@@ -1,9 +1,3 @@
-//! Strict d77 current-process catalog builder.
-//!
-//! The hook supplies only neutral raw D3D/VFS observations. This crate parses
-//! those observations, authenticates VFS-backed byte ranges against admitted
-//! payloads, derives portable descriptors, and discards every process pointer.
-
 use portable_content_manifest::{
     normalize_game_relative_path, ContentLayerKind, ContentManifest, UsedContentKey,
 };
@@ -19,12 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 pub trait AdmittedVfsPayloads {
-    /// Exact decompressed payload for the finalized manifest member.
     fn payload(&self, content: &UsedContentKey) -> Option<&[u8]>;
 
-    /// Exact admitted decompressed range used by one captured D3D payload.
-    /// Offline/full-file providers inherit the checked slice adapter; the live
-    /// H4CT provider overrides this and retains only observed ranges.
     fn payload_range(
         &self,
         content: &UsedContentKey,
@@ -68,9 +58,6 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, CatalogBuildError> {
     Err(CatalogBuildError(message.into()))
 }
 
-/// Normal production d77 builder. Completeness is exact set equality across
-/// raw submits, final draws, semantic observations, and the transitive object
-/// snapshot closure used by those draws.
 pub fn build_authenticated_render_catalog<V: AdmittedVfsPayloads>(
     manifest: &ContentManifest,
     raw: &RawParticleSubmit,
@@ -164,9 +151,6 @@ pub fn build_authenticated_render_catalog<V: AdmittedVfsPayloads>(
     AuthenticatedRenderCatalog::new(manifest, particle_rows, entity_rows).map_err(Into::into)
 }
 
-/// Fully portable result of one early-launch d80 static/post-process capture.
-/// Program and pass labels remain opaque; execution order and content joins
-/// are the only production selectors.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedStaticProgramSet {
     pub ordered_programs: Vec<StaticMapPassProgram>,
@@ -210,8 +194,6 @@ impl AuthenticatedStaticProgramSet {
     }
 }
 
-/// Construct the portable authority without allowing the recorder to
-/// re-key, omit, or rename the early-launch receipt fields.
 pub fn portable_render_authority(
     capture: &RawRenderCatalogCapture,
     effective_vfs_manifest_sha256: String,
@@ -233,11 +215,6 @@ pub const RECORDED_INPUT_VARIANT_AUTHORITY_MANIFEST_SHA256: Option<&str> =
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
-/// Pointer-free input evidence sampled by the injected observer in the normal
-/// capture loop and again at a later selected-Present boundary. This intentionally proves only the pointer
-/// member of the game's mouse/keyboard family. A stationary pointer, another
-/// foreground process, keyboard-only navigation and controllers produce no
-/// receipt and therefore remain unsupported.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRecordedPointerInputObservation {
     pub executable_sha256: String,
@@ -324,8 +301,7 @@ impl AuthenticatedRecordedInputVariant {
             || self.prior_observation_qpc_ticks == 0
             || self.selected_present_qpc_ticks <= self.prior_observation_qpc_ticks
             || self.present_sample_started_qpc_ticks < self.selected_present_qpc_ticks
-            || self.present_sample_completed_qpc_ticks
-                < self.present_sample_started_qpc_ticks
+            || self.present_sample_completed_qpc_ticks < self.present_sample_started_qpc_ticks
             || self.client_extent[0] == 0
             || self.client_extent[1] == 0
             || self.prior_client_position == self.current_client_position
@@ -343,12 +319,18 @@ impl AuthenticatedRecordedInputVariant {
             );
         }
         for (label, value) in [
-            ("input-variant authority manifest", &self.authority_manifest_sha256),
+            (
+                "input-variant authority manifest",
+                &self.authority_manifest_sha256,
+            ),
             (
                 "input-variant selected-Present receipt",
                 &self.selected_present_receipt_sha256,
             ),
-            ("input-variant observation receipt", &self.observation_receipt_sha256),
+            (
+                "input-variant observation receipt",
+                &self.observation_receipt_sha256,
+            ),
         ] {
             if value.len() != 64
                 || !value
@@ -365,9 +347,6 @@ impl AuthenticatedRecordedInputVariant {
     }
 }
 
-/// Convert a raw foreground pointer movement into the sole supported portable
-/// input family. The collector cannot request Keyboard or Controller here;
-/// those variants require independent focus/traversal evidence.
 pub fn authenticate_recorded_pointer_input(
     observation: RawRecordedPointerInputObservation,
 ) -> Result<AuthenticatedRecordedInputVariant, CatalogBuildError> {
@@ -383,17 +362,18 @@ pub fn authenticate_recorded_pointer_input(
         || observation.hook_epoch_nonce == 0
         || observation.observation_sequence == 0
         || observation.prior_observation_qpc_ticks == 0
-        || observation.selected_present_qpc_ticks
-            <= observation.prior_observation_qpc_ticks
-        || observation.present_sample_started_qpc_ticks
-            < observation.selected_present_qpc_ticks
+        || observation.selected_present_qpc_ticks <= observation.prior_observation_qpc_ticks
+        || observation.present_sample_started_qpc_ticks < observation.selected_present_qpc_ticks
         || observation.present_sample_completed_qpc_ticks
             < observation.present_sample_started_qpc_ticks
         || observation.client_extent[0] == 0
         || observation.client_extent[1] == 0
         || observation.prior_client_position == observation.current_client_position
         || !inside(observation.prior_client_position, observation.client_extent)
-        || !inside(observation.current_client_position, observation.client_extent)
+        || !inside(
+            observation.current_client_position,
+            observation.client_extent,
+        )
         || observation.selected_present_receipt_sha256.len() != 64
         || !observation
             .selected_present_receipt_sha256
@@ -426,9 +406,6 @@ pub fn authenticate_recorded_pointer_input(
     Ok(receipt)
 }
 
-/// UI-capable authority constructor. The legacy wrapper above deliberately
-/// supplies `None`; production UI must call this only with a same-launch live
-/// input-family receipt accepted by the frozen observation gate.
 pub fn portable_render_authority_with_input(
     capture: &RawRenderCatalogCapture,
     effective_vfs_manifest_sha256: String,
@@ -481,27 +458,23 @@ pub fn portable_render_authority_with_input(
         recorded_input_variant: recorded_input.map(|receipt| receipt.variant),
         recorded_input_receipt_sha256: recorded_input
             .map(|receipt| receipt.observation_receipt_sha256.clone()),
-        recorded_input_observation: recorded_input.map(|receipt| {
-            RecordedInputObservationReceipt {
-                executable_sha256: receipt.executable_sha256.clone(),
-                process_id: receipt.process_id,
-                process_start_nonce: receipt.process_start_nonce,
-                hook_epoch_nonce: receipt.hook_epoch_nonce,
-                observation_sequence: receipt.observation_sequence,
-                prior_observation_qpc_ticks: receipt.prior_observation_qpc_ticks,
-                selected_present_qpc_ticks: receipt.selected_present_qpc_ticks,
-                present_sample_started_qpc_ticks: receipt.present_sample_started_qpc_ticks,
-                present_sample_completed_qpc_ticks: receipt.present_sample_completed_qpc_ticks,
-                selected_present_receipt_sha256: receipt
-                    .selected_present_receipt_sha256
-                    .clone(),
-                client_extent: receipt.client_extent,
-                prior_client_position: receipt.prior_client_position,
-                current_client_position: receipt.current_client_position,
-                variant: receipt.variant,
-                authority_manifest_sha256: receipt.authority_manifest_sha256.clone(),
-                observation_receipt_sha256: receipt.observation_receipt_sha256.clone(),
-            }
+        recorded_input_observation: recorded_input.map(|receipt| RecordedInputObservationReceipt {
+            executable_sha256: receipt.executable_sha256.clone(),
+            process_id: receipt.process_id,
+            process_start_nonce: receipt.process_start_nonce,
+            hook_epoch_nonce: receipt.hook_epoch_nonce,
+            observation_sequence: receipt.observation_sequence,
+            prior_observation_qpc_ticks: receipt.prior_observation_qpc_ticks,
+            selected_present_qpc_ticks: receipt.selected_present_qpc_ticks,
+            present_sample_started_qpc_ticks: receipt.present_sample_started_qpc_ticks,
+            present_sample_completed_qpc_ticks: receipt.present_sample_completed_qpc_ticks,
+            selected_present_receipt_sha256: receipt.selected_present_receipt_sha256.clone(),
+            client_extent: receipt.client_extent,
+            prior_client_position: receipt.prior_client_position,
+            current_client_position: receipt.current_client_position,
+            variant: receipt.variant,
+            authority_manifest_sha256: receipt.authority_manifest_sha256.clone(),
+            observation_receipt_sha256: receipt.observation_receipt_sha256.clone(),
         }),
         particle_runtime_mode: ParticleRuntimeMode::SubmittedPacketReplay,
     })
@@ -1876,11 +1849,6 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                 .as_ref()
                 .map(|value| self.content.resolve(value))
                 .transpose()?,
-            // The current a729 target receipt authenticates the selected view
-            // descriptor and resource extent/sample identity. It does not yet
-            // carry the complete resource/view/init closure required by the
-            // optional exact-resource extension, so omission is the only
-            // evidence-backed value for the legacy mip-zero transient subset.
             exact_resource: None,
         })
     }
@@ -2046,14 +2014,11 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                         let packet = AuthenticatedTextureSnapshotPacket::sealed(resource)
                             .map_err(CatalogBuildError)?;
                         let snapshot_sha256 = packet.snapshot_sha256.clone();
-                        if let Some(existing) = self
-                            .authenticated_texture_snapshots
-                            .get(&snapshot_sha256)
+                        if let Some(existing) =
+                            self.authenticated_texture_snapshots.get(&snapshot_sha256)
                         {
                             if existing != &packet {
-                                return invalid(
-                                    "authenticated texture snapshot digest collision",
-                                );
+                                return invalid("authenticated texture snapshot digest collision");
                             }
                         } else {
                             self.authenticated_texture_snapshots
@@ -2090,10 +2055,6 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                         producer_ordinal,
                         payload_sha256,
                     } => {
-                        // H is the sole portable byte authority for this
-                        // runtime upload. Preserve the exact captured
-                        // descriptor/view but do not duplicate the draw-time
-                        // staging snapshot as invented resource initialization.
                         resource.ordered_subresources.clear();
                         StaticShaderResourceSource::SnowMudTexture {
                             producer_ordinal: *producer_ordinal,

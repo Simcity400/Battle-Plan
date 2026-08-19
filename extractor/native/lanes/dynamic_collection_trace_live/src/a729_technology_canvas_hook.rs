@@ -1,20 +1,6 @@
-//! Passive exact-a729 technology-canvas owner and commit-boundary hook.
-//!
-//! This module deliberately stops at the last boundary proved by retained
-//! static evidence. It authenticates the executable and all three detour
-//! entries, registers the mode-6 controller from its real owner constructor,
-//! and records post-return population/refresh commits with the exact active
-//! folder root. The observations are process-local and cannot themselves be
-//! encoded as `TCV1`: the active root still needs a selected-Present join that
-//! resolves its portable authored identity and final screen-space state.
-//!
-//! In particular, `CCountryView+0x578` is not a canvas or a two-axis owner.
-//! hook never reads axis data from that offset and never manufactures zero
-//! scroll/pan records.
-
 use crate::a729_technology_canvas::{
     expected_owner_construction_record_sha256, ObserverBoundary, OwnerRegistryWitness,
-    AUTHENTICATED_EXACT20_HOOK_CONTRACT, A729_EXECUTABLE_SHA256, CONTROLLER_MODE_OFFSET,
+    A729_EXECUTABLE_SHA256, AUTHENTICATED_EXACT20_HOOK_CONTRACT, CONTROLLER_MODE_OFFSET,
     MODE6_OWNER_SLOT_OFFSET, OWNER_CONSTRUCTOR_RVA, POPULATION_COMMIT_RVA, REFRESH_COMMIT_RVA,
     TECHNOLOGY_MODE,
 };
@@ -45,15 +31,12 @@ pub const ACTIVE_ROOT_GRAPHICAL_JOIN_ARTIFACT_SHA256: &str =
     "5fbd2a63f1ab3ca036bb596b1218ae36daefc2719b408dc03603e4bd85b37d8d";
 pub const TECHNOLOGY_CANVAS_AUTHORED_SURFACE_IDENTITY: &str = "technology_canvas";
 pub const TECHNOLOGY_CANVAS_RUNTIME_ROOT_IDENTITY: &str = "countrytechtreeview";
-pub const TECHNOLOGY_CANVAS_EFFECTIVE_INTERFACE_WINNER: &str =
-    "interface/countrytechtreeview.gui";
+pub const TECHNOLOGY_CANVAS_EFFECTIVE_INTERFACE_WINNER: &str = "interface/countrytechtreeview.gui";
 
 const ACTIVE_FOLDER_VECTOR_OFFSET: usize = 0x19F8;
 const ACTIVE_FOLDER_COUNT_OFFSET: usize = 0x1A04;
 const ACTIVE_FOLDER_ORDINAL_OFFSET: usize = 0x1A90;
 const GUI_SUBOBJECT_OFFSET: usize = 0x30;
-/// Materialized grid-widget vector/count proved under each resolved per-folder
-/// canvas root. It is not a final selected-Present draw list.
 pub const FOLDER_GRID_MATERIALIZED_VECTOR_OFFSET: usize = 0x1A0;
 pub const FOLDER_GRID_MATERIALIZED_COUNT_OFFSET: usize = 0x1AC;
 const MAX_FOLDER_ROOTS: usize = 4_096;
@@ -77,9 +60,6 @@ static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechnologyCanvasHookBoundary {
-    /// Exact monotonic commit sequence assigned while the hook-state mutex is
-    /// held. This is the process-local capture identity used by the
-    /// selected-Present bridge; it is never inferred from queue position.
     pub commit_sequence: u64,
     pub callback_rva: usize,
     pub boundary: ObserverBoundary,
@@ -91,15 +71,10 @@ pub struct TechnologyCanvasHookBoundary {
     pub owner_registry_witness: OwnerRegistryWitness,
     pub active_folder_ordinal: u32,
     pub active_folder_count: u32,
-    /// Process-local only. It must be consumed by the selected-Present bridge
-    /// and can never enter a portable carrier.
     pub active_folder_root_ptr: usize,
     pub runtime_graphical_subobject_ptr: usize,
 }
 
-/// Exact process-local registration passed to the production render-submit
-/// bridge. The bridge must join this registration to one selected Present and
-/// erase every pointer before producing `TCV1`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechnologyCanvasPresentRegistration {
     pub authored_surface_identity: &'static str,
@@ -110,8 +85,6 @@ pub struct TechnologyCanvasPresentRegistration {
     pub controller_ptr: usize,
     pub active_folder_ordinal: u32,
     pub active_folder_root_ptr: usize,
-    /// Exact `active_folder_root_ptr+0x30` graphical subobject consumed by the
-    /// common GUI traversal and therefore the runtime identity join key.
     pub runtime_graphical_subobject_ptr: usize,
 }
 
@@ -188,12 +161,10 @@ impl A729TechnologyCanvasHookOwner {
         let expected_root_slot = base
             .checked_add(compact_contract::build_profile::CG_STATE_DATE_OFFSET)
             .ok_or("technology canvas game-state root-slot address overflow")?;
-        if game_state_root_slot != expected_root_slot
-            || read_usize(game_state_root_slot).is_none()
+        if game_state_root_slot != expected_root_slot || read_usize(game_state_root_slot).is_none()
         {
             return Err(
-                "technology canvas game-state root slot differs from exact a729 authority"
-                    .into(),
+                "technology canvas game-state root slot differs from exact a729 authority".into(),
             );
         }
 
@@ -202,7 +173,11 @@ impl A729TechnologyCanvasHookOwner {
         let refresh_target = base + REFRESH_COMMIT_RVA;
         for (rva, target, label) in [
             (OWNER_CONSTRUCTOR_RVA, owner_target, "owner constructor"),
-            (POPULATION_COMMIT_RVA, population_target, "population commit"),
+            (
+                POPULATION_COMMIT_RVA,
+                population_target,
+                "population commit",
+            ),
             (REFRESH_COMMIT_RVA, refresh_target, "refresh commit"),
         ] {
             let sentinel = exact_sentinel(rva)?;
@@ -211,7 +186,9 @@ impl A729TechnologyCanvasHookOwner {
 
         reset_state()?;
         let epoch = INSTALL_EPOCH
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
             .map_err(|_| "technology canvas install epoch exhausted".to_string())?
             + 1;
 
@@ -268,9 +245,6 @@ impl A729TechnologyCanvasHookOwner {
 
         MODULE_BASE.store(base, Ordering::Release);
         GAME_STATE_ROOT_SLOT.store(game_state_root_slot, Ordering::Release);
-        // Enable commit consumers while their callbacks are closed. Open the
-        // owner callback immediately before enabling its hook, then open commit
-        // callbacks only after all three hooks exist.
         for (target, label) in [
             (refresh_target, "refresh"),
             (population_target, "population"),
@@ -286,7 +260,8 @@ impl A729TechnologyCanvasHookOwner {
                         "technology canvas {label} hook enable failed: {status}; disabled hooks could not quiesce: {quiescence}"
                     ));
                 }
-                let cleaned = cleanup_created_hooks(&[refresh_target, population_target, owner_target]);
+                let cleaned =
+                    cleanup_created_hooks(&[refresh_target, population_target, owner_target]);
                 if !cleaned {
                     return Err(format!(
                         "technology canvas rollback RETAINED created hooks; teardown still owed"
@@ -429,7 +404,10 @@ unsafe extern "system" fn hook_owner_constructor(owner: usize, context: usize) -
 
 unsafe extern "system" fn hook_population_commit(controller: usize) {
     let _in_flight = InFlight::enter();
-    call_original_commit(ORIGINAL_POPULATION_COMMIT.load(Ordering::Acquire), controller);
+    call_original_commit(
+        ORIGINAL_POPULATION_COMMIT.load(Ordering::Acquire),
+        controller,
+    );
     if COMMIT_CALLBACKS_OPEN.load(Ordering::Acquire) {
         if let Err(error) = capture_commit(
             controller,
@@ -501,8 +479,7 @@ fn register_owner(owner: usize, result: usize) -> Result<(), String> {
         owner_construction_record_sha256: String::new(),
         registry_manifest_sha256,
     };
-    witness.owner_construction_record_sha256 =
-        expected_owner_construction_record_sha256(&witness);
+    witness.owner_construction_record_sha256 = expected_owner_construction_record_sha256(&witness);
     state.owners_by_controller.insert(
         controller,
         OwnerRecord {
@@ -676,20 +653,8 @@ fn poison(error: String) {
 
 #[must_use = "a retained target is still owed a teardown and must reach the caller's error"]
 fn cleanup_created_hooks(targets: &[usize]) -> bool {
-    // DRAINED-BY-CALLER: every caller is an install failure arm that first
-    // closes both admission gates, disables all three targets and refuses on a
-    // failed `wait_for_quiescence(30s)` before reaching here. That matters
-    // because the later arms run AFTER a successful `enable`, so a body can be
-    // in flight -- this is not the vacuous never-enabled case despite the name.
     OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
     COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
-    // THE REMOVAL RESULTS ARE READ. They were all discarded with `let _ =`, so
-    // a refused removal -- a freeze that could not be taken, a target a thread
-    // was parked in -- left a CREATED MinHook entry behind while the three
-    // lines below zeroed its original and the module base. That is the retry's
-    // own evidence being deleted: a detour that may still dispatch then finds a
-    // null original and skips the game's function, and nothing can find the
-    // target again to finish the job.
     let mut removed = true;
     for target in targets {
         if unsafe { inline_detour::remove(*target as *mut c_void) }.is_err() {
@@ -697,8 +662,6 @@ fn cleanup_created_hooks(targets: &[usize]) -> bool {
         }
     }
     if !removed {
-        // RETAINED: originals, module base and game-state slot all stay, and
-        // the caller's error already names the failure. Cleanup is still owed.
         return false;
     }
     ORIGINAL_REFRESH_COMMIT.store(0, Ordering::Release);
@@ -737,7 +700,8 @@ fn verify_executable_sha256(module: *mut c_void) -> Result<(), String> {
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
-    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual =
+        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }

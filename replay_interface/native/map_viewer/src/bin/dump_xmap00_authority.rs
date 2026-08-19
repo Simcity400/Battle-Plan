@@ -1,30 +1,3 @@
-//! Manual verification CLI for the XMAP00 map-authority seam
-//! (`map_viewer::map_authority_projection_from_world_frame`).
-//!
-//! For every canonical hour of a recording it runs the real projection and
-//! reports each required input's derived disposition, so an admission claim can
-//! be checked against what a recording actually measured rather than against a
-//! hand-built fixture. It also reports, per hour, the raw `WorldFrame` view
-//! statuses and the completeness signals that a stronger-than-raw admission
-//! status has to consult, because a `Present` raw status is not by itself proof
-//! that a census was completely measured (see `map_authority.rs`,
-//! `land_terminal_detail_status`).
-//!
-//! This is a read-only observer: it never mutates the recording and never
-//! writes anything except the report it prints.
-//!
-//! Usage:
-//!   dump_xmap00_authority <recording-path> [--game ID] [--hours N] [--json]
-//!
-//! `--hours N` samples the first N canonical hours (default: all).
-//! `--json` prints one JSON document instead of the text report. It carries the
-//! per-input disposition roll-up and the dropped-row warning counts only — the
-//! per-hour raw statuses and completeness signals are in the text report, which
-//! is the one to use when investigating a single hour.
-//!
-//! The recording path is always supplied by the operator. Nothing here names a
-//! path inside `extractor/`: this workspace does not reach across that
-//! boundary, and the recording under test is passed in from outside.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -100,9 +73,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-/// One raw observation the admission derivation may consult. `status` is the
-/// view status as the decoder reports it; `completeness` names, in words, any
-/// signal that says the census behind that status may be short of rows.
 struct Observation {
     label: &'static str,
     status: Option<ViewStatus>,
@@ -126,30 +96,12 @@ fn leaf_word<T>(leaf: &Leaf<T>) -> &'static str {
     }
 }
 
-/// Coverage warnings whose prefix marks a dropped row in a census this report
-/// covers. A guard in `map_authority` can only be written against a prefix that
-/// actually appears here.
-///
-/// **An empty count is not proof of a complete census.** Several decoder paths
-/// drop a row with no warning at all — `build_raids` silently skips a malformed
-/// `raids.countries` entry and still returns `Present`, and `build_occupation`
-/// does the same for a non-numeric state key. Those losses are invisible to
-/// this report by construction, which is exactly why the rows they belong to
-/// are unadmitted (see `extractor/documents/technical_evidence.json` anchor
-/// `technical-r2-validation-bounds-audit::Census scope and observed failure class`). Read a zero here
-/// as "no *recorded* drop", never as "nothing was lost".
 fn dropped_row_warnings(frame: &WorldFrame) -> BTreeMap<String, usize> {
     let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     for warning in frame.coverage_warnings() {
-        // The decoder is not uniform about the verb: `row skipped`,
-        // `cell skipped`, `element skipped`, `row ignored` and bare `skipped`
-        // all occur. Matching only one of them is how a lossy census gets
-        // waved through, so match the whole vocabulary.
         if !(warning.contains("skipped") || warning.contains("ignored")) {
             continue;
         }
-        // Group by the text before the first '[' or ':' so a per-index warning
-        // collapses onto the census it belongs to.
         let head = warning
             .split_once('[')
             .map(|(head, _)| head)
@@ -238,12 +190,6 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
         Observation {
             label: "weather_province_snow_status",
             status: Some(frame.weather_province_snow_status()),
-            // The admitted XMAP00 row with a census behind it, so its refusals
-            // are the ones an operator will actually have to explain. Report every input its
-            // guard consults: the D24 witness, the raw member count it is
-            // compared against, the decoded length, whether every leaf was
-            // measured, and whether the decoded ids stay inside the declared
-            // dense range.
             completeness: Some({
                 let view = frame.weather_province_snow();
                 let weather = frame
@@ -307,7 +253,6 @@ fn run() -> Result<(), String> {
         None => all_hours.clone(),
     };
 
-    // input_id -> disposition -> hour count
     let mut roll: BTreeMap<&str, BTreeMap<&'static str, usize>> = BTreeMap::new();
     let mut per_hour_lines: Vec<String> = Vec::new();
     let mut warning_roll: BTreeMap<String, usize> = BTreeMap::new();

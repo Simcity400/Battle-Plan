@@ -1,10 +1,3 @@
-//! Passive, all-country XUI14 presentation carrier.
-//!
-//! The carrier is a replay-file contract. It is intentionally independent of
-//! recorder POV, window-open state, selected-Present timing and materialized
-//! controller geometry. The external producer resolves engine/game-file
-//! semantics and final text; Replay authenticates the complete transaction and
-//! lets the viewer select any country and intelligence surface afterwards.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,8 +7,6 @@ pub const XUI14_AUTHORITY: &str = "exact_a729_passive_all_country_intelligence";
 pub const XUI14_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
-// These are hashes of the packaged Replay-side producer/evidence contracts,
-// not arbitrary syntax-shaped digests supplied by a recording.
 pub const XUI14_PRODUCER_CONTRACT_MANIFEST_SHA256: &str =
     "25d5d795a12e54837cc82361c6a1475f2b77ea8731a69533dfb1446b4994a240";
 pub const XUI14_EVIDENCE_MANIFEST_SHA256: &str =

@@ -1,9 +1,3 @@
-//! XUI26 production seam for frontend/meta/dev panels and DLC music chrome.
-//!
-//! Layout and assets are admitted from the effective VFS. Dynamic values are
-//! admitted only as typed, complete snapshots with provenance. Missing live,
-//! backend, host-local, or developer inputs produce an explicit unavailable
-//! binding; the replay never invents values or contacts a service implicitly.
 
 use crate::authored_role_index::{AuthenticatedGuiRoleIndex, StrictAuthoredPanelAdmission};
 use crate::window_manager_law::{
@@ -36,13 +30,8 @@ pub struct FrontendBindingSnapshot {
     authority: FrontendAuthority,
     source_record_id: String,
     complete: bool,
-    /// Replay-payload snapshots are bound to the exact displayed WorldFrame.
-    /// Host/service authorities never enter the current shipping scope.
     frame_hour: Option<i64>,
     payload: FrontendBindingPayload,
-    /// Complete producer-observed dynamic semantics keyed by the selected
-    /// role index's opaque element ids. Static authored semantics are filled
-    /// by XUI07; these entries are the values that must affect output pixels.
     element_semantics: BTreeMap<String, replay_core::Xui26ElementSemantic>,
     collections: Vec<replay_core::Xui26ReplayCollection>,
 }
@@ -159,8 +148,6 @@ impl FrontendBindingSnapshot {
     }
 }
 
-/// Slot-exact values consumed by frontend/meta rendering.  Collection order is
-/// retained because several of these panels render producer order verbatim.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FrontendBindingPayload {
     AccountSummary {
@@ -483,8 +470,6 @@ impl FrontendBindingPayload {
 pub struct AdmittedFrontendBinding {
     pub slot_id: String,
     pub source_record_id: String,
-    /// Exact typed value admitted for this slot. Validation without transport
-    /// would leave the compositor with provenance but no data to render.
     pub payload: FrontendBindingPayload,
     pub element_semantics: BTreeMap<String, replay_core::Xui26ElementSemantic>,
     pub frame_hour: Option<i64>,
@@ -528,11 +513,6 @@ impl FrontendComposition {
     }
 }
 
-/// Native frontend/controller behavior proven by exact-a729 RE.
-///
-/// This registry intentionally contains no authored family, root, or file
-/// names. Those are effective-VFS data and are selected dynamically through
-/// [`AuthenticatedGuiRoleIndex`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrontendControllerDispatch {
     pub controller_id: &'static str,
@@ -604,9 +584,6 @@ pub fn frontend_family_scope(
     }
 }
 
-/// Root identity selected by each exact retained family. A source file may
-/// contain helper windows and row templates; only this root inherits the
-/// family's dynamic-slot contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct FrozenFrontendRoot {
     family_id: &'static str,
@@ -680,8 +657,6 @@ const FROZEN_FRONTEND_ROOTS: &[FrozenFrontendRoot] = &[
     },
     FrozenFrontendRoot {
         family_id: "saved_game_rules",
-        // The read-only replay surface is the authored load-side root. The
-        // nested `savedgamerules` list is not a manager-openable root.
         root_id: "savedgamerules_load",
     },
     FrozenFrontendRoot {
@@ -738,8 +713,6 @@ pub struct DiscoveredFrontendChrome {
     pub source_sha256: String,
 }
 
-/// Immutable XUI26 result sealed to one replay manifest, role index, panel
-/// token, and winning effective-VFS source identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DiscoveredFrontendComposition {
     chrome: DiscoveredFrontendChrome,
@@ -755,20 +728,11 @@ impl DiscoveredFrontendComposition {
         &self.chrome
     }
 
-    /// Exact retained frontend semantics. `None` means the admitted panel is
-    /// valid generic authored chrome but its source/layer/root does not match a
-    /// proven family; no semantics are guessed for overrides or mod additions.
     pub fn family(&self) -> Option<&FrontendComposition> {
         self.family.as_ref()
     }
 }
 
-/// Complete passive presentation admitted for an XUI26 shipping family.
-///
-/// This is content authority, not a manager/open/frame capability. The replay
-/// application must still send it through `ReplayOwnedWindowManager`; cloned
-/// values cannot authenticate a closed, reopened, cross-manager, or rejected
-/// frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StaticFrontendPanelPresentation {
     pub semantics: BTreeMap<String, ReplayAuthenticatedElementSemantic>,
@@ -785,10 +749,6 @@ pub enum StaticFrontendPanelRejection {
     InvalidDynamicSemantics,
 }
 
-/// Build the exact authored baseline and apply a complete admitted XUI26
-/// semantic carrier. Unknown/incomplete element ids or multiple bindings for
-/// one family fail closed. A complete observation may legitimately equal the
-/// authored baseline and is not treated as missing.
 pub fn admit_frontend_panel_presentation(
     surface: &crate::authored_role_index::AuthenticatedPanelSurface,
 ) -> Result<FrontendPanelPresentation, StaticFrontendPanelRejection> {
@@ -881,8 +841,6 @@ pub fn admit_frontend_panel_presentation(
     })
 }
 
-/// Admit the exact authored baseline for a family which has no dynamic slot.
-/// This compatibility entry point deliberately rejects every typed family.
 pub fn admit_static_frontend_panel_presentation(
     surface: &crate::authored_role_index::AuthenticatedPanelSurface,
 ) -> Result<StaticFrontendPanelPresentation, StaticFrontendPanelRejection> {
@@ -896,11 +854,7 @@ pub fn admit_static_frontend_panel_presentation(
     admit_frontend_panel_presentation(surface)
 }
 
-/// Revalidate content identity for a manager-owned open-panel lease.
-///
-/// This is deliberately crate-internal: content identity alone is not a
 /// lifetime authority. The replay application must additionally prove that
-/// the exact manager transition which opened the panel is still current.
 pub fn revalidate_discovered_frontend_chrome(
     composition: &DiscoveredFrontendComposition,
     index: &AuthenticatedGuiRoleIndex,
@@ -956,11 +910,6 @@ pub enum DiscoveredFrontendAdmissionError {
     DuplicateClassifiedFamily,
 }
 
-/// Product XUI26 admission from the selected replay's complete effective GUI
-/// closure. Generic authored chrome is not restricted to the retained family
-/// inventory; family semantics attach only when the effective logical path,
-/// content layer and family root match. The retained payload hashes are
-/// installed evidence, not a vanilla-only mod whitelist.
 pub fn admit_discovered_frontend_chrome(
     index: &AuthenticatedGuiRoleIndex,
     admission: &ValidatedContentAdmission,
@@ -1016,10 +965,6 @@ pub fn admit_discovered_frontend_chrome_with_bindings(
     })
 }
 
-/// Inventory the exact XUI26 families present in this replay's selected
-/// effective content manifest. This runs in the shipping observer constructor
-/// so a malformed contract or duplicate exact family refuses initialization,
-/// rather than waiting for a user to click the affected panel.
 pub fn admitted_frontend_family_ids(
     index: &AuthenticatedGuiRoleIndex,
     admission: &ValidatedContentAdmission,
@@ -1130,10 +1075,6 @@ struct ContractBinding {
     unavailable_reason_code: String,
 }
 
-/// Admits one XUI26 panel family against its effective-VFS identity.
-///
-/// Missing dynamic inputs are a successful, explicit fail-closed result. A
-/// supplied but malformed or incorrectly sourced input rejects the request.
 fn admit_frontend_composition(
     family_id: &str,
     source_sha256: &str,
@@ -1231,7 +1172,6 @@ fn admit_frontend_composition(
     })
 }
 
-/// Frozen exact-a729 evidence inventory. Not a product identity authority.
 pub fn frozen_frontend_family_ids() -> Result<Vec<String>, FrontendAdmissionError> {
     Ok(contract()?
         .families
@@ -1240,8 +1180,6 @@ pub fn frozen_frontend_family_ids() -> Result<Vec<String>, FrontendAdmissionErro
         .collect())
 }
 
-/// Frozen exact-a729 evidence inventory. Product admission uses
-/// [`admit_discovered_frontend_chrome`] instead.
 pub fn frozen_frontend_source_files() -> Result<BTreeSet<String>, FrontendAdmissionError> {
     let contract = contract()?;
     Ok(contract
@@ -1251,10 +1189,6 @@ pub fn frozen_frontend_source_files() -> Result<BTreeSet<String>, FrontendAdmiss
         .collect())
 }
 
-/// Classify one selected effective-VFS surface against the retained XUI26
-/// family namespace. Frozen hashes are evidence receipts, never product
-/// identity: a mod winner at the same logical path/root remains in-family and
-/// is bound to its own full `UsedContentKey` by normal panel admission.
 pub fn classified_frontend_family_for_surface(
     source: &UsedContentKey,
     surface_id: &str,
@@ -1278,11 +1212,6 @@ pub fn classified_frontend_family_for_surface(
         })
         .map(|family| family.family_id.clone())
         .collect::<Vec<_>>();
-    // Two retained Sabaton DLCs intentionally share one logical path/root.
-    // Their installed descriptors preserve the exact raw census. A mod winner
-    // has only one effective source at that logical path, so it is classified
-    // as the logical `sabaton_music` family instead of being dropped merely
-    // because both historical DLC descriptors match its mod layer.
     if source.layer_kind == ContentLayerKind::Mod
         && families.len() == 2
         && families.iter().any(|family| family == "sabaton_music")
@@ -1293,9 +1222,6 @@ pub fn classified_frontend_family_for_surface(
     Ok((families.len() == 1).then(|| families[0].clone()))
 }
 
-/// Classify only families whose exact controller contract has no dynamic
-/// slots. This is the shipping viewer-panel eligibility gate; it is derived
-/// from the same hash-pinned contract as the full family classifier.
 pub fn classified_static_frontend_family_for_surface(
     source: &UsedContentKey,
     surface_id: &str,
@@ -1941,11 +1867,6 @@ mod tests {
         );
     }
 
-    // Was a static `#[ignore]`, which meant it never ran under the standing
-    // `Mode Final` gate (that mode passes no `--run-ignored`), and panicked on
-    // an unset variable under `Mode Evidence`. The build-time gate runs it
-    // wherever the install resolves and reports it as `ignored, <reason>`
-    // where it does not.
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),
@@ -1976,9 +1897,6 @@ mod tests {
                     .find(|file| normalized_path_eq(&file.source_file, &family.source_file))?;
                 let observed = file.admitted_windows + file.rejected_windows;
                 let expected = if family.family_id == "sabaton_music" {
-                    // Both Sabaton packs mount interface/sabaton_music.gui.
-                    // The installed raw census retains both files, but the
-                    // later vol2 layer is the one effective VFS winner.
                     0
                 } else {
                     family.window_count

@@ -48,11 +48,6 @@ impl ProductionMainSceneTargetDesc {
     }
 }
 
-/// Viewer-owned, capture-independent descriptor set for XMAP10's MainScene.
-///
-/// Opaque attachment ordinals are deterministic standalone-viewer allocation
-/// identities owned by XMAP10's target plan. The HDR color descriptor and its
-/// matching full-resolution D24S8 depth descriptor come from that exact plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionMainSceneInputs {
     pub desc: ProductionMainSceneTargetDesc,
@@ -99,9 +94,6 @@ impl ProductionMainSceneInputs {
     }
 }
 
-/// Derive XMAP10's exact full-resolution MainScene allocation contract from
-/// the live viewer viewport and XMAP10 target plan. No selected-Present target
-/// or recorder camera participates.
 pub fn production_main_scene_inputs_from_viewer(
     viewer: &ViewerOwnedMapState,
     targets: &Xmap10TargetPlan,
@@ -178,9 +170,6 @@ fn main_scene_inputs_digest(
     )
 }
 
-/// Derive the sole materialized opaque color/depth descriptor from exact
-/// submitted output state.
-/// Every draw must agree. No width/format/sample default is supplied.
 pub fn production_main_scene_desc(
     frame: &PreparedProductionMapFrame,
 ) -> Result<Option<ProductionMainSceneTargetDesc>> {
@@ -194,9 +183,6 @@ pub fn production_main_scene_desc(
     ))
 }
 
-/// Derive one exact opaque color/depth descriptor from any ordered production draw
-/// sequence. Static and runtime backends share this gate so format, sample,
-/// dimension, and representable-mip validation cannot drift.
 pub fn production_main_scene_desc_from_outputs<'a>(
     outputs: impl IntoIterator<Item = &'a RenderOutputState>,
 ) -> Result<Option<ProductionMainSceneTargetDesc>> {
@@ -340,8 +326,6 @@ mod native {
     static NEXT_MAIN_SCENE_ALLOCATION_SERIAL: AtomicU64 = AtomicU64::new(1);
 
     impl NativeProductionMainSceneTarget {
-        /// # Safety
-        /// `device` must be a live D3D11 device for the duration of the call.
         pub unsafe fn create_on_device(
             device: *mut ID3D11Device,
             desc: ProductionMainSceneTargetDesc,
@@ -449,15 +433,10 @@ mod native {
             self.allocation_generation
         }
 
-        /// Pointer-free identity for this concrete MainScene allocation. The
-        /// generation is supplied by the production owner and is deliberately
-        /// distinct from the transient COM address.
         pub fn resource_identity_sha256(&self) -> &str {
             &self.resource_identity_sha256
         }
 
-        /// In-process same-device admission value. This is never serialized
-        /// or included in a deterministic receipt.
         pub fn device_identity(&self) -> usize {
             self.device_identity
         }

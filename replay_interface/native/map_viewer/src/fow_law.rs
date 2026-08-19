@@ -1,19 +1,4 @@
-//! Fog-of-war render law for the game map passes.
-//!
-//! Shipped shader anchors:
-//! - `gfx/FX/fow.fxh:79-88` applies fog as
-//!   `lerp(Color, lerp(DARK_FOW_COLOR, BRIGHT_FOW_COLOR, FogColorFactor),
-//!   FogAlphaFactor)`.
-//! - `gfx/FX/pdxmap.shader:388-389` samples the screen-space `ShadowMap`
-//!   with `ApplyFOW(vOut, ShadowMap, Input.vScreenCoord)` and then removes a
-//!   fraction of the fog over borders through
-//!   `BORDER_FOW_REMOVAL_FACTOR * (1 - vBloomAlpha)`.
-//! - The same `ShadowMap` render target is written by the map shadow/FoW
-//!   effect as `(shadow, FogColorFactor, FogAlphaFactor, 1)`.
-//!
 //! Captured DXGI 87 (`B8G8R8A8_UNORM`) staging bytes are in memory order
-//! B,G,R,A. HLSL samples them as R,G,B,A, so byte 2 is `.r` (shadow), byte 1
-//! is `.g` (fog color factor), and byte 0 is `.b` (fog alpha factor).
 
 use crate::*;
 use serde_json::Value;
@@ -38,7 +23,6 @@ pub const FOW_REQUIRED_SHADER_SOURCES: [&str; 7] = [
     "gfx/FX/shadow.fxh",
 ];
 
-// gfx/FX/fow.fxh:11-18.
 pub const FOW_TRANSPARENCY_MIN: f32 = 0.3;
 pub const FOW_TRANSPARENCY_MAX: f32 = 0.9;
 pub const FOW_COLOR_MIN: f32 = 0.2;
@@ -47,7 +31,6 @@ pub const FOW_NOISE_TILING: f32 = 0.01;
 pub const FOW_NOISE_SPEED: f32 = 0.015;
 
 pub const SHADOW_MAP_DXGI_FORMAT: u32 = 87;
-/// Exact a729 `CUpdateTextureThreaded` coverage edge for the A8 IntelMap.
 pub const INTEL_MAP_PROVINCE_COVERAGE_EDGE: usize = 6;
 pub const INTEL_MAP_MAX_PROVINCE_SAMPLES: usize =
     INTEL_MAP_PROVINCE_COVERAGE_EDGE * INTEL_MAP_PROVINCE_COVERAGE_EDGE;
@@ -62,9 +45,6 @@ pub enum ExactUnitDisclosure {
     ExactDetails,
 }
 
-/// Exact a729 land/rail unit disclosure tiers. The land map producer admits
-/// counters only at 250, while lower nonzero bytes remain detection/intel
-/// state and must not produce a map counter.
 pub fn exact_a729_land_unit_disclosure(raw_intel: u8) -> ExactUnitDisclosure {
     match raw_intel {
         0 => ExactUnitDisclosure::Hidden,
@@ -73,8 +53,6 @@ pub fn exact_a729_land_unit_disclosure(raw_intel: u8) -> ExactUnitDisclosure {
     }
 }
 
-/// Exact a729 task-force map-icon disclosure. 150 admits the map producer;
-/// 250 admits exact detail. Values 1..149 are detected but not map-visible.
 pub fn exact_a729_taskforce_disclosure(raw_intel: u8) -> ExactUnitDisclosure {
     match raw_intel {
         0 => ExactUnitDisclosure::Hidden,
@@ -84,13 +62,6 @@ pub fn exact_a729_taskforce_disclosure(raw_intel: u8) -> ExactUnitDisclosure {
     }
 }
 
-/// Rebuild one a729 A8 IntelMap texel from the engine's province-id coverage
-/// cells and an admitted complete current-POV visibility vector.
-///
-/// Each coverage sample contributes 255 for an invalid/non-land province or
-/// while FOW is disabled. Otherwise it contributes the exact engine byte at
-/// the province database ID. The stored A8 byte is the bitwise inverse of the
-/// approximation and must not consume a stale or partial visibility vector.
 pub fn exact_a729_intel_map_texel(
     province_ids: &[u16],
     province_is_eligible_land: &[bool],
@@ -126,11 +97,6 @@ pub fn exact_a729_intel_map_texel(
     Ok(!(average as u8))
 }
 
-/// Build the complete a729 A8 IntelMap from the province-id map raster.
-///
-/// The output extent is the positive map extent divided by six in each axis;
-/// remainder source pixels are not represented, matching the engine staging
-/// allocation and threaded rasterizer.
 pub fn exact_a729_intel_map(
     province_id_raster: &[u16],
     map_width: usize,
@@ -285,11 +251,6 @@ pub(crate) fn apply_fow(color: Vec3, factors: FowFogFactors) -> Vec3 {
     )
 }
 
-/// Effective fog alpha after `pdxmap.shader:389`.
-///
-/// The shader computes `lerp(vFOW, vOut, BORDER_FOW_REMOVAL_FACTOR *
-/// (1 - vBloomAlpha))`, so the fog contribution is scaled by
-/// `1 - BORDER_FOW_REMOVAL_FACTOR * (1 - vBloomAlpha)`.
 pub fn pdxmap_fow_effective_alpha(fog_alpha_factor: f32, bloom_alpha: f32) -> f32 {
     let removal = BORDER_FOW_REMOVAL_FACTOR * (1.0 - bloom_alpha);
     fog_alpha_factor * (1.0 - removal)
@@ -347,10 +308,6 @@ pub fn analyze_fow_capture_pair(on_dir: &Path, off_dir: &Path) -> Result<FowCapt
     let off_rt = post_pass_render_target_bytes(off_dir, &off_bundle)?;
     let masks = build_pair_masks(&on_shadow_bytes, &off_shadow_bytes)?;
 
-    // `bloom_alpha = 0` is the non-border branch explicitly initialized in
-    // `pdxmap.shader:324`. The residual on changed/fogged pixels is therefore
-    // a measured missing-evidence signal for per-pixel `vBloomAlpha` and the
-    // pre-FoW color, not an invitation to fit the factor.
     let observer_to_fow_all_pixels = parity_from_observer_to_fow(
         &off_rt,
         &on_rt,
@@ -632,7 +589,6 @@ fn build_pair_masks(on_shadow: &[u8], off_shadow: &[u8]) -> Result<PairMasks> {
         fogged_changed
             .push(on_alpha > 8 && (i16::from(on_alpha) - i16::from(off_alpha)).unsigned_abs() > 2);
     }
-    // Keep `all` explicit so the report makes the mask contract visible.
     all.shrink_to_fit();
     Ok(PairMasks {
         all,
@@ -833,9 +789,6 @@ fn percent(part: usize, whole: usize) -> f32 {
 mod tests {
     use super::*;
 
-    /// The crate's gate table, included so this test module resolves the CAP4
-    /// corpus through EXACTLY the candidate list the build-time probe used.
-    /// Two copies of a candidate list drift; one cannot.
     #[allow(dead_code)]
     mod corpus {
         include!("../test_gates.rs");

@@ -325,9 +325,6 @@ def _extract_archive(source: Path, destination: Path) -> None:
 
 def _stage_mod_descriptor(source: dict[str, Any], destination: Path, content_root: Path) -> Path:
     target = _safe_launcher_token(source["id"], destination)
-    # Preserve every source descriptor byte losslessly. Clausewitz descriptors
-    # are narrow byte strings, not guaranteed UTF-8; only the physical content
-    # field is rewritten for the private staging userdir.
     text = Path(source["descriptor_path"]).read_bytes().decode("latin-1")
     content_bytes = content_root.resolve().as_posix().encode("utf-8")
     if any(char in content_bytes for char in (b'"', b"\r", b"\n")):

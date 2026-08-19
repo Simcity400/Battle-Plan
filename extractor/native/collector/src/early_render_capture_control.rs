@@ -1,5 +1,3 @@
-//! Exact collector-side READY/FIRST/COMMIT proof adapter for H4CT.
-
 use crate::duplex_client::EarlyRenderControlBinding;
 use compact_contract::early_render_control::{
     EarlyCommitCaptureReceiptV1, EarlyFirstGameD3dV1, EarlyHookReadyV1,
@@ -135,8 +133,6 @@ pub fn first_game_d3d_proof(
             .map_err(|_| "game device pointer does not fit the FIRST wire")?,
         immediate_context_ptr: u64::try_from(ready.immediate_context_ptr)
             .map_err(|_| "immediate context pointer does not fit the FIRST wire")?,
-        // The staged lifecycle creates no collector NULL probe at all, which
-        // is stronger than identifying and filtering one after creation.
         collector_null_probe_excluded: true,
     }))
 }

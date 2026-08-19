@@ -1,11 +1,3 @@
-//! XMAP12 game-file-derived PdxMesh materialization.
-//!
-//! This is the shared, recorder-independent object seam used by cities,
-//! buildings, and generic fixed objects. Semantic producers supply a stable
-//! identity, resolved entity/PdxMesh declaration, and world transform. This module
-//! reads every payload through [`ValidatedContentAdmission`], parses the
-//! effective `.mesh`, applies the generic a729 sphere/frustum/LOD law, and
-//! emits both main-scene geometry and the unchanged XMAP09 L03 caster row.
 
 use crate::{
     extract_pdx_model, parse_pdx_asset, GameFileResolver, L03DrawArguments, L03MaterialFamily,
@@ -41,8 +33,6 @@ pub struct Xmap12TextureSource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap12MeshSettingOverride {
-    /// Raw authored shape/group index in the `.mesh`, matching the `.gfx`
-    /// `meshsettings.index` contract.
     pub shape_index: u32,
     pub texture_diffuse: Option<String>,
     pub texture_normal: Option<String>,
@@ -63,20 +53,15 @@ pub struct Xmap12PdxMeshRequest {
     pub mesh_source: UsedContentKey,
     pub shader_source: UsedContentKey,
     pub ordered_texture_sources: Vec<Xmap12TextureSource>,
-    /// Effective `.gfx` PdxMesh meshsettings, keyed by submesh index.
     pub mesh_settings: Vec<Xmap12MeshSettingOverride>,
-    /// Product row-vector affine matrix before entity/PdxMesh authored scale.
     pub world_matrix_f32_bits: [u32; 16],
     pub entity_scale_f32_bits: u32,
     pub pdxmesh_scale_f32_bits: u32,
     pub material_family: Xmap12PdxMeshMaterialFamily,
-    /// XMAP13's engine-selected LOD/shape closure. Static XMAP12 producers
-    /// leave both fields absent and retain viewer-camera LOD selection.
     #[serde(default)]
     pub selected_lod_override: Option<u32>,
     #[serde(default)]
     pub selected_shape_indices: Option<Vec<u32>>,
-    /// Exact current 50-matrix shader palette for a skinned XMAP13 entity.
     #[serde(default)]
     pub skin_palette_3200_bytes: Option<Vec<u8>>,
 }
@@ -84,11 +69,8 @@ pub struct Xmap12PdxMeshRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap12MaterializedSubmesh {
-    /// Raw authored shape ordinal in the selected `.mesh`.
     pub group_index: u32,
-    /// Compact ordinal in `object_draw.render.groups`.
     pub object_group_ordinal: u32,
-    /// Compact ordinal in that shared group's `submeshes`.
     pub object_submesh_ordinal: u32,
     pub shape_name: String,
     pub material_shader: String,
@@ -291,9 +273,6 @@ impl Xmap12PdxMeshMaterialization {
     }
 }
 
-/// Resolve one entity's effective mesh into viewer-selected production draw
-/// content.  No recorder camera, selected Present, or EntitySubmission is
-/// accepted by this API.
 pub fn materialize_xmap12_pdxmesh(
     resolver: &GameFileResolver,
     admission: &ValidatedContentAdmission,
@@ -450,8 +429,6 @@ pub fn materialize_xmap12_pdxmesh(
     Ok(Some(result))
 }
 
-/// at load; the last LOD is the default; scanning squared thresholds from last
-/// to first selects the first threshold not greater than distance squared.
 pub fn select_pdxmesh_lod(lod_distances: &[f32], distance_squared: f32) -> Result<u32> {
     if !distance_squared.is_finite()
         || distance_squared < 0.0
@@ -755,9 +732,6 @@ fn push_f32s<const N: usize>(bytes: &mut Vec<u8>, values: &[f32; N]) {
     }
 }
 
-/// Generic a729 aggregate sphere: explicit per-mesh spheres win; otherwise the
-/// per-mesh AABB midpoint and half-diagonal are used.  The model center is the
-/// aggregate AABB midpoint and its radius covers every per-mesh sphere.
 fn model_bounding_sphere(model: &crate::PdxModel) -> Result<[f32; 4]> {
     let meshes = model
         .shapes

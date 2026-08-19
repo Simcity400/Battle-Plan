@@ -1,9 +1,3 @@
-//! XMAP15 state-first orders, fronts, and movement-arrow preparation.
-//!
-//! Recorded M03 draws are intentionally not an input. The semantic sidecar is
-//! an unconditional current-hour census, effective definitions are resolved
-//! through the admitted VFS, and every D54/XMAP13 join is exact or preparation
-//! fails closed.
 
 use crate::{
     FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
@@ -30,10 +24,7 @@ pub const XMAP15_SEMANTIC_RAW_PATH: [&str; 3] = [
 pub const XMAP15_MAPARROWS_PATH: &str = "gfx/maparrows/maparrows.txt";
 pub const XMAP15_MAPARROW_SHADER_PATH: &str = "gfx/FX/maparrow.shader";
 pub const XMAP15_MOVEMENT_DEFINITIONS_PATH: &str = "interface/arrows.gfx";
-/// Authored Clausewitz effect spelling retained in `arrows.gfx`.
 pub const XMAP15_MOVEMENT_EFFECT_PATH: &str = "gfx/FX/arrow.lua";
-/// DX11 resolves the authored effect basename to this sibling translation
-/// unit; vanilla does not contain `arrow.lua` as a standalone file.
 pub const XMAP15_MOVEMENT_SHADER_PATH: &str = "gfx/FX/arrow.shader";
 pub const XMAP15_HEIGHTMAP_PATH: &str = "map/heightmap.bmp";
 pub const XMAP15_MAP_DIMENSIONS_PATH: &str = "map/provinces.bmp";
@@ -49,9 +40,6 @@ pub struct Xmap15ViewerSelection {
     pub selected_plan: Option<Xmap15PlanKey>,
 }
 
-/// Preserve the UI's D54 selection while exposing it to XMAP15 only when the
-/// selected order is an arrow-producing type 1-4 row in the authenticated
-/// current-hour XMAP15 census.
 pub fn xmap15_viewer_selection(
     world: &WorldFrame,
     selected: Option<&ArmyBattleplanOrderKey>,
@@ -93,18 +81,12 @@ pub trait Xmap15UnitIdentityProvider {
     fn hour_index(&self) -> i64;
     fn census_sha256(&self) -> &str;
     fn admission_sha256(&self) -> &str;
-    /// Count the exact Army/ArmyGroup formation identity and owner. `false`
-    /// means Army and `true` means ArmyGroup; no other kind is admitted. Every
-    /// plan requires exactly one, including unassigned plans with no member
-    /// join.
     fn formation_identity_match_count(
         &self,
         owner_is_army_group: bool,
         owner_id: u32,
         owner_country: &str,
     ) -> usize;
-    /// Count exact division identities matching both D54 stable id and owner.
-    /// Replay requires exactly one; zero and duplicates both fail closed.
     fn division_identity_match_count(&self, stable_id: u32, owner_country: &str) -> usize;
 }
 
@@ -208,9 +190,6 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
                 payload_schema: XMAP15_STATE_FIRST_SCHEMA.into(),
                 producer_registration_sha256: registration.clone(),
                 payload_sha256: prepared.portable.deterministic_sha256.clone(),
-                // XMAP22 authenticates this family-level operation without
-                // inventing a cross-packet edge. Per-row final draw ordinals
-                // remain packet-local inside the XMAP15 payload.
                 ordered_operations: vec![prepared
                     .assigned_stage
                     .foundation_operation_identity(
@@ -253,14 +232,10 @@ pub(crate) fn xmap15_used_content_sha256(content: &[UsedContentKey]) -> Result<S
 pub struct PreparedXmap15Frame {
     pub portable: Xmap15PreparedFrame,
     pub assigned_stage: AssignedStage,
-    /// Producer-derived main-scene viewport/camera identity. The foundation
-    /// operation is checked against this value, never against its own claim.
     pub foundation_target_sha256: String,
     pub plan_definitions: Vec<PreparedXmap15PlanDefinition>,
     pub movement_definitions: Vec<PreparedXmap15MovementDefinition>,
     pub heightmap: Option<UsedContentKey>,
-    /// Effective `map/provinces.bmp` winner from which shader map dimensions
-    /// are derived. Present only when a shader-backed row exists.
     pub map_dimensions_content: Option<UsedContentKey>,
     pub map_width: u32,
     pub map_height: u32,
@@ -435,9 +410,6 @@ pub struct Xmap15LifecycleUpdate {
 }
 
 impl Xmap15LifecycleState {
-    /// Replace the retained current-hour snapshot. Backward seeks use the same
-    /// operation as forward playback: rows absent from the requested complete
-    /// census are deleted, so future-hour GPU state cannot leak backward.
     pub fn apply(&mut self, frame: &PreparedXmap15Frame) -> Result<Xmap15LifecycleUpdate> {
         frame.validate()?;
         let mut incoming = BTreeMap::new();
@@ -518,12 +490,8 @@ pub struct PreparedXmap15PlanDefinition {
     pub body_width_f32_bits: [u32; 2],
     pub body_uv_scale_f32_bits: u32,
     pub body_uv_scale_2_f32_bits: Option<u32>,
-    /// Definition +0xb0..+0xb8. The exact builder consumes components zero
-    /// and one as point-width-class multipliers.
     pub mask_inner_f32_bits: [u32; 3],
-    /// Definition +0xbc..+0xc4 and shader CB3 ArrowMask outer pass.
     pub mask_outer_f32_bits: [u32; 3],
-    /// Definition +0xc8, multiplied by the order object's +0x178 scalar.
     pub width_scale_f32_bits: u32,
     pub width_scale_max_f32_bits: Option<u32>,
     pub head_length_f32_bits: Option<u32>,
@@ -538,8 +506,6 @@ pub struct PreparedXmap15PlanDefinition {
     pub draw_last: bool,
     pub ordered_texture_masks: Vec<String>,
     pub ordered_texture_patterns: Vec<String>,
-    /// Dependency-first effective-VFS translation unit, including the root
-    /// maparrow shader as the final entry.
     pub ordered_shader_translation_unit_paths: Vec<String>,
     pub ordered_used_content: Vec<UsedContentKey>,
     pub deterministic_sha256: String,
@@ -1155,8 +1121,6 @@ pub struct PreparedXmap15MovementDefinition {
     pub normal: String,
     pub specular: String,
     pub effect: String,
-    /// Dependency-first effective-VFS translation unit, including the root
-    /// movement shader as the final entry.
     pub ordered_shader_translation_unit_paths: Vec<String>,
     pub ordered_used_content: Vec<UsedContentKey>,
     pub deterministic_sha256: String,

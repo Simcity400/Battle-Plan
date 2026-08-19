@@ -283,11 +283,6 @@ fn alert_counts_and_semantics_must_match_rows() {
     assert!(bind_decision_panel(&catalog(), &threshold).is_err());
 }
 
-/// A34's activation matrix needs a measured-empty panel to be an ADMITTED
-/// binding with zero items, never an error. A country whose every decision
-/// category is gated off genuinely renders nothing, and the engine still
-/// materialises a grid rectangle for it, so an empty complete producer
-/// attestation is a real observation and must bind.
 #[test]
 fn measured_empty_panel_is_an_admitted_binding_not_an_error() {
     let mut empty = valid_snapshot();
@@ -305,16 +300,10 @@ fn measured_empty_panel_is_an_admitted_binding_not_an_error() {
     assert_eq!(binding.timeout_alert_count, 0);
     assert_eq!(binding.country_tag, "GER");
     assert_eq!(binding.frame_hour, 100);
-    // The grid rectangle is still carried, which is what separates a measured
-    // empty panel from a panel that was never measured at all.
     assert_eq!(binding.grid.clip_right, 502);
     assert_eq!(binding.grid.clip_bottom, 600);
 }
 
-/// An empty panel is only measured-empty when the producer attested complete.
-/// An incomplete producer that happens to have shipped zero rows stays a
-/// rejection, so "no rows" can never be manufactured by dropping the
-/// attestation.
 #[test]
 fn empty_panel_without_producer_attestation_is_still_rejected() {
     let mut empty = valid_snapshot();
@@ -326,11 +315,6 @@ fn empty_panel_without_producer_attestation_is_still_rejected() {
     assert!(bind_decision_panel(&catalog(), &empty).is_err());
 }
 
-/// The realistic measured-empty panel is row-empty but NOT child-empty: a
-/// category header is inserted independently of whether its category produced
-/// any rows, so a country with categories but no visible decisions renders
-/// headers over nothing. `rows == []` is the measured-empty signal;
-/// `children == []` only happens when the grid had no children at all.
 #[test]
 fn row_empty_panel_still_carries_its_materialized_category_headers() {
     let mut empty = valid_snapshot();
@@ -390,10 +374,6 @@ fn row_empty_panel_still_carries_its_materialized_category_headers() {
     }
 }
 
-/// The three d87 outcomes must stay distinguishable at the product's
-/// unavailability surface: "never observed" and "observed but rejected" are
-/// different facts about a recording, and A34's nonempty/measured-empty matrix
-/// cannot be read if they collapse into one message.
 #[test]
 fn unobserved_and_rejected_decision_panels_report_distinct_reasons() {
     let absent = replay_core::DecisionPanelExactView {
@@ -423,9 +403,6 @@ fn unobserved_and_rejected_decision_panels_report_distinct_reasons() {
     );
 }
 
-/// A measured-empty panel still has to agree with the production catalog. A
-/// panel whose catalog hash disagrees is a rejection whether or not it is
-/// empty, so emptiness is never a way around the catalog join.
 #[test]
 fn measured_empty_panel_still_joins_the_production_catalog() {
     let mut empty = valid_snapshot();

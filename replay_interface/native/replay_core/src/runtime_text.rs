@@ -1,9 +1,3 @@
-//! A25 exact runtime-text carrier admission.
-//!
-//! The engine has already selected scripted localisation, grammar and numeric
-//! formatting before these rows are recorded.  This module validates the
-//! recorded final bytes and exposes them without re-evaluating Clausewitz
-//! expressions.  Static localisation remains outside this sparse carrier.
 
 use crate::world::{Leaf, WorldFrame};
 use portable_render_stream::{
@@ -36,9 +30,7 @@ pub struct RuntimeTextRecord {
     pub view_id: String,
     pub element_id: String,
     pub source: RuntimeTextSource,
-    /// Exact post-setter bytes selected by the engine text-layout object.
     pub final_text_bytes: Vec<u8>,
-    /// UTF-8 interpretation mechanically verified against `final_text_bytes`.
     pub final_text_utf8: String,
     pub final_text_sha256: String,
     pub variables: BTreeMap<String, String>,
@@ -52,30 +44,18 @@ pub struct RuntimeTextRecord {
 pub enum RuntimeTextSource {
     LocalisationKey(String),
     Literal(String),
-    /// Exact raw `text = ...` token retained from `CTextBoxType+0x138` by
-    /// the authenticated A25 registration/setter join.
     AuthoredToken(String),
-    /// No authored token was present; the proven final-setter caller RVA is
-    /// the only exact source identity available.
     SetterCallerRva(u32),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeTextLayout {
-    /// The final string is reproducible with the admitted authored rectangle,
-    /// alignment and effective BMFont.  No duplicate glyph stream is stored.
     AuthoredReproducible,
-    /// The engine selected a result which cannot be reconstructed from static
-    /// assets (fallback font, truncation, or inline icons).  Runs are relative
-    /// to the owning element's top-left.
     CapturedRuntime(RuntimeTextCapturedLayout),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeTextCapturedLayout {
-    /// Owner-top-left-relative `[x, y, width, height]`. `None` means there is
-    /// no runtime-layout clip; the owning HUD destination is not an implicit
-    /// substitute clip.
     pub clip: Option<[i32; 4]>,
     pub glyphs: Vec<RuntimeGlyphRun>,
     pub inline_icons: Vec<RuntimeInlineIconRun>,
@@ -105,8 +85,6 @@ pub struct RuntimeInlineIconRun {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeTextProducer {
     pub setter_entry_rva: u32,
-    /// Exact setter caller when it was observed live. A pre-hook baseline row
-    /// with an authored registration token has no lawful historical caller.
     pub setter_caller_rva: Option<u32>,
     pub formatter_entry_rva: Option<u32>,
     pub identity_source: RuntimeTextIdentitySource,
@@ -142,11 +120,6 @@ impl fmt::Display for RuntimeTextAdmissionError {
 impl std::error::Error for RuntimeTextAdmissionError {}
 
 impl WorldFrame {
-    /// Admit the sparse A25 carrier from the untouched snapshot domain.
-    ///
-    /// Missing, unobtained and measured-empty are deliberately distinct:
-    /// no key -> `Absent`; `state=unobtained` -> `Unobtained`; and a measured
-    /// envelope with `contexts=[]` -> `Measured` with an empty catalog.
     pub fn runtime_text(&self) -> Result<Leaf<RuntimeTextCatalog>, RuntimeTextAdmissionError> {
         admit_runtime_text(self.domain("runtime_text"))
     }
@@ -229,9 +202,6 @@ pub fn admit_runtime_text(
     }
 }
 
-/// Bind every typed selected-Present text command to the exact A25 row that
-/// produced it. The command carries only recorded dynamic identity tokens;
-/// this join never consults a vanilla view/widget catalog.
 pub(crate) fn validate_ui_pass_runtime_text_bindings(
     pass: &AuthenticatedUiPass,
     runtime_text: &Leaf<RuntimeTextCatalog>,
@@ -604,9 +574,6 @@ fn admit_record(
     })
 }
 
-/// U+0011 is the authenticated engine colour lead and newlines are already
-/// selected by the engine layout object. Other C0 controls and pound-sign icon
-/// syntax require captured glyph/icon runs; replay must not silently strip them.
 fn requires_captured_runtime_layout(text: &str) -> bool {
     text.chars()
         .any(|ch| ch == '\u{00a3}' || (ch.is_control() && !matches!(ch, '\n' | '\r' | '\u{0011}')))

@@ -1,30 +1,4 @@
-//! Shared receipt custody for a lane whose production sites are all MinHook
-//! normal REL5 detours.
-//!
-//! # Why this exists
-//!
-//! Every lane the production hook registry owns has to hand it the same four
 //! things: the installed receipts, a one-shot take of the released receipts, a
-//! predicate for "did I actually let go", and a rollback that leaves neither
-//! side holding custody. D45, D67, D86 and D99 each wrote that logic out by
-//! hand. Three more lanes needed it on 2026-08-03 -- D85, D95 and D97, whose
-//! producer hooks the shipped passive product never installed at all -- and a
-//! fourth, fifth and sixth hand-written copy of a custody state machine is
-//! three more places for the same class of bug to live independently.
-//!
-//! So this is the one implementation those three share. It is deliberately NOT
-//! retrofitted onto the existing lanes: they are installed, measured and
-//! shipping, and rewriting their custody to prove a refactor is a far worse
-//! trade than leaving them alone.
-//!
-//! # What it does not do
-//!
-//! It owns receipts, not detours. Creating, enabling, disabling and removing
-//! the patch stays with the lane, because the ordering rules around those
-//! operations are lane-specific (which sites roll back together, whether a
-//! trampoline may be freed, how callbacks are quiesced). What this module
-//! guarantees is narrower and exact: a receipt is only ever minted from
-//! [`observe_enabled_minhook_rel5`] against the lane's own declared spec, and
 //! the installed/released sides can never both hold the same site.
 
 #![cfg(windows)]
@@ -36,12 +10,7 @@ use crate::{
 };
 use std::sync::Mutex;
 
-/// Custody for `N` REL5 sites belonging to one lane.
-///
-/// Held in a `static`; `new` is `const` so the specs are fixed at compile time
-/// and no runtime path can substitute a different roster.
 pub struct Rel5HookRoster<const N: usize> {
-    /// Prefixes every diagnostic, so a failure names the lane that produced it.
     lane: &'static str,
     specs: [ExpectedRvaHook; N],
     installed: Mutex<[Option<InstalledRvaHookReceipt>; N]>,
@@ -62,7 +31,6 @@ impl<const N: usize> Rel5HookRoster<N> {
         &self.specs
     }
 
-    /// Runtime address of site `index`, from the module base the lane resolved.
     pub fn target(&self, base: usize, index: usize) -> Result<usize, String> {
         let expected = self
             .specs
@@ -74,32 +42,9 @@ impl<const N: usize> Rel5HookRoster<N> {
             .ok_or_else(|| format!("{} runtime address overflow", expected.logical_name))
     }
 
-    /// Observe every site as an enabled REL5 patch bound to the lane's own
-    /// detour, and persist the receipts.
-    ///
-    /// Each [`SiteDetour`] NAMES the site it services, and the binding is by
-    /// that name rather than by array position -- see
-    /// [`bind_detours_by_identity`], which also refuses a null detour and, more
-    /// importantly, refuses two sites that resolve to the SAME address. The
-    /// linker's identical-code folding really does collapse detour bodies that
-    /// compile alike (D95's four folded to two in the optimized build of its
-    /// own test binary, found 2026-08-05), and a folded
-    /// pair verifies perfectly here -- the REL5 jump at both targets does point
-    /// at that one address -- while the receipts describe the wrong engine
-    /// function. Once bound, a relay pointing anywhere else is refused by
-    /// [`observe_enabled_minhook_rel5`] rather than recorded.
-    ///
-    /// Idempotent for a retry: a site that already holds a receipt is
-    /// re-observed and the result must be byte-identical, so a second call
-    /// after a partial failure cannot quietly replace an earlier attestation
     /// with a different one. A site whose release was already published refuses
     /// outright -- installing over released custody is exactly the state the
-    /// two-sided invariant exists to forbid.
-    ///
-    /// All-or-nothing at the roster level: a failure at site `k` leaves sites
     /// `0..k` persisted, which is what the caller's own rollback then releases.
-    /// This function does not roll back detours, because it did not install
-    /// them.
     pub fn observe_installed(&self, base: usize, detours: [SiteDetour; N]) -> Result<(), String> {
         let detours = bind_detours_by_identity(self.lane, &self.specs, detours)?;
         for index in 0..N {
@@ -135,9 +80,6 @@ impl<const N: usize> Rel5HookRoster<N> {
         Ok(())
     }
 
-    /// The complete installed roster. Refuses unless every site holds a
-    /// receipt, so a partially observed install can never be reported as an
-    /// installed one.
     pub fn installed_receipts(&self) -> Result<[InstalledRvaHookReceipt; N], String> {
         let installed = self.lock_installed()?;
         let mut complete = [None; N];
@@ -156,44 +98,22 @@ impl<const N: usize> Rel5HookRoster<N> {
             .map_err(|_| format!("{} installed hook roster width mismatch", self.lane))
     }
 
-    /// True once every site holds an installed receipt.
-    ///
-    /// EXACT, and deliberately fail-open on a poisoned lock: this answers "may
     /// I publish a complete release", and publishing over custody this cannot
-    /// read would be a worse answer than declining. For the safety question --
-    /// "might a detour still be patched in" -- use
-    /// [`Self::may_still_hold_installed_custody`], which fails the other way.
     pub fn has_complete_installed_custody(&self) -> bool {
         self.lock_installed()
             .map(|installed| installed.iter().all(Option::is_some))
             .unwrap_or(false)
     }
 
-    /// True while ANY site may still hold installed custody.
-    ///
     /// This is the predicate a lane's `release_pending()` is built from, and it
-    /// is pessimistic in both directions [`Self::has_complete_installed_custody`]
-    /// is not:
-    ///
-    ///   * a PARTIAL roster counts. `observe_installed` persists receipts site
-    ///     by site, so a failure at site three leaves two attested detours in
-    ///     the executable; "not complete" is not "not there".
-    ///   * a POISONED lock counts. "I cannot read my own custody" is not
-    ///     evidence that there is none, and the registry reads a `false` here as
     ///     proof it may skip the release entirely -- which would strand
-    ///     executable detours in a running game.
     pub fn may_still_hold_installed_custody(&self) -> bool {
         self.lock_installed()
             .map(|installed| installed.iter().any(Option::is_some))
             .unwrap_or(true)
     }
 
-    /// True while ANY custody is outstanding on either side.
-    ///
-    /// The registry's "did this lane really let go" question is answered from
-    /// the lane's own `installed()` flag; this is the receipt-side companion,
     /// and it is deliberately pessimistic -- a half-released roster answers
-    /// true.
     pub fn has_any_custody(&self) -> bool {
         let installed = self
             .lock_installed()
@@ -207,17 +127,8 @@ impl<const N: usize> Rel5HookRoster<N> {
     }
 
     /// Publish the complete release for every site, atomically.
-    ///
-    /// `relay_freed` says whether the lane called MinHook's remove -- which
-    /// frees the trampoline -- or only its disable. It is passed rather than
-    /// assumed because a receipt that claims a free nobody performed is a
     /// forged attestation, and `observe_released_set` re-reads the target's
-    /// bytes to check the restoration but cannot see which of the two calls the
-    /// lane made.
-    ///
-    /// Refuses if any site is missing an installed receipt or already holds a
     /// released one, so a second call after a completed release does not mint a
-    /// second set.
     pub fn publish_release(&self, relay_freed: bool) -> Result<(), String> {
         let installed = self.installed_receipts()?;
         {
@@ -253,7 +164,6 @@ impl<const N: usize> Rel5HookRoster<N> {
     }
 
     /// Consume the release roster. One-shot: a second call reports the receipts
-    /// as unavailable rather than handing the registry a second copy.
     pub fn take_released_receipts(&self) -> Result<[ReleasedRvaHookReceipt; N], String> {
         let mut released = self.lock_released()?;
         let mut out = Vec::with_capacity(N);
@@ -270,14 +180,7 @@ impl<const N: usize> Rel5HookRoster<N> {
             .map_err(|_| format!("{} released hook roster width mismatch", self.lane))
     }
 
-    /// Drop every receipt on both sides.
-    ///
-    /// This is the ROLLBACK path, for an install that failed before the lane
-    /// ever became usable. It publishes nothing: the caller has restored the
     /// target's bytes itself and there is no capture for a release receipt to
-    /// belong to. Using it after a successful capture would destroy the
-    /// evidence the recorder reconciles against, which is why it is named for
-    /// discarding rather than for releasing.
     pub fn discard_all_custody(&self) {
         if let Ok(mut installed) = self.lock_installed() {
             *installed = [None; N];
@@ -349,11 +252,6 @@ mod tests {
 
     static ROSTER: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
 
-    /// An empty roster reports absence rather than an empty success.
-    ///
-    /// Mutation proof: make `installed_receipts` return `Ok` for a `None` slot
-    /// and this fails. That matters because the registry treats a returned
-    /// roster as proof the lane owns its detours.
     #[test]
     fn an_unobserved_roster_refuses_to_report_installed_receipts() {
         let error = ROSTER.installed_receipts().unwrap_err();
@@ -372,8 +270,6 @@ mod tests {
         assert!(ROSTER.take_released_receipts().is_err());
     }
 
-    /// `target` derives from the declared RVA, never from a caller-supplied
-    /// address.
     #[test]
     fn target_addresses_come_from_the_declared_rvas() {
         assert_eq!(ROSTER.target(0x1_0000_0000, 0).unwrap(), 0x1_0000_1000);
@@ -382,19 +278,9 @@ mod tests {
         assert!(ROSTER.target(usize::MAX, 0).is_err());
     }
 
-    /// A discarded roster holds nothing on EITHER side. This is the state a
     /// failed install must leave behind, and the registry's release plan reads
-    /// it.
-    ///
-    /// The roster is SEEDED on both sides first. An earlier version of this
-    /// test discarded an already-empty roster and asserted it was still empty,
-    /// which passed with `discard_all_custody` replaced by an empty function and
     /// never looked at released custody at all despite its name -- a test that
-    /// could not fail.
-    ///
-    /// Mutation proof: delete either `*installed = [None; N]` or
     /// `*released = [None; N]` from `discard_all_custody` and this fails on the
-    /// corresponding side.
     #[cfg(feature = "test-support")]
     #[test]
     fn discard_clears_both_sides() {
@@ -408,8 +294,6 @@ mod tests {
             let mut released = DISCARDED.lock_released().unwrap();
             released[1] = Some(crate::mint_test_released_receipt(SPECS[1], 2));
         }
-        // Seeded, so the assertions below are about the discard rather than
-        // about an empty starting state.
         assert!(DISCARDED.has_complete_installed_custody());
         assert!(DISCARDED.may_still_hold_installed_custody());
         assert!(DISCARDED.has_any_custody());
@@ -428,19 +312,18 @@ mod tests {
             DISCARDED.take_released_receipts().is_err(),
             "a discarded roster has no release to hand the registry"
         );
-        // Read the stores directly as well: the accessors above could in
-        // principle refuse for a reason other than emptiness.
-        assert!(DISCARDED.lock_installed().unwrap().iter().all(Option::is_none));
-        assert!(DISCARDED.lock_released().unwrap().iter().all(Option::is_none));
+        assert!(DISCARDED
+            .lock_installed()
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
+        assert!(DISCARDED
+            .lock_released()
+            .unwrap()
+            .iter()
+            .all(Option::is_none));
     }
 
-    /// The width of the reported roster is the width of the declared spec list.
-    /// A lane that declares two sites cannot report one.
-    ///
-    /// Mutation proof: make `installed_receipts` skip absent slots and return
-    /// what it holds, and this fails. The registry compares the returned names
-    /// against `pinned_hook_names_for_group`, so a short roster would mark a
-    /// group installed while one of its detours was unattested.
     #[cfg(feature = "test-support")]
     #[test]
     fn a_partially_observed_roster_is_not_a_complete_one() {
@@ -459,7 +342,6 @@ mod tests {
     }
 
     /// Install refuses a site whose release is already published, so custody
-    /// can never be held on both sides at once.
     #[cfg(feature = "test-support")]
     #[test]
     fn installing_over_published_release_custody_refuses() {
@@ -480,22 +362,8 @@ mod tests {
     const DETOUR_FIRST: SiteDetour = SiteDetour::new("gameplay.dtest.first", 1);
     const DETOUR_SECOND: SiteDetour = SiteDetour::new("gameplay.dtest.second", 2);
 
-    /// Law: two sites that resolve to ONE detour address are refused before any
-    /// receipt is minted.
-    ///
-    /// This is the shape the MSVC linker's identical-code folding produces, and
-    /// it was live in D95: four detour bodies compiled to two addresses under
     /// `--release`. The refusal has to happen here rather than at
-    /// `observe_enabled_minhook_rel5`, because that function sees one site at a
-    /// time and every folded site verifies perfectly -- the REL5 jump really
-    /// does point at the address it was handed. Only the roster can see that
-    /// two of them were handed the same one.
-    ///
     /// It runs BEFORE the released-custody check and before any module read, so
-    /// no image is needed to observe it.
-    ///
-    /// MUTATION PROOF: delete the duplicate-address loop from
-    /// `bind_detours_by_identity` and this fails.
     #[test]
     fn two_sites_sharing_one_detour_address_are_refused() {
         static FOLDED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
@@ -515,8 +383,6 @@ mod tests {
         );
     }
 
-    /// Law: a null detour is refused. An address-taken function item is never
-    /// null, so a zero means the array was assembled from something else.
     #[test]
     fn a_null_detour_is_refused() {
         static NULLED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
@@ -530,12 +396,6 @@ mod tests {
         assert!(!NULLED.has_any_custody());
     }
 
-    /// Law: the binding is BY NAME. A detour roster that does not describe the
-    /// spec roster's sites is refused rather than zipped positionally.
-    ///
-    /// MUTATION PROOF: replace the name lookup in `bind_detours_by_identity`
-    /// with `bound[index] = detours[index].address` and this fails -- the
-    /// mislabelled entry would silently bind to the wrong site.
     #[test]
     fn a_detour_naming_a_site_the_roster_does_not_have_is_refused() {
         static MISNAMED: Rel5HookRoster<2> = Rel5HookRoster::new("DTEST", SPECS);
@@ -553,13 +413,6 @@ mod tests {
         assert!(!MISNAMED.has_any_custody());
     }
 
-    /// Law: a REORDERED detour table binds correctly rather than crosswise.
-    ///
-    /// This is the positional bug's other half. The two entries are swapped;
-    /// the binding must still hand site zero its own detour. The call then
-    /// proceeds to the module read and fails there -- there is no image behind
-    /// `0x1_0000_0000` -- which is exactly the proof that the binding did NOT
-    /// refuse.
     #[test]
     fn a_reordered_detour_table_still_binds_each_site_to_its_own_detour() {
         assert_eq!(

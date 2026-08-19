@@ -1,9 +1,3 @@
-//! Replay-owned completed-technology coloring for an observer-selected country.
-//!
-//! This module emits semantic node states only. Authored files remain the
-//! authority for actual colors and pixel layout. A complete completed-tech
-//! vector is required before any absent node is called `Unresearched`;
-//! otherwise every node is unavailable rather than plausibly recolored.
 
 use replay_core::{Leaf, ViewStatus, WorldFrame};
 use std::collections::{BTreeMap, BTreeSet};
@@ -51,10 +45,6 @@ impl ObserverTechnologyColoring {
     }
 }
 
-/// Resolve completed/in-progress/unresearched states for any d18 country.
-///
-/// `authored_order` comes from the active effective-VFS technology catalog.
-/// The function never carries a vanilla-only tag list or color constant.
 pub fn observer_technology_coloring(
     frame: &WorldFrame,
     country: &str,

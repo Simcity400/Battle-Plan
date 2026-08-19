@@ -1,12 +1,3 @@
-//! Product Paradox-user-directory discovery for automatic attach.
-//!
-//! Candidate *discovery* is deliberately separate from candidate *proof*.
-//! Windows location APIs and the target process command line tell us where the
-//! directory may be; the caller supplies the existing PID-held-log
-//! corroboration callback that proves which physical directory the running
-//! game actually owns.  Exactly one corroborated physical directory is
-//! required.  Zero and multiple survivors both fail closed.
-
 use std::collections::BTreeMap;
 use std::ffi::{c_void, OsString};
 use std::path::{Path, PathBuf};
@@ -24,9 +15,6 @@ pub(crate) struct LocatedUserDir {
 pub(crate) enum CandidateCorroboration {
     Owned,
     Rejected(String),
-    /// The candidate could not be classified. A second owned candidate cannot
-    /// be selected while this exists because that would convert unknown
-    /// ambiguity into a false singleton.
     Indeterminate(String),
 }
 
@@ -36,10 +24,6 @@ struct Candidate {
     provenance: Vec<String>,
 }
 
-/// All operating-system interactions used by discovery.  The resolver is
-/// generic over this seam so ambiguity, unavailable APIs, custom `-userdir`,
-/// redirected Documents, and multiple OneDrive accounts are deterministic
-/// unit-test cases rather than machine-dependent integration tests.
 pub(crate) trait DiscoveryEnvironment {
     fn process_command_line_args(&self, pid: u32) -> Result<Vec<OsString>, String>;
     fn known_documents_dir(&self) -> Result<PathBuf, String>;
@@ -49,12 +33,6 @@ pub(crate) trait DiscoveryEnvironment {
     fn canonicalize_dir(&self, dir: &Path) -> Result<PathBuf, String>;
 }
 
-/// Discover and prove the target process's Paradox user directory.
-///
-/// `explicit_override` is a support/legacy candidate. It never disables normal
-/// discovery and never bypasses `contains_dlc_load`, canonicalization, or
-/// `corroborate`, so an override cannot turn unresolved evidence into a
-/// resolved modset.
 pub(crate) fn locate_user_dir_with<E, F>(
     env: &E,
     pid: u32,
@@ -75,18 +53,12 @@ where
     }
     let mut raw = discover_all_candidates(env, pid)?;
     if let Some(path) = explicit_override {
-        // A support pin adds a candidate; it never narrows or disables normal
-        // discovery. Otherwise an override could hide a second PID-owned
-        // directory and turn ambiguity into a false singleton.
         raw.push(Candidate {
             path: path.to_path_buf(),
             provenance: vec!["support_override".to_string()],
         });
     }
 
-    // Canonicalize and de-duplicate only candidates that actually carry the
-    // launch configuration.  Multiple syntactic paths to the same physical
-    // directory (Known Folder + OneDrive + legacy) are one candidate.
     let mut physical: BTreeMap<String, Candidate> = BTreeMap::new();
     let mut absent = Vec::new();
     let mut canonical_failures = Vec::new();
@@ -119,9 +91,6 @@ where
             });
     }
 
-    // An existing `dlc_load.json` candidate that cannot be canonicalized may
-    // be a second physical directory. Choosing another hit would therefore
-    // turn an unknown into a false singleton.
     if !canonical_failures.is_empty() {
         canonical_failures.sort();
         return Err(format!(
@@ -198,9 +167,6 @@ fn discover_all_candidates<E: DiscoveryEnvironment>(
     env: &E,
     pid: u32,
 ) -> Result<Vec<Candidate>, String> {
-    // Every source is mandatory to query.  Silently ignoring an unavailable
-    // source can make a later single hit look unambiguous while the real custom
-    // directory was merely undiscoverable.
     let args = env
         .process_command_line_args(pid)
         .map_err(|e| format!("target process command line unavailable: {e}"))?;
@@ -257,10 +223,6 @@ fn physical_path_key(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-/// Extract exactly one absolute `-userdir` value from already-tokenized Windows
-/// command-line arguments.  Both `-userdir PATH` and `-userdir=PATH` are
-/// accepted case-insensitively.  Repetition is ambiguity even if the strings
-/// happen to match: engine precedence for repeated switches is not assumed.
 fn parse_userdir_args(args: &[OsString]) -> Result<Option<PathBuf>, String> {
     let mut found: Option<PathBuf> = None;
     let mut index = 0usize;
@@ -299,10 +261,6 @@ fn parse_userdir_args(args: &[OsString]) -> Result<Option<PathBuf>, String> {
     }
     Ok(found)
 }
-
-// =====================================================================
-// Live Windows discovery environment
-// =====================================================================
 
 #[cfg(windows)]
 pub(crate) struct WindowsDiscoveryEnvironment;
@@ -565,16 +523,13 @@ mod windows {
     }
 
     fn registry_one_drive_roots() -> Result<Vec<(String, PathBuf)>, String> {
-        // HKEY_CURRENT_USER is the sign-extended predefined pseudo-handle
-        // `(HKEY)(ULONG_PTR)((LONG)0x80000001)`, not a zero-extended address on
-        // 64-bit Windows.
         let hkcu = (-2_147_483_647isize) as HKey;
         let accounts_path = wide_nul(r"Software\Microsoft\OneDrive\Accounts");
         unsafe {
             let mut accounts: HKey = ptr::null_mut();
             let rc = RegOpenKeyExW(hkcu, accounts_path.as_ptr(), 0, KEY_READ, &mut accounts);
             if rc == 2 {
-                return Ok(Vec::new()); // ERROR_FILE_NOT_FOUND: OneDrive not installed/configured.
+                return Ok(Vec::new());
             }
             if rc != ERROR_SUCCESS {
                 return Err(format!("RegOpenKeyExW OneDrive Accounts failed: {rc}"));

@@ -1,10 +1,3 @@
-//! Durable append-only journal (`auto_attach_journal.jsonl`).
-//!
-//! One flushed record is written BEFORE each externally-visible action, so a
-//! hard kill at any point leaves a replayable trail. On startup the journal is
-//! replayed to reconcile every nonterminal identity with live processes and
-//! worker leases. Raw SID and pipe tokens are never written, only their hashes.
-
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -15,9 +8,6 @@ use snapshot::sha256::{to_hex, Sha256};
 use super::identity::ProcessKey;
 use super::state::{CandidateState, ReasonCode};
 
-/// One journal record. Optional fields are
-/// omitted (not null) when absent so a naive reader never mistakes a missing
-/// value for a real one.
 #[derive(Clone, Debug, PartialEq)]
 pub struct JournalRecord {
     pub schema: &'static str,
@@ -27,7 +17,6 @@ pub struct JournalRecord {
     pub pid: u32,
     pub process_creation_filetime: u64,
     pub process_session_id: Option<u32>,
-    /// SHA-256 hex of the user SID. NEVER the raw SID.
     pub process_user_sid_hash: Option<String>,
     pub exe_path: Option<String>,
     pub exe_sha256: Option<String>,
@@ -39,26 +28,19 @@ pub struct JournalRecord {
     pub staging_dir: Option<String>,
     pub run_dir: Option<String>,
     pub session_id: Option<String>,
-    /// SHA-256 hex of the pipe token. NEVER the raw token.
     pub pipe_token_hash: Option<String>,
     pub first_observed_hour: Option<i64>,
     pub last_attempted_hour: Option<i64>,
     pub last_confirmed_hour: Option<i64>,
     pub artifact_status: Option<String>,
     pub replay_path: Option<String>,
-    /// Hash of the preceding record, or all-zero for the genesis record.
     pub prev_record_hash: String,
-    /// SHA-256 over `prev_record_hash || canonical_record_bytes`.
     pub record_hash: String,
 }
 
 impl JournalRecord {
-    // Predecessor/head hashes are mandatory. Records without them fail closed
-    // instead of being treated as authenticated proof.
     pub const SCHEMA: &'static str = "auto_attach_journal.v2";
 
-    /// Minimal constructor for a state-transition record; optional evidence is
-    /// filled by the builder methods.
     pub fn transition(
         event_seq: u64,
         observed_at_utc_ms: u64,
@@ -175,14 +157,10 @@ impl JournalRecord {
         value
     }
 
-    /// One JSONL line (no trailing newline).
     pub fn to_jsonl(&self) -> String {
         self.to_json().to_string()
     }
 
-    /// Parse one JSONL line back to a record for recovery replay. Only the
-    /// fields the coordinator needs to reconcile are strictly required; the
-    /// rest are best-effort.
     pub fn from_jsonl(line: &str) -> Result<Self, String> {
         let v: Value = serde_json::from_str(line).map_err(|e| format!("bad journal line: {e}"))?;
         let object = v
@@ -332,8 +310,6 @@ fn parse_reason(s: &str) -> Result<ReasonCode, String> {
     Ok(match s {
         "detected" => Detected,
         "identity_unresolved" => IdentityUnresolved,
-        // Spelled from the same constant the reason code writes, so the writer
-        // and this reader cannot drift into a journal nobody can recover.
         other if other == crate::game_build::UnsupportedGameBuild::TERMINAL_OUTCOME => {
             UnsupportedGameBuild
         }
@@ -406,12 +382,6 @@ impl AnchorRecord {
     }
 }
 
-/// The anchor is deliberately a different filesystem object. Journal-only
-/// rollback/replacement therefore cannot erase an already-synced injection
-/// commitment. Production adds two independent corroborators before any hook:
-/// the stager's create-new PID+FILETIME commitment and target-module residency.
-/// Rewriting both journal files alone therefore cannot authorize a second
-/// production attempt; uncertainty in any layer is a refusal.
 pub(crate) fn anchor_path(path: &Path) -> PathBuf {
     let mut anchored = path.as_os_str().to_os_string();
     anchored.push(".anchor");
@@ -549,8 +519,6 @@ fn open_retained_append(path: &Path, label: &str) -> Result<File, String> {
         .map_err(|e| format!("open {label} {}: {e}", path.display()))
 }
 
-/// Append-only JSONL journal writer. Every append flushes to disk before the
-/// caller performs the external action it describes.
 pub struct Journal {
     path: PathBuf,
     file: File,
@@ -563,13 +531,9 @@ pub struct Journal {
 }
 
 impl Journal {
-    /// Open (creating if needed) the journal, scanning any existing content to
-    /// continue the `event_seq` monotonically.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, String> {
         let path = path.as_ref().to_path_buf();
         let anchor_path = anchor_path(&path);
-        // Open both objects with write/delete sharing denied BEFORE sampling
-        // either. The validated bytes and their authority handles are retained
         // for the coordinator lifetime; recovery never re-opens a bare path.
         let mut file = open_retained_append(&path, "journal")?;
         let mut anchor_file = open_retained_append(&anchor_path, "journal anchor")?;
@@ -605,8 +569,6 @@ impl Journal {
         &self.recovered_records
     }
 
-    /// Append one record (its `event_seq` is overwritten with the next
-    /// monotonic value), then flush. Returns the assigned seq.
     pub fn append(&mut self, mut record: JournalRecord) -> Result<u64, String> {
         if !self.healthy {
             return Err("journal writer is poisoned after a prior durability failure".to_string());
@@ -628,8 +590,6 @@ impl Journal {
             self.file
                 .sync_data()
                 .map_err(|e| format!("journal sync_data: {e}"))?;
-            // Journal first, anchor second. A crash/error between them yields a
-            // loud length mismatch on restart, never a re-injection authority.
             writeln!(self.anchor_file, "{anchor}")
                 .map_err(|e| format!("journal anchor write: {e}"))?;
             self.anchor_file
@@ -658,7 +618,6 @@ impl Journal {
     }
 }
 
-/// Read every record from a journal file (for recovery). Missing file => empty.
 pub fn read_all(path: impl AsRef<Path>) -> Result<Vec<JournalRecord>, String> {
     let path = path.as_ref();
     let bytes = match std::fs::read(path) {
@@ -669,27 +628,18 @@ pub fn read_all(path: impl AsRef<Path>) -> Result<Vec<JournalRecord>, String> {
     parse_records(&bytes, path)
 }
 
-/// Result of replaying a journal: the last known state per identity and whether
-/// it is terminal. Nonterminal identities need live reconciliation on startup.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecoveredIdentity {
     pub key: ProcessKey,
     pub last_state: CandidateState,
     pub injection_committed: bool,
-    /// Staging directory for the latest attach generation. A recovered
-    /// terminal generation may be rearmed only after its exact collector DLL is
-    /// proven absent from the still-live target process.
     pub staging_dir: Option<PathBuf>,
 }
 
-/// Fold a journal's records into the last-known state per identity so every
-/// nonterminal identity can be reconciled.
 pub fn recover(records: &[JournalRecord]) -> Vec<RecoveredIdentity> {
     use std::collections::BTreeMap;
-    let mut recovered: BTreeMap<
-        ProcessKey,
-        (u64, CandidateState, bool, Option<PathBuf>),
-    > = BTreeMap::new();
+    let mut recovered: BTreeMap<ProcessKey, (u64, CandidateState, bool, Option<PathBuf>)> =
+        BTreeMap::new();
     for r in records {
         let key = r.key();
         if recovered
@@ -710,19 +660,18 @@ pub fn recover(records: &[JournalRecord]) -> Vec<RecoveredIdentity> {
         if let Some(path) = r.staging_dir.as_ref() {
             staging_dir = Some(PathBuf::from(path));
         }
-        recovered.insert(
-            key,
-            (r.event_seq, r.state_to, committed, staging_dir),
-        );
+        recovered.insert(key, (r.event_seq, r.state_to, committed, staging_dir));
     }
     recovered
         .into_iter()
-        .map(|(key, (_, last_state, injection_committed, staging_dir))| RecoveredIdentity {
-            key,
-            last_state,
-            injection_committed,
-            staging_dir,
-        })
+        .map(
+            |(key, (_, last_state, injection_committed, staging_dir))| RecoveredIdentity {
+                key,
+                last_state,
+                injection_committed,
+                staging_dir,
+            },
+        )
         .collect()
 }
 
@@ -764,8 +713,6 @@ mod tests {
 
     #[test]
     fn never_writes_raw_secret_field_names() {
-        // The schema exposes only *_hash fields; assert a populated record's
-        // JSON has no bare `user_sid` or `pipe_token` key.
         let mut rec = JournalRecord::transition(
             0,
             0,
@@ -793,7 +740,7 @@ mod tests {
             assert_eq!(j.next_seq(), 0);
             let s0 = j
                 .append(JournalRecord::transition(
-                    999, // overwritten
+                    999,
                     1,
                     "c",
                     ProcessKey::new(10, 100),
@@ -816,7 +763,6 @@ mod tests {
                 .unwrap();
             assert_eq!(s1, 1);
         }
-        // Reopen: seq continues at 2.
         let j2 = portable_test_fs_retry::with_read_guard(&path, || Journal::open(&path))
             .expect("hold the journal open across the scanner's window")
             .unwrap();
@@ -906,7 +852,7 @@ mod tests {
     #[test]
     fn recover_two_identities_independent() {
         let a = ProcessKey::new(1, 10);
-        let b = ProcessKey::new(1, 20); // reused pid, new identity
+        let b = ProcessKey::new(1, 20);
         let recs = vec![
             JournalRecord::transition(
                 0,
@@ -959,7 +905,6 @@ mod tests {
             ))
             .unwrap();
         }
-        // Simulate a crash mid-append: append a partial line.
         {
             use std::io::Write as _;
             let mut f = OpenOptions::new().append(true).open(&path).unwrap();

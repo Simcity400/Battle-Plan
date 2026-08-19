@@ -325,9 +325,6 @@ def test_a_mod_namespace_does_not_move_any_vanilla_event_key(tmp_path):
     assert key_of(baseline, "vanilla_ns.7") == ("vanilla_ns", 7)
     assert key_of(modded, "vanilla_ns.7") == key_of(baseline, "vanilla_ns.7")
     assert key_of(modded, "aaa_mod_first.7") == ("aaa_mod_first", 7)
-    # Only the SET matters. Cross-layer namespace order is file provenance the
-    # catalogue deliberately does not own, so pinning a position here would
-    # re-establish exactly the authority this design hands back to the engine.
     assert {row["namespace"] for row in modded["namespaces"]} == {
         "vanilla_ns",
         "aaa_mod_first",

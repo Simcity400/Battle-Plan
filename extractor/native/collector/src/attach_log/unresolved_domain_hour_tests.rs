@@ -1,14 +1,3 @@
-//! A scheduled domain-hour must resolve to a DATA record or to a gap naming
-//! why there is none. These cover the seal pass that enforces it.
-//!
-//! The shape being prevented is real and shipped: in run t15
-//! `pov_spotted_units_live` (d95) emitted a DOMAIN_PERF record and then, on its
-//! reader's error path, no DATA record and no gap -- for 396 of 617 frames. No
-//! ledger in the sealed manifest counted those hours as missing, because none
-//! of them was counting anything for d95 at all, so the loss was
-//! indistinguishable from success. `pov_province_visibility_live` (d94) is the
-//! same code shape and balanced only because its read happened to succeed.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
@@ -16,9 +5,7 @@ use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapReco
 use super::*;
 
 const HOUR: i32 = 60_832_384;
-/// d95 itself: the domain the shape was found on.
 const SILENT_DOMAIN: u16 = COMPACT_DOMAIN_POV_SPOTTED_UNITS_LIVE;
-/// d94: the same code shape, silent only when its read fails.
 const RESOLVED_DOMAIN: u16 = COMPACT_DOMAIN_POV_PROVINCE_VISIBILITY_LIVE;
 
 fn perf_record(out: &mut Vec<u8>, sequence: u64, domain_id: u16) {
@@ -51,7 +38,6 @@ fn data_record(out: &mut Vec<u8>, sequence: u64, domain_id: u16) {
     );
 }
 
-/// Every (domain, record type) pair on the wire, in order.
 fn wire_shape(records: &[u8]) -> Vec<(u16, u16)> {
     let mut out = Vec::new();
     let mut offset = 0usize;
@@ -81,14 +67,6 @@ fn decode_gap_for(records: &[u8], domain_id: u16) -> DomainGapRecordV1 {
     panic!("no DOMAIN_GAP for domain {domain_id}");
 }
 
-/// The exact t15 d95 shape: a PERF record, no DATA, no gap. The seal must turn
-/// it into a gap, and must not leave the PERF record behind next to it --
-/// `stream_fold` admits one terminal outcome per domain per hour.
-///
-/// Mutation proof: delete the `close_unresolved_domain_hours` call from the
-/// seal and this fails on `silenced`; return `Ok` early from the function
-/// without minting and it fails on the missing gap; keep the superseded PERF
-/// record and it fails on `wire_shape`.
 #[test]
 fn a_domain_that_emits_perf_but_no_data_is_closed_with_a_named_gap() {
     let mut records = Vec::new();
@@ -116,20 +94,9 @@ fn a_domain_that_emits_perf_but_no_data_is_closed_with_a_named_gap() {
     let gap = decode_gap_for(&records, SILENT_DOMAIN);
     assert_eq!(gap.reason, DomainGapReason::ReaderSilent);
     assert_eq!(gap.target_hour_raw, HOUR);
-    // The domain already counted itself as an emission when it appended the
-    // PERF record, and the gap replacing it is the same single terminal
-    // outcome, so FRAME_END must not be moved.
     assert_eq!(closed.newly_emitted, 0);
 }
 
-/// `ReaderSilent` says only that no outcome was recorded. It must therefore
-/// carry no hour witness at all -- borrowing the frame's tick would assert the
-/// reader observed something it never observed.
-///
-/// Mutation proof: set `tick_before`/`tick_after` to the frame hour in
-/// `close_unresolved_domain_hours` and `encode` rejects the payload, because
-/// the reason's witness contract requires both to be zero; the `expect` in the
-/// helper then fires.
 #[test]
 fn a_reader_silent_gap_claims_no_clock_witness() {
     let mut records = Vec::new();
@@ -155,13 +122,6 @@ fn a_reader_silent_gap_claims_no_clock_witness() {
     );
 }
 
-/// A domain that resolved is left exactly as it was. Without this the pass
-/// would be free to mint gaps over real data and still look like it was
-/// working.
-///
-/// Mutation proof: drop the `!resolved.contains(domain)` filter and this fails
-/// with a gap minted for a domain that published a DATA record -- which
-/// `stream_fold` separately rejects as DATA coexisting with a GAP.
 #[test]
 fn a_domain_that_published_data_is_left_untouched() {
     let mut records = Vec::new();
@@ -185,15 +145,6 @@ fn a_domain_that_published_data_is_left_untouched() {
     assert!(ordinals.is_empty(), "no outcome ordinal may be spent");
 }
 
-/// A scheduled domain that put NOTHING on the wire is the second shape of the
-/// same hole: it is not even in the frame's terminal-outcome set, so the
-/// FRAME_END counts stay self-consistent while the roster is silently short.
-/// This one DOES owe an emission increment, because no site ever counted it.
-///
-/// Mutation proof: build `unresolved` from the PERF-bearing domains instead of
-/// the roster and the gap is never minted; count `newly_emitted` over all
-/// silenced domains instead of only the record-less ones and the previous test
-/// fails with 1.
 #[test]
 fn a_scheduled_domain_that_emits_nothing_is_named_and_counted() {
     let mut records = Vec::new();
@@ -215,8 +166,10 @@ fn a_scheduled_domain_that_emits_nothing_is_named_and_counted() {
         closed.newly_emitted, 1,
         "a domain with no record at all was never counted as an emission"
     );
-    assert_eq!(decode_gap_for(&records, SILENT_DOMAIN).reason, DomainGapReason::ReaderSilent);
-    // The resolved domain's pair is still there and still first.
+    assert_eq!(
+        decode_gap_for(&records, SILENT_DOMAIN).reason,
+        DomainGapReason::ReaderSilent
+    );
     assert_eq!(
         wire_shape(&records)[..2],
         [
@@ -226,11 +179,6 @@ fn a_scheduled_domain_that_emits_nothing_is_named_and_counted() {
     );
 }
 
-/// The reserved probe domain emits PERF records and no DATA by design and is
-/// excluded from every coverage gate, so it must not be swept up.
-///
-/// Mutation proof: remove either `RC_PROBE_DOMAIN_ID` guard and this fails with
-/// the probe's PERF record replaced by a gap.
 #[test]
 fn the_reserved_probe_domain_is_not_owed_an_outcome() {
     let mut records = Vec::new();
@@ -246,12 +194,6 @@ fn the_reserved_probe_domain_is_not_owed_an_outcome() {
     assert_eq!(records, before);
 }
 
-/// Outcome ordinals are a per-(domain, part) sequence that consumers use to
-/// detect a dropped outcome. A minted gap has to spend exactly one, or it opens
-/// the very hole it was minted to close.
-///
-/// Mutation proof: stop writing back to `outcome_ordinals` and the second hour
-/// re-uses ordinal 0.
 #[test]
 fn each_minted_gap_spends_exactly_one_outcome_ordinal() {
     let key = (SILENT_DOMAIN, domain_gap_part(SILENT_DOMAIN).code());
@@ -276,25 +218,6 @@ fn each_minted_gap_spends_exactly_one_outcome_ordinal() {
     assert_eq!(ordinals.get(&key), Some(&3));
 }
 
-/// The behavioural tests above call the pass directly, so on their own they
-/// keep saying "ok" if the seal stops calling it -- which is how this hole
-/// existed in the first place. This is a LEXICAL coupling check, and its limits
-/// are worth stating because a check that is trusted for more than it proves is
-/// how the next hole gets in:
-///
-///  * it proves the call exists, is the only one, is handed the ROSTER, has its
-///    emission count consumed, and precedes the FRAME_END that closes a read
-///    frame;
-///  * it does NOT prove the pass runs on every path that appends a FRAME_END --
-///    the `state == None` early return appends one before this call and is
-///    deliberately not covered (see `close_unresolved_domain_hours`);
-///  * it does NOT prove the pass is handed the frame's real record buffer.
-///
-/// Mutation proof: delete the call and the count is 1; pass anything but the
-/// roster helper and the argument assertion fails; drop
-/// `emitted_domains.saturating_add(closed.newly_emitted)` and the consumption
-/// assertion fails; move the call below the read frame's FRAME_END and the
-/// ordering assertion fails.
 #[test]
 fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
     const COLLECTOR_SOURCE: &str = include_str!("../attach_log.rs");
@@ -317,18 +240,12 @@ fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
         .find("let silent_domains = match close_unresolved_domain_hours(")
         .expect("the seal closes unresolved domain-hours");
 
-    // The roster is what makes this a check on every scheduled domain rather
-    // than on whichever domains happened to leave a record behind.
     let call_args = &code[call..call + 400];
     assert!(
         call_args.contains("&compact_scheduled_emitted_domain_ids(control)"),
         "the pass must be handed the expanded scheduled roster, or a domain that emitted \
          nothing at all is invisible to it too:\n{call_args}"
     );
-    // Anchored to a newline plus exactly four spaces: the read frame's own
-    // FRAME_END sits at the top level of the gate function, while the earlier
-    // ones -- including the `state == None` early return's -- are nested deeper
-    // and would otherwise match on their indent's tail.
     let frame_end = code
         .find("\n    append_compact_frame_end_record(")
         .expect("the seal appends FRAME_END");
@@ -337,13 +254,6 @@ fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
         "the pass adjusts the emitted-domain count that FRAME_END seals, so it must run first"
     );
 
-    // The emission count has to be ASSIGNED BACK, and before the seal reads it.
-    // Matching the bare expression would accept `let _ = emitted_domains
-    // .saturating_add(closed.newly_emitted);`, which computes the right number
-    // and throws it away; searching the whole file would accept it landing
-    // after FRAME_END had already been written. Both are exactly the wiring
-    // mistakes this check exists for, so it looks for the full assignment
-    // within the region the seal actually reads.
     assert!(
         code[call..frame_end]
             .contains("emitted_domains = emitted_domains.saturating_add(closed.newly_emitted);"),
@@ -352,9 +262,6 @@ fn the_seal_is_wired_to_close_unresolved_hours_before_it_seals_a_read_frame() {
     );
 }
 
-/// d95's part is `Both`, and the gap must carry the part the rest of the
-/// pipeline expects for that domain rather than a hardcoded one -- the ordinal
-/// lane is keyed on it.
 #[test]
 fn a_minted_gap_uses_the_domains_declared_part() {
     let mut records = Vec::new();

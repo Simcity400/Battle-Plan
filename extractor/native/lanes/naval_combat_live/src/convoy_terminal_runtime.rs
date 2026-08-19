@@ -1,49 +1,24 @@
-//! Production resolver state shared by the exact d49/d50 member walk and
-//! the a729 convoy-terminal call-site observer.
-//!
-//! Static RE proves that there is no separate route-manager hop in this join:
-//! `CFEXMember+0xD0` is resolved through the generic reference resolver and
-//! vtable-gated as a concrete route producer. The exact live reader publishes
-//! bindings whose raw observation is bound to the pinned exact-a729 static
-//! authority. Save-derived endpoints cannot enter this registry. Runtime
-//! misses remain explicit unavailable state and never synthesize a route.
-
+use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
-use serde::Serialize;
 
+use crate::convoy_route_source::ExactA729RouteRead;
 use crate::convoy_terminal_attribution::{
     CombatEpoch, EntityHandle, ExactCombatEpochResolver, ExactLiveRouteResolver,
-    LiveRouteResolution, RouteEndpointKind, RouteProducerKind, GAME_ENTITY_TYPE_TAG,
-    D90_STATIC_AUTHORITY_MANIFEST_SHA256,
+    LiveRouteResolution, RouteEndpointKind, RouteProducerKind,
+    D90_STATIC_AUTHORITY_MANIFEST_SHA256, GAME_ENTITY_TYPE_TAG,
 };
 use crate::extractor::ValidatedCombatSnapshot;
 use crate::member_epoch_runtime::{build_member_epoch_map, MemberEpochBinding};
-use crate::convoy_route_source::ExactA729RouteRead;
 
 const MAX_ACTIVE_ROUTE_BINDINGS: usize = 65_536;
 
 static NEXT_PUBLICATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static RESOLVER_STATE: OnceLock<RwLock<Arc<ResolverSnapshot>>> = OnceLock::new();
 
-/// Set the first time any publication is installed with unbound convoy
-/// members, and never cleared for the life of the process.
-///
-/// The per-publication `unbound_convoy_clients` count is a PER-FRAME value and
-/// can legitimately return to zero on the next frame. Batch rows do not stay in
-/// the frame that drained them: a batch that decodes incomplete is published
-/// but its queue reservation is rolled back, so the very same events are
-/// re-drained on a later frame. Without a latch those events could be re-encoded
-/// under a later, complete resolver and claim `exact_events_complete` -- shedding
-/// the partiality they were actually captured under.
-///
-/// Every other input to that claim (the drop counters) is monotonic for exactly
-/// this reason. This makes resolver partiality monotonic too, so it cannot be
-/// laundered by a rollback and re-drain.
 static RESOLVER_EVER_PARTIAL: AtomicBool = AtomicBool::new(false);
 
-/// Whether any resolver publication in this process has ever been partial.
 pub fn convoy_terminal_resolver_ever_partial() -> bool {
     RESOLVER_EVER_PARTIAL.load(Ordering::Acquire)
 }
@@ -52,7 +27,6 @@ pub fn convoy_terminal_resolver_ever_partial() -> bool {
 pub struct AuthenticatedLiveRouteBinding {
     pub client: EntityHandle,
     pub resolution: LiveRouteResolution,
-    /// Process-local evidence only. These values are never encoded in CTA1.
     pub reference_resolver: usize,
     pub reference_registry: usize,
     pub reference_slot: usize,
@@ -71,18 +45,6 @@ pub struct ResolverPublicationReceipt {
     pub game_hour_raw: i32,
     pub member_bindings: u32,
     pub route_bindings: u32,
-    /// Convoy members of the same clean d49/d50 walk that this publication
-    /// could NOT bind: their `CFEXMember+0xD0` client handle was unreadable or
-    /// structurally invalid, or their route read/authentication was refused.
-    ///
-    /// This is the denominator that makes a partial resolver provable. A
-    /// publication with `unbound_convoy_clients != 0` still resolves every
-    /// client it DID bind -- `resolve_client_route` fails closed per client and
-    /// never synthesizes -- so events for bound clients are captured normally
-    /// while events for unbound ones are refused and counted. It is carried
-    /// onto the D90 batch witness, where it forces `exact_events_complete` to
-    /// false, so a partial binding set can never be read as an exhaustive
-    /// event set.
     pub unbound_convoy_clients: u32,
 }
 
@@ -108,18 +70,14 @@ impl ResolverSnapshot {
         self.receipt
     }
 
-    pub fn route_evidence(
-        &self,
-        client: EntityHandle,
-    ) -> Option<&AuthenticatedLiveRouteBinding> {
+    pub fn route_evidence(&self, client: EntityHandle) -> Option<&AuthenticatedLiveRouteBinding> {
         self.routes.get(&client)
     }
 
-    /// Process-local acquisition view.  The returned addresses are never
-    /// encoded into CTA1/CTA2 and are exposed only to the explicitly armed
-    /// H-CONVOY evidence owner while the immutable resolver epoch is live.
     pub fn evidence_member_epochs(&self) -> impl Iterator<Item = (usize, CombatEpoch)> + '_ {
-        self.member_epochs.iter().map(|(address, epoch)| (*address, *epoch))
+        self.member_epochs
+            .iter()
+            .map(|(address, epoch)| (*address, *epoch))
     }
 }
 
@@ -133,14 +91,13 @@ impl ExactCombatEpochResolver for ResolverSnapshot {
 }
 
 impl ExactLiveRouteResolver for ResolverSnapshot {
-    fn resolve_client_route(
-        &self,
-        client: EntityHandle,
-    ) -> Result<LiveRouteResolution, String> {
+    fn resolve_client_route(&self, client: EntityHandle) -> Result<LiveRouteResolution, String> {
         self.routes
             .get(&client)
             .map(|binding| binding.resolution)
-            .ok_or_else(|| "client handle is absent from the authenticated live route snapshot".into())
+            .ok_or_else(|| {
+                "client handle is absent from the authenticated live route snapshot".into()
+            })
     }
 }
 
@@ -186,20 +143,11 @@ pub fn authenticate_exact_a729_route_read(
     ))
 }
 
-/// Bind one exact route read for the isolated H-CONVOY acquisition session.
-///
-/// The all-zero authority field is an explicit unpromoted evidence marker;
-/// it is accepted only by the evidence publication function below. Production
-/// publication continues to require the immutable exact-a729 static authority.
 pub fn authenticate_evidence_a729_route_read(
     read: ExactA729RouteRead,
     game_hour_raw: i32,
 ) -> Result<AuthenticatedLiveRouteBinding, String> {
-    Ok(authenticate_a729_route_read(
-        read,
-        game_hour_raw,
-        [0; 32],
-    ))
+    Ok(authenticate_a729_route_read(read, game_hour_raw, [0; 32]))
 }
 
 fn validate_route_binding(
@@ -248,13 +196,6 @@ fn validate_route_binding(
     Ok(())
 }
 
-/// Atomically publish the same validated active-member graph used to produce
-/// d49/d50 together with an authenticated generic-reference route snapshot.
-///
-/// Route bindings are supplied by the exact concrete-producer reader. This
-/// function deliberately accepts no saved-route fallback and no current
-/// province. A callback clones one immutable `Arc`, so its member and route
-/// lookups cannot straddle two publications.
 pub fn publish_convoy_terminal_resolver_snapshot(
     snapshots: &[ValidatedCombatSnapshot],
     routes: &[AuthenticatedLiveRouteBinding],
@@ -272,9 +213,7 @@ pub fn publish_convoy_terminal_resolver_snapshot(
         for member in &snapshot.members {
             let member_ptr = usize::try_from(member.member_ptr)
                 .map_err(|_| "CFEXMember pointer does not fit this process".to_string())?;
-            if member.combat_id != epoch.combat_id
-                || member.generation != epoch.generation
-            {
+            if member.combat_id != epoch.combat_id || member.generation != epoch.generation {
                 return Err("d49/d50 member pointer or epoch is inconsistent".into());
             }
             member_bindings.push(MemberEpochBinding {
@@ -288,9 +227,6 @@ pub fn publish_convoy_terminal_resolver_snapshot(
     publish_convoy_terminal_resolver_bindings(&member_bindings, routes, game_hour_raw, 0)
 }
 
-/// Collector adapter for the exact process-local bindings produced by the
-/// clean d49/d50 walk. This avoids rebuilding lossy snapshot objects merely to
-/// publish the member-pointer epoch graph.
 pub fn publish_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
@@ -307,9 +243,6 @@ pub fn publish_convoy_terminal_resolver_bindings(
     )
 }
 
-/// Publish resolver custody for the isolated H-CONVOY acquisition session.
-/// This does not authenticate or activate domain 90: its zero-authority
-/// marker cannot pass the production publication entry point.
 pub fn publish_evidence_convoy_terminal_resolver_bindings(
     member_bindings: &[MemberEpochBinding],
     routes: &[AuthenticatedLiveRouteBinding],
@@ -348,8 +281,6 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
         }
     }
 
-    // Latch BEFORE the snapshot goes live, so no callback can observe a
-    // partial resolver that the latch does not already describe.
     if unbound_convoy_clients != 0 {
         RESOLVER_EVER_PARTIAL.store(true, Ordering::Release);
     }
@@ -384,8 +315,6 @@ pub fn current_convoy_terminal_resolver_snapshot() -> Result<Arc<ResolverSnapsho
         .map_err(|_| "convoy terminal resolver state poisoned".to_string())
 }
 
-/// Callback-safe acquisition: contention or poison is a dropped observation,
-/// never a reason to block the game thread.
 pub fn try_current_convoy_terminal_resolver_snapshot() -> Option<Arc<ResolverSnapshot>> {
     state()
         .try_read()
@@ -397,8 +326,6 @@ pub fn current_convoy_terminal_publication_receipt() -> Result<ResolverPublicati
     Ok(current_convoy_terminal_resolver_snapshot()?.receipt())
 }
 
-/// Teardown clears process pointers only after the call-site observer has been
-/// disabled and quiesced. Queued pointer-free CTA1 events are owned separately.
 pub fn clear_convoy_terminal_resolver_snapshot() -> Result<(), String> {
     *state()
         .write()
@@ -411,24 +338,8 @@ pub fn clear_convoy_terminal_resolver_snapshot() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// Law: resolver partiality is MONOTONIC once published.
-    ///
-    /// This drives the production store, not a hand-set field. The per-frame
-    /// `unbound_convoy_clients` count legitimately returns to zero on the next
-    /// frame, but D90 rows outlive the frame that drained them: a batch that
-    /// decodes incomplete is published while its queue reservation is rolled
-    /// back, so the same rows are re-drained later. If the latch cleared with
-    /// the count, those rows would re-encode under the next complete
-    /// publication and claim an exhaustive event set they were never captured
-    /// under.
-    ///
-    /// Deleting the `RESOLVER_EVER_PARTIAL.store` in
-    /// `publish_convoy_terminal_resolver_bindings_with_hashes`, or clearing the
-    /// latch anywhere, fails this.
     #[test]
     fn a_partial_publication_latches_partiality_for_the_rest_of_the_capture() {
-        // Empty bindings and routes: this test is about the latch, and an
-        // empty publication is a legitimate one.
         let publish = |unbound: u32| {
             publish_convoy_terminal_resolver_bindings_with_hashes(
                 &[],
@@ -440,12 +351,9 @@ mod tests {
             .expect("empty publication is valid")
         };
 
-        // A complete publication must not raise the latch on its own, or the
-        // flag would be meaningless.
         let receipt = publish(0);
         assert_eq!(receipt.unbound_convoy_clients, 0);
 
-        // The first partial publication raises it...
         let receipt = publish(4);
         assert_eq!(receipt.unbound_convoy_clients, 4);
         assert!(
@@ -453,9 +361,6 @@ mod tests {
             "a partial publication must latch"
         );
 
-        // ...and a later COMPLETE publication does not lower it. This is the
-        // whole point: the next frame's clean receipt cannot launder the rows
-        // captured while the resolver was partial.
         let receipt = publish(0);
         assert_eq!(
             receipt.unbound_convoy_clients, 0,
@@ -466,7 +371,6 @@ mod tests {
             "but the latch does not"
         );
 
-        // Clearing the snapshot is teardown, not absolution.
         clear_convoy_terminal_resolver_snapshot().expect("clear");
         assert!(
             convoy_terminal_resolver_ever_partial(),

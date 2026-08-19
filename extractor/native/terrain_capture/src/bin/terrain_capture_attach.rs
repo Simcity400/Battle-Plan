@@ -54,22 +54,10 @@ const DEFAULT_MAX_CAPTURE_WORK_MS_PER_FRAME: u64 = 1_000;
 const DEFAULT_TERRAIN_CHUNK_LIBRARY_MAX_CAPTURE_WORK_MS_PER_FRAME: u64 = 2_000;
 const DEFAULT_MAX_PAYLOAD_WRITER_QUEUE_BYTES: u64 = 536_870_912;
 const DEFAULT_UI_PASS_MAX_STATES: u32 = 64;
-/// Capture sessions may run for up to 30 minutes so slow the game continue-save
-/// loads still leave enough armed time for synchronized evidence collection.
 const MAX_DWELL_MS: u64 = 1_800_000;
-/// FW12 H3: schema of the `--content-layers` declaration file.
 const CONTENT_LAYERS_SCHEMA: &str = "battle-plan-capture-content-layers-v1";
-/// The DLL's identity for base-installation bytes (mirrors
-/// `d3d11_runtime::BASE_INSTALLATION_SOURCE_ID`).
 const BASE_INSTALLATION_SOURCE_ID: &str = "base_installation";
 
-/// FW12 H3: one operator-declared content layer of the live session's
-/// effective VFS, staged into the capture control so the DLL resolves
-/// game-source evidence through the layers the engine actually compiled from
-/// (and records `effective_vfs_verified: true`). Mirrors the DLL's
-/// `CaptureContentLayerControl` shape: layers are lowest priority FIRST,
-/// later layers win by relative path, and `replace_path` removes lower-layer
-/// files in exactly that directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct DeclaredContentLayer {
     source_id: String,
@@ -77,14 +65,6 @@ struct DeclaredContentLayer {
     replace_path: Vec<String>,
 }
 
-/// Resolve the operator's content-layer declaration, if any:
-/// `--content-layers <file>` stages the file's layer stack verbatim (validated
-/// here — this helper only transports the declaration, it never derives one,
-/// so the layer-derivation authority stays with the resolver-side tooling);
-/// `--vanilla-content` declares "the effective VFS is the base installation
-/// only" as one explicit `base_installation` layer. Either way the emitted
-/// control sets `content_layers_authoritative: true` — the declaration is the
-/// operator's assertion that the stack is COMPLETE.
 fn declared_content_layers_from_args(args: &[String]) -> Result<Option<Vec<DeclaredContentLayer>>> {
     let file = value_after(args, "--content-layers");
     let vanilla = args.iter().any(|arg| arg == "--vanilla-content");
@@ -105,12 +85,6 @@ fn declared_content_layers_from_args(args: &[String]) -> Result<Option<Vec<Decla
     Ok(None)
 }
 
-/// `--vanilla-content` needs the base-installation root the LIVE session runs
-/// from: `--game-root` when attaching to a PID, otherwise the launch working
-/// directory (`--working-dir`, or the `--exe` parent). When both a
-/// `--game-root` and a launch working directory are known they must agree —
-/// evidence resolved from a different tree than the engine's working
-/// directory would be stamped verified against a VFS the engine never read.
 fn vanilla_content_game_root(args: &[String]) -> Result<PathBuf> {
     let game_root = value_after(args, "--game-root").map(PathBuf::from);
     let launch_working_dir = value_after(args, "--working-dir")
@@ -122,11 +96,13 @@ fn vanilla_content_game_root(args: &[String]) -> Result<PathBuf> {
         });
     let root = match (game_root, launch_working_dir) {
         (Some(game_root), Some(working_dir)) => {
-            let canonical_root = fs::canonicalize(&game_root).map_err(|error| {
-                format!("--game-root {}: {error}", game_root.display())
-            })?;
+            let canonical_root = fs::canonicalize(&game_root)
+                .map_err(|error| format!("--game-root {}: {error}", game_root.display()))?;
             let canonical_working = fs::canonicalize(&working_dir).map_err(|error| {
-                format!("launch working directory {}: {error}", working_dir.display())
+                format!(
+                    "launch working directory {}: {error}",
+                    working_dir.display()
+                )
             })?;
             if canonical_root != canonical_working {
                 return Err(format!(
@@ -154,18 +130,10 @@ fn vanilla_content_game_root(args: &[String]) -> Result<PathBuf> {
         )
         .into());
     }
-    // The staged root is consumed inside the GAME process, whose working
-    // directory differs from this helper's — a relative root would silently
-    // resolve to a different tree (or nothing) there. Stage the canonical
-    // absolute path.
     fs::canonicalize(&root)
         .map_err(|error| format!("--vanilla-content root {}: {error}", root.display()).into())
 }
 
-/// Parse and validate a `--content-layers` declaration file. Fail-closed on
-/// schema drift, unknown fields, duplicate/empty ids, and missing roots — a
-/// mis-declared layer would otherwise stamp evidence
-/// `effective_vfs_verified: true` against a VFS the session never had.
 fn parse_content_layers_declaration(path: &Path) -> Result<Vec<DeclaredContentLayer>> {
     let value: Value = serde_json::from_slice(&fs::read(path).map_err(|error| {
         format!(
@@ -227,10 +195,7 @@ fn parse_content_layers_declaration(path: &Path) -> Result<Vec<DeclaredContentLa
             })?
             .to_string();
         if !seen_ids.insert(source_id.clone()) {
-            return Err(format!(
-                "content-layers declaration repeats source_id {source_id}"
-            )
-            .into());
+            return Err(format!("content-layers declaration repeats source_id {source_id}").into());
         }
         let root = row
             .get("root")
@@ -246,11 +211,6 @@ fn parse_content_layers_declaration(path: &Path) -> Result<Vec<DeclaredContentLa
             )
             .into());
         }
-        // Canonicalize before staging: the control file is read by the DLL
-        // inside the game process, whose working directory is the game
-        // install — a root left relative to THIS helper's cwd would resolve
-        // to a different tree (or nothing) there and the evidence would be
-        // stamped verified against a VFS the session never had.
         let root = fs::canonicalize(&root).map_err(|error| {
             format!(
                 "content-layers declaration layer {source_id} root {}: {error}",
@@ -307,9 +267,6 @@ fn main() -> Result<()> {
         } else {
             30_000
         });
-    // Reject anything above the explicit 30-minute capture ceiling rather than
-    // silently clamping. With Bug 1 fixed, dwell expiry is safe (the DLL
-    // disarms; it never unhooks or unloads at runtime).
     validate_dwell_ms(dwell_ms)?;
     let settle_ms = value_after(&args, "--settle-ms")
         .map(|value| value.parse::<u64>())
@@ -334,8 +291,6 @@ fn main() -> Result<()> {
     let max_capture_work_ms_per_frame = value_after(&args, "--max-capture-work-ms-per-frame")
         .map(|value| value.parse::<u64>())
         .transpose()?;
-    // CAPFIX3 — operator escape hatch for the per-frame map-frame draw cap
-    // (default stays DEFAULT_MAX_DRAWS_PER_PASS / the chunk-library default).
     let max_draws_per_pass = parse_max_draws_per_pass_arg(&args)?;
     let ui_max_states = value_after(&args, "--ui-max-states")
         .map(|value| value.parse::<u32>())
@@ -344,16 +299,10 @@ fn main() -> Result<()> {
     validate_ui_cb_skip(&ui_cb_skip)?;
     let enable_map_frame_rounds = args.iter().any(|arg| arg == "--enable-map-frame-rounds");
     let census = args.iter().any(|arg| arg == "--census");
-    // Persistent scene-CB0 sampler cadence (ms). Absent/0 => sampler fully off.
     let cb0_sample_ms = value_after(&args, "--cb0-sample-ms")
         .map(|value| value.parse::<u64>())
         .transpose()?
         .filter(|interval| *interval > 0);
-    // CAPFIX3 — choreography: delay arming the moment sequence by N ms after the
-    // map renderer first goes live, so the orchestrator can zoom/position the
-    // camera before capture begins. Absent/0 => arm immediately (prior
-    // behavior). This is what the never-firing-token workaround and the
-    // zoom-race dance existed to fake tonight; a first-class delay removes both.
     let arm_delay_ms = value_after(&args, "--arm-delay-ms")
         .map(|value| value.parse::<u64>())
         .transpose()?
@@ -383,8 +332,6 @@ fn main() -> Result<()> {
     if shader_cache_arg.is_some() && harness_bundle_control.is_some() {
         return Err("pass either --shader-cache or --harness-bundle-control, not both".into());
     }
-    // FW12 H3: the session's declared effective content layers (validated
-    // fail-closed) travel into every control-file variant below.
     let declared_content_layers = declared_content_layers_from_args(&args)?;
     if let Some(shader_cache) = shader_cache_arg {
         write_shader_cache_control(
@@ -1146,10 +1093,6 @@ fn value_after(args: &[String], flag: &str) -> Option<String> {
         .map(|pair| pair[1].clone())
 }
 
-/// CAPFIX3 — parse `--max-draws-per-pass`. Reject 0 loudly: a zero cap would
-/// refuse the first draw of every pass and capture nothing (the DLL also clamps
-/// to >=1 defensively, but a typo should surface to the operator, not be
-/// silently neutered). Absent => None (moment-appropriate default applies).
 fn parse_max_draws_per_pass_arg(args: &[String]) -> Result<Option<u32>> {
     let value = value_after(args, "--max-draws-per-pass")
         .map(|value| value.parse::<u32>())
@@ -1160,9 +1103,6 @@ fn parse_max_draws_per_pass_arg(args: &[String]) -> Result<Option<u32>> {
     Ok(value)
 }
 
-/// The attach helper rejects any `--dwell-ms` above [`MAX_DWELL_MS`] (30
-/// minutes) with a clear error. Values at or under the cap
-/// pass through unchanged.
 fn validate_dwell_ms(dwell_ms: u64) -> Result<()> {
     if dwell_ms > MAX_DWELL_MS {
         return Err(format!(
@@ -1382,7 +1322,10 @@ fn write_harness_bundle_control(
             Err(error)
                 if !capture_moments_need_harness_shader_cache_constants(&capture_moments) =>
             {
-                if error.downcast_ref::<MissingShaderCacheConstants>().is_some() {
+                if error
+                    .downcast_ref::<MissingShaderCacheConstants>()
+                    .is_some()
+                {
                     empty_harness_bundle_control_parts()
                 } else {
                     return Err(error);
@@ -1825,9 +1768,6 @@ fn terrain_capture_control_json(
         .filter(|interval| *interval > 0)
         .map(|interval| format!("  \"cb0_sample_ms\": {},\n", interval))
         .unwrap_or_default();
-    // CAPFIX3 — choreography: only emit arm_delay_ms when set, so an unset flag
-    // leaves the field absent and the DLL's serde default (arm immediately)
-    // applies. Zero is filtered out at parse time and behaves as absent.
     let arm_delay_ms_json = arm_delay_ms
         .filter(|delay| *delay > 0)
         .map(|delay| format!("  \"arm_delay_ms\": {},\n", delay))
@@ -1847,9 +1787,6 @@ fn terrain_capture_control_json(
     let terrain_chunk_library = capture_moments
         .iter()
         .any(|moment| moment == TERRAIN_CHUNK_LIBRARY_MOMENT);
-    // CAPFIX3 — honor the operator's --max-draws-per-pass override; fall back to
-    // the moment-appropriate default. Clamp to >=1 (main() already rejects 0,
-    // but keep the writer self-consistent with the DLL's own >=1 clamp).
     let max_draws_per_pass = max_draws_per_pass
         .unwrap_or(if terrain_chunk_library {
             DEFAULT_TERRAIN_CHUNK_LIBRARY_MAX_DRAWS_PER_PASS
@@ -1872,12 +1809,6 @@ fn terrain_capture_control_json(
             DEFAULT_MAX_CAPTURE_WORK_MS_PER_FRAME
         });
     let ui_max_states = ui_max_states.unwrap_or(DEFAULT_UI_PASS_MAX_STATES).max(1);
-    // FW12 H3: emit the operator-declared effective content layers (lowest
-    // priority first) plus the authoritative marker, so the capture DLL's
-    // `copy_required_source_evidence` resolves game-source evidence through
-    // the session's declared VFS and records `effective_vfs_verified: true`.
-    // Absent declaration => both fields omitted, and the DLL's serde defaults
-    // keep the honest `effective_vfs_verified: false` labelling.
     let content_layers_json = content_layers
         .map(|layers| {
             let rows = layers
@@ -1897,9 +1828,7 @@ fn terrain_capture_control_json(
                 })
                 .collect::<Vec<_>>()
                 .join(",");
-            format!(
-                "  \"content_layers\": [{rows}],\n  \"content_layers_authoritative\": true,\n"
-            )
+            format!("  \"content_layers\": [{rows}],\n  \"content_layers_authoritative\": true,\n")
         })
         .unwrap_or_default();
     format!(
@@ -2077,8 +2006,6 @@ mod tests {
         );
         assert_eq!(rows[0]["replace_path"][0], "gfx/FX");
 
-        // Without a declaration, both fields stay absent so the DLL's serde
-        // defaults keep the honest effective_vfs_verified:false labelling.
         let undeclared = terrain_capture_control_json(
             &[TERRAIN_CAPTURE_MOMENT.to_string()],
             0,
@@ -2116,7 +2043,6 @@ mod tests {
         fs::create_dir_all(&mod_root).expect("create mod root");
         let decl = root.join("layers.json");
 
-        // Valid declaration round-trips.
         fs::write(
             &decl,
             format!(
@@ -2129,16 +2055,12 @@ mod tests {
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].source_id, "mod/a.mod");
         assert_eq!(layers[0].replace_path, vec!["gfx/FX".to_string()]);
-        // The staged root must be canonical-absolute: the DLL consumes it in
-        // the GAME process, whose working directory is not this helper's.
         assert!(layers[0].root.is_absolute(), "{:?}", layers[0].root);
         assert_eq!(
             layers[0].root,
             fs::canonicalize(&mod_root).expect("canonical mod root")
         );
 
-        // A relative root is staged as the canonical form of what it resolves
-        // to HERE (never forwarded verbatim into a foreign working directory).
         let previous_cwd = env::current_dir().expect("cwd");
         env::set_current_dir(&root).expect("enter temp root");
         fs::write(
@@ -2157,7 +2079,6 @@ mod tests {
             "relative roots must be canonicalized before staging"
         );
 
-        // Schema drift refuses.
         fs::write(
             &decl,
             "{\"schema\":\"hoi4-something-else-v1\",\"layers\":[]}",
@@ -2166,7 +2087,6 @@ mod tests {
         let err = parse_content_layers_declaration(&decl).expect_err("schema drift refuses");
         assert!(err.to_string().contains("schema drift"), "{err}");
 
-        // Empty layer list refuses (vanilla is declared explicitly instead).
         fs::write(
             &decl,
             format!("{{\"schema\":\"{CONTENT_LAYERS_SCHEMA}\",\"layers\":[]}}"),
@@ -2175,8 +2095,6 @@ mod tests {
         let err = parse_content_layers_declaration(&decl).expect_err("empty layers refuse");
         assert!(err.to_string().contains("--vanilla-content"), "{err}");
 
-        // A missing root directory refuses — evidence must never be stamped
-        // verified against a tree that does not exist.
         fs::write(
             &decl,
             format!(
@@ -2192,7 +2110,6 @@ mod tests {
             "{err}"
         );
 
-        // Duplicate source_id refuses.
         fs::write(
             &decl,
             format!(
@@ -2205,7 +2122,6 @@ mod tests {
         let err = parse_content_layers_declaration(&decl).expect_err("duplicate id refuses");
         assert!(err.to_string().contains("repeats source_id"), "{err}");
 
-        // Unknown layer fields refuse (drift protection).
         fs::write(
             &decl,
             format!(
@@ -2232,8 +2148,6 @@ mod tests {
             .expect("declared");
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].source_id, BASE_INSTALLATION_SOURCE_ID);
-        // Canonical-absolute for the same cross-process reason as
-        // --content-layers roots.
         assert!(layers[0].root.is_absolute(), "{:?}", layers[0].root);
         assert_eq!(
             layers[0].root,
@@ -2241,7 +2155,6 @@ mod tests {
         );
         assert!(layers[0].replace_path.is_empty());
 
-        // A game root contradicting the launch working directory refuses.
         let other = temp_dir("vanilla_content_other");
         let args = vec![
             "--vanilla-content".to_string(),
@@ -2250,20 +2163,18 @@ mod tests {
             "--working-dir".to_string(),
             other.to_string_lossy().to_string(),
         ];
-        let err = declared_content_layers_from_args(&args)
-            .expect_err("contradicting roots must refuse");
+        let err =
+            declared_content_layers_from_args(&args).expect_err("contradicting roots must refuse");
         assert!(
             err.to_string()
                 .contains("does not match the launch working directory"),
             "{err}"
         );
 
-        // No root source at all refuses with the fix named.
         let err = declared_content_layers_from_args(&["--vanilla-content".to_string()])
             .expect_err("no root must refuse");
         assert!(err.to_string().contains("--game-root"), "{err}");
 
-        // Mutually exclusive with --content-layers.
         let err = declared_content_layers_from_args(&[
             "--vanilla-content".to_string(),
             "--content-layers".to_string(),
@@ -2277,8 +2188,6 @@ mod tests {
 
     #[test]
     fn dwell_cap_rejects_over_thirty_minutes() {
-        // Slow continue-save loads need up to 20 minutes, so the helper permits
-        // a 30-minute session but still rejects larger values fail-closed.
         assert_eq!(MAX_DWELL_MS, 1_800_000);
         assert!(validate_dwell_ms(0).is_ok());
         assert!(validate_dwell_ms(30_000).is_ok());
@@ -2297,42 +2206,30 @@ mod tests {
 
     #[test]
     fn missing_shader_cache_constants_is_typed_not_text_matched() {
-        // R18-6: the harness-bundle control writer recovered the "bundle has
-        // no shader_cache_constants" subclass by substring on the rendered
-        // error. The producer now returns a typed MissingShaderCacheConstants
-        // the consumer can downcast, so an unrelated error whose text merely
-        // mentions the phrase can never be waived into an empty control.
         let absent = serde_json::json!({ "other_key": {} });
         let error = harness_bundle_control_parts_from_value(&absent)
             .expect_err("a bundle without shader_cache_constants must refuse");
         assert!(
-            error.downcast_ref::<MissingShaderCacheConstants>().is_some(),
+            error
+                .downcast_ref::<MissingShaderCacheConstants>()
+                .is_some(),
             "absence must be the typed subclass: {error}"
         );
 
-        // A present-but-malformed constants object is a DIFFERENT failure and
-        // must NOT be the recoverable typed subclass.
         let malformed = serde_json::json!({ "shader_cache_constants": {} });
         let error = harness_bundle_control_parts_from_value(&malformed)
             .expect_err("malformed constants must refuse");
         assert!(
-            error.downcast_ref::<MissingShaderCacheConstants>().is_none(),
+            error
+                .downcast_ref::<MissingShaderCacheConstants>()
+                .is_none(),
             "a malformed-constants error must stay unrecoverable: {error}"
         );
     }
 
     #[test]
     fn harness_bundle_control_recovers_only_the_typed_absence() {
-        // R18-6 consumer: write_harness_bundle_control must recover ONLY the
-        // typed MissingShaderCacheConstants absence into an empty control.
-        // Any other failure — here an unreadable bundle whose PATH TEXT
-        // merely contains the old matched phrase — must propagate. This
-        // exercises the actual consumer at the recover site, so reinstating
-        // substring matching on the rendered error cannot survive it.
-        let root = std::env::temp_dir().join(format!(
-            "r18_attach_consumer_{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("r18_attach_consumer_{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         let bundle = root.join("bundle");
         fs::create_dir_all(&bundle).unwrap();
@@ -2358,7 +2255,9 @@ mod tests {
         )
         .expect_err("an unreadable bundle must propagate even if its path text matches");
         assert!(
-            error.downcast_ref::<MissingShaderCacheConstants>().is_none(),
+            error
+                .downcast_ref::<MissingShaderCacheConstants>()
+                .is_none(),
             "a read failure is not the typed absence: {error}"
         );
         assert!(error.to_string().contains("failed to read"), "{error}");
@@ -2641,12 +2540,6 @@ mod tests {
         ));
     }
 
-    /// CAPFIX1 step 4: the exact recommended next-session recipe — the planned
-    /// base list with the fixed `borders_pass` and the new `underwater_pass`
-    /// appended — must parse, pass `validate_capture_moment`, and inject verbatim.
-    /// This is the end-to-end proof that the CLI accepts `underwater_pass` (the
-    /// piece the inherited diff left unwired: the attach binary carries its own
-    /// moment allowlist, separate from d3d11_runtime's profile table).
     #[test]
     fn capfix1_recommended_session_moment_string_parses_and_validates() {
         let moments = capture_moments_from_args(&[
@@ -2749,8 +2642,6 @@ mod tests {
         assert!(json.contains("\"max_payload_writer_queue_bytes\": 123456"));
     }
 
-    // CAPFIX3 — --max-draws-per-pass override is written into the control file;
-    // absent => the moment-appropriate default (128 for map moments).
     #[test]
     fn terrain_capture_control_honors_max_draws_per_pass_override() {
         let default_json = terrain_capture_control_json(
@@ -2766,7 +2657,7 @@ mod tests {
             None,
             None,
             None,
-            None, // max_draws_per_pass absent
+            None,
             None,
             "hazard",
             false,
@@ -2792,7 +2683,7 @@ mod tests {
             None,
             None,
             None,
-            Some(256), // max_draws_per_pass override
+            Some(256),
             None,
             "hazard",
             false,
@@ -2806,8 +2697,6 @@ mod tests {
         assert!(override_json.contains("\"max_draws_per_pass\": 256"));
     }
 
-    // CAPFIX3 — --arm-delay-ms is emitted only when positive; absent/0 leaves the
-    // field out so the DLL serde default (arm immediately) applies.
     #[test]
     fn terrain_capture_control_emits_arm_delay_ms_only_when_positive() {
         let with_delay = terrain_capture_control_json(
@@ -2831,7 +2720,7 @@ mod tests {
             None,
             true,
             None,
-            Some(2_500), // arm_delay_ms
+            Some(2_500),
             None,
         );
         assert!(with_delay.contains("\"arm_delay_ms\": 2500"));
@@ -2857,14 +2746,12 @@ mod tests {
             None,
             true,
             None,
-            None, // arm_delay_ms absent
+            None,
             None,
         );
         assert!(!without_delay.contains("arm_delay_ms"));
     }
 
-    // CAPFIX3 — --max-draws-per-pass parse: valid value threads through, 0 is
-    // rejected loudly, absent is None.
     #[test]
     fn parse_max_draws_per_pass_accepts_positive_and_rejects_zero() {
         let none_args: Vec<String> = vec!["--dll".into(), "x.dll".into()];
@@ -2883,11 +2770,8 @@ mod tests {
         assert!(parse_max_draws_per_pass_arg(&bad_args).is_err());
     }
 
-    // CAPFIX3 — --arm-delay-ms parse mirrors the cb0-sample-ms pattern: positive
-    // kept, 0 filtered to None (arm immediately), absent None.
     #[test]
     fn arm_delay_ms_arg_parses_positive_and_filters_zero() {
-        // Mirror main()'s parse expression so the wiring stays covered.
         let parse = |args: &[String]| -> Option<u64> {
             value_after(args, "--arm-delay-ms")
                 .map(|value| value.parse::<u64>())

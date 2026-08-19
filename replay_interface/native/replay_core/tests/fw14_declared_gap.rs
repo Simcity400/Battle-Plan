@@ -1,14 +1,3 @@
-//! FW14 integration properties, pinned through the PUBLIC surfaces only:
-//!
-//! * the recorder-declared coverage statement crosses `WorldTimeline`
-//!   (passthrough + per-hour lookup + coverage-honest hour resolution), and an
-//!   hour inside a declared gap surfaces every domain as unobtained — never
-//!   absent, never an earlier frame's stale measurements;
-//! * the X-ENDEDCOMBAT same-hour coalescer round-trips from raw snapshot JSON
-//!   through ingest and the typed fold.
-//!
-//! Fixture shape follows `r5_ingest_properties.rs`: a directory store is the
-//! cheapest anchor that still runs the real ingest admission.
 
 use replay_core::{
     coalesce_same_hour_ended_combats, HourCoverageState, Leaf, ViewStatus, WorldError,
@@ -67,7 +56,6 @@ fn snapshot_body(hour: i64, date: &str, extra: Value) -> Value {
     body
 }
 
-/// The exact row shape the stitcher emits for a main-timeline coverage row
 /// (`CoverageDisposition::to_value` + `add_main_ownership_fields`).
 fn coverage_row(start: i64, end: i64, kind: &str, reason: &str) -> Value {
     json!({
@@ -104,8 +92,6 @@ fn stitched_index(rows: Value, coverage: Value) -> Value {
     })
 }
 
-/// hours 1 and 4 recorded; hours 2..=3 declared absent (capture_failed);
-/// hour 0 declared absent (gap) BEFORE the first recorded frame.
 fn open_gap_timeline() -> (WorldTimeline, PathBuf) {
     let root = temp_root("declared_gap");
     write_store(
@@ -166,8 +152,6 @@ fn a_declared_gap_hour_surfaces_every_domain_unobtained_with_the_named_reason() 
         };
         assert_eq!(view.requested_hour(), hour);
         assert_eq!((view.gap().start_hour, view.gap().end_hour), (2, 3));
-        // Trichotomy: a positively declared absence is the EXPLICIT arm —
-        // unobtained, never "this recording never carried the domain".
         assert_eq!(view.domain_status(), ViewStatus::DomainUnavailable);
         assert_eq!(view.leaf_status::<i64>(), Leaf::Unobtained);
         let warning = view
@@ -187,9 +171,6 @@ fn a_declared_gap_hour_surfaces_every_domain_unobtained_with_the_named_reason() 
 #[test]
 fn a_declared_gap_outranks_the_before_first_inference() {
     let (timeline, root) = open_gap_timeline();
-    // Hour 0 is before the first recorded frame AND declared absent: the
-    // declared claim (with its reason and witness) wins over the inferred
-    // BeforeFirst error.
     let state = timeline.coverage_state_at(0).expect("declared gap answers");
     match state {
         HourCoverageState::DeclaredGap(view) => {
@@ -198,7 +179,6 @@ fn a_declared_gap_outranks_the_before_first_inference() {
         }
         HourCoverageState::Frame { .. } => panic!("hour 0 has no frame to resolve to"),
     }
-    // An undeclared hour before the first frame keeps the honest error.
     let root2 = temp_root("before_first");
     write_store(
         &root2,
@@ -227,7 +207,6 @@ fn a_declared_gap_outranks_the_before_first_inference() {
 #[test]
 fn recorded_and_undeclared_hours_keep_their_existing_resolutions() {
     let (timeline, root) = open_gap_timeline();
-    // A recorded hour is an exact frame.
     match timeline.coverage_state_at(1).expect("recorded hour") {
         HourCoverageState::Frame {
             frame,
@@ -240,8 +219,6 @@ fn recorded_and_undeclared_hours_keep_their_existing_resolutions() {
         }
         HourCoverageState::DeclaredGap(_) => panic!("hour 1 is recorded, not declared absent"),
     }
-    // An hour past the last frame that the recording did NOT declare absent
-    // stays on the scrub contract: nearest-at-or-before, marked inexact.
     match timeline.coverage_state_at(5).expect("scrub fallback") {
         HourCoverageState::Frame {
             frame_hour, exact, ..
@@ -251,10 +228,6 @@ fn recorded_and_undeclared_hours_keep_their_existing_resolutions() {
         }
         HourCoverageState::DeclaredGap(_) => panic!("hour 5 was never declared absent"),
     }
-    // The plain scrub/exact primitives are unchanged (their contracts are
-    // owned by seek == play_to equality): frame() stays exact-hour and
-    // state_at() stays nearest-at-or-before, and the coverage-honest answer
-    // for declared hours lives in coverage_state_at.
     assert!(matches!(
         timeline.frame(2),
         Err(WorldError::NoSuchHour(2))
@@ -287,7 +260,6 @@ fn a_recording_that_declared_nothing_answers_none_and_resolves_like_state_at() {
     );
     let source = replay_core::open_recording(&root).expect("plain store opens");
     let timeline = WorldTimeline::open(source).expect("timeline opens");
-    // "Declared nothing" is None — NOT a claim of full coverage.
     assert!(timeline.declared_coverage().is_none());
     assert!(timeline.declared_gap_at(2).is_none());
     match timeline.coverage_state_at(2).expect("undeclared hole scrubs") {
@@ -302,12 +274,6 @@ fn a_recording_that_declared_nothing_answers_none_and_resolves_like_state_at() {
     let _ = fs::remove_dir_all(root);
 }
 
-/// X-ENDEDCOMBAT round-trip: two same-hour snapshot BODIES (as raw JSON) ride
-/// through the real ingest and typed fold, and the coalescer unions their
-/// terminal rows per the seam contract. The two bodies live at different
-/// index hours only because shipped ingest refuses an index naming one hour
-/// twice — the coalescer is exercised on their typed views exactly as a
-/// same-hour holder would call it.
 #[test]
 fn ended_combat_round_trip_from_raw_snapshots_through_the_coalescer() {
     let root = temp_root("ended_combat_roundtrip");

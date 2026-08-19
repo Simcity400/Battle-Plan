@@ -1,25 +1,13 @@
-//! Recorder-owned selected-Present UI identity.
-//!
-//! The replay viewer's observer/POV selection is a display choice. It is not
-//! evidence for the country whose UI the game painted at the recorded
-//! selected Present. This module derives that identity only from typed,
-//! current-hour recorder carriers and rejects disagreement between them.
 
 use replay_core::{AuthenticatedUiPass, HudPaintCommand, Leaf, UiPassOperation, WorldFrame};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordedUiOwner {
-    /// Country whose semantic companion state may be consumed. `None` means
-    /// the authenticated pass is genuinely global.
     pub country: Option<String>,
-    /// Exact A25 scope carried by every text operation in the pass. This is
-    /// deliberately separate from `country`: a country-owned screen may
-    /// contain only globally scoped text.
     pub runtime_text_pov_country_or_global: String,
 }
 
-/// Resolve the selected-Present owner without consulting viewer state.
 pub fn recorded_ui_owner(
     frame: &WorldFrame,
     pass: &AuthenticatedUiPass,
@@ -53,9 +41,6 @@ pub fn recorded_ui_owner(
         )?;
     }
 
-    // d94 is a current-frame, authenticated POV census. It is an owner
-    // witness only when exactly one country was recorded; zero or multiple
-    // rows cannot be collapsed into a guessed selection.
     let visibility_povs = frame.visibility_povs().collect::<Vec<_>>();
     if visibility_povs.len() == 1 {
         insert_country(

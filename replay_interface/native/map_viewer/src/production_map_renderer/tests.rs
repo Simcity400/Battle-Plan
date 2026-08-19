@@ -1,8 +1,6 @@
 use super::*;
 use crate::PlaybackEnvironment;
 
-/// The crate's gate table, included so this test resolves the capture root
-/// through EXACTLY the candidate list the build-time probe used.
 #[allow(dead_code)]
 mod corpus {
     include!("../../test_gates.rs");
@@ -157,8 +155,6 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
     let prepared = crate::prepare_production_d3d_frame(&frame, &BTreeMap::new()).unwrap();
     assert!(prepared.ordered_static_programs.is_empty());
     assert!(prepared.ordered_render_operations.is_empty());
-    // One frame-global S1 absence plus the three-member static dependency
-    // cascade are each receipted independently.
     assert_eq!(prepared.omissions.len(), 4);
     assert!(prepared
         .omissions
@@ -330,8 +326,6 @@ fn admitted_renderer_with_bindings(
     };
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
     manifest = manifest.with_computed_digest().unwrap();
-    // Optional, unused DLC may differ at playback and never becomes a required
-    // layer or fallback asset source.
     let inventory = resolver
         .playback_inventory(
             &manifest,
@@ -2031,8 +2025,6 @@ fn o04_duplicate_dangling_and_unadmitted_references_fail_closed() {
     );
 }
 
-// Was a static `#[ignore]`, so it never ran under the standing `Mode Final`
-// gate even on a machine that holds the retained capture.
 #[test]
 #[cfg_attr(
     not(gate_retained_production_frame),
@@ -2117,10 +2109,6 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
 
     let mut draw = opaque_static_draw(shader_content);
     draw.draw_token = "retained.tree.draw000".into();
-    // This gate exercises relocatable captured geometry through the generic
-    // interpreter. Keep the synthetic shader pair from `opaque_static_draw`:
-    // using the retained C07 tree pair without its authenticated runtime
-    // visibility/model/LOD carrier must be omitted by production admission.
     draw.pipeline.index_format = IndexFormat::R16Uint;
     draw.pipeline.static_indices_u16 = vec![0, 1, 2];
     draw.geometry = StaticGeometrySource::InterpreterOutput {

@@ -1,17 +1,5 @@
 #![recursion_limit = "256"]
 
-//! Container v2 (stitched / reload-relaunch) reader acceptance for the
-//! `Time, identity, sessions, and files` contract in `PROJECT.md`.
-//!
-//! Proves the reader:
-//! * opens a v2 stitched container that declares `timeline_segments_v1`;
-//! * serves the main timeline (visible snapshots) through the ordinary index;
-//! * loads a SUPERSEDED (rollback) snapshot by its explicit segment-prefixed file
-//!   name — retained, never deleted;
-//! * parses the authoritative `segments.json` branch graph;
-//! * FAILS CLOSED on a v2 container missing the required feature, and on any
-//!   container version above the reader max.
-
 use serde_json::{json, Value};
 use snapshot::canon::manifest_canonical_bytes;
 use snapshot::container::{
@@ -167,17 +155,13 @@ fn raw_source_row(segment_id: u32, len: usize, participation_id: &str) -> Value 
     })
 }
 
-/// A minimal but faithful stitched store: segment 0 owns hours 0..=1; segment 1
-/// (a rollback) supersedes hour 1. Main timeline = s0:hour0 + s1:hour1. Segment
-/// 0's hour-1 snapshot is retained as rollback data.
 fn stitched_entries() -> Vec<PackEntry> {
     let s0_h0 = "s00000000.000000000000.snapshot.json";
-    let s0_h1_rollback = "s00000000.000000000001.snapshot.json"; // superseded
-    let s1_h1 = "s00000001.000000000001.snapshot.json"; // visible
+    let s0_h1_rollback = "s00000000.000000000001.snapshot.json";
+    let s1_h1 = "s00000001.000000000001.snapshot.json";
     let p0 = participation_id(0, 200);
     let p1 = participation_id(1, 100);
 
-    // stitched-main-v1 index: only VISIBLE snapshots; a visible coverage gap; head.
     let index = json!({
         "game_id": GAME,
         "schema_version": "1",
@@ -671,10 +655,8 @@ fn assert_zip_rejects(bytes: Vec<u8>, needle: &str) {
 fn v2_stitched_container_opens_and_serves_main_timeline() {
     let c = Container::from_bytes(build(&stitched_opts()), &ExpectedIdentity::default())
         .expect("v2 stitched container opens");
-    // the index is recognized as stitched.
     assert!(c.index().is_stitched());
     assert_eq!(c.index().segments_file.as_deref(), Some("segments.json"));
-    // main timeline: exactly the two visible hours.
     let hours: Vec<i64> = c
         .index()
         .snapshots
@@ -682,7 +664,6 @@ fn v2_stitched_container_opens_and_serves_main_timeline() {
         .filter_map(|s| s.hour_index)
         .collect();
     assert_eq!(hours, vec![0, 1]);
-    // hour 1 resolves to the LATER segment's file (not segment 0's rollback copy).
     let h1 = c
         .index()
         .snapshots
@@ -690,7 +671,6 @@ fn v2_stitched_container_opens_and_serves_main_timeline() {
         .find(|s| s.hour_index == Some(1))
         .unwrap();
     assert_eq!(h1.file, "s00000001.000000000001.snapshot.json");
-    // load by hour works through the index.
     assert_eq!(c.load(0).unwrap().hour_index, Some(0));
     assert_eq!(c.load(1).unwrap().hour_index, Some(1));
 }
@@ -876,9 +856,6 @@ fn v2_zip64_sentinel_with_zero_length_zip64_extra_fails_at_open() {
     ) as u64;
     bytes[central_header + 24..central_header + 28].copy_from_slice(&u32::MAX.to_le_bytes());
 
-    // The Zip64 field declares a zero-byte body. The following eight bytes are
-    // deliberately inside the overall extra area so an incorrectly whole-extra-
-    // bounded parser can consume them as the sentinel-required size.
     let extra_start = central_header + 46 + name_len;
     let mut malformed_extra = Vec::with_capacity(12);
     malformed_extra.extend_from_slice(&1u16.to_le_bytes());
@@ -1054,8 +1031,7 @@ fn v2_digest_and_compatibility_bindings_require_canonical_sha256() {
     let mut entries = stitched_entries();
     replace_json_entry(&mut entries, "segments.json", |graph| {
         graph["segments"][0]["build_exe_sha256"] = json!("AB".repeat(32));
-        graph["segments"][0]["compatibility"]["build_exe_sha256"] =
-            json!("AB".repeat(32));
+        graph["segments"][0]["compatibility"]["build_exe_sha256"] = json!("AB".repeat(32));
     });
     assert_rejects(
         build_entries(&entries, &stitched_opts()),
@@ -1157,18 +1133,15 @@ fn v2_standalone_raw_source_must_not_remain_embedded() {
 #[test]
 fn superseded_rollback_snapshot_is_retained_and_loadable() {
     let c = Container::from_bytes(build(&stitched_opts()), &ExpectedIdentity::default()).unwrap();
-    // the superseded hour-1 snapshot (segment 0) is NOT in the main index...
     assert!(!c
         .index()
         .snapshots
         .iter()
         .any(|s| s.file == "s00000000.000000000001.snapshot.json"));
-    // ...but is retained, manifest-listed, and loadable by explicit file name.
     let rollback = c
         .load_file("s00000000.000000000001.snapshot.json")
         .expect("rollback snapshot retained and loadable");
     assert_eq!(rollback.hour_index, Some(1));
-    // full verification passes (every retained entry hash-checks).
     c.verify_all().expect("verify_all incl. rollback entry");
 }
 
@@ -1197,7 +1170,6 @@ fn segments_graph_parses_with_spans() {
 
 #[test]
 fn v2_without_feature_fails_closed() {
-    // A v2 container that omits `timeline_segments_v1` is malformed.
     let opts = PackOptions {
         container_version: Some(2),
         required_features: None,
@@ -1397,8 +1369,6 @@ fn v2_parent_rewritten_from_final_graph_fails_at_open() {
 
 #[test]
 fn version_above_reader_max_rejects() {
-    // a future v3 (feature declared, so it clears the coupling gate) is still above
-    // the reader max and must reject — forward-compat fail-closed.
     let opts = PackOptions {
         container_version: Some(3),
         required_features: Some(vec!["timeline_segments_v1".into()]),
@@ -1414,7 +1384,6 @@ fn version_above_reader_max_rejects() {
 
 #[test]
 fn plain_v1_container_has_no_segment_graph() {
-    // a plain v1 container still opens and reports no stitched graph (back-compat).
     let plain = vec![
         ent(
             format!("payload/{GAME}/index.json"),

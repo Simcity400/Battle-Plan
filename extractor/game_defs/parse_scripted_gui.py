@@ -40,8 +40,7 @@ import resolver as R
 from paradox_parser import Node
 from clausewitz_ops import harvest_variables, operator_triples
 
-_GET = re.compile(r"\[([A-Za-z_][A-Za-z0-9_]*)\]")    # [GET_X] dynamic loc token
-# [?scope.var?] / [?var?] inline variable reference in a property image/text.
+_GET = re.compile(r"\[([A-Za-z_][A-Za-z0-9_]*)\]")
 _QVAR = re.compile(r"\[\?\s*([A-Za-z_][A-Za-z0-9_.]*)")
 
 
@@ -109,14 +108,11 @@ def parse_gui_def(name: str, node: Node, source_file: str,
         "source_file": source_file,
     }
     dyn = set()
-    # effects = { <effname> = {...} }
     eff = node.get("effects")
     if isinstance(eff, Node):
         for ename, ebody in eff.entries:
             if isinstance(ebody, Node):
                 r, w = _vars_in(ebody)
-                # engine convention: <element>_click / <element>_right_click fire
-                # on (right-)clicking <element>; recover the element + which click.
                 elem, click = None, None
                 if ename.endswith("_right_click"):
                     elem, click = ename[:-12], "right"
@@ -126,8 +122,6 @@ def parse_gui_def(name: str, node: Node, source_file: str,
                     "reads": r, "writes": w,
                     "on_click_of": elem, "click": click,
                 }
-    # triggers = { <trgname> = {...} } — names like <element>_visible /
-    # <element>_enabled / <element>_click_enabled gate a specific element.
     trg = node.get("triggers")
     if isinstance(trg, Node):
         for tname, tbody in trg.entries:
@@ -141,12 +135,10 @@ def parse_gui_def(name: str, node: Node, source_file: str,
                         break
                 rec["triggers"][tname] = {"reads": r, "gates_element": elem,
                                           "gate": gate}
-    # properties (element map) + inline [?var?] reads
     prop_reads = set()
     rec["elements"] = _parse_properties(node.get("properties"), dyn, prop_reads)
     if prop_reads:
         rec["reads"] = sorted(set(rec["reads"]) | prop_reads)
-    # classify dynamic-loc calls: which resolve to a scripted_localisation fn
     rec["dynamic_loc_calls"] = sorted(dyn)
     rec["dynamic_loc_calls_resolved"] = sorted(d for d in dyn if d in scripted_loc_names)
     return rec
@@ -181,7 +173,6 @@ def parse_scripted_guis(layers) -> dict:
         except Exception as e:
             print(f"[scripted_gui] WARN {rel}: {e}", file=sys.stderr)
             continue
-        # top level: scripted_gui = { <name> = {...}, ... }
         for k, v in root.entries:
             if k.lower() != "scripted_gui" or not isinstance(v, Node):
                 continue

@@ -1,22 +1,3 @@
-//! Dormant exact-a729 technology-canvas observer and pointer-free carrier.
-//!
-//! The retained controller roots prove where the mode-6
-//! `CCountryTechTreeView` is owned and where population/refresh commits occur,
-//! and the exact20 root/helper receipt and sentinels are now frozen. A later
-//! literal lookup proved that `controller+0x578` is `close_button`, not a
-//! two-dimensional canvas or axis owner. The active folder roots instead live
-//! in the populated vector at `controller+0x19f8` (count `+0x1a04`, active
-//! ordinal `+0x1a90`). Static evidence does not close their final
-//! selected-Present geometry, origin, scale, clipping, or draw order. It also
-//! proved that connector segment objects are reused across
-//! logical edges, so a post-return pool scan cannot recover portable endpoint
-//! identity. This module therefore supplies a complete fail-closed engineering
-//! seam while
-//! [`PRODUCTION_ACTIVATION`] remains false. The carrier is wired end-to-end on
-//! reserved domain 71, but collection and authenticated decode remain disabled
-//! unless the schema is revised for the single 2D root and a contextual
-//! connector producer is implemented.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
@@ -27,9 +8,6 @@ pub const PRODUCTION_ACTIVATION: bool = false;
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
-/// Final exact-a729 static-exhaustion exports. These close the controller-root
-/// and connector-pool questions; they do not manufacture the absent TCV1 axis
-/// records or portable connector identities.
 pub const FINAL_CONTROLLER_CONNECTOR_JOB_ID: &str =
     "20260722T072211Z-a28-tech-canvas-connector-two-axis-final-1b34e6a9";
 pub const FINAL_CONTROLLER_CONNECTOR_MANIFEST_SHA256: &str =
@@ -56,9 +34,6 @@ pub const POST_POPULATION_TAB_BIND_RVA: usize = 0x013B_F850;
 pub const CONNECTOR_PATH_MATERIALIZER_RVA: usize = 0x013C_10A0;
 pub const GRID_RESOLVER_RVA: usize = 0x013C_3040;
 pub const MATERIALIZED_VECTOR_CLEAR_RVA: usize = 0x013C_4480;
-/// Internal callback code labels installed by the typed constructor. A
-/// function-root export rejected this address class; the direct bytes are
-/// retained separately and these values are not exact20 function sites.
 pub const INTERNAL_OBSERVER_CALLBACK_LABEL_RVAS: [usize; 3] =
     [0x013C_4550, 0x013C_45B0, 0x013C_4720];
 pub const REQUIRED_EXACT20_FUNCTION_RVAS: [usize; 13] = [
@@ -90,16 +65,11 @@ pub struct FunctionSiteContract {
     pub entry_sentinel: [u8; 16],
 }
 
-/// Frozen only from the same-session exact20 receipt covering every listed
-/// root/helper. Placeholder bytes or retained exact10 manifests are not valid
-/// substitutes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Exact20HookContract {
     pub exact20_receipt_sha256: &'static str,
     pub root_producer_manifest_sha256: &'static str,
     pub helper_producer_manifest_sha256: &'static str,
-    /// Ordered exactly as [`REQUIRED_EXACT20_FUNCTION_RVAS`]. Each sentinel is
-    /// receipt-derived; non-hook producer roots are included because they
     /// define identity, filtering, order, geometry, or scroll ownership.
     pub function_sites: [FunctionSiteContract; 13],
 }
@@ -124,8 +94,7 @@ pub struct AuthenticatedLiveProducerContract {
 
 pub const AUTHENTICATED_EXACT20_HOOK_CONTRACT: Option<Exact20HookContract> =
     Some(Exact20HookContract {
-        exact20_receipt_sha256:
-            "6545f79563654c874cb078b3274d0f727237c093e6e845211f3f9672ee265f48",
+        exact20_receipt_sha256: "6545f79563654c874cb078b3274d0f727237c093e6e845211f3f9672ee265f48",
         root_producer_manifest_sha256:
             "eab85630d79f7592bd1ae38f9ae5fb6102ddb5e2201cb3a1d6482a83cf5c74cb",
         helper_producer_manifest_sha256:
@@ -133,71 +102,74 @@ pub const AUTHENTICATED_EXACT20_HOOK_CONTRACT: Option<Exact20HookContract> =
         function_sites: [
             FunctionSiteContract {
                 rva: OWNER_CONSTRUCTOR_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x20\x48\x89\x4c\x24\x08\x55\x56\x57\x41\x54\x41",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x20\x48\x89\x4c\x24\x08\x55\x56\x57\x41\x54\x41",
             },
             FunctionSiteContract {
                 rva: COUNTRY_TECH_TREE_CONSTRUCTOR_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x10\x48\x89\x4c\x24\x08\x55\x56\x57\x41\x54\x41",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x10\x48\x89\x4c\x24\x08\x55\x56\x57\x41\x54\x41",
             },
             FunctionSiteContract {
                 rva: POPULATION_COMMIT_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x08\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x08\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57",
             },
             FunctionSiteContract {
                 rva: FOLDER_MATERIALIZER_RVA,
-                entry_sentinel: *b"\x48\x8b\xc4\x4c\x89\x48\x20\x48\x89\x50\x10\x48\x89\x48\x08\x55",
+                entry_sentinel:
+                    *b"\x48\x8b\xc4\x4c\x89\x48\x20\x48\x89\x50\x10\x48\x89\x48\x08\x55",
             },
             FunctionSiteContract {
                 rva: REFRESH_COMMIT_RVA,
-                entry_sentinel: *b"\x48\x8b\xc4\x48\x89\x48\x08\x55\x53\x56\x57\x41\x54\x41\x55\x41",
+                entry_sentinel:
+                    *b"\x48\x8b\xc4\x48\x89\x48\x08\x55\x53\x56\x57\x41\x54\x41\x55\x41",
             },
             FunctionSiteContract {
                 rva: ITEM_REBIND_RVA,
-                entry_sentinel: *b"\x40\x53\x57\x41\x54\x41\x55\x48\x83\xec\x58\x4c\x8b\xe9\xe8\xed",
+                entry_sentinel:
+                    *b"\x40\x53\x57\x41\x54\x41\x55\x48\x83\xec\x58\x4c\x8b\xe9\xe8\xed",
             },
             FunctionSiteContract {
                 rva: CALLBACK_OBSERVER_GLUE_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x48\x89\x7c\x24\x20\x48",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x48\x89\x7c\x24\x20\x48",
             },
             FunctionSiteContract {
                 rva: GRID_LOOKUP_MAP_INSERT_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x18\x55\x56\x57\x41\x56\x41\x57\x48\x8b\xec\x48",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x18\x55\x56\x57\x41\x56\x41\x57\x48\x8b\xec\x48",
             },
             FunctionSiteContract {
                 rva: TECH_ITEM_POOL_ACQUIRE_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x10\x48\x89\x6c\x24\x18\x48\x89\x74\x24\x20\x57",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x10\x48\x89\x6c\x24\x18\x48\x89\x74\x24\x20\x57",
             },
             FunctionSiteContract {
                 rva: POST_POPULATION_TAB_BIND_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x08\x48\x89\x74\x24\x18\x48\x89\x7c\x24\x20\x48",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x08\x48\x89\x74\x24\x18\x48\x89\x7c\x24\x20\x48",
             },
             FunctionSiteContract {
                 rva: CONNECTOR_PATH_MATERIALIZER_RVA,
-                entry_sentinel: *b"\x48\x89\x54\x24\x10\x53\x55\x56\x57\x41\x56\x48\x83\xec\x60\x4c",
+                entry_sentinel:
+                    *b"\x48\x89\x54\x24\x10\x53\x55\x56\x57\x41\x56\x48\x83\xec\x60\x4c",
             },
             FunctionSiteContract {
                 rva: GRID_RESOLVER_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x18\x48\x89\x4c\x24\x08\x55\x56\x57\x41\x54\x41",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x18\x48\x89\x4c\x24\x08\x55\x56\x57\x41\x54\x41",
             },
             FunctionSiteContract {
                 rva: MATERIALIZED_VECTOR_CLEAR_RVA,
-                entry_sentinel: *b"\x48\x89\x5c\x24\x18\x56\x48\x83\xec\x20\x8b\x81\x4c\x1a\x00\x00",
+                entry_sentinel:
+                    *b"\x48\x89\x5c\x24\x18\x56\x48\x83\xec\x20\x8b\x81\x4c\x1a\x00\x00",
             },
         ],
     });
 
-/// The jobs performed in-broker readiness checks, but no same-session status
-/// artifact was persisted before their leases. Keep the dependent production
-/// gate absent until the canonical pool/job ledger supplies one.
 pub const PERSISTED_EXACT20_PREFLIGHT_RECEIPT_SHA256: Option<&str> = None;
 
-/// Deliberately absent. The retained static exports identify the active folder
-/// root but do not bind it to an authenticated selected Present or recover its
-/// exact final screen-space origin/scale/clip/order. Portable connector identity
-/// additionally requires a contextual bracket around
-/// `CONNECTOR_PATH_MATERIALIZER_RVA` and every segment-helper emission because
-/// the post-return pool merges/reuses segment objects. None of these values may
-/// be synthesized from the final pool.
 pub const AUTHENTICATED_LIVE_PRODUCER_CONTRACT: Option<AuthenticatedLiveProducerContract> = None;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,11 +183,7 @@ pub enum ObserverBoundary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum ObservationPhase {
-    /// The authenticated function was entered, but its mutations are not yet
-    /// complete. This phase is identity evidence only and cannot emit.
     FunctionEntry = 1,
-    /// The detour wrapper has returned from the authenticated population or
-    /// refresh function, so its mutations are complete for this transition.
     PostReturn = 2,
 }
 
@@ -232,7 +200,6 @@ impl ObserverBoundary {
     fn is_complete_snapshot_boundary(self) -> bool {
         matches!(self, Self::PopulationCommitted | Self::RefreshCommitted)
     }
-
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,8 +249,6 @@ pub struct TechnologyCanvasAuthority {
     pub live_observation_receipt_sha256: String,
     pub live_producer_manifest_sha256: String,
     pub owner_registry_manifest_sha256: String,
-    /// Authenticated receipt for the exact selected Present whose final UI
-    /// state is carried by this frame. A same-game-hour receipt is not enough.
     pub selected_present_receipt_sha256: String,
     pub selected_present_pass_identity_sha256: String,
     pub selected_present_producer_manifest_sha256: String,
@@ -317,14 +282,9 @@ pub struct MaterializedDrawable {
     pub slot_id: String,
     pub draw_ordinal: u32,
     pub rect: RectI32,
-    /// Exact selected-Present UI operation ordinals emitted for this
-    /// drawable by the same GUI traversal. Container-rectangle matching is
-    /// explicitly not a valid substitute.
     pub ui_pass_ordinals: Vec<u32>,
 }
 
-/// Complete, portable callback-to-selected-Present technology-canvas
-/// observation. No raw process pointer is representable in this type.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechnologyCanvasFrame {
     pub authority: TechnologyCanvasAuthority,
@@ -333,17 +293,11 @@ pub struct TechnologyCanvasFrame {
     pub frame_hour: u64,
     pub elapsed_wall_ms: u64,
     pub capture_sequence: u64,
-    /// QPC at the completed population/refresh callback.
     pub callback_qpc_ticks: u64,
-    /// Monotonic identity and QPC of the selected Present that consumed this
-    /// active technology root. These bind callback state to one render submit;
-    /// game hour alone is deliberately insufficient.
     pub selected_present_candidate_id: u64,
     pub selected_present_ordinal: u32,
     pub selected_present_qpc_ticks: u64,
     pub selected_present_cutoff_qpc_ticks: u64,
-    /// Pointer-free token assigned by the selected-Present producer to the
-    /// exact runtime GUI instance registered by the technology hook.
     pub selected_present_engine_instance_token: u64,
     pub boundary: ObserverBoundary,
     pub controller_mode: u32,
@@ -353,7 +307,6 @@ pub struct TechnologyCanvasFrame {
     pub active_root_identity: String,
     pub source_items: Vec<TechnologySourceItem>,
     pub final_draw_order: Vec<String>,
-    /// Strictly ordered complete union of all drawable `ui_pass_ordinals`.
     pub selected_present_ui_operation_order: Vec<u32>,
     pub materialized_drawables: Vec<MaterializedDrawable>,
     pub clip_rect: RectI32,
@@ -361,26 +314,16 @@ pub struct TechnologyCanvasFrame {
     pub viewport_extent_pixels: [i32; 2],
     pub render_target_extent_pixels: [i32; 2],
     pub client_extent_pixels: [i32; 2],
-    /// Exact fixed-5 screen-space origin of the selected active folder root.
     pub canvas_origin_pixels_fixed5: [i64; 2],
-    /// Raw IEEE-754 bit patterns for the exact selected-Present X/Y canvas
-    /// scale. The producer must read or statically prove these values; identity
-    /// scale must never be assumed.
     pub canvas_scale_bits: [u32; 2],
-    /// Explicit fixed-5 pixel translation. It is not reconstructed from either
-    /// axis' scroll current value.
     pub pan_pixels_fixed5: [i64; 2],
     pub horizontal_scroll_fixed5: AxisStateFixed,
     pub vertical_scroll_fixed5: AxisStateFixed,
 }
 
-/// Process-local callback observation. These pointer fields are accepted only
-/// by an authenticated bridge and never enter [`TechnologyCanvasFrame`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawBoundaryObservation {
     pub callback_rva: usize,
-    /// Original bytes saved and authenticated before an inline detour mutates
-    /// the entry. Current patched bytes are bound separately by hash.
     pub original_entry_bytes_before_patch: [u8; 16],
     pub installed_patch_sha256: String,
     pub trampoline_sha256: String,
@@ -411,8 +354,6 @@ pub(crate) mod private {
     pub trait Sealed {}
 }
 
-/// Implemented only by the eventual exact-a729 hook/registry bridge inside
-/// this crate. It must erase pointers and return complete producer accounting.
 pub trait ExactTechnologyCanvasObserverSource: private::Sealed {
     fn authority(&self) -> TechnologyCanvasAuthority;
     fn observe_complete_transition(
@@ -502,8 +443,6 @@ pub fn expected_source_record_id(
     format!("a729:technology_canvas:{}", hex32(array))
 }
 
-/// Future hook entrypoint. Even a structurally complete fake source cannot
-/// emit while activation or either live evidence contract is absent.
 pub fn collect_after_boundary<S: ExactTechnologyCanvasObserverSource>(
     source: &S,
     raw: RawBoundaryObservation,
@@ -513,9 +452,9 @@ pub fn collect_after_boundary<S: ExactTechnologyCanvasObserverSource>(
             "H-A29 technology canvas observer is compile-time inactive",
         ));
     }
-    let live_contract = AUTHENTICATED_LIVE_PRODUCER_CONTRACT.ok_or(
-        ObserverError::Inactive("H-A29 authenticated live producer contract is absent"),
-    )?;
+    let live_contract = AUTHENTICATED_LIVE_PRODUCER_CONTRACT.ok_or(ObserverError::Inactive(
+        "H-A29 authenticated live producer contract is absent",
+    ))?;
     let persisted_preflight = PERSISTED_EXACT20_PREFLIGHT_RECEIPT_SHA256.ok_or(
         ObserverError::Inactive("H-A29 persisted exact20 preflight receipt is absent"),
     )?;
@@ -539,8 +478,7 @@ pub fn collect_after_boundary<S: ExactTechnologyCanvasObserverSource>(
         || authority.live_observation_receipt_sha256
             != live_contract.live_observation_receipt_sha256
         || authority.live_producer_manifest_sha256 != live_contract.live_producer_manifest_sha256
-        || authority.owner_registry_manifest_sha256
-            != live_contract.owner_registry_manifest_sha256
+        || authority.owner_registry_manifest_sha256 != live_contract.owner_registry_manifest_sha256
         || authority.selected_present_producer_manifest_sha256
             != live_contract.selected_present_producer_manifest_sha256
     {
@@ -653,11 +591,7 @@ fn validate_raw_boundary(
     if raw.owner_registry_witness.registry_epoch == 0
         || raw.owner_registry_witness.owner_sequence == 0
         || raw.owner_registry_witness.construction_qpc_ticks == 0
-        || !lower_hex_sha256(
-            &raw
-                .owner_registry_witness
-                .owner_construction_record_sha256,
-        )
+        || !lower_hex_sha256(&raw.owner_registry_witness.owner_construction_record_sha256)
         || raw.owner_registry_witness.registry_manifest_sha256
             != live_contract.owner_registry_manifest_sha256
         || raw.owner_registry_witness.owner_construction_record_sha256
@@ -906,9 +840,7 @@ pub fn validate_frame(frame: &TechnologyCanvasFrame) -> Result<(), ObserverError
         || frame.selected_present_ui_operation_order
             != mapped_ui_operations.iter().copied().collect::<Vec<_>>()
     {
-        return invalid(
-            "selected-Present operation order is not the exact ordered drawable union",
-        );
+        return invalid("selected-Present operation order is not the exact ordered drawable union");
     }
     if frame.authority.content_manifest_sha256 != compute_content_manifest_sha256(frame)? {
         return Err(ObserverError::Unauthenticated(
@@ -1199,8 +1131,6 @@ fn decode_payload(payload: &[u8]) -> Result<TechnologyCanvasFrame, ObserverError
     Ok(frame)
 }
 
-/// Production-facing decoder. Structural decoding remains available for
-/// dormant fixtures, but authenticated consumers must use this entrypoint.
 pub fn decode_authenticated_payload(
     payload: &[u8],
 ) -> Result<TechnologyCanvasFrame, ObserverError> {
@@ -1212,9 +1142,9 @@ pub fn decode_authenticated_payload(
     let persisted_preflight = PERSISTED_EXACT20_PREFLIGHT_RECEIPT_SHA256.ok_or(
         ObserverError::Inactive("H-A29 persisted exact20 preflight receipt is absent"),
     )?;
-    let live_contract = AUTHENTICATED_LIVE_PRODUCER_CONTRACT.ok_or(
-        ObserverError::Inactive("H-A29 authenticated live producer contract is absent"),
-    )?;
+    let live_contract = AUTHENTICATED_LIVE_PRODUCER_CONTRACT.ok_or(ObserverError::Inactive(
+        "H-A29 authenticated live producer contract is absent",
+    ))?;
     validate_live_contract(live_contract)?;
     let frame = decode_payload(payload)?;
     if frame.authority.exact20_preflight_receipt_sha256 != persisted_preflight
@@ -1234,17 +1164,10 @@ pub fn decode_authenticated_payload(
     Ok(frame)
 }
 
-/// `TCV1` is transported as a first-class domain-71 payload rather than being
-/// projected into lossy `DCT1` collection rows. Kept as a mechanical promotion
-/// check for the hook installer and recorder integration.
 pub fn d71_projection_blockers() -> [&'static str; 0] {
     []
 }
 
-/// Computes the canonical callback-to-selected-Present content manifest.
-/// `content_manifest_sha256` and `source_record_id` are excluded to avoid
-/// circularity. The selected-Present receipt/producer hashes and every portable
-/// observed canvas field are included.
 pub fn compute_content_manifest_sha256(
     frame: &TechnologyCanvasFrame,
 ) -> Result<String, ObserverError> {
@@ -1274,16 +1197,10 @@ pub fn compute_content_manifest_sha256(
     put_u32(&mut bytes, frame.selected_present_ordinal);
     put_u64(&mut bytes, frame.selected_present_qpc_ticks);
     put_u64(&mut bytes, frame.selected_present_cutoff_qpc_ticks);
-    put_u64(
-        &mut bytes,
-        frame.selected_present_engine_instance_token,
-    );
+    put_u64(&mut bytes, frame.selected_present_engine_instance_token);
     put_u32(&mut bytes, frame.boundary as u32);
     put_u32(&mut bytes, frame.controller_mode);
-    put_string(
-        &mut bytes,
-        &frame.authority.selected_present_receipt_sha256,
-    )?;
+    put_string(&mut bytes, &frame.authority.selected_present_receipt_sha256)?;
     put_string(
         &mut bytes,
         &frame.authority.selected_present_pass_identity_sha256,
@@ -1388,18 +1305,13 @@ fn nonempty(value: &str, field: &str) -> Result<(), ObserverError> {
     }
 }
 
-/// Portable authored/runtime token used for technology, folder, drawable, and
-/// final-order identities. This deliberately supports the punctuation used by
-/// exact connector identities (`edge:a->b:0`) and common mod identifiers while
-/// excluding separators, whitespace, pointer spellings, and host paths.
 fn portable_canvas_atom(value: &str, field: &str) -> Result<(), ObserverError> {
     let bytes = value.as_bytes();
     let valid = !bytes.is_empty()
         && bytes.len() <= MAX_STR
         && (bytes[0].is_ascii_alphanumeric() || bytes[0] == b'_')
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'_' | b'-' | b'.' | b'@' | b':' | b'>')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b'@' | b':' | b'>')
         })
         && !value.contains("..")
         && !looks_like_pointer(value);
@@ -1410,9 +1322,6 @@ fn portable_canvas_atom(value: &str, field: &str) -> Result<(), ObserverError> {
     }
 }
 
-/// Canonical logical hierarchy/slot path. `/` is the only separator and every
-/// component is itself a portable canvas atom; absolute, drive, UNC, empty,
-/// dot, and parent components therefore fail closed.
 fn portable_canvas_path(value: &str, field: &str) -> Result<(), ObserverError> {
     if value.len() > MAX_STR
         || value.starts_with('/')
@@ -1737,8 +1646,7 @@ mod tests {
                 target: 12_500_000,
             },
         };
-        frame.authority.content_manifest_sha256 =
-            compute_content_manifest_sha256(&frame).unwrap();
+        frame.authority.content_manifest_sha256 = compute_content_manifest_sha256(&frame).unwrap();
         frame.source_record_id = expected_source_record_id(
             &frame.owner_instance_id,
             frame.frame_hour,
@@ -1928,8 +1836,6 @@ mod tests {
             .iter()
             .find(|site| site.rva == REFRESH_COMMIT_RVA)
             .unwrap();
-        // replay_interface/re_evidence/rendering_laws/UI09/
-        // H_A29_TECHNOLOGY_CANVAS_EXACT20_RECEIPT_20260720.json
         assert_eq!(
             refresh.entry_sentinel,
             *b"\x48\x8b\xc4\x48\x89\x48\x08\x55\x53\x56\x57\x41\x54\x41\x55\x41"

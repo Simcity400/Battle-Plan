@@ -1,10 +1,9 @@
 use crate::{
     encode_lane_frame, gate_lane_frame, read_country_construction_queue_with_target_lookup,
-    read_country_railway_construction_queue, read_province_building_rows,
-    read_state_building_rows, read_state_resource_rows,
-    CountryConstructionRoot, GateReport, LaneFrame, LaneMemory, ProvinceRoot, StateRoot,
-    TargetStateLookup, SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE, SOURCE_FLAG_DLL_NATIVE,
-    SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE, SOURCE_FLAG_SHARED_COUNTRY_ROOTS,
+    read_country_railway_construction_queue, read_province_building_rows, read_state_building_rows,
+    read_state_resource_rows, CountryConstructionRoot, GateReport, LaneFrame, LaneMemory,
+    ProvinceRoot, StateRoot, TargetStateLookup, SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE,
+    SOURCE_FLAG_DLL_NATIVE, SOURCE_FLAG_HEALTHY_LEVEL_CANDIDATE, SOURCE_FLAG_SHARED_COUNTRY_ROOTS,
     SOURCE_FLAG_SHARED_MAP_TOPOLOGY, STATUS_PARTIAL_DATA,
 };
 
@@ -98,9 +97,6 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
         }
         match read_country_railway_construction_queue(mem, roots.module_base, root.clone()) {
             Some(mut read) => {
-                // Reuse the existing D48 partial cause: a rejected railway row
-                // is an uncertain construction-queue omission and must not be
-                // allowed to clear prior fold state.
                 stats.skipped_construction_rows = stats
                     .skipped_construction_rows
                     .saturating_add(read.skipped_rows);
@@ -198,9 +194,6 @@ pub fn collect_domain48_frame<M: LaneMemory>(mem: &M, roots: CollectorRoots) -> 
 fn badge_construction_target_tuple_unavailable(rows: &mut [crate::ConstructionQueueRow]) {
     for row in rows {
         row.target_state_id = None;
-        // Location and scope are one promoted target tuple with the state
-        // join. Retaining either half while globally badging the join
-        // unavailable creates a self-contradictory wire row.
         row.target_location_id = None;
         row.target_scope = None;
     }

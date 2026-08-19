@@ -1,6 +1,4 @@
 //! The leaf's own suite. Two jobs: prove the walk and the encoder are generated
-//! from ONE table, and pin the bytes that table implies against a hand-written
-//! layout so a mistake both sides make is still caught.
 
 use alloc::vec::Vec;
 
@@ -10,8 +8,6 @@ use crate::{
     TokenStep, Violation, ViolationKind, HEADER_LEN, KNOWN_FLAGS, MAX_TOKEN_LEN, SCALAR_FIELDS,
     SCALAR_OFFSETS, STRING_BLOCK_OFFSET, TOKEN_FIELDS,
 };
-
-// --- Helpers ----------------------------------------------------------------
 
 fn walk(payload: &[u8]) -> Result<(u32, [u32; 5], Vec<(Field, Vec<u8>)>), Violation> {
     let header = read_header(payload)?;
@@ -28,14 +24,9 @@ fn walk(payload: &[u8]) -> Result<(u32, [u32; 5], Vec<(Field, Vec<u8>)>), Violat
     Ok((header.presence, scalars.words(), tokens))
 }
 
-/// Every representable shape of the payload, handwritten. The drift-killer
-/// asserts this covers every declared field, so a ninth field that nothing here
-/// exercises fails the suite rather than passing it silently.
 fn representable_headers() -> Vec<SessionHeader<'static>> {
     let mut out = Vec::new();
-    // nothing carried
     out.push(SessionHeader::default());
-    // every field carried
     out.push(SessionHeader {
         player_tag_db_id: Some(7),
         dlcs: Some(0x0000_00ff),
@@ -46,7 +37,6 @@ fn representable_headers() -> Vec<SessionHeader<'static>> {
         cosmetic_tag: Some("GER"),
         version: Some("1.19.2"),
     });
-    // one field at a time, so every flag appears alone
     out.push(SessionHeader {
         player_tag_db_id: Some(1),
         ..SessionHeader::default()
@@ -82,17 +72,7 @@ fn representable_headers() -> Vec<SessionHeader<'static>> {
     out
 }
 
-// --- The drift-killer --------------------------------------------------------
-
-/// kills: a declared d68 field written by the encoder and not delimited by the
-/// walk, or delimited and not written; a scalar offset the encoder and the walk
-/// disagree about; a token order the two disagree about; and a ninth field that
-/// no fixture exercises.
-///
-/// The mechanism is `Field::ALL`: the flag mask, the scalar offsets, the token
 /// order, `KNOWN_FLAGS`, the walk and the encoder are all generated from that
-/// one table by exhaustive `match`es with no wildcard arm, and all four
-/// consuming sites also match on `Field` with no wildcard.
 #[test]
 fn every_declared_field_is_written_and_delimited_and_the_payload_tiles_exactly() {
     let headers = representable_headers();
@@ -102,12 +82,9 @@ fn every_declared_field_is_written_and_delimited_and_the_payload_tiles_exactly()
         let payload = encode_payload(header, 1234, 0).expect("fixtures are in range");
         let (presence, words, tokens) = walk(&payload).expect("the encoder's bytes walk");
 
-        // 1. the presence word the encoder wrote is the one the walk reads back
         assert_eq!(presence, header.presence(), "presence round-trip");
         covered |= presence;
 
-        // 2. every scalar field's word is at the offset the table declares, and
-        //    an absent one packs zero
         for (i, field) in SCALAR_FIELDS.iter().copied().enumerate() {
             let expected = match field {
                 Field::Player => header.player_tag_db_id,
@@ -132,8 +109,6 @@ fn every_declared_field_is_written_and_delimited_and_the_payload_tiles_exactly()
             );
         }
 
-        // 3. every token field is delimited exactly once, in wire order, with
-        //    the bytes the producer was handed
         assert_eq!(tokens.len(), TOKEN_FIELDS.len(), "token count");
         for (i, field) in TOKEN_FIELDS.iter().copied().enumerate() {
             let expected = match field {
@@ -160,9 +135,6 @@ fn every_declared_field_is_written_and_delimited_and_the_payload_tiles_exactly()
         }
     }
 
-    // 4. the fixtures exercised every declared field. Without this, a ninth
-    //    field with a `None` default would be walked by nobody and every
-    //    assertion above would still pass.
     assert_eq!(
         covered, KNOWN_FLAGS,
         "the fixtures do not cover every declared presence flag"
@@ -177,8 +149,6 @@ fn known_flags_is_exactly_the_declared_table() {
         mask |= field.flag();
     }
     assert_eq!(mask, KNOWN_FLAGS);
-    // Eight fields, eight contiguous bits from zero -- the shape every reader's
-    // `presence & !KNOWN_FLAGS` rule is written against.
     assert_eq!(KNOWN_FLAGS, 0b1111_1111);
 }
 
@@ -199,23 +169,19 @@ fn the_two_field_lists_partition_the_table() {
     assert_eq!(seen, all, "every field is in exactly one list");
 }
 
-// --- Byte goldens ------------------------------------------------------------
-//
-// A round-trip test cannot catch a mistake BOTH sides make: widen the token
-// length prefix from two bytes to four in the encoder AND in the cursor and
-// every round-trip above still passes. These bytes are written out from the
-// documented layout, not produced by the crate.
-
 #[test]
 fn the_header_bytes_are_the_bytes_the_layout_says() {
-    let payload = encode_payload(&SessionHeader::default(), 0x0102_0304_0506_0708, 0x0000_2000)
-        .expect("no tokens");
+    let payload = encode_payload(
+        &SessionHeader::default(),
+        0x0102_0304_0506_0708,
+        0x0000_2000,
+    )
+    .expect("no tokens");
     assert_eq!(
         &payload[0..HEADER_LEN],
         &[
-            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, // elapsed_wall_ms u64 le
-            0x00, 0x00, 0x00, 0x00, // presence u32 le -- nothing carried
-            0x00, 0x20, 0x00, 0x00, // status_flags u32 le
+            0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20,
+            0x00, 0x00,
         ]
     );
     let header = read_header(&payload).expect("header");
@@ -242,14 +208,10 @@ fn the_scalar_block_bytes_are_the_bytes_the_layout_says() {
     assert_eq!(
         &payload[HEADER_LEN..STRING_BLOCK_OFFSET],
         &[
-            0x01, 0x00, 0x00, 0x00, // +16 player_tag_db_id
-            0x02, 0x00, 0x00, 0x00, // +20 dlcs
-            0x03, 0x00, 0x00, 0x00, // +24 start_date_raw
-            0x04, 0x00, 0x00, 0x00, // +28 save_version
-            0x05, 0x00, 0x00, 0x00, // +32 session
+            0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00,
+            0x00, 0x00, 0x05, 0x00, 0x00, 0x00,
         ]
     );
-    // the five scalar flags, and only those
     assert_eq!(crate::u32_at(&payload, 8), 0b0001_1111);
 }
 
@@ -258,7 +220,6 @@ fn the_token_block_bytes_are_the_bytes_the_layout_says() {
     let payload = encode_payload(
         &SessionHeader {
             ideology: Some("ab"),
-            // cosmetic_tag absent -- still writes its zero prefix
             version: Some("c"),
             ..SessionHeader::default()
         },
@@ -268,11 +229,7 @@ fn the_token_block_bytes_are_the_bytes_the_layout_says() {
     .expect("short tokens");
     assert_eq!(
         &payload[STRING_BLOCK_OFFSET..],
-        &[
-            0x02, 0x00, b'a', b'b', // ideology: u16 len 2 then the bytes
-            0x00, 0x00, // cosmetic_tag: absent, a zero-length prefix STILL WRITTEN
-            0x01, 0x00, b'c', // version
-        ]
+        &[0x02, 0x00, b'a', b'b', 0x00, 0x00, 0x01, 0x00, b'c',]
     );
     assert_eq!(payload.len(), STRING_BLOCK_OFFSET + 9);
     assert_eq!(
@@ -283,14 +240,11 @@ fn the_token_block_bytes_are_the_bytes_the_layout_says() {
 
 #[test]
 fn an_empty_payload_of_absent_fields_is_exactly_forty_two_bytes() {
-    // 16 header + 20 scalars + three two-byte zero prefixes.
     let payload = encode_payload(&SessionHeader::default(), 0, 0).expect("no tokens");
     assert_eq!(payload.len(), HEADER_LEN + 20 + 6);
     assert_eq!(payload.len(), 42);
     assert!(walk(&payload).is_ok());
 }
-
-// --- Refusals ----------------------------------------------------------------
 
 #[test]
 fn a_short_header_refuses_with_its_operands() {
@@ -311,8 +265,6 @@ fn a_short_header_refuses_with_its_operands() {
 #[test]
 fn a_header_only_payload_has_no_scalar_block() {
     let payload = [0u8; HEADER_LEN];
-    // the header itself still reads -- this is the early status exit the fold
-    // depends on
     assert!(read_header(&payload).is_ok());
     let err = read_scalar_block(&payload).expect_err("no scalars");
     assert_eq!(
@@ -331,7 +283,6 @@ fn a_header_only_payload_has_no_scalar_block() {
 #[test]
 fn a_truncated_token_prefix_names_its_field() {
     let mut payload = encode_payload(&SessionHeader::default(), 0, 0).expect("no tokens");
-    // drop the last token's prefix by one byte
     payload.truncate(payload.len() - 1);
     let err = walk(&payload).expect_err("truncated");
     assert_eq!(
@@ -347,8 +298,6 @@ fn a_truncated_token_prefix_names_its_field() {
 #[test]
 fn a_token_longer_than_the_ceiling_refuses_before_the_bytes_bound() {
     let mut payload = encode_payload(&SessionHeader::default(), 0, 0).expect("no tokens");
-    // claim MAX+1 bytes for `ideology` without supplying them: the ceiling rule
-    // must win, because that is the order every reader checks in
     let len = (MAX_TOKEN_LEN + 1) as u16;
     payload[STRING_BLOCK_OFFSET..STRING_BLOCK_OFFSET + 2].copy_from_slice(&len.to_le_bytes());
     let err = walk(&payload).expect_err("too long");
@@ -443,17 +392,13 @@ fn the_cursor_reports_end_repeatedly_and_never_moves_past_it() {
     let payload = encode_payload(&SessionHeader::default(), 0, 0).expect("no tokens");
     let mut cursor = TokenCursor::new();
     for _ in 0..TOKEN_FIELDS.len() {
-        assert!(matches!(
-            cursor.next(&payload),
-            Ok(TokenStep::Token { .. })
-        ));
+        assert!(matches!(cursor.next(&payload), Ok(TokenStep::Token { .. })));
     }
     let at = match cursor.next(&payload) {
         Ok(TokenStep::End(at)) => at,
         other => panic!("expected End, got {other:?}"),
     };
     assert_eq!(at, payload.len());
-    // asking again is not a misuse state: it is the same answer
     assert_eq!(cursor.next(&payload), Ok(TokenStep::End(at)));
     assert_eq!(cursor.offset(), at);
 }

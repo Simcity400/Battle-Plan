@@ -1,19 +1,9 @@
-//! The write side of domain 24's payload.
-//!
-//! The producer used to build these bytes itself
-//! (`attach_log.rs::compact_weather_data_payload`), which is what made the four
-//! transcriptions four INDEPENDENT statements of the layout rather than one
-//! statement and three readings. It now goes through here, so the header's word
 //! offsets and both row layouts are generated from the same tables the readers
-//! walk with.
 
 use alloc::vec::Vec;
 
-use crate::{
-    HeaderWord, ProvinceField, RegionField, HEADER_LEN, PROVINCE_ROW_LEN, REGION_ROW_LEN,
-};
+use crate::{HeaderWord, ProvinceField, RegionField, HEADER_LEN, PROVINCE_ROW_LEN, REGION_ROW_LEN};
 
-/// One frame's header words, as the producer has them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HeaderWords {
     pub region_count: u32,
@@ -29,10 +19,6 @@ pub struct HeaderWords {
 }
 
 impl HeaderWords {
-    /// This header word's value.
-    ///
-    /// Exhaustive, no wildcard: a new header word does not compile until the
-    /// producer has decided what to write into it.
     pub const fn word(&self, which: HeaderWord) -> u32 {
         match which {
             HeaderWord::RegionCount => self.region_count,
@@ -49,7 +35,6 @@ impl HeaderWords {
     }
 }
 
-/// One strategic-region row, as the producer has it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegionRow {
     pub region_id: u32,
@@ -71,14 +56,11 @@ impl RegionRow {
             RegionField::NextWeatherChangeRaw => self.next_weather_change_raw,
             RegionField::ActiveModifierCount => self.active_modifier_count,
             RegionField::Intensity => self.intensity,
-            // The reserved word is not a field the producer carries: every
-            // reader refuses a non-zero one, so there is nothing to carry.
             RegionField::Reserved => 0,
         }
     }
 }
 
-/// One province row, as the producer has it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProvinceRow {
     pub province_id: u32,
@@ -105,33 +87,22 @@ impl ProvinceRow {
     }
 }
 
-/// Write the header's bytes.
-///
-/// `region_count` / `province_count` are taken from `words`, NOT from the row
-/// slices: the producer owns the relationship between the counts it declares
-/// and the rows it emits, and a packer that silently corrected a mismatch would
-/// hide exactly the torn-payload shape the readers exist to catch.
 fn push_header(payload: &mut Vec<u8>, words: &HeaderWords, elapsed_wall_ms: u64) {
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     // `+8` onwards, in offset order, generated from the table.
     let mut written = 8usize;
     for which in HeaderWord::ALL {
-        debug_assert_eq!(which.offset(), written, "HeaderWord::ALL is not in offset order");
+        debug_assert_eq!(
+            which.offset(),
+            written,
+            "HeaderWord::ALL is not in offset order"
+        );
         payload.extend_from_slice(&words.word(which).to_le_bytes());
         written += 4;
     }
     debug_assert_eq!(payload.len(), HEADER_LEN);
 }
 
-/// Encode a whole d24 DATA payload.
-///
-/// The two row streams are `ExactSizeIterator`s, not slices, so a producer that
-/// holds its rows in some other shape streams them straight in instead of
-/// collecting a temporary `Vec` first. At the declared 65,536-province envelope
-/// that temporary was about 1.75 MiB per payload, on a path that runs every
-/// sweep (Codex review round 2, finding 3; `d13_grammar` took the same fix).
-/// The sizes are still known before the first byte is written, so the capacity
-/// reservation is unchanged.
 pub fn encode_payload(
     words: &HeaderWords,
     elapsed_wall_ms: u64,

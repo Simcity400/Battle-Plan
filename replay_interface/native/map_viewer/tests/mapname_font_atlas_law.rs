@@ -1,31 +1,5 @@
-//! Shipped glyph-atlas laws (byte/float-exact).
-//!
-//! These map-label properties are pure shipped-file laws about the
-//! country-name font `gfx/fonts/hoi_mapfont4.dds` / `.fnt`. This gate locks
-//! them against the shipped bytes (skips when the vanilla install is absent, as
-//! the other label gates do — captures/rasters validate, they never drive).
-//!
-//! 1. **Per-glyph advance table source + NO kerning.** The engine advances the
-//!    label pen by the AngelCode BMFont `xadvance` field of each `char` line in
-//!    `hoi_mapfont4.fnt`; the font ships **zero** `kerning` pairs, so there is
-//!    no kerning term to port. The apparent "V->I negative kerning" sub-0.4-wu
-//!    residual is the per-glyph `xoffset` placement
-//!    delta (BMFont draws each quad at `pen + xoffset`), not a kerning law —
-//!    computed here from the shipped metrics (I.xoffset - V.xoffset = 4 font
-//!    px). Closes the "kerning table / glyph advance source" residual as FILE.
-//!
 //! 2. **Glyph atlas mip chain is authored + shipped, not runtime-generated.**
-//!    `hoi_mapfont4.dds` is `B8G8R8A8_UNORM` (DXGI fmt 87) and ships a complete
-//!    4-level mip chain (2048x1024 -> 256x128); the file size equals the 128-B
-//!    header plus exactly four mips. The engine binds all four (frame4700 SRV
-//!    mips=4) and samples trilinear + `MipMapLodBias=-0.4` (`mapname.shader`);
-//!    the replay uploads the shipped bytes verbatim (`dds::decode_mip_chain_bytes`
-//!    / `FontPage::mips`). A runtime 2x2 box `GenerateMips` is REFUTED as the
-//!    source: box-downsampling mip 0 does NOT reproduce the shipped mip 1
-//!    (mean abs error ~4.9/255, only ~54% of bytes exact), so the shipped chain
-//!    is an offline higher-order (Kaiser/Lanczos-class) authoring that must be
 //!    uploaded as-is, not regenerated. Closes the "glyph atlas mips" residual
-//!    as FILE.
 
 const FONT_FNT: &str = "gfx/fonts/hoi_mapfont4.fnt";
 const FONT_DDS: &str = "gfx/fonts/hoi_mapfont4.dds";

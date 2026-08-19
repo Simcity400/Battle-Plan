@@ -1,9 +1,3 @@
-//! Collector-side domain registry.
-//!
-//! Descriptor types, the assigned-domain table, and validation live in the
-//! shared `compact_contract` crate; this module only keeps the
-//! collector-specific runtime registry and lane-module trait.
-
 pub use compact_contract::{
     assigned_descriptor_by_id, assigned_descriptor_by_name, descriptor_names, domain,
     validate_descriptor, CompactDomainId, CompactDomainStatus, DomainRegistryError,
@@ -99,8 +93,6 @@ mod tests {
 
     impl CollectorDomainModule for TestLaneModule {
         fn descriptor(&self) -> CollectorDomainDescriptor {
-            // Deliberately outside the active production id sequence so this exercises
-            // registering a brand-new lane on top of the builtins.
             domain(
                 999,
                 "test_lane_live",
@@ -198,9 +190,6 @@ mod tests {
 
     #[test]
     fn country_core_scalars_lane_schedules() {
-        // W1: per-country core-scalars lane (domain 63), distinct from the
-        // reserved economy-counter badge lane (domain 58), is part of the
-        // mandatory production-complete profile.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("country_core_scalars_live"),
@@ -271,7 +260,10 @@ mod tests {
             assigned_descriptor_by_name("decision_panel_live").map(|d| d.id),
             Some(87)
         );
-        assert_eq!(registry.id_for_scheduled_name("sunk_ship_history_live"), Some(86));
+        assert_eq!(
+            registry.id_for_scheduled_name("sunk_ship_history_live"),
+            Some(86)
+        );
         assert_eq!(
             registry.by_id(86).map(|descriptor| descriptor.status),
             Some(CompactDomainStatus::ProductionComplete)
@@ -293,7 +285,10 @@ mod tests {
             assigned_descriptor_by_name("national_focus_presentation_live").map(|d| d.id),
             Some(89)
         );
-        assert_eq!(registry.id_for_scheduled_name("national_focus_presentation_live"), Some(89));
+        assert_eq!(
+            registry.id_for_scheduled_name("national_focus_presentation_live"),
+            Some(89)
+        );
         assert_eq!(
             registry.by_id(89).map(|descriptor| descriptor.status),
             Some(CompactDomainStatus::ProductionComplete)
@@ -324,7 +319,10 @@ mod tests {
             assigned_descriptor_by_name("raid_instances_live").map(|d| d.id),
             Some(91)
         );
-        assert_eq!(registry.id_for_scheduled_name("raid_instances_live"), Some(91));
+        assert_eq!(
+            registry.id_for_scheduled_name("raid_instances_live"),
+            Some(91)
+        );
         assert_eq!(
             registry.by_id(91).map(|descriptor| descriptor.status),
             Some(CompactDomainStatus::ProductionComplete)
@@ -333,9 +331,6 @@ mod tests {
 
     #[test]
     fn w3_delayed_events_and_program_lanes_schedule() {
-        // W3: rooted per-country delayed events (domain 64) and owner-joined
-        // program facilities (domain 65). Both are mandatory
-        // production-complete domains.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("delayed_events_live"),
@@ -357,9 +352,6 @@ mod tests {
 
     #[test]
     fn w4_occupation_state_extras_lane_schedules() {
-        // W4: rooted per-occupied-state occupation extras (domain 66):
-        // per-state occupation law FNV token + garrison manpower source tag.
-        // Production-complete; keeps the forbidden d52 lane byte-identical.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("occupation_state_extras_live"),
@@ -373,10 +365,6 @@ mod tests {
 
     #[test]
     fn w5_country_dynamic_modifiers_lane_schedules() {
-        // W5: rooted per-country dynamic-modifier id set (domain 67), the
-        // country's OWN active dynamic-modifier definition ids off
-        // CCountry+0xE58. Variable-length per-country string set;
-        // production-complete.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("country_dynamic_modifiers_live"),
@@ -390,10 +378,6 @@ mod tests {
 
     #[test]
     fn w6_session_header_and_tech_sharing_groups_lanes_schedule() {
-        // W6: rooted top-level session header (domain 68) and tech-sharing
-        // groups (domain 69). Both are mandatory production-complete domains,
-        // distinct from the optional d57 session_multiplayer_metadata_live
-        // companion whose CID1 M3 multiplayer scope remains deferred.
         let registry = CollectorDomainRegistry::with_builtin_modules().unwrap();
         assert_eq!(
             registry.id_for_scheduled_name("session_header_live"),
@@ -411,7 +395,6 @@ mod tests {
             registry.by_id(69).map(|d| d.status),
             Some(CompactDomainStatus::ProductionComplete)
         );
-        // d57 stays a distinct lane (not clobbered by the new session header).
         assert_eq!(
             registry.id_for_scheduled_name("session_multiplayer_metadata_live"),
             Some(57)
@@ -448,7 +431,6 @@ mod tests {
             registry.by_id(999).map(|d| d.status),
             Some(CompactDomainStatus::ActiveIntegration)
         );
-        // The real domain 60 builtin stays intact alongside the test lane.
         assert_eq!(
             registry.id_for_scheduled_name("capitulation_war_state_live"),
             Some(60)

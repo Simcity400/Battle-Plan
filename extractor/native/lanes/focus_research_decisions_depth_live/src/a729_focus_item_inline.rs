@@ -1,27 +1,4 @@
-//! Exact-a729 mid-function instrumentation for A31 transient leaves.
-//!
-//! MinHook is appropriate for the six function-entry owners in the sibling
-//! module, but neither of these boundaries is a function entry.  This module
-//! therefore replaces only two complete, instruction-aligned sequences:
-//!
-//! * `0x141bb636e`: `mov edx,esi; mov rcx,rax`, immediately before the final
-//!   percentage widget call; and
-//! * `0x141379e5f`: the direct `call 0x140b35990` which receives the measured
-//!   joint-view country DB-id pointer in `R8`.
-//!
-//! Both sites are byte-gated and use rel32 calls to near relays.  The display
-//! relay restores the two displaced instructions before returning to the
 //! original indirect call.  The joint relay tail-jumps to an ABI-compatible
-//! Rust detour which invokes the original target exactly once.
-//!
-//! Thread exclusion is NOT this module's own.  Because neither site is a
-//! function entry, MinHook cannot own these patches -- but the freeze that has
-//! to hold across them is the same freeze every other patch in the workspace
-//! takes, so `write_code` below calls [`inline_detour::freeze_process`] and
-//! asks the returned guard about the range it is about to rewrite.  The
-//! hand-rolled suspender that used to live here read a broken `Thread32Next`
-//! as the end of the thread list and enumerated once, so it could certify a
-//! truncated list and could not see a thread created after its snapshot.
 
 #![cfg(windows)]
 
@@ -148,9 +125,6 @@ pub fn install(
         joint_patch,
     };
     if let Err(error) = unsafe { write_code(joint_site, &JOINT_ORIGINAL, &joint_patch) } {
-        // A protection-restore or instruction-cache failure can be reported
-        // after bytes were copied. Publish the relay identity before cleanup
-        // so no uncertain live patch can ever lose its restoration route.
         *slot = Some(installed);
         drop(slot);
         return Err(cleanup_failed_install(error));
@@ -164,13 +138,14 @@ pub fn install(
     Ok(())
 }
 
-/// Restore both exact sites.  The caller closes semantic admission and waits
 /// for the shared callback counter to quiesce before calling `release_relays`.
 pub fn restore_sites() -> Result<(), String> {
     let slot = INSTALLED
         .lock()
         .map_err(|_| "A31 inline install mutex poisoned")?;
-    let Some(installed) = *slot else { return Ok(()) };
+    let Some(installed) = *slot else {
+        return Ok(());
+    };
     let display = unsafe {
         restore_site(
             installed.display_site,
@@ -199,16 +174,24 @@ pub fn release_relays() -> Result<(), String> {
     let mut slot = INSTALLED
         .lock()
         .map_err(|_| "A31 inline install mutex poisoned")?;
-    let Some(installed) = *slot else { return Ok(()) };
-    verify_bytes(installed.display_site, &DISPLAY_ORIGINAL, "restored display-percent")?;
-    verify_bytes(installed.joint_site, &JOINT_ORIGINAL, "restored joint-country")?;
+    let Some(installed) = *slot else {
+        return Ok(());
+    };
+    verify_bytes(
+        installed.display_site,
+        &DISPLAY_ORIGINAL,
+        "restored display-percent",
+    )?;
+    verify_bytes(
+        installed.joint_site,
+        &JOINT_ORIGINAL,
+        "restored joint-country",
+    )?;
     *slot = None;
-    let display_ok = unsafe {
-        VirtualFree(installed.display_relay as *mut c_void, 0, MEM_RELEASE)
-    } != 0;
-    let joint_ok = unsafe {
-        VirtualFree(installed.joint_relay as *mut c_void, 0, MEM_RELEASE)
-    } != 0;
+    let display_ok =
+        unsafe { VirtualFree(installed.display_relay as *mut c_void, 0, MEM_RELEASE) } != 0;
+    let joint_ok =
+        unsafe { VirtualFree(installed.joint_relay as *mut c_void, 0, MEM_RELEASE) } != 0;
     if display_ok && joint_ok {
         Ok(())
     } else {
@@ -246,7 +229,9 @@ fn verify_bytes(address: usize, expected: &[u8], label: &str) -> Result<(), Stri
     if actual == expected {
         Ok(())
     } else {
-        Err(format!("A31 exact-a729 {label} bytes differ at {address:#x}"))
+        Err(format!(
+            "A31 exact-a729 {label} bytes differ at {address:#x}"
+        ))
     }
 }
 
@@ -286,15 +271,7 @@ unsafe fn publish_relay(relay: *mut u8, body: &[u8]) -> Result<(), String> {
     }
     unsafe { ptr::copy_nonoverlapping(body.as_ptr(), relay, body.len()) };
     let mut old = 0;
-    if unsafe {
-        VirtualProtect(
-            relay.cast(),
-            RELAY_CAPACITY,
-            PAGE_EXECUTE_READ,
-            &mut old,
-        )
-    } == 0
-    {
+    if unsafe { VirtualProtect(relay.cast(), RELAY_CAPACITY, PAGE_EXECUTE_READ, &mut old) } == 0 {
         return Err("A31 relay protection change failed".into());
     }
     if unsafe { FlushInstructionCache(GetCurrentProcess(), relay.cast(), body.len()) } == 0 {
@@ -309,30 +286,10 @@ unsafe fn write_code(address: usize, expected: &[u8], replacement: &[u8]) -> Res
     }
     verify_bytes(address, expected, "inline pre-write")?;
 
-    // Stop the world before touching live code, and keep it stopped until the
-    // bytes and the instruction cache are both consistent again. Writing these
-    // five bytes underneath running engine threads is a torn-instruction race:
-    // a thread inside the sequence resumes into a mix of old and new bytes.
-    //
-    // The freeze is the workspace's shared one. This module used to roll its
-    // own, which read a broken `Thread32Next` as the end of the thread list and
-    // enumerated exactly once, so a thread created after the snapshot was
-    // patched around while it ran. `inline_detour::freeze_process` refuses a
-    // truncated enumeration and iterates to a fixed point instead.
     let suspended = inline_detour::freeze_process()
         .map_err(|refusal| format!("A31 inline patch refused: {refusal}"))?;
 
-    // NOTHING BELOW THIS LINE UNTIL `drop(suspended)` MAY ALLOCATE.
-    //
-    // Every other thread of the game is stopped here, so a call into the
-    // allocator can wait on a lock one of them holds with nobody left to
     // release it -- a permanent hang of the player's game, not a slow path.
-    // This function used to build FIVE `String`s in here, all of them on
-    // failure paths, which is the worst place for it: the hang would happen
-    // exactly when something had already gone wrong. What the window produces
-    // now is a `&'static str` reason and a copied refusal; the message is built
-    // after the resume. `frozen_window_audit_tests` in this crate's `lib.rs`
-    // fails if that changes.
     let mut freeze_refusal = None;
     let mut refusal: Option<&'static str> = None;
     match suspended.any_instruction_pointer_in(&[(address, address + replacement.len())]) {
@@ -360,12 +317,7 @@ unsafe fn write_code(address: usize, expected: &[u8], replacement: &[u8]) -> Res
                 };
                 let mut ignored = 0;
                 if unsafe {
-                    VirtualProtect(
-                        address as *mut c_void,
-                        replacement.len(),
-                        old,
-                        &mut ignored,
-                    )
+                    VirtualProtect(address as *mut c_void, replacement.len(), old, &mut ignored)
                 } == 0
                 {
                     refusal = Some("protection restore failed");
@@ -413,21 +365,19 @@ fn absolute_jump_body(destination: usize) -> Vec<u8> {
 
 fn display_relay_body(callback: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(128);
-    // Entry is reached by CALL, so subtracting 0x78 both creates the Windows
-    // x64 shadow space and realigns RSP for the Rust callback.
     out.extend_from_slice(&[0x48, 0x83, 0xec, 0x78]);
-    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, 0x20]); // save rax
-    out.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x28]); // save rcx
-    out.extend_from_slice(&[0x48, 0x89, 0x54, 0x24, 0x30]); // save rdx
-    out.extend_from_slice(&[0x4c, 0x89, 0x44, 0x24, 0x38]); // save r8
-    out.extend_from_slice(&[0x4c, 0x89, 0x4c, 0x24, 0x40]); // save r9
-    out.extend_from_slice(&[0x4c, 0x89, 0x54, 0x24, 0x48]); // save r10
-    out.extend_from_slice(&[0x4c, 0x89, 0x5c, 0x24, 0x50]); // save r11
-    out.extend_from_slice(&[0x49, 0x8b, 0x8e, 0x50, 0x0f, 0, 0]); // rcx=[r14+f50]
-    out.extend_from_slice(&[0x8b, 0xd6]); // edx=esi
+    out.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, 0x20]);
+    out.extend_from_slice(&[0x48, 0x89, 0x4c, 0x24, 0x28]);
+    out.extend_from_slice(&[0x48, 0x89, 0x54, 0x24, 0x30]);
+    out.extend_from_slice(&[0x4c, 0x89, 0x44, 0x24, 0x38]);
+    out.extend_from_slice(&[0x4c, 0x89, 0x4c, 0x24, 0x40]);
+    out.extend_from_slice(&[0x4c, 0x89, 0x54, 0x24, 0x48]);
+    out.extend_from_slice(&[0x4c, 0x89, 0x5c, 0x24, 0x50]);
+    out.extend_from_slice(&[0x49, 0x8b, 0x8e, 0x50, 0x0f, 0, 0]);
+    out.extend_from_slice(&[0x8b, 0xd6]);
     out.extend_from_slice(&[0x48, 0xb8]);
     out.extend_from_slice(&(callback as u64).to_le_bytes());
-    out.extend_from_slice(&[0xff, 0xd0]); // call rax
+    out.extend_from_slice(&[0xff, 0xd0]);
     out.extend_from_slice(&[0x4c, 0x8b, 0x5c, 0x24, 0x50]);
     out.extend_from_slice(&[0x4c, 0x8b, 0x54, 0x24, 0x48]);
     out.extend_from_slice(&[0x4c, 0x8b, 0x4c, 0x24, 0x40]);
@@ -436,7 +386,6 @@ fn display_relay_body(callback: usize) -> Vec<u8> {
     out.extend_from_slice(&[0x48, 0x8b, 0x4c, 0x24, 0x28]);
     out.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, 0x20]);
     out.extend_from_slice(&[0x48, 0x83, 0xc4, 0x78]);
-    // Reproduce the displaced instructions, then return to 0x141bb6373.
     out.extend_from_slice(&[0x8b, 0xd6, 0x48, 0x8b, 0xc8, 0xc3]);
     out
 }
@@ -445,9 +394,6 @@ fn display_relay_body(callback: usize) -> Vec<u8> {
 mod suspension_tests {
     use super::*;
 
-    /// A page this test may legitimately rewrite, standing in for the game's
-    /// live code. `write_code` refuses on a byte mismatch before it freezes
-    /// anything, so the seed has to be the exact expected sequence.
     struct ScratchCode {
         base: *mut u8,
     }
@@ -482,20 +428,6 @@ mod suspension_tests {
         }
     }
 
-    /// Falsifiable, and THE guard on this module's migration: fails if
-    /// `write_code` ever rewrites live bytes without taking the shared process
-    /// freeze first.
-    ///
-    /// The observable is `inline_detour`'s per-thread freeze counter, which is
-    /// exact under concurrency where the process-wide one is not. Delete the
-    /// `inline_detour::freeze_process()` call and the count stops moving, which
-    /// fails here by name; reinstate a private suspender in this module instead
-    /// and it fails here as well, because a private suspender does not touch
-    /// that counter.
-    ///
-    /// The freeze is taken and dropped INSIDE `write_code`. Nothing is joined
-    /// or waited on while it is held, which is the rule the shared crate's own
-    /// removed ceiling test was removed for breaking.
     #[test]
     fn rewriting_code_takes_the_shared_process_freeze() {
         let scratch = ScratchCode::seeded_with(&DISPLAY_ORIGINAL);
@@ -512,7 +444,6 @@ mod suspension_tests {
         );
         assert_eq!(scratch.read(patch.len()), patch.to_vec());
 
-        // And back, so the restore path is pinned to the same freeze.
         let before = inline_detour::freeze_attempts_on_this_thread();
         unsafe { write_code(scratch.address(), &patch, &DISPLAY_ORIGINAL) }
             .expect("the restore must be patchable too");
@@ -527,12 +458,6 @@ mod suspension_tests {
         );
     }
 
-    /// Falsifiable: fails if a byte-gate mismatch is ever allowed to reach the
-    /// freeze, let alone the write.
-    ///
-    /// The pre-write verification is what makes the refusal free of side
-    /// effects; a mismatch that froze the process first would stop every game
-    /// thread to discover it had nothing to do.
     #[test]
     fn a_byte_mismatch_refuses_before_the_process_is_frozen() {
         let scratch = ScratchCode::seeded_with(&JOINT_ORIGINAL);

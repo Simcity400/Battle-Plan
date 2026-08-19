@@ -1,8 +1,4 @@
-//! GPU map renderer for the captured the game D3D11 replay path.
-//!
-//! Product map rendering must enter through a validated the game D3D11 capture. The
 //! old CPU `map_visual.rgbx` underlay and generated political SRV path are not
-//! part of this renderer.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -61,9 +57,6 @@ use crate::Result;
 
 pub(crate) const POLITICAL_COLOR_BLOCKER_BADGE: &str = "political colors BLOCKED";
 
-/// Full-screen composite shader for the captured the game D3D11 scene target.
-/// The input color comes from the captured engine pass, never from the removed
-/// CPU `map_visual` underlay.
 const CAPTURED_PASS_COMPOSITE_HLSL: &str = r#"
 #ifndef REPLAY_POSTFX_ENABLED
 #define REPLAY_POSTFX_ENABLED 1
@@ -229,26 +222,6 @@ float3 hoi4_scene_restore_full(float3 inColor) {
 }
 "#;
 
-/// GPU port of `map_viewer::bloom` (bright pass + separable blur). Every stage
-/// mirrors the CPU law, which itself is cited from the shipped shaders:
-///   * bright pass / 2x box downsample + knee: `gfx/FX/downsample.shader:62-73`
-///     (and `bloom.rs::bright_pass_downsample`).
-///   * separable linear-sampled Gaussian: `gfx/FX/bloom.shader` PixelShader
-///     (center tap + 4 symmetric tap pairs; `bloom.rs::blur_pass`).
-/// The kernel weights/offsets and knee constants come from the files-first
-/// resolver (`BloomBlurKernel::from_gaussian` + `BloomParams`), uploaded here.
-///
-/// PROVENANCE (R14/R15 C6a): this is HAND-WRITTEN HLSL that mirrors the
-/// shipped algorithms — it is NOT compiled from resolver-loaded shader source.
-/// The `LUMINANCE_VECTOR` (constants.fxh:119) and the `0.5` knee denominator
-/// (downsample.shader) are hard-coded in the string below rather than read
-/// through the resolver; only threshold, emissive strength, inverse sizes, and
-/// the blur-kernel law are uploaded dynamically. Reachability: this shader
-/// only runs on the legacy `MapRenderer::render` path — the non-authenticated
-/// debug branch (`app.rs`) and the headless `dump_debug_frame` route
-/// (`headless.rs`), which `reject_recording_dump_debug_bundle` forbids for
-/// production recordings. It is a debug/evidence surface, not a production
-/// render law.
 const RESTORE_BLOOM_HLSL: &str = r#"
 Texture2D<float4> BloomSource : register(t0);
 SamplerState BloomSampler : register(s0);
@@ -341,21 +314,15 @@ float4 bloom_blur_ps(BloomVsOut input) : SV_Target {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BloomBrightConstants {
-    /// x = BRIGHT_THRESHOLD, y = EMISSIVE_BLOOM_STRENGTH, z/w = 1 / MainScene
-    /// width/height (source-texel size for the 2x2 box tap centers).
     threshold_emissive_inv_size: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct BloomBlurConstants {
-    /// xy = axis (1,0 horizontal / 0,1 vertical); zw = 1 / blur-buffer size.
     axis_inv_size: [f32; 4],
-    /// x = center-tap weight (Weight0); yzw unused.
     weight0: [f32; 4],
-    /// Per-pair combined weights (Weights[0..3]).
     weights: [f32; 4],
-    /// Per-pair fractional sample offsets in texels (Offsets[0..3]).
     offsets: [f32; 4],
 }
 
@@ -373,29 +340,11 @@ struct RestoreFullPostfx {
     evidence_found: bool,
     constants: RestorePostfxConstants,
     color_cube_rgba8: Vec<u8>,
-    /// Files-first bloom law from the same exact six-scalar height/region
-    /// blend as the LUT and MiddleGrey.
-    /// `Some` iff `enabled`; the render composites `bloom.rgb + scene` before
-    /// exposure/tonemap/LUT per restorescene.shader:208-223.
     bloom: Option<RestoreBloomLaw>,
-    /// `MinHdr_MaxHdr` clamp bounds after exact per-volume inheritance and
-    /// height/region blending (NGraphics defines are the final fallback).
-    /// `Some` iff `enabled`; drives
-    /// the per-frame luminance-adaptation reduction that recomputes exposure
-    /// from the rendered scene (`downsample_luminance.shader` chain, ported in
-    /// `map_viewer::luminance_law`). When present the composite pass replaces
-    /// the file-grade's steady-state-floor AvgLum with the measured value.
     luminance_bounds: Option<LuminanceClampBounds>,
-    /// The files-derived `MiddleGrey` the exposure divides by. Kept so the
-    /// per-frame recompose can rebuild `exposure = [MiddleGrey, measured_avglum,
-    /// gate]` without re-reading the file grade.
     middle_grey: f32,
 }
 
-/// The resolved, files-first bloom parameters + derived separable-blur kernel.
-/// The three per-volume fields come from the exact six-scalar grade blend;
-/// emissive strength remains the resolver-loaded NGraphics global. No captured
-/// texture is a runtime input.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct RestoreBloomLaw {
     params: BloomParams,
@@ -439,21 +388,12 @@ struct RestoreGradeCpuUpdate {
     luminance_bounds_changed: bool,
 }
 
-/// GPU resources for the files-first bloom chain: a half-resolution bright-pass
-/// target and a ping-pong pair for the two separable blur passes, plus the
-/// bright-pass / blur shaders and the kernel constant buffer. All are created
-/// only when the files-first restore grade is enabled; the internal disabled
-/// composer path never allocates or binds any of them.
 struct RestoreBloomGpu {
     half_width: u32,
     half_height: u32,
-    /// Bright-pass output (MainScene/2). Also the vertical-blur output that the
-    /// composite samples as RestoreBloom. Held to keep the texture alive; the
-    /// RTV/SRV are the live handles.
     _bright_texture: ComPtr<ID3D11Texture2D>,
     bright_rtv: ComPtr<ID3D11RenderTargetView>,
     bright_srv: ComPtr<ID3D11ShaderResourceView>,
-    /// Ping-pong scratch: horizontal-blur output, then vertical-blur input.
     _scratch_texture: ComPtr<ID3D11Texture2D>,
     scratch_rtv: ComPtr<ID3D11RenderTargetView>,
     scratch_srv: ComPtr<ID3D11ShaderResourceView>,
@@ -461,10 +401,8 @@ struct RestoreBloomGpu {
     bright_ps: ComPtr<ID3D11PixelShader>,
     blur_vs: ComPtr<ID3D11VertexShader>,
     blur_ps: ComPtr<ID3D11PixelShader>,
-    /// Horizontal-pass constants (Axis=1) and vertical-pass constants (Axis=0).
     blur_cb_horizontal: ComPtr<ID3D11Buffer>,
     blur_cb_vertical: ComPtr<ID3D11Buffer>,
-    /// Bright-pass knee/threshold/emissive constants.
     bright_cb: ComPtr<ID3D11Buffer>,
 }
 
@@ -473,26 +411,11 @@ const WATER_BUNDLE_FILE: &str = "map_frame_water_pass_bundle.json";
 const RIVERS_BUNDLE_FILE: &str = "map_frame_rivers_pass_bundle.json";
 const TREES_BUNDLE_FILE: &str = "map_frame_trees_pass_bundle.json";
 
-/// TREES2: emit the trees-layer note for a loaded trees bundle.
-///
-/// The historical warning unconditionally claimed the trees pass "captured the
-/// first tree sub-draw only; missing second sub-draw pixel shader
-/// 6b77b6df9ba8f03d remains unrendered". The OFF-3 byte-exact recompiler proves
-/// 6b77b6df is `gfx/FX/tree.shader:tree_low_gfx` — the LOW_END_GFX variant of
-/// the SAME lit tree PS, mutually exclusive with the full `tree` shader by the
-/// graphics setting. Every captured session binds only the full-detail family;
-/// the low-gfx shader is compiled-but-unused, so there is no unrendered second
-/// sub-draw. This gates the note on real draw-binding evidence: it only calls
-/// the state a seam when a bundle genuinely binds the low-gfx PS to a draw that
-/// replay skipped (no captured session does today).
-///
 fn tree_layer_note(
     trees: &NativeD3d11TerrainBundle,
     game_resolver: Option<&GameFileResolver>,
 ) -> String {
     let Some(resolver) = game_resolver else {
-        // No resolver: cannot classify the bytecode by recompile, so keep the
-        // conservative, honest statement (identification is unavailable here).
         return "trees layer: second-tree-shader identification unavailable without a --game \
                 resolver; rendering the captured full-detail tree family"
             .to_string();
@@ -539,10 +462,6 @@ fn shader_source_with_restore_postfx(
     if !restore_full_enabled {
         return shader_source_with_postfx(source, postfx_enabled);
     }
-    // The bloom `#define` only affects the composite shader (which carries the
-    // `REPLAY_BLOOM_ENABLED` guard); the map shader ignores it. When bloom is
-    // off, the define is 0 (its default), so the composite compiles to the exact
-    // pre-bloom code and the flag-ON-no-bloom output is unchanged.
     let bloom_define = format!(
         "#define REPLAY_BLOOM_ENABLED {}\n",
         if bloom_enabled { 1 } else { 0 }
@@ -634,15 +553,7 @@ struct CapturedPassLayer {
     restore_bloom: Option<RestoreBloomGpu>,
     restore_region_weights: Option<PostEffectRegionWeightManifest>,
     current_weather_province_snow: Option<WeatherProvinceSnowView>,
-    /// CAP6 captured-map seam only. This pass never executes on the sealed
-    /// authenticated portable map/UI route. A CPU batch without an exact
-    /// frame tint/order/target receipt remains a feature-local zero draw.
     counter_gpu: CounterGpuPass,
-    /// COL3: the political-mapmode scene CB0 state (GB override/cutoffs +
-    /// shadow-fade height law) written into every pass's scene CB0 on camera
-    /// update. Defines are resolver-read (mod-aware); missing resolver data is
-    /// a blocker rather than a baked vanilla fallback. See
-    /// `map_viewer::PoliticalSceneCb0`.
     political_cb0: map_viewer::PoliticalSceneCb0,
     recorded_political_bindings: std::collections::BTreeSet<String>,
     recorded_tiled_lights_bound: bool,
@@ -657,11 +568,6 @@ struct CapturedPassLayer {
     last_render: Option<Duration>,
 }
 
-/// Legacy forensic captured-submit route only; not XMAP07 product authority.
-/// Resolve the old exact selected-Present-bound SnowMud carrier. Per-province
-/// semantic weather state is deliberately ignored: both the texture bytes and
-/// the fade bits come from the production render carrier's authenticated
-/// producer-to-D3D-consumer join.
 fn recorded_snow_mud_texture<'a>(
     _frame: &WorldFrame,
     render_frame: Option<&'a ProductionRenderFrame>,
@@ -680,12 +586,6 @@ fn recorded_snow_mud_texture<'a>(
     Ok(Some((packet, fade)))
 }
 
-/// Production admission for the dynamic snow/mud carrier. The captured PAN2
-/// bundle contains one historical `SnowMudTexture`, so treating a missing
-/// replay view as "no update" would silently display that unrelated capture.
-/// Exact replay therefore requires an authenticated producer packet and its
-/// reflected selected-Present fade on every displayed hour. The semantic view
-/// remains deliberately rejected because it is not the same render boundary.
 fn required_recorded_snow_mud_texture<'a>(
     frame: &WorldFrame,
     render_frame: Option<&'a ProductionRenderFrame>,
@@ -806,22 +706,11 @@ impl CapturedPassLayer {
             gfx.context.as_raw(),
         )?;
         renderer.set_water_full(water_full);
-        // WATER2: bind the modset resolver for the underwater refraction pass.
-        // By construction (above) `water_full` is only true here when a resolver
-        // exists, so this `.ok_or` can never trip on the default path.
         let renderer = if water_full {
             renderer.with_underwater_resolver(resolver.clone())
         } else {
             renderer
         };
-        // WATER1/REFLECT: when the modset resolver is available, the
-        // ReflectionCubeMap slot (slot 8) is produced by decoding + repacking the
-        // mod-aware map/terrain/reflection.dds and BYTE-VERIFIED equal to the
-        // captured payload (fail closed on mismatch). PROVENANCE-only: pixels are
-        // provably unchanged for vanilla, mod-correct otherwise. Only affects the
-        // paths that upload the real cube (--water-full / reference replay); the
-        // blocked legacy mean-color approximation never reaches the decode, so
-        // this is safe to thread unconditionally where a resolver exists.
         let renderer = renderer.with_reflection_resolver(resolver.clone());
         let mut layer_gaps = Vec::new();
         let terrain_path = session_dir.join(TERRAIN_BUNDLE_FILE);
@@ -851,12 +740,6 @@ impl CapturedPassLayer {
         };
         let trees_path = session_dir.join(TREES_BUNDLE_FILE);
         let trees = if trees_path.exists() {
-            // TREES2: PAN2 (and every captured session) binds only the
-            // full-detail tree family. The 6b77b6df pixel shader the old
-            // warning called a "second sub-draw" is gfx/FX/tree.shader:
-            // tree_low_gfx — the LOW_END_GFX variant, compiled but bound to
-            // no draw at the captured graphics settings. Gate the note on
-            // real draw-binding evidence instead of asserting a gap.
             let trees = NativeD3d11TerrainBundle::load_trees_with_resolver(&trees_path, resolver)?;
             layer_gaps.push(tree_layer_note(&trees, Some(resolver)));
             trees
@@ -886,10 +769,6 @@ impl CapturedPassLayer {
             prepared.target_format(),
             prepared.output_texture_raw(),
         )?;
-        // Bloom is part of the postfx composite (restorescene.shader adds it
-        // before Exposure/ToneMap). It rides the same internal `postfx_enabled`
-        // switch as tone/LUT so validation-only disabled postfx does not produce
-        // the impossible hybrid "linear scene + bloom" image.
         let bloom_enabled =
             postfx_enabled && restore_postfx.enabled && restore_postfx.bloom.is_some();
         let composite_shader_source = shader_source_with_restore_postfx(
@@ -948,12 +827,6 @@ impl CapturedPassLayer {
             None
         };
         let restore_color_cube = create_restore_color_cube_texture(gfx, &restore_postfx)?;
-        // Files-first bloom GPU chain, sized to the HDR MainScene the compositor
-        // grades. Created only when the compositor will actually sample it
-        // (`bloom_enabled`, i.e. postfx on + restore-full on + a resolved bloom
-        // law). Otherwise this stays `None` and no extra target is allocated,
-        // run, or bound. The scene target must be R16G16B16A16_FLOAT (the game's
-        // MainScene); fail closed if a future capture format differs.
         let restore_bloom = if bloom_enabled {
             create_restore_bloom_gpu(
                 gfx,
@@ -981,9 +854,6 @@ impl CapturedPassLayer {
             if restore_bloom.is_some() { "on" } else { "off" }
         );
 
-        // COL3: political-mapmode scene CB0 defines, resolver-read like the GB
-        // country field. This is product-visible draw state, so missing source
-        // files block startup instead of falling back to baked vanilla values.
         let political_cb0 =
             crate::political_scene::PoliticalSceneDefines::from_resolver(resolver)?.to_cb0();
         reject_snow_mud_env_overrides(
@@ -1042,9 +912,6 @@ impl CapturedPassLayer {
         }
     }
 
-    /// Legacy forensic captured-pass route: upload the selected-Present-bound
-    /// packet and replace its captured `SnowMudTexture` bindings. This is not
-    /// the XMAP07 product route; semantic rows are never rasterized as fallback.
     unsafe fn update_recorded_snow_mud(
         &mut self,
         gfx: &Gfx,
@@ -1096,9 +963,6 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    /// Bind exact byte-native political runtime textures from the explicitly
-    /// selected production submit. Target identity is checked by the prepared
-    /// pass itself; a packet that names no sampled SRV fails closed.
     unsafe fn update_recorded_political_textures(
         &mut self,
         gfx: &Gfx,
@@ -1162,10 +1026,6 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    /// XN15P production route: bind the exact selected submit's tiled-light
-    /// grid constants and complete logical textures. Multiple payloads in one
-    /// displayed submit have no declared display winner, so they fail closed
-    /// instead of choosing first/last heuristically.
     unsafe fn update_recorded_tiled_lights(
         &mut self,
         gfx: &Gfx,
@@ -1232,9 +1092,6 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    /// Retain only the explicitly selected submit for execution after the map
-    /// graph. Clearing the selected draw set dirties the scene so an earlier
-    /// hour's particles/entities cannot remain in MainScene.
     fn update_recorded_submitted_draws(
         &mut self,
         render_frame: &ProductionRenderFrame,
@@ -1263,9 +1120,6 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    /// `day_night_hour = None` keeps the captured CB0 day/night state (the
-    /// game's default: terminator shading off). `Some(hour)` opts into the
-    /// game's day/night toggle at that hour.
     fn render(
         &mut self,
         gfx: &Gfx,
@@ -1331,10 +1185,6 @@ impl CapturedPassLayer {
                     production_camera,
                     wrap_offset,
                 )?;
-                // The virtual light rig is driven by the day-cycle law at
-                // `day_night_hour`, not by the camera (the camera-follow FIT is
-                // removed). `day_night_hour = None` keeps the captured rig
-                // verbatim. See `shader_meta::write_virtual_light_rig_fields`.
                 self.renderer.update_prepared_production_map_scene(
                     &mut self.prepared,
                     copy_camera,
@@ -1349,8 +1199,6 @@ impl CapturedPassLayer {
                     compare_final_reference: false,
                     parity_report: None,
                     clear_targets: copy_index == 0,
-                    // The plain captured bundle ignores this cull option and
-                    // redraws its captured pass per wrap copy.
                     cull_world_rect: shifted_cull_world_rect(cull_world_rect, wrap_offset),
                     tree_season_cb: None,
                     map_clock_time,
@@ -1364,10 +1212,6 @@ impl CapturedPassLayer {
                 let (depth_width, depth_height, depth_format, depth_samples, depth_quality) =
                     self.prepared.output_depth_desc();
                 let target = crate::submitted_draw::SubmittedMainSceneTarget {
-                    // The capture-bundle target has no portable registration
-                    // receipt. Keep the identities absent so submitted_draw
-                    // rejects this debug substitution instead of inventing an
-                    // opaque attachment ordinal.
                     color_identity: None,
                     depth_identity: None,
                     color_rtv: self.prepared.output_render_target_view_raw(),
@@ -1400,17 +1244,6 @@ impl CapturedPassLayer {
                     stats.weather_joins,
                 );
             }
-            // Files-first per-frame exposure adaptation
-            // "LAW 2 — adaptation / exposure"): reduce the just-rendered HDR
-            // MainScene through the ported
-            // downsample_luminance.shader chain and rewrite the exposure's
-            // AverageLuminance, replacing the constant MIN_HDR_ADJUSTMENT
-            // floor. AvgLum depends only on the rendered scene bytes, so it is
-            // recomputed exactly when the scene re-renders (this dirty branch)
-            // rather than in composite() — composite runs every presented
-            // frame and the readback is a full GPU sync + CPU reduction.
-            // Gated so validation-only disabled postfx never reads back or
-            // mutates anything.
             if self.postfx_enabled && self.restore_postfx.enabled {
                 if let (Some(bounds), Some(cb)) = (
                     self.restore_postfx.luminance_bounds,
@@ -1424,20 +1257,9 @@ impl CapturedPassLayer {
             self.dirty = false;
         }
         self.composite(gfx)?;
-        // CAPTURE ordering: hoi4_frame69242 RestoreScene chunk 29204 writes the
-        // R8G8B8A8 output later consumed by counter backing chunk 31499. The
-        // counter pass therefore runs after RestoreScene composition. Its own
-        // admission rejects the current B8G8R8A8 app target and all frames
-        // lacking a complete tint/order receipt, so this call is zero-draw by
-        // default rather than an inferred semantic overlay.
         self.counter_gpu.draw(gfx)
     }
 
-    /// GRADE2 render wiring: recompose the files-first grade for the actual
-    /// frame camera/night state, then upload only the resources whose bytes or
-    /// constants changed. The LUT texture is DEFAULT so it can be updated with
-    /// `UpdateSubresource`; unchanged grade keys short-circuit before touching
-    /// D3D state.
     unsafe fn recompose_restore_grade_for_frame(
         &mut self,
         gfx: &Gfx,
@@ -1531,10 +1353,6 @@ impl CapturedPassLayer {
     }
 
     fn composite(&self, gfx: &Gfx) -> Result<()> {
-        // Files-first bloom: build the RestoreBloom half-res buffer from the
-        // replay's own HDR MainScene (output_srv) BEFORE the final composite,
-        // so the compositor can add it to the linear scene per
-        // restorescene.shader:210-213. No-op unless bloom is enabled.
         if let Some(bloom) = self.restore_bloom.as_ref() {
             unsafe { self.run_bloom_chain(gfx, bloom)? };
         }
@@ -1573,20 +1391,12 @@ impl CapturedPassLayer {
                 (*context).PSSetShaderResources(7, 1, srvs.as_ptr());
             }
             if let Some(bloom) = self.restore_bloom.as_ref() {
-                // RestoreBloom (t8) is the vertical-blur output.
                 let srvs = [bloom.bright_srv.as_raw()];
                 (*context).PSSetShaderResources(8, 1, srvs.as_ptr());
             }
             let samplers = [self.composite_sampler.as_raw()];
             (*context).PSSetSamplers(0, 1, samplers.as_ptr());
             (*context).Draw(3, 0);
-            // Unbind t0 (the scene) so its texture can be a render target
-            // again next frame — D3D11 forbids simultaneous SRV+RTV binding of
-            // one resource, and leaving it bound relies on implicit hazard
-            // resolution (debug-layer warnings every frame) instead of the
-            // explicit state management the rest of this file keeps. t8
-            // (bloom) likewise when the bloom chain is active, since it
-            // re-renders into the same half-res target.
             let null_srvs: [*mut ID3D11ShaderResourceView; 1] = [ptr::null_mut()];
             (*context).PSSetShaderResources(0, 1, null_srvs.as_ptr());
             if self.restore_bloom.is_some() {
@@ -1596,19 +1406,8 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    /// Run the files-first bloom chain into `bloom.bright_srv`:
-    ///   1. bright pass / 2x downsample  (output_srv -> bright_texture)
-    ///   2. horizontal blur (Axis=1)      (bright_texture -> scratch_texture)
-    ///   3. vertical blur (Axis=0)        (scratch_texture -> bright_texture)
-    /// Every stage unbinds its source SRV before that resource is next used as a
-    /// render target, so no texture is ever bound as SRV and RTV at once.
-    ///
-    /// # Safety
-    /// `bloom`'s D3D11 resources and `self.output_srv` must be valid and belong
-    /// to `gfx`'s device; the caller invokes this before the final composite.
     unsafe fn run_bloom_chain(&self, gfx: &Gfx, bloom: &RestoreBloomGpu) -> Result<()> {
         let context = gfx.context.as_raw();
-        // Half-res viewport for all three passes.
         let half_viewport = D3D11_VIEWPORT {
             TopLeftX: 0.0,
             TopLeftY: 0.0,
@@ -1628,18 +1427,15 @@ impl CapturedPassLayer {
         (*context).PSSetSamplers(0, 1, samplers.as_ptr());
         let null_srv: [*mut ID3D11ShaderResourceView; 1] = [ptr::null_mut()];
 
-        // Pass 1: bright pass + 2x downsample. Source = full-res MainScene.
         (*context).OMSetRenderTargets(1, [bloom.bright_rtv.as_raw()].as_ptr(), ptr::null_mut());
         (*context).VSSetShader(bloom.bright_vs.as_raw(), ptr::null(), 0);
         (*context).PSSetShader(bloom.bright_ps.as_raw(), ptr::null(), 0);
         (*context).PSSetConstantBuffers(0, 1, [bloom.bright_cb.as_raw()].as_ptr());
         (*context).PSSetShaderResources(0, 1, [self.output_srv.as_raw()].as_ptr());
         (*context).Draw(3, 0);
-        // Unbind the RT and its SRV source before reuse.
         (*context).OMSetRenderTargets(1, null_srv.as_ptr() as *const *mut _, ptr::null_mut());
         (*context).PSSetShaderResources(0, 1, null_srv.as_ptr());
 
-        // Pass 2: horizontal blur (Axis=1). bright_texture -> scratch_texture.
         (*context).OMSetRenderTargets(1, [bloom.scratch_rtv.as_raw()].as_ptr(), ptr::null_mut());
         (*context).VSSetShader(bloom.blur_vs.as_raw(), ptr::null(), 0);
         (*context).PSSetShader(bloom.blur_ps.as_raw(), ptr::null(), 0);
@@ -1649,8 +1445,6 @@ impl CapturedPassLayer {
         (*context).OMSetRenderTargets(1, null_srv.as_ptr() as *const *mut _, ptr::null_mut());
         (*context).PSSetShaderResources(0, 1, null_srv.as_ptr());
 
-        // Pass 3: vertical blur (Axis=0). scratch_texture -> bright_texture
-        // (reused as the final RestoreBloom buffer the compositor reads).
         (*context).OMSetRenderTargets(1, [bloom.bright_rtv.as_raw()].as_ptr(), ptr::null_mut());
         (*context).PSSetConstantBuffers(0, 1, [bloom.blur_cb_vertical.as_raw()].as_ptr());
         (*context).PSSetShaderResources(0, 1, [bloom.scratch_srv.as_raw()].as_ptr());
@@ -1661,22 +1455,6 @@ impl CapturedPassLayer {
         Ok(())
     }
 
-    /// FILES-FIRST per-frame exposure adaptation. Read back the rendered HDR
-    /// MainScene, reduce it through the ported `downsample_luminance.shader`
-    /// chain (`map_viewer::luminance_law::scene_average_luminance`) to a single
-    /// `AverageLuminance`, and rewrite the exposure constant's AvgLum field with
-    /// it — so the exposure scale `MiddleGrey / AverageLuminance` adapts to THIS
-    /// frame's scene instead of the constant MIN_HDR_ADJUSTMENT floor.
-    ///
-    /// MiddleGrey (`exposure.x`), the LUT-block gate (`exposure.z`), and every
-    /// other grade constant are preserved from the file grade; only `exposure.y`
-    /// changes. The measured value is R16-quantized inside the reduction to
-    /// match the engine's 1x1 `R16_FLOAT` `AverageLuminanceTexture` precision.
-    ///
-    /// # Safety
-    /// `cb` must be the DYNAMIC `RestorePostfxConstants` buffer bound at PS slot
-    /// 1; `self.prepared`'s output texture must be a valid RGBA16F MainScene on
-    /// `gfx`'s device.
     unsafe fn update_exposure_from_scene_luminance(
         &self,
         gfx: &Gfx,
@@ -1686,7 +1464,6 @@ impl CapturedPassLayer {
         let width = self.prepared.target_width();
         let height = self.prepared.target_height();
         let format = self.prepared.target_format();
-        // Byte-for-byte staging copy of the rendered MainScene, mapped for read.
         let source = self.prepared.output_texture_raw();
         let staging_desc = D3D11_TEXTURE2D_DESC {
             Width: width,
@@ -1724,8 +1501,6 @@ impl CapturedPassLayer {
             .checked_mul(height as usize)
             .ok_or("scene luminance readback size overflow")?;
         let raw = std::slice::from_raw_parts(mapped.pData as *const u8, byte_len);
-        // Reduce through the ported chain; copy out of the mapped memory before
-        // Unmap so no borrow of GPU memory outlives the mapping.
         let reduction = scene_average_luminance(
             raw,
             width as usize,
@@ -1737,18 +1512,6 @@ impl CapturedPassLayer {
         (*context).Unmap(staging.as_raw() as *mut _, 0);
         let reduction = reduction?;
 
-        // Rebuild the exposure vector: keep MiddleGrey (.x) and the LUT/exposure
-        // gate (.z), swap in the measured, R16-quantized AverageLuminance (.y).
-        //
-        // KNOWN DIVERGENCE (R14/R15 C6b, debug/evidence path only): this writes
-        // the CURRENT scene's reduction directly — no previous adapted
-        // luminance is retained and no `HDR_ADJUSTMENT_SPEED` easing is
-        // applied, whereas `luminance_law.rs` documents that a frame SEQUENCE
-        // eases toward the target. A single re-rendered frame therefore adapts
-        // instantly. Like the hand-written bloom HLSL above, this runs only on
-        // the legacy/debug `MapRenderer::render` route, never in authenticated
-        // production-recording playback. An unclamped reduction continues as
-        // ordinary output (logged below), not as a typed gap.
         let mut constants = self.restore_postfx.constants;
         constants.exposure[0] = self.restore_postfx.middle_grey;
         constants.exposure[1] = reduction.r16_quantized;
@@ -1777,19 +1540,10 @@ impl CapturedPassLayer {
         Ok(reduction)
     }
 
-    /// COLOR-lane debug readback (`--dump-hdr`): write the rendered HDR
-    /// MainScene — the captured-pass output target (RGBA16F at the capture's
-    /// native dimensions, BEFORE the composite/postfx) — verbatim to `path`,
-    /// with a `<path>.json` sidecar recording width/height/format/row bytes.
-    /// This is the byte-level artifact the engine post-pass RT referees
-    /// (e.g. session_POLCOLOR_1's borders/mapname post-pass render targets,
-    /// same 1920x1080 RGBA16F) diff against. Never a render input.
     fn dump_hdr_mainscene(&self, gfx: &Gfx, path: &std::path::Path) -> Result<()> {
         let width = self.prepared.target_width();
         let height = self.prepared.target_height();
         let format = self.prepared.target_format();
-        // The engine MainScene is R16G16B16A16_FLOAT (DXGI format 10). Fail
-        // closed on anything else so the sidecar's byte layout can never lie.
         const DXGI_FORMAT_R16G16B16A16_FLOAT: u32 = 10;
         if format != DXGI_FORMAT_R16G16B16A16_FLOAT {
             return Err(format!(
@@ -1894,8 +1648,6 @@ impl CapturedPassLayer {
                 screen_w.max(1.0) as f32,
                 screen_h.max(1.0) as f32,
             )?
-            // Ground z (north-up) -> bmp map pixel y (south-down), the space
-            // provinces.bmp picking indexes.
             .map(|(x, z)| (f64::from(x), map_h - f64::from(z))))
     }
 
@@ -1996,9 +1748,6 @@ pub struct MapRenderer {
 }
 
 impl MapRenderer {
-    /// Build the captured D3D11 replay renderer. `max_state_id` is retained only
-    /// for validating replay/controller color inputs while political recoloring
-    /// remains blocked.
     pub fn new(
         gfx: &Gfx,
         bundle: &MapBundle,
@@ -2016,9 +1765,6 @@ impl MapRenderer {
             );
         }
         unsafe {
-            // Files-first grade inputs come from shipped installed content through the
-            // resolver. Missing resolver or malformed source data is a hard
-            // blocker, not a downgrade to an ungraded map.
             let restore_postfx = restore_full_postfx_from_files(
                 postfx_restore_full,
                 game_resolver,
@@ -2026,9 +1772,6 @@ impl MapRenderer {
                 bundle.height,
                 None,
             )?;
-            // Captured-pass construction is fail-closed: missing water evidence,
-            // terrain evidence, or resolver data stops startup rather than
-            // retrying with app-owned approximations.
             let capture_dir = capture_dir.expect("capture_dir checked above");
             let captured = CapturedPassLayer::new(
                 gfx,
@@ -2045,8 +1788,6 @@ impl MapRenderer {
         }
     }
 
-    /// Scrub step: validate controller colors while visible replay-driven
-    /// political colors remain blocked.
     pub fn update_state_politics(
         &mut self,
         gfx: &Gfx,
@@ -2096,11 +1837,6 @@ impl MapRenderer {
         self.captured.last_snow_mud_h2_receipt.as_ref()
     }
 
-    /// CAP6 captured-map GPU handoff. Callers must supply the already
-    /// fail-closed CPU batch plus a mechanically joined frame admission.
-    /// `None` admission explicitly clears any previous receipt and guarantees
-    /// zero counter draws. This method is intentionally crate-only: the normal
-    /// portable route has its own authenticated UI operation stream.
     #[allow(dead_code)]
     pub(crate) fn update_counter_batch(
         &mut self,
@@ -2146,15 +1882,11 @@ impl MapRenderer {
         Some(self.captured.stats())
     }
 
-    /// COLOR-lane debug readback (`--dump-hdr`): see
-    /// [`CapturedPassLayer::dump_hdr_mainscene`]. Fails closed when no
-    /// captured pass is active (there is no HDR MainScene without one).
     pub fn dump_hdr_mainscene(&self, gfx: &Gfx, path: &std::path::Path) -> Result<()> {
         self.captured.dump_hdr_mainscene(gfx, path)
     }
 }
 
-/// Shared with text.rs (the overlay pipeline follows the same patterns).
 pub(crate) unsafe fn compile_shader(
     source: &str,
     entry: &str,
@@ -2198,7 +1930,6 @@ pub(crate) unsafe fn compile_shader(
     ComPtr::from_raw(code, "compiled shader blob")
 }
 
-/// Shared with text.rs (glyph atlas pages use the same upload path).
 pub(crate) unsafe fn create_immutable_texture(
     gfx: &Gfx,
     width: usize,
@@ -2265,9 +1996,6 @@ unsafe fn create_immutable_texture_with_pitch(
     Ok((texture, srv))
 }
 
-/// Mechanical replay-side H2 receipt: copy the immutable upload into a CPU
-/// staging resource and compare every tight source row byte-for-byte. D3D11
-/// may pad the mapped row pitch; padding is deliberately excluded.
 struct SnowMudTextureReadbackProof {
     tight_readback_bytes: Vec<u8>,
     readback_sha256: String,
@@ -2392,9 +2120,6 @@ fn seal_snow_mud_h2_receipt(
     Ok(receipt)
 }
 
-/// Seal the capture-independent product executor's per-consumer immutable
-/// upload/readback proof into the same portable H2 contract as the legacy
-/// captured-pass diagnostic path.
 pub(crate) fn seal_product_snow_mud_h2_receipt(
     packet: &SnowMudTexturePacket,
     selected_present: &replay_core::SelectedPresentReceipt,
@@ -2415,17 +2140,6 @@ pub(crate) fn seal_product_snow_mud_h2_receipt(
     )
 }
 
-/// Evidence sink for the snow/mud H/H2 pair. Each producer ordinal gets a
-/// create-new, fsynced receipt so scrubbing cannot silently overwrite an
-/// earlier member of the pair.
-///
-/// It supplies no bytes back to rendering, but it is NOT harmless: an empty
-/// directory value, a readback that disagrees with the sealed receipt, and a
-/// create-new collision holding different bytes each return `Err` and so fail a
-/// frame that would otherwise render. `REPLAY_SNOW_MUD_H2_RECEIPT_DIR` is
-/// therefore a registered [`crate::blockers::BlockerId::SnowMudH2ReceiptDir`]
-/// env surface: `reject_env_overrides` refuses to start the product with it
-/// set, and this function returns `Ok(None)` on every product path.
 pub(crate) fn persist_snow_mud_h2_receipt(
     receipt: &SnowMudReplayReadbackReceipt,
     tight_readback_bytes: &[u8],
@@ -2483,13 +2197,6 @@ pub(crate) fn seal_product_occupation_secondary_h2_receipt(
     Ok(receipt)
 }
 
-/// Create-new evidence sink for the replay half of the occupation H/H2
-/// transaction. It never supplies bytes back to rendering, but — exactly like
-/// [`persist_snow_mud_h2_receipt`] — it can fail an otherwise-good frame on an
-/// empty value, a receipt/readback disagreement, or a create-new collision.
-/// `REPLAY_OCCUPATION_H2_RECEIPT_DIR` is a registered
-/// [`crate::blockers::BlockerId::OccupationH2ReceiptDir`] env surface, so it is
-/// rejected at startup and this function returns `Ok(None)` in the product.
 pub(crate) fn persist_occupation_secondary_h2_receipt(
     receipt: &OccupationSecondaryReplayReadbackReceipt,
     tight_readback_bytes: &[u8],
@@ -2551,8 +2258,6 @@ fn persist_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) -> Result
 }
 
 unsafe fn create_linear_clamp_sampler(gfx: &Gfx) -> Result<ComPtr<ID3D11SamplerState>> {
-    // `pdxmap.shader:141-157` declares both GradientBorderChannel samplers as
-    // Linear/Linear/Linear with Clamp address modes.
     let desc = D3D11_SAMPLER_DESC {
         Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
         AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
@@ -2575,9 +2280,6 @@ unsafe fn create_restore_postfx_constant_buffer(
     gfx: &Gfx,
     constants: RestorePostfxConstants,
 ) -> Result<ComPtr<ID3D11Buffer>> {
-    // DYNAMIC (not IMMUTABLE): the per-frame luminance-adaptation pass rewrites
-    // the exposure `AverageLuminance` field each frame (Map WRITE_DISCARD) after
-    // reducing the rendered scene through the ported downsample_luminance chain.
     let desc = D3D11_BUFFER_DESC {
         ByteWidth: mem::size_of::<RestorePostfxConstants>() as UINT,
         Usage: D3D11_USAGE_DYNAMIC,
@@ -2668,8 +2370,6 @@ unsafe fn update_restore_color_cube_texture(
     gfx.check_void_device_call("UpdateSubresource RestoreScene ColorCube")
 }
 
-/// Create a half-res `R16G16B16A16_FLOAT` render target with an RTV and SRV,
-/// mirroring the engine's bloom intermediates (`bloom.shader` half-float pool).
 unsafe fn create_bloom_render_target(
     gfx: &Gfx,
     width: u32,
@@ -2718,14 +2418,11 @@ unsafe fn create_bloom_render_target(
     Ok((texture, rtv, srv))
 }
 
-/// Upload an immutable constant buffer of a `#[repr(C)]` value.
 unsafe fn create_immutable_constant_buffer<T: Copy>(
     gfx: &Gfx,
     value: &T,
     role: &str,
 ) -> Result<ComPtr<ID3D11Buffer>> {
-    // Constant-buffer byte width must be a multiple of 16; our layouts already
-    // are (float4-aligned), but assert to catch future edits.
     let size = mem::size_of::<T>();
     if size % 16 != 0 {
         return Err(format!("{role} constant buffer size {size} is not 16-byte aligned").into());
@@ -2749,7 +2446,6 @@ unsafe fn create_immutable_constant_buffer<T: Copy>(
     ComPtr::from_raw(buffer, role)
 }
 
-/// Compile a `(vs, ps)` pair from one HLSL source with the given entry points.
 unsafe fn create_vs_ps(
     gfx: &Gfx,
     source: &str,
@@ -2780,9 +2476,6 @@ unsafe fn create_vs_ps(
     Ok((vs, ps))
 }
 
-/// Build the files-first GPU bloom chain resources for a MainScene of
-/// `source_width x source_height`. Returns `None` (no allocation) unless a
-/// resolved bloom law is present, which happens only under `--postfx-restore-full`.
 unsafe fn create_restore_bloom_gpu(
     gfx: &Gfx,
     restore: &RestoreFullPostfx,
@@ -2793,10 +2486,6 @@ unsafe fn create_restore_bloom_gpu(
     let Some(law) = restore.bloom else {
         return Ok(None);
     };
-    // The bloom chain mirrors the engine's half-float MainScene->bloom pool. If
-    // the replay's scene target is ever not R16G16B16A16_FLOAT (DXGI 10), the
-    // bright-pass / blur precision assumptions no longer hold — fail closed
-    // under the flag rather than silently blooming a different format.
     if source_format != DXGI_FORMAT_R16G16B16A16_FLOAT {
         return Err(format!(
             "bloom chain blocked: MainScene format is DXGI {source_format}, expected R16G16B16A16_FLOAT (10); the bloom chain is only validated for the game's half-float scene target"
@@ -2809,8 +2498,6 @@ unsafe fn create_restore_bloom_gpu(
         )
         .into());
     }
-    // The engine's downsample is an exact 2x reduction; the CPU law rejects odd
-    // sizes for the same reason. Fail closed rather than silently rounding.
     if source_width % 2 != 0 || source_height % 2 != 0 {
         return Err(format!(
             "bloom chain blocked: MainScene {source_width}x{source_height} is not an even size for the 2x downsample"
@@ -2844,8 +2531,6 @@ unsafe fn create_restore_bloom_gpu(
         "bloom blur pass",
     )?;
 
-    // Bright-pass knee constants; inv-source-size drives the 2x2 box tap centers
-    // over the FULL-res MainScene.
     let bright_constants = BloomBrightConstants {
         threshold_emissive_inv_size: [
             law.params.bright_threshold,
@@ -2856,8 +2541,6 @@ unsafe fn create_restore_bloom_gpu(
     };
     let bright_cb = create_immutable_constant_buffer(gfx, &bright_constants, "bloom bright CB")?;
 
-    // Blur constants: one per axis. Offsets are in blur-buffer texels; the
-    // inv-size is the HALF-res buffer size (bloom.shader samples its own extent).
     let inv_half = [1.0 / half_width as f32, 1.0 / half_height as f32];
     let make_blur_cb = |axis: [f32; 2], role: &str| -> Result<ComPtr<ID3D11Buffer>> {
         let constants = BloomBlurConstants {
@@ -2868,7 +2551,6 @@ unsafe fn create_restore_bloom_gpu(
         };
         create_immutable_constant_buffer(gfx, &constants, role)
     };
-    // bloom.shader: horizontal pass Axis=1, then vertical pass Axis=0.
     let blur_cb_horizontal = make_blur_cb([1.0, 0.0], "bloom horizontal blur CB")?;
     let blur_cb_vertical = make_blur_cb([0.0, 1.0], "bloom vertical blur CB")?;
 
@@ -2891,18 +2573,8 @@ unsafe fn create_restore_bloom_gpu(
     }))
 }
 
-// A wide full-map orthographic dump corresponds to the game's highest-altitude
-// view: above every region posteffect_volume box (their tops sit below ~700), so
-// the `Base Highest` height volume selects the grade. Using the captured
-// vCamPos.y=2958 keeps the replay's selection identical to the live frame.
 const RESTORE_GRADE_VIEW_CAMERA_HEIGHT: f32 = 2958.0;
 
-/// FILES-FIRST grade source. The installed content are the source of truth so mods
-/// work: the LUT is composed from resolver-loaded `colorcorrection_*.tga` via the
-/// posteffect_volumes.txt selection law, and MiddleGrey / adaptation come from
-/// resolver-loaded posteffect_volumes.txt + defines. Fails closed (naming the
-/// gap) if the modset lacks a required file or selection key. The captured
-/// bundle is NEVER read here — see `restore_full_postfx_validate_capture`.
 fn restore_full_postfx_from_files(
     enabled: bool,
     game_resolver: Option<&GameFileResolver>,
@@ -2925,9 +2597,6 @@ fn restore_full_postfx_from_files(
     let resolver = game_resolver.ok_or(
         "--postfx-restore-full needs --game <the game install dir> (or BATTLE_PLAN_VANILLA): the grading LUT and constants are composed from the shipped installed content so mods work; no silent identity fallback",
     )?;
-    // The full-map dump is an above-all-volumes view; day/night comes from the
-    // playback hour when supplied (a night hour flips to the `_night` values),
-    // otherwise the default day view.
     let night = day_night_hour
         .map(|hour| !(0.25..0.75).contains(&hour))
         .unwrap_or(false);
@@ -2941,19 +2610,8 @@ fn restore_full_postfx_from_files(
         winter: false,
         region_winter_factor: None,
     };
-    // The replay has no runtime average-luminance readback, so the adaptation
-    // law's documented steady-state floor (MIN_HDR_ADJUSTMENT) is used.
     let grade = file_derived_grade(resolver, state, None)?;
-    // Files-first bloom from the same exact six-scalar composition as the LUT:
-    // height first, then ordinary-to-winter, then spatial region. NGraphics is
-    // the final inheritance fallback; there is no endpoint-only bloom lookup.
     let bloom = restore_bloom_law_for_grade(&grade)?;
-    // Files-first per-frame exposure adaptation (implemented by
-    // adaptation / exposure"): the
-    // `MinHdr_MaxHdr` clamp bounds come from the same resolved/blended scalar state and let
-    // the composite pass recompute AvgLum from the rendered scene each frame via
-    // the ported `downsample_luminance.shader` chain, instead of the
-    // MIN_HDR_ADJUSTMENT steady-state floor `file_derived_grade` used above.
     let luminance_bounds = LuminanceClampBounds {
         min_hdr_adjustment: grade.posteffect_scalars.min_hdr_adjustment,
         max_hdr_adjustment: grade.posteffect_scalars.max_hdr_adjustment,
@@ -2981,9 +2639,6 @@ fn restore_full_postfx_from_files(
     Ok(restore)
 }
 
-/// VALIDATION-ONLY path: load the captured restore bundle and report file-law
-/// vs captured deltas (LUT max per-channel delta, per-constant diffs). Never a
-/// render input — this is the regression gate for the files-first law.
 fn reject_snow_mud_env_overrides(
     snow_mud_override: Option<std::ffi::OsString>,
     snow_mud_fade: Option<std::ffi::OsString>,
@@ -3042,7 +2697,6 @@ pub fn restore_full_postfx_validate_capture(
         )
         .into());
     }
-    // Compare RGB only (alpha is forced opaque on both sides).
     let mut lut_max_delta = 0u8;
     for (cap_texel, file_texel) in captured.chunks_exact(4).zip(composed.chunks_exact(4)) {
         for channel in 0..3 {
@@ -3069,7 +2723,6 @@ pub fn restore_full_postfx_validate_capture(
     })
 }
 
-/// Report of files-first-law grade vs captured evidence.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RestoreCaptureValidation {
     pub selected_value: String,
@@ -3109,10 +2762,6 @@ impl RestorePostfxConstants {
         }
     }
 
-    /// FILES-FIRST constructor: the base posteffect_volumes.txt grade values
-    /// carry no HSV / ColorBalance block, so those stay neutral (HSV shift 0,
-    /// sat/val x1, balance x1); the LUT block is enabled and exposure uses the
-    /// files-derived MiddleGrey over the adaptation-law average luminance.
     fn from_file_grade(middle_grey: f32, average_luminance: f32) -> Self {
         let mut constants = Self::identity();
         constants.color_balance_use_lut = [1.0, 1.0, 1.0, 1.0];
@@ -3208,10 +2857,6 @@ unsafe fn create_captured_output_srv(
     ComPtr::from_raw(srv, "captured-pass output SRV")
 }
 
-/// Ground rect `[min_x, min_z, max_x, max_z]` visible from the camera,
-/// padded by one coarse tile so partially-visible edges and displaced
-/// terrain still draw. `None` (no culling) when any screen corner ray
-/// misses the ground plane.
 fn camera_ground_cull_rect(
     camera: &ProductionMapCamera,
     screen_w: u32,
@@ -3282,9 +2927,6 @@ fn production_camera_from_app_camera(
         return viewer_state.production_camera();
     }
 
-    // Scalar reconstruction is retained only for the explicit legacy debug
-    // camera. Product rendering and every hit/projection consumer above take
-    // the same typed XMAP03 camera state through the early return.
     let screen_w = screen_w.max(1) as f32;
     let height = projection.height_for_screen_zoom(
         camera.zoom as f32,
@@ -3292,10 +2934,6 @@ fn production_camera_from_app_camera(
         defines.min_height(),
         defines.max_height(),
     )?;
-    // The app camera is in bmp-style map pixels (y grows south/down, like
-    // provinces.bmp rows); the renderer's ground plane z grows north.
-    // Flipping here (and unflipping in screen_to_map) keeps every
-    // legacy debug interaction path in one consistent y-down space.
     let ground_z = camera.map_h() as f32 - camera.center_y as f32;
     projection.camera_for_ground_center(camera.center_x as f32, ground_z, height)
 }
@@ -3508,9 +3146,6 @@ mod tests {
 
     #[test]
     fn restore_full_postfx_disabled_is_inert_validation_path() {
-        // The product CLI blocks `--no-postfx-restore-full`; this disabled
-        // constructor path is retained only to prove the composer is inert when
-        // validation code asks for it directly.
         let disabled = restore_full_postfx_from_files(false, None, 5632, 2048, None)
             .expect("disabled grade never errors");
         assert!(!disabled.enabled, "disabled grade must remain disabled");
@@ -3526,9 +3161,6 @@ mod tests {
 
     #[test]
     fn restore_full_postfx_enabled_without_resolver_fails_closed() {
-        // With the grade enabled but no resolver, the composer errors and the
-        // renderer propagates that blocker. The message names the missing game
-        // install so the user knows which evidence source is absent.
         let err = restore_full_postfx_from_files(true, None, 5632, 2048, None)
             .expect_err("enabled grade without a resolver must fail closed");
         assert!(
@@ -3539,13 +3171,12 @@ mod tests {
 
     fn write_color_cube_tga(path: &Path, rgb: [u8; 3]) {
         let mut tga = vec![0u8; 18];
-        tga[2] = 2; // uncompressed true-color
+        tga[2] = 2;
         tga[12..14].copy_from_slice(&1024u16.to_le_bytes());
         tga[14..16].copy_from_slice(&32u16.to_le_bytes());
         tga[16] = 24;
-        tga[17] = 0x20; // top-left origin, matching the parser's top-down path
+        tga[17] = 0x20;
         for _ in 0..(1024 * 32) {
-            // TGA stores BGR; the parser converts to RGB before RGBA upload.
             tga.push(rgb[2]);
             tga.push(rgb[1]);
             tga.push(rgb[0]);

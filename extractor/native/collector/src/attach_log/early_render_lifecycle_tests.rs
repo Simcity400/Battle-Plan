@@ -1,5 +1,3 @@
-//! `early_render_lifecycle_tests`, extracted verbatim from `attach_log.rs`.
-
 use super::{
     aggregate_terminal_errors, append_terminal_error, finish_early_render_lifecycle,
     finish_shared_runtime_text_lifecycle, rollback_early_hook_pair,

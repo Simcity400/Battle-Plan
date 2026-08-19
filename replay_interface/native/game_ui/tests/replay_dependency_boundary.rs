@@ -3,15 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The acquisition tree's directory name, spelled in halves.
-///
-/// `replay_tree_names_no_extractor_path_outside_prose` scans this file like
-/// every other: it has no exemption, because an exemption for the gate's own
-/// source is a hole exactly where a reach would be least visible. Splitting the
-/// name is what lets the gate state its rule without breaking it. Nothing else
-/// in this tree may do that — a name assembled from pieces is exactly the
-/// evasion the scan documents as out of its reach — which is why this constant
-/// is the only place it happens and everything downstream derives from it.
 const ACQUISITION_TREE: &str = concat!("extr", "actor");
 
 fn normalized(path: &Path) -> String {
@@ -78,36 +69,8 @@ fn replay_workspace_cargo_metadata_has_zero_extractor_dependencies() {
     );
 }
 
-/// The positive statement of the same boundary: no crate here holds a live-code
-/// patching primitive.
-///
-/// The path check above is necessary but not sufficient, because it only says
-/// where a manifest lives. `terrain_capture` — the injected D3D11 DLL that
-/// captures the game's map-frame bundles — sat in this workspace until it was moved
-/// to `extractor/native/terrain_capture`, and it reached its hooking primitive
-/// two ways at once: `inline_detour` by path (which the check above catches) and
-/// `minhook` straight from crates.io (which it does not, because a registry
-/// dependency has no path to inspect). A crate re-added here that took only the
-/// registry dependency would satisfy the path check and still be patching live
-/// game code from the replay product.
-///
-/// The replay side consumes sealed captures. Nothing it ships needs to rewrite
-/// another process's instructions, so the honest form of the rule is that the
-/// primitive is absent, not that one route to it is.
-///
-/// Checked twice on purpose. The manifest scan names the offending member, but
-/// `--no-deps` only reports DECLARED dependencies, so a patching crate arriving
-/// transitively through some innocuous wrapper would not appear in it. The
-/// lockfile is the resolved closure, so it catches that — at the cost of not
-/// being able to say which member pulled it. Neither alone is the rule.
 #[test]
 fn replay_workspace_declares_no_live_code_patching_dependency() {
-    // Crates whose entire purpose is patching a running image. Matched on the
-    // stem, so the raw binding layer underneath each one — `minhook-sys`,
-    // `frida-gum-sys`, and friends — is denied by the same entry. Naming only
-    // the safe wrappers would leave the obvious bypass open: the `-sys` crate
-    // exposes the same patching entry points and takes no extra dependency to
-    // reach.
     const PATCHING_CRATES: [&str; 4] = ["minhook", "detour", "retour", "frida-gum"];
     let is_patching = |name: &str| {
         let stem = name.strip_suffix("-sys").unwrap_or(name);
@@ -119,8 +82,6 @@ fn replay_workspace_declares_no_live_code_patching_dependency() {
     for package in packages {
         let member = package["name"].as_str().unwrap_or("<unnamed>");
         for dependency in package["dependencies"].as_array().into_iter().flatten() {
-            // `name` is the real crate name even when the dependency is
-            // renamed with `package = "..."`, so an alias does not slip past.
             let Some(name) = dependency["name"].as_str() else {
                 continue;
             };
@@ -272,40 +233,19 @@ fn names_extractor_path(code: &str) -> bool {
     .any(|form| code.contains(form))
 }
 
-/// Every reach that is allowed to survive, keyed on the exact surviving text.
 fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
-    // XUI27 is the external producer dependency ledger's checker, not a Replay
-    // product runtime, and it carries one negative assertion that refuses a
-    // ledger binding pointing into the acquisition tree.
-    //
-    // Lane KK (2026-08-15) narrowed this from five admitted spellings to one.
-    // The other four -- the validation-wrapper path, a `startswith` prefix
-    // test, a nested-path test, and a refusal fixture -- all lived in the
-    // replay-owned freeze chain that lane KK deleted, so admitting them now
-    // would only hold the door open for a reach nothing needs. Keep it lexical
-    // and keep it at one: this exception must shrink with its subject, never
-    // outlive it.
-    // Keyed on the one file and the one exact line, not on the directory and a
-    // substring. `contains` over a whole subtree would admit a real reach that
-    // happened to share a line with the negative assertion, and it would admit
-    // it from any file added to XUI27 later.
     if relative == "replay_interface/re_evidence/rendering_laws/xui27/external_dependency_ledger.py"
     {
         let exclusion_check = format!("require(\"{ACQUISITION_TREE}/\" not in relative.lower(),");
         return code.trim() == exclusion_check;
     }
     match relative {
-        // Module-docstring prose. Python docstrings are scanned rather than
-        // skipped (a triple-quoted string can hold executable text), so the
-        // handful of genuine prose lines are listed instead.
         "replay_interface/game_assets/portraits.py" => {
             code.trim().starts_with("Companion to extract.py.")
         }
         "replay_interface/game_assets/tests/test_asset_resolution.py" => {
             code.trim().ends_with("against this same module.")
         }
-        // A negative assertion: the portable content manifest must NOT carry an
-        // acquisition path. Naming the string is how it checks.
         "replay_interface/native/replay_core/src/source.rs" => {
             code.trim() == format!("assert!(!manifest.contains(\"{ACQUISITION_TREE}/\"), \"{{manifest}}\");")
         }
@@ -313,17 +253,6 @@ fn is_allowed_extractor_path_mention(relative: &str, code: &str) -> bool {
     }
 }
 
-/// Drops whole-line comments, by the comment syntax of the file's own language.
-///
-/// Rust drops `//` and `///` only — NOT `#`, which begins an attribute, and a
-/// `#[path = "../../../<acquisition tree>/..."]` is executable. Nor `*`, which
-/// begins a dereference as readily as a block-comment continuation; a block
-/// comment that mentions the producer costs one allowlist entry, and getting
-/// that wrong the other way costs a missed reach.
-///
-/// Trailing comments are deliberately NOT stripped: a line that opens a file or
-/// dot-sources a script has code before any trailing comment, so nothing can
-/// hide behind one.
 fn strip_prose<'a>(relative: &str, line: &'a str) -> &'a str {
     let trimmed = line.trim();
     let comment_prefix = if relative.ends_with(".rs") { "//" } else { "#" };
@@ -335,8 +264,6 @@ fn strip_prose<'a>(relative: &str, line: &'a str) -> &'a str {
 
 fn scannable_sources(root: &Path) -> Vec<PathBuf> {
     fn walk(directory: &Path, found: &mut Vec<PathBuf>) {
-        // A traversal that swallows its own errors reports "no reaches found"
-        // for a directory it could not open.
         let entries = fs::read_dir(directory)
             .unwrap_or_else(|error| panic!("read_dir {}: {error}", directory.display()));
         let mut entries = entries
@@ -351,7 +278,6 @@ fn scannable_sources(root: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
             if path.is_dir() {
-                // Build outputs are not authored source.
                 if name == "target" || name.starts_with(".cargo-target") || name == "out" {
                     continue;
                 }

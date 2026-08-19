@@ -1,40 +1,29 @@
-//! Regression tests for malformed values and the invariants they exercise.
-
 use wire_format::record::Record;
 use wire_format::schema::{Collection, Field, Quant, Schema, Shape};
 use wire_format::value::{dequantize, escapes, quantize, stored_eq, Value};
 use wire_format::{Kind, WireError};
 
-/// delta-minimality contract makes the writer compare against the **reconstructed** prior, so a
-/// stored integer that does not survive reconstruction breaks the format: an
-/// unchanged source reads as changed, the writer emits a delta, and the reader
-/// rejects it as a mask bit on a field that did not change.
 #[test]
 fn a_quantization_that_is_not_a_fixed_point_escapes() {
     let q = Quant::Fixed(11);
-    // Scales to exactly 2^53 by rounding up, then dequantizes to a float that
-    // scales back to 2^53 - 1.
     let x = 90071.99254740993f64;
-    assert!(escapes(x, q), "must escape rather than store an unstable integer");
+    assert!(
+        escapes(x, q),
+        "must escape rather than store an unstable integer"
+    );
     assert_eq!(quantize(x, q), None);
 
     let f = Field::new(1, Kind::Continuous).quant(q);
-    // Escaped, so the reader reconstructs the exact f64 and the comparison holds.
     assert!(stored_eq(&f, Value::Continuous(x), Value::Continuous(x)));
 }
 
-/// The invariant, not just the one input: on the whole non-escaping domain,
-/// `quantize(dequantize(q)) == q`.
 #[test]
 fn every_non_escaping_value_survives_reconstruction() {
     let mut checked = 0u64;
     for k in [0u8, 1, 2, 5, 11, 17, 22] {
         let q = Quant::Fixed(k);
         let scale = 10f64.powi(k as i32);
-        // Ordinary magnitudes, then a sweep across the 2^53 boundary where the
-        // property actually breaks down.
-        let mut samples: Vec<f64> =
-            vec![0.0, 1.0, 0.5, 0.333, -7.5, 1e-8, 12345.6789, 1e15, -1e15];
+        let mut samples: Vec<f64> = vec![0.0, 1.0, 0.5, 0.333, -7.5, 1e-8, 12345.6789, 1e15, -1e15];
         for step in 0..64u64 {
             let near = (1u64 << 53) as f64 + step as f64 - 32.0;
             samples.push(near / scale);
@@ -61,16 +50,20 @@ fn every_non_escaping_value_survives_reconstruction() {
                 continue;
             }
             let raw = quantize(v, q).expect("non-escaping");
-            assert_eq!(quantize(dequantize(raw, q), q), Some(raw), "ratio({d}) at {v}");
+            assert_eq!(
+                quantize(dequantize(raw, q), q),
+                Some(raw),
+                "ratio({d}) at {v}"
+            );
             checked += 1;
         }
     }
-    assert!(checked > 500, "the sweep must actually cover something, got {checked}");
+    assert!(
+        checked > 500,
+        "the sweep must actually cover something, got {checked}"
+    );
 }
 
-/// schema-kind contract: "a value the writer cannot map into 0..n-1 is a failed sample, never a
-/// coerced code." The record path enforced it; the update path truncated to the
-/// field's bit width and produced silently wrong data.
 #[test]
 fn an_out_of_range_enum_is_rejected_on_every_path() {
     let s = Schema {
@@ -102,7 +95,6 @@ fn an_out_of_range_enum_is_rejected_on_every_path() {
         "the update path used to encode this as Enum(0)"
     );
 
-    // An in-range code still works on both paths.
     let good = Record::new(vec![Value::Enum(2)]);
     let mut out = Vec::new();
     wire_format::update::encode(c, &prior, &good, &mut out).unwrap();
@@ -110,9 +102,6 @@ fn an_out_of_range_enum_is_rejected_on_every_path() {
     assert_eq!(back.values, vec![Value::Enum(2)]);
 }
 
-/// key-encoding contract's ordered-keyed keys are absolute, and an occurrence list has no key
-/// prefix at all. The shaped decoder must choose those grammars without
-/// misreading 5,6 as the keyed-set delta chain 5,11 or indexing an empty key.
 #[test]
 fn the_baseline_decoder_uses_each_ordered_shapes_own_grammar() {
     use wire_format::body::{decode_shaped_baseline, CollectionState};
@@ -124,7 +113,10 @@ fn the_baseline_decoder_uses_each_ordered_shapes_own_grammar() {
         collections: vec![Collection {
             collection_id: 1,
             shape,
-            fields: vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)],
+            fields: vec![
+                Field::new(1, Kind::Unsigned).key(0),
+                Field::new(2, Kind::Unsigned),
+            ],
         }],
     };
     let (keyed, used) =
@@ -134,7 +126,11 @@ fn the_baseline_decoder_uses_each_ordered_shapes_own_grammar() {
         panic!("ordered keyed state");
     };
     assert_eq!(rows[0].key.0, vec![5]);
-    assert_eq!(rows[1].key.0, vec![6], "the second key is absolute, not 5 + 6");
+    assert_eq!(
+        rows[1].key.0,
+        vec![6],
+        "the second key is absolute, not 5 + 6"
+    );
 
     let occurrence = Schema {
         domain: 1,
@@ -154,32 +150,31 @@ fn the_baseline_decoder_uses_each_ordered_shapes_own_grammar() {
     assert_eq!(rows[0].values, vec![Value::Unsigned(7)]);
 }
 
-/// `domain` and `branch` are varints on the wire and `u32` in the header, so an
-/// over-range value must be rejected rather than truncated onto a valid identity.
 #[test]
 fn an_over_range_block_identity_is_rejected_not_aliased() {
     use wire_format::frame::BlockHeader;
     let mut bytes = Vec::new();
-    wire_format::varint::write_varint(&mut bytes, 1u64 << 32); // domain
-    wire_format::varint::write_varint(&mut bytes, 0); // branch
-    bytes.extend_from_slice(&1u64.to_le_bytes()); // schema_hash
-    wire_format::varint::write_varint(&mut bytes, 0); // first_tick
+    wire_format::varint::write_varint(&mut bytes, 1u64 << 32);
+    wire_format::varint::write_varint(&mut bytes, 0);
+    bytes.extend_from_slice(&1u64.to_le_bytes());
+    wire_format::varint::write_varint(&mut bytes, 0);
     assert_eq!(
         BlockHeader::decode(&bytes, 0),
         Err(WireError::Corrupt("block domain or branch exceeds u32")),
         "domain 2^32 used to decode as domain 0"
     );
 
-    // The largest legal identity still round-trips.
     let mut ok = Vec::new();
-    BlockHeader { domain: u32::MAX, branch: u32::MAX, schema_hash: 7, first_tick: 0 }
-        .encode(&mut ok);
+    BlockHeader {
+        domain: u32::MAX,
+        branch: u32::MAX,
+        schema_hash: 7,
+        first_tick: 0,
+    }
+    .encode(&mut ok);
     assert_eq!(BlockHeader::decode(&ok, 0).unwrap().0.domain, u32::MAX);
 }
 
-/// derived-field contract's whole purpose, end to end: a value that falls by one every tick has a
-/// constant stored value, so an entire run of ticks collapses to `UNCHANGED`.
-/// Before the transform existed, each tick emitted a changed row.
 #[test]
 fn a_derived_countdown_collapses_to_one_unchanged_run() {
     use wire_format::body::{diff, key, KeyedState};
@@ -202,7 +197,6 @@ fn a_derived_countdown_collapses_to_one_unchanged_run() {
     let c = &s.collections[0];
     let fields: Vec<&Field> = c.value_fields().collect();
 
-    // A siege timer ticking 100, 99, 98 ... down over ten ticks.
     let states: Vec<KeyedState> = (0..10u64)
         .map(|t| {
             let stored = row_to_stored(&fields, &[Value::Unsigned(100 - t)], t).unwrap();
@@ -219,7 +213,6 @@ fn a_derived_countdown_collapses_to_one_unchanged_run() {
         );
     }
 
-    // Every tick encodes to the same bytes, which is what makes the run legal.
     let mut first = Vec::new();
     states[0][&key(&[1])].encode(c, &mut first).unwrap();
     for (t, st) in states.iter().enumerate() {
@@ -229,10 +222,13 @@ fn a_derived_countdown_collapses_to_one_unchanged_run() {
     }
     assert_eq!(first, vec![0xC8, 0x01], "zigzag(100) = 200");
 
-    // And the reader recovers the live value for whichever tick it asks about.
     let (decoded, _) = Record::decode(c, &first, 0).unwrap();
     for t in 0..10u64 {
         let live = row_from_stored(&fields, &decoded.values, t).unwrap();
-        assert_eq!(live, vec![Value::Unsigned(100 - t)], "live value at tick {t}");
+        assert_eq!(
+            live,
+            vec![Value::Unsigned(100 - t)],
+            "live value at tick {t}"
+        );
     }
 }

@@ -1,66 +1,3 @@
-//! pdxasset (`.mesh` / `.anim`) decoder — the Paradox Clausewitz binary model
-//! format shipped under `gfx/models/**` (and DLC copies under `dlc/*/gfx/models/**`).
-//!
-//! # Format law (derived from first principles against the shipped bytes)
-//!
-//! The grammar below was reverse-engineered from hexdumps and then validated
-//! against every shipped asset: 2880 files (1262 `.mesh`, 1618 `.anim`) across
-//! vanilla + DLC parse with zero unknown structure; 2873 are binary (`@@b@`)
-//! and 7 (all under `gfx/models/anim_blend_test/`) are the text twin (`@@t@`).
-//!
-//! Binary stream:
-//!
-//! ```text
-//! magic        := "@@b@"
-//! token        := property | object
-//! property     := '!' u8:name_len name_bytes type_char payload
-//!   type 'i'   := u32:count count*i32le
-//!   type 'f'   := u32:count count*f32le
-//!   type 's'   := u32:count count*(u32:byte_len bytes)   ; byte_len includes a
-//!                                                        ; single trailing NUL
-//! object       := '['{depth} name_bytes '\0'             ; depth = bracket run
-//! ```
-//!
-//! Object depth is 1-based; an object at depth `d` becomes a child of the most
-//! recent object at depth `d-1` (root = depth 0). Properties attach to the
-//! most recently opened object. The text twin uses the same tree with
-//! whitespace-separated tokens, `[name]`/`[[name]]`… nesting and quoted
-//! strings (`shader s 1 "Collision"`).
-//!
-//! Observed inventory (exhaustive over all 2880 shipped files):
-//!
-//! * root: `pdxasset i` — version list, always `[1, 0]`.
-//! * `.mesh`: `[object]` → shape nodes (free names, optional `lod i1`) →
-//!   `[[[mesh]]]` (repeatable per shape; optional `boundingsphere f4`) with
-//!   `p f(3v)`, optional `n f(3v)` / `ta f(4v)` / `u0 u1 f(2v)`, `tri i(3t)`,
-//!   `[[[[aabb]]]]` (`min f3`, `max f3`, always present), `[[[[material]]]]`
-//!   (`shader s1` always; `diff`/`n`/`spec s1` optional), optional
-//!   `[[[[skin]]]]` (`bones i1` in 1..=4, `ix i(4v)`, `w f(4v)` — always 4
-//!   slots per vertex regardless of `bones`), optional `[[[skeleton]]]` →
-//!   joint nodes (`ix i1`, optional `pa i1`, `tx f12` — 3x4 payload of the
-//!   INVERSE world-space bind transform, written transposed by the
-//!   io_pdx_mesh exporter — rare `rcf i1`); `[locator]` → locator nodes
-//!   (`p f3`, `q f4`, optional `pa s1` parent-bone name, optional `tx f16`).
-//! * `.anim`: `[info]` (`fps f1`, `sa i1` sample count, `j i1` joint count) →
-//!   per-joint nodes (`sa s1` channel flags over "tqs", `t f3`, `q f4`,
-//!   `s f1`), then `[samples]` with `t f`, `q f`, `s f`. Sample totals obey
-//!   `len(t) = 3*sa*#joints-with-t`, `len(q) = 4*sa*#q`, `len(s) = 1*sa*#s`
-//!   (verified on all 1612 binary anims). Sample ORDER is frame-major over
-//!   the animated-joint subsequence in info order per channel array —
-//!   confirmed against the io_pdx_mesh import/export source (Codex review
-//!   2026-07-04); totals are proven against shipped bytes, ordering rests on
-//!   that source.
-//!
-//! Everything outside this inventory fails closed: the tree parser rejects
-//! unknown type chars / malformed framing, and the typed extractors collect
-//! and report unknown object/property names instead of skipping them.
-//! Known format extensions used by OTHER Paradox titles that would fail
-//! closed here by design (named in the error): `u2`/`u3` UV sets, `lodperc`,
-//! and 3-component (non-uniform) anim scale.
-//!
-//! Mod compatibility (the `PROJECT.md` heading "Content and mod contract"): all
-//! game-file reads go through [`GameFileResolver`]; `*_from_game_dir` helpers exist for
-//! tests and debug bins only and construct a vanilla resolver internally.
 
 use crate::{GameFileResolver, Result};
 use std::collections::BTreeMap;
@@ -68,14 +5,9 @@ use std::fmt::Write as _;
 
 pub const PDX_ASSET_BINARY_MAGIC: &[u8; 4] = b"@@b@";
 pub const PDX_ASSET_TEXT_MAGIC: &[u8; 4] = b"@@t@";
-/// The only shipped pdxasset version (all 2880 vanilla+DLC files).
 pub const PDX_ASSET_SUPPORTED_VERSION: [i32; 2] = [1, 0];
-/// Root of the model tree, resolver-relative.
 pub const PDX_MODELS_ROOT: &str = "gfx/models";
 
-// ---------------------------------------------------------------------------
-// Property tree
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PdxValues {
@@ -137,22 +69,13 @@ impl PdxNode {
     }
 }
 
-/// Parsed pdxasset property tree. `root` is a synthetic node holding the
-/// top-level objects; the `pdxasset` version property stays in
-/// `root.properties` and is mirrored in `version`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxAssetTree {
     pub version: Vec<i32>,
     pub root: PdxNode,
 }
 
-// ---------------------------------------------------------------------------
-// Grammar-level parser (binary + text twins)
-// ---------------------------------------------------------------------------
 
-/// Parse a pdxasset byte stream (`.mesh` or `.anim`, binary `@@b@` or text
-/// `@@t@`). Fails closed on unknown magic, unknown value type chars,
-/// malformed framing, or an unsupported `pdxasset` version.
 pub fn parse_pdx_asset(bytes: &[u8]) -> Result<PdxAssetTree> {
     match bytes.get(..4) {
         Some(magic) if magic == PDX_ASSET_BINARY_MAGIC => parse_pdx_asset_binary(bytes),
@@ -287,10 +210,6 @@ fn parse_pdx_asset_binary(bytes: &[u8]) -> Result<PdxAssetTree> {
                     }
                     b's' => {
                         let count = cursor.u32("string count")? as usize;
-                        // Clamp the preallocation by the minimum encoded size per
-                        // string (4-byte length prefix + 1 NUL byte) so a malformed
-                        // count cannot force a huge allocation before the per-item
-                        // take() produces the typed truncation error.
                         let remaining = cursor.bytes.len() - cursor.pos;
                         let mut values = Vec::with_capacity(count.min(remaining / 5));
                         for index in 0..count {
@@ -362,7 +281,6 @@ fn utf8_owned(bytes: &[u8], what: &str) -> Result<String> {
         .map_err(|err| format!("{what} is not UTF-8: {err}").into())
 }
 
-// --- text twin -------------------------------------------------------------
 
 fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
     let text = std::str::from_utf8(&bytes[4..])
@@ -397,10 +315,6 @@ fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
             .map_err(|err| format!("property '{name}': bad count {count_token:?}: {err}"))?;
         let values = match type_token {
             "i" => {
-                // Clamp the preallocation by the remaining token stream (each
-                // value consumes at least one byte) so a malformed count cannot
-                // force a huge allocation before next_token() reports the typed
-                // missing-value error.
                 let mut values = Vec::with_capacity(count.min(tokens.rest.len()));
                 for _ in 0..count {
                     let raw = tokens
@@ -414,10 +328,6 @@ fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
                 PdxValues::I32(values)
             }
             "f" => {
-                // Clamp the preallocation by the remaining token stream (each
-                // value consumes at least one byte) so a malformed count cannot
-                // force a huge allocation before next_token() reports the typed
-                // missing-value error.
                 let mut values = Vec::with_capacity(count.min(tokens.rest.len()));
                 for _ in 0..count {
                     let raw = tokens
@@ -431,10 +341,6 @@ fn parse_pdx_asset_text(bytes: &[u8]) -> Result<PdxAssetTree> {
                 PdxValues::F32(values)
             }
             "s" => {
-                // Clamp the preallocation by the remaining token stream (each
-                // value consumes at least one byte) so a malformed count cannot
-                // force a huge allocation before next_token() reports the typed
-                // missing-value error.
                 let mut values = Vec::with_capacity(count.min(tokens.rest.len()));
                 for _ in 0..count {
                     let raw = tokens
@@ -495,15 +401,9 @@ impl<'a> TextTokens<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Typed extraction — meshes
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxMaterial {
-    /// Engine material name; observed vanilla+DLC set: PdxMeshAdvanced,
-    /// Collision, PdxMeshAdvancedAnim, PdxMeshAdvancedSnow, PdxMeshStandard,
-    /// PdxMeshSnow, standard, PdxMeshTrain, PdxMeshBorder.
     pub shader: String,
     pub diffuse: Option<String>,
     pub normal_map: Option<String>,
@@ -518,11 +418,8 @@ impl PdxMaterial {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxSkin {
-    /// Influences actually used per vertex (`bones` property, 1..=4).
     pub influences_per_vertex: i32,
-    /// 4 joint indices per vertex (unused slots are -1).
     pub joint_indices: Vec<i32>,
-    /// 4 weights per vertex.
     pub weights: Vec<f32>,
 }
 
@@ -531,12 +428,7 @@ pub struct PdxJoint {
     pub name: String,
     pub index: i32,
     pub parent: Option<i32>,
-    /// 3x4 payload of the inverse world-space bind transform as shipped
-    /// (`tx f12`; the io_pdx_mesh exporter writes it transposed — consumers
-    /// must transpose back).
     pub transform_3x4: [f32; 12],
-    /// Rare and undocumented (`rcf i1`); shipped only in
-    /// dlc047 ENG_prototype_armor_1.mesh (value 6). Preserved verbatim.
     pub rcf: Option<i32>,
 }
 
@@ -545,13 +437,10 @@ pub struct PdxLocator {
     pub name: String,
     pub position: [f32; 3],
     pub rotation_quat: [f32; 4],
-    /// Bone the locator hangs off, when skeletal.
     pub parent_bone: Option<String>,
-    /// Optional full 4x4 transform (`tx f16`).
     pub transform_4x4: Option<[f32; 16]>,
 }
 
-/// One drawable (or collision) mesh inside a shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxMeshData {
     pub verts: Vec<[f32; 3]>,
@@ -559,11 +448,9 @@ pub struct PdxMeshData {
     pub tangents: Option<Vec<[f32; 4]>>,
     pub uv0: Option<Vec<[f32; 2]>>,
     pub uv1: Option<Vec<[f32; 2]>>,
-    /// Triangle list, 3 indices per triangle, all < verts.len().
     pub indices: Vec<u32>,
     pub aabb_min: [f32; 3],
     pub aabb_max: [f32; 3],
-    /// Rare (`boundingsphere f4`, center + radius).
     pub bounding_sphere: Option<[f32; 4]>,
     pub material: PdxMaterial,
     pub skin: Option<PdxSkin>,
@@ -577,10 +464,8 @@ pub struct PdxShape {
     pub skeleton: Vec<PdxJoint>,
 }
 
-/// Typed contents of one `.mesh` pdxasset.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxModel {
-    /// `loddist f` on the `[object]` node (LOD switch distances), when present.
     pub lod_distances: Vec<f32>,
     pub shapes: Vec<PdxShape>,
     pub locators: Vec<PdxLocator>,
@@ -684,9 +569,6 @@ fn fixed<const N: usize>(node_path: &str, name: &str, values: &[f32]) -> Result<
     })
 }
 
-/// Extract the typed model from a parsed `.mesh` tree. Fails closed: any
-/// object or property outside the verified inventory is collected and
-/// reported by name.
 pub fn extract_pdx_model(tree: &PdxAssetTree) -> Result<PdxModel> {
     let mut unknown = UnknownCollector::new();
     let mut model = PdxModel {
@@ -1061,26 +943,16 @@ fn extract_locator(node: &PdxNode, unknown: &mut UnknownCollector) -> Result<Opt
     }))
 }
 
-// ---------------------------------------------------------------------------
-// Typed extraction — animations
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxAnimJoint {
     pub name: String,
-    /// Channel flags over "tqs": which of translation / rotation / scale are
-    /// sampled per frame (empty = fully static joint).
     pub channels: String,
     pub base_translation: [f32; 3],
     pub base_rotation_quat: [f32; 4],
     pub base_scale: f32,
 }
 
-/// Typed contents of one `.anim` pdxasset. Sample totals are validated
-/// against the per-joint channel flags (`len(samples.t) == 3 * sample_count *
-/// #joints-with-t`, etc. — proven on all 1612 shipped binary anims). The raw
-/// sample arrays are exposed as shipped; per-frame slicing assumes the
-/// frame-major order documented in the module header.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PdxAnimData {
     pub fps: f32,
@@ -1227,9 +1099,6 @@ fn extract_anim_info(
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Validation report (gate evidence)
-// ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
 pub struct PdxMeshValidationRow {
@@ -1241,7 +1110,6 @@ pub struct PdxMeshValidationRow {
     pub max_index: u32,
     pub indices_in_bounds: bool,
     pub aabb_contains_positions: bool,
-    /// Largest positive excursion of any position component outside the aabb.
     pub max_aabb_deviation: f32,
     pub uv_min: Option<f32>,
     pub uv_max: Option<f32>,
@@ -1288,9 +1156,6 @@ pub fn validate_pdx_model(model: &PdxModel) -> Vec<PdxMeshValidationRow> {
     rows
 }
 
-// ---------------------------------------------------------------------------
-// Resolver-routed access + install-wide scan
-// ---------------------------------------------------------------------------
 
 pub fn pdx_model_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Result<PdxModel> {
     let path = resolver.resolve_required(rel_path, "pdxasset mesh")?;
@@ -1308,7 +1173,6 @@ pub fn pdx_anim_from_resolver(resolver: &GameFileResolver, rel_path: &str) -> Re
     extract_pdx_anim(&tree).map_err(|err| format!("{rel_path}: {err}").into())
 }
 
-/// Test/debug-only convenience wrapper (vanilla resolver, no mods).
 pub fn pdx_model_from_game_dir(game_dir: &std::path::Path, rel_path: &str) -> Result<PdxModel> {
     pdx_model_from_resolver(
         &GameFileResolver::vanilla(game_dir.to_path_buf())?,
@@ -1324,7 +1188,6 @@ pub struct PdxAssetScanReport {
     pub text_files: usize,
     pub mesh_failures: Vec<(String, String)>,
     pub anim_failures: Vec<(String, String)>,
-    /// (structural parent pattern, property name, type char) -> occurrences.
     pub property_inventory: BTreeMap<(String, String, char), usize>,
     pub validation_rows: usize,
     pub validation_failures: Vec<(String, String)>,
@@ -1338,9 +1201,6 @@ impl PdxAssetScanReport {
     }
 }
 
-/// Parse every `.mesh` and `.anim` under `rel_root` (resolver-routed,
-/// recursive), run typed extraction + semantic validation, and inventory the
-/// property names observed at grammar level.
 pub fn scan_pdx_assets_from_resolver(
     resolver: &GameFileResolver,
     rel_root: &str,
@@ -1425,8 +1285,6 @@ fn inventory_node(
     }
 }
 
-/// Collapse free-form names (shape/bone/locator/joint) so the inventory stays
-/// a compact structural fingerprint.
 fn child_pattern(parent_pattern: &str, child_name: &str) -> String {
     let structural = matches!(
         child_name,
@@ -1448,14 +1306,7 @@ fn child_pattern(parent_pattern: &str, child_name: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// OBJ dump (debug evidence)
-// ---------------------------------------------------------------------------
 
-/// Serialize a model as Wavefront OBJ text so a human can LOOK at it.
-/// Collision meshes are emitted as their own groups (commented) so viewers
-/// can hide them; V is flipped (1-v) per OBJ convention. Skin/skeleton data
-/// has no OBJ representation and is noted in comments only.
 pub fn pdx_model_to_obj(model: &PdxModel, source_label: &str) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# pdxasset OBJ dump — {source_label}");
@@ -1466,7 +1317,7 @@ pub fn pdx_model_to_obj(model: &PdxModel, source_label: &str) -> String {
         model.locators.len(),
         model.lod_distances
     );
-    let mut vertex_base = 1usize; // OBJ indices are 1-based
+    let mut vertex_base = 1usize;
     for shape in &model.shapes {
         for (mesh_index, mesh) in shape.meshes.iter().enumerate() {
             let _ = writeln!(
@@ -1546,9 +1397,6 @@ fn sanitize_obj_name(name: &str) -> String {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -1557,7 +1405,6 @@ mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    // --- synthetic byte builders (mirror the verified grammar) ---
 
     fn push_prop_f(bytes: &mut Vec<u8>, name: &str, values: &[f32]) {
         bytes.push(b'!');
@@ -1736,10 +1583,8 @@ mod tests {
 
     #[test]
     fn anim_sample_count_mismatch_fails_closed() {
-        // Same anim as synthetic_anim_bytes but samples.q carries 4 floats
-        // where the sample law requires 4 * sample_count(2) * one 'q' joint = 8.
         let mut bytes = synthetic_anim_bytes();
-        let q_prop_len = 1 + 1 + 1 + 1 + 4 + 4 * 8; // '!', len, "q", 'f', count, 8 floats
+        let q_prop_len = 1 + 1 + 1 + 1 + 4 + 4 * 8;
         bytes.truncate(bytes.len() - q_prop_len);
         push_prop_f(&mut bytes, "q", &[0.0, 0.0, 0.0, 1.0]);
         let tree = parse_pdx_asset(&bytes).expect("parse tampered anim");
@@ -1766,7 +1611,7 @@ mod tests {
         bytes.push(b'!');
         bytes.push(3);
         bytes.extend_from_slice(b"bad");
-        bytes.push(b'd'); // no such value type
+        bytes.push(b'd');
         let err = parse_pdx_asset(&bytes).expect_err("unknown type char");
         assert!(
             err.to_string().contains("unknown pdxasset value type"),
@@ -1784,9 +1629,6 @@ mod tests {
 
     #[test]
     fn binary_oversized_string_count_fails_closed_without_preallocation() {
-        // A malformed 's' property declaring u32::MAX strings with no payload
-        // must hit the typed truncation error, not abort on a huge Vec
-        // preallocation sized from the attacker-controlled count.
         let mut bytes = Vec::new();
         bytes.extend_from_slice(PDX_ASSET_BINARY_MAGIC);
         push_prop_i(&mut bytes, "pdxasset", &[1, 0]);
@@ -1801,8 +1643,6 @@ mod tests {
 
     #[test]
     fn text_oversized_count_fails_closed_without_preallocation() {
-        // Same law for the text twin: a count token of 4e9 with no values must
-        // produce the typed missing-value error, not a huge preallocation.
         let text = b"@@t@pdxasset i 2 1 0\nhuge f 4000000000\n";
         let err = parse_pdx_asset(text).expect_err("oversized text count");
         assert!(err.to_string().contains("missing f32 value"), "{err}");
@@ -1840,7 +1680,6 @@ mod tests {
         assert!(err.to_string().contains("out of bounds"), "{err}");
     }
 
-    // --- resolver contract (`PROJECT.md`: "Content and mod contract") ---
 
     fn write_bytes(root: &Path, rel: &str, bytes: &[u8]) {
         let path = rel
@@ -1916,7 +1755,6 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
-    // --- vanilla install gates (skipped when the install is absent) ---
 
     fn vanilla_dir() -> PathBuf {
         replay_test_gates::require_vanilla_game_root()
@@ -2027,7 +1865,6 @@ mod tests {
                     row.material_shader
                 );
             }
-            // unit + ship + plane should carry skeletons; building + tree need not.
             if matches!(kind, "unit") {
                 assert!(
                     model.shapes.iter().any(|shape| !shape.skeleton.is_empty()),

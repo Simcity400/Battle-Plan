@@ -1,16 +1,4 @@
-//! `wire_format::d99` transcribes the DCS1 grammar rather than importing it, so
-//! this is the gate that keeps the transcription and the production carrier from
-//! drifting apart.
-//!
-//! The module itself may not depend on `compact_contract` — that is the
-//! `compact_contract_dependency_policy` boundary, which only scans `src`. An
-//! integration test can, and this one does exactly one thing with that access:
-//! encode with the REAL production encoder and decode with the transcription,
-//! then compare field for field.
-//!
 //! The `@lane-payload-authority` marker in `src/d99.rs` pins the original
-//! decoder's source span and digest. That catches a change to the authority.
-//! This catches a transcription that is wrong today.
 
 use compact_contract::division_combat_stats as carrier;
 use wire_format::d99;
@@ -53,11 +41,6 @@ fn carrier_row(
     }
 }
 
-/// Law: every grammar constant d99 restates equals the carrier's.
-///
-/// d99 pins each of these to a literal in its own test, so this is the half that
-/// makes the literal mean something: without it the two could drift and both
-/// suites would stay green.
 #[test]
 fn every_transcribed_constant_equals_the_carrier() {
     assert_eq!(d99::DOMAIN, u32::from(carrier::DOMAIN_ID));
@@ -87,7 +70,6 @@ fn every_transcribed_constant_equals_the_carrier() {
         d99::LANE_LOCAL_STATUS_MASK,
         carrier::DOMAIN99_LANE_LOCAL_STATUS_MASK
     );
-    // The row-observation wire codes, in both directions.
     for (theirs, mine) in [
         (
             carrier::RowObservation::RoundEntryFold,
@@ -110,20 +92,29 @@ fn every_transcribed_constant_equals_the_carrier() {
     }
 }
 
-/// Law: what the production encoder writes, the transcription reads back
-/// unchanged — every raw field, on every observation state, on both sides.
-///
-/// This is the anti-drift gate proper. A transcription with a shifted offset, a
-/// swapped field pair, or a wrong row width would round-trip perfectly inside
-/// `d99`'s own tests, because those build the bytes with the same (wrong) layout.
-/// Only the real encoder can catch it.
 #[test]
 fn the_production_encoder_round_trips_through_the_transcription() {
     let rows = vec![
-        carrier_row(4_211, carrier::SIDE_ATTACKER, carrier::RowObservation::RoundEntryFold),
-        carrier_row(4_212, carrier::SIDE_ATTACKER, carrier::RowObservation::StatBlockNull),
-        carrier_row(4_213, carrier::SIDE_DEFENDER, carrier::RowObservation::TornRead),
-        carrier_row(4_214, carrier::SIDE_DEFENDER, carrier::RowObservation::Unread),
+        carrier_row(
+            4_211,
+            carrier::SIDE_ATTACKER,
+            carrier::RowObservation::RoundEntryFold,
+        ),
+        carrier_row(
+            4_212,
+            carrier::SIDE_ATTACKER,
+            carrier::RowObservation::StatBlockNull,
+        ),
+        carrier_row(
+            4_213,
+            carrier::SIDE_DEFENDER,
+            carrier::RowObservation::TornRead,
+        ),
+        carrier_row(
+            4_214,
+            carrier::SIDE_DEFENDER,
+            carrier::RowObservation::Unread,
+        ),
     ];
     let snapshot = carrier::DivisionCombatStatsSnapshot {
         read_time_us: 1_234,
@@ -135,8 +126,8 @@ fn the_production_encoder_round_trips_through_the_transcription() {
     };
     let payload = carrier::encode_payload(&snapshot).expect("the production encoder accepts this");
 
-    let (header, decoded) =
-        d99::decode_success_payload(&payload).expect("the transcription reads the production bytes");
+    let (header, decoded) = d99::decode_success_payload(&payload)
+        .expect("the transcription reads the production bytes");
     assert_eq!(header.observed_combat_count, snapshot.observed_combat_count);
     assert_eq!(header.read_time_us, snapshot.read_time_us);
     assert_eq!(header.source_sequence, snapshot.source_sequence);
@@ -187,13 +178,6 @@ fn the_production_encoder_round_trips_through_the_transcription() {
     }
 }
 
-/// Law: each of the four distinct stat members and each of the four distinct
-/// scale members lands in its OWN slot.
-///
-/// The round-trip above compares whole groups, so a transposition inside a group
-/// whose fixture values happened to be equal would survive it. Here every member
-/// gets a value unique across the whole row, so any swap moves a value into a
-/// slot it does not belong in.
 #[test]
 fn no_two_members_can_be_transposed_without_being_seen() {
     let stats = carrier::CachedStatBlock {
@@ -242,13 +226,6 @@ fn no_two_members_can_be_transposed_without_being_seen() {
     assert_eq!(decoded.combat_side_bonus_raw, Some(3_000_001));
 }
 
-/// Law: a failure-status payload minted by the production encoder folds to
-/// `Unavailable` through the transcription, not to an error and not to an empty
-/// snapshot.
-///
-/// "The hour failed" and "the hour observed no combat" are different facts, and a
-/// consumer that cannot tell them apart is the exact defect this domain's typed
-/// states exist to prevent.
 #[test]
 fn a_production_failure_payload_folds_to_unavailable() {
     let payload = carrier::encode_payload(&carrier::DivisionCombatStatsSnapshot {

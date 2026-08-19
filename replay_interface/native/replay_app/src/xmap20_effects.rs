@@ -1,8 +1,3 @@
-//! XMAP20 normal-product execution boundary.
-//!
-//! This is the only app-side entry point for particle/effect draws. It binds
-//! the current viewer projection and XMAP09/XMAP10-composed SceneCB0/MainScene;
-//! selected-Present camera, constants, viewport and targets are never inputs.
 
 use map_viewer::{
     GameFileResolver, NativeProductionMainSceneTarget, PreparedXmap20Frame,
@@ -62,7 +57,6 @@ pub struct Xmap20ExecutionReceipt {
     pub operation_id: String,
     pub topology_sha256: String,
     pub assignment_sha256: String,
-    // Frozen shared identity order owned by XMAP22.
     pub content_manifest_sha256: String,
     pub foundation_content_operation_sha256: String,
     pub viewer_state_sha256: String,
@@ -80,8 +74,6 @@ pub struct Xmap20ExecutionReceipt {
     pub color_target: PreparedRenderTarget,
     pub depth_target: PreparedRenderTarget,
     pub particle_draw_count: u32,
-    /// SHA-256 of canonical serde JSON for this entire receipt with this field
-    /// cleared. Declared last by the frozen XMAP22 contract.
     pub packet_draw_receipt_sha256: String,
 }
 
@@ -213,9 +205,6 @@ impl Xmap20ExecutionReceipt {
     }
 }
 
-/// # Safety
-/// All native target views and provider buffers must belong to `gfx.device`
-/// and remain alive for this call.
 pub unsafe fn execute_xmap20_effects(
     gfx: &Gfx,
     resolver: &GameFileResolver,

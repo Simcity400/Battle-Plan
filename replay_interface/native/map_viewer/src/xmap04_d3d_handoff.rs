@@ -1,11 +1,3 @@
-//! App-device handoff for XMAP04.
-//!
-//! This owns the compiled effective terrain program and uploads every piece of
-//! XMAP04 geometry to the product D3D11 device. Final `Effect terrain`
-//! submission remains structurally unavailable until XMAP05/XMAP07/XMAP09/
-//! XMAP10 satisfy [`PreparedTerrainFrame::admit_visible_draw_dependencies`];
-//! the only public draw method enforces that join against concrete same-device
-//! resources before it initializes and writes MainScene.
 
 #[cfg(windows)]
 use crate::NativeXmap05PoliticalHandoff;
@@ -16,7 +8,7 @@ use snapshot::sha256::Sha256;
 #[cfg(windows)]
 use std::collections::BTreeMap;
 
-const XMAP04_WATER_REFRACTION_DXGI_FORMAT: u32 = 87; // B8G8R8A8_UNORM
+const XMAP04_WATER_REFRACTION_DXGI_FORMAT: u32 = 87;
 const XMAP04_D3D11_MAX_TEXTURE_2D_DIMENSION: u32 = 16_384;
 const XMAP04_WATER_REFRACTION_COLOR_DESCRIPTOR_DOMAIN: &[u8] =
     b"xmap04.water_refraction.color_descriptor.v1\0";
@@ -236,10 +228,6 @@ pub struct Xmap04D3dHandoffReceipt {
 
 pub const XMAP04_TERRAIN_DRAW_RECEIPT_SCHEMA: &str = "hoi4.xmap04.native-terrain-draw.v1";
 
-/// Pointer-free proof that the exact effective-VFS terrain program initialized
-/// and wrote one concrete viewer-owned MainScene allocation. The pre-draw
-/// color/depth initialization is the exact zero-HDR / depth-one-stencil-zero
-/// state observed in the retained exact-a729 terrain-active capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap04TerrainDrawReceipt {
     pub schema: String,
@@ -312,10 +300,6 @@ impl Xmap04TerrainDrawReceipt {
     }
 }
 
-/// Exact identity of one XMAP04-owned map texture exposed to downstream map
-/// shaders. `payload_sha256` seals the bytes actually uploaded to D3D11 (not a
-/// source container header), while `descriptor_sha256` seals the complete
-/// texture/subresource layout used for that upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap04NativeMapShaderResourceBinding {
     pub symbol: String,
@@ -323,10 +307,7 @@ pub struct Xmap04NativeMapShaderResourceBinding {
     pub shader_register: u32,
     pub replay_frame_identity_sha256: String,
     pub camera_frame_sha256: String,
-    /// Authenticated effective-VFS payload identity before file decoding, or
-    /// the authenticated generator payload identity for `TerrainIDMap`.
     pub source_content_sha256: String,
-    /// Bytes actually uploaded to the D3D11 texture subresources.
     pub payload_sha256: String,
     pub descriptor_sha256: String,
 }
@@ -389,14 +370,14 @@ fn map_shader_resource_descriptor_sha256(
         width,
         height,
         mip_levels,
-        1, // ArraySize
+        1,
         dxgi_format,
-        1, // SampleDesc.Count
-        0, // SampleDesc.Quality
+        1,
+        0,
         usage,
-        8, // D3D11_BIND_SHADER_RESOURCE
-        0, // CPUAccessFlags
-        0, // MiscFlags
+        8,
+        0,
+        0,
     ] {
         identity.extend_from_slice(&value.to_le_bytes());
     }
@@ -517,9 +498,6 @@ impl Xmap04UnderwaterDrawReceipt {
     }
 }
 
-/// XMAP04-owned, XMAP07-produced identity contract for the retained
-/// high-GFX WaterRefraction texture and its two views. Every descriptor field
-/// is authenticated independently of the stable producer resource identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap04UnderwaterTargetContract {
     pub owner_packet: String,
@@ -530,9 +508,6 @@ pub struct Xmap04UnderwaterTargetContract {
     pub sample_quality: u32,
     pub descriptor_sha256: String,
     pub producer_frame_sha256: String,
-    /// Nonzero XMAP07 allocation generation stored beside the exact retained
-    /// texture. XMAP07 advances it only when a new WaterRefraction texture is
-    /// successfully allocated.
     pub producer_allocation_generation: u64,
     pub producer_allocation_identity_sha256: String,
     pub resource_identity_sha256: String,
@@ -687,7 +662,6 @@ pub unsafe trait NativeXmap04UnderwaterTarget {
     fn descriptor_sha256(&self) -> &str {
         &self.target_contract().descriptor_sha256
     }
-    /// XMAP04-owned stable identity for the retained texture resource.
     fn resource_identity_sha256(&self) -> &str {
         &self.target_contract().resource_identity_sha256
     }
@@ -903,8 +877,6 @@ struct NativeXmap04MapShaderTexture {
 }
 
 /// Borrowed XMAP04 map-resource view. The lifetime prevents the XMAP04
-/// handoff (and therefore its retained texture/SRV) from being dropped while a
-/// downstream packet constructs its own non-owning draw view.
 #[cfg(windows)]
 #[derive(Clone, Debug)]
 pub struct NativeXmap04MapShaderResourceView<'a> {
@@ -916,12 +888,10 @@ pub struct NativeXmap04MapShaderResourceView<'a> {
 
 #[cfg(windows)]
 impl NativeXmap04MapShaderResourceView<'_> {
-    /// Borrowed pointer retained by the parent XMAP04 handoff.
     pub fn as_raw(&self) -> *mut winapi::um::d3d11::ID3D11ShaderResourceView {
         self.raw_srv
     }
 
-    /// The exact D3D11 device on which this SRV was materialized.
     pub fn device(&self) -> *mut winapi::um::d3d11::ID3D11Device {
         self.raw_device
     }
@@ -968,8 +938,6 @@ pub struct NativeXmap04TerrainHandoff {
     terrain_rasterizer_state: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11RasterizerState>,
     map_shader_textures: BTreeMap<String, NativeXmap04MapShaderTexture>,
     draw_uploads: Vec<NativeXmap04DrawUpload>,
-    /// Authenticated effective-VFS bytes for XMAP04-owned terrain samplers.
-    /// Their typed sampler descriptors live in `PreparedTerrainProgram`.
     static_resources: Vec<(String, std::sync::Arc<[u8]>)>,
     downstream_pixel_slots: BTreeMap<String, u32>,
     underwater: Option<NativeXmap04UnderwaterProgram>,
@@ -985,12 +953,6 @@ struct NativeXmap04DrawUpload {
 
 #[cfg(windows)]
 impl NativeXmap04TerrainHandoff {
-    /// Create and retain the exact program/input layout, shared geometry,
-    /// per-draw height/CB1 buffers, and admitted static sampler payloads on the
-    /// application's own D3D11 device. This performs no pixel submission.
-    ///
-    /// # Safety
-    /// `device` must be a live `ID3D11Device` for the duration of this call.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &GameFileResolver,
@@ -1158,11 +1120,6 @@ impl NativeXmap04TerrainHandoff {
         })
     }
 
-    /// Replace per-camera geometry uploads while retaining the exact program,
-    /// input layout, shared geometry, and admitted static resources.
-    ///
-    /// # Safety
-    /// `device` must be the same live device used by `create_on_device`.
     pub unsafe fn update_frame(
         &mut self,
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -1201,8 +1158,6 @@ impl NativeXmap04TerrainHandoff {
         if frame.deterministic_sha256 == self.receipt.terrain_frame_sha256 {
             return Ok(&self.receipt);
         }
-        // Touch every retained object as part of the invariant: this runtime is
-        // not a metadata receipt detached from actual D3D resources.
         let _ = (
             self.vertex_shader.as_raw(),
             self.pixel_shader.as_raw(),
@@ -1229,7 +1184,6 @@ impl NativeXmap04TerrainHandoff {
         &self.receipt
     }
 
-    /// Borrow an exact XMAP04-owned underwater texture for another admitted
     /// map effect. Identity and lifetime remain tied to this handoff.
     pub fn underwater_static_resource<'a>(
         &'a self,
@@ -1261,10 +1215,6 @@ impl NativeXmap04TerrainHandoff {
         })
     }
 
-    /// Borrow an exact admitted static texture already owned by the visible
-    /// terrain program. This is the shared product-resource seam used by
-    /// file-derived map-object effects; it never manufactures a neutral
-    /// replacement when the effective program does not own the symbol.
     pub fn terrain_static_resource<'a>(
         &'a self,
         frame: &PreparedTerrainFrame,
@@ -1309,11 +1259,6 @@ impl NativeXmap04TerrainHandoff {
         Ok(draw.slot1.as_raw())
     }
 
-    /// Borrow the four exact XMAP04-owned map textures in downstream shader
-    /// register order (`t3` through `t6`). The returned views carry the replay,
-    /// camera, source-content, uploaded-payload, descriptor, and device
-    /// identities needed for a downstream packet to fail closed before
-    /// constructing its own draw-facing view.
     pub fn map_shader_resource_views(&self) -> Result<Vec<NativeXmap04MapShaderResourceView<'_>>> {
         if self.map_shader_textures.len() != XMAP04_MAP_SHADER_RESOURCE_SET.len() {
             return Err("XMAP04 map shader resource set is incomplete".into());
@@ -1341,14 +1286,6 @@ impl NativeXmap04TerrainHandoff {
             .collect()
     }
 
-    /// Bind XMAP05's four terrain-owned SRVs to the exact reflected
-    /// `Effect terrain` pixel-shader registers. This satisfies XMAP05's slice
-    /// of the visible-draw dependency contract while XMAP07/XMAP09/XMAP10
-    /// remain independently blocked.
-    ///
-    /// # Safety
-    /// `context` must belong to the same live device used to construct both
-    /// handoffs.
     pub unsafe fn bind_xmap05_dependencies(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -1377,15 +1314,7 @@ impl NativeXmap04TerrainHandoff {
         Ok(&self.receipt)
     }
 
-    /// Initialize and draw the exact effective-VFS terrain program into the
-    /// concrete viewer-owned MainScene target. Every cross-packet SRV, SceneCB0
-    /// row, PointLightsCB2, target view, and retained program object is checked
     /// for current replay/camera identity and same-device ownership before the
-    /// first D3D11 mutation.
-    ///
-    /// # Safety
-    /// All providers and `context` must belong to the same live D3D11 device
-    /// used to construct this handoff and must remain live for the call.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn render_visible_terrain(
         &self,
@@ -1685,17 +1614,6 @@ impl NativeXmap04TerrainHandoff {
         Ok(receipt)
     }
 
-    /// Render the exact high-GFX `pdxmap.shader:underwater` terrain pass into
-    /// the XMAP07-owned refraction RTV. XMAP04 owns the shaders, geometry,
-    /// terrain textures, depth target, and draw submission; XMAP07 retains the
-    /// color target/SRV. XMAP10 and XMAP09 supply the authenticated live
-    /// scene/light inputs. No neutral resource is accepted.
-    ///
-    /// # Safety
-    /// Every borrowed provider and `context` must belong to the same live
-    /// D3D11 device used to create this handoff. Implementors of the unsafe
-    /// provider traits guarantee the returned COM pointers remain live for
-    /// this call.
     pub unsafe fn render_underwater_refraction<T, S, P>(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -1976,11 +1894,6 @@ impl NativeXmap04TerrainHandoff {
         Ok(receipt)
     }
 
-    /// Bind XMAP07's real recording-fed SnowMud texture to terrain slot 1.
-    ///
-    /// # Safety
-    /// `context` must belong to the same live device used to construct both
-    /// handoffs.
     pub unsafe fn bind_xmap07_dependencies(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -3488,10 +3401,6 @@ unsafe fn create_indexed_heightmap_texture(
         crate::image_load::decode_bmp_indexed(bytes, std::path::Path::new("map/heightmap.bmp"))?;
     let width = u32::try_from(decoded.width)?;
     let height = u32::try_from(decoded.height)?;
-    // The admitted source is an 8-bit indexed height field and the engine
-    // shader samples its scalar normalized value. Preserve those exact indices
-    // as a single-channel R8_UNORM texture; do not expand through the BMP
-    // palette or assume vanilla dimensions.
     create_single_mip_map_shader_texture(
         device,
         "HeightMap",
@@ -3656,9 +3565,6 @@ unsafe fn create_terrain_normal_texture(
     let fourcc = bytes
         .get(84..88)
         .ok_or("XMAP04 TerrainNormal DDS pixel format is truncated")?;
-    // Legacy DDS FourCCs map to their linear DXGI variants. A DX10 header
-    // carries the exact view format and is preserved verbatim. These are the
-    // complete 2D formats whose byte layout is implemented below.
     let (dxgi_format, block_bytes, bytes_per_pixel, payload_offset) = match fourcc {
         b"DXT1" => (71u32, 8u32, 0u32, 128usize),
         b"DXT3" => (74u32, 16u32, 0u32, 128usize),

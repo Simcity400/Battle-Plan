@@ -1,9 +1,3 @@
-//! Exact-a729 delayed-event lifecycle observer for A19.
-//!
-//! Two lane-owned detours bracket the country hourly update and definition
-//! cancellation paths. Dispatch is observed through d75's already-installed
-//! common fire detour; this module never installs a competing hook at
-
 #![cfg(windows)]
 
 use core::{cell::RefCell, ffi::c_void, mem, ptr};
@@ -11,8 +5,7 @@ use minhook::MinHook;
 use production_hook_receipt::{
     bind_detours_by_identity, next_teardown_owner_token, observe_enabled_minhook_rel5,
     observe_released, ExpectedRvaHook, HookTeardownAttestation, InstallAbortDiscard,
-    InstalledRvaHookReceipt, ReleasedRvaHookReceipt, SiteDetour,
-    MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
+    InstalledRvaHookReceipt, ReleasedRvaHookReceipt, SiteDetour, MINHOOK_NORMAL_REL5_PRIMITIVE_ID,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -28,14 +21,7 @@ pub const EXECUTABLE_SHA256: &str =
 pub const HOURLY_UPDATE_RVA: usize = 0x006E_FE10;
 pub const DEFINITION_CANCEL_RVA: usize = 0x006D_D7F0;
 pub const EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_A19_DELAYED_EVENT_EVIDENCE";
-/// The exact hourly/cancel detours are installed passively whenever the
-/// existing delayed-events domain is scheduled. Missing roots, callback loss,
-/// or incomplete lifecycle custody fail the observation closed.
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
-/// Capacity of the reservable lifecycle queue. An enqueue that would exceed it
-/// is refused and charged to `dropped_overflow`, which clears the ledger's
-/// `complete` flag -- so one drain never carries more rows than this, and the
-/// replay consumer applies the same ceiling to the ledger it reads back.
 pub const MAX_PENDING_EVENTS: usize = portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_EVENTS;
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6E90;
@@ -54,29 +40,11 @@ const CDELAYED_EVENT_SCOPE_RANDOM_B_OFF: usize = 0x20;
 const CDELAYED_EVENT_ORIGINATOR_OFF: usize = 0xC0;
 const CDELAYED_EVENT_DUE_OFF: usize = 0xC4;
 const CEVENT_COMBINED_ID_OFF: usize = 0x0C;
-/// Owner/originator ceiling for a lifecycle row. Shared with the replay
-/// consumer, which used to apply no upper bound at all.
-///
-/// Despite the name this is the country LINK index space, not the country
-/// database's: [`CCOUNTRY_TAG_OFF`] is `CCountry + 0x08`, which is a link
-/// index, and `snapshot_row` requires `CDelayedEvent+0x18` to equal it. The
-/// originator at `CDelayedEvent+0xC0` has no such binding and takes this as a
-/// loose representation envelope. Both readings are written out at the shared
-/// constant, which is also where the residual that would tighten either lives.
-///
-/// It was `100_000` — a content-scale plausibility guess, and the last one in
-/// the country-cap family (lane GV's residual R-GV-1).
 const MAX_COUNTRY_TAG_DB_ID: u32 = portable_admission::MAX_DELAYED_EVENT_LIFECYCLE_TAG_DB_ID;
 const MIN_COMBINED_EVENT_ID: u32 = 100_000;
 const MAX_COMBINED_EVENT_ID: u32 = 100_099_999;
 const MAX_DUE_HOURS: u32 = 500_000;
-/// Plausibility ceiling on ONE country's `CCountry+0x129C` delayed-event vector
-/// count. Numerically equal to [`MAX_PENDING_EVENTS`] and deliberately NOT
-/// shared with it: that one is the lifecycle hook queue's capacity, which the
-/// replay consumer re-applies to the ledger it reads back, while this bounds an
-/// engine vector this scan walks. Coupling two different quantities because
 /// they happen to spell the same number is how a bound acquires a meaning
-/// nobody chose.
 const MAX_EVENTS_PER_COUNTRY: u32 = 65_536;
 const HEAP_LO: usize = 0x100_0000_0000;
 const HEAP_HI: usize = 0x7ff0_0000_0000;
@@ -248,17 +216,12 @@ pub const D64_TERMINAL_LIFECYCLE_SCHEMA: &str = "battle-plan.d64.lifecycle_termi
 pub const D64_POISONED_ABORT_SCHEMA: &str = "battle-plan.d64.poisoned_abort_envelope.v1";
 pub const D64_TERMINAL_ATTEMPT_BUDGET: u8 = 3;
 
-/// Opaque, one-session authority to detach the D75 bridge and terminate D64.
-/// It is minted only after live re-observation of both exact installed D64
-/// hooks while the D75 dispatch observer is registered.
 #[must_use = "D64 detach authority must terminate or abort D64 custody"]
 pub struct D64DetachAuthority {
     authority_id: u64,
     terminal_attempts_remaining: u8,
 }
 
-/// Test-only opaque authority used by dependent lane tests. This feature is
-/// enabled only as a dev-dependency and is absent from shipped artifacts.
 #[cfg(feature = "test-support")]
 pub fn mint_test_detach_authority() -> D64DetachAuthority {
     D64DetachAuthority {
@@ -347,8 +310,6 @@ impl fmt::Debug for D64TerminalAbortFailure {
 
 impl std::error::Error for D64TerminalAbortFailure {}
 
-/// Non-replayable terminal D64 custody result. Fields are private so only the
-/// exact sealed producer below can construct one.
 #[must_use = "authenticated D64 terminal custody must be bound to D75 publication"]
 pub struct AuthenticatedD64TerminalDrainReceipt {
     custody_identity_sha256: [u8; 32],
@@ -383,10 +344,6 @@ impl AuthenticatedD64TerminalDrainReceipt {
         self.payload_sha256
     }
 
-    /// Canonical terminal DEL2 bytes which must be the exact suffix of the
-    /// terminal D64 DATA payload. Keeping this serialization in the sealed D64
-    /// producer prevents a caller from pairing the authenticated lifecycle
-    /// envelope with a substituted D64 carrier.
     pub fn terminal_del2(&self) -> &[u8] {
         &self.terminal_del2
     }
@@ -527,13 +484,7 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Whether the A19 dispatch observer is currently registered.
-///
-/// The collector's production hook registry needs a LANE-owned answer to
-/// "is the D75 producer edge still open". Its own install bookkeeping is not
-/// one: the flag is set at install and cleared only by the abort path, so a
 /// capture that released through the typed terminal transaction leaves it
-/// permanently true.
 pub fn dispatch_observer_registered() -> bool {
     DISPATCH_OBSERVER_REGISTERED.load(Ordering::Acquire)
 }
@@ -546,8 +497,6 @@ pub fn set_dispatch_observer_registered(registered: bool) {
     }
 }
 
-/// Called synchronously from d75's authenticated common-fire detour. No raw
-/// address is retained beyond this function.
 pub fn observe_dispatch(
     event: usize,
     actor_tag_id: u32,
@@ -581,9 +530,6 @@ pub fn observe_dispatch(
     });
 }
 
-/// Fail closed when the shared d75 detour observed a dispatch but its bridge
-/// could not authenticate the raw arguments. Without this notification, an
-/// executed delayed event could be mislabeled as a false-trigger consumption.
 pub fn observe_dispatch_unavailable() {
     OPEN_CALL.with(|slot| {
         if let Some(open) = slot.borrow_mut().as_mut() {
@@ -667,8 +613,6 @@ fn install_hooks() -> Result<InstalledHookAddresses, String> {
         }
     };
     ORIGINAL_DEFINITION_CANCEL.store(original_cancel as usize, Ordering::Release);
-    // Cancellation remains first in the readable roster, while both hooks are
-    // patched inside one freeze instead of two with no intervening game thread.
     let enabled = unsafe { inline_detour::enable_batch(&hook_batch(sites)) };
     if let Some((name, status)) = enabled.refusal() {
         if let Err(cleanup) = cleanup_hooks(sites) {
@@ -771,9 +715,6 @@ fn released_hook_receipts_locked() -> Result<[ReleasedRvaHookReceipt; 2], String
         .ok_or_else(|| "A19 exact released-hook receipts are unavailable".into())
 }
 
-/// Compatibility-only destructive drain. Production publication must use
-/// [`peek_lifecycle_drain`], then commit only after its sink transaction
-/// succeeds.
 pub fn drain() -> Result<LifecycleDrain, String> {
     if detach_authority_active()? {
         return Err(
@@ -804,8 +745,6 @@ pub fn drain() -> Result<LifecycleDrain, String> {
     })
 }
 
-/// Peeks the complete current lifecycle prefix without removing it. Hook
-/// callbacks may continue appending behind this immutable reservation.
 pub fn peek_lifecycle_drain() -> Result<LifecycleDrainReservation, String> {
     if !INSTALLED.load(Ordering::Acquire) {
         return Err("A19 lifecycle hooks are not installed for delivery reservation".into());
@@ -838,8 +777,6 @@ pub fn peek_lifecycle_drain() -> Result<LifecycleDrainReservation, String> {
     })
 }
 
-/// Commits exactly the prefix returned by [`peek_lifecycle_drain`]. Rows
-/// appended concurrently after the peek remain queued in original order.
 pub fn commit_lifecycle_drain(reservation_id: u64) -> Result<(), String> {
     let mut queue = QUEUE
         .get_or_init(|| Mutex::new(ReservableLifecycleQueue::new()))
@@ -1064,15 +1001,7 @@ pub fn seal_drain_and_uninstall() -> Result<LifecycleDrain, String> {
     seal_drain_and_uninstall_locked()
 }
 
-/// Seals, drains and removes the D64 hook pair for a production hook registry
-/// that could not complete its install, discarding the drained lifecycle
-/// events instead of publishing them.
-///
-/// The D75 producer edge must already be closed: the caller unregisters the
 /// A19 dispatch observer and releases the XUI21 semantic hooks first, so this
-/// drain cannot race a live synchronous dispatch. If a D75 terminal detach
-/// authority was ever issued, this refuses — that capture owns the transition
-/// and must finish it through the authenticated terminal or abort path.
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
     let _guard = INSTALL_LOCK
         .lock()
@@ -1134,9 +1063,6 @@ fn prepare_teardown_locked() -> Result<Option<bool>, String> {
         teardown_owned = true;
         let sites = addresses(MODULE_BASE.load(Ordering::Acquire));
         cleanup_hooks(sites)?;
-        // From this point the exact original prefixes are live again. Never
-        // claim that the detours remain installed, even if receipt
-        // materialization encounters a transient module-read failure.
         INSTALLED.store(false, Ordering::Release);
         release_pending = begin_release_pending_if_owned()?;
     }
@@ -1192,9 +1118,6 @@ fn seal_drain_and_uninstall_for_d75_terminal_custody_inner(
         .lock()
         .map_err(|_| "A19 terminal D64 custody lifecycle lock poisoned")?;
     validate_detach_authority_id(authority_id)?;
-    // Seal delivery before detaching the D75 bridge. A live delivery
-    // reservation therefore cannot strand enabled D64 hooks without their
-    // synchronous dispatch observer.
     begin_teardown_queue_custody()?;
     authorize_terminal_dispatch_detach(authority_id, custody_identity_sha256)?;
     let teardown_owned =
@@ -1685,9 +1608,6 @@ fn mint_test_poisoned_abort_receipt(
     })
 }
 
-/// Encode the canonical DEL2 suffix used by the terminal D64 DATA record.
-/// This intentionally mirrors the stable wire contract consumed by
-/// `wire_format::d64`; terminal publication authenticates these exact bytes.
 fn encode_terminal_del2(drain: &LifecycleDrain) -> Vec<u8> {
     const MAGIC: &[u8; 4] = b"DEL2";
     const VERSION: u16 = 1;
@@ -1769,8 +1689,8 @@ fn encode_poisoned_abort_envelope(
     payload.extend_from_slice(&reason_sha256);
     payload.extend_from_slice(&lifecycle_len.to_le_bytes());
     payload.extend_from_slice(&lifecycle);
-    payload.push(1); // Capture completeness is irrevocably poisoned.
-    payload.push(1); // Queue and exact hook teardown custody are complete.
+    payload.push(1);
+    payload.push(1);
     Ok(payload)
 }
 
@@ -2111,16 +2031,12 @@ fn addresses(base: usize) -> InstalledHookAddresses {
     }
 }
 
-/// The detour addresses, each TAGGED with the site it services, in
-/// `EXPECTED_HOOKS` order.
-///
-/// Read through `bound_receipt_detours`, never directly: the binding is by
-/// name, and it refuses two sites that share one address -- which is what a
-/// linker fold of two detour bodies produces, and what would otherwise let
-/// both receipts attest successfully while naming the wrong engine function.
 fn receipt_detours() -> [SiteDetour; 2] {
     [
-        SiteDetour::new("gameplay.d64.definition_cancel", hook_definition_cancel as usize),
+        SiteDetour::new(
+            "gameplay.d64.definition_cancel",
+            hook_definition_cancel as usize,
+        ),
         SiteDetour::new(
             "gameplay.d64.hourly_delayed_event_update",
             hook_hourly_update as usize,
@@ -2128,7 +2044,6 @@ fn receipt_detours() -> [SiteDetour; 2] {
     ]
 }
 
-/// The detour addresses in `EXPECTED_HOOKS` order, bound by name.
 fn bound_receipt_detours() -> Result<[usize; 2], String> {
     bind_detours_by_identity("A19", &EXPECTED_HOOKS, receipt_detours())
 }
@@ -2345,14 +2260,10 @@ fn observe_pending_release_receipts() -> Result<(), String> {
 fn cleanup_hooks(sites: InstalledHookAddresses) -> Result<(), String> {
     let mut batch = hook_batch(sites);
     batch.reverse();
-    // Cleanup keeps hourly/cancellation reverse order while restoring both in
-    // one freeze rather than two. The quiescence boundary remains below it.
     if let Some((name, status)) = unsafe { inline_detour::disable_batch(&batch) }.first_failure() {
         return Err(format!("A19 hook disable failed for {name}: {status}"));
     }
     wait_for_callbacks()?;
-    // The same reverse-order pair is removed under one freeze instead of two;
-    // it is deliberately not merged across the callback wait above.
     if let Some((name, status)) = unsafe { inline_detour::remove_batch(&batch) }.first_failure() {
         return Err(format!("A19 hook remove failed for {name}: {status}"));
     }

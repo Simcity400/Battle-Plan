@@ -1,16 +1,8 @@
-//! Pinned the game 1.19.2 building-definition identity registry.
-//!
-//! `CBuilding+0x08` is the full runtime type id.  These ids are not a dense
-//! enum and they are not safe to truncate.  The table is deliberately shared
 //! by the collector and recorder so an id cannot acquire different names at
-//! the two ends of the production stream.
 
-/// Executable whose live rows and serializer evidence bind this table.
 pub const BUILDING_REGISTRY_EXE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
-/// All 55 building definitions loaded from the pinned vanilla
-/// `common/buildings` source set, sorted by runtime type id.
 pub const BUILDING_TYPE_ID_TO_TOKEN: &[(u32, &str)] = &[
     (0x27D2, "naval_supply_hub"),
     (0x2FAB, "infrastructure"),
@@ -69,8 +61,6 @@ pub const BUILDING_TYPE_ID_TO_TOKEN: &[(u32, &str)] = &[
     (0x7EA4, "landmark_bojnice_castle"),
 ];
 
-/// Returns the canonical script token only for an exact pinned id.
-/// Unknown/mod-added ids remain numeric and therefore fail closed.
 pub fn building_token_from_type_id(type_id: u32) -> Option<&'static str> {
     BUILDING_TYPE_ID_TO_TOKEN
         .binary_search_by_key(&type_id, |(id, _)| *id)

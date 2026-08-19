@@ -1,49 +1,43 @@
-//! Canonical DATA-payload decoding authority shared by recorder and validators.
-//!
-//! The implementation in this module is mechanically moved from the recorder
-//! binary so every production consumer uses one set of wire decoders.
-
-use air_loss_stats_live_lane as airloss61;
 use active_command_abilities_live_lane::production_carrier as abilities88;
+use air_loss_stats_live_lane as airloss61;
 use army_battleplans_depth_live_lane as battleplans54;
 use capitulation_war_state_live as capwar60;
 use character_presentation_live_lane as character82;
 use characters_leaders_cabinet_live_lane as domain47;
+use compact_contract::national_focus_presentation as focus89;
+use compact_contract::pov_visibility as visibility94;
+use compact_contract::preferred_tactic as preferred92;
+use compact_contract::spotted_units as spotted95;
+use compact_contract::tactic_weight as weight96;
 use construction_buildings_state_damage_live_lane as domain48;
+use country_army_upgrade_requests_live_lane as army_upgrades93;
 use country_economy_production_stockpile_live_lane as production11;
+use decision_panel_live_lane as decision87;
 use design_catalog_context_live_lane as design78;
 use design_catalog_context_live_lane::peace_conference_live as peace97;
-use theatre_selector_live_lane as theatre98;
 use design_catalog_context_live_lane::selected_designer_identity as selected85;
-use decision_panel_live_lane as decision87;
 use diplomacy_intel_operatives_live as diplomacy53;
 use dynamic_collection_trace_live_lane as dynamic71;
 use fired_event_popups_live_lane as fired75;
 use hub_motorization_live_lane as hub62;
 use hud_role_observer_live_lane as hud79;
 use land_combat_detail_events_live_lane as land_detail55;
-use compact_contract::national_focus_presentation as focus89;
-use compact_contract::preferred_tactic as preferred92;
-use compact_contract::pov_visibility as visibility94;
-use compact_contract::spotted_units as spotted95;
-use compact_contract::tactic_weight as weight96;
-use country_army_upgrade_requests_live_lane as army_upgrades93;
 use naval_combat_live_lane as naval4950;
 use naval_missions_status_live_lane as naval56;
 use nuke_stockpile_live_lane as nuke83;
 use occupation_resistance_compliance_live_lane as occupation52;
 use resolved_tooltip_instances_live_lane as tooltip72;
-use session_multiplayer_metadata_live as session57;
 use scripted_state_flags_variables_live_lane::scripted_gui_runtime_compact as scripted84;
+use session_multiplayer_metadata_live as session57;
 use sunk_ship_history_live_lane as sunk86;
 use supply_logistics_attrition_live_lane as supply44;
+use theatre_selector_live_lane as theatre98;
 
 use crate::campaign_identity::SessionHeaderIdentityObservation;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const A29_PRODUCER_AUTHORITY: &str =
-    "a729_observed_research_ahead_selected_present_v3";
+pub(crate) const A29_PRODUCER_AUTHORITY: &str = "a729_observed_research_ahead_selected_present_v3";
 pub(crate) const A29_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 pub(crate) const A29_EXACT_ROOT_JOB_ID: &str =
@@ -115,9 +109,8 @@ pub(crate) fn a29_expected_source_record_sha256(
     canonical.extend_from_slice(&selected_qpc_ticks.to_le_bytes());
     canonical.extend_from_slice(&selection_cutoff_qpc_ticks.to_le_bytes());
     canonical.extend_from_slice(snapshot::sha256::to_hex(candidate_set_sha256).as_bytes());
-    canonical.extend_from_slice(
-        snapshot::sha256::to_hex(selected_present_receipt_sha256).as_bytes(),
-    );
+    canonical
+        .extend_from_slice(snapshot::sha256::to_hex(selected_present_receipt_sha256).as_bytes());
     let digest = Sha256::digest(canonical);
     let mut output = [0u8; 32];
     output.copy_from_slice(&digest);
@@ -140,11 +133,6 @@ pub const COMPACT_STATUS_BRIDGE_UNAVAILABLE: u32 =
     compact_contract::COMPACT_STATUS_BRIDGE_UNAVAILABLE;
 pub const COMPACT_STATUS_SOURCE_UNAVAILABLE: u32 =
     compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
-/// The measured-zero badge. Informational, so it is deliberately absent from
-/// [`COMPACT_STATUS_FAILURE_MASK`] and from the recorder's gap-eligible mask: a
-/// domain that measured zero rows produced an ANSWER, and turning that answer
-/// into a gap would put the recorder back in the state this badge exists to
-/// leave — unable to say whether an hour is missing data or simply has none.
 pub const COMPACT_STATUS_SOURCE_EMPTY: u32 = compact_contract::COMPACT_STATUS_SOURCE_EMPTY;
 pub const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
 pub const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
@@ -152,9 +140,6 @@ pub const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FA
 pub const COMPACT_STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const COMPACT_STATUS_CONTROL_INVALID: u32 = compact_contract::COMPACT_STATUS_CONTROL_INVALID;
-// Re-exported, not re-declared. A local copy of a wire constant drifts the
-// moment the contract moves, and this file held one that silently pinned the
-// diagnostic trailer to version 1 after the producer began writing version 2.
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] =
     compact_contract::record_semantics::COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC;
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 =
@@ -212,33 +197,7 @@ pub const COMPACT_FRD_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
 pub const COMPACT_FRD_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
 pub const COMPACT_FRD_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
 pub const COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED: u32 = 1 << 6;
-/// D45-local direct-history reset badge.
-///
-/// "This record's `frd_direct_*` extent begins a NEW history; discard the
-/// accumulation you hold for it." Its scope is the `frd_direct_*` maps and
-/// NOTHING else -- focus, research and decision state is untouched, and the
-/// hour it lands in is still typed as whatever it was, because a resync
-/// recovers the FUTURE and never the hole.
-///
-/// It is deliberately NOT the global `COMPACT_STATUS_BASELINE_CLEAR`, and NOT
-/// registered in `compact_contract::lane_local_status_mask`: `depth_status_flags`
-/// is a separate `COMPACT_FRD_STATUS_*` namespace that never reaches a perf
-/// record's `status_flags` (see the collector's
-/// `worker_panic_constructor_published_status` census, which lists
-/// `depth_status_flags` as exactly that). The mask below is the discipline that
-/// actually governs this word, so this is where the bit is registered.
-/// `d45_cannot_carry_the_global_resync_bit` records why the global bit could
-/// not be used and must keep passing.
 pub const COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET: u32 = 1 << 7;
-// This remains the v1-v4 depth-authority mask.  The v5 direct-hook bit is a
-// distinct trailer/source assertion and is admitted only for a v5 header.
-//
-// The reset badge is admitted on EVERY schema version rather than v5 only. The
-// failure it recovers from has two shapes and one of them is a source
-// DOWNGRADE -- the fold refuses an untrailered record once a validated one was
-// accepted -- so the first record able to carry the badge is a v4 one. Gating
-// the badge on v5 would leave that shape dead until the hooks came back, which
-// is the defect rather than the fix.
 pub const COMPACT_FRD_STATUS_KNOWN_MASK: u32 = COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED
     | COMPACT_FRD_STATUS_DECISION_TARGETS_BADGED
     | COMPACT_FRD_STATUS_DIRECT_EVENTS_DERIVED
@@ -306,33 +265,47 @@ pub const COMPACT_MARKET_TRADE_CONTRACT_TYPE: u32 = d43_grammar::CORE_CONTRACT_T
 pub const COMPACT_MAX_OWNER_TAG_DB_ID: u32 =
     compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 
-/// The D45 numeric decision target is a STATE identity (see the collector and
-/// `world_fold`'s matching constant). It was `1_000_000` -- a state ceiling
-/// under a role name.
 pub const COMPACT_MAX_STATE_ID_FRD: u32 = compact_contract::build_profile::MAX_STATE_ID;
 pub const COMPACT_MARKET_TRADE_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_MARKET_TRADE_MAX_CONTRACT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MARKET_TRADE_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MARKET_TRADE_MAX_AMOUNT_RAW: i64 = d43_grammar::MAX_AMOUNT_RAW;
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID: u32 = d43_grammar::RowFlag::BuyerPtrValid.bit();
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 = d43_grammar::RowFlag::EquipmentSubbufValid.bit();
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID: u32 = d43_grammar::RowFlag::DeliverySubbufValid.bit();
-pub const COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID: u32 = d43_grammar::RowFlag::VariantValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_BUYER_PTR_VALID: u32 =
+    d43_grammar::RowFlag::BuyerPtrValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_EQUIPMENT_SUBBUF_VALID: u32 =
+    d43_grammar::RowFlag::EquipmentSubbufValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_DELIVERY_SUBBUF_VALID: u32 =
+    d43_grammar::RowFlag::DeliverySubbufValid.bit();
+pub const COMPACT_MARKET_TRADE_ROW_FLAG_VARIANT_VALID: u32 =
+    d43_grammar::RowFlag::VariantValid.bit();
 pub const COMPACT_MARKET_TRADE_ROW_FLAG_AMOUNT_VALID: u32 = d43_grammar::RowFlag::AmountValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::Detail.magic();
+pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::Detail.magic();
 pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
-pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::Detail.header_len();
-pub const COMPACT_MARKET_TRADE_DETAIL_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::Detail);
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID: u32 = d43_grammar::DetailFlag::PriceValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID: u32 = d43_grammar::DetailFlag::AmountValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID: u32 = d43_grammar::DetailFlag::SpeedValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID: u32 = d43_grammar::DetailFlag::CompletedValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID: u32 = d43_grammar::DetailFlag::DaysValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID: u32 = d43_grammar::DetailFlag::DeliveryCountryValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID: u32 = d43_grammar::DetailFlag::ConvoysValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID: u32 = d43_grammar::DetailFlag::EfficiencyValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID: u32 = d43_grammar::DetailFlag::FactoryProgressValid.bit();
-pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID: u32 = d43_grammar::DetailFlag::EquipmentProgressValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_TRAILER_HEADER_LEN: usize =
+    d43_grammar::Trailer::Detail.header_len();
+pub const COMPACT_MARKET_TRADE_DETAIL_ROW_LEN: usize =
+    d43_grammar::fixed_row_len(d43_grammar::Trailer::Detail);
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID: u32 =
+    d43_grammar::DetailFlag::PriceValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID: u32 =
+    d43_grammar::DetailFlag::AmountValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_SPEED_VALID: u32 =
+    d43_grammar::DetailFlag::SpeedValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_COMPLETED_VALID: u32 =
+    d43_grammar::DetailFlag::CompletedValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DAYS_VALID: u32 =
+    d43_grammar::DetailFlag::DaysValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_DELIVERY_COUNTRY_VALID: u32 =
+    d43_grammar::DetailFlag::DeliveryCountryValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_CONVOYS_VALID: u32 =
+    d43_grammar::DetailFlag::ConvoysValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID: u32 =
+    d43_grammar::DetailFlag::EfficiencyValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID: u32 =
+    d43_grammar::DetailFlag::FactoryProgressValid.bit();
+pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID: u32 =
+    d43_grammar::DetailFlag::EquipmentProgressValid.bit();
 pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
     COMPACT_MARKET_TRADE_DETAIL_FLAG_PRICE_VALID
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_AMOUNT_VALID
@@ -344,87 +317,89 @@ pub const COMPACT_MARKET_TRADE_DETAIL_FLAG_KNOWN_MASK: u32 =
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_EFFICIENCY_VALID
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_FACTORY_PROGRESS_VALID
         | COMPACT_MARKET_TRADE_DETAIL_FLAG_EQUIPMENT_PROGRESS_VALID;
-// MTRF: optional market-trade resource-flow trailer (per-country resource
-// import/export flow), appended AFTER the MTD1 detail trailer. 32-byte header
-// (magic, version u16, header_len u16, row_len u16, reserved u16, row_count u32,
-// row_count-dup/country_count u32, scale u32, resource_mask-or-count u32,
-// reserved/kind_mask u32); then row_count rows of (tag_db_id u32, flow_kind u32,
-// resource_mask-or-count u32, reserved u32, then N x i64 per-resource values).
-//
-// N is seven in v1 and v2, which is why a mod defining an eighth strategic
-// resource could not be published. v3 states the count at `+24` and derives
-// `row_len` from it. Mirrors the collector's
-// append_compact_market_trade_resource_flow_trailer wire layout.
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::ResourceFlow.magic();
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 = d43_grammar::FlowVersion::Legacy.wire();
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION: u16 = d43_grammar::FlowVersion::Fixed7.wire();
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 = d43_grammar::FlowVersion::Variable.wire();
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::ResourceFlow.header_len();
-/// v1/v2 only. A v3 row is `ROW_HEADER_LEN + 8 * resource_count`.
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize = d43_grammar::FLOW_FIXED7_ROW_LEN;
-pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize = d43_grammar::FLOW_ROW_HEADER_LEN;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::ResourceFlow.magic();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_LEGACY_VERSION: u16 =
+    d43_grammar::FlowVersion::Legacy.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_FIXED7_VERSION: u16 =
+    d43_grammar::FlowVersion::Fixed7.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_VERSION: u16 =
+    d43_grammar::FlowVersion::Variable.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_TRAILER_HEADER_LEN: usize =
+    d43_grammar::Trailer::ResourceFlow.header_len();
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize =
+    d43_grammar::FLOW_FIXED7_ROW_LEN;
+pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize =
+    d43_grammar::FLOW_ROW_HEADER_LEN;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_RESOURCE_MASK: u32 = d43_grammar::FLOW_RESOURCE_MASK;
 pub const COMPACT_MARKET_TRADE_RESOURCE_FLOW_KIND_MASK: u32 = d43_grammar::FLOW_KIND_MASK;
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::FactoryHeader.magic();
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::FactoryHeader.header_len();
-pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::FactoryHeader);
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::ResourceRow.magic();
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 = d43_grammar::ResourceRowVersion::Legacy.wire();
-/// v2 states the resource COUNT; v3 also states each resource's IDENTITY in a
-/// fixed-stride block between the header and the rows.
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION: u16 = d43_grammar::ResourceRowVersion::CountOnly.wire();
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 = d43_grammar::ResourceRowVersion::Identity.wire();
-/// v4 is v3 plus one extra admitted ROW shape: an oil row whose needed-trio
-/// could not be derived states that instead of being omitted. The header shape
-/// -- including the dense `row_count == country_count * resource_count`
-/// invariant this authority checks -- is byte-identical to v3.
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION: u16 = d43_grammar::ResourceRowVersion::NeededUnavailable.wire();
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::ResourceRow.header_len();
-pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::ResourceRow);
-/// One `MTRR` v3 identity entry.
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::FactoryHeader.magic();
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_VERSION: u16 =
+    d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_TRAILER_HEADER_LEN: usize =
+    d43_grammar::Trailer::FactoryHeader.header_len();
+pub const COMPACT_MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize =
+    d43_grammar::fixed_row_len(d43_grammar::Trailer::FactoryHeader);
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::ResourceRow.magic();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_LEGACY_VERSION: u16 =
+    d43_grammar::ResourceRowVersion::Legacy.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_COUNT_ONLY_VERSION: u16 =
+    d43_grammar::ResourceRowVersion::CountOnly.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_VERSION: u16 =
+    d43_grammar::ResourceRowVersion::Identity.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_NEEDED_UNAVAILABLE_VERSION: u16 =
+    d43_grammar::ResourceRowVersion::NeededUnavailable.wire();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN: usize =
+    d43_grammar::Trailer::ResourceRow.header_len();
+pub const COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN: usize =
+    d43_grammar::fixed_row_len(d43_grammar::Trailer::ResourceRow);
 pub const COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE: u32 =
     compact_contract::build_profile::COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE;
-/// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
 pub const COMPACT_MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = d43_grammar::FIXED7_RESOURCE_COUNT;
-/// The one shared admission ceiling for a count-prefixed resource vector.
 pub const COMPACT_MAX_STRATEGIC_RESOURCE_COUNT: u32 =
     compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT;
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::ClassicDeal.magic();
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 = d43_grammar::DealVersion::Legacy.wire();
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 = d43_grammar::DealVersion::Statuses.wire();
-/// v3 spends the header's last word on the incomplete-owner count and carries
-/// that many census keys between the witness block and the rows.
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION: u16 = d43_grammar::DealVersion::PerOwner.wire();
-/// v4 keeps v3's header exactly and respells the ROW's deal identity at full
-/// width: two `u32` country ids at `+0x20`/`+0x24` and a one-based `u32` ordinal
-/// at `+0x5C`, in place of v1-v3's single packed `u64`. This decoder is
-/// structural — it advances a cursor and counts units — so the only thing the
-/// bump changes here is which versions are admitted and which of them carry the
-/// incomplete block.
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION: u16 = d43_grammar::DealVersion::WideIdentity.wire();
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize = d43_grammar::Trailer::ClassicDeal.header_len();
-pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = d43_grammar::fixed_row_len(d43_grammar::Trailer::ClassicDeal);
-pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::Activation.magic();
-pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
-pub const COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN: usize = d43_grammar::Trailer::Activation.header_len();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::ClassicDeal.magic();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION: u16 =
+    d43_grammar::DealVersion::Legacy.wire();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION: u16 =
+    d43_grammar::DealVersion::Statuses.wire();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION: u16 =
+    d43_grammar::DealVersion::PerOwner.wire();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_WIDE_IDENTITY_VERSION: u16 =
+    d43_grammar::DealVersion::WideIdentity.wire();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN: usize =
+    d43_grammar::Trailer::ClassicDeal.header_len();
+pub const COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize =
+    d43_grammar::fixed_row_len(d43_grammar::Trailer::ClassicDeal);
+pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::Activation.magic();
+pub const COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_VERSION: u16 =
+    d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_ACTIVATION_HEADER_LEN: usize =
+    d43_grammar::Trailer::Activation.header_len();
 pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAGS_KNOWN: u32 = d43_grammar::KNOWN_ACTIVATION_FLAGS;
 pub const COMPACT_MARKET_TRADE_ACTIVATION_FLAG_ACTIVE: u32 = d43_grammar::ACTIVATION_FLAG_ACTIVE;
-pub const COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 = d43_grammar::ACTIVATION_ROOT_COUNTRYTRADEVIEW;
+pub const COMPACT_MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 =
+    d43_grammar::ACTIVATION_ROOT_COUNTRYTRADEVIEW;
 pub const COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA: u32 = d43_grammar::ACTIVATION_OPEN_RVA;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = d43_grammar::Trailer::Stockpile.magic();
-pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 = d43_grammar::SingleVersion::V1.wire();
-pub const COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = d43_grammar::Trailer::Stockpile.header_len();
-pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize = d43_grammar::STOCKPILE_COUNTRY_ROW_LEN;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] =
+    d43_grammar::Trailer::Stockpile.magic();
+pub const COMPACT_MARKET_TRADE_STOCKPILE_TRAILER_VERSION: u16 =
+    d43_grammar::SingleVersion::V1.wire();
+pub const COMPACT_MARKET_TRADE_STOCKPILE_HEADER_LEN: usize =
+    d43_grammar::Trailer::Stockpile.header_len();
+pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN: usize =
+    d43_grammar::STOCKPILE_COUNTRY_ROW_LEN;
 pub const COMPACT_MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN: usize = d43_grammar::STOCKPILE_ITEM_ROW_LEN;
 pub const COMPACT_MARKET_TRADE_STOCKPILE_GLOBAL_FLAGS: u32 = d43_grammar::STOCKPILE_GLOBAL_FLAGS;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 = d43_grammar::STOCKPILE_COUNTRY_COMPLETE;
-pub const COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE: u32 = d43_grammar::STOCKPILE_EQUIPMENT_TYPE;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_COUNTRY_COMPLETE: u32 =
+    d43_grammar::STOCKPILE_COUNTRY_COMPLETE;
+pub const COMPACT_MARKET_TRADE_STOCKPILE_EQUIPMENT_TYPE: u32 =
+    d43_grammar::STOCKPILE_EQUIPMENT_TYPE;
 
-// --- W1-W6 newly wired domains 63-69: summarizer decode constants ----------
-// These mirror the collector emit and the world_fold parse (recorder_host
-// world_fold.rs). The summarizer decode below re-validates the wire shape and
-// accounts row counts so the manifest carries zero parse_errors for these.
 pub const COMPACT_DOMAIN_COUNTRY_CORE_SCALARS_LIVE: u16 = 63;
 pub const COMPACT_COUNTRY_CORE_HEADER_LEN: usize = 20;
 pub const COMPACT_COUNTRY_CORE_ROW_LEN: usize = 48;
@@ -473,17 +448,7 @@ pub const COMPACT_COUNTRY_DYNAMIC_MODIFIERS_ROW_LEN: usize = 12;
 pub const COMPACT_COUNTRY_DYNAMIC_MODIFIER_MAX_ID_LEN: usize = 128;
 
 pub const COMPACT_DOMAIN_SESSION_HEADER_LIVE: u16 = 68;
-// The block lengths, the eight presence bits and the token ceiling used to be
-// restated here, a third time. They are `d68_grammar`'s now -- this validator,
-// the fold, the wire port and the producer all EXECUTE that crate instead of
-// transcribing it. `KNOWN_FLAGS` is re-exported rather than rebuilt because the
-// POLICY it drives (an unassigned presence bit is recorded here and is fatal in
-// the fold) is still this file's.
 pub const COMPACT_SESSION_HEADER_KNOWN_FLAGS: u32 = d68_grammar::KNOWN_FLAGS;
-// The eight bits keep their names because this crate's own suite builds
-// payloads out of them. They are ALIASES now, not declarations: there is one
-// statement of which bit is which field, in `d68_grammar::Field::flag`, and
-// these re-export it so no existing test had to be edited.
 pub const COMPACT_SESSION_HEADER_FLAG_PLAYER: u32 = d68_grammar::Field::Player.flag();
 pub const COMPACT_SESSION_HEADER_FLAG_DLCS: u32 = d68_grammar::Field::Dlcs.flag();
 pub const COMPACT_SESSION_HEADER_FLAG_START_DATE: u32 = d68_grammar::Field::StartDate.flag();
@@ -497,10 +462,6 @@ pub const COMPACT_SESSION_HEADER_MAX_PLAYER_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_T
 pub const COMPACT_DOMAIN_TECH_SHARING_GROUPS_LIVE: u16 = 69;
 pub const COMPACT_TECH_SHARING_GROUPS_HEADER_LEN: usize = 16;
 pub const COMPACT_TECH_SHARING_GROUPS_ROW_LEN: usize = 12;
-// Tied to the collector's vector-size ceiling: the reader walks the
-// tech-sharing std::vector's active size [0..size), not a fixed 9 slots, so a
-// >9-group save emits >9 rows and this decoder cap MUST match (re-gate
-// 019f5467 BLOCKER — a mismatched cap rejects a clean >9 frame outright).
 pub const COMPACT_TECH_SHARING_GROUP_MAX_GROUPS: usize =
     compact_contract::build_profile::DOMAIN69_TECH_SHARING_MAX_GROUPS as usize;
 pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBERS: usize = 512;
@@ -584,13 +545,7 @@ pub const COMPACT_SUPPLY_BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 =
     supply44::domain44_contract::BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE;
 pub const COMPACT_SUPPLY_BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: i32 =
     supply44::domain44_contract::BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
-// Respelling the number here is exactly the split-brain the comment below
-// warns about: the vanilla province count was written out in full in three
-// places, so raising the one home would have left this authority still
-// discarding every row a mod's provinces produce.
 pub const COMPACT_SUPPLY_MAX_PROVINCE_ID: u32 = supply44::MAX_PROVINCE_ID;
-// The supply admission bounds have one home in `domain44_contract`; respelling
-// them here is what let this authority and the lane gate drift apart.
 pub const COMPACT_SUPPLY_MAX_STATE_ID: u32 = supply44::domain44_contract::MAX_STATE_ID;
 pub const COMPACT_SUPPLY_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_SUPPLY_MAX_DIVISION_ID: u32 = i32::MAX as u32;
@@ -599,21 +554,12 @@ pub const COMPACT_SUPPLY_MAX_SUPPLY_GAIN_RAW: i32 =
     supply44::domain44_contract::MAX_SUPPLY_GAIN_RAW;
 pub const COMPACT_SUPPLY_MAX_DIVISION_FUEL_RAW: i32 = i32::MAX;
 pub const COMPACT_SUPPLY_MAX_BUILDING_LEVEL: i32 = supply44::domain44_contract::MAX_BUILDING_LEVEL;
-/// Deliberately left at the fixed-point scale: the per-province CSupply input
-/// is documented as an *efficiency*, for which a 0..=1.0 range is at least
-/// plausible, and no measured capture has ever been excluded for it. That is
-/// weaker than the evidence that refuted the disrupted-supply ceiling below —
-/// this bound is unverified, not proven, and is a candidate for the same
-/// treatment if a capture is ever lost to it.
 pub const COMPACT_SUPPLY_MAX_CSUPPLY_INPUT_RAW: i32 = COMPACT_FIXED_SCALE_RAW as i32;
 pub const COMPACT_SUPPLY_MAX_DISRUPTED_RAW: i32 =
     supply44::domain44_contract::MAX_COUNTRY_DISRUPTED_SUPPLY_RAW;
 pub const COMPACT_DIVISION_TYPE: u32 = 4713;
-// A15 extends the E4 104-byte row to 120 bytes with exact counter maximum
-// organisation, supply-status, and dig-in operands.
 pub const COMPACT_DIVISION_ROW_LEN: usize = 120;
 pub const LEGACY_COMPACT_DIVISION_ROW_LEN: usize = 104;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
 pub const COMPACT_MAX_DIVISION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_MAX_DIVISION_COMBAT_REF_COUNT: u32 = 1_000;
 pub const COMPACT_MAX_DIVISION_ORGANISATION_RAW: u32 = 100_000_000;
@@ -628,14 +574,9 @@ pub const COMPACT_MAX_DIVISION_DIG_IN_RAW: u32 = 100_000_000;
 pub const COMPACT_MAX_DIVISION_FUEL_RAW: u32 = u32::MAX;
 pub const COMPACT_DIVISION_ROW_FLAG_DELETED: u32 = 1 << 12;
 pub const COMPACT_DIVISION_ROW_FLAG_TEMPLATE: u32 = 1 << 13;
-/// Wave-3 primary-order linkage flags (mutually exclusive). ORDER_ARMY
-/// carries the COrderInstance+0x244 instance id in the row tail u32
-/// (previously reserved-zero); ARMY_GROUP/UNRESOLVED badge without an id.
 pub const COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY: u32 = 1 << 14;
 pub const COMPACT_DIVISION_ROW_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
 pub const COMPACT_DIVISION_ROW_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
-/// Wave-4 disrupted-supply presence (row +88). A present 0 is valid; absent
-/// (flag clear) must carry a zero field.
 pub const COMPACT_DIVISION_ROW_FLAG_DISRUPTED_SUPPLY: u32 = 1 << 17;
 pub const COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT: u32 = 1 << 18;
 pub const COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER: u32 = 1 << 19;
@@ -651,11 +592,7 @@ pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE: u32 = 1 << 28;
 pub const COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED: u32 = 1 << 29;
 pub const COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_OBSERVED: u32 = 1 << 30;
 pub const COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_VISIBLE: u32 = 1 << 31;
-/// Sane ceiling for disrupted_supply raw (fixed x100000): a disrupted
-/// fraction far above 1.0 is a torn read.
 pub const COMPACT_MAX_DIVISION_DISRUPTED_SUPPLY_RAW: u32 = 1_000_000;
-/// Shared ceiling for the division primary-order instance id (collector,
-/// this summary decoder, and world_fold enforce the same bound).
 pub const COMPACT_MAX_DIVISION_ORDER_INSTANCE_ID: u32 = 100_000_000;
 pub const COMPACT_MAX_DIVISION_TEMPLATE_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MAX_DIVISION_CURRENT_MANPOWER: u32 = 10_000_000;
@@ -668,7 +605,6 @@ pub const COMPACT_MAX_DIVISION_EQUIPMENT_VARIANT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_MAX_DIVISION_EQUIPMENT_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 pub const COMPACT_LAND_COMBAT_ROW_LEN: usize = 40;
 pub const COMPACT_LAND_COMBAT_PARTICIPANT_ROW_LEN: usize = 24;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
 pub const COMPACT_LAND_COMBAT_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_LAND_COMBAT_MAX_AGE_DAYS: u32 = 100_000;
 pub const COMPACT_ARMY_ORDER_ROW_LEN: usize = 48;
@@ -679,7 +615,6 @@ pub const COMPACT_ARMY_ORDER_ROW_FLAG_TARGET_STATE_COUNT: u32 = 1 << 2;
 pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY: u32 = 0;
 pub const COMPACT_ARMY_ORDER_OWNER_KIND_ARMY_GROUP: u32 = 1;
 pub const COMPACT_ARMY_ORDER_MAX_SLOT_INDEX: u32 = 64;
-/// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
 pub const COMPACT_ARMY_ORDER_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_ROW_LEN: usize = 80;
 pub const COMPACT_OOB_MEMBER_ROW_LEN: usize = 8;
@@ -696,7 +631,6 @@ pub const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 pub const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
 pub const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
 pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 pub const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
@@ -731,8 +665,6 @@ pub const COMPACT_AIR_WING_LOADOUT_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
 pub const COMPACT_AIR_WING_LOADOUT_MAX_VARIANT_ID: u32 = i32::MAX as u32;
 pub const COMPACT_AIR_WING_LOADOUT_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_000;
 pub const COMPACT_AIR_STRENGTH_DELTA_HEADER_LEN: usize = 48;
-// Row grew from 68 to 76 bytes with the wave-3 per-wing cumulative scalars
-// (air_accidents u32 @68, experience_raw i32 @72).
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_LEN: usize = 76;
 pub const COMPACT_AIR_REGION_STATS_TRAILER_MAGIC: u32 = 0x3152_3441;
 pub const COMPACT_AIR_REGION_STATS_TRAILER_VERSION: u16 = 2;
@@ -749,7 +681,6 @@ pub const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALARS: u32 = 1 << 5;
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_STATE_BASELINE: u32 = 1 << 6;
 pub const COMPACT_AIR_STRENGTH_DELTA_ROW_FLAG_WING_SCALAR_CHANGE: u32 = 1 << 7;
 pub const COMPACT_AIR_STRENGTH_EQUIPMENT_AMOUNT_PER_PLANE: i64 = 100_000;
-// Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
 pub const COMPACT_AIR_WING_MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
 pub const COMPACT_AIR_VARIANT_DEF_ROW_LEN: usize = 24;
 pub const COMPACT_AIR_VARIANT_DEF_ROW_FLAG_DISPLAY_NAME: u32 = 1;
@@ -810,7 +741,6 @@ pub const COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_KNOWN_FLAGS: u32 =
     COMPACT_PROJECT_BREAKTHROUGH_SPECIALIZATION_KNOWN_FLAGS
         | COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK;
 pub const COMPACT_PROJECT_MAX_ID: u32 = 10_000_000;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
 pub const COMPACT_PROJECT_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_PROJECT_MAX_HANDLE: u32 = 10_000_000;
 pub const COMPACT_PROJECT_MAX_ITERATIONS: u32 = 1_000_000;
@@ -838,7 +768,6 @@ pub const COMPACT_AIR_SUPERIORITY_INPUT_MAX_AMOUNT_RAW: i64 = 1_000_000_000_000_
 pub const COMPACT_AIR_BASE_STATUS_ROW_LEN: usize = 32;
 pub const COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED: u32 = 1;
 pub const COMPACT_AIR_BASE_STATUS_MAX_AIR_BASE_ID: u32 = i32::MAX as u32;
-/// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
 pub const COMPACT_AIR_BASE_STATUS_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_AIR_BASE_STATUS_MAX_CAPACITY: u32 = 1_000_000;
 pub const COMPACT_AIR_BASE_STATUS_MAX_BUILDING_LEVEL: u32 = 1_000;
@@ -851,89 +780,51 @@ pub const COMPACT_MAP_DETAIL_PROVINCE_ROW_LEN: usize = 20;
 pub const COMPACT_MAP_DETAIL_ENTRY_ROW_LEN: usize = 12;
 pub const COMPACT_WEATHER_REGION_ROW_LEN: usize = d24_grammar::REGION_ROW_LEN;
 pub const COMPACT_WEATHER_PROVINCE_ROW_LEN: usize = d24_grammar::PROVINCE_ROW_LEN;
-// The wire-side twins of the collector's 1 000-state / 10 000-province map
-// floors are gone. This decoder is STRUCTURAL: the payload length is required
-// to equal `32 + state_count * ROW + province_count * ROW` exactly, and every
-// row is then checked for a valid, unique id, in-range tags, and flag/value
-// agreement. Nothing there needed a lower bound on how many rows a real map
-// has -- and asserting one made a total conversion with a smaller map an
-// EXCLUDED RECORD on every hour, which is the fail-closed refusal doing exactly
-// the wrong thing. Lane GK's residual R3, closed by lane HJ; the producer's
-// twelve floors were removed in the same wave.
-/// See `world_fold.rs`'s `WEATHER_MAX_REGION_ROWS`: representation envelopes on
-/// the two weather array lengths, NOT counts. These were `305` (the vanilla
-/// strategic-region count, applied as an equality) and `10_000` (a floor tuned
-/// on the vanilla map); either one rejected a modded map's whole weather
-/// payload.
 pub const COMPACT_WEATHER_MAX_REGION_ROWS: usize = 65_536;
-/// The region array's floor: a POLICY on what counts as a resolved weather root,
-/// not a claim about the engine. It is 1 rather than 2 because a region row
-/// carries a dense 0-based index and so has no vacant slot to spend. It is not 0
-/// because a zero-length region array is what an unloaded manager looks like, so
-/// admitting it would publish an empty root as a real one -- a deliberate
-/// fail-closed choice, not a proof that the vector must be non-empty. See
-/// `collector/src/attach_log/offsets.rs`'s `WEATHER_MIN_REGION_COUNT`.
 pub const COMPACT_WEATHER_MIN_REGION_ROWS: usize = 1;
-/// The province array's floor, which is the engine's own and is NOT the region
-/// array's: that array is subscripted BY PROVINCE ID and slot 0 is the vacant
-/// location, so a loaded array holds at least that slot plus one real province.
-/// It replaces a `10_000` tuned on the vanilla map.
 pub const COMPACT_WEATHER_MIN_PROVINCE_ROWS: usize = 2;
 pub const COMPACT_WEATHER_MAX_PROVINCE_ROWS: usize = 65_536;
-/// State id space STRUCTURAL width (lane IA, `claim_39c989ce13504504353c`).
 pub const COMPACT_MAP_MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
-/// Province id space STRUCTURAL width (lane IA). This one was additionally
-/// spelled with the SLOT-COUNT value `65_536` rather than an id maximum -- an
-/// identity carrying a count's number, which admitted one id past the last
-/// addressable slot. Both halves fixed: it is an ID and it is the id space's
-/// width (`claim_347234c20a542ca79032`).
 pub const COMPACT_MAP_MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_MAP_MAX_TAG_DB_ID: u32 = COMPACT_MAX_OWNER_TAG_DB_ID;
 pub const COMPACT_MAP_MAX_RESOURCE_AMOUNT_RAW: i32 = 100_000_000;
 pub const COMPACT_MAP_MAX_BUILDING_LEVEL: u32 = 1_000;
-// COMPACT_WEATHER_MAX_REGION_ID (= 304, the vanilla strategic-region count
-// minus one) is deliberately gone rather than widened. A region id's ceiling is
-// the region table's own length, which the payload header carries in
-// `observed_region_rows`; a constant here would be a second, staler answer to a
-// question the wire already answers, and re-adding one is how this defect
-// returns.
 pub const COMPACT_WEATHER_MAX_RAW_ACTIVITY_CANDIDATE: u32 = 16;
 pub const COMPACT_WEATHER_MAX_TEMPERATURE_RAW: i32 = 10_000_000;
 pub const COMPACT_WEATHER_MAX_TEMP_CHANGE_RAW: i32 = 10_000_000;
-// COMPACT_WEATHER_MAX_PRECIP_RAW (= 100_000_000) is deliberately gone rather
-// than widened, on the same ground as COMPACT_WEATHER_MAX_REGION_ID above: the
-// engine's two precipitation ceilings are `CWeatherManager + 0x1a8` (water) and
-// `+ 0x1f8` (snow), both parsed out of `common/weather.txt`, so a constant here
-// is game content this crate made up. `100_000_000` is `1000.0` in
-// `COMPACT_FIXED_SCALE_RAW` spelling and matched no engine value at all. The
-// producer discovers both when the weather root resolves and carries them in the
-// payload header's last two words, so this decoder bounds rows by the measured
-// envelope. Authority site and engine proof:
-// `collector/src/attach_log/offsets.rs::WEATHER_MANAGER_MAX_WATER_RAW_OFF`.
 pub const COMPACT_WEATHER_MAX_ACTIVE_MODIFIERS: u32 = 4_096;
-// The eighteen flag bits and the two row widths keep their names because this
-// crate's suite and its callers are written against them. They are ALIASES now,
-// not declarations: there is one statement of which bit is which, in
-// `d24_grammar`, and these re-export it so no existing test had to be edited.
 pub const COMPACT_WEATHER_REGION_FLAG_RAIN_LIGHT: u32 = d24_grammar::RegionFlag::RainLight.bit();
 pub const COMPACT_WEATHER_REGION_FLAG_RAIN_HEAVY: u32 = d24_grammar::RegionFlag::RainHeavy.bit();
 pub const COMPACT_WEATHER_REGION_FLAG_SNOW: u32 = d24_grammar::RegionFlag::Snow.bit();
 pub const COMPACT_WEATHER_REGION_FLAG_BLIZZARD: u32 = d24_grammar::RegionFlag::Blizzard.bit();
-pub const COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER: u32 = d24_grammar::RegionFlag::ArcticWater.bit();
-pub const COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL: u32 = d24_grammar::RegionFlag::ActiveSignal.bit();
-pub const COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE: u32 = d24_grammar::RegionFlag::PhenomenonActive.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_ARCTIC_WATER: u32 =
+    d24_grammar::RegionFlag::ArcticWater.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_ACTIVE_SIGNAL: u32 =
+    d24_grammar::RegionFlag::ActiveSignal.bit();
+pub const COMPACT_WEATHER_REGION_FLAG_PHENOMENON_ACTIVE: u32 =
+    d24_grammar::RegionFlag::PhenomenonActive.bit();
 pub const COMPACT_WEATHER_REGION_FLAG_SANDSTORM: u32 = d24_grammar::RegionFlag::Sandstorm.bit();
 pub const COMPACT_WEATHER_REGION_KNOWN_FLAGS: u32 = d24_grammar::REGION_KNOWN_FLAGS;
-pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT: u32 = d24_grammar::ProvinceFlag::TempPresent.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT: u32 = d24_grammar::ProvinceFlag::TempChangePresent.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT: u32 = d24_grammar::ProvinceFlag::WaterPresent.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT: u32 = d24_grammar::ProvinceFlag::SnowPresent.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT: u32 = d24_grammar::ProvinceFlag::MudPresent.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE: u32 = d24_grammar::ProvinceFlag::MudActive.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT: u32 = d24_grammar::ProvinceFlag::CustomModifierCountPresent.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED: u32 = d24_grammar::ProvinceFlag::StructValidated.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER: u32 = d24_grammar::ProvinceFlag::MapRecolor.bit();
-pub const COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER: u32 = d24_grammar::ProvinceFlag::DynamicLut.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_PRESENT: u32 =
+    d24_grammar::ProvinceFlag::TempPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_TEMP_CHANGE_PRESENT: u32 =
+    d24_grammar::ProvinceFlag::TempChangePresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_WATER_PRESENT: u32 =
+    d24_grammar::ProvinceFlag::WaterPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_SNOW_PRESENT: u32 =
+    d24_grammar::ProvinceFlag::SnowPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_PRESENT: u32 =
+    d24_grammar::ProvinceFlag::MudPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_MUD_ACTIVE: u32 =
+    d24_grammar::ProvinceFlag::MudActive.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_CUSTOM_MODIFIER_COUNT_PRESENT: u32 =
+    d24_grammar::ProvinceFlag::CustomModifierCountPresent.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_STRUCT_VALIDATED: u32 =
+    d24_grammar::ProvinceFlag::StructValidated.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_MAP_RECOLOR_DRIVER: u32 =
+    d24_grammar::ProvinceFlag::MapRecolor.bit();
+pub const COMPACT_WEATHER_PROVINCE_FLAG_DYNAMIC_LUT_DRIVER: u32 =
+    d24_grammar::ProvinceFlag::DynamicLut.bit();
 pub const COMPACT_WEATHER_PROVINCE_KNOWN_FLAGS: u32 = d24_grammar::PROVINCE_KNOWN_FLAGS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1022,58 +913,12 @@ struct DomainDataDecodeSummary {
     session_header_identity: SessionHeaderIdentityObservation,
 }
 
-/// The one place every payload decoder's status word enters this authority.
-///
-/// 87 call sites reach it; nothing else may write
-/// [`DomainDataDecodeSummary::raw_status_flags_or`]. That single-funnel property
-/// is what lets [`reject_unassigned_status_bits`] be one gate instead of one
-/// per domain, and `every_decoder_status_word_reaches_the_shared_funnel` is what
-/// keeps a new decoder from bypassing it.
 fn add_decoder_status(summary: &mut DomainDataDecodeSummary, status_flags: u32) {
     summary.raw_status_flags_or = Some(summary.raw_status_flags_or.unwrap_or(0) | status_flags);
     summary.status_flags_or |=
         compact_contract::compact_status_for_global_interpretation(summary.domain_id, status_flags);
 }
 
-/// Refuse a `DOMAIN_DATA` record whose status word carries a bit the contract
-/// does not assign and this domain has not declared lane-locally.
-///
-/// # Owner ruling 2026-08-05: reject at the decoder
-///
-/// The collector DLL and this host ship together, so a status bit neither side
-/// defines is not version skew — it is producer/consumer wire disagreement,
-/// i.e. corruption or an unregistered producer-side assignment. Before this
-/// gate such a bit was INVISIBLE: [`compact_contract::COMPACT_STATUS_FAILURE_MASK`]
-/// covers assigned bits only, and no payload decoder called
-/// [`compact_contract::compact_status_unknown_flags_v1`], so a record carrying
-/// bit 20 folded exactly like a clean one.
-///
-/// The refusal is one gate at the shared boundary rather than 40 copies:
-/// [`add_decoder_status`] is the single funnel every decoder's status word
-/// passes through, so testing the accumulated word once here covers every
-/// domain [`summarize_domain_data_payload`] dispatches.
-///
-/// # Why a parse error and not a new outcome type
-///
-/// A non-empty `parse_errors` makes [`summarize_domain_data_payload`] return
-/// [`DomainDataError`], which the two production drivers already turn into an
-/// ACCOUNTED gap rather than a silent drop:
-/// `stream_fold::drive_fold_compressed_with_identity_mode` records an
-/// [`crate::stream_fold::ExcludedDomainDataRecord`] plus a
-/// `malformed_payload_domains` entry and calls
-/// `WorldFold::record_malformed_domain_payload`, and the manifest path in
-/// `recorder_host::main` pushes the same excluded record. The domain-hour
-/// therefore reads as refused-with-a-reason (partial data still seals), not as
-/// clean. Reusing that machinery is also why the reason is a string: it lands
-/// verbatim in `validation_reason`, so the offending bits are what the ledger
-/// SAYS (a degraded outcome names its cause).
-///
-/// Lane-local badges are NOT refused: `compact_status_unassigned_flags` strips
-/// this domain's declared mask first, so d53's bits 16..=22 and d60's 16..=17 —
-/// production-emitted, outside the v1 vocabulary, and legitimate — pass. d17's
-/// `WAR_SEGMENT_ABSENT` is an ASSIGNED informational bit and likewise passes;
-/// this gate never re-decides the failure/informational split, only whether the
-/// bit has a definition at all.
 fn reject_unassigned_status_bits(
     summary: &mut DomainDataDecodeSummary,
     domain_id: u16,
@@ -1110,14 +955,6 @@ fn add_compact_global_status_flags(
     add_decoder_status(summary, status_flags);
 }
 
-/// Fold one record's value for `name` into this frame's decode aggregate, by
-/// the unit's declared accumulation class.
-///
-/// A domain can publish more than one record in a frame, so the within-frame
-/// accumulation has to obey the same rule as the cross-frame one. Summing two
-/// records' copies of an absolute running total is the same defect at a
-/// smaller scale. `compact_contract::diagnostic_channel::Accumulation` is the
-/// authority; this function is the only arithmetic here.
 fn fold_named_unit(aggregate: &mut BTreeMap<String, u64>, name: &str, value: u64) {
     let class = compact_contract::diagnostic_channel::unit_accumulation(name);
     match aggregate.get_mut(name) {
@@ -1141,13 +978,7 @@ fn add_compact_domain_problem(
     fold_named_unit(&mut domain.problems, problem, count);
 }
 
-/// Record a PER-FRAME quantity: a count derived from the payload of the frame
-/// this record rode in.
-///
-/// A value that the producer maintains across frames must NOT come through
 /// here. `debug_assert` states that, and the release path still folds by the
-/// declared class, so a miscategorised call is a loud test failure rather than
-/// a silently inflated manifest figure.
 fn add_compact_domain_data_unit(
     summary: &mut DomainDataDecodeSummary,
     domain_id: u16,
@@ -1163,15 +994,6 @@ fn add_compact_domain_data_unit(
         ),
         "{name} is not a per-frame unit; use add_compact_domain_cumulative_unit"
     );
-    // Skipping a zero is only safe when zero is the fold's identity. Adding 0
-    // to a sum and OR-ing 0 into a mask both change nothing, so dropping those
-    // saves a map entry and nothing else.
-    //
-    // For a LastValue unit it is NOT safe, and dropping it was a real defect:
-    // `air_strength_first_invalid_reason` is submitted on every frame, so a
-    // frame that failed with reason 31 followed by a CLEAN frame reporting 0
-    // left 31 standing in the manifest. The capture then reported a failure
-    // reason for a domain whose last observation was "no failure".
     let class = compact_contract::diagnostic_channel::unit_accumulation(name);
     if count == 0
         && matches!(
@@ -1188,18 +1010,6 @@ fn add_compact_domain_data_unit(
     }
 }
 
-/// Record a value the PRODUCER maintains across frames: an absolute running
-/// total, a running maximum, a latching boolean, a session constant, or an
-/// instantaneous level.
-///
-/// Separate from [`add_compact_domain_data_unit`] so the caller states which
-/// kind of number it holds at the call site, and so a name that has not been
-/// classified in the contract cannot be recorded as cumulative by accident.
-///
-/// Unlike the per-frame entry point this does NOT drop a zero: for a cumulative
-/// unit, zero is the measurement "nothing has happened yet", and dropping it
-/// would make "the counter is still 0" indistinguishable from "the domain did
-/// not report", which is the [`UnitPresence`] mistake in a different costume.
 fn add_compact_domain_cumulative_unit(
     summary: &mut DomainDataDecodeSummary,
     domain_id: u16,
@@ -1357,8 +1167,6 @@ fn decode_compact_country_identity_data_payload(
                 return;
             }
         };
-        // Wave-4 cosmetic tag: 1-byte marker (0 absent / 1 null / 2 present),
-        // then a length-prefixed string only when present.
         if cursor >= payload.len() {
             summary.parse_errors.push(format!(
                 "offset {offset}: country_identity data row {row_index} truncated before cosmetic marker"
@@ -1474,13 +1282,16 @@ fn decode_compact_country_identity_data_payload(
                 let core_count = read_u32_le(payload, at + 8) as usize;
                 at += 12;
                 if state_id == 0 || (state_index != 0 && state_id <= previous_state) {
-                    return Err(format!("CIM1 state row {state_index} is not strictly ordered"));
+                    return Err(format!(
+                        "CIM1 state row {state_index} is not strictly ordered"
+                    ));
                 }
                 previous_state = state_id;
-                if (!claims_available && claim_count != 0)
-                    || (!cores_available && core_count != 0)
+                if (!claims_available && claim_count != 0) || (!cores_available && core_count != 0)
                 {
-                    return Err(format!("CIM1 unavailable state row {state_id} carries members"));
+                    return Err(format!(
+                        "CIM1 unavailable state row {state_id} carries members"
+                    ));
                 }
                 let member_bytes = claim_count
                     .checked_add(core_count)
@@ -1559,17 +1370,6 @@ fn decode_compact_country_identity_data_payload(
         })();
         match parsed {
             Ok((states, claims, cores, majors, major_true, consumed, cim1_status_or)) => {
-                // The three CIM1 sub-statuses are the SAME global vocabulary the
-                // record status uses (the collector writes exactly 0 or
-                // `SOURCE_UNAVAILABLE | PARTIAL_DATA`), and the production fold
-                // gates on them: `claims_available`/`cores_available`/
-                // `major_available` decide whether the claims, cores and
-                // dynamic-major families are published for this hour AT ALL.
-                // They were read here for the local count contract and then
-                // dropped, so a d18 record whose base status was clean while its
-                // membership read failed certified clean and silently shipped an
-                // hour with no claims. Feeding them to the classifier is what
-                // makes the status word say what the fold already acted on.
                 add_decoder_status(summary, cim1_status_or);
                 if let Some(domain) = summary.per_domain.get_mut(&18) {
                     domain.status_flags_or |= cim1_status_or;
@@ -1587,9 +1387,9 @@ fn decode_compact_country_identity_data_payload(
                 cursor = consumed;
             }
             Err(error) => {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: country_identity data {error}"
-                ));
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: country_identity data {error}"));
                 return;
             }
         }
@@ -1602,7 +1402,7 @@ fn decode_compact_country_identity_data_payload(
     }
 }
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=ef66c76c707c5c840c3b39a0e4aea9cea473157d7392e50126aa6406a7738829
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=cd0e1eed4d8767af23c3d745c2ff369f1fa78e514c9a77ab4f6ef9acdfc54631
 fn decode_compact_production_data_payload(
     offset: usize,
     payload: &[u8],
@@ -1633,9 +1433,6 @@ fn decode_compact_production_data_payload(
             "offset {offset}: production data scale {scale_raw} != expected {COMPACT_PRODUCTION_SCALE_RAW}"
         ));
     }
-    // Wave-4 production licensing: the base payload is self-delimiting to
-    // base_len; any trailing bytes are the `PLIC` license trailer (parsed
-    // after the base rows). A record with no trailer is exactly base_len.
     let base = match d11_grammar::BaseCursor::new(payload, &header) {
         Ok(base) => base,
         Err(violation) => {
@@ -1811,9 +1608,6 @@ fn decode_compact_production_data_payload(
             ));
         }
     }
-    // Parse the strict additive D11 trailer chain (`PLIC`, X4-P1 `PVJ1`,
-    // X4-P2 `PFR1`, exact-priority `PPR1`, XUI12 `PLS1`/`PEF1`, X4-P5
-    // `PMI1`, completeness witnesses, and B2 `PCV1`).
     let trailers = match construction.into_end() {
         Ok(end) => end.next,
         Err(violation) => {
@@ -2137,7 +1931,8 @@ fn decode_compact_deployment_queue_trailer(
     let codec_cursor = match d11_grammar::deployment::walk(codec_payload) {
         Ok(cursor) => cursor,
         Err(violation) => {
-            let error = production11::deployment_queue::format_deployment_grammar_violation(violation);
+            let error =
+                production11::deployment_queue::format_deployment_grammar_violation(violation);
             summary.parse_errors.push(format!(
                 "offset {offset}: PDQ1 deployment carrier is invalid: {error}"
             ));
@@ -2145,7 +1940,10 @@ fn decode_compact_deployment_queue_trailer(
         }
     };
     let codec_schema_version = codec_cursor.header().schema_version.wire();
-    let frame = match production11::decode_deployment_queue_frame_from_cursor(codec_payload, codec_cursor) {
+    let frame = match production11::decode_deployment_queue_frame_from_cursor(
+        codec_payload,
+        codec_cursor,
+    ) {
         Ok(frame) => frame,
         Err(error) => {
             summary.parse_errors.push(format!(
@@ -2261,7 +2059,6 @@ fn decode_compact_deployment_queue_trailer(
         "deployment_queue_equipment_rows",
         equipment_rows,
     );
-    // The lane decoder supplies values; explicitly consume the carrier block.
     Some(body.inner_payload().discard_all().next)
 }
 
@@ -2374,24 +2171,20 @@ fn decode_compact_country_convoy_trailer(
     let mut tags = BTreeSet::new();
     let mut countries = body.countries();
     loop {
-        let (row_index, row, noncanonical_ranges) = match authority_production_step(
-            offset,
-            payload,
-            summary,
-            countries.next(payload),
-        )? {
-            d11_grammar::PcvCountryStep::Row { index, row, .. } => (index, row, false),
-            d11_grammar::PcvCountryStep::RecoverableRow { index, row, .. } => {
-                (index, row, true)
-            }
-            d11_grammar::PcvCountryStep::RecoverableFinal { .. } => {
-                summary.parse_errors.push(format!(
-                    "offset {offset}: PCV1 country ranges do not cover all rows"
-                ));
-                break;
-            }
-            d11_grammar::PcvCountryStep::End(_) => break,
-        };
+        let (row_index, row, noncanonical_ranges) =
+            match authority_production_step(offset, payload, summary, countries.next(payload))? {
+                d11_grammar::PcvCountryStep::Row { index, row, .. } => (index, row, false),
+                d11_grammar::PcvCountryStep::RecoverableRow { index, row, .. } => {
+                    (index, row, true)
+                }
+                d11_grammar::PcvCountryStep::RecoverableFinal { .. } => {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: PCV1 country ranges do not cover all rows"
+                    ));
+                    break;
+                }
+                d11_grammar::PcvCountryStep::End(_) => break,
+            };
         let tag_db_id = row.tag_db_id;
         let flags = row.flags;
         let owned_raw = row.owned_raw;
@@ -2470,15 +2263,11 @@ fn decode_compact_country_convoy_trailer(
             ));
         }
     }
-    let countries_end = match authority_production_step(
-        offset,
-        payload,
-        summary,
-        countries.into_end(),
-    )? {
-        d11_grammar::PcvCountryEnd::Complete(end) => end,
-        d11_grammar::PcvCountryEnd::Recoverable { end, .. } => end,
-    };
+    let countries_end =
+        match authority_production_step(offset, payload, summary, countries.into_end())? {
+            d11_grammar::PcvCountryEnd::Complete(end) => end,
+            d11_grammar::PcvCountryEnd::Recoverable { end, .. } => end,
+        };
     add_compact_domain_data_unit(summary, 11, "country_convoy_rows", country_count);
     add_compact_domain_data_unit(summary, 11, "country_convoy_variant_rows", variant_count);
     add_compact_domain_data_unit(
@@ -2487,9 +2276,7 @@ fn decode_compact_country_convoy_trailer(
         "country_convoy_reservation_rows",
         reservation_count,
     );
-    // Variant values were validated before country rows to retain historical order.
     let variants_end = countries_end.next.variants().discard_all();
-    // Reservation values were validated in that same historical order.
     let reservations_end = variants_end.next.reservations().discard_all();
     Some(reservations_end.next)
 }
@@ -2568,9 +2355,6 @@ fn decode_compact_production_completeness_trailer(
     Some(authority_production_step(offset, payload, summary, rows.into_end())?.next)
 }
 
-/// Decode + gate the domain-11 `PLIC` production-license trailer. The trailer
-/// must consume the payload to its exact end. License db ids are gated
-/// 1..2^24 and per-country id sets are deduped.
 fn decode_compact_production_license_trailer(
     offset: usize,
     payload: &[u8],
@@ -2612,12 +2396,8 @@ fn decode_compact_production_license_trailer(
         }
         counts.push((tag_db_id, count));
     }
-    let countries_end = authority_production_step(
-        offset,
-        payload,
-        summary,
-        countries_cursor.into_end(),
-    )?;
+    let countries_end =
+        authority_production_step(offset, payload, summary, countries_cursor.into_end())?;
     if header.summed_item_count != header.item_count {
         summary.parse_errors.push(format!(
             "offset {offset}: production license id total {} != id_rows {}",
@@ -2668,8 +2448,6 @@ fn decode_compact_production_license_trailer(
                 ));
             }
             if version == d11_grammar::PlicVersion::V2
-                // `> i32::MAX` is one short of the id rule (it admits the size
-                // ceiling, which no database can index).
                 && (visible_order != expected_order as u32
                     || creator_tag_db_id == 0
                     || creator_tag_db_id > COMPACT_MAX_OWNER_TAG_DB_ID
@@ -3036,9 +2814,6 @@ fn decode_compact_focus_data_payload(
                 "offset {offset}: focus country row {row_index} duplicates tag_db_id {tag_db_id}"
             ));
         }
-        // Bits 6/7 carry the authenticated pause-field presence/value added to
-        // the current D12 producer. WorldFold already consumes the same full
-        // byte; the summary gate must not reject valid current-schema rows.
         if flags & !0xff != 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: focus country row {row_index} has unknown flags {flags}"
@@ -3086,21 +2861,12 @@ fn decode_compact_focus_data_payload(
     }
 }
 
-// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=23069ce1f109dcd23d697b71e18be75dc806d6169733ea41b7d36e78a19d0c29
+// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=ec84da6e0618aad3c8fdb720f0e048195d65bb6e37963e92391049463644b6d2
 fn decode_compact_tech_data_payload(
     offset: usize,
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    // The structural walk is `d13_grammar`'s, shared with the producer, the fold
-    // and the wire port. This decoder's own half is unchanged: it ACCUMULATES
-    // diagnostics where the fold returns, and which violations abandon the walk
-    // is decided here, at each step.
-    //
-    // That boundary matters in one direction only: `stream_fold` consults this
-    // decoder before applying a payload at all, so a row refused here never
-    // reaches `WorldFold`, and a rule that is merely STRICTER here silently
-    // deletes the domain.
     let header = match d13_grammar::read_header(payload) {
         Ok(header) => header,
         Err(_) => {
@@ -3220,8 +2986,6 @@ fn decode_compact_tech_data_payload(
                 "offset {offset}: tech active row {row_index} has invalid slot_index {slot_index}"
             ));
         }
-        // Recorded and walked past: the known bits still describe a walkable row,
-        // and refusing where the fold does not would delete the domain.
         if let Some(violation) = unknown_flags {
             summary
                 .parse_errors
@@ -3246,9 +3010,6 @@ fn decode_compact_tech_data_payload(
         let row_end = loop {
             let step = match row.next_step() {
                 Ok(step) => step,
-                // Terminal: the bytes that would find the next boundary are not
-                // there, so this decoder abandons the payload exactly as it
-                // always has for a truncated row.
                 Err(violation) => {
                     summary
                         .parse_errors
@@ -3256,8 +3017,6 @@ fn decode_compact_tech_data_payload(
                     return;
                 }
             };
-            // No wildcard arm: a tail added to the grammar is a compile error
-            // here until this decoder decides what it means.
             match step {
                 d13_grammar::ActiveStep::Section(section) => match section.tail {
                     d13_grammar::ActiveTail::TechName => {
@@ -3290,7 +3049,8 @@ fn decode_compact_tech_data_payload(
                         add_compact_domain_data_unit(summary, 13, "effective_ahead_rows", 1);
                     }
                     d13_grammar::ActiveTail::ObservedAuthority => {
-                        let view = match d13_grammar::A29ProvenanceView::new(payload, section.span) {
+                        let view = match d13_grammar::A29ProvenanceView::new(payload, section.span)
+                        {
                             Some(view) => view,
                             None => {
                                 summary.parse_errors.push(format!(
@@ -3380,7 +3140,9 @@ fn decode_compact_tech_data_payload(
                             || callback_qpc_ticks > selected_qpc_ticks
                             || selection_cutoff_qpc_ticks < selected_qpc_ticks
                             || candidate_set_sha256.iter().all(|byte| *byte == 0)
-                            || selected_present_receipt_sha256.iter().all(|byte| *byte == 0)
+                            || selected_present_receipt_sha256
+                                .iter()
+                                .all(|byte| *byte == 0)
                             || computed_selected_present_sha256.as_deref()
                                 != Some(
                                     snapshot::sha256::to_hex(&selected_present_receipt_sha256)
@@ -3401,23 +3163,19 @@ fn decode_compact_tech_data_payload(
                             1,
                         );
                     }
-                    // The DERIVED authority: the recorder's own inputs in place
-                    // of a producer receipt. This decoder sees a payload without
-                    // its record's hour, so the SAME-HOUR gate stays where the
-                    // frame hour is known (`world_fold.rs::fold_tech`); what is
-                    // checked here is everything that is decidable from the bytes
-                    // alone, and nothing beyond it.
                     d13_grammar::ActiveTail::DerivedAuthority => {
-                        let view =
-                            match d13_grammar::DerivedAuthorityView::new(payload, section.span) {
-                                Some(view) => view,
-                                None => {
-                                    summary.parse_errors.push(format!(
+                        let view = match d13_grammar::DerivedAuthorityView::new(
+                            payload,
+                            section.span,
+                        ) {
+                            Some(view) => view,
+                            None => {
+                                summary.parse_errors.push(format!(
                                         "offset {offset}: tech active row {row_index} is too short for the A29 derived authority"
                                     ));
-                                    return;
-                                }
-                            };
+                                return;
+                            }
+                        };
                         if view.authority() != 1
                             || view.producer_game_hour_raw() <= 0
                             || !(0..=10_000_000_000i64).contains(&view.penalty_factor_raw())
@@ -3426,17 +3184,18 @@ fn decode_compact_tech_data_payload(
                                 "offset {offset}: tech active row {row_index} A29 derived authority is invalid"
                             ));
                         }
-                        add_compact_domain_data_unit(summary, 13, "derived_ahead_authority_rows", 1);
+                        add_compact_domain_data_unit(
+                            summary,
+                            13,
+                            "derived_ahead_authority_rows",
+                            1,
+                        );
                     }
                 },
                 d13_grammar::ActiveStep::Recoverable(violation) => {
                     summary
                         .parse_errors
                         .push(tech_authority_message(offset, row_index, &violation));
-                    // One recoverable rule abandons the payload here and always
-                    // has: a receipt for a quartet that is not there means the
-                    // row's remaining bytes cannot be trusted to be what their
-                    // flags claim. The other three are recorded and walked past.
                     if matches!(
                         violation.kind,
                         d13_grammar::ViolationKind::Rule {
@@ -3452,14 +3211,6 @@ fn decode_compact_tech_data_payload(
         };
         cursor = row_end;
     }
-    // D13's XUI09 witness tail (G4-X9S1, landed by lane JO). This decoder
-    // authenticates the A29 provenance and the row structure; the FOLD is the
-    // authority on the witness itself. But the exact-consumption check below
-    // cannot tell a tail from corruption, so the tail's length has to be
-    // accounted for here or every record carrying one is refused. On the t53
-    // live capture that is precisely what happened: 59 D13 records excluded,
-    // "trailing byte(s)" counts of 923752 (whole payload) and 2244 (patch),
-    // both exactly the tail's own length.
     match crate::world_fold::compact_tech_xui09_tail_len(payload, cursor) {
         Ok(len) => cursor += len,
         Err(error) => summary
@@ -3476,13 +3227,6 @@ fn decode_compact_tech_data_payload(
     }
 }
 
-/// One structural violation, spelled the way THIS decoder has always spelled it:
-/// with the record's stream offset and the row's index, because its diagnostics
-/// become a sealed manifest's exclusion reasons and a reader needs to find the
-/// record they name.
-///
-/// Exhaustive, no wildcard arm: a new violation kind is a compile error here
-/// rather than a silently reworded exclusion.
 fn tech_authority_message(
     offset: usize,
     row_index: usize,
@@ -3500,8 +3244,6 @@ fn tech_authority_message(
             Section::ActiveFixed => format!(
                 "offset {offset}: tech active row {row_index} base record is truncated"
             ),
-            // `skip_compact_string_len`'s wording, which this decoder used for
-            // the name before the walk was shared.
             Section::TechNamePrefix | Section::TechNameBytes => format!(
                 "offset {offset}: tech active tech_name overruns payload at cursor {at}: need {len}, remaining {}",
                 available.saturating_sub(at)
@@ -4245,17 +3987,6 @@ fn decode_compact_frd_depth_data_payload(
                 "offset {offset}: focus row {row_index} has exact completed-token flag without token"
             ));
         }
-        // A completed-count-increase row is legitimately token-less when the
-        // encoder could not resolve a focus token: the country's completed_count
-        // ticked up while it had no active national/continuous focus at either
-        // bracketing sample (focus_kind == 0) and completed_tokens surfaced no
-        // new token, so neither the EXACT nor INFERRED completed-token flag is
-        // set. This is the encoder's `focus_completed_unresolved_rows` state, not
-        // corruption: the completion delta and counts are still carried, so
-        // accepting it loses no data and fabricates no token. An EXACT/INFERRED
-        // completed row without a token stays a hard error (caught here and by the
-        // exact-flag check above), and kinds 2..=5 always carry >=1 token, so this
-        // exemption stays tight and fail-closed.
         let unresolved_completion = kind == COMPACT_FRD_FOCUS_EVENT_COMPLETED_COUNT_INCREASED
             && flags
                 & (COMPACT_FRD_FOCUS_FLAG_COMPLETED_TOKEN_EXACT
@@ -4538,7 +4269,6 @@ fn decode_compact_frd_depth_data_payload(
         }
         if target_id == 0
             || (country_flags && target_id > COMPACT_MAX_OWNER_TAG_DB_ID)
-            // The numeric target is a STATE id (see the collector's note).
             || (numeric_flags && target_id > COMPACT_MAX_STATE_ID_FRD)
         {
             summary.parse_errors.push(format!(
@@ -4772,10 +4502,6 @@ fn decode_compact_frd_depth_data_payload(
     }
     if schema_version == COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5 {
         let trailer = &payload[cursor..];
-        // A logical stream may begin after the process-wide hook epoch has
-        // already drained pre-world or prior-campaign rows. For an empty first
-        // drain, the authoritative sequence cursor is therefore the stream's
-        // baseline; it is not required to be the hook-epoch origin (1).
         let sequence_start = if direct_transition_count == 0 {
             32
         } else {
@@ -5182,10 +4908,18 @@ fn decode_compact_divisions_data_payload(
         let strategic_redeployment_raw = read_u32_le(payload, cursor + 92);
         let current_manpower = read_u32_le(payload, cursor + 96);
         let cumulative_losses = read_u32_le(payload, cursor + 100);
-        let max_organisation_raw = extended.then(|| read_u32_le(payload, cursor + 104)).unwrap_or(0);
-        let counter_supply_status_raw = extended.then(|| read_u32_le(payload, cursor + 108)).unwrap_or(0);
-        let dig_in_raw = extended.then(|| read_u32_le(payload, cursor + 112)).unwrap_or(0);
-        let dig_in_cap_raw = extended.then(|| read_u32_le(payload, cursor + 116)).unwrap_or(0);
+        let max_organisation_raw = extended
+            .then(|| read_u32_le(payload, cursor + 104))
+            .unwrap_or(0);
+        let counter_supply_status_raw = extended
+            .then(|| read_u32_le(payload, cursor + 108))
+            .unwrap_or(0);
+        let dig_in_raw = extended
+            .then(|| read_u32_le(payload, cursor + 112))
+            .unwrap_or(0);
+        let dig_in_cap_raw = extended
+            .then(|| read_u32_le(payload, cursor + 116))
+            .unwrap_or(0);
         cursor += row_len;
 
         if div_id == 0 {
@@ -5248,22 +4982,16 @@ fn decode_compact_divisions_data_payload(
             (flags & COMPACT_DIVISION_ROW_FLAG_STRATEGIC_REDEPLOYMENT) != 0;
         let has_current_manpower = (flags & COMPACT_DIVISION_ROW_FLAG_CURRENT_MANPOWER) != 0;
         let has_cumulative_losses = (flags & COMPACT_DIVISION_ROW_FLAG_CUMULATIVE_LOSSES) != 0;
-        let has_max_organisation =
-            (flags & COMPACT_DIVISION_ROW_FLAG_MAX_ORGANISATION) != 0;
+        let has_max_organisation = (flags & COMPACT_DIVISION_ROW_FLAG_MAX_ORGANISATION) != 0;
         let has_counter_supply_status =
             (flags & COMPACT_DIVISION_ROW_FLAG_COUNTER_SUPPLY_STATUS) != 0;
         let has_dig_in = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN) != 0;
         let has_dig_in_cap = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_CAP) != 0;
-        let training_observed =
-            (flags & COMPACT_DIVISION_ROW_FLAG_TRAINING_OBSERVED) != 0;
-        let training_visible =
-            (flags & COMPACT_DIVISION_ROW_FLAG_TRAINING_VISIBLE) != 0;
-        let dig_in_ui_observed =
-            (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_OBSERVED) != 0;
-        let dig_in_ui_visible =
-            (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE) != 0;
-        let dig_in_ui_capped =
-            (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED) != 0;
+        let training_observed = (flags & COMPACT_DIVISION_ROW_FLAG_TRAINING_OBSERVED) != 0;
+        let training_visible = (flags & COMPACT_DIVISION_ROW_FLAG_TRAINING_VISIBLE) != 0;
+        let dig_in_ui_observed = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_OBSERVED) != 0;
+        let dig_in_ui_visible = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_VISIBLE) != 0;
+        let dig_in_ui_capped = (flags & COMPACT_DIVISION_ROW_FLAG_DIG_IN_UI_CAPPED) != 0;
         let invalid_orders_observed =
             (flags & COMPACT_DIVISION_ROW_FLAG_INVALID_ORDERS_OBSERVED) != 0;
         let invalid_orders_visible =
@@ -5512,8 +5240,6 @@ fn decode_compact_divisions_data_payload(
             COMPACT_MAX_DIVISION_FUEL_RAW,
             "fuel_raw",
         );
-        // Wave-4 disrupted supply: present value gated 0..=max (a present 0 is
-        // valid — 3162/3168 divisions); absent must carry a zero field.
         validate_optional_compact_u32(
             summary,
             offset,
@@ -7695,8 +7421,6 @@ fn decode_compact_air_combat_losses_live_data_payload(
         scalar_change_rows,
     );
 
-    // Historical payloads ended at the legacy wing rows. Current-build
-    // payloads append the exact A4R1 regional combat-history state.
     if payload.len() == legacy_len {
         return;
     }
@@ -7754,9 +7478,9 @@ fn decode_compact_air_combat_losses_live_data_payload(
             ));
         }
         if diagnostic_invalid_wing_rows > 0
-            && first_invalid_ordinal > observed_air_wing_rows.saturating_add(
-                diagnostic_invalid_wing_rows as usize,
-            ) as u32
+            && first_invalid_ordinal
+                > observed_air_wing_rows.saturating_add(diagnostic_invalid_wing_rows as usize)
+                    as u32
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: air combat invalid-wing diagnostic ordinal {first_invalid_ordinal} exceeds observed source rows"
@@ -8779,10 +8503,7 @@ fn decode_compact_air_loss_stats_live_data_payload(
         "air_loss_binding_verified_rows",
         lane_summary.binding_verified_rows as usize,
     );
-    // Each channel total is the within-frame sum over countries of that
     // country's ENGINE LIFETIME total for the channel (statistic id 23, the
-    // 89-field aggregate air-loss HISTORY record). The world total is therefore
-    // cumulative even though this frame built it by adding: summing it again
     // across frames multiplied the engine's lifetime figure by the frame count.
     for (label, total) in lane_summary.channel_totals {
         add_compact_domain_cumulative_unit(
@@ -9212,10 +8933,6 @@ fn decode_compact_naval_combat_lifecycle_live_data_payload(
         match naval4950::decode_lifecycle_rows(payload) {
             Ok((status_flags, rows)) => {
                 if let Err(reason) = validate_d49_promoted_location_region(status_flags, &rows) {
-                    // Bit 11 is deliberately lane-local for d49 and therefore
-                    // masked from global status interpretation. It is still
-                    // fatal to d49 DATA authority. Re-promote it when the row
-                    // evidence proves that the collector omitted the badge.
                     lane_summary.status_flags_or |=
                         naval4950::STATUS_LOCATION_CANDIDATE_UNVALIDATED;
                     lane_summary
@@ -9233,10 +8950,6 @@ fn decode_compact_naval_combat_lifecycle_live_data_payload(
     );
 }
 
-/// D49's promoted province/strategic-region pair is mandatory on every active
-/// lifecycle row. Bit 11 is a lane-local fail-closed badge (despite overlapping
-/// a global informational bit) and is therefore rejected here before global
-/// status normalization. Deleted tombstones may omit both promoted fields.
 pub(crate) fn validate_d49_promoted_location_region(
     status_flags: u32,
     rows: &[naval4950::LifecycleRow],
@@ -9276,9 +8989,6 @@ fn merge_naval_combat_lane_summary(
     domain_id: u16,
     lane_summary: naval4950::PayloadDecodeSummary,
 ) {
-    // Domain 49 carries a lane-local payload status bit (location-candidate
-    // badge); mask it from the GLOBAL status interpretation while keeping the
-    // raw flags on the per-domain summary (status_flags_scope reports this).
     add_compact_global_status_flags(summary, domain_id, lane_summary.status_flags_or);
     summary.parse_errors.extend(lane_summary.parse_errors);
     if let Some(domain) = summary.per_domain.get_mut(&domain_id) {
@@ -9312,18 +9022,54 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
 
     let witness = decoded.witness;
     let drop_counts = [
-        ("convoy_transport_attack_dropped_no_original", witness.telemetry.dropped_no_original),
-        ("convoy_transport_attack_dropped_teardown", witness.telemetry.dropped_teardown),
-        ("convoy_transport_attack_dropped_nested", witness.telemetry.dropped_nested),
-        ("convoy_transport_attack_dropped_capture_busy", witness.telemetry.dropped_capture_busy),
-        ("convoy_transport_attack_dropped_hour_or_epoch", witness.telemetry.dropped_hour_or_epoch),
-        ("convoy_transport_attack_dropped_resolver", witness.telemetry.dropped_resolver),
-        ("convoy_transport_attack_dropped_candidate", witness.telemetry.dropped_candidate),
-        ("convoy_transport_attack_dropped_d70_pre", witness.telemetry.dropped_d70_pre),
-        ("convoy_transport_attack_dropped_d70_post", witness.telemetry.dropped_d70_post),
-        ("convoy_transport_attack_dropped_d70_mutation", witness.telemetry.dropped_d70_mutation),
-        ("convoy_transport_attack_dropped_queue_busy", witness.telemetry.dropped_queue_busy),
-        ("convoy_transport_attack_dropped_queue_full", witness.telemetry.dropped_queue_full),
+        (
+            "convoy_transport_attack_dropped_no_original",
+            witness.telemetry.dropped_no_original,
+        ),
+        (
+            "convoy_transport_attack_dropped_teardown",
+            witness.telemetry.dropped_teardown,
+        ),
+        (
+            "convoy_transport_attack_dropped_nested",
+            witness.telemetry.dropped_nested,
+        ),
+        (
+            "convoy_transport_attack_dropped_capture_busy",
+            witness.telemetry.dropped_capture_busy,
+        ),
+        (
+            "convoy_transport_attack_dropped_hour_or_epoch",
+            witness.telemetry.dropped_hour_or_epoch,
+        ),
+        (
+            "convoy_transport_attack_dropped_resolver",
+            witness.telemetry.dropped_resolver,
+        ),
+        (
+            "convoy_transport_attack_dropped_candidate",
+            witness.telemetry.dropped_candidate,
+        ),
+        (
+            "convoy_transport_attack_dropped_d70_pre",
+            witness.telemetry.dropped_d70_pre,
+        ),
+        (
+            "convoy_transport_attack_dropped_d70_post",
+            witness.telemetry.dropped_d70_post,
+        ),
+        (
+            "convoy_transport_attack_dropped_d70_mutation",
+            witness.telemetry.dropped_d70_mutation,
+        ),
+        (
+            "convoy_transport_attack_dropped_queue_busy",
+            witness.telemetry.dropped_queue_busy,
+        ),
+        (
+            "convoy_transport_attack_dropped_queue_full",
+            witness.telemetry.dropped_queue_full,
+        ),
     ];
     let dropped_events = drop_counts
         .iter()
@@ -9340,7 +9086,6 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             .data_changed_rows_total
             .saturating_add(decoded.rows.len() as u64);
 
-        // PER-FRAME: computed from THIS batch.
         let mut add_batch_unit = |name: &str, count: u64| {
             if count != 0 {
                 fold_named_unit(&mut domain.data_units_total, name, count);
@@ -9370,15 +9115,6 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
         );
     }
 
-    // CUMULATIVE and GAUGE: `witness.telemetry` is the hook's
-    // `cumulative_telemetry` -- process-global `AtomicU64` counters reset only
-    // at hook install, so every batch reports the same running totals again.
-    // Summing them is what published 19,470 drops for 107 events in
-    // runs/live_unlock/t15. The binding/queue counts are the state of the
-    // publication and queue at drain time, so they are peaks, not totals.
-    //
-    // These deliberately do NOT skip a zero: for a running total, zero is the
-    // measurement "nothing has happened yet".
     let telemetry = witness.telemetry;
     for (name, value) in [
         (
@@ -9414,12 +9150,6 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             "convoy_transport_attack_resolver_unbound_convoy_clients",
             witness.resolver_unbound_convoy_clients as u64,
         ),
-        // The sites `..._dropped_hour_or_epoch` and `..._dropped_resolver` were
-        // hiding. They are published HERE rather than in `drop_counts` on
-        // purpose: `drop_counts` is summed into
-        // `convoy_transport_attack_dropped_events`, and these are subsets of
-        // two entries already in that sum, so folding them in would count the
-        // same dropped callback two or three times.
         (
             "convoy_transport_attack_dropped_pre_hour_unreadable",
             telemetry.dropped_pre_hour_unreadable,
@@ -9444,8 +9174,6 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             "convoy_transport_attack_dropped_resolver_unpublished",
             telemetry.dropped_resolver_unpublished,
         ),
-        // Distances, not counts. Running maxima, so they fold with MAX like the
-        // counters around them rather than being summed.
         (
             "convoy_transport_attack_receipt_hour_lag_max",
             telemetry.receipt_hour_lag_max,
@@ -9479,11 +9207,6 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             1,
         );
     }
-    // Reported as its own problem, not folded into the incomplete witness: a
-    // batch can be incomplete for reasons that have nothing to do with the
-    // resolver, and a consumer deciding whether these rows cover every convoy
-    // member needs the resolver's own partiality named. Zero here with an
-    // incomplete witness means the loss was elsewhere.
     add_compact_domain_problem(
         summary,
         COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
@@ -9719,7 +9442,6 @@ fn decode_compact_land_combat_detail_events_live_data_payload(
         "land_combat_detail_participant_left_unclassified_rows",
         participant_left_unclassified_rows,
     );
-    // E2: per-side CCombatSide detail rows.
     add_compact_domain_data_unit(
         summary,
         COMPACT_DOMAIN_LAND_COMBAT_DETAIL_EVENTS_LIVE,
@@ -10749,14 +10471,13 @@ fn decode_compact_projects_data_payload(
         let points_raw = read_u32_le(payload, cursor + 8);
         let flags = read_u32_le(payload, cursor + 12);
         cursor += COMPACT_PROJECT_BREAKTHROUGH_ROW_LEN;
-        let program_status_index = if header_extension
-            == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
-        {
-            (flags & COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK)
-                >> COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT
-        } else {
-            0
-        };
+        let program_status_index =
+            if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1 {
+                (flags & COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_MASK)
+                    >> COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT
+            } else {
+                0
+            };
         if program_status_index >= 3 {
             summary.parse_errors.push(format!(
                 "offset {offset}: projects breakthrough row {row_index} has invalid program_status_index {program_status_index}"
@@ -10780,8 +10501,7 @@ fn decode_compact_projects_data_payload(
                 "offset {offset}: projects breakthrough row {row_index} duplicates tag/program-status/specialization {tag_db_id}/{program_status_index}/{specialization_handle}"
             ));
         }
-        let known_flags = if header_extension
-            == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
+        let known_flags = if header_extension == COMPACT_PROJECT_HEADER_EXT_PROGRAM_STATUS_INDEX_V1
         {
             COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_KNOWN_FLAGS
         } else if header_extension == COMPACT_PROJECT_HEADER_EXT_SPECIALIZATION_V1 {
@@ -10798,8 +10518,7 @@ fn decode_compact_projects_data_payload(
         if deleted {
             deleted_breakthrough_rows = deleted_breakthrough_rows.saturating_add(1);
             let expected_deleted_flags = COMPACT_PROJECT_BREAKTHROUGH_ROW_FLAG_DELETED
-                | (program_status_index
-                    << COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT);
+                | (program_status_index << COMPACT_PROJECT_BREAKTHROUGH_PROGRAM_STATUS_INDEX_SHIFT);
             if flags != expected_deleted_flags || points_raw != 0 {
                 summary.parse_errors.push(format!(
                     "offset {offset}: projects breakthrough deleted row {row_index} has live fields"
@@ -10953,7 +10672,6 @@ fn decode_compact_projects_data_payload(
             ));
         }
     }
-    // Exact lifecycle/reward-history segments follow the self-delimiting base.
     if cursor != payload.len() {
         decode_compact_project_trailers(offset, payload, cursor, summary);
     }
@@ -11015,9 +10733,9 @@ fn decode_compact_project_trailers(
             }
             b"PRHF" => {
                 if saw_reward_history || saw_authority {
-                    summary.parse_errors.push(format!(
-                        "offset {offset}: PRHF trailer is duplicate"
-                    ));
+                    summary
+                        .parse_errors
+                        .push(format!("offset {offset}: PRHF trailer is duplicate"));
                     return;
                 }
                 saw_reward_history = true;
@@ -11041,29 +10759,39 @@ fn decode_compact_project_trailers(
             .checked_mul(row_len)
             .and_then(|rows| header_len.checked_add(rows))
         else {
-            summary.parse_errors.push(format!(
-                "offset {offset}: {label} trailer size overflow"
-            ));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: {label} trailer size overflow"));
             return;
         };
         let Some(next) = cursor.checked_add(segment_len) else {
-            summary.parse_errors.push(format!(
-                "offset {offset}: {label} trailer end overflow"
-            ));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: {label} trailer end overflow"));
             return;
         };
         if next > payload.len() {
-            summary.parse_errors.push(format!(
-                "offset {offset}: {label} trailer is truncated"
-            ));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: {label} trailer is truncated"));
             return;
         }
         if magic == b"PLCF" {
             decode_compact_project_lifecycle_trailer(offset, &payload[..next], cursor, summary);
         } else if magic == b"PPGF" {
-            decode_compact_project_owner_progress_trailer(offset, &payload[..next], cursor, summary);
+            decode_compact_project_owner_progress_trailer(
+                offset,
+                &payload[..next],
+                cursor,
+                summary,
+            );
         } else {
-            decode_compact_project_reward_history_trailer(offset, &payload[..next], cursor, summary);
+            decode_compact_project_reward_history_trailer(
+                offset,
+                &payload[..next],
+                cursor,
+                summary,
+            );
         }
         cursor = next;
     }
@@ -11081,9 +10809,9 @@ fn decode_compact_project_owner_progress_trailer(
     const DELETED: u32 = 1 << 31;
     let trailer = &payload[trailer_offset..];
     if trailer.len() < HEADER_LEN || &trailer[0..4] != b"PPGF" {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: project owner-progress trailer header is invalid"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: project owner-progress trailer header is invalid"
+        ));
         return;
     }
     let version = read_u16_le(trailer, 4);
@@ -11167,11 +10895,6 @@ fn decode_compact_project_owner_progress_trailer(
     );
 }
 
-/// Decode + gate one domain-41 `PLCF` project-lifecycle segment. The isolated
-/// segment must consume the supplied payload to its exact end. Flags are STARTED bit0 /
-/// COMPLETED bit1 (validated boolean-domain u8s from the collector); the
-/// higher bits must be zero. Per-country (tag, local_id) uniqueness is
-/// enforced.
 fn decode_compact_project_lifecycle_trailer(
     offset: usize,
     payload: &[u8],
@@ -11418,12 +11141,7 @@ fn decode_compact_project_reward_history_trailer(
         "project_reward_history_deleted_rows",
         deleted_rows,
     );
-    add_compact_domain_data_unit(
-        summary,
-        41,
-        "project_reward_history_countries",
-        countries,
-    );
+    add_compact_domain_data_unit(summary, 41, "project_reward_history_countries", countries);
     add_compact_domain_data_unit(
         summary,
         41,
@@ -11431,7 +11149,7 @@ fn decode_compact_project_reward_history_trailer(
         aborted_countries,
     );
 }
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=02163462bdcc964b65868afa16ad733c3d8c61631d4c779755037464a3f4a798
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=90163b1113daafaecdc9cc42ae06237f3488d7f85c71ccf20eff120f40f2cccd
 const COMPACT_MARKET_TRADE_UNDECODABLE: &str = "market trade record is undecodable at byte ";
 
 const D43_AUTHORITY_DECODE_CONTEXT: d43_grammar::decode::DecodeContext =
@@ -11469,18 +11187,6 @@ fn decode_compact_market_trade_record(
         add_decoder_status(summary, header.word(d43_grammar::CoreWord::StatusFlags));
     }
     for finding in &report.findings {
-        // A LANE-ONLY rule is the gate tool's stricter expectation, not this
-        // recorder's. `market_trade_live_lane` bounds an `MTD1` speed to
-        // `0..=100` where the fold and this reader bound it to
-        // `0..=1_000_000_000`; both readings are of the same byte, and only one
-        // of them is a statement about what the RECORDER accepts. Rendering the
-        // gate's here would put a new diagnostic on records both of the
-        // recorder's readers call clean, and it would print it under the SHARED
-        // rule's spelling with no field named -- "invalid value 125000" instead
-        // of naming the word. The verdict is unaffected either way: every
-        // lane-only rule is non-fatal, so this filter cannot make the two
-        // readers disagree about decodability, which is what the differential
-        // asserts.
         if finding.lane_rule.is_some() {
             continue;
         }
@@ -11512,33 +11218,111 @@ fn publish_market_trade_units(
     units: &d43_grammar::decode::D43UnitCounts,
 ) {
     for (name, value) in [
-        ("market_trade_contract_rows", units.market_trade_contract_rows),
-        ("market_trade_observed_contract_rows", units.market_trade_observed_contract_rows),
-        ("market_trade_omitted_candidate_rows", units.market_trade_omitted_candidate_rows),
-        ("market_trade_buyer_ptr_valid_rows", units.market_trade_buyer_ptr_valid_rows),
-        ("market_trade_variant_valid_rows", units.market_trade_variant_valid_rows),
-        ("market_trade_amount_valid_rows", units.market_trade_amount_valid_rows),
-        ("market_trade_partial_field_rows", units.market_trade_partial_field_rows),
+        (
+            "market_trade_contract_rows",
+            units.market_trade_contract_rows,
+        ),
+        (
+            "market_trade_observed_contract_rows",
+            units.market_trade_observed_contract_rows,
+        ),
+        (
+            "market_trade_omitted_candidate_rows",
+            units.market_trade_omitted_candidate_rows,
+        ),
+        (
+            "market_trade_buyer_ptr_valid_rows",
+            units.market_trade_buyer_ptr_valid_rows,
+        ),
+        (
+            "market_trade_variant_valid_rows",
+            units.market_trade_variant_valid_rows,
+        ),
+        (
+            "market_trade_amount_valid_rows",
+            units.market_trade_amount_valid_rows,
+        ),
+        (
+            "market_trade_partial_field_rows",
+            units.market_trade_partial_field_rows,
+        ),
         ("market_trade_detail_rows", units.market_trade_detail_rows),
-        ("market_trade_detail_omitted_rows", units.market_trade_detail_omitted_rows),
-        ("market_trade_detail_price_valid_rows", units.market_trade_detail_price_valid_rows),
-        ("market_trade_detail_speed_valid_rows", units.market_trade_detail_speed_valid_rows),
-        ("market_trade_detail_completed_valid_rows", units.market_trade_detail_completed_valid_rows),
-        ("market_trade_detail_days_valid_rows", units.market_trade_detail_days_valid_rows),
-        ("market_trade_detail_delivery_country_valid_rows", units.market_trade_detail_delivery_country_valid_rows),
-        ("market_trade_detail_convoy_valid_rows", units.market_trade_detail_convoy_valid_rows),
-        ("market_trade_detail_efficiency_valid_rows", units.market_trade_detail_efficiency_valid_rows),
-        ("market_trade_detail_delivery_route_valid_rows", units.market_trade_detail_delivery_route_valid_rows),
-        ("market_trade_detail_progress_valid_rows", units.market_trade_detail_progress_valid_rows),
-        ("market_trade_resource_flow_rows", units.market_trade_resource_flow_rows),
-        ("market_trade_factory_header_rows", units.market_trade_factory_header_rows),
-        ("market_trade_resource_rows", units.market_trade_resource_rows),
-        ("market_trade_classic_deal_country_witnesses", units.market_trade_classic_deal_country_witnesses),
-        ("market_trade_classic_deal_incomplete_owners", units.market_trade_classic_deal_incomplete_owners),
-        ("market_trade_classic_deal_rows", units.market_trade_classic_deal_rows),
-        ("market_trade_activation_rows", units.market_trade_activation_rows),
-        ("market_trade_stockpile_country_rows", units.market_trade_stockpile_country_rows),
-        ("market_trade_stockpile_item_rows", units.market_trade_stockpile_item_rows),
+        (
+            "market_trade_detail_omitted_rows",
+            units.market_trade_detail_omitted_rows,
+        ),
+        (
+            "market_trade_detail_price_valid_rows",
+            units.market_trade_detail_price_valid_rows,
+        ),
+        (
+            "market_trade_detail_speed_valid_rows",
+            units.market_trade_detail_speed_valid_rows,
+        ),
+        (
+            "market_trade_detail_completed_valid_rows",
+            units.market_trade_detail_completed_valid_rows,
+        ),
+        (
+            "market_trade_detail_days_valid_rows",
+            units.market_trade_detail_days_valid_rows,
+        ),
+        (
+            "market_trade_detail_delivery_country_valid_rows",
+            units.market_trade_detail_delivery_country_valid_rows,
+        ),
+        (
+            "market_trade_detail_convoy_valid_rows",
+            units.market_trade_detail_convoy_valid_rows,
+        ),
+        (
+            "market_trade_detail_efficiency_valid_rows",
+            units.market_trade_detail_efficiency_valid_rows,
+        ),
+        (
+            "market_trade_detail_delivery_route_valid_rows",
+            units.market_trade_detail_delivery_route_valid_rows,
+        ),
+        (
+            "market_trade_detail_progress_valid_rows",
+            units.market_trade_detail_progress_valid_rows,
+        ),
+        (
+            "market_trade_resource_flow_rows",
+            units.market_trade_resource_flow_rows,
+        ),
+        (
+            "market_trade_factory_header_rows",
+            units.market_trade_factory_header_rows,
+        ),
+        (
+            "market_trade_resource_rows",
+            units.market_trade_resource_rows,
+        ),
+        (
+            "market_trade_classic_deal_country_witnesses",
+            units.market_trade_classic_deal_country_witnesses,
+        ),
+        (
+            "market_trade_classic_deal_incomplete_owners",
+            units.market_trade_classic_deal_incomplete_owners,
+        ),
+        (
+            "market_trade_classic_deal_rows",
+            units.market_trade_classic_deal_rows,
+        ),
+        (
+            "market_trade_activation_rows",
+            units.market_trade_activation_rows,
+        ),
+        (
+            "market_trade_stockpile_country_rows",
+            units.market_trade_stockpile_country_rows,
+        ),
+        (
+            "market_trade_stockpile_item_rows",
+            units.market_trade_stockpile_item_rows,
+        ),
     ] {
         if let Some(value) = value {
             add_compact_domain_data_unit(summary, 43, name, value);
@@ -11847,12 +11631,12 @@ fn d43_value_field_name(field: Option<d43_grammar::decode::D43ValueField>) -> &'
     }
 }
 
-fn format_d43_deal_identity(
-    finding: &d43_grammar::decode::Finding,
-    suffix: &str,
-) -> String {
+fn format_d43_deal_identity(finding: &d43_grammar::decode::Finding, suffix: &str) -> String {
     let Some(identity) = finding.deal_identity else {
-        return format!("market trade MTRD deal at row {} {suffix}", finding.row_or_slot.unwrap_or(0));
+        return format!(
+            "market trade MTRD deal at row {} {suffix}",
+            finding.row_or_slot.unwrap_or(0)
+        );
     };
     format!(
         "market trade MTRD deal {}->{} resource {} ordinal {} {suffix}",
@@ -11869,29 +11653,83 @@ fn format_d43_structural_finding(finding: &d43_grammar::decode::Finding) -> Stri
         return "market trade structural violation".to_string();
     };
     match violation.kind {
-        ViolationKind::Need { section, needed, available } => match section {
-            Section::CoreHeader => format!("market trade data payload is {available} byte(s), expected at least {needed}"),
-            Section::CoreRows => format!("market trade data payload is {available} byte(s), expected at least {needed}"),
-            Section::TrailerMagic => "market trade trailer is too short to contain magic".to_string(),
+        ViolationKind::Need {
+            section,
+            needed,
+            available,
+        } => match section {
+            Section::CoreHeader => format!(
+                "market trade data payload is {available} byte(s), expected at least {needed}"
+            ),
+            Section::CoreRows => format!(
+                "market trade data payload is {available} byte(s), expected at least {needed}"
+            ),
+            Section::TrailerMagic => {
+                "market trade trailer is too short to contain magic".to_string()
+            }
             Section::TrailerHeader(trailer) => format!(
                 "market trade {} {} overruns payload at cursor {}: need {}, remaining {}",
                 trailer.label(),
-                if trailer == d43_grammar::Trailer::Activation { "activation header" } else { "trailer header" },
+                if trailer == d43_grammar::Trailer::Activation {
+                    "activation header"
+                } else {
+                    "trailer header"
+                },
                 violation.at,
                 needed.saturating_sub(violation.at),
                 available.saturating_sub(violation.at)
             ),
-            Section::TrailerBody(trailer) => format!("market trade {} len {available} < {needed}", trailer.label()),
+            Section::TrailerBody(trailer) => format!(
+                "market trade {} len {available} < {needed}",
+                trailer.label()
+            ),
         },
-        ViolationKind::UnknownTrailerMagic { .. } | ViolationKind::TrailingBytes { .. } => "market trade unknown trailer magic".to_string(),
-        ViolationKind::DuplicateTrailer { trailer, .. } => format!("market trade duplicate {} trailer", trailer.label()),
-        ViolationKind::UnknownVersion { trailer, version } => format!("market trade {} version {version} is unsupported", trailer.label()),
-        ViolationKind::HeaderLen { trailer, declared, expected } => format!("market trade {} header_len {declared} != {expected}", trailer.label()),
-        ViolationKind::RowLen { trailer, declared, expected } => format!("market trade {} row_len {declared} != {expected}", trailer.label()),
-        ViolationKind::ResourceCount { trailer, declared, max } => format!("market trade {} resource_count {declared} is outside 1..={max}", trailer.label()),
-        ViolationKind::IdentityStride { trailer, stride } => format!("market trade {} identity stride {stride} is invalid", trailer.label()),
-        ViolationKind::AbsentBlockDeclared { trailer: d43_grammar::Trailer::ClassicDeal, .. } => "market trade MTRD header shape is invalid".to_string(),
-        ViolationKind::AbsentBlockDeclared { trailer, declared } => format!("market trade {} absent block count is {declared}", trailer.label()),
+        ViolationKind::UnknownTrailerMagic { .. } | ViolationKind::TrailingBytes { .. } => {
+            "market trade unknown trailer magic".to_string()
+        }
+        ViolationKind::DuplicateTrailer { trailer, .. } => {
+            format!("market trade duplicate {} trailer", trailer.label())
+        }
+        ViolationKind::UnknownVersion { trailer, version } => format!(
+            "market trade {} version {version} is unsupported",
+            trailer.label()
+        ),
+        ViolationKind::HeaderLen {
+            trailer,
+            declared,
+            expected,
+        } => format!(
+            "market trade {} header_len {declared} != {expected}",
+            trailer.label()
+        ),
+        ViolationKind::RowLen {
+            trailer,
+            declared,
+            expected,
+        } => format!(
+            "market trade {} row_len {declared} != {expected}",
+            trailer.label()
+        ),
+        ViolationKind::ResourceCount {
+            trailer,
+            declared,
+            max,
+        } => format!(
+            "market trade {} resource_count {declared} is outside 1..={max}",
+            trailer.label()
+        ),
+        ViolationKind::IdentityStride { trailer, stride } => format!(
+            "market trade {} identity stride {stride} is invalid",
+            trailer.label()
+        ),
+        ViolationKind::AbsentBlockDeclared {
+            trailer: d43_grammar::Trailer::ClassicDeal,
+            ..
+        } => "market trade MTRD header shape is invalid".to_string(),
+        ViolationKind::AbsentBlockDeclared { trailer, declared } => format!(
+            "market trade {} absent block count is {declared}",
+            trailer.label()
+        ),
         ViolationKind::OffsetOverflow { .. } => "market trade payload extent overflow".to_string(),
         ViolationKind::CallerDefect(_) => "market trade decoder cursor defect".to_string(),
     }
@@ -11966,11 +11804,6 @@ fn d43_test_decode_sized_trailer(
     }
 }
 
-// --- W1 domain 63 country_core_scalars_live -------------------------------
-// 20-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
-// status_flags u32), then row_count fixed 48-byte rows. Each row: tag_db_id u32,
-// flags u32, manpower_pool u32, convoys_destroyed u32, divisions_lost u32, then
-// 7 x i32 experience channels. Mirrors world_fold::fold_country_core_scalars.
 fn decode_compact_country_core_scalars_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12054,8 +11887,6 @@ fn decode_compact_country_core_scalars_data_payload(
             has_divisions,
             COMPACT_COUNTRY_CORE_MAX_DIVISIONS_LOST,
         );
-        // 7 experience channels (i32) at +20..+48; when the experience flag is
-        // clear every channel must be zero-packed.
         if !has_experience {
             for k in 0..7 {
                 if read_i32_le(payload, base + 20 + k * 4) != 0 {
@@ -12085,10 +11916,6 @@ fn decode_compact_country_core_scalars_data_payload(
     );
 }
 
-// --- W3 domain 64 delayed_events_live -------------------------------------
-// 20-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
-// status_flags u32), then row_count fixed 20-byte rows: owner_tag_db_id u32,
-// event_id u32, flags u32, originator u32, due_remaining_hours u32.
 fn decode_compact_delayed_events_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12107,15 +11934,15 @@ fn decode_compact_delayed_events_data_payload(
     let status_flags = read_u32_le(payload, 16);
     add_decoder_status(summary, status_flags);
     let Some(rows_bytes) = row_count.checked_mul(COMPACT_DELAYED_EVENT_ROW_LEN) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: delayed_events row length overflow"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_events row length overflow"
+        ));
         return;
     };
     let Some(rows_end) = COMPACT_DELAYED_EVENTS_HEADER_LEN.checked_add(rows_bytes) else {
-        summary
-            .parse_errors
-            .push(format!("offset {offset}: delayed_events row length overflow"));
+        summary.parse_errors.push(format!(
+            "offset {offset}: delayed_events row length overflow"
+        ));
         return;
     };
     if payload.len() < rows_end {
@@ -12258,8 +12085,8 @@ fn decode_compact_delayed_event_lifecycle(
         return None;
     }
     for index in 0..count {
-        let base =
-            COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN + index * COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN;
+        let base = COMPACT_DELAYED_EVENT_LIFECYCLE_HEADER_LEN
+            + index * COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_LEN;
         let sequence = read_u64_le(payload, base);
         let game_hour_raw = read_i32_le(payload, base + 8);
         let reason = read_u32_le(payload, base + 12);
@@ -12283,8 +12110,7 @@ fn decode_compact_delayed_event_lifecycle(
             ));
             return None;
         }
-        let has_due_after =
-            row_flags & COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_FLAG_DUE_AFTER != 0;
+        let has_due_after = row_flags & COMPACT_DELAYED_EVENT_LIFECYCLE_ROW_FLAG_DUE_AFTER != 0;
         let transform_valid = match (reason, has_due_after) {
             (1, true) => {
                 due_before.checked_sub(1) == Some(due_after)
@@ -12303,10 +12129,6 @@ fn decode_compact_delayed_event_lifecycle(
     Some(count)
 }
 
-// --- W3 domain 65 special_project_programs_live ---------------------------
-// 24-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
-// status_flags u32, dropped_ambiguous u32), then row_count fixed 16-byte rows:
-// owner_tag_db_id u32, program_id u32, province u32, unread_prototype_rewards u32.
 fn decode_compact_special_project_programs_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12388,11 +12210,6 @@ fn decode_compact_special_project_programs_data_payload(
     );
 }
 
-// --- W4 domain 66 occupation_state_extras_live ----------------------------
-// 20-byte header (elapsed_wall_ms u64, row_count u32, changed_rows u32,
-// status_flags u32), then row_count fixed 24-byte rows: controller_tag u32,
-// occupied_tag u32, state_id u32, flags u32, occupation_law_token_id u32,
-// garrison_manpower_source_tag_db_id u32.
 fn decode_compact_occupation_state_extras_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12505,12 +12322,6 @@ fn decode_compact_occupation_state_extras_data_payload(
     );
 }
 
-// --- W5 domain 67 country_dynamic_modifiers_live --------------------------
-// 20-byte header (elapsed_wall_ms u64, country_count u32, total_id_count u32,
-// status_flags u32), then country_count fixed 12-byte rows (tag_db_id u32,
-// id_count u32, id_blob_offset u32 in id units), then a single concatenated id
-// blob where each id is a u16 length prefix + utf8 bytes. Windows must be
-// contiguous and cover the blob exactly.
 fn decode_compact_country_dynamic_modifiers_data_payload(
     offset: usize,
     payload: &[u8],
@@ -12608,7 +12419,6 @@ fn decode_compact_country_dynamic_modifiers_data_payload(
         ));
         return;
     }
-    // Parse the id blob (u16 length prefix + bytes), validating bounds/utf8.
     let mut id_count_parsed = 0usize;
     let mut cursor = table_len;
     let mut torn = false;
@@ -12652,7 +12462,6 @@ fn decode_compact_country_dynamic_modifiers_data_payload(
             payload.len()
         ));
     }
-    // Validate the contiguous, exact-cover row windows against the parsed ids.
     let mut expected_offset = 0usize;
     let mut seen: BTreeSet<u32> = BTreeSet::new();
     for i in 0..country_count {
@@ -12715,17 +12524,6 @@ fn decode_compact_country_dynamic_modifiers_data_payload(
     );
 }
 
-// --- W6 domain 68 session_header_live -------------------------------------
-// 16-byte header (elapsed_wall_ms u64, presence_flags u32, status_flags u32),
-// a fixed 20-byte scalar block (player_tag u32, dlcs u32, start_date u32,
-// save_version u32, session u32), then three length-prefixed utf8 strings
-// (ideology, cosmetic_tag, version), each a u16 length + bytes.
-/// This validator's spelling of a `d24_grammar` refusal.
-///
-/// Every arm reproduces the message this validator produced before the walk
-/// moved into the leaf, including its `offset {offset}: ` prefix and its
-/// "N byte(s), expected M" phrasing, which is not the fold's phrasing and never
-/// was. No wildcard arm.
 fn weather_violation(offset: usize, violation: d24_grammar::Violation) -> String {
     use d24_grammar::{Section, ViolationKind};
     match violation.kind {
@@ -12749,20 +12547,12 @@ fn weather_violation(offset: usize, violation: d24_grammar::Violation) -> String
         } => format!(
             "offset {offset}: weather data payload is {available} byte(s), expected {expected}"
         ),
-        // Unreachable on a 64-bit host; the old walk used `saturating_mul` and
-        // reported an overflow as a length mismatch against a saturated number.
         ViolationKind::LengthOverflow { count, unit, .. } => {
             format!("offset {offset}: weather row count {count} x {unit} overflows")
         }
     }
 }
 
-/// This validator's spelling of a `d68_grammar` refusal.
-///
-/// The leaf carries operands and no text. Every arm reproduces the message this
-/// validator produced before the walk moved into the leaf, including its
-/// `offset {offset}: ` prefix and its "N byte(s), expected at least M" phrasing,
-/// which is not the fold's phrasing and never was. No wildcard arm.
 fn session_header_violation(offset: usize, violation: d68_grammar::Violation) -> String {
     use d68_grammar::{Section, ViolationKind};
     match violation.kind {
@@ -12797,8 +12587,6 @@ fn session_header_violation(offset: usize, violation: d68_grammar::Violation) ->
         } => format!(
             "offset {offset}: session_header trailing bytes: consumed {consumed} of {available}"
         ),
-        // Unreachable on a 64-bit host; it had no message before, because the
-        // old walk added the lengths unchecked.
         ViolationKind::OffsetOverflow { at, len, .. } => {
             format!("offset {offset}: session_header offset {at} + {len} overflows")
         }
@@ -12815,11 +12603,6 @@ fn decode_compact_session_header_data_payload(
         .session_header_records_seen
         .saturating_add(1);
     let errors_before = summary.parse_errors.len();
-    // The structural walk is `d68_grammar`'s, shared with the producer, the
-    // fold and the wire port. This validator's own behaviour -- recording each
-    // violated field rule and CONTINUING where the fold returns -- is unchanged,
-    // and it must be: this gates the fold, and a rule that is merely STRICTER
-    // here deletes the domain instead of correcting it.
     let header = match d68_grammar::read_header(payload) {
         Ok(header) => header,
         Err(violation) => {
@@ -12890,9 +12673,6 @@ fn decode_compact_session_header_data_payload(
             "offset {offset}: session_header session without flag"
         ));
     }
-    // Three length-prefixed utf8 tokens must consume the payload exactly.
-    // `d68_grammar` delimits them; UTF-8 validity and the flag/emptiness pair
-    // are this validator's, and stay non-fatal here exactly as before.
     let mut cursor = d68_grammar::TokenCursor::new();
     let end = loop {
         let step = match cursor.next(payload) {
@@ -12906,11 +12686,6 @@ fn decode_compact_session_header_data_payload(
         };
         match step {
             d68_grammar::TokenStep::Token { field, bytes } => {
-                // No wildcard arm: a fourth token field does not compile until
-                // this validator has decided what it means. The three arms are
-                // identical today because the rules below are uniform across
-                // the tokens -- binding each variant is what makes that a
-                // DECISION rather than an accident of a generic loop.
                 let name = match field {
                     d68_grammar::Field::Ideology
                     | d68_grammar::Field::CosmeticTag
@@ -12957,10 +12732,6 @@ fn decode_compact_session_header_data_payload(
             .parse_errors
             .push(session_header_violation(offset, violation));
     }
-    // Commit identity witnesses only after the complete payload grammar has
-    // validated and only for an effective-success row. Failure/partial status
-    // mirrors the canonical fold's rejection: it remains badged above but can
-    // never leave stale or partial positive identity evidence behind.
     if summary.parse_errors.len() != errors_before
         || compact_contract::compact_status_is_failure(status_flags)
     {
@@ -12984,11 +12755,6 @@ fn decode_compact_session_header_data_payload(
     );
 }
 
-// --- W6 domain 69 tech_sharing_groups_live --------------------------------
-// 16-byte header (elapsed_wall_ms u64, group_count u32, status_flags u32), then
-// group_count fixed 12-byte rows (id_token u32, member_count u32,
-// member_blob_offset u32 in u32 units), then a flat u32 tag_db_id member blob.
-// Windows must be contiguous and cover the blob exactly.
 #[cfg(any())]
 fn decode_compact_tech_sharing_groups_data_payload_legacy(
     offset: usize,
@@ -13113,22 +12879,19 @@ fn decode_compact_tech_sharing_groups_data_payload(
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    // Preserve raw/global status observability in partial authority even when
-    // the v3 discriminator or body is malformed. Rows/units are committed only
-    // after the complete shared decoder and host policy both succeed.
     if payload.len() >= 16 {
         add_decoder_status(summary, read_u32_le(payload, 12));
     }
     let decoded =
         match compact_contract::tech_sharing_groups::decode_payload_with_definition_ids(payload) {
-        Ok(decoded) => decoded,
-        Err(error) => {
-            summary.parse_errors.push(format!(
-                "offset {offset}: tech_sharing_groups TSG3 payload invalid: {error}"
-            ));
-            return;
-        }
-    };
+            Ok(decoded) => decoded,
+            Err(error) => {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: tech_sharing_groups TSG3 payload invalid: {error}"
+                ));
+                return;
+            }
+        };
     let mut policy_errors = Vec::new();
     if decoded.rows.len() > COMPACT_TECH_SHARING_GROUP_MAX_GROUPS {
         policy_errors.push(format!(
@@ -13205,8 +12968,6 @@ fn decode_compact_sunk_convoy_history_data_payload(
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    // SCH1 stores its payload status at +0x0C. Preserve it in partial
-    // authority even when the remaining payload is malformed.
     if payload.len() >= 16 {
         add_decoder_status(summary, read_u32_le(payload, 12));
     }
@@ -13409,49 +13170,43 @@ fn decode_compact_country_army_upgrade_data_payload(
             return;
         }
     };
-    let (countries, groups, requests, deliveries, produced) = decoded.snapshot.as_ref().map_or(
-        (0usize, 0usize, 0usize, 0usize, 0usize),
-        |snapshot| {
-            let groups = snapshot
-                .countries
-                .iter()
-                .map(|country| country.groups.len())
-                .sum::<usize>();
-            let requests = snapshot
-                .countries
-                .iter()
-                .flat_map(|country| &country.groups)
-                .map(|group| group.requests.len())
-                .sum::<usize>();
-            let deliveries = snapshot
-                .countries
-                .iter()
-                .flat_map(|country| &country.groups)
-                .map(|group| group.deliveries.len())
-                .sum::<usize>();
-            let produced = snapshot
-                .countries
-                .iter()
-                .flat_map(|country| &country.groups)
-                .flat_map(|group| &group.deliveries)
-                .map(|delivery| delivery.produced.len())
-                .sum::<usize>();
-            (
-                snapshot.countries.len(),
-                groups,
-                requests,
-                deliveries,
-                produced,
-            )
-        },
-    );
-    // d93 recorded its status word into the per-domain copy only, never into the
-    // shared funnel. `DomainDataAuthority::status_flags` was therefore `None` for
-    // this domain, which is the claim "this payload authority decodes no status
-    // word at all" — false, and deliberately not collapsed with "the status was
-    // clean" (see `stream_fold::domain_data_payload_status`). The consequence was
-    // that d93's embedded status was never cross-checked against its DOMAIN_PERF
-    // status, and now also that it would have escaped `reject_unassigned_status_bits`.
+    let (countries, groups, requests, deliveries, produced) =
+        decoded
+            .snapshot
+            .as_ref()
+            .map_or((0usize, 0usize, 0usize, 0usize, 0usize), |snapshot| {
+                let groups = snapshot
+                    .countries
+                    .iter()
+                    .map(|country| country.groups.len())
+                    .sum::<usize>();
+                let requests = snapshot
+                    .countries
+                    .iter()
+                    .flat_map(|country| &country.groups)
+                    .map(|group| group.requests.len())
+                    .sum::<usize>();
+                let deliveries = snapshot
+                    .countries
+                    .iter()
+                    .flat_map(|country| &country.groups)
+                    .map(|group| group.deliveries.len())
+                    .sum::<usize>();
+                let produced = snapshot
+                    .countries
+                    .iter()
+                    .flat_map(|country| &country.groups)
+                    .flat_map(|group| &group.deliveries)
+                    .map(|delivery| delivery.produced.len())
+                    .sum::<usize>();
+                (
+                    snapshot.countries.len(),
+                    groups,
+                    requests,
+                    deliveries,
+                    produced,
+                )
+            });
     add_decoder_status(summary, decoded.status_flags);
     if let Some(domain) = summary
         .per_domain
@@ -13502,15 +13257,28 @@ fn decode_compact_rail_replay_state_data_payload(
         return;
     }
     let admitted_hub_simulation_rows = decoded.hub_simulation_rows.len();
-    if let Some(domain) = summary.per_domain.get_mut(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE) {
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE)
+    {
         domain.data_rows_total = domain
             .data_rows_total
             .saturating_add(decoded.provinces.len() as u64)
             .saturating_add(admitted_hub_simulation_rows as u64);
         domain.status_flags_or |= decoded.status_flags;
     }
-    add_compact_domain_data_unit(summary, COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE, "rail_replay_provinces", decoded.provinces.len());
-    add_compact_domain_data_unit(summary, COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE, "rail_replay_directed_neighbors", decoded.observed_neighbors as usize);
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        "rail_replay_provinces",
+        decoded.provinces.len(),
+    );
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
+        "rail_replay_directed_neighbors",
+        decoded.observed_neighbors as usize,
+    );
     add_compact_domain_data_unit(
         summary,
         COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
@@ -13541,9 +13309,6 @@ fn decode_compact_fired_event_popups_data_payload(
     if let Some(domain) = summary.per_domain.get_mut(&fired75::DOMAIN_ID) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(admitted_rows as u64);
     }
-    // The d75 ledger is append-only for the life of the runtime -- every frame
-    // clones the WHOLE ledger -- so these are the ledger's size, not this
-    // frame's fires.
     add_compact_domain_cumulative_unit(
         summary,
         fired75::DOMAIN_ID,
@@ -13775,7 +13540,10 @@ fn decode_compact_scripted_gui_runtime_data_payload(
     for (name, count) in [
         ("scripted_gui_runtime_rows", row_count),
         ("scripted_gui_runtime_results", result_count),
-        ("scripted_gui_runtime_unavailable_results", unavailable_count),
+        (
+            "scripted_gui_runtime_unavailable_results",
+            unavailable_count,
+        ),
         ("scripted_gui_runtime_tombstones", tombstone_count),
     ] {
         add_compact_domain_data_unit(summary, scripted84::DOMAIN_ID, name, count);
@@ -13811,9 +13579,7 @@ fn decode_compact_nuke_stockpile_data_payload(
         })
         .unwrap_or((0, 0));
     if let Some(domain) = summary.per_domain.get_mut(&nuke83::DOMAIN_ID) {
-        domain.data_rows_total = domain
-            .data_rows_total
-            .saturating_add(country_rows as u64);
+        domain.data_rows_total = domain.data_rows_total.saturating_add(country_rows as u64);
     }
     add_compact_domain_data_unit(
         summary,
@@ -13887,11 +13653,6 @@ fn decode_compact_peace_conference_data_payload(
             return;
         }
     };
-    // A measured zero is an ANSWER but not a ROW: the hour looked at the
-    // engine's peace-conference container and there was nothing in it to
-    // describe. Counting it here would inflate `data_rows_total` by one per
-    // peaceful hour -- which is nearly every hour of a campaign -- and make
-    // d97 look like the busiest domain in the capture.
     let frame_rows = usize::from(matches!(
         decoded.observation,
         Some(
@@ -13922,9 +13683,6 @@ fn decode_compact_peace_conference_data_payload(
         "peace_conference_active_frames",
         active_rows,
     );
-    // Published so a capture can state the shape of d97's hours instead of
-    // leaving "no rows" to be read as "no answer". Per-frame by construction:
-    // its value is computed from the payload of the frame it rides in.
     add_compact_domain_data_unit(
         summary,
         peace97::DOMAIN_ID,
@@ -13933,12 +13691,6 @@ fn decode_compact_peace_conference_data_payload(
     );
 }
 
-/// Count what domain 98 actually measured, keeping the three outcomes apart.
-///
-/// `theatre_selector_admitted_sections` and
-/// `theatre_selector_refused_sections` must be reported separately: collapsing
-/// them would make a recording in which every country failed look identical to
-/// one in which every country genuinely had no theatres.
 fn decode_compact_theatre_selector_data_payload(
     offset: usize,
     payload: &[u8],
@@ -14035,8 +13787,6 @@ fn decode_compact_sunk_ship_history_data_payload(
     if let Some(domain) = summary.per_domain.get_mut(&sunk86::DOMAIN_ID) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(event_rows as u64);
     }
-    // `current_complete_snapshot` clones the complete writer history every
-    // frame, so this is the history's LENGTH.
     add_compact_domain_cumulative_unit(
         summary,
         sunk86::DOMAIN_ID,
@@ -14144,8 +13894,6 @@ fn decode_compact_national_focus_presentation_data_payload(
     );
 }
 
-// Shared helper: an optional u32 field packed with a presence flag. When present
-// the value must be within [0, max]; when absent it must be zero-packed.
 fn validate_compact_optional_u32(
     summary: &mut DomainDataDecodeSummary,
     offset: usize,
@@ -14576,18 +14324,12 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                         "offset {offset}: supply logistics disrupted row {row_index} has invalid province_id {province_id}"
                     ));
                 }
-                if owner_tag_db_id == 0
-                    || owner_tag_db_id > COMPACT_SUPPLY_MAX_TAG_DB_ID
-                {
+                if owner_tag_db_id == 0 || owner_tag_db_id > COMPACT_SUPPLY_MAX_TAG_DB_ID {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics disrupted row {row_index} has invalid owner_tag_db_id {owner_tag_db_id}"
                     ));
                 }
-                if !seen_country_disrupted_supply.insert((
-                    owner_tag_db_id,
-                    province_id,
-                    join_id,
-                )) {
+                if !seen_country_disrupted_supply.insert((owner_tag_db_id, province_id, join_id)) {
                     summary.parse_errors.push(format!(
                         "offset {offset}: supply logistics disrupted row {row_index} duplicates owner/province/node_type identity"
                     ));
@@ -14664,9 +14406,6 @@ fn decode_compact_supply_logistics_attrition_data_payload(
         }
     }
 
-    // Additive D44 trailer chain: optional FHB1, optional ATR1, optional ARC1,
-    // optional PST1.
-    // PST1 is last because its strict codec owns EOF.
     let mut extension_cursor = expected_len;
     let mut foreign_homebase_extension_present = false;
     if payload.len().saturating_sub(extension_cursor) >= 4
@@ -14674,14 +14413,18 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     {
         foreign_homebase_extension_present = true;
         if payload.len().saturating_sub(extension_cursor) < 16 {
-            summary.parse_errors.push(format!("offset {offset}: truncated supply FHB1 header"));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: truncated supply FHB1 header"));
             return;
         }
         let row_count = read_u32_le(payload, extension_cursor + 8) as usize;
         if read_u32_le(payload, extension_cursor + 4) != 1
             || read_u32_le(payload, extension_cursor + 12) != 0
         {
-            summary.parse_errors.push(format!("offset {offset}: invalid supply FHB1 header"));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: invalid supply FHB1 header"));
             return;
         }
         extension_cursor += 16;
@@ -14743,9 +14486,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
                     return;
                 }
             };
-            let source_end = match source_start
-                .checked_add(source_len)
-            {
+            let source_end = match source_start.checked_add(source_len) {
                 Some(cursor) if cursor <= payload.len() => cursor,
                 _ => {
                     summary.parse_errors.push(format!(
@@ -14793,9 +14534,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             if !delta_data {
                 let expected_occurrence = match previous_key.as_ref() {
                     Some(previous)
-                        if previous.0 == key.0
-                            && previous.1 == key.1
-                            && previous.2 == key.2 =>
+                        if previous.0 == key.0 && previous.1 == key.1 && previous.2 == key.2 =>
                     {
                         match previous.3.checked_add(1) {
                             Some(value) => value,
@@ -14826,14 +14565,18 @@ fn decode_compact_supply_logistics_attrition_data_payload(
         && read_u32_le(payload, extension_cursor) == u32::from_le_bytes(*b"ATR1")
     {
         if payload.len().saturating_sub(extension_cursor) < 16 {
-            summary.parse_errors.push(format!("offset {offset}: truncated supply ATR1 header"));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: truncated supply ATR1 header"));
             return;
         }
         atr_rows = read_u32_le(payload, extension_cursor + 8) as usize;
         if read_u32_le(payload, extension_cursor + 4) != 1
             || read_u32_le(payload, extension_cursor + 12) != 0
         {
-            summary.parse_errors.push(format!("offset {offset}: invalid supply ATR1 header"));
+            summary
+                .parse_errors
+                .push(format!("offset {offset}: invalid supply ATR1 header"));
             return;
         }
         extension_cursor += 16;
@@ -14863,7 +14606,8 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             const BADGE: u32 = 1 << 4;
             const ACTIVE: u32 = 1 << 5;
             const REASONS_TRANSIENT: u32 = 1 << 6;
-            const KNOWN: u32 = DELETED | OWNER | TOTAL | THRESHOLD | BADGE | ACTIVE | REASONS_TRANSIENT;
+            const KNOWN: u32 =
+                DELETED | OWNER | TOTAL | THRESHOLD | BADGE | ACTIVE | REASONS_TRANSIENT;
             if division_id == 0
                 || division_id > COMPACT_SUPPLY_MAX_DIVISION_ID
                 || prior_id.is_some_and(|prior| prior >= division_id)
@@ -14937,25 +14681,25 @@ fn decode_compact_supply_logistics_attrition_data_payload(
     add_compact_domain_data_unit(summary, 44, "supply_division_attrition_i64_rows", atr_rows);
 
     if payload.len().saturating_sub(extension_cursor) >= 4
-        && read_u32_le(payload, extension_cursor)
-            == supply44::ATTRITION_COMPONENT_TRAILER_MAGIC
+        && read_u32_le(payload, extension_cursor) == supply44::ATTRITION_COMPONENT_TRAILER_MAGIC
     {
         match supply44::decode_attrition_component_trailer_prefix(&payload[extension_cursor..]) {
             Ok((batch, consumed)) => {
                 extension_cursor = match extension_cursor.checked_add(consumed) {
                     Some(cursor) => cursor,
                     None => {
-                        summary.parse_errors.push(format!(
-                            "offset {offset}: supply ARC1 end offset overflow"
-                        ));
+                        summary
+                            .parse_errors
+                            .push(format!("offset {offset}: supply ARC1 end offset overflow"));
                         return;
                     }
                 };
                 if batch.dropped_rows == 0 {
                     if batch.rows.len() != observed_division_roots as usize
-                        || batch.rows.iter().any(|row| {
-                            row.flags == supply44::ATTRITION_COMPONENT_FLAG_DELETED
-                        })
+                        || batch
+                            .rows
+                            .iter()
+                            .any(|row| row.flags == supply44::ATTRITION_COMPONENT_FLAG_DELETED)
                     {
                         summary.parse_errors.push(format!(
                             "offset {offset}: supply ARC1 is not a complete live current-frame division roster"
@@ -15027,10 +14771,6 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             decoded_csupply_input_rows, decoded_country_disrupted_supply_rows
         ));
     }
-    // Constant badges delta once and are retained by the fold. Baselines must
-    // carry the shared contract's four unconditional badges plus exactly the
-    // pressure badge selected by FHB1 presence. FHB1 row_count=0 remains a
-    // successful exact EMPTY read, not a source failure.
     if !delta_data {
         let seen_badge_flags = seen_badge_flags
             .iter()
@@ -15042,8 +14782,7 @@ fn decode_compact_supply_logistics_attrition_data_payload(
             foreign_homebase_extension_present,
             &mut summary.parse_errors,
         );
-        if decoded_country_disrupted_supply_live_rows > 0
-            && !has_country_disrupted_source_available
+        if decoded_country_disrupted_supply_live_rows > 0 && !has_country_disrupted_source_available
         {
             summary.parse_errors.push(format!(
                 "offset {offset}: supply logistics disrupted rows lack exact-source availability badge"
@@ -15647,9 +15386,6 @@ fn decode_compact_air_base_status_data_payload(
         let building_level = read_u32_le(payload, cursor + 16);
         let based_wing_count = read_u32_le(payload, cursor + 20);
         let based_plane_count = read_u32_le(payload, cursor + 24);
-        // A7 exact-a729 placement closure promoted the former reserved word to
-        // the pointer-free CAirBase -> CProvince id. Keep zero compatible with
-        // older/unresolved rows, but validate every present province id.
         let province_id = read_u32_le(payload, cursor + 28);
         cursor += COMPACT_AIR_BASE_STATUS_ROW_LEN;
         let deleted = (flags & COMPACT_AIR_BASE_STATUS_ROW_FLAG_DELETED) != 0;
@@ -15943,14 +15679,6 @@ fn decode_compact_map_control_data_payload(
         ));
         return;
     }
-    // A FULL baseline carrying no rows of EITHER kind carries no measurement,
-    // and the fold refuses it too -- before it clears its retained maps. It also
-    // cannot have come from this recorder, whose topology walk refuses an array
-    // that authenticates no province.
-    //
-    // Scoped twice: an empty DELTA is ordinary, and a STATE-ONLY snapshot is
-    // still a measurement. This is a consistency rule with the producer, not the
-    // 10 000-province content floor lane HJ removed from this decoder.
     if !delta_data && state_count == 0 && province_count == 0 {
         summary.parse_errors.push(format!(
             "offset {offset}: map control full baseline carries no rows of either kind"
@@ -16367,9 +16095,6 @@ fn decode_compact_weather_data_payload(
     payload: &[u8],
     summary: &mut DomainDataDecodeSummary,
 ) {
-    // The structural walk is `d24_grammar`'s, shared with the producer, the
-    // fold and the wire port. This validator's own behaviour -- recording each
-    // violated row rule and CONTINUING where the fold returns -- is unchanged.
     let header = match d24_grammar::read_header(payload) {
         Ok(header) => header,
         Err(violation) => {
@@ -16379,31 +16104,14 @@ fn decode_compact_weather_data_payload(
             return;
         }
     };
-    // Destructured, not read word by word: `HeaderWord::ALL`'s LENGTH is the
-    // compile error that stops a new header word from being added at the
-    // producer and ignored here.
-    let [
-        region_count_raw,
-        changed_rows_raw,
-        status_flags,
-        province_count_raw,
-        observed_region_rows_raw,
-        observed_province_rows_raw,
-        scale_raw,
-        active_region_count_raw,
-        max_water_raw_word,
-        max_snow_raw_word,
-    ] = header.words();
+    let [region_count_raw, changed_rows_raw, status_flags, province_count_raw, observed_region_rows_raw, observed_province_rows_raw, scale_raw, active_region_count_raw, max_water_raw_word, max_snow_raw_word] =
+        header.words();
     let region_count = region_count_raw as usize;
     let changed_rows = changed_rows_raw as usize;
     let province_count = province_count_raw as usize;
     let observed_region_rows = observed_region_rows_raw as usize;
     let observed_province_rows = observed_province_rows_raw as usize;
     let active_region_count = active_region_count_raw as usize;
-    // Header words `+40` / `+44`: the two ENGINE precipitation ceilings the
-    // producer discovered for this record, in the slots that used to be reserved
-    // zeros. See `COMPACT_WEATHER_MAX_TEMPERATURE_RAW`'s neighbourhood for why
-    // the constant they replaced is gone.
     add_decoder_status(summary, status_flags);
     let delta_data = (status_flags & COMPACT_STATUS_DELTA_DATA) != 0;
     let failed = compact_contract::compact_status_is_failure(
@@ -16480,11 +16188,6 @@ fn decode_compact_weather_data_payload(
             "offset {offset}: weather active_region_count {active_region_count} > region_count {region_count}"
         ));
     }
-    // The ceilings are a presence-gated pair: `0, 0` is the producer saying no
-    // weather root resolved, which is legal only when the record carries no
-    // province rows to bound. Anything else zero, or a value the wire's signed
-    // slot cannot hold, means rows arrived without the envelope they were
-    // admitted against.
     let ceilings_absent = max_water_raw_word == 0 && max_snow_raw_word == 0;
     if !ceilings_absent && (max_water_raw_word == 0 || max_snow_raw_word == 0) {
         summary.parse_errors.push(format!(
@@ -16534,9 +16237,6 @@ fn decode_compact_weather_data_payload(
     let mut region_cursor = d24_grammar::RegionCursor::new(&layout);
     let mut seen_regions = BTreeSet::new();
     let mut computed_active_regions = 0usize;
-    // Explicit, not `while let Ok(..)`: `body_layout` above already sized
-    // the payload, so a cursor error is unreachable -- and swallowing it
-    // would validate fewer rows than the header declared and say nothing.
     loop {
         let step = match region_cursor.next(payload) {
             Ok(step) => step,
@@ -16554,22 +16254,9 @@ fn decode_compact_weather_data_payload(
         else {
             break;
         };
-        // Destructured: `RegionField::ALL`'s LENGTH is the compile error that
-        // stops a new row field from being written by the producer and ignored
-        // by this validator.
-        let [
-            region_id,
-            flags,
-            temperature_word,
-            phenomenon,
-            next_weather_change_raw,
-            active_modifier_count,
-            intensity,
-            row_reserved,
-        ] = view.words();
+        let [region_id, flags, temperature_word, phenomenon, next_weather_change_raw, active_modifier_count, intensity, row_reserved] =
+            view.words();
         let temperature_raw = temperature_word as i32;
-        // Bounded by the region table's OWN length, which the header states.
-        // This was the constant 304, i.e. the vanilla count minus one.
         if region_id as usize >= observed_region_rows {
             summary.parse_errors.push(format!(
                 "offset {offset}: weather row {row_index} has invalid region_id {region_id}"
@@ -16662,9 +16349,6 @@ fn decode_compact_weather_data_payload(
 
     let mut province_cursor = d24_grammar::ProvinceCursor::new(&layout);
     let mut seen_provinces = BTreeSet::new();
-    // Explicit, not `while let Ok(..)`: `body_layout` above already sized
-    // the payload, so a cursor error is unreachable -- and swallowing it
-    // would validate fewer rows than the header declared and say nothing.
     loop {
         let step = match province_cursor.next(payload) {
             Ok(step) => step,
@@ -16682,17 +16366,8 @@ fn decode_compact_weather_data_payload(
         else {
             break;
         };
-        // Destructured, for the same reason the region row is.
-        let [
-            province_id,
-            flags,
-            temperature_word,
-            temperature_change_word,
-            water_word,
-            snow_word,
-            custom_modifier_count,
-            row_reserved,
-        ] = view.words();
+        let [province_id, flags, temperature_word, temperature_change_word, water_word, snow_word, custom_modifier_count, row_reserved] =
+            view.words();
         let temperature_raw = temperature_word as i32;
         let temperature_change_raw = temperature_change_word as i32;
         let water_raw = water_word as i32;
@@ -16926,12 +16601,6 @@ fn decode_compact_pov_visibility_data_payload(
         "pov_province_visibility_complete_frames",
         1,
     );
-    // How many of the frames delivered carry the hour their PRODUCER observed
-    // at, rather than only the hour the collector drained them in. D94 retains
-    // its frame and re-serves it until the producer replaces it, so without this
-    // word a consumer cannot tell fog standing since an earlier hour from fog
-    // rebuilt in the labelled one -- and a capture whose coverage of this fact
-    // is partial has to be able to say so.
     add_compact_domain_data_unit(
         summary,
         visibility94::DOMAIN_ID,
@@ -16982,12 +16651,6 @@ fn decode_compact_pov_spotted_units_data_payload(
         "pov_spotted_taskforce_complete_frames",
         usize::from(decoded.taskforce_frame_sequence.is_some()),
     );
-    // How many of the frames delivered carry the hour their PRODUCER observed
-    // at, rather than only the hour the collector drained them in. A frame is
-    // retained and re-served until its producer replaces it, so without this
-    // word a consumer cannot tell state standing since an earlier hour from
-    // state observed in the labelled one -- and a capture whose coverage of
-    // this fact is partial has to be able to say so.
     add_compact_domain_data_unit(
         summary,
         spotted95::DOMAIN_ID,
@@ -17098,7 +16761,7 @@ fn read_i64_le(bytes: &[u8], offset: usize) -> i64 {
     ])
 }
 
-// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=3349999ada55dc5ab043187ef1e8010e42db3edd125d851bf38ec2f06171779a
+// @leaf-source-authority crate=d74_grammar root=extractor/native/d74_grammar files=3 sha256=4cd5d55b36bc61bbe0564824bfd040a4ea8ebe386289c6894e730667fa3fae3c
 fn decode_compact_power_balance_state_data_payload(
     offset: usize,
     payload: &[u8],
@@ -17122,7 +16785,10 @@ fn decode_compact_power_balance_state_data_payload(
                 "power_balance_members",
                 members,
             );
-            let domain = summary.per_domain.entry(d74_grammar::DOMAIN_ID).or_default();
+            let domain = summary
+                .per_domain
+                .entry(d74_grammar::DOMAIN_ID)
+                .or_default();
             domain.data_rows_total = domain
                 .data_rows_total
                 .saturating_add(decoded.records.len() as u64);
@@ -17297,11 +16963,7 @@ pub fn summarize_domain_data_payload(
             decode_compact_rail_replay_state_data_payload(offset, payload, &mut summary)
         }
         dynamic71::DOMAIN_ID => {
-            decode_compact_dynamic_collection_trace_live_data_payload(
-                offset,
-                payload,
-                &mut summary,
-            )
+            decode_compact_dynamic_collection_trace_live_data_payload(offset, payload, &mut summary)
         }
         tooltip72::DOMAIN_ID => decode_compact_resolved_tooltip_instances_live_data_payload(
             offset,
@@ -17345,11 +17007,7 @@ pub fn summarize_domain_data_payload(
             decode_compact_national_focus_presentation_data_payload(offset, payload, &mut summary)
         }
         COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE => {
-            decode_compact_convoy_transport_attack_live_data_payload(
-                offset,
-                payload,
-                &mut summary,
-            )
+            decode_compact_convoy_transport_attack_live_data_payload(offset, payload, &mut summary)
         }
         COMPACT_DOMAIN_RAID_INSTANCES_LIVE => {
             decode_compact_raid_instances_data_payload(offset, payload, &mut summary)
@@ -17409,19 +17067,12 @@ pub fn summarize_domain_data_payload(
     }
 }
 
-/// One exact runtime token whose string bytes are eligible for the static
-/// catalogue join. Numeric-only runtime ids are deliberately absent from this
-/// type: callers cannot accidentally serialize them as guessed strings.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StaticJoinToken {
     pub kind: &'static str,
     pub token: String,
 }
 
-/// Validate a DATA payload with the canonical decoder, then extract only the
-/// string fields approved for the post-capture static join. Failure-class
-/// payloads never contribute tokens, even if they happen to contain residual
-/// bytes. The returned set is deterministic and duplicate-free.
 pub fn collect_static_join_tokens(
     domain_id: u16,
     payload: &[u8],
@@ -17461,9 +17112,7 @@ pub fn collect_static_join_tokens(
     Ok(rows.into_iter().collect())
 }
 
-fn collect_country_preferred_tactic_tokens(
-    payload: &[u8],
-) -> Result<Vec<StaticJoinToken>, String> {
+fn collect_country_preferred_tactic_tokens(payload: &[u8]) -> Result<Vec<StaticJoinToken>, String> {
     let decoded = preferred92::decode_payload(payload)?;
     Ok(decoded
         .rows
@@ -17690,15 +17339,19 @@ mod tests {
         out.extend_from_slice(value.as_bytes());
     }
 
-    /// A standalone `MTRD` trailer over two witnesses and no rows.
-    fn mtrd_trailer_with_witnesses(version: u16, witnesses: [u32; 2], incomplete: &[u32]) -> Vec<u8> {
+    fn mtrd_trailer_with_witnesses(
+        version: u16,
+        witnesses: [u32; 2],
+        incomplete: &[u32],
+    ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC);
         payload.extend_from_slice(&version.to_le_bytes());
+        payload.extend_from_slice(
+            &(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16).to_le_bytes(),
+        );
         payload
-            .extend_from_slice(&(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_HEADER_LEN as u16)
-                .to_le_bytes());
-        payload.extend_from_slice(&(COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
+            .extend_from_slice(&(COMPACT_MARKET_TRADE_CLASSIC_DEAL_ROW_LEN as u16).to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
         push_u32(&mut payload, 0);
         push_u32(&mut payload, 2);
@@ -17717,53 +17370,9 @@ mod tests {
         mtrd_trailer_with_witnesses(version, [34, 67], incomplete)
     }
 
-    /// This decoder must refuse every `MTRD` v3 incomplete block the FOLD
-    /// refuses, or the two disagree about one grammar.
-    ///
-    /// The decoder is structural — it advances a cursor and counts units, and
-    /// does not restate the fold's row semantics. But the incomplete block is a
-    /// statement about which owners are exact. Admitting `[99]` where 99 is not
-    /// a witness, or `[67, 34]` out of order, would report the payload
-    /// decodable and authoritative while `world_fold` rejects the whole D43
-    /// record and every family in it.
-    ///
-    /// The witness list is checked for v3 too, and NOT only when the incomplete
-    /// block is non-empty: a duplicate witness collapses in the set and lets the
-    /// duplicate pass the subset check, so the block's meaning depends on the
-    /// list being well formed.
-    ///
-    /// CHANGED by lane LR under the owner's 2026-08-16 reject ruling: it is
-    /// checked at EVERY version now. This comment used to end "v1/v2 witness
-    /// content stays uninspected here, exactly as it always was", and that was
-    /// the last version-gated hole in this family -- the fold's witness check
-    /// (the fold's former private MTRD walker) had never been
-    /// gated on a version, so a v1/v2 payload with a malformed witness list
-    /// decoded here and was discarded there. The whole-record consequence is
-    /// tested through the shipping entry points by
-    /// `d43_an_mtrd_witness_list_is_checked_at_every_version`; this test stays
-    /// at the family helper, where the incomplete-block rules live.
-    ///
-    /// What production change makes this fail: removing the ascending-witness
-    /// check, removing the witness validity check, re-gating either on a
-    /// non-empty incomplete block, or widening the header's version whitelist
-    /// without them.
-    ///
     /// MUTATION RUN (`--release`): deleted the `if per_owner { .. }` block,
-    /// leaving the header/length checks alone -- which is the state review found
-    /// this decoder in.
-    /// OBSERVED: FAILED -- "an incomplete owner that is not a witness is refused
-    /// here exactly as the fold refuses it: []"
-    ///
     /// MUTATION RUN (`--release`): re-gated the block on
-    /// `per_owner && incomplete_count > 0`, which is the narrower form the first
-    /// round of this fix shipped.
-    /// OBSERVED: FAILED -- "a duplicate witness with no incomplete owner is
-    /// refused here exactly as the fold refuses it: []"
-    ///
     /// MUTATION RUN (`--release`): dropped `|| !witnesses.insert(tag_db_id)` from
-    /// the witness check, keeping the nonzero/range arms.
-    /// OBSERVED: FAILED -- "a duplicate witness is refused here exactly as the
-    /// fold refuses it: []"
     #[test]
     fn mtrd_v3_incomplete_block_is_refused_here_exactly_as_the_fold_refuses_it() {
         let decode = |version: u16, incomplete: &[u32]| {
@@ -17773,15 +17382,24 @@ mod tests {
             (end, summary.parse_errors)
         };
 
-        let (end, errors) = decode(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION, &[34]);
-        assert!(errors.is_empty(), "a well-formed v3 block decodes: {errors:?}");
+        let (end, errors) = decode(
+            COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[34],
+        );
+        assert!(
+            errors.is_empty(),
+            "a well-formed v3 block decodes: {errors:?}"
+        );
         assert_eq!(
             end,
             D43TestTrailerEnd::At(32 + 2 * 4 + 4),
             "and the cursor clears the whole trailer"
         );
 
-        let (_, errors) = decode(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION, &[99]);
+        let (_, errors) = decode(
+            COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_PER_OWNER_VERSION,
+            &[99],
+        );
         assert!(
             errors
                 .iter()
@@ -17812,8 +17430,6 @@ mod tests {
             "and a repeated one: {errors:?}"
         );
 
-        // The version word still decides the grammar here too: a v3 body under a
-        // v2 label puts a non-zero count in v2's reserved word.
         let (_, errors) = decode(COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION, &[34]);
         assert!(
             errors
@@ -17822,9 +17438,6 @@ mod tests {
             "a v3 body labelled v2 is refused: {errors:?}"
         );
 
-        // A v3 witness list must itself be well formed, or the incomplete block
-        // has nothing meaningful to be a subset OF: duplicate witnesses collapse
-        // in the set and let the duplicate pass the subset check.
         let decode_witnesses = |version: u16, witnesses: [u32; 2], incomplete: &[u32]| {
             let payload = mtrd_trailer_with_witnesses(version, witnesses, incomplete);
             let mut summary = DomainDataDecodeSummary::default();
@@ -17833,9 +17446,11 @@ mod tests {
         };
         for (label, witnesses, incomplete) in [
             ("a duplicate witness", [34u32, 34], &[34u32][..]),
-            // Checked even with an EMPTY incomplete block: a v3 trailer owes a
-            // well-formed witness list whether or not it names anyone short.
-            ("a duplicate witness with no incomplete owner", [34, 34], &[][..]),
+            (
+                "a duplicate witness with no incomplete owner",
+                [34, 34],
+                &[][..],
+            ),
             ("a zero witness", [0, 67], &[][..]),
             (
                 "a witness past the owner bound",
@@ -17851,13 +17466,12 @@ mod tests {
             assert!(
                 errors
                     .iter()
-                    .any(|error| error.contains("witness") && error.contains("invalid or duplicated")),
+                    .any(|error| error.contains("witness")
+                        && error.contains("invalid or duplicated")),
                 "{label} is refused here exactly as the fold refuses it: {errors:?}"
             );
         }
 
-        // A WELL-FORMED v1/v2 trailer is untouched: same acceptance, same end,
-        // no block between witnesses and rows.
         for version in [
             COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_LEGACY_VERSION,
             COMPACT_MARKET_TRADE_CLASSIC_DEAL_TRAILER_VERSION,
@@ -17869,14 +17483,6 @@ mod tests {
                 D43TestTrailerEnd::At(32 + 2 * 4),
                 "with no block between witnesses and rows"
             );
-            // CHANGED by lane LR, owner ruling 2026-08-16. This used to assert
-            // the opposite -- that a v1/v2 witness list was "not this decoder's
-            // business" -- and that was the last version-gated hole in this
-            // family: the fold's former private MTRD walker
-            // has never gated the witness check on a version, so a v1/v2
-            // payload with a duplicate witness
-            // decoded here and was thrown away there. Both readers refuse it
-            // now, at every version.
             assert!(
                 decode_witnesses(version, [34, 34], &[])
                     .iter()
@@ -17887,11 +17493,6 @@ mod tests {
         }
     }
 
-    /// Minimal production-framed form of the six computed rows present at the
-    /// tail of every t9 D44 payload. The first t9 payload used elapsed=2063 and
-    /// carried flags/codes 0x200/1, 0x400/2, 0x4000/3, 0x10000/5,
-    /// 0x100000/6, and 0x04000000/8 before FHB1. A zero-row FHB1 exercises the
-    /// stricter boundary: exact EMPTY is still source-available.
     fn d44_t9_badge_shape(
         pressure_badge: supply44::domain44_contract::BadgeSpec,
         include_empty_fhb1: bool,
@@ -17921,13 +17522,7 @@ mod tests {
             push_u32(&mut payload, value);
         }
         for badge in badges {
-            for value in [
-                COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE,
-                0,
-                0,
-                0,
-                badge.flag,
-            ] {
+            for value in [COMPACT_SUPPLY_ROW_KIND_COMPUTED_BADGE, 0, 0, 0, badge.flag] {
                 push_u32(&mut payload, value);
             }
             payload.extend_from_slice(&badge.code.to_le_bytes());
@@ -17935,17 +17530,13 @@ mod tests {
         }
         if include_empty_fhb1 {
             payload.extend_from_slice(b"FHB1");
-            push_u32(&mut payload, 1); // version
-            push_u32(&mut payload, 0); // exact empty row set
-            push_u32(&mut payload, 0); // reserved
+            push_u32(&mut payload, 1);
+            push_u32(&mut payload, 0);
+            push_u32(&mut payload, 0);
         }
         payload
     }
 
-    /// Mutation proof: removing bit 26 from the shared production flag mask,
-    /// removing badge code 8, restoring an unconditional convoy-wall demand,
-    /// or treating FHB1 row_count=0 as unavailable makes this real-shape
-    /// authority call fail.
     #[test]
     fn d44_t9_foreign_homebase_badge_and_empty_fhb1_are_certifiable() {
         let payload = d44_t9_badge_shape(
@@ -17971,12 +17562,8 @@ mod tests {
             supply44::domain44_contract::CONVOY_PRESSURE_WALL_BADGE,
             true,
         );
-        let error = summarize_domain_data_payload(
-            44,
-            &obsolete_wall,
-            DomainDataContext::default(),
-        )
-        .expect_err("FHB1 plus the obsolete convoy wall is contradictory");
+        let error = summarize_domain_data_payload(44, &obsolete_wall, DomainDataContext::default())
+            .expect_err("FHB1 plus the obsolete convoy wall is contradictory");
         assert!(error
             .errors
             .iter()
@@ -17990,12 +17577,9 @@ mod tests {
             supply44::domain44_contract::FOREIGN_HOMEBASE_SOURCE_AVAILABLE_BADGE,
             false,
         );
-        let error = summarize_domain_data_payload(
-            44,
-            &unwitnessed_available,
-            DomainDataContext::default(),
-        )
-        .expect_err("source availability without FHB1 is not self-authenticating");
+        let error =
+            summarize_domain_data_payload(44, &unwitnessed_available, DomainDataContext::default())
+                .expect_err("source availability without FHB1 is not self-authenticating");
         assert!(error
             .errors
             .iter()
@@ -18006,10 +17590,6 @@ mod tests {
             .any(|message| message.contains("source badge is present without FHB1")));
     }
 
-    // --- subordinate DATA-payload statuses the fold gates on -----------------
-
-    /// One d18 country_identity payload: base status `base_status`, one country,
-    /// and a CIM1 extension carrying the three sub-statuses.
     fn country_identity_with_cim1(
         base_status: u32,
         claims_status: u32,
@@ -18018,12 +17598,12 @@ mod tests {
     ) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&1u64.to_le_bytes());
-        push_u32(&mut payload, 1); // row_count
-        push_u32(&mut payload, 1); // changed_rows
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 1);
         push_u32(&mut payload, base_status);
-        push_u32(&mut payload, 47); // tag_db_id
+        push_u32(&mut payload, 47);
         push_string(&mut payload, "GER");
-        payload.push(1); // cosmetic null
+        payload.push(1);
 
         let major_available = !compact_contract::compact_status_is_failure(major_status);
         payload.extend_from_slice(b"CIM1");
@@ -18032,11 +17612,11 @@ mod tests {
         push_u32(&mut payload, claims_status);
         push_u32(&mut payload, cores_status);
         push_u32(&mut payload, major_status);
-        push_u32(&mut payload, 0); // state rows
-        push_u32(&mut payload, 0); // expected claim memberships
-        push_u32(&mut payload, 0); // expected core memberships
-        push_u32(&mut payload, u32::from(major_available)); // major rows
-        push_u32(&mut payload, 0); // reserved
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, u32::from(major_available));
+        push_u32(&mut payload, 0);
         if major_available {
             push_u32(&mut payload, 47);
             payload.push(1);
@@ -18045,28 +17625,10 @@ mod tests {
         payload
     }
 
-    /// d18's three CIM1 sub-statuses reach the record status.
-    ///
-    /// `WorldFold::fold_country_identity` gates on all three:
-    /// `claims_available` / `cores_available` / `major_available` decide whether
-    /// `country_claims_this_hour`, `country_cores_this_hour` and
-    /// `country_major_this_hour` are `Some(map)` or `None` -- that is, whether
-    /// each family is published for this hour at all. The decoder read them for
-    /// its local count contract and then dropped them, so a record with a CLEAN
-    /// base status and a failed membership read certified clean while the hour
-    /// silently shipped with no claims. The collector writes exactly `0` or
-    /// `SOURCE_UNAVAILABLE | PARTIAL_DATA` into these words, so they are the
-    /// same vocabulary the classifier already speaks.
-    ///
-    /// Mutation proof: delete the `add_decoder_status(summary, cim1_status_or)`
-    /// line in `decode_compact_country_identity_data_payload` and every failing
-    /// case below reads `Some(0)`.
     #[test]
     fn d18_cim1_claims_cores_and_major_statuses_reach_the_record_status() {
         let failed = COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA;
 
-        // Control: everything clean stays clean, so the assertions below are
-        // about the sub-statuses and not about some unrelated always-set bit.
         let clean = summarize_domain_data_payload(
             18,
             &country_identity_with_cim1(0, 0, 0, 0),
@@ -18075,7 +17637,6 @@ mod tests {
         .expect("a clean CIM1 record decodes");
         assert_eq!(clean.status_flags, Some(0));
 
-        // Each sub-status ALONE, with a clean base status, must surface.
         for (name, claims, cores, major) in [
             ("claims", failed, 0, 0),
             ("cores", 0, failed, 0),
@@ -18105,7 +17666,6 @@ mod tests {
         }
     }
 
-    /// One d46 archetypes payload with an `ACE1` trailer carrying `ace_status`.
     fn air_variant_archetypes_with_ace_trailer(ace_status: u32) -> Vec<u8> {
         use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
         use air_wings_variants_lifecycle_live_lane::domain46_air_variant_archetypes_live as air46;
@@ -18136,27 +17696,6 @@ mod tests {
         payload
     }
 
-    /// d46's `ACE1` trailer status: the two bits the fold GATES on reach the
-    /// record status; the one it does not stays trailer-local.
-    ///
-    /// `WorldFold::apply_air_ace_roster` returns early on
-    /// `ACE_STATUS_SOURCE_UNAVAILABLE` or `ACE_STATUS_PARTIAL_DATA` -- it
-    /// RETAINS the previous hour's ace map and per-country sidecars instead of
-    /// full-replacing, and withholds `air_aces_fresh_this_hour`. The hour then
-    /// publishes a roster it did not measure, and before this the record status
-    /// said the domain was clean.
-    ///
-    /// `ACE_STATUS_WING_ASSIGNMENT_BLOCKED` must NOT cross: its value (1<<13)
-    /// is `COMPACT_STATUS_WAR_SEGMENT_ABSENT` globally, an unrelated fact, and
-    /// it is exactly the bit the fold does not gate on (the frame is still
-    /// full-replaced). Admitting it would assert a war-segment fact about an air
-    /// domain -- so this half of the test is what stops the fix from becoming
-    /// "OR the whole word in".
-    ///
-    /// Mutation proof: widen the mask in
-    /// `domain46_air_variant_archetypes_live::decode_payload` to
-    /// `ACE_KNOWN_STATUS_MASK` and the blocked case fails; remove the OR
-    /// entirely and both the unavailable and partial cases fail.
     #[test]
     fn d46_ace_trailer_status_crosses_exactly_where_the_fold_gates() {
         use air_wings_variants_lifecycle_live_lane::domain46_air_ace_roster_live as ace46;
@@ -18211,7 +17750,6 @@ mod tests {
             );
         }
 
-        // And the limit: the assignment-only anomaly is NOT a global fact.
         let blocked = summarize_domain_data_payload(
             46,
             &air_variant_archetypes_with_ace_trailer(ace46::ACE_STATUS_WING_ASSIGNMENT_BLOCKED),
@@ -18233,9 +17771,6 @@ mod tests {
             "the fold still full-replaces on an assignment-only anomaly, so it is not a failure"
         );
     }
-    /// Build one `MTRR` v3 trailer stating `tokens` as its resource set, with no
-    /// rows. `tokens` is written verbatim, including bodies the decoder must
-    /// refuse.
     fn mtrr_v3_identity_only(tokens: &[&str]) -> Vec<u8> {
         let max_len = compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
         let mut out = Vec::new();
@@ -18246,10 +17781,10 @@ mod tests {
         );
         out.extend_from_slice(&(COMPACT_MARKET_TRADE_RESOURCE_ROW_LEN as u16).to_le_bytes());
         out.extend_from_slice(&0u16.to_le_bytes());
-        push_u32(&mut out, 0); // row count
-        push_u32(&mut out, 0); // country count
+        push_u32(&mut out, 0);
+        push_u32(&mut out, 0);
         push_u32(&mut out, tokens.len() as u32);
-        push_u32(&mut out, 1); // display scale
+        push_u32(&mut out, 1);
         push_u32(&mut out, COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE);
         for token in tokens {
             let bytes = token.as_bytes();
@@ -18262,26 +17797,6 @@ mod tests {
         out
     }
 
-    /// The two entry points must not be interchangeable, or the split is
-    /// documentation rather than enforcement.
-    ///
-    /// This is not hypothetical: routing domain 61's engine channel totals
-    /// through the per-frame entry point is exactly the mistake this caught
-    /// while the accumulation authority was being wired up.
-    ///
-    /// MUTATION: delete the `debug_assert!` in `add_compact_domain_data_unit`
-    /// and this test stops panicking, so `#[should_panic]` fails it.
-    /// A LAST-VALUE unit's zero is a measurement, and dropping it left a stale
-    /// failure standing in the manifest.
-    ///
-    /// `air_strength_first_invalid_reason` is submitted on every frame. Frame 1
-    /// fails with reason 31; frame 2 is clean and reports 0. Under the old
-    /// zero-skip the manifest kept 31, so the capture reported a failure reason
-    /// for a domain whose last observation was "no failure" — the
-    /// `UnitPresence` mistake (absent and zero conflated) in a different place.
-    ///
-    /// MUTATION: restore the unconditional `if count == 0 { return; }` and the
-    /// first assertion reads 31.
     #[test]
     fn a_zero_is_a_measurement_for_a_last_value_unit_and_a_no_op_for_a_sum() {
         use compact_contract::diagnostic_channel::{unit_accumulation, Accumulation};
@@ -18295,13 +17810,10 @@ mod tests {
         add_compact_domain_data_unit(&mut summary, 42, "air_strength_first_invalid_reason", 31);
         add_compact_domain_data_unit(&mut summary, 42, "air_strength_first_invalid_reason", 0);
         assert_eq!(
-            summary.per_domain[&42].data_units_total["air_strength_first_invalid_reason"],
-            0,
+            summary.per_domain[&42].data_units_total["air_strength_first_invalid_reason"], 0,
             "the last observation was 'no failure' and the manifest must say so"
         );
 
-        // An ordinal is a position, not a quantity: two frames at 1 then 2 must
-        // read 2, never 3.
         assert_eq!(
             unit_accumulation("air_strength_first_invalid_ordinal"),
             Accumulation::LastValue
@@ -18313,8 +17825,6 @@ mod tests {
             2
         );
 
-        // And a per-frame count still drops its zeroes and still sums, so the
-        // fix did not turn every zero into a map entry.
         add_compact_domain_data_unit(&mut summary, 42, "air_strength_rows", 0);
         assert!(
             !summary.per_domain[&42]
@@ -18331,10 +17841,7 @@ mod tests {
     }
 
     // The guard is a `debug_assert!`, deliberately: the release path still
-    // folds by the DECLARED class, so a miscategorised call is a developer
-    // error rather than a wrong figure, and the hot per-unit path pays
     // nothing for it. That means the guard does not exist in a release
-    // build and this test cannot panic there -- so it is IGNORED in
     // release rather than left to fail the release gate.
     #[test]
     #[cfg_attr(
@@ -18348,16 +17855,8 @@ mod tests {
         add_compact_domain_data_unit(&mut summary, 61, "air_loss_our_fighters_lost_raw_sum", 7);
     }
 
-    /// And the converse: a per-frame count must not be smuggled in as
-    /// producer-retained state, which would publish a MAX where a total belongs.
-    ///
-    /// MUTATION: delete the `debug_assert!` in
-    /// `add_compact_domain_cumulative_unit` and `#[should_panic]` fails.
     // The guard is a `debug_assert!`, deliberately: the release path still
-    // folds by the DECLARED class, so a miscategorised call is a developer
-    // error rather than a wrong figure, and the hot per-unit path pays
     // nothing for it. That means the guard does not exist in a release
-    // build and this test cannot panic there -- so it is IGNORED in
     // release rather than left to fail the release gate.
     #[test]
     #[cfg_attr(
@@ -18392,19 +17891,10 @@ mod tests {
         summary
     }
 
-    /// This authority must apply the SAME identity contract the fold and the
-    /// lane decoder do. Sizing the block and stepping over it is not reading
-    /// it: a trailer this side calls decoded and the fold then rejects is not
-    /// an authority, it is a rubber stamp.
-    ///
-    /// Mutation: make the identity walk unreachable, and every case below is
-    /// accepted with no parse error.
     #[test]
     fn x15_mtrr_identity_is_validated_by_the_domain_data_authority() {
         let max_len = compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
 
-        // A well-formed set is accepted, so the refusals below are the contract
-        // biting rather than the decoder being broken.
         let clean = decode_mtrr(&mtrr_v3_identity_only(&["oil", "steel"]));
         assert!(clean.parse_errors.is_empty(), "{:?}", clean.parse_errors);
 
@@ -18426,7 +17916,6 @@ mod tests {
             );
         }
 
-        // A non-zero padding byte carries payload nothing accounts for.
         let mut padded = mtrr_v3_identity_only(&["oil", "steel"]);
         let body = COMPACT_MARKET_TRADE_RESOURCE_ROW_TRAILER_HEADER_LEN + 2;
         padded[body + max_len - 1] = b'z';
@@ -18440,7 +17929,6 @@ mod tests {
             summary.parse_errors
         );
 
-        // And a non-UTF-8 body.
         let mut invalid = mtrr_v3_identity_only(&["oil", "steel"]);
         invalid[body] = 0xFF;
         let summary = decode_mtrr(&invalid);
@@ -18464,12 +17952,8 @@ mod tests {
             payload.extend_from_slice(&value.to_le_bytes());
         }
 
-        let authority = summarize_domain_data_payload(
-            34,
-            &payload,
-            DomainDataContext::default(),
-        )
-        .expect("A7-promoted province id is canonical domain-34 data");
+        let authority = summarize_domain_data_payload(34, &payload, DomainDataContext::default())
+            .expect("A7-promoted province id is canonical domain-34 data");
         assert_eq!(authority.emitted_rows, 1);
         assert_eq!(authority.status_flags, Some(0));
     }
@@ -18493,12 +17977,8 @@ mod tests {
             payload.extend_from_slice(&value.to_le_bytes());
         }
 
-        let authority = summarize_domain_data_payload(
-            24,
-            &payload,
-            DomainDataContext::default(),
-        )
-        .expect("typed source-unavailable weather frame remains decodable");
+        let authority = summarize_domain_data_payload(24, &payload, DomainDataContext::default())
+            .expect("typed source-unavailable weather frame remains decodable");
         assert_eq!(
             authority.status_flags,
             Some(COMPACT_STATUS_SOURCE_UNAVAILABLE)
@@ -18525,13 +18005,13 @@ mod tests {
         for raw in [150_000i64, 300_000, 50_000, 200_000] {
             payload.extend_from_slice(&raw.to_le_bytes());
         }
-        push_u32(&mut payload, 3); // action-gated selected-Present authority
-        push_u32(&mut payload, 2); // reduced localization branch
-        payload.extend_from_slice(&1u64.to_le_bytes()); // callback sequence
-        push_u32(&mut payload, 2); // callback thread id
+        push_u32(&mut payload, 3);
+        push_u32(&mut payload, 2);
+        payload.extend_from_slice(&1u64.to_le_bytes());
+        push_u32(&mut payload, 2);
         payload.extend_from_slice(&43_800_024i32.to_le_bytes());
-        payload.extend_from_slice(&3u64.to_le_bytes()); // callback QPC
-        payload.extend_from_slice(&10_000_000u64.to_le_bytes()); // QPC frequency
+        payload.extend_from_slice(&3u64.to_le_bytes());
+        payload.extend_from_slice(&10_000_000u64.to_le_bytes());
         let candidate_set_sha256 = [0xabu8; 32];
         let selected_present = portable_render_stream::SelectedPresentReceipt::sealed(
             1,
@@ -18545,8 +18025,8 @@ mod tests {
         let selected_present_hex = selected_present.computed_sha256().unwrap();
         let mut selected_present_receipt_sha256 = [0u8; 32];
         for (index, byte) in selected_present_receipt_sha256.iter_mut().enumerate() {
-            *byte = u8::from_str_radix(&selected_present_hex[index * 2..index * 2 + 2], 16)
-                .unwrap();
+            *byte =
+                u8::from_str_radix(&selected_present_hex[index * 2..index * 2 + 2], 16).unwrap();
         }
         payload.extend_from_slice(&a29_expected_source_record_sha256(
             1,
@@ -18639,16 +18119,16 @@ mod tests {
         for value in [1, 1, 1, 2, 3, (1 << 16) | 31] {
             push_u32(&mut payload, value);
         }
-        push_u32(&mut payload, 1); // owner
-        push_u32(&mut payload, 88); // region
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 88);
         payload.extend_from_slice(&[0, 1, 0, 1]);
-        push_u32(&mut payload, 700); // wing
-        push_u32(&mut payload, 12345); // date raw
-        push_u32(&mut payload, 96); // planes
-        push_u32(&mut payload, 7); // mission
-        push_u32(&mut payload, 1); // attributed country
-        push_u32(&mut payload, 0); // damage first
-        push_u32(&mut payload, 1); // damage count
+        push_u32(&mut payload, 700);
+        push_u32(&mut payload, 12345);
+        push_u32(&mut payload, 96);
+        push_u32(&mut payload, 7);
+        push_u32(&mut payload, 1);
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 1);
         payload.extend_from_slice(&[1, 4, 0, 0]);
         push_u32(&mut payload, 0);
         payload.extend_from_slice(&300_000i64.to_le_bytes());
@@ -18749,7 +18229,6 @@ mod tests {
             for value in [1u32, 1, 0, COMPACT_PRODUCTION_SCALE_RAW, 0, 1, 0, 0] {
                 payload.extend_from_slice(&value.to_le_bytes());
             }
-            // One military production line at key (47, 1, 349).
             payload.extend_from_slice(&47u32.to_le_bytes());
             payload.extend_from_slice(&1u32.to_le_bytes());
             payload.extend_from_slice(&349i32.to_le_bytes());
@@ -18758,7 +18237,6 @@ mod tests {
             payload.extend_from_slice(&0i32.to_le_bytes());
             payload.extend_from_slice(&0i32.to_le_bytes());
             payload.extend_from_slice(&0i32.to_le_bytes());
-            // Exact optional-MIO join (zero is the proven-null CID).
             payload.extend_from_slice(b"PMI1");
             payload.extend_from_slice(&1u16.to_le_bytes());
             payload.extend_from_slice(&20u16.to_le_bytes());
@@ -18769,7 +18247,6 @@ mod tests {
             payload.extend_from_slice(&1u32.to_le_bytes());
             payload.extend_from_slice(&349i32.to_le_bytes());
             payload.extend_from_slice(&0u32.to_le_bytes());
-            // Production-vector completeness.
             payload.extend_from_slice(b"PCP1");
             payload.extend_from_slice(&1u16.to_le_bytes());
             payload.extend_from_slice(&20u16.to_le_bytes());
@@ -18778,7 +18255,6 @@ mod tests {
             payload.extend_from_slice(&0u32.to_le_bytes());
             payload.extend_from_slice(&47u32.to_le_bytes());
             payload.extend_from_slice(&(1u32 << 1).to_le_bytes());
-            // One complete B2 country, variant, and reservation.
             payload.extend_from_slice(b"PCV1");
             payload.extend_from_slice(&1u16.to_le_bytes());
             payload.extend_from_slice(&28u16.to_le_bytes());
@@ -18841,7 +18317,6 @@ mod tests {
             for value in [1u32, 1, 0, COMPACT_PRODUCTION_SCALE_RAW, 0, 1, 0, 0] {
                 payload.extend_from_slice(&value.to_le_bytes());
             }
-            // One military base row at key (47, 1, 349).
             payload.extend_from_slice(&47u32.to_le_bytes());
             payload.extend_from_slice(&1u32.to_le_bytes());
             payload.extend_from_slice(&349i32.to_le_bytes());
@@ -18850,7 +18325,6 @@ mod tests {
             payload.extend_from_slice(&0i32.to_le_bytes());
             payload.extend_from_slice(&0i32.to_le_bytes());
             payload.extend_from_slice(&0i32.to_le_bytes());
-            // Exact PLS1 join.
             payload.extend_from_slice(b"PLS1");
             payload.extend_from_slice(&1u16.to_le_bytes());
             payload.extend_from_slice(&20u16.to_le_bytes());
@@ -18861,7 +18335,6 @@ mod tests {
             payload.extend_from_slice(&1u32.to_le_bytes());
             payload.extend_from_slice(&349i32.to_le_bytes());
             payload.extend_from_slice(&subtype.to_le_bytes());
-            // Exact PEF1 join.
             payload.extend_from_slice(b"PEF1");
             payload.extend_from_slice(&1u16.to_le_bytes());
             payload.extend_from_slice(&20u16.to_le_bytes());
@@ -19004,8 +18477,8 @@ mod tests {
         for _ in 0..9 {
             push_u32(&mut out, 0);
         }
-        push_u32(&mut out, if direct_source_validated { 2 } else { 3 }); // badge_count
-        push_u32(&mut out, 0); // decision_target_omitted_rows
+        push_u32(&mut out, if direct_source_validated { 2 } else { 3 });
+        push_u32(&mut out, 0);
         if matches!(
             schema_version,
             COMPACT_FRD_DEPTH_SCHEMA_VERSION | COMPACT_FRD_DEPTH_SCHEMA_VERSION_V5
@@ -19013,7 +18486,7 @@ mod tests {
             push_u32(&mut out, raw_status.expect("v3 raw status"));
         }
         if direct_source_validated {
-            push_u32(&mut out, 0); // direct_transition_count
+            push_u32(&mut out, 0);
         }
         assert_eq!(out.len(), header_len);
 
@@ -19107,8 +18580,8 @@ mod tests {
         );
 
         let mut legacy = valid_frd_depth_payload(COMPACT_FRD_DEPTH_SCHEMA_VERSION, Some(0));
-        let legacy_status = read_u32_le(&legacy, 8)
-            | COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
+        let legacy_status =
+            read_u32_le(&legacy, 8) | COMPACT_FRD_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
         legacy[8..12].copy_from_slice(&legacy_status.to_le_bytes());
         let error = summarize_domain_data_payload(
             COMPACT_DOMAIN_FOCUS_RESEARCH_DECISIONS_DEPTH_LIVE,
@@ -19125,28 +18598,6 @@ mod tests {
             .any(|item| item.contains("legacy payload claims validated direct-hook source")));
     }
 
-    /// Bit 7 of `depth_status_flags` is an ASSIGNED bit, on every schema
-    /// version, and the decoder admits it.
-    ///
-    /// D45-local direct-history reset badge.
-    /// The decoder refuses any bit outside `admitted_depth_status_mask`, so a
-    /// badge that was not registered there would be rejected as an unknown bit
-    /// on exactly the records it exists to rescue -- the repair would announce
-    /// itself as corruption.
-    ///
-    /// Admitted on v4 as well as v5 deliberately. One of the two ways the
-    /// direct history dies is a source DOWNGRADE, and the record able to carry
-    /// the badge then is an untrailered v4 one; gating the badge on v5 would
-    /// leave that shape dead until the hooks came back.
-    ///
-    /// The negative control is bit 8, which is genuinely unassigned: without
-    /// it, a decoder that had simply stopped checking unknown bits would pass
-    /// the positive half.
-    ///
-    /// What production change makes this fail: dropping
-    /// `COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET` from
-    /// `COMPACT_FRD_STATUS_KNOWN_MASK`, or reassigning bit 7 to something else
-    /// without moving the badge.
     #[test]
     fn frd_depth_direct_history_reset_badge_is_an_assigned_bit() {
         assert_eq!(COMPACT_FRD_STATUS_DIRECT_HISTORY_RESET, 1 << 7);
@@ -19155,8 +18606,6 @@ mod tests {
             0,
             "the reset badge must be registered in the mask that governs depth_status_flags"
         );
-        // It is a DISTINCT bit, not an alias of a neighbour that would make the
-        // decoder accept it for the wrong reason.
         for (name, other) in [
             ("focus_pause_badged", COMPACT_FRD_STATUS_FOCUS_PAUSE_BADGED),
             (
@@ -19207,9 +18656,6 @@ mod tests {
                 panic!("{label} payload carrying the reset badge was refused: {error:?}")
             });
 
-            // NEGATIVE CONTROL: the next bit up is unassigned and must still be
-            // refused, or the check above proves only that the decoder stopped
-            // looking.
             let mut unassigned = valid_frd_depth_payload(schema_version, raw_status);
             let status = read_u32_le(&unassigned, 8) | (1 << 8);
             unassigned[8..12].copy_from_slice(&status.to_le_bytes());
@@ -19381,17 +18827,6 @@ mod tests {
         assert!(authority.problems.is_empty());
     }
 
-    /// The t15 defect, reproduced through the real d90 decoder.
-    ///
-    /// The hook's counters are process-global and reported at their ABSOLUTE
-    /// value on every batch, so a capture whose counter reaches 3 across three
-    /// batches must publish 3 — not 1+2+3. In `runs/live_unlock/t15` the
-    /// counter ran 1..107 over 396 batches and the manifest published their
-    /// sum, 19,470, as an event count.
-    ///
-    /// MUTATION: record the telemetry through `add_compact_domain_data_unit`,
-    /// or classify `convoy_transport_attack_callbacks_seen` as `PerFrame`, and
-    /// the cumulative assertion reads 6 instead of 3.
     #[test]
     fn convoy_transport_attack_cumulative_telemetry_publishes_once_not_once_per_batch() {
         let mut summary = DomainDataDecodeSummary::default();
@@ -19400,7 +18835,6 @@ mod tests {
             .entry(COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE)
             .or_default();
 
-        // Three batches whose absolute counter reads 1, then 2, then 3.
         for absolute in 1u64..=3 {
             let mut witness = convoy_transport_attack_test_witness(true);
             witness.telemetry.callbacks_seen = absolute;
@@ -19412,11 +18846,7 @@ mod tests {
                 witness,
             )
             .expect("valid CTA2 payload");
-            decode_compact_convoy_transport_attack_live_data_payload(
-                0,
-                &payload,
-                &mut summary,
-            );
+            decode_compact_convoy_transport_attack_live_data_payload(0, &payload, &mut summary);
         }
 
         let domain = &summary.per_domain[&COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE];
@@ -19425,19 +18855,25 @@ mod tests {
             "a counter reported at its absolute value on every batch is not summed; \
              summing 1+2+3 is the same arithmetic that published 19,470 in t15"
         );
-        assert_eq!(domain.data_units_total["convoy_transport_attack_original_calls"], 3);
-        assert_eq!(domain.data_units_total["convoy_transport_attack_events_emitted"], 3);
+        assert_eq!(
+            domain.data_units_total["convoy_transport_attack_original_calls"],
+            3
+        );
+        assert_eq!(
+            domain.data_units_total["convoy_transport_attack_events_emitted"],
+            3
+        );
 
-        // The per-batch counters beside them must still SUM, or the fix would
-        // be "aggregate everything by MAX", which loses real counts.
         assert_eq!(
             domain.data_units_total["convoy_transport_attack_batches"], 3,
             "a per-batch incidence count must still sum"
         );
         assert_eq!(domain.data_units_total["convoy_transport_attack_rows"], 3);
-        assert_eq!(domain.data_units_total["convoy_transport_attack_drained_rows"], 3);
+        assert_eq!(
+            domain.data_units_total["convoy_transport_attack_drained_rows"],
+            3
+        );
 
-        // A gauge is the peak of the publication in force, not its total.
         assert_eq!(
             domain.data_units_total["convoy_transport_attack_resolver_route_bindings"], 1,
             "one publication observed three times is one publication"
@@ -19477,14 +18913,6 @@ mod tests {
         );
     }
 
-    /// Law: rows captured under a PARTIAL resolver reach the authority, and
-    /// the partiality reaches it with them as an exact count.
-    ///
-    /// Both halves are load-bearing. If the collector goes back to discarding
-    /// a walk with any unreadable convoy member, `emitted_rows` here is 0. If
-    /// the count stops being carried, the problem entry disappears and a
-    /// consumer can no longer tell this batch from one that covered every
-    /// convoy member the walk saw.
     #[test]
     fn convoy_transport_attack_summary_publishes_partial_resolver_rows_and_counts_them() {
         let row = convoy_transport_attack_test_row();
@@ -19500,10 +18928,8 @@ mod tests {
         )
         .expect("a partial-resolver batch is decoded, not refused");
 
-        // The readable event survives.
         assert_eq!(authority.emitted_rows, 1);
         assert_eq!(authority.data_units["convoy_transport_attack_rows"], 1);
-        // The partiality is on the record, exactly.
         assert_eq!(
             authority.data_units["convoy_transport_attack_resolver_unbound_convoy_clients"],
             7
@@ -19512,7 +18938,6 @@ mod tests {
             authority.problems["convoy_transport_attack_resolver_unbound_convoy_clients"],
             7
         );
-        // And the batch does not claim to be exhaustive.
         assert_eq!(
             authority.data_units["convoy_transport_attack_incomplete_batches"],
             1
@@ -19531,8 +18956,6 @@ mod tests {
             convoy_transport_attack_test_witness(true),
         )
         .expect("valid exact CTA2 payload");
-        // Word 188 became `resolver_unbound_convoy_clients` in CTA2 v2; word
-        // 20 is still reserved-zero and is what this law is about.
         payload[20] = 1;
 
         let error = summarize_domain_data_payload(
@@ -19547,13 +18970,6 @@ mod tests {
             .any(|item| item.contains("CTA2 payload invalid: Reserved")));
     }
 
-    /// Drive the production gate over an assembled status word without needing a
-    /// well-formed payload for every one of the ~95 dispatched domains.
-    ///
-    /// This calls `reject_unassigned_status_bits` — the production function, not
-    /// a restatement of it — after feeding the word through `add_decoder_status`,
-    /// the production funnel. The end-to-end payload path is measured separately
-    /// in `world_fold::tests::the_capture_boundary_rejects_an_unassigned_status_bit`.
     fn refusal_for(domain_id: u16, status_flags: u32) -> Option<String> {
         let mut summary = DomainDataDecodeSummary {
             domain_id,
@@ -19564,20 +18980,6 @@ mod tests {
         summary.parse_errors.first().cloned()
     }
 
-    /// A lane's DECLARED private badge is not a wire disagreement, even though
-    /// it sits outside the v1 vocabulary.
-    ///
-    /// d53 publishes bits 16..=22 on 379 of 514 hours of batch-3a, and d60's
-    /// bit 16 is MANDATORY on any frame carrying war rows. A gate spelled
-    /// `compact_status_unknown_flags_v1(raw)` instead of
-    /// `compact_status_unassigned_flags(domain_id, raw)` would refuse every one
-    /// of those records — over-rejection that destroys real data rather than
-    /// protecting it.
-    ///
-    /// What production change makes this fail: dropping the
-    /// `compact_status_for_global_interpretation` strip from
-    /// `compact_status_unassigned_flags`, or removing a domain's row from
-    /// `lane_local_status_mask`.
     #[test]
     fn a_declared_lane_local_badge_is_not_refused() {
         for (domain_id, mask) in [
@@ -19591,8 +18993,6 @@ mod tests {
             ),
         ] {
             assert_ne!(mask, 0, "domain {domain_id} must declare a lane-local mask");
-            // The whole mask at once, and each bit alone: a gate that tolerated
-            // the union but not a single bit would pass the first form only.
             assert_eq!(
                 refusal_for(domain_id, mask),
                 None,
@@ -19608,8 +19008,6 @@ mod tests {
                     None,
                     "domain {domain_id}: declared lane-local bit {bit} must not be refused"
                 );
-                // The SAME bit on a domain that has not declared it is a
-                // disagreement, whenever the bit is outside the v1 vocabulary.
                 if compact_contract::compact_status_unknown_flags_v1(flag) != 0 {
                     assert!(
                         refusal_for(17, flag).is_some(),
@@ -19621,12 +19019,6 @@ mod tests {
         }
     }
 
-    /// d17's `WAR_SEGMENT_ABSENT` is ASSIGNED and informational, and production
-    /// sets it on every diplomacy record.
-    ///
-    /// It is deliberately absent from `COMPACT_STATUS_FAILURE_MASK`, so a gate
-    /// that asked "is this bit a known FAILURE?" rather than "is this bit
-    /// DEFINED?" would refuse the entire d17 domain in every capture ever taken.
     #[test]
     fn d17_war_segment_absent_is_assigned_and_never_refused() {
         assert_eq!(
@@ -19651,16 +19043,6 @@ mod tests {
         );
     }
 
-    /// Every unassigned bit is refused on every dispatched domain, and the
-    /// reason NAMES the offending bits.
-    ///
-    /// The naming is the point: the refusal string is what lands verbatim in
-    /// `ExcludedDomainDataRecord::validation_reason`, so it is the only place
-    /// the capture ledger can say WHICH bit disagreed.
-    ///
-    /// What production change makes this fail: removing the
-    /// `reject_unassigned_status_bits` call, or reducing its message to a bare
-    /// "unknown status".
     #[test]
     fn every_unassigned_bit_is_refused_and_named() {
         for bit in 0..u32::BITS {
@@ -19686,7 +19068,6 @@ mod tests {
         }
     }
 
-    /// Several offending bits at once are ALL named, not just the lowest.
     #[test]
     fn a_multi_bit_disagreement_names_every_offending_bit() {
         let reason = refusal_for(
@@ -19707,21 +19088,6 @@ mod tests {
         );
     }
 
-    /// Every decoder that reads a status word must route it through
-    /// `add_decoder_status`, or the single gate in
-    /// `summarize_domain_data_payload` silently stops covering that domain.
-    ///
-    /// This is what makes "one mechanism at the shared boundary" a property
-    /// rather than a claim: the gate reads `summary.raw_status_flags_or`, and
-    /// `add_decoder_status` is the only writer of it.
-    ///
-    /// d93 (`decode_compact_country_army_upgrade_data_payload`) was exactly the
-    /// bypass this catches — it wrote `decoded.status_flags` into the per-domain
-    /// copy only, leaving `DomainDataAuthority::status_flags` as `None` for the
-    /// domain. Fixed in this lane; this test is what stops the next one.
-    ///
-    /// What production change makes this fail: adding a decoder that writes
-    /// `domain.status_flags_or |= ...` without calling `add_decoder_status`.
     #[test]
     fn every_decoder_status_word_reaches_the_shared_funnel() {
         let source = include_str!("domain_data_authority.rs").replace("\r\n", "\n");
@@ -19748,7 +19114,9 @@ mod tests {
             if !body.contains("status_flags_or |=") {
                 return;
             }
-            if body.contains("add_decoder_status(") || body.contains("add_compact_global_status_flags(") {
+            if body.contains("add_decoder_status(")
+                || body.contains("add_compact_global_status_flags(")
+            {
                 return;
             }
             offenders.push(name.to_string());
@@ -19814,7 +19182,10 @@ mod tests {
             i += 1;
             if bytes.get(i) == Some(&b'u') && bytes.get(i + 1) == Some(&b'{') {
                 i += 2;
-                while matches!(bytes.get(i), Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' | b'_')) {
+                while matches!(
+                    bytes.get(i),
+                    Some(b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F' | b'_')
+                ) {
                     i += 1;
                 }
                 if bytes.get(i) != Some(&b'}') {
@@ -19832,8 +19203,6 @@ mod tests {
         bytes.get(i) == Some(&b'\'')
     }
 
-    /// Blank comments and literals while preserving byte offsets and line
-    /// boundaries. The walker census must count code, not diagnostic prose.
     fn d43_strip_rust_comments_and_strings(source: &str) -> String {
         let bytes = source.as_bytes();
         let mut out = String::with_capacity(source.len());
@@ -19910,7 +19279,10 @@ mod tests {
                 }
                 blank(&mut out, &source[start..i]);
             } else {
-                let ch = source[i..].chars().next().expect("source index is in bounds");
+                let ch = source[i..]
+                    .chars()
+                    .next()
+                    .expect("source index is in bounds");
                 out.push(ch);
                 i += ch.len_utf8();
             }
@@ -19964,7 +19336,9 @@ mod tests {
                 end -= 1;
             }
             let mut start = end;
-            while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+            {
                 start -= 1;
             }
             if start < end {
@@ -20008,10 +19382,6 @@ mod tests {
         None
     }
 
-    /// Count uses of a byte-slice parameter that can read bytes itself or hand
-    /// the slice to anything except a resolved shared-decoder forwarding chain.
-    /// Parameter names and helper names are discovered lexically, so renaming
-    /// an old `read_u32` helper does not evade the census.
     fn d43_computed_payload_reads(source: &str) -> usize {
         let source = d43_strip_rust_comments_and_strings(source);
         let bytes = source.as_bytes();
@@ -20022,8 +19392,8 @@ mod tests {
                 let at = search_at + relative;
                 let end = at + name.len();
                 search_at = end;
-                let identifier_before = at > 0
-                    && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
+                let identifier_before =
+                    at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
                 let identifier_after = bytes
                     .get(end)
                     .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
@@ -20058,8 +19428,7 @@ mod tests {
                     call,
                     Some("d43_grammar::decode::decode_record" | "d74_grammar::decode")
                 );
-                let local_authority_forwarder = call
-                    == Some("decode_compact_market_trade_record")
+                let local_authority_forwarder = call == Some("decode_compact_market_trade_record")
                     && source.contains("fn decode_compact_market_trade_record(");
                 if leaf_call || local_authority_forwarder {
                     continue;
@@ -20070,27 +19439,13 @@ mod tests {
         reads
     }
 
-    /// D43 had three independent reader sites before this lane: fold 154 raw
-    /// reads, authority 119, and lane gate 217, as recorded in
-    /// the pre-consolidation walker census. This test permits one
-    /// implementation: the leaf. The marked fold, authority, lane and producer
-    /// regions must have no byte-slice use except a fully-qualified leaf call
-    /// or a forwarder defined inside the region whose body is itself scanned.
-    ///
-    /// This cannot prove that no wholly independent parser was written from
-    /// scratch elsewhere. Encoding is also a separate census: the collector
-    /// still writes D43 bytes rather than delegating to `d43_grammar::encode`.
-    ///
-    /// kills: reintroducing payload-offset arithmetic, direct indexing, or a
-    /// renamed raw-read helper in any marked consumer region makes that site a
-    /// second implementation and changes the asserted site list.
     #[test]
     fn d43_has_exactly_one_structural_payload_reader() {
         let world_fold = include_str!("world_fold.rs").replace("\r\n", "\n");
         let authority = include_str!("domain_data_authority.rs").replace("\r\n", "\n");
         let lane = include_str!("../../lanes/market_trade_live/src/lib.rs").replace("\r\n", "\n");
-        let lane_leaf = include_str!("../../lanes/market_trade_live/src/leaf_decode.rs")
-            .replace("\r\n", "\n");
+        let lane_leaf =
+            include_str!("../../lanes/market_trade_live/src/leaf_decode.rs").replace("\r\n", "\n");
         let collector = include_str!("../../collector/src/attach_log.rs").replace("\r\n", "\n");
 
         let regions = [
@@ -20102,10 +19457,7 @@ mod tests {
                 "domain_data_authority",
                 d43_marker_region(&authority, Some("\n#[cfg(test)]\n#[derive(Clone, Copy")),
             ),
-            (
-                "lane_gate",
-                d43_census_region(&lane),
-            ),
+            ("lane_gate", d43_census_region(&lane)),
             ("lane_leaf_projection", d43_census_region(&lane_leaf)),
             (
                 "collector_encoder",
@@ -20164,60 +19516,58 @@ mod tests {
         &marked[..end]
     }
 
-    /// kills: indexing, slicing, cursor walking, or forwarding the d74 payload
-    /// to a local parser makes a consumer a second implementation.
     #[test]
     fn d74_has_exactly_one_structural_payload_reader() {
         let world_fold = include_str!("world_fold.rs").replace("\r\n", "\n");
         let authority = include_str!("domain_data_authority.rs").replace("\r\n", "\n");
         let collector = include_str!("../../collector/src/attach_log.rs").replace("\r\n", "\n");
         let regions = [
-            ("world_fold", d74_marker_region(&world_fold, "\n    fn fold_fired_event_popups")),
-            ("domain_data_authority", d74_marker_region(&authority, "\npub fn summarize_domain_data_payload")),
-            ("collector_perf_projection", d74_marker_region(&collector, "\n\nfn encode_hud_activation_from_live_roots(")),
+            (
+                "world_fold",
+                d74_marker_region(&world_fold, "\n    fn fold_fired_event_popups"),
+            ),
+            (
+                "domain_data_authority",
+                d74_marker_region(&authority, "\npub fn summarize_domain_data_payload"),
+            ),
+            (
+                "collector_perf_projection",
+                d74_marker_region(&collector, "\n\nfn encode_hud_activation_from_live_roots("),
+            ),
         ];
-        let counts: Vec<(&str, usize)> = regions.iter()
+        let counts: Vec<(&str, usize)> = regions
+            .iter()
             .map(|(site, source)| (*site, d43_computed_payload_reads(source)))
             .collect();
         let leaf = include_str!("../../d74_grammar/src/lib.rs");
         let mut implementations = Vec::new();
-        if d43_computed_payload_reads(leaf) > 0 { implementations.push("d74_grammar"); }
-        for (site, count) in &counts {
-            if *count > 0 { implementations.push(*site); }
+        if d43_computed_payload_reads(leaf) > 0 {
+            implementations.push("d74_grammar");
         }
-        assert_eq!(counts, [
-            ("world_fold", 0),
-            ("domain_data_authority", 0),
-            ("collector_perf_projection", 0),
-        ]);
+        for (site, count) in &counts {
+            if *count > 0 {
+                implementations.push(*site);
+            }
+        }
+        assert_eq!(
+            counts,
+            [
+                ("world_fold", 0),
+                ("domain_data_authority", 0),
+                ("collector_perf_projection", 0),
+            ]
+        );
         assert_eq!(implementations, ["d74_grammar"]);
     }
 
-    /// kills: adding a second PBS1 byte walker anywhere else in the native
-    /// tree. The region census above only proves that the three KNOWN consumer
-    /// sites forward to the leaf; it is blind to a fourth file. This walks
-    /// every `.rs` under `extractor/native` instead, and requires that the
-    /// magic bytes are spelled in exactly one crate and that the leaf decoder
-    /// is called from exactly the sites that are allowed to call it.
-    /// Every way the four magic bytes can be written down, counted in one
-    /// source file: the quoted literal, the little-endian word the bytes make,
-    /// the big-endian word a hand-rolled reader would compare after a
-    /// byte-swap, either word in decimal, the four bytes listed one after
-    /// another in hex or in decimal, and backslash-escaped hex bytes inside a
-    /// literal. Whitespace, commas, underscores and backslashes are squeezed
-    /// out first, so formatting cannot hide a spelling.
-    ///
-    /// Every needle is BUILT from `d74_grammar::MAGIC` at run time and none is
-    /// ever typed out here, so this scanner does not report itself.
     fn pbs1_magic_spellings(text: &str) -> usize {
         let magic = d74_grammar::MAGIC;
-        // The QUOTED literal, not the bare word: prose and named refusal
-        // strings mention the format by name and are not implementations.
-        let text_form = format!("\"{}\"", core::str::from_utf8(magic).expect("magic is ascii"));
+        let text_form = format!(
+            "\"{}\"",
+            core::str::from_utf8(magic).expect("magic is ascii")
+        );
         let little_endian = u32::from_le_bytes(*magic);
         let big_endian = u32::from_be_bytes(*magic);
-        // Collapse whitespace, separators and Rust's numeric underscores so a
-        // spelling cannot hide behind formatting.
         let squeezed: String = text
             .chars()
             .filter(|c| !c.is_whitespace() && *c != '_' && *c != ',' && *c != '\\')
@@ -20229,7 +19579,6 @@ mod tests {
             format!("{little_endian}"),
             format!("{big_endian}"),
         ];
-        // The four bytes one after another, hex or decimal, however spaced.
         needles.push(
             magic
                 .iter()
@@ -20258,23 +19607,16 @@ mod tests {
         hits
     }
 
-    /// Calls of the ONE leaf decoder in a source file, including calls made
-    /// through a renamed import. A `use d74_grammar::decode as parse_pbs1;`
-    /// makes `parse_pbs1(` a decoder call site in that file.
     fn pbs1_leaf_decoder_calls(text: &str) -> usize {
         let qualified = format!("{}::decode", "d74_grammar");
         let mut hits = 0usize;
         let mut names: Vec<String> = Vec::new();
         for line in text.lines() {
             let trimmed = line.trim();
-            // A line of prose about the decoder is not a call of it.
             if trimmed.starts_with("//") {
                 continue;
             }
             if trimmed.starts_with("use ") && trimmed.contains("d74_grammar") {
-                // `use d74_grammar as pbs;` renames the CRATE, and then
-                // `pbs::decode(payload)` is a decoder call site that names
-                // neither the crate nor the magic.
                 if let Some(rest) = trimmed.strip_prefix("use d74_grammar as ") {
                     let alias: String = rest
                         .trim()
@@ -20284,8 +19626,6 @@ mod tests {
                         names.push(format!("{alias}::decode"));
                     }
                 }
-                // `use d74_grammar::decode as alias;` and
-                // `use d74_grammar::{decode as alias, Payload};`
                 for piece in trimmed.split(',') {
                     let Some((left, right)) = piece.split_once(" as ") else {
                         continue;
@@ -20301,15 +19641,11 @@ mod tests {
                         names.push(alias);
                     }
                 }
-                // A bare `use d74_grammar::decode;` puts `decode(` in scope.
                 if trimmed.contains("::decode") && !trimmed.contains(" as ") {
                     names.push(String::from("decode"));
                 }
                 continue;
             }
-            // The fully qualified path counts where it is CALLED and where it
-            // is BOUND (a function pointer handed to somebody else is still a
-            // way in), but not where it is merely quoted inside a string.
             for at in line.match_indices(qualified.as_str()) {
                 let after = &line[at.0 + qualified.len()..];
                 if after.starts_with('(')
@@ -20334,20 +19670,10 @@ mod tests {
             .parent()
             .expect("extractor/native")
             .to_path_buf();
-        // The only files allowed to spell the magic in ANY form, and the exact
-        // number of times each spells it: the leaf grammar, which defines it,
-        // and the leaf grammar's own codec test, which asserts the bytes on the
-        // wire. Both live inside the one crate.
         const MAGIC_SITES: &[(&str, usize)] = &[
             ("d74_grammar/src/lib.rs", 1),
             ("d74_grammar/src/tests.rs", 1),
         ];
-        // Every site allowed to reach the leaf decoder, with the EXACT number
-        // of times it may do so. A count, not a licence: a second decode inside
-        // a listed file moves its number, and a site that stops decoding cannot
-        // linger in the list as a hole for a later reader to walk through.
-        // (Inside `d74_grammar` itself `decode` is the leaf, not a caller of
-        // it, so the crate's own files are not sites.)
         const DECODER_SITES: &[(&str, usize)] = &[
             ("recorder_host/src/world_fold.rs", 1),
             ("recorder_host/src/domain_data_authority.rs", 1),
@@ -20361,7 +19687,6 @@ mod tests {
                 let path = entry.expect("dir entry").path();
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 if path.is_dir() {
-                    // Build output and version control are not source.
                     if name.starts_with('.') || name == "target" || name == "runs" {
                         continue;
                     }
@@ -20386,7 +19711,10 @@ mod tests {
                 }
             }
         }
-        assert!(scanned > 200, "the walk found almost nothing: {scanned} files");
+        assert!(
+            scanned > 200,
+            "the walk found almost nothing: {scanned} files"
+        );
         for (file, spellings) in &magic_files {
             let allowed = MAGIC_SITES
                 .iter()
@@ -20422,8 +19750,6 @@ mod tests {
                  re-read the new call and update this census deliberately"
             );
         }
-        // No registered site may be dead weight: an entry that no longer calls
-        // the decoder is a hole in the census, not a licence to keep.
         for (site, expected) in DECODER_SITES {
             let observed = decoder_files
                 .iter()
@@ -20439,11 +19765,6 @@ mod tests {
         }
     }
 
-    // kills: a census that only greps for the text magic and the fully spelled
-    // `d74_grammar::decode`. Each of these sources is a second PBS1 reader that
-    // the previous scanner reported as clean. The evasions are ASSEMBLED from
-    // `d74_grammar::MAGIC` so that this test file does not itself become a
-    // magic-spelling site.
     #[test]
     fn the_one_decoder_census_sees_through_aliases_and_numeric_magic() {
         let magic = d74_grammar::MAGIC;
@@ -20492,8 +19813,6 @@ mod tests {
             "the quoted literal is a spelling"
         );
 
-        // Assembled, never typed out, so that this file does not become a
-        // decoder site by describing one.
         let leaf = "d74_grammar";
         let alias = format!(
             "use {leaf}::decode as parse_pbs1;\n\
@@ -20548,8 +19867,6 @@ mod tests {
         );
     }
 
-    // kills: exempting calls by their final component alone, which lets a
-    // local `decode_record` outside the marked census region hide a raw read.
     #[test]
     fn d43_structural_census_rejects_unresolved_decode_record_forwarder() {
         let source = r#"
@@ -20566,28 +19883,6 @@ fn consumer(payload: &[u8]) {
         assert_eq!(d43_computed_payload_reads(marked_region), 1);
     }
 
-    // =====================================================================
-    // The d43 message oracle
-    // =====================================================================
-    //
-    // WHY IT EXISTS. A future lane is meant to rewire
-    // `decode_compact_market_trade_data_payload` and its seven helpers off
-    // their own byte arithmetic and onto `d43_grammar`'s cursors. **Lane LK
-    // did NOT do that** -- it found that this site cannot execute the leaf's
-    // walk without either changing shipped behaviour or bypassing a leaf rule,
-    // and left the question with the owner
-    // (the structural characterization below). What it
-    // left behind is this test.
-    //
-    // The one thing that rewire must not do is change what this authority SAYS
-    // about a malformed capture: the operator reads these strings, and a
-    // renamed, reordered, dropped or invented diagnostic is a silent behaviour
-    // change that no other test in this file would catch.
-    //
-    // This test is written and committed BEFORE the rewire, so every expected
-    // line below is what the HAND-ROLLED walk produced. It is an oracle for
-    // the rewire, not a description of it.
-
     fn oracle_put_u16(payload: &mut [u8], at: usize, value: u16) {
         payload[at..at + 2].copy_from_slice(&value.to_le_bytes());
     }
@@ -20596,23 +19891,7 @@ fn consumer(payload: &[u8]) {
         payload[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
 
-    /// A well-formed d43 payload carrying all seven families this authority
-    /// accepts, plus the offset each trailer starts at.
-    ///
-    /// ASSEMBLED BY `d43_grammar::encode`, deliberately: the layout is the
-    /// leaf's, so a fixture cannot drift from the grammar it is meant to
-    /// exercise.
-    ///
-    /// **These bytes are NOT the leaf's hand-written goldens, and this test
-    /// does not claim they are.** The leaf's
-    /// `the_encoder_reproduces_the_handwritten_*_bytes` tests prove the encoder
-    /// equals a hand-written vector FOR THEIR OWN SAMPLE -- one core row with
-    /// tags 11/12 and amount 5, an `MTRF` over three resources -- and this
-    /// fixture uses different inputs, so the equality does not transfer. This is
     /// an independent, encoder-generated CHARACTERIZATION matrix. Driving the
-    /// hand-written vectors themselves needs the same public encoder calls with
-    /// the goldens' exact inputs, which is work this lane did not do
-    /// (the characterization limits below).
     fn d43_oracle_payload() -> (Vec<u8>, BTreeMap<&'static str, usize>) {
         use d43_grammar::encode;
 
@@ -20750,8 +20029,13 @@ fn consumer(payload: &[u8]) {
 
         at.insert("MTRD", payload.len());
         payload.extend_from_slice(
-            &encode::encode_classic_deals(d43_grammar::DealVersion::PerOwner, &[10, 20], &[10], &[])
-                .expect("MTRD encodes"),
+            &encode::encode_classic_deals(
+                d43_grammar::DealVersion::PerOwner,
+                &[10, 20],
+                &[10],
+                &[],
+            )
+            .expect("MTRD encodes"),
         );
 
         at.insert("MTRA", payload.len());
@@ -20788,112 +20072,357 @@ fn consumer(payload: &[u8]) {
         (payload, at)
     }
 
-    /// The fixture table: a name, and what it does to the well-formed payload.
     #[allow(clippy::type_complexity)]
     fn d43_oracle_cases() -> Vec<(
         &'static str,
         Box<dyn Fn(&mut Vec<u8>, &BTreeMap<&'static str, usize>)>,
     )> {
         vec![
-            ("clean", Box::new(|_: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {})),
-            ("core header short", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| p.truncate(40))),
-            ("core rows short", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| p.truncate(96))),
-            ("core changed_rows exceeds row_count", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 12, 5))),
-            ("core emitted/observed disagree", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
-                oracle_put_u32(p, 24, 3);
-                oracle_put_u32(p, 20, 1);
-            })),
-            ("core scale_raw wrong", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 44, 7))),
-            ("core row contract_type wrong", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 48 + 4, 9))),
-            ("core row unknown flag bit", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 48 + 8, 0x8000_001F))),
-            ("core row duplicate contract_id", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 96, 1))),
-            ("core row reserved nonzero", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| oracle_put_u32(p, 48 + 44, 1))),
-            ("trailer magic truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTD1"] + 2))),
-            ("trailer magic unknown", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
-                let d = at["MTD1"];
-                p[d..d + 4].copy_from_slice(b"ZZZZ");
-            })),
-            ("MTD1 twice", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
-                let f = at["MTRF"];
-                p[f..f + 4].copy_from_slice(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC);
-            })),
-            ("MTRA twice", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
-                let s = at["MTS1"];
-                p[s..s + 4].copy_from_slice(COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC);
-            })),
-            ("MTS1 twice", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
-                let again = p[at["MTS1"]..].to_vec();
-                p.extend_from_slice(&again);
-            })),
-            ("MTD1 header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTD1"] + 8))),
-            ("MTD1 version wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 4, 9))),
-            ("MTD1 header_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 6, 40))),
-            ("MTD1 row_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 8, 40))),
-            ("MTD1 reserved0 nonzero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTD1"] + 10, 1))),
-            ("MTD1 row_count overruns", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 12, 1_000))),
-            ("MTD1 count claim disagrees", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 16, 1))),
-            ("MTD1 row names a missing contract", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 32, 99))),
-            ("MTD1 row flags unknown", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTD1"] + 36, 0x8000_0003))),
-            ("MTRF version unsupported", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRF"] + 4, 9))),
-            ("MTRF v3 resource_count zero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 24, 0))),
-            ("MTRF header_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRF"] + 6, 40))),
-            ("MTRF country/kind shape wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 16, 3))),
-            ("MTRF scale_raw wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 20, 7))),
-            ("MTRF row_count overruns", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRF"] + 12, 1_000))),
-            ("MTRF header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTRF"] + 8))),
-            ("MTRH version wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRH"] + 4, 9))),
-            ("MTRH country_count wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRH"] + 16, 3))),
-            ("MTRR resource_count out of range", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRR"] + 20, 0))),
-            ("MTRR identity stride word wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRR"] + 28, 7))),
-            ("MTRR identity token length zero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRR"] + 32, 0))),
-            ("MTRR identity token too long", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRR"] + 32, 999))),
-            ("MTRR identity padding nonzero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p[at["MTRR"] + 37] = 1)),
-            ("MTRR identity not a token", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p[at["MTRR"] + 34] = b'!')),
-            ("MTRR identity not UTF-8", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p[at["MTRR"] + 34] = 0xFF)),
-            ("MTRR identity repeats a token", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
-                let r = at["MTRR"];
-                let stride = COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize;
-                let slot0 = p[r + 32..r + 32 + stride].to_vec();
-                p[r + 32 + stride..r + 32 + 2 * stride].copy_from_slice(&slot0);
-            })),
-            ("MTRD version wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTRD"] + 4, 9))),
-            ("MTRD witness invalid", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 32, 0))),
-            ("MTRD witness duplicated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 36, 10))),
-            ("MTRD incomplete owner not a witness", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 40, 99))),
-            ("MTRD row_count overruns", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRD"] + 12, 1_000))),
-            ("MTRD header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTRD"] + 8))),
-            ("MTRA root kind wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTRA"] + 24, 9))),
-            ("MTRA header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTRA"] + 8))),
-            ("MTS1 scale_raw wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 28, 7))),
-            ("MTS1 country row tag zero", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 40, 0))),
-            ("MTS1 country ranges short", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 48, 0))),
-            ("MTS1 item type wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u32(p, at["MTS1"] + 64, 9))),
-            ("MTS1 header truncated", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| p.truncate(at["MTS1"] + 8))),
-            ("MTS1 country_row_len wrong", Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| oracle_put_u16(p, at["MTS1"] + 8, 24))),
-            // Every other fixture leaves the core status word at zero, so the
-            // three status accumulators this report renders were all pinned at
-            // their identity value and a rewire that mishandled a SET flag
-            // would have stayed green.
-            ("core status flags set", Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
-                oracle_put_u32(p, 16, compact_contract::COMPACT_STATUS_PARTIAL_DATA)
-            })),
+            (
+                "clean",
+                Box::new(|_: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {}),
+            ),
+            (
+                "core header short",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| p.truncate(40)),
+            ),
+            (
+                "core rows short",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| p.truncate(96)),
+            ),
+            (
+                "core changed_rows exceeds row_count",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 12, 5)
+                }),
+            ),
+            (
+                "core emitted/observed disagree",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 24, 3);
+                    oracle_put_u32(p, 20, 1);
+                }),
+            ),
+            (
+                "core scale_raw wrong",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 44, 7)
+                }),
+            ),
+            (
+                "core row contract_type wrong",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 48 + 4, 9)
+                }),
+            ),
+            (
+                "core row unknown flag bit",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 48 + 8, 0x8000_001F)
+                }),
+            ),
+            (
+                "core row duplicate contract_id",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 96, 1)
+                }),
+            ),
+            (
+                "core row reserved nonzero",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 48 + 44, 1)
+                }),
+            ),
+            (
+                "trailer magic truncated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p.truncate(at["MTD1"] + 2)
+                }),
+            ),
+            (
+                "trailer magic unknown",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    let d = at["MTD1"];
+                    p[d..d + 4].copy_from_slice(b"ZZZZ");
+                }),
+            ),
+            (
+                "MTD1 twice",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    let f = at["MTRF"];
+                    p[f..f + 4].copy_from_slice(COMPACT_MARKET_TRADE_DETAIL_TRAILER_MAGIC);
+                }),
+            ),
+            (
+                "MTRA twice",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    let s = at["MTS1"];
+                    p[s..s + 4].copy_from_slice(COMPACT_MARKET_TRADE_ACTIVATION_TRAILER_MAGIC);
+                }),
+            ),
+            (
+                "MTS1 twice",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    let again = p[at["MTS1"]..].to_vec();
+                    p.extend_from_slice(&again);
+                }),
+            ),
+            (
+                "MTD1 header truncated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p.truncate(at["MTD1"] + 8)
+                }),
+            ),
+            (
+                "MTD1 version wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTD1"] + 4, 9)
+                }),
+            ),
+            (
+                "MTD1 header_len wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTD1"] + 6, 40)
+                }),
+            ),
+            (
+                "MTD1 row_len wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTD1"] + 8, 40)
+                }),
+            ),
+            (
+                "MTD1 reserved0 nonzero",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTD1"] + 10, 1)
+                }),
+            ),
+            (
+                "MTD1 row_count overruns",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTD1"] + 12, 1_000)
+                }),
+            ),
+            (
+                "MTD1 count claim disagrees",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTD1"] + 16, 1)
+                }),
+            ),
+            (
+                "MTD1 row names a missing contract",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTD1"] + 32, 99)
+                }),
+            ),
+            (
+                "MTD1 row flags unknown",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTD1"] + 36, 0x8000_0003)
+                }),
+            ),
+            (
+                "MTRF version unsupported",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTRF"] + 4, 9)
+                }),
+            ),
+            (
+                "MTRF v3 resource_count zero",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRF"] + 24, 0)
+                }),
+            ),
+            (
+                "MTRF header_len wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTRF"] + 6, 40)
+                }),
+            ),
+            (
+                "MTRF country/kind shape wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRF"] + 16, 3)
+                }),
+            ),
+            (
+                "MTRF scale_raw wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRF"] + 20, 7)
+                }),
+            ),
+            (
+                "MTRF row_count overruns",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRF"] + 12, 1_000)
+                }),
+            ),
+            (
+                "MTRF header truncated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p.truncate(at["MTRF"] + 8)
+                }),
+            ),
+            (
+                "MTRH version wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTRH"] + 4, 9)
+                }),
+            ),
+            (
+                "MTRH country_count wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRH"] + 16, 3)
+                }),
+            ),
+            (
+                "MTRR resource_count out of range",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRR"] + 20, 0)
+                }),
+            ),
+            (
+                "MTRR identity stride word wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRR"] + 28, 7)
+                }),
+            ),
+            (
+                "MTRR identity token length zero",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTRR"] + 32, 0)
+                }),
+            ),
+            (
+                "MTRR identity token too long",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTRR"] + 32, 999)
+                }),
+            ),
+            (
+                "MTRR identity padding nonzero",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p[at["MTRR"] + 37] = 1
+                }),
+            ),
+            (
+                "MTRR identity not a token",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p[at["MTRR"] + 34] = b'!'
+                }),
+            ),
+            (
+                "MTRR identity not UTF-8",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p[at["MTRR"] + 34] = 0xFF
+                }),
+            ),
+            (
+                "MTRR identity repeats a token",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    let r = at["MTRR"];
+                    let stride = COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize;
+                    let slot0 = p[r + 32..r + 32 + stride].to_vec();
+                    p[r + 32 + stride..r + 32 + 2 * stride].copy_from_slice(&slot0);
+                }),
+            ),
+            (
+                "MTRD version wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTRD"] + 4, 9)
+                }),
+            ),
+            (
+                "MTRD witness invalid",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRD"] + 32, 0)
+                }),
+            ),
+            (
+                "MTRD witness duplicated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRD"] + 36, 10)
+                }),
+            ),
+            (
+                "MTRD incomplete owner not a witness",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRD"] + 40, 99)
+                }),
+            ),
+            (
+                "MTRD row_count overruns",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRD"] + 12, 1_000)
+                }),
+            ),
+            (
+                "MTRD header truncated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p.truncate(at["MTRD"] + 8)
+                }),
+            ),
+            (
+                "MTRA root kind wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTRA"] + 24, 9)
+                }),
+            ),
+            (
+                "MTRA header truncated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p.truncate(at["MTRA"] + 8)
+                }),
+            ),
+            (
+                "MTS1 scale_raw wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTS1"] + 28, 7)
+                }),
+            ),
+            (
+                "MTS1 country row tag zero",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTS1"] + 40, 0)
+                }),
+            ),
+            (
+                "MTS1 country ranges short",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTS1"] + 48, 0)
+                }),
+            ),
+            (
+                "MTS1 item type wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, at["MTS1"] + 64, 9)
+                }),
+            ),
+            (
+                "MTS1 header truncated",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    p.truncate(at["MTS1"] + 8)
+                }),
+            ),
+            (
+                "MTS1 country_row_len wrong",
+                Box::new(|p: &mut Vec<u8>, at: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u16(p, at["MTS1"] + 8, 24)
+                }),
+            ),
+            (
+                "core status flags set",
+                Box::new(|p: &mut Vec<u8>, _: &BTreeMap<&'static str, usize>| {
+                    oracle_put_u32(p, 16, compact_contract::COMPACT_STATUS_PARTIAL_DATA)
+                }),
+            ),
         ]
     }
 
-    /// The stream offset every diagnostic is prefixed with. It is a PARAMETER,
-    /// not a constant: the matrix below is decoded once at zero and once here,
-    /// because every message this decoder writes opens with `offset {offset}:`
-    /// and a rewire that hardcoded a zero would pass a zero-only matrix.
     const D43_ORACLE_SECOND_OFFSET: usize = 4_096;
 
     fn d43_oracle_decode(offset: usize, payload: &[u8], report: &mut String) {
         let mut summary = DomainDataDecodeSummary::default();
-        // `summarize_domain_data_payload` sets the domain id and creates the
-        // per-domain row before it dispatches, so both are set here. Without
-        // the row the decoder's `per_domain.get_mut(&43)` finds nothing and the
-        // published counts -- half of what this oracle pins -- are invisible;
-        // without the id, `add_decoder_status` would interpret the status word
-        // for domain ZERO.
         summary.domain_id = 43;
         summary.per_domain.entry(43).or_default();
         decode_compact_market_trade_data_payload(offset, payload, &mut summary);
@@ -20902,10 +20431,6 @@ fn consumer(payload: &[u8]) {
             report.push_str(error);
             report.push('\n');
         }
-        // EVERY observable this decoder writes, not just the units. The first
-        // draft printed `data_units_total` alone, which would have let a rewire
-        // change a row total, a changed-row total or a status word with the
-        // oracle still green.
         report.push_str(&format!(
             "   $ raw_status_flags_or = {:?}\n   $ status_flags_or = {}\n",
             summary.raw_status_flags_or, summary.status_flags_or
@@ -20946,9 +20471,6 @@ fn consumer(payload: &[u8]) {
             report.push('\n');
             d43_oracle_decode(0, &payload, &mut report);
         }
-        // The WHOLE matrix again at a non-zero stream offset, so every
-        // `offset {offset}:` prefix is pinned to a number the decoder was
-        // given rather than to zero.
         for (name, mutate) in d43_oracle_cases() {
             let mut payload = clean.clone();
             mutate(&mut payload, &at);
@@ -20962,64 +20484,10 @@ fn consumer(payload: &[u8]) {
         report
     }
 
-    /// Every diagnostic and every published observable that THIS FIXTURE
-    /// MATRIX reaches, pinned to the exact string the hand-rolled walk
-    /// produced.
-    ///
-    /// It is a characterization matrix, not a proof of total coverage. What it
-    /// does NOT reach is written down in the characterization below
-    /// section 2: no two-fields-malformed precedence case, `MTRF`/`MTRR`/`MTRD`
-    /// v3 only rather than their full version sets, no duplicate
-    /// `MTRF`/`MTRH`/`MTRR`/`MTRD` and no `MTRB`/`MTLL` rejection. Lane LR's
-    /// `d43_a_second_trailer_of_any_family_is_refused_by_both_readers` and
-    /// `d43_a_family_no_reader_accepts_is_refused_at_its_first_magic` (below)
-    /// cover the last two.
-    ///
     /// # The constant was regenerated ONCE, by lane LR, under the owner's
-    /// 2026-08-16 reject ruling
-    ///
-    /// LK captured it from the warn-and-read-on walk. 90 of the 112 blocks
-    /// changed, 22 are byte-identical, and every change is one of five kinds.
-    /// The whole difference is kept at `runs/lr_mtd1_reject/oracle_diff.txt` and
-    /// checked per fixture below:
-    ///
-    /// 1. **one added line** on a payload that was already being refused: the
-    ///    record-level `is undecodable at byte N` verdict, which did not exist
-    ///    before.
-    /// 2. **units that are no longer published** (170 lines), because the family
-    ///    that would have published them refused, or because it came after a
-    ///    refusal. This is the defect: `MTD1 version wrong` published ten of
-    ///    them, including every later family's, from a record the fold discards.
-    /// 3. **one re-spelled diagnostic**, `MTRA`'s. It said "activation
-    ///    identity/shape is invalid" for any of nine failed predicates; it now
-    ///    names the one that failed and its operand.
-    /// 4. **one diagnostic no longer REACHED**, and it is the only place this
-    ///    matrix lost operator information: `MTRF row_count overruns` used to
-    ///    end at "MTRF len 1016 < 32336", and now ends at the country/kind
-    ///    shape check in front of it, because that check became fatal. The FOLD
-    ///    tests country/kind before length too, in
-    ///    `world_fold.rs::parse_market_trade_resource_flow_trailer`, so the two
-    ///    readers now stop at the same word.
-    /// 5. **`data_rows_total` and `data_changed_rows_total` fall from 2 to 0**
-    ///    in `core scale_raw wrong`, because a wrong core scale word is refused
-    ///    before the core rows are counted. The record's rows were never read,
-    ///    so reporting two of them was the same claim the units were.
-    ///
-    /// The `clean` block remains decodable at both offsets. Row-content defects
-    /// retain every specific diagnostic, but the shared fatality table now adds
-    /// the record-level refusal for rules the fold historically refused.
-    ///
-    /// kills: a rewire that renames a diagnostic, changes one of its operands,
-    /// emits two where one was emitted, stops emitting one, reorders two
-    /// diagnostics of the SAME payload, stops the outer trailer walk at a
-    /// different trailer, or changes a published unit count.
     #[test]
     fn d43_authority_message_spellings_and_units_are_unchanged() {
         let actual = d43_oracle_report();
-        // This source file is checked out CRLF and the report is built with
-        // `'\n'`, so the constant below carries whatever line break the
-        // checkout has. Normalise rather than let the oracle depend on a
-        // `core.autocrlf` setting.
         let expected = D43_ORACLE_EXPECTED.replace("\r\n", "\n");
         if actual != expected {
             panic!(
@@ -23649,24 +23117,10 @@ fn consumer(payload: &[u8]) {
    # market_trade_variant_valid_rows = 2
 "#;
 
-    // =====================================================================
-    // Lane LR -- the authority and the fold agree about DECODABILITY
-    // =====================================================================
-    //
-    // Owner ruling 2026-08-16: for d43 a wrong version word is rejected on BOTH
-    // sides. The tests below are the ones that would have caught the two
-    // readers disagreeing, and they drive the SHIPPING entry points --
-    // `decode_compact_market_trade_data_payload` and
-    // `WorldFold::fold_market_trade` -- over the same bytes. A test-only walker
-    // agreeing with the fold would prove nothing about what the recorder ships.
-
-    /// The authority's record-level verdict: `Some(diagnostic)` when it could
-    /// not read the record.
     fn d43_authority_verdict(payload: &[u8]) -> Option<String> {
         d43_authority_read(payload).0
     }
 
-    /// Verdict, every diagnostic, and every published unit.
     #[allow(clippy::type_complexity)]
     fn d43_authority_read(payload: &[u8]) -> (Option<String>, Vec<String>, BTreeMap<String, u64>) {
         d43_authority_read_at(0, payload)
@@ -23694,59 +23148,31 @@ fn consumer(payload: &[u8]) {
         (verdict, summary.parse_errors, units)
     }
 
-    /// The fold's verdict on the same bytes.
     fn d43_fold_verdict(payload: &[u8]) -> Option<String> {
         d43_fold_read(payload).0
     }
 
     fn d43_fold_read(
         payload: &[u8],
-    ) -> (
-        Option<String>,
-        crate::world_fold::D43FoldStateCardinalities,
-    ) {
+    ) -> (Option<String>, crate::world_fold::D43FoldStateCardinalities) {
         let mut fold = crate::world_fold::WorldFold::new("lx-d43-differential");
         let verdict = fold.fold_market_trade(payload).err();
         (verdict, fold.d43_state_cardinalities())
     }
 
-    /// A payload BOTH readers accept, carrying all seven families the authority
-    /// decodes, plus the offset each trailer starts at.
-    ///
-    /// Not LK's oracle payload, and that is the point. LK's exercises the
-    /// AUTHORITY and the fold refuses it -- its families witness different
-    /// country sets -- so a differential built on it would compare two refusals
-    /// and prove nothing. This one is accepted by both, which is what makes a
-    /// single mutated word the only difference between the accepted case and
-    /// the refused one.
     fn d43_agreed_payload() -> (Vec<u8>, BTreeMap<&'static str, usize>) {
         d43_agreed_payload_with(D43PayloadShape::default())
     }
 
-    /// The three choices the payload above fixes, made adjustable.
-    ///
-    /// Two rules can only be reached by a payload whose parts are each VALID
-    /// and disagree with one another, so they cannot be reached by mutating a
-    /// word of the default: the `MTRF`/`MTRR` resource-width reconciliation
-    /// needs two well-formed trailers stating different widths, and the `MTRD`
-    /// witness rule at v1/v2 needs a v1/v2 trailer.
     #[derive(Clone, Copy)]
     struct D43PayloadShape {
-        /// Which MTRF grammar the payload carries.
         flow_version: d43_grammar::FlowVersion,
-        /// The resource width `MTRF` declares.
         flow_resource_count: u32,
-        /// The resource width `MTRR` declares. Equal to the above by default.
         row_resource_count: u32,
-        /// Which `MTRD` grammar the payload carries.
         deal_version: d43_grammar::DealVersion,
-        /// Whether MTRD carries one valid two-half deal.
         deal_rows: bool,
-        /// Whether every witnessed owner appears in the v3/v4 incomplete block.
         deal_incomplete_all: bool,
-        /// Whether MTS1 carries two one-item countries instead of one.
         stockpile_two_countries: bool,
-        /// Whether MTS1's sole country carries two items instead of one.
         stockpile_two_items: bool,
     }
 
@@ -23765,35 +23191,13 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    fn d43_agreed_payload_with(
-        shape: D43PayloadShape,
-    ) -> (Vec<u8>, BTreeMap<&'static str, usize>) {
+    fn d43_agreed_payload_with(shape: D43PayloadShape) -> (Vec<u8>, BTreeMap<&'static str, usize>) {
         use d43_grammar::encode;
 
         let limits = d43_grammar::Limits::new(
             COMPACT_MAX_STRATEGIC_RESOURCE_COUNT,
             COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize,
         );
-        // Each family's INTERNAL layout is LK's oracle payload's: two core rows
-        // for contracts 1 and 2, the same seven trailers in the same order, and
-        // an `MTRD` carrying TWO witnesses and one incomplete owner.
-        //
-        // The ABSOLUTE offsets differ from LK's -- `MTRF`, `MTRH` and `MTRR`
-        // carry two countries here and one there -- and that is harmless because
-        // every fixture takes its offset from the `at` map this builder records.
-        // What must not move is a field's offset WITHIN its family. An earlier
-        // version of this builder shortened `MTRD` to one witness and no
-        // incomplete owner, and LK's `MTRD witness duplicated` (`+36`) and
-        // `MTRD incomplete owner not a witness` (`+40`) fixtures then wrote into
-        // the `MTRA` behind it and pinned two unrelated refusals. Review caught
-        // it; the intra-family shape is LK's again.
-        //
-        // The SAME two countries witness every classic family, or the fold
-        // refuses the record for a country-set disagreement before a header
-        // word matters. Three things differ from LK's payload, all of them
-        // because the FOLD refuses LK's: two witnessed countries rather than
-        // one, an oil row wearing the oil vocabulary, and one-based descriptor
-        // indices. The first is what moves the absolute offsets.
         let tag = 10u32;
         let second_tag = 20u32;
         let countries = [tag, second_tag];
@@ -23893,20 +23297,15 @@ fn consumer(payload: &[u8]) {
 
         at.insert("MTRH", payload.len());
         payload.extend_from_slice(
-            &encode::encode_factory_header(
-                &countries
-                    .map(|tag_db_id| d43_grammar::FactoryRow {
-                        tag_db_id,
-                        total: 4,
-                        used: 1,
-                        available: 3,
-                    }),
-            )
+            &encode::encode_factory_header(&countries.map(|tag_db_id| d43_grammar::FactoryRow {
+                tag_db_id,
+                total: 4,
+                used: 1,
+                available: 3,
+            }))
             .expect("MTRH encodes"),
         );
 
-        // Slot 0 is the oil row and no other row may wear its vocabulary; the
-        // descriptor index is one-based because the fold refuses a zero.
         let resource_row = |(tag_db_id, resource_index): (u32, u32)| d43_grammar::ResourceRow {
             tag_db_id,
             resource_index,
@@ -23933,9 +23332,6 @@ fn consumer(payload: &[u8]) {
             descriptor_db_index: resource_index + 1,
             reserved: 0,
         };
-        // One token per slot, distinct, and the fold names oil off slot 0's own
-        // vocabulary rather than off its position. A FIXED pool, so widening the
-        // set adds a slot instead of respelling the two the default carries.
         let token_pool: [&[u8]; 7] = [
             b"oil",
             b"steel",
@@ -23951,9 +23347,7 @@ fn consumer(payload: &[u8]) {
             .collect();
         let rows: Vec<d43_grammar::ResourceRow> = countries
             .into_iter()
-            .flat_map(|tag_db_id| {
-                (0..shape.row_resource_count).map(move |slot| (tag_db_id, slot))
-            })
+            .flat_map(|tag_db_id| (0..shape.row_resource_count).map(move |slot| (tag_db_id, slot)))
             .map(resource_row)
             .collect();
         at.insert("MTRR", payload.len());
@@ -23969,19 +23363,16 @@ fn consumer(payload: &[u8]) {
             .expect("MTRR encodes"),
         );
 
-        // v1 and v2 declare no incomplete-owner block, so the ONE owner short of
-        // exactness is a v3/v4 fact and the encoder refuses it otherwise.
         let incomplete_one = [tag];
         let incomplete_all = [tag, second_tag];
-        let incomplete: &[u32] = if shape.deal_version.carries_incomplete_owners()
-            && shape.deal_incomplete_all
-        {
-            &incomplete_all
-        } else if shape.deal_version.carries_incomplete_owners() {
-            &incomplete_one
-        } else {
-            &[]
-        };
+        let incomplete: &[u32] =
+            if shape.deal_version.carries_incomplete_owners() && shape.deal_incomplete_all {
+                &incomplete_all
+            } else if shape.deal_version.carries_incomplete_owners() {
+                &incomplete_one
+            } else {
+                &[]
+            };
         let deal_rows = if shape.deal_rows {
             vec![
                 d43_grammar::DealRow {
@@ -24036,12 +23427,7 @@ fn consumer(payload: &[u8]) {
         };
         at.insert("MTRD", payload.len());
         payload.extend_from_slice(
-            &encode::encode_classic_deals(
-                shape.deal_version,
-                &countries,
-                incomplete,
-                &deal_rows,
-            )
+            &encode::encode_classic_deals(shape.deal_version, &countries, incomplete, &deal_rows)
                 .expect("MTRD encodes"),
         );
 
@@ -24054,15 +23440,6 @@ fn consumer(payload: &[u8]) {
             COMPACT_MARKET_TRADE_ACTIVATION_OPEN_RVA,
         ));
 
-        // ONE country, unlike the four classic families above, and it is LK's
-        // layout that decides this rather than the fold: `MTS1` is NOT one of
-        // the families whose country sets the fold reconciles
-        // (`world_fold.rs::fold_market_trade` builds that set from `MTRF`,
-        // `MTRH`, `MTRR` and `MTRD` only), and LK's `MTS1 item type wrong`
-        // fixture writes `+64`, which is the first item row's `variant_type`
-        // only when a SINGLE 20-byte country row sits between the 40-byte header
-        // and the items. A second country row would move the items and that
-        // fixture would silently start editing a country row instead.
         let stockpile_tags: Vec<u32> = if shape.stockpile_two_countries {
             vec![tag, second_tag]
         } else {
@@ -24107,11 +23484,6 @@ fn consumer(payload: &[u8]) {
         (payload, at)
     }
 
-    /// The control every sweep below rests on.
-    ///
-    /// kills: a base payload that stopped carrying a family, which would make
-    /// every mutation of that family mutate a byte no reader looks at and let
-    /// the sweeps pass by testing nothing.
     #[test]
     fn d43_the_agreed_payload_is_accepted_by_both_readers() {
         let (payload, at) = d43_agreed_payload();
@@ -24137,11 +23509,6 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// The oracle matrix is a SHIPPING-entry-point differential, at both
-    /// record offsets the operator oracle pins.
-    ///
-    /// kills: either shipping reader acquiring a private fatality decision, or
-    /// record-offset arithmetic changing a verdict at the authority only.
     #[test]
     fn d43_oracle_matrix_has_one_shipping_decodability_verdict_at_both_offsets() {
         let (clean, at) = d43_agreed_payload();
@@ -24159,11 +23526,6 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// The authority's published units and the fold's applied state are two
-    /// projections of the same leaf-owned cardinalities.
-    ///
-    /// kills: either site counting a decoded block itself, dropping a typed
-    /// row while applying it, or publishing a count different from the leaf.
     #[test]
     fn d43_authority_units_and_fold_state_equal_the_leaf_report_units() {
         let (payload, _) = d43_agreed_payload();
@@ -24179,23 +23541,72 @@ fn consumer(payload: &[u8]) {
         assert_eq!(fold_verdict, None);
 
         let expected = [
-            ("market_trade_contract_rows", report.units.market_trade_contract_rows.unwrap_or(0)),
-            ("market_trade_detail_rows", report.units.market_trade_detail_rows.unwrap_or(0)),
-            ("market_trade_resource_flow_rows", report.units.market_trade_resource_flow_rows.unwrap_or(0)),
-            ("market_trade_factory_header_rows", report.units.market_trade_factory_header_rows.unwrap_or(0)),
-            ("market_trade_resource_rows", report.units.market_trade_resource_rows.unwrap_or(0)),
-            ("market_trade_classic_deal_country_witnesses", report.units.market_trade_classic_deal_country_witnesses.unwrap_or(0)),
-            ("market_trade_classic_deal_incomplete_owners", report.units.market_trade_classic_deal_incomplete_owners.unwrap_or(0)),
-            ("market_trade_classic_deal_rows", report.units.market_trade_classic_deal_rows.unwrap_or(0)),
-            ("market_trade_activation_rows", report.units.market_trade_activation_rows.unwrap_or(0)),
-            ("market_trade_stockpile_country_rows", report.units.market_trade_stockpile_country_rows.unwrap_or(0)),
-            ("market_trade_stockpile_item_rows", report.units.market_trade_stockpile_item_rows.unwrap_or(0)),
+            (
+                "market_trade_contract_rows",
+                report.units.market_trade_contract_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_detail_rows",
+                report.units.market_trade_detail_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_resource_flow_rows",
+                report.units.market_trade_resource_flow_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_factory_header_rows",
+                report.units.market_trade_factory_header_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_resource_rows",
+                report.units.market_trade_resource_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_classic_deal_country_witnesses",
+                report
+                    .units
+                    .market_trade_classic_deal_country_witnesses
+                    .unwrap_or(0),
+            ),
+            (
+                "market_trade_classic_deal_incomplete_owners",
+                report
+                    .units
+                    .market_trade_classic_deal_incomplete_owners
+                    .unwrap_or(0),
+            ),
+            (
+                "market_trade_classic_deal_rows",
+                report.units.market_trade_classic_deal_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_activation_rows",
+                report.units.market_trade_activation_rows.unwrap_or(0),
+            ),
+            (
+                "market_trade_stockpile_country_rows",
+                report
+                    .units
+                    .market_trade_stockpile_country_rows
+                    .unwrap_or(0),
+            ),
+            (
+                "market_trade_stockpile_item_rows",
+                report.units.market_trade_stockpile_item_rows.unwrap_or(0),
+            ),
         ];
         for (name, count) in expected {
             if count == 0 {
-                assert!(!authority_units.contains_key(name), "zero unit {name} must stay unpublished");
+                assert!(
+                    !authority_units.contains_key(name),
+                    "zero unit {name} must stay unpublished"
+                );
             } else {
-                assert_eq!(authority_units.get(name), Some(&(count as u64)), "unit {name}");
+                assert_eq!(
+                    authority_units.get(name),
+                    Some(&(count as u64)),
+                    "unit {name}"
+                );
             }
         }
         assert_eq!(
@@ -24206,22 +23617,25 @@ fn consumer(payload: &[u8]) {
                 resource_flow_rows: report.units.market_trade_resource_flow_rows.unwrap_or(0),
                 factory_rows: report.units.market_trade_factory_header_rows.unwrap_or(0),
                 resource_rows: report.units.market_trade_resource_rows.unwrap_or(0),
-                witnesses: report.units.market_trade_classic_deal_country_witnesses.unwrap_or(0),
-                incomplete_owners: report.units.market_trade_classic_deal_incomplete_owners.unwrap_or(0),
+                witnesses: report
+                    .units
+                    .market_trade_classic_deal_country_witnesses
+                    .unwrap_or(0),
+                incomplete_owners: report
+                    .units
+                    .market_trade_classic_deal_incomplete_owners
+                    .unwrap_or(0),
                 deal_rows: report.units.market_trade_classic_deal_rows.unwrap_or(0),
                 activation_rows: report.units.market_trade_activation_rows.unwrap_or(0),
-                stockpile_country_rows: report.units.market_trade_stockpile_country_rows.unwrap_or(0),
+                stockpile_country_rows: report
+                    .units
+                    .market_trade_stockpile_country_rows
+                    .unwrap_or(0),
                 stockpile_item_rows: report.units.market_trade_stockpile_item_rows.unwrap_or(0),
             }
         );
     }
 
-    /// D43's shared payload verdict does not erase the fold's two site-policy
-    /// early returns. The authority reports the fatal row; the fold deliberately
-    /// treats a failed/clear record as unavailable and never applies that row.
-    ///
-    /// kills: moving core-row refusal ahead of either fold policy gate, or
-    /// accidentally committing core contracts on the failure-status path.
     #[test]
     fn d43_core_defects_do_not_move_ahead_of_failure_or_baseline_clear_policy() {
         let (clean, _) = d43_agreed_payload();
@@ -24240,12 +23654,17 @@ fn consumer(payload: &[u8]) {
         ] {
             let mut payload = clean.clone();
             oracle_put_u32(&mut payload, 16, status_flags);
-            oracle_put_u32(&mut payload, d43_grammar::CORE_HEADER_LEN + 8, valid_flags | 1 << 31);
+            oracle_put_u32(
+                &mut payload,
+                d43_grammar::CORE_HEADER_LEN + 8,
+                valid_flags | 1 << 31,
+            );
 
             let report = d43_grammar::decode::decode_record(&payload, D43_AUTHORITY_DECODE_CONTEXT);
             assert!(
                 d43_grammar::decode::select_first_fatal(&report)
-                    .is_some_and(|finding| finding.rule == d43_grammar::decode::D43DecodeRule::D43CoreUnknownFlags),
+                    .is_some_and(|finding| finding.rule
+                        == d43_grammar::decode::D43DecodeRule::D43CoreUnknownFlags),
                 "{label}: the one decoder still finds the fatal core rule"
             );
             assert!(
@@ -24253,8 +23672,14 @@ fn consumer(payload: &[u8]) {
                 "{label}: the authority reports the shared record verdict"
             );
             let (fold_verdict, state) = d43_fold_read(&payload);
-            assert_eq!(fold_verdict, None, "{label}: the fold takes its policy early return");
-            assert_eq!(state.contract_rows, 0, "{label}: no malformed core is committed");
+            assert_eq!(
+                fold_verdict, None,
+                "{label}: the fold takes its policy early return"
+            );
+            assert_eq!(
+                state.contract_rows, 0,
+                "{label}: no malformed core is committed"
+            );
             assert_eq!(
                 state.resource_flow_rows > 0,
                 commits_trailers,
@@ -24263,11 +23688,6 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// Semantic findings discovered before a later structural stop survive in
-    /// the authority report, while both shipping readers share the refusal.
-    ///
-    /// kills: turning the report back into `Result` at the first semantic
-    /// finding, or clearing earlier findings when a later boundary is unknown.
     #[test]
     fn d43_shipping_report_retains_semantics_before_a_structural_stop() {
         let (mut payload, at) = d43_agreed_payload();
@@ -24275,24 +23695,26 @@ fn consumer(payload: &[u8]) {
         payload.truncate(at["MTRF"] + 8);
         for record_offset in [0, 4096] {
             let (verdict, errors, _) = d43_authority_read_at(record_offset, &payload);
-            assert!(verdict.is_some(), "offset {record_offset}: structural refusal");
             assert!(
-                errors.iter().any(|error| error.contains("changed_rows 5 > row_count 2")),
+                verdict.is_some(),
+                "offset {record_offset}: structural refusal"
+            );
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("changed_rows 5 > row_count 2")),
                 "offset {record_offset}: earlier semantic finding retained: {errors:?}"
             );
             assert!(
-                errors.iter().any(|error| error.contains("MTRF") && error.contains("overruns")),
+                errors
+                    .iter()
+                    .any(|error| error.contains("MTRF") && error.contains("overruns")),
                 "offset {record_offset}: structural stop remains named: {errors:?}"
             );
         }
         assert!(d43_fold_verdict(&payload).is_some());
     }
 
-    /// All defects in one decoded row remain reportable, but the shared policy
-    /// key still chooses the fold's historical first error.
-    ///
-    /// kills: short-circuiting row evaluation, sorting by discovery/byte order,
-    /// or selecting unknown flags ahead of contract type.
     #[test]
     fn d43_multi_defect_core_row_reports_all_and_selects_the_historical_first() {
         let (mut payload, _) = d43_agreed_payload();
@@ -24302,7 +23724,11 @@ fn consumer(payload: &[u8]) {
         oracle_put_u32(&mut payload, row + 44, 1);
         let (verdict, errors, _) = d43_authority_read(&payload);
         assert!(verdict.is_some());
-        for fragment in ["contract_type 9", "unknown flags", "reserved field is nonzero"] {
+        for fragment in [
+            "contract_type 9",
+            "unknown flags",
+            "reserved field is nonzero",
+        ] {
             assert!(
                 errors.iter().any(|error| error.contains(fragment)),
                 "retained {fragment}: {errors:?}"
@@ -24314,77 +23740,138 @@ fn consumer(payload: &[u8]) {
         );
     }
 
-    /// The classic row families the old authority sized but did not inspect are
-    /// exercised through both shipping entry points, with one named predicate
-    /// group per fixture.
-    ///
-    /// kills: restoring a private authority/fold row rule, omitting one classic
-    /// block from the shared report, or formatting a fatal finding while one
-    /// shipping entry point nevertheless accepts the record.
     #[test]
     fn d43_classic_row_predicate_groups_have_one_shipping_verdict() {
         use d43_grammar::decode::D43DecodeRule as Rule;
-        type Mutation = Box<
-            dyn Fn(
-                &mut Vec<u8>,
-                &d43_grammar::decode::DecodeReport,
-            ),
-        >;
+        type Mutation = Box<dyn Fn(&mut Vec<u8>, &d43_grammar::decode::DecodeReport)>;
 
         let (clean, _) = d43_agreed_payload_with(D43PayloadShape {
             deal_rows: true,
             ..D43PayloadShape::default()
         });
         let cases: Vec<(&str, Rule, Mutation)> = vec![
-            ("MTRF tag", Rule::D43FlowTagRange, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at, 0))),
-            ("MTRF kind", Rule::D43FlowKind, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 4, 9))),
-            ("MTRF width echo", Rule::D43FlowRowMaskOrCount, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 8, 9))),
-            ("MTRF reserved", Rule::D43FlowReserved, Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 12, 1))),
-            ("MTRF duplicate country/kind", Rule::D43FlowDuplicateCountryKind, Box::new(|p, r| {
-                let first = r.document.flow_rows[0].at;
-                let second = r.document.flow_rows[1].at;
-                let flow_kind = u32::from_le_bytes(
-                    p[first + 4..first + 8]
-                        .try_into()
-                        .expect("flow kind"),
-                );
-                oracle_put_u32(p, second + 4, flow_kind);
-            })),
-            ("MTRH tag", Rule::D43FactoryTagRange, Box::new(|p, r| oracle_put_u32(p, r.document.factory_rows[0].at, 0))),
-            ("MTRH duplicate", Rule::D43FactoryDuplicateTag, Box::new(|p, r| {
-                let first = r.document.factory_rows[0].row.tag_db_id;
-                oracle_put_u32(p, r.document.factory_rows[1].at, first);
-            })),
-            ("MTRR row shape", Rule::D43ResourceDescriptorZero, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 56, 0))),
-            ("MTRR unavailable version", Rule::D43ResourceUnavailableVersion, Box::new(|p, r| {
-                let at = r.document.resource_rows[0].at;
-                oracle_put_u32(p, at + 12, d43_grammar::NeededType::Unavailable.wire());
-                oracle_put_u32(p, at + 52, d43_grammar::ResourceFlag::NeededUnavailable.bit());
-            })),
-            ("MTRR oil shape", Rule::D43ResourceOilShape, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 40, 1))),
-            ("MTRR non-oil shape", Rule::D43ResourceNonOilNeededBalance, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 40, 1))),
-            ("MTRR duplicate key", Rule::D43ResourceDuplicateCountrySlot, Box::new(|p, r| {
-                let at = r.document.resource_rows[1].at;
-                oracle_put_u32(p, at + 4, 0);
-                oracle_put_u32(p, at + 8, 0);
-            })),
-            ("MTRR descriptor changes", Rule::D43ResourceDescriptorChanged, Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[2].at + 56, 9))),
-            ("MTRD row shape", Rule::D43DealFlags, Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 24, 0))),
-            ("MTRD half count", Rule::D43DealHalfCount, Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[1].at + 36, 2))),
-            ("MTRD half mismatch", Rule::D43DealHalfMismatch, Box::new(|p, r| {
-                let at = r.document.deal_rows[1].at + 48;
-                p[at..at + 8].copy_from_slice(&1i64.to_le_bytes());
-            })),
-            ("MTRD visible order", Rule::D43DealVisibleOrderCoverage, Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 12, 1))),
+            (
+                "MTRF tag",
+                Rule::D43FlowTagRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at, 0)),
+            ),
+            (
+                "MTRF kind",
+                Rule::D43FlowKind,
+                Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 4, 9)),
+            ),
+            (
+                "MTRF width echo",
+                Rule::D43FlowRowMaskOrCount,
+                Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 8, 9)),
+            ),
+            (
+                "MTRF reserved",
+                Rule::D43FlowReserved,
+                Box::new(|p, r| oracle_put_u32(p, r.document.flow_rows[0].at + 12, 1)),
+            ),
+            (
+                "MTRF duplicate country/kind",
+                Rule::D43FlowDuplicateCountryKind,
+                Box::new(|p, r| {
+                    let first = r.document.flow_rows[0].at;
+                    let second = r.document.flow_rows[1].at;
+                    let flow_kind =
+                        u32::from_le_bytes(p[first + 4..first + 8].try_into().expect("flow kind"));
+                    oracle_put_u32(p, second + 4, flow_kind);
+                }),
+            ),
+            (
+                "MTRH tag",
+                Rule::D43FactoryTagRange,
+                Box::new(|p, r| oracle_put_u32(p, r.document.factory_rows[0].at, 0)),
+            ),
+            (
+                "MTRH duplicate",
+                Rule::D43FactoryDuplicateTag,
+                Box::new(|p, r| {
+                    let first = r.document.factory_rows[0].row.tag_db_id;
+                    oracle_put_u32(p, r.document.factory_rows[1].at, first);
+                }),
+            ),
+            (
+                "MTRR row shape",
+                Rule::D43ResourceDescriptorZero,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 56, 0)),
+            ),
+            (
+                "MTRR unavailable version",
+                Rule::D43ResourceUnavailableVersion,
+                Box::new(|p, r| {
+                    let at = r.document.resource_rows[0].at;
+                    oracle_put_u32(p, at + 12, d43_grammar::NeededType::Unavailable.wire());
+                    oracle_put_u32(
+                        p,
+                        at + 52,
+                        d43_grammar::ResourceFlag::NeededUnavailable.bit(),
+                    );
+                }),
+            ),
+            (
+                "MTRR oil shape",
+                Rule::D43ResourceOilShape,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[0].at + 40, 1)),
+            ),
+            (
+                "MTRR non-oil shape",
+                Rule::D43ResourceNonOilNeededBalance,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 40, 1)),
+            ),
+            (
+                "MTRR duplicate key",
+                Rule::D43ResourceDuplicateCountrySlot,
+                Box::new(|p, r| {
+                    let at = r.document.resource_rows[1].at;
+                    oracle_put_u32(p, at + 4, 0);
+                    oracle_put_u32(p, at + 8, 0);
+                }),
+            ),
+            (
+                "MTRR descriptor changes",
+                Rule::D43ResourceDescriptorChanged,
+                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[2].at + 56, 9)),
+            ),
+            (
+                "MTRD row shape",
+                Rule::D43DealFlags,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 24, 0)),
+            ),
+            (
+                "MTRD half count",
+                Rule::D43DealHalfCount,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[1].at + 36, 2)),
+            ),
+            (
+                "MTRD half mismatch",
+                Rule::D43DealHalfMismatch,
+                Box::new(|p, r| {
+                    let at = r.document.deal_rows[1].at + 48;
+                    p[at..at + 8].copy_from_slice(&1i64.to_le_bytes());
+                }),
+            ),
+            (
+                "MTRD visible order",
+                Rule::D43DealVisibleOrderCoverage,
+                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 12, 1)),
+            ),
         ];
 
         for (name, expected_rule, mutate) in cases {
-            let clean_report = d43_grammar::decode::decode_record(&clean, D43_AUTHORITY_DECODE_CONTEXT);
+            let clean_report =
+                d43_grammar::decode::decode_record(&clean, D43_AUTHORITY_DECODE_CONTEXT);
             let mut payload = clean.clone();
             mutate(&mut payload, &clean_report);
             let report = d43_grammar::decode::decode_record(&payload, D43_AUTHORITY_DECODE_CONTEXT);
             assert!(
-                report.findings.iter().any(|finding| finding.rule == expected_rule),
+                report
+                    .findings
+                    .iter()
+                    .any(|finding| finding.rule == expected_rule),
                 "{name}: expected {expected_rule:?}, got {:?}",
                 report.findings
             );
@@ -24398,31 +23885,16 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// Every classic row predicate that was not already pinned by the LK/LR
-    /// oracle receives its own mutation through both shipping entry points.
-    ///
-    /// kills: dropping any individual MTRF/MTRR/MTRD/MTS1 predicate from the
-    /// shared evaluator, demoting its fatality, or letting either site recover
-    /// independently from that predicate.
     #[test]
     fn d43_remaining_row_predicates_have_one_shipping_verdict() {
         use d43_grammar::decode::{D43DecodeRule as Rule, D43RuleFatality};
-        type Mutation = Box<
-            dyn Fn(
-                &mut Vec<u8>,
-                &d43_grammar::decode::DecodeReport,
-            ),
-        >;
+        type Mutation = Box<dyn Fn(&mut Vec<u8>, &d43_grammar::decode::DecodeReport)>;
 
         let exercise = |name: &str, expected_rule: Rule, payload: Vec<u8>| {
-            let report = d43_grammar::decode::decode_record(
-                &payload,
-                D43_AUTHORITY_DECODE_CONTEXT,
-            );
+            let report = d43_grammar::decode::decode_record(&payload, D43_AUTHORITY_DECODE_CONTEXT);
             assert!(
                 report.findings.iter().any(|finding| {
-                    finding.rule == expected_rule
-                        && finding.fatality == D43RuleFatality::Fatal
+                    finding.rule == expected_rule && finding.fatality == D43RuleFatality::Fatal
                 }),
                 "{name}: expected fatal {expected_rule:?}, got {:?}",
                 report.findings
@@ -24440,10 +23912,7 @@ fn consumer(payload: &[u8]) {
             deal_rows: true,
             ..D43PayloadShape::default()
         });
-        let clean_report = d43_grammar::decode::decode_record(
-            &clean,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let clean_report = d43_grammar::decode::decode_record(&clean, D43_AUTHORITY_DECODE_CONTEXT);
         let cases: Vec<(&str, Rule, Mutation)> = vec![
             (
                 "MTRF decoded country count",
@@ -24489,7 +23958,11 @@ fn consumer(payload: &[u8]) {
                 Box::new(|p, r| {
                     let at = r.document.resource_rows[0].at;
                     oracle_put_u32(p, at + 12, d43_grammar::NeededType::Unavailable.wire());
-                    oracle_put_u32(p, at + 52, d43_grammar::ResourceFlag::NeededUnavailable.bit());
+                    oracle_put_u32(
+                        p,
+                        at + 52,
+                        d43_grammar::ResourceFlag::NeededUnavailable.bit(),
+                    );
                     oracle_put_u32(p, at + 40, 1);
                 }),
             ),
@@ -24511,7 +23984,13 @@ fn consumer(payload: &[u8]) {
             (
                 "MTRR non-oil sign",
                 Rule::D43ResourceNonOilSign,
-                Box::new(|p, r| oracle_put_u32(p, r.document.resource_rows[1].at + 12, d43_grammar::NeededType::Deficit.wire())),
+                Box::new(|p, r| {
+                    oracle_put_u32(
+                        p,
+                        r.document.resource_rows[1].at + 12,
+                        d43_grammar::NeededType::Deficit.wire(),
+                    )
+                }),
             ),
             (
                 "MTRR oil slot count",
@@ -24578,7 +24057,13 @@ fn consumer(payload: &[u8]) {
             (
                 "MTRD resource index range",
                 Rule::D43DealResourceIndexRange,
-                Box::new(|p, r| oracle_put_u32(p, r.document.deal_rows[0].at + 8, COMPACT_MAX_STRATEGIC_RESOURCE_COUNT)),
+                Box::new(|p, r| {
+                    oracle_put_u32(
+                        p,
+                        r.document.deal_rows[0].at + 8,
+                        COMPACT_MAX_STRATEGIC_RESOURCE_COUNT,
+                    )
+                }),
             ),
             (
                 "MTRD direction",
@@ -24600,7 +24085,8 @@ fn consumer(payload: &[u8]) {
                 Rule::D43DealPackedReserved,
                 Box::new(|p, r| {
                     let at = r.document.deal_rows[0].at + 32;
-                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    let old =
+                        u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
                     p[at..at + 8].copy_from_slice(&(old | (1u64 << 48)).to_le_bytes());
                 }),
             ),
@@ -24609,7 +24095,8 @@ fn consumer(payload: &[u8]) {
                 Rule::D43DealPackedResourceEcho,
                 Box::new(|p, r| {
                     let at = r.document.deal_rows[0].at + 32;
-                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    let old =
+                        u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
                     p[at..at + 8].copy_from_slice(&(old & !(0xffu64 << 8)).to_le_bytes());
                 }),
             ),
@@ -24618,7 +24105,8 @@ fn consumer(payload: &[u8]) {
                 Rule::D43DealIdentityOrdinal,
                 Box::new(|p, r| {
                     let at = r.document.deal_rows[0].at + 32;
-                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    let old =
+                        u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
                     p[at..at + 8].copy_from_slice(&(old & !0xffu64).to_le_bytes());
                 }),
             ),
@@ -24627,7 +24115,8 @@ fn consumer(payload: &[u8]) {
                 Rule::D43DealIdentityParties,
                 Box::new(|p, r| {
                     let at = r.document.deal_rows[0].at + 32;
-                    let old = u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
+                    let old =
+                        u64::from_le_bytes(p[at..at + 8].try_into().expect("packed identity"));
                     let changed = (old & !(0xffffu64 << 32)) | (11u64 << 32);
                     p[at..at + 8].copy_from_slice(&changed.to_le_bytes());
                 }),
@@ -24719,10 +24208,8 @@ fn consumer(payload: &[u8]) {
             row_resource_count: 7,
             ..D43PayloadShape::default()
         });
-        let legacy_flow_report = d43_grammar::decode::decode_record(
-            &legacy_flow,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let legacy_flow_report =
+            d43_grammar::decode::decode_record(&legacy_flow, D43_AUTHORITY_DECODE_CONTEXT);
         assert!(
             d43_grammar::decode::select_first_fatal(&legacy_flow_report).is_none(),
             "legacy-flow control: {:?}",
@@ -24744,10 +24231,8 @@ fn consumer(payload: &[u8]) {
             deal_rows: true,
             ..D43PayloadShape::default()
         });
-        let legacy_deal_report = d43_grammar::decode::decode_record(
-            &legacy_deal,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let legacy_deal_report =
+            d43_grammar::decode::decode_record(&legacy_deal, D43_AUTHORITY_DECODE_CONTEXT);
         let mut legacy_status = legacy_deal;
         oracle_put_u32(
             &mut legacy_status,
@@ -24765,10 +24250,8 @@ fn consumer(payload: &[u8]) {
             deal_incomplete_all: true,
             ..D43PayloadShape::default()
         });
-        let ascending_report = d43_grammar::decode::decode_record(
-            &ascending,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let ascending_report =
+            d43_grammar::decode::decode_record(&ascending, D43_AUTHORITY_DECODE_CONTEXT);
         let mut descending = ascending;
         oracle_put_u32(
             &mut descending,
@@ -24785,10 +24268,8 @@ fn consumer(payload: &[u8]) {
             stockpile_two_countries: true,
             ..D43PayloadShape::default()
         });
-        let two_country_report = d43_grammar::decode::decode_record(
-            &two_countries,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let two_country_report =
+            d43_grammar::decode::decode_record(&two_countries, D43_AUTHORITY_DECODE_CONTEXT);
         let mut duplicate_country = two_countries;
         oracle_put_u32(
             &mut duplicate_country,
@@ -24805,10 +24286,8 @@ fn consumer(payload: &[u8]) {
             stockpile_two_items: true,
             ..D43PayloadShape::default()
         });
-        let two_item_report = d43_grammar::decode::decode_record(
-            &two_items,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let two_item_report =
+            d43_grammar::decode::decode_record(&two_items, D43_AUTHORITY_DECODE_CONTEXT);
         let mut duplicate_item = two_items;
         let first_variant = two_item_report.document.stockpile_items[0]
             .row
@@ -24825,19 +24304,9 @@ fn consumer(payload: &[u8]) {
         );
     }
 
-    /// Fold row diagnostics that used helper functions or compound predicates
-    /// keep their pre-rewire byte-for-byte spellings.
-    ///
-    /// kills: replacing a field-specific MTD1 error or an oil/non-oil MTRR
-    /// model error with a generic row-shape/debug-rule message.
     #[test]
     fn d43_fold_row_spellings_remain_specific() {
-        type Mutation = Box<
-            dyn Fn(
-                &mut Vec<u8>,
-                &d43_grammar::decode::DecodeReport,
-            ),
-        >;
+        type Mutation = Box<dyn Fn(&mut Vec<u8>, &d43_grammar::decode::DecodeReport)>;
         let (clean, _) = d43_agreed_payload();
         let cases: Vec<(&str, Mutation)> = vec![
             (
@@ -24865,17 +24334,13 @@ fn consumer(payload: &[u8]) {
             ),
         ];
         for (expected, mutate) in cases {
-            let report = d43_grammar::decode::decode_record(
-                &clean,
-                D43_AUTHORITY_DECODE_CONTEXT,
-            );
+            let report = d43_grammar::decode::decode_record(&clean, D43_AUTHORITY_DECODE_CONTEXT);
             let mut payload = clean.clone();
             mutate(&mut payload, &report);
             assert_eq!(d43_fold_verdict(&payload).as_deref(), Some(expected));
         }
     }
 
-    /// The seven families this authority decodes, in payload order.
     const D43_ACCEPTED_FAMILIES: [(&str, d43_grammar::Trailer); 7] = [
         ("MTD1", d43_grammar::Trailer::Detail),
         ("MTRF", d43_grammar::Trailer::ResourceFlow),
@@ -24886,65 +24351,14 @@ fn consumer(payload: &[u8]) {
         ("MTS1", d43_grammar::Trailer::Stockpile),
     ];
 
-    /// THE TEST THAT WOULD HAVE CAUGHT IT.
-    ///
-    /// Every header POSITION of the core and of every accepted family, written
-    /// wrong one at a time, on a payload both readers otherwise accept. A write
-    /// that costs the record at one reader must cost it at the other; the
-    /// owner's 2026-08-16 ruling is that a wrong VERSION word is one of those,
-    /// and the sweep does not know which position is the version.
-    ///
-    /// Before this lane the sweep failed at 44 mutations: `MTD1`'s version word
-    /// (`+4`), and every one of `MTRA`'s nine header predicates, were diagnosed
-    /// here and fatal in the fold. `MTRF`'s mask, count/kind and `scale_raw`
-    /// words were the same shape.
-    ///
-    /// kills: any header position either reader starts or stops refusing on its
-    /// own -- reverting `MTD1`'s version to warn-and-read-on, reverting `MTRA`,
-    /// or reverting the three `MTRF` classes; and making the authority stricter
-    /// than the fold about any header position. Since the totals below became an
-    /// EQUALITY it also kills a change that makes both readers wrong in the same
-    /// direction, whenever that changes a count. What it still does NOT reach is
-    /// the `MTRF`/`MTRR` resource-width reconciliation: that rule needs two
-    /// individually VALID trailers, which no single wrong word can build, so it
-    /// has its own test below.
-    ///
-    /// The floor is PER PROBE POSITION, not per family and not aggregate, and a
-    /// probe that writes back the value already there is counted as the no-op it
-    /// is rather than as a position left alone. A per-FAMILY floor was the first
-    /// version and review was right that it is weak: `MTD1` refuses 21 probes,
-    /// so both readers could stop validating its version word entirely and 18
-    /// would remain -- twice any family-level floor. Per position, losing a
-    /// predicate takes that position's own count to zero.
-    ///
-    /// # What the pinned list below is, exactly
-    ///
-    /// The positions at which NO SINGLE 32-BIT WRITE costs the record at either
-    /// reader. That is a narrower statement than "words no reader judges", and
-    /// the difference is real: `MTRA +20` is the high half of an
-    /// `observation_sequence` both readers DO judge, and it is on the list only
-    /// because they judge the whole `u64` for nonzero and no single write to its
-    /// high half can zero it while the low half holds 7. The assertion right
-    /// after the list zeroes both halves and shows both readers refusing.
-    ///
-    /// # Scope
-    ///
-    /// The ten core header words (`d43_grammar::CoreWord::ALL`) and every word
-    /// of the seven accepted families' trailer headers, plus one truncation
-    /// bucket per family. Rows are covered separately by the oracle and the two
-    /// shipping row-predicate differentials above.
     #[test]
     fn d43_every_header_word_costs_the_record_at_both_readers_or_at_neither() {
         let (clean, at) = d43_agreed_payload();
         let mut disagreements = Vec::new();
         let mut totals = (0usize, 0usize, 0usize);
         let mut per_family = Vec::new();
-        // header word -> how many of its changed probes cost the record at BOTH
-        // readers.
         let mut by_word: BTreeMap<String, usize> = BTreeMap::new();
 
-        // The core header first, then each trailer. `(label, start, words)`:
-        // `None` words means "the family's own header layout".
         let mut passes: Vec<(&str, usize, Option<Vec<usize>>)> = vec![(
             "core",
             0,
@@ -24967,8 +24381,6 @@ fn consumer(payload: &[u8]) {
             let header_len = trailer.map_or(COMPACT_MARKET_TRADE_HEADER_LEN, |t| t.header_len());
             let mut mutated = Vec::new();
             if let Some(words) = core_words {
-                // The core has no magic and no `u16` words: ten `u32`s behind an
-                // eight-byte wall clock.
                 for word in words {
                     for probe in [0u32, 1, 9, u32::MAX] {
                         let mut payload = clean.clone();
@@ -25010,13 +24422,6 @@ fn consumer(payload: &[u8]) {
                 totals = (totals.0 + both, totals.1 + neither, totals.2 + no_ops);
                 continue;
             }
-            // Four 16-bit writes at `+4`, `+6`, `+8` and `+10`. In six of the
-            // seven families those are four declared `u16` words -- version,
-            // header_len and two widths. In `MTRA` they are two `u16`s followed
-            // by the two HALVES of a 32-bit `flags` word, so this pass probes
-            // that field twice at half width. That is a finer probe than the
-            // field, not a wrong one, and it is why the position count below is
-            // a count of PROBE POSITIONS rather than of header fields.
             for word in (4..12).step_by(2) {
                 for probe in [0u16, 1, 9, u16::MAX] {
                     let mut payload = clean.clone();
@@ -25028,7 +24433,6 @@ fn consumer(payload: &[u8]) {
                     ));
                 }
             }
-            // Every `u32` word behind them.
             for word in (12..header_len).step_by(4) {
                 for probe in [0u32, 1, 9, u32::MAX] {
                     let mut payload = clean.clone();
@@ -25040,7 +24444,6 @@ fn consumer(payload: &[u8]) {
                     ));
                 }
             }
-            // And a header that is not all there.
             for cut in [2usize, 8, header_len - 1] {
                 let mut payload = clean.clone();
                 payload.truncate(start + cut);
@@ -25053,9 +24456,6 @@ fn consumer(payload: &[u8]) {
 
             let (mut both, mut neither, mut no_ops) = (0usize, 0usize, 0usize);
             for (word, case, payload) in mutated {
-                // A probe that wrote back the byte already there IS the clean
-                // payload; counting it as "a word both readers left alone" would
-                // be counting the control over and over.
                 if payload == clean {
                     no_ops += 1;
                     continue;
@@ -25093,11 +24493,6 @@ fn consumer(payload: &[u8]) {
         for (label, both, neither, no_ops) in &per_family {
             println!("d43 header sweep {label}: {both} both, {neither} neither, {no_ops} no-op");
         }
-        // ASSERTED per family as well as in total, because the per-family
-        // figures are asserted below and a figure a
-        // test only prints is not evidence -- the battery log records this test
-        // as PASS and nothing else. The order is the sweep's: the core, then the
-        // seven families in payload order.
         assert_eq!(
             per_family,
             vec![
@@ -25112,10 +24507,6 @@ fn consumer(payload: &[u8]) {
             ],
             "a family's share of the sweep changed"
         );
-        // Every position at which no single 32-bit write cost the record at
-        // either reader. Pinned as a LIST rather than allowed for by a floor,
-        // because losing a predicate adds a position here and adding one removes
-        // a position here, and both are things somebody meant to do.
         let never_refused: Vec<&str> = by_word
             .iter()
             .filter(|(_, both)| **both == 0)
@@ -25123,42 +24514,12 @@ fn consumer(payload: &[u8]) {
             .collect();
         assert_eq!(
             never_refused,
-            // Sorted as a `BTreeMap` sorts its keys, not in payload order.
             [
-                // `MTD1`'s four count claims. The authority compares each with
-                // what it counted from the rows and says so; NEITHER reader
-                // refuses the record for one, and the fold reads none of them.
-                "MTD1 +16",
-                "MTD1 +20",
-                "MTD1 +24",
-                "MTD1 +28",
-                // The HIGH half of `MTRA`'s `observation_sequence` u64 -- and
-                // this one is NOT an unjudged word. Both readers refuse an
-                // active trailer whose whole u64 is zero; no single write to
-                // these four bytes can make it zero while the low half holds 7,
-                // which is what puts the position on a list of single writes.
-                // The assertion below zeroes both halves and both readers
-                // refuse.
-                "MTRA +20",
-                // Seven core count claims -- the authority reports each
-                // disagreement with what it counted and neither reader refuses
-                // the record for one -- and, at `+16`, the core `status_flags`
-                // word, which is not a count at all: it is folded into the
-                // report's status accumulators and is a statement ABOUT the
-                // capture rather than a claim either reader can falsify.
-                "core +12",
-                "core +16",
-                "core +20",
-                "core +24",
-                "core +28",
-                "core +32",
-                "core +36",
-                "core +40",
+                "MTD1 +16", "MTD1 +20", "MTD1 +24", "MTD1 +28", "MTRA +20", "core +12", "core +16",
+                "core +20", "core +24", "core +28", "core +32", "core +36", "core +40",
             ],
             "the set of d43 header positions no single 32-bit write refuses changed"
         );
-        // The proof that `MTRA +20` is a limit of the PROBE and not a hole in
-        // either reader.
         let mut zeroed_sequence = clean.clone();
         oracle_put_u32(&mut zeroed_sequence, at["MTRA"] + 16, 0);
         oracle_put_u32(&mut zeroed_sequence, at["MTRA"] + 20, 0);
@@ -25175,12 +24536,6 @@ fn consumer(payload: &[u8]) {
             by_word.len(),
             never_refused.len()
         );
-        // ASSERTED, not printed. Review was right that a number a test only
-        // prints is not evidence: the battery log records the test as PASS and
-        // nothing else, so every figure
-        // has to be checkable from the source. These four are the sweep's whole
-        // shape, and any of the changes this test is meant to kill moves one of
-        // them.
         assert_eq!(
             (totals.0, totals.1, totals.2, by_word.len()),
             (237, 51, 25, 80),
@@ -25188,27 +24543,6 @@ fn consumer(payload: &[u8]) {
         );
     }
 
-    /// Every fixture in LK's matrix, with BOTH readers' verdicts pinned as a
-    /// pair.
-    ///
-    /// The pair is the honest statement, and the reason it is a pinned report
-    /// rather than an assertion: over the whole matrix neither implication
-    /// holds. `authority reads / fold refuses` is a real and DELIBERATE class --
-    /// a row whose CONTENTS are wrong is diagnosed here and refused there --
-    /// and this table is where every one of those is visible and countable
-    /// instead of being argued about. The lane's rule is that the pairs change
-    /// only when someone means them to.
-    ///
-    /// kills: reverting `MTD1`'s version word, `MTRA`'s header, the three
-    /// `MTRF` classes, the `MTRR` identity block or the four added duplicate
-    /// refusals -- each flips at least one pair from `refused` back to `reads
-    /// the record`. It also kills a FOLD change that starts or stops refusing a
-    /// fixture.
-    ///
-    /// It does NOT kill re-gating the `MTRD` witness check on v3/v4: this
-    /// payload's `MTRD` IS v3, so the gate would not fire. That regression is
-    /// killed by `d43_an_mtrd_witness_list_is_checked_at_every_version`, which
-    /// drives every `DealVersion`.
     #[test]
     fn d43_verdict_pairs_are_unchanged() {
         let actual = d43_verdict_pair_report();
@@ -25230,9 +24564,6 @@ fn consumer(payload: &[u8]) {
             let mut payload = clean.clone();
             mutate(&mut payload, &at);
             let authority = match d43_authority_verdict(&payload) {
-                // The offset is pinned by the oracle test next door; here the
-                // fact that matters is the verdict, so the byte is dropped and
-                // a moved trailer does not churn two constants.
                 Some(_) => "refused".to_string(),
                 None => "reads the record".to_string(),
             };
@@ -25247,23 +24578,10 @@ fn consumer(payload: &[u8]) {
         report
     }
 
-    /// A structurally unreadable family publishes nothing and ends the walk;
-    /// a fully delimited family keeps its readable counts on semantic refusal.
-    ///
-    /// The three properties are separate and the first is the one the owner's
-    /// ruling is about: before it, an `MTD1` whose version word was 9 published
-    /// its detail rows AND every later family's units, out of a record
-    /// `world_fold` discards whole.
-    ///
-    /// kills: reading behind an invalid version, publishing behind that
-    /// structural stop, or erasing a fully decoded MTRA/MTS1 count merely
-    /// because an MTRA semantic word refuses the whole record.
     #[test]
     fn d43_publication_distinguishes_structural_stop_from_semantic_refusal() {
         let (clean, at) = d43_agreed_payload();
 
-        // MTD1 with a wrong version AND a row this reader would otherwise
-        // complain about. The row must stay unread.
         let mut poisoned = clean.clone();
         oracle_put_u16(&mut poisoned, at["MTD1"] + 4, 9);
         oracle_put_u32(&mut poisoned, at["MTD1"] + 32, 0);
@@ -25296,19 +24614,19 @@ fn consumer(payload: &[u8]) {
                 "a refused MTD1 publishes no {unit} and nothing after it: {units:?}"
             );
         }
-        // The CORE was read, and is still reported. The record is lost, but the
-        // reader says what it managed to read of it rather than going silent.
         assert_eq!(
             units.get("market_trade_contract_rows"),
             Some(&2),
             "the core rows it did read are still reported: {units:?}"
         );
 
-        // MTRA is a header and nothing else, so its whole header is this rule.
         let mut bad_activation = clean.clone();
         oracle_put_u32(&mut bad_activation, at["MTRA"] + 24, 9);
         let (verdict, errors, units) = d43_authority_read(&bad_activation);
-        assert!(verdict.is_some(), "a wrong MTRA root_kind refuses: {errors:?}");
+        assert!(
+            verdict.is_some(),
+            "a wrong MTRA root_kind refuses: {errors:?}"
+        );
         assert!(
             d43_fold_verdict(&bad_activation).is_some(),
             "as it does in the fold"
@@ -25329,8 +24647,6 @@ fn consumer(payload: &[u8]) {
             Some(&1),
             "the fully delimited MTS1 behind it remains readable: {units:?}"
         );
-        // MTD1 came BEFORE the refusal and is still published, which is what
-        // makes the absences above mean something.
         assert_eq!(
             units.get("market_trade_detail_rows"),
             Some(&2),
@@ -25338,16 +24654,6 @@ fn consumer(payload: &[u8]) {
         );
     }
 
-    /// One payload, one of each family.
-    ///
-    /// The duplicate rule was stated for `MTD1`, `MTRA` and `MTS1` only, so a
-    /// payload carrying two `MTRF`, `MTRH`, `MTRR` or `MTRD` trailers decoded
-    /// here and was thrown away by `world_fold`, which has always refused all
-    /// seven.
-    ///
-    /// kills: dropping any one of the seven refusals. The singleton control in
-    /// the same test is what stops it passing on a payload that was already
-    /// broken for some other reason.
     #[test]
     fn d43_a_second_trailer_of_any_family_is_refused_by_both_readers() {
         let (clean, at) = d43_agreed_payload();
@@ -25355,9 +24661,6 @@ fn consumer(payload: &[u8]) {
         assert_eq!(d43_fold_verdict(&clean), None, "at both readers");
 
         for (label, trailer) in D43_ACCEPTED_FAMILIES {
-            // Append a byte-identical second copy of the family, taken from the
-            // payload both readers just accepted, so the ONLY thing wrong with
-            // it is that it is the second one.
             let end = D43_ACCEPTED_FAMILIES
                 .iter()
                 .find_map(|(other, _)| (at[*other] > at[label]).then(|| at[*other]))
@@ -25388,10 +24691,6 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// The ONE nonzero unit each family publishes when it is read, in payload
-    /// order. Zero-valued units are dropped by `add_compact_domain_data_unit`,
-    /// so a unit that is zero in the agreed payload cannot witness "this family
-    /// was read".
     const D43_FAMILY_WITNESS_UNIT: [(&str, &str); 7] = [
         ("MTD1", "market_trade_detail_rows"),
         ("MTRF", "market_trade_resource_flow_rows"),
@@ -25402,21 +24701,10 @@ fn consumer(payload: &[u8]) {
         ("MTS1", "market_trade_stockpile_country_rows"),
     ];
 
-    /// EVERY family, not just the two the owner ruling named.
-    ///
-    /// A refused family publishes no unit of its own and none of the families
-    /// behind it, and the families in FRONT of it are still published -- which is
-    /// what makes the absences mean "refused here" rather than "reports nothing".
-    ///
-    /// kills: reverting any one family to publish-then-refuse or to walk on after
-    /// a refusal. Each family is checked on its own, so six families cannot cover
-    /// for a seventh.
     #[test]
     fn every_refused_d43_family_publishes_nothing_and_stops_the_walk() {
         let (clean, at) = d43_agreed_payload();
         for (index, (label, _)) in D43_FAMILY_WITNESS_UNIT.iter().enumerate() {
-            // A version word this grammar has no width for. Every family refuses
-            // it -- that is the owner's ruling, applied uniformly.
             let mut payload = clean.clone();
             oracle_put_u16(&mut payload, at[*label] + 4, 9);
             let (verdict, errors, units) = d43_authority_read(&payload);
@@ -25446,20 +24734,8 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// One payload, ONE resource set.
-    ///
-    /// `MTRF` and `MTRR` each state how many strategic resources their rows are
-    /// numbered against. This rule cannot be reached by mutating a word: change
-    /// either count and that trailer stops agreeing with its own row width or its
-    /// own dense row-count equation, and is refused for THAT before the two
-    /// counts are ever compared. So the payload is built with both trailers
-    /// individually well formed and stating different widths.
-    ///
-    /// kills: removing the shared resource-count agreement or erasing MTRR's
-    /// fully decoded row count merely because the cross-family widths disagree.
     #[test]
     fn d43_two_valid_trailers_that_state_different_resource_widths_are_refused() {
-        // The control: same shape, same widths, accepted by both.
         let (matched, _) = d43_agreed_payload_with(D43PayloadShape {
             flow_resource_count: 3,
             row_resource_count: 3,
@@ -25499,30 +24775,20 @@ fn consumer(payload: &[u8]) {
         );
     }
 
-    /// Both movable cross-family rules are observed through the shipping
-    /// readers, not merely through the leaf evaluator.
-    ///
-    /// kills: dropping country-set reconciliation, evaluating the MTRF-v3
-    /// identity requirement before exact consumption, or letting either site
-    /// choose its own record verdict for either rule.
     #[test]
     fn d43_movable_cross_family_rules_have_one_shipping_verdict() {
         use d43_grammar::decode::D43DecodeRule as Rule;
 
         let (mut country_mismatch, _) = d43_agreed_payload();
-        let report = d43_grammar::decode::decode_record(
-            &country_mismatch,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let report =
+            d43_grammar::decode::decode_record(&country_mismatch, D43_AUTHORITY_DECODE_CONTEXT);
         oracle_put_u32(
             &mut country_mismatch,
             report.document.factory_rows[0].at,
             30,
         );
-        let mismatch_report = d43_grammar::decode::decode_record(
-            &country_mismatch,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
+        let mismatch_report =
+            d43_grammar::decode::decode_record(&country_mismatch, D43_AUTHORITY_DECODE_CONTEXT);
         assert!(mismatch_report
             .findings
             .iter()
@@ -25532,25 +24798,16 @@ fn consumer(payload: &[u8]) {
 
         let (mut missing_identity, at) = d43_agreed_payload();
         missing_identity.drain(at["MTRR"]..at["MTRD"]);
-        let identity_report = d43_grammar::decode::decode_record(
-            &missing_identity,
-            D43_AUTHORITY_DECODE_CONTEXT,
-        );
-        assert!(identity_report.findings.iter().any(|finding| {
-            finding.rule == Rule::D43CrossFlowV3NeedsIdentityResourceRows
-        }));
+        let identity_report =
+            d43_grammar::decode::decode_record(&missing_identity, D43_AUTHORITY_DECODE_CONTEXT);
+        assert!(identity_report
+            .findings
+            .iter()
+            .any(|finding| { finding.rule == Rule::D43CrossFlowV3NeedsIdentityResourceRows }));
         assert!(d43_fold_verdict(&missing_identity).is_some());
         assert!(d43_authority_verdict(&missing_identity).is_some());
     }
 
-    /// The MTRD-only resource-name capacity refusal is deliberately fold-local:
-    /// it depends on the fold's seven authored fallback names, not payload
-    /// grammar. The shipping authority must therefore retain the leaf verdict
-    /// while the fold refuses projection with its exact contextual message.
-    ///
-    /// kills: moving the authored seven-name table into the leaf, silently
-    /// dropping an out-of-name-range deal at the fold, or making the authority
-    /// fabricate the fold's game-file context.
     #[test]
     fn d43_fold_local_resource_name_refusal_stays_contextual() {
         use d43_grammar::encode;
@@ -25613,24 +24870,8 @@ fn consumer(payload: &[u8]) {
         );
     }
 
-    /// `MTRD`'s witness list is checked at EVERY version.
-    ///
-    /// It used to be checked for v3/v4 only, with a comment saying archived v1/v2
-    /// bytes must keep decoding as they had. `world_fold`'s witness check has
-    /// never been gated on a version, so a v1 payload with a bad witness decoded
-    /// here and was discarded there.
-    ///
-    /// Driven through the SHIPPING entry points, and past the family helper the
-    /// older test calls directly, because the version gate lived in this
-    /// function and a helper-level test cannot show that a whole record is lost.
-    ///
-    /// kills: putting the `per_owner` gate back around the witness loop or
-    /// erasing the fully decoded witness count after its semantic refusal.
     #[test]
     fn d43_an_mtrd_witness_list_is_checked_at_every_version() {
-        // `DealVersion::ALL`, not a hand-written subset: the earlier list left
-        // v4 out while the test claimed "every version", and a fifth version
-        // added to the leaf must land here without anyone remembering to.
         for version in d43_grammar::DealVersion::ALL {
             let (clean, at) = d43_agreed_payload_with(D43PayloadShape {
                 deal_version: version,
@@ -25647,8 +24888,6 @@ fn consumer(payload: &[u8]) {
                 "and still folds -- this lane refuses no payload either reader used to take"
             );
 
-            // The FIRST of the two witnesses, zeroed. `+32` is the first word
-            // behind the 32-byte header, where the witness block begins.
             let mut bad_witness = clean.clone();
             oracle_put_u32(&mut bad_witness, at["MTRD"] + 32, 0);
             let (verdict, errors, units) = d43_authority_read(&bad_witness);
@@ -25674,17 +24913,6 @@ fn consumer(payload: &[u8]) {
         }
     }
 
-    /// `MTRB` and `MTLL` are families the GRAMMAR knows and no shipping reader
-    /// accepts.
-    ///
-    /// They cannot take part in the header sweep: both readers stop at the
-    /// magic, so mutating a header word behind it changes nothing. This is the
-    /// separate statement -- the first occurrence is refused, by both, before
-    /// any header word is read.
-    ///
-    /// kills: an authority that started decoding either family, or that stopped
-    /// telling an operator the difference between a family it refuses and four
-    /// bytes that name nothing.
     #[test]
     fn d43_a_family_no_reader_accepts_is_refused_at_its_first_magic() {
         use d43_grammar::encode;
@@ -25721,8 +24949,9 @@ fn consumer(payload: &[u8]) {
             let (verdict, errors, _) = d43_authority_read(&payload);
             assert!(verdict.is_some(), "{label} is refused here: {errors:?}");
             assert!(
-                errors.iter().any(|error| error
-                    .contains(&format!("{label} trailer is not a family this decoder accepts"))),
+                errors.iter().any(|error| error.contains(&format!(
+                    "{label} trailer is not a family this decoder accepts"
+                ))),
                 "as a NAMED family rather than as unknown bytes: {errors:?}"
             );
             assert!(
@@ -25731,7 +24960,6 @@ fn consumer(payload: &[u8]) {
             );
         }
 
-        // Four bytes that name nothing are a different operator fact.
         let mut unknown = clean.clone();
         unknown.extend_from_slice(b"ZZZZ");
         let (verdict, errors, _) = d43_authority_read(&unknown);

@@ -1,41 +1,6 @@
-//! Product-blocker registry — the enumerated set of surfaces
-//! `replay_app` refuses in the product path.
-//!
-//! Declared gaps are unavailable and never substitute a stale frame. This
-//! registry enforces that behavior: `--list-blockers` exposes
-//! the enumeration, and the coverage test below proves that it is complete.
-//!
-//! `replay_app` fails closed on any product path whose rendering/state law still
-//! has FIT/UNKNOWN residuals, plus legacy opt-outs and debug knobs that must
-//! never touch the final render surface. This module owns the executable list:
-//!
-//! - every fail-closed message is stored here as [`Blocker::reason`] and the
-//!   `main.rs` gates reference it (pure indirection — no behavior change);
-//! - `--list-blockers` prints [`render_list`] deterministically so audits (G3)
-//!   and the definition-of-done can consume the enumeration mechanically;
-//! - a coverage test asserts every `*_product_path_blocked` gate in the crate is
-//!   represented here, so a new block cannot be added without a registry row.
-//!
-//! Two refinements keep the registry verified against the code rather than
-//! parallel to it:
-//!
-//! - [`Scope`] distinguishes unconditional rows from debug/evidence CLI inputs
-//!   that are legal in the bundle-based debug modes but rejected on any
-//!   production-recording invocation (windowed or `--dump-frame`); the
-//!   production-recording gates in `main.rs`, `headless.rs`, and `app.rs`
-//!   return these rows' reasons verbatim.
-//! - [`ENV_INPUTS`] enumerates the sanctioned (non-blocker) environment inputs,
-//!   and source-scan tests prove (a) every `EnvOverride` row and every
-//!   [`EnvInput`] has a live reader (no phantom rows) and (b) every literal
-//!   environment read in the crate is registered.
-//!
-//! Adding a new product block = add a [`BlockerId`] variant + a [`REGISTRY`] row
-//! (and, for a CLI/env gate, route the `main.rs` arm through [`reason`]).
 
-/// Stable identifier for one product-blocker surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BlockerId {
-    // --- CLI switches ---
     DemoScrub,
     GbCpuFlag,
     SynthesizeTerrainChunks,
@@ -58,14 +23,12 @@ pub enum BlockerId {
     NoMapLabels,
     MapLabelsFallback,
     NoMapFurniture,
-    // --- CLI debug/evidence inputs scoped to production recording playback ---
     RecordingBundle,
     RecordingCapture,
     RecordingDumpZoom,
     RecordingDumpCenter,
     RecordingDumpHdr,
     RecordingDayNightHour,
-    // --- environment overrides ---
     DebugDumpUnderwater,
     DebugClearBeforeWater,
     DebugUnderwaterInputs,
@@ -77,7 +40,6 @@ pub enum BlockerId {
 }
 
 impl BlockerId {
-    /// Short stable slug for the `--list-blockers` emission (deterministic).
     pub const fn slug(self) -> &'static str {
         match self {
             BlockerId::DemoScrub => "demo_scrub",
@@ -120,12 +82,9 @@ impl BlockerId {
     }
 }
 
-/// Where the block is surfaced to the operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
-    /// A blocked CLI switch (the exact token, e.g. `--demo-scrub`).
     CliSwitch(&'static str),
-    /// A rejected environment override (the variable name).
     EnvOverride(&'static str),
 }
 
@@ -145,18 +104,9 @@ impl Surface {
     }
 }
 
-/// Where the block applies.
-///
-/// `Always` rows are unconditional: `parse_cli` rejects the switch and
-/// `reject_env_overrides` rejects the variable on every invocation.
-/// `ProductionRecording` rows are legal debug/evidence inputs for the
-/// bundle-based debug modes but are rejected on any invocation that opens a
-/// production recording (`--recording`, windowed or `--dump-frame`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Rejected on every invocation.
     Always,
-    /// Rejected whenever the invocation opens a production recording.
     ProductionRecording,
 }
 
@@ -169,17 +119,10 @@ impl Scope {
     }
 }
 
-/// Why the block exists — distinguishes a law residual (earnable off with
-/// evidence) from a permanent legacy opt-out / debug knob (never a product
-/// input by design).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockerKind {
-    /// A render/state law still has FIT/UNKNOWN residuals; closes with evidence.
     LawResidual,
-    /// A legacy approximation opt-out or no-op flag; blocked by design.
     LegacyOptOut,
-    /// A debug/validation knob (CLI or environment) barred from the product
-    /// render path.
     DebugKnob,
 }
 
@@ -193,10 +136,8 @@ impl BlockerKind {
     }
 }
 
-/// Serialized disposition for a registry row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// Fail-closed. Awaits the closure evidence in [`Blocker::waits_for`].
     Blocked,
 }
 
@@ -208,26 +149,15 @@ impl Status {
     }
 }
 
-/// One canonical product-blocker row.
 #[derive(Debug, Clone, Copy)]
 pub struct Blocker {
     pub id: BlockerId,
     pub surface: Surface,
     pub kind: BlockerKind,
-    /// The exact fail-closed message returned when the surface is triggered.
-    /// The `main.rs` gate for this surface returns this string verbatim.
     pub reason: &'static str,
-    /// The structured-evidence condition or executable invariant that must hold
-    /// before the surface can be enabled.
     pub waits_for: &'static str,
     pub status: Status,
-    /// Where the block applies ([`Scope::Always`] vs a production-recording-
-    /// scoped debug/evidence input). Emitted so the `--list-blockers` audit
-    /// cannot misread a conditional row as unconditional.
     pub scope: Scope,
-    /// The `*_product_path_blocked` (or sibling) crate test that exercises this
-    /// surface, if any. Drives the coverage gate (read from the test binary; in
-    /// a bin crate that reads as dead in the non-test build).
     #[cfg_attr(not(test), allow(dead_code))]
     pub product_path_test: Option<&'static str>,
 }
@@ -238,7 +168,6 @@ use Scope::{Always, ProductionRecording};
 use Status::Blocked;
 use Surface::{CliSwitch, EnvOverride};
 
-/// The canonical, ordered blocker list. Declaration order is the emission order.
 pub const REGISTRY: &[Blocker] = &[
     Blocker {
         id: B::DemoScrub,
@@ -602,9 +531,6 @@ pub const REGISTRY: &[Blocker] = &[
     },
 ];
 
-/// Look up a blocker row by id. Panics if the id has no row — every
-/// [`BlockerId`] variant MUST have exactly one [`REGISTRY`] entry (enforced by
-/// `registry_has_one_row_per_id`).
 pub fn get(id: BlockerId) -> &'static Blocker {
     REGISTRY
         .iter()
@@ -612,15 +538,10 @@ pub fn get(id: BlockerId) -> &'static Blocker {
         .expect("every BlockerId has a REGISTRY row")
 }
 
-/// The exact fail-closed message for a blocker surface. `main.rs` gates return
-/// this verbatim, keeping the registry the single source of the message text.
 pub fn reason(id: BlockerId) -> &'static str {
     get(id).reason
 }
 
-/// The fail-closed message for a rejected environment variable, by name.
-/// Test-only since the `main.rs` env gate became registry-iteration-driven
-/// (`reject_env_overrides`); kept as the by-name lookup seam with its own test.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn env_reason_by_name(name: &str) -> Option<&'static str> {
     REGISTRY
@@ -629,18 +550,8 @@ pub fn env_reason_by_name(name: &str) -> Option<&'static str> {
         .map(|b| b.reason)
 }
 
-/// Sanctioned machine-configuration environment input — NOT a blocker. These
-/// variables select machine-local configuration (profile path, game install)
-/// and are documented in the usage text. They are enumerated here so the
-/// registry is the complete accounting of every environment variable the
-/// product binary reads: a variable absent from both this table and the
-/// `EnvOverride` rows must not be read by non-test `replay_app` code (the
-/// `every_crate_env_read_is_registered` scan enforces that against the source,
-/// and `no_env_surface_row_is_a_phantom` proves every listed name has a live
-/// reader — the registry is verified against the code, never parallel to it).
 pub struct EnvInput {
     pub name: &'static str,
-    /// What the variable selects and where it is read.
     pub role: &'static str,
 }
 
@@ -663,24 +574,9 @@ pub const ENV_INPUTS: &[EnvInput] = &[
     },
 ];
 
-/// Environment variables read only by `#[cfg(test)]` code in this crate. They
-/// are listed so the env-read completeness scan is two-way: every literal env
-/// read found in `src/` must be registered as an [`EnvInput`], an
-/// `EnvOverride` row, or listed here — and every name listed here must still
-/// occur in the source, so a stale entry fails the scan instead of drifting.
 #[cfg_attr(not(test), allow(dead_code))]
-/// `BATTLE_PLAN_GAME_DIR`, `BATTLE_PLAN_GAME_ROOT`, `BATTLE_PLAN_REQUIRE_CAPTURE_GATES`, and
-/// `BATTLE_PLAN_CAPTURES_ROOT` have no literal reader in replay-app source. The last
-/// name belongs to a map-viewer evidence gate and must not pose as a live
-/// replay-app test reader. `XMAP_NATIVE_EVIDENCE_REPLAY` is read only by the
-/// gated native evidence test in `app.rs`.
 pub const TEST_ONLY_ENV_READS: &[&str] = &["XMAP_NATIVE_EVIDENCE_REPLAY"];
 
-/// Deterministic, test-consumable emission of the whole registry: one blocker
-/// row per line as tab-separated fields
-/// `slug<TAB>kind<TAB>surface-kind<TAB>surface<TAB>status<TAB>scope<TAB>waits-for`,
-/// followed by the sanctioned environment-input section, one line per input as
-/// `name<TAB>env-input<TAB>SANCTIONED<TAB>role`.
 pub fn render_list() -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -719,11 +615,9 @@ mod tests {
 
     #[test]
     fn registry_has_one_row_per_id_and_unique_surfaces() {
-        // Every row's `get(id)` resolves to itself (one row per id).
         for b in REGISTRY {
             assert_eq!(get(b.id).surface, b.surface, "id {:?} row mismatch", b.id);
         }
-        // Surfaces (CLI token / env name) are unique across the registry.
         let mut surfaces = BTreeSet::new();
         for b in REGISTRY {
             assert!(
@@ -732,7 +626,6 @@ mod tests {
                 b.surface.label()
             );
         }
-        // Slugs are unique too (they key the emission).
         let mut slugs = BTreeSet::new();
         for b in REGISTRY {
             assert!(slugs.insert(b.id.slug()), "duplicate slug {}", b.id.slug());
@@ -741,9 +634,6 @@ mod tests {
 
     #[test]
     fn every_reason_message_starts_with_its_surface_token() {
-        // The message the gate returns names the surface it blocks. This ties the
-        // registry text to the `main.rs` `*_product_path_blocked` assertions,
-        // which all check `err.contains("<surface> is blocked")`.
         for b in REGISTRY {
             let token = b.surface.label();
             let head = format!("{token} is blocked");
@@ -759,9 +649,6 @@ mod tests {
 
     #[test]
     fn counts_are_exact() {
-        // Guardrail: the canonical count is pinned. Bumping it is intentional
-        // and forces the `--list-blockers` snapshot below to be updated
-        // alongside.
         assert_eq!(REGISTRY.len(), 36, "total blocker surfaces");
         let cli = REGISTRY
             .iter()
@@ -773,8 +660,6 @@ mod tests {
             .count();
         assert_eq!(cli, 28, "blocked CLI switches");
         assert_eq!(env, 8, "rejected env overrides");
-        // Production-recording-scoped rows are exactly the six CLI
-        // debug/evidence inputs; every env row is unconditional.
         let scoped: Vec<&Blocker> = REGISTRY
             .iter()
             .filter(|b| b.scope == Scope::ProductionRecording)
@@ -829,29 +714,8 @@ mod tests {
         }
     }
 
-    /// Collect every literal environment read — a `var_os("NAME")` /
-    /// `var("NAME")` call — under the given source tree.
-    ///
-    /// Soundness measures: `//` line comments are
-    /// stripped before matching, so a commented mention can no longer pose as
-    /// a live reader; and the call patterns are matched WITHOUT requiring an
-    /// `env::` path prefix (a `use std::env::var_os;` import call site is
-    /// caught), while a preceding identifier character or `.` disqualifies
-    /// the match (`some_var(` and method calls like `x.var(` are not
-    /// counted).
-    ///
-    /// Known residual limitations, accepted and pinned here: `/* */` block
-    /// comments and string literals containing the call pattern are not
-    /// recognized as non-code, and a line whose string content contains `//`
-    /// before the call is truncated early. None of these shapes occur in the
-    /// scanned trees; the consuming assertions surface them as
-    /// unregistered-name or stale-entry failures rather than accepting them
-    /// silently. The dynamic
-    /// registry-driven read in `reject_env_overrides` has no literal name and
-    /// is deliberately outside this scan.
     fn literal_env_reads_in_source(src: &str, out: &mut BTreeSet<String>) {
         for line in src.lines() {
-            // Strip `//` line comments (also drops `///` doc lines).
             let code = match line.find("//") {
                 Some(cut) => &line[..cut],
                 None => line,
@@ -903,8 +767,6 @@ mod tests {
         // contains the bare call pattern — the real file scan of blockers.rs
         // must not pick these synthetic names up as crate reads.
         let src = "use std::env::var_os;\n\
-            // env::var_os(\"COMMENTED_PHANTOM\") must not count\n\
-            /// doc: env::var(\"DOC_PHANTOM\") must not count\n\
             let a = std::env::var_os(\"QUALIFIED_READ\");\n\
             let b = env::var(\"SEMI_QUALIFIED_READ\").ok();\n\
             let c = var_os(\"IMPORTED_READ\"); // env::var(\"TRAILING_PHANTOM\")\n\
@@ -920,12 +782,6 @@ mod tests {
         assert_eq!(reads, expected);
     }
 
-    /// No registered environment surface may lack a live reader.
-    /// Every `EnvOverride` row's variable and every sanctioned [`EnvInput`]
-    /// must be read somewhere in `replay_app` or `map_viewer` source (the
-    /// debug-underwater knobs live at the `map_viewer` render seams). This is
-    /// the regression gate for phantom rows such as `REPLAY_APP_GB_CPU` and
-    /// `REPLAY_DUMP_LABELS`.
     #[test]
     fn no_env_surface_row_is_a_phantom() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -949,11 +805,6 @@ mod tests {
         }
     }
 
-    /// The registry is verified against the code, not parallel to
-    /// it. Every literal environment read in `replay_app`'s own source must be
-    /// registered — as a sanctioned [`EnvInput`], as a rejected `EnvOverride`
-    /// row, or in [`TEST_ONLY_ENV_READS`] — and every test-only entry must
-    /// still occur in the source (two-way, so entries cannot go stale).
     #[test]
     fn every_crate_env_read_is_registered() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -988,16 +839,11 @@ mod tests {
 
     #[test]
     fn render_list_is_deterministic_and_snapshot_stable() {
-        // Deterministic: identical across calls.
         assert_eq!(render_list(), render_list());
         let list = render_list();
-        // Snapshot: blocker header + one line per row, then the env-input
-        // header + one line per sanctioned input, no more.
         let lines: Vec<&str> = list.lines().collect();
         assert_eq!(lines.len(), REGISTRY.len() + ENV_INPUTS.len() + 2);
         assert_eq!(lines[0], "replay_app product blockers: 36");
-        // Spot-check exact rows (surface tokens + status + scope) as a golden
-        // snapshot.
         assert_eq!(
             lines[1],
             "demo_scrub\tlaw-residual\tcli-switch\t--demo-scrub\tBLOCKED\talways\tnone: synthetic non-replay scrub state is intentionally unsupported in product paths"
@@ -1026,7 +872,6 @@ mod tests {
             *lines.last().unwrap(),
             "HOME\tenv-input\tSANCTIONED\tnon-Windows configuration-root fallback for the playback profile (install_paths::default_config_path)"
         );
-        // Every surface has its row line (status column follows the surface).
         for b in REGISTRY {
             let needle = format!("\t{}\tBLOCKED\t{}\t", b.surface.label(), b.scope.as_str());
             assert!(

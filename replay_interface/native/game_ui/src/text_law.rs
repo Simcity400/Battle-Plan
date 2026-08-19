@@ -1,9 +1,3 @@
-//! Fail-closed localisation expansion for the production UI compositor.
-//!
-//! This module deliberately does not emulate Clausewitz evaluation or numeric
-//! formatting. Runtime values are admitted only when the recording supplies
-//! the exact formatted substitution selected by the engine. Static `$KEY$`
-//! references may recurse through the effective localisation table.
 
 use replay_core::{
     RuntimeTextCatalog, RuntimeTextLayout, RuntimeTextRecord, RuntimeTextSource,
@@ -14,15 +8,9 @@ const MAX_EXPANSION_DEPTH: usize = 32;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeTextContext {
-    /// Exact engine-formatted `$token$` values. The key includes a format
-    /// suffix when present, for example `VAL|%0`.
     pub variables: BTreeMap<String, String>,
-    /// Exact engine-evaluated `[expression]` strings.
     pub data_functions: BTreeMap<String, String>,
-    /// Exact engine-evaluated `section-sign[expression]` colour code.
     pub dynamic_colors: BTreeMap<String, char>,
-    /// Exact final engine setter output. When present it supersedes token
-    /// expansion, but only after its source identity agrees with the request.
     pub exact: Option<ExactRuntimeText>,
 }
 
@@ -62,20 +50,10 @@ impl RuntimeTextContext {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RuntimeTextViewJoin {
-    /// Unique exact owner rows. Ambiguous elements are deliberately absent.
     pub by_element: BTreeMap<String, RuntimeTextContext>,
-    /// Elements with more than one same-frame/scope/view candidate. The
-    /// carrier has no lawful last-writer ordering field, so callers must not
-    /// choose one.
     pub ambiguous_elements: BTreeSet<String>,
 }
 
-/// Select exact runtime text for one observer-owned view.
-///
-/// `None` means the catalog does not claim complete coverage. Matching is
-/// byte-exact on frame, scope and view; no country/global or view-name fallback
-/// is permitted. Duplicate element candidates are removed and named in the
-/// result instead of being resolved by map iteration order.
 pub fn join_exact_runtime_text_view(
     catalog: &RuntimeTextCatalog,
     frame_hour: i64,
@@ -152,11 +130,6 @@ pub fn resolve_localisation(
     resolve_localisation_inner(entries, key, runtime, false)
 }
 
-/// Resolve localisation while preserving authored U+00A3 inline-icon tokens
-/// for a downstream engine-layout consumer that performs the effective-VFS
-/// sprite/metrics join. This is deliberately separate from
-/// [`resolve_localisation`]: consumers without that join keep the existing
-/// typed refusal and cannot silently erase icons.
 pub fn resolve_localisation_preserving_inline_icons(
     entries: &BTreeMap<String, String>,
     key: &str,
@@ -212,8 +185,6 @@ pub fn resolve_template(
     state.finish()
 }
 
-/// Resolve an authored literal/template while retaining U+00A3 icon tokens
-/// for a compositor that owns the exact sprite/frame/metric join.
 pub fn resolve_template_preserving_inline_icons(
     entries: &BTreeMap<String, String>,
     template: &str,
@@ -237,13 +208,6 @@ pub fn resolve_template_preserving_inline_icons(
     state.finish()
 }
 
-/// Consume an exact runtime row after the caller has already authenticated its
-/// `(view_id, element_id)` owner binding.
-///
-/// A setter-caller identity has no authored string to compare. The A25 carrier
-/// instead proves which registered widget received the final bytes, so this
-/// seam is intentionally usable only by an element-keyed compositor lookup.
-/// It performs no localisation or formatter emulation.
 pub fn resolve_element_bound_exact_runtime(runtime: &RuntimeTextContext) -> ResolvedText {
     let Some(exact) = runtime.exact.as_ref() else {
         return ResolvedText {
@@ -304,8 +268,6 @@ fn exact_result(
     }
 }
 
-/// The live setter uses byte 0x11 as the colour-control lead. Authored
-/// localisation uses U+00A7. Both feed the same proven colour-code grammar.
 pub fn normalize_engine_markup(text: &str) -> String {
     text.chars()
         .map(|ch| if ch == '\u{0011}' { '\u{00a7}' } else { ch })
@@ -426,14 +388,6 @@ impl<'a> ExpansionState<'a> {
     where
         I: Iterator<Item = char>,
     {
-        // Composition may not erase an icon token. The engine text-layout
-        // primitive can place one only after an effective-content resolver
-        // supplies its exact sprite, decoded frame, frame width and texture
-        // height
-        // (`engine_text_layout::ResolvedInlineIconMetrics`). This localisation
-        // layer owns no such admitted sprite join, so it preserves the existing
-        // typed refusal instead of passing through a glyph-less token or
-        // assuming square/font-sized metrics.
         let mut key = String::new();
         while let Some(next) = chars.peek().copied() {
             if next.is_ascii_alphanumeric() || next == '_' {
@@ -627,9 +581,6 @@ mod tests {
             }]
         );
         assert_eq!(mixed.text, "\u{00a3}army_experience ");
-        // Production change that makes this fail: globally allowing icons
-        // without a sprite-layout join, erasing the icon token before TEXT1,
-        // or broadening the exception to data functions.
     }
 
     #[test]

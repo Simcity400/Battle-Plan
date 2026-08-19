@@ -1,8 +1,3 @@
-//! Exact-a729 seven-surface intelligence visibility observation.
-//!
-//! Runtime pointers are sampled only after an authenticated controller refresh
-//! has returned.  The stored observation and final receipt are pointer-free.
-
 #![cfg(windows)]
 
 use serde::{Deserialize, Serialize};
@@ -22,24 +17,20 @@ pub const VISIBILITY_PRESENTER_JOB_ID: &str =
     "20260721T090420Z-wave6-xui14-seven-surface-presenters-0bd762bb";
 pub const VISIBILITY_PRESENTER_MANIFEST_SHA256: &str =
     "abf3f75adabcd94ecae61cb035c1e52374332c087a1a900b6b91b93ca4ba37bd";
-pub const AGENCY_GATE_JOB_ID: &str =
-    "20260721T090956Z-wave6-xui14-agency-tab-visibility-afde0980";
+pub const AGENCY_GATE_JOB_ID: &str = "20260721T090956Z-wave6-xui14-agency-tab-visibility-afde0980";
 pub const AGENCY_GATE_MANIFEST_SHA256: &str =
     "6f6639c028d3cb49a65ed2fe2b4a00b25839c464e67bc562f924c58c11d27863";
 pub const OPERATION_CIPHER_JOB_ID: &str =
     "20260721T091244Z-wave6-xui14-operation-crypto-tab-clicks-ea806c56";
 pub const OPERATION_CIPHER_MANIFEST_SHA256: &str =
     "79b580872121af00d23a50080bfb91a6b68a0b465c1e6a36a1b6c7107495e7f3";
-pub const LEDGER_JOB_ID: &str =
-    "20260721T092056Z-wave6-xui14-ledger-visibility-producer-8776bdb5";
+pub const LEDGER_JOB_ID: &str = "20260721T092056Z-wave6-xui14-ledger-visibility-producer-8776bdb5";
 pub const LEDGER_MANIFEST_SHA256: &str =
     "503e8d0490a157dc3a642aff5007ef34d091f26d52dee097c3ab3c901ac1bacb";
-pub const UI_MODE_JOB_ID: &str =
-    "20260721T093525Z-wave6-xui14-agency-vtable-lifecycle-10dc912a";
+pub const UI_MODE_JOB_ID: &str = "20260721T093525Z-wave6-xui14-agency-vtable-lifecycle-10dc912a";
 pub const UI_MODE_MANIFEST_SHA256: &str =
     "89c1136b21c4d6449297d4dac5400d234ad3be75a5fced26752b0f5f24ec1aa9";
-pub const LEDGER_HOOK_JOB_ID: &str =
-    "20260721T094709Z-wave6-xui14-ledger-hook-signature-6ef86474";
+pub const LEDGER_HOOK_JOB_ID: &str = "20260721T094709Z-wave6-xui14-ledger-hook-signature-6ef86474";
 pub const LEDGER_HOOK_MANIFEST_SHA256: &str =
     "643bd80d2736b265cdfcd3802e0427d655538c23c1331cbc80a0c7e0d21dc14b";
 pub const LEDGER_SENTINEL_JOB_ID: &str =
@@ -154,7 +145,13 @@ impl NetworkProductWitness {
         {
             return Err("A30 network payload authority is unavailable".into());
         }
-        Ok(Self { frame_hour, owner_tag_db_id, producer_record_identity, payload_sha256, row_count })
+        Ok(Self {
+            frame_hour,
+            owner_tag_db_id,
+            producer_record_identity,
+            payload_sha256,
+            row_count,
+        })
     }
 
     pub(crate) fn matches(
@@ -189,7 +186,10 @@ impl VisibilityProductJoins {
             || agency.frame_hour != cipher.frame_hour
             || agency.owner_tag_db_id != cipher.owner_tag_db_id
             || agency.producer_record_identity != cipher.producer_record_identity
-            || agency.producer_record_identity.iter().all(|byte| *byte == 0)
+            || agency
+                .producer_record_identity
+                .iter()
+                .all(|byte| *byte == 0)
         {
             return Err("A30 visibility controller products are torn".into());
         }
@@ -265,22 +265,20 @@ pub(crate) fn reset() -> Result<(), String> {
     Ok(())
 }
 
-/// Process-local surface classification for the autonomous evidence owner.
-/// It exposes no controller/widget pointer and is used only to avoid sealing a
-/// completed controller transaction against the wrong UI transition.
 pub fn latest_observed_surface() -> Option<IntelligenceSurface> {
     let observations = OBSERVATIONS.try_lock().ok()?;
-    let row = observations.iter().max_by_key(|row| row.refresh_end_qpc_ticks)?;
+    let row = observations
+        .iter()
+        .max_by_key(|row| row.refresh_end_qpc_ticks)?;
     match row.kind {
         VisibilityObservationKind::IntelLedgerRefresh => Some(IntelligenceSurface::IntelLedger),
-        VisibilityObservationKind::AgencyRefresh => match (
-            row.operations_visible,
-            row.ciphers_visible,
-        ) {
-            (Some(true), Some(false)) => Some(IntelligenceSurface::Operations),
-            (Some(false), Some(true)) => Some(IntelligenceSurface::Ciphers),
-            _ => Some(IntelligenceSurface::Agency),
-        },
+        VisibilityObservationKind::AgencyRefresh => {
+            match (row.operations_visible, row.ciphers_visible) {
+                (Some(true), Some(false)) => Some(IntelligenceSurface::Operations),
+                (Some(false), Some(true)) => Some(IntelligenceSurface::Ciphers),
+                _ => Some(IntelligenceSurface::Agency),
+            }
+        }
     }
 }
 
@@ -322,8 +320,6 @@ pub(crate) fn record_after_agency_refresh_tail(
     })
 }
 
-/// A production hook supplies the entry `view` unchanged after calling the
-/// original function; the selected id must match exactly one of four records.
 pub(crate) fn record_after_ledger_refresh(
     view: usize,
     module_base: usize,
@@ -379,10 +375,18 @@ pub(crate) fn seal_for_selected_present(
         })
         .map(|(index, row)| (index, row.refresh_end_qpc_ticks))
         .collect::<Vec<_>>();
-    let latest_qpc = candidates.iter().map(|(_, qpc)| *qpc).max()
+    let latest_qpc = candidates
+        .iter()
+        .map(|(_, qpc)| *qpc)
+        .max()
         .ok_or_else(|| "A30 visibility observation is missing or stale".to_string())?;
-    let latest = candidates.iter().filter(|(_, qpc)| *qpc == latest_qpc).collect::<Vec<_>>();
-    if latest.len() != 1 { return Err("A30 visibility observation is duplicated or torn".into()); }
+    let latest = candidates
+        .iter()
+        .filter(|(_, qpc)| *qpc == latest_qpc)
+        .collect::<Vec<_>>();
+    if latest.len() != 1 {
+        return Err("A30 visibility observation is duplicated or torn".into());
+    }
     let observation = observations.remove(latest[0].0);
     let network = network.filter(|witness| witness.matches(frame_hour, owner_tag_db_id, &identity));
     let gates = materialize_gates(&observation, products, network);
@@ -422,19 +426,35 @@ fn materialize_gates(
     if row.current_ui_mode != AGENCY_UI_MODE && row.current_ui_mode != INTEL_LEDGER_UI_MODE {
         return IntelligenceSurface::ALL
             .into_iter()
-            .map(|surface| gate(surface, VisibilityDisposition::Hidden, "different authenticated top-level UI mode"))
+            .map(|surface| {
+                gate(
+                    surface,
+                    VisibilityDisposition::Hidden,
+                    "different authenticated top-level UI mode",
+                )
+            })
             .collect();
     }
     if row.current_ui_mode == INTEL_LEDGER_UI_MODE {
         return IntelligenceSurface::ALL
             .into_iter()
             .map(|surface| {
-                if surface == IntelligenceSurface::IntelLedger && row.ledger_selected_tab_id.is_some() {
+                if surface == IntelligenceSurface::IntelLedger
+                    && row.ledger_selected_tab_id.is_some()
+                {
                     gate(surface, VisibilityDisposition::Visible, "")
                 } else if surface == IntelligenceSurface::IntelLedger {
-                    gate(surface, VisibilityDisposition::Unavailable, "ledger refresh did not select exactly one tab")
+                    gate(
+                        surface,
+                        VisibilityDisposition::Unavailable,
+                        "ledger refresh did not select exactly one tab",
+                    )
                 } else {
-                    gate(surface, VisibilityDisposition::Hidden, "intel ledger top-level UI mode selected")
+                    gate(
+                        surface,
+                        VisibilityDisposition::Hidden,
+                        "intel ledger top-level UI mode selected",
+                    )
                 }
             })
             .collect();
@@ -464,7 +484,11 @@ fn materialize_gates(
         .collect()
 }
 
-fn gate(surface: IntelligenceSurface, disposition: VisibilityDisposition, reason: &str) -> IntelligenceSurfaceGate {
+fn gate(
+    surface: IntelligenceSurface,
+    disposition: VisibilityDisposition,
+    reason: &str,
+) -> IntelligenceSurfaceGate {
     IntelligenceSurfaceGate {
         surface,
         disposition,
@@ -506,11 +530,11 @@ fn push(row: VisibilityObservation) -> Result<(), String> {
 }
 
 fn read_current_ui_mode(module_base: usize) -> Result<i32, String> {
-    let mode_pointer = read_stable::<usize>(module_base.saturating_add(CURRENT_UI_MODE_POINTER_RVA))
-        .filter(|pointer| *pointer != 0)
-        .ok_or_else(|| "A30 current UI mode pointer is unavailable".to_string())?;
-    read_stable::<i32>(mode_pointer)
-        .ok_or_else(|| "A30 current UI mode is unavailable".to_string())
+    let mode_pointer =
+        read_stable::<usize>(module_base.saturating_add(CURRENT_UI_MODE_POINTER_RVA))
+            .filter(|pointer| *pointer != 0)
+            .ok_or_else(|| "A30 current UI mode pointer is unavailable".to_string())?;
+    read_stable::<i32>(mode_pointer).ok_or_else(|| "A30 current UI mode is unavailable".to_string())
 }
 
 fn widget_visible(view: usize, field_offset: usize) -> Option<bool> {

@@ -12,8 +12,8 @@ for path in (HERE, MEMORY_OCCUPATION):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import parse_occupation  # noqa: E402
-import build_garrison_oracle  # noqa: E402
+import parse_occupation
+import build_garrison_oracle
 
 
 SAVE = r'''

@@ -24,7 +24,6 @@ import json
 import os
 import sys
 
-# --- compact status vocabulary (extractor/native/compact_contract/src) -------
 STATUS_BITS = {
     1 << 0: "state_unavailable",
     1 << 1: "profile_mismatch",
@@ -40,17 +39,7 @@ STATUS_BITS = {
     1 << 11: "transition_baseline_reset",
     1 << 12: "control_invalid",
     1 << 13: "war_segment_absent",
-    # The read reached its source, the source answered, and the answer was
-    # empty. Informational, and deliberately absent from FAILURE_MASK below: a
-    # measured zero is an ANSWER, not a missing hour. Before this bit existed a
-    # domain that legitimately observed nothing published `source_unavailable`,
-    # which is what a BROKEN reader publishes, and this report could not tell
-    # them apart.
     1 << 14: "source_empty",
-    # The stream's deliberate RESYNC primitive: clear this one domain's
-    # folded state, then apply this payload as its new whole baseline. Not a
-    # failure and not a keyframe -- a keyframe is merged sparsely, which is
-    # precisely the thing this bit exists to override.
     1 << 15: "baseline_clear",
 }
 KNOWN_MASK = (1 << 16) - 1
@@ -58,14 +47,6 @@ FAILURE_MASK = (
     (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3) | (1 << 6)
     | (1 << 7) | (1 << 8) | (1 << 9) | (1 << 12)
 )
-# Lane-local status badges, per domain: a domain-scoped vocabulary that must be
-# stripped before the word is read against the global v1 bits. This table IS a
-# copy of `compact_contract::lane_local_status_mask`, and the copy is exactly
-# how this report went wrong: it knew only d49/d51 while the contract had
-# registered d53, d60 and d99, so every d53/d60 capture was reported as
-# "UNKNOWN_BITS" -- a false contract violation on bits the contract defines.
-# `compact_contract/tests/script_status_vocabulary_sweep.rs` now parses this
-# table and fails if it ever disagrees with the contract again.
 LANE_LOCAL_BITS = {
     49: {11: "d49:location_candidate_unvalidated"},
     51: {
@@ -98,34 +79,12 @@ LANE_LOCAL_MASK = {
 }
 
 
-# --- infrastructure pseudo-domains ------------------------------------------
-#
-# `domains_seen` carries every wire name the stream actually produced;
-# `expected_domains` carries the SCHEDULED roster. Subtracting one from the
-# other is how this report finds a producer nobody asked for -- and it used to
-# find `frame` every single time, because the frame-level pseudo-domain
-# (`compact_contract` id 1000) is `schedulable: false`: it is emitted by the
-# frame carrier itself and therefore can never appear in a scheduled roster. It
-# was reported as "unexpected domains in stream (1): frame" on every capture
-# that has ever run, which is a false anomaly on a deliberate producer.
-#
 # The set is DERIVED, not listed: `domain_registry.json` is the generated mirror
-# of `compact_contract::ASSIGNED_COMPACT_DOMAINS`
-# (`compact_contract::tests::native_json_registry_is_derived_from_descriptors`
-# fails if the two disagree), so registering a third infrastructure domain in
-# the contract teaches this report about it with no edit here. That is the point:
-# a hand-copied list of Rust's own table drifts silently, and this file has
-# already been burned once by exactly that (see LANE_LOCAL_BITS above).
 DOMAIN_REGISTRY_PATH = os.path.normpath(
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)), os.pardir, "domain_registry.json"
     )
 )
-# Used only when the registry cannot be read at all (this script is audited and
-# must stay runnable standalone). It is not a second source of truth: the sweep
-# `compact_contract/tests/script_status_vocabulary_sweep.rs` asserts this tuple
-# is exactly the contract's infrastructure wire names, so it cannot drift
-# unnoticed. The report says out loud which of the two it used.
 PSEUDO_DOMAIN_NAMES_FALLBACK = ("clock", "frame")
 INFRASTRUCTURE_STATUS_KEY = "infrastructure"
 
@@ -165,9 +124,6 @@ def load_pseudo_domain_names(path: str = DOMAIN_REGISTRY_PATH) -> tuple[set, str
         and isinstance(entry.get("name"), str)
     }
     if not derived:
-        # A registry that declares no infrastructure domain is a registry this
-        # report does not recognise, not a licence to start calling `frame`
-        # unexpected again.
         return (
             set(PSEUDO_DOMAIN_NAMES_FALLBACK),
             "pinned fallback (registry declared no infrastructure domain)",
@@ -175,15 +131,6 @@ def load_pseudo_domain_names(path: str = DOMAIN_REGISTRY_PATH) -> tuple[set, str
     pinned = set(PSEUDO_DOMAIN_NAMES_FALLBACK)
     if derived == pinned:
         return derived, path
-    # The UNION, and the disagreement said out loud.
-    #
-    # Not a ReportError: registering a third infrastructure domain in the
-    # contract is the exact case this derivation exists to pick up with no edit
-    # here, and refusing to reach a verdict over it would make the authority a
-    # liability. Not the registry alone either: a truncated mirror would
-    # resurrect the false "unexpected: frame" row this whole change exists to
-    # kill. The union is safe in both directions, and the note is what stops the
-    # disagreement being silent -- the report prints this string on every run.
     detail = []
     missing = sorted(pinned - derived)
     extra = sorted(derived - pinned)
@@ -194,20 +141,8 @@ def load_pseudo_domain_names(path: str = DOMAIN_REGISTRY_PATH) -> tuple[set, str
     return derived | pinned, f"{path} UNION pinned fallback ({'; '.join(detail)})"
 
 
-# --- degraded/refused outcome reasons ----------------------------------------
-#
-# A domain that ends an hour degraded publishes WHY on the wire: the uniform
-# outcome contract carries a `reason` string per (frame, domain) in
-# `compact_stream.frame_degraded_outcomes` / `frame_refused_outcomes`. This
-# report used to discard all of it and print only the decoded status bits, so
-# "d85 source_unavailable" was the whole answer when the stream also carried
-# `A40 selected-designer frame did not encode: ...`.
 REASON_SUMMARY_MARKER = "| reason="
-# Per domain, how many distinct summaries to print before collapsing the tail.
 REASON_SUMMARIES_SHOWN = 4
-# The full reason carries the producer's per-frame diagnostic units, so it is
-# both long and near-unique per frame. One representative is printed, clipped,
-# and labelled as a clipped sample -- never presented as the complete string.
 REASON_SAMPLE_CHARS = 320
 
 
@@ -254,12 +189,6 @@ def predicate_label(item: dict) -> str:
         return "(none on the wire)"
     code = item.get("predicate_code")
     name = item.get("predicate_name")
-    # Read EXACTLY, never coerced: `int(10.9)` would name a predicate the
-    # producer never published, and a bool is an int in Python but never a
-    # predicate code. The name is likewise rendered as the wire wrote it --
-    # trimming it before display would print a string nobody published, and the
-    # producer's names come from static text that never carried padding, so a
-    # name with surrounding whitespace is itself corruption worth seeing.
     if isinstance(code, bool) or not isinstance(code, int):
         return "(unreadable predicate code)"
     if not isinstance(name, str) or not name.strip():
@@ -294,11 +223,6 @@ def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
                 continue
             hour = entry.get("hour_raw")
             claim = entry.get("coverage_claim")
-            # Any JSON value can land here, and it is used as a dict key and
-            # then sorted -- an unhashable claim, or two claims of different
-            # types, used to be a TypeError on the way to a verdict. Rendering
-            # it as text keys and sorts, and shows the reader what was actually
-            # there rather than a placeholder.
             claim_key = None if claim is None else (
                 claim if isinstance(claim, str) else str(claim)
             )
@@ -311,16 +235,11 @@ def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
                 if domain_id is None and reason is None:
                     continue
                 if not isinstance(reason, str):
-                    # `None` alongside a real domain id is still an outcome
-                    # whose reason never reached this report.
                     unreadable += 1
                     continue
                 if not reason.strip():
                     continue
                 if isinstance(domain_id, bool) or not isinstance(domain_id, int):
-                    # Parsed EXACTLY, never coerced: `int(10.9)` is 10, which
-                    # would attribute this domain's reason to d10. A value that
-                    # is not exactly an integer is counted, not guessed at.
                     try:
                         domain_id = int(str(domain_id), 10)
                     except (TypeError, ValueError):
@@ -351,9 +270,6 @@ def collect_outcome_reasons(stream: dict) -> tuple[dict, int]:
                 predicate = predicate_label(item)
                 slot["predicates"][predicate] = slot["predicates"].get(predicate, 0) + 1
                 slot["occurrences"] += 1
-                # Only an hour this report can actually compare bounds a range.
-                # Seeding from an unreadable value would print a "range" that
-                # was never computed.
                 if isinstance(hour, int) and not isinstance(hour, bool):
                     if slot["first_hour"] is None or hour < slot["first_hour"]:
                         slot["first_hour"] = hour
@@ -385,12 +301,6 @@ def print_outcome_reasons(reasons: dict, indent: str) -> None:
     )
     if claims:
         print(f"{indent}  coverage claim: {claims}")
-    # Before the prose: which check the producer says failed, and how often.
-    # `outcome_substantiated_from_record` here means the producer diagnosed
-    # nothing and the frame-final sweep reconstructed the outcome from the
-    # published record; `producer_declared_no_predicate` means nobody diagnosed
-    # it at all. Those two and a real predicate call for three different pieces
-    # of work, and they are indistinguishable in the reason strings below.
     predicates = list(reasons["predicates"].items())
     for predicate, count in predicates[:REASON_SUMMARIES_SHOWN]:
         print(f"{indent}  x{count} predicate {predicate}")
@@ -444,35 +354,9 @@ def decode(flags: int, domain_id: int = -1) -> list[str]:
     return names
 
 
-# A capture that published a status bit nothing defines is not "a capture with
-# a problem to weigh" -- it is a capture whose status word cannot be read at
-# all, by this report or by any other consumer. It gets its own exit code so
-# callers can block on THAT specifically without having to block on every
-# ordinary residual failure (a PARTIAL_DATA hour is a known, classifiable
-# outcome; an undefined bit is not).
 EXIT_UNDEFINED_STATUS_BITS = 2
-# This report REACHED NO VERDICT: it crashed, or could not read the capture at
-# all. Distinct from 1 on purpose. Exit 1 means "I read the status words and
-# some domain is failing" -- an answer. An unhandled exception used to land on
-# 1 as well, so a malformed manifest or a bug in this file was indistinguishable
-# from a clean, informative "blocking domains" verdict, and a caller that walks
-# past exit 1 (as the capture harness does, deliberately) walked past a
-# definedness check that never ran.
 EXIT_REPORT_ERROR = 3
 
-# Printed to STDERR by every path that reaches a verdict, and by no other path.
-# An exit code alone cannot be trusted: a SyntaxError, a failed import, or a
-# missing interpreter kills python BEFORE any code in this file runs, and the
-# process exits 1 -- which is this report's code for "I read the status words
-# and some domain is failing", an ANSWER that a caller is entitled to walk past.
-# The receipt is the difference between "the check said 1" and "something
-# exited 1"; a caller that does not see it must treat the definedness check as
-# never having run.
-#
-# STDERR, not stdout, because `--json` writes one complete JSON document to
-# stdout and a caller pipes it straight into a parser. A receipt appended there
-# makes the document unparseable -- which is exactly what it did before this
-# was moved.
 VERDICT_RECEIPT_PREFIX = "COMPACT_STATUS_VERDICT="
 
 
@@ -554,8 +438,6 @@ def selftest() -> int:
             sys.argv = [argv[0], "--run-dir", run_dir]
             buffer = io.StringIO()
             try:
-                # guarded_main, not main: the exit code a caller BLOCKS on is
-                # the guarded one, and the guard is itself under test.
                 with contextlib.redirect_stdout(buffer):
                     with contextlib.redirect_stderr(buffer):
                         code = guarded_main()
@@ -566,9 +448,6 @@ def selftest() -> int:
     cases = (
         ("a clean word is clean",
          {"fuel_live": (10, 0)}, 0, "VERDICT: clean", "UNDEFINED"),
-        # The regression this file exists for: these are the exact words
-        # runs/live_unlock/t15 published, and they were reported as
-        # UNKNOWN_BITS(0x530000)/UNKNOWN_BITS(0x30000).
         ("d53's registered badges are not undefined",
          {"diplomacy_intel_operatives_live": (53, 0x530000)}, 0,
          "VERDICT: clean", "UNDEFINED"),
@@ -578,17 +457,10 @@ def selftest() -> int:
         ("an ordinary failure status stays exit 1, not the undefined class",
          {"fuel_live": (10, 1 << 9)}, 1, "VERDICT: BLOCKED",
          "UNDEFINED STATUS BITS"),
-        # The bit is DERIVED from KNOWN_MASK, never written as a literal. This
-        # case was pinned to `1 << 15` and had been silently failing since bit
-        # 15 was assigned to `baseline_clear`: a case asserting "this bit is
-        # unassigned" rots the moment the vocabulary is widened, and it rotted
-        # into a green-looking selftest that returned 1. Deriving it means
-        # widening the vocabulary moves the case with it.
         ("an unassigned bit on a domain with no lane vocabulary is fatal",
          {"fuel_live": (10, 1 << KNOWN_MASK.bit_length())},
          EXIT_UNDEFINED_STATUS_BITS,
          "CONTRACT VIOLATION: UNDEFINED STATUS BITS", None),
-        # The strip is domain-scoped, never a blanket amnesty for high bits.
         ("an unregistered high bit on d53 is fatal despite d53's badges",
          {"diplomacy_intel_operatives_live": (53, 0x530000 | (1 << 23))},
          EXIT_UNDEFINED_STATUS_BITS, "0x800000", None),
@@ -600,10 +472,6 @@ def selftest() -> int:
          "fuel_live (domain 10) published status bits", None),
     )
 
-    # "This report reached no verdict" must never be reported as an ordinary
-    # blocking verdict: exit 1 is an ANSWER, and the capture harness walks past
-    # exit 1 on purpose. Before EXIT_REPORT_ERROR existed, a malformed manifest
-    # and a crash in this file both landed on 1.
     error_cases = (
         ("a malformed manifest reaches no verdict, it is not a blocking one",
          "{not json", True),
@@ -643,20 +511,13 @@ def selftest() -> int:
             failures += 1
             print(out)
 
-    # (label, seen-only domains, expected/seen domains, required text, forbidden
-    #  text). The seen-only set is what `domains_seen - expected_domains` leaves,
-    #  i.e. exactly the class the "unexpected" section reports.
     roster_cases = (
-        # The regression this section exists for: every capture ever run showed
-        # `unexpected domains in stream (1): frame`.
         ("the frame pseudo-domain is not an unexpected domain",
          {"frame": (1000, 0)}, {"fuel_live": (10, 0)},
          "infrastructure pseudo-domains      frame", "unexpected domains in stream"),
         ("the clock pseudo-domain is not an unexpected domain either",
          {"clock": (1, 0)}, {"fuel_live": (10, 0)},
          "infrastructure pseudo-domains      clock", "unexpected domains in stream"),
-        # The correction must not become a blanket amnesty: a SCHEDULABLE domain
-        # producing without being asked to is still the anomaly it always was.
         ("a schedulable domain seen but not expected is still unexpected",
          {"production_live": (11, 0)}, {"fuel_live": (10, 0)},
          "unexpected domains in stream (1)", None),
@@ -680,9 +541,6 @@ def selftest() -> int:
             failures += 1
             print(out)
 
-    # The pseudo-domain set is DERIVED. A test that only ran the fallback would
-    # pass forever while the derivation was broken, so this asserts the real
-    # registry file was the thing that answered.
     names, source = load_pseudo_domain_names()
     derived_ok = (
         source == DOMAIN_REGISTRY_PATH
@@ -692,19 +550,12 @@ def selftest() -> int:
           f"read from domain_registry.json ({sorted(names)} via {source})")
     if not derived_ok:
         failures += 1
-    # ... and the derivation must really READ the file it is pointed at. Without
-    # a synthetic registry, "returns the pinned literal and names the registry
-    # path" and "reads the registry" are indistinguishable.
-    #
-    # (label, registry text or None to not write the file, predicate)
     registry_cases = (
         ("a registry entry the contract does not have is still derived",
          '{"domains": [{"name": "sentinel_infra", "status": "infrastructure"},'
          ' {"name": "clock", "status": "infrastructure"},'
          ' {"name": "frame", "status": "infrastructure"}]}',
          lambda names, source: "sentinel_infra" in names and "UNION" in source),
-        # A truncated mirror must not resurrect the false "unexpected: frame"
-        # row, so the pinned names survive and the disagreement is stated.
         ("a truncated registry keeps the pinned names and says so",
          '{"domains": [{"name": "clock", "status": "infrastructure"}]}',
          lambda names, source: names == {"clock", "frame"}
@@ -741,10 +592,6 @@ def selftest() -> int:
         if not ok:
             failures += 1
 
-    # The wire's reason for a degraded hour must reach the printed row. Before
-    # this, the report decoded the status bits and threw the reason away, so
-    # "source_unavailable" was the whole account of a domain that had published
-    # a sentence saying what failed.
     reason_stream = {
         "frame_degraded_outcomes": [
             {
@@ -767,8 +614,6 @@ def selftest() -> int:
          {"fuel_live": (10, 0)}, reason_stream,
          "degraded/refused outcome reasons on non-blocking domains",
          None),
-        # A reason with no `| reason=` clause is shown WHOLE. Splitting on a
-        # marker the producer did not write would invent a summary.
         ("a reason with no summary clause is shown whole",
          {"fuel_live": (10, 1 << 8)},
          {"frame_degraded_outcomes": [{
@@ -776,7 +621,6 @@ def selftest() -> int:
              "domains": [{"domain_id": 10, "reason": "BARE_SENTINEL no marker"}],
          }]},
          "x1 BARE_SENTINEL no marker", None),
-        # A reason for a domain the manifest has no row for still surfaces.
         ("a reason for a domain with no per_domain row still surfaces",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [{
@@ -784,13 +628,9 @@ def selftest() -> int:
              "domains": [{"domain_id": 999, "reason": "ORPHAN_SENTINEL"}],
          }]},
          "ORPHAN_SENTINEL", None),
-        # No outcome section at all when the wire carried no reasons.
         ("no reason section when the wire carried no reasons",
          {"fuel_live": (10, 1 << 8)}, {},
          "VERDICT: BLOCKED", "reasons:"),
-        # A malformed outcome entry must cost that one entry, never the whole
-        # report: exit 3 is "this report reached no verdict", and a caller is
-        # entitled to the verdict on the 67 domains that were readable.
         ("an unreadable domain id costs one reason, not the verdict",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [{
@@ -800,8 +640,6 @@ def selftest() -> int:
          }]},
          "1 degraded/refused frame outcome(s) carried a domain id or a reason",
          None),
-        # `int(10.9)` is 10. Truncating would file d10.9's reason under d10 --
-        # a reason attributed to a domain that did not publish it.
         ("a non-integral domain id is counted, never truncated onto a real one",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [{
@@ -817,9 +655,6 @@ def selftest() -> int:
          }]},
          "1 degraded/refused frame outcome(s) carried a domain id or a reason",
          None),
-        # `coverage_claim` is whatever the manifest carried. Used as a dict key
-        # and then sorted, an unhashable or type-mixed claim was a TypeError on
-        # the way to a verdict.
         ("type-mixed and unhashable coverage claims do not cost the verdict",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [
@@ -831,8 +666,6 @@ def selftest() -> int:
               "domains": [{"domain_id": 10, "reason": "c"}]},
          ]},
          "VERDICT: clean", None),
-        # An hour this report cannot compare must not be printed as a range
-        # bound: "hours x-x" would be a range nothing computed.
         ("an unreadable hour is named, not printed as a range",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [{
@@ -840,8 +673,6 @@ def selftest() -> int:
              "domains": [{"domain_id": 10, "reason": "HOURLESS_SENTINEL"}],
          }]},
          "no readable hour", None),
-        # Shapes the recorder should never write, each of which used to be an
-        # unhandled exception on the way to a verdict.
         ("a malformed outcomes block does not cost the verdict",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": ["not a dict", {"domains": "not a list"},
@@ -852,9 +683,6 @@ def selftest() -> int:
          {"frame_degraded_outcomes": {"nope": 1},
           "frame_refused_outcomes": "nope"},
          "VERDICT: clean", None),
-        # The stored reason is the wire's own string. Trimming it before storing
-        # would make the "sample full reason" line and the distinct count
-        # describe a string the producer never wrote.
         ("whitespace variants are distinct strings and the sample is verbatim",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [
@@ -864,10 +692,6 @@ def selftest() -> int:
                                           "reason": "VERBATIM_SENTINEL"}]},
          ]},
          "sample full reason (1 of 2 distinct):  VERBATIM_SENTINEL", None),
-        # The reason is the same sentence both times, so grouping by prose says
-        # "one cause, twice". The producer decided by two different checks and
-        # says so in the predicate. Grouping by reason -- what this report did
-        # before `H4FD` version 2 -- prints `x2` and hides the second cause.
         ("one reason written by two predicates is two causes",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [
@@ -880,9 +704,6 @@ def selftest() -> int:
                  "predicate_name": "outcome_substantiated_from_record"}]},
          ]},
          "x1 predicate d10_rows_rejected [0x00020011]", "x2 predicate"),
-        # A capture written before version 2 carries no predicate at all. That
-        # is shown, not dropped, so the predicate counts still sum to the
-        # domain's occurrence count.
         ("an entry with no predicate is counted as having none",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [
@@ -890,8 +711,6 @@ def selftest() -> int:
              {"hour_raw": 2, "domains": [{"domain_id": 10, "reason": "b"}]},
          ]},
          "x2 predicate (none on the wire)", None),
-        # A code this report cannot read is named as unreadable rather than
-        # coerced: `int(10.9)` would name a predicate nobody published.
         ("an unreadable predicate code is named, not coerced",
          {"fuel_live": (10, 0)},
          {"frame_degraded_outcomes": [
@@ -930,11 +749,6 @@ def main() -> int:
     stream = manifest.get("compact_stream", {})
     per_domain = stream.get("per_domain", {})
 
-    # A tolerated domain has no residual failure flags, so without the reason
-    # and the frame count it reads as an ordinary clean domain. It is not one:
-    # it published an incomplete hour that somebody wrote an integrity argument
-    # for, and that argument is the only thing saying WHAT was missing. The
-    # manifest has carried both fields all along; this report threw them away.
     tolerated = {}
     tolerated_reason = {}
     tolerated_frames = {}
@@ -981,9 +795,6 @@ def main() -> int:
     expected = set(stream.get("expected_domains", []) or [])
     seen = set(stream.get("domains_seen", []) or [])
     pseudo_names, pseudo_source = load_pseudo_domain_names()
-    # An infrastructure producer is never scheduled, so it is never in
-    # `expected_domains` and subtracting it out is the whole correction: what
-    # survives is a domain that really did produce without being asked to.
     pseudo_seen = sorted(seen & pseudo_names)
     missing = sorted(expected - seen)
     unexpected = sorted(seen - expected - pseudo_names)
@@ -1042,15 +853,7 @@ def main() -> int:
         ],
         "silent_domains": [r["domain"] for r in silent],
         "domains_with_problems": [r["domain"] for r in with_problems],
-        # This report builds its rows from `per_domain`, so a domain that never
-        # produced anything is invisible to every list above. For a domain that
-        # was never scheduled that absence is correct but unexplained, so carry
-        # the decision through verbatim rather than leaving the roster short
-        # with no reason attached.
         "descheduled_domains": stream.get("descheduled_domains", {}) or {},
-        # The wire's own account of every degraded/refused hour, keyed by domain
-        # id. Carried whole so a JSON consumer is not limited to the rows this
-        # report happened to print.
         "outcome_reasons_by_domain_id": {
             str(domain_id): reasons for domain_id, reasons in sorted(outcome_reasons.items())
         },
@@ -1077,9 +880,6 @@ def main() -> int:
     line("unique hours / skipped", f"{report['unique_game_hour_count']} / {report['skipped_game_hours']}")
     line("frames (frame_end records)", report["frame_end_record_count"])
     line("domains in stream / expected", f"{report['domain_count']} / {report['expected_domain_count']}")
-    # Printed unconditionally, even when nothing infrastructural showed up: a
-    # reader has to be able to see WHICH authority decided `frame` is not an
-    # anomaly, and whether it was the registry or the pinned fallback.
     line("infrastructure pseudo-domains",
          f"{', '.join(pseudo_seen) or 'none in stream'}"
          f" (not scheduled by construction; authority: {pseudo_source})")
@@ -1090,12 +890,6 @@ def main() -> int:
     if not_scheduled:
         block = report["descheduled_domains"]
         line("deliberately not scheduled", f"{len(not_scheduled)}: {', '.join(not_scheduled)}")
-        # PER RULING. The block-level date is when the MECHANISM was
-        # established, not when each domain was ruled out -- d85's ruling is
-        # 2026-08-13 and the other five are 2026-08-03 -- so printing the block
-        # date against the whole list would attribute the wrong decision to it.
-        # Without the reason the line reads as an unexplained shortfall, which
-        # is the thing this record exists to stop it being.
         by_ruling = {}
         for entry in block.get("domains", []) or []:
             key = (str(entry.get("decided_on") or "?"), str(entry.get("reason") or "?"))
@@ -1168,10 +962,6 @@ def main() -> int:
         if row["problems"]:
             print(f"    {'problems:':10s} {json.dumps(row['problems'])[:400]}")
 
-    # A domain can publish a degraded frame outcome without ending the run with
-    # a residual failure bit (a bit that was tolerated, or one hour degraded out
-    # of hundreds). Those reasons are still the wire's own account of what went
-    # wrong, so they are printed rather than dropped for being non-blocking.
     blocking_ids = {row["domain_id"] for row in blocking}
     other_reason_rows = [
         row for row in rows
@@ -1191,8 +981,6 @@ def main() -> int:
         for row in other_reason_rows:
             print(f"  {row['domain']:48s} d{row['domain_id']:<3d}")
             print_outcome_reasons(row["outcome_reasons"], "    ")
-        # A reason for a domain with no `per_domain` entry has no name to print.
-        # Print the id rather than silently dropping the reason.
         for domain_id in unmatched_reason_ids:
             print(f"  (no per-domain entry){'':26s} d{domain_id:<3d}")
             print_outcome_reasons(outcome_reasons[domain_id], "    ")
@@ -1235,7 +1023,7 @@ def guarded_main() -> int:
     except ReportError as error:
         print(f"\nREPORT ERROR: {error}", file=sys.stderr)
         return emit_verdict_receipt(EXIT_REPORT_ERROR)
-    except Exception as error:  # noqa: BLE001 -- see docstring
+    except Exception as error:
         import traceback
 
         traceback.print_exc()

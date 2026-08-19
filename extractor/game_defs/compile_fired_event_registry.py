@@ -36,11 +36,7 @@ from parse_events import EVENT_KINDS, parse_event_block
 
 SCHEMA = "hoi4-xui21-fired-event-registry-v2"
 EVENT_KEY = "namespace (ASCII case-insensitive) + declared numeric id"
-# The engine packs one namespace per 100000-wide id slot; a declared numeric id
-# at or beyond that width would escape its own namespace.
 NUMERIC_ID_SPAN = 100_000
-# Ids below this are the engine's namespace-less ones; the ten slots they
-# occupy are why a namespaced id starts at slot ten.
 BARE_ID_LIMIT = 1_000_000
 PINNED_EXE_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 
@@ -155,9 +151,6 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
             if namespace_key in declared_namespaces:
                 continue
             declared_namespaces.add(namespace_key)
-            # Declaration order is recorded as file provenance only. It is NOT
-            # an id: the engine's namespace slot is read live from the engine's
-            # own table, never re-derived from this list.
             namespace_rows.append(
                 {
                     "namespace": value,
@@ -192,13 +185,9 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
             split = _split_event_id(event_id)
             bare_id = None if split is not None else _bare_numeric(event_id)
             if bare_id is not None:
-                # No namespace at all: the engine id is the literal itself, so
-                # nothing about it depends on load order.
                 row["numeric_id"] = bare_id
                 target = bare
             elif split is None or _ascii_fold(split[0]) not in declared_namespaces:
-                # The engine either rejects the declaration or its resolver
-                # returns -1, so no live CEvent can carry this id.
                 unresolved_ids.append(
                     {"event_id": event_id, "source_file": relpath}
                 )
@@ -208,11 +197,6 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
                 row["namespace"] = namespace
                 numeric_id = _addressable_numeric(suffix)
                 if numeric_id is None:
-                    # The engine still gives this event an id, but the suffix
-                    # does not keep it inside its own namespace's slot. Record
-                    # only the reduced suffix: where that id lands depends on
-                    # the declaring namespace's live slot and on a 32-bit wrap,
-                    # so it can only be rebuilt against the running engine.
                     row["reduced_id"] = _engine_reduce(suffix)
                     target = aliased
                 else:
@@ -236,9 +220,6 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
             bare.pop(event_id, None)
             target[event_id] = row
 
-    # The lookup key is exactly what a live collector can hand over: the
-    # engine's own namespace string, matched ASCII-case-insensitively the way
-    # the engine matches it, plus the declared numeric id.
     by_event_key: dict[tuple[str, int], dict] = {}
     event_key_collisions: list[dict] = []
     for row in by_script_id.values():
@@ -255,8 +236,6 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
             )
         by_event_key[event_key] = row
 
-    # Two events in one namespace whose suffixes reduce to the same value
-    # already share one engine id, which no live read can separate.
     by_alias_key: dict[tuple[str, int], dict] = {}
     alias_collisions: list[dict] = []
     for row in aliased.values():
@@ -273,8 +252,6 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
             )
         by_alias_key[alias_key] = row
 
-    # Bare ids are literals, so two events declaring the same one already share
-    # an engine id.
     by_bare_key: dict[int, dict] = {}
     bare_collisions: list[dict] = []
     for row in bare.values():
@@ -316,13 +293,7 @@ def compile_registry(layers: list, executable_sha256: str) -> dict:
         "source_files": file_rows,
         "namespaces": namespace_rows,
         "events": [by_event_key[key] for key in sorted(by_event_key)],
-        # Events whose declared suffix does not keep the engine id inside their
-        # own namespace's slot. `reduced_id` is the suffix reduction alone; the
-        # id it produces depends on the declaring namespace's live slot and a
-        # 32-bit wrap, so this list still names no engine slot.
         "aliased_events": [by_alias_key[key] for key in sorted(by_alias_key)],
-        # Namespace-less events. Their engine id is the declared literal, so
-        # they share the id space with anything a namespaced id wraps onto.
         "bare_events": [by_bare_key[key] for key in sorted(by_bare_key)],
     }
 

@@ -45,7 +45,6 @@ def _parse_focus_inner(tz, rec):
     completed = []
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
-            # activate_shine_on_focus={...} and any other nested list -> skip
             _skip_block_body(tz)
             continue
         val = atom_value(opener)
@@ -90,7 +89,6 @@ def _parse_countries(tz, by_tag):
                 rec["focus_tree"] = val
             elif key == "continuous_focus_palette":
                 rec["continuous_focus_palette"] = val
-        # Only keep countries that actually have a focus tree or completed any.
         if rec["focus_tree"] or rec["completed"] or rec["current"]:
             by_tag[tag] = rec
 

@@ -1,10 +1,3 @@
-//! A25 captured-runtime text bridge into the selected-Present UI carrier.
-//!
-//! This materializer is deliberately downstream of both owner-glyph admission
-//! and the render-hour selector. It cannot construct a text command from a
-//! stable font/sprite name: every descriptor and texture hash must resolve to
-//! exactly one winner in the authenticated launch VFS.
-
 use crate::a729_hook::{
     validate_selected_render_frame_receipt, RawSelectedRenderFrameCapture,
     SelectedPresentGuiDrawCapture,
@@ -26,25 +19,7 @@ use runtime_text_inputs_live_lane::RuntimeTextLayout;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Whether the production roster may own the A25 captured-runtime text path.
-///
-/// It may not. A25 observes drawing — the exact `CBitmapFont::Draw` post-emit
-/// and derived inline-icon detours, and the common-GUI paint scope above them —
-/// and drawing is client presentation, not authoritative host-visible state.
-/// A25 emits no domain of its own, and its only consumers
-/// (`character_presentation_live`, `runtime_text_inputs_live`) are reached only
-/// behind evidence flags. So the latch is false and the production early-render
-/// transaction installs neither the instant-text detour nor the owner-glyph
-/// automation that feeds off it.
-///
-/// This is a reachability gate, not a claim that the producer graph is
-/// complete: the gaps in [`A25_RUNTIME_TEXT_UNAVAILABLE_REASONS`] are still
-/// real and are still what a future evidence run would have to close. Turning
-/// this latch back on re-exposes an inline drawing detour to every ordinary
-/// recording, which is the specific thing that is not allowed.
 pub const A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED: bool = false;
-/// Keep the shared A25 command binding in one global scope instead of
-/// accepting caller entropy.
 pub const A25_RUNTIME_TEXT_POV_SCOPE: &str = "global";
 const A25_CAPTURED_RUNTIME_TEXT_CANONICAL_RGBA: [u8; 4] = [255; 4];
 
@@ -54,10 +29,6 @@ pub struct CommonGuiOperationIdentity {
     pub paint_ordinal: u32,
 }
 
-/// Pointer-free owner identity shared by every paint within one exact GUI-list
-/// invocation. Node and paint ordinals remain separate operation identity;
-/// putting either into this token would incorrectly create a different replay
-/// owner for each command below the same registered GUI root.
 pub fn common_gui_operation_identity(
     process_start_nonce: u64,
     hook_epoch_nonce: u64,
@@ -93,53 +64,15 @@ pub fn common_gui_operation_identity(
     })
 }
 
-/// Exact production callbacks still absent from the A25 producer graph. Keep
-/// these reasons typed so the collector cannot mistake an empty observation
-/// set for measured-empty text paint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum A25RuntimeTextUnavailableReason {
-    /// The A25 drawing substrate is gated out of the production path by
-    /// product ruling: it observes drawing rather than authoritative
-    /// host-visible state. This is the reason that holds regardless of how
-    /// many of the callback gaps below are later closed, and it is why a
-    /// production recording carries no A25 text observation at all — not an
-    /// observation that happened to be empty.
     DrawingObservationGatedOutOfProduction,
-    /// No live producer calls `begin_gui_paint_candidate_scope`, and the exact
-    /// later final-draw callback can capture draw payload, selected target, and
-    /// pipeline/scissor state only after `CInstantTextObject::Render` RVA
-    /// `0x022D8350` has begun emitting the draw. It does not provide the missing
-    /// pre-draw owner paint ordinal or destination. The owner-entry callback
-    /// must therefore remain unavailable instead of borrowing later draw state
-    /// or promoting the pointer-bearing diagnostic rectangle candidates.
     CommonGuiPaintOwnerEntryAuthorityUnavailable,
-    /// The authenticated font/inline-icon indexes the bitmap-font hooks resolve
-    /// their pointers against are never bound on the production path. The
-    /// producer itself is mechanical and does exist —
-    /// `a25_gui_bridge::bind_effective_vfs_winner_index` builds both receipt
-    /// sets and hands them to `a25_post_emit_hook::bind_authenticated_font_assets`
-    /// / `bind_authenticated_inline_icon_content` — but its sole caller,
-    /// `bind_a25_gui_effective_vfs_winner_index`, is skipped while
-    /// `A25_GUI_DRAW_SUBSTRATE_INSTALLED` is false. So the receipt indexes stay
-    /// empty and no observed pointer could be resolved to authenticated content.
-    /// This is a missing binding, not a missing producer.
     AuthenticatedFontAndIconAssetBindingNotInstalled,
-    /// The post-emit/cache hook owners are not yet installed by the early
-    /// render lifecycle. Their static insertion points are exact, but dormant.
     OrdinaryGlyphHookLifecycleNotInstalled,
-    /// The derived `CGameBitmapFont` callbacks are exact at RVAs
-    /// `0x0162E880/0x0162EFE0/0x0162EB10`, but are not yet part of the installed
-    /// render hook set.
     DerivedInlineIconHookLifecycleNotInstalled,
 }
 
-/// Every reason a production selected Present carries no A25 text observation.
-///
-/// This list must never be empty while
-/// [`A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED`] is false. An empty list
-/// would let a reader take `SourceUnavailable(vec![])` for "the substrate ran
-/// and saw nothing", which is exactly the measured-empty reading this typed
-/// state exists to prevent.
 pub const A25_RUNTIME_TEXT_UNAVAILABLE_REASONS: &[A25RuntimeTextUnavailableReason] = &[
     A25RuntimeTextUnavailableReason::DrawingObservationGatedOutOfProduction,
     A25RuntimeTextUnavailableReason::CommonGuiPaintOwnerEntryAuthorityUnavailable,
@@ -161,10 +94,6 @@ pub struct A25SelectedOwnerCaptureReservation {
     pub drain: A25SelectedOwnerCaptureDrain,
 }
 
-/// Reserve the exact selected/nonselected A25 owner frontier. A completed
-/// reservation remains lane-owned until the enclosing compact item reaches
-/// its authoritative sink; rollback makes the identical selected result
-/// retriable without admitting or discarding any owner twice.
 pub fn reserve_selected_a25_owner_captures(
     selected: OwnerGlyphPresentCandidate,
 ) -> Result<A25SelectedOwnerCaptureReservation, String> {
@@ -210,9 +139,6 @@ pub fn rollback_selected_a25_owner_captures(reservation_id: u64) -> Result<(), S
     runtime_text_inputs_live_lane::owner_glyph_probe::rollback_selected_present(reservation_id)
 }
 
-/// Drain the selected-Present owner queue without conflating a dormant
-/// producer with an authenticated empty result. The legacy evidence switch is
-/// still isolated and can never produce a production-ready drain.
 pub fn drain_selected_a25_owner_captures(
     selected: OwnerGlyphPresentCandidate,
 ) -> Result<A25SelectedOwnerCaptureDrain, String> {
@@ -237,15 +163,6 @@ pub struct A25SelectedPresentUiPassAssembly {
     pub owner_captures: Vec<SelectedOwnerGlyphCapture>,
 }
 
-/// Materialize the production selected-Present UI carrier directly from the
-/// exact GUI-list rows. This path deliberately does not construct or consume a
-/// `GuiPaintReceiptFrontier`: list/node traversal, owner joins, and promoted
-/// D3D capture-sequence joins are checked at their native producer boundary.
-///
-/// The target is taken from the first promoted generic GUI draw and every
-/// other generic row must name the same target. A text-only frontier is
-/// rejected because these direct inputs contain no authenticated render-target
-/// descriptor from which the pass target could be recovered.
 #[allow(clippy::too_many_arguments)]
 pub fn materialize_direct_selected_present_ui_pass(
     selected: &RawSelectedRenderFrameCapture,
@@ -267,9 +184,7 @@ pub fn materialize_direct_selected_present_ui_pass(
         .next()
         .and_then(exact_gui_draw_target)
         .cloned()
-        .ok_or(
-            "direct selected-Present GUI frontier has no exact generic draw target",
-        )?;
+        .ok_or("direct selected-Present GUI frontier has no exact generic draw target")?;
     let expected_candidate = selected_a25_owner_glyph_candidate(selected)?;
     let frame = &selected.selected.frame;
     let mut owner_by_key = BTreeMap::new();
@@ -333,7 +248,9 @@ pub fn materialize_direct_selected_present_ui_pass(
             ordinal,
         )?;
         if capture.operation != expected_operation {
-            return Err("direct GUI operation token does not authenticate its list/node row".into());
+            return Err(
+                "direct GUI operation token does not authenticate its list/node row".into(),
+            );
         }
         let identity = direct_gui_command_identity(capture, winners)?;
         if identity.engine_instance_token != capture.operation.engine_instance_token
@@ -350,13 +267,7 @@ pub fn materialize_direct_selected_present_ui_pass(
                         "direct text GUI row also owns promoted generic D3D captures".into(),
                     );
                 }
-                materialize_direct_a25_text_command(
-                    selected,
-                    winners,
-                    identity,
-                    owner,
-                    &target,
-                )?
+                materialize_direct_a25_text_command(selected, winners, identity, owner, &target)?
             }
             None => {
                 if capture.static_d3d_captures.len() != 1 {
@@ -378,12 +289,7 @@ pub fn materialize_direct_selected_present_ui_pass(
                     );
                 }
                 last_sequence = Some(capture_sequence);
-                materialize_direct_exact_gui_command(
-                    winners,
-                    identity,
-                    exact_draw,
-                    &target,
-                )?
+                materialize_direct_exact_gui_command(winners, identity, exact_draw, &target)?
             }
         };
         source_frontier.update(capture.list_invocation_ordinal.to_le_bytes());
@@ -407,10 +313,7 @@ pub fn materialize_direct_selected_present_ui_pass(
             &mut source_frontier,
             &authored.runtime_widget_vtable_rva_hex,
         );
-        hash_framed_text(
-            &mut source_frontier,
-            &authored.authored_type_vtable_rva_hex,
-        );
+        hash_framed_text(&mut source_frontier, &authored.authored_type_vtable_rva_hex);
         hash_framed_text(&mut source_frontier, &authored.authored_source_path);
         hash_framed_text(&mut source_frontier, &authored.authored_symbol);
         source_frontier.update(authored.authored_source_line.to_le_bytes());
@@ -480,8 +383,6 @@ pub fn materialize_direct_selected_present_ui_pass(
     Ok(pass)
 }
 
-/// Convert the exact extractor-local A25 asset receipts into the existing
-/// pointer-free `HudPaintCommand::Text` recorder/replayer contract.
 pub fn materialize_a25_selected_present_text_command(
     selected: &RawSelectedRenderFrameCapture,
     winners: &RawEffectiveVfsWinnerIndexBinding,
@@ -507,8 +408,7 @@ pub fn materialize_a25_selected_present_text_command(
         || input.gui_paint.selected_submit_index != frame.submit_index
         || input.gui_paint.selected_frame_sequence != frame.frame_sequence
         || input.gui_paint.selected_present_global_order != frame.global_order
-        || input.gui_paint.selected_present_receipt_sha256
-            != receipt.selection_receipt_sha256
+        || input.gui_paint.selected_present_receipt_sha256 != receipt.selection_receipt_sha256
         || catalog.process.process_start_nonce != frame.process_start_nonce
         || catalog.launch_epoch.hook_epoch_nonce != frame.hook_epoch_nonce
         || catalog.submit_index != frame.submit_index
@@ -519,12 +419,15 @@ pub fn materialize_a25_selected_present_text_command(
         return Err("A25 text asset winners differ from the selected launch VFS".into());
     }
     let identity = &input.gui_paint.identity;
-    authorize_used_content(winners, &identity.selected_gui_definition, "selected GUI definition")?;
+    authorize_used_content(
+        winners,
+        &identity.selected_gui_definition,
+        "selected GUI definition",
+    )?;
     if identity.runtime_root != input.owner_capture.view_id
         || identity.name != input.owner_capture.element_id
         || input.owner_capture.context_id.trim().is_empty()
-        || identity.engine_instance_token
-            != input.owner_capture.admitted.gui_engine_instance_token
+        || identity.engine_instance_token != input.owner_capture.admitted.gui_engine_instance_token
         || identity.paint_ordinal != input.owner_capture.admitted.paint_ordinal
     {
         return Err("A25 text paint owner identity differs from its runtime-text row".into());
@@ -546,16 +449,15 @@ pub fn materialize_a25_selected_present_text_command(
     validate_placement_target(&placement, &selected_ui_pass_target)?;
 
     let mut ordered_content = vec![identity.selected_gui_definition.clone()];
-    let mut used_paths = BTreeSet::from([
-        identity
-            .selected_gui_definition
-            .normalized_game_relative_path
-            .clone(),
-    ]);
+    let mut used_paths = BTreeSet::from([identity
+        .selected_gui_definition
+        .normalized_game_relative_path
+        .clone()]);
     let mut used_content = BTreeSet::from([identity.selected_gui_definition.clone()]);
     let mut font_bindings = Vec::new();
     for font in &input.owner_capture.admitted.fonts {
-        let definition = resolve_unique_payload(winners, &font.descriptor_sha256, "font definition")?;
+        let definition =
+            resolve_unique_payload(winners, &font.descriptor_sha256, "font definition")?;
         let definition_content_index = push_exact_content(
             &mut ordered_content,
             &mut used_paths,
@@ -630,9 +532,6 @@ pub fn materialize_a25_selected_present_text_command(
                 runtime_text_pov_country_or_global: A25_RUNTIME_TEXT_POV_SCOPE.into(),
                 runtime_text_view_id: input.owner_capture.view_id,
                 runtime_text_element_id: input.owner_capture.element_id,
-                // Captured-runtime painting uses each admitted glyph's exact
-                // RGBA/position and never reflows by horizontal alignment.
-                // Canonical constants keep ignored fields out of caller control.
                 rgba: A25_CAPTURED_RUNTIME_TEXT_CANONICAL_RGBA,
                 horizontal_alignment: TextHorizontalAlignment::Left,
                 layout_inputs: TextLayoutInputs::CapturedRuntime,
@@ -643,15 +542,10 @@ pub fn materialize_a25_selected_present_text_command(
         ordered_effective_vfs_used_content: ordered_content,
         command_identity_sha256: String::new(),
     };
-    command.command_identity_sha256 =
-        command.computed_identity_sha256(&selected_ui_pass_target)?;
+    command.command_identity_sha256 = command.computed_identity_sha256(&selected_ui_pass_target)?;
     Ok(command)
 }
 
-/// Assemble a complete selected-Present UI pass from the chronological GUI
-/// frontier. A25 commands are derived here; every other GUI receipt must have
-/// an independently authenticated command, so this function never invents a
-/// placeholder operation merely to close the ordinal range.
 pub fn assemble_selected_present_ui_pass(
     selected: &RawSelectedRenderFrameCapture,
     winners: &RawEffectiveVfsWinnerIndexBinding,
@@ -667,8 +561,7 @@ pub fn assemble_selected_present_ui_pass(
         || frontier.selected_submit_index != selected.receipt.selected_submit_index
         || frontier.selected_frame_sequence != selected.receipt.selected_frame_sequence
         || frontier.selected_present_global_order != selected.receipt.selected_global_order
-        || frontier.selected_present_receipt_sha256
-            != selected.receipt.selection_receipt_sha256
+        || frontier.selected_present_receipt_sha256 != selected.receipt.selection_receipt_sha256
     {
         return Err("A25 UI frontier crosses its selected Present".into());
     }
@@ -798,7 +691,9 @@ fn direct_gui_command_identity(
     if root.candidate_submit_index != capture.candidate_submit_index
         || root.candidate_frame_sequence != capture.candidate_frame_sequence
         || root.effective_interface_winner != authored.authored_source_path
-        || authored.selected_gui_definition.normalized_game_relative_path
+        || authored
+            .selected_gui_definition
+            .normalized_game_relative_path
             != root.effective_interface_winner
     {
         return Err("direct GUI authored node disagrees with its registered runtime root".into());
@@ -850,16 +745,15 @@ fn materialize_direct_a25_text_command(
     let placement = owner_placement(&owner.admitted)?;
     validate_placement_target(&placement, target)?;
     let mut ordered_content = vec![identity.selected_gui_definition.clone()];
-    let mut used_paths = BTreeSet::from([
-        identity
-            .selected_gui_definition
-            .normalized_game_relative_path
-            .clone(),
-    ]);
+    let mut used_paths = BTreeSet::from([identity
+        .selected_gui_definition
+        .normalized_game_relative_path
+        .clone()]);
     let mut used_content = BTreeSet::from([identity.selected_gui_definition.clone()]);
     let mut font_bindings = Vec::new();
     for font in &owner.admitted.fonts {
-        let definition = resolve_unique_payload(winners, &font.descriptor_sha256, "font definition")?;
+        let definition =
+            resolve_unique_payload(winners, &font.descriptor_sha256, "font definition")?;
         let definition_content_index = push_exact_content(
             &mut ordered_content,
             &mut used_paths,
@@ -890,11 +784,7 @@ fn materialize_direct_a25_text_command(
             &mut ordered_content,
             &mut used_paths,
             &mut used_content,
-            resolve_unique_payload(
-                winners,
-                &icon.definition_sha256,
-                "inline-icon definition",
-            )?,
+            resolve_unique_payload(winners, &icon.definition_sha256, "inline-icon definition")?,
         )?;
         let mut texture_content_indices = Vec::new();
         for digest in &icon.texture_sha256 {
@@ -992,9 +882,8 @@ fn materialize_direct_exact_gui_command(
 }
 
 fn exact_gui_draw_target(draw: &StaticMapDraw) -> Option<&RenderTargetDesc> {
-    (draw.output_state.ordered_color_targets.len() == 1
-        && draw.output_state.depth_target.is_none())
-    .then(|| &draw.output_state.ordered_color_targets[0])
+    (draw.output_state.ordered_color_targets.len() == 1 && draw.output_state.depth_target.is_none())
+        .then(|| &draw.output_state.ordered_color_targets[0])
 }
 
 fn placement_from_exact_gui_draw(draw: &StaticMapDraw) -> Result<HudPlacement, String> {
@@ -1009,16 +898,9 @@ fn placement_from_exact_gui_draw(draw: &StaticMapDraw) -> Result<HudPlacement, S
         "direct GUI viewport top",
         false,
     )?;
-    let width_i32 = exact_viewport_i32(
-        viewport.width_f32_bits,
-        "direct GUI viewport width",
-        true,
-    )?;
-    let height_i32 = exact_viewport_i32(
-        viewport.height_f32_bits,
-        "direct GUI viewport height",
-        true,
-    )?;
+    let width_i32 = exact_viewport_i32(viewport.width_f32_bits, "direct GUI viewport width", true)?;
+    let height_i32 =
+        exact_viewport_i32(viewport.height_f32_bits, "direct GUI viewport height", true)?;
     let destination_rect = portable_render_stream::UiPassRect {
         left_i32,
         top_i32,
@@ -1032,9 +914,7 @@ fn placement_from_exact_gui_draw(draw: &StaticMapDraw) -> Result<HudPlacement, S
     let clip_state = match &draw.output_state.scissor {
         None => UiPassClip::Disabled,
         Some(scissor) => {
-            if scissor.right_i32 <= scissor.left_i32
-                || scissor.bottom_i32 <= scissor.top_i32
-            {
+            if scissor.right_i32 <= scissor.left_i32 || scissor.bottom_i32 <= scissor.top_i32 {
                 return Err("direct GUI draw scissor has non-positive extent".into());
             }
             UiPassClip::Enabled {
@@ -1180,8 +1060,6 @@ fn owner_placement(
     })
 }
 
-/// Pointer-free selected candidate key consumed by the A25 evidence-mode
-/// queue before UI-pass materialization.
 pub fn selected_a25_owner_glyph_candidate(
     selected: &RawSelectedRenderFrameCapture,
 ) -> Result<OwnerGlyphPresentCandidate, String> {
@@ -1260,7 +1138,9 @@ fn authorize_used_content(
         .find(|row| row.content.logical_path == content.normalized_game_relative_path)
         .ok_or_else(|| format!("A25 {label} is absent from authenticated VFS winners"))?;
     if used_content_from_raw(winners, &row.content)? != *content {
-        return Err(format!("A25 {label} differs from the authenticated VFS winner"));
+        return Err(format!(
+            "A25 {label} differs from the authenticated VFS winner"
+        ));
     }
     Ok(())
 }
@@ -1307,10 +1187,6 @@ fn push_exact_content(
 mod production_reachability_tests {
     use super::*;
 
-    /// Red if the production latch is turned back on (the drain then demands an
-    /// installed owner-glyph automation and returns `Err`), and red if the
-    /// unavailable reason list is emptied so the gated-off state degrades into
-    /// something a reader could take for measured-empty paint.
     #[test]
     fn gated_production_returns_typed_unavailable_not_empty_capture() {
         let drain = drain_selected_a25_owner_captures(OwnerGlyphPresentCandidate {
@@ -1329,14 +1205,10 @@ mod production_reachability_tests {
             !reasons.is_empty(),
             "unavailable must name a reason; an empty list reads as measured-empty"
         );
-        assert!(reasons.contains(
-            &A25RuntimeTextUnavailableReason::DrawingObservationGatedOutOfProduction
-        ));
+        assert!(reasons
+            .contains(&A25RuntimeTextUnavailableReason::DrawingObservationGatedOutOfProduction));
     }
 
-    /// Red if either latch is flipped on. These are the only two switches that
-    /// can admit an A25 owner-glyph capture, and neither may be reachable from
-    /// an ordinary production build.
     #[test]
     fn neither_latch_admits_a25_owner_glyphs_in_a_shipped_build() {
         assert!(!A25_CAPTURED_RUNTIME_TEXT_PRODUCTION_ENABLED);

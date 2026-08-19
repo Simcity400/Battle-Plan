@@ -1,9 +1,3 @@
-//! Admission and selection for recorder-published CID1 rollover package sets.
-//!
-//! A rollover set is not one timeline: each member starts with its own CID1
-//! authority and its hour domain may move backwards relative to the preceding
-//! member. Callers must therefore select one logical stream explicitly. This
-//! module never concatenates members or chooses a member on the caller's behalf.
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -23,25 +17,6 @@ const MAX_RELATIVE_PATH_BYTES: usize = 1024;
 const MIN_GAME_HOUR_RAW: i32 = 60_005_999;
 const MAX_GAME_HOUR_RAW: i32 = 63_071_999;
 
-/// Typed classification of a rollover-segment authentication failure, so the
-/// product boundary can report the honest rejection class instead of
-/// flattening every rollover failure into "not playable by this build".
-///
-/// * `Integrity` — bytes disagree with the digest/length the package-set
-///   authority names for them (a tampered, corrupt, or substituted member).
-/// * `ModsetMismatch` — the selected container's manifest modset disagrees
-///   with its snapshot provenance (the same typed signal the single-file
-///   retained-container branch preserves).
-/// * `Unsupported` — "recognized but not playable by this build/request":
-///   the request cannot name a playable member (no `--logical-stream` on a
-///   set, an out-of-range stream, a recovery-only set, a direct recording),
-///   or the descriptor declares a package-set schema this build does not
-///   support. Not evidence the recording is broken.
-/// * `Structure` — the descriptor, manifest, or package set is malformed or
-///   internally inconsistent (container/schema class).
-///
-/// `Display` renders the inner message verbatim; the class lives in the type
-/// so consumers never classify by matching error text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RolloverAuthenticationError {
     Integrity(String),
@@ -69,9 +44,6 @@ impl std::fmt::Display for RolloverAuthenticationError {
 
 impl std::error::Error for RolloverAuthenticationError {}
 
-/// Adapt a container-open failure on the SELECTED package into the rollover
-/// authentication class it belongs to, mirroring the typed preservation the
-/// single-file retained-container branch performs.
 fn rollover_error_from_container(
     error: &snapshot::ContainerError,
     message: String,
@@ -102,12 +74,8 @@ pub struct RolloverPackageSegment {
     pub campaign_id_hex: String,
     pub cid1_payload_sha256_hex: String,
     pub raw_relative_path: PathBuf,
-    /// The member file on disk at `raw_relative_path`.
     pub raw_bytes: u64,
     pub raw_sha256: String,
-    /// The canonical H4CR that file decodes to. Equal to the storage pair only
-    /// when the member is stored raw; the packaged container embeds DECODED
-    /// bytes, so its compact-stream entry is compared against this pair.
     pub raw_decoded_bytes: u64,
     pub raw_decoded_sha256: String,
     pub manifest_relative_path: PathBuf,
@@ -117,10 +85,6 @@ pub struct RolloverPackageSegment {
     pub recovery: bool,
 }
 
-/// One descriptor-selected package whose whole-file receipt and internal role
-/// joins were proven against the exact retained container handle. Consumers
-/// must move the container into replay admission; reopening `path` would
-/// discard this guarantee.
 pub struct AuthenticatedRolloverPackage {
     path: PathBuf,
     package_sha256: String,
@@ -215,15 +179,6 @@ struct WirePackageSegment {
 }
 
 impl RolloverPackageSet {
-    /// Read and validate an explicitly named descriptor, or discover the
-    /// standard descriptor directly inside `path` when `path` is a directory.
-    ///
-    /// A well-formed descriptor that names a schema this build does not know
-    /// is the `Unsupported` class ("recognized but not playable by this
-    /// build"), checked BEFORE the strict v1 wire decode so a future schema
-    /// is not misreported as a malformed v1 descriptor. Every other failure
-    /// here is `Structure` (the descriptor is the root of trust; no digest
-    /// authority exists above it to lose against).
     pub fn open(path: &Path) -> Result<Self, RolloverAuthenticationError> {
         let (descriptor_path, bytes) =
             Self::read_descriptor(path).map_err(RolloverAuthenticationError::Structure)?;
@@ -243,7 +198,6 @@ impl RolloverPackageSet {
             .map_err(RolloverAuthenticationError::Structure)
     }
 
-    /// Locate and read the bounded descriptor bytes (symlink-refusing).
     fn read_descriptor(path: &Path) -> Result<(PathBuf, Vec<u8>), String> {
         let descriptor_path = if path.is_dir() {
             let metadata = fs::symlink_metadata(path).map_err(|error| {
@@ -283,9 +237,6 @@ impl RolloverPackageSet {
         Ok((descriptor_path, bytes))
     }
 
-    /// Strict v1 wire decode + internal-consistency validation. The schema
-    /// string has already been classified by [`Self::open`]; the equality
-    /// check here is a retained structural invariant.
     fn decode_v1_descriptor(
         descriptor_path: PathBuf,
         value: serde_json::Value,
@@ -423,11 +374,6 @@ impl RolloverPackageSet {
         &self.transitions
     }
 
-    /// Resolve and authenticate one logical-stream package. Both the durable
-    /// source descriptor and the selected package/manifest pair are bound.
-    /// Failures carry their typed rejection class
-    /// ([`RolloverAuthenticationError`]): an authentication failure on a
-    /// member is never reported as a build-capability limitation.
     pub fn select(
         &self,
         logical_stream_id: u64,
@@ -672,15 +618,6 @@ fn validate_selected_manifest(
     Ok(())
 }
 
-/// A selected package that fails the retained-handle container open is
-/// classified against the package-set's declared whole-file SHA-256: the
-/// container parser may trip on a STRUCTURAL shape first (a truncated or
-/// garbled ZIP), but when the on-disk bytes provably disagree with the digest
-/// the descriptor names, the member was tampered with or substituted and the
-/// failure is INTEGRITY. Only bytes that still match the declared digest fall
-/// through to the container error's own class (the descriptor pinned a
-/// malformed package). The open has already failed and stays failed either
-/// way — this probe classifies, it never admits.
 fn classify_selected_package_open_error(
     path: &Path,
     segment: &RolloverPackageSegment,
@@ -695,9 +632,6 @@ fn classify_selected_package_open_error(
     rollover_error_from_container(error, message)
 }
 
-/// Streaming whole-file SHA-256 probe over the descriptor-authorized package
-/// path, used only to classify an already-failed open. `None` when the file
-/// cannot be read (classification then stays with the container error).
 fn declared_package_sha256_matches(path: &Path, expected_sha256: &str) -> Option<bool> {
     let file = fs::File::open(path).ok()?;
     let mut reader = std::io::BufReader::new(file);
@@ -738,10 +672,6 @@ fn validate_selected_container(
         )));
     }
     let compact = &compact[0];
-    // The container's compact-stream entry is canonical H4CR: the packer
-    // decodes the member on the way in. Comparing it to the STORAGE pair holds
-    // only while the member is stored raw, and silently rejects every
-    // compressed member as a disagreement.
     if compact.bytes != segment.raw_decoded_bytes
         || compact.sha256.as_str() != segment.raw_decoded_sha256.as_str()
     {
@@ -795,9 +725,6 @@ fn validate_selected_container(
     Ok(container)
 }
 
-/// Authenticate one explicitly selected rollover member and return its pinned
-/// container capability. Direct recordings use the ordinary retained-container
-/// open and are intentionally outside this API.
 pub fn authenticate_rollover_segment(
     path: &Path,
     logical_stream_id: Option<u64>,
@@ -916,9 +843,6 @@ fn read_bound_file(
     expected_sha256: &str,
     label: &str,
 ) -> Result<(PathBuf, Vec<u8>), RolloverAuthenticationError> {
-    // Disagreement between the read bytes and the digest/length the
-    // package-set authority declares for them is the INTEGRITY class; every
-    // filesystem/shape failure before that comparison is structural.
     let canonical = resolve_bound_regular_file(root, relative, label)
         .map_err(RolloverAuthenticationError::Structure)?;
     let mut file = fs::File::open(&canonical).map_err(|error| {
@@ -1055,9 +979,6 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "aa".repeat(32)),
-                // The authority that proved these settings travels beside them,
-                // in its own map: a reader is told how well they were proven and
-                // is never asked to reproduce that statement.
                 ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
@@ -1068,30 +989,6 @@ mod tests {
         manifest.with_computed_digest().unwrap()
     }
 
-    /// A written-out rollover package tree, with the scanner guards that hold
-    /// it open CARRIED AS A FIELD.
-    ///
-    /// This used to be a `(PathBuf, PathBuf, Vec<File>)` tuple, and that was the
-    /// weakest of the three retention shapes in use in this repository:
-    /// `#[must_use]` does not reach through a destructuring pattern, so
-    /// `let (root, descriptor, _) = fixture(..)` dropped the guards at that
-    /// semicolon and compiled silently. Every call site happened to bind them,
-    /// by convention and by the doc comment asking for it -- which is not an
-    /// enforcement, and a new test written the obvious way would not have.
-    ///
-    /// As a field there is nothing for a caller to remember: the binding a test
-    /// needs anyway is what holds the tree open, and a test added later is
-    /// covered by construction. `#[must_use]` now also catches the one
-    /// remaining way to get it wrong, calling `fixture(..)` for its side effect
-    /// and discarding the value.
-    /// The fields are PRIVATE TO THIS MODULE and reached only through the two
-    /// borrowed accessors, which is the difference between a convention and an
-    /// enforcement. A plain public-field struct is not "covered by
-    /// construction": `let RolloverFixture { root, descriptor, .. } =
-    /// fixture(..)` consumes the `#[must_use]` value and drops the guards at
-    /// that statement, reproducing the exact tuple defect this replaced. A
-    /// reviewer pointed that out, and it was right. With the fields private,
-    /// that pattern does not compile outside this module.
     mod fixture_guard {
         use std::path::{Path, PathBuf};
 
@@ -1132,9 +1029,6 @@ mod tests {
         fixture_with_storage(tag, None)
     }
 
-    /// `storage` overrides the member's STORAGE identity (bytes, digest) so it
-    /// differs from the decoded identity, which is what a compressed member
-    /// looks like. `None` keeps them equal, which is what a raw member is.
     fn fixture_with_storage(tag: &str, storage: Option<(u64, String)>) -> RolloverFixture {
         let root = std::env::temp_dir().join(format!(
             "replay_core_rollover_set_{tag}_{}_{}",
@@ -1145,9 +1039,6 @@ mod tests {
                 .as_nanos()
         ));
         fs::create_dir_all(root.join("logical-streams/packages/00000000000000000000")).unwrap();
-        // Same minimal raw-H4CR fixture accepted by replay_core's certified
-        // prefolder tests. The fixture decoder owns semantic prefolding; this
-        // boundary still requires the canonical compact-stream magic.
         let raw = b"H4CRfixture-stream";
         let source = serde_json::to_vec(&json!({
             "schema": "cid1-rollover-set-v1",
@@ -1313,10 +1204,6 @@ mod tests {
         });
         let descriptor = root.join(ROLLOVER_PACKAGE_SET_FILE);
         fs::write(&descriptor, serde_json::to_vec(&value).unwrap()).unwrap();
-        // Everything under `root` was written moments ago, and `open` plus
-        // `select` read the descriptor, the manifests and the packages. The
-        // guards go back to the caller rather than being leaked: this binary
-        // runs every test in the crate, and handles held for the process
         // lifetime would accumulate across all of them.
         let guards = portable_test_fs_retry::tree_read_guards(&root)
             .expect("hold the package tree open across the scanner's window");
@@ -1369,14 +1256,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// The packaged container holds DECODED H4CR, so admission joins on the
-    /// decoded pair.
-    ///
-    /// A member whose spool was compressed has a storage length and digest that
-    /// are nothing like its decoded ones. Joining the container's compact-stream
-    /// entry to the storage pair does not corrupt anything — it rejects every
-    /// such member as a disagreement, which reads as a tampered package rather
-    /// than as the wrong field being compared.
     #[test]
     fn admission_joins_the_container_entry_to_the_decoded_member_identity() {
         let fixture = fixture_with_storage(
@@ -1395,8 +1274,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// And the decoded pair is still checked: a package set that misstates it
-    /// is refused rather than accepted because some other field matched.
     #[test]
     fn a_misstated_decoded_identity_is_still_refused() {
         let fixture = fixture("decoded_tamper");
@@ -1462,8 +1339,6 @@ mod tests {
         .unwrap();
         fs::write(root.join("native_session.battleplan"), replacement).unwrap();
         let error = set.select(0).unwrap_err();
-        // R7 F1 regression: a SUBSTITUTED member is an integrity failure, not
-        // "recognized but unplayable by this build".
         assert!(
             matches!(error, RolloverAuthenticationError::Integrity(_)),
             "substituted package member must classify as Integrity: {error:?}"
@@ -1488,9 +1363,6 @@ mod tests {
         let manifest_bytes = serde_json::to_vec(&manifest).unwrap();
         fs::write(&manifest_path, &manifest_bytes).unwrap();
 
-        // Even a descriptor rewritten to trust the post-pack file cannot make
-        // those bytes equal the recorder_manifest already sealed in the
-        // selected container.
         let mut value: serde_json::Value =
             serde_json::from_slice(&portable_test_fs_retry::read(&descriptor).unwrap()).unwrap();
         value["ordered_streams"][0]["manifest_sha256"] = json!(hash(&manifest_bytes));
@@ -1562,10 +1434,6 @@ mod tests {
         );
     }
 
-    /// R7 F1 regression: a TAMPERED rollover member (bytes disagree with the
-    /// SHA-256 the package-set authority names for them) must classify as an
-    /// integrity failure — never as a selection/capability refusal that the
-    /// product boundary would headline "recording not playable by this build".
     #[test]
     fn tampered_manifest_member_classifies_as_integrity() {
         let fixture = fixture("manifest_tamper");
@@ -1589,8 +1457,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// R7 F1 regression: a tampered durable source descriptor (its SHA-256 is
-    /// pinned by the package-set descriptor) is likewise an integrity failure.
     #[test]
     fn tampered_source_descriptor_classifies_as_integrity() {
         let fixture = fixture("source_tamper");
@@ -1612,10 +1478,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// Codex round-1 catch: a well-formed descriptor naming a schema this
-    /// build does not know is "recognized but not playable by this build" —
-    /// the Unsupported class, exactly as the pre-typed boundary reported it —
-    /// never a malformed-descriptor Structure error.
     #[test]
     fn unknown_package_set_schema_classifies_as_unsupported() {
         let fixture = fixture("future_schema");
@@ -1638,11 +1500,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// Codex round-1 catch: a package member tampered so badly its ZIP no
-    /// longer parses fails the container open STRUCTURALLY before the
-    /// whole-file receipt exists — but the bytes still lost against the
-    /// package-set's declared SHA-256, so the classification must be
-    /// Integrity, not Structure.
     #[test]
     fn unparseable_tampered_package_member_classifies_as_integrity() {
         let fixture = fixture("zip_structure_tamper");
@@ -1667,8 +1524,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// A malformed package-set descriptor stays in the container/schema class:
-    /// integrity is reserved for bytes that lost against a declared digest.
     #[test]
     fn malformed_descriptor_classifies_as_structure() {
         let fixture = fixture("malformed_descriptor");
@@ -1717,4 +1572,4 @@ mod tests {
         assert!(validate_package_transitions(&streams, &[transition]).is_err());
     }
 }
-
+

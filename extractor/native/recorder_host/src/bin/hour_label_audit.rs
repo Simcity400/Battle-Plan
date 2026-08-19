@@ -25,11 +25,6 @@ const NOTABLE_FRAME_LIMIT: usize = 200;
 #[derive(Serialize)]
 struct AuditReport {
     input_path: String,
-    /// WHAT BUILD PRODUCED THIS STREAM, read from the session manifest beside
-    /// it. Every number in this report is a timing, and a diagnostic collector
-    /// changes what a capture costs — so this belongs at the top of the report,
-    /// not in a footnote. `state` is `manifest_absent`/`undeclared` when the
-    /// answer is unknown, and `diagnostic_build` stays null there.
     collector_build: serde_json::Value,
     bytes_consumed: u64,
     records_seen: u64,
@@ -61,47 +56,14 @@ struct FrameCensus {
     build_start_lateness: BuildStartLateness,
 }
 
-/// HOW LATE EACH BUILD BEGAN INTO ITS OWN HOUR, and what that cost.
-///
-/// The mismatch counters above say how much was lost; this says why. A build
-/// that begins at its hour's start fits inside it and mislabels nothing; one
-/// that begins two thirds of the way in runs almost entirely in the next hour
-/// and every bracket it opens after the boundary is refused.
-///
-/// `frames_carrying_it` is what makes the rest readable, exactly as it is for
-/// `ExactInstrument`: a capture from a recorder that predates the unit reports
-/// an empty table for want of the unit, not for want of lateness.
-///
-/// The lateness is bucketed against the MISMATCH COUNT rather than reported as
-/// a lone distribution, because the pair is the finding and either half alone
-/// is not.
 #[derive(Default, Serialize)]
 struct BuildStartLateness {
-    /// Frames that carried ANY of the three units, whether or not they could
-    /// enter the joint table. This and only this decides whether the recorder
-    /// emitted the instrument at all: keying that on the paired count instead
-    /// let a capture print "the recorder predates this unit" and "N frames
-    /// carried a lateness" in the same section. (Codex review
-    /// 019fd946-7d35-7302-a59f-4adbc749f025, finding 5.)
     frames_carrying_it: u64,
-    /// Frames in the buckets below: a lateness AND both mismatch counters.
     frames_in_joint_table: u64,
-    /// Frames whose label the observer holds no stamp for. Never merged into a
-    /// zero bucket: "not measured" and "began at the boundary" are opposite
-    /// readings.
     frames_missing_it: u64,
-    /// Frames that carried a lateness but not both mismatch counters, so they
-    /// could not enter the joint table. Reported rather than dropped: without
-    /// it, `frames_carrying_it + frames_missing_it` silently fails to account
-    /// for every probe-carrying frame and the buckets look like a complete
-    /// population when they are not.
     frames_excluded_unpaired: u64,
-    /// Frames built for a label the engine had already moved past, by how many
-    /// hours. A nonzero entry is the loop running a whole hour or more behind.
     frontier_ahead_distribution: Vec<ValueCount>,
     lw_hour_age_us: Stats,
-    /// 10 ms buckets of build-start lateness against the mean and worst
-    /// mismatched-domain count of the frames in each.
     buckets: Vec<LatenessBucket>,
 }
 
@@ -115,14 +77,6 @@ struct LatenessBucket {
     bracketed_domains: u64,
 }
 
-/// `lw_hour_label_mismatch_domains` / `lw_bracketed_domains`, summed over the
-/// capture. THE number this whole tool is a substitute for: every other section
-/// here infers the defect from a second boundary happening to tear a later
-/// bracket, which needs luck; this one is counted directly on every frame.
-///
-/// `frames_carrying_it` is what makes the rest readable. A capture from a
-/// recorder that predates the instrument reports zeroes for want of the unit,
-/// not for want of mismatches, and the two must never be confused.
 #[derive(Default, Serialize)]
 struct ExactInstrument {
     frames_carrying_it: u64,
@@ -130,23 +84,9 @@ struct ExactInstrument {
     mismatched_domain_hours: u64,
     bracketed_domain_hours: u64,
     unusable_label_frames: u64,
-    /// Frames carrying SOME but not all of the three units. Never zero silently:
-    /// a nonzero value here means the numbers above are built from a population
-    /// the producer did not describe, and must not be read as a rate.
     partial_frames: u64,
-    /// How many domain-hours each frame mislabelled, as a distribution.
-    ///
-    /// The totals above cannot answer the question the defect is actually
-    /// diagnosed by: 2,005 mislabelled domain-hours is a frame that lost its
-    /// whole sweep 30 times over, or 250 frames that each lost a handful, and
-    /// those have different causes and different fixes. t21 is the second
-    /// shape sharpened -- 62 frames lost exactly 8 (one serial tail), 36 lost
-    /// 17..67, and one lost 67 of 68.
     mismatched_domain_hours_per_frame: Vec<ValueCount>,
-    /// Frames whose EVERY bracketed domain read outside the label. The sweep
-    /// ran entirely in another hour; nothing in the frame is attributable.
     wholly_mislabelled_frames: u64,
-    /// Frames that mislabelled some but not all of their bracketed domains.
     partially_mislabelled_frames: u64,
 }
 
@@ -156,9 +96,6 @@ struct ValueCount {
     count: u64,
 }
 
-/// `Default` is the EMPTY sample, not a zero one: `count: 0` with every
-/// quantile absent. It exists so a section that carries no samples serialises
-/// as "nothing measured" rather than as a distribution of zeroes.
 #[derive(Default, Serialize)]
 struct Stats {
     count: u64,
@@ -172,39 +109,16 @@ struct Stats {
 struct GapCensus {
     reason_counts: Vec<ReasonCount>,
     undecoded_gap_records: u64,
-    /// See [`AuditState::provenance_counts`]. Reported for every gap, whether
-    /// or not its witnesses were admitted.
     witness_provenance_counts: Vec<ProvenanceCount>,
     clock_witness_delta_counts: Vec<WitnessDeltaCount>,
     clock_witness_examples: Vec<WitnessExample>,
     clock_witness_examples_suppressed: u64,
 }
 
-/// A reason's three DIFFERENT quantities, reported side by side because
-/// mistaking one for another is how run t32's backpressure accounting was read
-/// as a 544-record hole that did not exist.
-///
-///  * `count` — `H4DG` RECORDS. `Overrun` and `Backpressure` coalesce, so one
-///    record can stand for many hours and this is NOT an hour count.
-///  * `domain_hours` — the sum over records of `range_end - range_start + 1`.
-///    This is the unit the scheduler's `rs_backpressure_domain_hours` /
-///    `rs_overrun_domain_hours` probe counters are in, and the only one that
-///    may be compared with them.
-///  * `distinct_hours` — how many distinct game hours the ranges cover at all,
-///    counted once however many domains named them. `domain_hours /
-///    distinct_hours` is the roster width when every domain names every range,
-///    which the gap-frame builder enforces.
-///
-/// The probe is a rider on a published frame, so hours that resolve after the
-/// last such frame (teardown flush, a final eviction) appear here and not
-/// there. `domain_hours` >= the probe's counter is therefore expected; the
-/// reverse would be an hour on the wire the scheduler never counted.
 #[derive(Serialize)]
 struct ReasonCount {
     reason: &'static str,
-    /// Sum over this reason's records of their covered hour span.
     domain_hours: u64,
-    /// Distinct game hours any of this reason's ranges cover.
     distinct_hours: u64,
     count: u64,
 }
@@ -214,9 +128,6 @@ struct ProvenanceCount {
     reason: &'static str,
     witness_provenance: &'static str,
     count: u64,
-    /// Whether rows in this cell had their witnesses ADMITTED as an
-    /// observation. Derived from the same function the accounting uses, so the
-    /// report cannot describe a rule the tool did not apply.
     witnesses_admitted: bool,
 }
 
@@ -235,10 +146,6 @@ struct WitnessExample {
     sequence: u64,
     domain_id: u16,
     reason: &'static str,
-    /// WHY THIS ROW IS IN THE TABLE AT ALL. `bracket_observed` is the record's
-    /// own claim; `unstated` means it was admitted by the pre-provenance
-    /// fallback on its reason alone. Printing it is what lets a reader tell a
-    /// capture's real corroboration from its inherited assumptions.
     witness_provenance: &'static str,
     frame_label: i32,
     opening_witness: u64,
@@ -271,23 +178,6 @@ struct ClassificationSection {
     notable_frames_suppressed: u64,
 }
 
-/// Every frame, counted by which of the THREE per-frame witnesses it carries.
-///
-/// It was two axes, and the missing one was the only one that can see the
-/// defect this tool is named after. `lw_hour_label_skew_abs` is a frame-START
-/// reading: it fires only when the label was already wrong before the sweep
-/// began, which the producer makes nearly impossible -- the label is claimed
-/// from the latest observed hour a few microseconds earlier. On t21 it is 0 on
-/// all 315 probe-carrying frames, so the whole `label_skew=yes` row was empty
-/// while 98 frames mislabelled 2,005 domain-hours. A Torn gap caught 93 of
-/// those by luck (some OTHER reader happened to straddle the same boundary);
-/// the remaining 5 -- including the worst frame in the capture, which
-/// mislabelled 67 of its 68 domain-hours and tore nothing -- were counted in
-/// `neither`, the same cell as a perfectly clean frame.
-///
-/// So the exact instrument is an axis now, and `mismatch_with_no_other_witness`
-/// states the size of the old blind spot in every report rather than leaving it
-/// to be rediscovered.
 #[derive(Default, Serialize)]
 struct ClassificationTable {
     neither: u64,
@@ -298,21 +188,7 @@ struct ClassificationTable {
     mismatch_and_torn: u64,
     mismatch_and_label_skew: u64,
     mismatch_and_label_skew_and_torn: u64,
-    /// Frames a `label_skew x torn` view alone calls clean while the exact
-    /// per-frame instrument says they mislabelled at least one domain-hour.
-    /// Identical to `mismatch_only` by construction, and named separately
-    /// because that is the number the reader needs, not an inference from a
-    /// cell name.
     mismatch_with_no_other_witness: u64,
-    /// Frames the exact instrument CANNOT SPEAK FOR, split by the other two
-    /// axes. `mismatch` is a three-valued thing -- yes, no, and no witness --
-    /// and the eight cells above only have room for two of them, so an
-    /// uninstrumented frame used to be flattened into the `mismatch=no` row and
-    /// counted beside frames that were actually checked and found clean. On t21
-    /// that put 3 probe-less frames in `neither`: 315 frames carried the
-    /// instrument and 98 of them mismatched, so 217 frames were checked clean
-    /// while the cell read 220. The unknown population is reported here instead
-    /// so the `mismatch=no` row means "checked, and clean".
     mismatch_unknown_neither: u64,
     mismatch_unknown_label_skew_only: u64,
     mismatch_unknown_torn_witness_only: u64,
@@ -325,10 +201,6 @@ struct NotableFrame {
     sequence_end: u64,
     label: i32,
     skew_abs: Option<u64>,
-    /// The exact instrument, on the line. A notable frame that is notable
-    /// BECAUSE of it must say so; without these two the reader can only count
-    /// `HourLabelMismatch` gap entries, which is the same number only while the
-    /// producer refuses every mismatch.
     mismatch_domains: Option<u64>,
     bracketed_domains: Option<u64>,
     worker_span_us: Option<u64>,
@@ -343,9 +215,6 @@ struct FrameGap {
     sequence: u64,
     domain_id: u16,
     reason: &'static str,
-    /// Stated for EVERY gap, including the ones whose witnesses are suppressed
-    /// below: "excluded" and "excluded because the producer said it had no
-    /// observation" are different findings.
     witness_provenance: &'static str,
     opening_witness: Option<u64>,
     closing_witness: Option<u64>,
@@ -404,25 +273,9 @@ struct LaneWallProbe {
     lw_prewarm_us: Option<u64>,
     lw_hour_label_skew_abs: Option<u64>,
     lw_hour_label_skew_missing: Option<u64>,
-    /// The exact per-frame instrument. Absent in captures older than it, which
-    /// is why these stay `Option` rather than defaulting to zero: "this
-    /// recorder did not emit the counter" and "this frame mismatched nothing"
-    /// are different facts and a zero would merge them.
     lw_hour_label_mismatch_domains: Option<u64>,
     lw_bracketed_domains: Option<u64>,
     lw_hour_label_unusable: Option<u64>,
-    /// HOW LATE INTO ITS OWN HOUR THE BUILD BEGAN, measured by the collector
-    /// against the observer's stamp for exactly this frame's label. Absent in
-    /// captures older than the unit, and absent per frame when the observer
-    /// holds no stamp for that label -- `lw_hour_age_missing` separates the two
-    /// cases from "the build began as the hour was observed", which is a real
-    /// zero.
-    ///
-    /// This is the term the mismatch rate is a function of, and before it
-    /// existed the only proxy was `mean_hour_period - lw_next_hour_at_us`,
-    /// which exists on a MINORITY of frames (316 of t32's 583, and 7 of its 274
-    /// clean ones) and needs a capture-wide mean to stand in for a per-hour
-    /// period.
     lw_hour_age_us: Option<u64>,
     lw_hour_frontier_ahead: Option<u64>,
     lw_hour_age_missing: Option<u64>,
@@ -453,10 +306,6 @@ impl FrameAccumulator {
     }
 }
 
-/// Widest gap range this audit will enumerate hour by hour. A capture's whole
-/// span is a few thousand hours, so anything past this is a malformed range;
-/// it is reported as a parse error and left out of `distinct_hours` rather than
-/// allowed to allocate an unbounded set.
 const MAX_ENUMERATED_RANGE_HOURS: u64 = 1_000_000;
 
 #[derive(Default)]
@@ -472,34 +321,16 @@ struct AuditState {
     skew_missing_frames: u64,
     worker_spans: Vec<u64>,
     prewarm_times: Vec<u64>,
-    /// `(build-start lateness us, mismatched domains, bracketed domains)` for
-    /// every frame that carried the lateness unit. Kept as pairs and bucketed
-    /// only at the end: the finding is the JOINT distribution, and two
-    /// independent marginals cannot recover it.
     lateness_samples: Vec<(u64, u64, u64)>,
     lateness_frames: u64,
     lateness_missing_frames: u64,
     lateness_unpaired_frames: u64,
-    /// Frames carrying ANY of the three lateness units, counted independently
-    /// of every pairing rule.
     lateness_carrier_frames: u64,
     frontier_ahead_distribution: BTreeMap<u64, u64>,
     reason_counts: BTreeMap<&'static str, u64>,
-    /// Per reason: the sum of every record's covered hour span. See
-    /// [`ReasonCount`] for why this is kept apart from the record count.
     reason_domain_hours: BTreeMap<&'static str, u64>,
-    /// Per reason: the distinct game hours its ranges cover. Bounded by the
-    /// capture's hour span, so enumerating each range is safe — except for a
-    /// malformed range, which is capped rather than enumerated (see
-    /// [`MAX_ENUMERATED_RANGE_HOURS`]).
     reason_hours: BTreeMap<&'static str, BTreeSet<i32>>,
     undecoded_gaps: u64,
-    /// Every gap record counted by (reason, stated witness provenance).
-    ///
-    /// THE CENSUS THAT MAKES THE INCLUSION RULE AUDITABLE. Without it a reader
-    /// cannot tell a capture whose witnesses were believed on the producer's
-    /// stamp from one whose rows entered on the pre-provenance fallback, and
-    /// those are different amounts of evidence.
     provenance_counts: BTreeMap<(&'static str, &'static str), u64>,
     witness_delta_counts: BTreeMap<(&'static str, &'static str, i128, i128), u64>,
     witness_examples: Vec<WitnessExample>,
@@ -765,13 +596,6 @@ fn process_record(
                         detail.decode_error = Some(message.clone());
                         record_error(state, offset, message);
                     }
-                    // The stamp is read from the SAME bytes `decode` just
-                    // accepted, so a record cannot be accounted under one
-                    // provenance and printed under another. `decode` has
-                    // already run the full grammar, including the rule that
-                    // refuses a provenance contradicting its own witnesses, so
-                    // this cannot fail for a payload that reached here; the
-                    // fallback is `Unstated`, which is the EXCLUDING value.
                     let provenance = DomainGapRecordV1::decode_witness_provenance(payload)
                         .unwrap_or(DomainGapWitnessProvenance::Unstated);
                     detail.gap = Some(gap_record_detail(gap, provenance));
@@ -910,10 +734,6 @@ fn account_gap(
         .entry((reason, provenance_name(provenance)))
         .or_default() += 1;
     *state.reason_counts.entry(reason).or_default() += 1;
-    // The hours this ONE record stands for. A `Backpressure`/`Overrun` range is
-    // coalesced, so this is where the record count and the domain-hour count
-    // part company; every other reason carries a single-hour range and the two
-    // agree.
     let covered = i64::from(gap.range_end_hour_raw)
         .checked_sub(i64::from(gap.range_start_hour_raw))
         .and_then(|delta| delta.checked_add(1))
@@ -949,17 +769,6 @@ fn account_gap(
             ),
         );
     }
-    // A delta is only meaningful when a clock was actually observed. Zero is
-    // the wire's ABSENT-witness value -- `ClockUnreadable` and `ReaderSilent`
-    // are required to carry it -- and subtracting the label from it produced a
-    // `-frame_label` entry that reads as an enormous clock excursion.
-    //
-    // The nonzero gate is KEPT ALONGSIDE the provenance rather than replaced by
-    // it. The grammar already refuses a `BracketObserved` claim on a zero, so
-    // for that provenance the conjunct is redundant today -- but it is the
-    // `Unstated` fallback's only defence, and an audit that depended on a
-    // producer-side rule to keep a division by nothing out of its own table
-    // would be trusting the input it exists to check.
     let clock_derived = witnesses_are_a_clock_observation(gap.reason, provenance)
         && gap.tick_before != 0
         && gap.tick_after != 0;
@@ -1026,25 +835,12 @@ fn finalize_frame(state: &mut AuditState) {
         if let Some(value) = probe.lw_prewarm_us {
             state.prewarm_times.push(value);
         }
-        // WHETHER THE FRAME CARRIED THE INSTRUMENT AT ALL, asked of all three
-        // units and answered before anything else. This and only this decides
-        // "the recorder predates the unit", so it must not be entangled with
-        // any pairing or completeness rule: deriving it from the paired count
-        // let a capture print "NOT PRESENT" and a warning about frames that
-        // carried a lateness in the same section, and deriving it from the age
-        // alone still missed a frame carrying only the flag or only the
-        // frontier unit. (Codex review 019fd946-7d35-7302-a59f-4adbc749f025,
-        // finding 5.)
         if probe.lw_hour_age_us.is_some()
             || probe.lw_hour_frontier_ahead.is_some()
             || probe.lw_hour_age_missing.is_some()
         {
             state.lateness_carrier_frames = state.lateness_carrier_frames.saturating_add(1);
         }
-        // The lateness enters the BUCKETS only with the mismatch counters it
-        // has to be read against. A frame carrying one and not the other would
-        // otherwise enter one marginal and not the joint table, and the bucket
-        // means would be built from a population the report does not describe.
         match (
             probe.lw_hour_age_us,
             probe.lw_hour_label_mismatch_domains,
@@ -1057,13 +853,9 @@ fn finalize_frame(state: &mut AuditState) {
             _ if probe.lw_hour_age_missing == Some(1) => {
                 state.lateness_missing_frames = state.lateness_missing_frames.saturating_add(1);
             }
-            // Carried a lateness but not both counters. Named, not dropped.
             (Some(_), _, _) => {
                 state.lateness_unpaired_frames = state.lateness_unpaired_frames.saturating_add(1);
             }
-            // Carried the instrument only as a `_missing == 0` flag or a
-            // frontier unit: counted as a carrier above, and nothing more can
-            // be said about it here.
             _ => {}
         }
         if let Some(ahead) = probe.lw_hour_frontier_ahead {
@@ -1072,31 +864,11 @@ fn finalize_frame(state: &mut AuditState) {
     }
 
     let torn = frame.gaps.iter().any(|gap| gap.reason == "Torn");
-    // NOT "label ahead". The producer stores `current.abs_diff(label)`, so the
-    // wire cannot tell a clock that is one hour AHEAD of the label from one an
-    // hour BEHIND it -- both encode 1. The classification is a skew, and
-    // calling it a direction would be a claim the capture does not carry.
     let label_skew = frame
         .lane_wall
         .as_ref()
         .and_then(|probe| probe.lw_hour_label_skew_abs)
         .is_some_and(|skew| skew > 0);
-    // The exact instrument, when the capture is new enough to carry it. This is
-    // the number the whole tool is a substitute for: unlike the skew above it
-    // is per bracket rather than per frame, and unlike a Torn witness it does
-    // not need a second boundary to become visible.
-    // ALL THREE OR NONE. The numerator, the denominator and the applicability
-    // flag are one statement about one frame, and summing them from different
-    // presence sets builds a ratio out of parts of different populations: a
-    // probe carrying only the denominator would print "0 of 9" under a "NOT
-    // PRESENT" banner, and one carrying only the numerator would print "N of
-    // 0". The producer emits the three together, but nothing on the wire forces
-    // it to, so the reader requires it and counts a frame that breaks the
-    // contract as a parse error rather than folding it in.
-    // Whether the exact instrument says THIS frame mislabelled anything. `None`
-    // when the capture predates the instrument or the probe is incomplete --
-    // which is not `false`, and is why the classification below treats it as
-    // "no witness available" rather than folding it into the clean cell.
     let mut exact_mismatch = None;
     if let Some(probe) = frame.lane_wall.as_ref() {
         match (
@@ -1115,12 +887,6 @@ fn finalize_frame(state: &mut AuditState) {
                     .or_default() += 1;
                 if domains > 0 {
                     state.exact_mismatch_frames = state.exact_mismatch_frames.saturating_add(1);
-                    // WHOLLY means every bracketed domain, not "a lot". The
-                    // comparison is against this frame's own denominator
-                    // because a frame does not always bracket the same number
-                    // of domains -- a disabled or unscheduled domain holds no
-                    // bracket, so a fixed 68 would misclassify the moment the
-                    // roster changes.
                     if domains >= bracketed && bracketed > 0 {
                         state.exact_wholly_mislabelled_frames =
                             state.exact_wholly_mislabelled_frames.saturating_add(1);
@@ -1142,14 +908,6 @@ fn finalize_frame(state: &mut AuditState) {
             }
         }
     }
-    // `None` STAYS `None` HERE. `exact_mismatch.unwrap_or(false)` was the whole
-    // defect: it turned "this frame carries no exact instrument, or carries an
-    // incomplete one" into "this frame was checked and mislabelled nothing", and
-    // the `(false, false, false)` arm then filed it under `neither` -- the
-    // clean cell. The comment thirty lines above already said `None` "is not
-    // `false`"; the code disagreed. An uncheckable frame goes to the unknown
-    // row, where it cannot inflate the clean count the refusal policy was
-    // priced against.
     match (exact_mismatch, label_skew, torn) {
         (Some(false), false, false) => state.classification.neither += 1,
         (Some(false), true, false) => state.classification.label_skew_only += 1,
@@ -1188,10 +946,6 @@ fn finalize_frame(state: &mut AuditState) {
         gap_reasons,
     });
 
-    // `mismatch` joins the gate for the reason the axis was added: a frame that
-    // mislabelled 67 of 68 domain-hours and happened to tear nothing was not
-    // listed here at all, so the ONE frame a reader most needs to see was the
-    // one the report omitted.
     if label_skew || torn || exact_mismatch == Some(true) {
         let notable = NotableFrame {
             sequence_start,
@@ -1378,9 +1132,6 @@ fn stats(values: &mut [u64]) -> Stats {
     }
 }
 
-/// Reduce the per-frame lateness samples to the joint table the finding lives
-/// in. Bucketing happens HERE and not at accumulation time so the bucket width
-/// is one decision in one place.
 fn build_start_lateness(
     frames_carrying_it: u64,
     frames_in_joint_table: u64,
@@ -1427,9 +1178,6 @@ fn build_start_lateness(
 
 fn print_report(report: &AuditReport) -> io::Result<()> {
     let mut out = BufWriter::new(io::stdout().lock());
-    // BEFORE anything else. The banner qualifies every timing below it, and a
-    // reader who scrolls past a footnote is exactly how t34/t35 were compared
-    // against production for a day.
     let declaration = recorder_host::build_declaration::for_stream(Path::new(&report.input_path));
     write!(
         out,
@@ -1875,65 +1623,6 @@ fn witness_delta(witness: u64, frame_label: i32) -> i128 {
     i128::from(witness) - i128::from(frame_label)
 }
 
-/// Whether THIS RECORD's two tick witnesses are a real engine-clock
-/// observation, so comparing them against the frame's label is evidence rather
-/// than arithmetic.
-///
-/// KEYED ON THE RECORD'S OWN PROVENANCE FIRST, AND ON THE REASON ONLY AS A
-/// FALLBACK (lane FQ, 2026-08-08). The question was previously answered from
-/// the reason code alone, which is a property of the whole VOCABULARY and not
-/// of the row in hand; a producer that started stamping real observations under
-/// an excluded reason could not be believed, and one that restated the label
-/// under an included reason could not be caught. `DomainGapWitnessProvenance`
-/// is that missing fact, written by the producer at the mint site and
-/// cross-checked by the payload grammar against the witnesses it describes.
-///
-/// THE THREE ANSWERS, AND WHY EACH IS THE ONLY SAFE ONE:
-///
-///  * `BracketObserved` — INCLUDE. The producer states these ticks are hours a
-///    reader's own clock bracket observed, and `validate_domain_gap_payload`
-///    has already refused the claim if either is the wire's no-witness zero.
-///    This is what makes d81's `SourceUnavailable` rows evidence: a row whose
-///    delta is `(+0, +0)` now says the sweep really did run in its labelled
-///    hour, because a sweep that ran in H+1 would have published H+1 here.
-///  * `Unobserved` — EXCLUDE. A positive statement that no observation reached
-///    the mint site. Its ticks are required to be zero, so there is nothing to
-///    compare.
-///  * `Unstated` — FALL BACK TO THE REASON, which is exactly the old table and
-///    exactly the old behaviour. THIS IS THE LOAD-BEARING HALF: every capture
-///    sealed before the provenance field existed carries `Unstated` on every
-///    record, and reading those as observations is the manufactured
-///    corroboration this whole function exists to refuse. An old d81
-///    `SourceUnavailable` row is `Unstated`, is not in the fallback table, and
-///    stays excluded — it cannot masquerade as bracket-stamped, because the
-///    only way into the included set is a nonzero code no old producer ever
-///    wrote and no old decoder would have admitted.
-///
-/// The fallback table itself is unchanged and its reasoning still stands:
-///
-///  * `Torn` and `HourLabelMismatch` are minted by reconciliation from
-///    `take_clock_brackets`, off real clock reads.
-///  * `WorkerPanic` is not, because d81 also maps its own panic path to that
-///    reason; nothing in an `Unstated` capture separates the two producers, and
-///    the nonzero gate cannot, since a label copy is nonzero.
-///  * `SourceUnavailable` is not, because in an `Unstated` capture its only
-///    producer is d81 filling BOTH ticks from `game_hour_raw`. t17's 501 of
-///    them are a tautology, not 501 observations.
-///  * `ReaderSilent` and `ClockUnreadable` are required to carry zeros, and
-///    `Overrun`/`Backpressure` carry a coalesced RANGE rather than one frame's
-///    observation, so a delta against a single label is meaningless for all
-///    four.
-///
-/// A CONSIDERED RESIDUAL, recorded so it is not rediscovered as a bug. Under
-/// `BracketObserved` this admits every reason, including the two coalesced-range
-/// ones, whose two ticks span several hours rather than witnessing one — so a
-/// delta against the single frame label would read oddly for them. It is left
-/// admitting them deliberately: no producer stamps `BracketObserved` on a
-/// coalesced range (both are minted by the host scheduler, which writes
-/// `Unstated`), and vetoing a provenance by reason would put the reason back in
-/// charge of provenance, which is the coupling this function exists to remove.
-/// A producer that ever wants to stamp a range is the right occasion to decide
-/// what its delta means.
 fn witnesses_are_a_clock_observation(
     reason: DomainGapReason,
     provenance: DomainGapWitnessProvenance,
@@ -1945,9 +1634,6 @@ fn witnesses_are_a_clock_observation(
     }
 }
 
-/// The pre-provenance table, kept as the `Unstated` fallback and as nothing
-/// else. See [`witnesses_are_a_clock_observation`] for why each reason is in or
-/// out.
 fn is_clock_derived(reason: DomainGapReason) -> bool {
     matches!(
         reason,
@@ -1959,14 +1645,6 @@ fn provenance_name(provenance: DomainGapWitnessProvenance) -> &'static str {
     provenance.wire_name()
 }
 
-/// The inclusion rule, re-asked by NAME for the report's own census.
-///
-/// It rebuilds the typed pair from the two strings and calls the SAME
-/// predicate the accounting called, rather than restating the rule: a report
-/// that described an admission policy the tool did not apply would be worse
-/// than one that described none. An unrecognised pair is reported as excluded,
-/// which is the fail-closed direction and unreachable while both names come
-/// from `reason_name`/`provenance_name`.
 fn admitted_by_name(reason: &str, provenance: &str) -> bool {
     let Some(reason) = DomainGapReason::ALL
         .into_iter()
@@ -2029,8 +1707,6 @@ mod tests {
         COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION,
     };
 
-    /// A real t21 label, so the calendar admits it and `lw_hour_label_unusable`
-    /// stays 0 -- a rejected label would suppress the very rule under test.
     const HOUR_A: i32 = 60_831_056;
     const HOUR_B: i32 = 60_831_057;
 
@@ -2083,9 +1759,6 @@ mod tests {
         units
     }
 
-    /// `lateness` is `Some((age_us, frontier_ahead))` for a frame the observer
-    /// held a stamp for, and `None` for one it did not — which emits the
-    /// `_missing` flag and NO value units, the way the producer does.
     fn probe_units_with_lateness(
         exact: Option<(u64, u64)>,
         skew_abs: u64,
@@ -2130,8 +1803,6 @@ mod tests {
         out
     }
 
-    /// One frame: its lane-wall probe, then FRAME_END. No gap records, so the
-    /// ONLY thing that can make the frame notable is the exact instrument.
     fn frame(sequence: &mut u64, hour: i32, exact: Option<(u64, u64)>, skew_abs: u64) -> Vec<u8> {
         let mut out = record(
             *sequence,
@@ -2160,11 +1831,6 @@ mod tests {
         finish_report(Path::new("synthetic"), state)
     }
 
-    /// One frame carrying a single d81 `SourceUnavailable` gap, stamped with
-    /// `provenance`, whose ticks are `observed`.
-    ///
-    /// `observed` is a parameter and not derived from `hour`, because the whole
-    /// question this section answers is whether the two are the same value.
     fn frame_with_d81_source_unavailable_gap(
         sequence: &mut u64,
         hour: i32,
@@ -2216,25 +1882,6 @@ mod tests {
         out
     }
 
-    /// A BRACKET-STAMPED `SourceUnavailable` row is evidence; the SAME bytes
-    /// without the stamp are not (lane FQ, 2026-08-08).
-    ///
-    /// This is the whole audit revision in one test, and it is deliberately run
-    /// over two streams that differ in EXACTLY ONE `u16` — the provenance word.
-    /// Everything else, including the witnesses, is identical, so nothing but
-    /// the stamp can be doing the work.
-    ///
-    /// The stamped row's witnesses are `HOUR_B` under a frame labelled `HOUR_A`:
-    /// a reader that failed inside a mismatched bracket, which is precisely the
-    /// shape that used to publish `(H, H)` and could not be told from a
-    /// tautology. It lands in the delta table at `(+1, +1)` — a real, nonzero
-    /// clock excursion the old tool could not have reported at all.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: keying the inclusion on the
-    /// reason again (the stamped row disappears); admitting `Unstated` as an
-    /// observation (the unstamped row appears, which is the manufactured
-    /// corroboration); or dropping the provenance from `WitnessExample` (the
-    /// report can no longer say why a row was believed).
     #[test]
     fn only_a_bracket_stamped_source_unavailable_row_is_read_as_an_observation() {
         let observed = u64::try_from(HOUR_B).expect("fixture hour fits u64");
@@ -2281,9 +1928,6 @@ mod tests {
             b.witness_provenance_counts
         );
 
-        // THE SAME BYTES, MINUS THE STAMP. This is an old capture: every record
-        // it holds was written before the provenance field existed, so it
-        // carries the reserved zero and must not be read as a claim.
         let mut sequence = 0u64;
         let unstamped = frame_with_d81_source_unavailable_gap(
             &mut sequence,
@@ -2311,7 +1955,6 @@ mod tests {
             b.witness_provenance_counts
         );
 
-        // And the two streams really are one field apart.
         assert_eq!(stamped.len(), unstamped.len());
         assert_eq!(
             stamped
@@ -2325,15 +1968,6 @@ mod tests {
         );
     }
 
-    /// The inclusion rule over the whole vocabulary, and the one shape a
-    /// producer must not be able to build.
-    ///
-    /// Swept over `ALL` rather than spot-checked, so a reason or provenance
-    /// added later has to be classified here instead of inheriting an answer.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: making `Unstated` or
-    /// `Unobserved` admit witnesses, or making `BracketObserved` depend on the
-    /// reason (which would put the reason back in charge of provenance).
     #[test]
     fn the_inclusion_rule_keys_on_provenance_and_never_manufactures_one() {
         for reason in DomainGapReason::ALL {
@@ -2358,10 +1992,6 @@ mod tests {
             );
         }
 
-        // The dangerous row cannot be built at all: `Unobserved` requires the
-        // wire's zeros, so no producer can claim "nothing was observed" while
-        // shipping a reading, and no reading can be smuggled past the
-        // exclusion by mislabelling it.
         let forgeable = DomainGapRecordV1 {
             part: compact_contract::DomainGapPart::State,
             reason: DomainGapReason::SourceUnavailable,
@@ -2379,16 +2009,6 @@ mod tests {
         assert!(forgeable.is_err());
     }
 
-    /// A capture sealed before the field existed decodes as `Unstated`.
-    ///
-    /// Built from RAW BYTES with the reserved word zeroed, not by asking the
-    /// current encoder for an `Unstated` record: the claim is about what the
-    /// OLD producer wrote, and an encoder that changed its default would still
-    /// satisfy a test that used it.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: moving the provenance off byte
-    /// 12, or assigning a nonzero code to `Unstated` — either would make every
-    /// sealed capture decode as a claim it never made.
     #[test]
     fn a_capture_written_before_the_field_existed_decodes_as_unstated() {
         let mut wire = DomainGapRecordV1 {
@@ -2406,8 +2026,6 @@ mod tests {
         }
         .encode()
         .expect("a t17-shaped d81 row");
-        // The old layout, restated: bytes 12..16 were one reserved word the old
-        // producer wrote as zero and the old decoder required to be zero.
         wire[12..16].copy_from_slice(&0u32.to_le_bytes());
         assert_eq!(
             DomainGapRecordV1::decode_witness_provenance(&wire).unwrap(),
@@ -2419,22 +2037,9 @@ mod tests {
         ));
     }
 
-    /// The build-start lateness is reduced against the mismatch counts it must
-    /// be read with, and a frame that carries only ONE of the two never enters
-    /// the joint table.
-    ///
-    /// THE DEFECT THIS EXISTS FOR: bucketing the lateness on its own would give
-    /// a table whose frame counts and whose mismatch means came from different
-    /// populations, which reads exactly like a real curve and is not one.
-    ///
-    /// MUTATION RUN: accumulate `lw_hour_age_us` whenever it is present,
-    /// independent of the mismatch counters. Observed failure: `a frame with
-    /// no mismatch counters must not enter the joint table` (left 3, right 2).
     #[test]
     fn build_start_lateness_is_bucketed_only_against_the_counts_it_pairs_with() {
         let mut sequence = 0u64;
-        // 5 ms late and clean; 65 ms late and losing 67 of 68; 62 ms late with
-        // NO mismatch counters at all; and one frame with no lateness unit.
         let mut stream =
             frame_with_lateness(&mut sequence, HOUR_A, Some((0, 68)), Some((5_000, 0)));
         stream.extend_from_slice(&frame_with_lateness(
@@ -2449,14 +2054,12 @@ mod tests {
             None,
             Some((62_000, 1)),
         ));
-        // A frame the observer held no stamp for: the `_missing` flag, no value.
         stream.extend_from_slice(&frame_with_lateness(
             &mut sequence,
             HOUR_B + 2,
             Some((4, 68)),
             None,
         ));
-        // A frame from a recorder that predates the unit entirely.
         stream.extend_from_slice(&frame(&mut sequence, HOUR_B + 3, Some((4, 68)), 0));
         let report = audit(&stream);
         assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
@@ -2473,10 +2076,6 @@ mod tests {
              report the recorder as predating a unit it plainly emitted"
         );
 
-        // A frame carrying ONLY the `_missing == 0` flag -- no age, no frontier
-        // unit -- still carried the instrument. Deriving the carrier count from
-        // the age, or from the three sub-counters, misses exactly this frame
-        // and reports the whole capture as predating the unit.
         let mut only_flag = Vec::new();
         let mut seq = 0u64;
         only_flag.extend_from_slice(&record(
@@ -2522,7 +2121,6 @@ mod tests {
         assert_eq!(lateness.lw_hour_age_us.count, 2);
         assert_eq!(lateness.lw_hour_age_us.max, Some(65_000));
 
-        // Two 10 ms buckets, each carrying its own frames' mismatch mean.
         let buckets: Vec<_> = lateness
             .buckets
             .iter()
@@ -2537,9 +2135,6 @@ mod tests {
             .collect();
         assert_eq!(buckets, vec![(0, 1, 0.0, 68), (60, 1, 67.0, 68)]);
 
-        // The frontier-ahead distribution covers every frame that carried the
-        // unit, including the one excluded from the joint table: a backlog is a
-        // fact about the loop, not about whether the counters paired up.
         let ahead: Vec<_> = lateness
             .frontier_ahead_distribution
             .iter()
@@ -2548,9 +2143,6 @@ mod tests {
         assert_eq!(ahead, vec![(0, 2), (1, 1)]);
     }
 
-    /// A capture written before the unit existed reports ABSENCE, not a
-    /// distribution of zeroes. Without this the tool would answer "no frame was
-    /// ever late" for every capture in the archive.
     #[test]
     fn a_capture_predating_the_lateness_unit_reports_it_absent() {
         let mut sequence = 0u64;
@@ -2565,17 +2157,6 @@ mod tests {
         assert!(lateness.frontier_ahead_distribution.is_empty());
     }
 
-    /// THE REGRESSION. A frame that mislabelled 67 of its 68 domain-hours, tore
-    /// nothing, and started its sweep in its own hour (`skew_abs == 0`, which is
-    /// what t21 measured on all 315 probe-carrying frames) must not land in the
-    /// same cell as a clean frame, and must be listed.
-    ///
-    /// MUTATION RUN: restore the classification to `match (label_skew, torn)`
-    /// and drop `mismatch` from the notable gate -- i.e. the code as it stood
-    /// before this lane. Observed failure:
-    ///   `the mislabelled frame was counted clean: neither=2` (left 2, right 1)
-    /// and, with only the notable gate reverted:
-    ///   `the mislabelled frame was not listed` (left 0, right 1).
     #[test]
     fn a_mislabelled_frame_with_no_tear_is_neither_counted_clean_nor_omitted() {
         let mut sequence = 0u64;
@@ -2603,25 +2184,10 @@ mod tests {
         assert_eq!(notable[0].bracketed_domains, Some(68));
     }
 
-    /// A frame the exact instrument cannot speak for is UNKNOWN, not clean.
-    ///
-    /// This is the t21 discrepancy in miniature: that capture had 318 frames,
-    /// 315 carrying the instrument and 98 of those mismatching, so 217 frames
-    /// were checked and clean -- yet `neither` read 220, because the 3
-    /// probe-less frames were folded into the clean cell by
-    /// `exact_mismatch.unwrap_or(false)`. The clean cell is what the refusal
-    /// policy's price is read against, so padding it understates the loss.
-    ///
-    /// MUTATION RUN: restore `let mismatch = exact_mismatch.unwrap_or(false);`
-    /// and match on `(mismatch, label_skew, torn)`. Observed failure:
-    ///   `an uninstrumented frame was counted as checked-and-clean: neither=2`
-    ///   (left 2, right 1).
     #[test]
     fn a_frame_without_the_exact_instrument_is_unknown_not_clean() {
         let mut sequence = 0u64;
-        // One frame that WAS checked and found clean.
         let mut stream = frame(&mut sequence, HOUR_A, Some((0, 68)), 0);
-        // One frame carrying no exact instrument at all: nothing checked it.
         stream.extend_from_slice(&frame(&mut sequence, HOUR_B, None, 0));
         let report = audit(&stream);
 
@@ -2639,7 +2205,6 @@ mod tests {
         );
         assert_eq!(table.mismatch_only, 0);
         assert_eq!(table.torn_witness_only, 0);
-        // Every frame is still accounted for exactly once.
         assert_eq!(
             table.neither
                 + table.label_skew_only
@@ -2658,10 +2223,6 @@ mod tests {
         );
     }
 
-    /// MUTATION RUN: change `domains >= bracketed` to `domains > bracketed` in
-    /// `finalize_frame`. Observed failure:
-    ///   `assertion `left == right` failed: a frame that mislabelled every
-    ///    bracketed domain was called partial` left: 0 right: 1.
     #[test]
     fn wholly_and_partially_mislabelled_frames_are_told_apart() {
         let mut sequence = 0u64;
@@ -2684,22 +2245,6 @@ mod tests {
         assert_eq!(distribution, vec![(8, 1), (68, 1)]);
     }
 
-    /// The instrument being ABSENT is not the instrument saying zero -- and it
-    /// is not the instrument saying one either. A capture from a recorder that
-    /// predates the instrument must be reported as UNCHECKED.
-    ///
-    /// This test asserted `neither == 1` when it was written, i.e. it pinned the
-    /// absent frame into the CLEAN cell. That was the same conflation from the
-    /// other side: "no evidence" was being reported as "evidence of no
-    /// mismatch", which is what let 3 probe-less t21 frames pad `neither` from
-    /// 217 to 220. The claim the test exists to make -- absent is not a
-    /// mismatch -- is unchanged and is asserted below.
-    ///
-    /// MUTATION RUN: make `mismatch` default to `true` when the instrument is
-    /// absent (`exact_mismatch.unwrap_or(true)` with the old two-valued match).
-    /// Observed failure:
-    ///   `assertion `left == right` failed: a frame with no exact instrument
-    ///    was classified as mismatching` left: 0 right: 1.
     #[test]
     fn an_absent_exact_instrument_is_not_read_as_a_mismatch() {
         let mut sequence = 0u64;
@@ -2726,9 +2271,6 @@ mod tests {
         assert!(report.section_d_classification.notable_frames.is_empty());
     }
 
-    /// The old two axes still work and still occupy their own cells -- the fix
-    /// ADDS an axis, and a frame whose skew really is nonzero must not be
-    /// swallowed by the new one.
     #[test]
     fn a_nonzero_label_skew_still_has_its_own_cell() {
         let mut sequence = 0u64;
@@ -2754,9 +2296,6 @@ fn record_type_name(record_type: u16) -> &'static str {
         COMPACT_RECORD_TYPE_FRAME_REFUSED => "FRAME_REFUSED",
         COMPACT_RECORD_TYPE_FRAME_DEGRADED => "FRAME_DEGRADED",
         COMPACT_RECORD_TYPE_CAPTURE_TERMINATED => "CAPTURE_TERMINATED",
-        // The two clock-recovery records. Both were reaching this audit as
-        // "UNKNOWN", which is the least helpful thing an hour-label audit can
-        // say about a record that exists precisely to explain an hour gap.
         compact_contract::COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL => {
             "CLOCK_UNREADABLE_INTERVAL"
         }
@@ -2772,8 +2311,6 @@ fn record_type_name(record_type: u16) -> &'static str {
 mod freeze_census_name_tests {
     use super::*;
 
-    /// kills: removing the type-11 label makes sealed attach telemetry look
-    /// like an unassigned wire value while type 12 must remain diagnostic.
     #[test]
     fn freeze_census_has_a_name_and_type_twelve_does_not() {
         assert_eq!(

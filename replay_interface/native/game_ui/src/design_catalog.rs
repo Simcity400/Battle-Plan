@@ -1,7 +1,3 @@
-//! XUI13 design/template/variant production admission.
-//!
-//! Definitions may originate in resolved static artifacts or live extractor
-//! rows. The observer path uses an explicit deterministic replay-side order.
 
 use crate::readonly_design_peace::DesignerViewKind;
 use replay_core::{
@@ -81,9 +77,6 @@ pub enum ObserverDesignCatalogueRejection {
     CatalogueHourUnavailable { hour: i64, reason: String },
     UnknownOwnerCompleteness { design_id: String },
     UnknownDefinitionCompleteness { design_id: String },
-    /// A27 proves only runtime type 70 for equipment variants. It cannot split
-    /// that census into tank, aircraft, or ship families without a separate
-    /// authenticated authored-definition join.
     UnsupportedFamily { family: DesignerViewKind },
 }
 
@@ -91,24 +84,14 @@ pub enum ObserverDesignCatalogueRejection {
 pub struct ObserverDesignerViewState {
     pub family: DesignerViewKind,
     pub anchor_design_id: String,
-    /// Last replay hour at which the app proved this anchor against the exact
-    /// family/country controller context. This is reconciliation state only;
-    /// the compositor still performs full admission independently.
     pub anchor_catalogue_hour: i64,
-    /// Owner and family paired with `anchor_catalogue_hour`. Together these
-    /// fields prevent a same-hour country or family change from reusing a
-    /// stale anchor-admission cache.
     pub anchor_catalogue_owner_tag: String,
     pub anchor_catalogue_family: DesignerViewKind,
     pub selected_design_id: Option<String>,
     pub our_filter_enabled: bool,
     pub foreign_filter_enabled: bool,
     pub obsolete_filter_enabled: bool,
-    /// Controller +0xf418 country IDs excluded from the catalogue. Countries
-    /// absent from this set are the selected/enabled strip rows.
     pub excluded_country_filter_tags: Vec<String>,
-    /// Viewer-owned wheel ticks. The compositor multiplies this by the
-    /// effective GUI file's authored `scroll_wheel_factor`.
     pub scroll_wheel_steps: u32,
     pub country_scroll_wheel_steps: u32,
 }
@@ -179,10 +162,6 @@ pub enum ObserverDesignerViewRejection {
     UnknownSelection(String),
 }
 
-/// Resolve an empty viewer anchor from the complete native A27-v3 family
-/// census. The first successful identity is the engine-native source-order
-/// anchor, never a filename/name heuristic. If the complete family has no
-/// candidates, the empty anchor is retained and admitted as measured-empty.
 pub fn resolve_observer_designer_view_state(
     frame: &WorldFrame,
     owner_tag: &str,
@@ -198,12 +177,6 @@ pub fn resolve_observer_designer_view_state(
         && viewer.anchor_catalogue_family == viewer.family;
     let mut resolved = viewer.clone();
     if !context_is_current {
-        // A27 is a complete per-hour native census. A cached anchor or
-        // selection is therefore evidence only for the exact hour, owner, and
-        // family that admitted it. Re-enter through the empty-anchor law to
-        // select the new hour's first native-order family member, and retain a
-        // user selection only when the new complete membership still proves
-        // it exists.
         resolved.anchor_design_id.clear();
         resolved.selected_design_id = None;
         let current = admit_observer_designer_view(frame, owner_tag, &resolved)?;
@@ -294,20 +267,6 @@ pub fn admit_observer_designer_view(
     })
 }
 
-/// Admit the viewer-selected country's complete A27 catalogue for one designer family.
-///
-/// This observer path deliberately does not consult d78 or d79. It filters the unfiltered
-/// portable A27 census by the viewer-selected owner and the kinds A27 authenticates, then orders
-/// matching rows by `design_id`. Division is authenticated by runtime type 52; Equipment and
-/// VariantUpgrade use A27's lossless generic runtime-type-70 census. Tank, Plane, and Ship refuse
-/// until a separate authenticated authored-definition join can subtype those type-70 rows.
-/// That order is a deterministic replay law, not an engine display order: the
-/// engine order previously captured by d78 was already filtered by one past player's local
-/// designer toggles and is not authoritative for a new observer.
-///
-/// A catalogue with no matching rows is measured-empty and returns `Ok` with an empty slice.
-/// Missing authority, an unserved hour, and unknown owner/definition completeness remain typed
-/// refusals.
 pub fn admit_observer_design_catalogue(
     frame: &WorldFrame,
     owner_tag: &str,

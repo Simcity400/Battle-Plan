@@ -1,9 +1,3 @@
-//! Lane-local compact schema for `army_battleplans_depth_live`.
-//!
-//! This crate is intentionally self-contained and is not registered in the
-//! shared native workspace by this packet. The serial integration worker can
-//! move these types behind the collector/recorder registration hooks.
-
 pub mod orders_group_live;
 
 use std::collections::BTreeSet;
@@ -60,15 +54,12 @@ pub const STATUS_VALIDATION_FAILED: u32 = 5;
 pub const STATUS_FIXTURE_REQUIRED: u32 = 6;
 pub const STATUS_COLD_PREFLIGHT_ONLY: u32 = 7;
 pub const ORDER_OWNER_KIND_ARMY: u32 = orders_group_live::ORDER_OWNER_KIND_ARMY;
-pub const ORDER_OWNER_KIND_ARMY_GROUP: u32 =
-    orders_group_live::ORDER_OWNER_KIND_ARMY_GROUP;
+pub const ORDER_OWNER_KIND_ARMY_GROUP: u32 = orders_group_live::ORDER_OWNER_KIND_ARMY_GROUP;
 
 pub const COMPACT_STATUS_DELTA_DATA: u32 = compact_contract::COMPACT_STATUS_DELTA_DATA;
 pub const COMPACT_STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
 pub const COMPACT_STATUS_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
-/// a729 `COrderInstance::GetOrderType()` values proven by the retained
-/// order-tool and order-instance producer/consumer evidence.
 pub const ORDER_TYPE_MOVE: i32 = 1;
 pub const ORDER_TYPE_LINE: i32 = 2;
 pub const ORDER_TYPE_INVASION: i32 = 3;
@@ -76,14 +67,7 @@ pub const ORDER_TYPE_PARADROP: i32 = 4;
 pub const ORDER_TYPE_AREA_DEFENSE: i32 = 5;
 const MAX_CHILD_ROWS: u32 = 5_000;
 const MAX_INLINE_CHILD_ROWS: u32 = 256;
-/// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
-/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`). A separate
-/// constant from the province one even though the numbers coincide.
 const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
-/// The province id space's STRUCTURAL width (lane IA). Was a guess --
-/// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
-/// four different ceilings for one id space. Proven from the engine's signed-int
-/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`).
 const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 const MAX_ARMY_ID: u32 = i32::MAX as u32;
 const MAX_SLOT_INDEX: u32 = 64;
@@ -110,8 +94,6 @@ pub trait BattleplansDepthMemory {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawOrderObservation {
     pub owner_kind: u32,
-    /// Stable type-53 owner ID. The legacy field name remains wire-compatible;
-    /// pair it with `owner_kind` before interpreting it as an army identifier.
     pub army_id: u32,
     pub generation: u64,
     pub engine_order_instance_id: u32,
@@ -409,10 +391,6 @@ pub fn read_non_type5_path_provinces<M: BattleplansDepthMemory>(
         return (path, STATUS_EXACT);
     }
 
-    // a729 paradrop geometry has a split representation. The execution and
-    // can-execute consumers use the first +0x70 entry as source and +0xB8 as
-    // target. Carry exactly that semantic pair on the pointer-free path table;
-    // do not expose unused tail storage as route geometry.
     let source = path[0];
     let Some(target_address) = order_ptr.checked_add(ORDER_OFF_PARADROP_TARGET) else {
         return (Vec::new(), STATUS_VALIDATION_FAILED);
@@ -496,8 +474,7 @@ pub fn extract_validated_depth_subset(source: &[RawOrderObservation]) -> DepthEx
             } else if matches!(
                 row.order_type,
                 ORDER_TYPE_MOVE | ORDER_TYPE_LINE | ORDER_TYPE_INVASION | ORDER_TYPE_PARADROP
-            )
-                && row.geometry_status == STATUS_EXACT
+            ) && row.geometry_status == STATUS_EXACT
                 && !row.path_provinces.is_empty()
                 && (row.order_type != ORDER_TYPE_PARADROP || row.path_provinces.len() == 2)
             {
@@ -587,8 +564,6 @@ pub fn collect_and_encode_depth_record(
     }
 }
 
-/// Production form of the record: the legacy exact order rows plus a complete,
-/// pointer-free type-53 manager/scalar extension.
 pub fn collect_and_encode_depth_record_with_orders_groups(
     observations: &[RawOrderObservation],
     elapsed_wall_ms: u64,
@@ -606,19 +581,14 @@ pub fn collect_and_encode_depth_record_with_orders_groups(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
-    if let Some(orphan) = observations
-        .iter()
-        .find(|row| {
-            !row.deleted
-                && match row.owner_kind {
-                    ORDER_OWNER_KIND_ARMY => !complete_army_ids.contains(&row.army_id),
-                    ORDER_OWNER_KIND_ARMY_GROUP => {
-                        !complete_army_group_ids.contains(&row.army_id)
-                    }
-                    _ => true,
-                }
-        })
-    {
+    if let Some(orphan) = observations.iter().find(|row| {
+        !row.deleted
+            && match row.owner_kind {
+                ORDER_OWNER_KIND_ARMY => !complete_army_ids.contains(&row.army_id),
+                ORDER_OWNER_KIND_ARMY_GROUP => !complete_army_group_ids.contains(&row.army_id),
+                _ => true,
+            }
+    }) {
         return Err(orders_group_live::OrdersGroupReadError::InvalidObject {
             army_id: orphan.army_id,
             reason: "typed order owner absent from complete manager",
@@ -871,10 +841,6 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
             .parse_errors
             .push(format!("offset {offset}: changed rows exceed row count"));
     }
-    // A delta can legitimately emit more rows than the live census observed:
-    // removals emit tombstones, and one observed replacement may emit both an
-    // old-generation tombstone and a new-generation row. The full-baseline
-    // invariant remains exact.
     if status_flags & COMPACT_STATUS_DELTA_DATA == 0 && observed_order_rows < row_count {
         summary.parse_errors.push(format!(
             "offset {offset}: observed order rows below emitted rows"
@@ -987,7 +953,10 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DecodeSummary {
                 "offset {offset}: deleted row {row_index} has child fields"
             ));
         }
-        if !matches!(owner_kind, ORDER_OWNER_KIND_ARMY | ORDER_OWNER_KIND_ARMY_GROUP) {
+        if !matches!(
+            owner_kind,
+            ORDER_OWNER_KIND_ARMY | ORDER_OWNER_KIND_ARMY_GROUP
+        ) {
             summary.parse_errors.push(format!(
                 "offset {offset}: row {row_index} has invalid owner kind"
             ));
@@ -1163,10 +1132,6 @@ fn read_u32_vector<M: BattleplansDepthMemory>(
     max_count: u32,
     max_inline: u32,
     max_value: u32,
-    // The bound-trip unit for `max_value`. Passed rather than inferred because
-    // this reader serves BOTH id spaces -- type-5 targets are STATE ids, paths
-    // are PROVINCE ids -- and filing both under one unit would report the wrong
-    // space, which is the provenance error this lane exists to close.
     value_trip_unit: usize,
 ) -> Result<(Vec<u32>, u32), u32> {
     let begin = mem
@@ -1209,15 +1174,7 @@ fn read_u32_vector<M: BattleplansDepthMemory>(
         if value == 0 {
             return Err(STATUS_VALIDATION_FAILED);
         }
-        // ATTRIBUTED separately from the zero/heap/read/length failures above,
-        // which all share STATUS_VALIDATION_FAILED. The status is unchanged --
-        // the whole vector is still refused -- but an out-of-space identity is
-        // no longer indistinguishable from a bad length or an unreadable body.
-        if compact_contract::bound_trips::bound_exceeded_u32(
-            value,
-            max_value,
-            value_trip_unit,
-        ) {
+        if compact_contract::bound_trips::bound_exceeded_u32(value, max_value, value_trip_unit) {
             return Err(STATUS_VALIDATION_FAILED);
         }
         out.push(value);
@@ -1401,14 +1358,8 @@ mod tests {
             army_group_ids: vec![],
             registered_entry_count: 1,
         };
-        let mut record = collect_and_encode_depth_record_with_orders_groups(
-            &[],
-            77,
-            0,
-            0,
-            &carrier,
-        )
-        .unwrap();
+        let mut record =
+            collect_and_encode_depth_record_with_orders_groups(&[], 77, 0, 0, &carrier).unwrap();
         record.payload[20..24].copy_from_slice(&2u32.to_le_bytes());
 
         let decoded = decode_depth_payload(0, &record.payload);
@@ -1464,16 +1415,16 @@ mod tests {
         let mut group_order = exact_order(23, 0, ORDER_TYPE_LINE, Vec::new(), vec![101]);
         group_order.owner_kind = ORDER_OWNER_KIND_ARMY_GROUP;
 
-        let record = collect_and_encode_depth_record_with_orders_groups(
-            &[group_order],
-            77,
-            0,
-            1,
-            &carrier,
-        )
-        .unwrap();
-        assert_eq!(read_u32(&record.payload, HEADER_LEN + 84), ORDER_OWNER_KIND_ARMY_GROUP);
-        assert!(decode_depth_payload(0, &record.payload).parse_errors.is_empty());
+        let record =
+            collect_and_encode_depth_record_with_orders_groups(&[group_order], 77, 0, 1, &carrier)
+                .unwrap();
+        assert_eq!(
+            read_u32(&record.payload, HEADER_LEN + 84),
+            ORDER_OWNER_KIND_ARMY_GROUP
+        );
+        assert!(decode_depth_payload(0, &record.payload)
+            .parse_errors
+            .is_empty());
     }
 
     #[test]
@@ -1551,13 +1502,8 @@ mod tests {
         let mut removed = exact_order(10, 0, 5, vec![44], Vec::new());
         removed.deleted = true;
         removed.target_states.clear();
-        let record = collect_and_encode_depth_record(
-            &[removed],
-            10,
-            COMPACT_STATUS_DELTA_DATA,
-            1,
-            0,
-        );
+        let record =
+            collect_and_encode_depth_record(&[removed], 10, COMPACT_STATUS_DELTA_DATA, 1, 0);
         let decoded = decode_depth_payload(0, &record.payload);
         assert_eq!(decoded.parse_errors, Vec::<String>::new());
         assert_eq!(decoded.totals.rows, 1);
@@ -1658,8 +1604,7 @@ mod tests {
         let (path, status) = read_non_type5_path_provinces(&mem, 0x3000, 99);
         assert!(path.is_empty());
         assert_eq!(status, STATUS_UNSUPPORTED);
-        let (path, status) =
-            read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_AREA_DEFENSE);
+        let (path, status) = read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_AREA_DEFENSE);
         assert!(path.is_empty());
         assert_eq!(status, STATUS_EXACT);
     }
@@ -1667,13 +1612,7 @@ mod tests {
     #[test]
     fn prepared_type1_and_type4_geometry_is_exact() {
         let movement = exact_order(10, 0, ORDER_TYPE_MOVE, Vec::new(), vec![101, 102]);
-        let paradrop = exact_order(
-            10,
-            1,
-            ORDER_TYPE_PARADROP,
-            Vec::new(),
-            vec![201, 202],
-        );
+        let paradrop = exact_order(10, 1, ORDER_TYPE_PARADROP, Vec::new(), vec![201, 202]);
         let record = collect_and_encode_depth_record(&[movement, paradrop], 10, 0, 1, 2);
         assert_eq!(record.emitted_rows, 2);
         assert_eq!(record.extraction.non_type5_exact_path_rows, 2);
@@ -1684,13 +1623,7 @@ mod tests {
 
     #[test]
     fn prepared_unknown_order_geometry_cannot_bypass_type_dispatch() {
-        let input = exact_order(
-            10,
-            0,
-            99,
-            Vec::new(),
-            vec![101, 102],
-        );
+        let input = exact_order(10, 0, 99, Vec::new(), vec![101, 102]);
         let record = collect_and_encode_depth_record(&[input], 10, 0, 1, 1);
         assert_eq!(record.emitted_rows, 1);
         assert_eq!(record.extraction.non_type5_exact_path_rows, 0);
@@ -1700,16 +1633,9 @@ mod tests {
 
     #[test]
     fn decoder_rejects_path_geometry_for_unknown_order_type() {
-        let input = exact_order(
-            10,
-            0,
-            ORDER_TYPE_INVASION,
-            Vec::new(),
-            vec![101, 102],
-        );
+        let input = exact_order(10, 0, ORDER_TYPE_INVASION, Vec::new(), vec![101, 102]);
         let mut record = collect_and_encode_depth_record(&[input], 10, 0, 1, 1);
-        record.payload[HEADER_LEN + 20..HEADER_LEN + 24]
-            .copy_from_slice(&99u32.to_le_bytes());
+        record.payload[HEADER_LEN + 20..HEADER_LEN + 24].copy_from_slice(&99u32.to_le_bytes());
         let decoded = decode_depth_payload(0, &record.payload);
         assert!(decoded
             .parse_errors
@@ -1735,8 +1661,7 @@ mod tests {
         assert_eq!(movement, vec![101, 102]);
         assert_eq!(movement_status, STATUS_EXACT);
 
-        mem.u32s
-            .insert(0x3000 + ORDER_OFF_PARADROP_TARGET, 303);
+        mem.u32s.insert(0x3000 + ORDER_OFF_PARADROP_TARGET, 303);
         let (paradrop, paradrop_status) =
             read_non_type5_path_provinces(&mem, 0x3000, ORDER_TYPE_PARADROP);
         assert_eq!(paradrop, vec![101, 303]);

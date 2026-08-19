@@ -86,12 +86,6 @@ def generate(repo_root: Path) -> dict:
         existing = json.loads(allowance_path.read_text(encoding="utf-8"))
 
     tree_external = existing.get("external_sources", [])
-    # The gate's own index of the cited side.  Needed here because the citation
-    # a match SPELLS can be wider than the match -- a filename with a space in it
-    # is completed by looking the wider spelling up in this index -- and a
-    # restamper that keyed the narrower spelling would write an allowance whose
-    # keys the gate does not recognise.  A `Tree` is one directory walk; it reads
-    # no source file until asked to.
     tree = VERIFY.Tree(repo_root)
     references: dict[str, dict[str, int]] = {}
     for citing in VERIFY.scan_files(repo_root):
@@ -108,9 +102,6 @@ def generate(repo_root: Path) -> dict:
             path, base = VERIFY.cited_path(text, match, tree)
             if VERIFY._external(tree_external, path, base):
                 continue
-            # Spelt exactly as the gate spells it, RANGE ENDPOINT INCLUDED --
-            # the two must agree on the budget key or the allowance this writes
-            # is one the gate rejects.
             counts[VERIFY.written_citation(text, match, tree)] += 1
         if counts:
             references[citing] = dict(sorted(counts.items()))

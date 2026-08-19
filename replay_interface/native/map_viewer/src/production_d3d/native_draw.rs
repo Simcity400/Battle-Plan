@@ -1,10 +1,3 @@
-//! Exact execution of portable particle/entity draw submissions.
-//!
-//! The replay carrier is already structurally validated by `replay_core`.
-//! This module supplies the remaining production boundary: every referenced
-//! game payload is reopened only through a validated effective-VFS admission,
-//! every D3D descriptor is reconstructed literally, and draw interleave is
-//! taken only from the prepared frame's authoritative cross-family order.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -66,8 +59,6 @@ fn hr_ok(value: i32, role: &str) -> Result<()> {
     }
 }
 
-/// Borrowed render-graph target that already contains the exact map-object
-/// predecessors of the submitted particle/entity sequence.
 pub struct SubmittedMainSceneTarget {
     pub color_identity: PreparedRenderTarget,
     pub depth_identity: Option<PreparedRenderTarget>,
@@ -123,8 +114,6 @@ unsafe fn execute_draw(
     additional_colors: &[SubmittedColorTarget],
     stream_output: &mut StreamOutputBuffers,
 ) -> Result<()> {
-    // The source key is not decorative provenance: exact VFS admission is
-    // required before captured compiled bytecode may execute.
     resolver.read_admitted_used_content(&shader.source)?;
     bind_output(gfx, output, target, additional_colors)?;
 
@@ -248,9 +237,6 @@ unsafe fn execute_draw(
         ),
     }
     (*context).SOSetTargets(0, ptr::null(), ptr::null());
-    // Avoid retaining replay-owned resources into a later pass. All objects
-    // remain alive until after the immediate-context draw call has consumed
-    // the bindings.
     clear_shader_bindings(context);
     Ok(())
 }
@@ -725,10 +711,6 @@ fn stream_output_layout(
     Ok((count, slots, offsets))
 }
 
-/// Draw-boundary admission for carried viewport/scissor state shared by every
-/// production bind path. The stream is validated at decode time, but the
-/// execution boundary re-checks in-memory callers so raw f32 bits can never
-/// hand the driver a non-finite or empty viewport, nor an inverted scissor.
 pub(super) fn validate_output_viewport_scissor(output: &RenderOutputState) -> Result<()> {
     let viewport = [
         f32::from_bits(output.viewport.top_left_x_f32_bits),
@@ -755,8 +737,6 @@ unsafe fn bind_output(
     target: &SubmittedMainSceneTarget,
     additional_colors: &[SubmittedColorTarget],
 ) -> Result<()> {
-    // Reject malformed carried state before any context mutation so a refused
-    // draw leaves no partially bound output behind.
     validate_output_viewport_scissor(output)?;
     if output.ordered_color_targets.len() != 1 + additional_colors.len() {
         return Err("submitted draw color-target count disagrees with prepared MRT target".into());
@@ -1218,8 +1198,6 @@ unsafe fn create_texture_views(
             resolver.read_admitted_used_content(&binding.content)?;
             let (resource, storage, init) =
                 create_texture_resource(gfx, resolver, &binding.resource, particle_records)?;
-            // Keep upload storage alive through Create*; it can be dropped once
-            // the immutable/default resource has copied the initial data.
             let _storage = storage;
             let _init = init;
             let desc = srv_desc(&binding.view)?;
@@ -1574,16 +1552,10 @@ unsafe fn verify_occupation_secondary_inline_readback(
     verification
 }
 
-/// BC1-BC7 block-compressed DXGI format ids, including the TYPELESS and SRGB
-/// variants (BC1..BC5 occupy 70..=84, BC6H/BC7 occupy 94..=99).
 fn is_block_compressed_dxgi_format(format: u32) -> bool {
     matches!(format, 70..=84 | 94..=99)
 }
 
-/// Physical row count the D3D11 runtime reads for one mip: ceil(height/4)
-/// block rows for BC formats, `height` texel rows otherwise. Unknown formats
-/// use the uncompressed row count, which reads the most bytes and is therefore
-/// the conservative admission bound.
 fn physical_row_count(format: u32, mip_height: u32) -> u32 {
     if is_block_compressed_dxgi_format(format) {
         mip_height.max(1).div_ceil(4)
@@ -1592,13 +1564,6 @@ fn physical_row_count(format: u32, mip_height: u32) -> u32 {
     }
 }
 
-/// Validate one carried texture subresource against what the D3D11 runtime
-/// will actually read from the materialized payload before its pointer is
-/// handed to `CreateTexture*`/`UpdateSubresource`. Carried pitches are
-/// otherwise trusted raw bits: a self-consistent hostile container could
-/// declare a row pitch far larger than its payload and make the driver read
-/// past the allocation. Sizes are lower bounds (padded captures stay valid);
-/// exact-format tightness is enforced only for formats the legacy table knows.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn validate_texture_subresource_payload(
     dimension: TextureResourceDimension,
@@ -2111,9 +2076,6 @@ unsafe fn clear_shader_bindings(context: *mut ID3D11DeviceContext) {
     let null_srvs = [ptr::null_mut(); D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT as usize];
     let null_samplers = [ptr::null_mut(); D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT as usize];
     let null_cbs = [ptr::null_mut(); D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT as usize];
-    // Any programmable stage retained from a preceding static map pass would
-    // alter the draw. Null every stage before binding the exact carried
-    // VS/PS plus each optional authenticated stage (and again after drawing).
     (*context).VSSetShader(ptr::null_mut(), ptr::null(), 0);
     (*context).PSSetShader(ptr::null_mut(), ptr::null(), 0);
     (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);
@@ -2247,7 +2209,6 @@ mod tests {
 
     #[test]
     fn texture_subresource_admission_refuses_payloads_smaller_than_driver_reads() {
-        // 8x4 RGBA8 (DXGI 28): the driver reads row_pitch * 4 rows = 128 bytes.
         let error = validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             28,
@@ -2262,8 +2223,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("runtime reads 128"), "{error}");
-        // Hostile shape: sha-consistent 4-byte inline payload with an inflated
-        // row pitch would make the driver read ~1 MiB past the allocation.
         let error = validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             28,
@@ -2278,7 +2237,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("payload has 4 bytes"), "{error}");
-        // The same geometry with a complete payload is admitted unchanged.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             28,
@@ -2291,7 +2249,6 @@ mod tests {
             128,
         )
         .unwrap();
-        // Padded captures stay valid: larger payloads are lower-bounded only.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             28,
@@ -2322,7 +2279,6 @@ mod tests {
 
     #[test]
     fn texture_subresource_admission_uses_bc_block_rows_not_texel_rows() {
-        // BC1 8x8 (DXGI 71): 2 block rows of 16 bytes, not 8 texel rows.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             71,
@@ -2353,7 +2309,6 @@ mod tests {
 
     #[test]
     fn texture_subresource_admission_enforces_known_format_minimum_row_pitch() {
-        // DXGI 28 at width 8 requires at least 32 bytes per row.
         let error = validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             28,
@@ -2368,8 +2323,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("below minimum 32"), "{error}");
-        // Formats outside the exact table (DXGI 24, R10G10B10A2_TYPELESS) are
-        // not refused for tightness; the conservative geometric bound remains.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             24,
@@ -2398,7 +2351,6 @@ mod tests {
 
     #[test]
     fn texture3d_subresource_admission_covers_slice_pitch_and_depth() {
-        // slice_pitch == row_pitch with 4 rows hides three rows of reads.
         let error = validate_texture_subresource_payload(
             TextureResourceDimension::Texture3d,
             28,
@@ -2413,7 +2365,6 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("slice_pitch 16 is below"), "{error}");
-        // Depth 2 reads slice_pitch * 1 + row_pitch * rows = 64 + 64 = 128.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture3d,
             28,
@@ -2442,7 +2393,6 @@ mod tests {
 
     #[test]
     fn texture_subresource_admission_shrinks_geometry_per_mip() {
-        // Mip 1 of 8x4 RGBA8 is 4x2: two rows of at least 16 bytes.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture2d,
             28,
@@ -2455,7 +2405,6 @@ mod tests {
             32,
         )
         .unwrap();
-        // Texture3D depth shrinks per mip too: mip 1 of depth 4 reads 2 slices.
         validate_texture_subresource_payload(
             TextureResourceDimension::Texture3d,
             28,

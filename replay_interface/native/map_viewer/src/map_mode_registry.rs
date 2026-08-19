@@ -1,9 +1,3 @@
-//! Exact-a729 map-mode registry and viewer-owned selection law.
-//!
-//! hard-coded registry. `CMapmodesInterface` constructs the visible button
-//! strip in a different order: button 2 selects strategic navy (engine 2)
-//! while button 3 selects strategic air (engine 1). Keeping those identities
-//! separate prevents a UI ordinal from being mistaken for an engine enum.
 
 use crate::Result;
 
@@ -231,9 +225,6 @@ impl ViewerMapModeSelection {
     }
 }
 
-/// Cycle the complete effective viewer-owned database. Function-key buttons
-/// cover only the engine's visible strip; this route deliberately includes the
-/// hidden hard-coded modes and every effective scripted definition.
 pub fn cycle_viewer_map_mode(
     current: &ViewerMapModeSelection,
     effective_scripted_ids: &[String],

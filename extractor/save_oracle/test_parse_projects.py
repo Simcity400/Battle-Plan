@@ -18,14 +18,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import parse_projects as pp  # noqa: E402
+import parse_projects as pp
 
 
-# A synthetic melt: GER with a program_status (one completed project, one
-# active-and-worked project with reward flags + history, one idle/locked
-# project), two facilities (one dismantling), a breakthrough block; plus a
-# character_manager carrying two GER scientists (one with an empty skill) and a
-# ROM scientist + a non-scientist character (must be ignored).
 SYN = """
 date=1940.9.10.13
 version="Operation Postern v1.19.1.0"
@@ -177,25 +172,19 @@ def _build():
     return outputs["projects.json"], report
 
 
-# ---------------------------------------------------------------------------
-# meta / rollup counts
-# ---------------------------------------------------------------------------
 
 def test_meta_stats():
     out, _ = _build()
     st = out["meta"]["stats"]
-    assert st["countries_with_program_status"] == 2          # GER, ROM
-    assert st["projects_total"] == 3                          # only GER has 3
-    assert st["projects_started"] == 2                        # naval + flamethrower
-    assert st["projects_completed"] == 1                      # flamethrower
+    assert st["countries_with_program_status"] == 2
+    assert st["projects_total"] == 3
+    assert st["projects_started"] == 2
+    assert st["projects_completed"] == 1
     assert st["facilities_total"] == 2
-    assert st["scientists_total"] == 3                        # the politician is ignored
-    assert st["scientist_countries"] == 2                     # GER, ROM
+    assert st["scientists_total"] == 3
+    assert st["scientist_countries"] == 2
 
 
-# ---------------------------------------------------------------------------
-# SPECIAL PROJECTS
-# ---------------------------------------------------------------------------
 
 def test_project_field_mapping():
     out, _ = _build()
@@ -207,7 +196,6 @@ def test_project_field_mapping():
     assert nav["iterations"] == 5
     assert nav["phase_progress"] == 24.31002
     assert nav["start"] is True and nav["completed"] is False
-    # project flags keep name + value + date
     flags = {f["flag"]: f for f in nav["project_flags"]}
     assert "sp_naval_generic_reward_major_progress_flag" in flags
     assert flags["sp_naval_generic_reward_major_progress_flag"]["value"] == 1
@@ -223,7 +211,6 @@ def test_reward_history_with_context():
     assert ev["option"] == "sp_naval_generic_reward_option_major_breakthrough"
     assert ev["prototype_reward"] == "sp_naval_generic_reward_major_progress_2"
     assert ev["date"] == "1940.6.29.1"
-    # slimmed context: province + progress + scientist char id (from character={})
     assert ev["context"]["province"] == 241
     assert ev["context"]["progress"] == 24.0
     assert ev["context"]["scientist_char_id"] == 1156
@@ -232,24 +219,20 @@ def test_reward_history_with_context():
 def test_active_vs_completed_split():
     out, _ = _build()
     ger = out["countries"]["GER"]
-    assert ger["projects_active"] == 1                         # only the naval (unfinished)
+    assert ger["projects_active"] == 1
     assert ger["completed_projects"] == ["sp_land_flamethrower_tank"]
     ap = {p["token"]: p for p in ger["active_projects"]}
     assert "sp_naval_support_ships" in ap
-    assert "sp_land_flamethrower_tank" not in ap               # completed -> not active
-    assert "sp_air_jet_engine" not in ap                       # never started
+    assert "sp_land_flamethrower_tank" not in ap
+    assert "sp_air_jet_engine" not in ap
 
 
 def test_active_project_in_facility_flag():
     out, _ = _build()
     ap = {p["token"]: p for p in out["countries"]["GER"]["active_projects"]}
-    # naval project IS being worked at facility 17 (program.project points at it)
     assert ap["sp_naval_support_ships"]["in_facility"] is True
 
 
-# ---------------------------------------------------------------------------
-# FACILITIES
-# ---------------------------------------------------------------------------
 
 def test_facility_field_mapping():
     out, _ = _build()
@@ -265,14 +248,12 @@ def test_facility_field_mapping():
     assert f["supply"]["province_id"] == 241
     assert f["supply"]["motorization_level"] == 0
     assert f["unassigned_scientist"] == {"target": 10, "current": 0, "timed": False}
-    # cross-ref to the scientist token (loc-key, not a display name)
     assert f["scientist_token"] == "GER_burkhardt"
 
 
 def test_facility_idle_when_no_project():
     out, _ = _build()
     facs = {f["id"]: f for f in out["countries"]["GER"]["facilities"]}
-    # facility 20 has no project= -> idle (active_project None)
     assert facs[20]["active_project"] is None
     assert facs[20]["building"] == "air_facility"
     assert facs[20]["supply"]["motorization_level"] == 1
@@ -281,20 +262,16 @@ def test_facility_idle_when_no_project():
 def test_facility_dismantle_in_progress():
     out, _ = _build()
     facs = {f["id"]: f for f in out["countries"]["GER"]["facilities"]}
-    # 17 not dismantling (current=0), 20 IS (current=42)
     assert facs[17]["dismantle_in_progress"] is False
     assert facs[20]["dismantle_in_progress"] is True
     assert facs[20]["dismantle"]["current"] == 42
 
 
-# ---------------------------------------------------------------------------
-# SCIENTISTS
-# ---------------------------------------------------------------------------
 
 def test_scientist_roster():
     out, _ = _build()
     ger = out["scientists"]["GER"]
-    assert len(ger) == 2                                       # politician excluded
+    assert len(ger) == 2
     byid = {s["char_id"]: s for s in ger}
     braun = byid[1152]
     assert braun["country"] == "GER"
@@ -302,7 +279,6 @@ def test_scientist_roster():
     assert braun["name_token"] == "GER_von_braun"
     assert "scientist_trait_rocketry_specialist" in braun["traits"]
     assert "scientist_trait_bright" in braun["traits"]
-    # all four specializations present; empty {} -> 0
     assert braun["skills"] == {
         "specialization_nuclear": 0, "specialization_naval": 0,
         "specialization_air": 4, "specialization_land": 0}
@@ -311,7 +287,7 @@ def test_scientist_roster():
 def test_scientist_non_scientist_ignored():
     out, _ = _build()
     ids = {s["char_id"] for s in out["scientists"]["GER"]}
-    assert 9999 not in ids                                     # the politician
+    assert 9999 not in ids
 
 
 def test_scientist_other_country():
@@ -322,9 +298,6 @@ def test_scientist_other_country():
     assert rom[0]["skills"]["specialization_land"] == 1
 
 
-# ---------------------------------------------------------------------------
-# meta / report / no path leak
-# ---------------------------------------------------------------------------
 
 def test_meta_and_no_path_leak():
     out, report = _build()
@@ -337,20 +310,16 @@ def test_meta_and_no_path_leak():
     assert "SPECIAL-PROJECTS" in report
 
 
-# ---------------------------------------------------------------------------
-# OPTIONAL: cross-check against the real campaign melt if present
-# ---------------------------------------------------------------------------
 
 def test_real_campaign_melt_if_present():
     melt = (Path(__file__).resolve().parent.parent
             / "re_scratch" / "campaign_melt_1940.txt")
     if not melt.is_file():
-        return  # skip silently when the big melt isn't on disk
+        return
     text = melt.read_text(encoding="utf-8", errors="replace")
     outputs, _ = pp.build(text, melt, False)
     out = outputs["projects.json"]
     st = out["meta"]["stats"]
-    # validated against the raw melt
     assert st["countries_with_program_status"] == 143
     assert st["projects_started"] == 30
     assert st["projects_completed"] == 30
@@ -361,7 +330,6 @@ def test_real_campaign_melt_if_present():
     assert ger["projects_started"] == 5
     assert ger["projects_completed"] == 4
     facs = {f["id"]: f for f in ger["facilities"]}
-    # the naval facility, byte-checked against the raw save
     assert facs[17]["active_project"] == "sp_naval_support_ships"
     assert facs[17]["building"] == "naval_facility"
     assert facs[17]["province"] == 241
@@ -382,7 +350,7 @@ def _run_standalone():
         except AssertionError as exc:
             failed += 1
             print(f"FAIL {name}: {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             print(f"ERROR {name}: {exc!r}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

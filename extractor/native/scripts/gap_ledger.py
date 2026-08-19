@@ -27,16 +27,6 @@ from typing import Any
 GAP_LEDGER_SCHEMA = "hoi4-gap-ledger-v2"
 GAP_LEDGER_VERSION = 2
 
-# The wire vocabularies, in the recorder's own spellings.
-#
-# TRANSCRIBED HERE AND PINNED THERE. `compact_contract`'s enums are the
-# authority, and the sweep tests in
-# `compact_contract/tests/script_status_vocabulary_sweep.rs` rebuild each set
-# below from the enum and fail if the two disagree -- the same arrangement that
-# already holds `verify_sink_reconciliation.py`'s `ALLOWED_GAP_REASONS` to the
-# contract. Without them this reader admits a reason the recorder cannot write
-# and the producer's own decoder refuses, which is two readers of one document
-# disagreeing about what it says.
 GAP_REASONS = frozenset({
     "coalesced", "skipped_hour", "source_unavailable", "partial_data",
     "bridge_unavailable", "worker_panic", "torn_sweep", "coverage_shortfall",
@@ -88,15 +78,9 @@ def _ledger(compact_stream: Any) -> dict[str, Any]:
     if not isinstance(ledger, dict):
         raise GapLedgerError("gap_ledger is not an object")
     schema = ledger.get("schema")
-    # THE LEDGER ITSELF IS THE LAST CONTAINER, and it was the last one open.
     _check_fields(ledger, frozenset({
         "schema", "version", "note", "gaps", "domain_gap_outcomes",
     }), "gap_ledger")
-    # AND `note` IS TYPED, not merely named. Allowlisting the name left an
-    # OBJECT-SHAPED HOLE: a name allowlist says nothing about the value under it.
-    # A string is what this format defines `note` to be; the exact prose is
-    # deliberately not pinned, because the note is documentation, part of no class
-    # identity, and cannot change a row -- while an object could carry structure.
     if "note" in ledger and not isinstance(ledger["note"], str):
         raise GapLedgerError("gap_ledger.note is not a string")
     version = ledger.get("version")
@@ -272,10 +256,6 @@ def _domains(class_: dict[str, Any]) -> list[int]:
     for domain in raw:
         if not _is_integer(domain) or domain < 0 or domain > 0xFFFF:
             raise GapLedgerError(f"class.domains entry {domain!r} is not a domain id")
-    # NON-DECREASING, as the encoder writes it: `[4,5]` and `[5,4]` expand to the
-    # same rows after the reader's own sort, so admitting both would let two
-    # documents mean one thing. Not STRICTLY increasing -- a repeated domain is
-    # legal and carries multiplicity.
     if any(a > b for a, b in zip(raw, raw[1:])):
         raise GapLedgerError("class.domains is not in ascending order")
     return list(raw)
@@ -292,9 +272,6 @@ def _runs(class_: dict[str, Any], limit: int | None = None) -> list[int]:
     raw = class_.get("hour_runs")
     if not isinstance(raw, list):
         raise GapLedgerError("class.hour_runs is not an array")
-    # A class that names NO hour expands to nothing, so a table could carry any
-    # number of them and still mean exactly what the empty table means. The
-    # encoder never writes one, and admitting it makes the format non-injective.
     if not raw:
         raise GapLedgerError("class.hour_runs is empty, so the class names no row")
     for run in raw:
@@ -303,25 +280,14 @@ def _runs(class_: dict[str, Any], limit: int | None = None) -> list[int]:
         first, count = run
         if not isinstance(first, int) or isinstance(first, bool):
             raise GapLedgerError("class.hour_runs first is not an integer")
-        # BOUNDED TO `u32`, as the recorder's own reader narrows it. Without the
-        # bound, `[[-2147483648, 4294967296]]` is refused there and materialized
-        # here -- 4.29 billion hours, which is a hang rather than a verdict.
         if (not isinstance(count, int) or isinstance(count, bool) or count < 1
                 or count > 0xFFFFFFFF):
             raise GapLedgerError("class.hour_runs count is not a u32 above zero")
-        # And bounded by the WORK the table admits to, BEFORE the hours are
-        # materialized: `4294967295` is inside the `u32` and still 4.29 billion
-        # iterations. Checked here rather than on the finished list, because the
-        # finished list is the hang.
         if limit is not None and len(hours) + count > limit:
             raise GapLedgerError(
                 f"a class names more than the {limit} rows the table declares")
         _i32(first, "class.hour_runs first hour")
         _i32(first + count - 1, "class.hour_runs last hour")
-        # CANONICAL AND MAXIMAL. `[[101,1],[102,2]]` expands to exactly what
-        # `[[101,3]]` does, so admitting both lets two documents mean one thing --
-        # the same non-injectivity an empty class carries. The encoder never
-        # splits a run and never emits them out of order.
         if hours:
             if first < hours[-1] + 1:
                 raise GapLedgerError("class.hour_runs is not ascending")
@@ -349,9 +315,6 @@ def _bounded_runs(class_: dict[str, Any], declared: int,
         per_hour = class_.get("repeat") if _is_integer(class_.get("repeat")) else 1
     else:
         per_hour = max(len(class_.get("domains") or []), 1)
-    # Bounded by the ROWS the class emits, not the hours it names: a shared class
-    # multiplies every hour by `repeat`, so an hour bound alone still admitted a
-    # `repeat` of `u64::MAX` and the loop under it.
     hours = _runs(class_, max(declared, 0) // max(per_hour, 1))
     for hour in hours:
         if hour in hours_claimed:
@@ -377,9 +340,6 @@ def _anchored(field: Any, anchor: int, what: str) -> int:
         raise GapLedgerError(f"{what} must carry exactly one of `rel` and `abs`")
     if has_abs:
         return _u64(field, "abs", f"{what}.abs")
-    # The RESOLVED value is the tick, and a tick is a `u64`: an offset that
-    # resolves below zero names a tick the recorder could not have written and
-    # that its own reader refuses.
     resolved = anchor + _i64(field, "rel", f"{what}.rel")
     if resolved < 0 or resolved > 0xFFFFFFFFFFFFFFFF:
         raise GapLedgerError(f"{what} resolves to {resolved}, outside the u64 tick range")
@@ -520,11 +480,6 @@ def _expand_gaps(compact_stream: Any) -> list[dict[str, Any]]:
             raise GapLedgerError(
                 "two classes share one identity; they would have been one class")
         seen.add(identity)
-        # The encoder aggregates every domain affected at one hour into ONE
-        # class, so two classes differing only in their domain list may not both
-        # name the same hour -- `domains:[4,5] @100` and `[4] @100` + `[5] @100`
-        # expand identically, and the identity rule cannot see it because the
-        # domain list is part of that identity.
         aggregation = _class_identity(class_, without_domains=True)
         hours_claimed = claimed.setdefault(aggregation, set())
         _check_fields(class_, GAP_CLASS_FIELDS, "gap class")
@@ -549,20 +504,12 @@ def _expand_gaps(compact_stream: Any) -> list[dict[str, Any]]:
                 "witness": _witness(class_.get("witness"), hour_start),
             }
             if grouping == "per_domain":
-                # A per-domain class with NO domain expands to nothing, so a
-                # table could carry any number of them and still mean what the
-                # empty table means. An empty list is meaningful only for a
-                # `shared` gap, where it is the contract's "every domain".
                 if not domains:
                     raise GapLedgerError(
                         "a per_domain class names no domain, so it names no row")
-                # ONE ROW PER LISTED DOMAIN, and the list was formed at this
-                # hour: never the product of a domain set with an hour range.
                 for domain in domains:
                     rows.append({**row, "domains": [domain]})
             elif grouping == "shared":
-                # A ONE-DOMAIN record is always `per_domain` on the encoder's
-                # side, so `shared` with a single domain is a second spelling.
                 if len(domains) == 1:
                     raise GapLedgerError(
                         "a shared class names exactly one domain; that record is per_domain")
@@ -573,10 +520,6 @@ def _expand_gaps(compact_stream: Any) -> list[dict[str, Any]]:
                     rows.append({**row, "domains": list(domains)})
             else:
                 raise GapLedgerError(f"unknown domain grouping {grouping!r}")
-    # REQUIRED, and checked against the expansion. Absent or the wrong type is an
-    # error rather than "no claim was made": the count is the only thing that can
-    # catch a truncated class list, and a check that skips itself when the field
-    # is missing is the check not running.
     declared = table.get("row_count")
     if not _is_integer(declared):
         raise GapLedgerError("gap_ledger.gaps.row_count is not an integer")
@@ -594,8 +537,6 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
     table = ledger.get("domain_gap_outcomes")
     if not isinstance(table, dict):
         raise GapLedgerError("gap_ledger.domain_gap_outcomes is not an object")
-    # THE TABLE IS CLOSED TOO: closing the classes but not their container left
-    # the same escape one level up.
     _check_fields(table, frozenset({
         "row_count", "class_count", "classes", "ordinal_encoding",
         "lane_ordinal_first",
@@ -609,19 +550,11 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
         raise GapLedgerError(f"unknown ordinal_encoding {encoding!r}")
     explicit = encoding == "explicit"
 
-    # The two branches must not carry each other's fields: a `lane_sequential`
-    # table ignores a class's `ordinals` and an `explicit` one ignores
-    # `lane_ordinal_first`, so a document carrying the ignored field means what
-    # the document without it means -- two documents, one expansion.
     if explicit and "lane_ordinal_first" in table:
         raise GapLedgerError(
             "an explicit ordinal table also carries lane_ordinal_first, which it ignores")
     lane_first: dict[tuple[int, str], int] = {}
     if not explicit:
-        # Required, as the recorder's own reader requires it. Absence already
-        # ended in an error one step later (every lane reporting no base), but
-        # not the SAME error, and a reader that fails differently from the
-        # producer's is a reader nobody can reason about.
         lanes = table.get("lane_ordinal_first")
         if not isinstance(lanes, list):
             raise GapLedgerError("lane_ordinal_first is not an array")
@@ -633,8 +566,6 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
                 raise GapLedgerError(
                     f"lane_ordinal_first.domain_id {domain_id} is not a domain id")
             lane = (domain_id, _lane_part(entry))
-            # A DUPLICATE entry silently overwrote its predecessor, so two
-            # different tables expanded identically.
             if lane in lane_first:
                 raise GapLedgerError(f"lane_ordinal_first names lane {lane} twice")
             lane_first[lane] = _u64(entry, "first", "lane_ordinal_first.first")
@@ -650,11 +581,6 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
             raise GapLedgerError(
                 "two classes share one identity; they would have been one class")
         seen.add(identity)
-        # The encoder aggregates every domain affected at one hour into ONE
-        # class, so two classes differing only in their domain list may not both
-        # name the same hour -- `domains:[4,5] @100` and `[4] @100` + `[5] @100`
-        # expand identically, and the identity rule cannot see it because the
-        # domain list is part of that identity.
         aggregation = _class_identity(class_, without_domains=True)
         hours_claimed = claimed.setdefault(aggregation, set())
         _check_fields(class_, OUTCOME_CLASS_FIELDS, "outcome class")
@@ -674,10 +600,6 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
         if explicit:
             if not isinstance(ordinals, list):
                 raise GapLedgerError("explicit outcome class carries no ordinals")
-            # ELEMENT-typed, not just list-typed. An ordinal that is not an
-            # integer reaches a caller as a row field it then compares and
-            # orders by -- the same shape as the `reason` defect: the expander
-            # returns successfully and the CALLER is what breaks.
             for ordinal in ordinals:
                 if not _is_integer(ordinal) or ordinal < 0 or ordinal > 0xFFFFFFFFFFFFFFFF:
                     raise GapLedgerError(
@@ -707,11 +629,9 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
                     "queue_depth": _u32(class_, "queue_depth", "class.queue_depth"),
                     "queue_dropped": _u64(class_, "queue_dropped",
                                           "class.queue_dropped"),
-                    # Filled below when the ordinals are derived.
                     "outcome_ordinal": (ordinals[position] if explicit else 0),
                 }
                 rows.append(row)
-                # Only used to keep the rows in a stable, hour-major order.
                 row["_class_index"] = class_index
                 position += 1
         if explicit and ordinals is not None and len(ordinals) != position:
@@ -720,17 +640,11 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
             )
 
     if not explicit:
-        # One pass per lane, in hour order, mirroring the check the encoder ran
-        # before it chose this encoding. Two rows of one lane at one hour makes
-        # the derivation ambiguous, and the encoder refuses it -- so a ledger
-        # claiming it here is one this reader must not interpret.
         lanes: dict[tuple[int, str], list[dict[str, Any]]] = {}
         for row in rows:
             lanes.setdefault((row["domain_id"], row["part"]), []).append(row)
         for lane in lane_first:
             if lane not in lanes:
-                # An UNUSED lane entry changes nothing about the expansion, so a
-                # table carrying one means what the table without it means.
                 raise GapLedgerError(
                     f"lane_ordinal_first names lane {lane}, which no class expands to")
         for lane, lane_rows in lanes.items():
@@ -744,9 +658,6 @@ def _expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
                 raise GapLedgerError(f"lane {lane} has no lane_ordinal_first")
             for offset, row in enumerate(lane_rows):
                 ordinal = lane_first[lane] + offset
-                # The ordinal is a `u64` on the wire, and the recorder's own
-                # reader adds with `checked_add`. An unbounded sum here would
-                # publish an ordinal no producer could have written.
                 if ordinal > 0xFFFFFFFFFFFFFFFF:
                     raise GapLedgerError("derived outcome ordinal overflows u64")
                 row["outcome_ordinal"] = ordinal
@@ -782,7 +693,7 @@ def _bounded(expand, compact_stream: Any, what: str) -> list[dict[str, Any]]:
         return expand(compact_stream)
     except GapLedgerError:
         raise
-    except Exception as error:  # noqa: BLE001 - the point is to catch the class
+    except Exception as error:
         raise GapLedgerError(f"{what}: {type(error).__name__}: {error}") from error
 
 
@@ -802,9 +713,6 @@ def expand_domain_gap_outcomes(compact_stream: Any) -> list[dict[str, Any]]:
     return _bounded(_expand_domain_gap_outcomes, compact_stream,
                     "gap_ledger.domain_gap_outcomes is unreadable")
 
-# ---------------------------------------------------------------------------
-# Fixture support
-# ---------------------------------------------------------------------------
 
 def pack_rows_for_tests(gaps: list[dict[str, Any]] | None = None,
                         outcomes: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -825,10 +733,6 @@ def pack_rows_for_tests(gaps: list[dict[str, Any]] | None = None,
         witness = dict(row.get("witness") or {})
         hour_start = int(row["hour_start"])
         kind = witness.get("kind")
-        # Rewritten field by field, and only where the fixture stated one: a
-        # scorecard fixture names the fields the axis under test reads and
-        # nothing else, and inventing the rest would make the fixture assert
-        # something it never said.
         if kind == "hour_discontinuity":
             for absolute, relative in (("previous_hour", "previous_hour_rel"),
                                        ("next_hour", "next_hour_rel")):
@@ -911,10 +815,6 @@ def _merge_packed_classes(classes: list[dict[str, Any]]) -> list[dict[str, Any]]
     list), so an hour whose domain set differs becomes its own class, which is
     what the recorder does.
     """
-    # A SHARED class carries its multiplicity in `repeat`, not in its domain
-    # list, so per-domain aggregation would fold two identical shared rows into
-    # one (`domains:[]`) or double a domain list (`[4,5]` -> `[4,4,5,5]`). Shared
-    # rows are therefore grouped on their FULL identity and counted.
     shared_counts: dict[str, dict[str, Any]] = {}
     per_hour: dict[tuple[str, int], dict[str, Any]] = {}
     template: dict[str, dict[str, Any]] = {}
@@ -950,8 +850,6 @@ def _merge_packed_classes(classes: list[dict[str, Any]]) -> list[dict[str, Any]]
 
     out: list[dict[str, Any]] = []
     for bucket in shared_counts.values():
-        # One class per (identity, repeat): two hours that occurred a different
-        # number of times are two classes, exactly as the encoder emits them.
         by_repeat: dict[int, list[int]] = {}
         for hour, times in bucket["hours"].items():
             by_repeat.setdefault(times, []).append(hour)

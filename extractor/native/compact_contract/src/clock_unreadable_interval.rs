@@ -1,76 +1,7 @@
-//! Clock-unreadable interval record (`H4CU`).
-//!
-//! # The hole this closes
-//!
-//! While the authenticated game clock cannot be read, the game keeps advancing.
-//! The scheduler notices only when the clock reads again, at some later hour,
-//! and the hours in between were never admitted: no request was ever built for
-//! them, so no domain ever gapped over them and no frame was ever assembled for
-//! them.
-//!
-//! The obvious repair -- push a per-domain gap range naming the interval -- is
-//! WRONG, and `read_only_scheduler` pins that in a test. Control gap ranges are
-//! transported by `build_scheduler_gap_frames`, which closes every range with
-//! `FRAME_END(range_end)`. The host derives its observed-hour set from FRAME_END
-//! records, so such a range would publish an empty-but-clean frame for the last
-//! hour of an interval nobody looked at, and the recorder would be CLAIMING an
-//! hour it never observed. That is worse than the silence it replaces.
-//!
-//! So the interval was counted in the scheduler's telemetry and never published.
-//! The consequence was the defect this record exists to remove: the host's
-//! `hour_data_accounting` walks the hours between two closed hours and demands a
-//! typed producer statement for each, and there was none -- so an outage the
-//! producer knew about, counted, and could describe exactly failed the capture's
-//! gap gate as an UNEXPLAINED hole.
-//!
-//! # What this record says, and what it refuses to say
-//!
-//! It says: hours `range_start..=range_end` elapsed and were NOT observed,
-//! because the clock could not be read; the last hour observed before the outage
-//! was `last_observed_hour`, the clock read again at `resumed_hour`, and
-//! `unreadable_events` failed reads were seen in between.
-//!
-//! It does NOT say those hours were swept, refused, or covered. It closes no
-//! hour, publishes no `FRAME_END`, and carries no domain. A consumer must count
-//! these hours as data holes -- they are -- and may count them as ACCOUNTED,
-//! because the producer has named them and said why.
-//!
-//! # Self-proving witnesses
-//!
-//! Every field is checked against the others, so a consumer never takes the
-//! producer's word for the shape:
-//!
-//! * `range_start == last_observed_hour + 1` -- the interval begins where
-//!   observation stopped, not somewhere convenient;
-//! * `range_end == resumed_hour - 1` -- and ends where it resumed;
-//! * `range_start <= range_end` -- an empty interval is not a fact worth a
-//!   record, and would let a producer mint an accounted range for no hours;
-//! * `unreadable_events > 0` -- a claim that the clock could not be read must be
-//!   backed by at least one failed read. Zero would let an ordinary hour jump be
-//!   relabelled as an outage.
-//! * every hour is a valid calendar hour.
-//!
-//! Layout, little-endian:
-//!
-//! ```text
-//! magic               [4]  b"H4CU"
-//! version             u16  = CLOCK_UNREADABLE_INTERVAL_VERSION
-//! declared_len        u16  = CLOCK_UNREADABLE_INTERVAL_PAYLOAD_LEN
-//! reserved            u32  MUST BE ZERO
-//! range_start_hour    i32
-//! range_end_hour      i32
-//! last_observed_hour  i32
-//! resumed_hour        i32
-//! unreadable_events   u32  NON-ZERO
-//! reserved_tail       u32  MUST BE ZERO
-//! -- 32 bytes --
-//! ```
-
 pub const CLOCK_UNREADABLE_INTERVAL_MAGIC: &[u8; 4] = b"H4CU";
 pub const CLOCK_UNREADABLE_INTERVAL_VERSION: u16 = 1;
 pub const CLOCK_UNREADABLE_INTERVAL_PAYLOAD_LEN: usize = 32;
 
-/// One published clock-unreadable interval.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClockUnreadableIntervalRecordV1 {
     pub range_start_hour_raw: i32,
@@ -81,13 +12,9 @@ pub struct ClockUnreadableIntervalRecordV1 {
 }
 
 impl ClockUnreadableIntervalRecordV1 {
-    /// How many hours this interval accounts for. Always at least one, because
-    /// an empty interval cannot validate.
     pub fn hour_count(&self) -> u64 {
-        u64::try_from(
-            i64::from(self.range_end_hour_raw) - i64::from(self.range_start_hour_raw) + 1,
-        )
-        .unwrap_or(0)
+        u64::try_from(i64::from(self.range_end_hour_raw) - i64::from(self.range_start_hour_raw) + 1)
+            .unwrap_or(0)
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, String> {
@@ -101,8 +28,6 @@ impl ClockUnreadableIntervalRecordV1 {
         payload[20..24].copy_from_slice(&self.last_observed_hour_raw.to_le_bytes());
         payload[24..28].copy_from_slice(&self.resumed_hour_raw.to_le_bytes());
         payload[28..32].copy_from_slice(&self.unreadable_events.to_le_bytes());
-        // Encode by validating what was just written, so a producer can never
-        // emit a record its own reader would refuse.
         validate_clock_unreadable_interval_payload(&payload)?;
         Ok(payload)
     }
@@ -235,28 +160,24 @@ mod tests {
         assert_eq!(original.hour_count(), 4);
     }
 
-    /// Every witness is CHECKED against its neighbours, so a producer cannot
-    /// mint an accounted range that does not join the hours it claims to sit
-    /// between.
-    ///
-    /// Production change that makes this fail: dropping any one clause from
-    /// `validate_clock_unreadable_interval_payload`.
     #[test]
     fn the_witnesses_must_prove_each_other() {
-        // A range that does not begin where observation stopped.
         let mut detached = record();
         detached.last_observed_hour_raw = hour(90);
         let error = detached.encode().expect_err("a detached start must refuse");
-        assert!(error.contains("not immediately after the last observed hour"), "{error}");
+        assert!(
+            error.contains("not immediately after the last observed hour"),
+            "{error}"
+        );
 
-        // A range that does not end where the clock resumed.
         let mut overrun = record();
         overrun.resumed_hour_raw = hour(200);
         let error = overrun.encode().expect_err("a detached end must refuse");
-        assert!(error.contains("not immediately before the resumed hour"), "{error}");
+        assert!(
+            error.contains("not immediately before the resumed hour"),
+            "{error}"
+        );
 
-        // An outage with no failed read: an ordinary hour jump wearing this
-        // record's name would be accounted for free.
         let mut unwitnessed = record();
         unwitnessed.unreadable_events = 0;
         let error = unwitnessed
@@ -264,7 +185,6 @@ mod tests {
             .expect_err("an unwitnessed outage must refuse");
         assert!(error.contains("no failed clock read"), "{error}");
 
-        // An empty interval: zero hours accounted, one record spent saying so.
         let empty = ClockUnreadableIntervalRecordV1 {
             range_start_hour_raw: hour(101),
             range_end_hour_raw: hour(100),

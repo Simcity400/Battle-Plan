@@ -1,7 +1,3 @@
-//! XUI17 replay-product seam.
-//!
-//! The app consumes typed exact views and effective-file catalogs only. Raw
-//! JSON, recorder POV, and recorder panel lifecycle never cross this boundary.
 
 use game_ui::character_ui::{
     admit_observer_character_ui, CharacterPortraitCatalog, CharacterViewerSelection,

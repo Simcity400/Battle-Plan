@@ -43,11 +43,13 @@ struct FrameRecordCounts {
     data: u64,
 }
 
-/// Fail-closed certification for a complete d53 collector stream.
 pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
     let mut out = Domain53StreamGateSummary::default();
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
-        out.parse_errors.push(format!("stateful stream placement: {error}"));
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes)
+    {
+        out.parse_errors
+            .push(format!("stateful stream placement: {error}"));
     }
     let mut cursor = 0usize;
     let mut previous_sequence = None;
@@ -104,9 +106,8 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
             }
         };
         // The single release epilogue the owner ruling admits after a closed-hour
-        // boundary. It uses the SHARED policy so this gate cannot drift into a
-        // laxer rule than the stateful validator run above.
-        if semantics_ok && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS {
+        if semantics_ok && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
+        {
             if let Ok(census) =
                 compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
             {
@@ -160,10 +161,6 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
                     let authority = Authority {
                         rows: decoded.data_rows_total,
                         changed_rows: decoded.data_changed_rows_total,
-                        // Production d53 PERF names this `unit_count`, but the
-                        // collector sets it to emitted_rows. The DATA unit map
-                        // contains both a total and per-family breakdown, so
-                        // summing that map would double count.
                         units: decoded.data_rows_total,
                         changed_units: decoded.data_changed_rows_total,
                         status: decoded.status_flags_or,
@@ -265,7 +262,6 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
     out
 }
 
-/// Produce a synthetic, explicitly lane-local one-hour proof stream.
 pub fn encode_domain53_proof_stream(game_hour_raw: i32, payload: &[u8]) -> Result<Vec<u8>, String> {
     let decoded = compact::decode_payload(0, payload);
     if !decoded.parse_errors.is_empty() {
@@ -544,10 +540,6 @@ fn validate_owned_authority(
     }
     if owned.perf_count == 1 && owned.data_count == 1 {
         if let (Some(perf), Some(data)) = (owned.perf, owned.data) {
-            // D53's first two PERF counters are observed-work telemetry,
-            // while unit_count/changed_unit_count are the emitted DATA
-            // authority. Do not invent equality between observed work and
-            // emitted rows (delta/partial modes legitimately diverge).
             let matches = perf.units == data.rows
                 && perf.changed_units == data.changed_rows
                 && perf.status == data.status;

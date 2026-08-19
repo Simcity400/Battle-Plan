@@ -1,9 +1,3 @@
-//! Semantic admission for recorder-packaged national-focus definitions.
-//!
-//! Container role, payload bytes, SHA-256, and content epoch are authenticated
-//! by `source`. This module validates the focus-specific self hash, counts,
-//! definition identities, style joins, and static tree topology. It never opens
-//! playback-machine installed content.
 
 use crate::source::PackagedStaticArtifact;
 use serde::Deserialize;
@@ -68,22 +62,8 @@ pub struct StaticFocusDefinition {
     pub authored_y: Option<f64>,
     pub relative_position_id: Option<String>,
     pub prerequisites: Vec<Vec<String>>,
-    /// Authored mutual-exclusion partners. XUI10's exclusive link tiles are
-    /// selected by this set, so it is admitted here rather than re-derived.
     pub mutually_exclusive: Vec<String>,
-    /// How many scripted `offset` blocks the authored definition declares.
-    ///
-    /// `CNationalFocus::GetPosition` adds each block's x/y to the resolved
-    /// position only when that block's trigger passes for the evaluating
-    /// country, so a non-zero count means the authored position alone does not
-    /// determine where the node lands. A replay-side derivation cannot evaluate
-    /// scripted triggers; it refuses such a node by name instead of pretending
-    /// the offsets are absent, which is why the count is admitted rather than
-    /// dropped.
     pub scripted_position_offsets: u32,
-    /// How many scripted `allow_branch` blocks the authored definition
-    /// declares. Non-zero means the node's visibility is a trigger result, not
-    /// an authored fact.
     pub allow_branch_blocks: u32,
     pub background_style_name: String,
     pub background_style: StaticFocusBackgroundStyle,
@@ -204,12 +184,6 @@ struct FocusRow {
     relative_position_id: Option<String>,
     #[serde(default)]
     prerequisites: Vec<Vec<String>>,
-    // No `serde(default)` on the three rows below. An artifact built before
-    // `focus_defs_static_gate.py` emitted them cannot distinguish "this focus
-    // has no scripted offsets" from "this build never looked", and the
-    // derivation's refusal turns on exactly that difference. Defaulting them to
-    // zero/empty would silently promote every stale artifact to "fully
-    // derivable authored geometry", so a stale artifact must fail admission.
     mutually_exclusive: Vec<String>,
     scripted_position_offsets: u32,
     allow_branch_blocks: u32,

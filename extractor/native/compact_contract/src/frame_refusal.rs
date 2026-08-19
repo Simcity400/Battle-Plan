@@ -1,199 +1,38 @@
-//! Frame-level refusal record (`H4FR`).
-//!
-//! A refused frame is ONE event with a list of offenders, not 73 domains each
-//! having a gap. Forcing it into the per-domain gap vocabulary was modelling it
-//! wrong before it was a naming problem, which is why none of the five
-//! `DOMAIN_GAP` reasons fitted: Torn, Overrun, Backpressure, ClockUnreadable and
-//! WorkerPanic all describe a throughput or acquisition outcome for a single
-//! domain, and a refusal is neither.
-//!
-//! What this record has to make true for a consumer:
-//!
-//! * the refused hour is ACCOUNTED FOR. Reading the stream must show that hour
-//!   N was attempted and refused, not that it never existed. That was the right
-//!   instinct behind the per-domain gaps and it survives the change.
-//! * a refusal is DISTINGUISHABLE from a throughput loss without special
-//!   knowledge. A consumer that sees `H4FR` knows the collector declined to
-//!   publish because named domains could not read; a consumer that sees
-//!   `H4DG`/BACKPRESSURE knows a queue overflowed. Those are different facts and
-//!   the stream now says which.
-//! * the offenders are named with the SAME detail the refusal was decided on --
-//!   domain, the raw status bits, the non-tolerated subset, and the reader's own
-//!   typed reason -- rather than a count.
-//!
-//! # Why the reason is STRUCTURED rather than one string
-//!
-//! An earlier shape of this record carried the reason as one comma-joined
-//! string, and the producer that built it kept six units and appended a literal
-//! `...`. Measured on `runs/postmerge_recovery_20260731/deflist-0{1,2}`, that
-//! truncation fired on every single frame for six domains, and the units it
-//! dropped were the ones that would have named the failure -- D44's deciding
-//! units did not reach the wire in either capture. A frame refusal whose whole
-//! job is to say WHY was deleting the why.
-//!
-//! So the free-form reason stays -- it is the producer's own text and it is
-//! usually already computed -- and it is carried alongside the structure a
-//! diagnosis needs:
-//!
-//! * a **predicate**, non-zero code plus name, so a refusal names WHICH check
-//!   failed rather than a walk stage that conflates three to seven of them;
-//! * an **authority**, so "a different domain's roster was incomplete" is not
-//!   reported as this domain's defect;
-//! * a **locator path** of `(ordinal, extent)` levels, so "region 41" arrives
-//!   as "region 41 of 96 in country container 3 of 12";
-//! * **typed units** carrying a role and a presence, so a zero is a zero and a
-//!   reset sentinel is not read as an index;
-//! * **typed truncation accounting** -- offered, emitted, bytes dropped, kind
-//!   -- instead of three dots that a real reason could also end with;
-//! * an optional **off-frame outcome**, so a derivation that is still running
-//!   reports how long it has been running and against what deadline.
-//!
-//! # A refusal that belongs to no domain is still accounted
-//!
-//! A header that only counts offenders, plus a producer guarded on
-//! `!offenders.is_empty()`, means a frame refused for a reason that is not
-//! attributable to any single domain -- its own clock, its identity, a framing
-//! fault in assembly -- publishes NOTHING, and the hour goes entirely
-//! unaccounted: nothing in the stream records that it happened or why. That is
-//! the same defect this record exists to fix, one level up.
-//!
-//! So the header spends its second `u16` on `frame_finding_count` and
-//! frame-level findings follow the offenders. A refusal must still substantiate
-//! itself -- it must name at least one offender OR at least one frame finding
-//! -- so nothing is weakened; what it buys is that "the frame's own clock was
-//! unreadable" is sayable.
-//!
-//! Layout, all little-endian. Header is fixed; entries follow contiguously.
-//!
-//! ```text
-//! magic                [4]  b"H4FR"
-//! version              u16  = FRAME_REFUSAL_VERSION
-//! header_len           u16  = FRAME_REFUSAL_HEADER_LEN
-//! refused_hour         i32
-//! offender_count       u16
-//! frame_finding_count  u16
-//! -- 16 byte header --
-//! per offender:
-//!   domain_id            u16
-//!   reserved             u16   MUST BE ZERO, so a later version can spend it
-//!   status_flags         u32
-//!   non_tolerated        u32
-//!   predicate_code       u32   NON-ZERO; PREDICATE_UNDECLARED if the producer
-//!                              declared none
-//!   truncation_kind      u8    NON-ZERO
-//!   reason_units_named   u8    how many of `units`, from the front, the
-//!                              reason names; the typed replacement for `...`
-//!   predicate_name_len   u16
-//!   units_offered        u32
-//!   units_emitted        u32
-//!   bytes_dropped        u32
-//!   authority            [12]  kind u16 | domain_id u16 | rva u64
-//!   entry_flags          u16   bit0 = an off-frame outcome follows
-//!   reason_len           u16
-//!   locator_len          u16
-//!   units_len            u16
-//!   -- 52 byte fixed entry head --
-//!   predicate_name       [predicate_name_len]
-//!   locator              [locator_len]
-//!   units                [units_len]
-//!   off_frame            [28] when entry_flags bit0
-//!   reason               [reason_len]
-//!
-//! per frame finding, after all offenders:
-//!   predicate_code       u32   NON-ZERO
-//!   authority            [12]
-//!   predicate_name_len   u16
-//!   locator_len          u16
-//!   reason_len           u16
-//!   reserved             u16
-//!   -- 24 byte fixed finding head --
-//!   predicate_name       [predicate_name_len]
-//!   locator              [locator_len]
-//!   reason               [reason_len]
-//! ```
-
 use crate::diagnostic_channel::{
     decode_locator, decode_units, encode_locator, encode_units, Authority, DiagUnit, LocatorLevel,
     OffFrameOutcome, Predicate, TruncationAccount, TruncationKind, OFF_FRAME_LEN,
 };
 
 pub const FRAME_REFUSAL_MAGIC: &[u8; 4] = b"H4FR";
-/// The one version this build writes and reads. Version 1 -- a single
-/// comma-joined reason with no predicate, authority, locator, typed units or
-/// truncation accounting -- was deleted with its encoder, its validator and its
-/// lift; pre-production captures are disposable, so nothing decodes it.
 pub const FRAME_REFUSAL_VERSION: u16 = 2;
 pub const FRAME_REFUSAL_HEADER_LEN: usize = 16;
 pub const FRAME_REFUSAL_ENTRY_FIXED_LEN: usize = 52;
-/// Bound on one locator blob.
 pub const FRAME_REFUSAL_MAX_LOCATOR_LEN: usize = 1024;
-/// Bound on one units blob. Sized so the per-offender floor
-/// ([`crate::diagnostic_channel::OFFENDER_FLOOR_BYTES`]) plus a generous
-/// discretionary share always fits.
 pub const FRAME_REFUSAL_MAX_UNITS_LEN: usize = 4096;
-/// Bound on one predicate name.
 pub const FRAME_REFUSAL_MAX_PREDICATE_NAME_LEN: usize =
     crate::diagnostic_channel::MAX_PREDICATE_NAME_LEN;
 const ENTRY_FLAG_OFF_FRAME: u16 = 1 << 0;
-/// Bound on one reason string, so a pathological reader cannot make a refusal
-/// record unbounded.
 pub const FRAME_REFUSAL_MAX_REASON_LEN: usize = 512;
 
-/// Separator a producer places between its rendered diagnostic units and the
-/// original producer text, as in `domain 88: read_completion=1,answer_extent=1
-/// | reason=D88 source refused`.
-///
-/// It lives HERE, in the contract both sides already depend on, because the
-/// validator below must recognise it as a field boundary. When the producer
-/// owned a private copy, the validator's boundary rule accepted only a comma or
-/// end-of-string, so the final unit before this suffix was reported missing --
-/// which failed H4FR encoding and aborted the whole capture loop with no wire
-/// evidence of why. Two independently-maintained spellings of one delimiter is
-/// the drift that caused that; there is now exactly one.
 pub const FRAME_REFUSAL_REASON_SUFFIX_SEPARATOR: &str = " | reason=";
-/// Bound on offenders. The scheduled roster is 73; this leaves headroom without
-/// admitting an absurd record.
 pub const FRAME_REFUSAL_MAX_OFFENDERS: usize = 1024;
 
-/// One offender, with the structure a diagnosis actually needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameRefusalOffenderV2 {
     pub domain_id: u16,
     pub status_flags: u32,
     pub non_tolerated_flags: u32,
-    /// WHICH check refused. Never absent: a producer that declared none is
-    /// stamped [`Predicate::undeclared`], which is a statement rather than a
-    /// silence and is countable in one pass over a stream.
     pub predicate: Predicate,
-    /// WHO refused. Often not this domain.
     pub authority: Authority,
-    /// Where, as a path of `(ordinal, extent)` levels from outermost in.
     pub locator: Vec<LocatorLevel>,
-    /// The typed units that survived the budget, in role order.
     pub units: Vec<DiagUnit>,
-    /// Exactly what the budget cost this offender.
     pub truncation: TruncationAccount,
-    /// Present when the answer was owed by a derivation that does not run on
-    /// the frame.
     pub off_frame: Option<OffFrameOutcome>,
-    /// The producer's own text. This is the `Err(String)` that the old
-    /// `Err(_) => status |= BIT` arms threw away.
     pub reason: String,
-    /// How many of `units`, in role order from the front, the reason names.
-    ///
-    /// The reason is bounded at [`FRAME_REFUSAL_MAX_REASON_LEN`] and the units
-    /// blob at [`FRAME_REFUSAL_MAX_UNITS_LEN`], four times larger, so a
-    /// verbose domain's reason cannot name everything it carries. This is that
-    /// shortfall as a NUMBER. It is the typed replacement for the literal
-    /// `...`: `named < units.len()` is the loss, stated rather than punctuated,
-    /// and a consumer that wants the rest reads the blob or calls
-    /// [`FrameRefusalOffenderV2::render`].
     pub reason_units_named: u32,
 }
 
 impl FrameRefusalOffenderV2 {
-    /// Render the offender the way a human reads it in a log line. Deliberately
-    /// has no `...` branch: what was dropped is stated numerically.
     pub fn render(&self) -> String {
         let mut parts = vec![
             format!(
@@ -229,10 +68,6 @@ impl FrameRefusalOffenderV2 {
         if !self.reason.is_empty() {
             parts.push(format!("reason={}", self.reason));
         }
-        // Say how much of the carried detail the reason alone conveys, so a
-        // consumer reading only the log line knows whether it is reading all
-        // of it. `named=3/24` is the fact the literal `...` was standing in
-        // for, and unlike `...` it is also true when nothing was lost.
         parts.push(format!(
             "reason_names={}/{}",
             self.reason_units_named,
@@ -242,11 +77,6 @@ impl FrameRefusalOffenderV2 {
     }
 }
 
-/// A reason a frame was refused that belongs to no single domain.
-///
-/// The frame's own clock, its identity, a framing fault discovered while
-/// assembling it. Without this channel the producer published nothing at all
-/// for such an hour and it went entirely unaccounted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameRefusalFinding {
     pub predicate: Predicate,
@@ -255,12 +85,7 @@ pub struct FrameRefusalFinding {
     pub reason: String,
 }
 
-/// `predicate_code u32 | authority [12] | predicate_name_len u16 |
-///  locator_len u16 | reason_len u16 | reserved u16`
 pub const FRAME_REFUSAL_FINDING_FIXED_LEN: usize = 24;
-/// Bound on frame-level findings. The completeness walk stops on the first
-/// framing fault, so a real frame carries very few; this admits a pathological
-/// one without admitting an unbounded record.
 pub const FRAME_REFUSAL_MAX_FINDINGS: usize = 256;
 
 impl FrameRefusalFinding {
@@ -292,16 +117,11 @@ impl FrameRefusalFinding {
 pub struct FrameRefusalRecordV2 {
     pub refused_hour: i32,
     pub offenders: Vec<FrameRefusalOffenderV2>,
-    /// Reasons that belong to the frame rather than to any domain.
     pub frame_findings: Vec<FrameRefusalFinding>,
 }
 
 impl FrameRefusalRecordV2 {
     pub fn encode(&self) -> Result<Vec<u8>, String> {
-        // A refusal must still SUBSTANTIATE itself. What changed from version 1
-        // is only that a frame-level finding is now an acceptable
-        // substantiation; a record that asserts a refusal and says nothing at
-        // all is refused exactly as before.
         if self.offenders.is_empty() && self.frame_findings.is_empty() {
             return Err(
                 "frame refusal names neither an offending domain nor a frame-level finding"
@@ -335,10 +155,6 @@ impl FrameRefusalRecordV2 {
                     offender.domain_id
                 ));
             }
-            // Fail closed rather than stamp declarations the producer never
-            // made: an undeclared authority or truncation account is an
-            // in-memory-only state whose wire code is 0, and encoding it would
-            // turn "nobody said" into a positive claim.
             if offender.authority == Authority::Undeclared
                 || offender.truncation.kind == TruncationKind::Undeclared
             {
@@ -348,10 +164,6 @@ impl FrameRefusalRecordV2 {
                     offender.domain_id
                 ));
             }
-            // The structural guarantee that a domain cannot report nothing.
-            // `predicate.code` is a NonZeroU32 in the type system, so the only
-            // way to reach here without a producer declaration is to have been
-            // stamped `PREDICATE_UNDECLARED`, and that says so on the wire.
             if offender.predicate.name.is_empty() {
                 return Err(format!(
                     "frame refusal gives domain {} a predicate with no name",
@@ -397,24 +209,12 @@ impl FrameRefusalRecordV2 {
                     offender.truncation.units_emitted
                 ));
             }
-            // The structural guarantee that the DECIDING fact reaches the field
-            // every consumer actually reads.
-            //
-            // Carrying a unit in the blob and leaving it out of the reason is
-            // exactly the failure that started this: the units existed, the
-            // reason was what got logged, and the reason had dropped them. So a
-            // record that carries units and does not name the first one -- the
-            // highest-priority one, because the budget hands units back in role
-            // order -- does not encode at all. A producer cannot regress the
-            // reason to a bare status word without this refusing.
             check_reason_names_its_units(
                 &offender.reason,
                 &offender.units,
                 offender.reason_units_named,
                 &format!("frame refusal for domain {}", offender.domain_id),
             )?;
-            // An account that says "complete" while units are missing is the
-            // exact lie the literal `...` used to tell by omission.
             if offender.truncation.kind == TruncationKind::None
                 && (offender.truncation.units_emitted != offender.truncation.units_offered
                     || offender.truncation.bytes_dropped != 0)
@@ -456,11 +256,6 @@ impl FrameRefusalRecordV2 {
             out.extend_from_slice(&offender.non_tolerated_flags.to_le_bytes());
             out.extend_from_slice(&offender.predicate.code.get().to_le_bytes());
             out.push(offender.truncation.kind.code());
-            // Version 2's spare byte, spent on the reason's unit count. A
-            // 512-byte reason cannot name more than 128 units -- the shortest
-            // legal render is `x=0` plus a separator -- so the byte always
-            // holds it, and the check is here so `encode` stays total rather
-            // than relying on that arithmetic staying true.
             let reason_units_named = u8::try_from(offender.reason_units_named).map_err(|_| {
                 format!(
                     "frame refusal for domain {} says its reason names {} units, above the \
@@ -561,7 +356,6 @@ fn decode_v2_finding(
     payload: &[u8],
     offset: usize,
 ) -> Result<(FrameRefusalFinding, usize), String> {
-    // Bounds already proved by `validate_frame_refusal_payload`.
     let predicate_code = read_u32(payload, offset);
     let authority = Authority::decode(&payload[offset + 4..offset + 16])?;
     let predicate_name_len = read_u16(payload, offset + 16) as usize;
@@ -607,14 +401,6 @@ fn read_u32(payload: &[u8], at: usize) -> u32 {
     ])
 }
 
-/// Is `needle` present in `haystack` as a whole field rather than as the head
-/// of a longer one?
-///
-/// `render_units_bounded` joins renderings with `,` after a producer prefix
-/// that ends in a space, so a genuinely named unit is always bounded by one of
-/// those on each side. Plain `contains` is not enough: `x=1` occurs inside
-/// `x=1_suffix=2`, so a reason that named only the longer unit would pass a
-/// substring test for the shorter one.
 fn contains_as_a_field(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
@@ -634,8 +420,6 @@ fn contains_as_a_field(haystack: &str, needle: &str) -> bool {
         if before_ok && after_ok {
             return true;
         }
-        // Advance by one char boundary, never by one byte: `haystack` is UTF-8
-        // and slicing mid-character panics.
         from = start + haystack[start..].chars().next().map_or(1, char::len_utf8);
         if from >= haystack.len() {
             break;
@@ -644,13 +428,6 @@ fn contains_as_a_field(haystack: &str, needle: &str) -> bool {
     false
 }
 
-/// The one rule both halves of the wire enforce: a reason that claims to name
-/// `named` units really does name the first `named` of them, in order.
-///
-/// This exists as a single function on purpose. It was written twice -- once in
-/// `encode`, once nowhere -- and an invariant enforced by the writer and not by
-/// the reader is not enforced: a payload that no producer would emit could
-/// still be decoded and believed. The `what` argument only shapes the message.
 fn check_reason_names_its_units(
     reason: &str,
     units: &[DiagUnit],
@@ -663,8 +440,6 @@ fn check_reason_names_its_units(
             units.len()
         ));
     }
-    // No units carried: the count check above already proved `named` is 0,
-    // because 0 is the only value not above `units.len()`.
     if units.is_empty() {
         return Ok(());
     }
@@ -690,9 +465,6 @@ fn decode_v2_entry(
     payload: &[u8],
     offset: usize,
 ) -> Result<(FrameRefusalOffenderV2, usize), String> {
-    // `validate_frame_refusal_payload` has already proved every bound this
-    // walk relies on, so the indexing below cannot panic on a payload that
-    // reached here. Both entry points call it first.
     let domain_id = read_u16(payload, offset);
     let status_flags = read_u32(payload, offset + 4);
     let non_tolerated_flags = read_u32(payload, offset + 8);
@@ -770,8 +542,6 @@ fn decode_v2_entry(
     ))
 }
 
-/// Complete grammar check for version 2. Total over arbitrary bytes; never
-/// panics.
 pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
     if payload.len() < FRAME_REFUSAL_HEADER_LEN {
         return Err(format!(
@@ -784,9 +554,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
     }
     let version = read_u16(payload, 4);
     if version != FRAME_REFUSAL_VERSION {
-        // The magic already matched, so these ARE refusal-record bytes and the
-        // only remaining explanation is a producer this build has not been
-        // taught. Saying "version 3 is not 2" would read as corruption.
         return Err(unknown_frame_refusal_version(version));
     }
     let header_len = read_u16(payload, 6) as usize;
@@ -825,10 +592,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
             ));
         }
         let domain_id = read_u16(payload, offset);
-        // The writer zeroes this. A reader that ignores it cannot later spend
-        // it on anything, because retained streams would already carry
-        // arbitrary values in it -- the finding walk below already refuses a
-        // nonzero reserved field for exactly this reason.
         if read_u16(payload, offset + 2) != 0 {
             return Err(format!(
                 "frame refusal entry {index} (domain {domain_id}) has a nonzero reserved field"
@@ -839,8 +602,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
                 "frame refusal entry {index} (domain {domain_id}) has no non-tolerated bits"
             ));
         }
-        // Zero is reserved for "the producer did not declare", and an entry
-        // that does not declare is exactly what this record exists to prevent.
         if read_u32(payload, offset + 12) == 0 {
             return Err(format!(
                 "frame refusal entry {index} (domain {domain_id}) declares no predicate"
@@ -882,11 +643,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
                 units_offered.saturating_sub(units_emitted)
             ));
         }
-        // Read here, checked further down against the DECODED units by the
-        // same `check_reason_names_its_units` the encoder calls. The count
-        // arithmetic deliberately is NOT repeated here: a second copy is a
-        // second place for the reader's rule to drift out of step with the
-        // writer's, which is the defect this seam exists to prevent.
         let reason_units_named = u32::from(payload[offset + 17]);
         Authority::decode(&payload[offset + 32..offset + 44])?;
         let entry_flags = read_u16(payload, offset + 44);
@@ -937,8 +693,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
         if end > payload.len() {
             return Err(format!("frame refusal entry {index} runs past the payload"));
         }
-        // Every variable-length section must decode against its declared
-        // length before the entry decoder indexes into it.
         let mut cursor = offset + FRAME_REFUSAL_ENTRY_FIXED_LEN;
         if core::str::from_utf8(&payload[cursor..cursor + predicate_name_len]).is_err() {
             return Err(format!(
@@ -975,10 +729,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
         let Ok(reason) = core::str::from_utf8(&payload[cursor..cursor + reason_len]) else {
             return Err(format!("frame refusal entry {index} reason is not UTF-8"));
         };
-        // The same rule `encode` applies, applied to what actually arrived.
-        // Without this the writer refuses a reason that names nothing while the
-        // reader accepts one, and a hand-built or corrupted payload hands a
-        // consumer a `reason_units_named` it has no way to check.
         check_reason_names_its_units(
             reason,
             &units,
@@ -1079,17 +829,6 @@ pub fn validate_frame_refusal_payload(payload: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// The version a well-formed-enough payload DECLARES, before any grammar check.
-///
-/// `None` means the bytes are not a refusal record at all -- too short to hold
-/// a version, or not bearing the magic -- and that is a different diagnosis
-/// from "a version this build does not decode": the version word of a
-/// non-record is meaningless, so the magic check has to fire first.
-///
-/// Public because a consumer that REPORTS what it decoded needs the declared
-/// version back out. There is exactly one decodable version, so this is now a
-/// statement about the wire rather than a dispatch key -- and it is still the
-/// only honest way to say "these bytes are not one of ours" without guessing.
 pub fn declared_frame_refusal_version(payload: &[u8]) -> Option<u16> {
     if payload.len() >= 6 && &payload[0..4] == FRAME_REFUSAL_MAGIC {
         Some(read_u16(payload, 4))
@@ -1098,14 +837,6 @@ pub fn declared_frame_refusal_version(payload: &[u8]) -> Option<u16> {
     }
 }
 
-/// The refusal a reader owes a version it was never taught.
-///
-/// A future version 3 is not a corrupt record, so reporting it as "version 3 is
-/// not 2" blames the wrong fact: it reads as corruption when what happened is
-/// that the producer is newer than the reader. Naming every version this build
-/// decodes turns that into an actionable statement, and it stays an `Err` --
-/// an unknown shape is never skipped, never lifted to a default, and never
-/// counted as a decoded refusal.
 fn unknown_frame_refusal_version(version: u16) -> String {
     format!(
         "frame refusal version {version} is not a version this build decodes \
@@ -1123,7 +854,6 @@ mod tests {
         UnitPresence, UnitRole, PREDICATE_UNDECLARED,
     };
 
-    /// D42's measured shape, as it would be reported through the new channel.
     fn d42_offender() -> FrameRefusalOffenderV2 {
         FrameRefusalOffenderV2 {
             domain_id: 42,
@@ -1148,8 +878,6 @@ mod tests {
         }
     }
 
-    /// D44's measured shape: the deciding fields are ZERO and a sibling field
-    /// still holds the reset sentinel.
     fn d44_offender() -> FrameRefusalOffenderV2 {
         FrameRefusalOffenderV2 {
             domain_id: 44,
@@ -1188,9 +916,6 @@ mod tests {
             reason: "country supply slot read refused: \
                      d44_country_supply_failure_stage=0,d44_country_supply_failure_branch=0"
                 .to_string(),
-            // Three units carried, two named: the sentinel locator did not fit
-            // the fixture's reason. That shortfall is a NUMBER on the wire, and
-            // the assertions below read it as one.
             reason_units_named: 2,
         }
     }
@@ -1218,8 +943,6 @@ mod tests {
         assert_eq!(FrameRefusalRecordV2::decode(&wire).unwrap(), value);
     }
 
-    /// The zero-valued deciding units and the reset sentinel all survive the
-    /// trip, and a consumer can tell all three apart.
     #[test]
     fn a_zero_deciding_value_and_a_reset_sentinel_survive_and_stay_distinguishable() {
         let wire = sample_v2().encode().unwrap();
@@ -1265,7 +988,6 @@ mod tests {
         assert!(rendered.contains("country_container 3 of 12"), "{rendered}");
         assert!(rendered.contains("region 41 of 96"), "{rendered}");
         assert!(!rendered.contains("..."), "no literal ellipsis: {rendered}");
-        // The authority is not this domain when a different domain refused.
         let d91 = FrameRefusalOffenderV2 {
             authority: Authority::OtherDomain(69),
             ..d42
@@ -1284,21 +1006,16 @@ mod tests {
         assert!(rendered.contains("gen=7"), "{rendered}");
     }
 
-    /// The structural bar: a refusal cannot be encoded, and cannot be decoded,
-    /// without naming a predicate.
     #[test]
     fn an_entry_that_declares_no_predicate_is_refused_on_the_wire() {
         let wire = sample_v2().encode().unwrap();
         let mut bad = wire.clone();
-        // predicate_code sits at entry offset +12.
         for byte in 0..4 {
             bad[FRAME_REFUSAL_HEADER_LEN + 12 + byte] = 0;
         }
         let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("declares no predicate"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
-        // And the reserved "undeclared" code IS accepted, because saying "this
-        // producer declared nothing" out loud is the point.
         let undeclared = FrameRefusalRecordV2 {
             refused_hour: 1,
             offenders: vec![FrameRefusalOffenderV2 {
@@ -1313,13 +1030,10 @@ mod tests {
         assert_eq!(back.offenders[0].predicate.code.get(), PREDICATE_UNDECLARED);
     }
 
-    /// An account that claims completeness while units are missing is the lie
-    /// the literal `...` used to tell by omission. Both halves refuse it.
     #[test]
     fn a_truncation_account_that_contradicts_the_carried_units_is_refused() {
         let mut value = sample_v2();
         value.offenders[0].truncation.units_offered = 9;
-        // kind is still None while 9 were offered and 2 emitted.
         let error = value.encode().unwrap_err();
         assert!(error.contains("claims no truncation"), "{error}");
 
@@ -1332,20 +1046,12 @@ mod tests {
         value.offenders[0].truncation.units_emitted = 99;
         assert!(value.encode().is_err());
 
-        // On the wire too: flip units_emitted under a valid record.
         let wire = sample_v2().encode().unwrap();
         let mut bad = wire.clone();
         bad[FRAME_REFUSAL_HEADER_LEN + 24] = 1;
         assert!(validate_frame_refusal_payload(&bad).is_err());
     }
 
-    /// The reason is the field consumers log. A record that carries units and
-    /// does not name the highest-priority one in its reason is the 192-byte
-    /// channel this lane replaced, and it must not be encodable.
-    ///
-    /// Production change that makes this fail: deleting the
-    /// `reason.contains(&first.render())` arm from `encode`, or letting a
-    /// producer build the reason without calling `render_units_bounded`.
     #[test]
     fn a_reason_that_names_none_of_its_carried_units_cannot_be_encoded() {
         let mut value = sample_v2();
@@ -1353,24 +1059,16 @@ mod tests {
         let error = value.encode().unwrap_err();
         assert!(error.contains("does not contain unit 0"), "{error}");
 
-        // Claiming zero named while carrying units is refused as its own shape,
-        // so a producer cannot opt out by setting the count honestly to zero.
         let mut value = sample_v2();
         value.offenders[0].reason_units_named = 0;
         let error = value.encode().unwrap_err();
         assert!(error.contains("names none of them"), "{error}");
 
-        // And a count above what is carried is refused rather than clamped.
         let mut value = sample_v2();
         value.offenders[0].reason_units_named = 99;
         let error = value.encode().unwrap_err();
         assert!(error.contains("but carries 2"), "{error}");
 
-        // The mirror case: an offender carrying NO units cannot claim to have
-        // named one. Without this, "names 1" and "carries 0" coexist and a
-        // consumer counting named units across a stream over-counts. The same
-        // count check catches it, which is why the contract needs no separate
-        // empty-units arm.
         let mut value = sample_v2();
         value.offenders[0].units.clear();
         value.offenders[0].truncation = TruncationAccount::complete(0);
@@ -1379,50 +1077,32 @@ mod tests {
         assert!(error.contains("names 1 units but carries 0"), "{error}");
     }
 
-    /// The decoder enforces the same rule, so a corrupted or hand-built payload
-    /// cannot hand a consumer a reason it has no way to tell is incomplete.
-    ///
-    /// Production change that makes this fail: removing the `reason_units_named`
-    /// arms from `validate_frame_refusal_payload`.
     #[test]
     fn a_forged_reason_unit_count_is_refused_on_the_way_in() {
         let wire = sample_v2().encode().unwrap();
-        // The count sits at entry offset +17, the byte version 2 spends on it.
         const AT: usize = FRAME_REFUSAL_HEADER_LEN + 17;
         assert_eq!(wire[AT], 2, "the fixture names both of its units");
         FrameRefusalRecordV2::decode(&wire).unwrap();
 
         let mut bad = wire.clone();
-        bad[AT] = 3; // above units_emitted
+        bad[AT] = 3;
         let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("but carries 2"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
 
         let mut bad = wire.clone();
-        bad[AT] = 0; // carries units, names none
+        bad[AT] = 0;
         let error = validate_frame_refusal_payload(&bad).unwrap_err();
         assert!(error.contains("names none of them"), "{error}");
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
 
-        // And the count survives the round trip as a value.
         let back = FrameRefusalRecordV2::decode(&wire).unwrap();
         assert_eq!(back.offenders[0].reason_units_named, 2);
         assert!(back.offenders[0].render().contains("reason_names=2/2"));
     }
 
-    /// The reader enforces the reason rule too. An invariant the writer applies
-    /// and the reader does not is not enforced: a hand-built or corrupted
-    /// payload could carry a `reason_units_named` naming units the reason never
-    /// mentions, and no consumer could tell.
-    ///
-    /// Production change that makes this fail: dropping the
-    /// `check_reason_names_its_units` call from
-    /// `validate_frame_refusal_payload`.
     #[test]
     fn a_payload_whose_reason_names_units_it_does_not_contain_is_refused_on_the_way_in() {
-        // Build a legal record, then overwrite the reason bytes in place with a
-        // same-length string that names nothing. Length-preserving, so every
-        // other offset and every other check still passes.
         let record = sample_v2();
         let wire = record.encode().unwrap();
         let original = &record.offenders[0].reason;
@@ -1439,22 +1119,12 @@ mod tests {
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
     }
 
-    /// `contains` is not the right test, and the collision is ordinary rather
-    /// than contrived: any counter at 1 renders as a prefix of the same counter
-    /// at 10. A reason that named only the larger reading would pass a
-    /// substring check for the smaller one and claim a fact it never stated.
-    ///
-    /// Production change that makes this fail: replacing
-    /// `contains_as_a_field` with `str::contains`.
     #[test]
     fn a_unit_named_only_as_the_head_of_a_longer_one_does_not_count_as_named() {
         let short = DiagUnit::deciding("d44_stage", 1);
         let long = DiagUnit::deciding("d44_stage", 10);
-        // The long unit's rendering literally contains the short one's.
         assert!(long.render().contains(&short.render()));
 
-        // A reason that names ONLY the long unit must not satisfy a claim to
-        // have named the short one.
         assert!(check_reason_names_its_units(
             &format!("domain 44: {}", long.render()),
             core::slice::from_ref(&short),
@@ -1462,7 +1132,6 @@ mod tests {
             "test",
         )
         .is_err());
-        // And the honest reason does satisfy it, at either end and in the middle.
         for reason in [
             format!("domain 44: {}", short.render()),
             format!("domain 44: {},{}", short.render(), long.render()),
@@ -1473,10 +1142,6 @@ mod tests {
         }
     }
 
-    /// A claim to name N units is checked against all N, not only the first.
-    ///
-    /// Production change that makes this fail: checking only `units[0]` in
-    /// `check_reason_names_its_units`.
     #[test]
     fn every_unit_the_count_claims_must_actually_appear() {
         let units = vec![
@@ -1484,22 +1149,12 @@ mod tests {
             DiagUnit::deciding("d44_branch", 0),
             DiagUnit::counter("d44_rows", 10_272),
         ];
-        let honest = format!(
-            "domain 44: {},{}",
-            units[0].render(),
-            units[1].render()
-        );
+        let honest = format!("domain 44: {},{}", units[0].render(), units[1].render());
         check_reason_names_its_units(&honest, &units, 2, "test").unwrap();
-        // Claiming three while naming two is refused, and the message says
-        // WHICH one is missing rather than just that something is.
         let error = check_reason_names_its_units(&honest, &units, 3, "test").unwrap_err();
         assert!(error.contains("does not contain unit 2"), "{error}");
     }
 
-    /// Production offender reasons append the producer's original diagnostic
-    /// after the rendered unit prefix. The final named unit is therefore
-    /// followed by ` | reason=`, not by a comma or end-of-string, and remains a
-    /// complete field rather than a substring of a longer unit.
     #[test]
     fn a_final_named_unit_before_the_producer_reason_suffix_counts_as_named() {
         let units = vec![
@@ -1522,13 +1177,6 @@ mod tests {
         assert!(check_reason_names_its_units(&longer, &units, 2, "test").is_err());
     }
 
-    /// The offender entry's reserved `u16` must be zero, so a later version can
-    /// still spend it. The finding walk already refused a nonzero reserved
-    /// field; the offender walk did not, which meant retained streams could
-    /// have accumulated arbitrary values there.
-    ///
-    /// Production change that makes this fail: dropping the `offset + 2` check
-    /// from `validate_frame_refusal_payload`.
     #[test]
     fn a_nonzero_reserved_field_in_an_offender_entry_is_refused() {
         let wire = sample_v2().encode().unwrap();
@@ -1540,22 +1188,11 @@ mod tests {
         assert!(FrameRefusalRecordV2::decode(&bad).is_err());
     }
 
-    /// A domain far more verbose than the reason bound still encodes, still
-    /// names its deciding unit first, and states the shortfall as a number.
-    ///
-    /// This is the pair of failures that used to be mutually exclusive: joining
-    /// every unit blew `FRAME_REFUSAL_MAX_REASON_LEN` and made the record
-    /// unencodable, and dropping the units made the reason say nothing.
-    ///
-    /// Production change that makes this fail: removing the length test from
-    /// `render_units_bounded`, or dropping the role-ordered sort from
-    /// `allocate_unit_budget` so the deciding unit is no longer first.
     #[test]
     fn a_verbose_domain_names_its_deciding_unit_and_states_what_the_reason_left_out() {
         let mut units: Vec<DiagUnit> = (0..600u64)
             .map(|index| DiagUnit::counter(format!("d44_counter_{index:04}"), index))
             .collect();
-        // Deciding unit built LAST, as D44's was, and zero-valued.
         units.push(DiagUnit::deciding("d44_country_supply_failure_stage", 0));
         let grants = allocate_unit_budget(
             &[BudgetRequest {
@@ -1602,8 +1239,6 @@ mod tests {
             }],
             frame_findings: Vec::new(),
         };
-        // The whole point: it ENCODES. A reason above the bound refuses the
-        // record, and a refused record is an hour that publishes nothing.
         let wire = record.encode().unwrap();
         let back = FrameRefusalRecordV2::decode(&wire).unwrap();
         let offender = &back.offenders[0];
@@ -1612,7 +1247,6 @@ mod tests {
             .reason
             .contains("d44_country_supply_failure_stage=0"));
         assert_eq!(offender.units[0].name, "d44_country_supply_failure_stage");
-        // The shortfall is readable as a number from the record alone.
         assert!(
             (offender.reason_units_named as usize) < offender.units.len(),
             "this fixture is only meaningful while the reason cannot name everything"
@@ -1624,19 +1258,6 @@ mod tests {
         )));
     }
 
-    /// A version this build was never taught is REFUSED, and the refusal says
-    /// which fact it is refusing on.
-    ///
-    /// The failure this guards is a reader reporting `version 3 is not 2`,
-    /// which blames the record for being corrupt when what actually happened is
-    /// that the producer is newer than the reader. Version 1 was deleted rather
-    /// than kept decodable, so version 1 is now one of the unknown versions and
-    /// is probed here as one: an old record must be refused by name, never
-    /// silently lifted to a shape it never carried.
-    ///
-    /// PRODUCTION CHANGE THAT MAKES THIS FAIL: adding a silent fall-through
-    /// (accepting an unknown version, or returning `Ok`) to either entry point,
-    /// or dropping the known-version list from the message.
     #[test]
     fn a_version_this_build_does_not_know_is_refused_and_names_the_version_it_does() {
         let known = sample_v2().encode().unwrap();
@@ -1666,9 +1287,6 @@ mod tests {
         }
     }
 
-    /// The version this build DOES know stays accepted by the same entry points
-    /// that refuse the ones it does not. Without this, "refuse everything"
-    /// would pass the test above.
     #[test]
     fn the_known_version_passes_the_entry_points_that_refuse_unknown_ones() {
         validate_frame_refusal_payload(&sample_v2().encode().unwrap()).unwrap();
@@ -1678,20 +1296,6 @@ mod tests {
         );
     }
 
-    /// Bytes that are not a refusal record at all must still be diagnosed as
-    /// that, not as an unknown version: the magic check is what fires, and the
-    /// version word of a non-record is meaningless.
-    ///
-    /// PRODUCTION CHANGE THAT MAKES THIS FAIL: reading the version word before
-    /// checking the magic in `declared_frame_refusal_version`.
-    ///
-    /// The fixture carries an UNKNOWN version under the broken magic, and that
-    /// is load-bearing. With the known version stamped, a reader that checked
-    /// the version word first would still reach the magic check and produce the
-    /// identical "magic is not H4FR" -- the test would pass under its own
-    /// mutation. Version 3 makes the two orderings say different things:
-    /// magic-first says the bytes are not a record, version-first says the
-    /// build is too old.
     #[test]
     fn bytes_that_are_not_a_refusal_are_diagnosed_by_magic_not_by_version() {
         let mut not_a_record = sample_v2().encode().unwrap();
@@ -1706,9 +1310,6 @@ mod tests {
         assert!(error.contains("magic is not H4FR"), "{error}");
         let error = FrameRefusalRecordV2::decode(&not_a_record).unwrap_err();
         assert!(error.contains("magic is not H4FR"), "{error}");
-        // And a payload too short to hold a version reports its length rather
-        // than reading one -- through BOTH entry points, and at every length
-        // below the header, so no index can be taken that is not there.
         for len in 0..FRAME_REFUSAL_HEADER_LEN {
             let short = &not_a_record[..len.min(not_a_record.len())];
             let error = validate_frame_refusal_payload(short).unwrap_err();
@@ -1722,16 +1323,6 @@ mod tests {
         assert!(error.contains("below the"), "{error}");
     }
 
-    /// The record is wired into the canonical dispatch, and the three ways that
-    /// wiring can be wrong all still fail loudly.
-    ///
-    /// The last two halves were carried by a version-1 test that is gone with
-    /// version 1; they are contracts about the DISPATCH, not about the record
-    /// version, so they move here rather than dying with their old fixture.
-    ///
-    /// Two out-of-tree roster parsers were silently stale for weeks on this
-    /// project. A record type that a reader quietly ignores is the same failure
-    /// with a different shape.
     #[test]
     fn the_record_is_wired_into_the_canonical_dispatch_and_misuse_fails_loudly() {
         use crate::record_semantics::{
@@ -1747,7 +1338,6 @@ mod tests {
         )
         .expect("the record must be accepted through the canonical dispatch");
 
-        // A version nobody has defined is refused.
         let mut future = wire.clone();
         future[4] = 9;
         assert!(validate_compact_record_semantics(
@@ -1758,17 +1348,12 @@ mod tests {
         )
         .is_err());
 
-        // Wrong envelope domain is refused: this is a FRAME-level record.
         assert!(
             validate_compact_record_semantics(47, COMPACT_RECORD_TYPE_FRAME_REFUSED, 0, &wire)
                 .is_err(),
             "a frame-level record carried on a domain envelope must be refused"
         );
 
-        // And an undefined record type still fails loudly rather than being
-        // skipped. The probe is a value the contract does not assign; if a
-        // future type claims it, the probe moves again -- it must never be the
-        // assertion that gives way.
         let unassigned_record_type = u16::MAX;
         let unknown = validate_compact_record_semantics(
             COMPACT_DOMAIN_FRAME,
@@ -1785,10 +1370,6 @@ mod tests {
         );
     }
 
-    /// The gap this closes: an hour refused for a reason that belongs to NO
-    /// domain used to publish nothing at all, because the record could not
-    /// carry a non-attributable reason and the producer's guard was
-    /// `!offenders.is_empty()`. The hour went entirely unaccounted.
     #[test]
     fn a_refusal_with_no_attributable_domain_is_still_a_complete_record() {
         let frame_only = FrameRefusalRecordV2 {
@@ -1813,7 +1394,6 @@ mod tests {
             .render()
             .contains("predicate=frame_end_present_and_singular#65539"));
         assert!(back.frame_findings[0].render().contains("authority=host"));
-        // And through the canonical dispatch, which is what a consumer calls.
         use crate::record_semantics::{
             validate_compact_record_semantics, COMPACT_DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_REFUSED,
@@ -1827,23 +1407,6 @@ mod tests {
         .expect("a frame-level-only refusal must pass the canonical dispatch");
     }
 
-    /// An offender that did not force the refusal, or that gives no reason at
-    /// all, does not encode.
-    ///
-    /// The wire side of both rules is separately covered: the validator rejects
-    /// a zero `non_tolerated` at `validate_frame_refusal_payload` and a zero
-    /// `reason_len` a few checks later. What is covered ONLY here is the
-    /// ENCODER refusing to build such a record in the first place, which is the
-    /// half a producer hits. Without it a collector could emit a refusal that
-    /// its own consumer then rejects as corrupt, turning a producer bug into an
-    /// unreadable stream. Two version-1 tests carried this and it is ported
-    /// here rather than deleted with that version.
-    ///
-    /// PRODUCTION CHANGE THAT MAKES EACH FAIL: dropping the
-    /// `non_tolerated_flags == 0` guard (a refusal then lists a domain that
-    /// tolerated everything, misattributing the cause), or dropping the
-    /// `reason.is_empty()` guard (a refusal then names a domain and says
-    /// nothing about it).
     #[test]
     fn an_offender_that_forced_nothing_or_says_nothing_does_not_encode() {
         let mut no_bits = sample_v2();
@@ -1856,9 +1419,6 @@ mod tests {
 
         let mut no_reason = sample_v2();
         no_reason.offenders[0].reason = String::new();
-        // The reason names this fixture's units, so emptying it must be
-        // accounted for or a different guard fires first and the test would
-        // pass for the wrong reason.
         no_reason.offenders[0].units = Vec::new();
         no_reason.offenders[0].truncation = TruncationAccount::complete(0);
         no_reason.offenders[0].reason_units_named = 0;
@@ -1866,8 +1426,6 @@ mod tests {
         assert!(error.contains("no reason"), "{error}");
     }
 
-    /// A refusal must still substantiate itself. Widening what counts as
-    /// substantiation must not become "anything goes".
     #[test]
     fn a_refusal_that_substantiates_nothing_is_still_refused() {
         let empty = FrameRefusalRecordV2 {
@@ -1878,7 +1436,6 @@ mod tests {
         let error = empty.encode().unwrap_err();
         assert!(error.contains("neither an offending domain nor a frame-level finding"));
 
-        // On the wire: zero both counts under an otherwise valid record.
         let mut wire = sample_v2().encode().unwrap();
         wire[12] = 0;
         wire[13] = 0;
@@ -1886,8 +1443,6 @@ mod tests {
         wire[15] = 0;
         assert!(validate_frame_refusal_payload(&wire).is_err());
 
-        // A finding with a zero predicate code is refused, exactly as an
-        // offender with one is.
         let mut wire = FrameRefusalRecordV2 {
             refused_hour: 1,
             offenders: Vec::new(),
@@ -1927,8 +1482,6 @@ mod tests {
                 "corrupt {label} must fail"
             );
         }
-        // Every single-byte flip in the fixed entry head is either rejected or
-        // decodes to a self-consistent record; nothing may panic.
         for index in FRAME_REFUSAL_HEADER_LEN..wire.len() {
             let mut bad = wire.clone();
             bad[index] ^= 0xFF;
@@ -1937,9 +1490,6 @@ mod tests {
         }
     }
 
-    /// The end-to-end property this whole lane exists for: under a budget that
-    /// cannot carry everything, the deciding unit of EVERY offender still
-    /// reaches the wire, and what was dropped is stated numerically.
     #[test]
     fn under_budget_pressure_every_offenders_deciding_unit_still_reaches_the_wire() {
         let requests: Vec<BudgetRequest> = (40..=52u16)
@@ -1950,14 +1500,12 @@ mod tests {
                     UnitRole::Deciding,
                     UnitPresence::Observed,
                 )];
-                // A wildly verbose neighbour: 120 counters each.
                 for index in 0..120u64 {
                     units.push(DiagUnit::counter(
                         format!("d{domain_id}_counter_{index:03}"),
                         index,
                     ));
                 }
-                // Deciding unit last in producer order, as D44's was.
                 units.rotate_left(1);
                 BudgetRequest { domain_id, units }
             })

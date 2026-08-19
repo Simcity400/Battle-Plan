@@ -1,12 +1,3 @@
-//! Pointer-free A30 captured/captured-by and recruitable-pool producer join.
-//!
-//! Static exact-a729 producers establish that assignment discriminator zero is
-//! captured, the dword at `COperativeLeader+0xFB0` is the capturer country DB
-//! identity, and `COperativeRecruitment+0x28` is the owning country's main
-//! recruitable vector. `+0x40` is the independent
-//! `recruitable_operatives_not_to_spy_master` vector and must not be folded into
-//! the replay's main recruitable pool.
-
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -112,11 +103,6 @@ pub struct CaptureRecruitableJoinReceipt {
     pub recruitable_vector_source_manifest_sha256: String,
 }
 
-/// Seal same-hour pointer-free observations into replay semantics.
-///
-/// `active_operative_ids` must be the complete controller order for the owner.
-/// Every active row requires one capture observation. Recruitable membership is
-/// independent and may introduce operative IDs absent from that active order.
 pub fn seal_capture_recruitable_join(
     frame_hour: u64,
     producer_record_identity: &str,
@@ -272,9 +258,6 @@ pub fn seal_capture_recruitable_join(
     })
 }
 
-/// Re-admit a serialized join at the selected-Present companion boundary.
-/// This repeats every semantic invariant available without retaining the raw
-/// process observations and pins all exact-a729 producer authority.
 pub fn validate_capture_recruitable_join_receipt(
     receipt: &CaptureRecruitableJoinReceipt,
     frame_hour: u64,
@@ -292,14 +275,11 @@ pub fn validate_capture_recruitable_join_receipt(
         || receipt.recruitment_vtable_job_id != RECRUITMENT_VTABLE_JOB_ID
         || receipt.recruitment_vtable_artifact_sha256 != RECRUITMENT_VTABLE_ARTIFACT_SHA256
         || receipt.recruitment_serializer_job_id != RECRUITMENT_SERIALIZER_JOB_ID
-        || receipt.recruitment_serializer_manifest_sha256
-            != RECRUITMENT_SERIALIZER_MANIFEST_SHA256
+        || receipt.recruitment_serializer_manifest_sha256 != RECRUITMENT_SERIALIZER_MANIFEST_SHA256
         || receipt.recruitment_item_codec_job_id != RECRUITMENT_ITEM_CODEC_JOB_ID
-        || receipt.recruitment_item_codec_manifest_sha256
-            != RECRUITMENT_ITEM_CODEC_MANIFEST_SHA256
+        || receipt.recruitment_item_codec_manifest_sha256 != RECRUITMENT_ITEM_CODEC_MANIFEST_SHA256
         || receipt.recruitment_owner_path_job_id != RECRUITMENT_OWNER_PATH_JOB_ID
-        || receipt.recruitment_owner_path_manifest_sha256
-            != RECRUITMENT_OWNER_PATH_MANIFEST_SHA256
+        || receipt.recruitment_owner_path_manifest_sha256 != RECRUITMENT_OWNER_PATH_MANIFEST_SHA256
         || receipt.recruitable_vector_source_job_id != RECRUITABLE_VECTOR_SOURCE_JOB_ID
         || receipt.recruitable_vector_source_manifest_sha256
             != RECRUITABLE_VECTOR_SOURCE_MANIFEST_SHA256
@@ -307,7 +287,10 @@ pub fn validate_capture_recruitable_join_receipt(
     {
         return Err("A30 capture/recruitable receipt authority or identity mismatch".into());
     }
-    let active = active_operative_ids.iter().copied().collect::<BTreeSet<_>>();
+    let active = active_operative_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     if active.is_empty()
         || active.len() != active_operative_ids.len()
         || receipt.rows.len() < active_operative_ids.len()
@@ -328,11 +311,10 @@ pub fn validate_capture_recruitable_join_receipt(
         } else {
             row.captured_by_tag_db_id.is_none() && row.capture_end_date_raw.is_none()
         };
-        if row.operative_id == 0
-            || !row_ids.insert(row.operative_id)
-            || !capture_payload_is_exact
-        {
-            return Err("A30 capture/recruitable receipt has duplicate or half-populated rows".into());
+        if row.operative_id == 0 || !row_ids.insert(row.operative_id) || !capture_payload_is_exact {
+            return Err(
+                "A30 capture/recruitable receipt has duplicate or half-populated rows".into(),
+            );
         }
         if !active.contains(&row.operative_id) && !row.recruitable_pool_member {
             return Err("A30 non-controller row lacks main recruitable-vector membership".into());
@@ -345,9 +327,10 @@ pub fn validate_capture_recruitable_join_receipt(
         .collect::<BTreeSet<_>>();
     if excluded.len() != receipt.not_to_spy_master_operatives.len()
         || excluded.contains(&0)
-        || receipt.rows.iter().any(|row| {
-            row.recruitable_pool_member && excluded.contains(&row.operative_id)
-        })
+        || receipt
+            .rows
+            .iter()
+            .any(|row| row.recruitable_pool_member && excluded.contains(&row.operative_id))
     {
         return Err("A30 recruitment vector identity or exclusion invariant failed".into());
     }

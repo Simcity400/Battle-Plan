@@ -1,120 +1,32 @@
-//! A JSON tree that carries the SOURCE SPELLING of every scalar token.
-//!
-//! The certified replay cache stores one full world checkpoint every N hours
-//! and bounded structural deltas in between, and every reconstructed hour must
-//! come back as the *exact bytes* the `replay_decoder` fold emitted. A
-//! `serde_json::Value` cannot carry that guarantee: it holds a decoded `f64`,
-//! not the token that produced it, and `serde_json`'s default number parser is
-//! deliberately not correctly-rounded (that is what its `float_roundtrip`
-//! feature buys). On capture t26 hour 17032314 the fold emits
-//!
-//! ```text
-//! "current":189352.52932739258
-//! ```
-//!
-//! which reparses one ULP low and re-serializes as `189352.52932739255`
-//! (`0x1.71d443c100000p+17` vs `0x1.71d443c0fffffp+17` — genuinely different
-//! doubles, not merely a different spelling of one). Across all 644 sealed
-//! hours of that capture — 16,337,177,524 bytes of world JSON — 510 of the
-//! 2,990,242 distinct number tokens move under the round trip.
-//!
-//! Turning on `serde_json/float_roundtrip` was rejected: Cargo unifies features
-//! across the workspace, so it would also change how the *fold* parses every
-//! number it ingests, and therefore the canonical snapshot bytes that
-//! `fold_check`'s G1 hashes are bound to. It also would not cover a token that
-//! is simply not in `serde_json`'s output spelling (`1.50`, `1e3`, an integer
-//! past `u64::MAX`).
-//!
-//! So the cache stores the spelling. [`CanonValue`] keeps every number as its
-//! source token and every string as its source token *body* (the bytes between
-//! the quotes, escapes and all); [`CanonValue::write_json`] emits those bytes
-//! back verbatim in `serde_json`'s compact layout. The round trip is then
-//! exact by construction for any compact JSON document, and
-//! `ReplayCacheReader::verify_every_hour` *proves* it per hour over the sealed
-//! artifact -- it re-serializes each reconstructed hour and requires the
-//! `world_json_sha256` the encoder took from the SOURCE bytes -- so an
-//! unanticipated token shape fails a build loudly instead of corrupting a seek
-//! quietly.
-
 use std::cmp::Ordering;
 use std::sync::Arc;
 
-/// Deepest nesting a canonical world body may use.
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
 
-/// One JSON value, with the source spelling of every scalar retained.
-///
-/// Objects are a sorted `Vec` rather than a map: the canonical fold emits
-/// `serde_json`'s `BTreeMap`-backed member order, [`CanonValue::parse`] requires
-/// strictly increasing member names, and every operation here is a merge walk
-/// that preserves that order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CanonValue {
     Null,
     Bool(bool),
-    /// The exact source token, e.g. `189352.52932739258` or `-0.0`.
     Number(String),
-    /// The exact source token BODY — the bytes between the quotes, with
-    /// escapes left in their source spelling.
     String(String),
-    /// SHARED, not owned: cloning this node bumps a refcount, so two hours of
-    /// one recording share every array they have in common. A writer takes
-    /// `Arc::make_mut`, which mutates in place while the array is uniquely
-    /// held and copies ONE level of element handles when it is not — each
-    /// element being another shared node, so the copy stops at that level.
     Array(Arc<Vec<CanonValue>>),
-    /// `(name body, value)` in strictly increasing DECODED name order, shared
-    /// on the same terms as [`CanonValue::Array`].
     Object(Arc<Vec<(String, CanonValue)>>),
 }
 
 impl CanonValue {
-    /// An array node from its elements.
     pub fn array(items: Vec<CanonValue>) -> CanonValue {
         CanonValue::Array(Arc::new(items))
     }
 
-    /// An object node from its members, which the caller has already put in
-    /// strictly increasing decoded-name order.
     pub fn object(members: Vec<(String, CanonValue)>) -> CanonValue {
         CanonValue::Object(Arc::new(members))
     }
 
-    /// Bytes the `Arc` around a shared container costs BEYOND the element
-    /// buffer it holds: two atomic reference counters and the `Vec` header
-    /// itself, which moved off the node and into that allocation when the
-    /// containers became shared.
-    ///
-    /// It is charged once per Array and per Object node, by both
-    /// [`CanonValue::heap_bytes`] and the parser's running count, because the
-    /// two must agree — `parse_counted_agrees_with_heap_bytes` requires it, and
-    /// they would agree just as happily on two wrong numbers if only one of
-    /// them were taught about this allocation (Codex review round 7,
-    /// finding 5).
-    ///
     /// An ABI number, deliberately, like the rest of `heap_bytes`: this asks
-    /// what THIS process's allocator is holding. `content_bytes`, which two
-    /// processes must agree on independently, is a function of the document and
-    /// does not use it.
     const fn shared_container_bytes<T>() -> u64 {
         (std::mem::size_of::<usize>() * 2 + std::mem::size_of::<T>()) as u64
     }
 
-    /// Do these two nodes stand on the SAME storage — the same allocation, not
-    /// merely equal contents?
-    ///
-    /// WHY THIS IS PUBLIC. It is the only way to observe the property the
-    /// shared containers exist for, and that property is invisible to every
-    /// value comparison: two hours that share a subtree and two hours that
-    /// each built their own are `==` in every respect. Without this, "hour h
-    /// and hour h+1 share everything they have in common" is an unfalsifiable
-    /// claim about an implementation — the day the tree starts copying itself
-    /// again, every existing test still passes and the recording merely gets
-    /// slower. `shared_subtrees_survive_a_patch` is what it exists for.
-    ///
-    /// Scalars answer `false`: they have no storage to share, so there is
-    /// nothing here to be right or wrong about, and answering `true` would let
-    /// a caller mistake "both are `Null`" for evidence about a container.
     pub fn shares_storage_with(&self, other: &CanonValue) -> bool {
         match (self, other) {
             (CanonValue::Array(left), CanonValue::Array(right)) => Arc::ptr_eq(left, right),
@@ -151,24 +63,10 @@ impl std::fmt::Display for CanonParseError {
 impl std::error::Error for CanonParseError {}
 
 impl CanonValue {
-    /// Parse one complete JSON document, retaining scalar spellings.
-    ///
-    /// Stricter than a general JSON reader in one place: object member names
-    /// must be strictly increasing by their DECODED text. That is the order
-    /// `serde_json` emits from a `BTreeMap`, it is what the binary cache format
-    /// has always required of a decoded record, and it makes duplicate members
-    /// impossible.
     pub fn parse(bytes: &[u8]) -> Result<Self, CanonParseError> {
         Self::parse_counted(bytes).map(|(value, _)| value)
     }
 
-    /// Parse, and report the heap the resulting tree owns.
-    ///
-    /// Identical to [`Self::parse`] in every byte it produces and every input
-    /// it rejects; the only difference is that the size comes back for free
-    /// instead of costing a second pass. Use this wherever the size is wanted
-    /// anyway — a whole-world tree is millions of nodes, and
-    /// [`Self::heap_bytes`] over one costs about 100 ms.
     pub fn parse_counted(bytes: &[u8]) -> Result<(Self, u64), CanonParseError> {
         let mut parser = Parser {
             bytes,
@@ -187,55 +85,11 @@ impl CanonValue {
         Ok((value, parser.heap_bytes))
     }
 
-    /// Bytes this value's tree owns on the heap, including its own node.
-    ///
-    /// A whole-world document parses into a tree of millions of nodes, and that
-    /// tree is several times the size of the JSON it came from — every scalar
-    /// becomes a `String` with its own allocation and its own header, and every
-    /// member name is stored a second time. That makes it one of the largest
-    /// resident objects the finalize path holds, so it has to be priceable
-    /// rather than estimated from the document length.
-    ///
-    /// This is a `capacity`-based accounting, not a `len`-based one: it reports
-    /// what is actually reserved, which is what the allocator is holding. It
-    /// excludes per-allocation allocator overhead, which no in-process walk can
-    /// see, so it is a floor on the true cost.
-    ///
-    /// Iterative rather than recursive: a deeply nested document must not be
-    /// able to turn a size query into a stack overflow. Cost is one visit per
-    /// node.
-    /// What one array slot weighs against the budget. A round number, not a
-    /// measurement: see [`Self::content_bytes`].
     pub const ARRAY_ELEMENT_WEIGHT: u64 = 16;
-    /// What one object member weighs, over and above its name's own bytes.
     pub const OBJECT_MEMBER_WEIGHT: u64 = 32;
 
-    /// Bytes this value's CONTENT comes to, counting `len` and never `capacity`.
-    ///
-    /// THE DIFFERENCE FROM [`Self::heap_bytes`] IS THE WHOLE POINT. That one
-    /// reports what the allocator is holding, which is the right number for a
-    /// memory table and the wrong number for any decision two processes must
-    /// reach independently: the JSON parser grows its vectors by doubling while
-    /// the binary decoder reserves the element count exactly, so the SAME
-    /// document has different capacities on the writing side and the reading
-    /// side. A budget charged on capacity therefore admits a value on one side
-    /// and refuses it on the other, which is exactly how lane LL's shadow
-    /// budget desynchronised the encoder from the reader (Codex review round 7,
-    /// Q1).
-    ///
-    /// This is a function of the DOCUMENT alone. Two equal `CanonValue`s always
-    /// come to the same number however they were built.
-    ///
-    /// FIXED WEIGHTS, never `size_of::<some Rust type>()`. A first cut priced a
     /// slot at `size_of::<CanonValue>()`, which is an ABI number: it can differ
-    /// between a 32- and 64-bit target and between compiler versions. A replay
-    /// is a PORTABLE artifact -- written on one machine, read on another -- so
     /// an ABI-dependent budget could cross its ceiling at a different node on
-    /// the reading side and reproduce the very missing-shadow failure this
-    /// function exists to prevent (Codex review round 8, Q1a).
-    ///
-    /// Iterative for the same reason as its neighbour: depth must not become a
-    /// stack overflow.
     pub fn content_bytes(&self) -> u64 {
         let mut total = 0u64;
         let mut stack = vec![self];
@@ -280,21 +134,16 @@ impl CanonValue {
                     }
                     names
                         .saturating_add(
-                            (members.capacity()
-                                * std::mem::size_of::<(String, CanonValue)>())
+                            (members.capacity() * std::mem::size_of::<(String, CanonValue)>())
                                 as u64,
                         )
-                        .saturating_add(Self::shared_container_bytes::<
-                            Vec<(String, CanonValue)>,
-                        >())
+                        .saturating_add(Self::shared_container_bytes::<Vec<(String, CanonValue)>>())
                 }
             });
         }
         total
     }
 
-    /// Append this value in `serde_json`'s compact layout, reusing the source
-    /// spelling of every scalar.
     pub fn write_json(&self, out: &mut Vec<u8>) {
         match self {
             Self::Null => out.extend_from_slice(b"null"),
@@ -332,7 +181,6 @@ impl CanonValue {
         }
     }
 
-    /// The complete compact JSON encoding of this value.
     pub fn to_json_bytes(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.json_len_hint());
         self.write_json(&mut out);
@@ -357,7 +205,6 @@ impl CanonValue {
         }
     }
 
-    /// The member of an object body, by its decoded name.
     pub fn member(&self, key: &str) -> Option<&CanonValue> {
         match self {
             Self::Object(members) => members
@@ -368,19 +215,16 @@ impl CanonValue {
         }
     }
 
-    /// This value as an `i64`, when its token spells one exactly.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
             Self::Number(token) => token
                 .parse::<i64>()
                 .ok()
-                // `str::parse` accepts `+1` and `007`; a canonical token does not.
                 .filter(|value| *token == value.to_string()),
             _ => None,
         }
     }
 
-    /// The DECODED text of a string value.
     pub fn as_decoded_str(&self) -> Option<String> {
         match self {
             Self::String(body) => decode_json_string_body(body),
@@ -389,11 +233,6 @@ impl CanonValue {
     }
 }
 
-/// Decode a JSON string body (the bytes between the quotes) into its text.
-///
-/// `None` when the body is not a well-formed body, including an unpaired
-/// surrogate escape — which the cache is happy to *carry* verbatim but cannot
-/// give a `String` for.
 pub fn decode_json_string_body(body: &str) -> Option<String> {
     let bytes = body.as_bytes();
     let mut out = String::with_capacity(body.len());
@@ -461,7 +300,6 @@ fn hex4(bytes: &[u8]) -> Option<u32> {
     Some(value)
 }
 
-/// A JSON number token, exactly as RFC 8259 spells one.
 pub fn is_json_number_token(token: &str) -> bool {
     let bytes = token.as_bytes();
     let mut index = 0;
@@ -507,12 +345,6 @@ pub fn is_json_number_token(token: &str) -> bool {
     index == bytes.len()
 }
 
-/// A JSON string body: no raw control character, no bare `"`, and every
-/// backslash starting a defined escape.
-///
-/// A `u`-escape only has to be four hex digits. An unpaired surrogate is not
-/// rejected here: it is a spelling a source may legitimately contain, and the
-/// cache's whole job is to give those bytes back unchanged.
 pub fn is_json_string_body(body: &str) -> bool {
     let bytes = body.as_bytes();
     let mut index = 0;
@@ -540,22 +372,10 @@ pub fn is_json_string_body(body: &str) -> bool {
     true
 }
 
-/// An object member name: a well-formed string body that also decodes.
-///
-/// Member names are the one place the cache needs the DECODED text — it orders,
-/// de-duplicates and merge-walks on it — so a name must be decodable. Escapes
-/// are allowed; an unpaired surrogate is not, and cannot occur: `serde_json`
-/// serializes a member name from a Rust `String`, which cannot hold one.
 pub fn is_valid_object_key(key: &str) -> bool {
     is_json_string_body(key) && decode_json_string_body(key).is_some()
 }
 
-/// Order two member NAMES by their decoded text.
-///
-/// `serde_json` writes object members in `BTreeMap` order, which is the order of
-/// the decoded names, not of their escaped spellings — and those disagree. A
-/// name with no escape is its own decoding, which is every name in a 16 GB
-/// census of real capture t26, so the common path is a plain byte compare.
 pub fn key_cmp(left: &str, right: &str) -> Ordering {
     let left_escaped = left.as_bytes().contains(&b'\\');
     let right_escaped = right.as_bytes().contains(&b'\\');
@@ -574,13 +394,10 @@ pub fn key_cmp(left: &str, right: &str) -> Ordering {
     };
     match (left_text, right_text) {
         (Some(left_text), Some(right_text)) => left_text.cmp(&right_text),
-        // Unreachable once `is_valid_object_key` has admitted both, and still a
-        // total order if it somehow is not.
         _ => left.cmp(right),
     }
 }
 
-/// Compare a STORED member name against a plain, already-decoded name.
 pub fn key_cmp_decoded(stored: &str, decoded: &str) -> Ordering {
     if !stored.as_bytes().contains(&b'\\') {
         return stored.cmp(decoded);
@@ -594,16 +411,6 @@ pub fn key_cmp_decoded(stored: &str, decoded: &str) -> Ordering {
 struct Parser<'a> {
     bytes: &'a [u8],
     position: usize,
-    /// Running total of the heap the parse has committed so far.
-    ///
-    /// Accumulated here rather than measured afterwards. The finished tree's
-    /// size is needed once per game hour by the recorder's memory accounting,
-    /// and walking a whole-world tree to get it costs about 100 ms per hour —
-    /// measurable against the finalize it is supposed to be observing. Every
-    /// allocation the parser makes passes through this function anyway, so
-    /// counting them in flight is free. [`CanonValue::heap_bytes`] remains the
-    /// authority, and `parse_counted_matches_the_independent_walk` holds the
-    /// two together.
     heap_bytes: u64,
 }
 
@@ -742,9 +549,7 @@ impl<'a> Parser<'a> {
                         .saturating_add(
                             (values.capacity() * std::mem::size_of::<CanonValue>()) as u64,
                         )
-                        .saturating_add(
-                            CanonValue::shared_container_bytes::<Vec<CanonValue>>(),
-                        );
+                        .saturating_add(CanonValue::shared_container_bytes::<Vec<CanonValue>>());
                     return Ok(CanonValue::array(values));
                 }
                 _ => return self.error("canonical world JSON array is malformed"),
@@ -806,8 +611,7 @@ impl<'a> Parser<'a> {
                     self.heap_bytes = self
                         .heap_bytes
                         .saturating_add(
-                            (members.capacity()
-                                * std::mem::size_of::<(String, CanonValue)>())
+                            (members.capacity() * std::mem::size_of::<(String, CanonValue)>())
                                 as u64,
                         )
                         .saturating_add(CanonValue::shared_container_bytes::<
@@ -825,15 +629,7 @@ impl<'a> Parser<'a> {
 mod heap_bytes_tests {
     use super::*;
 
-    /// `heap_bytes` must count exactly the allocations the value owns, not a
-    /// proxy for them. This document's cost is enumerable by hand, so a change
-    /// that started counting inline struct bytes, or stopped counting member
-    /// names, or double-counted a child node, moves the number and fails here.
-    /// Built with exact capacities rather than parsed, so the expectation is
     /// arithmetic about ownership and not a restatement of `Vec`'s growth
-    /// policy (a parsed `{"a":[1,2],"bb":"xyz"}` reserves 4 slots per container,
-    /// not 2, and pinning that here would make the test a mirror of the
-    /// standard library).
     #[test]
     fn heap_bytes_counts_every_owned_allocation_exactly_once() {
         let mut items = Vec::with_capacity(2);
@@ -846,11 +642,6 @@ mod heap_bytes_tests {
 
         let member = std::mem::size_of::<(String, CanonValue)>() as u64;
         let element = std::mem::size_of::<CanonValue>() as u64;
-        // Root object: its own shared allocation, 2 member slots, names
-        //   "a" (1) + "bb" (2).
-        // Array: its own shared allocation, 2 element slots, tokens
-        //   "1" (1) + "2" (1).
-        // String member: body "xyz" (3).
         let expected = CanonValue::shared_container_bytes::<Vec<(String, CanonValue)>>()
             + 2 * member
             + 1
@@ -863,9 +654,6 @@ mod heap_bytes_tests {
         assert_eq!(value.heap_bytes(), expected);
     }
 
-    /// Capacity, not length. The allocator is holding the reservation, so a
-    /// `len`-based accounting would under-report every container the parser
-    /// grew — which is all of them.
     #[test]
     fn heap_bytes_reports_reserved_capacity_not_occupied_length() {
         let mut items: Vec<CanonValue> = Vec::with_capacity(64);
@@ -878,15 +666,6 @@ mod heap_bytes_tests {
         );
     }
 
-    /// The cheap counter and the authoritative walk must agree, on every shape
-    /// the format allows.
-    ///
-    /// `parse_counted` accumulates during construction so the recorder does not
-    /// pay a whole-tree walk per game hour; `heap_bytes` is the definition. If
-    /// a future parser gains an allocation that forgets to charge itself — a
-    /// new scalar kind, a `reserve`, a container built a different way — the
-    /// two diverge here rather than silently under-reporting a component of the
-    /// recorder's published memory table.
     #[test]
     fn parse_counted_matches_the_independent_walk() {
         let documents: &[&[u8]] = &[
@@ -910,27 +689,7 @@ mod heap_bytes_tests {
         }
     }
 
-    /// Scalars that own nothing must cost nothing: a `heap_bytes` that charged
     /// per node regardless of ownership would inflate every world document by
-    /// the node count and make the component table wrong in the safe-looking
-    /// direction.
-    ///
-    /// An EMPTY CONTAINER is not in that class and no longer answers zero. It
-    /// owns one allocation — the `Arc` holding the reference counters and the
-    /// `Vec` header — from the moment it exists, empty or not, because that is
-    /// what made the containers shareable. Asserting zero here was the shape of
-    /// the omission Codex found: the two accounting implementations had drifted
-    /// together, so every array and object in a world went uncharged and every
-    /// test still passed.
-    ///
-    /// kills: dropping the `shared_container_bytes` charge from `heap_bytes`.
-    /// It takes BOTH tests to close the defect that was actually found, and
-    /// they close different halves of it: this one fails if the charge leaves
-    /// the traversal, and `parse_counted_matches_the_independent_walk` fails if
-    /// it leaves only ONE of the two counters. Removing it from both at once
-    /// passes that agreement test — the two implementations agree, on a number
-    /// short by one allocation per container, which on a 13.9 MB world is
-    /// hundreds of thousands of them — and this test is what stops it.
     #[test]
     fn heap_bytes_charges_ownership_and_nothing_else() {
         assert_eq!(CanonValue::Null.heap_bytes(), 0);
@@ -945,8 +704,6 @@ mod heap_bytes_tests {
             CanonValue::shared_container_bytes::<Vec<(String, CanonValue)>>(),
             "an empty object still owns the allocation that makes it shareable"
         );
-        // And the charge is per CONTAINER, so nesting one inside another costs
-        // two of them plus the outer array's single element slot.
         assert_eq!(
             CanonValue::array(vec![CanonValue::array(Vec::new())]).heap_bytes(),
             CanonValue::shared_container_bytes::<Vec<CanonValue>>() * 2
@@ -955,14 +712,6 @@ mod heap_bytes_tests {
         );
     }
 
-    /// The walk is iterative on purpose: a recursive one overflows the stack
-    /// on a value this deep, turning a size query into a process death. Making
-    /// `heap_bytes` recursive again fails this test rather than failing a
-    /// capture.
-    ///
-    /// The value is dismantled iteratively at the end because `CanonValue`'s
-    /// derived `Drop` IS recursive — so the test would otherwise die on the way
-    /// out and prove nothing about the walk.
     #[test]
     fn heap_bytes_survives_a_value_too_deep_to_recurse() {
         const DEPTH: usize = 200_000;
@@ -972,17 +721,12 @@ mod heap_bytes_tests {
         }
         let element = std::mem::size_of::<CanonValue>() as u64;
         let container = CanonValue::shared_container_bytes::<Vec<CanonValue>>();
-        assert_eq!(
-            value.heap_bytes(),
-            DEPTH as u64 * (element + container) + 4
-        );
+        assert_eq!(value.heap_bytes(), DEPTH as u64 * (element + container) + 4);
 
         let mut unwind = value;
         loop {
             let next = match &mut unwind {
-                CanonValue::Array(items) if !items.is_empty() => {
-                    Arc::make_mut(items).pop()
-                }
+                CanonValue::Array(items) if !items.is_empty() => Arc::make_mut(items).pop(),
                 _ => None,
             };
             match next {
@@ -997,42 +741,18 @@ mod heap_bytes_tests {
 mod tests {
     use super::*;
 
-    /// Every scalar shape whose `serde_json` parse -> serialize round trip is
-    /// NOT the identity, and which the cache therefore has to carry as a
-    /// spelling rather than a value.
-    ///
-    /// The first block is capture t26 verbatim. A census of all 644 sealed
-    /// hours (16,337,177,524 bytes of world JSON) found 2,990,242 distinct
-    /// number tokens, of which exactly 510 move under the round trip; all 510
-    /// are plain fractional decimals losing one ULP to `serde_json`'s
-    /// best-effort number parser, and `189352.52932739258` is hour 17032314
-    /// byte 808222. That corpus contains no exponent-form, integer-form or
-    /// escaped-string token that moves, so the second block is synthetic: those
-    /// shapes are legal JSON the format must still survive if a future domain
-    /// ever emits one.
-    ///
-    /// Every entry is asserted to actually move, in
-    /// `replay_cache::tests::number_spellings_serde_json_cannot_reproduce_survive_a_seek`,
-    /// so the fixture cannot quietly decay into a tautology. `-0.0`,
-    /// `1.0000000000000002` and `1.6e-6` were tried and are NOT here: they
-    /// round-trip through `serde_json` unchanged and so witness nothing.
     pub(crate) const NON_IDENTITY_TOKENS: &[&str] = &[
-        // 1-ULP parse loss (serde_json without `float_roundtrip`). Real t26.
         "189352.52932739258",
         "11268.982520000001",
         "26914.271699999998",
         "10.069999694824219",
         "10.100000381469727",
         "9.930000305175781",
-        // Spellings serde_json's serializer never produces, so a value round
-        // trip cannot return them even when the parse is exact.
         "1.50",
         "1e3",
         "1E3",
         "1e+3",
         "0.0000000000000000000000001",
-        // Past i64/u64: `serde_json::Number` cannot even hold these without
-        // `arbitrary_precision`, so a `Value` round trip is not merely lossy.
         "18446744073709551616",
         "-9223372036854775809",
         "123456789012345678901234567890",
@@ -1060,7 +780,6 @@ mod tests {
             r#"\b\f\n\r\t"#,
             "caf\u{e9} \u{4e2d}\u{6587}",
             r#"😀"#,
-            // Unpaired surrogate: carried verbatim, never decoded.
             r#"\ud800"#,
         ] {
             let source = format!(r#"{{"v":"{body}"}}"#);
@@ -1091,26 +810,17 @@ mod tests {
         }
     }
 
-    /// An object member name MAY carry an escape. `serde_json` writes members in
-    /// decoded-name order, which is not the order of their escaped spellings, so
-    /// the cache orders on the decoded name and stores the spelling.
     #[test]
     fn escaped_member_names_are_accepted_ordered_by_their_decoded_text() {
-        // Decoded, `a"b` (0x22 in the middle) sorts before `aXb` (0x58) - which
-        // is what serde_json writes. As raw bodies the escaped name carries
-        // 0x5C at that position, GREATER than 0x58, so a byte-order check on
-        // the stored spelling would call this document unsorted.
         let source = r#"{"a\"b":1,"aXb":2}"#;
         let parsed = CanonValue::parse(source.as_bytes()).unwrap();
         assert_eq!(String::from_utf8(parsed.to_json_bytes()).unwrap(), source);
         assert_eq!(parsed.member("a\"b").and_then(CanonValue::as_i64), Some(1));
         assert_eq!(parsed.member("aXb").and_then(CanonValue::as_i64), Some(2));
 
-        // And serde_json agrees this is the order it would have written.
         let value: serde_json::Value = serde_json::from_str(source).unwrap();
         assert_eq!(serde_json::to_string(&value).unwrap(), source);
 
-        // Two spellings of ONE name are a duplicate member, not two members.
         let error = CanonValue::parse(r#"{"a":1,"a":2}"#.as_bytes())
             .unwrap_err()
             .to_string();
@@ -1132,7 +842,6 @@ mod tests {
             Some("1936.1.1.12")
         );
         assert_eq!(value.member("absent"), None);
-        // A non-canonical integer spelling is not an i64 the index may bind to.
         let odd = CanonValue::parse(br#"{"hour_index":1.0}"#).unwrap();
         assert_eq!(odd.member("hour_index").unwrap().as_i64(), None);
     }

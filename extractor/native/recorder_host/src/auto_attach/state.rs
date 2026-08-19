@@ -1,46 +1,22 @@
-//! The per-identity attach state machine.
-//!
-//! Each detected `(pid, creation_filetime)` gets its own `CandidateState`. This
-//! module encodes the legal transitions as data so the coordinator cannot
-//! silently invent an illegal jump, such as reaching `Recording` without a
-//! heartbeat.
-
 use std::fmt;
 
-/// Lifecycle states ordered roughly by progress; terminal
-/// states are grouped at the end.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum CandidateState {
-    /// Just observed; identity query pending.
     Detected,
-    /// Identity/modset evidence missing or ambiguous. Fail-closed holding state.
     WaitingForIdentity,
-    /// Identity resolved but no injectable visible window yet.
     WaitingForWindow,
-    /// Staging a fresh DLL directory, control file, and pipe.
     Preparing,
-    /// Pipe listening barrier satisfied; installing the hook exactly once.
     Injecting,
-    /// Hook installed; waiting for a session-matching heartbeat.
     Handshaking,
-    /// Collector resident and proven; waiting for a structurally valid frame.
     WaitingForWorld,
-    /// A valid session frame arrived; capture is live.
     Recording,
-    /// Folding/packing/verifying the replay.
     Finalizing,
-    /// Verified replay produced. Terminal (success).
     Complete,
-    /// Any hard failure. Terminal; NO uncertain reinjection.
     Failed,
-    /// Process exited before we ever attached. Terminal.
     ProcessExitedBeforeAttach,
 }
 
 impl CandidateState {
-    /// Terminal states never transition again. Every detected identity MUST end
-    /// in `Complete`, `Failed`, or `ProcessExitedBeforeAttach`; `Complete` here
-    /// subsumes the finalized-success path.
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
@@ -50,10 +26,6 @@ impl CandidateState {
         )
     }
 
-    /// True once a collector DLL has (or may have) been injected into the live
-    /// process. Past this line a second injection would crash the game
-    /// (SINGLE-INJECTION LAW), so the coordinator must never start a second
-    /// attempt for the same identity while it is in — or past — one of these.
     pub fn injection_committed(self) -> bool {
         matches!(
             self,
@@ -66,7 +38,6 @@ impl CandidateState {
         )
     }
 
-    /// Human label for the tray/window card.
     pub fn visible_label(self) -> &'static str {
         match self {
             CandidateState::Detected => "the game detected",
@@ -84,18 +55,10 @@ impl CandidateState {
         }
     }
 
-    /// The legal forward transitions from this state. A process-exit or hard
-    /// failure edge is allowed from any non-terminal state and is applied
-    /// through [`CandidateState::on_process_exit`] / [`CandidateState::fail`],
-    /// NOT this table, so keep this to the "happy path plus documented retries".
     pub fn legal_next(self) -> &'static [CandidateState] {
         use CandidateState::*;
         match self {
             Detected => &[WaitingForIdentity, WaitingForWindow],
-            // Identity can resolve to the interactive window gate, or product
-            // headless mode can proceed directly to preparation after the
-            // same exact process/modset admission. Ambiguous evidence may
-            // still retry through the self-loop.
             WaitingForIdentity => &[WaitingForIdentity, WaitingForWindow, Preparing],
             WaitingForWindow => &[WaitingForWindow, Preparing],
             Preparing => &[Injecting],
@@ -108,21 +71,14 @@ impl CandidateState {
         }
     }
 
-    /// Whether `next` is a legal *forward* transition from `self`.
     pub fn can_advance_to(self, next: CandidateState) -> bool {
         self.legal_next().contains(&next)
     }
 
-    /// The state a live candidate moves to when its process is observed gone.
-    /// Before injection this is a clean "exited before attach"; after injection
-    /// commit it is a `Finalizing`/`Failed` decision the coordinator makes with
-    /// the worker's prefix status — so this only answers the pre-attach case.
     pub fn on_process_exit(self) -> Option<CandidateState> {
         if self.is_terminal() {
             None
         } else if self.injection_committed() {
-            // Post-injection exit is handled by the worker-finalization path,
-            // not here; returning None signals "not a simple pre-attach exit".
             None
         } else {
             Some(CandidateState::ProcessExitedBeforeAttach)
@@ -136,15 +92,10 @@ impl fmt::Display for CandidateState {
     }
 }
 
-/// Stable machine-readable reason codes for the journal and UI.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReasonCode {
     Detected,
     IdentityUnresolved,
-    /// The game is a build this recorder's offsets were never derived against.
-    /// TERMINAL, and reached BEFORE anything is staged, spawned or written into
-    /// the game (owner ruling 2026-08-18). Its `reason_detail` is the whole
-    /// host-facing message, verbatim.
     UnsupportedGameBuild,
     ModsetUnresolved,
     UserDirAmbiguous,
@@ -166,8 +117,6 @@ pub enum ReasonCode {
     FinalizeVerifyFailed,
     ReplayComplete,
     RecoveredNonterminalReinjectionBlocked,
-    /// A prior terminal attempt's worker is gone and Toolhelp proved that
-    /// attempt's exact staged collector module is no longer mapped.
     CollectorUnloadedRearmed,
     ExplicitStop,
 }
@@ -227,9 +176,6 @@ mod tests {
 
     #[test]
     fn recording_unreachable_without_full_ladder() {
-        // Reaching Recording without heartbeat/frame proof is forbidden. Prove
-        // there is no single legal edge that skips the
-        // Handshaking -> WaitingForWorld -> Recording ladder.
         assert!(!CandidateState::Injecting.can_advance_to(CandidateState::Recording));
         assert!(!CandidateState::Preparing.can_advance_to(CandidateState::WaitingForWorld));
         assert!(!CandidateState::Handshaking.can_advance_to(CandidateState::Recording));
@@ -243,7 +189,6 @@ mod tests {
 
     #[test]
     fn injection_commit_line_is_correct() {
-        // Pre-injection states are safe to abandon; committed states are not.
         assert!(!CandidateState::Detected.injection_committed());
         assert!(!CandidateState::WaitingForIdentity.injection_committed());
         assert!(!CandidateState::WaitingForWindow.injection_committed());
@@ -259,8 +204,6 @@ mod tests {
             CandidateState::WaitingForWindow.on_process_exit(),
             Some(CandidateState::ProcessExitedBeforeAttach)
         );
-        // Post-injection exit is NOT a simple pre-attach terminal (handled by
-        // worker finalization instead).
         assert_eq!(CandidateState::Recording.on_process_exit(), None);
     }
 

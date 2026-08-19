@@ -1,6 +1,4 @@
 use crate::*;
-// Crate-canonical HLSL mirrors (single copies with the shipped-shader
-// citations, `standardfuncsgfx.fxh:184-187` for `cam_distance`).
 use crate::occupation_stripe_law::{cam_distance, saturate, smoothstep};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -155,9 +153,6 @@ pub(crate) fn decode_map_frame_terrain_draw_outputs(
     decode_map_frame_terrain_draw_outputs_impl(draw, bundle_dir, constants, None)
 }
 
-/// Variant used by the per-draw render loop: the CB1 layout was already parsed
-/// once for the whole render call, so only this draw's own captured CB bytes
-/// are read and decoded here (all per-draw validation still runs).
 pub(crate) fn decode_map_frame_terrain_draw_outputs_with_cb1_layout(
     draw: &MapFrameDraw,
     bundle_dir: &Path,
@@ -467,10 +462,6 @@ pub(crate) fn map_frame_vertex_element_byte_offset(
         })
 }
 
-/// Per-draw CB1 decode. When `layout` is `Some`, it was parsed once for the
-/// whole render call; the per-draw checks (VS slot presence, this draw's
-/// captured CB bytes, and the shader-identity citation of `gfx/FX/pdxmap.fxh`)
-/// still run for every draw — only the `pdxmap.fxh` read/parse is hoisted.
 fn decode_map_frame_terrain_draw_cb1_impl(
     draw: &MapFrameDraw,
     bundle_dir: &Path,
@@ -580,10 +571,6 @@ pub(crate) fn decode_terrain_draw_cb1(
     Ok(decoded)
 }
 
-/// Per-draw point-light CB2 decode against a layout that was parsed once for
-/// the whole render call. The per-draw checks (PS slot presence and this
-/// draw's captured CB bytes) still run for every draw; only the
-/// `tiled_pointlights.fxh` read/parse is hoisted.
 pub(crate) fn decode_map_frame_point_light_cb2_with_layout(
     draw: &MapFrameDraw,
     bundle_dir: &Path,
@@ -603,9 +590,6 @@ pub(crate) fn decode_map_frame_point_light_cb2_with_layout(
     decode_terrain_point_light_cb2(&bytes, layout)
 }
 
-/// Constant-buffer layouts parsed once per `render_map_frame_terrain` call.
-/// The layouts are pure functions of the shipped `.fxh` sources, so hoisting
-/// the read/parse out of the per-draw loop cannot change any decode result.
 pub(crate) struct MapFrameTerrainCbLayouts {
     pub(crate) terrain_draw_cb1: ShaderConstantBufferLayout,
     pub(crate) point_light_cb2: ShaderConstantBufferLayout,
@@ -996,8 +980,6 @@ pub(crate) fn render_map_frame_terrain(
     output: &Path,
 ) -> Result<MapFrameTerrainRenderSummary> {
     let inputs = validate_production_terrain_renderer_for_map_frame(bundle)?;
-    // One manifest/contract parse (with the schema + mip-output validation the
-    // per-draw loop used to redo for every draw) for the whole render call.
     let (manifest, contract) = load_post_diffuse_bundle_context(bundle)?;
     let constants = load_map_frame_terrain_shader_constants(frame, bundle)?;
     validate_map_frame_base_terrain_shipped_resources(frame, bundle, &manifest, &contract)?;
@@ -1054,13 +1036,7 @@ pub(crate) fn render_map_frame_terrain(
     let mut covered = vec![false; map_w * map_h];
     let mut index_count = 0usize;
     let mut triangle_count = 0usize;
-    // Shader-source CB layouts are pure functions of the shipped `.fxh` files;
-    // parse them once for the whole render call instead of once per draw.
     let cb_layouts = load_map_frame_terrain_cb_layouts(bundle_dir)?;
-    // Post-diffuse texture reads are reused across draws whose validated specs
-    // are identical (the common case). Every per-draw validation still runs
-    // for every draw, and the small per-draw CB/shadow state is always
-    // re-decoded from that draw's own capture.
     let mut post_diffuse_cache: Option<(
         MapFramePostDiffuseTextureSpecs,
         TerrainPostDiffuseResources,
@@ -1148,8 +1124,6 @@ pub(crate) fn render_map_frame_terrain(
     })
 }
 
-/// Resolved location + exact expected dimensions of one post-diffuse texture
-/// input, produced by the per-draw binding validation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MapFrameRgbaTextureSpec {
     path: PathBuf,
@@ -1180,12 +1154,6 @@ pub(crate) enum MapFrameMipChainSpec {
     },
 }
 
-/// Everything the post-diffuse texture reads depend on, computed by running
-/// ALL the per-draw binding validation (resource presence, format,
-/// color-space, file-link, and exact-dimension checks). Two draws with equal
-/// specs are proven to reference byte-identical texture inputs, so
-/// `render_map_frame_terrain` may reuse the previously loaded pixels;
-/// validation itself always reruns per draw — only the disk reads are shared.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MapFramePostDiffuseTextureSpecs {
     snow_mud_data: MapFrameRgbaTextureSpec,
@@ -1292,8 +1260,6 @@ pub(crate) fn validate_map_frame_post_diffuse_texture_specs(
     })
 }
 
-/// Read every post-diffuse texture named by validated specs from disk and
-/// assemble the per-draw resource set.
 pub(crate) fn read_map_frame_post_diffuse_resources(
     specs: &MapFramePostDiffuseTextureSpecs,
     shadow_map: TerrainShadowMapState,
@@ -2038,9 +2004,6 @@ pub(crate) fn apply_terrain_secondary_mask(
 }
 
 pub(crate) fn calculate_occupation_mask(uv: Vec2, cam_y: f32) -> f32 {
-    // Keep the CPU terrain path on the single shipped-shader-derived law.
-    // The visible replay path still requires the authenticated per-hour
-    // ProvinceSecondaryColorMap; this helper supplies only its stripe mask.
     occupation_stripe_mask(uv.x, uv.y, cam_y)
 }
 
@@ -3084,10 +3047,6 @@ pub(crate) fn terrain_mipmap_level_for_pixel_step(
     )
 }
 
-/// Exact non-OpenGL `mipmapLevel` law from shipped
-/// `gfx/FX/standardfuncsgfx.fxh`: `0.5 * log2(max(dot(ddx(uv*T),ddx),
-/// dot(ddy(uv*T),ddy)))`. Keeping the vector form prevents a future rotated
-/// or perspective raster path from silently dropping cross-axis derivatives.
 pub(crate) fn terrain_mipmap_level_from_tile_repeat_derivatives(
     tile_repeat_dx: Vec2,
     tile_repeat_dy: Vec2,
@@ -3597,9 +3556,6 @@ mod tests {
             texture: texture(path),
             color_space,
         };
-        // The render loop reuses loaded post-diffuse pixels only when the
-        // validated specs match exactly; a draw binding the same file with a
-        // different color space (or a different file) must reload.
         assert_eq!(
             chain("runtime/a.rgba", RgbaColorSpace::Linear),
             chain("runtime/a.rgba", RgbaColorSpace::Linear)
@@ -3871,9 +3827,9 @@ mod tests {
             width: 4,
             height: 1,
             pixels: vec![
-                0, 0, 0, 255, //
-                64, 64, 64, 255, //
-                128, 128, 128, 255, //
+                0, 0, 0, 255,
+                64, 64, 64, 255,
+                128, 128, 128, 255,
                 192, 192, 192, 255,
             ],
         };
@@ -4929,21 +4885,9 @@ mod tests {
         );
     }
 
-    // ---- NIGHT2 (2026-07-09): gates for the ported night path (FIDELITY
-    // LEDGER 2.13). The mechanism is the shipped-HLSL port above
-    // (`calc_globe_normal` fxh:347, `day_night_factor` fxh:358/361,
-    // `nightify_color` fxh:370, `day_night_with_blend` fxh:393). Product
-    // validation stays capture-gated (no FoW.w != 0 frame exists); these are
-    // the synthetic unit gates + the captured-day-state byte-noop proof.
 
     #[test]
     fn gate_fow_gate_zero_makes_ported_night_path_a_byte_noop() {
-        // Every captured scene CB0 carries
-        // vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed.w == 0, and
-        // DayNightFactor multiplies by that gate (standardfuncsgfx.fxh:361).
-        // So on the captured day state the ported night path must change
-        // NOTHING: factor == +0.0 exactly and day_night_with_blend returns the
-        // input color bit-for-bit (lerp_f32(a, b, 0) = a + (b-a)*0 = a).
         let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
         scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 0.0;
         let constants = test_map_frame_shader_constants();
@@ -5019,11 +4963,6 @@ mod tests {
 
     #[test]
     fn gate_ambient_light_day_state_is_pure_day_rig() {
-        // AmbientLight (fxh:456-470) at day (day_factor == 0) must return the
-        // pure DAY rig contribution bit-exactly: lerp(day, boosted-night, 0)
-        // == day. With neg_fog_multiplier == 0 the normal adjustment (fxh:459)
-        // is also an exact identity lerp, so the whole result is the
-        // hand-computable sum of squared components times the day faces.
         let day = [
             DAY_AMBIENT_MAP_POS_X,
             DAY_AMBIENT_MAP_NEG_X,
@@ -5080,8 +5019,6 @@ mod tests {
                 );
             }
         }
-        // And at full night (day_factor == 1) the boosted night faces drive it:
-        // normal (0,-1,0) selects NightAmbientMapNegY = (0, 0, 0.1) * 3.0.
         let night_out = ambient_light(
             Vec3 {
                 x: 0.0,
@@ -5097,10 +5034,8 @@ mod tests {
 
     #[test]
     fn gate_day_night_factor_feather_ramp_endpoints_and_gate_scale() {
-        // DayNightFactor = saturate((dot - vMin)/(vMax - vMin)) * FoW.w
-        // (fxh:358-361) with FEATHER_MIN/MAX = -0.01/+0.01 (fxh:324-325).
         let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
-        scene.day_night_hour_sun_dir = [0.0, 0.0, 0.0, 1.0]; // sun dir = +z
+        scene.day_night_hour_sun_dir = [0.0, 0.0, 0.0, 1.0];
         scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 1.0;
         let globe = |d: f32| Vec3 {
             x: 0.0,
@@ -5113,21 +5048,14 @@ mod tests {
         assert!((f(scene, 0.0) - 0.5).abs() < 1e-6, "ramp midpoint");
         assert_eq!(f(scene, -1.0), 0.0, "fully day side saturates to 0");
         assert_eq!(f(scene, 1.0), 1.0, "fully night side saturates to 1");
-        // The gate scales the whole factor (fxh:361).
         scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 0.5;
         assert_eq!(f(scene, 1.0), 0.5, "FoW.w scales the factor");
-        // The moon window constants are a same-width feather (fxh:326-327).
         assert_eq!(MOON_FEATHER_MIN, FEATHER_MIN);
         assert_eq!(MOON_FEATHER_MAX, FEATHER_MAX);
     }
 
     #[test]
     fn gate_nightify_and_blend_match_hand_computed_shader_reference() {
-        // Hand-computed from the shipped HLSL (fxh:370-394) for
-        // day = (0.6, 0.4, 0.2), blend = 1: Grey = 0.37 (fxh:375), night =
-        // saturate(lerp(0.37, 0.37*(0.2,0.7,1.2), 0.25)) = (0.296, 0.34225,
-        // 0.3885) (fxh:376), desaturation = 0.8 (fxh:373), color * 0.5
-        // (NIGHT_DARKNESS, fxh:380) = (0.1784, 0.1769, 0.1754).
         let day = Vec3 {
             x: 0.6,
             y: 0.4,
@@ -5137,15 +5065,10 @@ mod tests {
         assert!((n.x - 0.1784).abs() < 2e-6, "nightify r {}", n.x);
         assert!((n.y - 0.1769).abs() < 2e-6, "nightify g {}", n.y);
         assert!((n.z - 0.1754).abs() < 2e-6, "nightify b {}", n.z);
-        // blend = 0: no desaturation, but NIGHT_DARKNESS still halves (the
-        // night look is never a plain passthrough: fxh:380 multiplies last).
         let n0 = nightify_color(day, 0.0);
         assert_eq!(n0.x.to_bits(), (day.x * NIGHT_DARKNESS).to_bits());
         assert_eq!(n0.y.to_bits(), (day.y * NIGHT_DARKNESS).to_bits());
         assert_eq!(n0.z.to_bits(), (day.z * NIGHT_DARKNESS).to_bits());
-        // Full-gate full-night blend caps at NIGHT_OPACITY = 0.85 (fxh:393):
-        // out = lerp(day, nightified, 1.0 * 0.85); hand-computed
-        // = (0.24164, 0.210365, 0.17909).
         let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
         scene.day_night_hour_sun_dir = [0.0, 0.0, 0.0, 1.0];
         scene.v_fow_opacity_fow_time_snow_mud_fade_max_game_speed[3] = 1.0;
@@ -5162,7 +5085,6 @@ mod tests {
 
     #[test]
     fn gate_calc_globe_normal_geometry() {
-        // CalcGlobeNormal (fxh:347-356) on the real 5632x2048 map constants.
         let constants = MapFrameTerrainShaderConstants {
             map_size_x: 5632.0,
             map_size_y: 2048.0,
@@ -5174,10 +5096,6 @@ mod tests {
         let mut scene = test_scene_cb0_with_camera_and_fade(800.0, 0.0);
         scene.day_night_hour_sun_dir[0] = 0.0;
         let at = |scene, x: f32, z: f32| calc_globe_normal(scene, constants, Vec3 { x, y: 0.0, z });
-        // Greenwich (world x == GMT_OFFSET == 2793) at the map's mid-latitude,
-        // phase 0: longitude angle 0 -> normal (0, y, +z). Hand-computed:
-        // y_param = 0.17 + 0.76*0.5 = 0.55, y = -cos(0.55*3.1415) = 0.15607,
-        // normalized -> (0, 0.18227, 0.98325).
         let greenwich = at(scene, GMT_OFFSET, 1024.0);
         assert!(greenwich.x.abs() < 1e-6, "greenwich x {}", greenwich.x);
         assert!(
@@ -5190,30 +5108,23 @@ mod tests {
             "greenwich z {}",
             greenwich.z
         );
-        // Unit length everywhere sampled.
         for (x, z) in [(0.0, 0.0), (2816.0, 1024.0), (5000.0, 2000.0)] {
             let g = at(scene, x, z);
             assert!((length_vec3(g) - 1.0).abs() < 1e-5, "unit at ({x},{z})");
         }
-        // Half a map east = the antipodal longitude: x and z negate.
         let antipode = at(scene, GMT_OFFSET + 2816.0, 1024.0);
         assert!((antipode.z + greenwich.z).abs() < 1e-5, "antipodal z");
-        // The shader's truncated turn constant (6.2831, fxh:354) makes
-        // sin(half-turn) ~ 4.6e-5 rather than 0 -- port faithfully reproduces it.
         assert!(
             antipode.x.abs() < 1e-4,
             "antipodal x {} (sin(6.2831/2) scale)",
             antipode.x
         );
-        // The hour phase rotates the terminator: phase 0.5 == +half-map shift.
         scene.day_night_hour_sun_dir[0] = 0.5;
         let phased = at(scene, GMT_OFFSET, 1024.0);
         assert!(
             (phased.z - antipode.z).abs() < 1e-5,
             "phase == longitude shift"
         );
-        // South pole offset: the missing-globe clamp keeps y strictly inside
-        // (-1, 1) at the map edges (SOUTH/NORTH_POLE_OFFSET, fxh:330-331).
         scene.day_night_hour_sun_dir[0] = 0.0;
         let south = at(scene, GMT_OFFSET, 0.0);
         let north = at(scene, GMT_OFFSET, 2047.0);

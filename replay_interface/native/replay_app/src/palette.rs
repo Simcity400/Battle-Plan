@@ -1,32 +1,14 @@
-//! State -> RGBA color table construction.
-//!
-//! acceptance gate): one `R8G8B8A8_UNORM` element per state id. Grounding
-//! rule: a state with a recorded owner whose color is in
-//! `country_colors.json` gets that color at full opacity. A recorded owner whose
-//! tag has no resolved color is a hard data gap, not a visual fallback: drawing
-//! the underlay would hide the missing country color as terrain.
 
 use std::collections::BTreeMap;
 
 use crate::Result;
 
-/// Alpha 0 = "no recorded owner color": the shader shows the underlay.
 pub const NO_OWNER_SENTINEL_RGBA: u32 = 0;
 
-/// Encode an owner RGB as a little-endian `R8G8B8A8_UNORM` texel at full
-/// opacity (bytes r, g, b, 255 in memory).
 pub fn encode_owner_rgba(color: [u8; 3]) -> u32 {
     u32::from(color[0]) | (u32::from(color[1]) << 8) | (u32::from(color[2]) << 16) | 0xFF00_0000
 }
 
-/// Build the compact state -> RGBA table of length `max_state_id + 1`.
-/// Index = state id. States without a recorded owner, and states whose
-/// owner tag has no entry in `country_colors.json`, get the sentinel.
-/// Impassable (wasteland) states are NOT special-cased: the engine's political
-/// mapmode ignores the `impassable` flag on the country-colour plane, so an
-/// owned impassable state gets the same owner colour as passable land (verified
-/// byte-exact against the captured GradientBorderChannel1: 0/22 impassable
-/// states are gray).
 pub fn build_state_color_table(
     max_state_id: u32,
     owners: &BTreeMap<u32, String>,
@@ -64,7 +46,6 @@ mod tests {
         owners.insert(2u32, "FRA".to_string());
         let table = build_state_color_table(3, &owners, &fixture_colors()).expect("colors");
         assert_eq!(table.len(), 4);
-        // bytes in memory: r=10, g=20, b=30, a=255
         assert_eq!(table[2], 10 | (20 << 8) | (30 << 16) | 0xFF00_0000);
     }
 

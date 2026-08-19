@@ -103,8 +103,6 @@ fn main() -> Result<(), String> {
             && number(units, "project_breakthrough_rows")? > 0;
     let breakthrough_compact_root_blocked =
         breakthrough_live_probe_captured && !breakthrough_compact_rows_present;
-    // Fresh exact-a729 writer/reader evidence closes the semantic namespace independently of the
-    // older lockstep fixture: CBreakthroughProgress keys are engine serializer token IDs.
     let breakthrough_semantics_promoted = true;
 
     let lifecycle_delta_captured = bool_value(&lifecycle, "accepted_for_lifecycle_delta_slice")?
@@ -314,26 +312,12 @@ fn validate_authority_binding(
         return Err("compact gate verification profile is not authoritative".to_string());
     }
     let replay = get_obj(details, "replay_verify")?;
-    // The run-dir manifest is bound to the container's SEALED copy, not equal
-    // to it: the recorder redacts absolute paths out of the sealed copy and
-    // writes finalize telemetry back into the run-dir copy after the container
-    // exists. The gate publishes what it actually proved. The old
-    // `external_manifest_exact_match` claimed byte-identity, which no live
-    // capture has ever satisfied.
     if !bool_value(replay, "external_manifest_bound_to_sealed_authority")? {
         return Err(
             "compact gate did not bind the run-dir manifest to the sealed replay authority"
                 .to_string(),
         );
     }
-    // The gate states WHICH proof certified the recording, and the source
-    // identity it publishes is named differently on each route: a cache-only
-    // container carries no packaged stream entry to describe, so its identity
-    // is the one the recorder manifest, H4IX and H4CP all agree on.
-    //
-    // Absence means "written before the gate stated its certification path",
-    // and every such report was byte-compared — that was the only route. A
-    // PRESENT but unassigned value is still a hard error.
     let (source_hash_key, source_bytes_key) = match replay
         .get("stream_certification_path")
         .map(|value| {
@@ -454,14 +438,6 @@ fn validate_authority_binding(
         ));
     }
 
-    // The local file this audit read is the RUN-DIR manifest, so it is checked
-    // against the identity the gate published for that file. It is NOT the
-    // sealed `recorder_manifest` identity: the recorder redacts absolute paths
-    // out of the sealed copy and writes finalize telemetry back into the
-    // run-dir copy after the container exists, so the two are deliberately
-    // different (t31: 17,957,105 vs 17,957,028 bytes). Comparing this file
-    // against `recorder_manifest_sha256` only ever held because the gate
-    // demanded byte-identity, which no live capture satisfied.
     let manifest_hash = sha256_hex(manifest_bytes);
     let gate_manifest_hash = string_value(replay, "external_manifest_sha256")?;
     validate_lower_sha256(gate_manifest_hash)
@@ -476,8 +452,6 @@ fn validate_authority_binding(
             "native manifest byte length differs from gate external_manifest_bytes".to_string(),
         );
     }
-    // The sealed copy's own identity is still required to be well-formed, and
-    // is published under its own name. It is never equal to the local file.
     validate_lower_sha256(string_value(replay, "recorder_manifest_sha256")?)
         .map_err(|error| format!("gate sealed recorder manifest hash: {error}"))?;
     if number(replay, "recorder_manifest_bytes")? == 0 {
@@ -717,9 +691,6 @@ mod tests {
     fn authority_fixture() -> (Value, Value, Value, Vec<u8>) {
         let manifest_bytes = b"run-dir native manifest bytes".to_vec();
         let manifest_hash = sha256_hex(&manifest_bytes);
-        // The sealed copy inside the container is a DIFFERENT artifact — the
-        // portable projection of the same session, sealed before the post-pack
-        // telemetry was written back into the run-dir file.
         let sealed_bytes = b"sealed portable recorder manifest bytes".to_vec();
         let sealed_hash = sha256_hex(&sealed_bytes);
         let stream_hash = sha256_hex(b"collector stream");
@@ -775,13 +746,8 @@ mod tests {
                     "game_id": "session-a",
                     "collector_compact_stream_bytes": 16,
                     "collector_compact_stream_sha256": stream_hash,
-                    // The SEALED copy: a different file from the one this
-                    // audit read off disk, exactly as every live capture
-                    // produces. Deliberately not equal to the run-dir identity
-                    // below, so a reader that conflates the two fails here.
                     "recorder_manifest_bytes": sealed_bytes.len(),
                     "recorder_manifest_sha256": sealed_hash,
-                    // The RUN-DIR copy: the file at `manifest_path`.
                     "external_manifest_bytes": manifest_bytes.len(),
                     "external_manifest_sha256": manifest_hash,
                     "external_manifest_bound_to_sealed_authority": true
@@ -799,15 +765,6 @@ mod tests {
         assert_eq!(binding["session_id"], json!("session-a"));
     }
 
-    /// The run-dir manifest this audit hashed is checked against the gate's
-    /// identity for THAT file, never against the sealed `recorder_manifest`
-    /// identity. The two are deliberately different for every live capture
-    /// (t31: 17,957,105 vs 17,957,028 bytes), so an audit that compares the
-    /// local file to the sealed identity refuses every real recording.
-    ///
-    /// Production change that would make this fail: pointing the local-file
-    /// comparison back at `recorder_manifest_sha256` /
-    /// `recorder_manifest_bytes`.
     #[test]
     fn the_local_file_is_bound_to_the_run_dir_identity_not_the_sealed_one() {
         let (lifecycle, manifest, gate, bytes) = authority_fixture();
@@ -819,14 +776,10 @@ mod tests {
         validate_authority_binding(&lifecycle, &manifest, &gate, &bytes)
             .expect("a live-shaped gate report must bind");
 
-        // A run-dir manifest that is not the file the gate reported still
-        // refuses, naming the run-dir identity.
         let error = validate_authority_binding(&lifecycle, &manifest, &gate, b"other bytes")
             .expect_err("a different local file must refuse");
         assert!(error.contains("external_manifest_sha256"), "{error}");
 
-        // And the sealed identity is still required to be present and
-        // well-formed, so dropping it is not a way to escape the check.
         let mut without_sealed = gate;
         without_sealed["details"]["replay_verify"]
             .as_object_mut()
@@ -838,14 +791,6 @@ mod tests {
         );
     }
 
-    /// A cache-only (default composition) capture publishes its source
-    /// identity under the manifest-attested names, because its container
-    /// carries no packaged stream entry to describe. The audit must bind
-    /// against those, and must refuse a certification path it cannot describe.
-    ///
-    /// Production change that would make this fail: hard-coding the
-    /// `collector_compact_stream_*` keys again, which would make every default
-    /// capture unauditable, or defaulting an unknown path to either route.
     #[test]
     fn binds_a_cache_only_capture_through_its_attested_source_identity() {
         let (lifecycle, manifest, mut gate, bytes) = authority_fixture();
@@ -865,7 +810,6 @@ mod tests {
         let binding = validate_authority_binding(&lifecycle, &manifest, &gate, &bytes).unwrap();
         assert_eq!(binding["ok"], json!(true));
 
-        // A drifted attested identity is still caught.
         let mut drifted = gate.clone();
         drifted["details"]["replay_verify"]["attested_source_sha256"] =
             json!(sha256_hex(b"other"));
@@ -875,7 +819,6 @@ mod tests {
                 .contains("decoded stream sha256 mismatch")
         );
 
-        // An unassigned certification path is a hard error, not a default.
         let mut unassigned = gate;
         unassigned["details"]["replay_verify"]["stream_certification_path"] = json!("whatever");
         assert!(

@@ -1,9 +1,3 @@
-//! Capture-independent production-map admission and execution planning.
-//!
-//! Production content is selected by the portable replay's content manifest,
-//! resolved through the launcher-equivalent VFS, and checked again at use.
-//! Paths are data carried by `UsedContentKey`; this module has no vanilla asset
-//! catalog, fallback path, or capture-bundle constructor.
 
 use crate::{bind_exact_rail_d80_draws, ExactRailD80Binding, GameFileResolver, Result};
 use replay_core::{
@@ -18,8 +12,6 @@ use replay_core::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// One byte-exact effective-VFS payload, loaded only through the complete
-/// replay-admitted `UsedContentKey` identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionMapResource {
     pub content_key: String,
@@ -62,9 +54,6 @@ pub struct ProductionMapDataNeed {
 
 pub const C03_CAMERA_REPLAY_BINDING_SCHEMA: &str = "hoi4.c03.camera-replay-binding.v1";
 
-/// Replay consumes the authenticated envelope camera state exactly once. Raw
-/// wheel/pan/map-pick rows authenticate that state transition but are never
-/// reapplied as input, which would double-advance an already captured camera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum C03CameraReplayMode {
@@ -85,10 +74,7 @@ pub struct C03CameraReplayBinding {
     pub target_eye_f32_bits: [u32; 3],
     pub target_look_at_f32_bits: [u32; 3],
     pub mode: C03CameraReplayMode,
-    /// Must remain zero: the recorded envelope state already includes every
-    /// accepted raw event in `camera_event_batches`.
     pub raw_event_reapplication_count: u8,
-    /// Exactly one selected envelope camera state is bound to this submit.
     pub envelope_state_selection_count: u8,
 }
 
@@ -200,57 +186,27 @@ pub struct PreparedProductionMapFrame {
     pub effective_vfs_manifest_sha256: String,
     pub selected_submit_index: Option<u64>,
     pub selected_submit_global_order: Option<u32>,
-    /// Receipt-ready C03 identity for the selected submit. Raw inputs are
-    /// evidence only; consumers select the recorded envelope state once.
     pub c03_camera_replay: Option<C03CameraReplayBinding>,
-    /// Exact scene bindings from the selected portable submit. Static map
-    /// interpreters consume these directly; they must never recover camera,
-    /// clock, or other scene state from a retained capture bundle.
     pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
-    /// Complete static map programs carried by the selected portable submit.
-    /// An empty vector is authoritative unavailability, never permission to
-    /// synthesize pipeline state from vanilla paths or retained captures.
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
     pub authenticated_texture_snapshots: Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
-    /// D81 semantics joined to engine-built D80 railroad draws through the
-    /// authenticated a729 registration producer. `None` never authorizes
-    /// reconstructed centroid ribbons or shader-name inference.
     pub rail_ribbon: Option<ExactRailD80Binding>,
-    /// Legacy captured-submit evidence packet. The shipping XMAP07/XMAP22
-    /// product path never reads this field; it consumes the passive global
-    /// `Xmap07PassiveSnowMudCarrier` instead.
     pub snow_mud_texture: Option<replay_core::SnowMudTexturePacket>,
-    /// C07 operation join admitted against the selected submit. The D3D
-    /// preparation/execution path must retain every referenced static draw.
     pub tree_runtime: Option<C07TreeRuntimeCarrier>,
-    /// Selected-submit S1 carrier already validated against the unified
-    /// static/runtime operation stream. Absence remains a typed omission.
     pub s1_shadow: Option<S1ShadowCarrier>,
-    /// Sole authenticated cross-family execution order. Backends may not
-    /// concatenate static and runtime families heuristically.
     pub ordered_render_operations: Vec<RenderExecutionRef>,
-    /// Exact dynamic texture uploads available to static shader-resource
-    /// bindings. They remain submit payloads, never VFS/default assets.
     pub political_textures: Vec<PoliticalTexturePacket>,
     pub tiled_lights: Vec<TiledLightSubmission>,
     pub ordered_runtime_draws: Vec<PreparedRuntimeDraw>,
-    /// Validated exact M02 carrier. Pixel execution remains omitted until the
-    /// complete UI pass can interleave its authenticated global ordinals.
     pub m02_combat: Option<M02CombatFrame>,
-    /// Complete authenticated selected-Present operation stream, retained
-    /// independently of map-dimension admission for execution before Present.
     pub authenticated_ui_pass: Option<AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
-    /// Separate exact supply-map railway carrier. Its draw payloads remain in
-    /// `ordered_static_map_programs` and execute through the static path.
     pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
     pub o04_cities: Option<O04CityFrame>,
     pub o05_buildings: Option<O05BuildingFrame>,
     pub omitted_data_needs: Vec<ProductionMapDataNeed>,
 }
 
-/// Capture-independent renderer front-end. A D3D backend can execute the
-/// static law interpreters and the exact prepared runtime draws directly.
 pub struct ProductionMapRenderer {
     resolver: GameFileResolver,
     manifest_sha256: String,
@@ -303,9 +259,6 @@ impl ProductionMapRenderer {
                 content_key: row.content_key.clone(),
                 kind: row.kind.clone(),
                 content: row.content.clone(),
-                // Bytes are loaded only after an authenticated selected frame
-                // declares this opaque key. Unrelated UI/hour content cannot
-                // gate or inflate the current non-UI route.
                 bytes: Vec::new(),
                 consumers: row.consumers.clone(),
             };
@@ -1265,9 +1218,6 @@ fn entity_submission<'a>(
 }
 
 fn collect_particle_content<'a>(particle: &'a ParticlePacket, out: &mut Vec<&'a UsedContentKey>) {
-    // XMAP20: the selected particle definition and atlas winner are semantic
-    // inputs, not decorative draw provenance. Reopen both through the admitted
-    // effective VFS even when a legacy binding happens to repeat the texture.
     out.push(&particle.content_identity.definition_content);
     out.push(&particle.content_identity.texture_content);
     out.push(&particle.shader_program.source);

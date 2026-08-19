@@ -28,7 +28,7 @@ except ImportError:
 HOURS = 3000
 LEVEL = 3
 ROWS = 200
-CHURN_PER_HOUR = 2          # rows that actually change each hour
+CHURN_PER_HOUR = 2
 
 
 def synthetic_hours():

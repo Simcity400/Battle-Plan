@@ -1,15 +1,3 @@
-//! Exact-a729 owner registry and materialized-order hook for the five overlap
-//! instances reached by the retained A28 controller roots.
-//!
-//! Four controller constructors/setup functions and the divisions-summary
-//! pool constructor register the concrete overlap pointer with its authored,
-//! pointer-free collection ID.  `COverlappingElementsBox::Layout` is then
-//! observed post-return only for a registered pointer.  This closes stored
-//! forward/reverse order and resolved child rectangles without pretending the
-//! generic overlap object owns pre-filter source accounting.  A complete DCT1
-//! source can be constructed only by joining an owner-captured controller
-//! ledger through [`A729NamedOverlapCompleteSource::try_join`].
-
 use crate::{
     CollectionTrace, ExactControllerTraceSource, MaterializedSlotTrace, RectI32, SourceItemTrace,
     TraceFrame,
@@ -48,8 +36,7 @@ pub const NAMED_OVERLAP_NAME_XREF_JOB_ID: &str =
 pub const NAMED_OVERLAP_NAME_XREF_ARTIFACT_SHA256: &str =
     "11c73a7d35c701023fb9bfd83a8dc58ba7cd294cc409ed98d659b08bc6c4ed80";
 
-pub const PEACE_COLLECTION_ID: &str =
-    "interface/peaceconferencewindow.gui#collection-0003";
+pub const PEACE_COLLECTION_ID: &str = "interface/peaceconferencewindow.gui#collection-0003";
 pub const UPGRADE_COLLECTION_ID: &str =
     "interface/countryintelligenceagencyview.gui#collection-0008";
 pub const DIPLOMACY_DIVISIONS_COLLECTION_ID: &str =
@@ -72,40 +59,27 @@ const CHILD_GUI_OFFSET: usize = 0x38;
 const MAX_PENDING: usize = 4_096;
 
 const PEACE_SENTINEL: [u8; 16] = [
-    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x48, 0x89, 0x48, 0x08, 0x55, 0x56, 0x57,
-    0x41, 0x54,
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x48, 0x89, 0x48, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54,
 ];
 const UPGRADE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
-    0x54, 0x41,
+    0x48, 0x89, 0x5C, 0x24, 0x18, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
 ];
 const DIVISIONS_ITEM_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41,
-    0x54, 0x41,
+    0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
 ];
 const DIVISIONS_POOL_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-    0x20, 0x57,
+    0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x6C, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57,
 ];
 const MARKET_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-    0x41, 0x57,
+    0x48, 0x89, 0x5C, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
 ];
 const LAYOUT_SENTINEL: [u8; 16] = [
-    0x41, 0x56, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x4C, 0x8B,
-    0xF1, 0xFF,
+    0x41, 0x56, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, 0x48, 0x8B, 0x01, 0x4C, 0x8B, 0xF1, 0xFF,
 ];
 
 type PeaceCtorFn = unsafe extern "system" fn(usize, usize, usize, u32) -> usize;
-type UpgradeCtorFn = unsafe extern "system" fn(
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-    usize,
-) -> usize;
+type UpgradeCtorFn =
+    unsafe extern "system" fn(usize, usize, usize, usize, usize, usize, usize) -> usize;
 type DivisionsItemCtorFn = unsafe extern "system" fn(usize, usize, u8) -> usize;
 type DivisionsPoolFn = unsafe extern "system" fn(usize, usize);
 type MarketSetupFn = unsafe extern "system" fn(usize);
@@ -208,10 +182,26 @@ impl A729NamedOverlapHookOwner {
             base + OVERLAP_LAYOUT_RVA,
         ];
         for (address, sentinel, label) in [
-            (targets[0], &PEACE_SENTINEL[..], "peace beneficiary overlap owner"),
-            (targets[1], &UPGRADE_SENTINEL[..], "agency upgrade overlap owner"),
-            (targets[2], &DIVISIONS_ITEM_SENTINEL[..], "divisions overlap item owner"),
-            (targets[3], &DIVISIONS_POOL_SENTINEL[..], "divisions overlap pool owner"),
+            (
+                targets[0],
+                &PEACE_SENTINEL[..],
+                "peace beneficiary overlap owner",
+            ),
+            (
+                targets[1],
+                &UPGRADE_SENTINEL[..],
+                "agency upgrade overlap owner",
+            ),
+            (
+                targets[2],
+                &DIVISIONS_ITEM_SENTINEL[..],
+                "divisions overlap item owner",
+            ),
+            (
+                targets[3],
+                &DIVISIONS_POOL_SENTINEL[..],
+                "divisions overlap pool owner",
+            ),
             (targets[4], &MARKET_SENTINEL[..], "market overlap owner"),
             (targets[5], &LAYOUT_SENTINEL[..], "overlap layout"),
         ] {
@@ -219,7 +209,9 @@ impl A729NamedOverlapHookOwner {
         }
         reset_state()?;
         let epoch = INSTALL_EPOCH
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
             .map_err(|_| "A28 named-overlap install epoch exhausted".to_string())?
             + 1;
         let hooks = [
@@ -258,12 +250,7 @@ impl A729NamedOverlapHookOwner {
             }
         }
         CALLBACKS_OPEN.store(true, Ordering::Release);
-        // Enable the shared consumer first. Foreign layout calls are ignored,
-        // while every subsequently enabled owner registration is observable.
         if let Err(status) = unsafe { inline_detour::enable(targets[5] as *mut c_void) } {
-            // A FAILED ENABLE MAY STILL HAVE PATCHED (see `remove_created`), so
-            // this arm goes through the same close/disable/drain/free it does
-            // rather than freeing straight out.
             let removed = remove_created(&targets, &originals, targets.len());
             return Err(if removed {
                 format!("named-overlap layout hook enable failed: {status}")
@@ -275,13 +262,6 @@ impl A729NamedOverlapHookOwner {
         }
         for index in 0..5 {
             if let Err(status) = unsafe { inline_detour::enable(targets[index] as *mut c_void) } {
-                // THE FAILING TARGET IS DISABLED TOO, and that is the fix here.
-                // This arm used to disable `take(index)` and the shared
-                // consumer and then drain -- leaving `targets[index]` itself,
-                // whose enable had just reported failure, still patched and
-                // still admitting, so the count it waited on was over a set
-                // that could refill. `remove_created` now closes admission and
-                // disables the WHOLE prefix before it measures anything.
                 let removed = remove_created(&targets, &originals, targets.len());
                 return Err(if removed {
                     format!("named-overlap hook {index} enable failed: {status}")
@@ -326,7 +306,6 @@ impl A729NamedOverlapHookOwner {
             .lock()
             .map_err(|_| "A28 named-overlap install mutex poisoned".to_string())?;
         CALLBACKS_OPEN.store(false, Ordering::Release);
-        // Stop all producers before removing the shared layout consumer.
         for target in self.targets.iter().take(5) {
             match unsafe { inline_detour::disable(*target as *mut c_void) } {
                 Ok(())
@@ -441,7 +420,9 @@ fn join_complete_collection(
     let mut source_ids = BTreeSet::new();
     let mut included = Vec::new();
     for (ordinal, item) in ledger.source_items.iter().enumerate() {
-        if item.source_ordinal as usize != ordinal || !source_ids.insert(item.stable_item_id.as_str()) {
+        if item.source_ordinal as usize != ordinal
+            || !source_ids.insert(item.stable_item_id.as_str())
+        {
             return Err("named-overlap source identity/ordinal is invalid".into());
         }
         if item.included {
@@ -476,21 +457,23 @@ fn join_complete_collection(
         .zip(ledger.slot_ids_in_materialized_order.iter())
         .zip(ledger.slot_template_ids_in_materialized_order.iter())
         .enumerate()
-        .map(|(ordinal, (((child, bound_item_id), slot_id), template_id))| {
-            if child.stored_ordinal as usize != ordinal
-                || slot_id.trim().is_empty()
-                || template_id.trim().is_empty()
-                || !slot_ids.insert(slot_id.as_str())
-            {
-                return Err("named-overlap materialized slot ledger is invalid".to_string());
-            }
-            Ok(MaterializedSlotTrace {
-                slot_id: slot_id.clone(),
-                bound_item_id: bound_item_id.clone(),
-                row_template_id: template_id.clone(),
-                rect: child.rect,
-            })
-        })
+        .map(
+            |(ordinal, (((child, bound_item_id), slot_id), template_id))| {
+                if child.stored_ordinal as usize != ordinal
+                    || slot_id.trim().is_empty()
+                    || template_id.trim().is_empty()
+                    || !slot_ids.insert(slot_id.as_str())
+                {
+                    return Err("named-overlap materialized slot ledger is invalid".to_string());
+                }
+                Ok(MaterializedSlotTrace {
+                    slot_id: slot_id.clone(),
+                    bound_item_id: bound_item_id.clone(),
+                    row_template_id: template_id.clone(),
+                    rect: child.rect,
+                })
+            },
+        )
         .collect::<Result<Vec<_>, _>>()?;
     Ok(CollectionTrace {
         collection_instance_id: observation.collection_instance_id,
@@ -516,16 +499,11 @@ unsafe extern "system" fn hook_peace(
     beneficiary: usize,
     index: u32,
 ) -> usize {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         return call_original_peace(owner, gui, beneficiary, index);
     }
     let result = call_original_peace(owner, gui, beneficiary, index);
-    // The constructor's authenticated owner boundary is its returned item,
-    // even though exact-a729 currently returns `param_1`.
     register_owner_field(result, PEACE_OVERLAP_OFFSET, PEACE_COLLECTION_ID);
     result
 }
@@ -539,23 +517,20 @@ unsafe extern "system" fn hook_upgrade(
     agency: usize,
     name: usize,
 ) -> usize {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         return call_original_upgrade(owner, idler, upgrade, branch, window, agency, name);
     }
     let result = call_original_upgrade(owner, idler, upgrade, branch, window, agency, name);
-    // Bind the returned item, matching the exact constructor contract.
     register_owner_field(result, UPGRADE_OVERLAP_OFFSET, UPGRADE_COLLECTION_ID);
     result
 }
 
-unsafe extern "system" fn hook_divisions_item(owner: usize, parent: usize, selectable: u8) -> usize {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
+unsafe extern "system" fn hook_divisions_item(
+    owner: usize,
+    parent: usize,
+    selectable: u8,
+) -> usize {
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         return call_original_divisions_item(owner, parent, selectable);
@@ -569,9 +544,6 @@ unsafe extern "system" fn hook_divisions_item(owner: usize, parent: usize, selec
 }
 
 unsafe extern "system" fn hook_divisions_pool(pool: usize, gui: usize) {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         call_original_divisions_pool(pool, gui);
@@ -584,9 +556,6 @@ unsafe extern "system" fn hook_divisions_pool(pool: usize, gui: usize) {
 }
 
 unsafe extern "system" fn hook_market(owner: usize) {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         call_original_market(owner);
@@ -597,9 +566,6 @@ unsafe extern "system" fn hook_market(owner: usize) {
 }
 
 unsafe extern "system" fn hook_layout(owner: usize) {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         call_original_layout(owner);
@@ -631,7 +597,9 @@ fn register_owner_field(owner: usize, offset: usize, collection_id: &'static str
                 poison(error);
             }
         }
-        _ => poison(format!("named-overlap owner field +0x{offset:X} is unreadable/null")),
+        _ => poison(format!(
+            "named-overlap owner field +0x{offset:X} is unreadable/null"
+        )),
     }
 }
 
@@ -702,8 +670,8 @@ fn register_owner(overlap: usize, collection_id: &'static str) -> Result<(), Str
 fn capture_layout(owner: usize, registration: RegisteredOwner) -> Result<(), String> {
     let list_interface = owner + LIST_INTERFACE_OFFSET;
     let vtable = read_usize(list_interface).ok_or("overlap list-interface vtable unreadable")?;
-    let accessor_address = read_usize(vtable + 0x58)
-        .ok_or("overlap list accessor function unreadable")?;
+    let accessor_address =
+        read_usize(vtable + 0x58).ok_or("overlap list accessor function unreadable")?;
     if accessor_address == 0 {
         return Err("overlap list accessor function is null".into());
     }
@@ -716,9 +684,10 @@ fn capture_layout(owner: usize, registration: RegisteredOwner) -> Result<(), Str
     if count > crate::MAX_ITEMS_PER_COLLECTION {
         return Err("overlap child count exceeds bound".into());
     }
-    let reverse = read_u8(owner + REVERSE_FLAG_OFFSET).ok_or("overlap reverse flag unreadable")? != 0;
-    let mut node = read_usize(list + if reverse { 8 } else { 0 })
-        .ok_or("overlap list endpoint unreadable")?;
+    let reverse =
+        read_u8(owner + REVERSE_FLAG_OFFSET).ok_or("overlap reverse flag unreadable")? != 0;
+    let mut node =
+        read_usize(list + if reverse { 8 } else { 0 }).ok_or("overlap list endpoint unreadable")?;
     let mut children = Vec::with_capacity(count);
     for ordinal in 0..count {
         if node == 0 {
@@ -852,29 +821,7 @@ fn original_slots() -> [&'static AtomicUsize; 6] {
     ]
 }
 
-/// Take the created prefix back out: close admission, disable the WHOLE
-/// prefix, drain ONCE, then free.
-///
-/// # Why the order changed
-///
-/// This used to disable and free one target at a time, with nothing between
-/// the two. Both halves of that were wrong:
-///
-/// * A per-target drain is not a drain at all while the SIBLINGS are still
-///   patched in -- they keep admitting, so the count never settles for the
-///   reason the caller wants it to. Admission closes and the whole prefix is
-///   disabled before anything is measured.
-/// * "It only ever runs after a failed `enable`, so nothing was patched" is
-///   FALSE IN THIS PRODUCT. `minhook_h4/vendor/src/hook.c`'s `EnableHookLL`
-///   writes the patch, then sets `isEnabled` and reports
-///   `MH_ERROR_MEMORY_PROTECT` if the protection restore or the
-///   instruction-cache flush did not complete -- "the bytes ARE written by the
-///   time these run". So a game thread can be inside a detour body here, and it
 ///   returns through the trampoline the free releases.
-///
-/// A prefix that cannot be proved quiet is RETAINED: disabled, so nothing new
-/// enters it, with trampolines and originals kept for whoever is inside. The
-/// caller reports that rather than treating cleanup as done.
 #[must_use = "a retained prefix is still owed a teardown and must reach the caller's error"]
 fn remove_created(targets: &[usize; 6], originals: &[&AtomicUsize; 6], created: usize) -> bool {
     CALLBACKS_OPEN.store(false, Ordering::Release);
@@ -884,15 +831,9 @@ fn remove_created(targets: &[usize; 6], originals: &[&AtomicUsize; 6], created: 
     if wait_for_quiescence(Duration::from_secs(30)).is_err() {
         return false;
     }
-    // QUIESCED: admission closed, the whole created prefix disabled, and the
-    // in-flight count observed at zero -- all three in this function, above
-    // this line, with nothing between them that could reopen any of them.
     let mut removed = true;
     for index in (0..created).rev() {
         if unsafe { inline_detour::remove(targets[index] as *mut c_void) }.is_err() {
-            // RETAINED. The original stays published, because a target that is
-            // still created may still be reachable and a zeroed original makes
-            // its detour skip the game's own function.
             removed = false;
             continue;
         }
@@ -904,25 +845,11 @@ fn remove_created(targets: &[usize; 6], originals: &[&AtomicUsize; 6], created: 
 struct InFlight;
 
 impl InFlight {
-    /// ALWAYS COUNTS, admitted or not.
-    ///
-    /// This used to return `None` when `CALLBACKS_OPEN` was already closed --
-    /// and the detour then went on to CALL THE ORIGINAL anyway, uncounted. That
-    /// is the exact thread teardown must wait for: it is inside this crate's
-    /// own detour body, which the freeze cannot see, and it RETURNS THROUGH THE
-    /// TRAMPOLINE that `inline_detour::remove` frees. A drain taken after
-    /// closing admission read zero straight past it.
-    ///
-    /// So entry and ADMISSION are now two different questions. The count says
-    /// "a thread is in the body"; [`InFlight::admitted`] says "and it may
-    /// capture". Closing the gate stops the capture and never stops the count.
     fn enter() -> Self {
         IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
         Self
     }
 
-    /// Whether this entrant may do the observation half. The call through the
-    /// original happens either way -- it is the game's own function.
     fn admitted(&self) -> bool {
         CALLBACKS_OPEN.load(Ordering::Acquire)
     }
@@ -987,7 +914,8 @@ fn invoke_geometry(object: usize, slot: usize, label: &str) -> Result<[i32; 2], 
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
-    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual =
+        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }

@@ -1,9 +1,3 @@
-//! Fixed H4CT payloads for exact early d77/d80 capture.
-//!
-//! All hashes are raw 32-byte SHA-256 values. The enclosing H4CT frame binds
-//! session, direction, sequence, length, and CRC; these payloads additionally
-//! bind the suspended process epoch and hook epoch.
-
 const VERSION_V1: u16 = 1;
 const VERSION_V2: u16 = 2;
 const READY_MAGIC: &[u8; 4] = b"ERDY";
@@ -27,18 +21,8 @@ pub const EARLY_DIAGNOSTIC_COM_SELECTOR_WIRE_MASK: u64 =
 pub const EARLY_DIAGNOSTIC_MIN_HOLD_MS: u64 = 210_000;
 pub const EARLY_DIAGNOSTIC_END_RECORDER_CANCEL: u16 = 1;
 pub const MAX_EARLY_RENDER_TIMEOUT_MS: u32 = 1_800_000;
-/// Process-environment key the recorder writes into a diagnostic child and the
-/// collector reads back to cross-check its control-block staged-hook
-/// selection. Both ends previously spelled this key as their own literal; it
-/// is a two-party agreement, so it lives with the rest of the early-render
-/// control contract.
 pub const DIAGNOSTIC_STAGE_MASK_ENV: &str = "BATTLE_PLAN_XN15L_DIAGNOSTIC_STAGE_MASK";
 
-/// Typed staged-hook inventory selected for one early-render run.
-///
-/// `Empty` is represented only by wire mask zero and is admitted only in v2
-/// staged-hook frames. Production retains its sole historical wire mask
-/// (`0x3ff`); an explicit all-COM selector remains noncanonical.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EarlyStagedHookSelection {
     Production,
@@ -143,8 +127,6 @@ impl EarlyStagedHookSelection {
     }
 }
 
-/// Splits the packed staged-hook selection carried in the historical
-/// `staged_hook_group_mask` field. Empty is the unique `(0, 0)` selection.
 pub fn staged_hook_selection_masks(wire_mask: u64) -> Option<(u64, u64)> {
     let selection = EarlyStagedHookSelection::from_wire_mask(wire_mask)?;
     Some((selection.group_mask(), selection.com_selector()))
@@ -204,10 +186,6 @@ pub struct EarlyCommitCaptureReceiptV1 {
     pub receipt_sha256: [u8; 32],
 }
 
-/// Recorder-authored authority transmitted only after the collector hello has
-/// been admitted. This is the first point at which the injected collector can
-/// learn the host's in-memory launch and effective-VFS identities.
-/// The authenticated recorder-to-collector launch binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EarlyRenderLaunchBindV2 {
     pub process_id: u32,
@@ -686,11 +664,6 @@ pub fn decode_early_diagnostic_liveness_request(
     Ok(value)
 }
 
-/// Canonical bytes authenticated by `EarlyDiagnosticLivenessResponseV1::response_sha256`.
-/// This is exactly bytes 0..182 of the 214-byte EDRP payload: the complete
-/// encoded response through `immediate_context_ptr`, excluding only the final
-/// 32-byte `response_sha256`. The digest is SHA-256 of these bytes directly;
-/// there is no domain prefix and it is not a 214-byte zero-filled encoding.
 pub fn canonical_early_diagnostic_liveness_response_binding_bytes(
     value: &EarlyDiagnosticLivenessResponseV1,
 ) -> Result<Vec<u8>, EarlyRenderCodecError> {
@@ -905,26 +878,6 @@ mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
-    /// The out-of-process production sink verifier and this wire constant must
-    /// never disagree about the staged-hook inventory, and there are exactly two
-    /// non-disagreeing arrangements:
-    ///
-    ///  * the verifier grades an early-render capture receipt, in which case it
-    ///    has to pin THIS value, or
-    ///  * the verifier refuses the early-render surface outright, in which case
-    ///    no production run it grades can carry a staged-hook count at all and
-    ///    the constant is enforced only by the Rust receipt validators.
-    ///
-    /// The passive product took the second arrangement: `--early-launch-exe` is
-    /// a forbidden recorder argument and `early_render_capture_receipt.json` is
-    /// a forbidden run-directory artifact. Asserting only the first arrangement
-    /// -- which is what this test did while the verifier still graded the
-    /// receipt -- would now demand grading logic for a file the same script
-    /// requires to be absent.
-    ///
-    /// What makes this fail: bumping `EARLY_STAGED_HOOK_COUNT` while the
-    /// verifier still pins the old number, or letting the verifier readmit the
-    /// early-render surface without pinning the count.
     #[test]
     fn production_sink_verifier_count_matches_wire_contract() {
         let verifier = include_str!("../../scripts/verify_sink_reconciliation.py");
@@ -939,10 +892,6 @@ mod tests {
                  EARLY_STAGED_HOOK_COUNT = {EARLY_STAGED_HOOK_COUNT}"
             );
         } else {
-            // These two have to be read POSITIONALLY, inside the block that
-            // makes them forbidden. A bare `contains` passes just as happily
-            // when the same literal is moved into an allowed/tolerated set,
-            // which is the readmission this branch exists to refuse.
             let forbidden_arguments = verifier
                 .split_once("FORBIDDEN_RECORDER_ARGUMENTS = {")
                 .and_then(|(_, rest)| rest.split_once('}'))
@@ -954,18 +903,6 @@ mod tests {
                  --early-launch-exe in FORBIDDEN_RECORDER_ARGUMENTS, or a production \
                  run can stage hooks nothing counts"
             );
-            // Membership in the set is worth nothing if the check that reads
-            // the set exempts the member. Pin the enforcement itself, so
-            // neutering it (`forbidden not in arguments or forbidden == ...`)
-            // is a failure rather than a silent readmission.
-            //
-            // The limit of this test, stated so nobody reads more into it:
-            // it is a LEXICAL guard from Rust over a Python file. It pins the
-            // set, the artifact loop, and the enforcement expression, but it
-            // cannot prove the verifier enforces anything at RUNTIME. Filtering
-            // the flag out of `arguments` before this loop, or returning early
-            // above it, readmits the surface with every assertion here still
-            // green. Runtime enforcement is the Python verifier's own to test.
             assert!(
                 verifier.contains(
                     "require(forbidden not in arguments, \

@@ -1,10 +1,6 @@
-//! The ten trailer families: field tables, versions, checked extents and row
-//! readers. PDQ1 owns only its outer carrier here; the inner deployment codec
-//! lives in `crate::deployment` (lane KX, second job).
-
 use crate::{
-    checked_add, checked_span, checked_sub, i32_at, i64_at, need, need_row, tiles,
-    u16_at, u32_at, Section, Span, Trailer, Violation, ViolationKind, Width,
+    checked_add, checked_span, checked_sub, i32_at, i64_at, need, need_row, tiles, u16_at, u32_at,
+    Section, Span, Trailer, Violation, ViolationKind, Width,
 };
 
 pub const FIXED_HEADER_LEN: usize = 20;
@@ -23,10 +19,6 @@ pub const KNOWN_FIXED_DECLARED_WORDS: u32 = 0b1;
 pub const KNOWN_PLIC_DECLARED_WORDS: u32 = 0b11;
 pub const KNOWN_PCV_DECLARED_WORDS: u32 = 0b111;
 pub const KNOWN_PDQ_DECLARED_WORDS: u32 = 0b1;
-
-// =============================================================================
-// Header field tables
-// =============================================================================
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FixedHeaderField {
@@ -243,10 +235,6 @@ const _: () = {
     }
 };
 
-// =============================================================================
-// Row field tables
-// =============================================================================
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineKeyField {
     TagDbId,
@@ -275,10 +263,7 @@ impl LineKeyField {
     }
 }
 
-// The five 16-byte line joins differ only in the ONE word behind the line
 // key. They are written out rather than generated: a leaf may not DEFINE a
-// macro, because `verify_leaf_is_sealed` reads source TEXT and an expansion
-// puts the code that runs somewhere no scan over these files can see.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PvjField {
@@ -384,7 +369,6 @@ impl PmiField {
         }
     }
 }
-
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PefField {
@@ -722,10 +706,6 @@ const _: () = {
     }
 };
 
-// =============================================================================
-// Versions, extents and parsed headers
-// =============================================================================
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum PlicVersion {
     V1,
@@ -807,12 +787,10 @@ pub struct PdqHeader {
 }
 
 impl PdqHeader {
-    /// The opaque inner deployment-codec frame.
     pub const fn inner_payload_span(&self) -> Span {
         self.codec_payload
     }
 
-    /// Outer finality operand. The site decides whether `false` is illegal.
     pub const fn ends_at_payload_end(&self, payload_len: usize) -> bool {
         self.extent.end == payload_len
     }
@@ -824,7 +802,6 @@ pub struct HeaderPreview {
     pub at: usize,
     pub version: u16,
     pub header_len: u16,
-    /// Family words from +8 onward; `word_count` says how many are present.
     pub words: [u32; 5],
     pub word_count: usize,
 }
@@ -1186,10 +1163,6 @@ pub(crate) fn read_trailer_headers(
         Trailer::Pdq1 => Ok(TrailerHeaders::Pdq1(read_pdq(payload, at)?)),
     }
 }
-
-// =============================================================================
-// Row values and readers
-// =============================================================================
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LineKey {

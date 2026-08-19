@@ -1,51 +1,19 @@
-//! the game inline text-markup law (the `§` colour / `£` icon / `$var$` / `[data]`
-//! escape codes embedded in localisation strings).
-//!
-//! Source of truth is FILE-derived, not fitted:
-//!
-//! * The `§<code>` colour table is the shipped `interface/core.gfx`
-//!   `bitmapfonts = { textcolors = { ... } }` block (see `core.gfx:796`,
-//!   comment *"Global text colors used in the entire game, for use in loc files
-//!   ex: \"§G Text Text§!\""*). Codes are CASE-SENSITIVE (`b` = black vs
-//!   `B` = blue, `g` = grey vs `G` = green). `§!` resets to the text box's
-//!   base colour. This replaces the previous hard-coded (and wrong) colour map,
-//!   `colorize_hoi4_text` in `font.rs`, which was deleted with it.
-//! * `£<key>` / `£<key>|<frame>` is an inline sprite/icon token (resolved to a
-//!   `GFX_` sprite by the caller). It is tokenised out of the text run so it
-//!   never leaks as literal glyphs and never corrupts measured text width.
-//! * `$<key>$` is a variable / nested-localisation substitution.
-//! * `[<expr>]` is an engine-evaluated scripted-localisation data function
-//!   (computed-not-stored in a read-only replay; the caller badges it, never
-//!   fabricates a value).
-//!
-//! The tokeniser here does the lexical split only. Resolving `$…$`/`[…]` to a
-//! value is the caller's job (loc lookup where resolvable, else an explicit
-//! unavailable badge) — this module never invents a value.
 
 use crate::assets::AssetResolver;
 use crate::paradox_text::{block_items, parse_file, scalar_u32, Value};
 use crate::Result;
 use std::collections::BTreeMap;
 
-/// `§` U+00A7 SECTION SIGN — the colour escape lead byte.
 pub const SECTION: char = '\u{00a7}';
-/// `£` U+00A3 POUND SIGN — the inline-icon lead byte.
 pub const ICON: char = '\u{00a3}';
-/// `Â` U+00C2 — the mojibake byte that precedes `§` when a UTF-8 `0xC2 0xA7`
-/// section sign is decoded as Latin-1. Tolerated so double-decoded strings
-/// still colour correctly.
 const MOJIBAKE_LEAD: char = '\u{00c2}';
 
-/// The `§<code>` → RGB table, parsed from `interface/core.gfx`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TextColorTable {
     colors: BTreeMap<char, [u8; 3]>,
 }
 
 impl TextColorTable {
-    /// Construct the exact font-local-first / graphics-global-fallback table
-    /// from authenticated ordered entries. Earlier entries win duplicates,
-    /// matching exact-a729's table parser.
     pub fn from_authenticated_ordered_components(
         tables: &[Vec<(String, Vec<String>)>],
     ) -> Result<Self> {
@@ -85,17 +53,6 @@ impl TextColorTable {
         Ok(Self { colors })
     }
 
-    /// Parse the `bitmapfonts.textcolors` block out of an already-parsed
-    /// `core.gfx` root value. Case is preserved (the Clausewitz parser keeps
-    /// raw key text), so `b`/`B` and `g`/`G` stay distinct.
-    ///
-    /// Every departure from the shipped shape is a typed refusal. Previously a
-    /// missing block returned an empty table, malformed entries were dropped,
-    /// and out-of-range components were clamped to 255 (R11 C7) — three ways
-    /// for a damaged `core.gfx` to become indistinguishable from a file with
-    /// no colours at all. Measured against the game 1.19.2's `interface/core.gfx`:
-    /// 23 entries, every key exactly one character, every value exactly three
-    /// components, none above 255 — this refuses nothing shipped.
     pub fn from_core_gfx_value(root: &Value) -> Result<Self> {
         let mut colors = BTreeMap::new();
         let Some(bitmapfonts) = root.first_value_ci("bitmapfonts") else {
@@ -145,20 +102,11 @@ impl TextColorTable {
         Ok(Self { colors })
     }
 
-    /// Load + parse `interface/core.gfx` through the mod-aware resolver.
-    /// Absence of the file is an error here; callers that legitimately run
-    /// without one want [`Self::load_optional`].
     pub fn load(resolver: &AssetResolver) -> Result<Self> {
         let resolved = resolver.resolve_file("interface/core.gfx")?;
         Self::load_resolved(&resolved.path)
     }
 
-    /// Load the colour table when the effective VFS has a `core.gfx`.
-    ///
-    /// `Ok(None)` means exactly one thing: this VFS has no `interface/core.gfx`
-    /// at all, so text renders in the base colour with codes stripped. A file
-    /// that exists but cannot be read or parsed is a typed error, never a
-    /// silent colourless render.
     pub fn load_optional(resolver: &AssetResolver) -> Result<Option<Self>> {
         let Some(resolved) = resolver.resolve_optional_file("interface/core.gfx")? else {
             return Ok(None);
@@ -168,8 +116,6 @@ impl TextColorTable {
 
     fn load_resolved(path: &std::path::Path) -> Result<Self> {
         let doc = parse_file(path)?;
-        // Consistent with `font::bitmap_font_dependency_paths`, which already
-        // refuses to read a font alias out of a recovery-parsed core.gfx.
         if !doc.recoveries.is_empty() {
             return Err(crate::GameUiError::parse(format!(
                 "core.gfx parse required recovery at {}: {:?}",
@@ -187,9 +133,6 @@ impl TextColorTable {
         Self::from_core_gfx_value(&doc.root)
     }
 
-    /// RGB for a colour code, or `None` if the code is not in the shipped
-    /// table (unknown codes leave the current colour unchanged, matching the
-    /// engine which simply consumes the escape).
     pub fn get(&self, code: char) -> Option<[u8; 3]> {
         self.colors.get(&code).copied()
     }
@@ -203,25 +146,17 @@ impl TextColorTable {
     }
 }
 
-/// One lexical token of a marked-up localisation string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Token {
-    /// A run of literal text carrying the active colour (`None` = base colour).
     Text {
         text: String,
         color: Option<[u8; 3]>,
     },
-    /// `£key` / `£key|frame` inline icon.
     Icon { key: String, frame: Option<u32> },
-    /// `$key$` variable / nested-loc substitution request.
     Variable { key: String },
-    /// `[expr]` engine data-function (computed-not-stored).
     DataFunction { expr: String },
 }
 
-/// Tokenise a marked-up string. `table` resolves `§` codes; pass an empty
-/// table to strip colour without tinting. Adjacent text with the same colour
-/// is merged into one run.
 pub fn parse(text: &str, table: &TextColorTable) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut current: Option<[u8; 3]> = None;
@@ -240,16 +175,11 @@ pub fn parse(text: &str, table: &TextColorTable) -> Vec<Token> {
     }
 
     while let Some(ch) = chars.next() {
-        // Section sign, optionally preceded by the Â mojibake byte.
         if ch == SECTION || (ch == MOJIBAKE_LEAD && chars.peek() == Some(&SECTION)) {
             if ch == MOJIBAKE_LEAD {
-                chars.next(); // consume the real §
+                chars.next();
             }
             flush!();
-            // `§[expr]` — a scripted-localisation data function that evaluates
-            // to a colour at runtime. Unresolvable in a read-only replay, so we
-            // consume the whole bracket and leave the colour unchanged rather
-            // than fabricate a tint.
             if chars.peek() == Some(&'[') {
                 chars.next();
                 for next in chars.by_ref() {
@@ -265,7 +195,6 @@ pub fn parse(text: &str, table: &TextColorTable) -> Vec<Token> {
             } else if let Some(rgb) = table.get(code) {
                 current = Some(rgb);
             }
-            // unknown single-char code: consumed, colour unchanged
             continue;
         }
 
@@ -314,7 +243,6 @@ pub fn parse(text: &str, table: &TextColorTable) -> Vec<Token> {
                 flush!();
                 tokens.push(Token::Variable { key });
             } else {
-                // Unterminated: treat the `$` literally.
                 buf.push('$');
                 buf.push_str(&key);
             }
@@ -347,18 +275,12 @@ pub fn parse(text: &str, table: &TextColorTable) -> Vec<Token> {
     tokens
 }
 
-/// Per-character colour vector + the visible (icon/variable/data stripped) text,
-/// for the glyph renderer. `Variable`/`DataFunction` tokens are dropped from the
-/// visible text (the caller substitutes/badges them before this stage if it has
-/// a value); `Icon` tokens are dropped (drawn separately as sprites).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ColorRuns {
     pub text: String,
     pub colors: Vec<[u8; 3]>,
 }
 
-/// Flatten a token stream to visible glyph text + per-glyph colour, given the
-/// text box's base colour for the `None`/reset state.
 pub fn color_runs(tokens: &[Token], base: [u8; 3]) -> ColorRuns {
     let mut out = ColorRuns::default();
     for token in tokens {
@@ -373,9 +295,6 @@ pub fn color_runs(tokens: &[Token], base: [u8; 3]) -> ColorRuns {
     out
 }
 
-/// Remove ONLY `§` colour sequences (`§X`, `§!`, `§[expr]`, and the `Â§`
-/// mojibake), leaving `£`/`$…$`/`[…]` intact. This is what callers that still
-/// need the variable/icon delimiters (e.g. localisation-key detection) want.
 pub fn strip_section_codes(text: &str) -> String {
     let mut out = String::new();
     let mut chars = text.chars().peekable();
@@ -392,7 +311,7 @@ pub fn strip_section_codes(text: &str) -> String {
                     }
                 }
             } else {
-                chars.next(); // the single code char (incl. '!')
+                chars.next();
             }
             continue;
         }
@@ -401,9 +320,6 @@ pub fn strip_section_codes(text: &str) -> String {
     out
 }
 
-/// Remove all markup, returning plain visible text (no tint). Icons, variables,
-/// and data functions are dropped. Uses an empty table (colours are irrelevant
-/// when stripping).
 pub fn strip(text: &str) -> String {
     let empty = TextColorTable::default();
     parse(text, &empty)
@@ -421,7 +337,6 @@ mod tests {
     use crate::paradox_text::parse_str;
 
     fn table() -> TextColorTable {
-        // Mirror of the shipped interface/core.gfx textcolors block.
         let doc = parse_str(
             r#"
             bitmapfonts = {
@@ -441,9 +356,6 @@ mod tests {
 
     #[test]
     fn a_damaged_colour_table_is_a_refusal_not_an_empty_table() {
-        // R11 C7: missing blocks returned an empty table, malformed entries
-        // were dropped and >255 components were clamped, so an unreadable
-        // core.gfx was indistinguishable from one with no colours.
         let cases = [
             ("bitmapfonts = { }", "no textcolors table"),
             ("something_else = { }", "no bitmapfonts block"),
@@ -494,11 +406,8 @@ mod tests {
         ));
         std::fs::create_dir_all(dir.join("interface")).unwrap();
         let resolver = AssetResolver::new(vec![dir.clone()]);
-        // No core.gfx at all: base-colour rendering is the documented
-        // fail-closed behaviour, reported as an explicit None.
         assert_eq!(TextColorTable::load_optional(&resolver).unwrap(), None);
 
-        // Present but with no usable colour table: an error, not a None.
         std::fs::write(dir.join("interface").join("core.gfx"), b"spriteTypes = { }").unwrap();
         TextColorTable::load_optional(&resolver)
             .expect_err("a present-but-tableless core.gfx must be an error");
@@ -614,8 +523,6 @@ mod tests {
     #[test]
     fn dynamic_bracket_colour_is_consumed_not_leaked() {
         let table = table();
-        // §[expr] evaluates to a colour at runtime; unresolvable here, so it
-        // must vanish from the visible text and leave the colour unchanged.
         let tokens = parse("a\u{a7}[GetColorTier1]b\u{a7}!c", &table);
         assert!(tokens
             .iter()

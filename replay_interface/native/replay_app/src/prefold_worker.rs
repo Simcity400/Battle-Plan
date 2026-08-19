@@ -1,14 +1,4 @@
-//! Authenticated internal process mode for compact-stream folding.
-//!
-//! The product deliberately executes the fold in a child process, but the
-//! child is the exact `replay_app` image already admitted by the launcher. The
-//! parent passes its retained-handle SHA-256 and the child refuses to fold
-//! unless its own image matches that value.
 
-// The production worker is the recorder executable already present in the
-// two-executable offline package. Keep only the process-contract constants in
-// the replay crate; the extractor-owned implementation below is retained as
-// historical source until the sibling-worker move is committed atomically.
 pub(crate) const INTERNAL_VERB: &str = "--internal-prefold-worker-v1";
 pub(crate) const RECEIPT_SCHEMA: &str = "hoi4_prefold_worker_receipt_v2";
 pub(crate) const DECODER_ID: &str = "extractor.replay_decoder.production_world_fold.worker.v1";
@@ -71,8 +61,6 @@ pub(crate) fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String
         identity_mode,
     )
     .map_err(|error| error.to_string())?;
-    // Parent stdin is a duplicated handle to the exact retained source object
-    // it authenticated. Never reopen `source` by pathname in the worker.
     let source_file = duplicate_inherited_source_file()?;
     let spool = replay_decoder::fold_raw_h4cr_open_file_spooled(request, source_file)
         .map_err(|error| error.to_string())?;
@@ -177,9 +165,6 @@ fn duplicate_inherited_source_file() -> Result<File, String> {
     Err("authenticated prefold source-handle inheritance is unsupported on this platform".into())
 }
 
-/// Retains every snapshot-directory component for the complete fold. On
-/// Windows each handle denies delete sharing, so an accepted component cannot
-/// be renamed or replaced by a junction before a later WorldFold child open.
 struct SnapshotDirectoryGuard {
     path: PathBuf,
     #[cfg(windows)]
@@ -460,9 +445,6 @@ mod tests {
         let moved = root.join("moved");
         std::fs::create_dir_all(&snapshots).unwrap();
         let guard = SnapshotDirectoryGuard::acquire(&snapshots).unwrap();
-        // Renaming a Windows directory requires DELETE access. Probe that
-        // capability directly instead of relying on std::fs::rename, whose
-        // Windows implementation may select different rename APIs and POSIX
         // fallback behavior across Rust releases.
         assert!(open_directory_for_delete(&snapshots).is_err());
         drop(guard);

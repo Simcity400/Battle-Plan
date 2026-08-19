@@ -1,9 +1,3 @@
-//! Falsifiable admission tests for the `THS2` all-country carrier.
-//!
-//! Every test here names, in its doc comment, the production change that turns
-//! it red. A test whose named mutation cannot be applied is vacuous and must be
-//! deleted rather than kept for coverage.
-
 use super::*;
 use std::collections::BTreeMap;
 
@@ -59,8 +53,6 @@ fn identity() -> ContentIdentity {
     }
 }
 
-/// An engine roster that AGREES with the layer stack above: the one mod the
-/// host resolved is the one mod the engine found, selected and mounted.
 fn engine_roster() -> EngineContentRoster {
     EngineContentRoster {
         requested_mods: vec!["ugc_1234".into()],
@@ -209,12 +201,6 @@ fn reencode(frame: &TheatreSelectorFrame) -> Result<TheatreSelectorFrame, Carrie
     decode_payload(&encode_payload(frame)?)
 }
 
-// ---------------------------------------------------------------------------
-// All-country enumeration
-// ---------------------------------------------------------------------------
-
-/// Red when `collect_and_encode` stops enumerating the census and emits only
-/// the recorder's own country (the `THS1` behaviour this carrier replaces).
 #[test]
 fn every_selectable_country_gets_a_section() {
     let frame = produced();
@@ -234,8 +220,6 @@ fn every_selectable_country_gets_a_section() {
     }
 }
 
-/// Red when the producer restricts its walk to the recorder's current country:
-/// the observer country's air hierarchy would then be missing or unavailable.
 #[test]
 fn observer_country_is_served_without_recorder_pov() {
     let frame = produced();
@@ -251,9 +235,6 @@ fn observer_country_is_served_without_recorder_pov() {
     assert_eq!(body.free_air_wings.len(), 1);
 }
 
-/// Red when a country with no theatres is transported as `Unavailable`
-/// instead of an admitted, measured-empty section -- the two carry opposite
-/// meanings to the panel.
 #[test]
 fn measured_empty_country_is_admitted_not_unavailable() {
     let frame = produced();
@@ -268,8 +249,6 @@ fn measured_empty_country_is_admitted_not_unavailable() {
     assert!(body.free_air_wings.is_empty());
 }
 
-/// Red when a per-country failure is converted into an empty admitted body, or
-/// when it aborts the whole frame instead of only its own section.
 #[test]
 fn rejected_country_is_unavailable_and_isolated() {
     let frame = produced();
@@ -281,7 +260,6 @@ fn rejected_country_is_unavailable_and_isolated() {
         broken.admission,
         SectionAdmission::Unavailable(SectionRejection::IdentityAuthenticationFailed)
     );
-    // Neighbours survive.
     assert!(matches!(
         snapshot.section(RECORDER_COUNTRY).unwrap().admission,
         SectionAdmission::Admitted(_)
@@ -292,8 +270,6 @@ fn rejected_country_is_unavailable_and_isolated() {
     ));
 }
 
-/// Red when a country absent from the census silently resolves to some other
-/// country's section (first-available or recorder-POV fallback).
 #[test]
 fn country_outside_the_census_has_no_section() {
     let frame = produced();
@@ -301,8 +277,6 @@ fn country_outside_the_census_has_no_section() {
     assert!(snapshot.section(999).is_none());
 }
 
-/// Red when `producer_complete` is hardcoded true, or stops tracking whether
-/// every section was admitted.
 #[test]
 fn producer_complete_tracks_section_admission() {
     let frame = produced();
@@ -310,13 +284,13 @@ fn producer_complete_tracks_section_admission() {
     assert!(!snapshot.producer_complete);
 
     let mut source = fixture();
-    source.bodies.insert(BROKEN_COUNTRY, Ok(SectionBody::default()));
+    source
+        .bodies
+        .insert(BROKEN_COUNTRY, Ok(SectionBody::default()));
     let clean = decode_payload(&collect_and_encode(&source, 900, 901, 7).unwrap()).unwrap();
     assert!(clean.snapshot.unwrap().producer_complete);
 }
 
-/// Red when `validate_snapshot` stops cross-checking the producer-complete
-/// flag, letting a frame claim completeness while carrying a refused section.
 #[test]
 fn producer_complete_contradiction_refuses() {
     let mut frame = exact_frame();
@@ -324,15 +298,6 @@ fn producer_complete_contradiction_refuses() {
     assert!(encode_payload(&frame).is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Section admission laws
-// ---------------------------------------------------------------------------
-
-/// Red when the section/census length equality check is removed.
-///
-/// The extra section duplicates an admitted one, so a length-blind consumer
-/// would zip it away and every other guard would still pass: only the length
-/// equality can catch it.
 #[test]
 fn extra_section_beyond_the_census_refuses() {
     let mut frame = exact_frame();
@@ -342,11 +307,6 @@ fn extra_section_beyond_the_census_refuses() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when sections are allowed to appear in an order other than the census
-/// order, which would let a consumer join the wrong country to a body.
-///
-/// Both sections are measured-empty on purpose: with no theatre rows, the
-/// per-row owner check cannot mask a missing section-order law.
 #[test]
 fn section_order_must_follow_the_census() {
     let mut frame = exact_frame();
@@ -360,8 +320,6 @@ fn section_order_must_follow_the_census() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// A country section with nothing in it. Used where a test must isolate a
-/// census/section law from the per-row owner checks.
 fn empty_section(owner: u32) -> CountrySection {
     CountrySection {
         owner_tag_db_id: owner,
@@ -369,11 +327,6 @@ fn empty_section(owner: u32) -> CountrySection {
     }
 }
 
-/// Red when the census ascending/nonzero law is dropped, which would admit a
-/// duplicated or zero country identity.
-///
-/// Each case rebuilds the sections to agree with the bad census, so the
-/// section-order and per-row owner checks cannot mask the missing law.
 #[test]
 fn census_must_be_strictly_ascending_and_nonzero() {
     for census in [
@@ -393,8 +346,6 @@ fn census_must_be_strictly_ascending_and_nonzero() {
     }
 }
 
-/// Red when the per-row owner check is removed, letting one country's section
-/// carry another country's theatre.
 #[test]
 fn cross_owner_theatre_row_rejects_the_section() {
     let mut frame = exact_frame();
@@ -407,8 +358,6 @@ fn cross_owner_theatre_row_rejects_the_section() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when contiguous engine order per kind stops being enforced, which is
-/// how an out-of-order or dropped theatre row would slip through as a prefix.
 #[test]
 fn non_contiguous_theatre_order_rejects_the_section() {
     let mut frame = exact_frame();
@@ -421,7 +370,6 @@ fn non_contiguous_theatre_order_rejects_the_section() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when duplicate theatre identities are admitted inside one section.
 #[test]
 fn duplicate_theatre_identity_rejects_the_section() {
     let mut frame = exact_frame();
@@ -436,7 +384,6 @@ fn duplicate_theatre_identity_rejects_the_section() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when duplicate member identities are admitted inside one theatre.
 #[test]
 fn duplicate_member_identity_rejects_the_section() {
     let mut frame = exact_frame();
@@ -446,15 +393,11 @@ fn duplicate_member_identity_rejects_the_section() {
         panic!("fixture section 0 is admitted");
     };
     let mut clone = body.theatres[0].members[0].clone();
-    // The next engine order satisfies the contiguity law, so only the
-    // identity-uniqueness law can catch this.
     clone.engine_order = 1;
     body.theatres[0].members.push(clone);
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when the parent-existence law is dropped: an air wing whose group is
-/// not carried would become an orphan row the panel cannot place.
 #[test]
 fn orphan_member_rejects_the_section() {
     let mut frame = exact_frame();
@@ -463,12 +406,10 @@ fn orphan_member_rejects_the_section() {
     else {
         panic!("fixture section 1 is admitted");
     };
-    body.theatres[0].members.remove(0); // drop the AirGroup parent
+    body.theatres[0].members.remove(0);
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when free-wing ordering stops being per-section contiguous, which would
-/// let two countries' free wings interleave into one order space.
 #[test]
 fn free_wing_order_must_be_contiguous_within_a_section() {
     let mut frame = exact_frame();
@@ -481,8 +422,6 @@ fn free_wing_order_must_be_contiguous_within_a_section() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when alert categories are allowed on non-land theatres or out of
-/// ascending scan order.
 #[test]
 fn alert_categories_are_land_only_and_ascending() {
     let mut frame = exact_frame();
@@ -504,16 +443,9 @@ fn alert_categories_are_land_only_and_ascending() {
     assert!(encode_payload(&descending).is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Envelope and identity laws
-// ---------------------------------------------------------------------------
-
-/// Red when the executable or any producer manifest hash stops being compared
-/// on decode, which would let a payload built by a different binary through.
 #[test]
 fn executable_and_manifest_identity_mismatches_refuse() {
     let payload = encode_payload(&exact_frame()).unwrap();
-    // 4 u32 + 3 u64 header, then five 32-byte hashes.
     let first_hash = 4 * 4 + 3 * 8;
     for hash_index in 0..5 {
         let mut corrupted = payload.clone();
@@ -525,8 +457,6 @@ fn executable_and_manifest_identity_mismatches_refuse() {
     }
 }
 
-/// Red when the schema version stops being compared, which would let a `THS1`
-/// recorder-POV payload be read as an all-country one.
 #[test]
 fn schema_version_mismatch_refuses() {
     let mut payload = encode_payload(&exact_frame()).unwrap();
@@ -534,7 +464,6 @@ fn schema_version_mismatch_refuses() {
     assert!(decode_payload(&payload).is_err());
 }
 
-/// Red when trailing or missing bytes stop being detected.
 #[test]
 fn truncation_and_trailing_bytes_refuse() {
     let payload = encode_payload(&exact_frame()).unwrap();
@@ -550,7 +479,6 @@ fn truncation_and_trailing_bytes_refuse() {
     );
 }
 
-/// Red when the nonzero source-sequence law is dropped from frame validation.
 #[test]
 fn zero_source_sequence_refuses() {
     let mut frame = exact_frame();
@@ -558,8 +486,6 @@ fn zero_source_sequence_refuses() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when `SourceSequenceGate` stops requiring a strict increase, which is
-/// how a replayed or reordered frame would be admitted.
 #[test]
 fn source_sequence_must_strictly_increase() {
     let mut gate = SourceSequenceGate::new();
@@ -570,9 +496,6 @@ fn source_sequence_must_strictly_increase() {
     assert!(gate.admit(11).is_ok());
 }
 
-/// Red when an exact frame is allowed to omit its content identity, which
-/// would leave engine-materialized display names unauthenticated against the
-/// replay-side effective VFS.
 #[test]
 fn exact_frame_without_content_identity_refuses() {
     let mut frame = exact_frame();
@@ -580,17 +503,10 @@ fn exact_frame_without_content_identity_refuses() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when the content-layer ordinal contiguity or duplicate check is
-/// dropped, which would let a mod load order be transported ambiguously.
 #[test]
 fn content_layer_order_and_uniqueness_are_enforced() {
     let mut gapped = exact_frame();
-    gapped
-        .content_identity
-        .as_mut()
-        .unwrap()
-        .ordered_layers[1]
-        .ordinal = 5;
+    gapped.content_identity.as_mut().unwrap().ordered_layers[1].ordinal = 5;
     assert!(encode_payload(&gapped).is_err());
 
     let mut duplicated = exact_frame();
@@ -600,8 +516,6 @@ fn content_layer_order_and_uniqueness_are_enforced() {
     assert!(encode_payload(&duplicated).is_err());
 }
 
-/// Red when the language token stops being required, which would let a frame
-/// carry display names with no way to tell which localization produced them.
 #[test]
 fn missing_language_refuses() {
     let mut frame = exact_frame();
@@ -609,7 +523,6 @@ fn missing_language_refuses() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when an unavailable frame is allowed to be clean or to carry a body.
 #[test]
 fn unavailable_frame_is_dirty_and_bodyless() {
     assert!(encode_source_unavailable(900, 901, 7, 0).is_err());
@@ -620,8 +533,6 @@ fn unavailable_frame_is_dirty_and_bodyless() {
     assert_eq!(decoded.source_sequence, 901);
 }
 
-/// Red when the producer stops authenticating its roots before walking, which
-/// would let a non-a729 process produce a nominally exact frame.
 #[test]
 fn unauthenticated_source_refuses_to_produce() {
     let mut source = fixture();
@@ -632,28 +543,8 @@ fn unauthenticated_source_refuses_to_produce() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// Uncaptured controller fields
-// ---------------------------------------------------------------------------
-
-/// Which rows carry a measured priority is part of the schema, and both
-/// directions of that rule are enforced.
-///
-/// Land and navy rows read the engine field the panel reads, so a land or navy
-/// row shipping `Unavailable` has silently lost an implemented leaf. The air
-/// row's ordinal is not a field at all -- it is the modal admitted wing
-/// priority -- so an air row shipping `Measured` has invented one; `Measured(0)`
-/// is the tempting spelling and is a false measurement, not a declared hole.
-/// Members and free wings have no implemented priority law at all.
-///
-/// kills: `validate_section_body` dropping the
-/// `priority_ordinal.measured().is_some() != priority_is_implemented` check, the
-/// member `PriorityOrdinal::Unavailable` check, or the free-wing one -- each of
-/// the four mutations leaves one of the four cases below encoding.
 #[test]
 fn priority_disposition_is_enforced_in_both_directions() {
-    // The fixture itself is the positive case: it encodes with a measured land
-    // priority, a measured navy priority, and unavailable everywhere else.
     assert!(encode_payload(&exact_frame()).is_ok());
 
     let mutate = |section: usize, apply: &dyn Fn(&mut SectionBody)| {
@@ -667,38 +558,24 @@ fn priority_disposition_is_enforced_in_both_directions() {
         encode_payload(&frame)
     };
 
-    // Land row loses its measurement.
     assert!(mutate(0, &|body| {
         body.theatres[0].priority_ordinal = PriorityOrdinal::Unavailable;
     })
     .is_err());
-    // Air row invents one.
     assert!(mutate(1, &|body| {
         body.theatres[0].priority_ordinal = PriorityOrdinal::Measured(0);
     })
     .is_err());
-    // A member invents one.
     assert!(mutate(0, &|body| {
         body.theatres[0].members[0].priority_ordinal = PriorityOrdinal::Measured(1);
     })
     .is_err());
-    // A free wing invents one.
     assert!(mutate(1, &|body| {
         body.free_air_wings[0].priority_ordinal = PriorityOrdinal::Measured(1);
     })
     .is_err());
 }
 
-/// `Unavailable` and `Measured(0)` stay distinguishable on the wire -- the
-/// exact collapse that would turn a declared hole into a false measurement.
-///
-/// Driven through the codec pair directly rather than through a frame, because
-/// the frame validator now forbids either spelling on most row kinds and would
-/// refuse the fixture before the encoding could be compared.
-///
-/// kills: `priority` encoding both variants identically (for instance by
-/// dropping the tag byte), and `Reader::priority` mapping tag 0 to
-/// `Measured(0)`.
 #[test]
 fn unavailable_priority_is_distinct_from_measured_zero() {
     let mut unavailable_bytes = Vec::new();
@@ -717,24 +594,12 @@ fn unavailable_priority_is_distinct_from_measured_zero() {
         }
         .priority()
     };
-    assert_eq!(
-        decode(&unavailable_bytes),
-        Ok(PriorityOrdinal::Unavailable)
-    );
+    assert_eq!(decode(&unavailable_bytes), Ok(PriorityOrdinal::Unavailable));
     assert_eq!(decode(&measured_bytes), Ok(PriorityOrdinal::Measured(0)));
     assert_eq!(PriorityOrdinal::Unavailable.measured(), None);
     assert_eq!(PriorityOrdinal::Measured(0).measured(), Some(0));
 }
 
-/// A wire encoding that claims `Unavailable` while smuggling a nonzero ordinal
-/// in the value slot is refused.
-///
-/// The forged bytes are built from the real encoder's output for `Measured(3)`
-/// with only the tag byte cleared, so this cannot pass by stumbling on some
-/// unrelated malformed field.
-///
-/// kills: `Reader::priority` dropping its `0 if ordinal == 0` guard and
-/// returning `Unavailable` for any tag-0 encoding.
 #[test]
 fn unavailable_priority_with_nonzero_ordinal_refuses() {
     let mut forged = Vec::new();
@@ -752,9 +617,6 @@ fn unavailable_priority_with_nonzero_ordinal_refuses() {
     );
 }
 
-/// Red when a named member loses its provenance, or a provenance appears with
-/// no name -- either would let replay treat a runtime string as a
-/// re-resolvable localization key.
 #[test]
 fn member_name_and_provenance_must_agree() {
     let mut frame = exact_frame();
@@ -776,8 +638,6 @@ fn member_name_and_provenance_must_agree() {
     assert!(encode_payload(&orphaned).is_err());
 }
 
-/// Red when a localization-keyed name is admitted with an empty key, which
-/// would make the key useless as provenance.
 #[test]
 fn localization_keyed_name_requires_a_key() {
     let mut frame = exact_frame();
@@ -790,14 +650,9 @@ fn localization_keyed_name_requires_a_key() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when the enumerated uncaptured-field list is emptied or silently
-/// shrunk without the corresponding read law actually landing. The list is the
-/// carrier's own record of what it does not claim.
 #[test]
 fn uncaptured_controller_fields_are_declared() {
     assert_eq!(UNCAPTURED_CONTROLLER_FIELDS.len(), 18);
-    // Drift in the other direction: a leaf this producer now measures must not
-    // still be declared a hole, or the record would understate itself.
     for captured in [
         "theater_group_settings_view.current_priority_ordinal",
         "theater_group_settings_view.delete_eligibility",
@@ -812,15 +667,6 @@ fn uncaptured_controller_fields_are_declared() {
             "{captured} is measured now and must not be declared uncaptured"
         );
     }
-    // The combat-log rows are a *permanent* absence, not a backlog item, and
-    // the length check above cannot see one of them being swapped out. Lane HV
-    // proved the engine law's receiver is a single per-client `CCombatLogView`
-    // at client-HUD-root `+0x2a0` -- reached only through `CInGameIdler +
-    // 0x6b8` -- and not `country + 0x2a0` as earlier briefs assumed. There is no authoritative per-country value to measure, so
-    // "capturing" it would mean labelling the recording client's panel state as
-    // every country's state.
-    // kills: a lane deletes one of these entries after reading the field off
-    // the client's CCombatLogView and calling it measured.
     for permanent in [
         "theater_group_item.combat_log_ownership_and_eligibility",
         "navy_theater_group_item.combat_log_ownership_and_eligibility",
@@ -840,18 +686,6 @@ fn uncaptured_controller_fields_are_declared() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Round trip
-// ---------------------------------------------------------------------------
-
-
-// ---------------------------------------------------------------------------
-// Section-wide identity (found by adversarial review: the identity sets were
-// scoped per theatre, which admitted one object under two parents)
-// ---------------------------------------------------------------------------
-
-/// Red when member-identity uniqueness is scoped per theatre instead of per
-/// section, which would admit the same fleet under two navy theatres.
 #[test]
 fn one_member_under_two_theatres_rejects_the_section() {
     let mut frame = exact_frame();
@@ -888,8 +722,6 @@ fn one_member_under_two_theatres_rejects_the_section() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when a wing is allowed to be both grouped and ungrouped in the same
-/// section -- two mutually exclusive states of one object.
 #[test]
 fn a_wing_that_is_both_grouped_and_free_rejects_the_section() {
     let mut frame = exact_frame();
@@ -898,13 +730,12 @@ fn a_wing_that_is_both_grouped_and_free_rejects_the_section() {
     else {
         panic!("fixture section 1 is admitted");
     };
-    // Wing 600 is already carried under AirGroup 500.
     body.free_air_wings.insert(
         0,
         FreeAirWingRow {
             wing_id: 600,
             engine_order: 0,
-        priority_ordinal: PriorityOrdinal::Unavailable,
+            priority_ordinal: PriorityOrdinal::Unavailable,
         },
     );
     for (index, wing) in body.free_air_wings.iter_mut().enumerate() {
@@ -913,8 +744,6 @@ fn a_wing_that_is_both_grouped_and_free_rejects_the_section() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// Red when a member or free-wing priority slot is dropped from the wire, or
-/// when either stops being explicitly unavailable.
 #[test]
 fn member_and_free_wing_priority_are_explicitly_unavailable() {
     let frame = produced();
@@ -938,19 +767,6 @@ fn member_and_free_wing_priority_are_explicitly_unavailable() {
     assert!(members > 0 && wings > 0, "fixture must exercise both rows");
 }
 
-/// Every declared hole names a template family the XUI07 dependency contract
-/// actually lists, and names a leaf inside it.
-///
-/// This test used to assert set equality against
-/// `replay_core::theatre_selector::REQUIRED_UNCAPTURED_CONTROLLER_FIELDS`. That
-/// constant no longer exists -- schema 6 does not read
-/// `uncaptured_controller_fields` at all (it is tolerated surplus) -- so the
-/// equality was pinning this list to a contract that had already been retired,
-/// and it is exactly what stopped the list shrinking when leaves were measured.
-/// What is still worth pinning is that the list names real things.
-///
-/// kills: an entry that is not `template.field`, or one whose template is not
-/// one of the contract's families.
 #[test]
 fn every_declared_hole_names_a_contract_template_and_leaf() {
     const CONTRACT_FAMILIES: &[&str] = &[
@@ -982,13 +798,8 @@ fn every_declared_hole_names_a_contract_template_and_leaf() {
     }
 }
 
-/// Red when the declared uncaptured-field list stops naming every template the
-/// dependency contract lists as a producer dependency.
 #[test]
 fn every_contract_template_family_is_declared_uncaptured() {
-    // `theater_group_settings_view` and `orders_group_item` are deliberately
-    // absent: every leaf they contributed is measured now, so requiring them
-    // here would force the list to keep declaring holes it no longer has.
     for family in [
         "navy_theater_fleet_item",
         "theater_group_item",
@@ -1013,36 +824,21 @@ fn every_contract_template_family_is_declared_uncaptured() {
     }
 }
 
-/// Red when any carried field is dropped or reordered by the codec.
 #[test]
 fn all_country_frame_round_trips_exactly() {
     let frame = exact_frame();
     assert_eq!(reencode(&frame).unwrap(), frame);
 }
 
-// ---------------------------------------------------------------------------
-// The engine-held mod/DLC roster
-// ---------------------------------------------------------------------------
-
-/// The gap the whole roster exists to make visible: `dlc_load.json` asked for a
-/// mod, the host resolved it into the intended layer stack, and the engine
-/// either never found it or never mounted it.
-///
-/// The load-bearing assertion is that this **encodes**. A capture of a
-/// half-broken install is a valid capture of a half-broken install, and a
-/// carrier that refused it would destroy the only evidence the mod failed.
 #[test]
 fn a_disagreement_between_the_disk_stack_and_the_engine_survives_the_wire() {
     let mut frame = exact_frame();
     let identity = frame.content_identity.as_mut().unwrap();
-    // The host still says this mod is part of the intended stack...
     assert!(identity
         .ordered_layers
         .iter()
         .any(|layer| layer.layer_id == "ugc_1234"));
-    // ...while the engine found it, would have used it, and did not mount it.
     identity.engine_roster.discovered[0].mounted = false;
-    // ...and a second requested mod the engine never discovered at all.
     identity
         .engine_roster
         .requested_mods
@@ -1065,24 +861,20 @@ fn a_disagreement_between_the_disk_stack_and_the_engine_survives_the_wire() {
         !discovered.contains(&"mod/vanished.mod"),
         "requested-but-undiscovered must be readable as a request with no entry"
     );
-    assert!(roster.requested_mods.contains(&"mod/vanished.mod".to_string()));
+    assert!(roster
+        .requested_mods
+        .contains(&"mod/vanished.mod".to_string()));
 }
 
 #[test]
 fn an_empty_engine_roster_round_trips() {
-    // A base-only launch has no mods and no disabled DLC. Empty lists must be a
-    // representable state, not an encoding error.
     let mut frame = exact_frame();
-    frame.content_identity.as_mut().unwrap().engine_roster =
-        EngineContentRoster::default();
+    frame.content_identity.as_mut().unwrap().engine_roster = EngineContentRoster::default();
     assert_eq!(reencode(&frame).unwrap(), frame);
 }
 
 #[test]
 fn a_roster_entry_may_carry_an_empty_name_or_descriptor_entry() {
-    // The engine can hold an entry with neither string populated. The plain
-    // string codec rejects a zero length, so these two fields are presence-
-    // flagged; without that an ordinary launch would fail to encode.
     let mut frame = exact_frame();
     let entry = &mut frame
         .content_identity
@@ -1094,17 +886,15 @@ fn a_roster_entry_may_carry_an_empty_name_or_descriptor_entry() {
     entry.descriptor_entry = String::new();
     let decoded = reencode(&frame).expect("empty engine strings are representable");
     assert_eq!(decoded, frame);
-    assert!(decoded.content_identity.unwrap().engine_roster.discovered[0]
-        .name
-        .is_empty());
+    assert!(
+        decoded.content_identity.unwrap().engine_roster.discovered[0]
+            .name
+            .is_empty()
+    );
 }
 
 #[test]
 fn a_roster_entry_claiming_to_be_a_base_or_integrated_layer_is_refused() {
-    // The engine's own tag distinguishes only DLC from mod. A base or
-    // integrated-DLC roster entry did not come from the engine reader, and
-    // admitting one would put a layer kind on the wire that the source cannot
-    // produce.
     for kind in [ContentLayerKind::Base, ContentLayerKind::IntegratedDlc] {
         let mut frame = exact_frame();
         frame
@@ -1123,9 +913,6 @@ fn a_roster_entry_claiming_to_be_a_base_or_integrated_layer_is_refused() {
 
 #[test]
 fn two_roster_entries_may_share_a_descriptor_entry() {
-    // The engine keys its DLC and mod maps independently, so nothing stops the
-    // same descriptor entry appearing twice. A uniqueness rule here would refuse
-    // a launch the engine itself runs.
     let mut frame = exact_frame();
     let roster = &mut frame.content_identity.as_mut().unwrap().engine_roster;
     let twin = roster.discovered[0].clone();
@@ -1148,8 +935,6 @@ fn an_over_long_roster_string_is_refused() {
 
 #[test]
 fn an_empty_requested_entry_is_refused() {
-    // dlc_load.json does not contain empty entries, and the wire codec cannot
-    // carry one, so an empty value here means the producer is broken.
     let mut frame = exact_frame();
     frame
         .content_identity
@@ -1163,9 +948,6 @@ fn an_empty_requested_entry_is_refused() {
 
 #[test]
 fn a_payload_from_the_previous_schema_is_rejected_rather_than_misread() {
-    // Schema 2 had no roster. Its bytes would decode as a shorter frame and the
-    // reader would run off the end into the census; the version gate is what
-    // stops that, so it has to actually reject.
     let mut payload = encode_payload(&exact_frame()).unwrap();
     payload[4..8].copy_from_slice(&2u32.to_le_bytes());
     assert!(matches!(
@@ -1185,31 +967,22 @@ fn the_roster_digest_travels_byte_for_byte() {
         .roster_sha256 = [0xab; 32];
     let decoded = reencode(&frame).unwrap();
     assert_eq!(
-        decoded.content_identity.unwrap().engine_roster.roster_sha256,
+        decoded
+            .content_identity
+            .unwrap()
+            .engine_roster
+            .roster_sha256,
         [0xab; 32]
     );
 }
 
-
-// ---------------------------------------------------------------------------
-// Measured controller leaves (lane GS)
-// ---------------------------------------------------------------------------
-
-/// A round trip preserves every measured controller leaf.
-///
-/// The fixture's land theatre carries a measured priority, delete eligibility,
-/// and both orders-group shapes (training+stop-at-max, and border conflict), so
-/// dropping any one of them from the encoder or the decoder shows up as a
-/// changed frame rather than as a silently absent field.
-///
-/// kills: the encoder omitting `opt_bool`/`orders_visibility`, or the decoder
-/// reading them in the wrong order.
 #[test]
 fn measured_controller_leaves_survive_a_round_trip() {
     let frame = exact_frame();
-    let decoded = decode_payload(&encode_payload(&frame).expect("fixture encodes"))
-        .expect("fixture decodes");
-    let SectionAdmission::Admitted(body) = &decoded.snapshot.as_ref().unwrap().sections[0].admission
+    let decoded =
+        decode_payload(&encode_payload(&frame).expect("fixture encodes")).expect("fixture decodes");
+    let SectionAdmission::Admitted(body) =
+        &decoded.snapshot.as_ref().unwrap().sections[0].admission
     else {
         panic!("fixture section 0 is admitted");
     };
@@ -1235,15 +1008,6 @@ fn measured_controller_leaves_survive_a_round_trip() {
     assert_eq!(decoded, frame);
 }
 
-/// Delete eligibility is a land-theatre leaf and nothing else.
-///
-/// The predicate is over the land theatre's own member vector. A navy or air row
-/// carrying it would be asserting a measurement of a control the engine never
-/// binds there, and a land row without it would be a silently unmeasured row.
-///
-/// kills: `validate_section_body` dropping the
-/// `delete_eligible.is_some() != (kind == LandTheatre)` check, in either
-/// direction.
 #[test]
 fn delete_eligibility_is_confined_to_land_theatres() {
     let mut frame = exact_frame();
@@ -1252,7 +1016,6 @@ fn delete_eligibility_is_confined_to_land_theatres() {
     else {
         panic!("fixture section 1 is admitted");
     };
-    // Section 1 is the air body: its theatre has no delete control.
     body.theatres[0].delete_eligible = Some(false);
     assert!(encode_payload(&frame).is_err());
 
@@ -1266,10 +1029,6 @@ fn delete_eligibility_is_confined_to_land_theatres() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// The orders group belongs to army rows and nothing else.
-///
-/// kills: `validate_section_body` dropping the
-/// `orders_visibility.is_some() != is_army_kind` check, in either direction.
 #[test]
 fn orders_group_visibility_is_confined_to_army_rows() {
     let mut frame = exact_frame();
@@ -1278,7 +1037,6 @@ fn orders_group_visibility_is_confined_to_army_rows() {
     else {
         panic!("fixture section 1 is admitted");
     };
-    // Section 1's members are an air group and an air wing.
     body.theatres[0].members[0].orders_visibility = Some(ArmyOrdersVisibility {
         training_visible: false,
         stop_at_max_visible: false,
@@ -1296,18 +1054,6 @@ fn orders_group_visibility_is_confined_to_army_rows() {
     assert!(encode_payload(&frame).is_err());
 }
 
-/// The two orders-group implications are the engine's law, so a pair that
-/// violates them is refused rather than transported.
-///
-/// border conflict inside the training-hidden one, so "stop-at-max without
-/// training" and "training and border conflict together" are shapes the engine
-/// cannot produce. Accepting them would let a mis-derived producer, or a torn
-/// wire, present an icon combination the panel can never paint.
-///
-/// kills: `ArmyOrdersVisibility::law_holds` losing either clause, and
-/// `Reader::orders_visibility` skipping its `law_holds` call -- the encode and
-/// decode halves are exercised separately below, because a validator that only
-/// runs on the way out would let a corrupted payload back in.
 #[test]
 fn orders_group_visibility_pairs_the_engine_cannot_produce_are_refused() {
     for illegal in [
@@ -1334,7 +1080,6 @@ fn orders_group_visibility_pairs_the_engine_cannot_produce_are_refused() {
             "illegal orders pair {illegal:?} must not encode"
         );
 
-        // And the same pair arriving on the wire, past any producer.
         let mut forged = Vec::new();
         orders_visibility(&mut forged, Some(illegal));
         assert_eq!(forged[0], 1, "the first byte is the presence flag");
@@ -1350,18 +1095,6 @@ fn orders_group_visibility_pairs_the_engine_cannot_produce_are_refused() {
     }
 }
 
-/// An absent controller leaf can never be read back as a measured `false`.
-///
-/// Presence and value are separate bytes on the wire, so a payload whose
-/// presence byte is clear but whose value byte is set is a contradiction: some
-/// producer or some transport lost one of the two halves. It is refused rather
-/// than resolved in favour of either side -- taking the presence byte would
-/// silently downgrade a measurement to a hole, and taking the value byte would
-/// silently invent one.
-///
-/// kills: the decoder's `opt_bool` returning `Ok(None)` without testing the
-/// value byte, and `orders_visibility` returning `Ok(None)` without testing its
-/// three.
 #[test]
 fn an_absent_controller_leaf_with_a_set_value_byte_is_refused() {
     assert_eq!(

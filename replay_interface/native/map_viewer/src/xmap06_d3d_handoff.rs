@@ -1,18 +1,3 @@
-//! App-device upload handoff for XMAP06 thin-border resources.
-//!
-//! This module owns the exact resources that [`PreparedThinBorderFrame`]
-//! proves: the captured 16-byte interleaved vertex layout, twelve runtime-
-//! partitioned `R32_UINT` index buffers, exact ordered per-record draw ranges,
-//! the authenticated selection palette and camera-independent selector state,
-//! replay-viewer camera fade evaluation, the 32-byte CB2 allocation, the
-//! compiled `Effect border` stages, and all six effective-VFS `BorderDiffuse`
-//! DDS resources.
-//!
-//! The runtime bucket carrier is mandatory at this boundary; a missing carrier
-//! fails before any D3D mutation. The handoff does not own the foundation scene
-//! CB0, render
-//! target, or depth target; callers supply those shared scene inputs to the
-//! phase executor.
 
 #[cfg(test)]
 use crate::PreparedThinBorderFadeWindow;
@@ -28,7 +13,7 @@ use std::sync::Arc;
 
 pub const XMAP06_BORDER_VERTEX_STRIDE_BYTES: u32 = 16;
 pub const XMAP06_BORDER_CB2_BYTE_WIDTH: u32 = 32;
-pub const XMAP06_BORDER_INDEX_FORMAT_DXGI: u32 = 42; // DXGI_FORMAT_R32_UINT
+pub const XMAP06_BORDER_INDEX_FORMAT_DXGI: u32 = 42;
 pub const XMAP06_PHASE_DRAW_RECEIPT_SCHEMA: &str = "hoi4.xmap06.phase-draw-receipt.v4";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -40,8 +25,6 @@ pub enum Xmap06BorderExecutionPhase {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Xmap06PhaseExecutionIdentity {
     pub hour_index: i64,
-    /// Replay's single gameplay-view target. XMAP06 accepts only main view bit 1;
-    /// recorder frustum masks are not playback authority.
     pub active_view_mask: u8,
     pub content_manifest_sha256: String,
     pub foundation_content_operation_sha256: String,
@@ -72,9 +55,6 @@ pub struct Xmap06PhaseDrawReceipt {
 }
 
 impl Xmap06PhaseDrawReceipt {
-    /// Validate the complete receipt before a compositor admits it into the
-    /// shared schedule chain. This verifies both the frozen body contract and
-    /// the self-excluding canonical receipt digest.
     pub fn validate(&self) -> Result<()> {
         validate_phase_draw_receipt_body(self)?;
         validate_canonical_sha256(&self.packet_draw_receipt_sha256, "packet draw receipt")?;
@@ -85,22 +65,18 @@ impl Xmap06PhaseDrawReceipt {
     }
 }
 
-/// The two exact submit phases recovered from exact-a729.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Xmap06BorderDrawPhase {
     Early,
     Late,
 }
 
-/// Exact runtime bucket-bank identity. The authenticated carrier partitions
-/// each stored border record into one bank without duplicating geometry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Xmap06BorderBucketBank {
     Base,
     Secondary,
 }
 
-/// One entry in exact-a729's twelve-bucket border submission plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Xmap06BorderDrawBucket {
     pub bucket_index: u32,
@@ -109,9 +85,6 @@ pub struct Xmap06BorderDrawBucket {
     pub material: BorderMaterial,
 }
 
-/// Exact bucket/material ordering. Buckets 0..=3 submit in the early phase;
-/// buckets 4..=11 submit in the late phase. The prepared frame's authenticated
-/// runtime partition supplies every base- and secondary-bank index stream.
 pub const XMAP06_BORDER_DRAW_PLAN: [Xmap06BorderDrawBucket; 12] = [
     Xmap06BorderDrawBucket {
         bucket_index: 0,
@@ -196,7 +169,6 @@ pub struct Xmap06BorderDdsMipDescriptor {
     pub slice_pitch: u32,
 }
 
-/// Descriptor derived from, and checked against, one admitted DDS payload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap06BorderDdsDescriptor {
     pub material: BorderMaterial,
@@ -227,7 +199,6 @@ pub struct Xmap06D3dHandoffReceipt {
     pub uploaded_buffers: u32,
     pub uploaded_textures: u32,
     pub created_shader_resource_views: u32,
-    /// True only when all twelve recorded runtime buckets were uploaded.
     pub scene_execution_ready: bool,
     pub deterministic_sha256: String,
 }
@@ -276,11 +247,6 @@ struct NativeXmap06BucketUpload {
 
 #[cfg(windows)]
 impl NativeXmap06ThinBorderHandoff {
-    /// Compile, validate, and upload every XMAP06 resource that the prepared
-    /// frame currently owns. No draw is submitted.
-    ///
-    /// # Safety
-    /// `device` must be a live `ID3D11Device` for the duration of this call.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &GameFileResolver,
@@ -439,11 +405,6 @@ impl NativeXmap06ThinBorderHandoff {
         })
     }
 
-    /// Replace all XMAP06-owned resources as one constructed candidate. The
-    /// old resource set remains live if any replacement upload fails.
-    ///
-    /// # Safety
-    /// `device` must be the same live device used by `create_on_device`.
     pub unsafe fn update_frame(
         &mut self,
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -519,14 +480,6 @@ impl NativeXmap06ThinBorderHandoff {
         ))
     }
 
-    /// Execute one compositor-authorized border phase on the shared MainScene
-    /// target. The centralized compositor owns ordering and constructs its
-    /// sequence token from the returned actual-draw receipt; this method
-    /// neither creates nor guesses a packet-local sequence token.
-    ///
-    /// # Safety
-    /// Every D3D pointer must belong to the same live device/context as this
-    /// handoff and remain valid for the duration of the call.
     #[allow(clippy::too_many_arguments)]
     pub unsafe fn execute_phase(
         &self,
@@ -1090,11 +1043,11 @@ fn parse_border_dds_descriptor(
             return Err(format!("XMAP06 {source} is not one non-cube Texture2D").into());
         }
         let format = match read_u32(128)? {
-            71 | 72 => 72, // BC1_UNORM_SRGB
-            74 | 75 => 75, // BC2_UNORM_SRGB
-            77 | 78 => 78, // BC3_UNORM_SRGB
-            28 | 29 => 29, // R8G8B8A8_UNORM_SRGB
-            87 | 91 => 91, // B8G8R8A8_UNORM_SRGB
+            71 | 72 => 72,
+            74 | 75 => 75,
+            77 | 78 => 78,
+            28 | 29 => 29,
+            87 | 91 => 91,
             other => {
                 return Err(format!("XMAP06 {source} has unsupported DXGI format {other}").into())
             }

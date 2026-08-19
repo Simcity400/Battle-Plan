@@ -18,11 +18,11 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-import resolver as R  # noqa: E402
-import source_inventory_layers as SIL  # noqa: E402
-import parse_decisions  # noqa: E402
-import parse_localisation  # noqa: E402
-from static_artifact_common import (  # noqa: E402
+import resolver as R
+import source_inventory_layers as SIL
+import parse_decisions
+import parse_localisation
+from static_artifact_common import (
     add_layer_args,
     canonical_json,
     layer_summary,

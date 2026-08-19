@@ -1,10 +1,3 @@
-//! XUI19 production seam for the decisions and missions panel.
-//!
-//! Static definition facts come from the extractor's effective-load-order
-//! `decisions.json`. Runtime facts are accepted only through the complete,
-//! ordered [`DecisionPanelSnapshot`] carrier. The module never evaluates
-//! scripted triggers, invents lifecycle results, derives display order, or
-//! formats costs/timers from authored widget names.
 
 use crate::{GameUiError, Result};
 use serde::{Deserialize, Serialize};
@@ -104,8 +97,6 @@ fn present_non_null(obj: &serde_json::Map<String, Value>, key: &str) -> bool {
 }
 
 impl DecisionStaticCatalog {
-    /// Admit the extractor's effective `decisions.json` without interpreting
-    /// arbitrary Clausewitz trigger/effect bodies.
     pub fn from_extractor_json(bytes: &[u8]) -> Result<Self> {
         let source_sha256 = snapshot::sha256::to_hex(&snapshot::sha256::Sha256::digest(bytes));
         let root: Value = serde_json::from_slice(bytes)
@@ -146,11 +137,6 @@ impl DecisionStaticCatalog {
                         "decision {decision_id} has unknown target_scope {other:?}"
                     )))
                 }
-                // A12 proves the runtime union directly: numeric rows are
-                // classified by an explicit state_target definition, while
-                // targeted definitions without that declaration use the
-                // string/country member. The pinned corpus has no province
-                // target declaration.
                 None if targeted_by_definition => Some(DecisionTargetScope::Country),
                 None => None,
             };
@@ -260,8 +246,6 @@ pub enum DecisionTarget {
 pub struct DecisionCostState {
     pub political_power: Option<i64>,
     pub custom_cost_available: Option<bool>,
-    /// Exact producer-selected display text. Never synthesized from the widget
-    /// key `cost_and_timer_text`, which UI13 proved can contain row names.
     pub formatted_text: Option<String>,
 }
 
@@ -341,26 +325,6 @@ pub struct DecisionPanelChild {
     pub height: i32,
 }
 
-/// Convert replay-core's fail-closed d87 view into the only runtime carrier
-/// accepted by the decision binder. A missing or unavailable typed view never
-/// falls back to authored definitions or local script evaluation.
-///
-/// The three d87 outcomes stay distinguishable all the way to the product's
-/// unavailability reason, because A34's activation matrix depends on telling
-/// them apart:
-///
-/// * [`ViewStatus::DomainAbsent`] - the recording never carried the panel at
-///   this hour. Unobserved.
-/// * [`ViewStatus::DomainUnavailable`] - the recording carried it and the
-///   authority, selected-Present join, or structural validation rejected it.
-///   Observed, not admitted.
-/// * [`ViewStatus::Present`] with zero rows and zero children - the panel was
-///   observed and the country genuinely had nothing to show. Measured empty.
-///   This is a normal admitted binding, never an error.
-///
-/// [`ViewStatus::DomainAbsent`]: replay_core::ViewStatus::DomainAbsent
-/// [`ViewStatus::DomainUnavailable`]: replay_core::ViewStatus::DomainUnavailable
-/// [`ViewStatus::Present`]: replay_core::ViewStatus::Present
 pub fn decision_panel_snapshot_from_world(
     view: &replay_core::DecisionPanelExactView,
 ) -> Result<DecisionPanelSnapshot> {
@@ -558,7 +522,6 @@ pub struct DecisionPanelBinding {
     pub alert_tooltip_row_limit: u32,
     pub grid: DecisionGridState,
     pub items: Vec<DecisionPanelItem>,
-    /// Decision-only compatibility projection. Exact rendering uses `items`.
     pub cards: Vec<DecisionCard>,
 }
 
@@ -587,8 +550,6 @@ fn icon_sprite(token: Option<&str>) -> String {
     }
 }
 
-/// Validate and bind a complete exact producer snapshot. Any missing,
-/// inconsistent, inferred, or unordered input rejects the entire panel.
 pub fn bind_decision_panel(
     catalog: &DecisionStaticCatalog,
     snapshot: &DecisionPanelSnapshot,

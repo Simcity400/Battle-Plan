@@ -21,8 +21,8 @@ SAVE_ORACLE = REPO_ROOT / "extractor" / "save_oracle"
 if str(SAVE_ORACLE) not in sys.path:
     sys.path.insert(0, str(SAVE_ORACLE))
 
-import deep_common as dc  # noqa: E402
-from deep_common import (  # noqa: E402
+import deep_common as dc
+from deep_common import (
     EQUALS,
     LBRACE,
     RBRACE,
@@ -43,11 +43,6 @@ class OracleParseError(RuntimeError):
     pass
 
 
-# Sentinel appended to a block-iteration when the tokenizer reached EOF before
-# the block's matching '}'. The shared iter_block_entries() returns silently on
-# either RBRACE (clean close) or None (EOF), so a truncated garrison block would
-# otherwise look like a short-but-valid block. We need to fail closed on
-# truncation, so this local iterator distinguishes the two terminators.
 _EOF_TRUNCATED = object()
 
 

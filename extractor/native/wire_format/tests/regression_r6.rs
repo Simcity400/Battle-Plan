@@ -1,7 +1,3 @@
-//! Regression tests for rules shared by the encoder and `validate`. A rule
-//! enforced only in the encoder lets an
-//! update — which touches only its changed fields — carry the violation past.
-
 use wire_format::body::{key, KeyedState};
 use wire_format::columnar::encode_baseline_columnar;
 use wire_format::record::Record;
@@ -14,13 +10,14 @@ fn one(fields: Vec<Field>) -> Schema {
         domain: 1,
         cadence_log2: 0,
         event_part: None,
-        collections: vec![Collection { collection_id: 1, shape: Shape::KeyedSet, fields }],
+        collections: vec![Collection {
+            collection_id: 1,
+            shape: Shape::KeyedSet,
+            fields,
+        }],
     }
 }
 
-/// Every arm must reject the same records. An out-of-range enum sitting on an
-/// *unchanged* field slipped through `update::encode`, and `update::decode`
-/// then carried it into reconstructed state.
 #[test]
 fn an_out_of_range_enum_on_an_unchanged_field_is_rejected() {
     let s = one(vec![
@@ -43,7 +40,6 @@ fn an_out_of_range_enum_on_an_unchanged_field_is_rejected() {
         "the enum only changed on a field the update never touches"
     );
 
-    // In range, on an unchanged field, still works.
     let prior = Record::new(vec![Value::Enum(2), Value::Bool(false)]);
     let next = Record::new(vec![Value::Enum(2), Value::Bool(true)]);
     let mut out = Vec::new();
@@ -52,10 +48,6 @@ fn an_out_of_range_enum_on_an_unchanged_field_is_rejected() {
     assert_eq!(back.values, next.values);
 }
 
-/// schema-kind contract gives a monotone counter an unsigned absolute form; the zigzag difference
-/// is a delta *encoding*, not a value a record holds. `matches_kind` granted
-/// `Signed` for `Kind::Monotone`, and once `validate` became its own consumer
-/// that grant let one past on an unchanged field.
 #[test]
 fn a_signed_value_is_not_valid_on_a_monotone_field() {
     let s = one(vec![
@@ -65,7 +57,10 @@ fn a_signed_value_is_not_valid_on_a_monotone_field() {
     ]);
     let c = &s.collections[0];
     let bad = Record::new(vec![Value::Signed(5), Value::Bool(false)]);
-    assert_eq!(bad.validate(c), Err(WireError::Corrupt("value does not match field kind")));
+    assert_eq!(
+        bad.validate(c),
+        Err(WireError::Corrupt("value does not match field kind"))
+    );
 
     let next = Record::new(vec![Value::Signed(5), Value::Bool(true)]);
     let mut out = Vec::new();
@@ -74,7 +69,6 @@ fn a_signed_value_is_not_valid_on_a_monotone_field() {
         Err(WireError::Corrupt("value does not match field kind"))
     );
 
-    // Unsigned is the monotone live form and still round-trips through a delta.
     let prior = Record::new(vec![Value::Unsigned(5), Value::Bool(false)]);
     let next = Record::new(vec![Value::Unsigned(9), Value::Bool(true)]);
     let mut out = Vec::new();
@@ -83,37 +77,45 @@ fn a_signed_value_is_not_valid_on_a_monotone_field() {
     assert_eq!(back.values, next.values);
 }
 
-/// The columnar arm implements the keyed-set grammar only, exactly as the
-/// row-major one does — it panicked on an occurrence list and silently used the
-/// wrong key grammar for an ordered keyed list.
 #[test]
 fn the_columnar_arm_rejects_ordered_shapes() {
     for shape in [Shape::OrderedKeyedList, Shape::OrderedOccurrenceList] {
         let fields = match shape {
             Shape::OrderedOccurrenceList => vec![Field::new(2, Kind::Unsigned)],
-            _ => vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)],
+            _ => vec![
+                Field::new(1, Kind::Unsigned).key(0),
+                Field::new(2, Kind::Unsigned),
+            ],
         };
         let s = Schema {
             domain: 1,
             cadence_log2: 0,
             event_part: None,
-            collections: vec![Collection { collection_id: 1, shape, fields }],
+            collections: vec![Collection {
+                collection_id: 1,
+                shape,
+                fields,
+            }],
         };
         let c = &s.collections[0];
         let mut state = KeyedState::new();
-        let k = if matches!(shape, Shape::OrderedOccurrenceList) { vec![] } else { vec![1u64] };
+        let k = if matches!(shape, Shape::OrderedOccurrenceList) {
+            vec![]
+        } else {
+            vec![1u64]
+        };
         state.insert(key(&k), Record::new(vec![Value::Unsigned(7)]));
         let mut out = Vec::new();
         assert_eq!(
             encode_baseline_columnar(c, &state, &mut out),
-            Err(WireError::Corrupt("ordered collections are not representable as a keyed state")),
+            Err(WireError::Corrupt(
+                "ordered collections are not representable as a keyed state"
+            )),
             "{shape:?} must be refused, not panicked on or mis-encoded"
         );
     }
 }
 
-/// The property behind all three: `validate` and `encode` must agree on every
-/// record, so no arm can accept what another rejects.
 #[test]
 fn validate_and_encode_agree_on_every_record() {
     let s = one(vec![

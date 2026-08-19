@@ -1,38 +1,3 @@
-//! Selected-unit view panel (`interface/unitview.gui`) layout gate and binding.
-//! Generic geometry follows `compose.rs` and `widget_layout.rs`; typed
-//! `WorldFrame` views own the dynamic values below.
-//!
-//! This module lays the layout for the selected-unit detail panels the game
-//! shows when a division / task-force / air-wing is selected, and binds
-//! `replay_core`'s READ-ONLY unit views onto their displayed field slots. It is
-//! the sibling of the D3 outliner seam in [`crate::binding`]: it parses no
-//! recording bytes — every value comes through a typed `WorldFrame` view — and
-//! fabricates nothing: a leaf that is `Absent`/`Unobtained`
-//! (or a view whose status is not `Present`) renders the fail-closed absent form
-//! (`None` / empty list), never a default like `0`.
-//!
-//! ## Two label classes
-//!
-//! * **Layout slots are FILE.** The panel windows and their text/icon slot
-//!   *names* are cited from `interface/unitview.gui` (the `LAND_DETAIL_WINDOW` /
-//!   `NAVAL_DETAIL_WINDOW` / `AIR_WING_ENTRY_WINDOW` consts and the
-//!   `*_FIELD_SLOTS` lists) and gated by [`inspect_unitview_layout`].
-//! * **Field *formatting* is UNKNOWN → rendered raw.** the game's unit-panel number
-//!   formatting (strength as a percent bar, org rounding, thousands grouping) is
-//!   engine-computed and not cited from any shipped file in this decoupled
-//!   context. Every scalar is carried as its raw measured value
-//!   (`Option<f64>` / `Option<i64>`), never a fabricated percent/grouping. The
-//!   caller renders it raw until a shipped-file citation for a field's format is
-//!   found. The per-field FILE/UNKNOWN/VIEW-GAP disposition is the code: each
-//!   bound field carries its citation, and unavailable values remain explicit
-//!   fail-closed `None` values.
-//!
-//! ## VIEW GAPS (data the read-only view does not surface)
-//!
-//! The panel shows a per-unit *custom display name* (division / task-force
-//! name), but `DivisionUnitRow` and `FleetUnitRow` expose no custom-name field,
-//! so `display_name` (land + naval) remains fail-closed `None`. The land
-//! `experience` slot is populated from `DivisionUnitRow::experience`.
 
 use crate::gui::{GuiElement, LayoutSet};
 use replay_core::{
@@ -41,23 +6,13 @@ use replay_core::{
 };
 use std::collections::BTreeSet;
 
-// ===========================================================================
-// FILE citations — panel windows + field slots (interface/unitview.gui)
-// ===========================================================================
 
-/// The shipped source file every window/slot name below is cited from.
 pub const UNITVIEW_GUI: &str = "interface/unitview.gui";
 
-/// Selected land-division detail window (FILE: `unitview.gui`).
 pub const LAND_DETAIL_WINDOW: &str = "army_division_stats_view";
-/// Selected ship / task-force detail window (FILE: `unitview.gui`).
 pub const NAVAL_DETAIL_WINDOW: &str = "ship_stats_window";
-/// Selected / listed air-wing row window (FILE: `unitview.gui`).
 pub const AIR_WING_ENTRY_WINDOW: &str = "ship_stats_air_wing_entry";
 
-/// FILE text-slot element names inside [`LAND_DETAIL_WINDOW`] the land binding
-/// targets. `unit_title` has no custom-name value in the typed view;
-/// `experience` binds the measured division-experience leaf.
 pub const LAND_FIELD_SLOTS: &[&str] = &[
     "unit_title",
     "experience",
@@ -65,8 +20,6 @@ pub const LAND_FIELD_SLOTS: &[&str] = &[
     "support_header_label",
 ];
 
-/// FILE text-slot element names inside [`NAVAL_DETAIL_WINDOW`] the naval binding
-/// targets or documents.
 pub const NAVAL_FIELD_SLOTS: &[&str] = &[
     "ship_title",
     "ship_name",
@@ -77,38 +30,20 @@ pub const NAVAL_FIELD_SLOTS: &[&str] = &[
     "fuel_consumption",
 ];
 
-/// FILE text-slot element names inside [`AIR_WING_ENTRY_WINDOW`] the air binding
-/// targets.
 pub const AIR_FIELD_SLOTS: &[&str] = &["name", "count"];
 
-// Runtime-populated list/grid surfaces (documented skips) share the single
-// runtime-populated-surface law in [`crate::major_views::is_runtime_populated`];
-// their contents are filled per-frame by the binding, not laid out statically.
 
-// ===========================================================================
-// Layout gate — parse unitview.gui and verify each detail panel's slots
-// ===========================================================================
 
-/// The parsed layout of one selected-unit detail panel: whether its window was
-/// found, which FILE field slots are present/missing, and the runtime-populated
-/// grid/list surfaces inside it (documented skips).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PanelLayout {
-    /// The window element name (one of the `*_DETAIL_WINDOW` / entry consts).
     pub window: String,
-    /// `true` when the window element was found in the parsed `unitview.gui`.
     pub found: bool,
-    /// Total descendant element count under the window (inclusive of nested).
     pub descendant_count: usize,
-    /// FILE field slots (the `*_FIELD_SLOTS` list) present in the subtree.
     pub field_slots_present: Vec<String>,
-    /// FILE field slots expected but absent (should be empty for a solid gate).
     pub field_slots_missing: Vec<String>,
-    /// Runtime-populated grid/list surfaces under the window (documented skips).
     pub runtime_grids: Vec<String>,
 }
 
-/// The full selected-unit layout report: land + naval + air detail panels.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UnitViewLayoutReport {
     pub land: PanelLayout,
@@ -116,8 +51,6 @@ pub struct UnitViewLayoutReport {
     pub air: PanelLayout,
 }
 
-/// Recursively collect every descendant element name and count under `element`
-/// (inclusive of `element` itself), plus the names of runtime grid surfaces.
 fn walk_subtree(
     element: &GuiElement,
     names: &mut BTreeSet<String>,
@@ -134,9 +67,6 @@ fn walk_subtree(
     }
 }
 
-/// Gate one panel window: locate it in `layouts`, walk its subtree, and classify
-/// the expected FILE field slots as present/missing. Fail-closed: a window not
-/// found yields `found: false` with every slot listed missing.
 fn inspect_panel(layouts: &LayoutSet, window: &str, expected_slots: &[&str]) -> PanelLayout {
     let Some(element) = layouts.find_by_name(window).into_iter().next() else {
         return PanelLayout {
@@ -172,9 +102,6 @@ fn inspect_panel(layouts: &LayoutSet, window: &str, expected_slots: &[&str]) -> 
     }
 }
 
-/// Parse `interface/unitview.gui` (already loaded into `layouts`) and gate the
-/// three selected-unit detail panels' layouts. The caller loads the file via
-/// [`LayoutSet::parse_file`] using the `GameFileResolver`/mod_resolver root.
 pub fn inspect_unitview_layout(layouts: &LayoutSet) -> UnitViewLayoutReport {
     UnitViewLayoutReport {
         land: inspect_panel(layouts, LAND_DETAIL_WINDOW, LAND_FIELD_SLOTS),
@@ -183,9 +110,6 @@ pub fn inspect_unitview_layout(layouts: &LayoutSet) -> UnitViewLayoutReport {
     }
 }
 
-// ===========================================================================
-// Fail-closed leaf → Option helpers (typed; never a fabricated default)
-// ===========================================================================
 
 fn opt_string(leaf: &Leaf<String>) -> Option<String> {
     leaf.measured().cloned()
@@ -203,11 +127,7 @@ fn opt_bool(leaf: &Leaf<bool>) -> Option<bool> {
     leaf.measured().copied()
 }
 
-// ===========================================================================
-// Binding — replay_core unit views → panel field bindings
-// ===========================================================================
 
-/// One equipment-composition line (division / air-wing), fail-closed per field.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UnitEquipmentLine {
     pub archetype: Option<String>,
@@ -230,35 +150,25 @@ fn equipment_lines(leaf: &Leaf<Vec<EquipmentAmount>>) -> (bool, Vec<UnitEquipmen
     }
 }
 
-/// Selected land-division panel binding (from [`DivisionUnitRow`]).
-///
-/// `display_name` is a VIEW GAP (`DivisionUnitRow` surfaces no custom name) and
-/// stays `None`; `uid` is the raw stable identity `div_uid` (UNKNOWN formatting,
-/// carried raw, same precedent as the D3 outliner row text).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LandUnitView {
     pub uid: String,
     pub owner: Option<String>,
-    /// VIEW GAP: no division custom-name field in the read-only view → `None`.
     pub display_name: Option<String>,
     pub template_name: Option<String>,
     pub template_role: Option<String>,
     pub template_id: Option<i64>,
     pub strength: Option<f64>,
     pub organisation: Option<f64>,
-    /// Raw measured division experience for the FILE `experience` slot.
     pub experience: Option<f64>,
     pub location_province: Option<u32>,
     pub moving: Option<bool>,
     pub in_combat: Option<bool>,
-    /// `true` when the `equipment` leaf was `Measured` (even if empty).
     pub equipment_available: bool,
     pub equipment: Vec<UnitEquipmentLine>,
-    /// `true` when the source `division_units` view status was `Present`.
     pub available: bool,
 }
 
-/// Bind one [`DivisionUnitRow`] to a [`LandUnitView`], fail-closed per field.
 pub fn land_unit_view_from_row(row: &DivisionUnitRow, available: bool) -> LandUnitView {
     let (equipment_available, equipment) = equipment_lines(&row.equipment);
     LandUnitView {
@@ -280,9 +190,6 @@ pub fn land_unit_view_from_row(row: &DivisionUnitRow, available: bool) -> LandUn
     }
 }
 
-/// Select the land division `div_uid` at one world frame and bind its panel.
-/// Fail-closed: returns `None` when no division with that UID is present this
-/// frame (never a fabricated empty unit).
 pub fn land_unit_view_from_frame(frame: &WorldFrame, div_uid: &str) -> Option<LandUnitView> {
     let available = frame.division_units_status() == ViewStatus::Present;
     frame
@@ -292,10 +199,6 @@ pub fn land_unit_view_from_frame(frame: &WorldFrame, div_uid: &str) -> Option<La
         .map(|row| land_unit_view_from_row(row, available))
 }
 
-/// Select a land division under one country POV. Own units and D95
-/// map-visible foreign units are admitted by the exact `(div_type, div_id)`
-/// join. A visible foreign unit without exact details returns an identity-only
-/// unavailable panel; an unspotted or unjoinable unit returns `None`.
 pub fn land_unit_view_for_pov(
     frame: &WorldFrame,
     div_uid: &str,
@@ -318,7 +221,6 @@ pub fn land_unit_view_for_pov(
     }
 }
 
-/// One ship line inside a selected task force (from [`ShipCompositionRow`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavalShipLine {
     pub uid: Option<String>,
@@ -347,29 +249,19 @@ fn ship_lines(leaf: &Leaf<Vec<ShipCompositionRow>>) -> (bool, Vec<NavalShipLine>
     }
 }
 
-/// Selected naval task-force panel binding (from [`FleetUnitRow`]).
-///
-/// `display_name` is a VIEW GAP (`FleetUnitRow` surfaces no task-force name) and
-/// stays `None`; `uid` is the raw `task_force_uid`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavalUnitView {
     pub uid: String,
     pub fleet_uid: Option<String>,
     pub owner: Option<String>,
-    /// VIEW GAP: no task-force custom-name field in the read-only view → `None`.
     pub display_name: Option<String>,
     pub mission: Option<String>,
     pub mission_state: Option<i64>,
-    /// Exact persisted D56 state name; intentionally separate from the final
-    /// engine activity label.
     pub detached_activity: Option<String>,
-    /// Exact localization key for a mechanically closed activity branch.
     pub activity_key: Option<String>,
-    /// `true` only when same-hour D49/D50 member-epoch authority was present.
     pub active_combat_epochs_available: bool,
     pub active_combat_epochs: Vec<String>,
     pub combat_membership_authority: Option<String>,
-    /// Exact save-tick movement path; never convoy-route attribution.
     pub movement_path_available: bool,
     pub movement_path: Vec<u32>,
     pub movement_progress: Option<f64>,
@@ -384,14 +276,11 @@ pub struct NavalUnitView {
     pub ship_count: Option<i64>,
     pub dominant_hull_class: Option<String>,
     pub location_province: Option<u32>,
-    /// `true` when the `ships` composition leaf was `Measured`.
     pub ships_available: bool,
     pub ships: Vec<NavalShipLine>,
-    /// `true` when the source `fleets` view status was `Present`.
     pub available: bool,
 }
 
-/// Bind one [`FleetUnitRow`] to a [`NavalUnitView`], fail-closed per field.
 pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUnitView {
     let (ships_available, ships) = ship_lines(&row.ships);
     let (active_combat_epochs_available, active_combat_epochs) = match &row.active_combat_epochs {
@@ -434,8 +323,6 @@ pub fn naval_unit_view_from_row(row: &FleetUnitRow, available: bool) -> NavalUni
     }
 }
 
-/// Select the task force `task_force_uid` at one world frame and bind its panel.
-/// Fail-closed `None` when no task force with that UID is present this frame.
 pub fn naval_unit_view_from_frame(
     frame: &WorldFrame,
     task_force_uid: &str,
@@ -448,11 +335,6 @@ pub fn naval_unit_view_from_frame(
         .map(|row| naval_unit_view_from_row(row, available))
 }
 
-/// Selected air-wing panel binding (from [`WingUnitRow`]).
-///
-/// Unlike land/naval, the air view DOES surface a `name`, so `display_name` is
-/// bound. `plane_definition` / `experience` / `manpower` are commonly
-/// recording-Absent → fail-closed `None`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AirWingView {
     pub uid: String,
@@ -464,17 +346,12 @@ pub struct AirWingView {
     pub strategic_region_id: Option<u32>,
     pub air_base: Option<String>,
     pub state_id: Option<u32>,
-    /// Recording-Absent in the fixtures → `None`.
     pub plane_definition: Option<String>,
-    /// Recording-Absent in the fixtures → `None`.
     pub experience: Option<f64>,
-    /// Recording-Absent in the fixtures → `None`.
     pub manpower: Option<i64>,
-    /// `true` when the source `wings` view status was `Present`.
     pub available: bool,
 }
 
-/// Bind one [`WingUnitRow`] to an [`AirWingView`], fail-closed per field.
 pub fn air_wing_view_from_row(row: &WingUnitRow, available: bool) -> AirWingView {
     AirWingView {
         uid: row.wing_uid.clone(),
@@ -493,8 +370,6 @@ pub fn air_wing_view_from_row(row: &WingUnitRow, available: bool) -> AirWingView
     }
 }
 
-/// Select the air wing `wing_uid` at one world frame and bind its panel.
-/// Fail-closed `None` when no wing with that UID is present this frame.
 pub fn air_wing_view_from_frame(frame: &WorldFrame, wing_uid: &str) -> Option<AirWingView> {
     let available = frame.wings_status() == ViewStatus::Present;
     frame
@@ -550,7 +425,7 @@ mod tests {
         assert_eq!(view.organisation, None);
         assert_eq!(view.experience, None);
         assert_eq!(view.template_name, None);
-        assert_eq!(view.display_name, None); // VIEW GAP, always None
+        assert_eq!(view.display_name, None);
         assert!(!view.equipment_available);
         assert!(view.equipment.is_empty());
     }
@@ -600,7 +475,6 @@ mod tests {
         assert_eq!(view.location_province, Some(1000));
         assert_eq!(view.moving, Some(true));
         assert_eq!(view.in_combat, Some(false));
-        // equipment leaf is Measured-but-empty → available, zero lines.
         assert!(view.equipment_available);
         assert!(view.equipment.is_empty());
     }
@@ -692,7 +566,6 @@ mod tests {
         assert_eq!(view.plane_count, Some(100));
         assert_eq!(view.effective_planes, Some(90));
         assert_eq!(view.mission_kind.as_deref(), Some("air_superiority"));
-        // Recording-Absent fields fail closed.
         assert_eq!(view.experience, None);
         assert_eq!(view.manpower, None);
         assert_eq!(view.plane_definition, None);

@@ -1,12 +1,3 @@
-//! Manual verification CLI for `replay_core` ingest + world model.
-//!
-//! `replay_dump <recording-path> [--hour N] [--game ID]`
-//!
-//! Prints the game id, hour range, ingest warnings, and per-domain
-//! provenance coverage for the first and last frame. With `--hour N` it
-//! prints a state-of-the-world summary at that hour (nearest at-or-before
-//! frame), with every Leaf status rendered distinctly:
-//! `stability=0.62` / `war_support=null(unobtained)` / `fuel=absent`.
 
 use replay_core::{
     open_recording, open_recording_game, Leaf, MapLayerSource, ProductionProfileAuthority,
@@ -17,7 +8,6 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 const USAGE: &str = "usage: replay_dump <recording-path> [--hour N] [--game ID]";
-/// Country-core sample size for the summary (keeps real recordings readable).
 const SAMPLE_TAGS: usize = 8;
 
 fn main() -> ExitCode {
@@ -92,9 +82,6 @@ fn run() -> Result<(), String> {
         None => open_recording(&args.path),
     }
     .map_err(|e| e.to_string())?;
-    // Print the production-profile admission BEFORE the timeline takes the
-    // source: a recording that is admitted with a named shortfall must say so
-    // where the operator reads it, not only in the provenance accessor.
     match source.product_admission() {
         None => println!("product admission: no recorder manifest"),
         Some(admission) if admission.is_full_production_profile() => {
@@ -103,9 +90,6 @@ fn run() -> Result<(), String> {
         Some(admission) => {
             println!(
                 "product admission: {} profile authority, admitted without {}",
-                // Printed because the guarantee list alone does not say WHY a
-                // guarantee is unheld: an unstated manifest made no claim, a
-                // disabled one made a claim that fell short.
                 match admission.authority {
                     ProductionProfileAuthority::Unstated => "unstated",
                     ProductionProfileAuthority::Disabled => "disabled",
@@ -120,9 +104,6 @@ fn run() -> Result<(), String> {
             );
             println!(
                 "  profile domains not scheduled: {}",
-                // UNKNOWN, not "none": an unstated manifest declared no set and
-                // replay cannot derive one from the package, so printing "none"
-                // would report an unmeasured thing as measured-empty.
                 if admission.authority == ProductionProfileAuthority::Unstated {
                     "unknown (no production_profile authority)".to_string()
                 } else {
@@ -200,13 +181,6 @@ fn print_frame_coverage(label: &str, frame: &WorldFrame) {
     print_snow_mud(frame);
 }
 
-/// The GP-U12 per-province snow/mud seam, printed because its acceptance leg is
-/// a LIVE one: `by_province_status` is the field that separates "the carrier was
-/// there and empty" from "the carrier was absent, unobtained or wrong-typed",
-/// and an operator validating a real recording has no other way to read it.
-/// The snow extremes come with it because the admitted range is the ENGINE's
-/// (`CWeatherManager + 0x1f8`, parsed from `common/weather.txt`), so what the
-/// capture actually reached is the only evidence of where that ceiling sits.
 fn print_snow_mud(frame: &WorldFrame) {
     let view = frame.snow_mud();
     let mut measured = 0usize;
@@ -329,7 +303,6 @@ fn fmt_layer_source(source: MapLayerSource) -> &'static str {
     }
 }
 
-/// Render the trichotomy distinctly: measured value / null(unobtained) / absent.
 fn fmt_leaf_display<T: std::fmt::Display>(leaf: &Leaf<T>) -> String {
     match leaf {
         Leaf::Measured(v) => format!("{v}"),

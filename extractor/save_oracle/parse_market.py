@@ -55,9 +55,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Top-level equipments archetype index (id,type) -> archetype name
-# ---------------------------------------------------------------------------
 
 def _parse_equipments_index(tz, index):
     """equipments={ <archetype>={ id={id type} creator obsolete is_frame } }."""
@@ -72,14 +69,11 @@ def _parse_equipments_index(tz, index):
                 else:
                     _skip_block_body(tz)
                 continue
-            atom_value(op)  # consume scalar
+            atom_value(op)
         if eid is not None:
             index[(eid, etype)] = arch_name
 
 
-# ---------------------------------------------------------------------------
-# equipment amount lists:  { equipment={ id={id type} amount=N } ... }
-# ---------------------------------------------------------------------------
 
 def _parse_equipment_amounts(tz):
     out = []
@@ -107,9 +101,6 @@ def _parse_equipment_amounts(tz):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Top-level purchase contracts
-# ---------------------------------------------------------------------------
 
 def _parse_delivery_route(tz):
     """delivery_route_handler={ convoy_client={ country convoys_subscriber } ... }."""
@@ -267,9 +258,6 @@ def _parse_top_market(tz, contracts):
                 _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# Per-country equipment_market (market_stockpile + automation)
-# ---------------------------------------------------------------------------
 
 def _parse_country_market(tz, rec):
     for key, opener in iter_block_entries(tz):
@@ -317,16 +305,10 @@ def _parse_countries(tz, by_tag):
                     _parse_country_market(tz, rec)
                 else:
                     _skip_block_body(tz)
-        # Preserve explicit measured-empty market stockpiles. Dropping a
-        # country whose `equipments={}` vector is present conflates a proven
-        # empty serializer result with a missing/unreadable market owner.
         if rec["market_present"]:
             by_tag[tag] = rec
 
 
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
 
 def _join(raw, arch_index, unknown):
     out = []
@@ -357,7 +339,6 @@ def build(text, source, was_melted):
 
     unknown: set = set()
 
-    # Finalize contracts (join archetypes).
     contracts = []
     for c in contracts_raw:
         contracts.append({
@@ -376,7 +357,6 @@ def build(text, source, was_melted):
             "completed": c["completed"],
         })
 
-    # Finalize per-country market stockpiles.
     countries = {}
     for tag, rec in by_tag.items():
         stock = _join(rec["stockpile_raw"], arch_index, unknown)

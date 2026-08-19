@@ -51,7 +51,6 @@ def _plain(node):
 
 
 def _ordered(layers, subdir, exts=(".txt",)):
-    # path-boundary-safe load order (vanilla before mod), shared resolver helper.
     return R.ordered_files(layers, subdir, exts)
 
 

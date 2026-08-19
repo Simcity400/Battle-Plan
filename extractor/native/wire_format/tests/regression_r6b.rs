@@ -1,6 +1,6 @@
-//! Regression tests for malformed states reachable outside the crate's happy path.
-
-use wire_format::body::{decode_baseline, encode_baseline, encode_delta, Key, KeyedDelta, KeyedState, Row};
+use wire_format::body::{
+    decode_baseline, encode_baseline, encode_delta, Key, KeyedDelta, KeyedState, Row,
+};
 use wire_format::record::Record;
 use wire_format::schema::{Collection, Derived, EventPart, Field, Schema, SchemaError, Shape};
 use wire_format::value::Value;
@@ -11,16 +11,20 @@ fn keyed(fields: Vec<Field>) -> Schema {
         domain: 1,
         cadence_log2: 0,
         event_part: None,
-        collections: vec![Collection { collection_id: 1, shape: Shape::KeyedSet, fields }],
+        collections: vec![Collection {
+            collection_id: 1,
+            shape: Shape::KeyedSet,
+            fields,
+        }],
     }
 }
 
-/// `Key` holds `i128` so one type carries every key-encoding contract key kind, which means the
-/// range has to be checked: an unchecked `as u64` mapped `u64::MAX + 1` onto `0`
-/// and emitted another key's bytes on every path.
 #[test]
 fn an_out_of_range_key_component_is_rejected_everywhere() {
-    let s = keyed(vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)]);
+    let s = keyed(vec![
+        Field::new(1, Kind::Unsigned).key(0),
+        Field::new(2, Kind::Unsigned),
+    ]);
     let too_big = Key(vec![(u64::MAX as i128) + 1]);
     let negative = Key(vec![-1]);
     let row = || Record::new(vec![Value::Unsigned(0)]);
@@ -31,12 +35,20 @@ fn an_out_of_range_key_component_is_rejected_everywhere() {
         let mut out = Vec::new();
         assert_eq!(
             encode_baseline(&s, &[state.clone()], &mut out),
-            Err(WireError::Corrupt("key component is outside its kind's range")),
+            Err(WireError::Corrupt(
+                "key component is outside its kind's range"
+            )),
             "baseline must reject {bad:?}"
         );
 
         let mut out = Vec::new();
-        let delta = KeyedDelta { changed: vec![Row { key: bad.clone(), record: row() }], tombstones: vec![] };
+        let delta = KeyedDelta {
+            changed: vec![Row {
+                key: bad.clone(),
+                record: row(),
+            }],
+            tombstones: vec![],
+        };
         assert!(
             encode_delta(&s, &[KeyedState::new()], &[Some(delta)], &mut out).is_err(),
             "delta must reject {bad:?}"
@@ -45,12 +57,13 @@ fn an_out_of_range_key_component_is_rejected_everywhere() {
         let mut out = Vec::new();
         assert_eq!(
             wire_format::columnar::encode_baseline_columnar(&s.collections[0], &state, &mut out),
-            Err(WireError::Corrupt("key component is outside its kind's range")),
+            Err(WireError::Corrupt(
+                "key component is outside its kind's range"
+            )),
             "columnar must reject {bad:?}"
         );
     }
 
-    // The extremes that are in range still work.
     let mut state = KeyedState::new();
     state.insert(Key(vec![u64::MAX as i128]), row());
     let mut out = Vec::new();
@@ -59,11 +72,12 @@ fn an_out_of_range_key_component_is_rejected_everywhere() {
     assert_eq!(back[0].keys().next().unwrap(), &Key(vec![u64::MAX as i128]));
 }
 
-/// The prior comes from the caller's reconstructed state and every index reaches
-/// into it, so a short one has to error rather than panic.
 #[test]
 fn update_decode_rejects_a_malformed_prior_instead_of_panicking() {
-    let s = keyed(vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)]);
+    let s = keyed(vec![
+        Field::new(1, Kind::Unsigned).key(0),
+        Field::new(2, Kind::Unsigned),
+    ]);
     let c = &s.collections[0];
     assert_eq!(
         wire_format::update::decode(c, &Record::new(vec![]), &[0x01, 0x01], 0),
@@ -78,38 +92,36 @@ fn update_decode_rejects_a_malformed_prior_instead_of_panicking() {
         ),
         Err(WireError::Corrupt("record arity does not match schema"))
     );
-    // A well-formed prior still decodes.
-    let (back, _) = wire_format::update::decode(
-        c,
-        &Record::new(vec![Value::Unsigned(0)]),
-        &[0x01, 0x01],
-        0,
-    )
-    .unwrap();
+    let (back, _) =
+        wire_format::update::decode(c, &Record::new(vec![Value::Unsigned(0)]), &[0x01, 0x01], 0)
+            .unwrap();
     assert_eq!(back.values, vec![Value::Unsigned(1)]);
 }
 
-/// tick-grid contract counts ticks in a `u64`, so `2^ticks_per_hour_log2` must fit one. At 64
-/// the shift panics under this workspace's overflow checks and is masked to
-/// `1 << 0` without them — a silently wrong grid rather than a rejected schema.
 #[test]
 fn the_tick_grid_is_bounded_at_a_representable_shift() {
-    let s = keyed(vec![Field::new(1, Kind::Unsigned).key(0), Field::new(2, Kind::Unsigned)]);
+    let s = keyed(vec![
+        Field::new(1, Kind::Unsigned).key(0),
+        Field::new(2, Kind::Unsigned),
+    ]);
     assert_eq!(
         s.validate(64),
-        Err(SchemaError::TicksPerHourTooLarge { ticks_per_hour_log2: 64 })
+        Err(SchemaError::TicksPerHourTooLarge {
+            ticks_per_hour_log2: 64
+        })
     );
-    assert_eq!(s.validate(63), Ok(()), "63 is the largest representable grid");
+    assert_eq!(
+        s.validate(63),
+        Ok(()),
+        "63 is the largest representable grid"
+    );
 
-    // And a derived shift is still bounded by the grid, not independently.
     let mut f = Field::new(2, Kind::Unsigned);
     f.derived = Some(Derived { c: 1, u: 64 });
     let s = keyed(vec![Field::new(1, Kind::Unsigned).key(0), f]);
     assert!(s.validate(63).is_err(), "u = 64 exceeds a 63 grid");
 }
 
-/// event-continuity contract's frontier designates exactly one of its components as the sequence. An
-/// index past the end names nothing, so the frontier has no ordering at all.
 #[test]
 fn an_event_sequence_index_must_name_a_frontier_component() {
     let with = |ids: Vec<u32>, sequence_index: u32| Schema {
@@ -125,11 +137,17 @@ fn an_event_sequence_index_must_name_a_frontier_component() {
     };
     assert_eq!(
         with(vec![10], 1).validate(3),
-        Err(SchemaError::SequenceIndexOutOfRange { sequence_index: 1, components: 1 })
+        Err(SchemaError::SequenceIndexOutOfRange {
+            sequence_index: 1,
+            components: 1
+        })
     );
     assert_eq!(
         with(vec![], 0).validate(3),
-        Err(SchemaError::SequenceIndexOutOfRange { sequence_index: 0, components: 0 })
+        Err(SchemaError::SequenceIndexOutOfRange {
+            sequence_index: 0,
+            components: 0
+        })
     );
     assert_eq!(with(vec![10, 11], 1).validate(3), Ok(()));
 }

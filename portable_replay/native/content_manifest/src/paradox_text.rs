@@ -123,84 +123,39 @@ pub fn decode_text(bytes: &[u8]) -> String {
     }
 }
 
-/// Ceiling on recorded decode diagnostics per input. Content bytes are
-/// untrusted; without a ceiling a file that is invalid at every byte would
-/// materialize one diagnostic per byte — an allocation amplification the
-/// decode itself does not have. Losses past the ceiling stay COUNTED (the
-/// final [`TextDecodeLoss::Suppressed`] entry), so the total is never
-/// understated, only the per-site detail is capped.
 pub const MAX_TEXT_DECODE_DIAGNOSTICS: usize = 256;
 
-/// One byte-level event in which [`decode_text`] discarded or reinterpreted
-/// input. `line`/`column` are 1-based positions in the DECODED text (the same
-/// coordinate space as [`Recovery`]), locating the replacement character or
-/// fallback start so byte damage can be attributed next to line-level parse
-/// damage. `byte_offset` is the absolute offset in the original input,
-/// including any byte-order mark.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextDecodeLoss {
-    /// An invalid UTF-8 sequence after a UTF-8 BOM was replaced with U+FFFD.
-    /// `bytes` are the exact bytes that were lost (one maximal invalid
-    /// subpart, at most 3 bytes).
     InvalidUtf8 {
         byte_offset: usize,
         bytes: Vec<u8>,
         line: usize,
         column: usize,
     },
-    /// An unpaired UTF-16 surrogate code unit was replaced with U+FFFD.
     UnpairedUtf16Surrogate {
         byte_offset: usize,
         code_unit: u16,
         line: usize,
         column: usize,
     },
-    /// A UTF-16 stream had an odd byte count; the trailing byte was dropped.
     TruncatedUtf16Unit {
         byte_offset: usize,
         byte: u8,
         line: usize,
         column: usize,
     },
-    /// The input had no BOM and was not valid UTF-8, so every byte was
-    /// reinterpreted as one Latin-1 character. No byte is lost, but a damaged
-    /// UTF-8 file silently becomes mojibake from `byte_offset` on; this entry
-    /// attributes where the strict UTF-8 reading first failed.
     NonUtf8DecodedAsLatin1 {
         byte_offset: usize,
         line: usize,
         column: usize,
     },
-    /// More losses occurred than [`MAX_TEXT_DECODE_DIAGNOSTICS`]; `count` of
-    /// them were counted but not individually recorded.
-    Suppressed { count: usize },
+    Suppressed {
+        count: usize,
+    },
 }
 
 impl TextDecodeLoss {
-    /// Whether this event DESTROYED input, as opposed to merely attributing how
-    /// the input was interpreted.
-    ///
-    /// The distinction is the whole basis on which a decode event is allowed to
-    /// block anything, so it is drawn on one question: does the decoded text
-    /// still contain everything the bytes said?
-    ///
-    /// * `InvalidUtf8`, `UnpairedUtf16Surrogate` — bytes were replaced by
-    ///   U+FFFD. The original content is unrecoverable from the decode.
-    /// * `TruncatedUtf16Unit` — the odd tail byte was dropped outright.
-    /// * `Suppressed` — the overflow counter is only ever incremented by the
-    ///   UTF-8 and UTF-16 walks, both of which record destructive events
-    ///   exclusively; `NonUtf8DecodedAsLatin1` is emitted at most ONCE per
-    ///   input (it is a whole-file verdict) and so can never reach the
-    ///   ceiling. A suppressed count therefore always stands for destroyed
-    ///   input, and is counted as destructive rather than assumed harmless.
-    /// * `NonUtf8DecodedAsLatin1` — NOT destructive. Every byte becomes exactly
-    ///   one Latin-1 char, so byte count in equals char count out and nothing
-    ///   is lost. Latin-1 is a Paradox encoding in active use: the game 1.19.2
-    ///   itself ships `pdx_online_assets/interface/online_accountcreate.gui`
-    ///   and `previewer_assets/assetviewer_interface/previewer_interface.gui`
-    ///   with a raw `0xA7` (the `§` colour-code marker), and mods use it far
-    ///   more widely. Treating this as damage would refuse correct content on
-    ///   the strength of a diagnostic that reports no loss.
     #[must_use]
     pub fn discards_input(&self) -> bool {
         match self {
@@ -213,26 +168,11 @@ impl TextDecodeLoss {
     }
 }
 
-/// The subset of `losses` that destroyed input, in order.
-///
-/// Empty for every input that decodes cleanly, and empty for input that is
-/// merely non-UTF-8 (see [`TextDecodeLoss::discards_input`]). This is the
-/// predicate any admission or completeness surface must use — never
-/// `!losses.is_empty()`, which conflates lossless encoding attribution with
-/// destroyed bytes.
 #[must_use]
 pub fn destructive_losses(losses: &[TextDecodeLoss]) -> Vec<&TextDecodeLoss> {
     losses.iter().filter(|loss| loss.discards_input()).collect()
 }
 
-/// How many destructive decode EVENTS `losses` represents.
-///
-/// This is NOT `destructive_losses(losses).len()`. The per-site detail is capped
-/// at [`MAX_TEXT_DECODE_DIAGNOSTICS`], and everything past the cap collapses
-/// into a single [`TextDecodeLoss::Suppressed`] entry carrying the residual
-/// COUNT. Counting entries would therefore report 257 for 296 destroyed sites —
-/// understating damage, which is the one direction a damage report must never
-/// err in. Every reported event count must come from here.
 #[must_use]
 pub fn destructive_event_count(losses: &[TextDecodeLoss]) -> usize {
     losses
@@ -292,18 +232,11 @@ impl std::fmt::Display for TextDecodeLoss {
     }
 }
 
-/// [`decode_text`] plus a typed account of everything that decode lost or
-/// reinterpreted. The text is produced by the SAME function — byte-identical
-/// for every input, clean or damaged — and the diagnosis is a separate
-/// read-only pass, so no admitted decode result can move.
 #[must_use = "byte-level decode damage must be recorded, not dropped"]
 pub fn decode_text_diagnosed(bytes: &[u8]) -> (String, Vec<TextDecodeLoss>) {
     (decode_text(bytes), diagnose_text_decode(bytes))
 }
 
-/// The diagnosis pass behind [`decode_text_diagnosed`]: observes exactly what
-/// [`decode_text`] discards, without building the decoded string. Empty for
-/// every input that decodes cleanly.
 pub fn diagnose_text_decode(bytes: &[u8]) -> Vec<TextDecodeLoss> {
     if let Some(rest) = bytes.strip_prefix(&[0xef, 0xbb, 0xbf]) {
         return diagnose_utf8_lossy(rest, 3);
@@ -318,9 +251,6 @@ pub fn diagnose_text_decode(bytes: &[u8]) -> Vec<TextDecodeLoss> {
         Ok(_) => Vec::new(),
         Err(error) => {
             let byte_offset = error.valid_up_to();
-            // In the Latin-1 fallback every byte is one decoded char, so the
-            // decoded-text position of the first non-UTF-8 byte follows from
-            // the newline count of the byte prefix.
             let line = 1 + bytes[..byte_offset]
                 .iter()
                 .filter(|byte| **byte == b'\n')
@@ -339,8 +269,6 @@ pub fn diagnose_text_decode(bytes: &[u8]) -> Vec<TextDecodeLoss> {
     }
 }
 
-/// Tracks the decoded-text cursor and the bounded diagnostic list shared by
-/// the UTF-8 and UTF-16 diagnosis walks.
 struct DecodeDiagnosisCursor {
     line: usize,
     column: usize,
@@ -358,7 +286,6 @@ impl DecodeDiagnosisCursor {
         }
     }
 
-    /// Advance past one decoded character, mirroring `Parser::bump`.
     fn advance(&mut self, ch: char) {
         if ch == '\n' {
             self.line += 1;
@@ -386,10 +313,6 @@ impl DecodeDiagnosisCursor {
     }
 }
 
-/// Observe what `String::from_utf8_lossy` replaces: `utf8_chunks` yields the
-/// exact maximal-invalid-subpart segmentation that `from_utf8_lossy` maps to
-/// one U+FFFD each, so walking it reproduces the decode's cursor positions
-/// without re-deriving its replacement policy.
 fn diagnose_utf8_lossy(rest: &[u8], bom_len: usize) -> Vec<TextDecodeLoss> {
     let mut cursor = DecodeDiagnosisCursor::new();
     let mut consumed = 0usize;
@@ -412,9 +335,6 @@ fn diagnose_utf8_lossy(rest: &[u8], bom_len: usize) -> Vec<TextDecodeLoss> {
     cursor.finish()
 }
 
-/// Observe what `String::from_utf16_lossy` replaces (it is exactly
-/// `char::decode_utf16` with errors mapped to U+FFFD) plus the odd trailing
-/// byte that `chunks_exact(2)` silently drops before the lossy decode runs.
 fn diagnose_utf16_lossy(rest: &[u8], word: impl Fn(&[u8]) -> u16) -> Vec<TextDecodeLoss> {
     const BOM_LEN: usize = 2;
     let words = rest.chunks_exact(2).map(word);
@@ -474,10 +394,6 @@ pub fn block_items(value: &Value) -> impl Iterator<Item = &Value> {
         .map(|entry| &entry.value)
 }
 
-/// Maximum brace-nesting depth accepted before the parser records a recovery
-/// and skips the subtree. Content files (including mods) are untrusted input;
-/// without this cap a file of pathological open braces would overflow the
-/// stack and abort the process instead of surfacing a typed parse failure.
 const MAX_DEPTH: usize = 512;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -580,10 +496,6 @@ impl<'a> Parser<'a> {
         entries
     }
 
-    /// Parse the body of an object whose opening brace `open` was just
-    /// consumed. At `MAX_DEPTH` the subtree is skipped iteratively (never by
-    /// re-entering `parse_entries`, which would preserve the stack overflow)
-    /// and replaced with an empty object plus a recovery.
     fn parse_object_body(&mut self, open: &Token, depth: usize) -> Value {
         if depth >= MAX_DEPTH {
             self.recover_at(open, "nesting depth limit exceeded; subtree skipped");
@@ -593,8 +505,6 @@ impl<'a> Parser<'a> {
         Value::Object(self.parse_entries(true, depth + 1))
     }
 
-    /// Consume tokens for a subtree whose opening brace was already consumed,
-    /// tracking brace balance iteratively until the matching close (or EOF).
     fn skip_balanced_subtree(&mut self) {
         let mut balance = 1usize;
         loop {
@@ -835,13 +745,9 @@ mod tests {
             .recoveries
             .iter()
             .any(|recovery| recovery.message.contains("nesting depth limit exceeded")));
-        // The balanced skip must resynchronize so trailing siblings still parse.
         assert_eq!(doc.root.first_scalar_ci("after"), Some("2"));
     }
 
-    /// The diagnosis pass never changes the decode: for clean and damaged
-    /// inputs alike, `decode_text_diagnosed` returns exactly what
-    /// `decode_text` returns (it IS `decode_text` plus observation).
     #[test]
     fn diagnosed_decode_is_byte_identical_to_plain_decode() {
         let samples: &[&[u8]] = &[
@@ -883,7 +789,6 @@ mod tests {
 
     #[test]
     fn invalid_utf8_after_bom_is_attributed_with_position_and_lost_bytes() {
-        // Line 1 is clean; the damage sits on line 2 after "k = ".
         let (text, losses) = decode_text_diagnosed(b"\xef\xbb\xbfa = 1\nk = \xe2\x82ok");
         assert_eq!(text, "a = 1\nk = \u{fffd}ok");
         assert_eq!(
@@ -903,7 +808,6 @@ mod tests {
 
     #[test]
     fn unpaired_utf16_surrogates_are_attributed_in_both_byte_orders() {
-        // LE: 'a' '\n' then an unpaired high surrogate then 'b'.
         let (text, losses) = decode_text_diagnosed(b"\xff\xfea\x00\n\x00\x00\xd8b\x00");
         assert_eq!(text, "a\n\u{fffd}b");
         assert_eq!(
@@ -916,10 +820,7 @@ mod tests {
             }]
         );
 
-        // BE: same stream big-endian; a supplementary-plane pair before the
-        // damage proves the byte offset counts code UNITS, not chars.
-        let (text, losses) =
-            decode_text_diagnosed(b"\xfe\xff\xd8\x3d\xde\x00\xdc\x00\x00b");
+        let (text, losses) = decode_text_diagnosed(b"\xfe\xff\xd8\x3d\xde\x00\xdc\x00\x00b");
         assert_eq!(text, "\u{1f600}\u{fffd}b");
         assert_eq!(
             losses,
@@ -980,8 +881,6 @@ mod tests {
         );
     }
 
-    /// The destructive/lossless split is the sole basis on which a decode event
-    /// may block anything, so it is pinned per variant.
     #[test]
     fn only_events_that_destroy_input_are_classified_destructive() {
         let destroys = [
@@ -1020,9 +919,6 @@ mod tests {
         assert_eq!(destructive_losses(&all).len(), 4);
     }
 
-    /// The suppressed overflow must be COUNTED, not collapsed to one entry.
-    /// Entry count would understate the damage, which is the one direction a
-    /// damage report may never err in.
     #[test]
     fn suppressed_overflow_counts_every_event_not_every_entry() {
         let mut bytes = vec![0xef, 0xbb, 0xbf];
@@ -1031,24 +927,20 @@ mod tests {
             bytes.push(0xff);
         }
         let losses = diagnose_text_decode(&bytes);
-        // 256 individual entries + 1 Suppressed{40} entry.
-        assert_eq!(destructive_losses(&losses).len(), MAX_TEXT_DECODE_DIAGNOSTICS + 1);
-        // ... but 296 actual destroyed sites.
+        assert_eq!(
+            destructive_losses(&losses).len(),
+            MAX_TEXT_DECODE_DIAGNOSTICS + 1
+        );
         assert_eq!(
             destructive_event_count(&losses),
             MAX_TEXT_DECODE_DIAGNOSTICS + 40
         );
-        // Lossless attribution contributes nothing to the event count.
         assert_eq!(
             destructive_event_count(&diagnose_text_decode(b"caf\xe9")),
             0
         );
     }
 
-    /// Latin-1 input is reported but is not damage: byte count in equals char
-    /// count out, so `destructive_losses` is empty. This is the property that
-    /// keeps a decode-based blocker from refusing the shipped game, which does
-    /// ship raw 0xA7 colour codes.
     #[test]
     fn latin1_fallback_reports_without_destroying_input() {
         let bytes = b"text = \"Email\xa7R *\xa7!\"";
@@ -1064,18 +956,11 @@ mod tests {
         assert!(!text.contains('\u{fffd}'));
     }
 
-    /// Decode damage and parse recovery are INDEPENDENT — the fact that makes a
-    /// separate carrier necessary rather than merely tidy. Destroyed bytes can
-    /// leave the token structure perfectly well-formed.
     #[test]
     fn destroyed_bytes_can_leave_the_parse_completely_clean() {
         let bytes = b"\xef\xbb\xbfname = \"a\xffb\"";
         let document = parse_bytes(bytes);
-        assert!(
-            document.recoveries.is_empty(),
-            "{:?}",
-            document.recoveries
-        );
+        assert!(document.recoveries.is_empty(), "{:?}", document.recoveries);
         assert_eq!(document.root.first_scalar_ci("name"), Some("a\u{fffd}b"));
         assert_eq!(destructive_losses(&diagnose_text_decode(bytes)).len(), 1);
     }

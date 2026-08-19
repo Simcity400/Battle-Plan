@@ -11,11 +11,6 @@ pub struct ProvinceBinding {
     pub(crate) symbol: String,
 }
 
-/// A province-id resolver admitted by the exact portable content manifest.
-///
-/// Symbols use the definition's unique RGB identity, not the recorder-local
-/// numeric id: `province/rgb/R/G/B`. The source id remains bound under
-/// `hoi4.province` only inside the symbol-manifest resolver.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthenticatedProvinceCatalog {
     pub(crate) content_manifest_sha256: [u8; 32],
@@ -63,14 +58,7 @@ impl AuthenticatedProvinceCatalog {
         Ok(out)
     }
 
-    /// Reauthenticate a persisted catalog against the exact admitted
-    /// `definition.csv` membership in an authenticated content manifest.
-    ///
-    /// The artifact alone is never an authority-bearing constructor.
-    pub fn from_artifact(
-        content_manifest_json: &[u8],
-        bytes: &[u8],
-    ) -> Result<Self, ProductError> {
+    pub fn from_artifact(content_manifest_json: &[u8], bytes: &[u8]) -> Result<Self, ProductError> {
         let untrusted = decode_artifact(bytes)?;
         let definition_csv = artifact_definition_bytes(bytes)?;
         let authenticated = Self::from_content_manifest(content_manifest_json, definition_csv)?;
@@ -126,11 +114,7 @@ impl AuthenticatedProvinceCatalog {
             ));
         }
         let admitted_content = required.content.clone();
-        Self::from_validated_manifest_and_resolution(
-            manifest,
-            &admitted_content,
-            definition_csv,
-        )
+        Self::from_validated_manifest_and_resolution(manifest, &admitted_content, definition_csv)
     }
 
     fn from_validated_manifest_and_resolution(
@@ -138,11 +122,10 @@ impl AuthenticatedProvinceCatalog {
         resolution: &portable_content_manifest::UsedContentKey,
         definition_csv: &[u8],
     ) -> Result<Self, ProductError> {
-        // `resolution` is reachable only through an exact `required_content`
-        // row selected from the parsed manifest above. A naked, externally
-        // fabricated UsedContentKey can never enter this authority boundary.
         resolution.validate().map_err(|error| {
-            ProductError::new(format!("definition.csv content admission rejected: {error}"))
+            ProductError::new(format!(
+                "definition.csv content admission rejected: {error}"
+            ))
         })?;
         if resolution.normalized_game_relative_path != DEFINITION_CSV_PATH {
             return Err(ProductError::new(format!(
@@ -197,38 +180,38 @@ impl AuthenticatedProvinceCatalog {
 }
 
 pub(crate) fn decode_artifact(bytes: &[u8]) -> Result<ProvinceCatalogArtifact, ProductError> {
-        if bytes.len() < 80 || &bytes[..4] != b"H4PC" {
-            return Err(ProductError::new("province catalog artifact is truncated or has wrong magic"));
-        }
-        if u16::from_le_bytes(bytes[4..6].try_into().unwrap()) != 2
-            || bytes[6..8] != [0, 0]
-        {
-            return Err(ProductError::new("province catalog artifact version/reserved bytes invalid"));
-        }
-        let content_manifest_sha256 = bytes[8..40].try_into().unwrap();
-        let definition_csv_sha256 = bytes[40..72].try_into().unwrap();
-        let definition_len = usize::try_from(u64::from_le_bytes(
-            bytes[72..80].try_into().unwrap(),
-        ))
-        .map_err(|_| ProductError::new("province catalog definition length exceeds usize"))?;
-        if definition_len != bytes.len().saturating_sub(80) {
-            return Err(ProductError::new(
-                "province catalog definition length is noncanonical",
-            ));
-        }
-        let definition_csv = artifact_definition_bytes(bytes)?;
-        if Sha256::digest(definition_csv).as_slice() != definition_csv_sha256 {
-            return Err(ProductError::new(
-                "province catalog definition digest does not match embedded bytes",
-            ));
-        }
-        let bindings = parse_definition_csv(definition_csv)?;
-        Ok(ProvinceCatalogArtifact {
-            content_manifest_sha256,
-            definition_csv_sha256,
-            bindings,
-        })
+    if bytes.len() < 80 || &bytes[..4] != b"H4PC" {
+        return Err(ProductError::new(
+            "province catalog artifact is truncated or has wrong magic",
+        ));
     }
+    if u16::from_le_bytes(bytes[4..6].try_into().unwrap()) != 2 || bytes[6..8] != [0, 0] {
+        return Err(ProductError::new(
+            "province catalog artifact version/reserved bytes invalid",
+        ));
+    }
+    let content_manifest_sha256 = bytes[8..40].try_into().unwrap();
+    let definition_csv_sha256 = bytes[40..72].try_into().unwrap();
+    let definition_len = usize::try_from(u64::from_le_bytes(bytes[72..80].try_into().unwrap()))
+        .map_err(|_| ProductError::new("province catalog definition length exceeds usize"))?;
+    if definition_len != bytes.len().saturating_sub(80) {
+        return Err(ProductError::new(
+            "province catalog definition length is noncanonical",
+        ));
+    }
+    let definition_csv = artifact_definition_bytes(bytes)?;
+    if Sha256::digest(definition_csv).as_slice() != definition_csv_sha256 {
+        return Err(ProductError::new(
+            "province catalog definition digest does not match embedded bytes",
+        ));
+    }
+    let bindings = parse_definition_csv(definition_csv)?;
+    Ok(ProvinceCatalogArtifact {
+        content_manifest_sha256,
+        definition_csv_sha256,
+        bindings,
+    })
+}
 
 fn artifact_definition_bytes(bytes: &[u8]) -> Result<&[u8], ProductError> {
     if bytes.len() < 80 {
@@ -311,7 +294,9 @@ fn parse_definition_csv(bytes: &[u8]) -> Result<Vec<ProvinceBinding>, ProductErr
 
 pub(crate) fn decode_sha256(value: &str) -> Result<[u8; 32], ProductError> {
     if value.len() != 64 {
-        return Err(ProductError::new("SHA-256 text is not 64 hexadecimal bytes"));
+        return Err(ProductError::new(
+            "SHA-256 text is not 64 hexadecimal bytes",
+        ));
     }
     let mut out = [0u8; 32];
     for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {

@@ -1,120 +1,47 @@
-//! The KIND C content epoch — ONE authority, read by the recorder that stamps
-//! it onto packaged static artifacts and by the replay consumer that admits
-//! them.
-//!
-//! # What this closes
-//!
-//! A packaged static artifact is only usable if something states WHICH content
-//! corpus it was derived from; otherwise a consumer is joining a catalog to
-//! bytes nothing proves it came from. Until now the only such statement was
-//! `portable_content_manifest.manifest_digest_sha256`, which is built from an
-//! effective-VFS observation taken before `ResumeThread`. The shipped
-//! `collector_record` cannot take one — the client-driving actuator is compiled
-//! out — so `replay_packaging.static_artifacts[*].content_manifest_digest_sha256`
-//! came out NULL on every recording the product can produce, and every packaged
-//! catalog was declined by the consumer.
-//!
-//! The recorder already takes a strictly stronger observation on exactly that
-//! route: the KIND C attach-time effective-VFS join
-//! (`recorder_host::attach_content_proof`), which resolves every path the
-//! packaged artifacts claim through the engine's own effective VFS and requires
-//! the winning layer's bytes to hash to the declared digest. This module turns
-//! that proof into the epoch the packaging contract needs.
-//!
-//! # Why the derivation lives here and not in the recorder
-//!
-//! Harness-authority drift: a value one component computes and another
-//! re-derives drifts silently. The recorder calls
-//! [`epoch_from_proof_json`] on the block it is about to seal, and the replay
-//! consumer calls the same function on the block it read out of the sealed
-//! manifest. There is no second spelling of the canonicalization.
-//!
-//! # What the digest covers, and what it deliberately does not
-//!
-//! Covered: the executable identity, the `dlc_load.json` identity, the ordered
-//! layer stack, every certified artifact join (role + the artifact's own
-//! digest + its claim counts), and every joined required-content row. These are
-//! the facts that say *which content world this is*.
-//!
-//! Not covered: `observed_at_unix`, `completed_at_unix`, `elapsed_ms`,
-//! `hashed_bytes`, `hashed_files`, `window_attempts`. Those are the COST and
-//! the WINDOW of the observation, not its content. Two recordings taken minutes
-//! apart against one unchanged install therefore carry the SAME epoch, which is
-//! what makes it an epoch rather than a per-recording nonce.
-
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-/// Schema of the recorder's attach-time content-proof block.
 pub const ATTACH_PROOF_SCHEMA: &str = "hoi4.attach-time-content-proof.v1";
 
-/// Versioned name of the canonicalization this module hashes. Part of the
-/// hashed document, so a future canonicalization can never collide with this
-/// one.
 pub const EPOCH_SCHEMA: &str = "hoi4.attach-time-content-epoch.v1";
 
-/// Manifest field naming WHICH content proof ran.
 pub const CONTENT_PROOF_KIND_FIELD: &str = "content_proof_kind";
 
-/// Manifest field carrying the KIND C proof block itself.
 pub const ATTACH_TIME_CONTENT_PROOF_FIELD: &str = "attach_time_content_proof";
 
-/// The launch-time epoch: a content manifest observed before `ResumeThread`.
 pub const KIND_LAUNCH_TIME_STATIC_BUNDLE_V1: &str = "launch_time_static_bundle_v1";
 
-/// The attach-time effective-VFS join.
 pub const KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1: &str = "attach_time_effective_vfs_join_v1";
 
-/// Neither proof ran.
 pub const KIND_NONE: &str = "none";
 
-/// Ceiling on rows read out of one proof block, so a malformed manifest cannot
-/// turn admission into unbounded work.
 const MAX_PROOF_ROWS: usize = 1 << 16;
 
-/// The closed set of content-layer kinds a proof may name.
-///
-/// Spelled here rather than accepting any non-empty string: the recorder's own
-/// wire reader refuses an unknown kind, so accepting one here would let a layer
-/// stack the producer could never have written hash to a valid epoch (Codex
-/// round 1, LOW). These are the four `ContentLayerKind` wire names.
 const LAYER_KINDS: [&str; 4] = ["base", "integrated_dlc", "dlc", "mod"];
 
-/// A KIND C epoch, plus the per-role joins that authorize an artifact to carry
-/// it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachContentEpoch {
     digest: String,
-    /// role -> the digest of the artifact FILE as the proof read it at attach.
     joined: BTreeMap<String, String>,
-    /// role -> why the proof refused to certify it.
     refused: BTreeMap<String, String>,
 }
 
 impl AttachContentEpoch {
-    /// The epoch every packaged artifact this proof certifies must carry.
     pub fn digest(&self) -> &str {
         &self.digest
     }
 
-    /// Roles the proof certified, in canonical order.
     pub fn joined_roles(&self) -> impl Iterator<Item = &str> {
         self.joined.keys().map(String::as_str)
     }
 
-    /// Roles the proof explicitly refused, with the reason it gave.
     pub fn refusals(&self) -> impl Iterator<Item = (&str, &str)> {
         self.refused
             .iter()
             .map(|(role, reason)| (role.as_str(), reason.as_str()))
     }
 
-    /// Decide whether one packaged artifact may carry this epoch.
-    ///
-    /// `artifact_sha256` is the digest of the bytes the package actually
-    /// carries. It must equal the digest the proof read at attach, so a
-    /// receipt can never be read as covering some other build of the artifact.
     pub fn bind(&self, role: &str, artifact_sha256: &str) -> Result<&str, String> {
         if let Some(reason) = self.refused.get(role) {
             return Err(format!(
@@ -122,9 +49,7 @@ impl AttachContentEpoch {
             ));
         }
         match self.joined.get(role) {
-            None => Err(
-                "attach-time content proof carries no join for this artifact".to_string(),
-            ),
+            None => Err("attach-time content proof carries no join for this artifact".to_string()),
             Some(proven) if proven == artifact_sha256 => Ok(self.digest.as_str()),
             Some(proven) => Err(format!(
                 "attach-time content proof joined a different build of this artifact \
@@ -134,11 +59,6 @@ impl AttachContentEpoch {
     }
 }
 
-/// Read the manifest-level `content_proof_kind` declaration.
-///
-/// Positively declared or refused: a consumer never infers the proof kind from
-/// which other fields happen to be present. A manifest with no declaration at
-/// all is legacy and answers `None`.
 pub fn content_proof_kind(manifest: &Map<String, Value>) -> Result<Option<&str>, String> {
     match manifest.get(CONTENT_PROOF_KIND_FIELD) {
         None => Ok(None),
@@ -155,12 +75,6 @@ pub fn content_proof_kind(manifest: &Map<String, Value>) -> Result<Option<&str>,
     }
 }
 
-/// Derive the epoch from a sealed (or about-to-be-sealed) KIND C proof block.
-///
-/// Every refusal is named. An unsettled window is refused here rather than
-/// producing a weaker epoch: the whole point of the window bracket is that
-/// nothing observed inside an unsettled one describes one install, and the
-/// recorder already names every artifact as unproven in that case.
 pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String> {
     let proof = proof
         .as_object()
@@ -185,10 +99,6 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
     if layer_stack.is_empty() {
         return Err("attach-time content proof has an empty layer stack".to_string());
     }
-    // RE-DERIVE THE LAYER-STACK DIGEST rather than trusting the declared one.
-    // Load order decides which layer wins a path, so a reordered stack is a
-    // different world; a consumer that copied the declared value would inherit
-    // whatever the producer chose to write.
     let recomputed = layer_stack_digest(&layer_stack)?;
     if recomputed != layer_stack_sha256 {
         return Err(format!(
@@ -200,9 +110,9 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
     let mut joined = BTreeMap::new();
     let mut join_rows = Vec::new();
     for row in read_rows(proof, "artifact_joins")? {
-        let row = row
-            .as_object()
-            .ok_or_else(|| "attach-time content proof artifact join is not an object".to_string())?;
+        let row = row.as_object().ok_or_else(|| {
+            "attach-time content proof artifact join is not an object".to_string()
+        })?;
         let role = read_non_empty(row, "role")?;
         let artifact_sha256 = read_digest(row, "artifact_sha256")?;
         let canonical = json!({
@@ -226,19 +136,20 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
 
     let mut refused = BTreeMap::new();
     for row in read_rows(proof, "refused_artifacts")? {
-        let row = row.as_object().ok_or_else(|| {
-            "attach-time content proof refusal is not an object".to_string()
-        })?;
+        let row = row
+            .as_object()
+            .ok_or_else(|| "attach-time content proof refusal is not an object".to_string())?;
         let role = read_non_empty(row, "role")?;
         let reason = read_non_empty(row, "reason")?;
-        if refused.insert(role.to_string(), reason.to_string()).is_some() {
+        if refused
+            .insert(role.to_string(), reason.to_string())
+            .is_some()
+        {
             return Err(format!(
                 "attach-time content proof refuses artifact role {role:?} more than once"
             ));
         }
     }
-    // A role that is both joined and refused makes the proof self-contradicting,
-    // and which disposition wins would be decided by read order.
     if let Some(role) = refused.keys().find(|role| joined.contains_key(*role)) {
         return Err(format!(
             "attach-time content proof both joins and refuses artifact role {role:?}"
@@ -253,11 +164,6 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
         })?;
         let purpose = read_non_empty(row, "purpose")?;
         let logical_path = read_non_empty(row, "logical_path")?;
-        // The sort below keys on (purpose, logical_path). Duplicates would make
-        // it a PARTIAL order, so two rows differing only in digest could be
-        // swapped by the producer and change the epoch — exactly the
-        // producer-order independence this canonicalization claims (Codex
-        // round 1, LOW).
         if required_keys
             .insert((purpose.to_string(), logical_path.to_string()), ())
             .is_some()
@@ -275,10 +181,6 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
             "winning_layer_id": read_non_empty(row, "winning_layer_id")?,
         }));
     }
-    // Parsed and bounded even though it is deliberately NOT hashed: a proof
-    // whose refusal list is malformed or unbounded is a malformed proof, and
-    // leaving one array of the block unread is how a reader learns to trust
-    // shapes it never checked.
     for row in read_rows(proof, "refused_required_content")? {
         let row = row.as_object().ok_or_else(|| {
             "attach-time content proof refused-required-content row is not an object".to_string()
@@ -287,10 +189,10 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
         read_non_empty(row, "logical_path")?;
         read_non_empty(row, "reason")?;
     }
-    // Canonical order, independent of the order the producer happened to emit.
     join_rows.sort_by(|left, right| sort_key(left, &["role"]).cmp(&sort_key(right, &["role"])));
     required_rows.sort_by(|left, right| {
-        sort_key(left, &["purpose", "logical_path"]).cmp(&sort_key(right, &["purpose", "logical_path"]))
+        sort_key(left, &["purpose", "logical_path"])
+            .cmp(&sort_key(right, &["purpose", "logical_path"]))
     });
 
     let document = json!({
@@ -313,12 +215,6 @@ pub fn epoch_from_proof_json(proof: &Value) -> Result<AttachContentEpoch, String
     })
 }
 
-/// Digest over the ordered layer stack, taken over the same JSON rows the
-/// manifest carries.
-///
-/// Shared with `recorder_host::attach_content_proof`, which builds the rows
-/// from its own structs before the manifest exists; both spellings must hash
-/// identical bytes, which the round-trip test in that module asserts.
 pub fn layer_stack_digest(layers: &[Value]) -> Result<String, String> {
     let rows = layers
         .iter()
@@ -493,8 +389,6 @@ mod tests {
         })
     }
 
-    /// Kills: writing the row order into the digest. Reordering `artifact_joins`
-    /// would change the epoch, so two readers of one install could disagree.
     #[test]
     fn the_epoch_is_independent_of_join_row_order() {
         let a = join("localisation_join", &digest(0x01));
@@ -504,8 +398,6 @@ mod tests {
         assert_eq!(left.digest(), right.digest());
     }
 
-    /// Kills: folding the observation window or its cost into the epoch. Two
-    /// recordings of one unchanged install must bind to one epoch.
     #[test]
     fn the_epoch_ignores_the_window_and_its_cost() {
         let joins = vec![join("localisation_join", &digest(0x01))];
@@ -528,7 +420,6 @@ mod tests {
         );
     }
 
-    /// Kills: dropping any content-identity field from the hashed document.
     #[test]
     fn the_epoch_changes_when_the_content_world_changes() {
         let joins = vec![join("localisation_join", &digest(0x01))];
@@ -549,13 +440,11 @@ mod tests {
                 "{field} must change the epoch"
             );
         }
-        // A different layer stack is a different world.
         let mut relayered = proof(joins.clone(), Vec::new());
         let layers = vec![layer(0, "base"), layer(1, "mod/other")];
         relayered["layer_stack_sha256"] = json!(layer_stack_digest(&layers).unwrap());
         relayered["layer_stack"] = json!(layers);
         assert_ne!(base, epoch_from_proof_json(&relayered).unwrap().digest());
-        // And so is a different build of a packaged artifact.
         let rebuilt = vec![join("localisation_join", &digest(0x07))];
         assert_ne!(
             base,
@@ -565,16 +454,17 @@ mod tests {
         );
     }
 
-    /// Kills: trusting the declared `layer_stack_sha256`.
     #[test]
     fn a_layer_stack_digest_that_does_not_match_its_stack_is_refused() {
         let mut tampered = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
         tampered["layer_stack_sha256"] = json!(digest(0x55));
         let error = epoch_from_proof_json(&tampered).unwrap_err();
-        assert!(error.contains("does not match its own layer stack"), "{error}");
+        assert!(
+            error.contains("does not match its own layer stack"),
+            "{error}"
+        );
     }
 
-    /// Kills: deriving an epoch from an unsettled window.
     #[test]
     fn an_unsettled_window_yields_no_epoch() {
         let mut unsettled = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
@@ -583,8 +473,6 @@ mod tests {
         assert!(error.contains("never settled"), "{error}");
     }
 
-    /// Kills: binding an artifact the proof never joined, one it refused, or a
-    /// different build of one it did join.
     #[test]
     fn bind_admits_only_the_exact_certified_build() {
         let epoch = epoch_from_proof_json(&proof(
@@ -596,9 +484,7 @@ mod tests {
             epoch.bind("localisation_join", &digest(0x01)).unwrap(),
             epoch.digest()
         );
-        let wrong_build = epoch
-            .bind("localisation_join", &digest(0x02))
-            .unwrap_err();
+        let wrong_build = epoch.bind("localisation_join", &digest(0x02)).unwrap_err();
         assert!(wrong_build.contains("different build"), "{wrong_build}");
         let refused = epoch.bind("focus_defs_static", &digest(0x03)).unwrap_err();
         assert!(refused.contains("two paths disagreed"), "{refused}");
@@ -608,8 +494,6 @@ mod tests {
         assert!(unjoined.contains("no join"), "{unjoined}");
     }
 
-    /// Kills: letting a self-contradicting proof pick a disposition by read
-    /// order.
     #[test]
     fn a_role_that_is_both_joined_and_refused_is_refused() {
         let error = epoch_from_proof_json(&proof(
@@ -620,7 +504,6 @@ mod tests {
         assert!(error.contains("both joins and refuses"), "{error}");
     }
 
-    /// Kills: reading an unstated or unrecognised proof kind as a known one.
     #[test]
     fn the_proof_kind_declaration_is_read_positively() {
         let mut manifest = Map::new();
@@ -632,31 +515,20 @@ mod tests {
         manifest.insert(CONTENT_PROOF_KIND_FIELD.to_string(), json!(7));
         assert!(content_proof_kind(&manifest).is_err());
     }
-    /// Kills: accepting a content-layer kind the producer's own wire reader
-    /// refuses, which would let a layer stack nothing could have written hash
-    /// to a valid epoch.
     #[test]
     fn an_unknown_content_layer_kind_is_refused() {
         let mut stack = vec![layer(0, "base")];
         stack[0]["kind"] = json!("invented_layer_kind");
         let mut tampered = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
-        // A stack whose declared digest matches it, so the ONLY thing wrong is
-        // the kind.
         tampered["layer_stack_sha256"] = json!("0".repeat(64));
         tampered["layer_stack"] = json!(stack.clone());
         let error = epoch_from_proof_json(&tampered).unwrap_err();
         assert!(error.contains("unknown content-layer kind"), "{error}");
-        // And `layer_stack_digest` refuses it directly, so a caller cannot get a
-        // digest for a stack the epoch would then reject.
         assert!(layer_stack_digest(&stack)
             .unwrap_err()
             .contains("unknown content-layer kind"));
     }
 
-    /// Kills: leaving `(purpose, logical_path)` a partial order. With duplicate
-    /// keys the sort is not total, so a producer could swap two rows that differ
-    /// only in digest and change the epoch — breaking the order-independence
-    /// this canonicalization claims.
     #[test]
     fn duplicate_required_content_keys_are_refused() {
         let mut duplicated = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
@@ -674,8 +546,6 @@ mod tests {
         assert!(error.contains("more than once"), "{error}");
     }
 
-    /// Kills: leaving one array of the block unread. It is deliberately not
-    /// hashed, but a malformed or unbounded refusal list is a malformed proof.
     #[test]
     fn a_malformed_refused_required_content_row_is_refused() {
         let mut malformed = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
@@ -686,8 +556,6 @@ mod tests {
         let error = epoch_from_proof_json(&malformed).unwrap_err();
         assert!(error.contains("reason"), "{error}");
 
-        // Well-formed refusals are accepted and do NOT change the epoch: they
-        // record what the proof could not state, not what it did.
         let mut refused = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
         refused["refused_required_content"] = json!([{
             "purpose": "D81 province catalog",
@@ -705,19 +573,6 @@ mod tests {
         );
     }
 
-    /// THE CROSS-SEAM ROUND TRIP, actually asserted.
-    ///
-    /// The recorder computes `layer_stack_sha256` from its own `ProofLayer`
-    /// STRUCTS and seals the block; the replay consumer re-derives it from the
-    /// JSON rows it parses back out. Both call this function, but they hand it
-    /// rows built two different ways, so "they hash identical bytes" is an
-    /// assumption until something asserts it. A doc comment in
-    /// `recorder_host::attach_content_proof` claimed this test existed before it
-    /// did (Codex round 1, LOW).
-    ///
-    /// kills: any canonicalization that is not stable across a
-    /// serialize/parse round trip — a non-BTreeMap key order, a float or
-    /// signed spelling of `ordinal`, or dropping a null field on the way out.
     #[test]
     fn the_layer_stack_digest_survives_a_serialize_parse_round_trip() {
         let built = vec![
@@ -741,14 +596,11 @@ mod tests {
         ];
         let direct = layer_stack_digest(&built).unwrap();
 
-        // Exactly what the seam does: serialize the rows into a manifest, read
-        // them back, and re-derive.
         let sealed = serde_json::to_vec(&json!({"layer_stack": built})).unwrap();
         let parsed: Value = serde_json::from_slice(&sealed).unwrap();
         let reparsed = parsed["layer_stack"].as_array().unwrap().clone();
         assert_eq!(direct, layer_stack_digest(&reparsed).unwrap());
 
-        // And the whole epoch survives the same trip.
         let mut block = proof(vec![join("localisation_join", &digest(0x01))], Vec::new());
         block["layer_stack_sha256"] = json!(direct);
         block["layer_stack"] = json!(built);

@@ -1,18 +1,3 @@
-//! Event-chrome gates. Generic element geometry follows
-//! `game_ui::compose` and the structured UI-layout evidence fixture; this suite does
-//! not replace XUI21's packet-local production gates.
-//!
-//! Two FILE-derived gates against the shipped install. The central evidence
-//! gate treats a missing install as an unmet prerequisite, not a passing
-//! result; direct libtest discovery marks the individual tests ignored:
-//!   1. `eventwindow.gui` layout — the chrome rects/sprites/fonts each event
-//!      window variant declares (byte-exact vs the shipped `.gui`).
-//!   2. Event-def → window resolution — every `events/*.txt` definition's
-//!      localisation keys + picture GFX resolved against the loaded
-//!      localisation + sprite registry, measuring the renderable rate.
-//!
-//! Expected values are transcribed from the shipped files
-//! (`interface/eventwindow.gui`), not produced by the code under test.
 
 use game_ui::assets::AssetResolver;
 use game_ui::event_chrome::{
@@ -30,9 +15,6 @@ use replay_core::{RuntimeTextLayout, RuntimeTextSource};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
@@ -45,9 +27,6 @@ fn pair(x: &str, y: &str) -> Option<(String, String)> {
     Some((x.to_string(), y.to_string()))
 }
 
-// ---------------------------------------------------------------------------
-// GATE 1 — eventwindow.gui layout gates (byte-exact vs shipped .gui)
-// ---------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(
@@ -58,7 +37,6 @@ fn eventwindow_declares_all_four_variants_and_option_row() {
     let root = game_root();
     let layout = load_event_layout(&resolver(root)).expect("parse eventwindow.gui");
 
-    // All four window variants + the shared option-row template resolve.
     for name in EVENT_WINDOW_VARIANTS {
         assert!(
             event_window_chrome(&layout, name).is_some(),
@@ -88,7 +66,6 @@ fn default_event_window_chrome_matches_shipped_rects() {
         Some("GFX_tiled_window_transparent")
     );
 
-    // Title text-box (top_Window/Title).
     let title = chrome.title.expect("Title");
     assert_eq!(title.element_type, "instantTextBoxType");
     assert_eq!(title.position, pair("14", "70"));
@@ -96,20 +73,17 @@ fn default_event_window_chrome_matches_shipped_rects() {
     assert_eq!(title.format.as_deref(), Some("centre"));
     assert_eq!(title.max_width.as_deref(), Some("551"));
 
-    // Description text-box (midsection/Description).
     let desc = chrome.description.expect("Description");
     assert_eq!(desc.position, pair("31", "0"));
     assert_eq!(desc.font.as_deref(), Some("hoi4_typewriter16"));
     assert_eq!(desc.format.as_deref(), Some("left"));
     assert_eq!(desc.max_width.as_deref(), Some("512"));
 
-    // Event picture icon (bottom_Window/event_picture).
     let pic = chrome.picture.expect("event_picture");
     assert_eq!(pic.element_type, "iconType");
     assert_eq!(pic.position, pair("5", "5"));
     assert_eq!(pic.sprite.as_deref(), Some("GFX_report_event_001"));
 
-    // Options grid (bottom_Window/options_grid).
     let grid = chrome.options_grid.expect("options_grid");
     assert_eq!(grid.element_type, "gridBoxType");
     assert_eq!(grid.position, pair("215", "-1"));
@@ -134,7 +108,6 @@ fn news_event_window_chrome_matches_shipped_rects() {
         Some("GFX_event_news_bg")
     );
 
-    // News window uses the news picture sprite default + centre title.
     let pic = chrome.picture.expect("news event_picture");
     assert_eq!(pic.sprite.as_deref(), Some("GFX_news_event_001"));
     let title = chrome.title.expect("news Title");
@@ -271,15 +244,7 @@ fn positive_event_popup_reaches_the_shipping_compositor_with_shipped_assets() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// GATE 2 — event-def → window resolution rate (loc + gfx joins)
-// ---------------------------------------------------------------------------
 
-/// The full corpus parses, every visible event maps to a chrome window, and a
-/// strong majority resolve to a fully renderable window (title + desc +
-/// picture + option all resolve). Structural invariants are exact; the
-/// renderable rate is floored (install version drift is expected to only add
-/// events) and the precise counts are printed on every run.
 #[test]
 #[cfg_attr(
     not(gate_hoi4_install),
@@ -291,8 +256,6 @@ fn event_def_to_window_resolution_rate() {
     let corpus = load_events(&resolver).expect("load events");
     let loc = Localisation::load_english(&resolver).expect("load localisation");
 
-    // Build the sprite registry from every interface/*.gfx (event pictures live
-    // across several .gfx files).
     let mut registry = SpriteRegistry::new();
     for file in resolver
         .list_files_recursive("interface", Some("gfx"))
@@ -305,7 +268,6 @@ fn event_def_to_window_resolution_rate() {
 
     let report = resolve_events(&corpus, &loc, &registry);
 
-    // --- structural invariants (exact) ---
     assert!(
         corpus.parse_failures.is_empty(),
         "event parse failures: {:?}",
@@ -332,7 +294,6 @@ fn event_def_to_window_resolution_rate() {
     assert!(report.options_resolved_any <= report.visible);
     assert!(report.picture_resolved <= report.picture_declared);
 
-    // --- magnitude floors (install-version-robust) ---
     assert!(
         report.total >= 6000,
         "expected the full vanilla event corpus (>=6000), got {}",
@@ -343,7 +304,6 @@ fn event_def_to_window_resolution_rate() {
         "expected >=600 visible news events, got {}",
         report.visible_by_kind[1]
     );
-    // Renderable rate over visible events.
     let rate = report.renderable as f64 / report.visible as f64;
     assert!(
         rate >= 0.90,
@@ -352,7 +312,6 @@ fn event_def_to_window_resolution_rate() {
         report.renderable,
         report.visible
     );
-    // Title/desc/option resolve rates are each near-total.
     assert!(report.title_resolved as f64 / report.visible as f64 >= 0.95);
     assert!(report.desc_resolved as f64 / report.visible as f64 >= 0.95);
     assert!(report.options_resolved_any as f64 / report.visible as f64 >= 0.95);
@@ -381,10 +340,6 @@ fn event_def_to_window_resolution_rate() {
     );
 }
 
-/// Measures the shipped event-definition SHAPE census against the real
-/// install. This deliberately does not call the result "renderable": runtime
-/// localisation/sprite joins are separate authorities from this exact
-/// five-class definition-to-window shape check.
 #[test]
 #[ignore = "requires BATTLE_PLAN_GAME_ROOT, BATTLE_PLAN_GAME_DIR, and BATTLE_PLAN_USER_DIR"]
 fn shipped_visible_event_definition_shape_census() {
@@ -500,14 +455,6 @@ fn shipped_visible_event_definition_shape_census() {
         rate * 100.0
     );
 
-    // Pinned after measuring the a729-compatible shipped install: 6,745 of
-    // 6,757 visible definitions (99.8224%). The 12 failures all lack a title
-    // key; no definition lacked its keyword-mapped root, subtype-specific
-    // payload slots, description, or named option. Leader/operative chrome is
-    // deliberately authenticated by its exact portrait/name/agency slots, not
-    // by the `event_picture` slot used by the other windows. This is not proof
-    // of the runtime country-event subtype. Keep both count and ratio gates so
-    // additions cannot hide a regression.
     const MEASURED_VISIBLE: usize = 6_757;
     const MEASURED_STRUCTURALLY_COMPLETE: usize = 6_745;
     assert!(

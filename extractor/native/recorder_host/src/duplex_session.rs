@@ -1,10 +1,3 @@
-//! Activation-disabled H4CT session primitives.
-//!
-//! This module owns typed recurring-heartbeat state only. It does not create
-//! pipes, query processes, install hooks, inject a DLL, or start a session. A
-//! live integration must first construct a deadline-bearing channel from a
-//! validated peer admission token.
-
 pub mod durable_fs;
 pub mod identity_control;
 pub mod rollover_control;
@@ -186,8 +179,6 @@ struct OutstandingChallenge {
     deadline: ControlDeadline,
 }
 
-/// Recorder-side recurring liveness proof. Each accepted cycle consumes a
-/// unique challenge and exactly one monotonically increasing counter.
 #[derive(Default)]
 pub struct RecorderHeartbeat {
     next_counter: u64,
@@ -250,9 +241,6 @@ impl RecorderHeartbeat {
         self.accept_proof_frame(channel, frame)
     }
 
-    /// Validate a frame already read by a higher-level dispatcher. This lets
-    /// the auto-attach control loop recognize terminal sink-status messages
-    /// without misclassifying them as malformed heartbeat proofs.
     pub fn accept_proof_frame<I: DeadlineControlIo>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -296,8 +284,6 @@ impl RecorderHeartbeat {
         self.last_proven_sequence
     }
 
-    /// Reset only the H4CR progress frontier after a fully acknowledged
-    /// logical-stream rollover. Control challenge counters and replay
     /// protection remain continuous for the lifetime of the H4CT session.
     pub fn begin_logical_stream(&mut self) -> Result<(), HeartbeatError> {
         if self.outstanding.is_some() {
@@ -308,8 +294,6 @@ impl RecorderHeartbeat {
     }
 }
 
-/// Collector-side challenge responder. It accepts only the next counter and a
-/// never-before-seen challenge; unsolicited/cached proofs are not constructible.
 #[derive(Default)]
 pub struct CollectorHeartbeat {
     next_counter: u64,
@@ -718,12 +702,16 @@ mod tests {
         heartbeat
             .send_challenge(&mut channel, challenges[0], deadline, &cancellation)
             .unwrap();
-        heartbeat.receive_proof(&mut channel, &cancellation).unwrap();
+        heartbeat
+            .receive_proof(&mut channel, &cancellation)
+            .unwrap();
         heartbeat.begin_logical_stream().unwrap();
         heartbeat
             .send_challenge(&mut channel, challenges[1], deadline, &cancellation)
             .unwrap();
-        heartbeat.receive_proof(&mut channel, &cancellation).unwrap();
+        heartbeat
+            .receive_proof(&mut channel, &cancellation)
+            .unwrap();
         assert_eq!(heartbeat.last_proven_sequence(), Some(0));
     }
 

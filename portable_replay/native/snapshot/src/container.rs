@@ -1,16 +1,3 @@
-//! The `.battleplan` container reader and wire-contract implementation.
-//!
-//! Opens a portable recording, validates its manifest + integrity + identity, and
-//! serves the snapshot series through the SAME shapes the directory store uses
-//! ([`crate::Index`], [`crate::Snapshot`]), so the app opens a `.battleplan` with
-//! zero changes elsewhere ([`crate::Store`] dispatches to this transparently).
-//!
-//! Verification is staged. Open validates ZIP structure and caps,
-//! the manifest digest/signature, versioned path rules, and the required
-//! `index.json`/`timeline.json` spine. Per-entry CRC, size, and SHA-256 checks
-//! happen lazily in the same bounded pass that supplies a requested payload.
-//! No bytes cross an exposure boundary before every integrity check matches.
-
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
 use crate::stream_verify::FileBackedArchive;
@@ -28,29 +15,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use unicode_normalization::UnicodeNormalization;
 
-/// Highest container version this reader understands. Bumped 1 -> 2 for stitched
-/// (reload/relaunch) archives, which carry the segment/timeline graph
-/// (the `PROJECT.md` heading "Portable boundary"). A reader still rejects any
-/// version ABOVE this, and
-/// a pre-bump (v1-max) reader rejects a v2 stitched archive rather than silently
-/// hiding its rollback graph.
 pub const MAX_CONTAINER_VERSION: u64 = 2;
-/// The container version at/above which the stitched segment feature is mandatory.
 const STITCHED_CONTAINER_VERSION: u64 = 2;
-/// The required feature a stitched (v2) container must declare.
 const FEATURE_TIMELINE_SEGMENTS_V1: &str = "timeline_segments_v1";
 const FEATURE_PORTABLE_CONTENT_MANIFEST_V2: &str = "portable_content_manifest_v2";
 const STITCH_INDEX_SCHEMA: &str = "stitched-main-v1";
 const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
-/// Zip-bomb structural caps. Generous for a real campaign yet bounded.
 pub(crate) const MAX_ENTRIES: usize = 2_000_000;
-pub(crate) const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024; // 64 GiB total
+pub(crate) const MAX_TOTAL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 static SPOOL_TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Canonical digest domain shared by the stitch planner and the v2 reader. The
-/// serialized graph is authoritative; only the digest field itself is removed
-/// from the preimage. This makes open-time recomputation independent of any
-/// planner object while binding every serialized required input and campaign key.
 pub fn canonical_stitch_input_digest(
     game_id: &str,
     graph: &Value,
@@ -73,9 +47,6 @@ pub fn canonical_stitch_input_digest(
     Sha256::hex(canonical.as_bytes())
 }
 
-/// Lexically canonicalize a Windows source path without touching the filesystem.
-/// The stitcher records already-observed files, so filesystem canonicalization
-/// would introduce time-of-check races and would fail for portable containers.
 pub fn normalize_stitch_source_path(path: &str) -> Result<String, String> {
     if path.is_empty() || path.contains('\0') {
         return Err("source path is empty or contains NUL".into());
@@ -147,21 +118,10 @@ pub enum ContainerError {
     Io(std::io::Error),
     Zip(crate::zip::ZipError),
     Json(serde_json::Error),
-    /// A finalized manifest is missing — unfinalized / recovery-only file.
     NoManifest,
-    /// A semantic/integrity/identity rejection, with a human-readable reason.
     Reject(String),
-    /// Retained payload bytes disagree with the manifest digest that names them.
     PayloadIntegrity(String),
-    /// The manifest's mod identity disagrees with snapshot provenance. Typed
-    /// (rather than a [`ContainerError::Reject`] string) so downstream layers
-    /// can classify a modset mismatch without matching on error text.
-    ModsetMismatch {
-        /// `manifest.mod_identity.modset_id`
-        manifest: String,
-        /// the first snapshot's `provenance.mod.modset_id`
-        snapshot: String,
-    },
+    ModsetMismatch { manifest: String, snapshot: String },
 }
 
 impl std::fmt::Display for ContainerError {
@@ -177,8 +137,6 @@ impl std::fmt::Display for ContainerError {
             ContainerError::Reject(s) | ContainerError::PayloadIntegrity(s) => {
                 write!(f, "container rejected: {s}")
             }
-            // Renders the EXACT text the pre-typed Reject produced, so every
-            // existing message contract (fixtures, product surfaces) holds.
             ContainerError::ModsetMismatch { manifest, snapshot } => write!(
                 f,
                 "container rejected: manifest modset_id {manifest:?} disagrees with snapshot provenance.mod {snapshot:?}"
@@ -203,16 +161,10 @@ impl From<serde_json::Error> for ContainerError {
     }
 }
 
-/// What identity the caller expects (e.g. the reader-pinned build, the app's known
-/// container version). All optional: `None` skips that check. The container always
-/// self-checks its own digest + internal consistency regardless.
 #[derive(Debug, Clone, Default)]
 pub struct ExpectedIdentity {
-    /// Reject if the recorded `build.exe_sha256` != this (the reader-pinned build).
     pub build_exe_sha256: Option<String>,
-    /// Reject if the recorded `schema_version` != this.
     pub schema_version: Option<String>,
-    /// Reject if the recorded `mod_identity.modset_id` != this.
     pub modset_id: Option<String>,
 }
 
@@ -263,8 +215,6 @@ impl ContainerArchive {
         }
     }
 
-    /// Central-directory metadata for every entry, in archive order — the
-    /// variant-neutral view the v2 stitched validators iterate.
     fn entries_meta(&self) -> Vec<ArchiveEntry<'_>> {
         (0..self.len()).filter_map(|i| self.entry(i)).collect()
     }
@@ -396,9 +346,7 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
         use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
         use std::path::{Component, Prefix};
 
-        // Permit other readers but deny any new writer or delete/rename handle
         // for the lifetime of the retained archive. A writer that predates this
-        // open is still covered by the pre/post same-handle receipt equality.
         const FILE_SHARE_READ: u32 = 0x0000_0001;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -429,10 +377,6 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
                 "replay container path has no rooted local-drive form",
             ));
         }
-        // Normalize dot components lexically before opening anything. This does
-        // not follow the filesystem (and therefore cannot hide a reparse
-        // point); every resulting component is still opened and inspected with
-        // OPEN_REPARSE_POINT below.
         let mut absolute = PathBuf::from(&prefix);
         absolute.push("\\");
         let mut depth = 0usize;
@@ -462,11 +406,11 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
             }
         }
 
-        // Retain every existing parent without delete sharing until the final
-        // object is open. OPEN_REPARSE_POINT makes each component inspection
-        // no-follow, preventing junction/symlink ancestry and pathname rebinding.
         let parent = absolute.parent().ok_or_else(|| {
-            Error::new(ErrorKind::InvalidInput, "replay container has no parent directory")
+            Error::new(
+                ErrorKind::InvalidInput,
+                "replay container has no parent directory",
+            )
         })?;
         let mut retained = Vec::new();
         let mut cursor = PathBuf::from(prefix);
@@ -479,8 +423,7 @@ fn open_retained_container_file(path: &Path) -> std::io::Result<File> {
                 .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
                 .open(&cursor)?;
             let metadata = directory.metadata()?;
-            if !metadata.is_dir()
-                || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+            if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
             {
                 return Err(Error::new(
                     ErrorKind::PermissionDenied,
@@ -523,10 +466,6 @@ struct SpoolFileIdentity {
     file: u64,
 }
 
-/// Retains the complete destination-directory chain while a spool file is
-/// authenticated and published. Windows handles omit delete sharing, so no
-/// accepted component can be renamed or replaced by a junction during the
-/// later pathname-based hard-link call.
 struct SpoolDirectoryGuard {
     destination: PathBuf,
     parent: PathBuf,
@@ -707,9 +646,6 @@ fn open_spool_path_for_identity(path: &Path) -> std::io::Result<File> {
     const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
     OpenOptions::new()
         .read(true)
-        // The retained writer already denies other writers. This inspection
-        // handle must nevertheless share that writer's existing write access
-        // or Windows rejects the reopen; delete sharing stays omitted.
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)
@@ -802,15 +738,6 @@ fn spool_file_identity(file: &File, path: &Path) -> Result<SpoolFileIdentity, Co
     })
 }
 
-/// Rebind the spool temporary's pathname to the retained object: reopen the
-/// name and refuse unless it still resolves to the identity captured when the
-/// retained handle was created. Extracted verbatim from the publication
-/// sequence so the refusal has a directly executable test on a platform whose
-/// share modes make an end-to-end rebind impossible to stage.
-///
-/// Returns the inspection handle so the caller can keep it open for exactly as
-/// long as the inline code did: it was a closure local, and therefore lived
-/// across the hard link and any post-publication work.
 fn bind_spool_temp_pathname_identity(
     temp: &Path,
     retained_identity: SpoolFileIdentity,
@@ -862,12 +789,10 @@ fn verify_spool_receipt_on_handle(
     Ok(())
 }
 
-/// One manifest-authenticated entry, indexed by its exact container path.
 struct EntryRec {
     archive_index: usize,
     bytes: u64,
     expected_sha256: String,
-    /// Transitions exactly once after decompressed bytes match expected_sha256.
     sha256_state: EntryVerificationState,
 }
 
@@ -882,9 +807,6 @@ impl EntryRec {
     }
 }
 
-/// Public metadata for one manifest-listed payload entry. The bytes are not
-/// included here; callers must use [`Container::read_entry_bytes`] so integrity
-/// verification stays centralized.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContainerEntry {
     pub path: String,
@@ -894,24 +816,14 @@ pub struct ContainerEntry {
     pub sha256: String,
 }
 
-/// One container entry's integrity verdict, from
-/// [`Container::verify_all_streaming_report`].
-///
-/// `hour_index` is what makes a per-hour recording's container gate per-hour:
-/// an entry that serves one game hour can be refused alone, while an entry the
-/// recording cannot be read without is still a whole-container refusal — named.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryVerification {
     pub path: String,
     pub role: Option<String>,
-    /// The game hour this entry serves, when the verified index names one.
     pub hour_index: Option<i64>,
-    /// `None` when the entry's decompressed bytes matched its manifest digest.
     pub error: Option<String>,
 }
 
-/// Authentication receipt for one manifest entry copied through the bounded
-/// file-backed container path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpoolEntryReceipt {
     path: String,
@@ -948,30 +860,15 @@ impl ContainerEntry {
     }
 }
 
-/// An opened, manifest-verified `.battleplan`. Path opens retain one pinned file
-/// handle; byte-buffer opens retain their supplied archive. Snapshot bytes are
-/// verified lazily on read.
 pub struct Container {
     archive: ContainerArchive,
     manifest: Value,
     content_manifest: Option<portable_content_manifest::ContentManifest>,
     game_id: String,
-    /// container-path -> entry record (post-verification of manifest↔zip agreement)
     by_path: Mutex<HashMap<String, EntryRec>>,
-    /// the verified, parsed index (its `file` names are the only filename authority)
     index: Index,
-    /// hour_index -> index `file` name, built once at open (first entry wins,
-    /// matching the historical first-match scan) so per-hour lookup is O(log n)
-    /// instead of a linear index scan per scrub step.
     hour_to_file: BTreeMap<i64, String>,
-    /// Every snapshot file name an index authorizes. The index is the filename
-    /// authority: the main index's `file` names plus, for a stitched
-    /// container, every per-segment-index retained snapshot — superseded
-    /// rollback files stay loadable by explicit name, while manifest-listed
-    /// non-index entries (segments.json, stray payloads) never decode as a
-    /// Snapshot.
     indexed_snapshot_files: BTreeSet<String>,
-    /// signed | unsigned | sig-invalid(rejected before construction)
     pub signed: bool,
     pub unsigned: bool,
 }
@@ -989,7 +886,6 @@ impl Container {
     pub fn index(&self) -> &Index {
         &self.index
     }
-    /// Manifest-listed payload entries in manifest order.
     pub fn entries(&self) -> Vec<ContainerEntry> {
         self.manifest
             .get("entries")
@@ -1002,7 +898,6 @@ impl Container {
             })
             .unwrap_or_default()
     }
-    /// Manifest-listed payload entries with a specific role.
     pub fn entries_by_role(&self, role: &str) -> Vec<ContainerEntry> {
         self.entries()
             .into_iter()
@@ -1010,10 +905,6 @@ impl Container {
             .collect()
     }
 
-    /// Open + verify a `.battleplan` from a path. `expected` enforces identity
-    /// (build/schema/mod) when its fields are set; pass `Default::default()` for
-    /// structural and identity consistency checks. Payload integrity remains
-    /// fail-closed and is verified lazily at each exposure boundary.
     pub fn open<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
@@ -1021,9 +912,6 @@ impl Container {
         Self::open_strict(path, expected)
     }
 
-    /// Open through one pinned file handle and retain only bounded ZIP metadata.
-    /// Payload CRC, size, and SHA-256 checks complete lazily in the same pass
-    /// that supplies authenticated contents to a caller.
     pub fn open_strict<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
@@ -1034,11 +922,6 @@ impl Container {
         Self::from_archive(ContainerArchive::File(archive), expected)
     }
 
-    /// Open through one pinned handle and bind a whole-file receipt to that
-    /// exact handle. The whole-file length and SHA-256 must agree before and
-    /// after manifest/index parsing. External package-set descriptors can
-    /// therefore authenticate and consume one file object without a pathname
-    /// reopen window.
     pub fn open_strict_with_file_receipt<P: AsRef<Path>>(
         path: P,
         expected: &ExpectedIdentity,
@@ -1047,10 +930,6 @@ impl Container {
         Self::open_strict_with_file_receipt_from_handle(file, expected, || Ok(()))
     }
 
-    /// Open and retain an already-open file object, binding the same whole-file
-    /// receipt used by the path-based strict opener. This is intended for an
-    /// unpublished sibling temp whose creation handle has stayed open from pack
-    /// through verification; no pathname reopen is involved.
     pub fn open_strict_with_file_receipt_from_file(
         file: File,
         expected: &ExpectedIdentity,
@@ -1066,10 +945,6 @@ impl Container {
     where
         F: FnOnce() -> Result<(), ContainerError>,
     {
-        // Receipt the exact retained handle before even the central directory
-        // is parsed. The same handle is then moved into the archive and hashed
-        // again after all manifest/index parsing, closing the entire parse
-        // interval rather than only the higher-level manifest interval.
         let initial_receipt = FileBackedArchive::whole_file_receipt_before_open(&mut file)
             .map_err(file_archive_error)?;
         after_initial_receipt()?;
@@ -1086,7 +961,6 @@ impl Container {
         Ok((container, final_receipt.0, final_receipt.1))
     }
 
-    /// As [`open`](Self::open) but from in-memory bytes (used by tests).
     pub fn from_bytes(
         data: Vec<u8>,
         expected: &ExpectedIdentity,
@@ -1094,8 +968,6 @@ impl Container {
         Self::from_bytes_strict(data, expected)
     }
 
-    /// Strict in-memory open. The strict pass returns the semantic value, so
-    /// man_bytes is never decoded ordinarily before or after validation.
     pub fn from_bytes_strict(
         data: Vec<u8>,
         expected: &ExpectedIdentity,
@@ -1111,12 +983,8 @@ impl Container {
         archive: ContainerArchive,
         expected: &ExpectedIdentity,
     ) -> Result<Container, ContainerError> {
-        // Validate the physical half of every ZIP entry before reading even the
-        // manifest payload. This covers v2 entries that semantic validation does
-        // not otherwise materialize, including embedded raw sources.
         archive.validate_local_headers()?;
 
-        // Structural zip-bomb caps.
         if archive.len() > MAX_ENTRIES {
             return Err(ContainerError::Reject(format!(
                 "too many entries ({} > {})",
@@ -1143,9 +1011,6 @@ impl Container {
             ));
         }
 
-        // One borrowed exact-name index supports O(1) manifest joins without
-        // cloning every retained central-directory path a second time. EntryRec
-        // keeps only the resulting stable numeric index after construction.
         let archive_name_index: HashMap<&str, usize> = (0..archive.len())
             .filter_map(|index| archive.entry(index).map(|entry| (entry.name, index)))
             .collect();
@@ -1155,7 +1020,6 @@ impl Container {
             ));
         }
 
-        // (5) manifest present? absent => recovery-only, refused.
         let man_entry = archive_name_index
             .get("manifest.json")
             .copied()
@@ -1164,7 +1028,6 @@ impl Container {
         let manifest = crate::strict_json::from_slice(&man_bytes)?;
         validate_strict_manifest(&manifest)?;
 
-        // (6) format + version
         if manifest.get("format").and_then(Value::as_str) != Some("hoi4replay") {
             return Err(ContainerError::Reject(
                 "manifest.format != \"hoi4replay\"".into(),
@@ -1179,15 +1042,7 @@ impl Container {
                 "container_version {cv} > reader max {MAX_CONTAINER_VERSION}"
             )));
         }
-        // (7) required_features the reader must understand. FAIL-CLOSED on shape:
-        // (collect the declared feature names first so the version<->feature
-        // coupling below can be checked.)
         let mut declared_features: Vec<String> = Vec::new();
-        // absent or JSON null = "none required" (allowed); a PRESENT value of any
-        // other type, or any non-string element, is malformed and MUST be rejected
-        // — otherwise a tampered manifest could smuggle an unknown required feature
-        // past this gate by encoding it as a non-array (e.g. a bare string), which
-        // `as_array` would silently treat as "no required features" (Codex b).
         match manifest.get("required_features") {
             None | Some(Value::Null) => {}
             Some(Value::Array(rf)) => {
@@ -1213,22 +1068,12 @@ impl Container {
             }
         }
 
-        // Historical container v1 used the ASCII-only collision namespace.
-        // A stitched v2 container or the current portable-content-v2 feature
-        // opts into NFC plus Unicode-caseless identity. The
-        // explicit feature keeps new ordinary (non-stitched) v1 packages strict
-        // while preserving pre-feature recordings byte-for-byte.
         let unicode_paths = cv >= STITCHED_CONTAINER_VERSION
             || declared_features
                 .iter()
                 .any(|feature| feature == FEATURE_PORTABLE_CONTENT_MANIFEST_V2);
         archive.validate_portable_paths(unicode_paths)?;
 
-        // Version-to-feature coupling: a stitched container declares
-        // container_version 2 AND required feature `timeline_segments_v1`. A v2+
-        // container WITHOUT that feature is malformed — reject fail-closed so a
-        // tampered manifest cannot advertise the segment format while omitting the
-        // flag old readers key on.
         if cv >= STITCHED_CONTAINER_VERSION
             && !declared_features
                 .iter()
@@ -1280,7 +1125,6 @@ impl Container {
             ));
         }
 
-        // (8) manifest_digest over the canonical manifest (strips digest+signature)
         let declared_digest = manifest
             .get("manifest_digest")
             .and_then(Value::as_str)
@@ -1293,11 +1137,6 @@ impl Container {
             )));
         }
 
-        // (9) signature: present-and-valid => signed; present-and-invalid => reject;
-        // absent => unsigned (allowed). v1 ships the verification SLOT; an actual
-        // Ed25519 verify is wired when a key policy is configured (the digest is the
-        // signed payload). Until then a NON-NULL signature with no verifier policy
-        // is conservatively REJECTED rather than trusted (fail-closed).
         let sig = manifest.get("signature");
         let (signed, unsigned) = match sig {
             None | Some(Value::Null) => (false, true),
@@ -1310,7 +1149,6 @@ impl Container {
             }
         };
 
-        // Manifest identity expectations.
         let schema_version = manifest.get("schema_version").and_then(Value::as_str);
         if let Some(exp) = &expected.schema_version {
             if schema_version != Some(exp.as_str()) {
@@ -1351,9 +1189,6 @@ impl Container {
             .ok_or_else(|| ContainerError::Reject("manifest.game_id missing".into()))?
             .to_string();
 
-        // Build the path -> expected-hash map from manifest.entries, and confirm
-        // every manifest entry actually exists in the zip with the declared size
-        // (and vice-versa: a zip entry not in the manifest is a tamper signal).
         let entries = manifest
             .get("entries")
             .and_then(Value::as_array)
@@ -1366,7 +1201,6 @@ impl Container {
         }
         let mut by_path: HashMap<String, EntryRec> = HashMap::with_capacity(entries.len());
         let mut manifest_collision_keys: HashSet<String> = HashSet::with_capacity(entries.len());
-        // (filled below; later verify-marks need it mutable)
         for ent in entries {
             let p = ent
                 .get("path")
@@ -1402,8 +1236,6 @@ impl Container {
                     "container entry index {archive_index} is out of range"
                 ))
             })?;
-            // declared bytes must equal the zip's uncompressed size (zip-bomb guard
-            // + manifest-can't-lie-about-size). (Codex b)
             if ze.uncomp_size != declared_bytes {
                 return Err(ContainerError::Reject(format!(
                     "entry {p}: manifest bytes {declared_bytes} != zip uncompressed {}",
@@ -1427,7 +1259,6 @@ impl Container {
                 )));
             }
         }
-        // every payload/* zip entry must be covered by the manifest (no stowaways)
         for archive_index in 0..archive.len() {
             let ze = archive.entry(archive_index).ok_or_else(|| {
                 ContainerError::Reject(format!(
@@ -1446,16 +1277,10 @@ impl Container {
         }
         drop(archive_name_index);
 
-        // (11) verify + parse index.json NOW (it is the spine the app reads first).
-        // `by_path` is already `mut` (its verify-marks need it); verify_and_read
-        // hashes the bytes against the manifest before returning them.
         let index_path = format!("payload/{game_id}/index.json");
         let index_bytes = verify_and_read(&archive, &mut by_path, &index_path)?;
-        // Strict (duplicate-key-rejecting) decode per replay-loader hardening,
-        // while retaining the parsed Value that stitched-v2 validation consumes.
         let index_value: Value = crate::parse_json_strict(&index_bytes)?;
         let index: Index = serde_json::from_value(index_value.clone())?;
-        // index.game_id must agree with the manifest game_id
         if index.game_id != game_id {
             return Err(ContainerError::Reject(format!(
                 "index.game_id {:?} != manifest.game_id {game_id:?}",
@@ -1474,9 +1299,6 @@ impl Container {
             indexed_snapshot_files.extend(retained);
         }
 
-        // Verify and parse timeline.json now if it is declared: a malformed or
-        // duplicate-key timeline must be an open-time
-        // refusal, never a later consumption-time surprise.
         let timeline_path = format!("payload/{game_id}/timeline.json");
         if by_path.contains_key(&timeline_path) {
             let timeline_bytes = verify_and_read(&archive, &mut by_path, &timeline_path)?;
@@ -1485,9 +1307,6 @@ impl Container {
             })?;
         }
 
-        // (13) identity consistency: manifest.mod_identity.modset_id must match a
-        // representative snapshot's provenance.mod.modset_id (a manifest must not be
-        // able to lie about identity). We check the FIRST snapshot in the index.
         if let Some(first) = index.snapshots.first() {
             let snap_path = format!("payload/{game_id}/{}", first.file);
             let snap_bytes = verify_and_read(&archive, &mut by_path, &snap_path)?;
@@ -1497,8 +1316,6 @@ impl Container {
                 .and_then(|p| p.get("mod"))
                 .and_then(|m| m.get("modset_id"))
                 .and_then(Value::as_str);
-            // Both null is fine (mod-set not read either place). If the manifest
-            // claims a modset id, a snapshot that names a DIFFERENT one is a lie.
             if let (Some(m), Some(s)) = (modset_id, snap_modset) {
                 if m != s {
                     return Err(ContainerError::ModsetMismatch {
@@ -1507,9 +1324,6 @@ impl Container {
                     });
                 }
             }
-            // Same principle for the build identity: the manifest's
-            // build.exe_sha256 must not contradict what the snapshots recorded.
-            // Absence on either side is a measured absence and passes.
             for (label, snap_sha) in [
                 (
                     "collector",
@@ -1536,9 +1350,6 @@ impl Container {
             }
         }
 
-        // hour_index -> file resolution map. FIRST entry wins, preserving the
-        // previous `.find()` first-match semantics (hour_index uniqueness is not
-        // validated at open for a plain v1 index).
         let mut hour_to_file: BTreeMap<i64, String> = BTreeMap::new();
         for entry in &index.snapshots {
             if let Some(hour) = entry.hour_index {
@@ -1562,14 +1373,7 @@ impl Container {
         })
     }
 
-    /// Load a snapshot by its index `file` name (the only filename authority).
-    /// Verifies the entry's hash lazily; never exposes unverified bytes (Codex d).
     pub fn load_file(&self, file: &str) -> Result<Snapshot, ContainerError> {
-        // The index (main index, plus per-segment indexes for
-        // a stitched container's retained rollback snapshots) is the filename
-        // authority for snapshot reads. Refuse to decode a manifest-listed
-        // non-index entry (e.g. segments.json or a stray JSON payload) as a
-        // Snapshot.
         if !self.indexed_snapshot_files.contains(file) {
             return Err(ContainerError::Reject(format!(
                 "snapshot file {file:?} is not listed in the index (index is the filename authority)"
@@ -1580,9 +1384,6 @@ impl Container {
         Ok(crate::decode_json_strict(&bytes)?)
     }
 
-    /// Read any manifest-listed payload entry as verified raw bytes. This is the
-    /// generic path used for optional non-snapshot streams such as
-    /// `collector_raw_stream`.
     pub fn read_entry_bytes(&self, path: &str) -> Result<Vec<u8>, ContainerError> {
         let mut guard = self.by_path.lock().map_err(|_| {
             ContainerError::Reject("container entry-verification lock poisoned".into())
@@ -1590,15 +1391,10 @@ impl Container {
         verify_and_read(&self.archive, &mut guard, path)
     }
 
-    /// Authenticate one file-backed manifest entry without exposing its bytes.
     pub fn authenticate_entry(&self, path: &str) -> Result<SpoolEntryReceipt, ContainerError> {
         self.spool_entry_to_writer(path, &mut std::io::sink())
     }
 
-    /// Copy one authenticated entry into a caller-owned unpublished sink using
-    /// the retained container handle and bounded decompression buffers. The
-    /// caller must not expose or publish the sink until this method returns its
-    /// receipt successfully.
     pub fn copy_entry_to_unpublished_writer_bounded<W: Write>(
         &self,
         path: &str,
@@ -1608,16 +1404,6 @@ impl Container {
         self.spool_entry_to_writer_bounded(path, writer, maximum_uncompressed_bytes)
     }
 
-    /// Authenticate and decompress one file-backed manifest entry into a new
-    /// file, publishing the destination name only after every integrity check,
-    /// flush, and file sync succeeds.
-    ///
-    /// A unique sibling temporary file is created with `create_new`; on Windows
-    /// its retained handle denies write/delete sharing and every destination
-    /// directory ancestor is retained as a non-reparse handle. After sync, the
-    /// same handle is re-hashed and its pathname identity is rebound. The
-    /// no-replace hard link is the commit point; production performs no
-    /// fallible operation after the destination becomes visible.
     pub fn spool_entry_to_file_transactionally<P: AsRef<Path>>(
         &self,
         path: &str,
@@ -1632,9 +1418,6 @@ impl Container {
         )
     }
 
-    /// Product-facing bounded variant. The manifest declaration is rejected
-    /// before creating a spool file, and the decompressor enforces the same
-    /// ceiling while writing so a forged ZIP size cannot bypass admission.
     pub fn spool_entry_to_file_transactionally_bounded<P: AsRef<Path>>(
         &self,
         path: &str,
@@ -1729,24 +1512,11 @@ impl Container {
             writer.get_ref().sync_all().map_err(|error| {
                 ContainerError::Reject(format!("sync authenticated spool temporary: {error}"))
             })?;
-            // Test-only mutation window. Production passes a no-op closure; the
-            // hook receives the retained handle as well as the pathname so a
-            // regression test can model BOTH post-sync substitution shapes: a
-            // pathname rebind by another process, and a same-handle byte change
-            // that no share mode can deny.
             before_publish(&temp, writer.get_mut())?;
 
-            // Re-authenticate through the retained handle after the final
-            // mutation window and before any pathname is published.
             verify_spool_receipt_on_handle(writer.get_mut(), &receipt)?;
-            // Held to the end of this closure, exactly as the inline local was.
             let _temp_path_handle = bind_spool_temp_pathname_identity(&temp, retained_identity)?;
 
-            // Commit point: the source pathname is identity-bound to the
-            // retained, immutable handle and every directory ancestor remains
-            // locked. A successful no-replace hard link therefore publishes
-            // that exact object. Production performs no fallible operation
-            // after this call.
             fs::hard_link(&temp, &destination).map_err(|error| {
                 ContainerError::Reject(format!(
                     "publish authenticated spool file by no-replace hard link: {error}"
@@ -1758,13 +1528,7 @@ impl Container {
         })();
         drop(writer);
         // Release every deny-delete file/directory handle before a test-only
-        // injected post-commit failure is rolled back.
         drop(directory);
-        // Test-only window. This is the interval in which the destination
-        // pathname is no longer identity-pinned by any retained handle, which
-        // is exactly what the rollback below re-checks before unlinking.
-        // Production passes a no-op closure; the hook returns nothing, so it
-        // cannot influence control flow.
         after_release(&temp, &destination);
 
         let result = if published && result.is_err() {
@@ -1789,9 +1553,6 @@ impl Container {
             result
         };
 
-        // Never unlink a pathname that an adversary rebound while publication
-        // was failing. Successful publication (and ordinary verification
-        // failures without a namespace swap) still remove the retained temp.
         let temp_still_retained = open_spool_path_for_identity(&temp)
             .ok()
             .and_then(|file| spool_file_identity(&file, &temp).ok())
@@ -1802,8 +1563,6 @@ impl Container {
         result
     }
 
-    /// Low-level authenticated copy primitive. It remains private so no caller
-    /// can accidentally expose bytes written before the final SHA-256 match.
     fn spool_entry_to_writer<W: Write>(
         &self,
         path: &str,
@@ -1835,9 +1594,11 @@ impl Container {
                 rec.bytes
             )));
         }
-        let (digest, uncompressed_len) = self
-            .archive
-            .copy_entry_to_writer(rec.archive_index, writer, maximum_uncompressed_bytes)?;
+        let (digest, uncompressed_len) = self.archive.copy_entry_to_writer(
+            rec.archive_index,
+            writer,
+            maximum_uncompressed_bytes,
+        )?;
         if digest != rec.expected_sha256 {
             return Err(ContainerError::Reject(format!(
                 "entry {path}: sha256 {digest} != manifest {}",
@@ -1853,27 +1614,15 @@ impl Container {
         })
     }
 
-    /// The stitched branch graph (`segments.json`), verified and parsed, or `None`
-    /// when this is a plain (non-stitched) container. The graph is the
-    /// authoritative rollback/branch map (the `PROJECT.md` heading
-    /// "Time, identity, sessions, and files"); the main
-    /// `index()` remains the default-playback view.
     pub fn segments(&self) -> Result<Option<SegmentGraph>, ContainerError> {
         let path = format!("payload/{}/segments.json", self.game_id);
         if !self.has_entry(&path)? {
             return Ok(None);
         }
         let bytes = self.read_entry_bytes(&path)?;
-        // Strict (duplicate-member-rejecting) decode: the graph is trusted
-        // rollback authority, so last-wins collapse is an ambiguity to refuse.
         Ok(Some(crate::decode_json_strict(&bytes)?))
     }
 
-    /// Whether a manifest-listed payload entry exists at `path` (O(1); no
-    /// per-call manifest re-projection). A poisoned entry-verification lock is
-    /// the SAME typed refusal [`Container::read_entry_bytes`] raises — never a
-    /// silent "absent" (a caught panic mid-verification must fail closed, not
-    /// downgrade an existing entry into `Ok(None)` at the caller).
     pub fn has_entry(&self, path: &str) -> Result<bool, ContainerError> {
         let guard = self.by_path.lock().map_err(|_| {
             ContainerError::Reject("container entry-verification lock poisoned".into())
@@ -1881,16 +1630,10 @@ impl Container {
         Ok(guard.contains_key(path))
     }
 
-    /// Every game hour this container's verified index publishes a snapshot
-    /// for. A consumer of the recording's per-hour coverage map checks this
-    /// against the map: an hour the container serves that the map does not
-    /// vouch for is an excluded hour reaching replay.
     pub fn published_hour_indexes(&self) -> Vec<i64> {
         self.hour_to_file.keys().copied().collect()
     }
 
-    /// Load a snapshot by hour_index — resolved through the INDEX (`file` field),
-    /// not by synthesizing a filename, so segment-prefixed rollback files load too.
     pub fn load(&self, hour_index: i64) -> Result<Snapshot, ContainerError> {
         let file = self.hour_to_file.get(&hour_index).cloned().ok_or_else(|| {
             ContainerError::Reject(format!("no snapshot for hour_index {hour_index}"))
@@ -1898,8 +1641,6 @@ impl Container {
         self.load_file(&file)
     }
 
-    /// Test-only: poison the entry-verification lock by panicking while a
-    /// thread holds it, mimicking a caught panic mid-verification.
     #[cfg(test)]
     pub(crate) fn poison_entry_lock_for_test(&self) {
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1909,17 +1650,6 @@ impl Container {
         assert!(self.by_path.is_poisoned(), "lock must be poisoned");
     }
 
-    /// Full background verification: hash EVERY declared entry. Returns Ok(()) when
-    /// all match; the first mismatch is an error. (Optional; never gates open.)
-    ///
-    /// An entry larger than the materializing cap is verified by streaming it
-    /// past a sink instead — same decompression, same CRC, same SHA-256, no
-    /// resident copy. That case exists because the certified checkpoint cache is
-    /// now packed under the streaming ceiling: capture t32's cache is
-    /// 2,209,767,138 bytes, and a `verify_all` that insisted on a `Vec` would
-    /// refuse to check the very container it had just sealed. Every entry that
-    /// still fits the cap goes through the unchanged materializing path, so no
-    /// previously verifiable container changes route.
     pub fn verify_all(&self) -> Result<(), ContainerError> {
         let mut guard = self.by_path.lock().map_err(|_| {
             ContainerError::Reject("container entry-verification lock poisoned".into())
@@ -1938,9 +1668,6 @@ impl Container {
         Ok(())
     }
 
-    /// Full retained-file verification without materializing any payload. Each
-    /// entry is decompressed, CRC-checked, and SHA-256 checked into a bounded
-    /// sink through the already-open archive handle.
     pub fn verify_all_streaming(&self) -> Result<(), ContainerError> {
         for entry in self.verify_all_streaming_report()? {
             if let Some(error) = entry.error {
@@ -1950,24 +1677,6 @@ impl Container {
         Ok(())
     }
 
-    /// Verify EVERY entry and report each one, instead of stopping at the first
-    /// failure.
-    ///
-    /// The granularity of a verdict is the granularity of the damage it can
-    /// isolate. `verify_all_streaming` above answers one question about the
-    /// whole container, so a single flipped byte anywhere in it refuses
-    /// everything. A recording that publishes a per-hour coverage map
-    /// needs the container gate to answer at the same resolution, or the map's
-    /// own verifiability is coarser than the map.
-    ///
-    /// So this reports one row per entry, each carrying the entry's role and
-    /// the hour it serves when the manifest names one. A caller can then refuse
-    /// exactly what the damage reached: a failed entry that serves one hour
-    /// excludes that hour, while a failed entry the recording cannot be read
-    /// without is still a whole-container refusal — with the entry named.
-    ///
-    /// Verification cost is unchanged: the same entries, the same streaming
-    /// decompression, the same digests. Only the stopping rule differs.
     pub fn verify_all_streaming_report(&self) -> Result<Vec<EntryVerification>, ContainerError> {
         let roles: HashMap<String, Option<String>> = self
             .entries()
@@ -1996,25 +1705,7 @@ impl Container {
         Ok(report)
     }
 
-    /// The game hour a container entry serves, when the verified index names
-    /// one. Snapshot entries are per-hour by construction; the certified cache
-    /// and index are not, and correctly report `None` — a cache-only recording
-    /// has no finer granularity than its cache and must be refused as a whole.
     fn hour_index_served_by(&self, path: &str) -> Option<i64> {
-        // The index's `file` is a container-relative name that CARRIES its
-        // directory — production writes `snapshots/000000000000.snapshot.json`
-        // — while a manifest entry path is `payload/<game>/<that name>`. So the
-        // join is a path-boundary suffix match, not a basename compare:
-        // comparing basenames was false for every real production snapshot
-        // entry, which silently reclassified a one-hour injury as damage
-        // serving no hour and refused the whole recording (Codex review round
-        // 2, finding 3).
-        //
-        // The join is against the EXACT path the reader resolves, not any path
-        // that happens to end with the indexed name: an unrelated
-        // `payload/<game>/aux/snapshots/<file>` would otherwise be reported as
-        // serving that hour, attributing an injury to the wrong owner (Codex
-        // review round 3, finding 4).
         let expected_prefix = format!("payload/{}/", self.game_id);
         let relative = path.strip_prefix(expected_prefix.as_str())?;
         self.hour_to_file
@@ -2023,16 +1714,11 @@ impl Container {
             .map(|(hour, _)| *hour)
     }
 
-    /// Recompute a bounded whole-file receipt through the retained file handle.
-    /// File-backed callers use this after streaming verification to prove the
-    /// object did not change across the complete validation interval.
     pub fn retained_file_receipt(&self) -> Result<(u64, String), ContainerError> {
         self.archive.whole_file_receipt()
     }
 }
 
-/// Strict states that ContainerEntry's permissive projection cannot express.
-/// This runs before format, digest, identity, or role-table semantics.
 fn validate_strict_manifest(manifest: &Value) -> Result<(), ContainerError> {
     let game_id = manifest.get("game_id").and_then(Value::as_str);
     let timeline_path = game_id.map(|game| format!("payload/{game}/timeline.json"));
@@ -2062,8 +1748,6 @@ fn validate_strict_manifest(manifest: &Value) -> Result<(), ContainerError> {
     Ok(())
 }
 
-/// Features this reader build understands. A `required_features` entry not here is
-/// a hard reject (forward-compat fail-closed; Codex b).
 const KNOWN_FEATURES: &[&str] = &[
     FEATURE_TIMELINE_SEGMENTS_V1,
     FEATURE_PORTABLE_CONTENT_MANIFEST_V2,
@@ -2813,10 +2497,6 @@ fn validate_raw_sources(
     Ok(sources)
 }
 
-/// Validates the whole stitched (v2) graph. On success returns every retained
-/// snapshot file name the per-segment indexes authorize (visible AND
-/// superseded rollback snapshots), for [`Container::load_file`]'s
-/// index-authority check.
 fn validate_stitched_v2(
     archive: &ContainerArchive,
     by_path: &mut HashMap<String, EntryRec>,
@@ -2837,8 +2517,6 @@ fn validate_stitched_v2(
         return Err(reject("v2 container is missing segments.json"));
     }
     let graph_bytes = verify_and_read(archive, by_path, &graph_path)?;
-    // Strict (duplicate-member-rejecting) parse: a segments.json carrying a
-    // duplicated member must be a typed refusal, never last-wins collapse.
     let graph: Value = crate::parse_json_strict(&graph_bytes)?;
     required_object(&graph, "segments.json")?;
     let declared_stitch_digest = required_sha256(&graph, "stitch_input_digest", "segments.json")?;
@@ -3317,11 +2995,6 @@ fn validate_stitched_v2(
         match (cutover, head) {
             (None, None) if local.is_empty() => {}
             (Some(start), Some(end)) if start <= end => {
-                // Density check WITHOUT materializing (start..=end): a hostile
-                // cutover/head pair (e.g. 0..=i64::MAX) must be a fast typed
-                // refusal, not an unbounded allocation. Keys are unique sorted
-                // i64s, so len == width && min == start && max == end proves
-                // the key set is exactly start..=end.
                 let expected_len = (end as i128) - (start as i128) + 1;
                 if expected_len != local.len() as i128
                     || local.keys().next() != Some(&start)
@@ -3550,10 +3223,6 @@ fn validate_stitched_v2(
             parse_disposition(row, segment_id, game_id, by_path, &context, false)?;
         disposition.ownership = selected_ownership_value(row, &context)?;
         for hour in start..=end {
-            // Any hour outside `visible` is guaranteed to fail the final
-            // `index_main != visible` equality; rejecting it eagerly keeps a
-            // hostile coverage span (e.g. 0..=9e18) from materializing
-            // billions of map entries before that comparison can run.
             if !visible.contains_key(&hour) {
                 return Err(reject(format!(
                     "{context} covers hour {hour} absent from graph visible spans"
@@ -3628,15 +3297,6 @@ fn validate_stitched_v2(
     Ok(retained_snapshot_files)
 }
 
-/// Read an entry's bytes and verify them against the manifest hash. Immutable
-/// in-memory entries become hash-free after the first success; file-backed entries
-/// re-authenticate each exposure. Never returns bytes whose hash did not match.
-/// Verify one entry without materializing it.
-///
-/// The receipt is derived from the same decompression pass, so the SHA-256 this
-/// compares is over exactly the bytes the entry decodes to. Only reachable for a
-/// file-backed archive; a memory-backed one says so rather than pretending the
-/// entry was checked.
 fn verify_streamed(
     archive: &ContainerArchive,
     by_path: &mut HashMap<String, EntryRec>,
@@ -3668,10 +3328,6 @@ fn verify_and_read(
     let rec = by_path
         .get_mut(path)
         .ok_or_else(|| ContainerError::Reject(format!("entry {path} not in manifest")))?;
-    // In-memory archive bytes are immutable, so one successful hash is enough.
-    // A retained file handle pins identity, not contents: another writer could
-    // still alter bytes in place after open. Re-authenticate every file-backed
-    // exposure, during the same decompression pass that produces the bytes.
     let calculate_sha256 =
         rec.sha256_state == EntryVerificationState::Pending || archive.requires_sha256_each_read();
     let (bytes, digest) = archive.read_entry(rec.archive_index, calculate_sha256)?;
@@ -3687,9 +3343,6 @@ fn verify_and_read(
                 rec.expected_sha256
             )));
         }
-        // Record the successful transition before the exposure guard. In-memory
-        // entries may reuse it; file-backed entries still re-authenticate each
-        // read because the retained handle does not make file contents immutable.
         rec.sha256_state = EntryVerificationState::Verified;
     }
     rec.require_sha256_verified(path)?;
@@ -3699,16 +3352,6 @@ fn verify_and_read(
 #[cfg(test)]
 mod tests {
 
-    /// `Container::open` with the whole fixture tree held across it.
-    ///
-    /// Every test here writes a container and opens it on the next line, which
-    /// on Windows is exactly when a real-time scanner holds the file and the
-    /// open returns `os error 32`. The guard lives in the TEST module, not in
-    /// `open_retained_container_file`: that function's exact source lines are
-    /// registered in the replay side's pathname-capability audit
-    /// (`replay_core/src/source.rs`), and editing a production file-access site
-    /// to carry test scaffolding both fails that gate and puts test-only text
-    /// into a production registry.
     fn open_container_guarded(
         path: &std::path::Path,
         expected: &ExpectedIdentity,
@@ -3745,10 +3388,6 @@ mod tests {
         }
     }
 
-    /// A scratch directory that is removed even when an assertion unwinds. The
-    /// spool guarantees are proven by driving failure paths, and on Windows a
-    /// leaked deny-delete temporary is sticky, so cleanup may not depend on a
-    /// test reaching its last line.
     struct TempSpoolDir(std::path::PathBuf);
 
     impl TempSpoolDir {
@@ -3772,15 +3411,11 @@ mod tests {
             if let Ok(entries) = fs::read_dir(&self.0) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    // Never recurse through a reparse point: a junction fixture
-                    // must be unlinked, never followed into its target.
                     let Ok(metadata) = fs::symlink_metadata(&path) else {
                         continue;
                     };
                     let file_type = metadata.file_type();
                     if file_type.is_symlink() {
-                        // A reparse point: unlink the link itself, never
-                        // descend through it.
                         if fs::remove_dir(&path).is_err() {
                             let _ = fs::remove_file(&path);
                         }
@@ -3795,11 +3430,6 @@ mod tests {
         }
     }
 
-    /// A destination pathname that deliberately lies OUTSIDE a `TempSpoolDir`
-    /// -- a volume root, the process working directory, a scratch directory's
-    /// parent. Those tests assert a refusal, so if the refusal ever regresses
-    /// the destination is genuinely published, and the assertion panics before
-    /// any trailing cleanup could run. Removal must therefore be on drop.
     struct TempSpoolPath(std::path::PathBuf);
 
     impl Drop for TempSpoolPath {
@@ -3808,23 +3438,6 @@ mod tests {
         }
     }
 
-    /// One file-backed container carrying `payload/g/compact.bin`. Every spool
-    /// guarantee below needs a retained-handle container: the transactional
-    /// spool refuses an in-memory archive before it reaches any of them.
-    /// `verify_all` now picks a route by entry size, so the streaming route has
-    /// to be the same check — not a cheaper one that happens to be reachable
-    /// only for the entries too big to hold.
-    ///
-    /// The size crossing itself needs a >2 GiB entry and is proved on capture
-    /// t32's real 2,209,767,138-byte checkpoint cache by
-    /// `t32_oversized_checkpoint_cache_seals_and_reconstructs`. What this proves
-    /// is the part that test cannot: that the two routes AGREE — both accept an
-    /// intact container, and both refuse the same corrupted one, naming the same
-    /// entry.
-    ///
-    /// Production change that would make this fail: letting `verify_streamed`
-    /// skip the digest compare, forget to mark the entry verified, or accept an
-    /// entry whose bytes no longer hash to the manifest.
     #[test]
     fn the_streaming_verification_route_is_not_weaker_than_the_materializing_one() {
         let bytes = compact_container_bytes(b"route equivalence payload");
@@ -3839,8 +3452,6 @@ mod tests {
             .expect("intact container verifies streamed");
         drop(container);
 
-        // Corrupt one STORE'd payload byte in place. Both routes decompress the
-        // same bytes, so both must refuse, and both must name the entry.
         let mut corrupted = bytes.clone();
         let offset = corrupted
             .windows(b"route equivalence payload".len())
@@ -3902,8 +3513,8 @@ mod tests {
         let bytes = pack("g", &[empty_index_entry()], &PackIdentity::default(), false).unwrap();
         let path = TempContainerFile::write("backend_selection", &bytes);
 
-        let file_backed =
-            open_container_guarded(&path.0, &ExpectedIdentity::default()).expect("path container opens");
+        let file_backed = open_container_guarded(&path.0, &ExpectedIdentity::default())
+            .expect("path container opens");
         assert!(matches!(&file_backed.archive, ContainerArchive::File(_)));
 
         let in_memory = Container::from_bytes(bytes, &ExpectedIdentity::default())
@@ -3975,9 +3586,6 @@ mod tests {
             as u64;
         let path = TempContainerFile::write("receipt_same_length_mutation", &bytes);
 
-        // Use permissively shared test handles so the hook can model a writer
-        // that already existed before the production deny-write handle opened.
-        // The production path has no hook and uses open_retained_container_file.
         let reader = portable_test_fs_retry::open(&path.0).expect("open retained test reader");
         let mut mutator = OpenOptions::new()
             .read(true)
@@ -4029,10 +3637,6 @@ mod tests {
             false,
         )
         .unwrap();
-        // The transactional spool is file-backed ONLY (an in-memory container
-        // refuses bounded entry spooling outright), so this scenario must be
-        // built on a real retained-handle container or it never reaches the
-        // publication path it claims to guard.
         let archive = TempContainerFile::write("post_sync_substitution", &bytes);
         let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         assert!(matches!(&container.archive, ContainerArchive::File(_)));
@@ -4063,9 +3667,6 @@ mod tests {
             },
         );
 
-        // Without this the whole test degrades to "the spool succeeded": a
-        // refactor that stopped consuming the post-sync window would still be
-        // green on the platform whose share mode denies the mutation.
         assert!(
             reached.load(Ordering::SeqCst),
             "the post-sync/pre-publication window must still be reached"
@@ -4084,18 +3685,13 @@ mod tests {
         } else {
             let receipt = result.expect("Windows retained handles deny the mutation attempt");
             assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
-            assert_eq!(portable_test_fs_retry::read(&destination).unwrap(), AUTHENTICATED);
+            assert_eq!(
+                portable_test_fs_retry::read(&destination).unwrap(),
+                AUTHENTICATED
+            );
         }
-
     }
 
-    /// The pathname-rebinding variant above cannot execute its mutation on
-    /// Windows — the retained spool handle denies write and delete sharing, so
-    /// the substitution is refused by the OS instead of by the re-hash. This
-    /// test drives the SAME production publication path with a post-sync byte
-    /// change made through the retained handle itself, which no share mode can
-    /// deny. It is what keeps `verify_spool_receipt_on_handle` a proven step of
-    /// the commit sequence on every platform rather than dead code on one.
     #[test]
     fn transactional_spool_rejects_post_sync_change_on_the_retained_handle() {
         const AUTHENTICATED: &[u8] = b"authenticated retained-handle bytes";
@@ -4128,7 +3724,8 @@ mod tests {
             )
             .unwrap();
             let archive = TempContainerFile::write(&format!("retained_handle_{label}"), &bytes);
-            let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
+            let container =
+                open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
             let root = TempSpoolDir::create(&format!("retained_{label}"));
             let destination = root.join("retained.bin");
 
@@ -4137,8 +3734,6 @@ mod tests {
                     "payload/g/retained.bin",
                     &destination,
                     |_temp, retained| {
-                        // After flush + sync_all, before any pathname is
-                        // published: exactly the window the re-hash covers.
                         retained.seek(SeekFrom::Start(0))?;
                         if same_length {
                             retained.write_all(&vec![b'X'; AUTHENTICATED.len()])?;
@@ -4185,8 +3780,6 @@ mod tests {
             false,
         )
         .unwrap();
-        // File-backed for the same reason as the post-sync substitution test:
-        // the failure-atomicity path only exists behind the retained handle.
         let archive = TempContainerFile::write("post_link_failure", &bytes);
         let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         assert!(matches!(&container.archive, ContainerArchive::File(_)));
@@ -4200,9 +3793,6 @@ mod tests {
                 STREAMING_MAX_CONTAINER_ENTRY_BYTES,
                 |_, _| Ok(()),
                 |published| {
-                    // The hook only runs after the hard-link commit, so the
-                    // destination is genuinely visible at injection time; the
-                    // rollback below is what makes the failure atomic.
                     assert!(
                         published.exists(),
                         "the post-publication hook must run with the destination visible"
@@ -4227,13 +3817,12 @@ mod tests {
             .spool_entry_to_file_transactionally("payload/g/post-link.bin", &destination)
             .expect("hard-link commit with no post-publication work succeeds");
         assert_eq!(receipt.uncompressed_len(), AUTHENTICATED.len() as u64);
-        assert_eq!(portable_test_fs_retry::read(&destination).unwrap(), AUTHENTICATED);
+        assert_eq!(
+            portable_test_fs_retry::read(&destination).unwrap(),
+            AUTHENTICATED
+        );
     }
 
-    /// A junction anywhere in the destination's directory chain is refused
-    /// before a single byte is spooled. Without this the hard-link commit could
-    /// be aimed at a directory an adversary redirects, and the retained
-    /// ancestor handles would be retaining the wrong objects.
     #[cfg(windows)]
     #[test]
     fn transactional_spool_refuses_a_reparse_point_directory_component() {
@@ -4246,9 +3835,6 @@ mod tests {
         let target = root.join("target");
         fs::create_dir(&target).unwrap();
         let junction = root.join("junction");
-        // `mklink /J` creates a directory junction with no privilege at all,
-        // unlike a directory symlink, which needs SeCreateSymbolicLink or
-        // Developer Mode. That makes the reparse fixture available headlessly.
         let status = std::process::Command::new("cmd")
             .arg("/C")
             .arg("mklink")
@@ -4285,9 +3871,6 @@ mod tests {
         assert!(!destination.exists());
     }
 
-    /// The destination's parent must contain at least one retainable
-    /// component. A volume root has none, so no ancestor could be pinned for
-    /// the duration of the commit and the spool refuses outright.
     #[cfg(windows)]
     #[test]
     fn transactional_spool_refuses_a_filesystem_root_destination() {
@@ -4301,9 +3884,6 @@ mod tests {
             .last()
             .expect("the temp directory has a volume root")
             .to_path_buf();
-        // Removal is on drop: if the guard ever regresses on a writable root
-        // the destination IS published, and the assertion below panics before
-        // any trailing cleanup could run.
         let destination = TempSpoolPath(
             volume_root.join(format!("hoi4_spool_root_probe_{}.bin", std::process::id())),
         );
@@ -4324,9 +3904,6 @@ mod tests {
         );
     }
 
-    /// `.`, `..` and the empty path are refused lexically, before the chain is
-    /// resolved: a destination whose meaning depends on the process working
-    /// directory or on traversal cannot be identity-pinned.
     #[test]
     fn transactional_spool_refuses_empty_and_dot_relative_destinations() {
         const PAYLOAD: &[u8] = b"lexical destination guard payload";
@@ -4335,9 +3912,6 @@ mod tests {
         let container = open_container_guarded(&archive.0, &ExpectedIdentity::default()).unwrap();
         let root = TempSpoolDir::create("lexical");
 
-        // Both of these name objects OUTSIDE the scratch root, so a regressed
-        // guard would publish them where nothing else cleans up; removal is on
-        // drop rather than after the panic-capable assertions.
         let cur_dir_relative = TempSpoolPath(std::path::Path::new(".").join(format!(
             "hoi4_spool_curdir_probe_{}.bin",
             std::process::id()
@@ -4371,21 +3945,6 @@ mod tests {
         );
     }
 
-    /// Unique-temporary allocation is bounded: after 128 occupied candidate
-    /// names it refuses instead of spinning, and it never opens, truncates or
-    /// adopts a name that already exists.
-    ///
-    /// The property is stated over `SPOOL_TEMP_SEQUENCE`, which is
-    /// process-wide, so it is only decidable in a process where nothing else
-    /// allocates a spool temporary: the occupied names have to be the names
-    /// the allocation will actually try. Under `cargo test` the whole crate
-    /// suite shares one process and sibling spool tests advance that sequence
-    /// between the load and the spool call, which slides the real candidate
-    /// window past the occupied names and lets the allocation succeed.
-    /// Rather than assume a runner that gives every test its own process,
-    /// this test makes one: it re-executes this test binary filtered to this
-    /// test alone, and the child — marked by the environment variable below —
-    /// evaluates the property with the sequence quiescent.
     #[test]
     fn transactional_spool_gives_up_after_the_bounded_unique_name_window() {
         const WORKER_MARKER: &str = "BATTLE_PLAN_BOUNDED_UNIQUE_NAME_WINDOW_WORKER";
@@ -4409,9 +3968,6 @@ mod tests {
              \n--- child stderr ---\n{stderr}",
                 output.status.code()
             );
-            // A child whose filter matched nothing also exits 0, so the pass count
-            // is what keeps this outer assertion from passing vacuously — it is
-            // also what catches a rename that leaves `TEST_NAME` stale.
             assert!(
                 stdout.contains("test result: ok. 1 passed"),
                 "the isolated child must have run exactly this one test\n--- child stdout ---\n\
@@ -4420,9 +3976,6 @@ mod tests {
         }
     }
 
-    /// The candidate-window property itself. Only ever called in the isolated
-    /// child process spawned by the test above, where `SPOOL_TEMP_SEQUENCE` is
-    /// quiescent and the candidate run is therefore exactly predictable.
     fn bounded_unique_name_window_property() {
         const PAYLOAD: &[u8] = b"unique name window payload";
         const ATTEMPTS: u64 = 128;
@@ -4434,10 +3987,6 @@ mod tests {
         let destination = root.join("compact.bin");
         let destination_name = destination.file_name().unwrap().to_owned();
 
-        // The candidate names are `.<destination>.authenticated-spool.<pid>.<n>.part`
-        // over a run of the process-wide sequence. This process runs this test
-        // and nothing else, so nothing advances that sequence between the load
-        // below and the spool call, and the run is exactly predictable.
         let first_sequence = SPOOL_TEMP_SEQUENCE.load(Ordering::Relaxed);
         let mut occupied = Vec::new();
         for sequence in first_sequence..first_sequence + ATTEMPTS {
@@ -4480,10 +4029,6 @@ mod tests {
         }
     }
 
-    /// The pathname-identity rebind that guards the hard-link source. On
-    /// Windows the retained handle's share mode denies the rename/unlink that
-    /// would rebind the name (proven by the companion test below), so the
-    /// refusal is exercised against the production function directly.
     #[test]
     fn spool_temporary_pathname_identity_rebind_is_refused() {
         let root = TempSpoolDir::create("identity_rebind");
@@ -4527,10 +4072,6 @@ mod tests {
         drop(substitute);
     }
 
-    /// Why the rebind above cannot be staged end-to-end on Windows, and why the
-    /// `temp_still_retained` guard's false arm is unreachable there: while the
-    /// retained handle is open, its pathname cannot be renamed or unlinked at
-    /// all, so it can never come to name a different object.
     #[cfg(windows)]
     #[test]
     fn a_retained_spool_temporary_cannot_be_renamed_or_unlinked_at_its_pathname() {
@@ -4544,8 +4085,6 @@ mod tests {
             fs::rename(&temp, &displaced).expect_err("a retained spool must not be renamable");
         let remove_error =
             fs::remove_file(&temp).expect_err("a retained spool must not be unlinkable");
-        // Both refusals are ERROR_SHARING_VIOLATION -- the retained handle's
-        // omitted delete sharing, not a permission or attribute effect.
         const ERROR_SHARING_VIOLATION: i32 = 32;
         for (label, error) in [("rename", &rename_error), ("remove", &remove_error)] {
             assert_eq!(
@@ -4560,14 +4099,10 @@ mod tests {
 
         drop(retained);
         // Once the handle is released the same pathname is ordinary again --
-        // the denial is the retained handle's, not the filesystem's.
         portable_test_fs_retry::remove_file(&temp).expect("the released pathname is removable");
     }
 
-    /// Post-publication rollback never unlinks a destination it cannot bind to
     /// the object it published. The release hook models the only window in
-    /// which the name is unpinned: after every retained handle is dropped and
-    /// before the rollback runs.
     #[test]
     fn post_publication_rollback_refuses_a_rebound_destination() {
         use std::sync::atomic::AtomicBool;
@@ -4596,7 +4131,8 @@ mod tests {
                     ))
                 },
                 |_temp, published| {
-                    portable_test_fs_retry::remove_file(published).expect("the released name is unlinkable");
+                    portable_test_fs_retry::remove_file(published)
+                        .expect("the released name is unlinkable");
                     fs::write(published, FOREIGN).expect("the released name is rebindable");
                     hook_rebound.store(true, std::sync::atomic::Ordering::SeqCst);
                 },
@@ -4630,9 +4166,6 @@ mod tests {
         );
     }
 
-    /// The other rollback failure mode: the destination is still the published
-    /// object, but it cannot be removed. The refusal is reported rather than
-    /// swallowed, so a caller never sees a bare Err with a live destination.
     #[cfg(windows)]
     #[test]
     fn post_publication_rollback_reports_an_undeletable_destination() {
@@ -4657,9 +4190,6 @@ mod tests {
                 STREAMING_MAX_CONTAINER_ENTRY_BYTES,
                 |_, _| Ok(()),
                 |published| {
-                    // The retained spool handle is still open here, so this
-                    // handle must share read and write with it; omitting delete
-                    // sharing is what makes the rollback's unlink fail.
                     let blocker = OpenOptions::new()
                         .read(true)
                         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
@@ -4674,9 +4204,9 @@ mod tests {
             .expect_err("a rollback that cannot unlink must fail closed");
 
         assert!(
-            error.to_string().contains(
-                "post-publication failure could not remove authenticated destination"
-            ),
+            error
+                .to_string()
+                .contains("post-publication failure could not remove authenticated destination"),
             "unexpected error: {error}"
         );
         assert!(
@@ -4691,14 +4221,11 @@ mod tests {
 
         // Release the blocker so the scratch directory can be cleaned up.
         held.lock().unwrap().take();
-        portable_test_fs_retry::remove_file(&destination).expect("the released destination is removable");
+        portable_test_fs_retry::remove_file(&destination)
+            .expect("the released destination is removable");
     }
 
-    /// The temporary's own cleanup is identity-gated too, and its refusal arm
     /// is NOT Windows-unreachable: the retained handle is released before the
-    /// check runs, so the pathname is genuinely unpinned in that window on
-    /// every platform. A temporary whose name was rebound there is left alone
-    /// rather than unlinked, exactly as a foreign destination is.
     #[test]
     fn a_rebound_spool_temporary_pathname_is_never_unlinked() {
         use std::sync::atomic::AtomicBool;
@@ -4724,10 +4251,8 @@ mod tests {
                 |_, _| Ok(()),
                 |_| Ok(()),
                 |temp, _published| {
-                    // The retained handle is already dropped here, so this
-                    // unlink succeeds even on Windows: the temporary's cleanup
-                    // window is unpinned on every platform.
-                    portable_test_fs_retry::remove_file(temp).expect("the released temporary is unlinkable");
+                    portable_test_fs_retry::remove_file(temp)
+                        .expect("the released temporary is unlinkable");
                     fs::write(temp, FOREIGN).expect("the released name is rebindable");
                     *hook_temp.lock().unwrap() = temp.to_path_buf();
                     hook_rebound.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -4749,9 +4274,6 @@ mod tests {
         );
     }
 
-    /// Whole-file receipts are a retained-handle property: an in-memory
-    /// container has no object to re-read, and answering with anything would
-    /// be a receipt for bytes nobody can re-verify.
     #[test]
     fn whole_file_receipts_require_a_retained_file_backed_container() {
         const PAYLOAD: &[u8] = b"whole file receipt payload";
@@ -4771,8 +4293,8 @@ mod tests {
         );
 
         let archive = TempContainerFile::write("whole_file_receipt", &bytes);
-        let file_backed =
-            open_container_guarded(&archive.0, &ExpectedIdentity::default()).expect("path container opens");
+        let file_backed = open_container_guarded(&archive.0, &ExpectedIdentity::default())
+            .expect("path container opens");
         let (len, sha256) = file_backed
             .retained_file_receipt()
             .expect("a retained container answers with its receipt");
@@ -4780,10 +4302,6 @@ mod tests {
         assert_eq!(sha256, to_hex(&Sha256::digest(&bytes)));
     }
 
-    /// `ContainerArchive::copy_entry_to_writer` refuses a file-backed archive
-    /// that answered a `calculate_sha256` request with no digest. That arm is
-    /// unreachable while the archive keeps its side of the contract; this pins
-    /// the contract itself, which is the only thing that keeps it unreachable.
     #[test]
     fn a_file_backed_archive_never_omits_a_requested_spool_sha256() {
         const PAYLOAD: &[u8] = b"requested spool sha256 payload";
@@ -4833,9 +4351,6 @@ mod tests {
         );
     }
 
-    /// `Container::authenticate_entry` has three production consumers and no
-    /// test in any crate. It must authenticate against the manifest without
-    /// exposing bytes, and refuse everything the spool primitive refuses.
     #[test]
     fn authenticate_entry_verifies_without_exposing_bytes() {
         const PAYLOAD: &[u8] = b"authenticate entry payload";
@@ -4858,11 +4373,6 @@ mod tests {
             "unexpected error: {error}"
         );
 
-        // The receipt must come from the archive, not from the manifest record
-        // it is checked against. Against an intact container a receipt
-        // fabricated out of the manifest's own path/len/sha would be
-        // indistinguishable from an authenticated one, so authenticate the
-        // same manifest against stored bytes that no longer match it.
         let mut tampered = bytes.clone();
         let offset = tampered
             .windows(PAYLOAD.len())
@@ -4870,8 +4380,9 @@ mod tests {
             .expect("the stored payload is locatable in the packed container");
         tampered[offset] ^= 0xff;
         let tampered_archive = TempContainerFile::write("authenticate_entry_tampered", &tampered);
-        let tampered_container = open_container_guarded(&tampered_archive.0, &ExpectedIdentity::default())
-            .expect("entry bytes are authenticated lazily, so the container still opens");
+        let tampered_container =
+            open_container_guarded(&tampered_archive.0, &ExpectedIdentity::default())
+                .expect("entry bytes are authenticated lazily, so the container still opens");
         let error = tampered_container
             .authenticate_entry("payload/g/compact.bin")
             .expect_err("a manifest-listed entry whose stored bytes changed must fail closed");
@@ -4892,10 +4403,6 @@ mod tests {
         );
     }
 
-    /// `Container::copy_entry_to_unpublished_writer_bounded` is the caller-owned
-    /// sink variant, and its one production consumer is its only exercise. The
-    /// receipt is the caller's permission to publish, so every refusal must
-    /// arrive with nothing usable written.
     #[test]
     fn copy_entry_to_unpublished_writer_bounded_refuses_before_it_writes() {
         const PAYLOAD: &[u8] = b"unpublished writer payload";
@@ -4961,8 +4468,6 @@ mod tests {
 
     #[test]
     fn segments_accessor_strict_parses_duplicate_members() {
-        // A v1 container carrying a stray segments.json with a duplicated
-        // member: the accessor must be a typed refusal, never last-wins.
         let bytes = pack(
             "g",
             &[
@@ -4991,10 +4496,6 @@ mod tests {
 
     #[test]
     fn poisoned_entry_lock_is_a_typed_refusal_never_absence() {
-        // A caught panic during entry verification poisons `by_path`. From that
-        // point every membership answer is unknowable: `has_entry` must raise
-        // the same typed refusal as `read_entry_bytes`, and `segments()` must
-        // never collapse the poison into Ok(None) "no graph" (fail-closed).
         let bytes = pack(
             "g",
             &[
@@ -5264,7 +4765,6 @@ mod tests {
             matches!(err, ContainerError::ModsetMismatch { .. }),
             "expected typed ModsetMismatch, got {err:?}"
         );
-        // Display renders the EXACT pre-typed message (fixture/UX contract).
         assert_eq!(
             err.to_string(),
             "container rejected: manifest modset_id \"claimed\" disagrees with snapshot provenance.mod \"real\""

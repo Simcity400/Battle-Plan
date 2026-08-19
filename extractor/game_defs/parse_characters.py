@@ -123,7 +123,6 @@ def parse_characters(layers) -> dict:
             rec = parse_character(cid, body, rel, name_token_kinds.get(cid))
             rec["source_layer"] = label
             if not rec["roles"]:
-                # still keep (portrait-only character) but mark
                 rec["roles"] = []
             if cid in chars and chars[cid]["source_file"] != rel:
                 collisions.append({"id": cid, "first": chars[cid]["source_file"],

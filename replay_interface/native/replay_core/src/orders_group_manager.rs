@@ -1,10 +1,3 @@
-//! Typed replay view for the exact a729 domain-54 orders-group manager.
-//!
-//! The recorder places this pointer-free carrier under
-//! `order_of_battle.extra.army_battleplans_depth_live.orders_group_manager`.
-//! This module is deliberately strict: legacy snapshots remain readable, but
-//! they yield `DomainUnavailable`; malformed or contradictory authority never
-//! becomes a partial measured view.
 
 use crate::{ViewStatus, WorldFrame};
 use serde_json::{Map, Value};
@@ -22,7 +15,6 @@ pub enum ArmyExecutionMode {
     Careful,
     Balanced,
     Aggressive,
-    /// Exact raw engine storage with no authenticated a729 UI label.
     UnlabelledRaw(u32),
 }
 
@@ -43,8 +35,6 @@ pub struct ArmyOrdersGroupScalarExact {
 }
 
 impl ArmyOrdersGroupScalarExact {
-    /// `0..=2` are authenticated by the a729 command writer and
-    /// exact raw engine state and deliberately receive no invented label.
     pub fn execution_mode(&self) -> ArmyExecutionMode {
         match self.execution_type {
             0 => ArmyExecutionMode::Careful,
@@ -64,15 +54,8 @@ pub struct ArmyOrdersGroupManagerView {
     pub registered_entry_count: Option<u32>,
     pub army_group_count: Option<u32>,
     pub armies: Vec<ArmyOrdersGroupScalarExact>,
-    /// Stable type-53 handle IDs for every registered `CArmyGroup`.
-    ///
-    /// Legacy OGS1 v1 snapshots carried only `army_group_count`; those remain
-    /// readable for army controls, but cannot authenticate an army-group
-    /// battleplan owner. OGS1 v2 carries this strict-sorted identity census.
     pub army_group_ids: Vec<u32>,
     pub owner_identities_complete: bool,
-    /// Structural rejection reason. This is empty for a valid measured view
-    /// and for an honestly unavailable legacy/unknown carrier.
     pub diagnostic: Option<String>,
 }
 
@@ -118,8 +101,6 @@ impl ArmyOrdersGroupManagerView {
 }
 
 impl WorldFrame {
-    /// Complete registered type-53 army census and exact command-backed
-    /// execution/cohesion/leader-proximity ordinals for this replay hour.
     pub fn army_orders_group_manager(&self) -> ArmyOrdersGroupManagerView {
         parse_orders_group_manager(self.raw())
     }

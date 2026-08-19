@@ -1,10 +1,3 @@
-//! Typed replay consumer for D45 focus/research/decision depth annotations.
-//!
-//! The recorder deliberately keeps these fields under `_r2_depth_*` sidecars
-//! because the first-class focus/research/decision fields have other owners.
-//! This module is the enforcing consumer for those sidecars: it preserves
-//! absent versus explicitly unobtained values and rejects malformed rows as a
-//! whole-view failure instead of dropping individual facts.
 
 use crate::world::ViewStatus;
 use serde::de::DeserializeOwned;
@@ -163,9 +156,6 @@ impl FrdDepthAnnotationsView {
         }
     }
 
-    /// A D45 collector problem invalidates the complete depth view even if
-    /// some sidecars survived in the frame. Retaining partial rows here would
-    /// let downstream UI confuse a partial observation with exact authority.
     pub(crate) fn mark_unavailable(&mut self) {
         *self = Self::unavailable();
     }

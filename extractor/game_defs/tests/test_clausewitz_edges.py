@@ -23,14 +23,11 @@ for _p in (str(_GAME_ASSETS), str(_DEFS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from paradox_parser import parse, Node  # noqa: E402
-import clausewitz_ops as C              # noqa: E402
-import parse_catalogs as catalogs       # noqa: E402
+from paradox_parser import parse, Node
+import clausewitz_ops as C
+import parse_catalogs as catalogs
 
 
-# --------------------------------------------------------------------------
-# helpers
-# --------------------------------------------------------------------------
 def _harvest(text: str):
     root = parse(text)
     reads, writes = set(), set()
@@ -38,20 +35,10 @@ def _harvest(text: str):
     return reads, writes
 
 
-# ==========================================================================
-# Comparison-operator handling in check_variable shorthand.
-#
-# the game very commonly writes `check_variable = { my_var >= 5 }`. The shared
-# tokenizer treats `=` as a hard delimiter and does NOT know multi-char ops,
-# so `>=` lexes as `>` + `=`. The clausewitz_ops helpers MUST still recover the
-# real variable name `my_var` for every operator, and must NEVER fabricate a
-# bogus operator-glyph (`>`/`<`/`!`) as a variable name.
-# ==========================================================================
 def test_harvest_recovers_var_for_all_operators():
     for op in (">", "<", ">=", "<=", "==", "!="):
         reads, _ = _harvest(f"check_variable = {{ my_var {op} 5 }}")
         assert "my_var" in reads, f"op {op!r}: var name lost, reads={reads}"
-        # no bogus operator glyph leaked in as a "variable"
         assert not (reads & {">", "<", "!", "=", ">=", "<=", "!=", "=="}), \
             f"op {op!r}: fabricated operator token in reads={reads}"
 
@@ -75,7 +62,6 @@ def test_operator_triples_all_operators():
 
 
 def test_harvest_glued_operator_form_still_works():
-    # the no-whitespace glued form must keep resolving (regression guard)
     reads, _ = _harvest("check_variable = { Root.foo>0 }")
     assert "Root.foo" in reads, reads
     reads, _ = _harvest("check_variable = { Root.bar>=2 }")
@@ -83,10 +69,8 @@ def test_harvest_glued_operator_form_still_works():
 
 
 def test_harvest_explicit_and_inline_forms_unaffected():
-    # explicit `{ var = NAME value = N }`
     reads, _ = _harvest("check_variable = { var = explicit_v value = 3 }")
     assert "explicit_v" in reads and ">" not in reads, reads
-    # inline `{ NAME = N }`
     reads, _ = _harvest("check_variable = { inline_v = 3 }")
     assert "inline_v" in reads, reads
 
@@ -103,10 +87,6 @@ def test_write_ops_recover_var_name():
         assert want in writes, f"{text!r}: writes={writes}"
 
 
-# ==========================================================================
-# Tokenizer / parser structural edge cases (exercised via clausewitz_ops +
-# the public parse()).
-# ==========================================================================
 def test_duplicate_keys_all_kept():
     """Clausewitz allows repeated keys (e.g. multiple add_core_of). The parser
     MUST keep every one, not collapse to the last (silent data loss)."""
@@ -143,7 +123,6 @@ def test_quoted_string_special_chars_preserved():
 
 
 def test_unterminated_quote_does_not_hang_or_crash():
-    # must terminate and yield the partial string, not loop forever
     root = parse('name = "hello world')
     assert root.get("name") == "hello world"
 
@@ -166,16 +145,10 @@ def test_empty_block_and_list_value():
 
 
 def test_unbalanced_brace_at_eof_is_graceful():
-    # missing closing braces -> parser closes implicitly, no exception / hang
     root = parse("x = { y = { z = 1 ")
     assert root.get("x").get("y").get("z") == "1"
 
 
-# ==========================================================================
-# End-to-end: the operator fix must flow through the real scripted_gui parser
-# (a visible={} gate on `var >= N` is what tells the replay UI which variable
-# controls an overlay's visibility -- the binding-critical case).
-# ==========================================================================
 def test_scripted_gui_visible_gate_with_compound_operator():
     import parse_scripted_gui as SG
     txt = """

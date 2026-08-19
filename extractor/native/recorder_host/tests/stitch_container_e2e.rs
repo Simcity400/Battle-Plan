@@ -1,7 +1,3 @@
-//! End-to-end: `plan_stitch` -> canonical container files + snapshot payloads ->
-//! pack a real v2 `.battleplan` -> open with the snapshot reader and verify the
-//! main timeline, rollback access, the segment graph, integrity, and determinism.
-
 use std::collections::BTreeMap;
 
 use recorder_host::stitching::{
@@ -21,8 +17,6 @@ const GAME: &str = "g";
 const MODSET: &str = "MS";
 const K: &[u8] = b"campaign-A";
 
-/// Snapshot body bytes as a pure function of (play_order, hour) so two segments'
-/// same-hour snapshots differ and each has a distinct hash.
 fn snap_payload(play_order: u64, hour: i64) -> Vec<u8> {
     format!(
         r#"{{"schema_version":"1","game_id":"{GAME}","hour_index":{hour},"provenance":{{"mod":{{"modset_id":"{MODSET}"}}}},"po":{play_order},"countries":{{}},"states":{{}}}}"#
@@ -143,11 +137,8 @@ fn snap_seg(play_order: u64, range: std::ops::RangeInclusive<i64>) -> SegmentInp
     }
 }
 
-/// Build the full container payload set (stitched files + snapshot payloads) for a
-/// plan, deterministically.
 fn container_entries(plan: &StitchedPlan) -> Vec<PackEntry> {
     let mut entries: Vec<PackEntry> = Vec::new();
-    // stitched index/segments/segment-index files.
     for f in plan.to_container_files() {
         let role: &'static str = match f.role {
             "index" => "index",
@@ -162,8 +153,6 @@ fn container_entries(plan: &StitchedPlan) -> Vec<PackEntry> {
             hour_index: None,
         });
     }
-    // Each exact raw source is stored once, independently of how many segments
-    // reference its participation bounds.
     let mut raw_sources = BTreeMap::new();
     for segment in &plan.segments {
         let source = segment.input.raw_source.as_ref().unwrap();
@@ -183,8 +172,6 @@ fn container_entries(plan: &StitchedPlan) -> Vec<PackEntry> {
             hour_index: None,
         });
     }
-    // snapshot payloads: EVERY snapshot hour of EVERY segment (visible + rollback),
-    // named by the segment's assigned global ordinal.
     for p in &plan.segments {
         let po = p.input.play_order;
         for (h, disp) in p.input.coverage.iter() {
@@ -521,7 +508,6 @@ fn stitched_opts() -> PackOptions {
 }
 
 fn plan_rollback() -> StitchedPlan {
-    // Rollback inside one campaign: S0=0..3, S1=2..2 (supersedes hour 2).
     match plan_stitch(
         "g",
         stitch_inputs(),
@@ -557,9 +543,6 @@ fn stitched_plan_packs_and_reader_serves_main_and_rollback() {
     let c = Container::from_bytes(bytes, &ExpectedIdentity::default())
         .expect("open stitched container");
 
-    // main timeline: hours 0,1 from S0; hour 2 from S1. Hour 3 (S0's abandoned
-    // future beyond S1's head=2) is REMOVED from main by S1's cutover and becomes
-    // Rollback-only: playback ends at hour 2.
     assert!(c.index().is_stitched());
     let hours: Vec<i64> = c
         .index()
@@ -568,7 +551,6 @@ fn stitched_plan_packs_and_reader_serves_main_and_rollback() {
         .filter_map(|s| s.hour_index)
         .collect();
     assert_eq!(hours, vec![0, 1, 2]);
-    // hour 2 resolves to segment 1's file (the later branch), not segment 0's.
     let h2 = c
         .index()
         .snapshots
@@ -576,21 +558,16 @@ fn stitched_plan_packs_and_reader_serves_main_and_rollback() {
         .find(|s| s.hour_index == Some(2))
         .unwrap();
     assert_eq!(h2.file, "s00000001.000000000002.snapshot.json");
-    // and its bytes carry po=1 (segment 1), proving the later branch won.
     let s = c.load(2).unwrap();
     assert_eq!(s.rest.get("po").and_then(|v| v.as_u64()), Some(1));
 
-    // the SUPERSEDED hour-2 snapshot (segment 0, po=0) is retained and loadable.
     let rollback = c
         .load_file("s00000000.000000000002.snapshot.json")
         .expect("segment 0 rollback hour 2 retained");
     assert_eq!(rollback.rest.get("po").and_then(|v| v.as_u64()), Some(0));
-    // the abandoned-future hour-3 snapshot (segment 0) is also retained as
-    // rollback-only: loadable by file, absent from the main index.
     assert!(c.load_file("s00000000.000000000003.snapshot.json").is_ok());
     assert!(!c.index().snapshots.iter().any(|s| s.hour_index == Some(3)));
 
-    // the branch graph is present and records the supersession.
     let g = c.segments().unwrap().expect("segments graph");
     let seg0 = g.segments.iter().find(|s| s.segment_id == 0).unwrap();
     assert!(seg0
@@ -598,7 +575,6 @@ fn stitched_plan_packs_and_reader_serves_main_and_rollback() {
         .iter()
         .any(|s| s["superseded_by"].as_i64() == Some(1)));
 
-    // integrity: every entry (incl. the rollback snapshot) hash-verifies.
     c.verify_all().expect("verify_all");
 }
 

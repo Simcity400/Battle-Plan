@@ -1,23 +1,3 @@
-//! C1 CPU-side construction for on-map land-counter quads.
-//!
-//! This module consumes the decoded counter asset/layout chain and a
-//! renderer-neutral mirror of game_ui binding counter content. It never reads
-//! recording bytes. Shipped-file reads are routed through GameFileResolver.
-//!
-//! Evidence split:
-//! - FILE: interface/mapicons.gui:17-159; interface/mapicons.gfx:79-88,
-//!   326-334,442-459; interface/unitview.gfx:419-423; and the division/NATO
-//!   atlas at interface/subuniticons.gfx:182-231.
-//! - DERIVED: natural sprite-frame dimensions, atlas UVs, the 90-degree bar
-//!   transform, and fraction clipping are arithmetic consequences of FILE rows.
-//! - CAPTURE: the 2026-07-10 whole-frame corpus proves one GUI pixel per GUI
-//!   unit over h in [50.0000076, 566.1656494], close-zoom anchor rounding and
-//!   offsets at the captured h=50 and h=79.797 bands, close-zoom backing/symbol
-//!   frame 0, and a two-counter [0, 24] stack separation.
-//! - UNKNOWN-fail-closed: the anchor interpolation between captured bands,
-//!   engine stack-slot identity/order, grouped-counter aggregation at h>=90,
-//!   and runtime tint/modulation are not promoted. The former FIT stack variant
-//!   is retained only as a source-compatibility fail-closed sentinel.
 
 use crate::{
     map_counter_sprites_from_resolver, on_map_division_counter_inventory_from_resolver,
@@ -27,35 +7,18 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// FILE: interface/mapicons.gfx:79-83.
 pub const COUNTER_FRAME_SPRITE: &str = "GFX_onmap_unit_counter";
-/// FILE: interface/mapicons.gfx:326-330.
 pub const COUNTER_ORG_BAR_SPRITE: &str = "GFX_mapicon_unit_bar_org";
-/// FILE: interface/mapicons.gfx:331-334.
 pub const COUNTER_STRENGTH_BAR_SPRITE: &str = "GFX_mapicon_unit_bar_str";
-/// FILE: interface/mapicons.gui:86,93.
 pub const COUNTER_BAR_ROTATION_RADIANS_FILE: f32 = 1.5708;
-/// FILE: interface/mapicons.gui:189-198.
 pub const ACTIVE_ABILITY_ITEM_SIZE_GUI_FILE: [f32; 2] = [20.0, 20.0];
-/// FILE: interface/mapicons.gui:193-197.
 pub const ACTIVE_ABILITY_ICON_SCALE_FILE: f32 = 0.8;
 
-/// CAPTURE: lower/upper camera heights for the repeated h=50 close-zoom anchor
-/// band. `hoi4_frame35240` chunk 28061 and `hoi4_frame61841` chunk 14602 use
-/// the same GUI transform and resolve to anchor-to-origin `[-38, 39]` pixels.
 pub const COUNTER_CAPTURE_H50_MIN: f32 = 50.000_008;
 pub const COUNTER_CAPTURE_H50_MAX: f32 = 50.115_116;
-/// CAPTURE: lower/upper camera heights for the repeated war-cluster band.
-/// `hoi4_frame76017` chunk 24055 through `hoi4_frame69242` chunk 31494 resolve
-/// to anchor-to-origin `[-38, 28]` pixels.
 pub const COUNTER_CAPTURE_H79_MIN: f32 = 79.796_92;
 pub const COUNTER_CAPTURE_H79_MAX: f32 = 79.797_05;
-/// CAPTURE: all sampled counter GUI transforms from h=50.0000076 through
-/// h=566.1656494 use 2/1920 and 2/1080 orthographic diagonals with unchanged
-/// 66x27 / 30x12 VBs, hence one screen pixel per GUI unit.
 pub const COUNTER_CAPTURE_PIXELS_PER_GUI_UNIT: f32 = 1.0;
-/// CAPTURE: the two visible close-zoom stack pairs are separated by 24 pixels:
-/// `hoi4_frame69242` chunks 33696/33815 and `hoi4_frame69592` equivalents.
 pub const COUNTER_CAPTURE_STACK_STEP_GUI: [f32; 2] = [0.0, 24.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -67,8 +30,6 @@ pub enum CounterHonesty {
     Fit,
 }
 
-/// Only Land is constructible in this wave. Naval and air frame/symbol laws
-/// remain UNKNOWN-fail-closed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CounterRenderDomain {
     Land,
@@ -95,7 +56,6 @@ pub struct CounterFrameSelection {
     pub evidence: CounterHonesty,
 }
 
-/// FILE slots: interface/mapicons.gui:57-63,112-159.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CounterBadgeKind {
     NoOrders,
@@ -139,19 +99,15 @@ impl CounterBadgeKind {
     }
 }
 
-/// Renderer-neutral mirror of bound content plus placement/camera results.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CounterRenderInput {
     pub unit_id: String,
     pub province_id: u32,
     pub domain: CounterRenderDomain,
     pub visible: bool,
-    /// UNKNOWN-fail-closed when absent.
     pub screen_anchor_px: Option<ScreenPointPx>,
-    /// Three FILE backing frames exist, but runtime meaning is CAP6-gated.
     pub counter_frame: Option<CounterFrameSelection>,
     pub nato_symbol_key: Option<String>,
-    /// The shipped two-frame symbol meaning is not established; no default.
     pub nato_symbol_frame: Option<CounterFrameSelection>,
     pub strength_fraction: Option<f32>,
     pub organisation_fraction: Option<f32>,
@@ -192,10 +148,6 @@ pub struct CounterDisplaySelection {
     pub omissions: Vec<CounterDisplayOmission>,
 }
 
-/// Narrow product seam for the two counter display controls. The shipped
-/// colour toggle means Countries versus Allegiance; both tint/frame branches
-/// remain CAP6-blocked. Player-only mode additionally requires the item-4
-/// player-country mapping and a measured owner for every admitted unit.
 pub fn select_counter_display_inputs(
     inputs: &[CounterRenderInput],
     player_counters_only: bool,
@@ -283,7 +235,6 @@ pub fn select_counter_display_inputs(
     selection
 }
 
-/// CAP6-owned screen law. FIT evidence is rejected for size/scale-vs-zoom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CounterScreenLaw {
     UnknownFailClosed,
@@ -322,7 +273,6 @@ impl CounterScreenLaw {
         })
     }
 
-    /// Public CAP6 handoff without widening the crate's root export surface.
     pub fn from_capture_close_zoom(assets: &CounterRenderAssets, camera_height: f32) -> Self {
         captured_counter_screen_law(assets, camera_height)
     }
@@ -331,8 +281,6 @@ impl CounterScreenLaw {
 #[derive(Clone, Debug, PartialEq)]
 pub enum CounterStackingLaw {
     UnknownFailClosed,
-    /// Legacy source-compatibility sentinel. The former FIT geometry is retired
-    /// and this variant now fails closed for every stack index.
     FitVerticalByDeclaredContainerHeight,
     EvidencedOffsets {
         offsets_gui: Vec<[f32; 2]>,
@@ -341,7 +289,6 @@ pub enum CounterStackingLaw {
 }
 
 impl CounterStackingLaw {
-    /// Public CAP6 handoff paired with [`CounterScreenLaw::from_capture_close_zoom`].
     pub fn from_capture_close_zoom(assets: &CounterRenderAssets, camera_height: f32) -> Self {
         captured_counter_stacking_law(assets, camera_height)
     }
@@ -359,7 +306,6 @@ pub struct CounterRenderAssets {
     pub zoomed_in_offset: GuiPoint,
 }
 
-/// FILE parser entrypoint. Every read goes through the active resolver.
 pub fn counter_render_assets_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<CounterRenderAssets> {
@@ -420,9 +366,6 @@ pub fn counter_render_assets_from_resolver(
     })
 }
 
-/// CAPTURE close-zoom screen law, gated to the two actually observed anchor
-/// bands and the resolver-loaded FILE geometry used by the capture. Heights in
-/// the unsampled gaps, changed mod layouts, and non-finite inputs fail closed.
 pub fn captured_counter_screen_law(
     assets: &CounterRenderAssets,
     camera_height: f32,
@@ -450,14 +393,8 @@ pub fn captured_counter_screen_law(
 
     CounterScreenLaw::Evidenced {
         pixels_per_gui_unit: COUNTER_CAPTURE_PIXELS_PER_GUI_UNIT,
-        // FILE/DERIVED x: half of the resolver-loaded 76-unit container width.
-        // CAPTURE y: exact world-anchor projection / GUI-CB comparison.
         anchor_to_origin_gui: [-(layout_size.width as f32) * 0.5, anchor_y],
-        // CAPTURE: all 35 h=79.797 type-0 matches first round the projected
-        // anchor to a pixel, then apply the integer offset.
         round_anchor_to_pixel: true,
-        // CAPTURE: close-zoom backing and every observed division strip use
-        // frame zero; allegiance is carried separately by GUI modulation.
         default_counter_frame: Some(CounterFrameSelection {
             frame_index: 0,
             evidence: CounterHonesty::Capture,
@@ -470,8 +407,6 @@ pub fn captured_counter_screen_law(
     }
 }
 
-/// CAPTURE close-zoom stack-offset law. Only two slots were observed; index 2
-/// and above fail closed rather than extrapolating the 24-pixel step.
 pub fn captured_counter_stacking_law(
     assets: &CounterRenderAssets,
     camera_height: f32,
@@ -511,7 +446,6 @@ pub struct CounterQuad {
     pub source_line: usize,
     pub frame_index: u32,
     pub selection_honesty: CounterHonesty,
-    /// Clockwise: top-left, top-right, bottom-right, bottom-left.
     pub vertices: [CounterQuadVertex; 4],
     pub geometry_honesty: CounterHonesty,
 }
@@ -560,12 +494,6 @@ pub struct CounterRenderBatch {
     pub omissions: Vec<CounterRenderOmission>,
 }
 
-/// Resolver-decoded counter texture payload for the replay-app GPU handoff.
-///
-/// The path remains the normalized FILE identity carried by [`CounterQuad`];
-/// callers cannot substitute arbitrary bytes. Resolution goes through the
-/// active effective-VFS resolver and DDS decoding is shared with the map
-/// renderer rather than duplicated in the app.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CounterTextureRgba {
     pub texture_file: String,
@@ -593,8 +521,6 @@ pub fn counter_texture_rgba_from_resolver(
     })
 }
 
-/// Deterministic CPU construction. Visible inputs are grouped by province and
-/// domain, then sorted by stable unit id before stack indices are assigned.
 pub fn build_counter_instances(
     assets: &CounterRenderAssets,
     inputs: &[CounterRenderInput],
@@ -954,8 +880,6 @@ fn build_bar(
         return;
     };
 
-    // DERIVED from FILE: clockwise quarter-turn maps 3x17 to 17x3. Cropping
-    // visible width maps to the source V axis.
     let cropped_v = frame.uv.v1 - (frame.uv.v1 - frame.uv.v0) * fraction;
     let local = [position.x as f32, position.y as f32];
     let size = [frame.rect.height as f32 * fraction, frame.rect.width as f32];
@@ -1051,7 +975,6 @@ fn build_badges(
         if kind == CounterBadgeKind::ActiveAbility {
             size[0] *= ACTIVE_ABILITY_ICON_SCALE_FILE;
             size[1] *= ACTIVE_ABILITY_ICON_SCALE_FILE;
-            // DERIVED from FILE orientation=center inside active_ability_item.
             local[0] += (ACTIVE_ABILITY_ITEM_SIZE_GUI_FILE[0] - size[0]) * 0.5;
             local[1] += (ACTIVE_ABILITY_ITEM_SIZE_GUI_FILE[1] - size[1]) * 0.5;
         }
@@ -1503,7 +1426,7 @@ mod tests {
         let batch =
             build_counter_instances(&assets(), &[row], law(1.0, [0.0, 0.0]), &single_stack_law());
         assert_eq!(batch.instances.len(), 1);
-        assert_eq!(batch.instances[0].quads.len(), 1); // explicit badge only
+        assert_eq!(batch.instances[0].quads.len(), 1);
         assert_eq!(batch.omissions.len(), 4);
         assert!(batch.omissions.iter().any(|row| {
             row.reason == CounterRenderOmissionReason::CounterFrameSelectionUnknown
@@ -1578,7 +1501,7 @@ mod tests {
         let batch =
             build_counter_instances(&assets(), &[row], law(1.0, [0.0, 0.0]), &single_stack_law());
         assert_eq!(batch.instances.len(), 1);
-        assert_eq!(batch.instances[0].quads.len(), 2); // FILE-selected bar frames only
+        assert_eq!(batch.instances[0].quads.len(), 2);
         assert_eq!(batch.omissions.len(), 3);
         assert!(batch.omissions.iter().any(|row| {
             row.reason == CounterRenderOmissionReason::CounterFrameSelectionUnknown

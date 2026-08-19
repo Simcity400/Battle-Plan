@@ -127,7 +127,6 @@ def _parse_technology_block(tz, rec):
                 rec["research_bonuses"].append(_parse_bonus(tz, True))
             else:
                 _skip_block_body(tz)
-        # scalar children (override_icons_tag, next_bonus_id) ignored
 
 
 def _parse_countries(tz, by_tag):

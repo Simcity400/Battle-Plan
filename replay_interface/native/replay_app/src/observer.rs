@@ -1,27 +1,3 @@
-//! E6 observer country selection and optional fog mode.
-//!
-//! Product model (see the `PROJECT.md` heading "Fidelity and truth states"):
-//! the
-//! default view is the omniscient world (no fog). The viewer may select any
-//! country in the complete d18 roster for replay-owned panels. Fog is a
-//! separate optional request and is admitted only when the selected country
-//! has complete current-frame d94/d95 evidence. This module owns:
-//!
-//! * [`PovState`] — the POV state object + a stateless, idempotent toggle.
-//! * [`povs_from_frame`] — the country picker source, derived from the typed
-//!   complete d18 roster, never from the session-player subset.
-//! * [`PovState::render_status`] — the fail-closed render contract: because
-//!   a selected POV requires authenticated current-frame replay inputs;
-//!   POV entry binds to the current frame's exact d94 province visibility and
-//!   d95 spotted-unit state. Missing or incomplete data is unavailable rather
-//!   than an invitation to display omniscient pixels.
-//!
-//! The POV *state* still flips on entry so the UI can show which country is
-//! observed and offer the toggle.
-//!
-//! [`povs_from_session`] remains only as a legacy/session diagnostic helper.
-//! Product country selection calls [`povs_from_frame`] and therefore cannot be
-//! restricted by multiplayer participation or recorder POV.
 
 use replay_core::{
     Leaf, PovVisibilityView, SessionMetadataView, SpottedUnitsView, ViewStatus, WorldFrame,
@@ -29,49 +5,35 @@ use replay_core::{
 #[cfg(test)]
 use replay_core::SessionHeaderView;
 
-/// Fail-closed diagnostic prefix for an unavailable selected-POV frame join.
 pub const POV_RECORDED_STATE_UNAVAILABLE: &str =
     "selected POV has no complete current-frame d94/d95 visibility and spotted-unit evidence";
 
-/// Fail-closed diagnostic surfaced when the recording carries no
-/// player-country list the picker can use (see the module note).
 pub const SESSION_PLAYERS_GAP: &str = "session player-country list unavailable: this recording \
      carries no player-country list under session.player_countries or \
      world.scenario.players (replay_core SessionMetadataView.player_countries \
      is Absent); country picker fails closed";
 
-/// Observer view mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObserverMode {
-    /// Default omniscient world view (no fog).
     Omniscient,
-    /// Rendering optional fog as a country (by TAG).
     Pov(String),
 }
 
-/// One selectable d18 country in the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountryChoice {
     pub tag: String,
-    /// Human player label when the recording carried one.
     pub label: Option<String>,
 }
 
-/// The country picker's source state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PovPicker {
-    /// One or more selectable d18 countries.
     Available(Vec<CountryChoice>),
-    /// No usable player-country list; carries the fail-closed reason.
     Unavailable(String),
 }
 
-/// What the map should render for the current POV state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PovRenderStatus {
-    /// Omniscient world view — render normally.
     Omniscient,
-    /// Exact current-frame d94/d95 inputs admitted for this POV.
     Recorded {
         pov: String,
         province_slot_count: usize,
@@ -80,16 +42,12 @@ pub enum PovRenderStatus {
         spotted_land_unit_count: Option<usize>,
         spotted_taskforce_count: Option<usize>,
     },
-    /// A selected POV lacks complete current-frame inputs. The caller must
-    /// omit the POV-dependent render, never substitute the omniscient world.
     Unavailable {
         pov: String,
         diagnostic: String,
     },
 }
 
-/// The POV state object. Holds the current mode plus the last-entered POV so
-/// the one-key toggle can flip back to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PovState {
     selected_ui_country: Option<String>,
@@ -115,16 +73,12 @@ impl PovState {
     pub fn mode(&self) -> &ObserverMode {
         &self.mode
     }
-    /// Country whose replay-owned panels are open. This is independent of fog.
     pub fn selected_ui_country(&self) -> Option<&str> {
         self.selected_ui_country.as_deref()
     }
-    /// Select a country for replay-owned UI without requesting fog.
     pub fn select_ui_country(&mut self, tag: &str) {
         self.selected_ui_country = Some(tag.to_string());
     }
-    /// Clear both panel and fog selection after the complete roster becomes
-    /// unavailable. No previous-hour country identity is held as current.
     pub fn clear_country_selection(&mut self) {
         self.selected_ui_country = None;
         self.mode = ObserverMode::Omniscient;
@@ -133,35 +87,26 @@ impl PovState {
     pub fn is_omniscient(&self) -> bool {
         matches!(self.mode, ObserverMode::Omniscient)
     }
-    /// The active POV tag, or `None` in the world view.
     pub fn active_pov(&self) -> Option<&str> {
         match &self.mode {
             ObserverMode::Pov(tag) => Some(tag),
             ObserverMode::Omniscient => None,
         }
     }
-    /// The last POV entered this session (the toggle target), if any.
     pub fn last_pov(&self) -> Option<&str> {
         self.last_pov.as_deref()
     }
 
-    /// Enter a country POV. Records it as the toggle target. Entering the same
-    /// tag again is idempotent (state unchanged).
     pub fn enter_pov(&mut self, tag: &str) {
         self.selected_ui_country = Some(tag.to_string());
         self.mode = ObserverMode::Pov(tag.to_string());
         self.last_pov = Some(tag.to_string());
     }
 
-    /// Return to the omniscient world view (keeps the last-POV toggle target).
     pub fn exit_to_world(&mut self) {
         self.mode = ObserverMode::Omniscient;
     }
 
-    /// One-key toggle between the world view and the last-entered POV. This is
-    /// **stateless** (the result is a pure function of `mode` + `last_pov`)
-    /// and **idempotent under pairing**: `toggle(); toggle();` returns to the
-    /// starting state. With no POV ever entered, toggling is a no-op.
     pub fn toggle(&mut self) {
         self.mode = match &self.mode {
             ObserverMode::Omniscient => match self
@@ -176,7 +121,6 @@ impl PovState {
         };
     }
 
-    /// Join the observer mode to the displayed frame (fail-closed on POV).
     pub fn render_status(&self, frame: Option<&WorldFrame>) -> PovRenderStatus {
         match &self.mode {
             ObserverMode::Omniscient => PovRenderStatus::Omniscient,
@@ -290,16 +234,11 @@ fn exact_spotted_surface<T>(
     }
 }
 
-/// Build the country picker from the session view. Fails closed to
-/// [`PovPicker::Unavailable`] when the player-country list is absent,
-/// unobtained, or present-but-empty — the picker never invents countries and
-/// never parses behind the `replay_core` seam.
 pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
     match &session.player_countries {
         Leaf::Measured(list) => {
             let mut choices = Vec::new();
             for pc in list {
-                // Only fully-identified players are selectable POVs.
                 if let Leaf::Measured(tag) = &pc.tag {
                     choices.push(CountryChoice {
                         tag: tag.clone(),
@@ -322,10 +261,6 @@ pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
     }
 }
 
-/// Build the production observer-country picker from the complete d18 roster.
-///
-/// This selection controls replay-owned panels only. Choosing a country here
-/// does not request fog and therefore does not require d94/d95 evidence.
 pub fn povs_from_frame(frame: &WorldFrame) -> PovPicker {
     let roster = frame.d18_country_roster();
     if roster.status != ViewStatus::Present {
@@ -471,9 +406,6 @@ mod tests {
             taskforce_units: Leaf::Unobtained,
             land_frame_sequence: Leaf::Measured(9),
             taskforce_frame_sequence: Leaf::Unobtained,
-            // An observation of this very hour. POV admission turns on the
-            // vector and the sequences, not on how old the frame is: a
-            // retained frame is still a real observation and must still admit.
             land_frame_age_hours: Leaf::Measured(0),
             taskforce_frame_age_hours: Leaf::Unobtained,
         };
@@ -526,8 +458,6 @@ mod tests {
             raw_province_levels: Leaf::Absent,
             capture_sequence: Leaf::Absent,
             pov_country_id: Leaf::Absent,
-            // The nonexact A3 shape carries no authority block, so it makes no
-            // observation-time claim either.
             producer_hour_index: Leaf::Absent,
             producer_frame_age_hours: Leaf::Absent,
             spotted_units: spotted.clone(),
@@ -548,7 +478,6 @@ mod tests {
 
     #[test]
     fn toggle_is_stateless_and_idempotent_under_pairing() {
-        // From every reachable state, toggle();toggle(); is a no-op.
         let mut fresh = PovState::new();
         let before = fresh.clone();
         fresh.toggle();
@@ -558,19 +487,18 @@ mod tests {
         let mut in_pov = PovState::new();
         in_pov.enter_pov("ENG");
         let before = in_pov.clone();
-        in_pov.toggle(); // -> world
+        in_pov.toggle();
         assert!(in_pov.is_omniscient());
-        in_pov.toggle(); // -> back to ENG
+        in_pov.toggle();
         assert_eq!(in_pov, before);
 
-        // World-with-remembered-POV round-trips too.
         let mut world_after = PovState::new();
         world_after.enter_pov("ENG");
         world_after.exit_to_world();
         let before = world_after.clone();
-        world_after.toggle(); // -> ENG
+        world_after.toggle();
         assert_eq!(world_after.active_pov(), Some("ENG"));
-        world_after.toggle(); // -> world
+        world_after.toggle();
         assert_eq!(world_after, before);
     }
 
@@ -585,7 +513,6 @@ mod tests {
                 tag: Leaf::Measured("SOV".into()),
                 player_name: Leaf::Absent,
             },
-            // Unmeasured tag → dropped (never a fabricated POV).
             PlayerCountry {
                 tag: Leaf::Unobtained,
                 player_name: Leaf::Measured("Ghost".into()),

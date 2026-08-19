@@ -21,7 +21,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import gap_ledger  # noqa: E402  (path is set immediately above)
+import gap_ledger
 
 
 SCRIPT = Path(__file__).with_name("capture_scorecard.py")
@@ -45,10 +45,6 @@ def outcome(domain_id, start, end, reason):
 
 
 def derived(domains, start, end, reason, kind="status_bits"):
-    # The witness carries the fields its kind requires, because the ledger
-    # expander refuses a witness missing one -- a partial witness on the wire
-    # would be a gap whose evidence nobody can read. The values are not what any
-    # axis here asserts on; the KIND is.
     witness = {"kind": kind}
     if kind == "hour_discontinuity":
         witness["previous_hour"] = start - 1
@@ -86,9 +82,6 @@ def manifest(outcomes, gaps, frames=4, domain_ids=(10, 11)):
                           "row_count_total": 1, "gap_record_count": None}
                 for i in domain_ids
             },
-            # The scorecard reads the RUN-ENCODED ledger. Fixtures still state
-            # the flat rows they want it to see; `pack_rows_for_tests` wraps them
-            # in the smallest valid ledger carrying exactly those rows.
             "gap_ledger": gap_ledger.pack_rows_for_tests(gaps, outcomes),
             "frame_degraded_outcomes": [],
         },
@@ -121,8 +114,8 @@ class GapReconciliation(unittest.TestCase):
         book = manifest(
             outcomes=[outcome(10, 1, 1, "source_unavailable")],
             gaps=[
-                derived([10], 1, 1, "source_unavailable"),   # the projection
-                derived([10], 2, 2, "source_unavailable"),   # delivered, flagged
+                derived([10], 1, 1, "source_unavailable"),
+                derived([10], 2, 2, "source_unavailable"),
                 derived([11], 2, 2, "partial_data"),
                 derived([11], 3, 3, "source_unavailable"),
             ],
@@ -256,9 +249,9 @@ class ExcludedRecordAccounting(unittest.TestCase):
             "total_records": 3,
             "per_domain": {"11": 2, "10": 1},
             "records": [
-                {"game_hour_raw": 2, "domain_id": 11},   # flagged
-                {"game_hour_raw": 3, "domain_id": 11},   # looks clean
-                {"game_hour_raw": 1, "domain_id": 10},   # inside a producer gap
+                {"game_hour_raw": 2, "domain_id": 11},
+                {"game_hour_raw": 3, "domain_id": 11},
+                {"game_hour_raw": 1, "domain_id": 10},
             ],
         }
         count, detail = axis(book, "records excluded from the seal")

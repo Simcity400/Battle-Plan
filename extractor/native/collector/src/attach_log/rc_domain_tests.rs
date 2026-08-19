@@ -1,5 +1,3 @@
-//! `rc_domain_tests`, extracted verbatim from `attach_log.rs`.
-
 use super::*;
 
 #[test]
@@ -143,28 +141,10 @@ fn scheduler_probe_is_inserted_before_physical_final_frame_end() {
     ));
 }
 
-// The tests below toggle the process-global RC_ENABLED and drain the
-// process-global per-domain sink, so they take
-// `super::lock_rc_counters()` — the ONE lock over the whole read-counter
-// family, whose doc enumerates every entry point.
-//
-// A module-private lock stood here and did not work. It serialised these
-// tests against each other but not against the 36 tests OUTSIDE this
-// module that drive a production frame, and frame assembly stores the
-// control's perf gate into RC_ENABLED at the top of every frame. The
-// residual flip was covered by an `eventually()` helper that re-ran each
-// body up to five times; it is gone, along with every retry, because a
-// retry loop around a race also swallows a genuine regression that
-// breaks the counters four times in five. Every assertion here now runs
-// ONCE and must hold on the first attempt.
-
-// Uses domain ids 213/214, which no production code tags, so parallel
-// tests bumping the GLOBAL counters cannot contaminate these slots.
 #[test]
 fn rc_domain_scope_attributes_nested_counts_and_drains() {
     let _rc_counters = super::lock_rc_counters();
     RC_ENABLED.store(true, Ordering::Relaxed);
-    // Pre-drain our slots in case of a previous run in this process.
     let _ = rc_domain_take_and_reset();
     {
         let _outer = RcDomainScope::new(213);
@@ -174,7 +154,6 @@ fn rc_domain_scope_attributes_nested_counts_and_drains() {
             let _inner = RcDomainScope::new(214);
             rc_bump(RC_READS, 7);
         }
-        // back under the outer tag after inner drop
         rc_bump(RC_READS, 3);
     }
     rc_flush_current_thread();
@@ -189,7 +168,6 @@ fn rc_domain_scope_attributes_nested_counts_and_drains() {
     );
     assert_eq!(d213[RC_PD_SEH_CALLS], 5);
     assert_eq!(d214[RC_PD_READS], 7, "inner scope attributed separately");
-    // drained means drained
     assert!(rc_domain_take_and_reset()
         .iter()
         .all(|(d, _)| *d != 213 && *d != 214));
@@ -205,27 +183,20 @@ fn rc_domain_unit_names_are_stable_and_formatted() {
     assert_eq!(n[RC_PD_GUARDED_SPL_NS], "rc_d213_guarded_spl_ns");
     assert_eq!(n[RC_PD_GUARDED_SPL_N], "rc_d213_guarded_spl_n");
     assert_eq!(n[RC_PD_SCAN_GUARDED_NS], "rc_d213_scan_guarded_ns");
-    // Same leaked pointers on second lookup (no re-leak per call).
     let again = rc_domain_unit_names(213);
     assert!(std::ptr::eq(n, again));
 }
 
-// Deterministic stride: with the phase pinned to 0, exactly every 64th
-// logical read is sampled, counts route to the active domain tag, and
-// the sampled-time accumulator moves. Domain id 215 is test-reserved.
 #[test]
 fn rc_read_probe_samples_every_64th_and_routes_per_domain() {
     let _rc_counters = super::lock_rc_counters();
     RC_ENABLED.store(true, Ordering::Relaxed);
     let _ = rc_domain_take_and_reset();
-    // Pin a NONZERO phase (0 would trigger the lazy re-seed).
     RC_LOCAL.with(|r| r.spl_ctr.set(64));
     {
         let _scope = RcDomainScope::new(215);
         for _ in 0..128 {
             let probe = rc_read_probe(16);
-            // Give a sampled window a measurable body so elapsed
-            // nanos cannot floor to 0 at QPC resolution.
             let mut acc = 0u64;
             for i in 0..2_000u64 {
                 acc = std::hint::black_box(acc.wrapping_add(i));
@@ -242,9 +213,6 @@ fn rc_read_probe_samples_every_64th_and_routes_per_domain() {
         .find(|(d, _)| *d == 215)
         .map(|(_, v)| *v)
         .expect("slot 215 drained");
-    // From phase 64, counts run 65..=192: samples at exactly 128
-    // and 192. (A phase-shifted stride would see 3; see the
-    // boundary test below for the 63-stride discriminator.)
     assert_eq!(d215[RC_PD_READS], 128);
     assert_eq!(d215[RC_PD_BULK_BYTES], 128 * 16);
     assert_eq!(d215[RC_PD_GUARDED_SPL_N], 2);
@@ -252,11 +220,6 @@ fn rc_read_probe_samples_every_64th_and_routes_per_domain() {
     assert!(d215[RC_PD_GUARDED_SPL_N] <= d215[RC_PD_READS]);
 }
 
-// Exact stride boundary (1R review finding 3: the aggregate-count
-// oracle above alone cannot distinguish stride 63 or a phase-shifted
-// 64 — this can): from phase 126, read #1 (count 127) must NOT sample
-// and read #2 (count 128) MUST. A 63-stride samples neither (127%63=1,
-// 128%63=2); a shifted 64 samples the wrong one.
 #[test]
 fn rc_read_probe_stride_boundary_is_exact() {
     let _rc_counters = super::lock_rc_counters();
@@ -286,9 +249,6 @@ fn rc_read_probe_stride_boundary_is_exact() {
     assert_eq!(d215[RC_PD_GUARDED_SPL_N], 1);
 }
 
-// Fresh threads must NOT start at phase 0, and DIFFERENT fresh threads
-// must get DIFFERENT phases (1R2 finding: a constant shared seed would
-// pass a mere nonzero check while preserving frame-wide phase lock).
 #[test]
 fn rc_read_probe_seeds_fresh_threads_with_distinct_phases() {
     let _rc_counters = super::lock_rc_counters();
@@ -305,12 +265,6 @@ fn rc_read_probe_seeds_fresh_threads_with_distinct_phases() {
     let (a, b) = (grab(), grab());
     RC_ENABLED.store(false, Ordering::Relaxed);
     let _ = rc_domain_take_and_reset();
-    // Unseeded would leave exactly 1 on both; a constant seed would
-    // leave them equal. Sampling depends only on the low 6 bits, so
-    // compare PHASES, not whole counters (a seed source stepping by a
-    // multiple of 64 would pass a whole-counter check while keeping
-    // every thread phase-locked — 1R3 finding). Consecutive golden
-    // steps differ by 21 mod 64, so distinct phases are guaranteed.
     assert_ne!(a, 1, "fresh thread ran unseeded at phase 0");
     assert_ne!(a, 0);
     assert_ne!(
@@ -320,10 +274,6 @@ fn rc_read_probe_seeds_fresh_threads_with_distinct_phases() {
     );
 }
 
-// Integration: the probe must fire from read_bytes_scan ITSELF (1R2
-// finding: probing rc_scan_probe directly leaves the wiring untested —
-// deleting the probe calls inside read_bytes_scan must fail a test).
-// Reads our own live buffer via the real RPM path.
 #[test]
 fn read_bytes_scan_integrates_scan_probe() {
     let _rc_counters = super::lock_rc_counters();
@@ -347,17 +297,12 @@ fn read_bytes_scan_integrates_scan_probe() {
         .find(|(d, _)| *d == 218)
         .map(|(_, v)| *v)
         .expect("slot 218 drained");
-    // Unsampled: a 4 KiB guarded scan is microseconds, three orders above
-    // QPC's ~100 ns tick, so this cannot floor to zero.
     assert!(
         d218[RC_PD_SCAN_GUARDED_NS] > 0,
         "read_bytes_scan must charge its own scan probe"
     );
 }
 
-// Scan probes are unsampled: EVERY call accumulates. Draining after
-// each call (1R review finding 3: a single aggregate >0 assert would
-// pass even if 2 of 3 calls were dropped) proves per-call coverage.
 #[test]
 fn rc_scan_probe_accumulates_every_call() {
     let _rc_counters = super::lock_rc_counters();
@@ -390,8 +335,6 @@ fn rc_scan_probe_accumulates_every_call() {
     RC_ENABLED.store(false, Ordering::Relaxed);
 }
 
-// Gate OFF is the production path: no probe, no counts, no timing —
-// the primitives pay only the relaxed-load early-return.
 #[test]
 fn rc_probes_are_inert_when_gate_off() {
     let _rc_counters = super::lock_rc_counters();
@@ -401,13 +344,15 @@ fn rc_probes_are_inert_when_gate_off() {
         let _scope = RcDomainScope::new(217);
         for read in 0..70 {
             let probe = rc_read_probe(8);
-            assert!(probe.is_none(), "read {read}: gate is OFF, probe must not arm");
+            assert!(
+                probe.is_none(),
+                "read {read}: gate is OFF, probe must not arm"
+            );
             rc_read_probe_end(probe);
         }
         assert!(rc_scan_probe().is_none(), "gate is OFF, scan must not arm");
     }
     rc_flush_current_thread();
-    // Gate OFF must accumulate nothing, not even read counts.
     assert!(
         rc_domain_take_and_reset().iter().all(|(d, _)| *d != 217),
         "slot 217 accumulated with the gate OFF"

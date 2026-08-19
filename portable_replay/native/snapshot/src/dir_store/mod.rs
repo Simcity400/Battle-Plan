@@ -1,9 +1,3 @@
-//! Anchored, handle-relative directory-store access.
-//!
-//! The root pathname is resolved exactly once. Every descendant component is
-//! then opened relative to its already-open parent, checked on that object, and
-//! read from that handle. No descendant pathname is retained or re-resolved.
-
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -221,8 +215,6 @@ pub(super) struct ListedObject {
     pub(super) id: ObjectId,
 }
 
-/// Bind the requested component to the opened object and to exactly one name
-/// in the same parent. This is also the directory lookalike policy gate.
 pub(super) fn validate_binding(
     expected: &str,
     actual_name: &str,
@@ -289,9 +281,6 @@ pub(super) fn validate_reopen_identity(
     }
 }
 
-/// Select the only handle from which bytes may be read. Production and the
-/// tag-injection tests share this function so a permitted non-surrogate tag
-/// cannot bypass the reopen-and-identity check without breaking the gate.
 pub(super) fn identity_bound_handle<T, F>(
     tag: u32,
     inspected: T,

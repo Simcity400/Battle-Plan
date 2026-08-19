@@ -34,10 +34,6 @@ from paradox_parser import Node, coerce_scalar
 from static_artifact_common import validate_clausewitz_text
 
 
-# Exact shipped-source compatibility for a729. The Clausewitz focus loader
-# accepts this document's one surplus top-level closing brace at EOF; the
-# generic strict parser correctly rejects the same shape everywhere else.
-# Admission is byte-bound so a changed game file or mod can never borrow it.
 _TRAILING_ROOT_CLOSER_COMPAT = {
     "common/national_focus/TSR_lingguang_incident_joint_branch.txt":
         "44bd7c7ae071b45956abe08035dedd955e2f7041c8c144be40803e343207f8a6",
@@ -56,9 +52,6 @@ def _validate_focus_source(text: str, rel: str, source_path: Path) -> str | None
         trimmed = text.rstrip()
         if not trimmed.endswith("}"):
             raise
-        # Removing exactly the terminal closer must produce an otherwise strict,
-        # fully balanced document. No interior or multiple-brace damage is
-        # tolerated by this exact-byte exception.
         validate_clausewitz_text(trimmed[:-1], rel)
         if "unmatched closing brace" not in str(original):
             raise
@@ -125,19 +118,7 @@ def parse_focus(node: Node, loc, rel, source_layer=None) -> dict:
         "cost": _num(node.get("cost")),
         "prerequisites": _prereq_groups(node),
         "mutually_exclusive": _mutual_exclusions(node),
-        # Count, not contents. `CNationalFocus::GetPosition` (a729
-        # `FUN_1402d2330`) adds each `offset` block's x/y to the resolved
-        # position ONLY when that block's trigger passes against the evaluating
-        # country, so a focus with any offset block has a country-dependent
-        # authored position. A replay-side derivation cannot evaluate scripted
-        # triggers, so it needs to know the block is THERE in order to refuse;
-        # it never needs the trigger body. Emitting the count rather than a
-        # boolean keeps the gate able to say how much scripted geometry the
-        # effective content carries.
         "scripted_position_offsets": len(node.get_all("offset")),
-        # Same shape, for the other scripted gate on the same node: a focus with
-        # an `allow_branch` block is visible only when that trigger passes, so
-        # the visible set is not a function of authored content alone.
         "allow_branch_blocks": len(node.get_all("allow_branch")),
         "has_available": node.get("available") is not None,
         "has_bypass": node.get("bypass") is not None,
@@ -214,7 +195,6 @@ def parse_focus_defs(layers, loc, *, strict=False) -> dict:
                 country = None
                 cblk = v.get("country")
                 if isinstance(cblk, Node):
-                    # country = { factor=... modifier{ tag=X } } — record tag refs
                     country = [vv for kk, vv in cblk.entries
                                if kk.lower() == "tag" and isinstance(vv, str)]
                 trees[tid] = {

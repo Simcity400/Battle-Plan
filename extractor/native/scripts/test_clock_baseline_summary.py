@@ -37,8 +37,6 @@ def settle_sample(hour_delta, window_ms, paused=False, pause_forced=False):
         "observed_window_ms": window_ms,
         "paused_final": paused,
         "pause_forced_final": pause_forced,
-        # Set on essentially every sample of a healthy speed-5 run; present so a
-        # test goes red if it is ever made an exclusion.
         "tick_inhibited_final": True,
         "advancing": hour_delta > 0,
     }
@@ -87,11 +85,6 @@ def span_row(at_ms, hour_a, cpu_ms, phase="capture", pid=1, paused=False,
     return row
 
 
-# Where a fixture run's dwell starts, and how long the recorder was asked to
-# hold it. Both are arbitrary but they must be REAL: every witness row a live
-# harness writes carries a timestamp, and the ready receipt carries the dwell,
-# so a fixture without them describes a run that cannot exist and would let the
-# attach bound go permanently untested.
 ATTACH_START_MS = 1_700_000_000_000
 DWELL_MS = 60_000
 
@@ -160,9 +153,6 @@ class RunDir:
     def _write(self, name, rows):
         if not rows:
             return
-        # utf-8-sig: Windows PowerShell 5.1's Add-Content -Encoding UTF8 writes a
-        # BOM, and a reader that does not strip it fails on the first line of
-        # every real run.
         with open(self.path / name, "w", encoding="utf-8-sig") as handle:
             for row in rows:
                 handle.write(json.dumps(row) + "\n")
@@ -410,8 +400,6 @@ class ClockBaselineSummaryTests(unittest.TestCase):
         self.assertEqual(span["game_hours"], 50)
         self.assertEqual(span["wall_ms"], 10_000)
         self.assertAlmostEqual(span["hours_per_second"], 5.0, places=9)
-        # 20 s of CPU over 10 s of wall is two logical cores, and 400 ms of CPU
-        # bought each of the 50 game-hours.
         self.assertAlmostEqual(span["target_cpu_cores"], 2.0, places=9)
         self.assertAlmostEqual(span["cpu_ms_per_game_hour"], 400.0, places=9)
 
@@ -426,13 +414,13 @@ class ClockBaselineSummaryTests(unittest.TestCase):
         """
         rows = [
             span_row(0, hour_a=100, cpu_ms=1_000),
-            span_row(1_000, hour_a=110, cpu_ms=2_000),          # clean
+            span_row(1_000, hour_a=110, cpu_ms=2_000),
             span_row(2_000, hour_a=120, cpu_ms=3_000, paused=True),
             span_row(3_000, hour_a=130, cpu_ms=4_000),
-            span_row(4_000, hour_a=125, cpu_ms=5_000),          # hour went back
-            span_row(5_000, hour_a=140, cpu_ms=4_000),          # cpu went back
-            span_row(6_000, hour_a=150, cpu_ms=6_000, pid=99),  # other process
-            span_row(6_000, hour_a=160, cpu_ms=7_000, pid=99),  # no wall time
+            span_row(4_000, hour_a=125, cpu_ms=5_000),
+            span_row(5_000, hour_a=140, cpu_ms=4_000),
+            span_row(6_000, hour_a=150, cpu_ms=6_000, pid=99),
+            span_row(6_000, hour_a=160, cpu_ms=7_000, pid=99),
         ]
         span = BASELINE.span_aggregate(rows, "x")
         self.assertEqual(span["segments"], 1)
@@ -552,7 +540,7 @@ class ClockBaselineSummaryTests(unittest.TestCase):
         """
         rows = [
             span_row(0, hour_a=100, cpu_ms=1_000),
-            span_row(1_000, hour_a=110, cpu_ms=2_000),                       # clean
+            span_row(1_000, hour_a=110, cpu_ms=2_000),
             span_row(2_000, hour_a=120, cpu_ms=3_000, drop=("processor_milliseconds",)),
             span_row(3_000, hour_a=130, cpu_ms=4_000),
             span_row(4_000, hour_a=140, cpu_ms=5_000, drop=("hour_a",)),
@@ -616,10 +604,6 @@ class ClockBaselineSummaryTests(unittest.TestCase):
         self.assertIsNotNone(problem, summary["problems"])
         self.assertIn("not reliable as collector cost", problem)
         self.assertIn("470000 ms", problem)
-        # The claim it must NOT make: that a hidden pause happened, or by how
-        # much the span term is wrong. Asserted positively as well as
-        # negatively, because "does not contain the word overstate" is trivial
-        # to satisfy while still asserting contamination in other words.
         self.assertIn("cannot show whether one occurred", problem)
         self.assertNotIn("overstate", problem)
 

@@ -1,9 +1,3 @@
-//! Recorder-side compact domain registry.
-//!
-//! Descriptor types, the assigned-domain table, and validation live in the
-//! shared `compact_contract` crate; this module only keeps the
-//! recorder-specific decoder-module registry.
-
 pub use compact_contract::{
     assigned_descriptor_by_id, assigned_descriptor_by_name, descriptor_names, domain,
     id_for_scheduled_name, requires_data_record, validate_descriptor, wire_name_for_id,
@@ -161,7 +155,10 @@ mod tests {
         let production_d70 = assigned_descriptor_by_name("sunk_convoy_history_live")
             .expect("production d70 remains assigned");
         assert_eq!(production_d70.id, 70);
-        assert_eq!(production_d70.status, CompactDomainStatus::ProductionComplete);
+        assert_eq!(
+            production_d70.status,
+            CompactDomainStatus::ProductionComplete
+        );
         assert!(production_d70.schedulable);
         assert!(production_d70.requires_data_record);
         assert_eq!(
@@ -188,7 +185,6 @@ mod tests {
             .expect("builtins register");
         registry
             .register(CompactDomainModule {
-                // Deliberately outside the active production id sequence.
                 descriptor: domain(
                     999,
                     "test_lane_live",

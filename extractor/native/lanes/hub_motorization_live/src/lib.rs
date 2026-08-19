@@ -1,28 +1,3 @@
-//! hub_motorization_live (domain 62) -- exact per-country supply-node motorization levels.
-//!
-//! Build 870ebf validated shape:
-//!
-//! ```text
-//! CCountrySupplySystem vtable[0] = module + 0x298BBF8
-//! CCountrySupplySystem vtable[1] = module + 0x298BC48
-//! country        = u64[CCSS + 0x78]
-//! tag_db_id      = u32[country + 0x08]
-//! node_array     = u64[CCSS + 0x188]
-//! node_count     = u32[CCSS + 0x194]      // >0 selects the persistent settings object
-//! record[i]      = node_array + i * 0x28
-//!   province     = u32[record + 0x00]
-//!   state        = u32[record + 0x04]
-//!   motor_map    = u64[record + 0x10]
-//!   map_size     = u32[record + 0x1c]
-//!   motor_map[j] = 8-byte entry
-//!     actor_tag_db_id = u32[entry + 0x00]
-//!     level          = u8 [entry + 0x04]  // 1=50%, 2=100%; 0 is not persisted
-//! ```
-//!
-//! The stored key is already the country table/tag-db id: lookup call sites first
-//! result directly to entry `+0x00`. Emission validates that key against the live
-//! country table.
-
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 62;
@@ -34,14 +9,6 @@ pub const COUNTRY_COUNT_OFF: u64 = 0x31C;
 pub const COUNTRY_VTABLE_RVA: u64 = 0x27D0E90;
 pub const COUNTRY_TAG_DB_ID_OFF: u64 = 0x08;
 
-/// Anchored root: CSupplySystem lives at `u64[CGameState + 0x3D8]` and owns a
-/// `std::vector<CCountrySupplySystem*>` whose header is
-/// `{ data_ptr @ +0x108, count @ +0x110, cap @ +0x114 }`. Walking that vector
-/// replaces the old full-heap vtable sweep for CCSS discovery -- LIVE-VERIFIED
-/// (D04 1944) to yield the SAME set of row-producing objects and byte-identical
-/// rows as the sweep, while additionally rejecting orphan/stale CCSS objects the
-/// sweep would (harmlessly) surface. The vector reallocates on resize, so the
-/// header is re-read every frame and NEVER cached across frames.
 pub const CSUPPLY_SYSTEM_OFF: u64 = 0x3D8;
 pub const CSS_VECTOR_DATA_OFF: u64 = 0x108;
 pub const CSS_VECTOR_COUNT_OFF: u64 = 0x110;
@@ -61,53 +28,16 @@ pub const MOTOR_MAP_ENTRY_STRIDE: usize = 0x08;
 pub const MOTOR_MAP_ACTOR_TAG_DB_ID_OFF: usize = 0x00;
 pub const MOTOR_MAP_LEVEL_OFF: usize = 0x04;
 
-/// Fail-closed ceiling on a live country-table COUNT and on the per-country
-/// CCSS vector's count/capacity words. A COUNT, not an id — the id question is
-/// [`MAX_COUNTRY_TAG_DB_ID`], which used to share this constant and must not,
-/// because widening an id space and widening a live-read budget are different
-/// decisions.
-///
-/// PRICED: a country-table slot is one 8-byte pointer, so at this ceiling the
-/// walk covers 512 KB. It is 149x the vanilla country count. Was `2_048`, which
-/// priced nothing. NOT engine-proven; overflow is a typed
-/// `CountryTableUnavailable`/`CcssVectorIncoherent`.
 pub const MAX_COUNTRY_COUNT: u32 = 65_536;
 
-/// Fail-closed ceiling on `owner_tag_db_id` / `actor_tag_db_id`.
-/// ENGINE-STRUCTURAL: a country database id is admissible iff
-/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
-/// is the widest id a loadable database holds. Was the `2_048` above, a guess
-/// at the vanilla-plus-DLC country count that discarded an overhaul's rows on
-/// both sides of the wire.
 pub const MAX_COUNTRY_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_NODE_COUNT: u32 = 16_384;
-/// Representation envelopes on the two map-content ids a supply-node row
-/// carries. NOT counts, and specifically not vanilla counts.
-///
-/// Both were `20_000` — a round number above the vanilla province count with a
-/// little margin, which is a guess about content and not a bound anything
-/// states. This build's settled envelope for both id spaces is 65_535
-/// (`compact_contract::build_profile::MAX_PROVINCE_ID` / `::MAX_STATE_ID`,
-/// pinned to that literal by
-/// `wire_format/tests/producer_consumer_admission_agreement.rs`), corroborated
-/// by `MAX_MAP_CONTROL_PROVINCE_COUNT`/`WEATHER_MAX_PROVINCE_COUNT` (65 536
-/// slots) and `MAX_MAP_CONTROL_STATE_ID` (65 535). A map mod between 20 001 and
-/// 65 535 provinces had every d62 row past the old ceiling refused while the
-/// same provinces were admitted by domains 30, 44 and 48 from the same map.
-/// The province id space's STRUCTURAL width (lane IA). Was a guess --
-/// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
-/// four different ceilings for one id space. Proven from the engine's signed-int
-/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`).
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
-/// The state id space's STRUCTURAL width (lane IA). Was `65_535`, a guess.
-/// Proven from `ai_theatre_graph.cpp:0x86` (`claim_39c989ce13504504353c`). A separate
-/// constant from the province one even though the numbers coincide.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_MOTOR_MAP_SIZE: u32 = 2_048;
 
 pub const SCHEMA_VERSION: u32 = 2;
 pub const PAYLOAD_HEADER_LEN: usize = 32;
-/// Row: owner | actor | province | state | record | entry | level | flags.
 pub const ROW_LEN: usize = 32;
 
 pub const ROW_FLAG_COUNTRY_VERIFIED: u32 = 1 << 0;
@@ -167,22 +97,12 @@ pub enum HubMotorizationError {
     ModuleBaseZero,
     GameStateUnavailable,
     CountryTableUnavailable,
-    /// CSupplySystem anchor at `CGameState + 0x3D8` was unreadable/out-of-heap.
     SupplySystemUnavailable,
-    /// The `std::vector<CCSS*>` header was incoherent (bad data ptr, `count > cap`,
-    /// or oversized) -- fail closed rather than index a torn/freed array.
     CcssVectorIncoherent,
-    /// The vector header changed between the pre-walk and post-walk reads (a
-    /// resize/realloc raced the walk); discard the frame.
     CcssVectorRaced,
     CcssScanFailed,
-    CcssDuplicateCountry {
-        tag_db_id: u32,
-    },
-    CcssMalformed {
-        object: u64,
-        reason: &'static str,
-    },
+    CcssDuplicateCountry { tag_db_id: u32 },
+    CcssMalformed { object: u64, reason: &'static str },
 }
 
 pub trait Mem {
@@ -508,30 +428,13 @@ fn object_passes_candidate_guard<M: Mem>(
     if mem.u64(country_table + u64::from(tag_db_id) * 8) != Some(country) {
         return false;
     }
-    // The node array must be READABLE for this to be a usable candidate, but
-    // its CONTENTS are deliberately not judged here.
-    //
-    // This guard's whole job is discrimination: the scan tries many heap
-    // addresses and this decides which of them are `CCountrySupplySystem`
-    // objects. Everything above answers that — the country back-pointer is in
-    // heap, its vtable matches, its `tag_db_id` is inside the live country
-    // table, and `country_table[tag_db_id]` points back at this very object. An
-    // object that satisfies all four IS one; nothing about a node's province id
-    // can add to that.
-    //
-    // It used to go on to range-check every node's province id, state id and
-    // motor-map size against this lane's envelopes, and return `false` — which
-    // `collect_rows` turns into a bare `continue`. That silently dropped the
-    // whole country's rows while the domain still reported success, and it made
-    // `derive_object_rows`'s own `province_id_out_of_range`,
-    // `state_id_out_of_range`, `motor_map_size_out_of_range` and
-    // `motor_map_ptr_invalid` refusals — which check exactly the same four
-    // things, on the same bytes, one call later — unreachable. An authenticated
-    // CCSS with an out-of-envelope node now reaches those and fails the frame
-    // closed with a named reason, which is what the typed error exists for.
     mem.u64(object + CCSS_NODE_ARRAY_OFF)
         .filter(|ptr| ok_ptr(*ptr, heap_lo, heap_hi, 8))
-        .and_then(|arr| (count as usize).checked_mul(NODE_RECORD_STRIDE).map(|len| (arr, len)))
+        .and_then(|arr| {
+            (count as usize)
+                .checked_mul(NODE_RECORD_STRIDE)
+                .map(|len| (arr, len))
+        })
         .and_then(|(arr, len)| mem.read_bytes(arr, len))
         .is_some()
 }
@@ -567,11 +470,6 @@ fn derive_object_rows<M: Mem>(
     }
     let tag_db_id = mem
         .u32(country + COUNTRY_TAG_DB_ID_OFF)
-        // The live `country_count` is the real bound. The second clause was
-        // `MAX_COUNTRY_COUNT`, the READ BUDGET, applied to an ID -- redundant
-        // today because the count is itself budget-bounded, but it would become
-        // a hidden 65_536 id ceiling the moment R-GV-2 replaces that budget
-        // with the live cross-check.
         .filter(|tag| *tag > 0 && *tag < country_count && *tag <= MAX_COUNTRY_TAG_DB_ID)
         .ok_or_else(|| malformed("tag_db_id_out_of_range"))?;
     if mem.u64(country_table + u64::from(tag_db_id) * 8) != Some(country) {
@@ -649,7 +547,6 @@ fn derive_object_rows<M: Mem>(
                     .try_into()
                     .unwrap(),
             );
-            // As above: the live count bounds the id; the budget must not.
             if actor_tag_db_id == 0
                 || actor_tag_db_id >= country_count
                 || actor_tag_db_id > MAX_COUNTRY_TAG_DB_ID
@@ -684,8 +581,6 @@ fn derive_object_rows<M: Mem>(
                     | ROW_FLAG_LEVEL_VERIFIED,
             });
         }
-        // The vector is game-owned and may reallocate. Re-read its pointer/count
-        // after decoding; a changed header makes this frame unknown.
         let live_header = mem
             .read_bytes(
                 arr + (i as u64) * NODE_RECORD_STRIDE as u64 + NODE_MOTOR_MAP_PTR_OFF as u64,
@@ -708,16 +603,12 @@ fn derive_object_rows<M: Mem>(
     })
 }
 
-/// One coherent read of the `std::vector<CCSS*>` header living inside CSupplySystem:
-/// `{ data_ptr @ +0x108, count @ +0x110, cap @ +0x114 }`. Reading all three fields
-/// from a single `read_bytes` snapshot avoids interleaving with a concurrent resize.
 fn read_ccss_vector_header<M: Mem>(
     mem: &M,
     supply_system: u64,
     heap_lo: u64,
     heap_hi: u64,
 ) -> Option<(u64, u32, u32)> {
-    // Fields span [+0x108, +0x118): 8-byte data ptr then two u32 (count, cap).
     let blob = mem.read_bytes(supply_system + CSS_VECTOR_DATA_OFF, 0x10)?;
     if blob.len() != 0x10 {
         return None;
@@ -725,25 +616,12 @@ fn read_ccss_vector_header<M: Mem>(
     let data_ptr = u64::from_le_bytes(blob[0..8].try_into().unwrap());
     let count = u32::from_le_bytes(blob[8..12].try_into().unwrap());
     let cap = u32::from_le_bytes(blob[12..16].try_into().unwrap());
-    // A zero-length vector legitimately carries a null/dangling data ptr; only a
-    // non-empty vector must point into the heap.
     if count > 0 && !ok_ptr(data_ptr, heap_lo, heap_hi, 8) {
         return None;
     }
     Some((data_ptr, count, cap))
 }
 
-/// Anchored replacement for the former full-heap vtable sweep.
-///
-/// Reaches the game-owned `std::vector<CCountrySupplySystem*>` via
-/// `CGameState + 0x3D8 -> CSupplySystem + 0x108`, re-reading the `{data,count,cap}`
-/// header from scratch on every call (the vector reallocates on resize, so the
-/// pointer is never cached across frames). Each entry is validated by the CCSS
-/// vtable pair plus the `+0x78` country back-pointer's COUNTRY vtable -- the same
-/// structural gate the sweep applied -- and collected into a `BTreeSet<u64>` so the
-/// returned order is ascending-by-address, byte-identical to what the old
-/// `scan_ccss_objects` produced. Fails closed on an incoherent header or if the
-/// header shifts between the pre-walk and post-walk reads (a resize raced the walk).
 fn anchored_ccss_objects<M: Mem>(
     mem: &M,
     module_base: u64,
@@ -758,9 +636,6 @@ fn anchored_ccss_objects<M: Mem>(
 
     let (data_ptr, count, cap) = read_ccss_vector_header(mem, supply_system, heap_lo, heap_hi)
         .ok_or(HubMotorizationError::CcssVectorIncoherent)?;
-    // Bound the walk: count must not exceed capacity, and both must be sane. The
-    // per-country CCSS vector never approaches MAX_COUNTRY_COUNT, so this doubles
-    // as a torn-read tripwire.
     if count > cap || cap > MAX_COUNTRY_COUNT || count > MAX_COUNTRY_COUNT {
         return Err(HubMotorizationError::CcssVectorIncoherent);
     }
@@ -782,11 +657,9 @@ fn anchored_ccss_objects<M: Mem>(
             if !ok_ptr(ccss, heap_lo, heap_hi, 8) {
                 continue;
             }
-            // Structural gate: CCSS vtable pair.
             if mem.u64(ccss) != Some(vtable0) || mem.u64(ccss + 8) != Some(vtable1) {
                 continue;
             }
-            // Country back-pointer must itself be a COUNTRY object.
             let Some(country) = mem
                 .u64(ccss + CCSS_COUNTRY_OFF)
                 .filter(|ptr| ok_ptr(*ptr, heap_lo, heap_hi, 8))
@@ -800,8 +673,6 @@ fn anchored_ccss_objects<M: Mem>(
         }
     }
 
-    // Re-read the header: if the vector resized mid-walk, the {data,count} we
-    // walked is stale -- discard the frame rather than emit a torn snapshot.
     let (data_ptr_after, count_after, _cap_after) =
         read_ccss_vector_header(mem, supply_system, heap_lo, heap_hi)
             .ok_or(HubMotorizationError::CcssVectorRaced)?;
@@ -829,9 +700,6 @@ mod tests {
         u32s: HashMap<u64, u32>,
         bytes: Vec<(u64, Vec<u8>)>,
         ranges: Vec<(u64, usize)>,
-        /// (addr, second_read_bytes): on the SECOND `read_bytes` hitting `addr`,
-        /// return these bytes instead -- simulates a vector header mutating
-        /// (realloc) between the pre-walk and post-walk reads.
         race_header: Option<(u64, Vec<u8>)>,
         race_hits: RefCell<usize>,
     }
@@ -844,15 +712,9 @@ mod tests {
             self.u32s.insert(addr, value);
         }
         fn sbytes(&mut self, addr: u64, bytes: Vec<u8>) {
-            // Overwrite any prior blob registered at the same base so re-wiring a
-            // fixture (e.g. a second set_ccss_vector) shadows the first, matching
-            // real "writing memory replaces it" semantics.
             self.bytes.retain(|(base, _)| *base != addr);
             self.bytes.push((addr, bytes));
         }
-        /// Install the CSupplySystem `std::vector<CCSS*>` anchored root: writes the
-        /// `{data,count,cap}` header at `supply_system+0x108` and the pointer array
-        /// at `data_ptr`, and wires `CGameState+0x3D8 -> supply_system`.
         fn set_ccss_vector(
             &mut self,
             cgs: u64,
@@ -953,7 +815,6 @@ mod tests {
         scan[8..16].copy_from_slice(&(BASE + CCSS_VTABLE1_RVA).to_le_bytes());
         mem.sbytes(ccss, scan);
         mem.ranges.push((ccss, 0x100));
-        // Anchored root: single-entry CSupplySystem vector pointing at `ccss`.
         let supply_system = 0x2600_0000;
         let ccss_array = 0x2700_0000;
         mem.set_ccss_vector(cgs, supply_system, ccss_array, &[ccss], 1, 1);
@@ -1045,22 +906,6 @@ mod tests {
         assert!(got.rows.is_empty());
     }
 
-    /// An AUTHENTICATED `CCountrySupplySystem` carrying a node outside this
-    /// lane's id envelopes fails the frame closed with a named reason — it is
-    /// not quietly skipped.
-    ///
-    /// `object_passes_candidate_guard` used to range-check every node itself and
-    /// return `false`, which `collect_rows` turns into a bare `continue`: the
-    /// country's whole row set vanished and the domain still reported success,
-    /// while `derive_object_rows`'s own `province_id_out_of_range` refusal —
-    /// checking the same bytes one call later — could never fire. The guard now
-    /// decides only WHETHER THIS IS a CCSS (country back-pointer in heap, its
-    /// vtable, its `tag_db_id` inside the live table, and the table pointing
-    /// back at this object), which is what a discriminator is for.
-    ///
-    /// kills: restoring the node-content range checks to
-    /// `object_passes_candidate_guard`. Under that, both cases below return
-    /// `Ok` with `settings_objects == 0` and no rows instead of the typed error.
     #[test]
     fn an_authenticated_object_with_an_out_of_envelope_node_fails_closed() {
         for (province, state, reason) in [
@@ -1144,8 +989,6 @@ mod tests {
         assert_eq!(decoded, rows);
     }
 
-    /// Wrapper that panics if `readable_ranges` is ever consulted -- proves the
-    /// anchored discovery path performs NO full-heap sweep (the old ~6s/frame op).
     struct NoHeapScanMem(MockMem);
     impl Mem for NoHeapScanMem {
         fn u32(&self, addr: u64) -> Option<u32> {
@@ -1164,8 +1007,6 @@ mod tests {
 
     #[test]
     fn collect_rows_does_not_full_heap_scan() {
-        // The anchored root walk must produce the identical collection WITHOUT ever
-        // touching readable_ranges (the former per-frame heap sweep).
         let anchored =
             collect_rows(&NoHeapScanMem(good_image()), BASE, LO, HI).expect("anchored collection");
         let baseline = collect_rows(&good_image(), BASE, LO, HI).expect("baseline");
@@ -1179,19 +1020,15 @@ mod tests {
 
     #[test]
     fn anchored_walk_validates_by_vtable_pair_and_country_backref() {
-        // Baseline: the single well-formed CCSS is discovered via the vector.
         let cgs = 0x2000_0000u64;
         let objects = anchored_ccss_objects(&good_image(), BASE, LO, HI, cgs).expect("walk");
         assert_eq!(objects, vec![0x2300_0000]);
 
-        // Corrupt the second vtable slot -> entry rejected (vtable pair mismatch),
-        // even though it is present in the anchored vector.
         let mut mem = good_image();
         mem.su64(0x2300_0000 + 8, BASE + CCSS_VTABLE1_RVA + 0x8);
         let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
         assert!(objects.is_empty(), "vtable-pair mismatch must reject entry");
 
-        // Break the country back-pointer's vtable -> rejected on country backref.
         let mut mem = good_image();
         mem.su64(0x2200_0000, BASE + COUNTRY_VTABLE_RVA + 0x10);
         let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
@@ -1200,7 +1037,6 @@ mod tests {
             "country backref mismatch must reject entry"
         );
 
-        // A non-heap CCSS pointer in the array is skipped, not fatal.
         let mut mem = good_image();
         mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[0x2300_0000, 0x1], 2, 2);
         let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
@@ -1213,12 +1049,9 @@ mod tests {
 
     #[test]
     fn anchored_walk_returns_objects_sorted_by_address() {
-        // Vector order (high addr first) must be re-sorted ascending so the row
-        // payload is byte-identical to the old address-sorted BTreeSet output.
         let cgs = 0x2000_0000u64;
         let mut mem = good_image();
-        let ccss_lo = 0x2300_0000u64; // already wired in good_image (valid, row-producing)
-                                      // Add a second valid, row-producing CCSS at a HIGHER address, listed FIRST.
+        let ccss_lo = 0x2300_0000u64;
         let country_hi = 0x2a00_0000u64;
         let ccss_hi = 0x2b00_0000u64;
         let node_array_hi = 0x2c00_0000u64;
@@ -1234,7 +1067,6 @@ mod tests {
         let mut nodes = vec![0u8; NODE_RECORD_STRIDE];
         put_record(&mut nodes, 0, 100, 3, motor_map_hi, 4);
         mem.sbytes(node_array_hi, nodes);
-        // Listed high-then-low in the vector.
         mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[ccss_hi, ccss_lo], 2, 2);
 
         let objects = anchored_ccss_objects(&mem, BASE, LO, HI, cgs).expect("walk");
@@ -1245,7 +1077,6 @@ mod tests {
     fn anchored_walk_rejects_incoherent_and_raced_vectors() {
         let cgs = 0x2000_0000u64;
 
-        // count > cap is incoherent -> fail closed.
         let mut mem = good_image();
         mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[0x2300_0000], 5, 1);
         assert_eq!(
@@ -1253,7 +1084,6 @@ mod tests {
             Err(HubMotorizationError::CcssVectorIncoherent)
         );
 
-        // count exceeding the sane country bound is incoherent -> fail closed.
         let mut mem = good_image();
         mem.set_ccss_vector(
             cgs,
@@ -1268,12 +1098,10 @@ mod tests {
             Err(HubMotorizationError::CcssVectorIncoherent)
         );
 
-        // Header mutates between the pre-walk and post-walk read (realloc raced the
-        // walk): the post-walk data ptr differs -> discard the frame.
         let mut mem = good_image();
         mem.set_ccss_vector(cgs, 0x2600_0000, 0x2700_0000, &[0x2300_0000], 1, 1);
         let mut moved = vec![0u8; 0x10];
-        moved[0..8].copy_from_slice(&0x2800_0000u64.to_le_bytes()); // different data ptr
+        moved[0..8].copy_from_slice(&0x2800_0000u64.to_le_bytes());
         moved[8..12].copy_from_slice(&1u32.to_le_bytes());
         moved[12..16].copy_from_slice(&1u32.to_le_bytes());
         mem.race_header = Some((0x2600_0000 + CSS_VECTOR_DATA_OFF, moved));
@@ -1282,7 +1110,6 @@ mod tests {
             Err(HubMotorizationError::CcssVectorRaced)
         );
 
-        // Missing CSupplySystem anchor -> SupplySystemUnavailable.
         let mut mem = good_image();
         mem.u64s.remove(&(cgs + CSUPPLY_SYSTEM_OFF));
         assert_eq!(

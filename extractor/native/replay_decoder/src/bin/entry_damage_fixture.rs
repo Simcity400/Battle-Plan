@@ -1,18 +1,3 @@
-// Shared fixture for the packaged-H4IX/H4CP entry-damage harnesses.
-//
-// `include!`d rather than imported: these two harnesses are BINARIES, and the
-// alternative — a feature-gated module in the crate's library — would put
-// fault-injection scaffolding on the library's compilation path for the sake
-// of two evidence tools. One copy, two includers, no visibility ceremony.
-//
-// Includers:
-//
-//  * `ha_entry_confinement.rs`: a damaged RECORD costs its
-//    checkpoint window (`runs/ha_entry_confinement/`).
-//  * `hr_truncated_prefix.rs`: a TRUNCATED artifact costs
-//    the hours past its verified prefix (`runs/hr_standing_reds/`).
-//
-// It shares the production fixture components with `ha_entry_confinement.rs`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -35,19 +20,8 @@ const D18_COUNTRY_IDENTITY: u16 = 18;
 const D13_TECH_LIVE: u16 = 13;
 const CAMPAIGN_UUID: &str = "a4b17fed-ed12-4361-9064-fb6576638110";
 const BASE_HOUR: i64 = 16_959_360;
-/// Twelve hours over three whole checkpoint windows, so a damaged record can
-/// sit in the first window, in an interior one, in the last one, at a window
-/// boundary, or in two windows at once, with intact windows on both sides of
-/// every interior case.
 const HOURS: usize = 12;
 const GAME_ID: &str = "ha_entry_confinement";
-/// Four, not the production `DEFAULT_CHECKPOINT_INTERVAL_HOURS` (744; it was
-/// 168 when this was written). The confinement law is stated in windows, and
-/// a window has to fit inside the instrument for its edges to be observable at
-/// all: at the production interval every hour here would share one window and no cell could tell
-/// "confined to the window" from "confined to the recording". The interval is
-/// a build parameter of the same production function, not a code path of its
-/// own.
 const CHECKPOINT_INTERVAL: u32 = 4;
 
 fn raw_for(hour_index: i64) -> i32 {
@@ -58,10 +32,6 @@ fn hour_of(ordinal: usize) -> i64 {
     BASE_HOUR + ordinal as i64
 }
 
-// ---------------------------------------------------------------------------
-// Stream construction — the H4CR record envelope the collector writes.
-// Spelled identically across the harnesses, over the same two domains.
-// ---------------------------------------------------------------------------
 
 fn write_record(
     out: &mut Vec<u8>,
@@ -136,7 +106,6 @@ fn cid1_record_payload() -> Vec<u8> {
     encode_cid1(&fields).expect("encode CID1")
 }
 
-/// A clean stream: every hour present, every hour closed by a frame end.
 fn synthesize() -> Vec<u8> {
     let mut bytes = Vec::new();
     write_record(
@@ -184,17 +153,12 @@ fn synthesize() -> Vec<u8> {
     bytes
 }
 
-// ---------------------------------------------------------------------------
-// The clean artifact pair, built once by the real production path
-// ---------------------------------------------------------------------------
 
 struct BuiltPair {
     index_bytes: Vec<u8>,
     cache_path: PathBuf,
     source_len: u64,
     source_sha256: String,
-    /// Byte offset and length of each served hour's cache record, in index
-    /// order, read out of the packaged H4IX itself.
     records: Vec<(i64, u64, u64)>,
 }
 
@@ -241,23 +205,11 @@ fn build_clean_pair(scratch: &Path) -> BuiltPair {
     }
 }
 
-/// Where in the packaged H4CP a cell flips its byte.
 enum Injection {
-    /// The LAST byte of the record serving index position `n` — inside the
-    /// record's payload, past its 21-byte header, for every record the encoder
-    /// writes (the smallest is the header plus a payload).
     RecordPayload(usize),
-    /// A byte of the H4CP file header's source-digest field: damage to the
-    /// artifact's own identity, which serves no single hour.
     FileHeader,
 }
 
-/// Copy the clean pair into a cell directory and flip one byte per injection.
-///
-/// Most cells name one injection, so most cells flip one byte. The exceptions
-/// are deliberate: the clean control names none, cell (c5) names two record
-/// sites in two different windows, and cell (c6)'s single site is in the H4CP
-/// FILE HEADER rather than in a record.
 fn injected_cache(scratch: &Path, tag: &str, pair: &BuiltPair, injections: &[Injection]) -> PathBuf {
     let cell_dir = scratch.join(tag);
     if cell_dir.exists() {
@@ -272,9 +224,6 @@ fn injected_cache(scratch: &Path, tag: &str, pair: &BuiltPair, injections: &[Inj
                 let (_, record_offset, record_len) = pair.records[*position];
                 (record_offset + record_len - 1) as usize
             }
-            // Byte 8 is the first byte of the 32-byte H4CR source digest the
-            // header carries: it is neither the magic nor the version, so the
-            // refusal it provokes is the identity check and not a framing one.
             Injection::FileHeader => 8,
         };
         cache[offset] ^= 0xff;
@@ -283,16 +232,10 @@ fn injected_cache(scratch: &Path, tag: &str, pair: &BuiltPair, injections: &[Inj
     cache_path
 }
 
-// ---------------------------------------------------------------------------
-// Asking the real consumer door what survives
-// ---------------------------------------------------------------------------
 
 struct Observed {
-    /// Hours that reconstructed, byte-exactly against the fold's parity digest.
     served: BTreeSet<usize>,
-    /// Hours refused, with the refusal text.
     refused: BTreeMap<usize, String>,
-    /// The seal path's total proof over every indexed hour.
     total_proof: Result<u32, String>,
 }
 
@@ -325,34 +268,12 @@ fn observe(pair: &BuiltPair, cache_path: &Path) -> Result<Observed, String> {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Judging
-// ---------------------------------------------------------------------------
 
-/// What the confinement law says a cell should produce.
 enum Expect {
-    /// These index positions, and no others, are confined; every other hour
-    /// serves. The set is computed from the interval by ARITHMETIC in
-    /// `confined_window`, never by asking the production classifier — a cell
-    /// that asked production what production should say would pass whatever
-    /// production did.
     Confined(BTreeSet<usize>),
-    /// The damage reaches something that serves no single hour, so the whole
-    /// artifact is refused — by name. The payload is a substring the refusal
-    /// must carry, so that "by name" is checked against the name THIS cell
-    /// injured rather than against a fixed vocabulary: a header cell and a
-    /// length cell are both whole refusals and must not be able to pass on each
-    /// other's sentence.
     WholeArtifactRefusal(&'static str),
 }
 
-/// The hours a damaged record at `position` costs: itself, and every later
-/// hour up to the next checkpoint.
-///
-/// Stated here as the arithmetic the law is: with a checkpoint every
-/// `CHECKPOINT_INTERVAL` hours and no holes in this stream, position `p` sits
-/// in the window starting at `p - p % interval`, and every hour from `p` to the
-/// end of that window replays through `p`'s record.
 fn confined_window(position: usize) -> BTreeSet<usize> {
     let interval = CHECKPOINT_INTERVAL as usize;
     let window_end = (position - position % interval + interval).min(HOURS);
@@ -371,9 +292,6 @@ struct Row {
 fn judge(cell: &str, shape: &str, expect: &Expect, outcome: &Result<Observed, String>) -> Row {
     let observed = match (outcome, expect) {
         (Err(error), Expect::WholeArtifactRefusal(must_name)) => {
-            // The refusal is the expected outcome here, but only if it NAMES
-            // the injury THIS cell caused, rather than merely rejecting the
-            // pair or naming some other unattributable shape.
             let named = error.to_lowercase().contains(&must_name.to_lowercase());
             return Row {
                 cell: cell.to_string(),
@@ -464,9 +382,6 @@ fn judge(cell: &str, shape: &str, expect: &Expect, outcome: &Result<Observed, St
             ));
         }
     }
-    // The total proof is the producer's, and it claims EVERY indexed hour
-    // reconstructs. It must hold for the clean control and must not hold for
-    // any cell that confines an hour.
     match (&observed.total_proof, expected_confined.is_empty()) {
         (Ok(_), true) | (Err(_), false) => {}
         (Err(error), true) => failures.push(format!(
@@ -517,17 +432,7 @@ fn one_line(text: &str) -> String {
 }
 
 
-// ---------------------------------------------------------------------------
-// TRUNCATION
-// ---------------------------------------------------------------------------
 
-/// Copy the clean pair's H4CP into a cell directory with its tail cut off at
-/// `keep_bytes`.
-///
-/// This is post-seal LOSS rather than post-seal rot: the artifact's own bytes
-/// are untouched up to the cut, and the index still publishes the length,
-/// offsets and per-record digests of the whole cache. Nothing about the cut is
-/// recorded anywhere in the artifact pair — the consumer has to notice it.
 fn truncated_cache(scratch: &Path, tag: &str, pair: &BuiltPair, keep_bytes: u64) -> PathBuf {
     let cell_dir = scratch.join(tag);
     if cell_dir.exists() {
@@ -546,35 +451,20 @@ fn truncated_cache(scratch: &Path, tag: &str, pair: &BuiltPair, keep_bytes: u64)
     cache_path
 }
 
-/// The clean H4CP's byte length — the length the packaged H4IX publishes, since
-/// the clean control admits.
 fn clean_cache_len(pair: &BuiltPair) -> u64 {
     fs::metadata(&pair.cache_path)
         .expect("stat clean H4CP")
         .len()
 }
 
-/// The byte offset at which position `position`'s cache record begins, read out
-/// of the packaged H4IX. Cutting the artifact here loses that record whole.
 fn record_start(pair: &BuiltPair, position: usize) -> u64 {
     pair.records[position].1
 }
 
-/// One byte into position `position`'s record: the cut lands INSIDE it, so the
-/// record arrives incomplete rather than not at all. The confinement must be
-/// the same either way — a partial record is not a record.
 fn inside_record(pair: &BuiltPair, position: usize) -> u64 {
     pair.records[position].1 + 1
 }
 
-/// The hours a truncation that first loses position `p` costs: `p` and every
-/// later position.
-///
-/// Stated as arithmetic, like `confined_window`, and NOT by asking production.
-/// It is the union of `confined_window` over `p..HOURS` — every position from
-/// `p` on is unvouched, so every window from `p`'s onward is confined from its
-/// first unvouched position — which collapses to the run `p..HOURS` because
-/// the positions are contiguous.
 fn confined_tail(position: usize) -> BTreeSet<usize> {
     (position..HOURS).collect()
 }

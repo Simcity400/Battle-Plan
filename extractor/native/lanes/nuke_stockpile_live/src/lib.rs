@@ -1,20 +1,11 @@
-//! A17 exact a729 country nuke-stockpile carrier (compact domain 83).
-//!
-//! Static authority, wire, recorder, and replay consumers are production-
-//! integrated. Live admission is restricted to an exact-a729 source; the
-//! collector supplies that source from its double-stable, vtable/tag-checked
-//! current-process country roster. An unavailable or torn roster is encoded as
-//! unavailable and can never masquerade as a measured-empty stockpile.
-
 #[path = "../nuke_stockpile_exact.rs"]
 mod exact;
 
 pub use exact::{
     built_count_from_raw, read_country_built_nukes, read_country_nukes, CountryNukeSnapshot,
-    NukeEntrySnapshot, NukeMemory, ReadError, COUNTRY_NUKE_ARRAY_OFF,
-    COUNTRY_NUKE_CAPACITY_OFF, COUNTRY_NUKE_COUNT_OFF, MAX_NUKE_TYPE_ROWS,
-    NUKE_AMOUNT_RAW_OFF, NUKE_OWNER_OFF, NUKE_READY_OFF, NUKE_STRIDE, NUKE_TYPE_COUNT,
-    NUKE_TYPE_OFF, NUKE_VTABLE_RVA,
+    NukeEntrySnapshot, NukeMemory, ReadError, COUNTRY_NUKE_ARRAY_OFF, COUNTRY_NUKE_CAPACITY_OFF,
+    COUNTRY_NUKE_COUNT_OFF, MAX_NUKE_TYPE_ROWS, NUKE_AMOUNT_RAW_OFF, NUKE_OWNER_OFF,
+    NUKE_READY_OFF, NUKE_STRIDE, NUKE_TYPE_COUNT, NUKE_TYPE_OFF, NUKE_VTABLE_RVA,
 };
 
 use std::collections::BTreeSet;
@@ -25,30 +16,10 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"NUK1");
 pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_SOURCE_UNAVAILABLE: u32 = 0;
 pub const AUTHORITY_EXACT_A729_RECEIPT: u32 = 1;
-/// Fail-closed ceiling on the number of country rows a NUK1 snapshot carries.
-///
-/// Was `2_048` — a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags), which refused an overhaul's whole payload on both sides. A
-/// country count is content, so there is no honest constant for it; it is now
-/// the structural row width. The bound that does the work on decode is the
-/// payload: `country_count * COUNTRY_BLOCK_LEN + prologue` must equal the
-/// payload length exactly (`decode_carrier`, and `wire_format::d83`'s mirror of
-/// the same rule), so a crafted count cannot size the allocation.
 pub const MAX_COUNTRIES: usize = i32::MAX as usize;
 
-/// One country's fixed extent in a NUK1 CARRIER payload: `tag_db_id` 4,
-/// `container_capacity` 4, `entry_count` 4, then `NUKE_TYPE_COUNT` entries of
-/// `nuke_type_raw` 4 + reserved 4 + `amount_raw` 8 + `nukes_ready` 4 +
-/// reserved 4. `entry_count` is required to equal `NUKE_TYPE_COUNT` exactly, so
-/// the block is fixed. (This is the carrier's layout; `wire_format::d83`'s
-/// `COUNTRY_BLOCK_LEN` is the wire record's and is a separate number.)
 const CARRIER_COUNTRY_BLOCK_LEN: usize = 12 + (NUKE_TYPE_COUNT as usize) * 24;
 
-/// Root-controlled promotion switch. Fresh Wave-5 producer/consumer,
-/// constructor, and vtable authority is bound to the collector's authenticated
-/// current-process country roster. This does not make source failures
-/// permissive: callers must still authenticate the exact source and every
-/// memory read remains coherent and fail-closed.
 pub const PRODUCTION_AUTHORITY_ENABLED: bool = true;
 pub const WAVE5_PRODUCER_CONSUMER_MANIFEST_SHA256: [u8; 32] =
     hex32(b"0968ed85cd6103149ebd51415d6b64d1959bb05d1aff4cbfce9d31e437a6995c");
@@ -123,9 +94,9 @@ impl CountryNukeRow {
     }
 
     pub fn ready_total(&self) -> u64 {
-        self.entries
-            .iter()
-            .fold(0u64, |total, entry| total.saturating_add(u64::from(entry.nukes_ready)))
+        self.entries.iter().fold(0u64, |total, entry| {
+            total.saturating_add(u64::from(entry.nukes_ready))
+        })
     }
 }
 
@@ -171,9 +142,6 @@ impl From<ReadError> for CarrierError {
     }
 }
 
-/// Exact collector-side source helper. It accepts only the already-authenticated
-/// country roster and reads each country-owned CNuke array through the common
-/// coherent reader. It does not grant production authority by itself.
 pub fn read_snapshot_from_country_roots<M: NukeMemory>(
     memory: &M,
     module_base: u64,
@@ -214,10 +182,6 @@ pub fn read_snapshot_from_country_roots<M: NukeMemory>(
     Ok(snapshot)
 }
 
-/// Production collector seam. Only an authenticated exact-a729 current-process
-/// source may produce a clean frame. Source rejection or read failure is an
-/// error; the collector converts that error into an explicit unavailable d83
-/// frame rather than a measured-empty snapshot.
 pub fn collect_and_encode<S: ExactNukeStockpileSource>(
     source: &S,
     frame_hour: u64,
@@ -372,12 +336,6 @@ pub fn decode_payload(payload: &[u8]) -> Result<NukeStockpileFrame, CarrierError
         if country_count > MAX_COUNTRIES {
             return invalid("NUK1 country count exceeds bound");
         }
-        // The count is stream-supplied and sizes the allocation below, so it is
-        // bounded by what the remaining payload can actually hold: one country
-        // is a fixed CARRIER_COUNTRY_BLOCK_LEN block. Without this a four-byte
-        // word decides the allocation -- which is what the old content-scale
-        // ceiling was incidentally preventing, and the reason widening it
-        // needed a real bound rather than a bigger number.
         if country_count > reader.remaining() / CARRIER_COUNTRY_BLOCK_LEN {
             return invalid("NUK1 country count exceeds the payload's capacity");
         }
@@ -406,7 +364,11 @@ pub fn decode_payload(payload: &[u8]) -> Result<NukeStockpileFrame, CarrierError
                     nukes_ready,
                 });
             }
-            countries.push(CountryNukeRow { tag_db_id, container_capacity, entries });
+            countries.push(CountryNukeRow {
+                tag_db_id,
+                container_capacity,
+                entries,
+            });
         }
         Some(NukeStockpileSnapshot {
             source_sequence,
@@ -461,8 +423,6 @@ impl<'a> Reader<'a> {
         self.at = end;
         Ok(value)
     }
-    /// Bytes left. A count-prefixed section divides this by its fixed block
-    /// size so a stream-supplied count can never size an allocation.
     fn remaining(&self) -> usize {
         self.payload.len().saturating_sub(self.at)
     }
@@ -577,10 +537,12 @@ mod tests {
         frame.receipt_sha256 = [0; 32];
         assert!(encode_payload(&frame).is_err());
         assert!(encode_source_unavailable(900, 7, 0).is_err());
-        assert!(decode_payload(&encode_source_unavailable(900, 7, 1).unwrap())
-            .unwrap()
-            .snapshot
-            .is_none());
+        assert!(
+            decode_payload(&encode_source_unavailable(900, 7, 1).unwrap())
+                .unwrap()
+                .snapshot
+                .is_none()
+        );
     }
 
     #[test]

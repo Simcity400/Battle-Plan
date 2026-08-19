@@ -1,4 +1,3 @@
-//! D3D product adapter for the proven game_ui compositor.
 
 use game_ui::assets::AssetResolver;
 use replay_core::{ArmyBattleplanOrderKey, WorldFrame};
@@ -12,9 +11,7 @@ use crate::Result;
 
 #[derive(Clone, Copy, Default)]
 pub struct ArmyBattleplanUiSupplementalInputs<'a> {
-    /// Local product selection joined to the complete d54 manager census.
     pub selected_owner: Option<replay_core::ArmyBattleplanOwnerKey>,
-    /// Stable replay identity selected from an already admitted panel row.
     pub selected_order_key: Option<&'a ArmyBattleplanOrderKey>,
 }
 
@@ -70,9 +67,6 @@ fn execute_observer_layers<I, O, E>(
     overlay_image: impl Fn(&O) -> &I,
     mut upload_and_draw: impl FnMut(&I) -> std::result::Result<(), E>,
 ) -> std::result::Result<Option<O>, E> {
-    // The base is always uploaded first. An overlay refusal therefore
-    // replaces any prior-frame overlay with this frame's base before the
-    // refusal propagates; Closed supplies Ok(None) and remains base-only.
     upload_and_draw(base)?;
     let overlay = overlay?;
     if let Some(output) = overlay.as_ref() {
@@ -201,7 +195,6 @@ impl ProductObserverOccupationRuntime {
     }
 }
 
-/// Product receipt for the replay-owned observer compositor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverUiOutcome {
     pub authored_roots: Vec<String>,
@@ -222,8 +215,6 @@ pub struct ObserverUiOutcome {
     pub production_lines_open: bool,
     pub production_lines_country: Option<String>,
     pub production_lines_available: bool,
-    /// Exact authored offset applied by the staged XUI12 manager geometry.
-    /// The app commits it to viewer state only after this frame is Presented.
     pub production_lines_applied_scroll_offset: Option<i32>,
     pub designer_open: bool,
     pub designer_country: Option<String>,
@@ -271,16 +262,9 @@ pub struct ObserverUiOutcome {
     pub event_visible_sequences: Vec<i64>,
     pub event_focused_sequence: Option<i64>,
     pub gaps: Vec<game_ui::production_renderer::ObserverUiGap>,
-    /// Logical XUI16 row actually applied after authored-geometry clamping.
     pub occupation_applied_scroll_row: Option<usize>,
-    /// Exact authored client-space wheel target for the panel drawn this
-    /// frame. Closed or unavailable panels expose no target.
     pub occupation_input_region: Option<game_ui::occupation_compositor::OccupationInputRegion>,
-    /// XUI16 shortage/text semantics joined to the exact D79 active icon row.
-    /// The D79 compositor remains the sole owner of the always-on icon pixels.
     pub occupation_alert: Option<game_ui::occupation_binding::OccupationAlertProductBinding>,
-    /// Machine-readable extension promotion emitted by the actual shipping
-    /// manager compositor, not by a direct-HUD compatibility route.
     pub promoted_extension_packets: Vec<String>,
 }
 
@@ -299,8 +283,6 @@ impl Default for ProductionLinesUiSupplementalInputs {
 }
 
 impl ProductionLinesUiSupplementalInputs {
-    /// Decode only the current frame's detached payload/authority pair. The
-    /// private field prevents shipping callers from minting a Present carrier.
     pub fn from_frame(frame: &replay_core::WorldFrame) -> Self {
         Self {
             producer: game_ui::production_lines::xui12_producer_payload_from_frame(frame),
@@ -352,12 +334,6 @@ pub enum ObserverViewerActionDisposition {
     RefusedGameplayMutation(game_ui::window_manager_law::PoliticsGameplayMutation),
 }
 
-/// State-first product UI executor.
-///
-/// Construction takes an already playback-admitted renderer, keeping
-/// install/profile/VFS selection outside the frame executor. The
-/// execution API deliberately has no selected-Present pass or recorder UI
-/// owner parameter.
 pub struct ProductObserverUiRuntime {
     renderer: game_ui::production_renderer::ProductionUiRenderer,
     image: ImageRenderer,
@@ -419,8 +395,6 @@ pub struct ProductObserverUiRuntime {
     xui08_pending_staged: bool,
     xui08_pending_viewer_checkpoint:
         Option<game_ui::peace_conference_ui::PeaceConferenceViewerState>,
-    /// Input collected after the last Presented frame. It remains isolated
-    /// from the Presented viewer until `execute` stages the next candidate.
     xui08_pending_viewer_input: Option<game_ui::peace_conference_ui::PeaceConferenceViewerState>,
     xui08_cursor: Option<(i32, i32)>,
     xui14_presented: Option<Xui14PresentedFrame>,
@@ -503,9 +477,6 @@ impl ObserverUiExecuteLifecycle {
     }
 }
 
-/// Candidate viewer state without a feature-local pending carrier. It is
-/// committed only after Present and restored on skip, occlusion, rejection,
-/// or any execution error together with XUI10's Presented hit-test backing.
 #[derive(Clone, Debug)]
 struct ObserverUiFrameCheckpoint {
     authored_input: Option<crate::gui_definition_admission::AuthoredObserverUiInputCheckpoint>,
@@ -665,9 +636,6 @@ impl ObserverUiFrameCheckpoint {
     fn commit(self) {}
 }
 
-/// Typed pre-event Presented transaction for the complete observer viewer.
-/// Runtime event handlers mutate only the live candidate; a non-Present
-/// disposition consumes this token to restore the exact last Presented state.
 #[derive(Clone, Debug)]
 struct ObserverViewerPresentTransaction {
     checkpoint: game_ui::production_renderer::ObserverViewerUiState,
@@ -684,10 +652,6 @@ impl ObserverViewerPresentTransaction {
         *viewer = self.checkpoint;
     }
 
-    /// A committed target resize retires XUI11's Presented geometry and its
-    /// frame-bound viewer selection/scroll state. Preserve every unrelated
-    /// pre-event viewer value while making only that platform invalidation
-    /// durable across a later skipped, occluded, or failed candidate.
     fn make_politics_frame_invalidation_durable(
         &mut self,
         viewer: &game_ui::production_renderer::ObserverViewerUiState,
@@ -715,8 +679,6 @@ fn release_xui10_pointer_capture_durably(
 ) -> bool {
     let released = drag_cursor.take().is_some();
     if let Some(checkpoint) = frame_checkpoint.as_mut() {
-        // CaptureLost is an OS fact, not a candidate UI mutation. Make the
-        // pre-event checkpoint agree so rejection cannot resurrect capture.
         checkpoint.xui10_drag_cursor = None;
     }
     released
@@ -1007,9 +969,6 @@ fn xui09_blocks_lower_pointer_input_for_state(
     }
     match xui09_matching_presented_surface(panel_open, selected_country, presented) {
         Some((_, region)) => region.contains(x, y),
-        // An open panel owns input fail-closed until matching Presented
-        // geometry exists. Otherwise same-batch input after open, or input
-        // after a rejected composition, could mutate a lower layer.
         None => true,
     }
 }
@@ -1103,10 +1062,6 @@ fn xui18_blocks_lower_pointer_input_for_state(
     }
     match xui18_matching_presented_region(panel_open, selected_country, presented) {
         Some(region) => region.contains(x, y),
-        // The viewer has opened the panel, so it owns pointer input even
-        // before the next Present installs authenticated composed geometry.
-        // Fail closed instead of allowing a same-batch click through to the
-        // map or another lower layer.
         None => true,
     }
 }
@@ -1127,7 +1082,6 @@ struct Xui19PresentedFrame {
     card_hit_targets: Vec<game_ui::production_renderer::Xui19CardHitTarget>,
     custom_icon_hit_targets: Vec<game_ui::production_renderer::Xui19CustomIconHitTarget>,
     /// Exact inserted-child ownership retained transactionally through Present.
-    /// The XUI19 parent refuses its whole authored region; XUI22 may later
     /// refine descendant hit regions without changing parent ownership.
     provider_receipts: Vec<game_ui::production_renderer::ObserverDecisionCategoryProviderReceipt>,
     xui22_widget_hit_targets: Vec<game_ui::production_renderer::Xui22WidgetHitTarget>,
@@ -1692,10 +1646,6 @@ impl Xui15InteractionSurface {
     }
 }
 
-/// The constructible production owner for XUI12 viewer state and XUI15's
-/// Presented/pending interaction surface. ProductObserverUiRuntime delegates
-/// every Present disposition to this exact owner; tests exercise the same
-/// state machine without constructing D3D or the full authored renderer.
 #[derive(Clone, Debug, Default)]
 struct ObserverUiPresentTransactionOwner {
     viewer: Option<ObserverViewerPresentTransaction>,
@@ -1910,8 +1860,6 @@ fn apply_xui15_feature_local_composition(
 }
 
 impl ProductObserverUiRuntime {
-    /// Snapshot viewer-owned state before dispatching this window frame's
-    /// events. Present is the only commit boundary for these values.
     pub fn begin_observer_frame_transaction(
         &mut self,
         viewer: &game_ui::production_renderer::ObserverViewerUiState,
@@ -1925,10 +1873,6 @@ impl ProductObserverUiRuntime {
         Ok(())
     }
 
-    /// Construct from the replay's admitted authored-root dependency closure.
-    ///
-    /// This is intentionally prefix-restricted. It never opens every required
-    /// manifest file or falls back to the installed tree.
     pub fn from_playback_content(
         gfx: &Gfx,
         resolver: &map_viewer::GameFileResolver,
@@ -2253,14 +2197,8 @@ impl ProductObserverUiRuntime {
             let timeline_discontinuity = world_frame.hour_index() != prior.frame_hour
                 && world_frame.hour_index() != prior.frame_hour.saturating_add(1);
             if timeline_discontinuity {
-                // This reset also clears XUI20 and the global XUI08 history.
-                // It must precede their current-frame checkpoints,
-                // authentication, reconciliation, and staging.
                 self.reset_xui23_for_seek(viewer);
             } else if country_changed {
-                // Country-bound panels must reset, but XUI08 is a global,
-                // selected-country-independent conference surface and keeps
-                // its Presented state and history authentication.
                 self.reset_country_dependent_ui_for_country_change(viewer);
             }
         }
@@ -2297,9 +2235,6 @@ impl ProductObserverUiRuntime {
             viewer.collapsed_decision_categories.clear();
             self.xui19_cursor = None;
         }
-        // XUI14 is composited after XUI08. Keep that ordering exact by making
-        // the two full-screen authored panels mutually exclusive before the
-        // XUI08 candidate is staged; a same-event-batch Shift+P then Shift+I
         // cannot leave hidden XUI08 input or tooltip ownership underneath.
         if viewer.intelligence.panel_open {
             self.close_xui08(viewer);
@@ -2399,9 +2334,6 @@ impl ProductObserverUiRuntime {
             .is_some_and(Xui18PresentedFrame::has_active_balance)
             && viewer.power_balance.panel_open
         {
-            // Never leave a stale open panel authorized by an earlier hour or
-            // country when the current exact carrier cannot be admitted or
-            // explicitly measured no active balance.
             viewer.power_balance.close();
             self.xui18_cursor = None;
         }
@@ -2570,10 +2502,6 @@ impl ProductObserverUiRuntime {
                 gfx.height as usize,
             ) {
                 Ok(()) => {
-                    // The first pass proves that this exact frame has a complete
-                    // authenticated XUI15 producer. Re-seal after the cadence
-                    // update so composition and interaction bind the advanced
-                    // viewer state.
                     semantic = match self
                         .renderer
                         .prepare_observer_semantic_frame_with_xui12_and_xui22_producers(
@@ -4726,10 +4654,6 @@ impl ProductObserverUiRuntime {
         self.execute_lifecycle.finish();
     }
 
-    /// Retire old-size Presented hit geometry as a durable platform fact.
-    /// Viewer event mutations remain transactional, but rejection may not
-    /// resurrect any runtime surface invalidated by a committed swap-chain
-    /// resize or zero-sized target transition.
     pub fn invalidate_for_resize_durably(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -4847,9 +4771,6 @@ impl ProductObserverUiRuntime {
         let Some(active) = self.present_transaction.presented_xui15() else {
             return Ok(false);
         };
-        // A viewer action makes this frame's strict panel seal stale.  Keep
-        // the panel root blocking lower map input until the next composed
-        // frame, but do not apply a second action against stale hit regions.
         let panel = active.panel()?;
         if panel.validate_for_viewer(&viewer.trade).is_err() {
             return Ok(false);
@@ -4884,8 +4805,6 @@ impl ProductObserverUiRuntime {
         let Some(active) = self.present_transaction.presented_xui15() else {
             return Ok(false);
         };
-        // See `xui15_pointer_press`: preserve panel-root blocking across an
-        // event batch while refusing stale hit geometry until recomposition.
         let panel = active.panel()?;
         if panel.validate_for_viewer(&viewer.trade).is_err() {
             return Ok(false);
@@ -5034,9 +4953,6 @@ impl ProductObserverUiRuntime {
         authored.activate_focused_viewer_action()
     }
 
-    /// Whether a viewer-opened panel currently owns keyboard/controller input.
-    /// Persistent HUD roots deliberately do not satisfy this predicate; wheel
-    /// routing must consult authenticated geometry instead.
     pub fn authored_input_window_active(&self) -> bool {
         self.authored_observer_ui
             .as_ref()
@@ -5228,8 +5144,6 @@ impl ProductObserverUiRuntime {
         Ok(())
     }
 
-    /// Commit event-only state when a Presented frame intentionally contains
-    /// no observer UI, then retire the prior authored hit-test surface.
     pub fn confirm_presented_without_observer_ui(&mut self) -> Result<()> {
         self.observer_frame_checkpoint
             .take()
@@ -5238,8 +5152,6 @@ impl ProductObserverUiRuntime {
         Ok(())
     }
 
-    /// Commit the exact production Present owner after the authored/runtime
-    /// candidate has crossed its matching Presented boundary.
     pub(crate) fn finish_observer_frame_disposition(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5276,9 +5188,6 @@ impl ProductObserverUiRuntime {
         Ok(())
     }
 
-    /// Reject a frame before observer UI execution. Only event-stage state
-    /// exists, so restore the pre-dispatch checkpoint and discard XUI08 input
-    /// staging without requiring compositor candidate checkpoints.
     pub fn reject_unexecuted_observer_frame(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5326,8 +5235,6 @@ impl ProductObserverUiRuntime {
         self.xui21_pending_viewer_checkpoint = None;
     }
 
-    /// Restore every staged viewer/component transaction when any fallible
-    /// step inside `execute` returns before a Present/Reject disposition.
     pub fn rollback_after_execute_error(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5338,10 +5245,6 @@ impl ProductObserverUiRuntime {
             .execute_lifecycle
             .finish_ownerless_execute_error(frame_pending, owner_pending)?
         {
-            // A fallible execute tail may already have rejected the exact
-            // transaction before returning its original error to the window
-            // loop. The caller's uniform rollback hook is intentionally
-            // idempotent for that fully-consumed state.
             self.clear_execute_candidates();
             return Ok(());
         }
@@ -5455,7 +5358,6 @@ impl ProductObserverUiRuntime {
         reject_result
     }
 
-    /// Toggle XUI19 only from the last Presented passive all-country carrier.
     pub fn toggle_xui19(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5502,8 +5404,6 @@ impl ProductObserverUiRuntime {
             .and_then(|frame| frame.panel_rect)
         {
             Some(rect) => xui19_rect_contains(rect, x, y),
-            // An open panel with no matching Presented geometry owns the input
-            // batch fail-closed so the click cannot fall through to gameplay.
             None => true,
         }
     }
@@ -5580,8 +5480,6 @@ impl ProductObserverUiRuntime {
         Ok(ObserverViewerActionDisposition::Applied)
     }
 
-    /// Page XUI19 by its exact Presented authored grid height. This is a
-    /// replay-viewer projection and never claims an unproven engine wheel step.
     pub fn xui19_page_scroll(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5701,8 +5599,6 @@ impl ProductObserverUiRuntime {
         dismiss_xui21_presented_focus(presented, &mut viewer.events)
     }
 
-    /// Open XUI23 for one exact context from the last Presented carrier. A
-    /// pending/unpresented frame can never authorize viewer interaction.
     pub fn open_xui23_context(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5729,9 +5625,6 @@ impl ProductObserverUiRuntime {
         viewer.abilities.selected_context = None;
     }
 
-    /// Cycle the exact Presented evaluator-context roster, closing after the
-    /// final context. This is the shipping keyboard/open path; a pending frame
-    /// or caller-minted context can never authorize it.
     pub fn cycle_xui23_context(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5771,9 +5664,6 @@ impl ProductObserverUiRuntime {
                 eprintln!("replay_app: XUI26 country reset failed closed: {error}");
             }
         }
-        // XUI12 row identities and scroll extent are frame/country-bound.
-        // Preserve open-panel intent, but never carry geometry-dependent state
-        // across a country change or timeline discontinuity.
         viewer.production_lines.reset_for_seek_or_country_change();
         viewer.abilities.reset_for_seek();
         viewer.focus.reset_for_seek_or_country_change();
@@ -5826,7 +5716,6 @@ impl ProductObserverUiRuntime {
         self.xui21_cursor = None;
     }
 
-    /// Explicit seek/step invalidation used by the shipping transport paths.
     pub fn reset_xui23_for_seek(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5847,9 +5736,6 @@ impl ProductObserverUiRuntime {
         self.xui08_cursor = None;
     }
 
-    /// Open one exact XUI20 identity from the last Presented passive-global
-    /// carrier. Pending state and arbitrary caller-invented identities cannot
-    /// authorize a panel.
     pub fn open_xui20_panel(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -5911,9 +5797,6 @@ impl ProductObserverUiRuntime {
         self.open_xui20_panel(viewer, Xui20ViewerPanel::CombatLog { country_tag, tab })
     }
 
-    /// Cycle every exact panel identity available to the current observer.
-    /// Global combat/result panels are always eligible; country-owned log and
-    /// losses panels are filtered to the viewer-selected country.
     pub fn cycle_xui20_panel(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6019,8 +5902,6 @@ impl ProductObserverUiRuntime {
         self.xui17_cursor = Some((x, y));
     }
 
-    /// Toggle the viewer-owned XUI14 panel only from the last Presented,
-    /// passive all-country carrier.
     pub fn toggle_xui14(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6136,9 +6017,7 @@ impl ProductObserverUiRuntime {
         )
     }
 
-    /// Toggle the global peace-conference viewer only from the last Presented
     /// passive carrier. Recorder window ownership is never consulted. Input
-    /// remains isolated until the next candidate receives Present.
     pub fn toggle_xui08(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6255,8 +6134,6 @@ impl ProductObserverUiRuntime {
         )
     }
 
-    /// Win32 capture loss is not a candidate interaction. Once the OS revokes
-    /// capture, no rejected or occluded frame may resurrect the drag.
     pub fn xui08_capture_lost(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6306,9 +6183,6 @@ impl ProductObserverUiRuntime {
             return Ok(true);
         };
         let Some(step) = region.wheel_pixels(scroll_region) else {
-            // The exact effective container did not author a wheel law. Its
-            // referenced scrollbar remains the navigation authority; replay
-            // must not invent a row-height wheel step.
             return Ok(true);
         };
         self.stage_xui08_viewer_input(viewer).wheel(
@@ -6396,8 +6270,6 @@ impl ProductObserverUiRuntime {
         Ok(true)
     }
 
-    /// Toggle the state-first politics panel only from the last Presented
-    /// passive carrier. Pending or withdrawn state cannot open a panel.
     pub fn toggle_xui11(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6506,7 +6378,6 @@ impl ProductObserverUiRuntime {
         self.xui11_cursor = Some((x, y));
     }
 
-    /// Toggle XUI18 only from the last Presented passive all-country carrier.
     pub fn toggle_xui18(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6577,8 +6448,6 @@ impl ProductObserverUiRuntime {
             viewer.power_balance.close();
             self.xui18_cursor = None;
         }
-        // Decision cards are replay inspection only; pointer presses are
-        // consumed by the panel and never mutate simulated state.
         Ok(true)
     }
 
@@ -6586,9 +6455,6 @@ impl ProductObserverUiRuntime {
         self.xui18_cursor = Some((x, y));
     }
 
-    /// Toggle XUI09 only from the last Presented complete-D18 carrier and the
-    /// exact effective authored-folder roster. Pending candidate bytes never
-    /// authorize viewer interaction.
     pub fn toggle_xui09(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6640,8 +6506,6 @@ impl ProductObserverUiRuntime {
         self.xui09_cursor = None;
     }
 
-    /// Clear every viewer- and runtime-owned XUI09 identity when the selected
-    /// country changes. This path is called independently of XUI23 authority.
     pub fn reset_xui09_for_country_change(
         &mut self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6722,8 +6586,6 @@ impl ProductObserverUiRuntime {
             viewer.selected_country.as_deref(),
             self.xui09_presented.as_ref(),
         ) else {
-            // The open panel still absorbs the event, but no selection or drag
-            // may begin until matching Presented geometry exists.
             self.xui09_drag_cursor = None;
             self.xui09_cursor = None;
             return Ok(());
@@ -6868,8 +6730,6 @@ impl ProductObserverUiRuntime {
             .is_some_and(|region| region.contains(x, y))
     }
 
-    /// Ability activation is a gameplay mutation. Replay consumes the hit
-    /// only to refuse it; no command is emitted or simulated.
     pub fn xui23_pointer_press(&self, x: i32, y: i32) -> Option<ObserverViewerActionDisposition> {
         self.xui23_presented.as_ref().and_then(|presented| {
             presented.button_regions.iter().find_map(|region| {
@@ -7035,12 +6895,6 @@ impl ProductObserverUiRuntime {
 }
 
 
-/// Performance-only selected-Present stress adapter.
-///
-/// This deliberately owns no semantic UI state and is never a replay or RE
-/// authority. It reuses the exact production `ImageRenderer` upload/draw path
-/// for a contract-pinned number of selected-Present-equivalent GPU operations.
-/// The F1 receipt labels the result non-semantic and non-promotional.
 pub(crate) struct ProductSelectedPresentPerformanceRuntime {
     image: ImageRenderer,
 }
@@ -7854,16 +7708,6 @@ mod tests {
         assert!(xui18_matching_presented_region(true, Some("ITA"), Some(&presented)).is_none());
     }
 
-    /// This module's source, LF-normalised, with the test module cut off.
-    ///
-    /// Two hazards are handled here rather than in every assertion:
-    ///
-    /// * A source-structure assertion that searches the WHOLE file finds its
-    ///   own needle in the test body, so it can never fail — a gate placed
-    ///   where it cannot fire.
-    /// * Checked-out line endings are CRLF, so a multi-line needle written with
-    ///   `\n` silently matches nothing and `!contains` assertions pass
-    ///   vacuously.
     fn production_source() -> String {
         let source = include_str!("ui_runtime.rs").replace("\r\n", "\n");
         let marker = ["#[cfg(", "test)]"].concat();
@@ -7877,20 +7721,13 @@ mod tests {
     fn the_production_source_slice_actually_excludes_the_tests() {
         let production = production_source();
         assert!(production.len() < include_str!("ui_runtime.rs").len());
-        // Extraction normalises CRLF when present and is already canonical for
-        // LF input. The invariant is the byte-identical production slice after
-        // line-ending normalisation, not a workstation checkout convention.
         assert!(!production.contains('\r'));
-        // A string that exists ONLY in this test module must not be in it.
         let test_only = [
             "the_production_source_slice_",
             "actually_excludes_the_tests",
         ]
         .concat();
         assert!(!production.contains(&test_only));
-        // ...while a string that exists only in the production half must be.
-        // Lane JL retargeted this marker when the legacy selected-Present oracle
-        // receipt it used to name was deleted with the rest of that path.
         assert!(production.contains("fn cached_occupation_outcome("));
     }
 
@@ -8321,8 +8158,6 @@ mod tests {
         let mut pending_input = None;
         let mut checkpoint = None;
 
-        // Real app ordering: input arrives before execute. The Presented
-        // viewer remains byte-for-byte unchanged until execute begins.
         stage_xui08_viewer_input(&mut pending_input, &viewer).history_tab =
             PeaceConferenceHistoryTab::Beneficiaries;
         assert_eq!(viewer.history_tab, PeaceConferenceHistoryTab::Victors);
@@ -8337,7 +8172,6 @@ mod tests {
         assert!(pending.is_none());
         assert!(!staged);
 
-        // The execute-error path uses the same exact rollback primitive.
         stage_xui08_viewer_input(&mut pending_input, &viewer).set_open(false);
         assert!(viewer.open);
         begin_xui08_staged_candidate(&mut viewer, &mut pending_input, &mut checkpoint).unwrap();
@@ -8347,7 +8181,6 @@ mod tests {
             .unwrap();
         assert!(viewer.open);
 
-        // Present consumes the checkpoint and retains the staged viewer.
         stage_xui08_viewer_input(&mut pending_input, &viewer).set_open(false);
         begin_xui08_staged_candidate(&mut viewer, &mut pending_input, &mut checkpoint).unwrap();
         pending = Some(3);
@@ -8667,7 +8500,6 @@ mod tests {
             viewer.abilities.animation_elapsed_micros = 5_000;
             let transaction = ObserverViewerPresentTransaction::begin(&viewer);
 
-            // Shipping order: the checkpoint exists before event handlers.
             viewer.selected_country = Some("ENG".into());
             viewer.theatre_settings_land_id = Some(99);
             viewer.designer = None;
@@ -8736,15 +8568,11 @@ mod tests {
 
             let mut transaction = ObserverViewerPresentTransaction::begin(&viewer);
 
-            // These event-stage changes are ordinary candidate state and must
-            // roll back when the frame is not Presented.
             viewer.selected_country = Some("ENG".into());
             viewer.trade_panel_open = false;
             viewer.trade.selected_resource_index = 7;
 
-            // A target resize is already committed by the platform. Only the
             // XUI08/XUI15 pointer releases and XUI11 state tied to the retired
-            // geometry become durable.
             viewer.politics.reset_frame_bound_state();
             transaction.make_politics_frame_invalidation_durable(&viewer);
             viewer.politics.displayed_scroll_fixed = 99_000;
@@ -8780,7 +8608,6 @@ mod tests {
         let mut backing: Option<Xui10PresentedFrame> = None;
         let transaction = ObserverViewerPresentTransaction::begin(&viewer);
 
-        // Event handling and candidate reconciliation both happen after begin.
         viewer.focus.selected_focus_id = Some("event-mutated".into());
         viewer.theatre_settings_land_id = Some(77);
         viewer.focus.selected_focus_id = Some("execute-reconciled".into());
@@ -8892,8 +8719,6 @@ mod tests {
         owner.xui15_presented = Some(Xui15InteractionSurface::fixture([800, 600]));
         owner.begin(&viewer).expect("begin pre-resize frame");
 
-        // This is the state transition performed by
-        // ProductObserverUiRuntime::invalidate_for_resize_durably.
         owner.invalidate_runtime_surfaces();
         viewer.trade.active_scrollbar_drag = None;
         viewer.peace_conference.release_active_scrollbar();
@@ -8905,8 +8730,6 @@ mod tests {
             .finish_disposition(&mut viewer, ObserverUiFrameDisposition::Presented, None)
             .expect("Present resized candidate");
 
-        // A following MouseMove has no capture to continue. The newly
-        // Presented geometry alone never creates a drag.
         assert!(viewer.trade.active_scrollbar_drag.is_none());
         assert!(viewer.peace_conference.active_scrollbar_drag.is_none());
         assert_eq!(
@@ -9044,8 +8867,6 @@ mod tests {
         presented.set_open(true);
         let mut pending = None;
 
-        // Shift+I stages XUI08 closed before a later pointer event in the same
-        // pump batch. Every shipping pointer route reads this staged state.
         stage_xui08_closed(&mut pending, &presented);
         let current = xui08_current_viewer_state(&pending, &presented);
         assert!(!current.open);
@@ -9078,7 +8899,6 @@ mod tests {
         assert!(presented.active_scrollbar_drag.is_none());
 
         // Execute checkpoints the already-released state. Skipped, Occluded,
-        // and execute-error all share this component rollback primitive.
         let mut checkpoint = None;
         begin_xui08_staged_candidate(&mut presented, &mut pending, &mut checkpoint)
             .expect("begin XUI08 candidate");

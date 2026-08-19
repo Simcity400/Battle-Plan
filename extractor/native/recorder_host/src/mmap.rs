@@ -1,16 +1,3 @@
-//! A minimal read-only memory map (Windows) so the on-disk compact stream can be
-//! summarized without a session-proportional heap allocation.
-//!
-//! The recorder streams the pipe straight to disk during capture (bounded RAM),
-//! then must run the full `summarize_compact_stream` gate over the whole stream.
-//! Reading it back with `fs::read` would reintroduce the very heap blow-up this
-//! phase removes, so instead the file is memory-mapped read-only: the summarize
-//! pass sees a `&[u8]` of the entire stream, but the pages are FILE-BACKED and
-//! evictable — peak PRIVATE (committed) bytes stay O(1) regardless of stream
-//! length, and on a weak PC the OS simply drops clean pages under pressure rather
-//! than committing pagefile, so the scan never OOMs. Only the fold (chunked) and
-//! this map touch the full stream; neither scales committed memory with length.
-
 use std::ffi::c_void;
 use std::fs::File;
 use std::ops::Deref;
@@ -42,7 +29,6 @@ extern "system" {
     fn CloseHandle(handle: Handle) -> i32;
 }
 
-/// A read-only view of a file's bytes. Derefs to `&[u8]`. The backing `File` and
 /// mapping handle are held for the view's lifetime and released on drop.
 pub struct Mmap {
     _file: File,
@@ -56,8 +42,6 @@ unsafe impl Send for Mmap {}
 unsafe impl Sync for Mmap {}
 
 impl Mmap {
-    /// Map `path` read-only. A zero-length file maps to an empty slice (Windows
-    /// cannot map a 0-byte file, so that case is handled without an OS call).
     pub fn open(path: &Path) -> std::io::Result<Mmap> {
         let file = File::open(path)?;
         let len = file.metadata()?.len();
@@ -82,7 +66,7 @@ impl Mmap {
                 std::ptr::null_mut(),
                 PAGE_READONLY,
                 0,
-                0, // 0/0 => map the whole current file size
+                0,
                 std::ptr::null(),
             )
         };

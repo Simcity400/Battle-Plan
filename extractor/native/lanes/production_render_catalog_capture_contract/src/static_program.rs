@@ -1,9 +1,3 @@
-//! Neutral d80 static/post-process capture rows.
-//!
-//! Pass/program identities are opaque SHA-256 values derived by the observer
-//! from captured registration/state graphs. They carry no vanilla role name
-//! and never select playback behavior.
-
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,15 +10,11 @@ pub struct RawCaptureLaunchEpoch {
     pub first_creation_sequence: u64,
     pub hook_epoch_nonce: u64,
     pub hook_set_receipt_sha256: String,
-    /// Final committed transcript receipt. Rows remain buffered and cannot be
-    /// drained while this value is pending.
     pub capture_receipt_sha256: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawStaticContentJoin {
-    /// Opaque portable manifest key selected by the recorder. It is never a
-    /// filename, role, or catalog lookup hint.
     pub content_key: String,
     pub content: RawVfsContentIdentity,
 }
@@ -32,21 +22,8 @@ pub struct RawStaticContentJoin {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawStaticShaderResourceSource {
     UsedContent,
-    /// Exact draw-time texture bytes retained by the authenticated D3D11
     /// resource snapshot. This is used for engine-generated immutable/runtime
-    /// resources (for example TerrainIDMap, RiverData, gradient-border fields,
-    /// and season-dependent atlases) that are neither direct effective-VFS
-    /// payloads nor render-target producer edges.
-    ///
-    /// The marker carries no pointer or semantic guess. The resource
-    /// descriptor, view, subresource pitches, bytes, and hashes are supplied by
-    /// the same exact snapshot row already joined by stage/slot/resource
-    /// identity.
     AuthenticatedSnapshot,
-    /// Exact selected-Present SnowMudData upload joined by the process-local
-    /// resource identity while capture is still in-process, after the exact
-    /// draw-time resource snapshot matches H row-for-row. Only the pointer-free
-    /// producer ordinal and payload digest survive promotion.
     SnowMudTexture {
         producer_ordinal: u64,
         payload_sha256: String,
@@ -56,8 +33,6 @@ pub enum RawStaticShaderResourceSource {
         producer_capture_sequence: u64,
     },
     PoliticalTexture {
-        /// Exact portable political upload family observed at the upload/bind
-        /// join; no texture identity is inferred from a slot.
         texture_kind: String,
         target_binding_identity: String,
         upload_order: u32,
@@ -148,7 +123,6 @@ pub struct RawStaticD3dDrawState {
     pub ordered_constant_buffer_semantics: Vec<RawConstantBufferSemantic>,
     pub ordered_color_targets: Vec<RawOutputTargetSemantic>,
     pub depth_target: Option<RawOutputTargetSemantic>,
-    /// Exact effective-VFS winners observed while resolving this program.
     pub ordered_content: Vec<RawStaticContentJoin>,
 }
 
@@ -156,7 +130,6 @@ pub struct RawStaticD3dDrawState {
 pub struct RawStaticStreamOutputBuffer {
     pub slot: u32,
     pub buffer_ptr: usize,
-    /// Exact D3D11 offset; `u32::MAX` preserves append semantics.
     pub byte_offset: u32,
 }
 
@@ -218,7 +191,6 @@ pub struct RawStaticProgramCapture {
     pub frame_sequence: u64,
     pub ordered_operations: Vec<RawStaticOrderOperation>,
     pub draws: Vec<RawStaticD3dDrawState>,
-    /// Shared immutable creation/snapshot registry for every pointer above.
     pub catalog: RawRenderCatalogCapture,
 }
 
@@ -540,8 +512,6 @@ impl RawStaticProgramCapture {
     }
 }
 
-/// Hook-facing sink. Implementations must queue the state atomically with the
-/// matching raw order event; dropping either side invalidates the whole frame.
 pub trait RawStaticProgramCaptureSink {
     fn push_static_draw(&mut self, state: RawStaticD3dDrawState) -> Result<(), String>;
 }

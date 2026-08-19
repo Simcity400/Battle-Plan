@@ -1,11 +1,3 @@
-//! Tests for the engine-held localisation provenance reader.
-//!
-//! Every fixture here is a synthetic *image* — a sparse map of mapped regions
-//! laid out exactly as the a729 structures are, read through the same
-//! [`TargetImageMemory`] the live path uses. Reads outside a mapped region fail,
-//! as they would against a real process, so a wild pointer in the parser shows up
-//! as a test failure rather than as silent zeroes.
-
 use super::*;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -13,7 +5,6 @@ use std::collections::BTreeMap;
 const IMAGE_BASE: u64 = 0x0000_0001_4000_0000;
 const HEAP_BASE: u64 = 0x0000_0002_0000_0000;
 
-/// Sparse mapped memory. A read must lie wholly inside one placed region.
 #[derive(Default, Clone)]
 struct FakeImage {
     regions: BTreeMap<u64, Vec<u8>>,
@@ -47,8 +38,6 @@ impl TargetImageMemory for FakeImage {
     }
 }
 
-/// A memory whose Nth read of the root slot differs, to exercise the re-read
-/// disagreement gate.
 struct FlippingImage {
     first: FakeImage,
     second: FakeImage,
@@ -68,8 +57,6 @@ impl TargetImageMemory for FlippingImage {
     }
 }
 
-/// A reader whose every answer comes from a closure, for probing one helper at
-/// an address a whole-image fixture cannot reach (near `u64::MAX`).
 struct ScriptedImage<F>(F)
 where
     F: Fn(u64, usize) -> Result<Vec<u8>, String>;
@@ -83,12 +70,10 @@ where
     }
 }
 
-/// One localisation record as the fixture describes it.
 #[derive(Clone)]
 struct Record {
     key: &'static str,
     value: &'static str,
-    /// `None` models the engine's `-1` "no recorded source".
     source: Option<&'static str>,
 }
 
@@ -100,10 +85,6 @@ fn record(key: &'static str, value: &'static str, source: &'static str) -> Recor
     }
 }
 
-/// Lay out one language table plus the root that points at it.
-///
-/// `decoy_language`, when given, places a second table *before* the wanted one,
-/// so position and language selection cannot be confused.
 struct Fixture {
     language: &'static str,
     records: Vec<Record>,
@@ -112,36 +93,22 @@ struct Fixture {
     override_entry_count: Option<u32>,
     override_source_index: Option<i32>,
     override_key_offset: Option<i32>,
-    /// Makes the root's active-language token differ from every table name, the
-    /// shape where the engine has selected a language it has no table for.
     root_language_override: Option<&'static str>,
-    /// Appends a final record sized so the arena ends exactly on a page
-    /// boundary, putting a real value hard against the end of the mapped
-    /// region. An unclamped 256-byte chunk read would run off the end.
     exact_page_arena: bool,
-    /// Declares more tables than the array holds valid pointers for.
     override_table_count: Option<u32>,
     override_source_count: Option<u32>,
-    /// Puts a null pointer in the counted table array, ahead of the real table.
     null_table_slot: bool,
-    /// Corrupts the first source name's std::string header.
     corrupt_source_string: Option<CorruptString>,
-    /// Declared arena length, defaulting to the real arena size.
     arena_capacity: Option<u32>,
     arena_length: Option<u32>,
-    /// Declared vector capacities. Default to the declared size, so a size the
-    /// engine could never produce has to be asked for explicitly.
     table_capacity: Option<u32>,
     entry_capacity: Option<u32>,
     source_capacity: Option<u32>,
 }
 
-/// Ways a std::string header can be inconsistent in a corrupt image.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum CorruptString {
-    /// size > capacity, which no valid MSVC string ever has.
     SizeExceedsCapacity,
-    /// size beyond the module's declared maximum text length.
     SizeBeyondMaximum,
 }
 
@@ -173,8 +140,6 @@ impl Fixture {
         let mut image = FakeImage::default();
         let mut next = HEAP_BASE;
         let mut alloc = |image: &mut FakeImage, bytes: Vec<u8>| -> u64 {
-            // Page-align every region so a chunked C-string read never straddles
-            // two regions, exactly as page-granular process memory behaves.
             let address = (next + 0xfff) & !0xfffu64;
             let mut padded = bytes;
             let pad = (padded.len() + 0xfff) & !0xfffusize;
@@ -184,25 +149,23 @@ impl Fixture {
             address
         };
 
-        // Text arena: every key and value, NUL-terminated, with recorded offsets.
         let mut records = self.records.clone();
         let mut arena = Vec::new();
         let mut offsets: Vec<(i32, i32)> = Vec::new();
-        let mut push_text = |arena: &mut Vec<u8>, offsets: &mut Vec<(i32, i32)>, record: &Record| {
-            let key_offset = arena.len() as i32;
-            arena.extend_from_slice(record.key.as_bytes());
-            arena.push(0);
-            let value_offset = arena.len() as i32;
-            arena.extend_from_slice(record.value.as_bytes());
-            arena.push(0);
-            offsets.push((key_offset, value_offset));
-        };
+        let mut push_text =
+            |arena: &mut Vec<u8>, offsets: &mut Vec<(i32, i32)>, record: &Record| {
+                let key_offset = arena.len() as i32;
+                arena.extend_from_slice(record.key.as_bytes());
+                arena.push(0);
+                let value_offset = arena.len() as i32;
+                arena.extend_from_slice(record.value.as_bytes());
+                arena.push(0);
+                offsets.push((key_offset, value_offset));
+            };
         for record in &records {
             push_text(&mut arena, &mut offsets, record);
         }
         if self.exact_page_arena {
-            // Size one more value so its terminating NUL is the arena's very
-            // last byte, leaving no zero padding after it.
             const PAGE: usize = 0x1000;
             let key = "ZZ_PAGE_EDGE";
             let after_key = arena.len() + key.len() + 1;
@@ -224,7 +187,6 @@ impl Fixture {
         let arena_len = arena.len() as u32;
         let arena_address = alloc(&mut image, arena);
 
-        // Source-name array, in first-seen order, as the engine appends it.
         let mut source_names: Vec<&str> = Vec::new();
         for record in &records {
             if let Some(source) = record.source {
@@ -256,7 +218,6 @@ impl Fixture {
                 .copy_from_slice(&capacity.to_le_bytes());
             patch(&mut image, source_address, &header);
         }
-        // Long names live on the heap, exactly like a real long file path.
         for (index, name) in source_heaps {
             let heap = alloc(&mut image, name.as_bytes().to_vec());
             let slot = source_address + index as u64 * STD_STRING_STRIDE;
@@ -267,7 +228,6 @@ impl Fixture {
             patch(&mut image, slot, &header);
         }
 
-        // Entry array.
         let mut entries = Vec::new();
         for (index, record) in records.iter().enumerate() {
             let (key_offset, value_offset) = offsets[index];
@@ -288,8 +248,6 @@ impl Fixture {
             } else {
                 source_index
             };
-            // The hash column is genuinely unread by the parser; fill it with a
-            // value that would be wrong if anything started trusting it.
             entries.extend_from_slice(&0xdead_beef_dead_beefu64.to_le_bytes());
             entries.extend_from_slice(&key_offset.to_le_bytes());
             entries.extend_from_slice(&value_offset.to_le_bytes());
@@ -319,12 +277,9 @@ impl Fixture {
             alloc(image, table)
         };
 
-        let entry_count = self
-            .override_entry_count
-            .unwrap_or(records.len() as u32);
+        let entry_count = self.override_entry_count.unwrap_or(records.len() as u32);
         let mut tables: Vec<u64> = Vec::new();
         if let Some(decoy) = self.decoy_language {
-            // A decoy with its own (empty-ish) content, placed first.
             let table = build_table(
                 &mut image,
                 &mut alloc,
@@ -402,8 +357,6 @@ impl Fixture {
     }
 }
 
-/// An MSVC `std::string` holding `text` inline. Callers patch in a heap pointer
-/// when the text is too long for the small-string buffer.
 fn std_string_placeholder(text: &str) -> [u8; 0x20] {
     let mut bytes = [0u8; 0x20];
     bytes[STD_STRING_SIZE_OFFSET..STD_STRING_SIZE_OFFSET + 8]
@@ -516,14 +469,6 @@ fn a_changed_key_moves_the_digest() {
 
 #[test]
 fn a_mod_overriding_a_base_key_from_its_own_file_moves_the_digest_even_with_identical_text() {
-    // The engine records the *virtual* path that won each key. A mod shipping
-    // its own differently-named file (the common override shape) therefore
-    // changes the recorded source even when the text is byte-identical, and a
-    // digest over key/value alone could not see that.
-    //
-    // The other shape — a mod replacing a base file under the same name — keeps
-    // the virtual path, and is caught by the value and by the layer inventory
-    // instead. That limit is documented on the module.
     let base = Fixture::new("l_english", base_records()).build();
     let mut overridden = base_records();
     overridden[0].source = Some("mod/my_mod/localisation/theatre_l_english.yml");
@@ -557,7 +502,6 @@ fn a_key_with_no_recorded_source_is_distinct_from_one_sourced_from_an_empty_name
 
 #[test]
 fn framing_prevents_a_key_value_boundary_shift_from_colliding() {
-    // Without length framing, ("AB","C") and ("A","BC") would digest alike.
     let left = Fixture::new("l_english", vec![record("AB", "C", "f.yml")]).build();
     let right = Fixture::new("l_english", vec![record("A", "BC", "f.yml")]).build();
     assert_ne!(
@@ -624,9 +568,6 @@ fn two_tables_claiming_one_language_are_refused() {
 
 #[test]
 fn an_active_language_with_no_table_of_its_own_is_refused() {
-    // The engine reports `l_spanish` as active but only ships an `l_english`
-    // table. Falling back to the single table present would silently digest the
-    // wrong language's content.
     let mut fixture = Fixture::new("l_english", base_records());
     fixture.root_language_override = Some("l_spanish");
     let image = fixture.build();
@@ -680,7 +621,10 @@ fn an_arena_offset_past_the_span_bound_is_refused() {
 fn an_empty_language_binding_is_refused() {
     let image = Fixture::new("l_english", base_records()).build();
     let error = error_of(&image, "");
-    assert!(error.contains("requires a launch-bound language"), "got: {error}");
+    assert!(
+        error.contains("requires a launch-bound language"),
+        "got: {error}"
+    );
 }
 
 #[test]
@@ -704,14 +648,6 @@ fn a_table_that_changes_between_the_two_reads_is_refused() {
 
 #[test]
 fn a_value_is_read_past_the_first_chunk_not_truncated_at_it() {
-    // The chunked C-string reader walks 256 bytes at a time. Two values that are
-    // identical for the first 600 bytes and differ only afterwards must still
-    // digest differently — a reader that stopped at the first chunk would see
-    // the same 256 bytes for both and collide.
-    //
-    // Comparing a long value against a *short* one would not test this: a
-    // truncated long value still differs from a short one, so that assertion
-    // holds whether or not the truncation bug is present.
     let prefix = "a".repeat(600);
     let one: &'static str = Box::leak(format!("{prefix}TAIL_ONE").into_boxed_str());
     let two: &'static str = Box::leak(format!("{prefix}TAIL_TWO").into_boxed_str());
@@ -726,11 +662,6 @@ fn a_value_is_read_past_the_first_chunk_not_truncated_at_it() {
 
 #[test]
 fn a_value_ending_flush_with_the_last_mapped_page_is_still_read() {
-    // Real process memory is mapped by the page. A string sitting hard against
-    // the end of the last mapped page of a region must not make the reader ask
-    // for bytes past it: `ReadProcessMemory` would fail on the unmapped page and
-    // a perfectly readable key would be refused. The fixture's arena ends exactly
-    // on a page boundary, so an unclamped 256-byte chunk runs off the region.
     let mut fixture = Fixture::new("l_english", base_records());
     fixture.exact_page_arena = true;
     let image = fixture.build();
@@ -744,9 +675,6 @@ fn a_value_ending_flush_with_the_last_mapped_page_is_still_read() {
 
 #[test]
 fn the_active_language_is_part_of_the_digest() {
-    // Every other digest comparison here holds the language fixed, so nothing
-    // else would notice if the language stopped being hashed. Two launches whose
-    // key/value sets happen to coincide must still not share a digest.
     let english = Fixture::new("l_english", base_records()).build();
     let french = Fixture::new("l_french", base_records()).build();
     assert_ne!(
@@ -758,11 +686,6 @@ fn the_active_language_is_part_of_the_digest() {
 
 #[test]
 fn source_tags_stop_a_source_being_reassociated_onto_a_neighbouring_key() {
-    // Length framing alone is not enough. Without the Some/None tag byte these
-    // two distinct engine states flatten to the same field sequence:
-    //   A: (A,V1,Some(B)) (C,V2,None)   -> A V1 B | C V2
-    //   B: (A,V1,None)    (B,C,Some(V2)) -> A V1   | B C V2
-    // Both are `A V1 B C V2`. The tag is what keeps them apart.
     let left = Fixture::new(
         "l_english",
         vec![
@@ -864,8 +787,6 @@ fn an_empty_key_is_refused() {
 
 #[test]
 fn an_arena_string_that_never_terminates_within_the_bound_is_refused() {
-    // Also pins the budget clamp: the reader must stop at MAX_TEXT_BYTES rather
-    // than overshoot by up to one chunk when the NUL lands inside a later read.
     let huge: &'static str = Box::leak("x".repeat(MAX_TEXT_BYTES + 5_000).into_boxed_str());
     let image = Fixture::new("l_english", vec![record("K", huge, "f.yml")]).build();
     let error = error_of(&image, "l_english");
@@ -874,11 +795,6 @@ fn an_arena_string_that_never_terminates_within_the_bound_is_refused() {
 
 #[test]
 fn the_text_bound_holds_even_when_the_terminator_lands_inside_a_later_chunk() {
-    // Checking `out.len() >= MAX_TEXT_BYTES` only *after* searching a chunk for
-    // NUL lets a string terminating inside that chunk return up to one chunk
-    // more than the declared bound. Starting one byte into a page makes the
-    // chunk sizes land so that the accumulated length is 65_520 — just under the
-    // bound — when a chunk containing the NUL at offset 200 arrives.
     const REGION: u64 = 0x0000_0003_0000_0000;
     const NUL_AT: usize = 65_720;
     let mut bytes = vec![b'x'; 17 * 4096];
@@ -904,11 +820,6 @@ fn an_image_base_that_overflows_the_root_slot_address_is_refused() {
         .expect_err("an overflowing base must be refused");
     assert!(error.contains("overflow"), "got: {error}");
 }
-
-// A vector whose size exceeds its capacity is a state the engine never
-// produces. It must be refused before the bulk read, because process mappings do
-// not preserve allocation boundaries: reading past the real end of a short
-// allocation can succeed and hand back neighbouring bytes that parse as entries.
 
 #[test]
 fn a_table_vector_whose_size_exceeds_its_capacity_is_refused() {
@@ -946,8 +857,6 @@ fn a_source_vector_whose_size_exceeds_its_capacity_is_refused() {
     );
 }
 
-/// Lay out one bare `{data, i32 capacity, i32 size, Allocator*}` header, so the
-/// vector reader can be probed with values a whole-image fixture cannot express.
 fn vector_header(data: u64, capacity: i32, size: i32) -> (FakeImage, u64) {
     const AT: u64 = 0x0000_0004_0000_0000;
     let mut bytes = vec![0u8; 0x1000];
@@ -961,9 +870,6 @@ fn vector_header(data: u64, capacity: i32, size: i32) -> (FakeImage, u64) {
 
 #[test]
 fn a_vector_with_capacity_but_a_null_data_pointer_is_refused() {
-    // Reachable through the source vector, whose caller tolerates null data when
-    // the size is zero: every entry carrying source index -1 makes size 0, and a
-    // stale capacity would then have gone unnoticed.
     let (image, at) = vector_header(0, 1, 0);
     let error = read_pdx_vector(&image, at, "source").expect_err("must refuse");
     assert!(
@@ -974,8 +880,6 @@ fn a_vector_with_capacity_but_a_null_data_pointer_is_refused() {
 
 #[test]
 fn an_empty_never_allocated_vector_is_still_accepted() {
-    // The counterpart to the guard above: capacity and size both zero is the one
-    // shape in which a null data pointer is legitimate.
     let (image, at) = vector_header(0, 0, 0);
     let (data, size) = read_pdx_vector(&image, at, "source").expect("must be accepted");
     assert_eq!((data, size), (0, 0));
@@ -983,7 +887,6 @@ fn an_empty_never_allocated_vector_is_still_accepted() {
 
 #[test]
 fn a_vector_declaring_a_negative_capacity_is_refused() {
-    // An unchecked `as u32` would turn -1 into u32::MAX, making every size fit.
     let (image, at) = vector_header(0x1000, -1, 1);
     let error = read_pdx_vector(&image, at, "entry").expect_err("must refuse");
     assert!(error.contains("capacity is negative"), "got: {error}");
@@ -996,11 +899,6 @@ fn a_vector_declaring_a_negative_size_is_refused() {
     assert!(error.contains("count is negative"), "got: {error}");
 }
 
-// Each checked addition below is an independent guard. A whole-image fixture
-// cannot place structures near `u64::MAX`, so these probe the helpers directly:
-// without the `checked_add`, each wraps to a low address and reads whatever
-// happens to live there instead of refusing.
-
 #[test]
 fn a_field_offset_that_overflows_the_structure_address_is_refused() {
     let error = field(u64::MAX - 3, ROOT_TABLE_VECTOR).expect_err("must refuse");
@@ -1009,7 +907,6 @@ fn a_field_offset_that_overflows_the_structure_address_is_refused() {
 
 #[test]
 fn a_table_slot_index_that_overflows_the_array_address_is_refused() {
-    // Slot 0 resolves and its table names a different language; slot 1 overflows.
     let memory = ScriptedImage(|_address, length| match length {
         8 => Ok(0x1000u64.to_le_bytes().to_vec()),
         0x20 => Ok(std_string_placeholder("l_german").to_vec()),
@@ -1041,19 +938,14 @@ fn an_arena_offset_that_overflows_the_arena_address_is_refused() {
 
 #[test]
 fn a_c_string_cursor_that_overflows_while_advancing_is_refused() {
-    // 51 bytes remain in the final page and none is NUL, so the cursor advance
-    // lands exactly one past u64::MAX.
     let memory = ScriptedImage(|_address, length| Ok(vec![b'x'; length]));
-    let error = read_c_string(&memory, u64::MAX - 50, usize::MAX, "value").expect_err("must refuse");
+    let error =
+        read_c_string(&memory, u64::MAX - 50, usize::MAX, "value").expect_err("must refuse");
     assert!(error.contains("address overflow"), "got: {error}");
 }
 
 #[test]
 fn arena_reads_are_bounded_by_the_engines_declared_length_not_by_what_is_mapped() {
-    // The arena carries its own length. The bytes past that length are still
-    // mapped and still NUL-terminated in this fixture, so a reader that trusted
-    // the mapping would happily return them. Shrinking only the declared length
-    // must turn the identical image into a refusal.
     let records = vec![record("KEY", "value", "f.yml")];
     let full = Fixture::new("l_english", records.clone()).build();
     provenance_of(&full, "l_english");
@@ -1069,7 +961,6 @@ fn arena_reads_are_bounded_by_the_engines_declared_length_not_by_what_is_mapped(
     );
 }
 
-/// A reader that caches, like the collector's in-process one.
 struct CachingImage {
     inner: FakeImage,
     fresh_reads: Cell<u32>,
@@ -1102,19 +993,14 @@ impl TargetImageMemory for CachingImage {
 
 #[test]
 fn a_second_pass_through_a_caching_reader_touches_the_target_zero_times() {
-    // This is why `read_engine_localisation_provenance_once` is public.
-    //
-    // `read_engine_localisation_provenance` runs both of its passes through the
-    // SAME memory. Against a caching reader the second pass reads nothing fresh
-    // at all, so it cannot observe any change and the comparison agrees by
-    // construction — the disagreement check silently becomes a no-op. A caching
-    // caller must instead drive the single-pass entry point twice with a freshly
-    // built reader each time, which is what the collector seam does.
     let image = CachingImage::over(Fixture::new("l_english", base_records()).build());
 
     read_engine_localisation_provenance_once(&image, IMAGE_BASE, "l_english").expect("first pass");
     let after_first = image.fresh_reads.get();
-    assert!(after_first > 0, "the first pass must actually read the target");
+    assert!(
+        after_first > 0,
+        "the first pass must actually read the target"
+    );
 
     read_engine_localisation_provenance_once(&image, IMAGE_BASE, "l_english").expect("second pass");
     assert_eq!(
@@ -1127,10 +1013,6 @@ fn a_second_pass_through_a_caching_reader_touches_the_target_zero_times() {
 
 #[test]
 fn the_root_rva_is_the_documented_absolute_address_minus_the_image_base() {
-    // No other test can catch a mistyped RVA: the fixtures place the root slot
-    // at IMAGE_BASE + LOCALISATION_ROOT_RVA using the same constant the parser
-    // reads, so a wrong value moves both sides together and stays green. This
-    // pins the constant to the absolute address read out of the binary.
     assert_eq!(LOCALISATION_ROOT_VA_A729, 0x1_435a_10d8);
     assert_eq!(A729_PREFERRED_IMAGE_BASE, 0x1_4000_0000);
     assert_eq!(LOCALISATION_ROOT_RVA, 0x35a_10d8);
@@ -1140,18 +1022,11 @@ fn the_root_rva_is_the_documented_absolute_address_minus_the_image_base() {
     );
 }
 
-/// Measures the parse + sort + digest cost over a table the size of a real
-/// English install. This is the half of the cost that does not depend on how
-/// memory is reached; the read-side cost still owes a live measurement.
-///
-/// Ignored by default because it allocates a few tens of MB. Run with:
-/// `cargo test -p recorder_host --lib engine_localisation_provenance -- --ignored --nocapture`
 #[test]
 #[ignore]
 fn measure_digest_cost_over_a_realistic_table() {
     use std::time::Instant;
 
-    // The exact shape observed live on a729 at the main menu.
     const KEYS: usize = 129_097;
     const SOURCES: usize = 207;
     let mut records: Vec<Record> = Vec::with_capacity(KEYS);
@@ -1162,8 +1037,11 @@ fn measure_digest_cost_over_a_realistic_table() {
                 .into_boxed_str(),
         );
         let source: &'static str = Box::leak(
-            format!("localisation/english/file_{:04}_l_english.yml", index % SOURCES)
-                .into_boxed_str(),
+            format!(
+                "localisation/english/file_{:04}_l_english.yml",
+                index % SOURCES
+            )
+            .into_boxed_str(),
         );
         records.push(Record {
             key,

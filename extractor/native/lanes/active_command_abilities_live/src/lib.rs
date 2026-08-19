@@ -1,9 +1,3 @@
-//! A36/XUI23 exact selected-context command-ability carrier.
-//!
-//! The carrier admits only a source that authenticates itself as the pinned
-//! a729 `CAbilityListWindow` post-refresh boundary. It deliberately does not
-//! evaluate scripted `allowed` blocks or reconstruct tooltip text.
-
 use std::collections::BTreeSet;
 
 #[cfg(windows)]
@@ -13,17 +7,9 @@ pub mod production_carrier;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"ABL1");
 pub const SCHEMA_VERSION: u32 = 2;
 pub const AUTHORITY_EXACT_A729_ABILITY_CONTROLLER: u32 = 0xA729_0036;
-/// Static exact20 authority permits the diagnostic observer to run. It does
-/// not, by itself, authorize a replay payload.
 pub const EXACT_A729_AUTHORITY_BOUND: bool = true;
-/// Exact refresh/state transitions are retained by the ordinary collector
-/// hook and fail closed on any identity or lifecycle break.
 pub const LIVE_TRANSITION_PROMOTION_BOUND: bool = true;
-/// Deliberately false until final tooltip and disabled-reason bytes are joined
-/// to the exact ordered ability row that produced them.
 pub const PORTABLE_TEXT_JOIN_BOUND: bool = false;
-/// Core rows are production-scheduled independently of the optional portable
-/// final-text join. Missing tooltip/disabled-reason observations stay absent.
 pub const COMPACT_DOMAIN_SCHEDULED: bool = true;
 pub const HEADER_LEN: usize = 40;
 pub const COMMAND_POWER_FIXED_SCALE: i64 = 100_000;
@@ -94,8 +80,6 @@ pub struct AbilityRow {
     pub activation_hour: Option<u64>,
     pub cooldown_total: TimerValue,
     pub cooldown_remaining: TimerValue,
-    /// Exact evaluated cost when the engine exposes it at the retained
-    /// boundary. `None` is unavailable, never an invented zero.
     pub cost_command_power_fixed: Option<i64>,
     pub target_kind: Option<String>,
     pub target_id: Option<String>,
@@ -103,8 +87,6 @@ pub struct AbilityRow {
     pub duration_remaining: TimerValue,
     pub display_order: u32,
     pub icon: String,
-    /// Optional final evaluated text. Core row authority does not depend on a
-    /// hover/tooltip transaction occurring in the same frame.
     pub tooltip: Option<String>,
     pub disabled_reason: Option<String>,
     pub affected_division_ids: Vec<String>,
@@ -146,9 +128,7 @@ pub fn collect_and_encode<S: ExactA729AbilityControllerSource>(
     source: &S,
     frame_hour: u64,
 ) -> Result<Vec<u8>, AbilityError> {
-    if !EXACT_A729_AUTHORITY_BOUND
-        || !LIVE_TRANSITION_PROMOTION_BOUND
-        || !COMPACT_DOMAIN_SCHEDULED
+    if !EXACT_A729_AUTHORITY_BOUND || !LIVE_TRANSITION_PROMOTION_BOUND || !COMPACT_DOMAIN_SCHEDULED
     {
         return Err(AbilityError::ActivationDisabled);
     }

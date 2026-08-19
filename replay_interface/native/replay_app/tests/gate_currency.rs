@@ -1,11 +1,3 @@
-//! The compiled test gates must still describe the environment this run sees.
-//!
-//! Without this, a stale build-script probe could leave a gated test `ignored`
-//! on a machine where its precondition is now available — quiet
-//! non-execution of exactly the kind the gate mechanism exists to remove — or
-//! leave it runnable after the resource disappeared. `rerun-if-env-changed`
-//! cannot see a directory appearing at an unchanged path, so this check is the
-//! safety net for that case.
 
 include!("../test_gates.rs");
 

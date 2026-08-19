@@ -1,8 +1,3 @@
-//! Canonical H4CR certification for the production domain-41 scientist slice.
-//!
-//! This module deliberately starts from the physical compact stream.  A loose
-//! JSON manifest, a lane-only payload, or a detached row count is not proof.
-
 use crate::{ScientistRow, MAX_CHARACTER_ID, MAX_SCIENTIST_DISPLAY_LEN, MAX_SCIENTIST_TOKEN_LEN};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,13 +27,10 @@ pub struct StreamCertificationPolicy {
     pub expected_perf_roster: BTreeSet<u16>,
     pub expected_data_roster: BTreeSet<u16>,
     pub require_nonempty_scientists: bool,
-    /// Exact requested game-hour advancements. Production certification
-    /// requires `N + 1` consecutive closed frames spanning exactly `N` hours.
     pub requested_game_hour_advancements: Option<u32>,
 }
 
 impl StreamCertificationPolicy {
-    /// Exact roster derived from the shared production descriptor table.
     pub fn production(requested_game_hour_advancements: u32) -> Result<Self, String> {
         validate_requested_game_hours(requested_game_hour_advancements)?;
         let expected_perf_roster: BTreeSet<u16> = compact_contract::production_profile_domains()
@@ -58,9 +50,6 @@ impl StreamCertificationPolicy {
         })
     }
 
-    /// Small, production-wire-compatible fixture policy.  Only the roster is
-    /// reduced; framing, D41 schema, source, fold, and close-boundary rules are
-    /// identical to production.
     pub fn scientists_fixture() -> Self {
         Self {
             expected_perf_roster: BTreeSet::from([DOMAIN_PROJECTS_LIVE]),
@@ -125,10 +114,6 @@ struct PerfAuthority {
     status_flags: u32,
 }
 
-/// Decode the exact production D41 progress-v2 payload and return its scientist
-/// mutations.  All surrounding row families and the optional PLCF trailer are
-/// structurally validated so an offset cannot be certified from a malformed
-/// mixed-domain fixture.
 pub fn decode_production_projects_scientists(
     payload: &[u8],
 ) -> Result<ProductionProjectsScientistsPayload, String> {
@@ -213,8 +198,6 @@ pub fn decode_production_projects_scientists(
             }
         }
     }
-    // A clean certification cannot hide root failures in counters while leaving
-    // the status word clear.  Neutral/absent optional roots (76..84) are valid.
     for offset in [
         64usize, 68, 72, 88, 92, 96, 100, 104, 108, 112, 116, 120, 124, 128, 132,
     ] {
@@ -470,7 +453,9 @@ pub fn certify_canonical_stream(
         requested_game_hour_advancements: policy.requested_game_hour_advancements,
         actual_game_hour_advancements: None,
     };
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes)
+    {
         report
             .problems
             .push(format!("stateful stream placement: {error}"));
@@ -594,7 +579,6 @@ pub fn certify_canonical_stream(
         match record_type {
             compact_contract::KnownRecordType::DomainData => {
                 if header.domain_id == DOMAIN_CONTROL {
-                    // Control/latch diagnostics are outside the scheduled roster.
                 } else if !policy.expected_data_roster.contains(&header.domain_id) {
                     report.problems.push(format!(
                         "offset {offset}: unexpected DATA domain {}",
@@ -876,13 +860,6 @@ fn validate_frame_end(payload: &[u8], perf: &BTreeMap<u16, PerfAuthority>) -> Re
 }
 
 fn reject_status(domain_id: u16, status: u32, label: &str) -> Result<(), String> {
-    // Validity and failure classification are defined over the GLOBALLY
-    // interpretable view: a domain's registered lane-local badges are its own
-    // vocabulary, not unassigned bits and not failure evidence
-    // (`compact_contract::lane_local_status_mask`; the d53 0x530200 defect
-    // class). For every domain this certifier admits today the mask is zero
-    // and this is an identity, but the rule is the contract's, not the
-    // roster's.
     let global = compact_contract::compact_status_for_global_interpretation(domain_id, status);
     let unknown = compact_contract::compact_status_unknown_flags_v1(global);
     if unknown != 0 {
@@ -1121,23 +1098,14 @@ fn i32_at(bytes: &[u8], offset: usize) -> Result<i32, String> {
 mod tests {
     use super::*;
 
-    /// Regression: `reject_status` classifies over the globally interpretable
-    /// view, so a domain's registered lane-local badges (d53 bits 16..=22,
-    /// d60 bits 16..=17) are neither unknown bits nor failure bits for that
-    /// domain — while remaining unknown for every unregistered domain.
     #[test]
     fn reject_status_strips_registered_lane_local_badges_first() {
-        // d53's production word: PARTIAL_DATA is a genuine failure bit and
-        // must still reject — but as a FAILURE, not as unknown bits.
         let err = reject_status(53, 0x0053_0200, "t").unwrap_err();
         assert!(err.contains("failure bits 0x200"), "{err}");
-        // Badges alone are clean for their own domain.
         assert!(reject_status(53, 0x0053_0000, "t").is_ok());
         assert!(reject_status(60, (1 << 16) | (1 << 17), "t").is_ok());
-        // Unregistered domains still reject the same words as unknown.
         let err = reject_status(DOMAIN_PROJECTS_LIVE, 0x0053_0000, "t").unwrap_err();
         assert!(err.contains("unknown bits 0x530000"), "{err}");
-        // A truly unassigned bit stays unknown even for d53.
         let err = reject_status(53, 1 << 30, "t").unwrap_err();
         assert!(err.contains("unknown bits"), "{err}");
     }
@@ -1175,7 +1143,7 @@ mod tests {
         put_u32(&mut payload, 40, observed);
         put_u32(&mut payload, 48, PROJECT_SOURCE_SCAN);
         put_u32(&mut payload, 52, PROJECT_HEADER_EXT_PROGRESS_V2);
-        put_u32(&mut payload, 76, 3); // neutral optional program roots are legitimate
+        put_u32(&mut payload, 76, 3);
         put_u32(&mut payload, 136, state_count as u32);
         put_u32(&mut payload, 140, breakthrough_count as u32);
         put_u32(&mut payload, 144, state_count as u32);

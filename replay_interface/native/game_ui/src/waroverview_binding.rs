@@ -1,42 +1,9 @@
-//! War-overview / war-summary panel population (U1 wave —
-//! `interface/waroverview.gui` `waroverview_window`: the global list of ongoing
-//! wars, their belligerents, and per-participant summary stats).
-//!
-//! Population seam over `replay_core`'s read-only [`DiplomacyView`] (items
-//! 8/8b). It parses no recording bytes (Constraint 2) and fabricates nothing
-//! (Constraint 3): an unmeasured casualty tally is `None`, never `0`.
-//!
-//! ## What is POPULATED
-//!
-//! * **Belligerent-pair casualties and H-B5 war residuals** — from
-//!   `DiplomacyView::war_relations`
-//!   (the live `diplomacy_live.war_relations` feed), each row is an ordered
-//!   `(first, second)` belligerent pair plus the two running casualty tallies
-//!   and the exact threat/instigator/hostility tuple. These feed the
-//!   war-participant rows' `casualties` textbox and the read-only war detail.
-//! * **Exact war objects** — ordered attacker/defender sides, engine-resolved
-//!   war name, participant participation/breakdown/capitulation rows, and the
-//!   signed overall-progress raw value from `DiplomacyView::wars`.
-//! * **Belligerent set** — the union of every country in an `at_war==true`
-//!   pair (`DiplomacyView::pairs`) or any `war_relations` row, giving the
-//!   participant column contents.
-//! * **POV belligerents** — the countries the POV country is at war with, for
-//!   the POV-highlight (mirrors the diplomacy panel's `wars`).
-//!
-//! ## KNOWN GAPS (fail-closed; each is an explicit `None` below)
-//!
-//! * **W1C fields** — participant division count, participant IC, ordered live
-//!   wargoals, and terminal `war_result` are distinct scheduled-reader inputs.
-//!   They remain absent; pair-scoped D60 values are never substituted.
 
 use replay_core::{
     DiplomacyView, Leaf, ViewStatus, WarObjectRow, WarParticipantOverviewRow, WorldFrame,
 };
 use std::collections::BTreeSet;
 
-/// One exact a729 hostility-reason registry resolution. The registry token id
-/// is portable integer identity, never a process pointer. Unknown raw values
-/// and raw/spelling mismatches are not admitted as modded or guessed tokens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HostilityReasonToken {
     pub raw: i64,
@@ -44,8 +11,6 @@ pub struct HostilityReasonToken {
     pub spelling: &'static str,
 }
 
-/// Resolve the complete hostility-reason table proved by the H-B5 exact-20
-/// token-xref receipt. This deliberately has no fallback for unknown values.
 pub const fn resolve_hostility_reason_token(raw: i64) -> Option<HostilityReasonToken> {
     let (registry_token_id, spelling) = match raw {
         0 => (0x298D, "war"),
@@ -63,9 +28,6 @@ pub const fn resolve_hostility_reason_token(raw: i64) -> Option<HostilityReasonT
     })
 }
 
-/// Complete, mechanically resolved H-B5 residual tuple. The tuple is admitted
-/// all-or-none so a replay cannot combine a measured raw discriminator with a
-/// missing or invented spelling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WarResidualSummary {
     pub threat_fixed5_raw: i64,
@@ -75,35 +37,16 @@ pub struct WarResidualSummary {
     pub hostility_reason_defender: HostilityReasonToken,
 }
 
-/// The only fixed-point scale the exact-a729 threat value is admitted at. The
-/// producer publishes D60's own `DOMAIN60_WAR_THREAT_FIXED_SCALE`; a row that
-/// carries anything else is a producer contract break, not a value to rescale.
 pub const WAR_THREAT_FIXED_SCALE: i64 = 100_000;
 
-/// Why an H-B5 residual tuple was not admitted, in the two terms an admitting
-/// surface has to keep apart: a leaf the external producer did not supply is an
-/// EXTERNAL gap, while a fully-supplied tuple that contradicts the exact-a729
-/// law is a REJECTED row. [`resolve_war_residuals`] collapses both into
-/// `Leaf::Unobtained`, which is right for a typed binding and wrong for an
-/// admission that has to name which of the two it is.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WarResidualAdmission {
-    /// No H-B5 leaf is carried at all — a pre-v2 D60 recording.
     Absent,
-    /// At least one leaf is carried and at least one required leaf is not
-    /// measured. `field` names the first such leaf in wire order.
     Incomplete { field: &'static str },
-    /// Every leaf is measured but the tuple contradicts the exact-a729 law.
     Inconsistent { reason: String },
-    /// The complete, mechanically resolved tuple.
     Measured(WarResidualSummary),
 }
 
-/// Admit one exact war object's H-B5 tuple. This is the row-level entry point:
-/// it applies exactly the law [`resolve_war_residuals`] applies and additionally
-/// reports which half of it failed. EIR-NE-011 is a typed non-shipping row, so
-/// its only current callers are this module and the XUI20 replay admission,
-/// which is reached from the evidence/oracle reconstruction runtime.
 pub fn admit_war_object_residuals(row: &WarObjectRow) -> WarResidualAdmission {
     admit_war_residuals(
         &row.threat_fixed5_raw,
@@ -136,14 +79,6 @@ fn admit_war_residuals(
         return WarResidualAdmission::Absent;
     }
 
-    // Wire order. The first non-measured leaf names the gap so a refusal points
-    // at one producer field instead of the whole tuple.
-    //
-    // Written out rather than folded into a local macro on purpose: this crate's
-    // `no_silent_skip` guard refuses a macro whose expansion contains `return`,
-    // because libtest reports an early return as a PASS and no scan of a test
-    // body can see a `return` hidden inside a macro expansion. Seven explicit
-    // `let ... else` arms keep every exit visible where it happens.
     let Some(&threat_fixed5_raw) = threat_fixed5_raw.measured() else {
         return WarResidualAdmission::Incomplete { field: "threat_fixed5_raw" };
     };
@@ -224,9 +159,6 @@ fn admit_war_residuals(
     })
 }
 
-/// Project an admission onto the typed leaf. A typed binding has exactly two
-/// non-measured states, so both refusal kinds land on `Unobtained`; only a
-/// surface that must report WHICH kind it was needs the admission itself.
 fn leaf_from_admission(admission: WarResidualAdmission) -> Leaf<WarResidualSummary> {
     match admission {
         WarResidualAdmission::Absent => Leaf::Absent,
@@ -257,17 +189,12 @@ fn resolve_war_residuals(
     ))
 }
 
-/// One live belligerent-pair casualty row from `DiplomacyView::war_relations`.
-/// The pair identity requires both tags measured; each casualty tally is
-/// `Some` only when measured (fail-closed, never a fabricated `0`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarRelationSummary {
     pub first: String,
     pub second: String,
     pub first_casualties: Option<i64>,
     pub second_casualties: Option<i64>,
-    /// Exact H-B5 tuple, absent for pre-v2 streams and unobtained when a leaf
-    /// is missing or the carried tuple is internally inconsistent.
     pub residuals: Leaf<WarResidualSummary>,
 }
 
@@ -283,8 +210,6 @@ impl Default for WarRelationSummary {
     }
 }
 
-/// One exact participant row. Raw fixed-point values remain raw; rendering
-/// converts them only after this admission validates their a729 bounds.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarParticipantSummary {
     pub tag: Leaf<String>,
@@ -306,8 +231,6 @@ impl From<&WarParticipantOverviewRow> for WarParticipantSummary {
     }
 }
 
-/// One exact war row in producer order. `source_key` is identity only and is
-/// never substituted for a missing engine-resolved display name.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarObjectSummary {
     pub source_key: String,
@@ -363,31 +286,17 @@ fn war_object(row: &WarObjectRow) -> WarObjectSummary {
         start_date: row.start_date.clone(),
         first_casualties: row.first_casualties.clone(),
         second_casualties: row.second_casualties.clone(),
-        // The same row-level entry the XUI20 replay admission calls, so the
-        // typed binding and that admission cannot list the seven leaves
-        // differently and reach opposite verdicts on one row.
         residuals: leaf_from_admission(admit_war_object_residuals(row)),
     }
 }
 
-/// Read-only war-overview panel binding for one POV at one world frame (U1).
 #[derive(Clone, Debug, PartialEq)]
 pub struct WarOverviewBinding {
     pub pov_tag: String,
-    /// `true` only when the underlying [`DiplomacyView`] status is `Present`.
     pub available: bool,
-    /// Live belligerent-pair casualty rows (verbatim from `war_relations`),
-    /// filtered to rows whose pair identity (`first`,`second`) is measured.
-    /// Leaf authority is preserved: a measured-empty feed (no wars) stays
-    /// distinct from an absent (pre-v2 stream) or unobtained one.
     pub war_relations: Leaf<Vec<WarRelationSummary>>,
-    /// Exact source order and leaf authority are preserved.
     pub war_objects: Leaf<Vec<WarObjectSummary>>,
-    /// Every country in any `at_war==true` pair OR any `war_relations` row,
-    /// sorted ascending and de-duplicated — the participant column.
     pub belligerents: Vec<String>,
-    /// The POV's own belligerents (other tags with `at_war == Some(true)` from
-    /// `pov -> other`), sorted ascending — for the POV highlight.
     pub pov_belligerents: Vec<String>,
 }
 
@@ -412,11 +321,6 @@ fn war_object_summaries(view: &DiplomacyView) -> Leaf<Vec<WarObjectSummary>> {
     }
 }
 
-/// Belligerent-pair casualty rows from the view, dropping any row whose pair
-/// identity is not measured (a row with no tags cannot be attributed). The
-/// feed's leaf authority is preserved: `Measured(vec![])` (no wars recorded
-/// this hour) is NOT the same binding state as an `Absent` pre-v2 stream or
-/// an `Unobtained` feed.
 fn war_relation_summaries(view: &DiplomacyView) -> Leaf<Vec<WarRelationSummary>> {
     let rows = match &view.war_relations {
         Leaf::Measured(rows) => rows,
@@ -448,8 +352,6 @@ fn war_relation_summaries(view: &DiplomacyView) -> Leaf<Vec<WarRelationSummary>>
     Leaf::Measured(summaries)
 }
 
-/// Union of all tags in the casualty rows plus all tags in any measured
-/// `at_war==true` pair, sorted + de-duplicated.
 fn belligerents(
     view: &DiplomacyView,
     summaries: &Leaf<Vec<WarRelationSummary>>,
@@ -479,8 +381,6 @@ fn belligerents(
     set.into_iter().collect()
 }
 
-/// The POV's own belligerents: other tags where `pov -> other` has
-/// `at_war == Some(true)`.
 fn pov_belligerents(view: &DiplomacyView, pov_tag: &str) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for (a, b) in view.at_war_pairs() {
@@ -491,9 +391,6 @@ fn pov_belligerents(view: &DiplomacyView, pov_tag: &str) -> Vec<String> {
     set.into_iter().collect()
 }
 
-/// Build the read-only war-overview panel for `pov_tag` at one world frame
-/// (U1). When the diplomacy view is not `Present`, returns the fail-closed
-/// empty binding (`available: false`, no rows).
 pub fn war_overview_from_frame(frame: &WorldFrame, pov_tag: &str) -> WarOverviewBinding {
     let view = frame.diplomacy();
     if view.status != ViewStatus::Present {
@@ -596,9 +493,6 @@ mod tests {
         assert!(belligerents(&view, &Leaf::Absent, &Leaf::Absent).is_empty());
     }
 
-    /// A measured-empty casualty feed (no wars recorded this hour), an absent
-    /// pre-v2 feed, and an unobtained feed are three DIFFERENT binding states,
-    /// never collapsed into one empty vector.
     #[test]
     fn war_relations_leaf_states_stay_distinct() {
         let measured_empty = view_with(ViewStatus::Present, vec![], Leaf::Measured(vec![]));
@@ -611,7 +505,6 @@ mod tests {
         assert_eq!(war_relation_summaries(&absent), Leaf::Absent);
         assert_eq!(war_relation_summaries(&unobtained), Leaf::Unobtained);
 
-        // The distinction survives through the frame-level binding shape too.
         let measured = WarOverviewBinding {
             war_relations: war_relation_summaries(&measured_empty),
             ..WarOverviewBinding::default()

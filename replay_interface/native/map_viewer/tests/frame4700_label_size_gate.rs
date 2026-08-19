@@ -1,25 +1,3 @@
-//! NAME2 engine gate: the country-label SIZE law against the frame4700
-//! RenderDoc oracle (vanilla 1936 save, political mapmode).
-//!
-//! Fixture `tests/fixtures/mapname/frame4700_labels.json` is the ANSWER KEY:
-//! 38 engine `mapname` labels decoded from captured vertex buffers (cap
-//! height, baseline arc length, tracking, natural text width in font px) and
-//! joined 1:1 against the 1936 bundle placements. Captures validate, they
-//! never drive — the law here recomputes placements
-//! from the bundle raster and must reproduce the engine sizes:
-//!
-//!   h_engine ≈ min(arc_ours / W_nat × cap_px, world_height)
-//!
-//! (the renderer's `scale = min(fit_scale, cap_scale)`, `map_labels.rs`).
-//! Thresholds from the NAME2 fit (2026-07-07): 89% of pairs within ±25%,
-//! median ratio 0.988. The gate asserts the aggregate law (≥78% within ±25%,
-//! median within [0.90, 1.10]) plus the capped-regime rows individually.
-//! Known residual: IRAN fills at 44.7 while every breadth proxy caps it
-//! ~19% lower (the engine's exact breadth metric is UNTRACED); it sits just
-//! inside the ±25% band and is NOT special-cased.
-//!
-//! SKIPS (like the tree/acceptance gates) when the untracked map bundle is
-//! absent — the gate is meaningful only against the real 1936 raster.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -67,9 +45,6 @@ fn fixture_rows() -> Vec<KeyRow> {
         .collect()
 }
 
-/// Minimal 1936 label-law inputs from the untracked map bundle. Mirrors
-/// `bin/dump_map_labels.rs` `LabelBundle::load` (bins are not linkable from
-/// integration tests, so the reader is duplicated here).
 struct Bundle {
     width: usize,
     height: usize,
@@ -167,9 +142,6 @@ fn load_bundle(dir: &Path) -> Option<Bundle> {
     })
 }
 
-/// Same 1:1 greedy join the answer key was built with, minus the text
-/// validator (the key stores the validated tag): per key row, the nearest
-/// same-tag placement within `max(25, 0.6 × half_length)` map px.
 fn join<'a>(
     rows: &'a [KeyRow],
     placements: &'a [CountryLabelPlacement],
@@ -225,10 +197,6 @@ fn frame4700_engine_label_sizes_reproduce() {
         pairs.len()
     );
 
-    // Effective size, exactly as the renderer computes it: the ENGINE
-    // `countryname.cpp` glyph-scale law (`engine_glyph_scale`), converted to a
-    // cap height in map px by the font cap size. `LINE_HEIGHT` is the vanilla
-    // hoi_mapfont4 `.fnt` lineHeight (the engine `textH`).
     const LINE_HEIGHT: f32 = 84.0;
     let mut ratios: Vec<f32> = Vec::new();
     let mut capped_misses = Vec::new();
@@ -237,12 +205,6 @@ fn frame4700_engine_label_sizes_reproduce() {
         let h_pred = gs.scale * CAP_PX;
         let ratio = h_pred / row.h_cap;
         ratios.push(ratio);
-        // Capped-regime rows: the engine letterspaced markedly (>10% total
-        // extra advance) AND drew well below its own fill size (h < 0.8 ×
-        // arc/W_nat×cap — this second clause excludes tiny labels whose
-        // per-gap tracking is measurement noise, e.g. the Northern-Ireland
-        // UNITED KINGDOM at 0.89×fill). For these, OUR breadth-cap term must
-        // both bind AND reproduce the engine height.
         let gaps = (row.text.chars().filter(|c| !c.is_whitespace()).count() - 1).max(1) as f32;
         let engine_fill = row.arc_w / row.w_nat_px * CAP_PX;
         if row.track_px * gaps / row.w_nat_px > 0.10 && row.h_cap < 0.8 * engine_fill {
@@ -277,15 +239,6 @@ fn frame4700_engine_label_sizes_reproduce() {
     );
 }
 
-/// NAME3 anchor gate: the distance-weighted CORE anchor must land near the
-/// engine's primary (largest-arc) label anchor for each country — the fix that
-/// pulls NORWAY off the empty north (raw centroid 122 px away) onto the
-/// populated south. Fixture `frame4700_placement_gate.json` is the engine
-/// primary anchor + angle per tag, decoded from the same capture and mapped to
-/// map-pixel space via `(x, 2048 − z)`. The angle is the informational
-/// uniform-PCA reference (GREECE ~29° is a documented low-anisotropy residual —
-/// weighting the angle to chase it flips near-round countries, so it is NOT
-/// gated tight here).
 #[test]
 #[cfg_attr(not(gate_map_bundle), ignore = "the map bundle directory at map_viewer/out/map_bundle")]
 fn frame4700_engine_anchors_reproduce() {
@@ -317,9 +270,6 @@ fn frame4700_engine_anchors_reproduce() {
         let tag = r["tag"].as_str().unwrap();
         let ex = r["anchor_x"].as_f64().unwrap() as f32;
         let ey = r["anchor_y"].as_f64().unwrap() as f32;
-        // Nearest same-tag placement (any component: a country's primary label
-        // may be a colony, e.g. Spanish Sahara — match whichever of ours is
-        // closest, so the gate measures anchor accuracy, not component identity).
         let best = placements
             .iter()
             .filter(|p| p.tag == tag)
@@ -336,14 +286,11 @@ fn frame4700_engine_anchors_reproduce() {
         "only {}/19 engine anchors matched a same-tag placement",
         dists.len()
     );
-    // Headline NAME3 fix: NORWAY's core anchor is on the populated south, not
-    // the thin empty north (raw centroid was 122 px away).
     let nor = norway.expect("NORWAY must place");
     assert!(
         nor <= 30.0,
         "NAME3 regression: NORWAY anchor {nor:.0} px from the engine (raw-centroid law was 122; core-anchor fix ~9)"
     );
-    // Aggregate: the core anchor tracks the engine across the set.
     let mut sorted = dists.clone();
     sorted.sort_by(f32::total_cmp);
     let median = sorted[sorted.len() / 2];

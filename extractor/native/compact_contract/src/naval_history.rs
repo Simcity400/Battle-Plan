@@ -1,34 +1,16 @@
-//! Domain 70 `sunk_convoy_history_live` payload contract.
-//!
-//! This domain is a full snapshot of the global `CGameState` sunk-convoy
-//! history. It is deliberately separate from domain 49 active naval combats
-//! and from per-ship cumulative sunk-convoy counters.
-
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 70;
 pub const PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"SCH1");
-/// Version 1 canonicalised rows by `(month, killer, owner)` before emission.
-/// That made byte output deterministic but discarded the engine vector's
-/// first-seen aggregate ordering. Version 2 preserves the authoritative vector
-/// order while retaining the same pointer-free row layout. Version 3 binds the
-/// snapshot to its exact frame and pinned-a729 static authority receipts.
 pub const LEGACY_PAYLOAD_VERSION: u16 = 1;
 pub const ORDERED_PAYLOAD_VERSION: u16 = 2;
 pub const PAYLOAD_VERSION: u16 = 3;
 pub const LEGACY_HEADER_LEN: usize = 32;
 pub const HEADER_LEN: usize = 272;
 pub const ROW_LEN: usize = 24;
-/// Resource ceiling for one hourly carrier. This is a payload-allocation bound,
-/// not an inferred engine semantic maximum.
 pub const MAX_ROWS: usize = 65_536;
-/// The exact reader, collector scheduler, fold and replay path are complete and
-/// fail closed. The paused equality fixture is optional evidence rather than a
-/// production activation prerequisite.
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
-/// Optional paused-equality evidence receipt. A zero value means that optional
-/// evidence is absent; it does not disable the exact production reader.
 pub const LIVE_FIXTURE_RECEIPT_SHA256: [u8; 32] = [0u8; 32];
 
 pub const EXECUTABLE_SHA256: [u8; 32] =
@@ -72,22 +54,14 @@ pub struct SunkConvoyHistoryRow {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SunkConvoyHistoryOrdering {
-    /// Legacy SCH1/v1 order: canonical `(month, killer, owner)` sort. The
-    /// engine's first-seen order was not retained.
     CanonicalIdentity,
-    /// SCH1/v2/v3 order: the exact `CGameState+0x5A8` pointer-vector order. Static
-    /// RE proves this is first-seen order of aggregate `(month, killer, owner)`
-    /// buckets, not the order or time of individual convoy losses.
     FirstSeenAggregateIdentity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SunkConvoyHistoryAuthority {
-    /// Explicit unavailable v3 payload. No row may accompany this state.
     Unavailable,
-    /// A readable v1/v2 payload without a frame/build/receipt binding.
     LegacyUnbound,
-    /// Exact pinned-a729 owner/serializer/row/mutation receipts.
     StaticExact20Receipt,
 }
 
@@ -104,9 +78,6 @@ pub struct DecodedSunkConvoyHistoryPayload {
     pub rows: Vec<SunkConvoyHistoryRow>,
 }
 
-/// Test/migration-only writer for historical ordered SCH1/v2 payloads.
-/// Production collectors must use `encode_exact_payload` or
-/// `encode_unavailable_payload`; this function cannot claim authority.
 pub fn encode_legacy_ordered_payload(
     rows: &[SunkConvoyHistoryRow],
     elapsed_wall_ms: u64,

@@ -17,11 +17,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import parse_abilities as pa  # noqa: E402
+import parse_abilities as pa
 
 
-# A synthetic melt with: a char-manager carrying a gated FM (cooldown) and a
-# captured general; two countries with aces; officer-corps spirits + a timed one.
 SYN = """
 date=1940.9.10.13
 version="Operation Postern v1.19.1.0"
@@ -118,19 +116,16 @@ def _build():
     return outputs["abilities.json"], report
 
 
-# ---------------------------------------------------------------------------
-# (b) ACES
-# ---------------------------------------------------------------------------
 
 def test_ace_counts():
     out, _ = _build()
     st = out["meta"]["stats"]
     assert st["total_aces"] == 3
-    assert st["countries_with_aces"] == 2          # GER, ENG (BUL has none)
+    assert st["countries_with_aces"] == 2
     assert st["aces_alive"] == 2 and st["aces_dead"] == 1
     assert out["aces"]["GER"]["count"] == 2
     assert out["aces"]["ENG"]["count"] == 1
-    assert "BUL" not in out["aces"]                 # no ace block -> omitted
+    assert "BUL" not in out["aces"]
 
 
 def test_ace_field_mapping():
@@ -141,16 +136,16 @@ def test_ace_field_mapping():
     assert a["callsign"] == "Bubi"
     assert a["modifier"] == "fighter_good"
     assert a["ace_category"] == "fighter" and a["tier"] == "good"
-    assert a["alive"] is False                      # alive=no
+    assert a["alive"] is False
     assert a["kill_type"] == 1
-    assert a["killer_id"] == 19803                  # from killer_name block
-    assert a["killer_type"] == 4713                 # killer_name carries type too
+    assert a["killer_id"] == 19803
+    assert a["killer_type"] == 4713
     assert a["killer_country"] == "ENG"
 
 
 def test_ace_alive_defaults_true_when_absent():
     out, _ = _build()
-    a = out["aces"]["GER"]["aces"][1]               # Theodor: no `alive` field
+    a = out["aces"]["GER"]["aces"][1]
     assert a["alive"] is True
     assert a["ace_category"] == "fighter" and a["tier"] == "genius"
     assert a["killer_id"] is None and a["killer_country"] is None
@@ -163,23 +158,16 @@ def test_ace_modifier_split_support():
 
 
 def test_ace_modifier_split_last_underscore():
-    # robustness: a multi-word category must split on the LAST underscore.
     cat, tier = pa._split_modifier("heavy_fighter_genius")
     assert cat == "heavy_fighter" and tier == "genius"
-    # unknown trailing token falls back to the known-prefix split
     cat2, tier2 = pa._split_modifier("fighter_experimental")
     assert cat2 == "fighter" and tier2 == "experimental"
 
 
-# ---------------------------------------------------------------------------
-# (a) COMMANDER ABILITIES (cooldown gate / capture)
-# ---------------------------------------------------------------------------
 
 def test_gated_commander_extracted():
     out, _ = _build()
     st = out["meta"]["stats"]
-    # GER FM (cooldown) + ROM general (captured) are gated; GER's plain general
-    # (id 99, no cooldown) is NOT.
     assert st["gated_commanders"] == 2
     ger = out["commander_abilities"]["GER"]
     assert len(ger) == 1
@@ -194,7 +182,6 @@ def test_gated_commander_extracted():
 
 def test_uncooled_commander_omitted():
     out, _ = _build()
-    # GER has exactly one gated entry (the FM); the plain general (id 99) is gone.
     ids = {c["unit_leader_id"] for c in out["commander_abilities"]["GER"]}
     assert 99 not in ids
 
@@ -209,15 +196,11 @@ def test_captured_commander_surfaced():
     assert rom[0]["location"] == 9783
 
 
-# ---------------------------------------------------------------------------
-# (c) OFFICER CORPS
-# ---------------------------------------------------------------------------
 
 def test_officer_corps_spirits_filtered():
     out, _ = _build()
     ger = out["officer_corps"]["GER"]
     toks = {s["token"] for s in ger["officer_corps_spirits"]}
-    # only the _spirit ideas, not war_economy / GER_some_national_spirit-style
     assert "mobile_warfare_academy_spirit" in toks
     assert "signals_training_spirit" in toks
     assert "war_economy" not in toks
@@ -230,48 +213,38 @@ def test_officer_corps_timed_spirit_days():
     timed = {s["token"]: s["days_remaining"]
              for s in ger["officer_corps_spirits"]}
     assert timed["signals_training_spirit"] == 30
-    assert timed["mobile_warfare_academy_spirit"] is None   # permanent
+    assert timed["mobile_warfare_academy_spirit"] is None
 
 
 def test_captured_general_tallies():
     out, _ = _build()
-    # BUL holds 1 enemy general; ROM lost 1 of its own.
     assert out["officer_corps"]["BUL"]["captured_enemy_generals"] == 1
     assert out["officer_corps"]["ROM"]["own_generals_captured"] == 1
 
 
 def test_empty_officer_corps_country_omitted():
     out, _ = _build()
-    # BUL has no spirits but holds a captured general -> still present.
     assert "BUL" in out["officer_corps"]
-    # a country with neither spirits nor captures would be omitted (none here).
 
 
-# ---------------------------------------------------------------------------
-# meta / report
-# ---------------------------------------------------------------------------
 
 def test_meta_and_no_path_leak():
     out, report = _build()
     m = out["meta"]
     assert m["save_date"] == "1940.9.10.13"
     assert m["player"] == "GER"
-    # path redaction must not leak an absolute user path
     blob = str(out) + report
     for bad in ("C:\\Users", "OneDrive", "/c/Users"):
         assert bad not in blob
     assert "ACES" in report and "ABILITIES" in report.upper()
 
 
-# ---------------------------------------------------------------------------
-# OPTIONAL: cross-check against the real campaign melt if present
-# ---------------------------------------------------------------------------
 
 def test_real_campaign_melt_if_present():
     melt = (Path(__file__).resolve().parent.parent
             / "re_scratch" / "campaign_melt_1940.txt")
     if not melt.is_file():
-        return  # skip silently when the big melt isn't on disk
+        return
     text = melt.read_text(encoding="utf-8", errors="replace")
     outputs, _ = pa.build(text, melt, False)
     out = outputs["abilities.json"]
@@ -279,11 +252,9 @@ def test_real_campaign_melt_if_present():
     assert st["total_aces"] == 38
     assert st["countries_with_aces"] == 7
     assert out["aces"]["GER"]["count"] == 18
-    # the known first GER ace
     a0 = out["aces"]["GER"]["aces"][0]
     assert a0["name"] == "Gunther" and a0["surname"] == "Strohmann"
     assert a0["callsign"] == "Bubi" and a0["killer_country"] == "ENG"
-    # 162 reassign cooldowns + 1 capture were observed in this melt
     assert st["gated_commanders"] == 162
     assert st["captured_commanders"] == 1
 
@@ -301,7 +272,7 @@ def _run_standalone():
         except AssertionError as exc:
             failed += 1
             print(f"FAIL {name}: {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             print(f"ERROR {name}: {exc!r}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

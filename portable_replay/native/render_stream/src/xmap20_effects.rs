@@ -1,16 +1,7 @@
-//! Presentation-independent XMAP20 effect lifecycle and particle snapshot.
-//!
-//! This carrier is intentionally not a view over [`ProductionRenderFrame`].
-//! That older frame selects a recorder Present and cannot be normal-product map
-//! authority. XMAP20 instead consumes one unconditional game-hour lifecycle
-//! census plus the exact post-simulation particle packets at the engine submit
-//! boundary. Viewer-owned scene constants and render targets are supplied only
-//! by the XMAP03/XMAP09/XMAP10 production providers at execution time.
-
 use crate::{
     canonical_json_sha256, check_sha256, validate_constant_buffers,
-    validate_runtime_draw_vfs_authority, validate_texture_bindings, EffectOperation,
-    ParentAnchor, ParticlePacket, RenderOutputRef, Xmap20DependencyReceipts,
+    validate_runtime_draw_vfs_authority, validate_texture_bindings, EffectOperation, ParentAnchor,
+    ParticlePacket, RenderOutputRef, Xmap20DependencyReceipts,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,11 +15,6 @@ pub const XMAP20_PARTICLE_REGISTRY_RVA: u32 = 0x023e_8590;
 pub const XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA: u32 = 0x0227_f420;
 const PARTICLE_SHADER_PATH: &str = "gfx/fx/particle.shader";
 
-/// One unconditional, complete semantic/game-state effect census for an hour.
-///
-/// `particles` retain the old packet's authenticated draw descriptor only as
-/// evidence for its exact program/resource/geometry state. Product execution
-/// never consumes the packet's recorder output target or recorder SceneCBs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap20EffectFrame {
@@ -56,9 +42,6 @@ pub struct Xmap20EffectFrame {
     pub deterministic_sha256: String,
 }
 
-/// XMAP20's presentation-independent lifecycle row. It is separate from the
-/// legacy selected-submit lifecycle type so exact authored-effect identity
-/// does not silently change production-render schema v13.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap20LifecycleEvent {
@@ -75,8 +58,6 @@ pub struct Xmap20LifecycleEvent {
     pub producer_kind: String,
     pub producer_instance_id: String,
     pub authored_event_index: u32,
-    /// Zero-based source-order ordinal among every effect invocation inside
-    /// the authored event block, including non-particle effects.
     pub authored_effect_index: u32,
     pub parent_anchor: ParentAnchor,
     pub initial_rng_seed_u32: u32,
@@ -94,8 +75,6 @@ impl Xmap20EffectFrame {
         Ok(frame)
     }
 
-    /// Decode from a JSON value that has already passed the replay source's
-    /// duplicate-key parse boundary.
     pub fn decode_value(value: &serde_json::Value) -> Result<Self, String> {
         let frame: Self = Self::deserialize(value)
             .map_err(|error| format!("XMAP20 effect-frame JSON: {error}"))?;
@@ -175,8 +154,6 @@ pub struct Xmap20ActiveEffect {
     pub last_sequence: u64,
     #[serde(with = "crate::decimal_u64")]
     pub last_update_index: u64,
-    /// Complete packet keys for this instance at the hour checkpoint. Empty is
-    /// an authenticated no-live-particles state, never an omitted carrier.
     pub ordered_packet_keys: Vec<[u32; 3]>,
 }
 
@@ -261,10 +238,7 @@ impl Xmap20EffectAdmission {
         }
         validate_sha256(&self.provider_receipts_sha256, "provider receipts")?;
         validate_sha256(&self.producer_receipt_sha256, "producer receipt")?;
-        validate_sha256(
-            &self.complete_enumeration_sha256,
-            "complete enumeration",
-        )?;
+        validate_sha256(&self.complete_enumeration_sha256, "complete enumeration")?;
         let mut unsigned = self.clone();
         unsigned.deterministic_sha256.clear();
         if self.deterministic_sha256 != canonical_json_sha256(&unsigned)? {
@@ -479,8 +453,8 @@ fn validate_event(
         } => {
             if event.producer_kind != "weather"
                 || !world_transform_4x4_f32_bits
-                .iter()
-                .all(|bits| f32::from_bits(*bits).is_finite())
+                    .iter()
+                    .all(|bits| f32::from_bits(*bits).is_finite())
                 || !dependencies.admits_weather_semantic_source(&event.producer_instance_id)
             {
                 return Err(
@@ -600,11 +574,6 @@ fn validate_particles(
     Ok(packets)
 }
 
-/// Revalidate a prepared packet vector against its portable admission.
-///
-/// Prepared frames are public transport values, so a deterministic digest is
-/// not a substitute for repeating the structural/content checks at the next
-/// trust boundary.
 pub fn validate_xmap20_admitted_particles(
     admission: &Xmap20EffectAdmission,
     particles: &[ParticlePacket],
@@ -660,8 +629,7 @@ pub fn validate_xmap20_admitted_particles(
             || packet.packet_ordinal != reference.packet_ordinal
             || packet.draw_order != reference.draw_order
             || packet.resolved_definition_sha256 != reference.definition_sha256
-            || packet.content_identity.texture_content.payload_sha256
-                != reference.texture_sha256
+            || packet.content_identity.texture_content.payload_sha256 != reference.texture_sha256
             || packet.shader_program.source.payload_sha256 != reference.shader_sha256
             || packet.gpu_instance_records_sha256 != reference.instance_records_sha256
         {
@@ -703,8 +671,8 @@ fn validate_active_effect(effect: &Xmap20ActiveEffect) -> Result<(), String> {
             world_transform_4x4_f32_bits,
         } if effect.producer_kind == "weather"
             && world_transform_4x4_f32_bits
-            .iter()
-            .all(|bits| f32::from_bits(*bits).is_finite()) => {}
+                .iter()
+                .all(|bits| f32::from_bits(*bits).is_finite()) => {}
         _ => return Err("XMAP20 admitted active effect has an invalid parent anchor".into()),
     }
     Ok(())
@@ -799,8 +767,7 @@ fn validate_packet(
             || !required.contains(&(binding.slot, binding.byte_count))
         {
             return Err(
-                "XMAP20 particle packet has a non-VS or unexpected per-draw constant buffer"
-                    .into(),
+                "XMAP20 particle packet has a non-VS or unexpected per-draw constant buffer".into(),
             );
         }
         required.remove(&(binding.slot, binding.byte_count));
@@ -858,16 +825,11 @@ mod tests {
             effective_vfs_manifest_sha256: "e".repeat(64),
             camera: receipt(XMAP20_CAMERA_OWNER, '1'),
             lighting: receipt(XMAP20_LIGHTING_OWNER, '2'),
-            scene_compositor_pre_particles: receipt(
-                XMAP20_PRE_PARTICLE_COMPOSITOR_OWNER,
-                '3',
-            ),
+            scene_compositor_pre_particles: receipt(XMAP20_PRE_PARTICLE_COMPOSITOR_OWNER, '3'),
             entity_identity: receipt(XMAP20_ENTITY_IDENTITY_OWNER, '4'),
             weather_identity: receipt(XMAP20_WEATHER_IDENTITY_OWNER, '5'),
             ordered_entity_semantic_source_ids: vec!["division:7".into()],
-            ordered_weather_semantic_source_ids: vec![
-                "xmap19.weather:r1:e0:c2:p1:primary".into(),
-            ],
+            ordered_weather_semantic_source_ids: vec!["xmap19.weather:r1:e0:c2:p1:primary".into()],
         }
     }
 

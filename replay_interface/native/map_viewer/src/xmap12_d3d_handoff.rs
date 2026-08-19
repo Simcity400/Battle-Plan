@@ -1,11 +1,3 @@
-//! Native same-device execution for the file/state-derived XMAP12 frame.
-//!
-//! XMAP12 owns its compiled effect objects, material textures, samplers,
-//! immutable geometry and per-object CB1. The caller
-//! supplies only shared map resources, per-partition SceneCB0, pixel CB2, and
-//! the complete MainScene target already owned by the production target. Every
-//! borrowed pointer is paired with a pointer-free identity and is validated
-//! before any draw is issued.
 
 use crate::{
     PreparedXmap12RenderFrame, PreparedXmap13Frame, Result, Xmap12PdxMeshMaterialization,
@@ -42,9 +34,6 @@ pub fn xmap13_native_bridge_frame(
         effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.into(),
         replay_frame_identity_sha256: replay_frame_identity_sha256.into(),
         viewer_state_sha256: viewer_state_sha256.into(),
-        // These three fields are mandatory XMAP12 producer-family witnesses.
-        // For this private execution bridge they are packet-owned, exact
-        // XMAP13 witnesses and cannot be observed as XMAP12 family output.
         city_frame_sha256: prepared.semantic_input_sha256.clone(),
         building_frame_sha256: prepared.unit_entity_assignment.assignment_sha256.clone(),
         fixed_frame_sha256: prepared.counter_quad_assignment.assignment_sha256.clone(),
@@ -121,7 +110,6 @@ impl Xmap12NativeExecutionReceipt {
 pub struct NativeXmap12ReflectedSharedResource {
     pub semantic: String,
     pub shader_register: u32,
-    /// Exact D3D_SRV_DIMENSION reflected from effective DXBC.
     pub view_dimension: u32,
 }
 
@@ -129,17 +117,9 @@ pub struct NativeXmap12ReflectedSharedResource {
 pub struct NativeXmap12ProgramBinding {
     pub effect_name: String,
     pub program_sha256: String,
-    /// Exact reflected non-material SRV registers for this compiled effect.
     pub required_shared_resource_registers: Vec<u32>,
-    /// Exact reflected material SRV registers. XMAP12 supports the proven
-    /// diffuse/specular/normal contract at t0/t1/t2 and rejects every other
-    /// material register before creating native state.
     pub required_material_resource_registers: Vec<u32>,
-    /// Exact reflected non-material SRV names paired with their registers.
-    /// The effective shader is authoritative, so modded effects cannot be
-    /// rebound through a vanilla slot-name assumption.
     pub required_shared_resources: Vec<NativeXmap12ReflectedSharedResource>,
-    /// Exact reflected sampler registers for this compiled effect.
     pub required_sampler_registers: Vec<u32>,
     pub vertex_shader: *mut winapi::um::d3d11::ID3D11VertexShader,
     pub pixel_shader: *mut winapi::um::d3d11::ID3D11PixelShader,
@@ -162,7 +142,6 @@ pub struct NativeXmap12SharedResourceBinding {
     pub shader_register: u32,
     pub payload_sha256: String,
     pub descriptor_sha256: String,
-    /// Live `ID3D11ShaderResourceView::GetDesc().ViewDimension` value.
     pub view_dimension: u32,
     pub view: *mut winapi::um::d3d11::ID3D11ShaderResourceView,
 }
@@ -201,17 +180,11 @@ pub struct NativeXmap12MainSceneBindings {
 #[cfg(windows)]
 pub struct NativeXmap12ShadowProgramBinding {
     pub pipeline: crate::L03ShadowPipeline,
-    /// Main effect whose exact `<effect>Shadow` companion produced this
-    /// program. L03's broad pipeline family is not a sufficient program key.
     pub main_effect_name: String,
     pub program_sha256: String,
-    /// Shadow pixel resources are restricted to the proven alpha-test diffuse
-    /// path at t0. Any effective shader requiring another resource fails
-    /// closed during owner construction.
     pub required_material_resource_registers: Vec<u32>,
     pub required_sampler_registers: Vec<u32>,
     pub vertex_shader: *mut winapi::um::d3d11::ID3D11VertexShader,
-    /// A null pixel shader is admitted for an exact depth-only effect.
     pub pixel_shader: *mut winapi::um::d3d11::ID3D11PixelShader,
     pub input_layout: *mut winapi::um::d3d11::ID3D11InputLayout,
     pub depth_state: *mut winapi::um::d3d11::ID3D11DepthStencilState,
@@ -292,9 +265,6 @@ struct OwnedXmap12Draw {
     submeshes: Vec<OwnedXmap12Submesh>,
 }
 
-/// Same-device owner for every XMAP12-private native object. It is immutable
-/// for one exact prepared frame and viewport. Rebuild instead of updating
-/// partially when any authenticated identity changes.
 #[cfg(windows)]
 pub struct NativeXmap12ResourceOwner {
     device_identity: usize,
@@ -318,10 +288,6 @@ pub struct NativeXmap12ResourceOwner {
 
 #[cfg(windows)]
 impl NativeXmap12ResourceOwner {
-    /// Reuse the promoted PdxMesh device owner for XMAP13's independently
-    /// authenticated unit census. The bridge exists only inside this native
-    /// module: packet identity and completion are still reported through an
-    /// XMAP13 receipt, never as an XMAP12 family result.
     pub unsafe fn create_xmap13_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &crate::GameFileResolver,
@@ -361,12 +327,6 @@ impl NativeXmap12ResourceOwner {
         )
     }
 
-    /// Materialize all XMAP12-private objects from the admission-bound
-    /// effective VFS. No borrowed map resource is accepted at construction.
-    ///
-    /// # Safety
-    /// `device` must remain live for the duration of this call. The returned
-    /// COM objects retain their own references.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &crate::GameFileResolver,
@@ -805,9 +765,6 @@ impl NativeXmap12ResourceOwner {
             .collect()
     }
 
-    /// Borrow one exact engine-owned static map texture at the register
-    /// reflected from the effective shader. The semantic selects the admitted
-    /// asset; the register remains program-specific and is never hard-coded.
     pub fn static_shared_resource(
         &self,
         required: &NativeXmap12ReflectedSharedResource,
@@ -876,9 +833,6 @@ pub struct NativeXmap12ShadowPartitionBinding {
     pub scene_cb0: *mut winapi::um::d3d11::ID3D11Buffer,
 }
 
-/// Same-device CB0 for the selected L03 light. Shadow PdxMesh shaders consume
-/// `ViewProjectionMatrix` from the first 64 bytes of the standard 416-byte map
-/// scene layout; they must never borrow the viewer-camera MainScene CB0.
 #[cfg(windows)]
 pub struct NativeXmap12LightSceneConstantBuffer {
     device_identity: usize,
@@ -889,9 +843,6 @@ pub struct NativeXmap12LightSceneConstantBuffer {
 
 #[cfg(windows)]
 impl NativeXmap12LightSceneConstantBuffer {
-    /// # Safety
-    /// `device` must be live for the call. The returned COM object retains its
-    /// own device reference.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         selected_light: &crate::L03SelectedLightFrame,
@@ -946,9 +897,6 @@ fn xmap12_light_scene_cb0_payload(matrix: [u32; 16]) -> Result<[u8; 416]> {
     Ok(bytes)
 }
 
-/// Exact XMAP12 registration/execution object consumed by XMAP09's owned L03
-/// pass. Program and CB0 objects are borrowed from their promoted providers
-/// for the duration of `execute_light_depth`.
 #[cfg(windows)]
 pub struct NativeXmap12LightDepthCaster<'a> {
     owner_packet: &'static str,
@@ -965,13 +913,6 @@ pub struct NativeXmap12LightDepthCaster<'a> {
 
 #[cfg(windows)]
 impl<'a> NativeXmap12LightDepthCaster<'a> {
-    /// Build the one XMAP12 caster census from the exact combined L03
-    /// projection. No submission is synthesized or claimed by owner name
-    /// alone.
-    ///
-    /// # Safety
-    /// Every native program and CB0 pointer must remain live and belong to
-    /// `device` through XMAP09 light-depth execution.
     pub unsafe fn new(
         device: *mut winapi::um::d3d11::ID3D11Device,
         owned: &'a NativeXmap12ResourceOwner,
@@ -993,8 +934,6 @@ impl<'a> NativeXmap12LightDepthCaster<'a> {
         )
     }
 
-    /// XMAP13 uses the same admitted PdxMesh shadow backend but remains an
-    /// independently named owner in XMAP09's caster receipt census.
     pub unsafe fn new_xmap13(
         device: *mut winapi::um::d3d11::ID3D11Device,
         owned: &'a NativeXmap12ResourceOwner,
@@ -1477,10 +1416,6 @@ pub unsafe fn execute_xmap12_main_scene(
     Ok(receipt)
 }
 
-/// Execute the exact XMAP13 unit census through the same native PdxMesh
-/// backend used by XMAP12, then close the packet-owned assigned operation with
-/// an XMAP13 receipt. A measured-empty census is authenticated empty; missing
-/// semantic input never reaches this function.
 #[cfg(windows)]
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn execute_xmap13_unit_entities(
@@ -2245,8 +2180,6 @@ fn validate_xmap12_cbuffer_layout(
         .map(|var| (var.name.as_str(), var.offset, var.size))
         .collect::<Vec<_>>();
     let valid = match resource.bind_point {
-        // The complete field-level b0 layout is checked by XMAP10's canonical
-        // SceneCB0 validator before this stage contract is admitted.
         0 => cbuffer.size == crate::XMAP10_SCENE_CB0_BYTE_LEN as u32,
         1 => {
             cbuffer.size == 96

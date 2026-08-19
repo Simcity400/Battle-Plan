@@ -1,11 +1,3 @@
-//! Exact collector-to-recorder H4CT report for terminal early-render startup
-//! failures.
-//!
-//! The report remains inside the already admitted H4CT session. It preserves
-//! the collector's UTF-8 error text byte-for-byte and binds it to the observed
-//! process epoch, session id, startup phase, and (once available) launch BIND.
-//! A report is diagnostic terminal evidence; it can never authorize capture.
-
 use crate::campaign_identity::Sha256;
 use crate::control_transport::CONTROL_MAX_PAYLOAD_LEN;
 use core::fmt;

@@ -1,8 +1,3 @@
-//! Exact replay carrier for map-scene VP, capital, resource and raid icons.
-//!
-//! The carrier contains the engine-current semantic census, not captured
-//! pixels or recorder-camera submissions. Replay owns projection, clipping,
-//! relation colours, selection and hit testing.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -43,7 +38,6 @@ pub struct VictoryPointFurnitureRow {
     pub controller_tag: Option<String>,
     pub controller_tag_db_id: Option<u32>,
     pub anchor: MapFurnitureWorldPoint,
-    /// Construction ordinal read by the engine's active-icon depth sorter.
     pub map_icon_ordinal: u32,
 }
 
@@ -54,8 +48,6 @@ pub enum CapitalAnchorSource {
     FirstStateProvince,
 }
 
-/// Replay localises this semantic identity through the effective VFS and the
-/// selected playback language; the extractor must not freeze recorder text.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CapitalLabelSource {
@@ -75,7 +67,6 @@ pub struct CapitalFurnitureRow {
     pub source_province_id: Option<u32>,
     pub label_source: CapitalLabelSource,
     pub anchor: MapFurnitureWorldPoint,
-    /// Construction ordinal read by the engine's active-icon depth sorter.
     pub map_icon_ordinal: u32,
 }
 
@@ -84,7 +75,6 @@ pub struct CapitalFurnitureRow {
 pub struct ResourceViewerAmount {
     pub viewer_tag: String,
     pub viewer_tag_db_id: u32,
-    /// Exact viewer-dependent value used as `VAL` by CResourceMapIcon.
     pub available_amount: i64,
 }
 
@@ -92,12 +82,8 @@ pub struct ResourceViewerAmount {
 #[serde(deny_unknown_fields)]
 pub struct ResourceFurnitureEntry {
     pub resource_name: String,
-    /// Exact global resource-definition iteration ordinal. The engine skips
-    /// its sentinel and emits positive entries in this order.
     pub resource_definition_ordinal: u32,
-    /// Exact state resource-array value used as `MAX`.
     pub total_amount: i64,
-    /// Complete all-country viewer values for country switching.
     pub viewer_amounts: Vec<ResourceViewerAmount>,
 }
 
@@ -107,8 +93,6 @@ pub struct ResourceFurnitureRow {
     pub state_id: u32,
     pub controller_tag: Option<String>,
     pub controller_tag_db_id: Option<u32>,
-    /// Exact effective-VFS flag texture selected for the current controller.
-    /// Both controller and texture are absent for an uncontrolled state.
     pub controller_flag_texture_path: Option<String>,
     pub anchor: MapFurnitureWorldPoint,
     pub entries: Vec<ResourceFurnitureEntry>,
@@ -137,12 +121,9 @@ pub struct RaidFurnitureIdentity {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RaidFurniturePresentation {
-    /// Both absent denotes the exact no-viewer presentation.
     pub viewer_tag: Option<String>,
     pub viewer_tag_db_id: Option<u32>,
-    /// `None` is an authenticated hidden icon for this viewer.
     pub variant: Option<RaidMapIconVariant>,
-    /// Exact effective-VFS sprite identities installed by the active variant.
     pub frame_sprite_name: Option<String>,
     pub frame_index: Option<u32>,
     pub button_sprite_name: Option<String>,
@@ -153,10 +134,8 @@ pub struct RaidFurniturePresentation {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RaidFurnitureRow {
-    /// One rendered icon can aggregate multiple raid instances at one anchor.
     pub raid_identities: Vec<RaidFurnitureIdentity>,
     pub anchor: MapFurnitureWorldPoint,
-    /// Complete no-viewer plus all-country presentation frontier.
     pub presentations: Vec<RaidFurniturePresentation>,
     pub map_icon_ordinal: u32,
 }
@@ -167,8 +146,6 @@ pub struct MapFurnitureFrame {
     pub schema: String,
     pub executable_sha256: String,
     pub update_index: u64,
-    /// Attests that all four arrays are the complete active operation frontier,
-    /// including the valid empty case.
     pub complete: bool,
     pub victory_points: Vec<VictoryPointFurnitureRow>,
     pub capitals: Vec<CapitalFurnitureRow>,

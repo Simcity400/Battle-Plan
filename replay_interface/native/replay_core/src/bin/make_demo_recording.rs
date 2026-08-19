@@ -1,17 +1,5 @@
 //! Build a SYNTHETIC demo `.battleplan` recording from a generated map
-//! bundle's real 1936 state owners.
-//!
-//! Purpose: exercise the full playback pipeline (container -> replay_core ->
-//! replay_app) before real extraction recordings exist. The output is a
 //! dev fixture: hour 0 is the bundle's real 1936 ownership, later hours flip
-//! a deterministic set of states between real tags. It is NOT captured game
-//! state and must never be presented as one; the game_id and provenance
-//! notes say so explicitly.
-//!
-//! Usage:
-//!   make_demo_recording --bundle <map_bundle_dir> --out <file.battleplan>
-//!                       [--hours N] [--start-hour N]
-//!                       (default 72 hours starting at 1936.1.1.12)
 
 use snapshot::{pack, PackEntry, PackIdentity};
 use std::collections::BTreeMap;
@@ -19,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "usage: make_demo_recording --bundle <map_bundle_dir> --out <file.battleplan> [--hours N] [--start-hour N]";
 const GAME_ID: &str = "synthetic_demo";
-/// Clausewitz month lengths for 365-day years without leap days.
 const MONTH_DAYS: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 fn main() {
@@ -78,9 +65,6 @@ fn run() -> Result<(), String> {
     }
     let state_provinces = load_state_provinces(&bundle_dir)?;
 
-    // Deterministic script: the lowest-id quarter of owned states flips to the
-    // majority tag one state per hour, then flips back in the second half.
-    // Real state ids, real tags, synthetic sequence.
     let majority_tag = majority_owner(&owners_1936);
     let mut flip_order: Vec<u32> = owners_1936
         .iter()
@@ -165,8 +149,6 @@ fn load_state_owners(bundle_dir: &Path) -> Result<BTreeMap<u32, String>, String>
     let mut owners = BTreeMap::new();
     for (sid, tag) in object {
         let sid: u32 = sid.parse().map_err(|e| format!("state id {sid:?}: {e}"))?;
-        // Owner rows can be a bare TAG string or an object carrying an owner
-        // field; anything else is a malformed bundle, not something to guess.
         let tag = match tag {
             serde_json::Value::String(tag) => tag.clone(),
             serde_json::Value::Object(map) => match map.get("owner").and_then(|v| v.as_str()) {
@@ -201,8 +183,6 @@ fn owners_at_step(
 ) -> BTreeMap<u32, String> {
     let mut owners = base.clone();
     let half = total_hours / 2;
-    // First half: one more state per hour joins the majority tag. Second
-    // half: they revert one per hour, so scrubbing backwards is visible too.
     let flipped = if step <= half {
         step
     } else {
@@ -241,21 +221,13 @@ fn load_state_provinces(bundle_dir: &Path) -> Result<BTreeMap<u32, Vec<u32>>, St
     Ok(by_state)
 }
 
-/// Scripted "front": one defender and one attacker division per early flip
-/// state, plus an active land combat where the front currently sits. Real
-/// state/province ids and tags, synthetic sequence — fixture data for the
-/// unit-counter and combat-marker surfaces.
 struct WarScript {
-    /// (state_id, front_province, defender_tag) per contested state, in
-    /// flip order.
     fronts: Vec<(u32, u32, String)>,
     attacker_tag: String,
-    /// Staging province for not-yet-advanced attackers.
     home_province: u32,
     total_hours: i64,
 }
 
-/// How many of the earliest flip states carry scripted divisions/combats.
 const WAR_FRONT_COUNT: usize = 8;
 
 impl WarScript {
@@ -277,7 +249,6 @@ impl WarScript {
                 fronts.push((*state_id, front_province, owner.clone()));
             }
         }
-        // Staging area: the first majority-owned state with mapped provinces.
         let home_province = owners_1936
             .iter()
             .filter(|(_, tag)| tag.as_str() == majority_tag)
@@ -291,9 +262,6 @@ impl WarScript {
         }
     }
 
-    /// Divisions and active combats at one step. Deterministic; mirrors
-    /// `owners_at_step`'s triangle (front advances then withdraws) at a
-    /// quarter of the state-flip pace so battles spread across the timeline.
     fn at_step(&self, step: i64) -> (Vec<serde_json::Value>, Vec<serde_json::Value>) {
         let half = self.total_hours / 2;
         let flipped = if step <= half {
@@ -309,8 +277,6 @@ impl WarScript {
             let taken = front > i;
             let battle_here = front == i || front == i + 1;
 
-            // Defender: holds its state until two hours after it falls,
-            // then is destroyed (never resurrected on the withdrawal leg).
             let peak_front = if step <= half {
                 front
             } else {
@@ -319,8 +285,6 @@ impl WarScript {
             let destroyed = peak_front > i + 1;
             if !destroyed {
                 let organisation = if i == 3 {
-                    // Trichotomy fixture: one defender's org is
-                    // captured-but-unobtained every snapshot.
                     serde_json::Value::Null
                 } else if battle_here {
                     serde_json::json!(0.35)
@@ -339,8 +303,6 @@ impl WarScript {
                 }));
             }
 
-            // Attacker: staged at home until the front reaches its state,
-            // then occupies the front province.
             let location = if taken {
                 *front_province
             } else {
@@ -380,9 +342,6 @@ fn build_snapshot(
     step: i64,
     war: &WarScript,
 ) -> serde_json::Value {
-    // OCCUPATION semantics, matching real extraction data: the flip script
-    // moves the CONTROLLER (the occupier); the legal OWNER stays the 1936
-    // tag. Where they differ, the state is occupied territory.
     let mut states = serde_json::Map::new();
     let mut owner_by_state = serde_json::Map::new();
     for (sid, owner) in base_owners {
@@ -393,9 +352,6 @@ fn build_snapshot(
         );
         owner_by_state.insert(sid.to_string(), serde_json::json!(owner));
     }
-    // Trichotomy demo on one country: stability measured (drifting), war
-    // support explicitly null every third hour, political_power absent (the
-    // key is simply not written).
     let stability = 0.70 - (step as f64) * 0.002;
     let mut politics = serde_json::Map::new();
     politics.insert("stability".to_string(), serde_json::json!(stability));
@@ -484,7 +440,7 @@ mod tests {
     #[test]
     fn war_script_moves_fights_and_destroys() {
         let mut owners = BTreeMap::new();
-        owners.insert(1u32, "GER".to_string()); // staging (majority)
+        owners.insert(1u32, "GER".to_string());
         owners.insert(2u32, "POL".to_string());
         owners.insert(3u32, "POL".to_string());
         let mut provinces = BTreeMap::new();
@@ -495,7 +451,6 @@ mod tests {
         assert_eq!(war.fronts.len(), 2);
         assert_eq!(war.home_province, 100);
 
-        // Step 0: nothing taken; attackers staged at home; battle at front 0.
         let (divs, combats) = war.at_step(0);
         assert_eq!(divs.len(), 4);
         let attacker0 = divs.iter().find(|d| d["div_id"] == 2000).unwrap();
@@ -503,19 +458,15 @@ mod tests {
         assert_eq!(combats.len(), 1);
         assert_eq!(combats[0]["defenders"][0], 1000);
 
-        // Step 8 (front 2): attacker 0 occupies its state; defender 0 is
-        // destroyed; the battle has moved to front 1.
         let (divs, combats) = war.at_step(8);
         let attacker0 = divs.iter().find(|d| d["div_id"] == 2000).unwrap();
         assert_eq!(attacker0["location_province"], 200);
         assert!(!divs.iter().any(|d| d["div_id"] == 1000));
         assert!(combats.iter().any(|c| c["combat_id"] == 501));
 
-        // Destroyed defenders stay destroyed on the withdrawal leg.
         let (divs, _) = war.at_step(47);
         assert!(!divs.iter().any(|d| d["div_id"] == 1000));
 
-        // Determinism.
         assert_eq!(war.at_step(3), war.at_step(3));
     }
 }

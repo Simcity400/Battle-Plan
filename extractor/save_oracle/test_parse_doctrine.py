@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import parse_doctrine as pd  # noqa: E402
+import parse_doctrine as pd
 
 
 SYN = """

@@ -1,20 +1,10 @@
-//! Authenticated assignment of named production-map stages.
-//!
-//! Packet implementations declare names and dependency edges. This neutral
-//! provider authenticates that topology and derives the only accepted
-//! contiguous operation ordinals. Packets never choose a number locally, and
-//! the final compositor remains free to supply and validate the complete graph
-//! without becoming a compile dependency of every packet.
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const ASSIGNED_STAGE_SCHEMA: &str = "hoi4.replay-map-assigned-stage.v1";
-pub const ASSIGNED_STAGE_SCHEDULE_SCHEMA: &str =
-    "hoi4.replay-map-assigned-stage-schedule.v1";
-pub const ASSIGNED_STAGE_TOPOLOGY_SCHEMA: &str =
-    "hoi4.replay-map-assigned-stage-topology.v1";
+pub const ASSIGNED_STAGE_SCHEDULE_SCHEMA: &str = "hoi4.replay-map-assigned-stage-schedule.v1";
+pub const ASSIGNED_STAGE_TOPOLOGY_SCHEMA: &str = "hoi4.replay-map-assigned-stage-topology.v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -166,9 +156,6 @@ impl AssignedStage {
         AssignedStageIdentity::new(self.stage_name.clone(), self.operation_name.clone())
     }
 
-    /// Construct the aggregate foundation identity for this exact assigned
-    /// node. Packet adapters supply their authenticated program/resource/target
-    /// digests, but cannot reconstruct or replace the provider-owned ordinal.
     pub fn foundation_operation_identity(
         &self,
         program_sha256: impl Into<String>,
@@ -249,8 +236,6 @@ impl AssignedStageSchedule {
         Self::seal(topology, assignments)
     }
 
-    /// Authenticate a transported schedule against the exact topology that
-    /// owns its census and dependency edges.
     pub fn seal(
         topology: &AssignedStageTopology,
         assignments: Vec<AssignedStage>,
@@ -295,13 +280,10 @@ impl AssignedStageSchedule {
         self.assignments
             .iter()
             .find(|assignment| {
-                assignment.stage_name == stage_name
-                    && assignment.operation_name == operation_name
+                assignment.stage_name == stage_name && assignment.operation_name == operation_name
             })
             .ok_or_else(|| {
-                format!(
-                    "assigned-stage schedule omits required {stage_name}/{operation_name}"
-                )
+                format!("assigned-stage schedule omits required {stage_name}/{operation_name}")
             })
     }
 
@@ -340,23 +322,21 @@ impl AssignedStageSchedule {
         Ok(())
     }
 
-    fn validate_assignments_against(
-        &self,
-        topology: &AssignedStageTopology,
-    ) -> Result<(), String> {
+    fn validate_assignments_against(&self, topology: &AssignedStageTopology) -> Result<(), String> {
         if self.topology_sha256 != topology.topology_sha256 {
             return Err("assigned-stage schedule belongs to another topology".into());
         }
         let expected = deterministic_topological_order(&topology.stages, &topology.edges)?;
         if expected.len() != self.assignments.len()
-            || expected.iter().zip(&self.assignments).any(|(identity, assignment)| {
-                identity.stage_name != assignment.stage_name
-                    || identity.operation_name != assignment.operation_name
-            })
+            || expected
+                .iter()
+                .zip(&self.assignments)
+                .any(|(identity, assignment)| {
+                    identity.stage_name != assignment.stage_name
+                        || identity.operation_name != assignment.operation_name
+                })
         {
-            return Err(
-                "assigned-stage schedule differs from deterministic topology order".into(),
-            );
+            return Err("assigned-stage schedule differs from deterministic topology order".into());
         }
         Ok(())
     }
@@ -422,9 +402,9 @@ fn validate_sha256(value: &str, label: &str) -> Result<(), String> {
 
 fn validate_name(value: &str, label: &str) -> Result<(), String> {
     if value.is_empty()
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte))
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_.-".contains(&byte)
+        })
     {
         return Err(format!(
             "{label} is not nonempty lowercase ASCII [a-z0-9_.-]"
@@ -465,10 +445,7 @@ mod tests {
             schedule
                 .ordered_assignments()
                 .iter()
-                .map(|assignment| (
-                    assignment.stage_name.as_str(),
-                    assignment.assigned_ordinal
-                ))
+                .map(|assignment| (assignment.stage_name.as_str(), assignment.assigned_ordinal))
                 .collect::<Vec<_>>(),
             vec![
                 ("early_borders", 1),
@@ -499,11 +476,8 @@ mod tests {
         reordered.assignments.swap(0, 1);
         assert!(reordered.validate().is_err());
 
-        let other = AssignedStageTopology::seal(
-            vec![identity("water", "water.draw")],
-            Vec::new(),
-        )
-        .unwrap();
+        let other =
+            AssignedStageTopology::seal(vec![identity("water", "water.draw")], Vec::new()).unwrap();
         assert!(schedule.validate_against(&other).is_err());
     }
 
@@ -527,11 +501,9 @@ mod tests {
 
     #[test]
     fn invalid_names_edges_and_cycles_are_rejected() {
-        assert!(AssignedStageTopology::seal(
-            vec![identity("Bad Name", "draw")],
-            Vec::new()
-        )
-        .is_err());
+        assert!(
+            AssignedStageTopology::seal(vec![identity("Bad Name", "draw")], Vec::new()).is_err()
+        );
 
         let a = identity("a", "draw");
         let b = identity("b", "draw");

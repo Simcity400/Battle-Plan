@@ -133,8 +133,6 @@ pub struct ScientistRow {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ExtractionCounters {
     pub countries_seen: u32,
-    /// Countries whose optional scientist-roster root was read as absent/empty.
-    /// This is a measured empty source, not a source failure.
     pub absent_roster_roots: u32,
     pub roster_vectors_seen: u32,
     pub observed_pins: u32,

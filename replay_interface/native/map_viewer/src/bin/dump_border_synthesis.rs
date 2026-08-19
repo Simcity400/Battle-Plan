@@ -1,9 +1,3 @@
-//! Synthesize thin border geometry from resolver-routed installed content and dump
-//! debug BMP regions plus stats JSON.
-//!
-//! Usage:
-//!   dump_border_synthesis --game <the game dir> [--mod <dir>]... --out <dir>
-//!       [--region name:x:y:w:h]... [--source-excerpts]
 
 use map_viewer::{
     border_material_sources_from_resolver, border_source_evidence_from_resolver,
@@ -264,8 +258,6 @@ fn render_region_bmp(mesh: &BorderWorldMesh, region: &DumpRegion, path: &Path) -
     bmp_out::write_bmp24_rgb_flat(path, region.width, region.height, &pixels)
 }
 
-/// Draw the chain's smoothed centerline row-to-row. World -> bmp uses the
-/// pinned pixel-center convention: pixel (x, y) center = world (x, (H-1) - y).
 fn draw_chain(
     mesh: &BorderWorldMesh,
     region: &DumpRegion,
@@ -359,17 +351,6 @@ fn plot_thick(
     }
 }
 
-/// LEGEND colours for the *structural* geometry dump — these make the six border
-/// CLASSES visually separable so the synthesis (which edge got which rank) can be
-/// eyeballed. They are explicitly a category legend, **NOT vanilla appearance**:
-/// the authentic per-class colours are near-black/navy/brown (decoded in
-/// `map_viewer::border_texture_law`), which would be
-/// indistinguishable in a structural dump. Because the user-facing appearance
-/// mandate forbids implying vanilla draws a red/hot country border, the country
-/// legend hue is a neutral teal here rather than the old `[255,83,73]` red — no
-/// legend colour resembles a "hot" border. For the AUTHENTIC per-class colour and
-/// opacity, see `dump_border_render` (which paints the decoded DDS colours) and
-/// the `material_sources` in this dump's stats JSON.
 fn color_for_material(material: BorderMaterial) -> [u8; 3] {
     match material {
         BorderMaterial::Province => [178, 184, 188],

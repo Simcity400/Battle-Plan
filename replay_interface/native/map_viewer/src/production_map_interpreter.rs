@@ -1,11 +1,3 @@
-//! Portable static-map interpreter bridge.
-//!
-//! The portable stream carries a proven interpreter identity, exact ordered
-//! effective-VFS inputs, and hashes/descriptors for every output buffer.  This
-//! module is the only production route that turns that description into GPU
-//! bytes.  It has no path lookup, vanilla catalogue, or captured-asset fallback:
-//! callers must provide bytes already loaded through `ProductionMapRenderer`'s
-//! validated content admission.
 
 use crate::ProductionMapResource;
 use replay_core::{
@@ -20,11 +12,7 @@ pub const RAW_VERTEX_INDEX_BUFFERS_V1: &str = "raw_vertex_index_buffers.v1";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MapInterpreterFailure {
-    /// The recording names a grammar that this build cannot reproduce.  The
-    /// owning static pass must be omitted; it must not be guessed.
     Unsupported { interpreter_token: String },
-    /// A supported program is malformed, stale, or does not match admitted
-    /// bytes.  This is a recording/content error and must fail playback.
     Invalid { detail: String },
 }
 
@@ -48,9 +36,6 @@ fn invalid(detail: impl Into<String>) -> MapInterpreterFailure {
     }
 }
 
-/// Materialize every interpreter draw in one pass.  Supported identities are
-/// pass-scoped (`<pass_token>.raw_*`) so bytes admitted for one semantic pass
-/// cannot be reinterpreted by another.
 pub fn materialize_static_program(
     program: &StaticMapPassProgram,
     resources: &BTreeMap<String, ProductionMapResource>,
@@ -306,8 +291,6 @@ fn validate_draw_bounds(
     }
 }
 
-/// Convert an unsupported interpreter into a feature-local omission reason.
-/// Invalid/tampered supported programs remain errors.
 pub(crate) fn unsupported_reason(error: &MapInterpreterFailure) -> Option<String> {
     match error {
         MapInterpreterFailure::Unsupported { interpreter_token } => Some(format!(

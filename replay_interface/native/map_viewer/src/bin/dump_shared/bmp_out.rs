@@ -1,20 +1,8 @@
-//! Shared 24-bit BMP writer for the `map_viewer` dump tools.
-//!
-//! Each `src/bin/dump_*.rs` includes this file via
-//! `#[path = "dump_shared/bmp_out.rs"] mod bmp_out;` so the near-identical
-//! per-tool writer copies collapse into one implementation without touching
-//! the `map_viewer` library surface. Cargo does not treat this directory as a
-//! binary target (no `main.rs` here).
-//!
-//! The output is byte-exact with the writers this module replaced:
-//! BITMAPFILEHEADER + 40-byte BITMAPINFOHEADER (54 bytes total), 24 bpp
-//! BI_RGB, 2835 px/m resolution, bottom-up BGR rows zero-padded to 4 bytes.
 
 use map_viewer::Result;
 use std::io::Write;
 use std::path::Path;
 
-/// Write a 24-bpp bottom-up BI_RGB BMP from top-down `[r, g, b]` pixels.
 #[allow(dead_code)]
 pub fn write_bmp24_rgb(path: &Path, width: usize, height: usize, rgb: &[[u8; 3]]) -> Result<()> {
     if rgb.len() != width * height {
@@ -64,8 +52,6 @@ pub fn write_bmp24_rgb(path: &Path, width: usize, height: usize, rgb: &[[u8; 3]]
     Ok(())
 }
 
-/// Flat-slice convenience for callers holding packed `r,g,b` triples in a
-/// `&[u8]`, preserving the byte-length refusal of the writers it replaced.
 #[allow(dead_code)]
 pub fn write_bmp24_rgb_flat(path: &Path, width: usize, height: usize, rgb: &[u8]) -> Result<()> {
     if rgb.len() != width * height * 3 {

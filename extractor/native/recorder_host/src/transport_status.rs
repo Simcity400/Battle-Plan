@@ -1,17 +1,3 @@
-//! Typed, out-of-band H4CT sink-failure reporting.
-//!
-//! The 64-byte payload byte codec is the single source in
-//! [`compact_contract::sink_failure`] so the collector-side producer and this
-//! recorder-side consumer cannot drift into two silently divergent layouts
-//! (the same convention the CFA1 payload uses). This module keeps only the
-//! control-transport envelope concern the payload codec is deliberately neutral
-//! about: mapping the two authoritative `MessageKind` values onto the intrinsic
-//! [`SinkFailureKind`].
-//!
-//! These terminal reports are never appended to H4CR. When either authoritative
-//! sink fails, both stop together; the independent control pipe carries the
-//! requested/opened topology and final progress needed to explain the failure.
-
 use crate::control_transport::MessageKind;
 
 pub use compact_contract::sink_failure::{
@@ -19,12 +5,6 @@ pub use compact_contract::sink_failure::{
     SinkTerminality, SinkTopology, SINK_FAILURE_PAYLOAD_LEN,
 };
 
-/// Envelope bridge between the recorder-host control transport's `MessageKind`
-/// and the payload codec's MessageKind-neutral [`SinkFailureKind`].
-///
-/// Kept as an extension trait rather than inherent methods because the intrinsic
-/// enum now lives in `compact_contract`, which must not depend on the
-/// control-transport `MessageKind`.
 pub trait SinkFailureMessageKind: Sized {
     fn message_kind(self) -> MessageKind;
     fn from_message_kind(kind: MessageKind) -> Result<Self, SinkStatusError>;
@@ -47,11 +27,6 @@ impl SinkFailureMessageKind for SinkFailureKind {
     }
 }
 
-/// Decode a sink-failure payload delivered under a control-transport envelope.
-///
-/// The `MessageKind` is mapped to the expected intrinsic branch and then handed
-/// to the single-source payload decoder; a non-sink kind fails closed without
-/// touching the payload bytes.
 pub fn decode_sink_failure(
     kind: MessageKind,
     payload: &[u8],

@@ -1,13 +1,3 @@
-//! Exact production a729 ability-list transition observer.
-//!
-//! This module records the exact engine leaves needed by the A36 human
-//! transition matrix and captures the exact same-row disabled-reason
-//! accumulator before its destruction when such text is evaluated. Runtime
-//! pointers and aggregate scratch records remain process-local join identities.
-//! Only `JoinedExactA729AbilitySource`,
-//! produced after a complete pointer-erasing row join, implements
-//! `ExactA729AbilityControllerSource`. Core rows do not require optional text.
-
 use core::ffi::c_void;
 use minhook::MinHook;
 use std::cell::RefCell;
@@ -18,9 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use windows_sys::Win32::System::Diagnostics::Debug::{
-    ReadProcessMemory, RtlCaptureStackBackTrace,
-};
+use windows_sys::Win32::System::Diagnostics::Debug::{ReadProcessMemory, RtlCaptureStackBackTrace};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -34,26 +22,15 @@ pub const TOOLTIP_BUILDER_RVA: u32 = 0x01D0_49C0;
 pub const STRING_APPEND_RVA: u32 = 0x0012_9700;
 pub const EFFECTIVE_COMMAND_POWER_COST_RVA: u32 = 0x00FF_4C30;
 pub const ICON_RESOLVER_RVA: u32 = 0x0222_3EB0;
-/// Return address immediately after the one append which copies the temporary
-/// disabled-reason accumulator into the final tooltip. The accumulator is the
-/// exact source argument at this call and is still alive until 0x141D063A3.
 pub const DISABLED_REASON_APPEND_RETURN_RVA: u32 = 0x01D0_6057;
 pub const EFFECTIVE_COST_RETURN_RVA: u32 = 0x01D0_4E38;
 pub const ICON_RESOLVER_RETURN_RVA: u32 = 0x01D0_8BA6;
 
-/// Static hook authority bound to the mechanically reconciled a729 receipt.
-/// This opens diagnostic observer installation only; it does not promote ABL1
-/// production output or schedule a compact domain.
 pub const EXACT_A729_AUTHORITY_BOUND: bool = true;
-pub const EXACT_A729_AUTHORITY_JOB_ID: &str =
-    "20260720T020812Z-w3-a36-ability-list-feb98226";
+pub const EXACT_A729_AUTHORITY_JOB_ID: &str = "20260720T020812Z-w3-a36-ability-list-feb98226";
 pub const EXACT_A729_AUTHORITY_SHARD: &str = "shard-19";
 pub const EXACT_A729_AUTHORITY_MANIFEST_SHA256: &str =
     "12768dfa9a8b47ceda4feae9cdc45b76811f602ecd557008aa936e95adf2db45";
-/// Follow-up receipts which authenticate the corrected tooltip/timer laws and
-/// the final selected-context root census used by this observer.  The original
-/// exact20 receipt remains the complete hook-site census; these receipts are
-/// additive authority and must travel with every live evidence receipt.
 pub const FINAL_STATIC_AUDIT_JOB_ID: &str =
     "20260720T102325Z-w5-a36-final-tooltip-timer-audit-dc624c9b";
 pub const FINAL_STATIC_AUDIT_SHARD: &str = "shard-06";
@@ -206,7 +183,9 @@ struct ControllerMeta {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeEvent {
-    ContextInvalid { invalid: bool },
+    ContextInvalid {
+        invalid: bool,
+    },
     ActiveCooldown {
         definition_runtime: usize,
         scope_runtime: usize,
@@ -221,8 +200,14 @@ pub enum ProbeEvent {
         scope_runtime: usize,
         available: bool,
     },
-    SpecialContext { controller_runtime: usize, allowed: bool },
-    IconResolved { icon: String, resolved: bool },
+    SpecialContext {
+        controller_runtime: usize,
+        allowed: bool,
+    },
+    IconResolved {
+        icon: String,
+        resolved: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,8 +226,6 @@ struct OpenActiveProbeTrace {
     duplicate_or_nested: bool,
 }
 
-/// Exact CCountry active-record identity consumed by `0x1406F3370`.
-/// Runtime addresses are diagnostic join keys and never enter ABL1/ABA2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ActiveRecordWitness {
     pub country_runtime: usize,
@@ -287,8 +270,6 @@ struct OpenTooltipTrace {
     nested_or_replaced: bool,
 }
 
-/// Diagnostic-only exact same-row text observation. Runtime addresses are
-/// process-local join keys and are never serialized into ABL1 or ABA2.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisabledReasonObservation {
     pub sequence: u64,
@@ -309,13 +290,8 @@ pub struct DisabledReasonObservation {
     pub source_definition_runtime: Vec<usize>,
     pub row_owner_runtime: Vec<usize>,
     pub final_tooltip: String,
-    /// Exact evaluated accumulator bytes before the final-tooltip append. An
-    /// empty string is a measured empty accumulator, not a missing value.
     pub disabled_reason: String,
     pub accumulator_callsite_seen: bool,
-    /// Exact fixed-point result written by 0x140FF4C30 at the unique ordinary
-    /// tooltip call returning at 0x141D04E38. Field-marshal rows use the
-    /// already-retained aggregate cost record instead.
     pub effective_command_power_cost_fixed: Option<i64>,
 }
 
@@ -356,14 +332,8 @@ pub struct OrdinaryAbilityLeaf {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FieldMarshalLeaderLeaf {
     pub leader_runtime: usize,
-    /// Exact engine enum: 0 available, 1 active, 2 cooldown, 3 cannot-use,
-    /// 4 leader-unavailable.
     pub state_code: u8,
     pub remaining_hours: i32,
-    /// Exact elapsed value returned by the same ordered 0x1406F3370 call
-    /// which produced this leader state. The 0x28 aggregate row does not
-    /// retain it for indefinite abilities, so the observer joins it by the
-    /// engine's leader iteration order before pointer erasure.
     pub activation_elapsed_hours: i32,
     pub command_power_cost_fixed: i64,
     pub activation_command_power_cost_fixed: i64,
@@ -468,14 +438,6 @@ pub fn diagnostics() -> HookDiagnostics {
     }
 }
 
-/// Whether this lane's a729 refresh detours are patched into the running game.
-///
-/// [`observations`] answers the empty vector for BOTH "the detour is not
-/// installed" and "the detour is installed and this hour produced nothing",
-/// and the collector's d88 read reported the two with the same
-/// `exact_refresh_observation_unavailable` reason. That is exactly the
-/// distinction between a broken reader and a legitimately quiet one, so the
-/// state has to be askable separately.
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
@@ -488,16 +450,15 @@ pub fn observations() -> Vec<ControllerObservation> {
         .unwrap_or_default()
 }
 
-/// Re-authenticates the process-local controller identity at the collector
-/// root-catalog boundary. The hook observation remains the sole state/text
-/// producer, but a later root join may not reuse it after selection, source
 /// order, aggregate membership, or row ownership has changed.
 pub fn observation_identity_still_current(
     observation: &ControllerObservation,
 ) -> Result<(), String> {
     let current_game_hour_raw = current_game_hour_raw()?;
     if current_game_hour_raw != observation.observed_game_hour_raw {
-        return Err("A36 retained refresh crossed a game-hour boundary before exact-root join".into());
+        return Err(
+            "A36 retained refresh crossed a game-hour boundary before exact-root join".into(),
+        );
     }
     let (meta, source_bytes, state_bytes, leader_bytes, row_widget_bytes) =
         stable_snapshot(observation.controller_runtime)?;
@@ -521,62 +482,66 @@ pub fn observation_identity_still_current(
     if observation.field_marshal_aggregate {
         let current = parse_field_marshal_states(&state_bytes)?;
         if current.len() != observation.field_marshal_leaves.len()
-            || !current.iter().zip(&observation.field_marshal_leaves).all(|(left, right)| {
-                left.definition_runtime == right.definition_runtime
-                    && left.leaders.iter().zip(&right.leaders).all(|(l, r)| {
-                        l.leader_runtime == r.leader_runtime
-                            && l.state_code == r.state_code
-                            && l.remaining_hours == r.remaining_hours
-                            && l.command_power_cost_fixed == r.command_power_cost_fixed
-                            && l.activation_command_power_cost_fixed
-                                == r.activation_command_power_cost_fixed
-                            && l.will_activate == r.will_activate
-                    })
-                    && left.leaders.len() == right.leaders.len()
-                    && left.available_count == right.available_count
-                    && left.active_count == right.active_count
-                    && left.cooldown_count == right.cooldown_count
-                    && left.allocated_count == right.allocated_count
-                    && left.candidate_leader_count == right.candidate_leader_count
-                    && left.definition_allowed_leader_count
-                        == right.definition_allowed_leader_count
-                    && left.minimum_active_remaining_hours
-                        == right.minimum_active_remaining_hours
-                    && left.minimum_cooldown_remaining_hours
-                        == right.minimum_cooldown_remaining_hours
-                    && left.group_activation_elapsed_hours
-                        == right.group_activation_elapsed_hours
-                    && left.allocated_command_power_cost_fixed
-                        == right.allocated_command_power_cost_fixed
-                    && left.allocated_activation_command_power_cost_fixed
-                        == right.allocated_activation_command_power_cost_fixed
-                    && left.allocated_daily_command_power_cost_fixed
-                        == right.allocated_daily_command_power_cost_fixed
-                    && left.allocated_affected_division_count
-                        == right.allocated_affected_division_count
-                    && left.group_already_active == right.group_already_active
-            })
+            || !current
+                .iter()
+                .zip(&observation.field_marshal_leaves)
+                .all(|(left, right)| {
+                    left.definition_runtime == right.definition_runtime
+                        && left.leaders.iter().zip(&right.leaders).all(|(l, r)| {
+                            l.leader_runtime == r.leader_runtime
+                                && l.state_code == r.state_code
+                                && l.remaining_hours == r.remaining_hours
+                                && l.command_power_cost_fixed == r.command_power_cost_fixed
+                                && l.activation_command_power_cost_fixed
+                                    == r.activation_command_power_cost_fixed
+                                && l.will_activate == r.will_activate
+                        })
+                        && left.leaders.len() == right.leaders.len()
+                        && left.available_count == right.available_count
+                        && left.active_count == right.active_count
+                        && left.cooldown_count == right.cooldown_count
+                        && left.allocated_count == right.allocated_count
+                        && left.candidate_leader_count == right.candidate_leader_count
+                        && left.definition_allowed_leader_count
+                            == right.definition_allowed_leader_count
+                        && left.minimum_active_remaining_hours
+                            == right.minimum_active_remaining_hours
+                        && left.minimum_cooldown_remaining_hours
+                            == right.minimum_cooldown_remaining_hours
+                        && left.group_activation_elapsed_hours
+                            == right.group_activation_elapsed_hours
+                        && left.allocated_command_power_cost_fixed
+                            == right.allocated_command_power_cost_fixed
+                        && left.allocated_activation_command_power_cost_fixed
+                            == right.allocated_activation_command_power_cost_fixed
+                        && left.allocated_daily_command_power_cost_fixed
+                            == right.allocated_daily_command_power_cost_fixed
+                        && left.allocated_affected_division_count
+                            == right.allocated_affected_division_count
+                        && left.group_already_active == right.group_already_active
+                })
         {
             return Err("A36 retained field-marshal state changed before exact-root join".into());
         }
     } else {
         for leaf in &observation.ordinary_leaves {
-            let matching = observation.probe_events.iter().filter_map(|event| match event {
-                ProbeEvent::ActiveCooldown {
-                    definition_runtime,
-                    active,
-                    cooldown,
-                    elapsed_since_activation_hours,
-                    record,
-                    ..
-                } if *definition_runtime == leaf.definition_runtime => Some((
-                    *active,
-                    *cooldown,
-                    *elapsed_since_activation_hours,
-                    *record,
-                )),
-                _ => None,
-            }).collect::<Vec<_>>();
+            let matching = observation
+                .probe_events
+                .iter()
+                .filter_map(|event| match event {
+                    ProbeEvent::ActiveCooldown {
+                        definition_runtime,
+                        active,
+                        cooldown,
+                        elapsed_since_activation_hours,
+                        record,
+                        ..
+                    } if *definition_runtime == leaf.definition_runtime => {
+                        Some((*active, *cooldown, *elapsed_since_activation_hours, *record))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
             if matching.len() != 1 {
                 return Err("A36 retained ordinary row lacks one active-record witness".into());
             }
@@ -598,7 +563,10 @@ pub fn observation_identity_still_current(
                 || refreshed.record_group_target_runtime != record.record_group_target_runtime
                 || refreshed.record_pass_active != record.record_pass_active
             {
-                return Err("A36 retained ordinary active-record state changed before exact-root join".into());
+                return Err(
+                    "A36 retained ordinary active-record state changed before exact-root join"
+                        .into(),
+                );
             }
         }
     }
@@ -629,8 +597,6 @@ pub fn take_disabled_reason_observations() -> Vec<DisabledReasonObservation> {
         .unwrap_or_default()
 }
 
-/// Portable identity from the authenticated character/OOB root snapshot.
-/// Runtime addresses are lookup keys only and never enter ABL1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortableContextIdentity {
     pub country_tag: String,
@@ -638,9 +604,6 @@ pub struct PortableContextIdentity {
     pub stable_id: u64,
 }
 
-/// One immutable same-epoch join catalog built by the exact root collectors.
-/// Ability tokens and icons are deliberately absent: A36 observes those from
-/// the CAbility definition and exact UI resolver callsite itself.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ExactA729PortableIdentityCatalog {
     pub epoch: u64,
@@ -648,8 +611,6 @@ pub struct ExactA729PortableIdentityCatalog {
     pub division_ids_by_leader_runtime: BTreeMap<usize, Vec<u32>>,
 }
 
-/// Frozen pointer-free source built from engine observations. No caller may
-/// supply an AbilityFrame or any row field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JoinedExactA729AbilitySource {
     frame: crate::AbilityFrame,
@@ -726,11 +687,14 @@ fn materialize_abl1_frame(
         || catalog.epoch != controller.sequence
         || controller.source_definition_runtime.len() != controller.row_widget_count as usize
         || controller.definition_presentations.len() != controller.source_definition_runtime.len()
-        || controller.definitions.len() != controller.source_definition_runtime.len() {
+        || controller.definitions.len() != controller.source_definition_runtime.len()
+    {
         return Err("A36 ABL1 row count does not match retained refresh identity".into());
     }
     let selected_runtime = selected_context_runtime(controller)?;
-    let context = catalog.contexts_by_runtime.get(&selected_runtime)
+    let context = catalog
+        .contexts_by_runtime
+        .get(&selected_runtime)
         .ok_or_else(|| "A36 selected context is absent from the exact root catalog".to_string())?;
     validate_context_identity(context, controller)?;
     let selected_context_id = context_wire_id(context);
@@ -744,8 +708,7 @@ fn materialize_abl1_frame(
                     && observation.row_ordinal as usize == ordinal
                     && observation.definition_runtime
                         == controller.source_definition_runtime[ordinal]
-                    && observation.source_definition_runtime
-                        == controller.source_definition_runtime
+                    && observation.source_definition_runtime == controller.source_definition_runtime
                     && observation.row_owner_runtime == controller.row_owner_runtime
                     && observation.context_mode == controller.context_mode
                     && observation.selected_root_runtime == controller.selected_root_runtime
@@ -779,16 +742,13 @@ fn materialize_abl1_frame(
         }) {
             return Err("A36 observed tooltip/disabled-reason transaction is incomplete".into());
         }
-        // 0x141D06052 is unconditional: it appends the evaluated error
-        // accumulator even when that accumulator has length zero. Therefore
-        // callsite presence authenticates the observation, while the exact
-        // captured length (not callsite presence) is the availability leaf.
-        let has_disabled_reason = observation
-            .is_some_and(|observation| !observation.disabled_reason.is_empty());
+        let has_disabled_reason =
+            observation.is_some_and(|observation| !observation.disabled_reason.is_empty());
         let definition = &controller.definitions[ordinal];
         let presentation = &controller.definition_presentations[ordinal];
         if definition.definition_runtime != controller.source_definition_runtime[ordinal]
-            || presentation.definition_runtime != definition.definition_runtime {
+            || presentation.definition_runtime != definition.definition_runtime
+        {
             return Err("A36 definition leaves/presentation/source identity disagree".into());
         }
         if !controller.field_marshal_aggregate {
@@ -802,27 +762,48 @@ fn materialize_abl1_frame(
             if observation.is_some()
                 && ((ordinary.state == OrdinaryAbilityState::Available && has_disabled_reason)
                     || (ordinary.state == OrdinaryAbilityState::Unavailable
-                        && !has_disabled_reason)) {
+                        && !has_disabled_reason))
+            {
                 return Err(
                     "A36 evaluated ordinary availability disagrees with the exact accumulator"
                         .into(),
                 );
             }
         }
-        let (active, activation_elapsed, cooldown_remaining, duration_remaining, cost, active_leaders) =
-            materialize_state(controller, definition, observation)?;
+        let (
+            active,
+            activation_elapsed,
+            cooldown_remaining,
+            duration_remaining,
+            cost,
+            active_leaders,
+        ) = materialize_state(controller, definition, observation)?;
         let available = ability_available(controller, definition)?;
-        let activation_hour = if active {
-            Some(frame_hour.checked_sub(u64::try_from(activation_elapsed)
-                .map_err(|_| "A36 active row has a negative activation elapsed value")?)
-                .ok_or_else(|| "A36 activation elapsed predates frame zero".to_string())?)
-        } else { None };
+        let activation_hour =
+            if active {
+                Some(
+                    frame_hour
+                        .checked_sub(u64::try_from(activation_elapsed).map_err(|_| {
+                            "A36 active row has a negative activation elapsed value"
+                        })?)
+                        .ok_or_else(|| "A36 activation elapsed predates frame zero".to_string())?,
+                )
+            } else {
+                None
+            };
         let mut affected_division_ids = BTreeSet::new();
         for leader in active_leaders {
-            for division_id in catalog.division_ids_by_leader_runtime.get(&leader)
-                .ok_or_else(|| "A36 active leader is absent from exact division membership roots".to_string())? {
+            for division_id in catalog
+                .division_ids_by_leader_runtime
+                .get(&leader)
+                .ok_or_else(|| {
+                    "A36 active leader is absent from exact division membership roots".to_string()
+                })?
+            {
                 if *division_id == 0 || !affected_division_ids.insert(*division_id) {
-                    return Err("A36 exact division membership contains zero or duplicate identity".into());
+                    return Err(
+                        "A36 exact division membership contains zero or duplicate identity".into(),
+                    );
                 }
             }
         }
@@ -845,7 +826,8 @@ fn materialize_abl1_frame(
                 (!observation.disabled_reason.is_empty())
                     .then(|| observation.disabled_reason.clone())
             }),
-            affected_division_ids: affected_division_ids.into_iter()
+            affected_division_ids: affected_division_ids
+                .into_iter()
                 .map(|id| format!("division:{id}"))
                 .collect(),
         });
@@ -871,7 +853,8 @@ fn materialize_abl1_frame(
         complete: true,
         rows,
     };
-    crate::validate_frame(&frame).map_err(|error| format!("A36 joined ABL1 frame invalid: {error:?}"))?;
+    crate::validate_frame(&frame)
+        .map_err(|error| format!("A36 joined ABL1 frame invalid: {error:?}"))?;
     Ok((frame, tooltip_sequences))
 }
 
@@ -919,15 +902,23 @@ fn validate_identity_catalog(catalog: &ExactA729PortableIdentityCatalog) -> Resu
         if *runtime == 0
             || context.stable_id == 0
             || !compact_contract::country_tag::is_engine_country_tag(&context.country_tag)
-            || !context_ids.insert((context.country_tag.clone(), context.kind.wire(), context.stable_id))
+            || !context_ids.insert((
+                context.country_tag.clone(),
+                context.kind.wire(),
+                context.stable_id,
+            ))
         {
-            return Err("A36 exact root catalog carries an invalid or duplicate context identity".into());
+            return Err(
+                "A36 exact root catalog carries an invalid or duplicate context identity".into(),
+            );
         }
     }
     for (leader_runtime, divisions) in &catalog.division_ids_by_leader_runtime {
         let mut division_ids = BTreeSet::new();
         if *leader_runtime == 0
-            || divisions.iter().any(|division| *division == 0 || !division_ids.insert(*division))
+            || divisions
+                .iter()
+                .any(|division| *division == 0 || !division_ids.insert(*division))
         {
             return Err(
                 "A36 exact division catalog carries a null or duplicate identity for one leader"
@@ -942,8 +933,6 @@ fn validate_context_identity(
     context: &PortableContextIdentity,
     controller: &ControllerObservation,
 ) -> Result<(), String> {
-    // A36 contexts belong to a real country; the no-country sentinel is not one.
-    // Dynamic tags are ordinary countries — see `compact_contract::country_tag`.
     if context.stable_id == 0
         || !compact_contract::country_tag::is_engine_country_tag(&context.country_tag)
     {
@@ -980,7 +969,9 @@ fn context_kind_name(kind: crate::SelectedContextKind) -> &'static str {
 
 fn context_wire_id(context: &PortableContextIdentity) -> String {
     let prefix = match context.kind {
-        crate::SelectedContextKind::ArmyLeader | crate::SelectedContextKind::FieldMarshal => "leader",
+        crate::SelectedContextKind::ArmyLeader | crate::SelectedContextKind::FieldMarshal => {
+            "leader"
+        }
         crate::SelectedContextKind::ArmyGroup => "army_group",
         crate::SelectedContextKind::Army => "army",
         crate::SelectedContextKind::Other(_) => "other",
@@ -1039,54 +1030,82 @@ fn materialize_state(
     controller: &ControllerObservation,
     definition: &DefinitionLeaves,
     tooltip: Option<&DisabledReasonObservation>,
-) -> Result<(bool, i32, crate::TimerValue, crate::TimerValue, Option<i64>, Vec<usize>), String> {
+) -> Result<
+    (
+        bool,
+        i32,
+        crate::TimerValue,
+        crate::TimerValue,
+        Option<i64>,
+        Vec<usize>,
+    ),
+    String,
+> {
     if controller.field_marshal_aggregate {
-        let state = controller.field_marshal_leaves.iter()
+        let state = controller
+            .field_marshal_leaves
+            .iter()
             .find(|row| row.definition_runtime == definition.definition_runtime)
-            .ok_or_else(|| "A36 field-marshal definition lacks its exact state record".to_string())?;
-        // The refresh paints the aggregate row active either when the
-        // selected field-marshal scope is itself active (+0x64), or when all
-        // candidate subordinate leaders are active (+0x24 == +0x30, nonzero).
-        let all_candidates_active = state.candidate_leader_count != 0
-            && state.active_count == state.candidate_leader_count;
+            .ok_or_else(|| {
+                "A36 field-marshal definition lacks its exact state record".to_string()
+            })?;
+        let all_candidates_active =
+            state.candidate_leader_count != 0 && state.active_count == state.candidate_leader_count;
         let active = state.group_already_active || all_candidates_active;
-        let cooldown_remaining = if !active
-            && state.available_count == 0
-            && state.cooldown_count != 0
-        {
-            remaining_timer(state.minimum_cooldown_remaining_hours)?
-        } else { crate::TimerValue::NotStarted };
+        let cooldown_remaining =
+            if !active && state.available_count == 0 && state.cooldown_count != 0 {
+                remaining_timer(state.minimum_cooldown_remaining_hours)?
+            } else {
+                crate::TimerValue::NotStarted
+            };
         let duration_remaining = if active {
-            if definition.duration_hours == -1 { crate::TimerValue::Indefinite }
-            else if state.group_already_active {
+            if definition.duration_hours == -1 {
+                crate::TimerValue::Indefinite
+            } else if state.group_already_active {
                 let remaining = i64::from(definition.duration_hours)
                     .checked_sub(i64::from(state.group_activation_elapsed_hours))
-                    .ok_or_else(|| "A36 aggregate duration remaining calculation overflowed".to_string())?;
-                remaining_timer(i32::try_from(remaining.max(0))
-                    .map_err(|_| "A36 aggregate duration remaining exceeds i32")?)?
+                    .ok_or_else(|| {
+                        "A36 aggregate duration remaining calculation overflowed".to_string()
+                    })?;
+                remaining_timer(
+                    i32::try_from(remaining.max(0))
+                        .map_err(|_| "A36 aggregate duration remaining exceeds i32")?,
+                )?
             } else {
                 remaining_timer(state.minimum_active_remaining_hours)?
             }
-        } else { crate::TimerValue::NotStarted };
+        } else {
+            crate::TimerValue::NotStarted
+        };
         let (activation_elapsed, active_leaders) = if state.group_already_active {
             if controller.selected_leader_runtime == 0 {
-                return Err("A36 active field-marshal scope has no selected leader identity".into());
+                return Err(
+                    "A36 active field-marshal scope has no selected leader identity".into(),
+                );
             }
             (
                 state.group_activation_elapsed_hours,
                 vec![controller.selected_leader_runtime],
             )
         } else if all_candidates_active {
-            let leaders = state.leaders.iter()
+            let leaders = state
+                .leaders
+                .iter()
                 .filter(|leader| leader.state_code == 1)
                 .collect::<Vec<_>>();
-            let elapsed = leaders.iter()
+            let elapsed = leaders
+                .iter()
                 .map(|leader| leader.activation_elapsed_hours)
                 .max()
-                .ok_or_else(|| "A36 active field-marshal row has no active leader elapsed leaf".to_string())?;
+                .ok_or_else(|| {
+                    "A36 active field-marshal row has no active leader elapsed leaf".to_string()
+                })?;
             (
                 elapsed,
-                leaders.into_iter().map(|leader| leader.leader_runtime).collect(),
+                leaders
+                    .into_iter()
+                    .map(|leader| leader.leader_runtime)
+                    .collect(),
             )
         } else {
             (state.group_activation_elapsed_hours, Vec::new())
@@ -1094,10 +1113,18 @@ fn materialize_state(
         if active && active_leaders.is_empty() {
             return Err("A36 active field-marshal row has no active leader membership".into());
         }
-        Ok((active, activation_elapsed, cooldown_remaining,
-            duration_remaining, Some(state.allocated_command_power_cost_fixed), active_leaders))
+        Ok((
+            active,
+            activation_elapsed,
+            cooldown_remaining,
+            duration_remaining,
+            Some(state.allocated_command_power_cost_fixed),
+            active_leaders,
+        ))
     } else {
-        let state = controller.ordinary_leaves.iter()
+        let state = controller
+            .ordinary_leaves
+            .iter()
             .find(|row| row.definition_runtime == definition.definition_runtime)
             .ok_or_else(|| "A36 ordinary definition lacks its exact state record".to_string())?;
         let active = state.state == OrdinaryAbilityState::Active;
@@ -1106,29 +1133,42 @@ fn materialize_state(
                 .checked_add(i64::from(definition.cooldown_hours))
                 .and_then(|value| value.checked_sub(i64::from(state.activation_elapsed_hours)))
                 .ok_or_else(|| "A36 cooldown remaining calculation overflowed".to_string())?;
-            remaining_timer(i32::try_from(remaining.max(0))
-                .map_err(|_| "A36 cooldown remaining exceeds i32")?)?
-        } else { crate::TimerValue::NotStarted };
+            remaining_timer(
+                i32::try_from(remaining.max(0))
+                    .map_err(|_| "A36 cooldown remaining exceeds i32")?,
+            )?
+        } else {
+            crate::TimerValue::NotStarted
+        };
         let duration_remaining = if active {
-            if definition.duration_hours == -1 { crate::TimerValue::Indefinite }
-            else {
+            if definition.duration_hours == -1 {
+                crate::TimerValue::Indefinite
+            } else {
                 let remaining = i64::from(definition.duration_hours)
                     .checked_sub(i64::from(state.activation_elapsed_hours))
                     .ok_or_else(|| "A36 duration remaining calculation overflowed".to_string())?;
-                remaining_timer(i32::try_from(remaining.max(0))
-                    .map_err(|_| "A36 duration remaining exceeds i32")?)?
+                remaining_timer(
+                    i32::try_from(remaining.max(0))
+                        .map_err(|_| "A36 duration remaining exceeds i32")?,
+                )?
             }
-        } else { crate::TimerValue::NotStarted };
-        let cost = tooltip.and_then(|observation| {
-            observation.effective_command_power_cost_fixed
-        });
+        } else {
+            crate::TimerValue::NotStarted
+        };
+        let cost = tooltip.and_then(|observation| observation.effective_command_power_cost_fixed);
         let leaders = if active && controller.selected_leader_runtime != 0 {
             vec![controller.selected_leader_runtime]
         } else {
             Vec::new()
         };
-        Ok((active, state.activation_elapsed_hours, cooldown_remaining,
-            duration_remaining, cost, leaders))
+        Ok((
+            active,
+            state.activation_elapsed_hours,
+            cooldown_remaining,
+            duration_remaining,
+            cost,
+            leaders,
+        ))
     }
 }
 
@@ -1152,18 +1192,66 @@ pub fn install_a729_ability_transition_hook() -> Result<InstalledHookAddresses, 
     }
     let addresses = installed_addresses(base);
     for (label, address, sentinel) in [
-        ("ability refresh", addresses.refresh, REFRESH_SENTINEL.as_slice()),
-        ("context-invalid probe", addresses.context_invalid_probe, CONTEXT_PROBE_SENTINEL.as_slice()),
-        ("active/cooldown probe", addresses.active_cooldown_probe, ACTIVE_PROBE_SENTINEL.as_slice()),
-        ("effect-scope caster resolver", addresses.effect_scope_caster_resolver, EFFECT_SCOPE_CASTER_RESOLVER_SENTINEL.as_slice()),
-        ("availability evaluator", addresses.availability_evaluator, AVAILABILITY_SENTINEL.as_slice()),
-        ("special-context probe", addresses.special_context_probe, SPECIAL_CONTEXT_SENTINEL.as_slice()),
-        ("ability tooltip", addresses.tooltip_builder, TOOLTIP_SENTINEL.as_slice()),
-        ("string append", addresses.string_append, STRING_APPEND_SENTINEL.as_slice()),
-        ("effective command-power cost", addresses.effective_command_power_cost, EFFECTIVE_COST_SENTINEL.as_slice()),
-        ("ability icon resolver", addresses.icon_resolver, ICON_RESOLVER_SENTINEL.as_slice()),
-        ("ordinary effective-cost callsite", base + (EFFECTIVE_COST_RETURN_RVA - 5) as usize, EFFECTIVE_COST_CALLSITE_SENTINEL.as_slice()),
-        ("ability icon resolver callsite", base + (ICON_RESOLVER_RETURN_RVA - 5) as usize, ICON_RESOLVER_CALLSITE_SENTINEL.as_slice()),
+        (
+            "ability refresh",
+            addresses.refresh,
+            REFRESH_SENTINEL.as_slice(),
+        ),
+        (
+            "context-invalid probe",
+            addresses.context_invalid_probe,
+            CONTEXT_PROBE_SENTINEL.as_slice(),
+        ),
+        (
+            "active/cooldown probe",
+            addresses.active_cooldown_probe,
+            ACTIVE_PROBE_SENTINEL.as_slice(),
+        ),
+        (
+            "effect-scope caster resolver",
+            addresses.effect_scope_caster_resolver,
+            EFFECT_SCOPE_CASTER_RESOLVER_SENTINEL.as_slice(),
+        ),
+        (
+            "availability evaluator",
+            addresses.availability_evaluator,
+            AVAILABILITY_SENTINEL.as_slice(),
+        ),
+        (
+            "special-context probe",
+            addresses.special_context_probe,
+            SPECIAL_CONTEXT_SENTINEL.as_slice(),
+        ),
+        (
+            "ability tooltip",
+            addresses.tooltip_builder,
+            TOOLTIP_SENTINEL.as_slice(),
+        ),
+        (
+            "string append",
+            addresses.string_append,
+            STRING_APPEND_SENTINEL.as_slice(),
+        ),
+        (
+            "effective command-power cost",
+            addresses.effective_command_power_cost,
+            EFFECTIVE_COST_SENTINEL.as_slice(),
+        ),
+        (
+            "ability icon resolver",
+            addresses.icon_resolver,
+            ICON_RESOLVER_SENTINEL.as_slice(),
+        ),
+        (
+            "ordinary effective-cost callsite",
+            base + (EFFECTIVE_COST_RETURN_RVA - 5) as usize,
+            EFFECTIVE_COST_CALLSITE_SENTINEL.as_slice(),
+        ),
+        (
+            "ability icon resolver callsite",
+            base + (ICON_RESOLVER_RETURN_RVA - 5) as usize,
+            ICON_RESOLVER_CALLSITE_SENTINEL.as_slice(),
+        ),
         (
             "disabled-reason accumulator append callsite",
             base + (DISABLED_REASON_APPEND_RETURN_RVA - 5) as usize,
@@ -1217,23 +1305,59 @@ type HookSpec = (usize, *mut c_void, &'static AtomicUsize);
 
 fn hook_specs(addresses: InstalledHookAddresses) -> [HookSpec; HOOK_COUNT] {
     [
-        (addresses.context_invalid_probe, hook_context_probe as *mut c_void, &ORIGINAL_CONTEXT_PROBE),
-        (addresses.active_cooldown_probe, hook_active_probe as *mut c_void, &ORIGINAL_ACTIVE_PROBE),
-        (addresses.effect_scope_caster_resolver, hook_effect_scope_caster_resolver as *mut c_void, &ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER),
-        (addresses.availability_evaluator, hook_availability as *mut c_void, &ORIGINAL_AVAILABILITY),
-        (addresses.special_context_probe, hook_special_context as *mut c_void, &ORIGINAL_SPECIAL_CONTEXT),
-        (addresses.string_append, hook_string_append as *mut c_void, &ORIGINAL_STRING_APPEND),
-        (addresses.effective_command_power_cost, hook_effective_cost as *mut c_void, &ORIGINAL_EFFECTIVE_COST),
-        (addresses.icon_resolver, hook_icon_resolver as *mut c_void, &ORIGINAL_ICON_RESOLVER),
-        (addresses.tooltip_builder, hook_tooltip as *mut c_void, &ORIGINAL_TOOLTIP),
-        (addresses.refresh, hook_refresh as *mut c_void, &ORIGINAL_REFRESH),
+        (
+            addresses.context_invalid_probe,
+            hook_context_probe as *mut c_void,
+            &ORIGINAL_CONTEXT_PROBE,
+        ),
+        (
+            addresses.active_cooldown_probe,
+            hook_active_probe as *mut c_void,
+            &ORIGINAL_ACTIVE_PROBE,
+        ),
+        (
+            addresses.effect_scope_caster_resolver,
+            hook_effect_scope_caster_resolver as *mut c_void,
+            &ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER,
+        ),
+        (
+            addresses.availability_evaluator,
+            hook_availability as *mut c_void,
+            &ORIGINAL_AVAILABILITY,
+        ),
+        (
+            addresses.special_context_probe,
+            hook_special_context as *mut c_void,
+            &ORIGINAL_SPECIAL_CONTEXT,
+        ),
+        (
+            addresses.string_append,
+            hook_string_append as *mut c_void,
+            &ORIGINAL_STRING_APPEND,
+        ),
+        (
+            addresses.effective_command_power_cost,
+            hook_effective_cost as *mut c_void,
+            &ORIGINAL_EFFECTIVE_COST,
+        ),
+        (
+            addresses.icon_resolver,
+            hook_icon_resolver as *mut c_void,
+            &ORIGINAL_ICON_RESOLVER,
+        ),
+        (
+            addresses.tooltip_builder,
+            hook_tooltip as *mut c_void,
+            &ORIGINAL_TOOLTIP,
+        ),
+        (
+            addresses.refresh,
+            hook_refresh as *mut c_void,
+            &ORIGINAL_REFRESH,
+        ),
     ]
 }
 
-/// Stops capture, disables every detour, waits for in-flight callbacks to
-/// leave the observer, and only then removes the trampolines. A failure leaves
-/// the lane draining and marks the process unusable for a second install; the
-/// owner must retain the DLL and require a process restart.
 pub fn uninstall_a729_ability_transition_hook() -> Result<(), String> {
     let _install_guard = INSTALL_LOCK
         .get_or_init(|| Mutex::new(()))
@@ -1300,11 +1424,7 @@ pub fn uninstall_a729_ability_transition_hook() -> Result<(), String> {
     Ok(())
 }
 
-fn rollback(
-    specs: &[HookSpec],
-    created: usize,
-    enabled: usize,
-) -> String {
+fn rollback(specs: &[HookSpec], created: usize, enabled: usize) -> String {
     DRAINING.store(true, Ordering::Release);
     let mut failures = Vec::new();
     for (target, _, _) in specs.iter().take(enabled).rev() {
@@ -1336,7 +1456,10 @@ fn rollback(
         String::new()
     } else {
         INSTALL_BROKEN.store(true, Ordering::Release);
-        format!("; rollback retained live trampolines at {}", failures.join(", "))
+        format!(
+            "; rollback retained live trampolines at {}",
+            failures.join(", ")
+        )
     }
 }
 
@@ -1399,12 +1522,13 @@ unsafe extern "system" fn hook_refresh(controller: usize) {
 
 unsafe extern "system" fn hook_context_probe(context: usize) -> u8 {
     let callback = CallbackGuard::enter();
-    let original: ContextProbeFn = unsafe {
-        mem::transmute(ORIGINAL_CONTEXT_PROBE.load(Ordering::Acquire))
-    };
+    let original: ContextProbeFn =
+        unsafe { mem::transmute(ORIGINAL_CONTEXT_PROBE.load(Ordering::Acquire)) };
     let result = unsafe { original(context) };
     if callback.capture {
-        record_event(ProbeEvent::ContextInvalid { invalid: result != 0 });
+        record_event(ProbeEvent::ContextInvalid {
+            invalid: result != 0,
+        });
     }
     result
 }
@@ -1437,9 +1561,8 @@ unsafe extern "system" fn hook_active_probe(
     } else {
         false
     };
-    let original: ActiveProbeFn = unsafe {
-        mem::transmute(ORIGINAL_ACTIVE_PROBE.load(Ordering::Acquire))
-    };
+    let original: ActiveProbeFn =
+        unsafe { mem::transmute(ORIGINAL_ACTIVE_PROBE.load(Ordering::Acquire)) };
     let result = unsafe { original(runtime, definition, scope, cooldown_out, elapsed_out) };
     if !callback.capture || nested {
         return result;
@@ -1471,9 +1594,8 @@ unsafe extern "system" fn hook_active_probe(
 
 unsafe extern "system" fn hook_effect_scope_caster_resolver(scope: usize) -> usize {
     let callback = CallbackGuard::enter();
-    let original: EffectScopeCasterResolverFn = unsafe {
-        mem::transmute(ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER.load(Ordering::Acquire))
-    };
+    let original: EffectScopeCasterResolverFn =
+        unsafe { mem::transmute(ORIGINAL_EFFECT_SCOPE_CASTER_RESOLVER.load(Ordering::Acquire)) };
     let result = unsafe { original(scope) };
     if callback.capture {
         ACTIVE_PROBE_TRACE.with(|trace| {
@@ -1499,9 +1621,9 @@ fn exact_active_record_witness(
     cooldown: bool,
     elapsed: i32,
 ) -> Result<ActiveRecordWitness, String> {
-    let resolved_caster_runtime = trace
-        .resolved_caster_runtime
-        .ok_or_else(|| "active probe did not traverse its exact effect-scope caster resolver".to_string())?;
+    let resolved_caster_runtime = trace.resolved_caster_runtime.ok_or_else(|| {
+        "active probe did not traverse its exact effect-scope caster resolver".to_string()
+    })?;
     let effect_group_target_runtime = read_usize(
         trace
             .effect_scope_runtime
@@ -1574,9 +1696,8 @@ unsafe extern "system" fn hook_availability(
     resolved_text: usize,
 ) -> usize {
     let callback = CallbackGuard::enter();
-    let original: AvailabilityFn = unsafe {
-        mem::transmute(ORIGINAL_AVAILABILITY.load(Ordering::Acquire))
-    };
+    let original: AvailabilityFn =
+        unsafe { mem::transmute(ORIGINAL_AVAILABILITY.load(Ordering::Acquire)) };
     let result = unsafe { original(runtime, definition, scope, resolved_text) };
     if callback.capture {
         record_event(ProbeEvent::Availability {
@@ -1591,9 +1712,8 @@ unsafe extern "system" fn hook_availability(
 
 unsafe extern "system" fn hook_special_context(controller: usize) -> u8 {
     let callback = CallbackGuard::enter();
-    let original: SpecialContextFn = unsafe {
-        mem::transmute(ORIGINAL_SPECIAL_CONTEXT.load(Ordering::Acquire))
-    };
+    let original: SpecialContextFn =
+        unsafe { mem::transmute(ORIGINAL_SPECIAL_CONTEXT.load(Ordering::Acquire)) };
     let result = unsafe { original(controller) };
     if callback.capture {
         record_event(ProbeEvent::SpecialContext {
@@ -1606,9 +1726,8 @@ unsafe extern "system" fn hook_special_context(controller: usize) -> u8 {
 
 unsafe extern "system" fn hook_icon_resolver(registry: usize, icon_string: usize) -> usize {
     let callback = CallbackGuard::enter();
-    let original: IconResolverFn = unsafe {
-        mem::transmute(ORIGINAL_ICON_RESOLVER.load(Ordering::Acquire))
-    };
+    let original: IconResolverFn =
+        unsafe { mem::transmute(ORIGINAL_ICON_RESOLVER.load(Ordering::Acquire)) };
     let result = unsafe { original(registry, icon_string) };
     if callback.capture && immediate_game_return_rva() == Some(ICON_RESOLVER_RETURN_RVA) {
         let icon = read_engine_string(icon_string)
@@ -1628,9 +1747,8 @@ unsafe extern "system" fn hook_effective_cost(
     scope: usize,
 ) -> usize {
     let callback = CallbackGuard::enter();
-    let original: EffectiveCostFn = unsafe {
-        mem::transmute(ORIGINAL_EFFECTIVE_COST.load(Ordering::Acquire))
-    };
+    let original: EffectiveCostFn =
+        unsafe { mem::transmute(ORIGINAL_EFFECTIVE_COST.load(Ordering::Acquire)) };
     let result = unsafe { original(definition, cost_out, scope) };
     if callback.capture && immediate_game_return_rva() == Some(EFFECTIVE_COST_RETURN_RVA) {
         let value = rpm(cost_out as usize, 8).and_then(|bytes| le_i64(&bytes, 0).ok());
@@ -1643,7 +1761,10 @@ unsafe extern "system" fn hook_effective_cost(
             };
             if open.identity.field_marshal_aggregate
                 || definition != open.identity.definition_runtime
-                || open.effective_command_power_cost_fixed.replace(value).is_some()
+                || open
+                    .effective_command_power_cost_fixed
+                    .replace(value)
+                    .is_some()
             {
                 open.duplicate_effective_cost = true;
             }
@@ -1718,8 +1839,7 @@ unsafe extern "system" fn hook_string_append(
     length: usize,
 ) -> usize {
     let callback = CallbackGuard::enter();
-    let tooltip_open =
-        callback.capture && TOOLTIP_TRACE.with(|trace| trace.borrow().is_some());
+    let tooltip_open = callback.capture && TOOLTIP_TRACE.with(|trace| trace.borrow().is_some());
     if tooltip_open && immediate_game_return_rva() == Some(DISABLED_REASON_APPEND_RETURN_RVA) {
         TOOLTIP_TRACE.with(|trace| {
             let mut trace = trace.borrow_mut();
@@ -1731,10 +1851,6 @@ unsafe extern "system" fn hook_string_append(
                 open.duplicate_accumulator_append = true;
                 return;
             }
-            // The exact call is unconditional. A zero-length source is the
-            // engine's measured available result, and must be retained as an
-            // authenticated empty accumulator rather than rejected as a
-            // missing disabled-reason observation.
             let bytes = if length == 0 {
                 Vec::new()
             } else if let Some(bytes) = rpm(source, length) {
@@ -1973,7 +2089,10 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
     if trace.controller_runtime == 0 || trace.nested_or_replaced {
         return Err("null/nested ability refresh".into());
     }
-    if !matches!(trace.events.first(), Some(ProbeEvent::ContextInvalid { invalid: false })) {
+    if !matches!(
+        trace.events.first(),
+        Some(ProbeEvent::ContextInvalid { invalid: false })
+    ) {
         return Err("ability refresh did not pass its exact context-validity gate".into());
     }
     let game_hour_before = current_game_hour_raw()?;
@@ -2020,12 +2139,13 @@ fn build_observation(trace: OpenTrace) -> Result<ControllerObservation, String> 
         let ability_id = read_engine_string(*definition_runtime + 0x70)
             .and_then(|bytes| String::from_utf8(bytes).ok())
             .filter(|value| valid_portable_token(value))
-            .ok_or_else(|| "ability definition intrinsic token is unreadable or non-portable".to_string())?;
-        if !ability_ids.insert(ability_id.clone())
-            || !resolved
-            || !valid_portable_token(icon)
-        {
-            return Err("ability token/icon identity is duplicate, unresolved or non-portable".into());
+            .ok_or_else(|| {
+                "ability definition intrinsic token is unreadable or non-portable".to_string()
+            })?;
+        if !ability_ids.insert(ability_id.clone()) || !resolved || !valid_portable_token(icon) {
+            return Err(
+                "ability token/icon identity is duplicate, unresolved or non-portable".into(),
+            );
         }
         definition_presentations.push(DefinitionPresentation {
             definition_runtime: *definition_runtime,
@@ -2121,27 +2241,33 @@ fn reconcile_field_marshal_active_probes(
         .collect::<Vec<_>>();
     let mut cursor = 0usize;
     for state in states {
-        let (definition, group_active, _group_cooldown, group_elapsed, group_record) = *probes
-            .get(cursor)
-            .ok_or_else(|| "field-marshal state lacks its selected-scope active probe".to_string())?;
+        let (definition, group_active, _group_cooldown, group_elapsed, group_record) =
+            *probes.get(cursor).ok_or_else(|| {
+                "field-marshal state lacks its selected-scope active probe".to_string()
+            })?;
         cursor += 1;
         if definition != state.definition_runtime
             || group_active != state.group_already_active
             || (group_active && group_elapsed != state.group_activation_elapsed_hours)
             || !witness_targets_runtime(&group_record, selected_leader_runtime)
         {
-            return Err("field-marshal selected-scope probe disagrees with aggregate record".into());
+            return Err(
+                "field-marshal selected-scope probe disagrees with aggregate record".into(),
+            );
         }
         if state.group_already_active {
             if !state.leaders.is_empty() {
-                return Err("active field-marshal scope unexpectedly retained subordinate rows".into());
+                return Err(
+                    "active field-marshal scope unexpectedly retained subordinate rows".into(),
+                );
             }
             continue;
         }
         for leader in &mut state.leaders {
-            let (definition, active, cooldown, elapsed, record) = *probes
-                .get(cursor)
-                .ok_or_else(|| "field-marshal leader row lacks its ordered active probe".to_string())?;
+            let (definition, active, cooldown, elapsed, record) =
+                *probes.get(cursor).ok_or_else(|| {
+                    "field-marshal leader row lacks its ordered active probe".to_string()
+                })?;
             cursor += 1;
             let expected_active = leader.state_code == 1;
             let expected_cooldown = leader.state_code == 2;
@@ -2150,7 +2276,9 @@ fn reconcile_field_marshal_active_probes(
                 || cooldown != expected_cooldown
                 || !witness_targets_runtime(&record, leader.leader_runtime)
             {
-                return Err("field-marshal leader state disagrees with ordered active probe".into());
+                return Err(
+                    "field-marshal leader state disagrees with ordered active probe".into(),
+                );
             }
             leader.activation_elapsed_hours = elapsed;
         }
@@ -2211,12 +2339,13 @@ fn reconcile_ordinary(
     }
     for event in events {
         if let ProbeEvent::Availability {
-            definition_runtime,
-            ..
+            definition_runtime, ..
         } = event
         {
             if !sources.contains(definition_runtime) {
-                return Err("availability probe referenced a definition outside the source vector".into());
+                return Err(
+                    "availability probe referenced a definition outside the source vector".into(),
+                );
             }
         }
     }
@@ -2236,7 +2365,9 @@ fn reconcile_ordinary(
                     definition_runtime,
                     scope_runtime,
                     available,
-                } if definition_runtime == definition => Some((*country_runtime, *scope_runtime, *available)),
+                } if definition_runtime == definition => {
+                    Some((*country_runtime, *scope_runtime, *available))
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -2251,8 +2382,13 @@ fn reconcile_ordinary(
         {
             return Err("ordinary availability scope differs from active/cooldown scope".into());
         }
-        let availability = matching_availability.first().map(|(_, _, available)| *available);
-        let special = leaves.special_context_required.then_some(special_result).flatten();
+        let availability = matching_availability
+            .first()
+            .map(|(_, _, available)| *available);
+        let special = leaves
+            .special_context_required
+            .then_some(special_result)
+            .flatten();
         if !active && !cooldown && leaves.special_context_required && special.is_none() {
             return Err("ordinary inactive row lacks its required special-context leaf".into());
         }
@@ -2391,7 +2527,10 @@ fn read_definition(definition: usize) -> Result<DefinitionLeaves, String> {
         duration_hours: le_i32(&bytes, 0)?,
         cooldown_hours: le_i32(&bytes, 4)?,
         cancelable: *bytes.get(0x240).ok_or("ability cancelable leaf missing")? != 0,
-        special_context_required: *bytes.get(0x241).ok_or("ability special-context leaf missing")? != 0,
+        special_context_required: *bytes
+            .get(0x241)
+            .ok_or("ability special-context leaf missing")?
+            != 0,
     })
 }
 
@@ -2457,7 +2596,10 @@ fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLea
                 activation_elapsed_hours: -1,
                 command_power_cost_fixed: le_i64(row, 0x10)?,
                 activation_command_power_cost_fixed: le_i64(row, 0x18)?,
-                will_activate: *row.get(0x20).ok_or("field-marshal allocation leaf missing")? != 0,
+                will_activate: *row
+                    .get(0x20)
+                    .ok_or("field-marshal allocation leaf missing")?
+                    != 0,
             });
         }
         out.push(FieldMarshalAbilityLeaf {
@@ -2476,27 +2618,30 @@ fn parse_field_marshal_states(bytes: &[u8]) -> Result<Vec<FieldMarshalAbilityLea
             allocated_activation_command_power_cost_fixed: le_i64(record, 0x50)?,
             allocated_daily_command_power_cost_fixed: le_i64(record, 0x58)?,
             allocated_affected_division_count: le_u32(record, 0x60)?,
-            group_already_active: *record.get(0x64).ok_or("field-marshal group-active leaf missing")? != 0,
+            group_already_active: *record
+                .get(0x64)
+                .ok_or("field-marshal group-active leaf missing")?
+                != 0,
         });
     }
     Ok(out)
 }
 
 fn retain(observation: ControllerObservation) {
-    let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() else {
+    let Ok(mut state) = STATE
+        .get_or_init(|| Mutex::new(ObserverState::default()))
+        .lock()
+    else {
         return;
     };
     state.completed_refreshes = state.completed_refreshes.saturating_add(1);
-    let replace_last = state
-        .observations
-        .back()
-        .is_some_and(|prior| {
-            same_retention_state(prior, &observation)
-                && !state
-                    .disabled_reasons
-                    .iter()
-                    .any(|tooltip| tooltip.controller_sequence == prior.sequence)
-        });
+    let replace_last = state.observations.back().is_some_and(|prior| {
+        same_retention_state(prior, &observation)
+            && !state
+                .disabled_reasons
+                .iter()
+                .any(|tooltip| tooltip.controller_sequence == prior.sequence)
+    });
     if replace_last {
         state.observations.pop_back();
         state.observations.push_back(observation);
@@ -2519,10 +2664,7 @@ fn retain(observation: ControllerObservation) {
     state.observations.push_back(observation);
 }
 
-fn same_retention_state(
-    left: &ControllerObservation,
-    right: &ControllerObservation,
-) -> bool {
+fn same_retention_state(left: &ControllerObservation, right: &ControllerObservation) -> bool {
     left.controller_runtime == right.controller_runtime
         && left.context_mode == right.context_mode
         && left.selected_root_runtime == right.selected_root_runtime
@@ -2602,15 +2744,14 @@ fn field_marshal_retention_key(
 }
 
 fn retain_disabled_reason(observation: DisabledReasonObservation) {
-    let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() else {
+    let Ok(mut state) = STATE
+        .get_or_init(|| Mutex::new(ObserverState::default()))
+        .lock()
+    else {
         return;
     };
     state.completed_tooltips = state.completed_tooltips.saturating_add(1);
     if state.disabled_reasons.len() >= MAX_TEXT_OBSERVATIONS {
-        // Never silently orphan an earlier controller/tooltip transaction.
-        // The fixture regrader rejects any nonzero rejection counter, so a
-        // saturated evidence buffer is explicit and cannot be promoted as a
-        // complete four-card capture.
         state.rejected_tooltips = state.rejected_tooltips.saturating_add(1);
         return;
     }
@@ -2618,31 +2759,44 @@ fn retain_disabled_reason(observation: DisabledReasonObservation) {
 }
 
 fn reject_refresh() {
-    if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
+    if let Ok(mut state) = STATE
+        .get_or_init(|| Mutex::new(ObserverState::default()))
+        .lock()
+    {
         state.rejected_refreshes = state.rejected_refreshes.saturating_add(1);
     }
 }
 
 fn reject_nested() {
-    if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
+    if let Ok(mut state) = STATE
+        .get_or_init(|| Mutex::new(ObserverState::default()))
+        .lock()
+    {
         state.nested_refreshes = state.nested_refreshes.saturating_add(1);
     }
 }
 
 fn reject_tooltip() {
-    if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
+    if let Ok(mut state) = STATE
+        .get_or_init(|| Mutex::new(ObserverState::default()))
+        .lock()
+    {
         state.rejected_tooltips = state.rejected_tooltips.saturating_add(1);
     }
 }
 
 fn reject_nested_tooltip() {
-    if let Ok(mut state) = STATE.get_or_init(|| Mutex::new(ObserverState::default())).lock() {
+    if let Ok(mut state) = STATE
+        .get_or_init(|| Mutex::new(ObserverState::default()))
+        .lock()
+    {
         state.nested_tooltips = state.nested_tooltips.saturating_add(1);
     }
 }
 
 fn verify_sentinel(label: &str, address: usize, expected: &[u8]) -> Result<(), String> {
-    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual =
+        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }
@@ -2658,7 +2812,9 @@ fn read_local_i32(address: *mut i32) -> Option<i32> {
 }
 
 fn read_u8(address: usize) -> Result<u8, String> {
-    rpm(address, 1).and_then(|bytes| bytes.first().copied()).ok_or_else(|| "u8 unreadable".into())
+    rpm(address, 1)
+        .and_then(|bytes| bytes.first().copied())
+        .ok_or_else(|| "u8 unreadable".into())
 }
 
 fn read_u32(address: usize) -> Result<u32, String> {
@@ -2677,7 +2833,11 @@ fn read_usize(address: usize) -> Result<usize, String> {
 }
 
 fn le_u32(bytes: &[u8], offset: usize) -> Result<u32, String> {
-    let raw: [u8; 4] = bytes.get(offset..offset + 4).ok_or("u32 truncated")?.try_into().map_err(|_| "u32 width")?;
+    let raw: [u8; 4] = bytes
+        .get(offset..offset + 4)
+        .ok_or("u32 truncated")?
+        .try_into()
+        .map_err(|_| "u32 width")?;
     Ok(u32::from_le_bytes(raw))
 }
 
@@ -2686,12 +2846,20 @@ fn le_i32(bytes: &[u8], offset: usize) -> Result<i32, String> {
 }
 
 fn le_i64(bytes: &[u8], offset: usize) -> Result<i64, String> {
-    let raw: [u8; 8] = bytes.get(offset..offset + 8).ok_or("i64 truncated")?.try_into().map_err(|_| "i64 width")?;
+    let raw: [u8; 8] = bytes
+        .get(offset..offset + 8)
+        .ok_or("i64 truncated")?
+        .try_into()
+        .map_err(|_| "i64 width")?;
     Ok(i64::from_le_bytes(raw))
 }
 
 fn le_usize(bytes: &[u8], offset: usize) -> Result<usize, String> {
-    let raw: [u8; 8] = bytes.get(offset..offset + 8).ok_or("pointer truncated")?.try_into().map_err(|_| "pointer width")?;
+    let raw: [u8; 8] = bytes
+        .get(offset..offset + 8)
+        .ok_or("pointer truncated")?
+        .try_into()
+        .map_err(|_| "pointer width")?;
     Ok(u64::from_le_bytes(raw) as usize)
 }
 
@@ -2773,10 +2941,7 @@ mod tests {
                     stable_id: 42,
                 },
             )]),
-            division_ids_by_leader_runtime: BTreeMap::from([(
-                0x7ff6_2000_0100,
-                vec![7],
-            )]),
+            division_ids_by_leader_runtime: BTreeMap::from([(0x7ff6_2000_0100, vec![7])]),
         }
     }
 
@@ -2820,7 +2985,10 @@ mod tests {
         assert!(crate::ExactA729AbilityControllerSource::is_exact_a729_ability_controller(&source));
         assert_eq!(source.controller_sequence(), 41);
         assert_eq!(source.tooltip_sequences(), &[42]);
-        assert_eq!(source.frame.rows[0].disabled_reason.as_deref(), Some("Cannot use while retreating"));
+        assert_eq!(
+            source.frame.rows[0].disabled_reason.as_deref(),
+            Some("Cannot use while retreating")
+        );
         let production = crate::production_carrier::ProductionAbilityFrame {
             elapsed_wall_ms: source.frame.elapsed_wall_ms,
             frame_hour: source.frame.frame_hour,
@@ -2847,12 +3015,7 @@ mod tests {
         assert_eq!(source.frame.rows[0].tooltip, None);
         assert_eq!(source.frame.rows[0].disabled_reason, None);
         assert_eq!(source.frame.rows[0].cost_command_power_fixed, None);
-        assert!(crate::production_carrier::collect_and_encode(
-            &source,
-            TEST_FRAME_HOUR,
-            7
-        )
-        .is_ok());
+        assert!(crate::production_carrier::collect_and_encode(&source, TEST_FRAME_HOUR, 7).is_ok());
     }
 
     #[test]
@@ -2889,7 +3052,10 @@ mod tests {
             &[tooltip],
         )
         .expect("bind signed exact effective cost");
-        assert_eq!(source.frame.rows[0].cost_command_power_fixed, Some(-125_000));
+        assert_eq!(
+            source.frame.rows[0].cost_command_power_fixed,
+            Some(-125_000)
+        );
     }
 
     #[test]
@@ -3026,11 +3192,7 @@ mod tests {
             Some(DISABLED_REASON_APPEND_RETURN_RVA)
         );
         assert_eq!(
-            nearest_game_return_rva(
-                base,
-                0x4000_0000,
-                &[0x7fff_0000, base + 0x1234, expected],
-            ),
+            nearest_game_return_rva(base, 0x4000_0000, &[0x7fff_0000, base + 0x1234, expected],),
             Some(0x1234)
         );
     }
@@ -3041,10 +3203,7 @@ mod tests {
         controller.selected_leader_runtime = 0;
         controller.selected_army_group_runtime = 0x7ff6_2000_0200;
         controller.selected_army_runtime = 0x7ff6_2000_0300;
-        assert_eq!(
-            selected_context_runtime(&controller),
-            Ok(0x7ff6_2000_0200)
-        );
+        assert_eq!(selected_context_runtime(&controller), Ok(0x7ff6_2000_0200));
     }
 
     #[test]

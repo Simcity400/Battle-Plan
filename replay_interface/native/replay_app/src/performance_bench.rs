@@ -1,14 +1,3 @@
-//! F1 production headless performance acceptance.
-//!
-//! The recording profile opens one admitted portable recording, resolves its
-//! exact selected frame, and repeatedly executes XMAP22's shared packet-native
-//! product compositor with GPU completion in the timed interval. The default F1 profile
-//! instead runs a contract-pinned synthetic stress packet through isolated GPU
-//! stress adapters so performance acceptance has no future-capture dependency.
-//! Stress receipts explicitly prohibit semantic, pixel, RE, and rendering-law
-//! claims. Both profiles measure GPU-completed 1920x1080 frames and reject
-//! queued CPU-submit time, debug bundles, or omissions; only the recording
-//! profile is evidence about the actual production map composition.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -381,10 +370,6 @@ pub(crate) fn run(
     Ok(())
 }
 
-/// Run the default F1 gate without a replay recording. The workload is an
-/// explicitly synthetic, performance-only stress packet: count authority comes
-/// from retained engine observations, but neither its pixels nor its operation
-/// identities are admissible as replay, rendering-law, or promotion evidence.
 pub(crate) fn run_stress(options: StressBenchOptions) -> Result<()> {
     if options.warmup_frames < MIN_WARMUP_FRAMES {
         return Err(format!("--benchmark-warmup-frames must be >= {MIN_WARMUP_FRAMES}").into());

@@ -1,9 +1,3 @@
-//! XMAP19 presentation-independent weather/atmosphere preparation.
-//!
-//! The normal product path combines exact D24 gameplay flags, the minimal
-//! host-seeded visual epoch carrier, viewer-owned camera state, and admitted
-//! effective-VFS weather content. Recorder camera, selected Present, live
-//! entity pointers, and captured draw bytes are not accepted here.
 
 use crate::{
     entity_default_state_events, entity_definition_count, particle_asset_defines,
@@ -178,8 +172,6 @@ impl PreparedWeatherEntityProgram {
     }
 }
 
-/// Exact XMAP19-owned authored trigger row consumed by XMAP20 after joining the
-/// portable effect's producer ID and all-event ordinal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap19WeatherTrigger {
@@ -225,9 +217,6 @@ impl Xmap19WeatherTrigger {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedWeatherSelection {
-    /// Zero-based candidate row within this weather type's
-    /// `common/weather.txt` `weather_effects` vector. This is deliberately
-    /// distinct from an entity event's `authored_effect_index`.
     pub authored_weather_effect_index: u16,
     pub primary_source_id: String,
     pub fading_source_id: Option<String>,
@@ -441,9 +430,6 @@ impl PreparedXmap19WeatherFrame {
         Ok(())
     }
 
-    /// Complete authenticated producer-ID census in strategic-region and
-    /// source-file order. XMAP20 compares this with its unconditional
-    /// lifecycle carrier before accepting any weather trigger.
     pub fn ordered_producer_instance_ids(&self) -> Vec<&str> {
         self.regions
             .iter()
@@ -456,8 +442,6 @@ impl PreparedXmap19WeatherFrame {
             .collect()
     }
 
-    /// Resolve one exact particle event by producer identity and the
-    /// zero-based ordinal among every event row in the selected state.
     pub fn weather_trigger(
         &self,
         producer_instance_id: &str,

@@ -1,9 +1,3 @@
-//! A26/XUI05 authenticated final-tooltip carrier (production d72).
-//!
-//! RenderDoc rectangles and OCR text remain validation oracles only. Production
-//! collection requires an authenticated a729 tooltip hook implementing the
-//! source trait.
-
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 72;
@@ -14,10 +8,6 @@ pub const MAGIC: u32 = u32::from_le_bytes(*b"TTI2");
 pub const HEADER_LEN: usize = 96;
 pub const MAX_INSTANCES: usize = 4_096;
 pub const MAX_STRING_BYTES: usize = 65_536;
-/// The ordinary collector owns the exact-a729 hook lifecycle and emits a
-/// typed-unavailable TTI2 record whenever installation or selected-Present
-/// admission fails. A positive visibility fixture is regression evidence, not
-/// a prerequisite for using the already-authenticated passive observer.
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -32,18 +22,13 @@ pub struct RectI32 {
 pub struct ResolvedTooltipInstance {
     pub frame_hour: u64,
     pub pov_country_or_global: String,
-    /// Exact authored `CGuiType+0x28` name of the hovered GUI object. This is
-    /// not promoted into a fabricated source-row or view-path identity.
     pub hovered_element_authored_name: String,
-    /// Exact cached authored name of the global CTextBox owner.
     pub tooltip_owner_authored_name: String,
     pub repeat_index: u32,
     pub screen_rect: RectI32,
     pub viewport_width_px: i32,
     pub viewport_height_px: i32,
     pub producer_record_identity: String,
-    /// One copied final post-layout engine string. Newlines remain bytes inside
-    /// this blob; they are not reclassified as authored semantic rows.
     pub final_resolved_text: String,
 }
 
@@ -83,8 +68,6 @@ pub enum TooltipTraceError {
 pub trait ExactTooltipInstanceSource {
     fn is_exact_a729_tooltip_source(&self) -> bool;
     fn producer_manifest_sha256(&self) -> [u8; 32];
-    /// Seal one immutable source snapshot against an authenticated selected
-    /// Present. Completeness, count, and instances must come from this one call.
     fn capture_selected_present(
         &self,
         selected_present: &SelectedPresentStamp,
@@ -109,12 +92,10 @@ pub fn collect_and_encode<S: ExactTooltipInstanceSource>(
         return Err(TooltipTraceError::UnauthenticatedSource);
     }
     if frame.frame_hour != selected_present.frame_hour
-        || frame.selected_present_candidate_id
-            != selected_present.selected_present_candidate_id
+        || frame.selected_present_candidate_id != selected_present.selected_present_candidate_id
         || frame.selected_present_ordinal != selected_present.selected_present_ordinal
         || frame.selected_present_qpc_ticks != selected_present.selected_present_qpc_ticks
-        || frame.selected_present_receipt_sha256
-            != selected_present.selected_present_receipt_sha256
+        || frame.selected_present_receipt_sha256 != selected_present.selected_present_receipt_sha256
     {
         return Err(TooltipTraceError::UnauthenticatedSource);
     }
@@ -327,10 +308,7 @@ fn validate_nonempty(value: &str, field: &str) -> Result<(), TooltipTraceError> 
     }
 }
 
-pub(crate) fn validate_sha256_hex(
-    value: &str,
-    field: &str,
-) -> Result<(), TooltipTraceError> {
+pub(crate) fn validate_sha256_hex(value: &str, field: &str) -> Result<(), TooltipTraceError> {
     if value.len() != 64
         || !value
             .bytes()
@@ -342,9 +320,6 @@ pub(crate) fn validate_sha256_hex(
     Ok(())
 }
 
-/// Canonical fail-closed representation for a scheduled observer failure.
-/// This is not a measured-hidden tooltip and cannot be replayed as an empty
-/// instance set because all selected-Present and producer authority is absent.
 pub fn encode_source_unavailable(
     frame_hour: u64,
     elapsed_wall_ms: u64,

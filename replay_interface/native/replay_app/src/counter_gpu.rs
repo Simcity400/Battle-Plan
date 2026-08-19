@@ -1,10 +1,3 @@
-//! Native the game counter-sprite GPU pipeline and legacy CAP6 admission handoff.
-//!
-//! The shared native runtime preserves the established engine counter law:
-//! f32 modulation, linear/linear/point sampling with -0.8 mip bias, captured
-//! clamp/clamp/wrap addressing, and straight-alpha blending. XMAP13 supplies
-//! complete effective-file-authenticated primitives. CAP6 remains only the
-//! admission oracle for the legacy `CounterRenderBatch` comparison route.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
@@ -105,9 +98,6 @@ pub(crate) struct CounterGpuQuadReceipt {
     pub(crate) modulation_honesty: CounterHonesty,
 }
 
-/// Event-scoped authority required in addition to CPU geometry. There is no
-/// default constructor: the captured renderer must receive a mechanically
-/// joined frame receipt, not infer one from stable replay IDs or draw layers.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct CounterGpuFrameAdmission {
     pub(crate) captured_session_dir: PathBuf,
@@ -304,8 +294,6 @@ fn compose_counter_gpu_plan(
                 CounterGpuOmissionReason::ModulationEvidenceUnavailable,
             );
         }
-        // CAPTURE GUI IA order is TL, BL, TR, BR as a four-vertex strip. The
-        // CPU quad stores clockwise TL, TR, BR, BL, hence this exact remap.
         let vertices = [0usize, 3, 1, 2].map(|index| CounterGpuVertex {
             position: [
                 quad.vertices[index].position_px.x,
@@ -363,9 +351,6 @@ struct CounterGpuTexture {
     decoded_rgba_sha256: String,
 }
 
-/// Shared native counter-sprite pipeline. Its state is the established the game
-/// counter law (float modulation, linear/linear/point sampling, -0.8 mip bias,
-/// straight-alpha blending); CAP6 only controls admission to the legacy pass.
 struct CounterSpriteGpuRuntime {
     vs: ComPtr<ID3D11VertexShader>,
     ps: ComPtr<ID3D11PixelShader>,
@@ -773,9 +758,6 @@ impl CounterGpuPass {
     }
 
     pub(crate) fn draw(&mut self, gfx: &Gfx) -> Result<()> {
-        // CAP6 screen geometry and frame admission are event-scoped. Consume
-        // both exactly once so a camera/hour transition cannot redraw stale
-        // screen-space quads if the producer misses an update.
         let batch = mem::take(&mut self.batch);
         let admission = self.admission.take();
         let plan = compose_counter_gpu_plan(
@@ -821,10 +803,6 @@ impl CounterGpuPass {
     }
 }
 
-/// Production XMAP13 counter compositor. Unlike `CounterGpuPass`, this path
-/// consumes the complete viewer-independent XMAP13 presentation alternatives,
-/// group/item census, and viewer-owned camera. CAP6 remains a comparison
-/// oracle only.
 pub(crate) struct Xmap13CounterGpuPass {
     resolver: GameFileResolver,
     runtime: Option<CounterSpriteGpuRuntime>,

@@ -58,10 +58,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Top-level equipments archetype index (id,type) -> archetype name
-# (identical join basis to parse_market / parse_production)
-# ---------------------------------------------------------------------------
 
 def _parse_equipments_index(tz, index):
     """equipments={ <archetype>={ id={id type} creator obsolete is_frame } }."""
@@ -76,16 +72,11 @@ def _parse_equipments_index(tz, index):
                 else:
                     _skip_block_body(tz)
                 continue
-            atom_value(op)  # consume scalar
+            atom_value(op)
         if eid is not None:
             index[(eid, etype)] = arch_name
 
 
-# ---------------------------------------------------------------------------
-# price_levels.levels  — populated structure unknown in this melt (always {}).
-# We read it tolerantly: each level entry is captured as a raw {key:value} map
-# plus, if it carries an id={id type} block, the (id,type) for archetype join.
-# ---------------------------------------------------------------------------
 
 def _parse_levels(tz):
     """Read ``levels={ ... }`` (LBRACE consumed) tolerantly.
@@ -109,7 +100,6 @@ def _parse_levels(tz):
                 if v is not None:
                     rec["fields"][k] = v
             entries.append(rec)
-        # bare atoms inside levels are ignored
     return entries
 
 
@@ -125,14 +115,8 @@ def _parse_price_levels(tz):
     return levels
 
 
-# ---------------------------------------------------------------------------
-# subsidies.subsidies[]  — per-archetype market subsidy to specific buyers
-# ---------------------------------------------------------------------------
 
 def _parse_one_subsidy(tz):
-    # A subsidy targets buyers EITHER by an explicit ``targets={ <tag> }`` list OR
-    # by a ``trigger="..."`` scripted-trigger name (mutually exclusive in this
-    # save). Capture both so neither targeting mode is lost.
     rec = {"cic": None, "archetype": None, "targets": [], "trigger": None}
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
@@ -171,7 +155,6 @@ def _parse_anon_subsidy_list(tz):
             continue
         if tok is LBRACE:
             out.append(_parse_one_subsidy(tz))
-        # stray atoms/'=' ignored
     return out
 
 
@@ -187,10 +170,6 @@ def _parse_subsidies(tz):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Per-country equipment_market: price_levels + subsidies (skip what market.json
-# already owns: market_stockpile + market_request_automation)
-# ---------------------------------------------------------------------------
 
 def _parse_country_market(tz, rec):
     for key, opener in iter_block_entries(tz):
@@ -200,7 +179,6 @@ def _parse_country_market(tz, rec):
             elif key == "subsidies":
                 rec["subsidies"] = _parse_subsidies(tz)
             else:
-                # market_stockpile / market_request_automation -> market.json
                 _skip_block_body(tz)
 
 
@@ -219,10 +197,6 @@ def _parse_countries(tz, by_tag):
             by_tag[tag] = rec
 
 
-# ---------------------------------------------------------------------------
-# Top-level equipment_market: per-contract price_levels + the requests[] list
-# (skip everything market.json already owns: equipments/prices/convoys/...)
-# ---------------------------------------------------------------------------
 
 def _parse_contract_draft(tz, rec):
     """contract_draft={ seller buyer equipments{...} speed subsidies{...} }.
@@ -265,7 +239,6 @@ def _parse_purchase_contract(tz):
             else:
                 _skip_block_body(tz)
             continue
-        # scalars ignored
     return rec
 
 
@@ -297,9 +270,6 @@ def _parse_top_market(tz, contracts, requests):
                 _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
 
 def _attach_arch(levels, arch_index, unknown):
     for lv in levels:
@@ -332,8 +302,6 @@ def build(text, source, was_melted):
 
     unknown: set = set()
 
-    # Contract price-levels (seller/buyer captured from contract_draft, which is
-    # nested in contract_definition and read in the same pass).
     contracts = []
     for c in contracts_raw:
         _attach_arch(c["price_levels"], arch_index, unknown)
@@ -360,8 +328,6 @@ def build(text, source, was_melted):
         n_subsidies += len(rec["subsidies"])
 
     n_contract_levels = sum(c["price_levels_count"] for c in contracts)
-    # How many contracts/countries had an (empty) price_levels block at all is the
-    # honest signal here (levels={} everywhere in this melt).
     contracts_with_block = len(contracts)
     countries_with_block = len(countries)
 

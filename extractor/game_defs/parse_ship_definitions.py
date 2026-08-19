@@ -288,11 +288,6 @@ def _allowed_module_categories(hulls: dict[str, dict[str, Any]]) -> set[str]:
 def _module_selected(token: str, body: Node, allowed_categories: set[str]) -> bool:
     category = first_scalar(body, "category")
     gui_category = first_scalar(body, "gui_category")
-    # Select by CATEGORY signals only. The prior `"ship" in token.lower()`
-    # token-substring fallback over-included non-ship modules whose id merely
-    # contained "ship" (e.g. "airship_*"). Category membership in a real
-    # ship-hull slot category, or a category that explicitly names ship, are
-    # legitimate signals; the module token itself is not.
     return bool(
         (category and category in allowed_categories)
         or (gui_category and gui_category in allowed_categories)

@@ -13,11 +13,11 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-import parse_focus_def  # noqa: E402
-import parse_localisation  # noqa: E402
-import resolver as R  # noqa: E402
-import source_inventory_layers as SIL  # noqa: E402
-from static_artifact_common import (  # noqa: E402
+import parse_focus_def
+import parse_localisation
+import resolver as R
+import source_inventory_layers as SIL
+from static_artifact_common import (
     add_layer_args,
     canonical_json,
     layer_summary,
@@ -114,12 +114,6 @@ def _validate_catalog(parsed: dict[str, Any]) -> None:
             or not focus.get("source_layer")
         ):
             raise RuntimeError(f"focus definition {focus_id!r} has inconsistent identity")
-        # The two scripted-gate counts XUI10's replay-side scene derivation
-        # refuses on. They are counts of blocks the parser saw, so a negative or
-        # non-integer value means the parser row was assembled by something
-        # other than `parse_focus_def.parse_focus`, and a missing key means an
-        # artifact built before the derivation existed. Both must fail the gate
-        # rather than reach the consumer as a silent "no scripted geometry".
         for scripted_key in ("scripted_position_offsets", "allow_branch_blocks"):
             value = focus.get(scripted_key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:

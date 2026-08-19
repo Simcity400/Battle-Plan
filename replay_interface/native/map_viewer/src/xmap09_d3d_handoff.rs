@@ -1,11 +1,3 @@
-//! App-device providers for XMAP09 lighting and shadow resources.
-//!
-//! XMAP09 owns the point-light textures/CB2 and its exact SceneCB0 field
-//! contribution. It does not claim camera, FoW, snow/mud, or post-light bytes:
-//! consumers apply the authenticated field patch to their reflected aggregate
-//! SceneCB0. This module executes XMAP09's owned 2048x2048 light-depth pass.
-//! XMAP10 owns the downstream combined terrainunlit/blur screen `ShadowMap`;
-//! XMAP09 never fabricates its non-owned SceneCB0 or fog inputs.
 
 use crate::{
     L03LightDepthProjection, L03LightDepthSubmission, L03SelectedLightFrame,
@@ -25,8 +17,6 @@ pub struct Xmap09NativeShaderResourceBinding {
     pub camera_frame_sha256: String,
     pub replay_frame_identity_sha256: String,
     pub stable_resource_id: String,
-    /// Authenticated payload identity for immutable CPU uploads, or the sealed
-    /// native execution identity for GPU-produced light depth.
     pub resource_sha256: String,
     pub descriptor_sha256: String,
 }
@@ -149,7 +139,6 @@ impl NativeXmap09ShaderResourceView<'_> {
         &self.binding.replay_frame_identity_sha256
     }
 
-    /// Borrowed pointer; the `NativeXmap09LightingHandoff` must outlive use.
     pub fn as_raw(&self) -> *mut winapi::um::d3d11::ID3D11ShaderResourceView {
         self.raw_srv
     }
@@ -213,7 +202,6 @@ impl NativeXmap09ConstantBufferView<'_> {
         &self.binding.replay_frame_identity_sha256
     }
 
-    /// Borrowed pointer; the `NativeXmap09LightingHandoff` must outlive use.
     pub fn as_raw(&self) -> *mut winapi::um::d3d11::ID3D11Buffer {
         self.raw_buffer
     }
@@ -282,12 +270,6 @@ pub trait NativeXmap09LightDepthCaster {
     fn replay_frame_identity_sha256(&self) -> &str;
     fn registered_submission_sha256s(&self) -> &[String];
 
-    /// Draw one exact registered L03 submission. XMAP09 has already bound the
-    /// current frame's light-depth DSV and 2048x2048 viewport.
-    ///
-    /// # Safety
-    /// The implementation must use only resources from `context`'s device and
-    /// must issue exactly the supplied submission.
     unsafe fn draw_light_depth_submission(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -313,12 +295,6 @@ pub struct NativeXmap09LightingHandoff {
 
 #[cfg(windows)]
 impl NativeXmap09LightingHandoff {
-    /// Upload XMAP09's immutable point-light resources and create its exact
-    /// 2048x2048 light-depth target on the app device.
-    ///
-    /// # Safety
-    /// `device` must be a live D3D11 device for this call and every use of the
-    /// returned borrowed provider views.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         frame: &PreparedXmap09LightingFrame,
@@ -428,9 +404,6 @@ impl NativeXmap09LightingHandoff {
         }
     }
 
-    /// Return XMAP09's sampled light-depth target only after the current
-    /// frame's owned native pass has completed. Inactive and unexecuted frames
-    /// fail closed; XMAP10 consumes this view to publish the screen ShadowMap.
     pub fn light_depth_view(&self) -> Result<NativeXmap09ShaderResourceView<'_>> {
         let execution = self
             .light_depth_execution
@@ -450,13 +423,6 @@ impl NativeXmap09LightingHandoff {
         })
     }
 
-    /// Execute XMAP09's owned light-depth pass on the app device. The method
-    /// clears depth to 1.0 and dispatches every exact projected submission to
-    /// the one caster that registered its canonical submission hash.
-    ///
-    /// # Safety
-    /// `context` must belong to this handoff's device. Every caster must issue
-    /// only the supplied submission using resources from that same device.
     pub unsafe fn execute_light_depth(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,

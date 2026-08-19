@@ -1,4 +1,3 @@
-//! XUI14 passive all-country admission and authored compositor.
 
 use crate::assets::AssetResolver;
 use crate::compose::{resolve_element_rect, ComposeOptions, ComposeOutput, Compositor, Rect};
@@ -393,9 +392,6 @@ pub fn render_intelligence(
                             .iter()
                             .map(|row| row.stable_item_id.clone()),
                     );
-                    // Both authored grids are fully materialized and do not
-                    // share one engine scrollbar. Do not advertise a fake
-                    // combined scroll range.
                     (ids, 0)
                 }
                 IntelligenceViewerSurface::Operations => {
@@ -403,8 +399,6 @@ pub fn render_intelligence(
                     options.hidden_elements.insert("agency_agents".into());
                     options.hidden_elements.insert("agency_crypto".into());
                     append_operations(&mut root, &layout, registry, presentation, &mut options)?;
-                    // The authored operations grid is fully materialized; it
-                    // has no replay-owned pagination contract.
                     (
                         presentation
                             .operations
@@ -649,8 +643,6 @@ fn append_operatives(
         let (x, y) = grid_origin(&layout.operative_grid, index)?;
         set_position_upper_left(&mut clone, x, y);
         prefix_element_names(&mut clone, &prefix);
-        // `skill` remains an exact admission value, but the carrier does not
-        // carry the engine's final display text for this numeric label.
         options
             .hidden_elements
             .insert(format!("{prefix}operative_skill_level"));
@@ -725,9 +717,6 @@ fn build_ledger_surface(
     options: &mut ComposeOptions,
 ) -> Result<(GuiElement, Vec<String>)> {
     let mut root = layout.ledger_root.clone();
-    // The carrier contains the engine's four disclosure levels, not the
-    // ledger's deeper economy/unit facts. Keep those authored panels absent
-    // instead of displaying their definition placeholders as recorded data.
     for name in ["economy_panel", "army_panel", "navy_panel", "air_panel"] {
         options.hidden_elements.insert(name.into());
     }
@@ -762,15 +751,6 @@ fn build_ledger_surface(
         &row.navy_text.final_text,
     );
     set_text(options, "xui14_ledger_air_intel", &row.air_text.final_text);
-    // `country_info` is an engine-owned tooltip-context hook, not a visible
-    // child template. Exact a729 CIntelLedgerHeaderController construction and
-    // update evidence shows that its only state is the selected target-country
-    // id; the same id is then propagated to the active ledger channel. Keep
-    // the hook empty. Its authored declaration has no size, and the evidence
-    // does not prove an engine hit owner or region, so Replay must not replace
-    // it with a root-wide hover target. Injecting a flag/name template or a
-    // broader tooltip region would invent presentation the game does not
-    // author or create.
     Ok((root, vec![row.stable_item_id.clone()]))
 }
 
@@ -808,8 +788,6 @@ fn build_operation_overview_surface(
         "operation_name_text",
         &operation.display.final_text,
     );
-    // The exact raw phase drives admission and progress geometry. The carrier
-    // has no final engine-rendered phase label, so do not synthesize one.
     options
         .hidden_elements
         .insert("operation_progress_text".into());
@@ -1020,9 +998,6 @@ fn intelligence_tooltip_targets(
                 )?;
             }
         }
-        // The size-less authored `country_info` context hook has no proven
-        // hit-test geometry. Fail closed instead of assigning its payload to
-        // the full ledger root.
         IntelligenceViewerSurface::IntelLedger => {}
         IntelligenceViewerSurface::OperationOverview => {
             if let Some(row) = presentation.operations.get(viewer.row_scroll) {

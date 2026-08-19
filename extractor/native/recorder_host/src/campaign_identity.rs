@@ -1,29 +1,3 @@
-//! Campaign/save identity binding (recorder_host side).
-//!
-//! The v1 campaign identity is the engine-persisted pair
-//! (`game_unique_id`, `game_unique_seed`). The external `campaign_id` is derived
-//! from their canonical representation (SHA-256 of a fixed preimage). Both raw
-//! components are preserved as first-class fields; the digest is only an index.
-//!
-//! ## Fail-closed behavior
-//!
-//! Exact-build static serializer/deserializer evidence now proves the candidate
-//! members (`i32[CGameState+0x720]` and MSVC `std::string[CGameState+0x728]`),
-//! but neither candidate is live-accepted or wired into the d68
-//! `session_header_live` payload. That wire schema carries player tag / DLC
-//! mask / start date / save version / session /
-//! ideology / cosmetic tag / build banner and *no* `game_unique_*` field — see
-//! `world_fold.rs::fold_session_header` and
-//! `domain_data_authority.rs::decode_compact_session_header_data_payload`). Consequently a
-//! capture resolves to `state = "unavailable"` when d68 rows
-//! were seen but the components are not sourced) or `state = "unbound"` (no d68
-//! row was observed at all). Identity is NEVER fabricated from witnesses; a
-//! missing/torn/partial component yields an explicit null plus a reason note.
-//!
-//! The resolver, digest math, closed-grammar manifest validator, and stitching
-//! consumer interface accept a `state = "known"` binding only when a validated
-//! collector observation supplies the complete pair.
-
 use serde_json::{json, Map, Value};
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -34,38 +8,23 @@ use compact_contract::{
 
 use crate::stitching::{AppendTicket, CampaignIdentityResolution};
 
-/// Manifest schema tag for the campaign identity object.
 pub const CAMPAIGN_IDENTITY_SCHEMA: &str = "hoi4.campaign_identity.v1";
 
-/// Fixed digest preimage prefix. Already carries a
-/// trailing NUL; a second NUL separates the UUID from the seed at digest time.
 pub const CID_PREIMAGE_PREFIX: &[u8] = b"hoi4-campaign-id-v1\0";
 
-/// Domain separator for the in-memory evidence binding. The proof is never
-/// serialized; it binds authorization to immutable CID1 bytes and the exact
-/// current fields rather than to a transferable boolean latch.
 const EVIDENCE_BINDING_PREFIX: &[u8] = b"hoi4-campaign-identity-evidence-v1\0";
 
-/// Source label for a `known` identity read from live game memory.
 pub const SOURCE_LIVE_MEMORY: &str = "live_memory";
 
-/// Resolution state of the v1 identity binding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CampaignIdentityState {
-    /// Both components present and canonical; `campaign_id` derived.
     Known,
-    /// The identity source (d68) was observed, but the components are not
-    /// sourced / torn / malformed. Fail-closed null.
     Unavailable,
-    /// No d68 identity-source row was observed at all. Fail-closed null.
     Unbound,
-    /// A transition comparison between two complete stable observations found
-    /// exactly one changed component. Never used for a malformed/missing read.
     Conflict,
 }
 
 impl CampaignIdentityState {
-    /// Stable wire string for the manifest `state` field.
     pub fn as_str(self) -> &'static str {
         match self {
             CampaignIdentityState::Known => "known",
@@ -86,11 +45,6 @@ impl CampaignIdentityState {
     }
 }
 
-/// Raw compatibility witnesses carried BESIDE the identity for conflict
-/// adjudication. These are NEVER substituted for the identity components:
-/// start date, session, scenario, roster, and modset are witnesses only. The d68
-/// header supplies `start_date_raw` and `session`; unsupported witnesses remain
-/// null.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CampaignIdentityWitnesses {
     pub start_date_raw: Option<u32>,
@@ -100,75 +54,38 @@ pub struct CampaignIdentityWitnesses {
     pub modset_identity: Option<String>,
 }
 
-/// Sealed, clone-safe evidence retained only in memory.
-///
-/// The payload bytes are private and immutable through the public API. The
-/// binding digest covers those exact bytes plus every field of the object that
-/// carries the proof. A clone is harmless: changing any public field makes the
-/// digest fail to recompute and therefore revokes authorization fail-closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct IdentityEvidenceProof {
     cid1_payload: Vec<u8>,
     binding_sha256: [u8; 32],
 }
 
-/// The identity-candidate observation extracted from the decoded d68 stream.
-///
-/// `game_unique_id` / `game_unique_seed` are the ONLY v1 identity components.
-/// They are `None` when the wire schema does not carry them. A validated
-/// collector observation that supplies both fields lets the resolver produce a
-/// `known` binding.
 #[derive(Debug, Clone, Default)]
 pub struct SessionHeaderIdentityObservation {
-    /// Count of d68 records routed to the decoder, including malformed or
-    /// failure-status records. Zero means the source domain was entirely absent.
     pub session_header_records_seen: usize,
-    /// Count of decoded d68 `session_header_live` data records. Zero means the
-    /// decoder committed no complete effective-success row.
     pub session_header_rows: usize,
-    /// Canonical (or raw) engine `game_unique_id`, if the stream ever sources it.
     pub game_unique_id: Option<String>,
-    /// Exact engine `game_unique_seed` as a base-10 string (no cast/truncation).
     pub game_unique_seed: Option<String>,
-    /// Valid game hour bracketing the identity read.
     pub observed_game_hour_raw: Option<i32>,
-    /// Build-profile id that sourced (or failed to source) the identity.
     pub source_build_profile: Option<String>,
-    /// Number of matching, complete pair observations that bracket admission.
-    /// Version 1 requires at least two; a single canonical pair is never enough.
     pub stable_identity_observations: u32,
-    /// SHA-256 of the complete CID1 payload, set only while sealing validated
-    /// payload bytes and covered by the private evidence proof.
     pub verified_stream_header_sha256: Option<String>,
-    /// Private authorization bound to the exact current observation fields and
-    /// the immutable CID1 payload bytes. External callers cannot mint it.
     evidence_proof: Option<IdentityEvidenceProof>,
-    /// Raw compatibility witnesses (never substituted for identity).
     pub witnesses: CampaignIdentityWitnesses,
 }
 
-/// A resolved, first-class campaign identity binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CampaignIdentity {
     state: CampaignIdentityState,
-    /// 64 lowercase hex chars; `Some` only when `state == Known`.
     campaign_id: Option<String>,
     game_unique_id: Option<String>,
     game_unique_seed: Option<String>,
-    /// `live_memory` only when `Known`; `None` otherwise (nothing was bound).
     source: Option<String>,
     source_build_profile: Option<String>,
     observed_game_hour_raw: Option<i32>,
-    /// SHA-256 of the complete CID1 stream-header payload. `None` until the
-    /// production stream walker supplies an opaque validated CID1 token.
     stream_header_sha256: Option<String>,
     witnesses: CampaignIdentityWitnesses,
-    /// Human-readable reason for any non-`Known` state. Always `Some` when the
-    /// identity is not bound; `None` only when `Known`.
     resolution_note: Option<String>,
-    /// In-memory authorization bound to the exact current identity fields and
-    /// immutable CID1 bytes. It is private and never serialized: neither
-    /// manifest metadata nor a mutated clone can mint a stitchable identity.
     evidence_proof: Option<IdentityEvidenceProof>,
 }
 
@@ -213,19 +130,6 @@ impl CampaignIdentity {
         self.resolution_note.as_deref()
     }
 
-    /// Append a PRODUCER-NAMED reason to a non-`Known` identity's note.
-    ///
-    /// The recorder can say the identity is unavailable; only the collector can
-    /// say WHY -- an unrecognised build, a torn read, a world still loading.
-    /// That reason used to exist only in a sidecar file beside the DLL that
-    /// normal configuration does not even write, so a sealed recording said
-    /// "unavailable" and nothing else. This is how the reason reaches the
-    /// manifest.
-    ///
-    /// A `Known` identity is REFUSED, not silently ignored: its note is `null`
-    /// by grammar and its evidence proof is bound over the note, so writing one
-    /// would either break the grammar or invalidate the proof. There is also
-    /// nothing to explain about an identity that was obtained.
     pub fn append_resolution_note(&mut self, reason: &str) -> Result<(), String> {
         if self.state == CampaignIdentityState::Known {
             return Err(
@@ -244,7 +148,6 @@ impl CampaignIdentity {
         Ok(())
     }
 
-    /// True only when the identity is fully bound (`state == Known`).
     pub fn is_bound(&self) -> bool {
         self.state == CampaignIdentityState::Known
             && self.evidence_proof.as_ref().is_some_and(|proof| {
@@ -257,10 +160,6 @@ impl CampaignIdentity {
     }
 }
 
-/// Resolve a `Known` identity only from the opaque result of the shared CID1
-/// byte parser. Parallel manifest fields, asserted hashes, and caller booleans
-/// cannot construct `ValidatedCid1`, so this is the production authorization
-/// boundary between stream bytes and recorder metadata.
 pub fn resolve_validated_cid1(cid1: &ValidatedCid1) -> CampaignIdentity {
     let Cid1Witnesses {
         start_date_raw,
@@ -393,12 +292,6 @@ fn payload_hash_matches(stored_hash: Option<&str>, cid1_payload: &[u8]) -> bool 
     stored_hash == Some(to_hex(&Sha256::digest(cid1_payload)).as_str())
 }
 
-/// Seal an observation only after the stateful decoder has validated these
-/// exact CID1 bytes and established two matching complete observations.
-///
-/// This legacy observation sealer remains private for the pre-CID1 observation
-/// tests. Production authorization uses `resolve_validated_cid1`; candidate
-/// fields or a caller-supplied hash alone can never create authorization.
 #[allow(dead_code)]
 fn seal_verified_observation_evidence(
     obs: &mut SessionHeaderIdentityObservation,
@@ -449,8 +342,6 @@ fn seal_verified_observation_evidence(
     Ok(())
 }
 
-/// Validate + canonicalize a `game_unique_id` into lowercase `8-4-4-4-12` hex.
-/// Accepts any input case; rejects anything not shaped like a UUID.
 pub fn canonical_uuid(raw: &str) -> Option<String> {
     let groups = [8usize, 4, 4, 4, 12];
     let parts: Vec<&str> = raw.split('-').collect();
@@ -470,11 +361,6 @@ pub fn canonical_uuid(raw: &str) -> Option<String> {
     Some(out)
 }
 
-/// Validate + canonicalize a signed-32-bit `game_unique_seed` as a base-10
-/// integer string. Static serializer/deserializer evidence proves the member is
-/// an engine `i32`; accepting a wider value would authorize an identity that
-/// the current build cannot contain. Rejects empty, non-digit, leading-zero
-/// (`007`), negative-zero (`-0`), and values outside the i32 range.
 pub fn canonical_seed(raw: &str) -> Option<String> {
     let (neg, digits) = match raw.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -483,7 +369,6 @@ pub fn canonical_seed(raw: &str) -> Option<String> {
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
-    // No leading zeros unless the value is exactly "0"; no "-0".
     if digits.len() > 1 && digits.starts_with('0') {
         return None;
     }
@@ -499,7 +384,6 @@ pub fn canonical_seed(raw: &str) -> Option<String> {
     Some(canonical)
 }
 
-/// SHA-256 of the canonical preimage, lowercase hex.
 pub fn compute_campaign_id(canonical_uuid: &str, canonical_seed: &str) -> String {
     let mut buf = Vec::with_capacity(
         CID_PREIMAGE_PREFIX.len() + canonical_uuid.len() + 1 + canonical_seed.len(),
@@ -511,12 +395,6 @@ pub fn compute_campaign_id(canonical_uuid: &str, canonical_seed: &str) -> String
     to_hex(&Sha256::digest(&buf))
 }
 
-/// Resolve an observation into a fail-closed identity binding.
-///
-/// `Known` requires the complete canonical pair plus two matching observations,
-/// a valid bracketing hour, a non-empty build profile, and the verified CID1
-/// payload hash. Missing/malformed input is `Unavailable`; component conflict is
-/// reserved for comparing two complete stable observations during transition.
 pub fn resolve(obs: &SessionHeaderIdentityObservation) -> CampaignIdentity {
     let canon_uuid = obs.game_unique_id.as_deref().and_then(canonical_uuid);
     let canon_seed = obs.game_unique_seed.as_deref().and_then(canonical_seed);
@@ -596,9 +474,6 @@ pub fn resolve(obs: &SessionHeaderIdentityObservation) -> CampaignIdentity {
             });
             identity
         }
-        // A partial or malformed observation is uncertainty, not a transition
-        // conflict. Conflict exists only when two complete stable observations
-        // are compared and exactly one canonical component changed.
         _ if obs.game_unique_id.is_some() || obs.game_unique_seed.is_some() => {
             let uuid_state = match (&obs.game_unique_id, &canon_uuid) {
                 (None, _) => "missing",
@@ -619,7 +494,6 @@ pub fn resolve(obs: &SessionHeaderIdentityObservation) -> CampaignIdentity {
                 )),
             )
         }
-        // Neither component present.
         _ => {
             if obs.session_header_records_seen == 0 && obs.session_header_rows == 0 {
                 base(
@@ -659,9 +533,6 @@ fn witnesses_json(w: &CampaignIdentityWitnesses) -> Value {
     })
 }
 
-/// Serialize a resolved identity into the exact manifest schema object.
-/// External callers cannot construct or mutate the positive fields: a `Known`
-/// value originates only in this module's evidence-bound resolvers.
 pub fn to_manifest_json(id: &CampaignIdentity) -> Value {
     if id.state == CampaignIdentityState::Known && !id.is_bound() {
         return json!({
@@ -692,15 +563,6 @@ pub fn to_manifest_json(id: &CampaignIdentity) -> Value {
         "witnesses": witnesses_json(&id.witnesses),
     })
 }
-
-// --- Closed-grammar manifest validator (drift guard) ----------------------
-//
-// Style mirrors `main.rs::validate_repack_manifest_modset`: the accepted grammar
-// is exactly the serializer's output. An unexpected key at any level, a
-// state/field-shape mismatch, or a digest that does not recompute is a shape the
-// recorder never wrote and fails the repack closed. This terminates manifest
-// drift by construction: identity fields are hash-bound and any mismatch is
-// fatal.
 
 const CAMPAIGN_IDENTITY_KEYS: &[&str] = &[
     "schema",
@@ -813,7 +675,6 @@ fn nullable_roster(value: &Value) -> Result<Option<Vec<String>>, String> {
         .map(Some)
 }
 
-/// Validate a `campaign_identity` object's exact shape and internal consistency.
 pub fn validate_manifest_object(value: &Value) -> Result<(), String> {
     let obj = value
         .as_object()
@@ -889,7 +750,6 @@ pub fn validate_manifest_object(value: &Value) -> Result<(), String> {
             if canon_seed != seed {
                 return Err("campaign_identity game_unique_seed is not in canonical form".into());
             }
-            // Digest must recompute exactly; a mismatch is fatal.
             let recomputed = compute_campaign_id(&canon_uuid, &canon_seed);
             if recomputed != cid {
                 return Err(
@@ -928,7 +788,6 @@ pub fn validate_manifest_object(value: &Value) -> Result<(), String> {
         CampaignIdentityState::Unavailable
         | CampaignIdentityState::Unbound
         | CampaignIdentityState::Conflict => {
-            // Fail-closed: identity fields MUST be null and a reason recorded.
             for (name, v) in [
                 ("campaign_id", campaign_id),
                 ("game_unique_id", game_unique_id),
@@ -961,9 +820,6 @@ pub fn validate_manifest_object(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Tolerant wrapper for the pack/repack path: a session manifest WITHOUT a
-/// `campaign_identity` key is an identity-unavailable, unstitchable legacy
-/// stream. When the key is present it must satisfy the exact grammar.
 pub fn validate_in_session_manifest(manifest: &Value) -> Result<(), String> {
     match manifest.get("campaign_identity") {
         None => Ok(()),
@@ -971,12 +827,6 @@ pub fn validate_in_session_manifest(manifest: &Value) -> Result<(), String> {
     }
 }
 
-/// Reconstruct a non-bound `CampaignIdentity` from stored manifest metadata.
-///
-/// A `known` manifest is shape-validated but cannot authorize stitching: this
-/// function has no CID1 payload from which to recompute the stored hash. The
-/// future stateful CID1 decoder must call `resolve` from its verified observation
-/// rather than treating parallel JSON metadata as stream truth.
 pub fn from_manifest_json(value: &Value) -> Result<CampaignIdentity, String> {
     validate_manifest_object(value)?;
     let obj = value.as_object().unwrap();
@@ -1017,42 +867,24 @@ pub fn from_manifest_json(value: &Value) -> Result<CampaignIdentity, String> {
     })
 }
 
-// --- Stitching consumer interface -----------------------------------------
-//
-// The reload/relaunch stitcher asks exactly one question of two containers: may
-// their streams be joined as the same persisted playthrough?
-//
-// The answer is fail-closed: two streams stitch ONLY when both identities are
-// `Known` and equal on the whole pair. An unavailable/unbound/conflict identity
-// on either side is never auto-stitched.
-
-/// The stitcher's decision for a pair of container identities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StitchDecision {
-    /// Both bound and identical -> same persisted playthrough; may join.
     SameCampaign,
-    /// Both bound, whole pair differs -> distinct campaigns; must NOT join.
     DifferentCampaign,
-    /// Both bound but exactly one raw component differs -> conflict; stop auto
-    /// stitching and surface both observations.
     ComponentConflict,
-    /// At least one side is not bound -> identity-unavailable; never auto-join.
     IdentityUnavailable,
 }
 
-/// Decide whether two resolved identities may be stitched as one campaign.
 pub fn stitch_decision(a: &CampaignIdentity, b: &CampaignIdentity) -> StitchDecision {
     if !a.is_bound() || !b.is_bound() {
         return StitchDecision::IdentityUnavailable;
     }
-    // Both Known: campaign_id is present and derived from the components.
     if a.campaign_id == b.campaign_id
         && a.game_unique_id == b.game_unique_id
         && a.game_unique_seed == b.game_unique_seed
     {
         return StitchDecision::SameCampaign;
     }
-    // Exactly one component equal -> component conflict, not a clean split.
     let uuid_eq = a.game_unique_id == b.game_unique_id;
     let seed_eq = a.game_unique_seed == b.game_unique_seed;
     if uuid_eq != seed_eq {
@@ -1062,28 +894,8 @@ pub fn stitch_decision(a: &CampaignIdentity, b: &CampaignIdentity) -> StitchDeci
     }
 }
 
-// --- Reconciliation with the stitching CampaignIdentityResolution seam --------
-//
-// The stitcher consumes a fail-closed result per verified save epoch. That seam
-// type is `crate::stitching::
-// CampaignIdentityResolution`; this module is the identity *provider*. The two
-// independently-defined seams (this module's `CampaignIdentity` and stitching's
-// `CampaignIdentityResolution`) are joined here by ADAPTING a resolved identity
-// into that type — without weakening either side's validation:
-//   * a `Verified` result is minted ONLY when `is_bound()` holds (Known + the
-//     private, non-transferable in-memory evidence proof recomputes over the exact
-//     current fields and the immutable CID1 bytes), so a mutated clone or forged
-//     manifest metadata can never fabricate a stitchable identity; and
-//   * `campaign_key` is the OPAQUE canonical identity preimage — equal byte-for-
-//     byte iff two Known epochs are the same persisted playthrough — never a
-//     filename / date / mod / path heuristic, matching stitching's opaque-key rule.
-
-/// Stream/identity scheme major for the v1 `(game_unique_id, game_unique_seed)`
-/// identity. Two epochs may be candidates for one
-/// campaign only when their `scheme_major` **and** opaque `campaign_key` bytes match.
 pub const CAMPAIGN_IDENTITY_SCHEME_MAJOR: u16 = 1;
 
-/// Decode 64 lowercase-hex chars into 32 bytes; `None` on any non-hex/short input.
 fn hex64_to_bytes(hex: &str) -> Option<[u8; 32]> {
     if hex.len() != 64 {
         return None;
@@ -1096,11 +908,6 @@ fn hex64_to_bytes(hex: &str) -> Option<[u8; 32]> {
 }
 
 impl CampaignIdentity {
-    /// Opaque campaign-key bytes for a bound identity: the exact canonical preimage
-    /// of the identity pair (`CID_PREIMAGE_PREFIX` + canonical uuid + NUL + canonical
-    /// seed — the same preimage `compute_campaign_id` digests). Equal byte-for-byte
-    /// iff two Known identities are the same playthrough; `None` unless fully bound.
-    /// Stitching treats these bytes as opaque and never inspects them.
     fn campaign_key_bytes(&self) -> Option<Vec<u8>> {
         if !self.is_bound() {
             return None;
@@ -1115,20 +922,6 @@ impl CampaignIdentity {
         Some(buf)
     }
 
-    /// Bridge this resolved identity into the fail-closed stitching seam
-    /// (`crate::stitching::CampaignIdentityResolution`). This is the join
-    /// point that feeds `plan_stitch` real per-epoch results.
-    ///
-    /// * `Known` (and `is_bound()`) -> `Verified` with the opaque `campaign_key`
-    ///   preimage and the sealed CID1 evidence hash as `evidence_digest` (audit
-    ///   only, never the equality key). If the private evidence proof does not
-    ///   recompute, the state is `Known` but `is_bound()` is false, so this yields
-    ///   `Missing` — fail closed, never `Verified`.
-    /// * `Unavailable` / `Unbound` -> `Missing { reason }` (no verified epoch).
-    /// * `Conflict` -> `Conflict { reason }`.
-    ///
-    /// This scheme never emits `Ambiguous`; that variant is reserved for a provider
-    /// that ranks multiple candidates, which the v1 pair-identity does not.
     pub fn to_stitch_resolution(&self) -> CampaignIdentityResolution {
         let unbound_reason = || {
             self.resolution_note
@@ -1150,8 +943,6 @@ impl CampaignIdentity {
                             evidence_digest,
                         }
                     }
-                    // Known but the evidence proof / sealed hash did not survive
-                    // (mutated clone, forged metadata): fail closed.
                     _ => CampaignIdentityResolution::Missing {
                         reason: self.resolution_note.clone().unwrap_or_else(|| {
                             "identity marked known but its in-memory evidence proof does not \
@@ -1172,18 +963,7 @@ impl CampaignIdentity {
         }
     }
 
-    /// Construct the stitching [`AppendTicket`] binding this bound identity's
-    /// campaign participation to an ALREADY-ALLOCATED `play_order` plus the session
-    /// provenance. `None` unless the identity is bound — an unresolved epoch never
     /// acquires a ticket; bytes observed while identity is unresolved
-    /// stay in an unbound recovery source).
-    ///
-    /// The durable, campaign-locked `play_order` *allocation* itself (the append
-    /// ledger committed before the first campaign-bound byte is accepted) is the
-    /// campaign store's responsibility and is intentionally NOT built here. This
-    /// method only binds an allocated
-    /// ordinal to the same opaque `campaign_key` the resolution carries, so one key
-    /// flows consistently to both `plan_stitch` inputs (identity result + ticket).
     pub fn append_ticket(
         &self,
         play_order: u64,
@@ -1273,10 +1053,9 @@ mod tests {
             Some("a4b17fed-ed12-4361-9064-fb6576638110")
         );
         assert!(canonical_uuid("not-a-uuid").is_none());
-        assert!(canonical_uuid("a4b17fed-ed12-4361-9064-fb657663811").is_none()); // short
-        assert!(canonical_uuid("g4b17fed-ed12-4361-9064-fb6576638110").is_none()); // non-hex
+        assert!(canonical_uuid("a4b17fed-ed12-4361-9064-fb657663811").is_none());
+        assert!(canonical_uuid("g4b17fed-ed12-4361-9064-fb6576638110").is_none());
         assert!(canonical_uuid("a4b17fed-ed12-4361-9064-fb6576638110-00").is_none());
-        // extra group
     }
 
     #[test]
@@ -1309,10 +1088,10 @@ mod tests {
             Some("-2147483648")
         );
         assert_eq!(canonical_seed("2147483647").as_deref(), Some("2147483647"));
-        assert!(canonical_seed("007").is_none()); // leading zero
-        assert!(canonical_seed("-0").is_none()); // negative zero
-        assert!(canonical_seed("-2147483649").is_none()); // below i32
-        assert!(canonical_seed("2147483648").is_none()); // above i32
+        assert!(canonical_seed("007").is_none());
+        assert!(canonical_seed("-0").is_none());
+        assert!(canonical_seed("-2147483649").is_none());
+        assert!(canonical_seed("2147483648").is_none());
         assert!(canonical_seed("").is_none());
         assert!(canonical_seed("12a").is_none());
         assert!(canonical_seed("- 5").is_none());
@@ -1325,7 +1104,6 @@ mod tests {
             lower,
             "b28ea1bc4bcea2790b9257208abdc9c27f9985a6e57ef8ce8934d456fcd3be6f"
         );
-        // Different seed -> different digest.
         let other = compute_campaign_id("a4b17fed-ed12-4361-9064-fb6576638110", "1026046528");
         assert_ne!(lower, other);
     }
@@ -1348,8 +1126,6 @@ mod tests {
             )
         );
         assert!(id.resolution_note.is_none());
-        // Shape-valid metadata alone must not reconstruct a stitchable Known
-        // identity: without the actual CID1 bytes, its payload hash is unverified.
         let manifest = to_manifest_json(&id);
         validate_manifest_object(&manifest).unwrap();
         assert!(from_manifest_json(&manifest)
@@ -1397,7 +1173,6 @@ mod tests {
         assert!(id.campaign_id.is_none());
         assert!(id.game_unique_id.is_none());
         assert!(id.resolution_note.as_deref().unwrap().contains("mandatory"));
-        // Witnesses survive beside the null identity.
         assert_eq!(id.witnesses.start_date_raw, Some(1));
         assert_eq!(id.witnesses.session, Some(2));
         validate_manifest_object(&to_manifest_json(&id)).unwrap();
@@ -1423,7 +1198,7 @@ mod tests {
         let id = resolve(&obs);
         assert_eq!(id.state, CampaignIdentityState::Unavailable);
         assert!(id.campaign_id.is_none());
-        assert!(id.game_unique_id.is_none()); // never surface a half identity
+        assert!(id.game_unique_id.is_none());
         assert!(id
             .resolution_note
             .as_deref()
@@ -1474,7 +1249,6 @@ mod tests {
             session_header_rows: 1,
             ..Default::default()
         }));
-        // Smuggle a fake campaign_id into a non-known state.
         manifest["campaign_id"] = json!("a".repeat(64));
         let err = validate_manifest_object(&manifest).unwrap_err();
         assert!(err.contains("must have null"), "{err}");
@@ -1484,7 +1258,6 @@ mod tests {
     fn validator_rejects_digest_mismatch_on_known() {
         let id = resolve(&known_obs());
         let mut manifest = to_manifest_json(&id);
-        // Tamper the digest while leaving the components intact.
         manifest["campaign_id"] = json!("b".repeat(64));
         let err = validate_manifest_object(&manifest).unwrap_err();
         assert!(err.contains("does not recompute"), "{err}");
@@ -1494,7 +1267,7 @@ mod tests {
     fn validator_rejects_noncanonical_uuid_on_known() {
         let id = resolve(&known_obs());
         let mut manifest = to_manifest_json(&id);
-        manifest["game_unique_id"] = json!("A4B17FED-ED12-4361-9064-FB6576638110"); // uppercase
+        manifest["game_unique_id"] = json!("A4B17FED-ED12-4361-9064-FB6576638110");
         let err = validate_manifest_object(&manifest).unwrap_err();
         assert!(err.contains("canonical"), "{err}");
     }
@@ -1554,10 +1327,8 @@ mod tests {
 
     #[test]
     fn session_manifest_tolerates_absent_identity_but_strict_on_present() {
-        // Legacy manifest: no campaign_identity key -> accepted (identity-unavailable).
         let legacy = json!({ "schema": "native_collector_session_v1" });
         validate_in_session_manifest(&legacy).unwrap();
-        // Present-but-malformed -> rejected.
         let mut bad = json!({ "schema": "native_collector_session_v1" });
         bad.as_object_mut()
             .unwrap()
@@ -1567,8 +1338,6 @@ mod tests {
 
     #[test]
     fn documented_known_manifest_example_passes_validator() {
-        // Keep the executable test fixture inside the crate. Cargo's isolated source
-        // sandbox intentionally excludes the sibling extractor/documents tree.
         let json_text = include_str!("fixtures/campaign_identity_known_manifest.json");
         let manifest: Value = serde_json::from_str(json_text).expect("valid example JSON");
 
@@ -1579,16 +1348,12 @@ mod tests {
     #[test]
     fn stitch_decision_matrix() {
         let a = resolve(&known_obs());
-        // identical
         let b = resolve(&known_obs());
         assert_eq!(stitch_decision(&a, &b), StitchDecision::SameCampaign);
-        // fully different
         let c = resolve(&verified_obs("11111111-1111-4111-8111-111111111111", "99"));
         assert_eq!(stitch_decision(&a, &c), StitchDecision::DifferentCampaign);
-        // one component shared -> conflict
         let d = resolve(&verified_obs("a4b17fed-ed12-4361-9064-fb6576638110", "99"));
         assert_eq!(stitch_decision(&a, &d), StitchDecision::ComponentConflict);
-        // unbound side -> never auto-join
         let unbound = resolve(&SessionHeaderIdentityObservation::default());
         assert_eq!(
             stitch_decision(&a, &unbound),
@@ -1612,7 +1377,6 @@ mod tests {
             } => {
                 assert_eq!(scheme_major, CAMPAIGN_IDENTITY_SCHEME_MAJOR);
                 assert!(!campaign_key.is_empty());
-                // evidence_digest is the sealed CID1 hash (audit only), not the key.
                 assert_eq!(
                     Some(evidence_digest),
                     a.stream_header_sha256.as_deref().and_then(hex64_to_bytes)
@@ -1627,8 +1391,6 @@ mod tests {
         let a = resolve(&known_obs());
         let same = resolve(&known_obs());
         let different = resolve(&verified_obs("11111111-1111-4111-8111-111111111111", "99"));
-        // Same components -> identical opaque key bytes (the equality contract
-        // plan_stitch enforces); a different playthrough -> different bytes.
         assert_eq!(a.campaign_key_bytes(), same.campaign_key_bytes());
         assert!(a.campaign_key_bytes().is_some());
         assert_ne!(a.campaign_key_bytes(), different.campaign_key_bytes());
@@ -1652,8 +1414,6 @@ mod tests {
 
     #[test]
     fn to_stitch_resolution_fails_closed_on_mutated_known_clone() {
-        // A Known identity whose fields were mutated so the private evidence proof
-        // no longer recomputes must NOT reach Verified — join without weakening.
         let mut mutated = resolve(&known_obs());
         mutated.game_unique_seed = Some("99".to_string());
         assert_eq!(mutated.state, CampaignIdentityState::Known);
@@ -1680,8 +1440,6 @@ mod tests {
         assert_eq!(ticket.play_order, 7);
         assert_eq!(ticket.session_nonce, "nonce-x");
         assert_eq!(ticket.process_start_identity, "pid-x");
-        // The ticket carries the SAME opaque key the resolution does, so one key
-        // flows to both plan_stitch inputs.
         assert_eq!(Some(ticket.campaign_key), bound.campaign_key_bytes());
 
         let unbound = resolve(&SessionHeaderIdentityObservation::default());

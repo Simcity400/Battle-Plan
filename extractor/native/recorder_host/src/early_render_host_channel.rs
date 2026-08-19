@@ -1,5 +1,3 @@
-//! Recorder-side H4CT transaction for suspended render capture.
-
 #![cfg(windows)]
 
 use crate::auto_attach::proof::{
@@ -59,18 +57,12 @@ use std::time::Duration;
 
 type Prepared = PreparedControlListener<WindowsPipeBackend>;
 
-/// Terminal result of the post-COMMIT early-render H4CT service. A collector
-/// sink failure is a typed authenticated outcome, not an unexpected VFS frame.
 pub enum EarlyRenderServiceOutcome {
     CaptureTeardown,
     SinkFailure(SinkFailureReport),
     StartupFailure(AuthenticatedEarlyRenderStartupFailure),
 }
 
-/// Collector-authored terminal startup evidence received inside the admitted
-/// H4CT session. The host observation point is retained separately from the
-/// collector's own typed phase so telemetry can distinguish a failure report
-/// from the EOF/BrokenPipe that follows it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthenticatedEarlyRenderStartupFailure {
     pub report: EarlyRenderStartupFailureV1,
@@ -94,9 +86,6 @@ pub fn early_render_content_manifest_metadata_envelope(
     envelope.with_computed_digest()
 }
 
-/// Canonical, path-redacted effective-VFS authority prepared while the game is
-/// still suspended. Chunk boundaries are deterministic and every wire frame is
-/// additionally bound to the admitted H4CT session and encoded BIND digest.
 #[derive(Clone, Debug)]
 pub struct PreparedEarlyRenderVfsIndex {
     rows: Vec<EarlyRenderVfsWinnerRowV1>,
@@ -522,9 +511,6 @@ impl PreparedEarlyRenderHostChannel {
         self.cancellation.clone()
     }
 
-    /// Retains the authenticated H4CT session after COMMIT and serves only
-    /// exact ranges of winners that were admitted in the pre-resume index.
-    /// Cancellation is the normal capture-teardown terminator.
     pub fn serve_vfs_payload_requests(
         mut self,
         capture_teardown_timeout_ms: u64,
@@ -559,8 +545,7 @@ impl PreparedEarlyRenderHostChannel {
                 return Ok(EarlyRenderServiceOutcome::SinkFailure(report));
             }
             if frame.kind == MessageKind::EarlyRenderStartupFailure {
-                let failure =
-                    self.decode_startup_failure(&frame.payload, "vfs_payload_service")?;
+                let failure = self.decode_startup_failure(&frame.payload, "vfs_payload_service")?;
                 return Ok(EarlyRenderServiceOutcome::StartupFailure(failure));
             }
             if frame.kind != MessageKind::EarlyRenderVfsPayloadRequest {
@@ -803,9 +788,7 @@ fn validate_startup_failure_authority(
         || report.process_start_nonce != expectation.creation_filetime
         || report.session_id != session_id
     {
-        return Err(
-            "early H4CT startup failure names a foreign process epoch or session".into(),
-        );
+        return Err("early H4CT startup failure names a foreign process epoch or session".into());
     }
     if let Some(reported_bind) = report.launch_bind_sha256 {
         if Some(reported_bind) != launch_bind_sha256 {
@@ -822,18 +805,11 @@ fn validate_startup_failure_observation(
     let allowed = match observed_while {
         "await_ready" => matches!(
             phase,
-            EarlyRenderStartupPhase::PostHelloPreBind
-                | EarlyRenderStartupPhase::PostBindPreFirst
+            EarlyRenderStartupPhase::PostHelloPreBind | EarlyRenderStartupPhase::PostBindPreFirst
         ),
-        "await_first_game_d3d" => {
-            phase == EarlyRenderStartupPhase::PostBindPreFirst
-        }
-        "await_runtime_dlc_roster" => {
-            phase == EarlyRenderStartupPhase::PostFirstPreCommit
-        }
-        "vfs_payload_service" => {
-            phase == EarlyRenderStartupPhase::PostCommitBootstrap
-        }
+        "await_first_game_d3d" => phase == EarlyRenderStartupPhase::PostBindPreFirst,
+        "await_runtime_dlc_roster" => phase == EarlyRenderStartupPhase::PostFirstPreCommit,
+        "vfs_payload_service" => phase == EarlyRenderStartupPhase::PostCommitBootstrap,
         _ => false,
     };
     if !allowed {
@@ -1246,8 +1222,7 @@ mod tests {
     use crate::early_render_launch::{EarlyHookCompleteness, EffectiveRuntimeDlcReceipt};
     use compact_contract::early_render_control::{
         decode_early_diagnostic_end, encode_early_diagnostic_liveness_response,
-        EarlyDiagnosticLivenessResponseV1, EarlyRenderCodecError,
-        EARLY_DIAGNOSTIC_MIN_HOLD_MS,
+        EarlyDiagnosticLivenessResponseV1, EarlyRenderCodecError, EARLY_DIAGNOSTIC_MIN_HOLD_MS,
         EARLY_STAGED_HOOK_GENERATION,
     };
     use compact_contract::early_render_startup_failure::EarlyRenderStartupPhase;

@@ -1,36 +1,13 @@
-//! E1 transport controls: play/pause, speed steps, seek (index / hour /
-//! fraction / date), jump-to-date, and day-boundary seek-bar ticks.
-//!
-//! This is a pure state machine over a recording's ordered `(hour_index,
-//! date)` spine. The Win32 loop drives it (`advance` on each frame, key/scrub
-//! events call the seek/step/speed methods) and then reads `current_hour()`
-//! back to scrub the map through `replay_core` (`WorldTimeline::seek` /
-//! `play_to` — which resolve identically today; see the
-//! `seek_equals_play_to` conformance gate). No recording bytes are parsed
-//! here; dates come from the frames' own `date` strings.
-//!
-//! Parameter labels (per the no-eyeball / FILE-CAPTURE-FIT-UNKNOWN rule):
-//! * [`SPEED_STEPS_HOURS_PER_SEC`] — **FIT (product UX)**. These are
-//!   replay-app *playback* rates (game-hours advanced per wall-clock second),
-//!   a video-player-style control. They are NOT the engine's game-speed
-//!   law and make no parity claim; the default matches the pre-existing
-//!   autoplay rate (0.25 s/hour = 4 h/s).
 
 use crate::clausewitz::Date;
 use replay_core::{Leaf, SessionMetadataView};
 use std::error::Error;
 use std::fmt;
 
-/// Playback speed steps in game-hours per wall-clock second. **FIT (product
-/// UX)** — see the module note. Explicit, ascending, and fixed so the
-/// speed-step behavior is fully determined and unit-gated.
 pub const SPEED_STEPS_HOURS_PER_SEC: [f64; 5] = [1.0, 2.0, 4.0, 12.0, 48.0];
 
-/// Default speed step index: `4.0` h/s, matching the prior autoplay rate.
 pub const DEFAULT_SPEED_STEP: usize = 2;
 
-/// One day-boundary tick on the seek bar: the first recorded frame of a new
-/// calendar day, with its `Y.M.D` label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DateTick {
     pub index: usize,
@@ -38,9 +15,6 @@ pub struct DateTick {
     pub label: String,
 }
 
-/// A fail-closed date-navigation error. Recorded-date lookup failures are
-/// distinct from malformed user input so callers never turn unavailable index
-/// metadata into a guessed seek.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DateNavigationError {
     InvalidTarget { target: String },
@@ -64,21 +38,10 @@ impl Error for DateNavigationError {}
 
 #[derive(Debug, Clone)]
 enum DateSlot {
-    /// The authenticated date index has not been consulted for this hour.
     Unknown,
-    /// The index was consulted successfully. `None` is an authenticated
-    /// dateless frame, not an unavailable lookup.
     Known(Option<String>),
 }
 
-/// Exact recorded engine clock state at the selected replay hour.
-///
-/// The engine speed slot is preserved as recorded state, but it does not select
-/// a product wall-clock rate: the game simulation throughput is machine-dependent
-/// and the recording contains no authoritative seconds-per-hour law. Recorded
-/// pause is likewise separate from the viewer's play/pause control because a
-/// paused capture contains no authoritative wall duration to wait before the
-/// next recorded hour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordedClockState {
     pub speed_raw: u8,
@@ -87,28 +50,17 @@ pub struct RecordedClockState {
     pub transition_sequence: Option<u64>,
 }
 
-/// Transport state over an ordered recorded-hour spine.
 #[derive(Debug, Clone)]
 pub struct Transport {
-    /// Strictly increasing recorded hour indexes (the scrub authority).
     hours: Vec<i64>,
-    /// Lazy per-hour date-index cache, parallel to `hours`. Product startup
-    /// leaves every slot `Unknown`; user-invoked date navigation fills only
-    /// the portion it needs without loading snapshot bodies.
     dates: Vec<DateSlot>,
     index: usize,
     playing: bool,
     speed_step: usize,
-    /// Sub-hour playback accumulator (game-hours), reset on any explicit seek.
     accum: f64,
-    /// X12/D57 clock state consumed from the currently selected typed frame.
-    /// `None` is the fail-closed legacy/unavailable state.
     recorded_clock: Option<RecordedClockState>,
 }
 
-/// Constant-size Present transaction snapshot. Lazy date-cache observations
-/// are immutable input knowledge and may be retained; only viewer-visible
-/// transport selection/cadence state rolls back when a frame is undisplayed.
 #[derive(Debug, Clone, Copy)]
 pub struct TransportPresentationCheckpoint {
     index: usize,
@@ -140,9 +92,6 @@ impl Transport {
         self.recorded_clock = checkpoint.recorded_clock;
     }
 
-    /// Build over recorded hours and their parallel date strings. `hours` must
-    /// be non-empty and the two slices equal length; otherwise `Err` (the
-    /// caller has a malformed timeline and must fail closed).
     pub fn new(hours: Vec<i64>, dates: Vec<Option<String>>) -> Result<Transport, String> {
         if hours.is_empty() {
             return Err("transport: recording has no hours".to_string());
@@ -165,9 +114,6 @@ impl Transport {
         })
     }
 
-    /// Build over an authenticated hour index without enumerating its date
-    /// metadata. Calls to the `*_with` date-navigation methods resolve and
-    /// cache dates through the supplied index lookup only when requested.
     pub fn with_lazy_dates(hours: Vec<i64>) -> Result<Transport, String> {
         if hours.is_empty() {
             return Err("transport: recording has no hours".to_string());
@@ -184,9 +130,6 @@ impl Transport {
         })
     }
 
-    /// Build with no date strings (all `None`); date-based controls degrade to
-    /// clamping to the first hour, which is the honest behavior for a
-    /// dateless recording.
     pub fn without_dates(hours: Vec<i64>) -> Result<Transport, String> {
         let dates = vec![None; hours.len()];
         Transport::new(hours, dates)
@@ -229,12 +172,6 @@ impl Transport {
         self.recorded_clock
     }
 
-    /// Consume the typed D57/X12 tail for the currently displayed frame.
-    ///
-    /// A complete X12 history is cumulative, so its last row is the exact
-    /// speed/pause/tick state at the snapshot boundary. Legacy hourly anchors
-    /// also work, but carry no sub-hour tick/sequence. Invalid or unavailable
-    /// leaves clear the recorded state and never synthesize a clock.
     pub fn apply_recorded_session_timing(&mut self, session: &SessionMetadataView) -> bool {
         let Some(events) = session.speed_events.measured() else {
             self.recorded_clock = None;
@@ -281,7 +218,6 @@ impl Transport {
         true
     }
 
-    // --- play/pause ---
 
     pub fn set_playing(&mut self, playing: bool) {
         self.playing = playing;
@@ -291,7 +227,6 @@ impl Transport {
         self.set_playing(!self.playing);
     }
 
-    // --- speed steps ---
 
     pub fn set_speed_step(&mut self, step: usize) {
         self.speed_step = step.min(SPEED_STEPS_HOURS_PER_SEC.len() - 1);
@@ -303,28 +238,20 @@ impl Transport {
         self.speed_step = self.speed_step.saturating_sub(1);
     }
 
-    // --- stepping / seeking ---
 
-    /// Step one recorded hour forward (clamped at the last hour).
     pub fn step_forward(&mut self) -> usize {
         self.seek_to_index(self.index + 1)
     }
-    /// Step one recorded hour backward (clamped at the first hour).
     pub fn step_backward(&mut self) -> usize {
         self.seek_to_index(self.index.saturating_sub(1))
     }
 
-    /// Seek to a recorded-hour index, clamped into range. Resets the
-    /// sub-hour accumulator so playback continues from the seek point.
     pub fn seek_to_index(&mut self, index: usize) -> usize {
         self.index = index.min(self.hours.len() - 1);
         self.accum = 0.0;
         self.index
     }
 
-    /// Seek to the recorded hour at-or-before `hour` (the scrub primitive,
-    /// matching `WorldTimeline::state_at`). Before the first recorded hour it
-    /// clamps to the first; after the last it clamps to the last.
     pub fn seek_to_hour(&mut self, hour: i64) -> usize {
         let index = match self.hours.binary_search(&hour) {
             Ok(i) => i,
@@ -334,8 +261,6 @@ impl Transport {
         self.seek_to_index(index)
     }
 
-    /// Seek by a `0.0..=1.0` fraction across the recorded-hour count (the
-    /// seek-bar drag primitive). Index-spaced, matching the tick layout.
     pub fn seek_to_fraction(&mut self, fraction: f64) -> usize {
         if self.hours.len() < 2 {
             return self.seek_to_index(0);
@@ -344,12 +269,6 @@ impl Transport {
         self.seek_to_index(scaled.round() as usize)
     }
 
-    /// Jump to a Clausewitz date (`Y.M.D` or `Y.M.D.H`): resolves to the
-    /// recorded hour whose date is at-or-before the target, clamped to
-    /// `[first, last]`. A target before the first dated frame clamps to index
-    /// 0; a target after the last clamps to the last dated frame. Frames with
-    /// no/unparseable date are skipped. `Err` only when the *input* string is
-    /// unparseable (never a guessed jump).
     pub fn jump_to_date(&mut self, date: &str) -> std::result::Result<usize, DateNavigationError> {
         let target = Date::parse(date).ok_or_else(|| DateNavigationError::InvalidTarget {
             target: date.to_string(),
@@ -371,7 +290,6 @@ impl Transport {
                 break;
             }
         }
-        // Before the first dated frame → clamp to the first hour.
         Ok(self.seek_to_index(found.unwrap_or(0)))
     }
 
@@ -395,10 +313,6 @@ impl Transport {
         }
     }
 
-    /// Lazy/index-backed jump-to-date. The supplied lookup must expose only
-    /// authenticated index metadata; snapshot-body decoding does not belong in
-    /// this seam. Successful lookups are cached, while a lookup error leaves
-    /// the slot unresolved and the current selection unchanged.
     pub fn jump_to_date_with<F>(
         &mut self,
         date: &str,
@@ -424,11 +338,7 @@ impl Transport {
         Ok(self.seek_to_index(found.unwrap_or(0)))
     }
 
-    // --- playback advance ---
 
-    /// Advance playback by `dt_secs` of wall time. Steps whole recorded hours
-    /// forward at the current speed; auto-pauses at the last hour (product
-    /// playback does not wrap). Returns whether the current index changed.
     pub fn advance(&mut self, dt_secs: f64) -> bool {
         if !self.playing || self.hours.len() < 2 {
             return false;
@@ -449,11 +359,7 @@ impl Transport {
         changed
     }
 
-    // --- seek-bar ticks ---
 
-    /// One tick per calendar day, at the first recorded hour of that day,
-    /// labeled `Y.M.D`. Empty when no frames carry parseable dates (the seek
-    /// bar then falls back to its index-spaced hour ticks).
     pub fn date_ticks(&self) -> std::result::Result<Vec<DateTick>, DateNavigationError> {
         let mut ticks = Vec::new();
         let mut last_day: Option<(i64, u32, u32)> = None;
@@ -480,10 +386,6 @@ impl Transport {
         Ok(ticks)
     }
 
-    /// Resolve the day-boundary tick spine on demand through the authenticated
-    /// date index. App startup deliberately does not call this method; the
-    /// first explicit day-navigation command resolves it and later commands
-    /// reuse the cache.
     pub fn date_ticks_with<F>(
         &mut self,
         mut lookup: F,
@@ -545,18 +447,15 @@ mod tests {
 
     #[test]
     fn speed_step_table_is_explicit_and_clamped() {
-        // The table itself is the contract.
         assert_eq!(SPEED_STEPS_HOURS_PER_SEC, [1.0, 2.0, 4.0, 12.0, 48.0]);
         let mut t = Transport::without_dates(vec![0, 1, 2]).unwrap();
         assert_eq!(t.speed_step(), DEFAULT_SPEED_STEP);
         assert_eq!(t.speed_hours_per_sec(), 4.0);
-        // speed_down clamps at 0.
         t.speed_down();
         t.speed_down();
         t.speed_down();
         assert_eq!(t.speed_step(), 0);
         assert_eq!(t.speed_hours_per_sec(), 1.0);
-        // speed_up clamps at the last step.
         for _ in 0..10 {
             t.speed_up();
         }
@@ -630,28 +529,23 @@ mod tests {
         assert!(!t.is_playing());
         t.toggle_play();
         assert!(t.is_playing());
-        // Half an hour accumulated, then a toggle clears it.
-        t.set_speed_step(2); // 4 h/s
-        assert!(!t.advance(0.1)); // 0.4h < 1h, no step
+        t.set_speed_step(2);
+        assert!(!t.advance(0.1));
         t.toggle_play();
         assert!(!t.is_playing());
         t.toggle_play();
         assert!(t.is_playing());
-        // Accumulator was reset by toggles, so this 0.4h alone still no step.
         assert!(!t.advance(0.1));
     }
 
     #[test]
     fn advance_steps_and_autopauses_at_end() {
         let mut t = Transport::without_dates(vec![0, 1, 2]).unwrap();
-        t.set_speed_step(2); // 4 h/s
+        t.set_speed_step(2);
         t.set_playing(true);
-        // 1.0s * 4 h/s = 4 hours of demand over a 2-hour span → index 0 -> 2,
-        // then the surplus hits the end and auto-pauses.
         assert!(t.advance(1.0));
         assert_eq!(t.current_index(), 2);
         assert!(!t.is_playing(), "auto-paused at last hour");
-        // Further advance is a no-op once paused.
         assert!(!t.advance(1.0));
         assert_eq!(t.current_index(), 2);
     }
@@ -671,20 +565,20 @@ mod tests {
     #[test]
     fn step_forward_backward_clamp() {
         let mut t = Transport::without_dates(vec![10, 20, 30]).unwrap();
-        assert_eq!(t.step_backward(), 0); // clamp low
+        assert_eq!(t.step_backward(), 0);
         assert_eq!(t.step_forward(), 1);
         assert_eq!(t.step_forward(), 2);
-        assert_eq!(t.step_forward(), 2); // clamp high
+        assert_eq!(t.step_forward(), 2);
         assert_eq!(t.current_hour(), 30);
     }
 
     #[test]
     fn seek_to_hour_is_at_or_before_and_clamped() {
         let mut t = Transport::without_dates(vec![100, 200, 300]).unwrap();
-        assert_eq!(t.seek_to_hour(50), 0); // before first → first
-        assert_eq!(t.seek_to_hour(200), 1); // exact
-        assert_eq!(t.seek_to_hour(250), 1); // at-or-before
-        assert_eq!(t.seek_to_hour(9999), 2); // after last → last
+        assert_eq!(t.seek_to_hour(50), 0);
+        assert_eq!(t.seek_to_hour(200), 1);
+        assert_eq!(t.seek_to_hour(250), 1);
+        assert_eq!(t.seek_to_hour(9999), 2);
     }
 
     #[test]
@@ -693,8 +587,8 @@ mod tests {
         assert_eq!(t.seek_to_fraction(0.0), 0);
         assert_eq!(t.seek_to_fraction(0.5), 5);
         assert_eq!(t.seek_to_fraction(1.0), 10);
-        assert_eq!(t.seek_to_fraction(-1.0), 0); // clamp
-        assert_eq!(t.seek_to_fraction(2.0), 10); // clamp
+        assert_eq!(t.seek_to_fraction(-1.0), 0);
+        assert_eq!(t.seek_to_fraction(2.0), 10);
     }
 
     #[test]
@@ -703,23 +597,16 @@ mod tests {
         let t1 = "1936.1.1.12";
         let t2 = "1936.1.2.0";
         let mut t = dated(&[0, 12, 24], &[t0, t1, t2]);
-        // exact
         assert_eq!(t.jump_to_date("1936.1.1.12").unwrap(), 1);
-        // at-or-before (06:00 → the 00:00 frame)
         assert_eq!(t.jump_to_date("1936.1.1.6").unwrap(), 0);
-        // before first → clamp to 0
         assert_eq!(t.jump_to_date("1935.12.31").unwrap(), 0);
-        // after last → clamp to last dated frame
         assert_eq!(t.jump_to_date("1990.1.1").unwrap(), 2);
-        // date-only target matches the day boundary
         assert_eq!(t.jump_to_date("1936.1.2").unwrap(), 2);
-        // unparseable input errors (no guessed jump)
         assert!(t.jump_to_date("not-a-date").is_err());
     }
 
     #[test]
     fn date_ticks_one_per_calendar_day() {
-        // Two hours on day 1, two on day 2, one on day 3.
         let t = dated(
             &[0, 1, 24, 25, 48],
             &[
@@ -762,7 +649,6 @@ mod tests {
     fn date_ticks_empty_without_dates() {
         let t = Transport::without_dates(vec![0, 1, 2]).unwrap();
         assert!(t.date_ticks().unwrap().is_empty());
-        // Jump-to-date on a dateless recording clamps to the first hour.
         let mut t = t;
         assert_eq!(t.jump_to_date("1936.1.1").unwrap(), 0);
     }

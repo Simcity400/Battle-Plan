@@ -1,4 +1,3 @@
-//! Shared #[cfg(test)] fixtures used by the per-module test suites.
 
 use crate::*;
 use std::collections::BTreeMap;
@@ -639,16 +638,16 @@ pub(crate) fn le_f32_bytes(values: &[f32]) -> Vec<u8> {
 
 pub(crate) fn test_position_vertex_bytes() -> Vec<u8> {
     le_i16_bytes(&[
-        0, 0, 0, 0, //
-        1, 0, 0, 0, //
+        0, 0, 0, 0,
+        1, 0, 0, 0,
         0, 1, 1, 1,
     ])
 }
 
 pub(crate) fn test_height_vertex_bytes() -> Vec<u8> {
     le_i16_bytes(&[
-        1000, 2000, //
-        1100, 2100, //
+        1000, 2000,
+        1100, 2100,
         1200, 2200,
     ])
 }
@@ -656,12 +655,12 @@ pub(crate) fn test_height_vertex_bytes() -> Vec<u8> {
 pub(crate) fn test_terrain_draw_cb1_bytes() -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend(le_f32_bytes(&[
-        1.0, 0.0, 0.0, 0.0, //
-        0.0, 1.0, 0.0, 0.0, //
-        0.0, 0.0, 1.0, 0.0, //
-        0.0, 0.0, 0.0, 1.0, //
-        10.0, 20.0, 2.0, 0.0, //
-        1.0, 0.0, 0.0, 0.0, //
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+        10.0, 20.0, 2.0, 0.0,
+        1.0, 0.0, 0.0, 0.0,
         0.0, 0.1, 8.0, 0.0,
     ]));
     bytes

@@ -199,10 +199,6 @@ struct ObserverTestTempDir {
 
 impl ObserverTestTempDir {
     fn new(tag: &str) -> Self {
-        // Cargo's integration-test temp root is isolated with the candidate
-        // target directory. The Windows user temp root can be writable for
-        // fixture creation yet reject the subsequent portable-replay reopen
-        // under a restricted validation runner.
         let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(observer_temp_name(tag));
         fs::create_dir_all(&path).unwrap();
         Self { path }

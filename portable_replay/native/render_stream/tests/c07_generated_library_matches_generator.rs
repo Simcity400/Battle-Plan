@@ -1,32 +1,6 @@
-//! Run the C07 tree-library generator's drift gate where the pins are edited.
-//!
-//! `replay_interface/re_evidence/rendering_laws/C07/build_c07_portable_tree_library.py`
-//! is the authority on `c07_tree_content_hashes.rs`,
-//! `c07_tree_complete_buckets.rs` and `c07_tree_content_library.bin`: it
-//! re-derives all three from the hash-pinned shipped installed content by running the
-//! and `include_bytes!`d straight into this crate, so a hand-edit to any of them
-//! changes what `authenticated_complete_library_ref()` admits.
-//!
-//! Nothing checked them. `--verify` existed but exited 1 on a clean tree,
 //! because the generated `.rs` had grown a hand-written provenance block the
-//! generator does not emit; the documented workaround was a three-flag
-//! regeneration into throwaway paths that nobody would run by habit. A gate that
-//! is red when nothing is wrong is not a gate. The provenance now lives in
 //! `c07_trees.rs`, the generated file is byte-reproducible, and this target runs
-//! the identical script the central runner runs — one authority, no second
-//! implementation to drift.
-//!
 //! Scope: this is a GENERATED-ARTIFACT gate. Whether the library's content is
-//! semantically right is the business of the `c07_trees` unit tests, which check
-//! the packed bytes against the bucket table and both pins against the sealed
-//! payload. What this target adds is the one link those cannot make from inside
-//! the crate: that the committed bytes are still what the installed content produce.
-//!
-//! It therefore requires the hash-pinned the game install. That requirement is not
-//! softened into a skip: the generator's own game-file identity gate is what
-//! makes the check meaningful, and a gate that reports success when it did not
-//! run is worse than no gate. Point `BATTLE_PLAN_GAME_ROOT` at the install if it is not
-//! at the generator's default location.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -45,10 +19,6 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Locate the interpreter the repository already requires. A missing
-/// interpreter fails the test rather than skipping it: central validation
-/// already runs Python gates, so "no Python" is a broken host, not a reason to
-/// declare the pins verified.
 fn python() -> &'static str {
     const CANDIDATES: [&str; 3] = ["python", "python3", "py"];
     for candidate in CANDIDATES {
@@ -63,12 +33,6 @@ fn python() -> &'static str {
     );
 }
 
-/// Pull one scalar out of the generator's stdout receipt.
-///
-/// The receipt is `json.dumps(..., indent=2, sort_keys=True)`, so every scalar
-/// appears exactly once as `"  \"key\": <value>,"`. Matching the whole line
-/// prefix rather than searching for the value keeps a right-looking digest that
-/// landed under some other key from passing.
 fn receipt_scalar<'a>(receipt: &'a str, key: &str) -> &'a str {
     let needle = format!("\"{key}\": ");
     let mut hits = receipt.lines().filter_map(|line| {
@@ -208,8 +172,6 @@ fn generated_c07_tree_library_still_matches_the_exact_producer() {
         .lines()
         .skip_while(|line| line.trim() != "\"verified_outputs\": [")
         .skip(1)
-        // `sort_keys=True` puts `verified_outputs` last, so the array closes with
-        // a bare `]` rather than `],`.
         .take_while(|line| !line.trim().starts_with(']'))
         .map(|line| line.trim().trim_end_matches(',').trim_matches('"'))
         .collect();

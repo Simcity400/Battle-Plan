@@ -64,19 +64,10 @@ pub struct LiveAceRosterInput {
     pub name: Option<String>,
     pub surname: Option<String>,
     pub callsign: Option<String>,
-    /// Validated alive flag (+0x158): `Some(true)`=alive, `Some(false)`=dead,
-    /// `None`=unknown (torn/out-of-domain byte) — never defaulted.
     pub alive: Option<bool>,
-    /// Serializer-owned handled flag (+0x16C). Unknown when the lifecycle
-    /// tuple is torn or out of domain.
     pub handled: Option<bool>,
-    /// Serializer-owned raw kill type (+0x15C). Kept numeric because the
-    /// retained corpus does not prove an exhaustive enum mapping.
     pub kill_type_raw: Option<u32>,
-    /// Killer ace id (+0x164); only meaningful on a dead ace and
-    /// independently present (two D04 dead aces have none).
     pub killer_ace_id: Option<u32>,
-    /// Killer country tag-db-id (+0x168); only meaningful on a dead ace.
     pub killer_country_tag_db_id: Option<u32>,
 }
 
@@ -112,26 +103,6 @@ pub fn build_air_variant_archetype_payload(
     crate::domain46_air_variant_archetypes_live::encode_payload(&header, &rows)
 }
 
-/// Build the `ACE1` trailer bytes for the domain-46 data record.
-///
-/// Fail-closed replace contract (the fold FULL-REPLACES its ace state only on
-/// a clean, complete frame; PARTIAL and SOURCE_UNAVAILABLE both RETAIN prior
-/// state so a read failure is never written as ground-truth absence):
-/// - `source_unavailable`: the country scalar source was missing entirely
-///   (0 rows carried, absent — never zero-filled) => SOURCE_UNAVAILABLE.
-/// - `roster_incomplete`: at least one country root/ace that DOES exist could
-///   not be read this frame (rejected root, torn vector, wrong vtable,
-///   invalid id), so the emitted full-replace set is missing real rows =>
-///   PARTIAL. The surviving rows are still carried for observability.
-/// - `assignment_scan_blocked`: the wing walk failed/was empty, so no
-///   assignments could be joined => WING_ASSIGNMENT_BLOCKED. This is an
-///   assignment-only anomaly (identity is complete); it does NOT force a
-///   retain on its own.
-///
-/// `skipped_rows` is an informational counter (identity + ambiguous-
-/// assignment skips) and may be nonzero on a complete frame when only
-/// ambiguous wing claims were dropped; PARTIAL is driven by `roster_incomplete`,
-/// not by `skipped_rows`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_air_ace_roster_trailer(
     observed_country_rows: u32,
@@ -202,8 +173,6 @@ pub fn build_air_ace_roster_row(input: &LiveAceRosterInput) -> AirAceRosterRow {
     if input.handled.is_some() && input.kill_type_raw.is_some() {
         source_mask |= SOURCE_LIVE_ACE_LIFECYCLE_RECORD;
     }
-    // Killer fields are only trusted on a confirmed-dead ace (fail closed:
-    // their content on living/unknown aces was never validated).
     let dead = input.alive == Some(false);
 
     AirAceRosterRow {
@@ -267,12 +236,6 @@ pub fn build_air_variant_archetype_row(input: &LiveVariantInput) -> AirVariantAr
     }
 }
 
-/// Bind only an authenticated live token-dictionary identity.
-///
-/// A raw numeric token is not a string identity, and spelling-based airframe
-/// or role classification is not static-catalog authority. Missing dictionary
-/// entries therefore remain unresolved. Static catalog enrichments may be
-/// added only by a producer that also supplies its admitted catalog hash.
 pub fn close_or_badge_equipment_token(token_name: Option<&str>) -> ArchetypeClosure {
     ArchetypeClosure {
         archetype_token: token_name.map(str::to_string),
@@ -284,7 +247,6 @@ pub fn close_or_badge_equipment_token(token_name: Option<&str>) -> ArchetypeClos
 pub fn fixed_one_raw() -> i32 {
     FIXED_SCALE_RAW as i32
 }
-
 
 #[cfg(test)]
 mod tests {

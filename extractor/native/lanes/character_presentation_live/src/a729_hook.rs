@@ -1,10 +1,3 @@
-//! Exact-a729 process-local observers for the proven A39 refresh/bind roots.
-//!
-//! This module intentionally stops before production activation. The hooks
-//! retain only short-lived process-local pointers for an authenticated decoder;
-//! no pointer is representable in CPR1. The source remains unauthenticated
-//! until the post-hook receipt and required mixed fixtures are admitted.
-
 use crate::{
     validate_snapshot, AceListContext, AcePortraitObservation, CharacterPresentationSnapshot,
     ExactCharacterPresentationSource, TraitNodeState, TraitTreeObservation, TraitTreeRoot,
@@ -44,11 +37,6 @@ pub const ACE_ROW_BIND_RVA: u32 = 0x0201_EDC0;
 pub const SPRITE_SET_RVA: u32 = 0x0229_A780;
 pub const TRAIT_TOOLTIP_FORMATTER_RVA: u32 = 0x01CF_F880;
 
-/// The current eight-site owner (four local D82 hooks plus four shared A25
-/// runtime-text hooks) is UI-conditional. It is not an unconditional
-/// simulation source and therefore is not promotable for passive production.
-/// A future re-sourced owner must explicitly replace this authority gate; the
-/// receipt/custody seams below remain fail-closed in the meantime.
 pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = false;
 pub const CURRENT_EIGHT_SITE_UI_OWNER_PROMOTABLE: bool = false;
 pub const SHARED_RUNTIME_TYPED_OWNER_CUSTODY_AUTHORIZED: bool = false;
@@ -221,10 +209,6 @@ fn capture_epoch_is_current(epoch: u64) -> bool {
     )
 }
 
-/// Publish the collector's expected raw game-hour label. Hook callbacks
-/// independently read CGameState's current date at materialization and accept
-/// it only when it equals this value, so an old GUI row can never be relabeled
-/// as current evidence.
 pub fn publish_collector_game_hour_raw(game_hour_raw: i32) {
     COLLECTOR_GAME_HOUR_RAW.store(game_hour_raw, Ordering::Release);
 }
@@ -296,15 +280,8 @@ impl Drop for DecoderCallGuard {
 struct HookState {
     latest_trait_component: Option<DecodedTraitComponent>,
     latest_ace_component: Option<DecodedAceComponent>,
-    /// Last exact sprite-set observation for a materialized portrait widget.
-    /// This is process-local cache state only and is cleared on reinstall.
     ace_portrait_by_widget: BTreeMap<usize, String>,
-    /// Current post-refresh process-local item correlation. These addresses
-    /// are never copied into CPR1 and are discarded on every new refresh.
     trait_items: BTreeMap<usize, TraitItemLocator>,
-    /// Intentional fatal fixture-epoch poison. Any ambiguous callback requires
-    /// uninstall/reinstall; a success from the other component cannot revive
-    /// stale evidence.
     current_error: Option<String>,
     component_reservation: Option<ComponentPairReservationState>,
 }
@@ -327,9 +304,6 @@ impl SharedRuntimeObserverGuard {
         if shared_runtime_targets_are_original(module_base)? {
             return Err("A39 requires the registry-owned shared-runtime lease first".into());
         }
-        // D82 never installs or removes the shared set. The registry/evidence
-        // harness must hold the complete A25 four-site lease throughout this
-        // observer registration.
         Ok(Self { armed: true })
     }
 
@@ -394,23 +368,14 @@ struct DecodedAceComponent {
     rows: Vec<AcePortraitObservation>,
 }
 
-/// Short-lived input to the not-yet-promoted trait decoder. These addresses
-/// are never serialized and must be consumed in the hooked process.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocalTraitRefresh {
     pub sequence: u64,
     pub observed_game_hour_raw: i32,
     pub controller_ptr: usize,
-    /// Exact CReferenceObject pair copied from controller+0x78 after refresh.
-    /// It is a process-local join key, not a portable unit-leader identity.
     pub selected_leader_reference_raw: u64,
-    /// Exact live object resolved through the read-only 0x14220A3D0 hash law.
-    /// It is used only to join the authenticated d47 root registry.
     pub selected_leader_ptr: usize,
     pub refresh_argument_raw: i32,
-    /// Exact post-refresh tree/item layout decoded before the callback epoch
-    /// closes. Definition pointers remain process-local and must be joined to
-    /// the authenticated shared trait-definition registry by the decoder.
     pub trees: Vec<ProcessLocalTraitTree>,
 }
 
@@ -423,39 +388,20 @@ pub struct ProcessLocalTraitTree {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocalTraitNode {
     pub source_ordinal: u32,
-    /// Exact live tree-item address retained only for the formatter/setter
-    /// transition join. The synchronous decoder may inspect it as a local
-    /// lookup key, but it is never copied into its portable rows or CPR1.
     pub item_ptr: usize,
     pub trait_definition_ptr: usize,
-    /// Decoded from the exact one-hot visibility law materialized by
-    /// 0x141D011A0, not re-evaluated from static prerequisites.
     pub state: TraitNodeState,
-    /// Exact raw numerator from the selected leader's +0xDF8/+0xE04 sparse
-    /// trait-XP pairs for trait kinds 2/3. `None` is not applicable.
     pub progress_raw: Option<i64>,
-    /// Exact definition kind read at `trait_definition_ptr + 0x920`, the same
-    /// value that decides `progress_raw`'s applicability. It used to be read
-    /// and thrown away; the XUI17 admission needs it per node, and re-reading
-    /// it later would be a second observation of a value that can change.
     pub definition_kind: u32,
 }
 
-/// One exact row-bind call in post-sort callback order. The row and ace
-/// pointers are process-local correlation evidence, not replay identities.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocalAceBind {
     pub visible_ordinal: u32,
-    /// Stable CAceEntry+0x0C identity copied while `ace_ptr` is live.
     pub ace_id: u32,
     pub row_ptr: usize,
     pub ace_ptr: usize,
-    /// Final sprite key observed at 0x14229A780 while the exact row portrait
-    /// widget is bound. This string is pointer-free even though the enclosing
-    /// record remains process-local correlation evidence.
     pub portrait_gfx: String,
-    /// Exact final newline-delimited modifier string supplied by
-    /// 0x14201EDC0 to the row+0x60 textbox. Empty is measured-empty.
     pub modifier_text: String,
 }
 
@@ -474,16 +420,7 @@ pub enum ProcessLocalAceListContext {
     PlaneTypeMask { mask_raw: u32 },
 }
 
-/// Future receipt-bound identity-decoder seam. The hook has already copied the
-/// exact tree layout/state and final portrait string; implementations join only
-/// stable owner/leader/trait/ace identities and must never persist an address
-/// from either process-local refresh record. A decoder may perform only
-/// crash-safe read-only memory/registry joins; it must not call engine/UI code,
-/// install hooks, or otherwise re-enter the observed callback graph.
 pub trait ExactA729BoundaryDecoder: Send + Sync {
-    /// `Some` only for the sealed collector decoder. The adapter samples this
-    /// before and after each synchronous decode to reject catalog replacement
-    /// during a callback and to prevent cross-epoch trait/ace pairing.
     fn identity_catalog_epoch(&self) -> Option<u64> {
         None
     }
@@ -499,11 +436,6 @@ pub trait ExactA729BoundaryDecoder: Send + Sync {
     ) -> Result<(AceListContext, Vec<AcePortraitObservation>), String>;
 }
 
-/// Process-local identity joins supplied by the already authenticated d47/d46
-/// root registries. Addresses are lookup keys only and can never enter CPR1.
-/// Constructing this catalog does not authenticate a source. Fixture decoders
-/// may consume an explicitly supplied catalog, while production accepts only
-/// the sealed collector-owned decoder and still requires the activation gate.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProcessLocalIdentityCatalog {
     pub leaders_by_address: BTreeMap<usize, (u32, u64)>,
@@ -592,9 +524,6 @@ pub fn decode_ace_rows_with_catalog(
     }
     validate_snapshot(&CharacterPresentationSnapshot {
         source_sequence: boundary.sequence,
-        // Component-local validation supplies the two carrier-required roots
-        // only as an internal shape witness. The combined snapshot later
-        // replaces these placeholders with the authenticated trait component.
         trait_trees: vec![
             TraitTreeObservation {
                 owner_tag_db_id: 1,
@@ -645,19 +574,11 @@ fn decode_ace_context_with_catalog(
     }
 }
 
-/// Concrete fixture decoder for an immutable authenticated root snapshot. The
-/// caller must rebuild it when d47/d46 root membership changes; stale or
-/// missing entries reject the entire fixture epoch.
 #[derive(Clone, Debug)]
 pub struct CatalogBoundaryDecoder {
     catalog: Arc<ProcessLocalIdentityCatalog>,
 }
 
-/// Sealed collector-owned decoder whose catalog is atomically replaced from
-/// one complete d47+d46 root-read epoch. Callback readers clone one immutable
-/// snapshot, so a collector refresh can never tear an in-flight UI decode.
-/// This is not an authentication switch: production hook/source activation
-/// remains governed by `PRODUCTION_ACTIVATION_AUTHORIZED`.
 #[derive(Debug, Default)]
 pub struct CollectorBoundaryDecoder {
     state: RwLock<CollectorCatalogState>,
@@ -684,8 +605,6 @@ impl CollectorBoundaryDecoder {
         Ok(true)
     }
 
-    /// Any incomplete d47/d46 root epoch removes the prior catalog. Retaining
-    /// stale process addresses would turn known source loss into false identity.
     pub fn invalidate(&self) -> bool {
         if let Ok(mut state) = self.state.write() {
             if state.catalog.take().is_some() {
@@ -821,17 +740,6 @@ impl ExactA729BoundaryDecoder for CatalogBoundaryDecoder {
     }
 }
 
-/// Reserved d82 source. It cannot authenticate as a production source while
-/// the promotion constant is false, and proving that is now its whole job:
-/// `collect_and_encode` is generic over `ExactCharacterPresentationSource` and
-/// this is the only concrete implementor, so
-/// `production_activation_is_fail_closed` is what holds the refusal.
-///
-/// It carried an `expected_game_hour_raw` field until 2026-08-15. The only
-/// reader was the retired harness-only `decode_fixture_candidate`, which
-/// passed it to `peek_character_presentation_candidate`; production reaches
-/// that API directly with the hour it is building, so the field went with the
-/// A39 evidence workflow.
 #[derive(Clone, Copy, Debug)]
 pub struct A729ObservedCharacterPresentationSource;
 
@@ -839,21 +747,10 @@ impl A729ObservedCharacterPresentationSource {
     pub const fn new() -> Self {
         Self
     }
-
-    // RETIRED 2026-08-15 (owner ruling): `decode_fixture_candidate` was a
-    // harness-only peek+commit used to generate mixed CPR1 fixtures. Its only
-    // caller anywhere in the tree was the collector's `A39EvidenceOwner`, which
-    // is deleted with the A39 evidence workflow, so it went with it. The
-    // transactional `peek_character_presentation_candidate` /
-    // `commit_character_presentation_candidate` pair it wrapped is the
-    // PRODUCTION publication API and is untouched.
 }
 
 impl ExactCharacterPresentationSource for A729ObservedCharacterPresentationSource {
     fn is_exact_a729_character_presentation_source(&self) -> bool {
-        // The legacy trait cannot carry a publication reservation across its
-        // caller's encode/stage boundary. Production must use the explicit
-        // peek/commit/rollback API below.
         false
     }
 
@@ -887,28 +784,6 @@ pub struct InstalledAddresses {
     pub trait_tooltip_formatter: usize,
 }
 
-// RETIRED 2026-08-15 (owner ruling, A39 evidence-workflow retirement, lane JX):
-// `HookDiagnostics` and `diagnostics()` stood here. Their only caller anywhere
-// in the tree was the collector's A39 evidence receipt, which is deleted, and
-// `diagnostics()` was the ONLY reader of six `HookState` counters
-// (`trait_refresh_count`, `trait_tooltip_count`, `trait_reason_join_count`,
-// `ace_refresh_count`, `ace_bind_count`, `rejected_observation_count`) - so the
-// counters and the increments that maintained them went with it. The writes
-// happened inside live d82 callbacks, but the VALUES were consumed by nothing:
-// removing them narrows no capture. `current_error`, `latest_trait_component`
-// and `latest_ace_component` are read by the live production path and stay.
-
-/// The ONLY entry point. It cannot install until the evidence gate changes.
-///
-/// The harness-only `install_for_fixture_capture` that used to sit beside it is
-/// retired: it took an arbitrary decoder, skipped the installed-hook receipts,
-/// and was reachable only behind the `a729-fixture-hook` cargo feature. It had
-/// no caller left anywhere in the tree when it was deleted — the collector's
-/// A39 evidence owner called it in an earlier revision (39573eb8a), but that
-/// call had already been removed, leaving the owner's `character_install` field
-/// permanently `None`. So it is deleted rather than gated, and this lane now
-/// has no way to install a detour that a production build could not also
-/// install.
 pub fn install() -> Result<InstalledAddresses, String> {
     if !PRODUCTION_ACTIVATION_AUTHORIZED {
         return Err("A39 production hook activation is not authorized".into());
@@ -994,11 +869,6 @@ impl HookState {
     }
 }
 
-/// Pointer-free D82 candidate held under a bounded single reservation.
-///
-/// The caller may encode and stage this snapshot without removing the source
-/// pair. It must commit only after successful publication, or roll back on any
-/// failure so the same pair remains first in order ahead of newer callbacks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CharacterPresentationCandidateReservation {
     pub reservation_id: u64,
@@ -1022,11 +892,6 @@ fn register_decoder(decoder: Arc<dyn ExactA729BoundaryDecoder>) -> Result<(), St
     Ok(())
 }
 
-/// Installing ALWAYS observes the exact installed-hook receipts. The
-/// `production_receipts: bool` parameter existed for one other caller, the
-/// retired `install_for_fixture_capture`, which passed `false` to skip them;
-/// with that entry point deleted the only caller is `install()` and it passed
-/// `true`, so the receipt-free arm was dead and is gone with it.
 fn install_hook_set() -> Result<InstalledAddresses, String> {
     let _install_guard = INSTALL_LOCK
         .lock()
@@ -1196,17 +1061,11 @@ pub fn uninstall() -> Result<(), String> {
         .lock()
         .map_err(|_| "A39 install mutex poisoned")?;
     if !HOOK_SET_PRESENT.load(Ordering::Acquire) {
-        // Hook restoration may have succeeded while receipt observation
-        // failed. Preserve retryable custody instead of silently converting
-        // that failure into success on the next teardown call.
         observe_local_release_receipts_if_owned()?;
         release_partial_local_install_receipts()?;
         return Ok(());
     }
     let resolved = addresses(MODULE_BASE.load(Ordering::Acquire));
-    // Close admission before inspecting reservation custody. A reserving
-    // caller rechecks these gates while holding STATE, so it cannot enter
-    // after this transition.
     TEARDOWN_ACTIVE.store(true, Ordering::Release);
     INSTALLED.store(false, Ordering::Release);
     LIFECYCLE_HEALTHY.store(false, Ordering::Release);
@@ -1239,8 +1098,6 @@ pub fn uninstall() -> Result<(), String> {
         }
     }
     if let Some(error) = removal.error {
-        // Keep the trampolines and module base intact: a failed disable/remove
-        // may have left a detour callable unless every remove succeeded.
         return Err(error);
     }
     if let Some(error) = release_receipt_error {
@@ -1259,9 +1116,6 @@ pub fn uninstall() -> Result<(), String> {
     Ok(())
 }
 
-/// Bind the shared owner's complete four-site installed receipt set and retain
-/// only D82's non-owning sprite observation. The shared owner has already
-/// authenticated each MinHook relay against its actual detour.
 pub fn bind_shared_runtime_installed_receipts(
     shared_runtime_installed_receipts: &[InstalledRvaHookReceipt; 4],
 ) -> Result<(), String> {
@@ -1289,13 +1143,7 @@ pub fn bind_shared_runtime_installed_receipts(
     Ok(())
 }
 
-/// Exact enabled receipts for D82's four locally owned hooks plus its
-/// non-owning observation of the shared A25 sprite-set hook.
-///
-/// This five-entry D82 observation is not the complete active-hook census:
-/// `install_a729_runtime_text_hooks` also owns registration, setter, and
 /// destructor detours. The fifth receipt does not transfer removal ownership
-/// to D82.
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 5], String> {
     let receipts = HOOK_RECEIPTS
         .get()
@@ -1318,9 +1166,7 @@ pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; 5], String>
     Ok([local[0], local[1], local[2], local[3], shared])
 }
 
-/// Observe the shared sprite target only after the A25 owner has uninstalled
 /// its complete hook set. This refuses to manufacture a complete D82 release
-/// while the shared target is still patched.
 pub fn finalize_shared_sprite_release_receipt(
     shared_runtime_release_receipts: &[ReleasedRvaHookReceipt; 4],
 ) -> Result<(), String> {
@@ -1383,7 +1229,6 @@ pub fn finalize_shared_sprite_release_receipt(
 }
 
 /// Consume D82's exact five-observation release set. It remains unavailable
-/// until D82's four local targets are restored and the shared owner supplies
 /// release custody for all four runtime-text targets. It is not a replacement
 /// for the shared owner's complete four-site release set.
 pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 5], String> {
@@ -1501,7 +1346,6 @@ fn validate_shared_runtime_install_custody(
     Ok(())
 }
 
-/// Consumes one already pointer-free trait fixture component.
 pub fn drain_decoded_trait_candidate() -> Result<(u64, Vec<TraitTreeObservation>), String> {
     if !INSTALLED.load(Ordering::Acquire) || !LIFECYCLE_HEALTHY.load(Ordering::Acquire) {
         return Err("A39 exact-a729 fixture hooks are not installed".into());
@@ -1530,7 +1374,6 @@ pub fn drain_decoded_trait_candidate() -> Result<(u64, Vec<TraitTreeObservation>
         .ok_or_else(|| "A39 has not decoded a complete trait refresh".into())
 }
 
-/// Consumes one already pointer-free ace fixture component.
 pub fn drain_decoded_ace_candidate() -> Result<(u64, Vec<AcePortraitObservation>), String> {
     if !INSTALLED.load(Ordering::Acquire) || !LIFECYCLE_HEALTHY.load(Ordering::Acquire) {
         return Err("A39 exact-a729 fixture hooks are not installed".into());
@@ -1553,11 +1396,6 @@ pub fn drain_decoded_ace_candidate() -> Result<(u64, Vec<AcePortraitObservation>
         .ok_or_else(|| "A39 has not decoded a complete ace refresh".into())
 }
 
-/// Reserve the oldest complete pointer-free D82 pair without consuming it.
-///
-/// Exactly one reservation may be active. New callbacks continue into the
-/// bounded latest-pending slots while a reservation is held. A rollback keeps
-/// the reserved pair first; a later commit reveals the newer pending pair.
 pub fn peek_character_presentation_candidate(
     expected_game_hour_raw: i32,
 ) -> Result<Option<CharacterPresentationCandidateReservation>, String> {
@@ -1572,10 +1410,6 @@ pub fn peek_character_presentation_candidate(
             snapshot,
         })),
         Err(error) => {
-            // A source-invalid/cross-hour pair can never become publishable.
-            // Discard it so the collector can emit a typed gap and later
-            // observe a newer pair. Rollback is reserved for failures after a
-            // valid snapshot has entered publication staging.
             commit_character_presentation_candidate(reservation_id)?;
             Err(error)
         }
@@ -1758,9 +1592,6 @@ unsafe extern "system" fn a39_sprite_setter_observer(
             .as_ref()
             .is_some_and(|capture| capture.widget_ptr == widget_ptr)
     });
-    // This is a generic GUI setter and therefore observes unrelated traffic.
-    // Only recursion for the active row portrait target can make the A39
-    // observation ambiguous; foreign widget recursion must not poison d82.
     if nested && target_matches {
         reject_callback("A39 recursive sprite set rejected");
     }
@@ -1972,8 +1803,6 @@ fn record_ace_bind(
     modifier_set: Option<Result<ActiveAceModifierSet, String>>,
 ) {
     if !ACTIVE_ACE_BINDS.with(|scratch| scratch.borrow().is_some()) {
-        // A foreign-thread or out-of-refresh bind cannot enter another
-        // thread's post-sort ordinal set and cannot poison its batch.
         return;
     }
     if row_ptr == 0 || ace_ptr == 0 {
@@ -2152,10 +1981,6 @@ fn finish_ace_modifier_set() -> Result<ActiveAceModifierSet, String> {
         .ok_or_else(|| "A39 ace modifier-text capture disappeared before row bind returned".into())
 }
 
-/// A25 owns the sole 0x1422B59E0 detour. This observer runs before its
-/// trampoline consumes the MSVC string. Ace text requires the exact row-bind
-/// TLS epoch plus row+0x60 widget equality; trait text requires exact equality
-/// with the immediately preceding mapped tooltip formatter output.
 unsafe extern "system" fn a39_pre_text_setter_observer(
     owner_ptr: usize,
     widget_ptr: usize,
@@ -2203,9 +2028,6 @@ unsafe extern "system" fn a39_pre_text_setter_observer(
             let Some(pending) = slot.as_mut() else {
                 return;
             };
-            // Admit only the immediately following exact setter input. The
-            // first foreign setter invalidates this transition so a stale
-            // tooltip string cannot collide with later UI traffic.
             if pending.expected_text == observed_text && pending.matched_owner_widget.is_none() {
                 pending.matched_owner_widget = Some((owner_ptr, widget_ptr));
             } else {
@@ -2434,13 +2256,6 @@ fn read_trait_progress_catalog(selected_leader_ptr: usize) -> Result<BTreeMap<us
     Ok(by_definition)
 }
 
-/// The exact definition kind, and the trait-XP numerator its value selects.
-///
-/// One read, two results, deliberately. The kind decides whether a progress
-/// value applies at all, so reading it twice -- once to decide and once to
-/// carry -- would allow the carried kind to disagree with the applicability it
-/// is supposed to explain. The tear-detecting re-read stays inside this
-/// function, which is what makes the returned pair a single observation.
 fn trait_definition_kind_and_progress(
     trait_definition_ptr: usize,
     progress_by_definition: &BTreeMap<usize, i64>,
@@ -2816,7 +2631,6 @@ fn release_partial_local_install_receipts() -> Result<(), String> {
 }
 
 /// Consume release proof from a failed partial local install. Reinstallation
-/// remains blocked until the caller has taken this custody.
 pub fn take_partial_install_rollback_release_receipts(
 ) -> Result<Vec<ReleasedRvaHookReceipt>, String> {
     if PARTIAL_LOCAL_INSTALL_RECEIPTS
@@ -3289,8 +3103,6 @@ mod tests {
                         trait_token: "panzer_leader".into(),
                         state: TraitNodeState::Picked,
                         progress_raw,
-                        // The carrier enforces `kind in {2,3}` iff a numerator
-                        // is present, so the fixture kind tracks the argument.
                         definition_kind: if progress_raw.is_some() { 2 } else { 4 },
                         reason_context_id: None,
                     }],

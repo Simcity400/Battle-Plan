@@ -22,17 +22,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import gap_ledger  # noqa: E402  (path is set immediately above)
+import gap_ledger
 
-# Gap reasons that mean an hour was deliberately skipped rather than lost to a
-# reader. Kept separate because they reconcile against `skipped_game_hours`.
 SKIPPED_HOUR_REASONS = {"skipped_hour"}
 
-# The v1 failure vocabulary, by bit, from
-# `compact_contract/src/status_flags_base.rs`. Named here rather than imported
-# because this script reads a sealed manifest and must run against a manifest
-# from any checkout; a name this table does not know is printed as its bit so
-# an added flag is still visible.
 FAILURE_STATUS_NAMES = (
     (1 << 0, "state_unavailable"),
     (1 << 1, "profile_mismatch"),
@@ -174,15 +167,6 @@ def score(manifest):
     Returns a list of (key, count, detail) where a nonzero count is a miss.
     """
     stream = manifest.get("compact_stream", {}) or {}
-    # The gap ledger is RUN ENCODED in the sealed manifest -- the flat arrays
-    # this scorecard used to walk cost 33.5 KB of JSON per game hour. Expanded
-    # once, here, into exactly the rows the flat arrays held, so every axis below
-    # is unchanged.
-    #
-    # A ledger this scorecard cannot read is ITS OWN AXIS, not zero gaps. Every
-    # gap axis below counts rows, so an unreadable or absent ledger would
-    # otherwise score a capture perfectly clean on the strength of a document
-    # nobody could open -- the strongest false claim this tool can make.
     ledger_fault = ""
     try:
         gap_rows = gap_ledger.expand_gaps(stream)
@@ -204,9 +188,6 @@ def score(manifest):
             return 0
         return end - start + 1
 
-    # Domain-hours, not records. An H4DG range is INCLUSIVE and can be
-    # coalesced across several hours, so a record count understates the loss --
-    # t17 carries 7238 records over 8054 domain-hours.
     gap_outcome_hours = collections.Counter()
     for outcome in gap_outcome_rows:
         gap_outcome_hours[outcome.get("reason", "?")] += _span(
@@ -224,12 +205,6 @@ def score(manifest):
     gap_records = int(stream.get("domain_gap_record_count", 0) or 0)
     domain_hours = frames * len(expected)
 
-    # A domain-hour must resolve to exactly one of: a data record, or a gap
-    # record naming why there is none. Anything left over is an hour that no
-    # ledger accounts for, which is the failure mode that hides real loss.
-    #
-    # Reconcile per domain, not in aggregate: one domain silent for hundreds of
-    # hours and another over-reporting would cancel out in a single subtraction.
     gaps_by_id = collections.Counter(
         outcome.get("domain_id") for outcome in gap_outcome_rows
     )
@@ -242,20 +217,6 @@ def score(manifest):
             unresolved_by_domain[name] = frames - resolved
     unresolved_domain_hours = sum(abs(v) for v in unresolved_by_domain.values())
 
-    # The hours the clock advanced through but no frame observed, and the part
-    # of that which no skipped-hour gap explains.
-    #
-    # Two traps here, both of which produced wrong numbers on t15 and both of
-    # which are the reason this quantity must not be eyeballed:
-    #
-    # 1. `game_hours_advanced` is a DELTA (last_hour - first_hour), while
-    #    `unique_game_hour_count` is a COUNT. Subtracting one from the other
-    #    drops the inclusive endpoint and reports one hour too few -- 145 where
-    #    the capture really has 146. The span is `advanced + 1` hours.
-    # 2. `skipped_hour` gap entries are COALESCED RANGES, so counting the
-    #    records counts runs, not hours. t15 carries 125 such records covering
-    #    exactly 146 hours (105 runs of 1, 19 of 2, 1 of 3). Comparing 146
-    #    against 125 invents 20 unexplained hours that do not exist.
     span_hours = advanced + 1 if advanced or observed else 0
     hours_unobserved = span_hours - observed
     skipped_hours_covered = 0
@@ -269,35 +230,20 @@ def score(manifest):
         skipped_hours_covered += end - start + 1
     hours_unaccounted = hours_unobserved - skipped_hours_covered
 
-    # `reader_silent` is the seal saying a scheduled domain produced neither a
-    # data record nor any statement about why. It is an honest floor, not a
-    # clean outcome: the hour IS now accounted, which is the whole point, but
-    # the thing being accounted is a producer that returned nothing. Counted on
-    # its own axis so it can never pass as an ordinary explained gap.
     reader_silent_by_domain = collections.Counter()
     for outcome in gap_outcome_rows:
         if outcome.get("reason") == "reader_silent":
             reader_silent_by_domain[outcome.get("domain_id")] += 1
 
-    # The host counts gap records per domain while building `per_domain`, and
-    # the outcome ledger is scanned separately. They describe the same records,
-    # so a divergence means one of them is not counting something.
     gap_count_disagreements = {}
     for name, info in per_domain.items():
         declared = info.get("gap_record_count")
         if declared is None:
             continue
-        # NOT `observed` -- that name holds unique_game_hour_count, and
-        # rebinding it here left the hours axis explaining itself with the
-        # last domain's gap count ("89 observed of 594") while its headline
-        # number, computed earlier, was right. A shadowed name in a report is
-        # a wrong report.
         counted = gaps_by_id.get(info.get("domain_id"), 0)
         if int(declared) != counted:
             gap_count_disagreements[name] = (int(declared), counted)
 
-    # A domain can be absent from `per_domain` and still be emitting gaps, so
-    # name both shapes: it is the shape the per-domain report cannot see.
     known_ids = {info.get("domain_id") for info in per_domain.values()}
     absent = sorted(set(expected) - set(per_domain))
     absent_but_gapping = sorted(
@@ -316,35 +262,6 @@ def score(manifest):
         if int(info.get("row_count_total", 0) or 0) == 0
     )
 
-    # A domain that produced nothing has almost always SAID why, once per
-    # frame, in its degraded record -- and naming the domain without its reason
-    # is what sent a whole lane after an answer the manifest already carried.
-    # Report the dominant reason beside each name so this file answers "why is
-    # it empty" without a second tool.
-    # Grouped by PREDICATE, with the reason as the sample beside it.
-    #
-    # Reasons carry per-frame values ("47 rows observed, 3 rejected"), so
-    # counting distinct reason strings counts frames, not causes: a domain
-    # failing the same way 505 times looked like 505 different conditions and
-    # the "dominant reason" was whichever frame happened to repeat. H4FD v2
-    # carries the predicate, which is the stable key -- one code per check --
-    # and in particular separates a producer's own diagnosis from
-    # `outcome_substantiated_from_record`, the frame-final sweep's
-    # reconstruction, and from `producer_declared_no_predicate`, which means
-    # nobody diagnosed it at all. Those three call for different work.
-    #
-    # The key is the CODE, not the name. The shared contract defines a predicate
-    # as a code plus a name and says the code is per-domain rather than globally
-    # unique, so within one domain the code is the identity and the name is how
-    # it reads. Keying on the name instead merged two codes that happened to
-    # share a name and split one code whose name was reworded -- and this file
-    # claimed to be keying on the code while doing neither.
-    #
-    # An entry with no readable predicate is grouped as such rather than falling
-    # back to its reason: version 2 always writes one, so a missing predicate is
-    # a fact about a broken capture, and quietly substituting prose would hide
-    # exactly the thing worth seeing. There is no pre-version-2 read path here
-    # -- old captures are disposable.
     reason_by_domain = collections.defaultdict(collections.Counter)
     sample_reason = {}
     predicate_label = {}
@@ -354,21 +271,12 @@ def score(manifest):
             continue
         entries = frame.get("domains")
         for entry in entries if isinstance(entries, list) else []:
-            # Every shape below is one the recorder should never write. Each was
-            # an unhandled exception on the way to a scorecard: a report that
-            # dies on one malformed entry tells the reader nothing about the
-            # other 72 domains.
             if not isinstance(entry, dict):
                 continue
             reason = entry.get("reason")
             reason = reason.strip() if isinstance(reason, str) else ""
             code = entry.get("predicate_code")
             name = entry.get("predicate_name")
-            # THE KEY IS THE CODE ALONE. Putting the name in the key -- even
-            # beside the code -- reintroduces half the defect: one code whose
-            # name is reworded between builds splits into two causes, which is
-            # the same overcounting the reason strings produced. The name is
-            # display, remembered from the first entry that carried this code.
             if isinstance(code, bool) or not isinstance(code, int):
                 key = "(no readable predicate)"
                 label = key
@@ -396,8 +304,6 @@ def score(manifest):
             return f"{name} [{hits}x {label}: {sample[:90]}]"
         return f"{name} [{hits}x {label[:110]}]"
 
-    # Producers that counted what they threw away. Any nonzero counter here is
-    # data the reader saw and did not record.
     dropped = {}
     for name, info in per_domain.items():
         problems = info.get("problems") or {}
@@ -409,28 +315,9 @@ def score(manifest):
     artifact = manifest.get("replay_artifact", {}) or {}
     hourly = manifest.get("hourly_requirement", {}) or {}
 
-    # A degraded-frame count on its own says nothing actionable: 505 of 592 is
-    # either one broken domain repeated 505 times or 505 unrelated events, and
-    # those call for opposite responses. Name the offenders and how often each
-    # appears, so the count carries its own explanation.
-    # Normalised ONCE, then used by all three walks below. Each of them used to
-    # re-walk the raw JSON and raise `AttributeError` on a non-dict frame or
-    # offender, which took the WHOLE scorecard -- every unrelated axis included
-    # -- down over one malformed entry. Doing it once also keeps the numerator
-    # and the denominator of the "would still be degraded" ratio counting the
-    # same set of frames, which two independent walks could not promise.
     raw_degraded = stream.get("frame_degraded_outcomes")
     degraded_offenders = []
-    # ONE counter for every shape this walk could not read, at whatever level it
-    # sat: a malformed frame and a malformed offender inside a good frame are
-    # both "something the numbers below do not include", which is the only thing
-    # a reader needs from it. The wording on the detail line says "record(s)"
-    # rather than "entries" for that reason -- an earlier spelling called them
-    # all offender entries while the number also counted whole frames.
     unreadable_records = 0
-    # ABSENT is not MALFORMED: a stream with no degraded frames omits the key,
-    # and counting that as unreadable would put a permanent 1 on every clean
-    # capture. A key that is present but not a list is a real defect.
     if raw_degraded is not None and not isinstance(raw_degraded, list):
         unreadable_records += 1
     for frame in raw_degraded if isinstance(raw_degraded, list) else []:
@@ -439,8 +326,6 @@ def score(manifest):
             continue
         offenders = frame.get("domains")
         if offenders is not None and not isinstance(offenders, list):
-            # Silently treating this as an empty frame said "this hour degraded
-            # nothing", which is a claim, not a gap.
             unreadable_records += 1
         ids = set()
         for offender in offenders if isinstance(offenders, list) else []:
@@ -464,13 +349,6 @@ def score(manifest):
         f"d{domain_id} {name_by_id.get(domain_id, '?')}={count}"
         for domain_id, count in degraded_by_domain.most_common()
     ) or "none"
-    # A domain that offends in EVERY degraded frame is a standing condition, not
-    # an event; separating those says how many frames would still be degraded if
-    # it were fixed.
-    # One domain per frame, counted once: the wire contract already refuses a
-    # notice that names a domain twice, so this changes no valid capture, and
-    # it keeps `count` comparable to the frame count on the next line -- which
-    # a per-entry count could exceed.
     always_degrading = {
         domain_id for domain_id, count in degraded_by_domain.items()
         if degraded_frame_count and count == degraded_frame_count
@@ -485,21 +363,11 @@ def score(manifest):
             + f"; {frames_degraded_by_others} of {degraded_frame_count} frames "
               "would still be degraded without them")
     if unreadable_records:
-        # NAMED, not dropped. Every count above is over the records this
-        # function could read, so a reader comparing them against the frame
-        # count needs to know some never joined them. Silently losing an
-        # offender is the same defect class as dying on one.
         degraded_detail += (
             f"; {unreadable_records} degraded record"
             + ("" if unreadable_records == 1 else "s")
             + " unreadable and excluded from these counts")
 
-    # A production capture must not expect a domain the owner ruled out of
-    # capture scope: if it does, some roster path did not get the deschedule and
-    # the capture is about to count hundreds of empty frames against a domain
-    # nobody asked for. An evidence capture that deliberately passes
-    # `--scheduled-domain` for one of them will also show these two axes; that
-    # is a deliberate configuration showing up as expected, not a silent one.
     descheduled_block = descheduled(manifest)
     descheduled_names = {
         entry.get("domain")
@@ -508,9 +376,6 @@ def score(manifest):
     descheduled_but_expected = sorted(descheduled_names & set(expected))
     descheduled_but_reported = sorted(descheduled_names & set(per_domain))
 
-    # The record itself is an axis. A capture whose roster shrank but whose
-    # manifest carries no reasoned account of why is exactly the D81 shape this
-    # whole mechanism exists to prevent, and it must not score COMPLETE.
     record_faults = []
     if not descheduled_block:
         record_faults.append(
@@ -525,13 +390,6 @@ def score(manifest):
         for field in ("reason", "decided_on", "decided_by", "authority"):
             if not str(descheduled_block.get(field) or "").strip():
                 record_faults.append(f"descheduled_domains.{field} is missing or empty")
-        # The rulings are not one event. The block-level date is the date the
-        # MECHANISM was established, and each entry carries the ruling that
-        # actually covered it -- d85's is 2026-08-13 while the other five are
-        # 2026-08-03. Checking only the block would let a record publish six
-        # domains under one date, read as complete, and still say something
-        # false about one of them, which is the exact failure this section
-        # exists to prevent.
         for entry in descheduled_block.get("domains", []) or []:
             name = entry.get("domain") or "<unnamed>"
             for field in ("decided_on", "reason"):
@@ -539,8 +397,6 @@ def score(manifest):
                     record_faults.append(
                         f"descheduled domain {name} publishes no {field}; a reader cannot "
                         "tell which ruling covered it")
-        # Non-emptiness alone lets a record drop entries or invent one. Compare
-        # it against the registry, which owns the decision.
         expected_pairs = registry_descheduled()
         if expected_pairs is None:
             record_faults.append(
@@ -560,33 +416,6 @@ def score(manifest):
                     f"the manifest records d{extra[0]} {extra[1]} as descheduled but the "
                     "checkout's registry does not")
 
-    # The two ledgers are NOT two counts of the same thing, and comparing them
-    # per-reason for equality -- which this axis used to do -- overstates loss.
-    #
-    # `domain_gap_outcomes` is one entry per H4DG record: a scheduled domain's
-    # own terminal statement that it emitted NO data for those hours. That is
-    # the gap count.
-    #
-    # `gaps` is the host-derived ledger, and `derive_gap_records` builds it as a
-    # SUPERSET: every H4DG projected into it, PLUS whole-clock skipped hours,
-    # PLUS one record per domain-hour that DID emit data and carried a failure
-    # status bit. Those last are annotations on delivered data, not absences.
-    #
-    # On t17 the old axis read `source_unavailable: 4703 vs 501` and invited the
-    # reading that 4202 domain-hours were lost. They were not: all 4202 have a
-    # DOMAIN_DATA record in the stream. The 501 are the real gaps.
-    #
-    # The reasons are NOT the join key: the recorder renames some on the way in
-    # (an H4DG `torn` projects to a ledger `torn_sweep`, `overrun` to
-    # `backpressure`), so subtracting per reason invents a difference where
-    # there is none. Restating that mapping here would be a second copy of the
-    # recorder's table, free to drift from it silently.
-    #
-    # The (hour, domain) PAIR is a sound join key and needs no table. A derived
-    # record is backed by a producer outcome exactly when the pairs it claims
-    # are claimed by an H4DG for the same domain; anything else it claims is
-    # host-derived. The recorder guarantees at most one outcome per domain-hour,
-    # so the split is unambiguous.
     outcome_pairs = set()
     for outcome in gap_outcome_rows:
         domain_id = outcome.get("domain_id")
@@ -597,17 +426,6 @@ def score(manifest):
         for hour in range(start, end + 1):
             outcome_pairs.add((hour, domain_id))
 
-    # The host-derived arm is not one thing. `derive_gap_records` raises a
-    # COVERAGE witness when a domain-hour produced no PERF or too few DATA, and
-    # a STATUS witness when it produced its records and flagged them. The first
-    # is an absence the producer never named; the second is delivered data. They
-    # must not share an axis -- counting a coverage shortfall as a delivery is
-    # the same overstatement, pointing the other way, as the equality axis this
-    # replaced.
-    #
-    # The witness names the difference itself, so no reason table is needed: a
-    # coverage witness carries the observed/expected record counts it is
-    # asserting, and arm (c) only ever raises one when something was short.
     COVERAGE_WITNESSES = {"coverage", "coverage_and_status"}
 
     claimed_pairs = set()
@@ -621,7 +439,7 @@ def score(manifest):
         if start is None or end is None or end < start:
             continue
         if not domains:
-            continue  # a global whole-clock hour, not a per-domain outcome
+            continue
         witness = record.get("witness") or {}
         is_absence = witness.get("kind") in COVERAGE_WITNESSES
         for domain_id in domains:
@@ -635,19 +453,11 @@ def score(manifest):
                     flagged_pairs.add((hour, domain_id))
                     flagged_by_reason[record.get("reason", "?")] += 1
 
-    # Every producer outcome must reach the derived ledger. This is the real
-    # reconciliation the old equality axis was reaching for, and unlike it a
-    # nonzero count here is genuine loss: a domain-hour the producer said it
-    # could not fill, that the ledger the replay is graded against never heard
-    # about.
     unprojected_outcome_hours = len(outcome_pairs - claimed_pairs)
     flagged_delivered_hours = sum(flagged_by_reason.values())
     host_absent_hours = sum(host_absent_by_reason.values())
     outcome_hours = sum(gap_outcome_hours.values())
 
-    # A flagged delivery whose payload was then rejected from the fold has an
-    # envelope and no content. It is counted on the exclusion axis too; said
-    # here so the flagged number is not read as "delivered but usable".
     excluded_records = (excluded.get("records") or [])
     excluded_pairs = {
         (record.get("game_hour_raw"), record.get("domain_id"))
@@ -675,39 +485,11 @@ def score(manifest):
             f" {len(excluded_pairs) - also_flagged - also_gapped} are otherwise"
             " indistinguishable from a clean delivery)")
 
-    # COVERED-BY-DATA is not COVERED-BY-EXPLANATION, and the coverage gate
-    # cannot tell them apart.
-    #
-    # `compact_domain_coverage_errors_with_gaps` asks one question per
-    # scheduled domain-hour: did a PERF record arrive, and where the domain
-    # requires one, a DATA record. d81 answers yes for every one of its 318
-    # hours and carries no rail state in any of them -- every record is a
-    # SOURCE_UNAVAILABLE envelope whose payload is empty. `domain_coverage.ok`
-    # is therefore true, and a reader who stops at that word reads the capture
-    # as covering d81. The hours ARE accounted; what they are accounted BY is
-    # an explanation, not data, and only one of those is the thing the capture
-    # was run to collect.
-    #
-    # Both facts have to be printed, because a domain carrying no rows is two
-    # different situations that call for opposite responses. A domain can be
-    # legitimately empty for a whole capture -- no nuclear strike was ever
-    # made, so d24 has nothing to say and says it cleanly. That is not the d81
-    # shape. The residual failure-status word is exactly what separates them:
-    # d81's hours carry `source_unavailable`, the empty-but-clean domain's
-    # carry nothing. So the axis COUNTS only the domains whose emptiness is a
-    # named failure, and prints the clean-empty ones beside it as context that
-    # must never silently become a miss.
-    #
-    # Derived here from `per_domain` rather than read from a manifest field so
-    # that it also scores captures sealed before the recorder published its own
-    # split -- t23 included.
     explanation_only = []
     empty_but_clean = []
     for name in expected:
         info = per_domain.get(name)
         if info is None:
-            # "expected domains with no per-domain record" already owns this;
-            # counting it twice would double-report one absence.
             continue
         if int(info.get("row_count_total", 0) or 0):
             continue
@@ -715,8 +497,6 @@ def score(manifest):
         data_records = int(info.get("data_record_count", 0) or 0)
         gap_records = gaps_by_id.get(domain_id, 0)
         if not data_records and not gap_records:
-            # Nothing accounts for these hours at all. That is a strictly worse
-            # condition and the reconciliation axis above is what names it.
             continue
         failure = residual_failure_status(info)
         entry = (name, domain_id, data_records, gap_records, failure)
@@ -738,8 +518,6 @@ def score(manifest):
             + ", ".join(f"{e[0]} (d{e[1]})" for e in sorted(empty_but_clean)))
 
     axes = [
-        # FIRST, because every gap axis below is read through the ledger: if this
-        # is nonzero, their zeros mean "not read", not "nothing there".
         ("the gap ledger could not be read", 1 if ledger_fault else 0,
          ledger_fault or "read"),
         ("hours the clock advanced but no frame observed", hours_unobserved,
@@ -814,21 +592,13 @@ def score(manifest):
          len((stream.get("domain_coverage", {}) or {}).get("errors", []) or []), ""),
         ("replay gate problems", len(artifact.get("gate_problems", []) or []),
          ", ".join(artifact.get("gate_problems", []) or []) or "none"),
-        # `hourly_requirement.problems` is the WHOLE replay gate despite its
-        # name -- `requested_game_hours` governs exactly one of its checks. The
-        # old label said "hourly requirement problems", which sent a reader
-        # after the hour floor for a failure that had nothing to do with it.
         ("replay gate problems as sealed under hourly_requirement",
          len(hourly.get("problems", []) or []),
          ", ".join(hourly.get("problems", []) or []) or "none"),
     ]
 
-    # A recovery replay is a failed seal wearing a replay's name.
     if artifact.get("recovery"):
         axes.append(("replay is a recovery artifact, not a promotable one", 1, ""))
-    # The hour floor asserts nothing at zero. Stated as vacuity, not as a pass:
-    # the old wording claimed the requirement "passed" without ever reading
-    # `met`, and printed that on t17 while `met` was false.
     if hourly.get("required") and not int(hourly.get("requested_game_hours", 0) or 0):
         axes.append(("game-hour floor requested was zero, so it asserts nothing", 1,
                      "--min-game-hours 0 cannot distinguish a capture that "
@@ -870,23 +640,13 @@ def main():
         mark = " " if count == 0 else "!"
         print(f"{mark} {axis:{width}s} {count}")
         if detail and count:
-            # A multi-line detail (one entry per line) must keep the detail
-            # column, or the continuation lines read as separate axes.
             pad = chr(10) + f"  {'':{width}s}   "
             print(f"  {'':{width}s}   {detail.replace(chr(10), pad)}")
 
-    # Printed unconditionally, and outside the axis table, because a clean
-    # scorecard must still say what it was not asked to capture. A capture that
-    # scores COMPLETE over a silently shrunken roster is the failure this
-    # section exists to prevent.
     entries = not_scheduled.get("domains", []) or []
     names = [entry.get("domain") for entry in entries]
     if names:
         print(f"\n  deliberately not scheduled ({len(names)}): {', '.join(names)}")
-        # PER RULING, never one block-level line. Printing the block's date
-        # against all six would tell a reader d85 was part of the 2026-08-03
-        # decision, which it was not. Domains sharing a ruling group onto one
-        # line so the common case stays short.
         by_ruling = {}
         for entry in entries:
             key = (str(entry.get("decided_on") or "?"), str(entry.get("reason") or "?"))

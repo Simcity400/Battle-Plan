@@ -1,8 +1,3 @@
-//! Normal-product semantic consumers for recorder-packaged research catalogs.
-//!
-//! All constructors take authenticated `PackagedStaticArtifact` bytes.  There
-//! is intentionally no path-based constructor and no fallback to a developer
-//! output or playback-machine localisation corpus.
 
 use crate::{GameUiError, Result};
 use replay_core::{
@@ -53,9 +48,6 @@ pub struct TechnologySharingUiView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TechnologySharingUiGroup {
     pub runtime_ordinal: u32,
-    /// The current TSG2 runtime carrier preserves an engine intern ordinal.
-    /// Static catalog order is not its mapping.  Until a packaged,
-    /// authenticated ordinal map exists this leaf remains Unobtained.
     pub definition: Leaf<TechnologySharingDefinition>,
     pub definition_unavailable_reason: Option<String>,
     pub members: Vec<TechnologySharingRuntimeMember>,
@@ -78,8 +70,6 @@ pub struct StaticResearchFrameBindings {
     pub technology_sharing_definition_unavailable_ordinals: BTreeSet<u32>,
 }
 
-/// Normal-product construction boundary.  Every artifact is required and
-/// every exact byte payload is semantically parsed before playback proceeds.
 pub fn admit_static_research_catalogs(
     localisation: Option<&PackagedStaticArtifact>,
     idea_technology: Option<&PackagedStaticArtifact>,
@@ -159,16 +149,12 @@ impl StaticResearchUiCatalog {
             })
     }
 
-    /// Effective authored technology definitions from authenticated replay
-    /// package bytes; no playback-machine VFS participates.
     pub fn technology_definitions(
         &self,
     ) -> impl Iterator<Item = (&str, &IdeaTechnologyDefinition)> {
         self.admitted.idea_technology().technologies()
     }
 
-    /// Stable authored folder identities available to viewer-owned XUI09
-    /// navigation. Empty/coordinate-less rows are not selectable.
     pub fn authored_technology_folders(&self) -> BTreeSet<String> {
         self.technology_definitions()
             .flat_map(|(_, definition)| definition.authored_folders.iter())
@@ -230,10 +216,6 @@ impl StaticResearchUiCatalog {
             })
     }
 
-    /// Resolve every focus ID the runtime exposes through the exact packaged
-    /// localisation rows.  Absence/unobtained is preserved per collection;
-    /// a measured row with a missing key rejects the feature rather than
-    /// displaying an ID as invented UI text.
     pub fn bind_focus(&self, focus: &FocusView) -> Result<FocusCatalogLabels> {
         Ok(FocusCatalogLabels {
             current: self.resolve_focus_leaf(&focus.current_set)?,
@@ -244,10 +226,6 @@ impl StaticResearchUiCatalog {
         })
     }
 
-    /// Resolve current/completed technology identifiers from D3 through the
-    /// packaged idea/technology xref.  Exact canvas text can still come from
-    /// runtime text; this consumer supplies the authored static research path
-    /// and never silently substitutes one for the other.
     pub fn bind_research(&self, research: &ResearchView) -> Result<ResearchCatalogLabels> {
         let in_progress = match &research.in_progress_live {
             Leaf::Absent => Leaf::Absent,
@@ -301,8 +279,6 @@ impl StaticResearchUiCatalog {
         })
     }
 
-    /// Join every extracted politics idea family to the recorder-packaged
-    /// authored catalog. Collection shape and group keys are preserved.
     pub fn bind_politics_ideas(
         &self,
         politics: &PoliticsDetailView,
@@ -317,9 +293,6 @@ impl StaticResearchUiCatalog {
         })
     }
 
-    /// Bind D69's exact members, definition identity, and dynamic bonuses to
-    /// the authenticated static catalog. Legacy TSG2 captures remain explicit
-    /// rather than guessing a definition from the numeric intern ordinal.
     pub fn bind_technology_sharing(
         &self,
         frame: &WorldFrame,
@@ -380,9 +353,6 @@ impl StaticResearchUiCatalog {
         Ok(TechnologySharingUiView { groups })
     }
 
-    /// Exercise every normal-product research/focus/sharing join for one
-    /// decoded hour.  Legitimately unresolved authored identities remain
-    /// explicit in the report; malformed D69 structure is an error.
     pub fn bind_frame(&self, frame: &WorldFrame) -> Result<StaticResearchFrameBindings> {
         let mut out = StaticResearchFrameBindings::default();
         for (country, focus) in frame.focus_by_country() {

@@ -1,9 +1,3 @@
-//! Machine-local playback profile selection.
-//!
-//! A `.battleplan` never contains these paths.  It carries a portable content
-//! manifest; these two roots merely tell this installation of the standalone
-//! replayer where to reconstruct the launcher's effective VFS for validation
-//! and playback.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,7 +31,6 @@ const PRODUCT_PROFILE_SETTING_KEYS: [&str; 11] = [
 ];
 static PROFILE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// The only machine-local values retained by the replayer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProductPaths {
     pub game_install: PathBuf,
@@ -51,14 +44,11 @@ struct StoredProfile {
     user_data: PathBuf,
 }
 
-/// How the profile resolver should source a profile for this invocation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ResolveOptions {
     pub game_override: Option<PathBuf>,
     pub user_data_override: Option<PathBuf>,
-    /// Ignore a saved profile and ask for any root without an explicit override.
     pub force_reselect: bool,
-    /// Never read stdin. Missing or invalid data produces an actionable error.
     pub non_interactive: bool,
 }
 
@@ -81,8 +71,6 @@ impl From<StoredProfile> for ProductPaths {
     }
 }
 
-/// Select the default configuration file without assuming a game install or
-/// user-data location. `battle-plan_CONFIG` is the portable/headless override.
 pub fn default_config_path() -> Result<PathBuf> {
     if let Some(path) = env::var_os("battle-plan_CONFIG") {
         if path.is_empty() {
@@ -121,8 +109,6 @@ fn recorder_recordings_root_from_local_app_data(root: &Path) -> PathBuf {
     root.join(RECORDER_DATA_DIRECTORY_NAME)
 }
 
-/// Return the recorder's ordinary per-user output root without creating it.
-/// The no-argument viewer uses this only as its file-picker starting folder.
 #[cfg(windows)]
 pub fn recorder_recordings_root() -> Result<PathBuf> {
     Ok(recorder_recordings_root_from_local_app_data(
@@ -130,8 +116,6 @@ pub fn recorder_recordings_root() -> Result<PathBuf> {
     ))
 }
 
-/// Resolve machine-local storage through the Windows Known Folder API. Neither
-/// APPDATA nor LOCALAPPDATA environment variables participate in this path.
 #[cfg(windows)]
 fn local_app_data_root() -> Result<PathBuf> {
     use std::ffi::{c_void, OsString};
@@ -199,8 +183,6 @@ pub fn legacy_config_path(config: &Path) -> PathBuf {
     config.with_file_name(LEGACY_CONFIG_FILE)
 }
 
-/// Load, validate, interactively repair if allowed, and atomically persist a
-/// playback profile. Explicit roots always win over saved roots.
 pub fn resolve_or_prompt<R: BufRead, W: Write>(
     config: &Path,
     options: ResolveOptions,
@@ -281,8 +263,6 @@ pub fn validate_game_install(path: &Path) -> std::result::Result<(), String> {
     if !path.is_dir() {
         return Err(format!("directory does not exist: {}", path.display()));
     }
-    // Validate the content root, not a platform-specific executable or a
-    // Steam/default-drive location. These are launcher-independent the game roots.
     let required = ["common", "gfx", "map"];
     let missing = required
         .iter()
@@ -312,9 +292,6 @@ pub fn validate_user_data(path: &Path) -> std::result::Result<(), String> {
     Ok(())
 }
 
-/// Validate every machine-local input needed to reconstruct the launcher's
-/// effective content and material-settings profile. Callers must complete this
-/// check before persisting or reusing a product profile.
 pub fn validate_product_profile(paths: &ProductPaths) -> Result<map_viewer::GameFileResolver> {
     let resolver = map_viewer::GameFileResolver::from_dlc_load(
         paths.game_install.clone(),
@@ -330,8 +307,6 @@ pub fn validate_product_profile(paths: &ProductPaths) -> Result<map_viewer::Game
     Ok(resolver)
 }
 
-/// Derive exact, path-redacted local facts for portable-content admission.
-/// Expected values from the replay are never used as local defaults.
 pub fn playback_environment_from_paths(
     paths: &ProductPaths,
     resolver: &map_viewer::GameFileResolver,
@@ -426,12 +401,6 @@ pub fn playback_environment_from_paths(
     })
 }
 
-/// Admit the standalone viewer's own UI presentation profile.
-///
-/// Unlike portable-content compatibility, this always requests every local
-/// setting that affects UI layout. No value is read from replay session
-/// metadata, and the input family is the one implemented by the Win32 client
-/// event pump (mouse + keyboard, with no invented traversal/controller graph).
 pub fn playback_ui_profile_from_paths(
     paths: &ProductPaths,
     resolver: &map_viewer::GameFileResolver,
@@ -446,9 +415,6 @@ pub fn playback_ui_profile_from_paths(
         .map_err(|error| format!("admit local playback UI profile: {error:?}").into())
 }
 
-/// `draw_hires_terrain` byte from the `mapRenderingOptions` settings object;
-/// replay must use the selected profile value rather than a recorder carrier
-/// or a hard-coded default.
 pub fn playback_terrain_lod_options_from_paths(
     paths: &ProductPaths,
 ) -> Result<map_viewer::TerrainLodCullOptions> {
@@ -521,9 +487,6 @@ fn source_game_identity(game_install: &Path) -> Result<replay_core::SourceGameId
     })
 }
 
-/// Delegates to the ONE shared rule so the identity the viewer derives from a
-/// local install is the identity the recorder wrote into the manifest. Keeping
-/// a second copy here is what let the two spellings drift apart.
 fn parse_hoi4_version(full: &str, raw: Option<&str>) -> Result<(String, String)> {
     Ok(replay_core::parse_launcher_version_and_build(full, raw)?)
 }

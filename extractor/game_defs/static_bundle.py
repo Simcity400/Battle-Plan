@@ -38,9 +38,6 @@ OMISSION_INVENTORY_SCHEMA = "extractor.static_token_omissions.v1"
 DEFER_PROVENANCE_SCHEMA = "extractor.static_token_join_deferred.v1"
 MOD_STATE_SCHEMA = "extractor.mod_state.v1"
 DLC_STATE_SCHEMA = "extractor.dlc_state.v1"
-# v2: the vanilla entry's content_sha256 IS the effective-VFS base namespace
-# digest, so the row reconstructs offline from the source inventory rows.  v1
-# recorded a second, differently-scoped full-tree hash that nothing could join.
 LOAD_ORDER_SCHEMA = "extractor.load_order.v2"
 PRODUCT_MODSET_SCHEMA = "extractor.product_modset_key.v1"
 HEX256 = set("0123456789abcdef")
@@ -192,8 +189,6 @@ def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, An
 
 
 def _reject_nonfinite_json_constant(value: str) -> Any:
-    # NaN/Infinity are Python decoder extensions, not JSON numbers.  They also
-    # cannot be represented by the downstream serde_json readers.
     raise BundleError(f"non-finite JSON constant {value!r}")
 
 

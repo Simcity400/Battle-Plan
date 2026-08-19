@@ -1,12 +1,3 @@
-//! A self-contained, dependency-free SHA-256 (FIPS 180-4).
-//!
-//! Used for the container integrity layer: per-entry digests over raw
-//! decompressed bytes and the canonical-manifest digest. Kept in-crate (rather
-//! than pulling the `sha2`/`digest`/`cpufeatures` tree into a crate that
-//! otherwise depends only on serde) so the reader has a small, auditable,
-//! deterministic surface. Streaming (`Sha256::update` in chunks) so a multi-MB
-//! snapshot is hashed without buffering a second copy.
-
 const H0: [u32; 8] = [
     0x6a09_e667,
     0xbb67_ae85,
@@ -85,13 +76,10 @@ const K: [u32; 64] = [
     0xc671_78f2,
 ];
 
-/// Incremental SHA-256 hasher.
 #[derive(Clone)]
 pub struct Sha256 {
     h: [u32; 8],
-    /// total message length in bytes
     len: u64,
-    /// partial block buffer
     buf: [u8; 64],
     buf_len: usize,
 }
@@ -114,7 +102,6 @@ impl Sha256 {
 
     pub fn update(&mut self, mut data: &[u8]) {
         self.len = self.len.wrapping_add(data.len() as u64);
-        // fill the partial buffer first
         if self.buf_len > 0 {
             let need = 64 - self.buf_len;
             let take = need.min(data.len());
@@ -127,14 +114,12 @@ impl Sha256 {
                 self.buf_len = 0;
             }
         }
-        // full blocks straight from the input
         while data.len() >= 64 {
             let mut block = [0u8; 64];
             block.copy_from_slice(&data[..64]);
             self.compress(&block);
             data = &data[64..];
         }
-        // stash the tail
         if !data.is_empty() {
             self.buf[..data.len()].copy_from_slice(data);
             self.buf_len = data.len();
@@ -143,7 +128,6 @@ impl Sha256 {
 
     pub fn finalize(mut self) -> [u8; 32] {
         let bit_len = self.len.wrapping_mul(8);
-        // append 0x80 then pad with zeros to 56 mod 64, then the 64-bit length
         let mut pad = [0u8; 72];
         pad[0] = 0x80;
         let rem = (self.buf_len + 1) % 64;
@@ -158,19 +142,16 @@ impl Sha256 {
         out
     }
 
-    /// One-shot convenience.
     pub fn digest(data: &[u8]) -> [u8; 32] {
         let mut h = Sha256::new();
         h.update(data);
         h.finalize()
     }
 
-    /// One-shot hex digest.
     pub fn hex(data: &[u8]) -> String {
         to_hex(&Sha256::digest(data))
     }
 
-    // update used during padding: must NOT re-count length bytes
     fn update_no_len(&mut self, mut data: &[u8]) {
         if self.buf_len > 0 {
             let need = 64 - self.buf_len;
@@ -253,7 +234,6 @@ impl Sha256 {
     }
 }
 
-/// Lower-case hex of a digest.
 pub fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -270,7 +250,6 @@ mod tests {
 
     #[test]
     fn known_vectors() {
-        // FIPS 180-4 examples / RFC vectors.
         assert_eq!(
             Sha256::hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -298,7 +277,6 @@ mod tests {
 
     #[test]
     fn block_boundary_lengths() {
-        // exercise 55/56/57/63/64/65-byte messages (padding edge cases)
         for n in [0usize, 1, 55, 56, 57, 63, 64, 65, 119, 120, 121] {
             let data = vec![0xa5u8; n];
             let mut h = Sha256::new();

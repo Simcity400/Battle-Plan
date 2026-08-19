@@ -1,14 +1,3 @@
-//! Fail-closed CID1 campaign-identity payload contract.
-//!
-//! The engine evidence determines the identity values: a canonical lowercase
-//! UUID and a signed `i32` seed. The fixed offsets, flag assignments, suffix
-//! order, and size limits below are version-1 protocol policy. They are frozen
-//! here so producers and consumers cannot invent parallel encodings.
-//!
-//! This module deliberately does not allocate control-transport message kinds
-//! or define acknowledgement payloads. It validates only the CID1 payload and
-//! its placement in the first H4CR record.
-
 use crate::calendar::hour_index_from_raw;
 use crate::record_header::CompactRecordHeader;
 
@@ -29,7 +18,6 @@ pub const CID1_MAX_PAYLOAD_LEN: usize = CID1_FIXED_HEADER_LEN
     + CID1_MAX_ROSTER_BYTES_LEN
     + CID1_MAX_MODSET_IDENTITY_LEN;
 
-// Preserve this public path while the single record-type roster owns the value.
 pub use crate::record_semantics::COMPACT_RECORD_TYPE_STREAM_HEADER;
 pub const COMPACT_DOMAIN_STREAM_HEADER: u16 = 0;
 pub const CID1_SOURCE_LIVE_MEMORY: u16 = 1;
@@ -53,7 +41,6 @@ const KNOWN_FLAGS: u32 = FLAG_START_DATE_PRESENT
 
 const CID_PREIMAGE_PREFIX: &[u8] = b"hoi4-campaign-id-v1\0";
 
-/// One complete, hour-bracketed identity observation supplied to the encoder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cid1Observation {
     pub game_unique_id: String,
@@ -61,7 +48,6 @@ pub struct Cid1Observation {
     pub game_hour_raw: i32,
 }
 
-/// Compatibility data retained beside the identity, never substituted for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Cid1Witnesses {
     pub start_date_raw: Option<u32>,
@@ -71,8 +57,6 @@ pub struct Cid1Witnesses {
     pub modset_identity: Option<String>,
 }
 
-/// Encoder input created only from two complete observations of the same
-/// UUID/seed identity pair. Each observation carries its own coherent hour.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cid1Fields {
     game_unique_id: String,
@@ -105,10 +89,6 @@ impl Cid1Fields {
         Ok(Self {
             game_unique_id: first.game_unique_id,
             game_unique_seed: first.game_unique_seed,
-            // The proof concerns the UUID/seed identity pair. At speed 5 the
-            // calendar can legitimately advance between two independently
-            // coherent reads, so bind the payload to the later observation's
-            // own valid bracket rather than falsely requiring a paused clock.
             game_hour_raw: second.game_hour_raw,
             source_build_profile,
             witnesses,
@@ -116,8 +96,6 @@ impl Cid1Fields {
     }
 }
 
-/// Syntax-validated CID1 payload. This does not prove first-record placement and
-/// is therefore insufficient to authorize a recorder `Known` identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedCid1 {
     payload: Vec<u8>,
@@ -172,8 +150,6 @@ impl ParsedCid1 {
     }
 }
 
-/// Opaque CID1 authority token produced only after payload validation and the
-/// mandatory first-H4CR-record placement checks both succeed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedCid1 {
     parsed: ParsedCid1,
@@ -298,7 +274,6 @@ impl core::fmt::Display for Cid1Error {
     }
 }
 
-/// Encode the only v1 wire shape, then parse it again before returning bytes.
 pub fn encode_cid1(fields: &Cid1Fields) -> Result<Vec<u8>, Cid1Error> {
     validate_canonical_uuid(&fields.game_unique_id)?;
     validate_game_hour(fields.game_hour_raw)?;
@@ -359,7 +334,6 @@ pub fn encode_cid1(fields: &Cid1Fields) -> Result<Vec<u8>, Cid1Error> {
     put_u32(&mut out, 40, fields.witnesses.start_date_raw.unwrap_or(0));
     put_u32(&mut out, 44, fields.witnesses.session.unwrap_or(0));
     out[48..80].copy_from_slice(&campaign_id);
-    // 18..20 and 80..96 remain reserved zero.
 
     out.extend_from_slice(fields.game_unique_id.as_bytes());
     out.extend_from_slice(fields.source_build_profile.as_bytes());
@@ -373,7 +347,6 @@ pub fn encode_cid1(fields: &Cid1Fields) -> Result<Vec<u8>, Cid1Error> {
     Ok(out)
 }
 
-/// Parse a complete CID1 payload. Short, long, unknown, and trailing shapes fail.
 pub fn parse_cid1(payload: &[u8]) -> Result<ParsedCid1, Cid1Error> {
     if payload.len() < CID1_FIXED_HEADER_LEN {
         return Err(Cid1Error::TooShort(payload.len()));
@@ -522,7 +495,6 @@ pub fn parse_cid1(payload: &[u8]) -> Result<ParsedCid1, Cid1Error> {
     })
 }
 
-/// Validate both CID1 bytes and the mandatory first-record H4CR placement.
 pub fn parse_cid1_record(
     header: &CompactRecordHeader,
     payload: &[u8],
@@ -619,7 +591,6 @@ fn validate_optional_text(
 }
 
 fn validate_witnesses(value: &Cid1Witnesses) -> Result<(), Cid1Error> {
-    // Optional numeric witnesses use zero as the canonical absent encoding.
     if value.start_date_raw == Some(0) {
         return Err(Cid1Error::InvalidWitness("start date"));
     }
@@ -638,9 +609,7 @@ fn validate_witnesses(value: &Cid1Witnesses) -> Result<(), Cid1Error> {
         }
         let mut previous: Option<&str> = None;
         for tag in tags {
-            // The roster carries whatever countries the humans actually played,
             // and a released or civil-war faction is an ordinary one. See
-            // `crate::country_tag` for the engine rule this defers to.
             if !crate::country_tag::is_engine_country_tag(tag)
                 || previous.is_some_and(|prior| prior >= tag.as_str())
             {
@@ -741,7 +710,6 @@ fn put_i32(bytes: &mut [u8], offset: usize, value: i32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-// Dependency-free SHA-256 keeps compact_contract suitable for collector use.
 const SHA256_H0: [u32; 8] = [
     0x6a09_e667,
     0xbb67_ae85,

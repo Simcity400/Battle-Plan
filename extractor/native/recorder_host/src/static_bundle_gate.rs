@@ -1,13 +1,3 @@
-//! Process boundary for the canonical Python static-bundle verifier.
-//!
-//! Rust deliberately does not duplicate the bundle schema. The Python verifier
-//! remains the single semantic authority; this module supplies bounded process
-//! execution, captures its verified evidence, and detects byte/binding drift by
-//! requiring an identical second verification before publication. Recorder
-//! admission is explicitly the pre-injection phase: only a current, deferred
-//! bundle is accepted here. Final token closure remains a separate post-capture
-//! Python finalization/publication gate with exact capture provenance.
-
 use serde_json::{json, Value};
 use snapshot::sha256::Sha256;
 use std::ffi::OsString;
@@ -34,10 +24,6 @@ pub struct StaticBundleRequest {
     pub expected_process_id: u32,
     pub expected_process_creation_filetime_utc: u64,
     /// A selected product-modset corpus is necessarily acquired from an
-    /// earlier process. A recorder-owned suspended launch may rebind only the
-    /// process identity; Python still re-hashes every source, and the early
-    /// launch path independently joins the selected runtime mod/DLC/VFS
-    /// content before COMMIT. Late attach must leave this false.
     pub allow_prepared_process_identity_rebind: bool,
     pub timeout: Duration,
 }
@@ -292,8 +278,7 @@ pub fn finalize_with_process(
         live_resolution_report,
         expected_process_id: admitted.expected_process_id,
         expected_process_creation_filetime_utc: admitted.expected_process_creation_filetime_utc,
-        allow_prepared_process_identity_rebind: admitted
-            .allow_prepared_process_identity_rebind,
+        allow_prepared_process_identity_rebind: admitted.allow_prepared_process_identity_rebind,
         expected_capture_id: capture_id.to_string(),
         expected_session_id: session_id.to_string(),
         expected_stream_sha256: stream_sha256.to_string(),
@@ -501,9 +486,6 @@ pub fn verify_with_process(
         return Err("static bundle verifier returned the wrong admission phase".to_string());
     }
 
-    // Semantic validity belongs exclusively to static_bundle.py. After it
-    // passes, retain the exact verified roster and hashes for manifest evidence
-    // and a byte-for-byte second-verification comparison.
     let manifest_bytes = read_bounded(&manifest, "static bundle manifest")?;
     let manifest_json: Value = serde_json::from_slice(&manifest_bytes)
         .map_err(|error| format!("read verified static bundle evidence failed: {error}"))?;
@@ -1041,8 +1023,7 @@ mod tests {
             live_resolution_report: request.live_resolution_report.clone(),
             expected_process_id: request.expected_process_id,
             expected_process_creation_filetime_utc: request.expected_process_creation_filetime_utc,
-            allow_prepared_process_identity_rebind: request
-                .allow_prepared_process_identity_rebind,
+            allow_prepared_process_identity_rebind: request.allow_prepared_process_identity_rebind,
             expected_capture_id: "capture-1".to_string(),
             expected_session_id: "00000000-0000-4000-8000-000000000001".to_string(),
             expected_stream_sha256: "b".repeat(64),
@@ -1290,9 +1271,6 @@ mod tests {
         let mut request = fixture_request(&root.0);
         request.verifier =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../game_defs/static_bundle.py");
-        // This is the one test that spawns the real Python verifier; interpreter
-        // startup on a loaded machine can exceed the fixture's 5 s. The assertion
-        // is about rejection, not latency, so give the subprocess ample time.
         request.timeout = Duration::from_secs(120);
         fs::write(&request.manifest, b"{}\n").unwrap();
         let error = verify(&request).unwrap_err();

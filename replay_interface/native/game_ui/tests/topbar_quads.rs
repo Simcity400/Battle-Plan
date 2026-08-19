@@ -1,32 +1,13 @@
-//! Engine-quad gate for the topbar layout.
-//!
-//! Answer key = the engine's OWN GUI draw quads, mined from the vanilla
-//! RenderDoc capture `hoi4_vanilla_frame9232.rdc` (1920x1080, gui_scale 1.0)
-//! with `replay_interface/renderdoc/mine_ui_quads.py`. Each quad's screen rect
-//! is `POSITION * cb0_ortho` where the GUI vertex shader's constant buffer is
-//! the orthographic screen->NDC matrix (m00 = 2/1920, m11 = 2/1080, m30/m31 =
-//! the per-widget translation supplied via `VSSetConstantBuffers1`
-//! FirstConstant). This pins `resolve_element_rect` to engine bytes rather than
-//! merely "consistent with topbar.gui".
-//!
-//! Skipped when the game install is absent.
 
 use game_ui::assets::AssetResolver;
 use game_ui::probe::parse_gfx_files;
 use game_ui::topbar::{compose_topbar, TopbarBinding};
 use std::path::PathBuf;
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
 
-/// Engine answer-key quads (screen rect x0,y0,x1,y1), mined from
-/// hoi4_vanilla_frame9232.rdc. `background` = GFX_topbar_background_extended
-/// (2346x87, ps158, the sole >500px-wide top-of-screen quad); `player_flag` =
-/// GFX_shield_medium (82x52). Tolerance is <=1 px per edge.
 struct EngineQuad {
     name: &'static str,
     x0: f32,

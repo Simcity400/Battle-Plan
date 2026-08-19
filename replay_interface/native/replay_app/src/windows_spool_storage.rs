@@ -1,4 +1,3 @@
-//! Windows-only private transient-storage authority for replay playback.
 
 use std::ffi::{c_void, OsString};
 use std::fs::{self, File};
@@ -306,7 +305,6 @@ fn current_user_sid() -> Result<Vec<u8>, String> {
 
 impl PrivateAcl {
     fn new() -> Result<Self, String> {
-        // OW means the verified current owner; SYSTEM is retained for recovery.
         let mut sddl: Vec<u16> = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)"
             .encode_utf16()
             .chain(std::iter::once(0))

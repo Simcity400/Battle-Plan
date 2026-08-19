@@ -4,8 +4,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Instant;
 
-/// Max-speed decoded input rate measured on the t31 live capture
-/// (2 373 041 632 bytes over the 60 s capture window).
 const MAX_SPEED_INPUT_MB_PER_S: f64 = 39.55;
 
 fn main() -> ExitCode {
@@ -51,12 +49,6 @@ fn run(args: Vec<String>) -> Result<(), String> {
     Ok(())
 }
 
-/// Measure the spool storage codec on real capture bytes.
-///
-/// The input is decoded into RAM once so the timed section is the encoder and
-/// nothing else — no source disk read, no sink disk write. One thread, so the
-/// reported MB/s is MB/s per core by construction; that is the number the
-/// capture loop pays, because the loop compresses inline on the pipe thread.
 fn bench(args: &[String]) -> Result<(), String> {
     if args.is_empty() || args.len() > 4 {
         return Err(usage());
@@ -81,8 +73,6 @@ fn bench(args: &[String]) -> Result<(), String> {
         None => vec![1, 2, 3, 4, 5],
     };
 
-    // Production rotates the storage frame on this cadence; measuring without
-    // it would leave the encoder-restart cost out of the number.
     let frame_bytes: Option<u64> = match args.get(3) {
         Some(value) if value == "none" => None,
         Some(value) => Some(
@@ -111,8 +101,6 @@ fn bench(args: &[String]) -> Result<(), String> {
     );
 
     for level in levels {
-        // Feed in the exact 64 KiB bursts the recorder host reads from the
-        // collector pipe, so the per-call overhead is the production one.
         let started = Instant::now();
         let mut sink = std::io::sink();
         let (decoded_len, stored_len) = compact_stream::encode_to_writer(
@@ -144,8 +132,6 @@ fn bench(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Hands out a fixed-size slice per `read`, reproducing the recorder host's
-/// pipe-burst write pattern instead of one giant buffer.
 struct ChunkedReader<'a> {
     bytes: &'a [u8],
     chunk: usize,

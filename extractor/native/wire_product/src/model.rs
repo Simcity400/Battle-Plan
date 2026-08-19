@@ -232,10 +232,6 @@ impl PreparedBundle {
         Ok(())
     }
 
-    /// Write the already verified artifact set beneath `root`.
-    ///
-    /// Existing files are rejected. Packaging owns its temporary directory and
-    /// final atomic rename; this method never replaces a prior artifact.
     pub fn materialize(&self, parent: &Path) -> Result<MaterializedBundle, ProductError> {
         crate::verify_prepared_bundle(self)?;
         std::fs::create_dir_all(parent).map_err(|error| {
@@ -245,7 +241,6 @@ impl PreparedBundle {
             ))
         })?;
         let root = create_unique_materialization_root(parent)?;
-        // Own the unique child immediately so every later `?` cleans it.
         let mut materialized = MaterializedBundle {
             root,
             entries: Vec::with_capacity(self.entries.len()),
@@ -338,8 +333,6 @@ impl MaterializedBundle {
 
 impl Drop for MaterializedBundle {
     fn drop(&mut self) {
-        // `root` is always a uniquely created child from
-        // `create_unique_materialization_root`, never the caller's directory.
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -347,7 +340,6 @@ impl Drop for MaterializedBundle {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BranchParent {
     pub branch: u32,
-    /// The child inherits the parent through this tick, inclusive.
     pub through_tick: u64,
 }
 
@@ -356,8 +348,6 @@ pub struct BranchSpec {
     pub branch: u32,
     pub parent: Option<BranchParent>,
     pub first_tick: u64,
-    /// SHA-256 of the decoded canonical H4CR byte stream for this branch. This
-    /// is the recorder's existing `source_decoded_digest` provenance value.
     pub session_fingerprint: [u8; 32],
 }
 
@@ -376,13 +366,6 @@ impl Default for BundleBuildConfig {
     }
 }
 
-/// Planner-authenticated non-H4CR coverage immediately preceding one selected
-/// branch extent.
-///
-/// The detailed stitch `reason` and `evidence_id` remain authenticated by the
-/// stitched index because the frozen wire gap grammar has no string witness.
-/// This declaration preserves the exact disposition class and interval in the
-/// rebuilt-wire gap stream instead of inventing a generic missing hour.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum D81LeadingGapKind {
     CaptureFailed,
@@ -438,18 +421,13 @@ impl D81LeadingGap {
 #[derive(Clone, Copy, Debug)]
 pub enum H4crSource<'a> {
     Bytes(&'a [u8]),
-    /// Raw and zstd files are detected at the file boundary by `compact_stream`.
     File(&'a Path),
-    /// Exact retained object; the handle is cloned and rewound, never reparsed
-    /// through a pathname.
     RetainedFile(&'a std::fs::File),
     BytesSelection(&'a [u8], H4crSelection),
     FileSelection(&'a Path, H4crSelection),
     RetainedFileSelection(&'a std::fs::File, H4crSelection),
 }
 
-/// Authenticated inclusive record-sequence and half-open decoded-byte extent
-/// selected from one fully validated sealed H4CR source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct H4crSelection {
     pub first_sequence: u64,
@@ -467,8 +445,6 @@ pub struct H4crSession<'a> {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct D81SessionInspection {
-    /// Earliest authenticated state-coverage tick. An initial coalesced H4DG
-    /// may make this earlier than the first enclosing FRAME_END.
     pub first_tick: u64,
     pub first_d81_tick: Option<u64>,
     pub last_tick: u64,

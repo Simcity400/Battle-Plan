@@ -4,8 +4,6 @@ use compact_contract::{parse_compact_record_header, RecordFramingError};
 
 #[cfg(windows)]
 pub mod a729_hook;
-/// Passive replacement carrier for the D55 panel hooks. Platform-independent:
-/// it reads through a memory seam, so its laws are provable offline.
 pub mod passive_modifier_carrier;
 #[cfg(windows)]
 pub mod terminal_coordinator;
@@ -22,14 +20,6 @@ pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS: u16 = 55;
 pub const DOMAIN_LAND_COMBAT_DETAIL_EVENTS_NAME: &str = "land_combat_detail_events_live";
 
-// Schema v2 (E2) appends a per-side combat DETAIL row family AFTER the event
-// rows, extending the header with a side-detail count. v1 payloads (no side
-// detail) remain decodable: a v1 header omits the trailing count field, so the
-// version gate selects the header/parse shape (never a payload-byte sniff).
-// Schema v9 (the passive D55 carrier) keeps the v8 header length and every v8
-// block offset, and appends its rows AFTER the tactic string table. A v9
-// payload is therefore byte-identical to a v8 one up to the trailer, which is
-// what lets the carrier land without disturbing any existing reader.
 pub const SCHEMA_VERSION: u16 = 9;
 pub const SCHEMA_VERSION_V1_NO_SIDE_DETAIL: u16 = 1;
 pub const SCHEMA_VERSION_V2_SIDE_DETAIL: u16 = 2;
@@ -38,45 +28,16 @@ pub const SCHEMA_VERSION_V4_TACTIC_PROGRESS: u16 = 4;
 pub const SCHEMA_VERSION_V5_RESERVE_MEMBERS: u16 = 5;
 pub const SCHEMA_VERSION_V6_TERMINAL_RECORDS: u16 = 6;
 pub const SCHEMA_VERSION_V7_WIDTH_LOSS: u16 = 7;
-/// v8: hook-observed panel rows. Still emitted; the passive carrier publishes
-/// ALONGSIDE the panel hooks rather than in place of them.
 pub const SCHEMA_VERSION_V8_PANEL: u16 = 8;
-/// v1 header (event rows only). Kept for decoding older streams.
 pub const PAYLOAD_HEADER_LEN_V1: usize = 28;
-/// v2 header adds a u32 side_detail_row_count after the event-row count block.
 pub const PAYLOAD_HEADER_LEN_V2: usize = 32;
-/// v3/v4 header adds a u32 attribution_row_count after the side-detail count.
-/// In v4 the existing string_count word describes the canonical tactic string
-/// table appended after all fixed rows.
 pub const PAYLOAD_HEADER_LEN_V4: usize = 36;
-/// v5 appends the exact reserve-member row count after attribution_row_count.
 pub const PAYLOAD_HEADER_LEN_V5: usize = 40;
-/// v6 appends the authenticated terminal-record row count.
 pub const PAYLOAD_HEADER_LEN_V6: usize = 44;
-/// v7 appends exact-call width and current-epoch loss observation counts. v8
-/// assigns the former trailing reserved word to authenticated combat-panel
-/// side observations, retaining the same 52-byte header.
 pub const PAYLOAD_HEADER_LEN: usize = 52;
 pub const DETAIL_EVENT_ROW_LEN: usize = 52;
 
-// --- Per-side combat DETAIL row (E2, CCombatSide scalars) -----------------
-//
-// Current-state (NOT delta): one row per active combat per side, emitted every
-// frame for every live combat, so the fold always has the latest per-side
-// scalars regardless of whether the participant/phase delta changed this hour.
-// Offsets validated 50/50 on both sides against the melt. Damage
-// fields are i64 fixed-point ×100000; counts are u32. Schema v4 additionally
-// carries the exact progress accumulator and the validated tactic identity.
-// `losses` remains undisambiguated on the all-zero-loss oracle and is omitted.
-/// Side-detail row wire length. Layout (all little-endian):
-///   combat_id u32 | generation u64 | side u32 | flags u32           (20)
-///   units u32 | committed u32 | reserve u32 | air_kills u32
-///     | org_loss_summary_index u32 | num_org_losses u32             (+24 = 44)
-///   7 × i64 damage raws: anti_air, air_str, air_org, ground_str,
-///     ground_org, prevented_str, prevented_org                      (+56 = 100)
 pub const SIDE_DETAIL_ROW_LEN_V3: usize = 100;
-/// v4 adds progress_raw i32, tactic_id i32, tactic_token_index u32, and
-/// tactic_name_index u32. String indices address the canonical payload table.
 pub const SIDE_DETAIL_ROW_LEN: usize = 116;
 pub const SIDE_DETAIL_FIXED_SCALE: i64 = 100_000;
 pub const MAX_TACTIC_STRING_COUNT: usize = 16_000;
@@ -85,24 +46,13 @@ pub const TACTIC_STRING_INDEX_NONE: u32 = u32::MAX;
 
 pub const SIDE_DETAIL_FLAG_ATTACKER: u32 = 1 << 0;
 pub const SIDE_DETAIL_FLAG_DEFENDER: u32 = 1 << 1;
-/// The CCombatSide vtable + registry back-ref revalidated for this side.
 pub const SIDE_DETAIL_FLAG_SIDE_VALIDATED: u32 = 1 << 2;
-/// tactic is unresolved (pointer/table-backed) — never emitted as a value.
 pub const SIDE_DETAIL_FLAG_TACTIC_UNRESOLVED: u32 = 1 << 3;
-/// losses is not disambiguable on this save (all-zero oracle) — omitted.
 pub const SIDE_DETAIL_FLAG_LOSSES_OMITTED: u32 = 1 << 4;
-/// The count triple was read STABLY (each field double-read agreed) but the
-/// `committed + reserve == units` invariant did not hold — i.e. a genuine
-/// mid-combat transient (a division joining/leaving between the engine's own
-/// bookkeeping), NOT a torn read. The row is retained (dropping it would lose
-/// the side exactly at the interesting transition) but badged so a consumer
-/// treats the count triple as momentarily inconsistent, not authoritative.
 pub const SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE: u32 = 1 << 5;
 pub const SIDE_DETAIL_FLAG_PROGRESS_PRESENT: u32 = 1 << 6;
 pub const SIDE_DETAIL_FLAG_TACTIC_KNOWN: u32 = 1 << 7;
 pub const SIDE_DETAIL_FLAG_TACTIC_PRESENT: u32 = 1 << 8;
-/// Schema v5 proves that the reserve-member vector was read stably. When this
-/// bit is absent, reserve_member_rows are unknown rather than known-empty.
 pub const SIDE_DETAIL_FLAG_RESERVE_MEMBERS_KNOWN: u32 = 1 << 9;
 pub const SIDE_DETAIL_KNOWN_FLAG_MASK: u32 = SIDE_DETAIL_FLAG_ATTACKER
     | SIDE_DETAIL_FLAG_DEFENDER
@@ -115,8 +65,6 @@ pub const SIDE_DETAIL_KNOWN_FLAG_MASK: u32 = SIDE_DETAIL_FLAG_ATTACKER
     | SIDE_DETAIL_FLAG_TACTIC_PRESENT
     | SIDE_DETAIL_FLAG_RESERVE_MEMBERS_KNOWN;
 
-/// Sanity ceiling on a fixed-point damage accumulator (±~9.2e12 raw = ±92M
-/// after the /1e5 scale — generous for a single combat, still rejects garbage).
 pub const MAX_SIDE_DETAIL_DAMAGE_RAW: i64 = 9_200_000_000_000;
 pub const MAX_SIDE_DETAIL_COUNT: u32 = 100_000;
 
@@ -141,8 +89,6 @@ pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DA
 pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
-/// D55 uses only the shared compact-status vocabulary (bits 0..=14); it has no
-/// lane-local aliases. Unknown bits must not silently become non-fatal badges.
 pub const D55_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 pub const EVENT_PHASE_STARTED: u32 = 1;
@@ -172,20 +118,10 @@ pub const KNOWN_FLAG_MASK: u32 = FLAG_LOCATION_PRESENT
 
 pub const MAX_COMBAT_ID: u32 = 0x7fff_ffff;
 pub const MAX_DIVISION_ID: u32 = 0x7fff_ffff;
-/// Province id space STRUCTURAL width (`claim_347234c20a542ca79032`).
-///
-/// Was `1_000_000`. This constant is named for the FIELD (`location`) rather
-/// than the SPACE. The value it bounds is read from an authenticated `CProvince` and is
-/// a province id like any other.
 pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_AGE_DAYS: u32 = 100_000;
 pub const MAX_SIDE_UNITS: usize = 128;
-/// The shared collector admits at most 4,000 land combats. In the most
-/// adversarial one-hour transition, both 128-entry side vectors can be wholly
-/// replaced (four participant events per side slot) plus one phase event per
-/// combat. Bound decoded allocations to that production topology.
 pub const MAX_DETAIL_EVENT_ROWS: usize = 4_000 * (4 * MAX_SIDE_UNITS + 1);
-/// Two sides per combat; bound the side-detail family the same as MAX_LAND_COMBATS.
 pub const MAX_LAND_COMBATS_SIDE_DETAIL: usize = 8_000;
 pub const MAX_LAND_COMBATS_ATTRIBUTION: usize = 32_000;
 pub const MAX_LAND_COMBATS_RESERVE_MEMBERS: usize = 8_000 * MAX_SIDE_UNITS;
@@ -194,9 +130,6 @@ pub const MAX_LAND_COMBAT_WIDTH_ROWS: usize = 8_000 * MAX_SIDE_UNITS;
 pub const MAX_LAND_COMBAT_LOSS_ROWS: usize = 8_000 * MAX_SIDE_UNITS;
 pub const MAX_LAND_COMBAT_PANEL_ROWS: usize = 8_000;
 
-/// One pointer-free observation sealed by the exact land-combat side panel
-/// materializer at 0x1415C9860. The nested 0x1415BBF00 appends prove the exact
-/// displayed modifier set/order, and 0x14129E190 supplies the selected leader.
 pub const PANEL_OBSERVATION_ROW_LEN: usize = 40;
 pub const PANEL_FLAG_OUTER_SENTINEL: u32 = 1 << 0;
 pub const PANEL_FLAG_MODIFIER_SENTINEL: u32 = 1 << 1;
@@ -213,12 +146,8 @@ pub const PANEL_REQUIRED_FLAG_MASK: u32 = PANEL_FLAG_OUTER_SENTINEL
     | PANEL_FLAG_LEADER_IDENTITY
     | PANEL_FLAG_ENGINE_ORDER;
 pub const PANEL_MODIFIER_KNOWN_MASK: u32 = 0x03ff;
-/// Exact append order in 0x1415C9860, expressed as tooltip enum ids.
 pub const PANEL_MODIFIER_CANONICAL_ORDER: [u8; 10] = [8, 2, 1, 0, 3, 4, 5, 6, 7, 9];
 
-/// One row per exact `wrapper+0x170` return in an authenticated synchronous
-/// `0x141299610` call. The final producer return is repeated for a mechanical
-/// grouped sum check. No process pointer crosses this boundary.
 pub const WIDTH_OBSERVATION_ROW_LEN: usize = 56;
 pub const WIDTH_FLAG_PRODUCER_SENTINEL: u32 = 1 << 0;
 pub const WIDTH_FLAG_LEAF_SENTINEL: u32 = 1 << 1;
@@ -231,10 +160,6 @@ pub const WIDTH_REQUIRED_FLAG_MASK: u32 = WIDTH_FLAG_PRODUCER_SENTINEL
     | WIDTH_FLAG_WRAPPER_IDENTITY
     | WIDTH_FLAG_FINAL_SUM_EXACT;
 
-/// One row per changed equipment identity in one exact current-epoch writer
-/// observation. Manpower before/after is repeated so each grouped row remains
-/// independently auditable. The carrier remains inactive until its production
-/// loss-observation authority is complete.
 pub const CURRENT_LOSS_OBSERVATION_ROW_LEN: usize = 72;
 pub const CURRENT_LOSS_FLAG_WRITER_SENTINEL: u32 = 1 << 0;
 pub const CURRENT_LOSS_FLAG_ACTIVE_EPOCH_BOUND: u32 = 1 << 1;
@@ -242,11 +167,7 @@ pub const CURRENT_LOSS_FLAG_TWO_HOUR_CONTROL: u32 = 1 << 2;
 pub const CURRENT_LOSS_FLAG_MANPOWER_DELTA: u32 = 1 << 3;
 pub const CURRENT_LOSS_FLAG_EQUIPMENT_DELTA: u32 = 1 << 4;
 pub const CURRENT_LOSS_FLAG_EQUIPMENT_IDENTITY: u32 = 1 << 5;
-/// The synchronous update came from the active division-damage producer at
-/// `hoi4.exe+0x0C7BFC0`.
 pub const CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE: u32 = 1 << 6;
-/// The synchronous update came from the participant-lifecycle producer at
-/// `hoi4.exe+0x1299850`.
 pub const CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE: u32 = 1 << 7;
 pub const CURRENT_LOSS_SOURCE_FLAG_MASK: u32 =
     CURRENT_LOSS_FLAG_SOURCE_ACTIVE_DAMAGE | CURRENT_LOSS_FLAG_SOURCE_PARTICIPANT_LIFECYCLE;
@@ -257,16 +178,10 @@ pub const CURRENT_LOSS_REQUIRED_FLAG_MASK: u32 = CURRENT_LOSS_FLAG_WRITER_SENTIN
     | CURRENT_LOSS_FLAG_EQUIPMENT_DELTA
     | CURRENT_LOSS_FLAG_EQUIPMENT_IDENTITY;
 
-/// Pointer-free projection of the engine's exact 0x448-byte terminal record.
-/// The hook retains the raw bytes only process-locally, then projects these
-/// proven scalar offsets before crossing the replay boundary.
 pub const TERMINAL_RECORD_ROW_LEN: usize = 48;
 pub const TERMINAL_WRITER_KIND_OVERRUN: u32 = 1;
 pub const TERMINAL_WRITER_KIND_NORMAL: u32 = 2;
 
-/// Exact reserve identity, read from CCombatSide's reserve vector (+0xE0/+0xEC).
-/// Layout: combat_id u32 | generation u64 | side u32 | flags u32 |
-/// ordinal u32 | division_id u32 | reserved u32.
 pub const RESERVE_MEMBER_ROW_LEN: usize = 32;
 pub const RESERVE_MEMBER_FLAG_ATTACKER: u32 = 1 << 0;
 pub const RESERVE_MEMBER_FLAG_DEFENDER: u32 = 1 << 1;
@@ -301,19 +216,12 @@ pub struct TacticIdentity {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideDetail {
-    /// Total units on the side (side+0x2C = committed + reserve). 100/100.
     pub units: u32,
-    /// Committed (front-line) count (side+0xD4). 100/100, values 1..6.
     pub committed: u32,
-    /// Reserve count (side+0xEC). 100/100.
     pub reserve: u32,
-    /// Air-to-ground kills (side+0x140). u32.
     pub air_kills: u32,
-    /// Org-loss summary index (side+0x1A8). u32.
     pub org_loss_summary_index: u32,
-    /// Number of org losses = combat day count (side+0x1AC). u32.
     pub num_org_losses: u32,
-    /// i64 ×1e5 damage accumulators (side+0x138..+0x170).
     pub anti_air_attack_raw: i64,
     pub air_damage_str_raw: i64,
     pub air_damage_org_raw: i64,
@@ -321,27 +229,18 @@ pub struct SideDetail {
     pub ground_damage_org_raw: i64,
     pub prevented_damage_str_raw: i64,
     pub prevented_damage_org_raw: i64,
-    /// Exact stored side progress: i32[CCombatSide+0x418] / 100000.
-    /// None exists only when decoding legacy v2/v3 streams.
     pub progress_raw: Option<i32>,
-    /// Exact runtime CCombatTactic identity. None with tactic_known=true means
-    /// the stable side tactic pointer was null; false is legacy/unavailable.
     pub tactic: Option<TacticIdentity>,
     pub tactic_known: bool,
-    /// True when the stably-read count triple violated committed+reserve==units
-    /// (a genuine mid-combat transient). The row is still emitted, badged.
     pub counts_incomplete: bool,
 }
 
-/// A per-side current-state detail row for one combat.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SideDetailRow {
     pub combat_id: u32,
     pub generation: u64,
     pub side: CombatSide,
     pub detail: SideDetail,
-    /// Whether the matching reserve-member vector passed the stable container
-    /// read. False is unavailable, not known-empty.
     pub reserve_members_known: bool,
 }
 
@@ -365,7 +264,6 @@ pub struct ReserveMemberRow {
     pub combat_id: u32,
     pub generation: u64,
     pub side: CombatSide,
-    /// Stable engine-vector order. Consumers must not infer battle position.
     pub ordinal: u32,
     pub division_id: u32,
 }
@@ -376,8 +274,6 @@ pub struct TerminalCombatRecordRow {
     pub generation: u64,
     pub record_index: u32,
     pub writer_kind: u32,
-    /// Exact eight-byte scalar passed as record+0x10 / record+0x220 to the
-    /// combat-log manpower localizer. No display conversion is applied.
     pub attacker_manpower_loss_raw: i64,
     pub defender_manpower_loss_raw: i64,
     pub end_date_raw: u32,
@@ -424,9 +320,7 @@ pub struct PanelObservationRow {
     pub generation: u64,
     pub side: CombatSide,
     pub capture_sequence: u64,
-    /// Exact `CArmyLeader+0x0C`; zero is an authenticated no-leader result.
     pub leader_id: u32,
-    /// Tooltip enum presence bits 0..=9. Order is the pinned engine order.
     pub modifier_bits: u32,
     pub control_flags: u32,
 }
@@ -440,14 +334,10 @@ pub struct LandCombatSnapshot {
     pub duration: Option<u32>,
     pub attacker_divisions: Vec<u32>,
     pub defender_divisions: Vec<u32>,
-    /// E2: per-side CCombatSide detail scalars. `None` when the side object
-    /// failed revalidation (fail closed — absent, never zero-filled).
     pub attacker_detail: Option<SideDetail>,
     pub defender_detail: Option<SideDetail>,
     pub attacker_attribution: Vec<AttributionEntry>,
     pub defender_attribution: Vec<AttributionEntry>,
-    /// Exact reserve identities from the side reserve vector. None means the
-    /// vector did not pass the stable container/partition validation.
     pub attacker_reserve_divisions: Option<Vec<u32>>,
     pub defender_reserve_divisions: Option<Vec<u32>>,
 }
@@ -462,13 +352,7 @@ pub struct DetailEventRow {
     pub location: Option<u32>,
     pub day: Option<u32>,
     pub duration: Option<u32>,
-    /// Participant count in this side's previous validated snapshot. Every
-    /// participant delta synthesized from the same snapshot pair carries the
-    /// same value; this is not a per-event count immediately before the row.
     pub old_side_count: u32,
-    /// Participant count in this side's current validated snapshot. See
-    /// `old_side_count`: joined and left rows are a batch diff, so either kind
-    /// may carry an equal, larger, or smaller old-to-new count.
     pub new_side_count: u32,
     pub flags: u32,
 }
@@ -751,21 +635,13 @@ impl GateBoundaryState {
 pub struct CaptureFrame {
     pub compact_stream: Vec<u8>,
     pub rows: Vec<DetailEventRow>,
-    /// E2: per-side current-state detail rows (one per active combat per side).
     pub side_detail_rows: Vec<SideDetailRow>,
-    /// E5: per-side current-state damage attribution rows.
     pub attribution_rows: Vec<AttributionRow>,
-    /// X2b: exact reserve division identities in stable engine-vector order.
     pub reserve_member_rows: Vec<ReserveMemberRow>,
-    /// X2 terminal records produced before active-combat deletion.
     pub terminal_record_rows: Vec<TerminalCombatRecordRow>,
-    /// Dormant X2 carrier transport. Empty until the exact width controls pass.
     pub width_observation_rows: Vec<WidthObservationRow>,
-    /// Dormant X2 carrier transport. Empty until the exact loss controls pass.
     pub current_loss_observation_rows: Vec<CurrentLossObservationRow>,
     pub panel_observation_rows: Vec<PanelObservationRow>,
-    /// v9: the passive carrier's rows. Empty is a real observation (no active
-    /// combat), distinct from a pre-v9 stream that could not carry them.
     pub carrier_rows: passive_modifier_carrier::CarrierRows,
 }
 
@@ -774,59 +650,10 @@ pub struct LandCombatDetailTracker {
     previous: Vec<LandCombatSnapshot>,
     pending_rebaseline: bool,
     last_frame_rebaselined: bool,
-    /// This frame's successor baseline, durable only once the frame's D55
-    /// record is judged one the consumer will apply.
-    ///
-    /// # The defect this removes
-    ///
-    /// The snapshot baseline used to be installed here, inside the reader's
-    /// clock bracket. D55 can then be badged failure-class by hook-reservation
-    /// custody that settles on the main thread AFTER that bracket has closed,
-    /// and the fold discards a failure-class D55 record WHOLE -- it clears the
-    /// hour's detail events and returns. So the producer's baseline had moved to
-    /// a state the fold never applied, and the next frame's transitions were
-    /// derived against a baseline that did not exist downstream. The transitions
-    /// that happened during the discarded frame were then never emitted by
-    /// anyone.
-    ///
-    /// A later keyframe does not repair it: once a domain has a delta baseline
-    /// the fold treats every subsequent record as a sparse patch, so the missing
-    /// transitions are simply gone. The pin must therefore never diverge in the
-    /// first place, which is what committing it after the status is final buys.
-    ///
-    /// Rolling back keeps the OLDER baseline, so the next frame derives
-    /// old -> newest and emits the union of both frames' transitions. A
-    /// superset, never a gap.
     staged: Option<StagedLandCombatDetailBaseline>,
-    /// The baseline this frame STARTED from, kept only while a commit this
-    /// frame performed could still turn out never to have reached the fold.
-    ///
-    /// # The residual this removes
-    ///
-    /// `commit_staged_baseline` runs at the emission site, which is before
-    /// bracket rejection is known. A frame can commit on a status word the fold
-    /// applies and then have its whole record REPLACED WITH A GAP because its
-    /// clock bracket was torn — the fold never saw it, and the producer is
-    /// ahead. The old answer was `reset_trackers_after_rejected_bracket` wiping
-    /// this tracker to `Default`, which put it BEHIND the fold's retained state
-    /// instead: an emptied `previous` makes the next frame report every live
-    /// combat as new, and the transitions that actually happened are gone.
-    ///
-    /// PRE-FRAME RESTORATION undoes just this frame's commit and leaves the
-    /// baseline exactly where the fold's is. It costs nothing: the pre-commit
-    /// `previous` is already moved out by `commit_staged_baseline`, so it is
-    /// kept rather than dropped.
     frame_entry: Option<StagedLandCombatDetailBaseline>,
 }
 
-/// One frame's uncommitted D55 baseline.
-///
-/// `last_frame_rebaselined` is deliberately NOT staged. It is a FRAME-LOCAL
-/// signal -- `read_compact_land_combat_detail_events_live` reads it immediately
-/// after `collect_transition_capture_frame` returns, to decide this frame's
-/// status word, and every path that reaches the next frame rewrites it before it
-/// is read again. Staging it would have made the reader unable to see the reset
-/// it had just performed.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct StagedLandCombatDetailBaseline {
     previous: Vec<LandCombatSnapshot>,
@@ -838,24 +665,13 @@ impl LandCombatDetailTracker {
         self.previous.clear();
         self.pending_rebaseline = true;
         self.last_frame_rebaselined = false;
-        // A hard reset outranks an uncommitted successor: the successor
-        // describes a read this frame has just decided not to stand behind.
         self.staged = None;
-        // `frame_entry` is deliberately NOT cleared, and cannot be stale here:
-        // this is called from the READER, which always runs before the frame's
-        // commit site, so a frame that resets has not committed yet and the slot
-        // is empty. If the frame is later rejected, restoring to the state this
-        // reset produced -- empty baseline, rebaseline still pending -- is
-        // exactly right, because the announcement the reset would have made was
-        // replaced with a gap and the consumer never saw it either.
     }
 
     pub fn last_frame_rebaselined(&self) -> bool {
         self.last_frame_rebaselined
     }
 
-    /// Record this frame's successor baseline. Nothing is durable until
-    /// [`Self::commit_staged_baseline`].
     fn stage_baseline(&mut self, previous: Vec<LandCombatSnapshot>, pending_rebaseline: bool) {
         self.staged = Some(StagedLandCombatDetailBaseline {
             previous,
@@ -863,17 +679,11 @@ impl LandCombatDetailTracker {
         });
     }
 
-    /// Install this frame's successor baseline. Called ONLY where D55's final
-    /// status word is known -- after hook-reservation custody has settled -- and
-    /// only when that word is one the consumer applies.
     pub fn commit_staged_baseline(&mut self) {
         if let Some(staged) = self.staged.take() {
             let previous = std::mem::replace(&mut self.previous, staged.previous);
             let pending_rebaseline =
                 std::mem::replace(&mut self.pending_rebaseline, staged.pending_rebaseline);
-            // Only the FIRST commit of a frame records the entry state, so a
-            // frame that commits twice still restores to one frame back rather
-            // than to the intermediate value.
             if self.frame_entry.is_none() {
                 self.frame_entry = Some(StagedLandCombatDetailBaseline {
                     previous,
@@ -883,11 +693,6 @@ impl LandCombatDetailTracker {
         }
     }
 
-    /// PRE-FRAME RESTORATION: undo this frame's commit and discard anything
-    /// still staged, leaving the baseline where the fold's is when this frame's
-    /// record became a `DOMAIN_GAP`.
-    ///
-    /// Idempotent, and a no-op on a frame that never committed.
     pub fn restore_frame_entry_baseline(&mut self) {
         self.staged = None;
         if let Some(entry) = self.frame_entry.take() {
@@ -896,16 +701,10 @@ impl LandCombatDetailTracker {
         }
     }
 
-    /// Seal this frame's commit: it is now what the fold holds, and no later
-    /// frame's rejection may undo it.
     pub fn close_frame_transaction(&mut self) {
         self.frame_entry = None;
     }
 
-    /// Discard this frame's successor baseline, because the record carrying it
-    /// will be discarded whole. A rebaseline that is rolled back stays PENDING,
-    /// so the next frame announces it again rather than believing a reset the
-    /// consumer never saw.
     pub fn roll_back_staged_baseline(&mut self) {
         self.staged = None;
     }
@@ -918,12 +717,6 @@ impl LandCombatDetailTracker {
 pub trait LandCombatDetailMemory {
     fn land_combat_snapshots(&self) -> Result<Vec<LandCombatSnapshot>, Vec<String>>;
 
-    /// Passive-carrier rows for this frame.
-    ///
-    /// Defaulted to empty so a memory source that predates the carrier compiles
-    /// unchanged. Modifier state is CURRENT-STATE, not a delta, so these are
-    /// emitted on a rebaselined frame exactly as on any other -- the transition
-    /// baseline reset zeroes event history, not live scalars.
     fn carrier_rows(&self) -> passive_modifier_carrier::CarrierRows {
         passive_modifier_carrier::CarrierRows::default()
     }
@@ -939,10 +732,6 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
     let current = memory.land_combat_snapshots()?;
     let carrier_rows = memory.carrier_rows();
     if tracker.pending_rebaseline {
-        // The transition BASELINE reset zeroes the event-delta history so no
-        // synthetic join/leave events are fabricated across the gap. Per-side
-        // detail is CURRENT-STATE, not a delta, so it is still emitted on the
-        // rebaseline frame — the fold needs the live scalars every hour.
         let side_detail_rows = side_detail_rows_from_snapshots(&current);
         let attribution_rows = attribution_rows_from_snapshots(&current);
         let reserve_member_rows = reserve_member_rows_from_snapshots(&current);
@@ -991,9 +780,6 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
         game_hour_raw,
         elapsed_wall_ms,
     )?;
-    // `build_transition_capture_frame` is a pure delta builder with no view of
-    // live modifier state, so the carrier rows are folded in here -- one
-    // producer for both the preview stream and the published record.
     let payload = encode_detail_events_payload_v9(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
@@ -1023,9 +809,6 @@ pub fn collect_transition_capture_frame<M: LandCombatDetailMemory>(
     Ok(frame)
 }
 
-/// Build the per-side current-state detail rows for every active combat that
-/// carries validated CCombatSide detail. A side whose detail failed
-/// revalidation contributes NO row (fail closed; absent, not zero).
 pub fn side_detail_rows_from_snapshots(current: &[LandCombatSnapshot]) -> Vec<SideDetailRow> {
     let mut rows = Vec::new();
     for snapshot in current {
@@ -1108,21 +891,13 @@ pub struct DecodedDetailEventsPayload {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub rows: Vec<DetailEventRow>,
-    /// E2: per-side current-state detail rows (empty for v1 streams).
     pub side_detail_rows: Vec<SideDetailRow>,
-    /// E5: per-side current-state damage attribution rows (empty before v3).
     pub attribution_rows: Vec<AttributionRow>,
-    /// X2b: exact reserve identities (empty before v5).
     pub reserve_member_rows: Vec<ReserveMemberRow>,
-    /// X2 authenticated terminal record scalars (empty before v6).
     pub terminal_record_rows: Vec<TerminalCombatRecordRow>,
-    /// X2 exact-call width rows (empty before v7).
     pub width_observation_rows: Vec<WidthObservationRow>,
-    /// X2 exact current-epoch loss rows (empty before v7).
     pub current_loss_observation_rows: Vec<CurrentLossObservationRow>,
-    /// Authenticated panel-selected leader and displayed modifiers (v8).
     pub panel_observation_rows: Vec<PanelObservationRow>,
-    /// Passive carrier rows (empty before v9).
     pub carrier_rows: passive_modifier_carrier::CarrierRows,
 }
 
@@ -1137,10 +912,6 @@ pub fn build_transition_capture_frame(
     let side_detail_rows = side_detail_rows_from_snapshots(current);
     let attribution_rows = attribution_rows_from_snapshots(current);
     let reserve_member_rows = reserve_member_rows_from_snapshots(current);
-    // A pure delta builder holds no live modifier state, so its trailer is
-    // empty and its `carrier_rows` is empty to match. The frame and its stream
-    // agree; `collect_transition_capture_frame` replaces both together when a
-    // memory source does have carrier rows to contribute.
     let payload = encode_detail_events_payload_v9(
         elapsed_wall_ms,
         STATUS_DELTA_DATA,
@@ -1233,8 +1004,6 @@ pub fn build_detail_event_rows(
     Ok(rows)
 }
 
-/// v1 encoder (event rows only, no side detail). Retained for the legacy wire
-/// shape and older tests; writes SCHEMA_VERSION_V1 and the 28-byte header.
 pub fn encode_detail_events_payload(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1252,9 +1021,6 @@ pub fn encode_detail_events_payload(
     payload
 }
 
-/// v2 encoder (E2): event rows PLUS a per-side detail row family. The 32-byte
-/// header appends a u32 side_detail_row_count after the event-row count block;
-/// the side-detail rows follow the event rows.
 pub fn encode_detail_events_payload_v2(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1271,10 +1037,10 @@ pub fn encode_detail_events_payload_v2(
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes()); // string_count
+    payload.extend_from_slice(&0u32.to_le_bytes());
     payload
         .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    payload.extend_from_slice(&0u32.to_le_bytes());
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
         append_side_detail_row_legacy(&mut payload, row);
@@ -1282,8 +1048,6 @@ pub fn encode_detail_events_payload_v2(
     payload
 }
 
-/// v3 compatibility encoder: attribution rows are present, while side detail
-/// retains the legacy 100-byte shape and has no tactic string table.
 pub fn encode_detail_events_payload_v3(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1302,12 +1066,12 @@ pub fn encode_detail_events_payload_v3(
     payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
     payload.extend_from_slice(&(rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes()); // string_count
+    payload.extend_from_slice(&0u32.to_le_bytes());
     payload
         .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload
         .extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    payload.extend_from_slice(&0u32.to_le_bytes());
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
         append_side_detail_row_legacy(&mut payload, row);
@@ -1318,8 +1082,6 @@ pub fn encode_detail_events_payload_v3(
     payload
 }
 
-/// v4 production encoder: exact per-side progress and tactic identity, with a
-/// canonical UTF-8 tactic string table, plus attribution rows.
 pub fn encode_detail_events_payload_v4(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1351,7 +1113,7 @@ pub fn encode_detail_events_payload_v4(
         .extend_from_slice(&(side_detail_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
     payload
         .extend_from_slice(&(attribution_rows.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+    payload.extend_from_slice(&0u32.to_le_bytes());
     append_event_rows(&mut payload, rows);
     for row in side_detail_rows {
         append_side_detail_row(&mut payload, row, &string_indices, false);
@@ -1366,7 +1128,6 @@ pub fn encode_detail_events_payload_v4(
     payload
 }
 
-/// v5 production encoder: v4 tactic/progress + exact reserve identities.
 pub fn encode_detail_events_payload_v5(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1421,8 +1182,6 @@ pub fn encode_detail_events_payload_v5(
     payload
 }
 
-/// v6 production encoder: v5 plus the authenticated, pointer-free projection
-/// of terminal combat-log records. Terminal rows precede the tactic strings.
 pub fn encode_detail_events_payload_v6(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1485,9 +1244,6 @@ pub fn encode_detail_events_payload_v6(
     payload
 }
 
-/// Current production encoder: v6 plus the pointer-free X2 width/loss and
-/// authenticated panel-observation transports. Counts are explicit header
-/// fields; no row shape is inferred from payload remainder bytes.
 pub fn encode_detail_events_payload_v8(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -1573,12 +1329,6 @@ pub fn encode_detail_events_payload_v8(
     payload
 }
 
-/// v9: the v8 payload with the passive-carrier trailer appended.
-///
-/// The version word is the ONLY byte that differs before the trailer, so a
-/// consumer that only wants the v8 blocks can keep its offsets unchanged. The
-/// trailer is always written, even when empty: "this frame observed no modifier
-/// state" and "this frame predates the carrier" must not look alike.
 #[allow(clippy::too_many_arguments)]
 pub fn encode_detail_events_payload_v9(
     elapsed_wall_ms: u64,
@@ -1606,8 +1356,6 @@ pub fn encode_detail_events_payload_v9(
         panel_observation_rows,
     );
     payload[0..2].copy_from_slice(&SCHEMA_VERSION.to_le_bytes());
-    // The trailer encoder reserves for itself, AFTER validating the budget --
-    // reserving here would size the allocation from an unvalidated row count.
     passive_modifier_carrier::append_carrier_trailer(&mut payload, carrier_rows);
     payload
 }
@@ -1679,7 +1427,6 @@ fn append_side_detail_row_legacy(payload: &mut Vec<u8>, row: &SideDetailRow) {
     payload.extend_from_slice(&row.detail.prevented_damage_org_raw.to_le_bytes());
 }
 
-/// Encode one v4 side-detail row (SIDE_DETAIL_ROW_LEN bytes).
 fn append_side_detail_row(
     payload: &mut Vec<u8>,
     row: &SideDetailRow,
@@ -1914,16 +1661,10 @@ fn validate_terminal_record_row(row: &TerminalCombatRecordRow) -> Result<(), Str
     }
 }
 
-/// Validate the compact stream's framing, per-hour D55 authority, payload
-/// joins, and terminal boundary. This is the structural gate; callers making a
-/// production-duration claim must use [`gate_stream_for_product`].
 pub fn gate_stream(data: &[u8]) -> GateResult {
     gate_stream_internal(data, None)
 }
 
-/// Validate a product capture for an explicitly requested number of game-hour
-/// advancements. Because both endpoints must be closed, `N` advancements
-/// require at least `N + 1` consecutive authoritative FRAME_END records.
 pub fn gate_stream_for_product(data: &[u8], minimum_game_hour_advancements: i64) -> GateResult {
     gate_stream_internal(data, Some(minimum_game_hour_advancements))
 }
@@ -2177,11 +1918,6 @@ pub fn decode_detail_events_payload(
     payload: &[u8],
 ) -> Result<DecodedDetailEventsPayload, Vec<String>> {
     let mut errors = Vec::new();
-    // The version selects the header/parse shape (framing-level, never a
-    // payload-byte sniff). v1 = events only, v2 = side detail, v3 = side detail
-    // plus damage attribution, v4 = exact side progress and tactic identity,
-    // v5 = exact reserve-member identities, v6 = terminal records, v7 =
-    // pointer-free X2 width/current-loss transports, v8 = exact panel rows.
     if payload.len() < 4 {
         return Err(vec![format!("offset {offset}: detail payload too short")]);
     }
@@ -2316,8 +2052,6 @@ pub fn decode_detail_events_payload(
                 SIDE_DETAIL_ROW_LEN,
             )
         }
-        // v9 shares the v8 header verbatim; it differs only by the trailer
-        // appended after the tactic strings.
         SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION => {
             if payload.len() < PAYLOAD_HEADER_LEN {
                 return Err(vec![format!(
@@ -2350,7 +2084,6 @@ pub fn decode_detail_events_payload(
     let status_flags = read_u32(payload, 12);
     let row_count = read_u32(payload, 16) as usize;
     let string_count = read_u32(payload, 20) as usize;
-    // v8 assigns the final v7 reserved word to panel_observation_row_count.
     let reserved = read_u32(payload, header_len - 4);
     if row_len != DETAIL_EVENT_ROW_LEN {
         errors.push(format!(
@@ -2384,8 +2117,6 @@ pub fn decode_detail_events_payload(
             | SCHEMA_VERSION_V8_PANEL
             | SCHEMA_VERSION
     ) && string_count != 0)
-        // v8 and v9 both spend the final header word on the panel-row count,
-        // so it is data there rather than a reserved zero.
         || (!matches!(version, SCHEMA_VERSION_V8_PANEL | SCHEMA_VERSION) && reserved != 0)
     {
         errors.push(format!(
@@ -2500,15 +2231,10 @@ pub fn decode_detail_events_payload(
         strings.push(value);
         string_cursor += len;
     }
-    // v9 alone may carry bytes past the string table, and exactly one trailer's
-    // worth. Every other version keeps the strict no-trailing-bytes rule, so an
-    // older stream cannot smuggle carrier rows past a reader that predates them.
     let carrier_rows = if version == SCHEMA_VERSION {
-        let (carrier_rows, end) = passive_modifier_carrier::decode_carrier_trailer(
-            payload,
-            string_cursor,
-        )
-        .map_err(|error| vec![format!("offset {offset}: {error}")])?;
+        let (carrier_rows, end) =
+            passive_modifier_carrier::decode_carrier_trailer(payload, string_cursor)
+                .map_err(|error| vec![format!("offset {offset}: {error}")])?;
         if end != payload.len() {
             return Err(vec![format!(
                 "offset {offset}: detail payload has {} trailing bytes after the carrier trailer",
@@ -2580,7 +2306,6 @@ pub fn decode_detail_events_payload(
         });
     }
 
-    // v2 per-side detail family (empty for v1).
     let mut side_detail_rows = Vec::with_capacity(side_detail_row_count);
     let mut seen_side = BTreeSet::new();
     for row_index in 0..side_detail_row_count {
@@ -3044,10 +2769,6 @@ fn decode_side_detail_row(
             ));
         }
     }
-    // The committed+reserve==units invariant is REQUIRED unless the row is
-    // explicitly badged COUNTS_INCOMPLETE (a genuine mid-combat transient the
-    // collector observed with a stable double-read). Without the badge, a
-    // violation is a corrupt/torn payload and is rejected.
     let counts_incomplete = flags & SIDE_DETAIL_FLAG_COUNTS_INCOMPLETE != 0;
     if !counts_incomplete && committed.saturating_add(reserve) != units {
         return Err(format!(
@@ -3225,11 +2946,6 @@ fn validate_payload_referential_consistency(
     }
 
     for ((combat_id, generation, side), set) in participant_sets {
-        // `push_side_delta_rows` diffs two complete side snapshots and stamps
-        // every synthesized row with those snapshots' cardinalities. Direction
-        // is therefore a property of the whole batch, not of an individual
-        // joined/left row. This identity rejects missing, extra, or mislabeled
-        // participant rows while accepting replacements and mixed net changes.
         let expected = i64::from(set.old_count) + set.joined.len() as i64 - set.left.len() as i64;
         if expected != i64::from(set.new_count) {
             errors.push(format!(
@@ -3411,7 +3127,6 @@ fn decode_reserve_member_row(
             "offset {offset}: reserve member row {row_index} duplicates identity"
         ));
     }
-    // An ID may appear only once per side even if a corrupt payload changes its ordinal.
     if seen
         .iter()
         .filter(|(c, g, s, _, d)| {
@@ -3990,11 +3705,6 @@ fn validate_attribution_entry(entry: AttributionEntry) -> Result<(), String> {
     if entry.dealer_tag_db_id == entry.victim_tag_db_id {
         return Err("has identical dealer and victim".to_string());
     }
-    // SDamageDone publishes a validated dealer/victim relationship before its
-    // cumulative damage necessarily becomes nonzero. A stable zero is therefore
-    // measured zero, not an unavailable row. This was observed directly on the
-    // exact-a729 CStatsObserver path (runtime job
-    // 20260724T141552Z-observe-runtime-72087eab).
     if entry.damage_raw > MAX_ATTRIBUTION_DAMAGE_RAW {
         return Err("has invalid damage_raw".to_string());
     }
@@ -5272,7 +4982,6 @@ mod tests {
             .unwrap();
         assert_eq!(defender.detail, def);
 
-        // Gate accepts the v4 stream and counts exact side-detail rows.
         let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
         assert_eq!(gate.summary.side_detail_rows, 2);
@@ -5596,8 +5305,6 @@ mod tests {
 
     #[test]
     fn side_missing_detail_emits_no_row_fail_closed() {
-        // A side whose detail failed revalidation (None) must contribute NO
-        // row — absent, never zero-filled.
         let current = vec![snapshot_with_detail(
             21453,
             7,
@@ -5613,7 +5320,6 @@ mod tests {
 
     #[test]
     fn v1_payload_still_decodes_with_no_side_detail() {
-        // The legacy v1 encoder path (event rows only) must still decode.
         let start = [snapshot(42, 7, 1000, &[1001, 1002], &[2001])];
         let update = [snapshot(42, 7, 1000, &[1001], &[2001, 2002])];
         let rows = build_detail_event_rows(&start, &update).unwrap();
@@ -5627,10 +5333,8 @@ mod tests {
 
     #[test]
     fn side_detail_committed_plus_reserve_must_equal_units_without_badge() {
-        // An invariant violation WITHOUT the incomplete badge is a corrupt/torn
-        // payload and must be rejected.
         let mut bad = sample_side_detail(2, 2);
-        bad.units = 5; // committed+reserve = 4 != 5
+        bad.units = 5;
         bad.counts_incomplete = false;
         let current = vec![snapshot_with_detail(
             21381,
@@ -5650,11 +5354,8 @@ mod tests {
 
     #[test]
     fn side_detail_invariant_violation_accepted_when_incomplete_badged() {
-        // The SAME violation WITH the incomplete badge (a genuine mid-combat
-        // transient the collector observed with a stable double-read) is
-        // RETAINED and round-trips — the row is not dropped.
         let mut transient = sample_side_detail(2, 0);
-        transient.units = 3; // committed 2 + reserve 0 = 2 != 3
+        transient.units = 3;
         transient.counts_incomplete = true;
         let current = vec![snapshot_with_detail(
             21381,
@@ -5671,7 +5372,6 @@ mod tests {
         assert_eq!(decoded.side_detail_rows.len(), 1);
         assert!(decoded.side_detail_rows[0].detail.counts_incomplete);
         assert_eq!(decoded.side_detail_rows[0].detail.units, 3);
-        // The flag round-trips in the wire flags.
         let gate = gate_stream(&certify_lane_data_record(frame.compact_stream));
         assert!(gate.ok, "{:?}", gate.errors);
     }

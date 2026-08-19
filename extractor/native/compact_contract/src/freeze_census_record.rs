@@ -1,16 +1,3 @@
-//! Bounded, frame-independent freeze-census payload (`H4FC`).
-//!
-//! The enclosing H4CR record closes no game hour and claims no domain
-//! coverage. This payload carries only rows that were already observed after a
-//! freeze ended. Encoding may allocate, but it is never called under a freeze.
-//!
-//! The encoder distinguishes contradictory input from bounded observation:
-//! counter regression, impossible rows, and invalid ordering return `Err`;
-//! more than 256 rows, an individual label longer than 1,024 bytes, or a label
-//! blob longer than 16,384 bytes cuts the retained row prefix and sets
-//! [`FreezeCensusQuality::encoder_bound_truncated`]. Thus a bounded payload
-//! still seals without pretending that its retained rows are complete.
-
 use core::fmt;
 
 use crate::record_semantics::KnownRecordType;
@@ -27,62 +14,16 @@ pub const FREEZE_CENSUS_MAX_PAYLOAD_LEN: usize = FREEZE_CENSUS_HEADER_LEN
     + FREEZE_CENSUS_MAX_LABEL_BLOB_LEN;
 
 /// THE RELEASE-EPILOGUE GRAMMAR (owner ruling 2026-08-16, option (a)).
-///
-/// A recording may carry EXACTLY ONE bounded H4FC record after its last frame
-/// boundary, and nothing at all after that. Concretely, and enforced by the two
-/// pure functions below plus [`FreezeCensusRecordV1::decode`]:
-///
 /// * exactly one -- a second release record is refused
 ///   ([`validate_freeze_census_placement_policy`], `release_epilogue_already_seen`);
-/// * fixed maximum size -- [`FREEZE_CENSUS_MAX_PAYLOAD_LEN`], refused by the decoder;
 /// * it must be the FREEZE_CENSUS record type in its release phase -- any other
-///   record type after the boundary is malformed exactly as it was before;
-/// * immediately after a canonical closed-hour boundary. `FRAME_END` and
-///   `FRAME_REFUSED` both close a game hour, and a stream is allowed to end on
-///   either, so both are accepted predecessors and nothing else is. Narrowing
-///   this to `FRAME_END` alone would call an honestly-refused final hour
-///   malformed the moment the epilogue rides behind it;
-/// * end of file immediately after it
 ///   ([`validate_record_allowed_after_release_epilogue`]);
-/// * it opens no hour and claims no coverage: domain 1000, game-hour sentinel
-///   zero, contiguous sequence, no coverage span (enforced by the H4CR envelope
-///   checks in `record_semantics` and by every consumer routing the record away
-///   from its hour bookkeeping).
-///
-/// There is deliberately no enable/disable switch: the ruling is shipped, so
-/// the refusing branch is gone rather than parked behind a constant that is
-/// always true.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FreezeCensusPlacement {
     InstallPreamble,
     ReleaseEpilogue,
 }
 
-/// Pure placement authority. Every consumer that admits an H4FC record routes
-/// through this one function, so the grammar above has a single definition.
-///
-/// # The install slot does not depend on the stream's identity mode
-///
-/// This function once took a `campaign_identity_present` flag and refused any
-/// install record that did not sit behind an admitted CID1. That was WRONG for
-/// half of production, and every shipped recording proved it: the recorder runs
-/// [`StreamIdentityMode::IdentityV1`] only for auto-attach captures, and
-/// [`StreamIdentityMode::Legacy`] -- no CID1 at all -- for every capture that
-/// attaches to a game already running. In legacy mode there is no sequence-zero
-/// record, so the install census is the first physical record in the file, and
-/// the flag made the 22 whole-stream scanners refuse a stream the fold accepted
-/// (the fold passed the flag as a hardcoded `true`).
-///
-/// The rule that is actually being stated, and that holds in BOTH modes, is
-/// **the install census is the first ORDINARY record of its logical stream**:
-/// sequence 1, no ordinary record before it, no ordinary predecessor. Identity
-/// presence is a property of the stream MODE, not of this record's placement,
-/// and it is enforced where identity is: in `IdentityV1` the CID1 is mandatory
-/// at sequence zero and the stateful stream validator refuses a stream without
-/// it, which no standalone scan over bytes alone can decide anyway.
-///
-/// [`StreamIdentityMode::IdentityV1`]: crate::stream_validator::StreamIdentityMode
-/// [`StreamIdentityMode::Legacy`]: crate::stream_validator::StreamIdentityMode
 pub fn validate_freeze_census_placement_policy(
     phase: FreezeCensusPhase,
     sequence: u64,
@@ -129,7 +70,6 @@ pub fn validate_freeze_census_placement_policy(
 }
 
 /// Pure EOF side of the bounded epilogue grammar: once a release census was
-/// accepted, no further physical H4CR record is permitted.
 pub fn validate_record_allowed_after_release_epilogue(
     release_epilogue_seen: bool,
 ) -> Result<(), String> {
@@ -141,13 +81,6 @@ pub fn validate_record_allowed_after_release_epilogue(
 }
 
 /// Pure physical-EOF policy shared by whole-stream consumers. A release row
-/// closes the stream only once, immediately after a clean world boundary.
-///
-/// `previous_record_closed_world` is the caller's own "the record I just
-/// finished was a canonical closed-hour boundary" bit, which is exactly the
-/// `FRAME_END`/`FRAME_REFUSED` predecessor rule stated above. An install-phase
-/// record never closes a stream, so this returns false for it and the caller's
-/// pre-existing terminal requirement stands unchanged.
 pub const fn release_epilogue_closes_stream_policy(
     previous_record_closed_world: bool,
     phase: FreezeCensusPhase,
@@ -163,9 +96,6 @@ const QUALITY_CENSUS_OVERFLOWED_BEFORE_PHASE: u8 = 1 << 1;
 const QUALITY_CENSUS_DROPPED_DURING_PHASE: u8 = 1 << 2;
 const QUALITY_PROCESS_THREAD_ATTEMPTS_DIFFER: u8 = 1 << 3;
 const QUALITY_COUNTER_RECONCILIATION: u8 = 1 << 4;
-// The accepted design required encoder-bound cuts to be named but left bits
-// 5..=7 unassigned. Bit 5 is the smallest wire correction that makes that
-// requirement representable without changing any field offset or width.
 const QUALITY_ENCODER_BOUND_TRUNCATED: u8 = 1 << 5;
 const QUALITY_KNOWN_MASK: u8 = QUALITY_ATTEMPTS_UNREPRESENTED
     | QUALITY_CENSUS_OVERFLOWED_BEFORE_PHASE
@@ -252,7 +182,6 @@ impl TryFrom<u8> for FreezeCensusEntryPoint {
     }
 }
 
-/// One atomic-counter snapshot taken at a phase boundary.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FreezeCensusCounterSnapshot {
     pub process_attempts: u64,
@@ -262,7 +191,6 @@ pub struct FreezeCensusCounterSnapshot {
     pub census_dropped: u64,
 }
 
-/// Borrowed producer-side row. The encoder copies its label into the payload.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FreezeCensusRowRef<'a> {
     pub ordinal: u64,
@@ -276,8 +204,6 @@ pub struct FreezeCensusRowRef<'a> {
     pub passes: u32,
 }
 
-/// Owned consumer-side row. Its label is carried by the sealed payload rather
-/// than borrowed from the producer's process-static roster.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FreezeCensusRow {
     pub ordinal: u64,
@@ -380,8 +306,6 @@ pub struct FreezeCensusRecordV1 {
 }
 
 impl FreezeCensusRecordV1 {
-    /// Total, bounded encoder. It rejects contradictory snapshots or rows, but
-    /// seals a named prefix when the row/label storage bound is reached.
     pub fn encode_bounded(
         phase: FreezeCensusPhase,
         before: FreezeCensusCounterSnapshot,
@@ -442,9 +366,6 @@ impl FreezeCensusRecordV1 {
             encoder_bound_truncated = true;
         }
         let retained_rows = &selected_rows[..rows_to_keep];
-        // A row beyond the retained prefix is outside the payload by the named
-        // bound and cannot make partial telemetry fatal. Contradictions inside
-        // the retained prefix still reject.
         validate_selected_rows(
             before.process_attempts,
             after.process_attempts,
@@ -568,14 +489,11 @@ impl FreezeCensusRecordV1 {
             label_cursor = label_end;
         }
 
-        // The producer contract is deliberately checked through the same total
-        // decoder consumers use. No successful encode can mint rejected bytes.
         Self::decode(&out)
             .map_err(|error| format!("H4FC encoder produced invalid bytes: {error}"))?;
         Ok(out)
     }
 
-    /// Total decoder over arbitrary byte slices.
     pub fn decode(payload: &[u8]) -> Result<Self, String> {
         if payload.len() < FREEZE_CENSUS_HEADER_LEN {
             return Err(format!(
@@ -964,9 +882,6 @@ impl FreezeCensusRecordV1 {
         &self.rows
     }
 
-    /// Report-only condition: missing labels are allowed because a row remains
-    /// useful without an identifying roster string. `Direct` has no target
-    /// roster, so its canonical empty label is not missing.
     pub fn has_missing_non_refused_labels(&self) -> bool {
         self.rows.iter().any(|row| {
             !row.refused
@@ -1171,9 +1086,6 @@ mod tests {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
 
-    /// kills: any H4FC offset, width, byte order, magic, version, row packing,
-    /// or label-blob order changing without an intentional version change. The
-    /// explicit array is independent of source-file line endings.
     #[test]
     fn exact_byte_golden_pins_header_rows_and_label_blob() {
         let before = FreezeCensusCounterSnapshot {
@@ -1222,9 +1134,6 @@ mod tests {
         );
     }
 
-    /// kills: reducing either advertised maximum, overflowing payload-length
-    /// arithmetic, or accepting fewer than 256 rows / 16,384 label bytes at
-    /// the exact bound.
     #[test]
     fn maximum_size_payload_round_trips_at_exact_bounds() {
         let labels = vec!["x".repeat(64); FREEZE_CENSUS_MAX_ROWS];
@@ -1248,9 +1157,6 @@ mod tests {
         );
     }
 
-    /// kills: silently dropping bound overflow without a wire-visible reason,
-    /// rejecting honest partial telemetry, or retaining more than the bounded
-    /// row/label prefix. These are boundary examples, not byte mutation loops.
     #[test]
     fn encoder_bounds_cut_a_prefix_and_name_the_truncation() {
         let rows: Vec<_> = (1..=257)
@@ -1287,7 +1193,6 @@ mod tests {
         assert!(decoded.quality().encoder_bound_truncated());
     }
 
-    /// kills: changing any phase or entry-point discriminant and thereby
     /// re-attributing install/release work or MinHook entry points.
     #[test]
     fn every_phase_and_entry_point_round_trips() {
@@ -1315,9 +1220,6 @@ mod tests {
         }
     }
 
-    /// kills: accepting a phase, quality bit, row bit, or entry-point code that
-    /// has no assigned meaning. Each mutation targets a complete one-byte
-    /// vocabulary; changing unrelated bytes cannot evade the closed masks.
     #[test]
     fn unassigned_discriminants_and_bits_reject() {
         let base = encode_rows(&[row(1, FreezeCensusEntryPoint::Enable, "x")]);
@@ -1335,10 +1237,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&entry).is_err());
     }
 
-    /// kills: trusting assigned quality claims that contradict the counters or
-    /// retained rows. Each bit is derived by one closed arithmetic predicate,
-    /// so representative false-positive and false-negative claims prove the
-    /// rule without mutating unrelated payload bytes.
     #[test]
     fn assigned_quality_flags_must_match_their_wire_facts() {
         let complete = encode_rows(&[]);
@@ -1405,9 +1303,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&dishonest_complete).is_err());
     }
 
-    /// kills: spending reserved header or row words without a versioned
-    /// grammar. Both reserved regions are checked directly, so no byte sweep is
-    /// needed to prove the rule.
     #[test]
     fn reserved_words_reject() {
         let base = encode_rows(&[row(1, FreezeCensusEntryPoint::Enable, "x")]);
@@ -1422,8 +1317,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&row_reserved).is_err());
     }
 
-    /// kills: trusting `rows_present` or `label_blob_len` without proving that
-    /// header + fixed rows + blob equals the exact supplied payload.
     #[test]
     fn row_count_and_blob_length_must_describe_the_exact_payload() {
         let base = encode_rows(&[
@@ -1439,8 +1332,6 @@ mod tests {
     }
 
     /// kills: ambiguous label ownership through invalid UTF-8, overlaps,
-    /// aliases, gaps, or unclaimed trailing bytes. Requiring every offset to
-    /// equal the prior label end proves canonical packing analytically.
     #[test]
     fn labels_are_utf8_and_canonically_partition_the_blob() {
         let base = encode_rows(&[
@@ -1471,9 +1362,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&trailing).is_err());
     }
 
-    /// kills: accepting duplicate, reordered, or out-of-phase ordinals. One
-    /// strict comparison against the prior row plus the closed interval proves
-    /// the property for every row, so no per-byte mutation battery is needed.
     #[test]
     fn ordinals_are_strictly_increasing_and_inside_the_phase_interval() {
         let base = encode_rows(&[
@@ -1492,9 +1380,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&above).is_err());
     }
 
-    /// kills: a header lying about attempt, refusal, cursor, or drop deltas.
-    /// Each arithmetic identity has one representative counter mutation; the
-    /// decoder applies the same identity to the full-width value.
     #[test]
     fn header_counter_deltas_are_exact_and_monotonic() {
         let base = encode_rows(&[row(1, FreezeCensusEntryPoint::Enable, "")]);
@@ -1521,8 +1406,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&unrepresented).is_err());
     }
 
-    /// kills: reporting duration or refusal totals not recomputed from the
-    /// decoded rows. The four fields cover every present-row aggregate.
     #[test]
     fn header_present_sums_must_equal_the_rows() {
         let base = encode_rows(&[row(1, FreezeCensusEntryPoint::Enable, ""), refused_row(2)]);
@@ -1534,8 +1417,6 @@ mod tests {
         }
     }
 
-    /// kills: accepting a row whose acquisition and MinHook shares add to more
-    /// than the whole freeze-call upper bound.
     #[test]
     fn row_parts_cannot_exceed_the_window() {
         let mut payload = encode_rows(&[row(1, FreezeCensusEntryPoint::Enable, "")]);
@@ -1544,8 +1425,6 @@ mod tests {
         assert!(FreezeCensusRecordV1::decode(&payload).is_err());
     }
 
-    /// kills: a refused row claiming a real entry point or nonzero target,
-    /// acquisition, MinHook, or enumeration work that never completed.
     #[test]
     fn refused_row_invariants_reject_contradictions() {
         let base = encode_rows(&[refused_row(1)]);
@@ -1559,9 +1438,6 @@ mod tests {
         }
     }
 
-    /// kills: turning honest incompleteness into either a decoder failure or a
-    /// silent success. Every accepted partial condition is asserted through a
-    /// consumer-facing accessor rather than inferred from private bytes.
     #[test]
     fn report_only_conditions_decode_and_are_observable() {
         let before = FreezeCensusCounterSnapshot {
@@ -1625,10 +1501,6 @@ mod tests {
             .counter_reconciliation_issue());
     }
 
-    /// kills: a decoder panic on adversarial/truncated bytes. The deterministic
-    /// generator samples lengths through and beyond the maximum payload; this
-    /// is the explicitly requested fuzz-style safety test, not a mutation
-    /// battery claiming semantic coverage.
     #[test]
     fn arbitrary_payload_slices_never_panic() {
         let mut state = 0x58A4_32D1_9EC7_B605u64;
@@ -1651,12 +1523,7 @@ mod tests {
         }
     }
 
-    /// kills: relaxing the shipped epilogue grammar in the ONE place that
-    /// defines it. Each assertion below fails on a specific production change:
-    /// dropping the duplicate guard, dropping the sequence-contiguity check,
     /// admitting a release record after a non-boundary predecessor, admitting
-    /// one with no ordinary records at all, or admitting one after a record
-    /// type that closes no hour.
     #[test]
     fn release_epilogue_placement_accepts_exactly_the_ruled_shape() {
         // POSITIVE: one release record, contiguous, straight after a FRAME_END.
@@ -1670,8 +1537,6 @@ mod tests {
             ),
             Ok(FreezeCensusPlacement::ReleaseEpilogue)
         );
-        // POSITIVE: FRAME_REFUSED closes an hour too, and a stream is allowed
-        // to end on one, so the epilogue may ride behind it.
         assert_eq!(
             validate_freeze_census_placement_policy(
                 FreezeCensusPhase::Release,
@@ -1691,8 +1556,6 @@ mod tests {
             true,
         )
         .is_err());
-        // NEGATIVE: not immediately after a boundary -- every record type that
-        // closes no game hour is refused as the predecessor.
         for predecessor in [
             KnownRecordType::DomainData,
             KnownRecordType::DomainPerf,
@@ -1717,7 +1580,6 @@ mod tests {
                 predecessor.canonical_name()
             );
         }
-        // NEGATIVE: no ordinary record precedes it at all (no hour was closed).
         assert!(validate_freeze_census_placement_policy(
             FreezeCensusPhase::Release,
             1,
@@ -1726,7 +1588,6 @@ mod tests {
             false,
         )
         .is_err());
-        // NEGATIVE: sequence is not contiguous with the records before it.
         assert!(validate_freeze_census_placement_policy(
             FreezeCensusPhase::Release,
             10,
@@ -1737,22 +1598,8 @@ mod tests {
         .is_err());
     }
 
-    /// kills: dropping the install-preamble slot rule, which would let an
-    /// install record float anywhere in the stream, or let it masquerade as the
-    /// terminal epilogue.
-    ///
-    /// kills: re-adding a stream-identity requirement to the install slot. The
-    /// FIRST assertion is the whole legacy-mode production case -- an install
-    /// census as the first ordinary record with no CID1 anywhere -- and putting
-    /// a `campaign_identity_present` gate back into the policy makes it fail.
     #[test]
     fn install_preamble_placement_is_the_first_ordinary_record_in_both_identity_modes() {
-        // The ONE shape, and it is the same call in both modes. In `Legacy`
-        // there is no sequence-zero record and this census is the first
-        // physical record in the file; in `IdentityV1` the CID1 occupies
-        // sequence zero, is not an ordinary record, and is not an ordinary
-        // predecessor. Neither mode changes any argument here, which is the
-        // point: identity presence is not part of this record's placement.
         assert_eq!(
             validate_freeze_census_placement_policy(FreezeCensusPhase::Install, 1, 0, None, false,),
             Ok(FreezeCensusPlacement::InstallPreamble)
@@ -1772,7 +1619,6 @@ mod tests {
             )
             .is_err());
         }
-        // An install record never closes a stream, whatever preceded it.
         assert!(!release_epilogue_closes_stream_policy(
             true,
             FreezeCensusPhase::Install,
@@ -1780,8 +1626,6 @@ mod tests {
         ));
     }
 
-    /// kills: dropping the "EOF immediately after it" half of the grammar, so
-    /// a second record -- of ANY type -- could follow the epilogue.
     #[test]
     fn nothing_may_follow_the_release_epilogue() {
         assert_eq!(
@@ -1791,9 +1635,6 @@ mod tests {
         assert!(validate_record_allowed_after_release_epilogue(true).is_err());
     }
 
-    /// kills: changing the consumer-facing EOF predicate so duplicates are
-    /// accepted, the world boundary becomes optional, or an install record is
-    /// allowed to stand as the stream's terminal boundary.
     #[test]
     fn release_epilogue_closes_stream_only_once_after_a_boundary() {
         assert!(release_epilogue_closes_stream_policy(
@@ -1813,9 +1654,6 @@ mod tests {
         ));
     }
 
-    /// kills: raising or removing the fixed payload ceiling. A payload one byte
-    /// past the maximum is refused by the decoder, so an oversize epilogue can
-    /// never be admitted by any consumer -- they all decode before placing.
     #[test]
     fn oversize_payload_is_refused_by_the_decoder() {
         let mut payload = vec![0u8; FREEZE_CENSUS_MAX_PAYLOAD_LEN + 1];

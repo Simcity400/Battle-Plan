@@ -22,8 +22,6 @@ pub fn decode_file(path: &Path) -> Result<PngImage> {
     })
 }
 
-/// Decode the non-interlaced, 8-bit PNG forms used by the game interface assets.
-/// Unsupported PNG features fail closed instead of being silently reinterpreted.
 pub fn decode_bytes(data: &[u8]) -> Result<PngImage> {
     if data.get(..PNG_SIGNATURE.len()) != Some(PNG_SIGNATURE) {
         return Err(invalid_png("png_signature", "invalid PNG signature"));
@@ -447,7 +445,7 @@ mod tests {
         path.push(format!("game_ui_png_crc_{nonce}.png"));
         write_png(&path, &image).unwrap();
         let mut bytes = fs::read(&path).unwrap();
-        bytes[29] ^= 1; // IHDR CRC starts immediately after its 13-byte payload.
+        bytes[29] ^= 1;
         let err = decode_bytes(&bytes).expect_err("corrupt CRC must fail closed");
         assert_eq!(err.kind, ErrorKind::InvalidTexture("png_crc".to_string()));
         let _ = fs::remove_file(path);

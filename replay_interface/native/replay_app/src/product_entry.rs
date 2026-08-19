@@ -1,9 +1,3 @@
-//! Windows product-shell entry for double-click and file-association launches.
-//!
-//! Explicit option-bearing invocations remain the existing CLI. A no-argument
-//! launch uses the system file picker; exactly one positional `.battleplan`
-//! path is the file-association form. Both product forms force non-interactive
-//! profile resolution and surface every startup rejection in a visible dialog.
 
 use std::ffi::c_void;
 use std::mem;
@@ -145,8 +139,6 @@ fn choose_replay() -> Result<Option<String>, String> {
         "Battle Plan recordings (*.battleplan)\0*.battleplan\0All files (*.*)\0*.*\0\0"
             .encode_utf16()
             .collect();
-    // The literal already ends in two NULs, but keep the backing vector mutable
-    // and alive for the full common-dialog call.
     if !filter.ends_with(&[0, 0]) {
         filter.extend_from_slice(&[0, 0]);
     }
@@ -281,11 +273,6 @@ fn strict_replacement_options(paths: ProductPaths) -> ResolveOptions {
     }
 }
 
-/// Ensure the ordinary packaged route has a validated machine-local profile.
-/// A valid saved profile is reused without prompting. Missing, corrupt, or
-/// invalid state opens two native folder selectors, validates each selection
-/// using the same strict product validators, and then asks the existing atomic
-/// profile writer to validate both again before replacement.
 pub fn ensure_product_profile() -> Result<(), String> {
     if crate::install_paths::resolve_process_paths(None, strict_saved_profile_options()).is_ok() {
         return Ok(());
@@ -353,9 +340,6 @@ pub fn show_error(message: &str) {
     }
 }
 
-/// Ensure diagnostics have a console. A false result means the GUI-subsystem
-/// process has nowhere visible to write stderr and must use a MessageBox for
-/// any eventual error.
 pub fn attach_parent_console() -> bool {
     unsafe {
         !GetConsoleWindow().is_null()
@@ -363,10 +347,6 @@ pub fn attach_parent_console() -> bool {
     }
 }
 
-/// Whether the process inherited a usable stderr sink. GUI-subsystem binaries
-/// do not necessarily have a console, but test runners and CLI automation can
-/// still give them a pipe. Treat that pipe as authoritative: explicit CLI
-/// failures must stay machine-readable instead of opening a modal dialog.
 pub fn inherited_stderr_available() -> bool {
     let handle = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     if handle.is_null() || handle as isize == -1 {

@@ -1,15 +1,4 @@
-//! Clausewitz date parsing (`Y.M.D` or `Y.M.D.H`).
-//!
-//! Recordings carry a per-frame `date` string in this format (see
-//! `replay_fixture_gen::fixture_time`). The transport
-//! layer resolves jump-to-date and day-boundary seek-bar ticks against these
-//! strings ONLY — it never invents an epoch or hour-index arithmetic, so the
-//! recording's own dates stay the single authority.
-//!
-//! Ordering is lexical over `(year, month, day, hour)`. A missing hour parses
-//! as hour `0` (midnight, day boundary).
 
-/// A parsed Clausewitz calendar date. Comparison is chronological.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Date {
     pub year: i64,
@@ -19,20 +8,16 @@ pub struct Date {
 }
 
 impl Date {
-    /// Parse `Y.M.D` or `Y.M.D.H`. Returns `None` on any malformed component
-    /// (never a guessed date). Whitespace around the string is tolerated.
     pub fn parse(s: &str) -> Option<Date> {
         let s = s.trim();
         let mut parts = s.split('.');
         let year = parts.next()?.trim().parse::<i64>().ok()?;
         let month = parts.next()?.trim().parse::<u32>().ok()?;
         let day = parts.next()?.trim().parse::<u32>().ok()?;
-        // Hour is optional; when present it must parse.
         let hour = match parts.next() {
             Some(h) => h.trim().parse::<u32>().ok()?,
             None => 0,
         };
-        // A trailing extra component is a malformed date, not a truncation.
         if parts.next().is_some() {
             return None;
         }
@@ -47,13 +32,10 @@ impl Date {
         })
     }
 
-    /// The calendar-day key (year, month, day) — used to detect day
-    /// boundaries for seek-bar ticks.
     pub fn day_key(&self) -> (i64, u32, u32) {
         (self.year, self.month, self.day)
     }
 
-    /// `Y.M.D` label (no hour) for a day tick.
     pub fn day_label(&self) -> String {
         format!("{}.{}.{}", self.year, self.month, self.day)
     }
@@ -88,11 +70,11 @@ mod tests {
     #[test]
     fn rejects_malformed() {
         assert_eq!(Date::parse("hour 12"), None);
-        assert_eq!(Date::parse("1936.13.1"), None); // month out of range
-        assert_eq!(Date::parse("1936.1.0"), None); // day zero
-        assert_eq!(Date::parse("1936.1.1.24"), None); // hour out of range
-        assert_eq!(Date::parse("1936.1.1.0.5"), None); // extra component
-        assert_eq!(Date::parse("1936.1"), None); // too few components
+        assert_eq!(Date::parse("1936.13.1"), None);
+        assert_eq!(Date::parse("1936.1.0"), None);
+        assert_eq!(Date::parse("1936.1.1.24"), None);
+        assert_eq!(Date::parse("1936.1.1.0.5"), None);
+        assert_eq!(Date::parse("1936.1"), None);
         assert_eq!(Date::parse(""), None);
     }
 
@@ -103,7 +85,6 @@ mod tests {
         let c = Date::parse("1936.1.2.0").unwrap();
         let d = Date::parse("1937.1.1.0").unwrap();
         assert!(a < b && b < c && c < d);
-        // Equal dates compare equal.
         assert_eq!(a, Date::parse("1936.1.1").unwrap());
     }
 

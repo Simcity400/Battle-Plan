@@ -1,20 +1,11 @@
-//! Shared pointer-free map-object content boundary.
-//!
-//! XMAP11 owns this small structural contract because trees are the first
-//! promoted map-object family. Feature owners retain semantic population,
-//! lifecycle, visibility, and caster eligibility. This module only carries the
-//! exact effective-VFS content and prepared draw identity shared by trees,
-//! cities, buildings, and later PdxMesh map objects.
-
 use crate::UsedContentKey;
 use serde::{Deserialize, Serialize};
 
 pub const MAP_OBJECT_PARTITION_PRIMARY: u8 = 1;
 pub const MAP_OBJECT_PARTITION_WRAP_WEST: u8 = 2;
 pub const MAP_OBJECT_PARTITION_WRAP_EAST: u8 = 4;
-pub const MAP_OBJECT_PARTITION_ALL: u8 = MAP_OBJECT_PARTITION_PRIMARY
-    | MAP_OBJECT_PARTITION_WRAP_WEST
-    | MAP_OBJECT_PARTITION_WRAP_EAST;
+pub const MAP_OBJECT_PARTITION_ALL: u8 =
+    MAP_OBJECT_PARTITION_PRIMARY | MAP_OBJECT_PARTITION_WRAP_WEST | MAP_OBJECT_PARTITION_WRAP_EAST;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -90,7 +81,6 @@ pub struct MapObjectRenderContent {
     pub selected_mesh: String,
     pub mesh_source: UsedContentKey,
     pub groups: Vec<MapObjectMeshGroupContent>,
-    /// Raw binary32 lanes in the engine's host row-vector order.
     pub world_matrix_f32_bits: [u32; 16],
     pub skinned: bool,
 }

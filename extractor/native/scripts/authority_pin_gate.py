@@ -129,59 +129,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 
-# The two sides of the seam. `runs/` is excluded for finding GP-F11's reason;
-# the Replay side's evidence lives in `replay_interface/re_evidence/`, outside
-# `native/`, so it is already out of scope.
-#
-# Written as (include, exclude) prefix lists rather than as git pathspec magic:
-# `git ls-tree` rejects `:(exclude)` outright ("pathspec magic not supported by
-# this command"), and a scope whose exclusion is silently inert is the exact
-# defect finding GP-F11 recorded. Excluding in Python keeps the exclusion where
-# it can be tested.
 PRODUCER_SCOPE = (
     ["extractor/native/", "extractor/game_defs/"],
     ["extractor/native/runs/", "extractor/native/scripts/"],
 )
 CONSUMER_SCOPE = (["replay_interface/native/", "portable_replay/native/"], [])
 
-# Rust AND Python. Not decoration: two of the extractor's producers for pins the
-# Replay side enforces are Python, and an `.rs`-only reader reported both of them
-# as drift.
-#
-#   `extractor.ui14_engine_vfs.v1` -- pinned by `game_ui/src/assets.rs::from_runtime_userdir`,
-#     minted by `extractor/game_defs/live_binding_resolver.py::UI14_ENGINE_VFS_SCHEMA`;
-#   the A27 live-heap catalog envelope (`program_sha256`, `coherence`,
-#     `full_replacement`, `transport`) -- pinned by
-#     `portable_replay/native/snapshot/src/design_catalog.rs`, minted by
-#     `extractor/native/lanes/design_catalog_live/live_a729_acceptance.py`.
-#
-# This is a FOURTH instance of the blindness class the gate was written for --
-# IO-F6's was a name prefix, IZ's a pin shape, IW's a constant shape, and this
-# one a file extension -- and it was found by running the gate, which is the
-# argument for the gate.
 SOURCE_SUFFIXES = (".rs", ".py")
 
-# ---------------------------------------------------------------------------
-# Lexical shape of each pin class. These are the only hand-written constants,
-# and each is a SHAPE, not a membership list.
-# ---------------------------------------------------------------------------
 
-# The build tag every a729-pinned authority carries. Pins are build-scoped by
-# construction, which makes the tag a reliable discriminator rather than a guess.
 BUILD_TAG = "a729"
 
-# A path-shaped literal is never a pin. Without this, `"a729_hook.rs"` and
-# `"interface/*.gui"` enter the vocabulary.
 PATH_SUFFIXES = (
     ".rs", ".py", ".ps1", ".json", ".toml", ".md", ".txt", ".tsv", ".csv",
     ".yml", ".yaml", ".exe", ".dll", ".pdb", ".log", ".jsonl", ".gui", ".gfx",
     ".dds", ".png", ".bmp", ".bin", ".zip", ".sh", ".lock", ".xml", ".html",
 )
 
-# `.v<n>` version tail, optionally followed by a C string terminator. Several
-# digest domain-separation prefixes are spelled with a trailing NUL and the NUL
-# is part of the pinned value (`xui09_research_contract.rs` asserts exactly
-# that), so it is preserved in the token and only ignored when deciding shape.
 VERSION_TAIL = re.compile(r"\.v\d+$")
 
 IDENT_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
@@ -205,51 +169,12 @@ def classify_literal(value: str) -> str | None:
     if lowered.endswith(PATH_SUFFIXES):
         return None
 
-    # name: snake_case, at least two components, `a729` as a WHOLE component.
-    # Whole-component is what keeps `1.19.2.0.a729` and `hoi4-a729` out while
-    # admitting `exact_a729_passive_all_country_politics` (the old gate's
-    # world), `a729_country_technology_ui_state_classifier_v1` (IO-F6) and
-    # `a729_xui16_occupation_ui_supplement_v1` (the gap map's GP-U6 prose
-    # exception). A bare `"a729"` is a build tag, not an authority, and has one
-    # component, so it is out.
     if re.fullmatch(r"[A-Za-z0-9_]+", core):
         parts = core.split("_")
         if len(parts) >= 2 and BUILD_TAG in parts:
             return "name"
         return None
 
-    # schema_string: a NAMESPACED dotted constant carrying the build tag as its
-    # own dotted component.
-    #
-    # The build tag is what makes this class the CROSS-WORKSPACE one, and it is
-    # the same discriminator the `name` class uses one line up. Both workspaces
-    # are full of dotted version constants that never cross the seam --
-    # `hoi4.production-render-submit.v13`, `hoi4.replay.package.v1`,
-    # `extractor.replay_decoder.binary_seek.v1` -- and a first revision that
-    # accepted any `.v<n>` tail returned 414 tokens of which 229 were "consumer
-    # only" purely because `portable_replay`'s own renderer wire has no reason
-    # to appear in the extractor. That is not drift, it is a scope error, and a
-    # gate whose drift column is mostly scope error is one nobody reads. `a729`
-    # names the reverse-engineered executable this pin was derived against, so a
-    # constant carrying it is by construction about the recorded game and not
-    # about Replay's internal plumbing.
-    #
-    # The second requirement exists because the tag alone admits a version
-    # number: `1.19.2.0.a729` is the engine build string, dotted, with `a729` as
-    # a whole component. What separates it from `hoi4.xmap20.effect-frame.a729.v1`
-    # is shape -- a version string is a tuple of integers with a tag on the end,
-    # a schema string is a namespace path -- so at least two components must be
-    # NAMES rather than integers. `1.19.2.0.a729` has exactly one (`a729`);
-    # `hoi4.a729.present-consumed-rolling.v2` has four.
-    #
-    # STATED BOUND. Two Wave-2 schema tokens are spelled WITHOUT the tag --
-    # `xui19.decision_evaluation_exact.v1` and `MAPC1` -- so they are not in
-    # this class. They are not unmeasured: both are part-(a) keys of
-    # `runs/hu_wave2_scaffold/wave2_scope_enumerate.py`, which compares each
-    # carrier's recorded `RequiredSchema` / `REQUIRED_SCHEMA_TOKEN` against the
-    # consumer's own literal and exits 1 on drift. That is the composition
-    # boundary between the two gates, and it is a boundary rather than a hole
-    # only for keys that script enumerates.
     if re.fullmatch(r"[A-Za-z0-9_.\-]+", core) and "." in core:
         dotted = core.split(".")
         if BUILD_TAG not in dotted:
@@ -260,19 +185,9 @@ def classify_literal(value: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Rust lexing: comment stripping that PRESERVES OFFSETS, string extraction.
-# ---------------------------------------------------------------------------
 
-# Rust raw strings: `r"..."`, `r#"..."#`, and the byte/C variants. Inside one a
-# `"` does not end the literal, so a scanner that missed the prefix would read
-# the rest of the file in the wrong state. All three prefixes, per the
-# reference, not just the ones a counter-example happened to name.
 RAW_STRING_OPEN_RE = re.compile(r"(?:[bc]?r)(#*)\"")
 # A char literal, told apart from a lifetime tick by the closing quote.
-# `const QUOTE: char = '"';` and `b'"'` both occur in this tree; treating
-# either as a string opener leaves the scanner inside a string for the rest of
-# the file and every following comment is then copied through as code.
 CHAR_LITERAL_RE = re.compile(r"'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)|[^\\'])'")
 
 
@@ -380,8 +295,6 @@ def lex(text: str) -> tuple[str, str]:
     return "".join(code), "".join(comment)
 
 
-# A cooked (non-raw) Rust string literal, with its escapes. Raw strings are
-# matched separately below because their body has no escape processing.
 COOKED_STRING_RE = re.compile(r'(?<![A-Za-z0-9_])(?:[bc]?)"((?:[^"\\]|\\.)*)"')
 RAW_STRING_RE = re.compile(r'(?<![A-Za-z0-9_])(?:[bc]?r)(#*)"')
 
@@ -420,10 +333,6 @@ def unescape(raw: str) -> str:
     return "".join(out)
 
 
-# --- Python -----------------------------------------------------------------
-# A Python string opener with any prefix combination. Triple quotes are matched
-# FIRST: `"""x"""` read as `""` + `x` + `""` desyncs the scanner for the rest of
-# the file, and the extractor's Python producers are docstring-heavy.
 PY_STRING_OPEN_RE = re.compile(r"(?:[rRbBuUfF]{0,3})('''|\"\"\"|'|\")")
 
 
@@ -513,8 +422,6 @@ def string_literals_python(code: str) -> list[tuple[str, int]]:
         quote = body[:3] if body[:3] in ("'''", '"""') else body[0]
         raw = body[len(quote) : -len(quote)]
         prefix = m.group("prefix").lower()
-        # An f-string's value is not fixed at all, so it is not a pin. Raw
-        # strings keep their backslashes; everything else is unescaped.
         if "f" in prefix:
             continue
         found.append((raw if "r" in prefix else unescape(raw), m.start()))
@@ -539,10 +446,6 @@ def string_literals(code: str) -> list[tuple[str, int]]:
     return found
 
 
-# ---------------------------------------------------------------------------
-# `#[cfg(test)]` regions, so a fixture is FLAGGED rather than counted silently.
-# Finding GP-F17 was a name that existed only as a Replay-side test fixture.
-# ---------------------------------------------------------------------------
 
 CFG_TEST_RE = re.compile(r"#\s*\[\s*cfg\s*\(\s*test\s*\)\s*\]")
 
@@ -587,85 +490,31 @@ def is_test_path(path: str) -> bool:
     return "/tests/" in path or path.endswith("/tests.rs") or "/benches/" in path
 
 
-# ---------------------------------------------------------------------------
-# field_pin extraction -- lane IZ's class.
-# ---------------------------------------------------------------------------
 
-# A two-`&str` helper whose body reads a key out of a map and compares it to the
-# expected value. Found by SHAPE -- closure binding or free function -- so a
-# fourth envelope written the same way is picked up without editing this file,
-# which is the whole point: a hand list of envelope names is the drift class the
-# gate exists for.
 EXACT_HELPER_RE = re.compile(
     r"(?:let\s+(\w+)\s*=\s*\|\s*(\w+)\s*:\s*&\s*str\s*,\s*(\w+)\s*:\s*&\s*str\s*\|"
     r"|fn\s+(\w+)\s*\(\s*(\w+)\s*:\s*&\s*str\s*,\s*(\w+)\s*:\s*&\s*str\s*\))"
     r"([\s\S]{0,400})"
 )
 
-# A call in PIN SHAPE: a bare-identifier callee with exactly two arguments whose
-# first is a string literal. The shape is the filter, not the name.
-#
-# A first revision keyed on the callee NAME instead (`exact\w*`) and reported
-# 1,073 "unparsed pin sites" -- every `exact_frame`, `exact_text`, `exact_order`
-# and `exact_binding` in two workspaces, none of which is a pin: they are local
-# bindings and test fixtures that happen to start with the same five letters.
-# Fail-closed reporting is only useful if what it reports is a pin candidate; a
-# thousand false ones hide the real one exactly as silence would.
 PIN_SHAPE_CALL_RE = re.compile(
     r"(?<![A-Za-z0-9_.])([a-z_][A-Za-z0-9_]*)\s*\(\s*"
     r'("(?:[^"\\]|\\.)*")\s*,\s*'
     r"((?:[^()\"]|\"(?:[^\"\\]|\\.)*\")*?)\s*,?\s*\)"
 )
 
-# The inline spelling: `.get("field").and_then(Value::as_str) != Some("value")`.
-# rustfmt splits these across lines, so every gap is `\s*`.
-#
-# TWO accessor spellings, and the second was found by the loose net below rather
-# than by reading the three known envelopes: `game_ui/src/assets.rs::from_runtime_userdir` pins
-# `.get("schema").and_then(|v| v.as_str()) != Some("extractor.ui14_engine_vfs.v1")`
-# through a CLOSURE, not a path. A reader that only knew `Value::as_str` had
-# that pin in its "loose only" census and out of its measured set -- the same
-# shape of miss, one spelling over, which is why the census exists.
-# The payload of a `Some(...)`: any run of characters with at most one level of
-# balanced parentheses, string literals kept intact. Defined ONCE and shared by
-# the inline reader and the let-bound reader below -- two copies of a regex this
-# fiddly drift apart, and the second copy had already lost its backslash escapes
-# and failed to compile.
 SOME_PAYLOAD = (
     r'(?:[^()"]|"(?:[^"\\]|\\.)*"|\((?:[^()"]|"(?:[^"\\]|\\.)*")*\))*?'
 )
 
-# An `and_then` CHAIN LINK: one `.and_then(...)` whose argument may itself carry a
-# balanced pair of parentheses (`|v| v.as_str()`, `|id| id.get("k")`).
 AND_THEN_LINK = r"\s*\.\s*and_then\(\s*(?:[^();]|\([^()]*\))*\)"
 
-# `.get("field")` followed by ZERO OR MORE `and_then` links and then the
-# comparison.
-#
-# ZERO, not one. Requiring a link was a conservatism that hid a real shape:
-# `compact_replay_verification_gates/src/lib.rs` seals the recorder authority
-# with a bare `embedded_manifest.get("portable_content_manifest") != Some(&v)`,
-# comparing the whole `Value` with no accessor at all. Two such sites sat in the
-# non-failing census while `unparsed 0` was quoted as covering every recognised
-# shape. Review round 6, finding 1. The chain is what makes a NESTED read visible:
-# `rollover_package_set.rs` pins the campaign identity as
-#   .get("campaign_identity").and_then(as_object)
-#       .and_then(|identity| identity.get("campaign_id")).and_then(as_str)
-#       != Some(segment.campaign_id_hex.as_str())
-# and a reader that allowed exactly one link could not see it at all. The FIELD
-# and the ACCESSOR are then taken as the LAST of each inside the matched span,
-# because in a nested read the pinned field is the inner one -- reporting
-# `campaign_identity` there would name the envelope instead of the pin.
 DIRECT_PIN_RE = re.compile(
     r'\.\s*get\(\s*"(?P<field>[A-Za-z0-9_]+)"\s*\)'
     r"(?P<chain>(?:" + AND_THEN_LINK + r")*)\s*"
     r"(?P<op>!=|==)\s*Some\(\s*(?P<value>" + SOME_PAYLOAD + r")\s*\)"
 )
 
-# Consumers spell a pinned value as a named constant about as often as inline,
-# and in every arithmetic type, so all of them are followed. A reader that only
-# understood `&str` reported the numeric half as unresolvable and left those
-# pins unmeasured -- the same blindness one level down.
 CONST_STR_RE = re.compile(
     r'(?:pub\s+)?(?:pub\s*\([^)]*\)\s*)?const\s+([A-Z][A-Z0-9_]*)\s*:\s*&\s*(?:\'\w+\s+)?str\s*=\s*"((?:[^"\\]|\\.)*)"'
 )
@@ -676,57 +525,14 @@ CONST_NUM_RE = re.compile(
 CONST_BOOL_RE = re.compile(
     r"(?:pub\s+)?(?:pub\s*\([^)]*\)\s*)?const\s+([A-Z][A-Z0-9_]*)\s*:\s*bool\s*=\s*(true|false)\s*;"
 )
-# `const A: &str = crate::other::B;` -- one alias hop, resolved after the whole
-# tree is read so definition order does not matter.
 CONST_ALIAS_RE = re.compile(
     r"(?:pub\s+)?(?:pub\s*\([^)]*\)\s*)?const\s+([A-Z][A-Z0-9_]*)\s*:\s*"
     r"(?:&\s*(?:'\w+\s+)?str|u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|bool)\s*=\s*"
     r"((?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*[A-Z][A-Z0-9_]*)\s*;"
 )
 
-# A use of an ALL-CAPS constant. Length >= 3 keeps single-letter generics and
-# two-letter enum shorthands out; the leading boundary keeps it from matching
-# the tail of a longer mixed-case identifier.
 CONST_REF_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Z][A-Z0-9_]{2,})(?![A-Za-z0-9_])")
 
-# The WATCH CENSUS for the inline spelling, and it is a census, not a gate.
-#
-# `DIRECT_PIN_RE` reads the accessor chains the shipping envelopes use; this
-# reads any `.get("field")` compared against a `Some(...)` within 200 characters,
-# whatever sits between. Sites it finds that the strict reader did not are
-# recorded in `loose_only_get_some` and do NOT set the exit code.
-#
-# An earlier revision's comment claimed these were reported as `unparsed`. That
-# was false and review round 1 caught it, along with the reason it mattered:
-# `world.rs`'s `fixed_scale`/`displayed_decimals` pins and MAPC1's three digest
-# pins were real pins sitting in this census, never given a producer comparison,
-# while `unparsed 0` was being quoted as "every recognised pin parsed". The
-# strict reader was widened to take them and the claim is now the accurate one:
-# this census cannot be an exit code because the same pattern also matches
-# ordinary `Option` comparisons that are not authority pins at all. Its NUMBER
-# MOVING is the signal a reader should act on, not its value; the count is
-# printed on every run for exactly that.
-# The LET-BOUND spelling: the field is read into a local and compared further
-# down. `replay_core/src/source.rs` admits the compact stream this way --
-#     let format = timeline.get("format").and_then(Value::as_str);
-#     let role   = timeline.get("raw_stream_role").and_then(Value::as_str);
-#     let declares_compact = format == Some(COMPACT_STREAM_TIMELINE_FORMAT)
-#                         || role   == Some(COMPACT_STREAM_ROLE);
-# -- and review round 2 found that real admission pin sitting in the non-failing
-# census while `unparsed 0` was being quoted as "every recognised pin parsed".
-# One binding hop, bounded to the same file and to a window after the binding,
-# which is enough for every occurrence of the shape in this tree.
-# TWO binding forms, because both occur and each hides a real pin:
-#
-#   let <bind> = <recv>.get("<field>").and_then(<accessor>);   ... <bind> == Some(v)
-#       -- `replay_core/src/source.rs`'s compact-stream admission.
-#   if let Some(<bind>) = <recv>.get("<field>") { ... <bind>.as_str() != Some(v) }
-#       -- found in the (since-deleted) `replay_core/src/g2_engine_capture.rs`
-#          packaged-witness join on `effective_vfs_manifest_sha256`, which
-#          review round 3 found still sitting in the census because the
-#          accessor is applied at the COMPARISON rather than at the binding.
-#          The file is gone (lane MA, 2026-08-18); the binding FORM it taught
-#          this gate to recognise is not, so the branch and its self-test stay.
 BINDING_GET_RE = re.compile(
     r"(?:"
     r"let\s+(?P<bind>[a-z_][A-Za-z0-9_]*)\s*=\s*[^;=]*?"
@@ -755,15 +561,6 @@ def binding_comparisons(code: str, bind: str, start: int) -> list[tuple[str, str
     with an unrelated local of the same name further down the file.
     """
     window = code[start : start + 2000]
-    # STOP AT A REBINDING of the same name. The character bound alone is not
-    # enough: the since-deleted `g2_engine_capture.rs` wrote two consecutive
-    # `if let Some(value) = content.get(...)` blocks, so the first binding's
-    # window reached the SECOND block's comparison and the gate recorded
-    # `effective_vfs_manifest_sha256` as being compared against
-    # `witness.localisation_language`. A comparison after a rebinding refers to
-    # the new binding, always. Review round 4, finding 1 -- with a literal on
-    # the far side it would have fabricated a shipping field pin rather than
-    # only a dynamic one.
     rebind = re.search(
         r"(?<![A-Za-z0-9_])(?:let\s+" + re.escape(bind) + r"\s*="
         r"|Some\(\s*" + re.escape(bind) + r"\s*\))",
@@ -795,8 +592,6 @@ def literal_of(
     ambiguous: set[str] | None = None,
     defs_by_name: dict[str, list[tuple[str, str, str]]] | None = None,
 ) -> tuple[str | None, str, str]:
-    # `local` is the already-scoped view of this file's constants for the USE
-    # SITE -- see `scoped_consts`, which picks the nearest preceding definition.
     """Resolve a pinned-value expression to (value, kind, note).
 
     `kind` is one of:
@@ -834,10 +629,6 @@ def literal_of(
         return expr, "bool", ""
     if re.fullmatch(r"-?[0-9_]+", expr):
         return expr.replace("_", ""), "int", ""
-    # A cast or conversion wrapper around a constant is still a constant pin.
-    # `world.rs` writes `== Some(u64::from(SCALE))` and `== Some(DECIMALS as u64)`;
-    # a reader that did not unwrap those left real pins in the fail-closed
-    # census instead of in the measured set (review round 1, finding 3).
     cast = re.fullmatch(r"(?:[A-Za-z0-9_]+\s*::\s*)?from\(\s*([^()]*?)\s*\)", expr)
     if cast:
         return literal_of(cast.group(1), consts, aliases, local, ambiguous,
@@ -847,10 +638,6 @@ def literal_of(
         return literal_of(cast.group(1), consts, aliases, local, ambiguous,
                           defs_by_name)
 
-    # Rust's primitive associated constants are LANGUAGE facts with exact values,
-    # not project constants, and treating them as undefined names put a real
-    # `world.rs` pin into the fail-closed bucket. Computed rather than listed:
-    # the widths come from the type name.
     prim = re.fullmatch(r"(?P<ty>[iu](?:8|16|32|64|128|size))\s*::\s*(?P<name>MIN|MAX|BITS)", expr)
     if prim:
         width = 64 if prim.group("ty").endswith("size") else int(prim.group("ty")[1:])
@@ -865,36 +652,6 @@ def literal_of(
 
     tail = expr.split("::")[-1].strip()
     if re.fullmatch(r"[A-Z][A-Z0-9_]*", tail):
-        # MODULE SCOPE FIRST, then the tree, and only when the tree agrees.
-        #
-        # Rust constants are module-scoped and this tree reuses the obvious
-        # names heavily: `AUTHORITY`, `SOURCE`, `ORDERING` and `MANIFEST_SHA256`
-        # are each defined many times with different values. A single flat table
-        # keyed on the bare name reported one of those definitions for all of
-        # them -- review round 1 measured `world.rs`'s local
-        # `AUTHORITY = "exact_a729_cdivision_cached_attrition_badge_law"` being
-        # recorded as `exact_a729_passive_all_country_decisions` and called
-        # consistent against an unrelated sidecar. A wrong value is worse than
-        # no value: it manufactures both false consistency and false drift.
-        #
-        # So: the using FILE's own definition wins; failing that the tree-wide
-        # table is used only when every definition of that name agrees; and a
-        # name that is defined in more than one place with more than one value,
-        # and not defined locally, is UNRESOLVED and fails closed.
-        # A QUALIFIED path is NOT resolved by this reader. It records the
-        # module the constant comes from, and following that soundly means
-        # implementing Rust's name resolution -- crate prefixes, `mod.rs`
-        # directories, crate roots whose name differs from their directory,
-        # `pub use` facades, ALIASED re-exports (`pub use x::A as B`), and `use`
-        # aliases in the using file. Five consecutive review rounds each found a
-        # shape the previous approximation got wrong, twice by resolving a pin to
-        # ANOTHER MODULE'S VALUE, which is the worst thing this gate can do.
-        #
-        # So it is not approximated. A qualified path whose tail is ambiguous
-        # tree-wide is reported in `unresolved_constant`, by site, with the
-        # expression -- a NAMED limitation of this reader rather than a guess and
-        # rather than silence. When the tail is unambiguous the qualification is
-        # redundant and the bare rule below resolves it exactly.
         if "::" in expr and tail in ambiguous:
             return (
                 None,
@@ -904,8 +661,6 @@ def literal_of(
                 f"and will not guess which module is meant",
             )
 
-        # BARE name: the using file's own definition, then the tree-wide table
-        # when every definition of that name agrees, then fail closed.
         seen = {tail}
         name = tail
         while name not in local and name not in consts and name in aliases and aliases[name] not in seen:
@@ -935,9 +690,6 @@ def literal_of(
     return None, "dynamic", f"expected value is computed at run time: {expr[:80]}"
 
 
-# ---------------------------------------------------------------------------
-# git plumbing
-# ---------------------------------------------------------------------------
 
 
 def git(args: list[str], allow_one: bool = False) -> str:
@@ -1009,9 +761,6 @@ def read_blobs(paths: list[str]) -> dict[str, str]:
     return texts
 
 
-# ---------------------------------------------------------------------------
-# The scan
-# ---------------------------------------------------------------------------
 
 
 def line_of(code: str, offset: int) -> int:
@@ -1025,7 +774,6 @@ class SideScan:
         self.name = name
         self.paths = source_paths(scope)
         self.texts = read_blobs(self.paths)
-        # token -> list of site dicts
         self.tokens: dict[str, list[dict]] = {}
         self.comment_tokens: dict[str, int] = {}
         self.consts: dict[str, tuple[str, str]] = {}
@@ -1129,8 +877,6 @@ class SideScan:
                 if via:
                     row["via_const"] = via
                 self.tokens.setdefault(value, []).append(row)
-            # Comment-only tokens: a `//!` header naming an authority a file has
-            # not implemented must never mint it, but it must not vanish either.
             for m in re.finditer(r"[A-Za-z0-9_.\-]*a729[A-Za-z0-9_.\-]*", comment):
                 cls = classify_literal(m.group(0))
                 if cls is not None:
@@ -1177,20 +923,6 @@ class SideScan:
                 key_param = m.group(2) or m.group(5)
                 expected_param = m.group(3) or m.group(6)
                 body = m.group(7)
-                # A pin helper READS the key out of a map AND COMPARES the
-                # result to the expected parameter. Both halves are load-bearing
-                # and each was put here by a measured failure:
-                #
-                #   * `.get(<key_param>)` literally, not just `.get(` -- the
-                #     first revision admitted `path_is_under(path, prefix)`,
-                #     whose body is `path.get(..prefix.len())`, a slice range,
-                #     and `validate_hash(field, value)`.
-                #   * the COMPARISON, not merely an occurrence of the expected
-                #     parameter -- review round 1 found `dump_map_labels.rs`'s
-                #     `let file = |key: &str, default: &str|`, an ordinary
-                #     manifest loader ending `.unwrap_or(default)`. It was
-                #     classified as an authority helper and five plain filename
-                #     defaults entered the report as authority pins.
                 squashed = re.sub(r"\s+", "", body)
                 compares = (
                     ("Some(%s)" % expected_param) in squashed
@@ -1237,9 +969,6 @@ class SideScan:
                     {"field": field, "value": value, "kind": kind, "site": site,
                      "spelling": "helper:%s" % helper, "note": vnote, "test": testish}
                 )
-            # A pin helper that exists and yields nothing means the CALL reader
-            # has gone blind while the helper reader still works -- the exact
-            # half-broken state a gate must not report as clean.
             for helper, offset in helpers.items():
                 if helper in parsed_from:
                     continue
@@ -1253,10 +982,6 @@ class SideScan:
                     }
                 )
             for m in DIRECT_PIN_RE.finditer(code):
-                # The LAST `get("...")` and the LAST `as_X` inside the matched
-                # span, not the first: in a nested read the pinned field is the
-                # inner one, and naming the outer one would report the envelope
-                # instead of the pin.
                 span = m.group(0)
                 gets = re.findall(r'get\(\s*"([A-Za-z0-9_]+)"\s*\)', span)
                 field = gets[-1] if gets else m.group("field")
@@ -1298,15 +1023,6 @@ class SideScan:
                 )
             for m in BINDING_GET_RE.finditer(code):
                 bind = m.group("bind") or m.group("bind2")
-                # The LAST `get("...")` in the binding's own chain, exactly as
-                # the inline reader does. A binding can carry a nested read too:
-                # `snapshot/src/container.rs` binds
-                # `manifest.get("build").and_then(|b| b.get("exe_sha256"))` and
-                # `rollover_package_set.rs` binds
-                # `.get("campaign_identity")…get("observed_game_hour_raw")`.
-                # Taking the first named the ENVELOPE, so a producer change to
-                # the inner field moved no correctly-named row, and the inner
-                # field stayed in the census. Review round 4, finding 2.
                 gets = re.findall(r'get\(\s*"([A-Za-z0-9_]+)"\s*\)', m.group(0))
                 field = gets[-1] if gets else (m.group("field") or m.group("field2"))
                 site = "%s:%d" % (path, line_of(code, m.start()))
@@ -1329,11 +1045,6 @@ class SideScan:
                         )
                         continue
                     let_bound_offsets.add(m.start())
-                    # EVERY line the binding's chain and its comparison cover,
-                    # not just the two endpoints. A multi-line `.get()` chain
-                    # left its middle lines in the census, so the same pin was
-                    # reported as measured AND as unread, contradicting the
-                    # strict-reader census.
                     for line_no in range(line_of(code, m.start()),
                                          line_of(code, at) + 1):
                         measured_lines.add(line_no)
@@ -1350,12 +1061,6 @@ class SideScan:
                          "test": testish}
                     )
             for m in LOOSE_PIN_RE.finditer(code):
-                # De-duplicate on the LINE, not on the byte offset. A let-bound
-                # read and the loose pattern match at different offsets on the
-                # same statement, so an offset test left `source.rs`'s `format`
-                # pin listed as unread on the very line the let-bound reader had
-                # just measured. A census that lists measured sites is a census
-                # nobody can act on.
                 if (m.start() in strict_offsets or m.start() in let_bound_offsets
                         or line_of(code, m.start()) in measured_lines):
                     continue
@@ -1375,18 +1080,12 @@ class SideScan:
         self.collect_tokens()
         self.collect_field_pins()
 
-    # -- queries used by the diff --------------------------------------------
 
     def code_sites(self, token: str, include_tests: bool = True) -> list[dict]:
         rows = self.tokens.get(token, [])
         return rows if include_tests else [row for row in rows if not row["test"]]
 
 
-# ---------------------------------------------------------------------------
-# self-test -- one named case per shape a review round or a lane finding
-# constructed. Cases are NAMED, never numbered, and the count is printed rather
-# than written down.
-# ---------------------------------------------------------------------------
 
 
 def self_test() -> int:
@@ -1398,7 +1097,6 @@ def self_test() -> int:
         if got != want:
             raise SystemExit("self-test case %r failed: got %r, want %r" % (name, got, want))
 
-    # -- classify_literal ----------------------------------------------------
     check("old gate's own class still classifies",
           classify_literal("exact_a729_passive_all_country_politics"), "name")
     check("IO-F6 G4 authority is now visible",
@@ -1424,7 +1122,6 @@ def self_test() -> int:
     check("a token with no build tag is not in this vocabulary",
           classify_literal("exact_passive_all_country_politics"), None)
 
-    # -- lexing --------------------------------------------------------------
     src = 'let a = "exact_a729_alpha"; // exact_a729_beta\n'
     code, comment = lex(src)
     check("comment text is not code", "exact_a729_beta" in code, False)
@@ -1457,7 +1154,6 @@ def self_test() -> int:
     check("NUL escape is part of the pinned value",
           unescape("hoi4.a729.x.v1\\0"), "hoi4.a729.x.v1\0")
 
-    # -- Python lexing (the fourth blindness instance) ------------------------
     py = "SCHEMA = 'extractor.ui14_engine_vfs.v1'  # exact_a729_commented\n"
     pcode, pcomment = lex_python(py)
     check("a python literal is code", "extractor.ui14_engine_vfs.v1" in pcode, True)
@@ -1484,12 +1180,10 @@ def self_test() -> int:
     check("python literals are extracted and f-strings are not pins",
           sorted(pl), ["one", "two"])
 
-    # -- string extraction ---------------------------------------------------
     lits = dict(string_literals('let a = "one"; let b = r"two"; let c = b"three";'))
     check("cooked, raw and byte literals are all extracted",
           sorted(lits), ["one", "three", "two"])
 
-    # -- minting through a shared constant ------------------------------------
     class _Side:
         pass
     side = _Side()
@@ -1505,7 +1199,6 @@ def self_test() -> int:
     check("a value minted through a shared constant counts as spelled",
           "hoi4.portable-design-catalog.v3" in spelled, True)
 
-    # -- cfg(test) flagging (finding GP-F17) --------------------------------
     tsrc = 'fn a() {}\n#[cfg(test)]\nmod t { fn f() { let x = "exact_a729_fixture"; } }\n'
     tcode, _ = lex(tsrc)
     spans = cfg_test_spans(tcode)
@@ -1513,7 +1206,6 @@ def self_test() -> int:
     check("a literal inside #[cfg(test)] is flagged", in_spans(off, spans), True)
     check("a literal outside #[cfg(test)] is not flagged", in_spans(0, spans), False)
 
-    # -- field_pin parsing (lane IZ's class) ---------------------------------
     consts = {"MAPC1_EXECUTABLE_SHA256": ("870ebf", "str"),
               "THEATRE_SELECTOR_SCHEMA_VERSION": ("6", "int")}
     check("an inline pinned string resolves",
@@ -1566,7 +1258,6 @@ def self_test() -> int:
     check("a rustfmt-split pin is still one pin",
           sm.group("field") if sm else None, "schema_version")
 
-    # -- review round 1's five findings, one named case each -----------------
     scoped = {"AUTHORITY": ("exact_a729_passive_all_country_decisions", "str")}
     localdef = {"AUTHORITY": ("exact_a729_cdivision_cached_attrition_badge_law", "str")}
     check("a constant defined in the using file wins over the tree-wide table",
@@ -1614,7 +1305,6 @@ def self_test() -> int:
     check("a real pin helper is still admitted",
           "get(key)" in body2 and "Some(expected)" in body2, True)
 
-    # -- review round 2's findings, one named case each ----------------------
     class _Scoped:
         pass
     sc = _Scoped()
@@ -1656,7 +1346,6 @@ def self_test() -> int:
     check("a let-bound read with no later comparison is not a pin",
           binding_comparisons(no_comparison, "x", 0), [])
 
-    # -- review round 3's findings, one named case each ----------------------
     alts = (
         'let schema = value.get("schema").and_then(Value::as_str);\n'
         'if (schema != Some(A27_LIVE_CATALOG_SCHEMA)\n'
@@ -1699,7 +1388,6 @@ def self_test() -> int:
           "campaign_id")
 
 
-    # -- review round 4's findings, one named case each ----------------------
     rebound = (
         'if let Some(value) = content.get("effective_vfs_manifest_sha256") {\n'
         '    if value.as_str() != Some(witness.effective_vfs_manifest_sha256.as_str()) { }\n'
@@ -1743,7 +1431,6 @@ def self_test() -> int:
           bb.group(0).count("\n") > 1 if bb else False, True)
 
 
-    # -- review round 6's findings, one named case each ----------------------
     bare = 'if embedded_manifest.get("portable_content_manifest") != Some(&container_content_value)\n'
     bm = DIRECT_PIN_RE.search(bare)
     check("a BARE get/Some comparison with no accessor is a recognised pin",
@@ -1752,12 +1439,6 @@ def self_test() -> int:
           bm.group("value").strip() if bm else None, "&container_content_value")
 
 
-    # -- review round 10's finding, THROUGH THE PRODUCTION MERGE -------------
-    # Round 11 found the previous revision of this case building the expected
-    # ambiguity set by hand, so it passed while `main`'s merge still missed the
-    # disagreement. These stubs now go through `merge_workspace_tables` itself:
-    # kills = the cross-workspace comparison being dropped from the production
-    # merge, or the merge reverting to a plain union of per-side ambiguity.
     class _Ws:
         def __init__(self, consts, defs):
             self.consts = consts
@@ -1796,9 +1477,6 @@ def self_test() -> int:
                      cross_ambiguous, cross_defs)[0],
           "gfx/FX/particle.shader")
 
-    # -- surviving behaviour whose self-tests went with the resolver deletion,
-    #    restored (round 11 finding 3: the doc claimed other cases covered
-    #    them; only bare ambiguity was) --------------------------------------
     check("an unknown constant is reported, not skipped",
           literal_of("NO_SUCH_CONST", {"OTHER": ("1", "int")})[1], "unresolved")
     check("a run-time expected value is a dynamic pin, not an unparsed one",
@@ -1847,9 +1525,6 @@ def check_scope_excludes_this_gate() -> None:
         )
 
 
-# ---------------------------------------------------------------------------
-# report
-# ---------------------------------------------------------------------------
 
 
 def resolve_out(args) -> Path:
@@ -1873,18 +1548,6 @@ def resolve_out(args) -> Path:
 
 
 def token_rows(producer: SideScan, consumer: SideScan, cls: str) -> list[dict]:
-    # Comments ANNOTATE the vocabulary; they never create it.
-    #
-    # Comment text is scanned as identifiers, not as string literals, so a
-    # prose mention of a Rust function whose name happens to carry the build tag
-    # -- `from_exact_a729_observation`, `abort_a729_terminal_custody_and_uninstall`,
-    # `install_a729_design_catalog_context_hook` -- is shaped exactly like an
-    # authority name. Admitting those invented 17 tokens that no code on either
-    # side spells and that no producer could ever be owed for. What finding
-    # GP-F11 actually requires is the opposite direction and is preserved below:
-    # a token the CONSUMER pins in code and the producer names only in a `//!`
-    # header stays `consumer_only`, with its comment sites carried beside it, so
-    # the doc comment can never read as minting.
     names = {tok for tok, rows in producer.tokens.items() if rows[0]["class"] == cls}
     names |= {tok for tok, rows in consumer.tokens.items() if rows[0]["class"] == cls}
     rows = []
@@ -2045,11 +1708,6 @@ def main() -> int:
 
     producer = SideScan("producer", PRODUCER_SCOPE)
     consumer = SideScan("consumer", CONSUMER_SCOPE)
-    # The constant table is built across BOTH workspaces before either side
-    # reads a pin. The extractor imports schema constants from `portable_replay`
-    # crates (`PORTABLE_DESIGN_CATALOG_SCHEMA`, `PORTABLE_ARTIFACT_PATH`), so a
-    # per-side table reports a side's own dependencies as having no definition
-    # and files them under fail-closed -- noise that buries the real ones.
     for side in (producer, consumer):
         side.lex_all()
         side.collect_consts()
@@ -2060,16 +1718,6 @@ def main() -> int:
         side.defs_by_name = defs
         side.ambiguous = ambiguous
         side.collect_tokens()
-    # FIELD PINS ARE SCANNED ON THE CONSUMER SIDE ONLY. Scanning the producer for
-    # them measured nothing -- a producer checking a field of its own manifest
-    # is an internal consistency check, never a cross-workspace seam pin, and
-    # `field_pin_rows` builds rows from the consumer alone. Because only the
-    # consumer's pins are collected, only CONSUMER parse failures can reach the
-    # exit code; a producer-side pin site is never parsed and cannot fail this
-    # gate. Three review rounds were spent on producer-side sites that could
-    # never have become a measurement. The vocabulary classes (`name`,
-    # `schema_string`) are still collected from BOTH sides: that diff is the
-    # whole point.
     consumer.collect_field_pins()
 
     names = token_rows(producer, consumer, "name")
@@ -2077,12 +1725,6 @@ def main() -> int:
     pins = field_pin_rows(producer, consumer)
     unparsed = consumer.unparsed
     unresolved_constant = consumer.unresolved_constant
-    # `.get("field") … == Some(…)` sites the STRICT reader did not match. Each
-    # is a pin the accessor reader may not be seeing, so they are reported as a
-    # standing census rather than swallowed. They are not exit-code failures:
-    # the loose pattern also matches ordinary option comparisons that are not
-    # authority pins at all, so the number is a watch line -- it moving is the
-    # signal, not its value.
     loose_only = consumer.loose_only
     dynamic_pins = consumer.dynamic_pins
 
@@ -2092,9 +1734,6 @@ def main() -> int:
             counts[row["state"]] = counts.get(row["state"], 0) + 1
         return counts
 
-    # SHIPPING vs TEST, separately, because a total that silently folds fixtures
-    # in is the number a reader will quote. Review round 1 caught "500 pins"
-    # being the JSON's row count rather than a count of production pins.
     shipping = {
         "name": sum(1 for row in names if row["state"] != "test_only"),
         "schema_string": sum(1 for row in schemas if row["state"] != "test_only"),
@@ -2129,9 +1768,6 @@ def main() -> int:
     if args.force:
         out.write_text(payload, encoding="utf-8")
     else:
-        # Exclusive creation: two runs can both see the path absent, spend a
-        # second scanning, then both truncate it. Check-then-write cannot be
-        # made safe by checking harder.
         try:
             with open(out, "x", encoding="utf-8") as handle:
                 handle.write(payload)

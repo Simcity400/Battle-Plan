@@ -1,12 +1,5 @@
 #![recursion_limit = "256"]
 
-//! Replay ingest and scrubbable world timeline.
-//!
-//! The only place recording bytes enter the replay layer. Everything
-//! downstream (replay_app, tools) consumes [`WorldTimeline`] /
-//! [`WorldFrame`] and never touches container or schema internals.
-//! Durable product boundaries are documented under the `PROJECT.md` heading
-//! "Replay".
 
 pub mod agency_upgrade_controller;
 pub mod army_battleplans;
@@ -263,21 +256,7 @@ pub use theatre_selector::{
     TheatreControllerState as TheatreSelectorController, TheatreRow as TheatreSelectorTheatre,
     TheatreSelectorView,
 };
-/// The compact owner-identity ceiling, re-exported from `portable_admission` --
-/// the dependency-free crate the extractor producer and this consumer both
-/// path-depend on so the bound has one home.
-///
-/// Surfaces above this one (`game_ui`'s XUI20 binding gate) re-apply the same
-/// ceiling and carried a hand-typed copy of the number; they take it from here.
 pub use portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID;
-/// The engine hour-counter sanity window, re-exported from the same crate and
-/// for the same reason.
-///
-/// Both endpoints are INCLUSIVE. They are re-exported so that a surface above
-/// this crate which needs to name the window -- a test probing what falls just
-/// outside it, say -- names the shared value rather than transcribing the
-/// arithmetic a fourth time. Callers deciding whether a row is admissible
-/// should use the predicates, not these numbers.
 pub use portable_admission::{RAW_DATE_MAX, RAW_DATE_MIN};
 pub use world::{
     alert_icon_frame_for_type, coalesce_same_hour_ended_combats, weather_visual_lifecycle_digest,

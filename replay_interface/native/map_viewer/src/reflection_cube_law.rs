@@ -1,46 +1,12 @@
-//! WATER1/REFLECT — resolver-decode of the water `ReflectionCubeMap` (slot 8,
-//! `Type=Cube`) at replay time, byte-equal to the captured
-//! `d3d11_mapped_subresources` payload.
-//!
-//! Today the `ReflectionCubeMap` texels are uploaded from a CAPTURED per-pass
-//! `.d3d11` blob (`resource.file` → [`read_map_frame_resource_payload`]). This
-//! module is the mod-aware, PROVENANCE-driven replacement for that byte source:
-//! it resolves the shipped `map/terrain/reflection.dds` through the modset
-//! [`GameFileResolver`], decodes the legacy uncompressed BGRA cube, and RE-PACKS
-//! it into the EXACT D3D11 staging-map layout the capture recorded, driven
-//! ENTIRELY by the captured `resource.subresources[]` metadata (per-mip
-//! `file_offset` + `row_pitch`). No constant is guessed: the layout comes from
-//! the binding, the texels from the file.
-//!
-//! Proven byte-identical to the captured payload for vanilla (see
-//! the retained reflection-cube evidence and the scratch `repack_verify.py`): the repacked
-//! buffer == the captured `session_20260702c_fixed` payload, full 2112768 bytes,
-//! FNV-1a-64 `e267c5bfc5d499c8`. The gate asserts FULL byte-equality, not the
-//! hash alone.
-//!
-//! The DDS descriptor/SRV/format (DXGI 91 = `B8G8R8A8_UNORM_SRGB`) and the cube
-//! view dimension are NOT touched — they stay bound verbatim from the capture.
-//! Only the *byte source* for the slot flips from `resource.file` to this
-//! resolver-decoded-then-byte-verified buffer.
-//!
-//! Fail-closed policy (Codex-reviewed, Mode-A xhigh, exit 0): the decoder
-//! rejects any non-vanilla DDS shape — DX10 extended header, compressed/BCn,
-//! non-BGRA masks, non-cube, volume texture, non-square dims, or a
-//! mip/face/subresource-count that does not match the captured binding. A mod
-//! shipping any of those would need its own allocate/upload path; refusing here
-//! keeps us from SILENTLY diverging from what the engine would upload.
 
 use crate::mod_resolver::GameFileResolver;
 use crate::types::MapFrameTextureBinding;
 use crate::Result;
 
-// --- DDS pixel-format flags (little-endian header, offset 80) ---
 const DDPF_ALPHAPIXELS: u32 = 0x1;
 const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
 
-// --- caps2 (offset 112) ---
-/// `DDSCAPS2_CUBEMAP (0x200) | +X..-Z (0xfc00)` — a cubemap with all 6 faces.
 const DDSCAPS2_CUBEMAP_ALLFACES: u32 = 0xfe00;
 const DDSCAPS2_VOLUME: u32 = 0x200000;
 
@@ -48,21 +14,14 @@ const DDS_HEADER_LEN: usize = 128;
 const CUBE_FACES: u32 = 6;
 const BYTES_PER_TEXEL: usize = 4;
 
-/// The mod-aware source path for the reflection cube (documented once so the
-/// resolver read and any diagnostics agree).
 pub(crate) const REFLECTION_CUBE_DDS_SOURCE: &str = "map/terrain/reflection.dds";
 
-/// A decoded legacy uncompressed BGRA cubemap: face-major, mip-minor, TIGHTLY
-/// packed (no per-row padding — that padding is re-applied at repack time from
-/// the captured subresource metadata).
 #[derive(Debug)]
 pub(crate) struct DdsCube {
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) mips: usize,
-    /// Always 6 for a valid cube (asserted in [`parse_reflection_dds`]).
     pub(crate) faces: usize,
-    /// Legacy header stripped: 6 faces × tight mip chain of BGRA8 texels.
     pub(crate) payload: Vec<u8>,
 }
 
@@ -73,17 +32,10 @@ fn u32le(data: &[u8], off: usize) -> Result<u32> {
     Ok(u32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
-/// Parse the vanilla `map/terrain/reflection.dds` — a legacy (no DX10 header)
-/// uncompressed 32bpp BGRA cubemap with all 6 faces. Fail closed on anything
-/// else so a modded cube of a different byte contract never silently produces a
-/// wrong-but-valid buffer.
 pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
     if data.get(0..4) != Some(b"DDS ") {
         return Err(format!("{path}: not a DDS file (missing 'DDS ' magic)").into());
     }
-    // GUARD 0: minimum legacy-header length. A DX10 fourcc carries a 20-byte
-    // extended header at offset 128 and can encode BCn/typeless/arrays — a
-    // completely different byte contract. Reject it below.
     if data.len() < DDS_HEADER_LEN {
         return Err(format!("{path}: truncated DDS (<{DDS_HEADER_LEN} B header)").into());
     }
@@ -100,11 +52,6 @@ pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
     let amask = u32le(data, 104)?;
     let caps2 = u32le(data, 112)?;
 
-    // GUARD 1: uncompressed. Assert the DDPF_FOURCC flag is clear AND that the
-    // fourcc field is zero. A mod could ship a BC/DXT/DX10 reflection.dds; any
-    // of those would not match the captured mapped-subresource payload
-    // byte-for-byte. (DX10 in particular carries an extended header we do not
-    // parse.) Fail closed on both the flag and a nonzero fourcc.
     if fourcc == b"DX10" {
         return Err(format!(
             "{path}: reflection.dds uses a DX10 extended header — refusing to resolver-decode \
@@ -121,8 +68,6 @@ pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
         )
         .into());
     }
-    // GUARD 2: uncompressed 32bpp RGB with an alpha channel — the exact
-    // B8G8R8A8 contract. Vanilla pf_flags = 0x41 = DDPF_RGB | DDPF_ALPHAPIXELS.
     if pf_flags & DDPF_RGB == 0 || pf_flags & DDPF_ALPHAPIXELS == 0 || rgb_bits != 32 {
         return Err(format!(
             "{path}: expected uncompressed 32bpp RGBA DDS (DDPF_RGB|DDPF_ALPHAPIXELS), got \
@@ -131,8 +76,6 @@ pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
         .into());
     }
     // GUARD 3: BGRA channel masks (B in the low byte). This is the memory order
-    // DXGI 87/91 (B8G8R8A8_UNORM[_SRGB]) expect — so we copy DDS bytes straight,
-    // no channel swap.
     if (rmask, gmask, bmask, amask) != (0x00ff_0000, 0x0000_ff00, 0x0000_00ff, 0xff00_0000) {
         return Err(format!(
             "{path}: unexpected DDS channel masks R={rmask:#010x} G={gmask:#010x} \
@@ -140,14 +83,12 @@ pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
         )
         .into());
     }
-    // GUARD 4: cubemap with all 6 faces, and NOT a volume texture.
     if caps2 & DDSCAPS2_CUBEMAP_ALLFACES != DDSCAPS2_CUBEMAP_ALLFACES {
         return Err(format!("{path}: caps2 {caps2:#x} is not a 6-face cubemap").into());
     }
     if caps2 & DDSCAPS2_VOLUME != 0 {
         return Err(format!("{path}: caps2 {caps2:#x} marks a volume texture").into());
     }
-    // GUARD 5: square, nonzero dims (cube faces are square).
     if width == 0 || height == 0 || width != height {
         return Err(
             format!("{path}: cube faces must be square nonzero, got {width}x{height}").into(),
@@ -179,8 +120,6 @@ pub(crate) fn parse_reflection_dds(data: &[u8], path: &str) -> Result<DdsCube> {
     })
 }
 
-/// Tight (no row pad) byte length of one cube face: sum over mips of
-/// `mipW * mipH * 4`, with checked arithmetic.
 fn face_tight_bytes(width: usize, height: usize, mips: usize) -> Result<usize> {
     let mut total: usize = 0;
     for level in 0..mips {
@@ -197,28 +136,11 @@ fn face_tight_bytes(width: usize, height: usize, mips: usize) -> Result<usize> {
 }
 
 fn mip_dim(width: usize, height: usize, level: usize) -> (usize, usize) {
-    // Fail-closed against a hostile DDS mip count: a shift >= usize::BITS panics
-    // in checked builds. `checked_shr(level).unwrap_or(0)` yields 0 for
-    // over-large levels, then `.max(1)` clamps to the D3D11 1x1 tail — so an
-    // absurd mip_count degrades to a shape that the subresource cross-checks
-    // then reject, rather than crashing (Codex-flagged).
     let shift = |dim: usize| (dim.checked_shr(level as u32).unwrap_or(0)).max(1);
     (shift(width), shift(height))
 }
 
-/// Re-pack the decoded tight cube into the EXACT captured mapped-subresource
-/// layout, driven by `resource.subresources[]` (offsets + row/depth pitches).
-///
-/// The layout is NOT recomputed from `align(w*4, 128)` — the captured metadata
-/// is the ground truth for THIS bundle's driver/GPU, and it is what the upload
-/// path ([`native_d3d11_texture_upload`]) already trusts. `align(.,128)` is what
-/// vanilla produced, but reading the metadata is driver-agnostic. We only
-/// VALIDATE that the DDS supplies enough tight texels to fill each padded row,
-/// and cross-check every subresource's identity (`array_slice`/`mip_slice`/dims)
-/// against the D3D11 cube ordering `k = face*mip_count + mip`.
 fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) -> Result<Vec<u8>> {
-    // Descriptor cross-checks — fail closed on any mismatch so a mod cube of a
-    // different shape never silently produces a wrong-but-valid buffer.
     if resource.width as usize != cube.width
         || resource.height as usize != cube.height
         || resource.mip_count as usize != cube.mips
@@ -253,12 +175,11 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
 
     let face_tight = face_tight_bytes(cube.width, cube.height, cube.mips)?;
 
-    let mut out = vec![0u8; resource.byte_len]; // zero-fill => row padding is zero, matching capture
+    let mut out = vec![0u8; resource.byte_len];
     for face in 0..cube.faces {
         let face_src = face
             .checked_mul(face_tight)
             .ok_or("reflection cube face source offset overflow")?;
-        // tight src offset walks per-mip inside the face
         let mut src_mip_off = 0usize;
         for mip in 0..cube.mips {
             let (w, h) = mip_dim(cube.width, cube.height, mip);
@@ -271,9 +192,6 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
                 .ok_or("reflection cube subresource index overflow")?;
             let sub = &subs[k];
 
-            // Subresource identity — do NOT trust the vector order blindly
-            // (Codex-flagged). D3D11 cube ordering is k = face*mip_count + mip,
-            // i.e. array_slice = face, mip_slice = mip.
             if sub.array_slice as usize != face || sub.mip_slice as usize != mip {
                 return Err(format!(
                     "reflection cube subresource {k} has array_slice={} mip_slice={}, expected \
@@ -290,7 +208,7 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
                 .into());
             }
 
-            let dst_row_pitch = sub.row_pitch as usize; // == align(w*4,128) for vanilla
+            let dst_row_pitch = sub.row_pitch as usize;
             if src_row_bytes > dst_row_pitch {
                 return Err(format!(
                     "reflection cube subresource {k}: tight row {src_row_bytes} > captured \
@@ -298,7 +216,6 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
                 )
                 .into());
             }
-            // The captured subresource must have room for h padded rows.
             let sub_needed = h
                 .checked_sub(1)
                 .and_then(|last_row| last_row.checked_mul(dst_row_pitch))
@@ -348,7 +265,6 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
                     .into());
                 }
                 out[dst..dst_end].copy_from_slice(&cube.payload[src..src_end]);
-                // bytes [dst+src_row_bytes .. dst+dst_row_pitch) stay zero (pad)
             }
             src_mip_off = src_mip_off
                 .checked_add(
@@ -362,12 +278,6 @@ fn repack_to_captured_layout(cube: &DdsCube, resource: &MapFrameTextureBinding) 
     Ok(out)
 }
 
-/// Resolve + decode + repack `map/terrain/reflection.dds` (mod-aware) into a
-/// buffer byte-equal to the captured `ReflectionCubeMap` mapped-subresource
-/// payload. The caller byte-verifies this against the captured payload (fail
-/// closed on mismatch) before uploading it — for vanilla the match is exact; a
-/// mod's `reflection.dds` (resolved by the recording's modset) is what gets
-/// uploaded instead of a bare-vanilla read.
 pub(crate) fn decode_reflection_cube_payload(
     resolver: &GameFileResolver,
     resource: &MapFrameTextureBinding,
@@ -385,9 +295,6 @@ mod tests {
     use super::*;
     use crate::types::MapFrameTextureSubresource;
 
-    /// Build the same 128-byte-aligned mapped-subresource layout the vanilla
-    /// capture recorded (6 faces × 9 mips, face-major/mip-minor), returning the
-    /// synthetic `MapFrameTextureBinding` plus the total padded byte length.
     fn vanilla_reflection_binding(size: u32, mips: u32) -> MapFrameTextureBinding {
         let align = |x: usize, a: usize| (x + (a - 1)) / a * a;
         let mut subresources = Vec::new();
@@ -436,27 +343,24 @@ mod tests {
         }
     }
 
-    /// Synthesize a legacy uncompressed BGRA cube DDS (no DX10 header) with a
-    /// deterministic per-byte pattern so repack correctness is observable.
     fn synth_reflection_dds(size: u32, mips: u32) -> Vec<u8> {
         let mut hdr = vec![0u8; DDS_HEADER_LEN];
         hdr[0..4].copy_from_slice(b"DDS ");
         let put =
             |h: &mut [u8], off: usize, v: u32| h[off..off + 4].copy_from_slice(&v.to_le_bytes());
-        put(&mut hdr, 4, 124); // dwSize
-        put(&mut hdr, 8, 0x0002_100f); // flags (indicative)
-        put(&mut hdr, 12, size); // height
-        put(&mut hdr, 16, size); // width
-        put(&mut hdr, 28, mips); // mipMapCount
-        put(&mut hdr, 76, 32); // pf dwSize
-        put(&mut hdr, 80, DDPF_RGB | DDPF_ALPHAPIXELS); // pf_flags = 0x41
-                                                        // fourcc (84) stays zero
-        put(&mut hdr, 88, 32); // rgb bit count
-        put(&mut hdr, 92, 0x00ff_0000); // R
-        put(&mut hdr, 96, 0x0000_ff00); // G
-        put(&mut hdr, 100, 0x0000_00ff); // B
-        put(&mut hdr, 104, 0xff00_0000); // A
-        put(&mut hdr, 112, DDSCAPS2_CUBEMAP_ALLFACES); // caps2
+        put(&mut hdr, 4, 124);
+        put(&mut hdr, 8, 0x0002_100f);
+        put(&mut hdr, 12, size);
+        put(&mut hdr, 16, size);
+        put(&mut hdr, 28, mips);
+        put(&mut hdr, 76, 32);
+        put(&mut hdr, 80, DDPF_RGB | DDPF_ALPHAPIXELS);
+        put(&mut hdr, 88, 32);
+        put(&mut hdr, 92, 0x00ff_0000);
+        put(&mut hdr, 96, 0x0000_ff00);
+        put(&mut hdr, 100, 0x0000_00ff);
+        put(&mut hdr, 104, 0xff00_0000);
+        put(&mut hdr, 112, DDSCAPS2_CUBEMAP_ALLFACES);
 
         let face_tight = face_tight_bytes(size as usize, size as usize, mips as usize).unwrap();
         let mut payload = vec![0u8; face_tight * CUBE_FACES as usize];
@@ -468,8 +372,6 @@ mod tests {
         out
     }
 
-    /// Independent tight→padded repack reference (mirrors repack_verify.py) so
-    /// the test does not merely re-run the production repack against itself.
     fn reference_repack(dds: &[u8], resource: &MapFrameTextureBinding) -> Vec<u8> {
         let size = resource.width as usize;
         let mips = resource.mip_count as usize;
@@ -497,7 +399,6 @@ mod tests {
 
     #[test]
     fn repack_matches_independent_reference() {
-        // 256x256x9 is the vanilla shape; also exercise a tiny cube.
         for (size, mips) in [(256u32, 9u32), (8, 4)] {
             let binding = vanilla_reflection_binding(size, mips);
             let dds = synth_reflection_dds(size, mips);
@@ -509,7 +410,6 @@ mod tests {
                 repacked, reference,
                 "repack must equal the independent tight->padded reference for {size}x{size}x{mips}"
             );
-            // Pad bytes are zero: each row's tail past the tight width is zero.
             for face in 0..CUBE_FACES as usize {
                 for mip in 0..mips as usize {
                     let (w, h) = mip_dim(size as usize, size as usize, mip);
@@ -555,7 +455,6 @@ mod tests {
     #[test]
     fn rejects_non_bgra_masks() {
         let mut dds = synth_reflection_dds(8, 4);
-        // Swap to RGBA (R in low byte) — should be rejected.
         dds[92..96].copy_from_slice(&0x0000_00ffu32.to_le_bytes());
         dds[100..104].copy_from_slice(&0x00ff_0000u32.to_le_bytes());
         let err = parse_reflection_dds(&dds, "rgba.dds")
@@ -567,7 +466,7 @@ mod tests {
     #[test]
     fn rejects_non_cube() {
         let mut dds = synth_reflection_dds(8, 4);
-        dds[112..116].copy_from_slice(&0u32.to_le_bytes()); // caps2 = 0, not a cube
+        dds[112..116].copy_from_slice(&0u32.to_le_bytes());
         let err = parse_reflection_dds(&dds, "flat.dds")
             .unwrap_err()
             .to_string();
@@ -586,7 +485,6 @@ mod tests {
 
     #[test]
     fn rejects_mip_count_mismatch_against_binding() {
-        // DDS says 4 mips, binding says 9 — must fail closed.
         let binding = vanilla_reflection_binding(8, 9);
         let dds = synth_reflection_dds(8, 4);
         let cube = parse_reflection_dds(&dds, "synthetic.dds").unwrap();
@@ -601,21 +499,16 @@ mod tests {
 
     #[test]
     fn hostile_mip_count_fails_closed_without_panic() {
-        // A DDS declaring an absurd mip count must NOT panic on the mip shift; it
-        // must fail closed (payload-length mismatch), then also be rejected by
-        // the binding cross-check. Exercises the checked_shr guard in mip_dim.
         let mut dds = synth_reflection_dds(8, 4);
-        dds[28..32].copy_from_slice(&200u32.to_le_bytes()); // mipMapCount = 200
+        dds[28..32].copy_from_slice(&200u32.to_le_bytes());
         let err = parse_reflection_dds(&dds, "hostile.dds")
             .unwrap_err()
             .to_string();
         assert!(err.contains("payload"), "got: {err}");
-        // mip_dim itself must be panic-free for over-large levels.
         assert_eq!(mip_dim(256, 256, 999), (1, 1));
     }
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
-        // FNV-1a-64: offset basis 0xcbf29ce484222325, prime 0x100000001b3.
         let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
         for &b in bytes {
             hash ^= b as u64;
@@ -624,32 +517,12 @@ mod tests {
         hash
     }
 
-    /// PROOF gate (opt-in): exercise the FULL public
-    /// [`decode_reflection_cube_payload`] path — resolve the vanilla
-    /// `map/terrain/reflection.dds` through a real [`GameFileResolver`], decode,
-    /// and repack into the captured 256x256x9x6 128-byte-aligned layout — then
-    /// assert FULL byte-equality against the captured payload (`cap_c.bin`,
-    /// 2112768 bytes, FNV-1a-64 `e267c5bfc5d499c8`). This is the durable mirror
-    /// of scratch `repack_verify.py`, but driven by the production Rust decoder.
-    ///
-    /// Gated on `REFLECTION_CUBE_PROOF_DIR` pointing at a directory that holds
-    /// the shipped `reflection.dds` + the captured `cap_c.bin`, so it stays green
-    /// in CI (where those bundle/game assets are absent) and is run explicitly
-    /// against the checked-out capture. Set the env var to run it.
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),
         ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
     )]
     fn gate_vanilla_reflection_dds_decodes_to_captured_payload_fnv() {
-        // Self-contained capture-equality proof (no capture corpus needed on
-        // disk): the captured ReflectionCubeMap upload payload measured
-        // 2,112,768 bytes with FNV-1a64 e267c5bfc5d499c8 (recorded in the
-        // capture bundle and in the WATER1 evidence -- all
-        // 54 subresources byte-identical to the shipped DDS). Decoding the
-        // REAL shipped map/terrain/reflection.dds through the resolver into
-        // the captured 128-aligned layout must reproduce exactly that byte
-        // stream, so the runtime resolver-decode is a byte-noop for vanilla.
         let game_dir = replay_test_gates::require_vanilla_game_root();
         let resolver = GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
         let binding = vanilla_reflection_binding(256, 9);
@@ -693,8 +566,6 @@ mod tests {
             "captured payload FNV must be the declared e267c5bfc5d499c8"
         );
 
-        // Lay out a vanilla game root so the resolver finds
-        // map/terrain/reflection.dds exactly as it would in a real install.
         let root =
             std::env::temp_dir().join(format!("hoi4_reflection_proof_{}", std::process::id()));
         let terrain_dir = root.join("map").join("terrain");
@@ -702,15 +573,12 @@ mod tests {
         std::fs::copy(&dds_src, terrain_dir.join("reflection.dds")).expect("copy reflection.dds");
 
         let resolver = GameFileResolver::vanilla(&root).expect("build vanilla resolver");
-        // The captured binding: 256x256, 9 mips, 6 faces, DXGI 91, 128-aligned
-        // mapped-subresource layout — the exact shape the capture recorded.
         let binding = vanilla_reflection_binding(256, 9);
         assert_eq!(binding.byte_len, 2_112_768, "captured layout byte length");
 
         let decoded = decode_reflection_cube_payload(&resolver, &binding)
             .expect("resolver-decode reflection cube");
 
-        // FULL byte-equality is the proof (not just the FNV checkpoint).
         assert_eq!(decoded.len(), captured.len(), "decoded length");
         assert_eq!(
             fnv1a64(&decoded),

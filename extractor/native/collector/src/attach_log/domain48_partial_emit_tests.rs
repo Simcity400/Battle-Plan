@@ -1,13 +1,7 @@
-//! `domain48_partial_emit_tests`, extracted verbatim from `attach_log.rs`.
-
 use super::*;
 
 #[test]
 fn domain48_lane_partial_causes_match_partial_predicate_per_cause() {
-    // C1 stage A residue producer: all-zero pairs ⇔ the lane would
-    // NOT set PARTIAL; each of the 7 predicate counters maps to its
-    // OWN origin id (residue gate MEDIUM: a packed multi-cause word
-    // under last-value semantics dropped earlier frames' causes).
     use compact_contract::status_origins as so;
     let clean = domain48::collector_module::CollectorStats::default();
     assert!(domain48_lane_partial_causes(&clean)
@@ -47,10 +41,6 @@ fn domain48_lane_partial_causes_match_partial_predicate_per_cause() {
             "cause {slot} must not bleed into other ids"
         );
     }
-    // Two-frame different-causes regression (the gate's scenario):
-    // frame A country-root only, frame B resource-row only — because
-    // each cause has its OWN origin id, frame B's recording cannot
-    // overwrite frame A's cause; they land on distinct ids.
     let mut frame_a = domain48::collector_module::CollectorStats::default();
     frame_a.failed_country_roots = 1;
     let mut frame_b = domain48::collector_module::CollectorStats::default();
@@ -222,15 +212,10 @@ fn partial(
     )
 }
 
-// GATE (c): the churn mutation. A tolerated-partial frame that re-reads the
-// SAME rows must emit NOTHING; the legacy path (returning the full read)
-// would have re-emitted every row. The genuinely-changed subset is emitted
-// and nothing else.
 #[test]
 fn partial_reduces_churn_to_changed_subset_not_full_reemit() {
     let mut tracker = CompactDomain48Tracker::default();
 
-    // Baseline clean frame establishes the tracker.
     let base = apply(
         clean(
             vec![cq(77, 5_000_000)],
@@ -241,7 +226,6 @@ fn partial_reduces_churn_to_changed_subset_not_full_reemit() {
     );
     assert_eq!(base.emitted_rows, 3, "baseline emits the full row set");
 
-    // Partial frame re-reading IDENTICAL values.
     let identical = partial(
         vec![cq(77, 5_000_000)],
         vec![bld(0x2fab, 5)],
@@ -271,7 +255,6 @@ fn partial_reduces_churn_to_changed_subset_not_full_reemit() {
         "a partial frame is never promoted to a DELTA frame"
     );
 
-    // Partial frame with exactly one genuine change (building level 5 -> 6).
     let one_change = partial(
         vec![cq(77, 5_000_000)],
         vec![bld(0x2fab, 6)],
@@ -287,9 +270,6 @@ fn partial_reduces_churn_to_changed_subset_not_full_reemit() {
     assert_eq!(reduced.frame.building_rows[0].level, 6);
 }
 
-// Composition with the fold fix (a1c787a4a): a partial frame must NEVER
-// advance the DELTA baseline (`last_*`). Otherwise a partial's transient
-// value would poison the next delta's diff.
 #[test]
 fn partial_never_advances_delta_baseline() {
     let mut tracker = CompactDomain48Tracker::default();
@@ -297,7 +277,6 @@ fn partial_never_advances_delta_baseline() {
     let key = domain48_construction_key(&cq(77, 0));
     assert_eq!(tracker.last_construction[&key].produced_raw, 5_000_000);
 
-    // Partial reads a transient 9_000_000. Baseline must stay at 5_000_000.
     apply(
         partial(vec![cq(77, 9_000_000)], vec![], vec![]),
         &mut tracker,
@@ -307,8 +286,6 @@ fn partial_never_advances_delta_baseline() {
         "partial frame must not advance the delta baseline"
     );
 
-    // A later clean frame that matches the baseline emits an empty delta:
-    // the transient 9_000_000 never entered the baseline.
     let d = apply(clean(vec![cq(77, 5_000_000)], vec![], vec![]), &mut tracker);
     assert_eq!(
         d.status_flags & COMPACT_STATUS_DELTA_DATA,
@@ -320,16 +297,11 @@ fn partial_never_advances_delta_baseline() {
     );
 }
 
-// Data-loss guard: a partial diffs against the PROJECTION (what the fold is
-// showing), NOT the delta baseline. A value that a prior partial pushed to
-// 9M and then reverts to the baseline 5M must be RE-EMITTED, because the
-// fold is still projecting 9M and would otherwise never be corrected.
 #[test]
 fn partial_corrects_value_reverting_to_baseline_via_projection_diff() {
     let mut tracker = CompactDomain48Tracker::default();
     apply(clean(vec![cq(77, 5_000_000)], vec![], vec![]), &mut tracker);
 
-    // Partial pushes 9M (emitted; projection now shows 9M).
     let p1 = apply(
         partial(vec![cq(77, 9_000_000)], vec![], vec![]),
         &mut tracker,
@@ -337,9 +309,6 @@ fn partial_corrects_value_reverting_to_baseline_via_projection_diff() {
     assert_eq!(p1.emitted_rows, 1);
     assert_eq!(p1.frame.construction_rows[0].produced_raw, 9_000_000);
 
-    // Partial reverts to the baseline value 5M. Diffing against the delta
-    // baseline (5M) would WRONGLY skip it; diffing against the projection
-    // (9M) correctly re-emits it so the fold is corrected.
     let p2 = apply(
         partial(vec![cq(77, 5_000_000)], vec![], vec![]),
         &mut tracker,
@@ -351,9 +320,6 @@ fn partial_corrects_value_reverting_to_baseline_via_projection_diff() {
     assert_eq!(p2.frame.construction_rows[0].produced_raw, 5_000_000);
 }
 
-// GATE (d): a partial frame never fabricates a deletion. A row present in
-// the baseline but simply omitted from a partial read (unread, not deleted)
-// must NOT be tombstoned.
 #[test]
 fn partial_never_emits_tombstone_for_omitted_row() {
     let mut tracker = CompactDomain48Tracker::default();
@@ -362,7 +328,6 @@ fn partial_never_emits_tombstone_for_omitted_row() {
         &mut tracker,
     );
 
-    // Partial reads only line 77 (line 88 unread). No tombstone for 88.
     let p = apply(
         partial(vec![cq(77, 5_000_000)], vec![], vec![]),
         &mut tracker,
@@ -383,8 +348,6 @@ fn partial_never_emits_tombstone_for_omitted_row() {
     );
 }
 
-// A normal (non-partial) delta frame MUST still tombstone a genuinely
-// removed row — the fix does not weaken delta-mode deletion semantics.
 #[test]
 fn clean_delta_frame_still_tombstones_removed_row() {
     let mut tracker = CompactDomain48Tracker::default();
@@ -393,7 +356,6 @@ fn clean_delta_frame_still_tombstones_removed_row() {
         &mut tracker,
     );
 
-    // Full clean read where line 88 is genuinely gone -> tombstone emitted.
     let d = apply(clean(vec![cq(77, 5_000_000)], vec![], vec![]), &mut tracker);
     let tombstones: Vec<_> = d
         .frame
@@ -404,8 +366,6 @@ fn clean_delta_frame_still_tombstones_removed_row() {
     assert_eq!(tombstones, vec![88], "removed line 88 must be tombstoned");
 }
 
-// A clean/delta frame ends any partial run and resets the projection so the
-// next partial re-seeds from the fresh baseline, not stale transient rows.
 #[test]
 fn clean_frame_resets_partial_projection() {
     let mut tracker = CompactDomain48Tracker::default();
@@ -416,15 +376,12 @@ fn clean_frame_resets_partial_projection() {
     );
     assert!(tracker.partial_projection.is_some());
 
-    // Clean frame matching the baseline: projection overlay dropped.
     apply(clean(vec![cq(77, 5_000_000)], vec![], vec![]), &mut tracker);
     assert!(
         tracker.partial_projection.is_none(),
         "clean frame must clear the partial projection overlay"
     );
 
-    // Next partial re-seeds from the baseline (5M): a 9M read is a real
-    // change again and must be emitted.
     let p = apply(
         partial(vec![cq(77, 9_000_000)], vec![], vec![]),
         &mut tracker,
@@ -433,12 +390,9 @@ fn clean_frame_resets_partial_projection() {
     assert_eq!(p.frame.construction_rows[0].produced_raw, 9_000_000);
 }
 
-// Full emit mode is untouched: it clears both baselines and the projection
-// and returns the full read as-is on every frame (including partials).
 #[test]
 fn full_mode_emits_full_rows_and_clears_state() {
     let mut tracker = CompactDomain48Tracker::default();
-    // Prime some state via delta mode, then a full-mode frame must reset it.
     apply(clean(vec![cq(77, 5_000_000)], vec![], vec![]), &mut tracker);
     apply(
         partial(vec![cq(77, 9_000_000)], vec![], vec![]),

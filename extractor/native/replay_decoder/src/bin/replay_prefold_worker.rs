@@ -1,9 +1,3 @@
-// Extractor-owned production worker for compact-stream pre-folding.
-//
-// The replay product invokes this sibling process so its Cargo graph remains
-// free of extractor/live-lane crates. Input paths name a replay-owned private
-// spool; `replay_decoder` authenticates the exact H4CR bytes and drives the
-// single production WorldFold before this process emits a small JSON receipt.
 
 use std::ffi::OsString;
 use std::fs::File;
@@ -52,10 +46,6 @@ pub(crate) fn run(iter: impl IntoIterator<Item = OsString>) -> Result<(), String
     let game_id = args.game_id.ok_or("missing --game-id")?;
     let source = args.source.ok_or("missing --source")?;
     let snapshot_dir = args.snapshot_dir.ok_or("missing --snapshot-dir")?;
-    // Hold every mutable directory component open without delete sharing for
-    // the complete fold.  On Windows this prevents an attacker from replacing
-    // an already-validated ancestor with a junction (or replacing the spool
-    // directory itself) between validation and WorldFold's child opens.
     let snapshot_guard = SnapshotDirectoryGuard::acquire(&snapshot_dir)?;
     let source_len = args.source_len.ok_or("missing --source-len")?;
     let source_sha256 = args.source_sha256.ok_or("missing --source-sha256")?;
@@ -74,14 +64,9 @@ pub(crate) fn run(iter: impl IntoIterator<Item = OsString>) -> Result<(), String
     )
     .map_err(|error| error.to_string())?;
     let spool = if worker_executable_sha256.is_some() {
-        // Production receives stdin as a duplicate of the exact source handle
-        // authenticated and retained by replay_app. Never reopen its diagnostic
-        // pathname across the process boundary.
         let source_file = duplicate_inherited_source_file()?;
         replay_decoder::fold_raw_h4cr_open_file_spooled(request, source_file)
     } else {
-        // Historical development target only. Production always supplies the
-        // executable binding and inherited source handle.
         replay_decoder::fold_raw_h4cr_file_spooled(request)
     }
     .map_err(|error| error.to_string())?;
@@ -222,14 +207,6 @@ fn duplicate_inherited_source_file() -> Result<File, String> {
     Err("authenticated prefold source-handle inheritance is unsupported on this platform".into())
 }
 
-/// Retained capability for the worker-owned snapshot output directory.
-///
-/// Windows pathname traversal is vulnerable if validation and child creation
-/// are separate operations. Each non-root component is therefore opened from
-/// the volume root down, rejected when it is a reparse point, and retained
-/// without `FILE_SHARE_DELETE` until the fold and receipt are complete. The
-/// snapshot writer separately uses atomic `create_new`, so a planted final
-/// component cannot be followed or truncate an existing file.
 struct SnapshotDirectoryGuard {
     path: PathBuf,
     #[cfg(windows)]

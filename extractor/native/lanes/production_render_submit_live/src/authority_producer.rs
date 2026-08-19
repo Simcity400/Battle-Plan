@@ -1,9 +1,3 @@
-//! Exact production constructors for d77/d80 authority observations.
-//!
-//! The constructors consume only authenticated effective-VFS payloads and
-//! opaque hook receipts. They never derive a semantic role from a path, slot,
-//! object address, or captured vanilla catalog.
-
 use crate::{
     observe_live_draw_authority, observe_static_authority, RawD3dDrawState, RawDrawContentIdentity,
     RawDrawIdentity, RawEffectiveVfsOpenObservation, RawEffectiveVfsWinnerIndexBinding,
@@ -116,9 +110,6 @@ pub enum ExactLiveDrawContentEvidence {
     },
 }
 
-/// In-process view of exact decompressed VFS ranges admitted over H4CT.
-/// Implementations must be path-free and process-local; the winner index is
-/// supplied separately so a payload cannot confer authority by itself.
 pub trait AdmittedAuthorityPayloads {
     fn payload_range(
         &self,
@@ -133,10 +124,6 @@ pub trait AdmittedAuthorityPayloads {
     }
 }
 
-/// Hydrates a raw archive-open receipt from the authenticated winner index.
-/// The engine path token must name exactly one winner; payload digest/length
-/// are copied from that winner and still require H4CT byte verification when
-/// `materialize_exact_vfs_open` runs.
 pub fn hydrate_exact_vfs_open_evidence(
     winner_index: &RawEffectiveVfsWinnerIndexBinding,
     observation_sequence: u64,
@@ -187,8 +174,6 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         })
     }
 
-    /// Enumerates the exact full winner payloads that must be fetched over the
-    /// still-authenticated H4CT session before the live constructor runs.
     pub fn required_live_authority_payloads(
         &self,
         draw: &RawD3dDrawState,
@@ -233,7 +218,6 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         Ok(required.into_values().collect())
     }
 
-    /// Enumerates the exact full winner payloads required by one d80 draw.
     pub fn required_static_authority_payloads(
         &self,
         evidence: &ExactStaticDrawEvidence,
@@ -272,11 +256,6 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         Ok(required.into_values().collect())
     }
 
-    /// Enumerates the normal exact-pipeline payloads plus the selected GUI
-    /// definition that grants the neutral engine-program lookup its GUI
-    /// authority. The definition is not inserted into the D3D draw's resource
-    /// list: it is an owner/registration join, while the reflected bindings
-    /// remain the complete set of resources consumed by the draw.
     pub fn required_gui_static_authority_payloads(
         &self,
         evidence: &ExactStaticDrawEvidence,
@@ -386,11 +365,6 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
         )
     }
 
-    /// Builds one generic-GUI exact-pipeline authority row. Success requires
-    /// all ordinary D3D/reflection/VFS joins and an exact selected-owner
-    /// `interface/*.gui` winner from the same authenticated VFS manifest.
-    /// Unknown, non-interface, stale, or non-admitted GUI definitions fail
-    /// closed; a map registration root is never relabelled as GUI authority.
     pub fn build_gui_static_draw_authority(
         &self,
         evidence: &ExactStaticDrawEvidence,
@@ -841,9 +815,7 @@ impl<'a, V: AdmittedAuthorityPayloads> ProductionAuthorityObservationProducer<'a
             || !normalized.starts_with("interface/")
             || !normalized.ends_with(".gui")
         {
-            return Err(
-                "selected GUI definition is not a canonical interface/*.gui winner".into(),
-            );
+            return Err("selected GUI definition is not a canonical interface/*.gui winner".into());
         }
         let index = self
             .winner_index

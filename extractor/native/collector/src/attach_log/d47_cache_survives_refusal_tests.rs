@@ -1,30 +1,9 @@
-//! Lane MX: d47's DISCOVERY CACHE (roots + sealed byte witness + walk families)
-//! SURVIVES every refusal path — its own rejected bracket, a frame that rejects
-//! every domain, and the whole-frame refusal salvage.
-//!
-//! WHY (MT t83, code-confirmed): `reset_trackers_after_rejected_bracket`
-//! default-constructed the whole cache whenever d47's bracket was refused, so
-//! the next frame ran a cold 75-85 ms discovery, straddled the next ~90-136 ms
-//! hour, was refused again, and wiped the cache again — 350 full frames against
-//! 19 replay misses, reuse on 3 of 373 frames. The cache is never published
-//! from directly: the next frame's worker replays the witness inside ITS
-//! bracket at open and close and publishes only on a byte-identical replay, so
-//! a refused bracket (a statement about which HOUR this frame's product belongs
-//! to) has nothing to say about the cache's validity.
-//!
-//! What production change makes each test fail: removing the
-//! `characters_leaders_cabinet_live` carve-out from
-//! `reset_trackers_after_rejected_bracket` (the blanket `fresh` then wins), or
-//! the move in `restore_country_trackers_after_refused_frame`.
-
 use super::*;
 
 use domain47::adapter::CharacterRoot;
 use domain47::extractor::ResolvedTypeRoots;
 use domain47::scheduled::NativeRootCache;
 
-/// A cache as it stands after one adoption that sealed a witness and cached a
-/// walk family, with distinctive values in every field a wipe would erase.
 pub(super) fn adopted_cache_with_witness() -> CompactDomain47PrewarmCache {
     let mut roots = NativeRootCache::default();
     roots.roots_validated = true;
@@ -98,11 +77,20 @@ pub(super) fn adopted_cache_with_witness() -> CompactDomain47PrewarmCache {
     }
 }
 
-fn assert_cache_survived(cache: &CompactDomain47PrewarmCache, expected: &CompactDomain47PrewarmCache) {
-    assert!(cache.roots.has_stable_roots(), "the adopted roots must survive");
+fn assert_cache_survived(
+    cache: &CompactDomain47PrewarmCache,
+    expected: &CompactDomain47PrewarmCache,
+) {
+    assert!(
+        cache.roots.has_stable_roots(),
+        "the adopted roots must survive"
+    );
     assert_eq!(cache.roots.characters.len(), 1);
     assert_eq!(cache.roots.characters[0].name.as_deref(), Some("mx_name"));
-    assert_eq!(cache.roots.skipped_root_rows, expected.roots.skipped_root_rows);
+    assert_eq!(
+        cache.roots.skipped_root_rows,
+        expected.roots.skipped_root_rows
+    );
     assert_eq!(cache.sweep_gen, expected.sweep_gen);
     assert_eq!(cache.sweep_epoch, expected.sweep_epoch);
     assert_eq!(
@@ -110,7 +98,10 @@ fn assert_cache_survived(cache: &CompactDomain47PrewarmCache, expected: &Compact
         expected.negative_prewarm_frames_remaining
     );
     assert_eq!(cache.refresh_hold_streak, expected.refresh_hold_streak);
-    assert_eq!(cache.witness, expected.witness, "the sealed witness must survive");
+    assert_eq!(
+        cache.witness, expected.witness,
+        "the sealed witness must survive"
+    );
     assert!(
         cache
             .witness
@@ -120,12 +111,13 @@ fn assert_cache_survived(cache: &CompactDomain47PrewarmCache, expected: &Compact
         "the cached walk families must survive with the witness"
     );
     assert_eq!(cache.witness_last_miss, expected.witness_last_miss);
-    assert_eq!(cache.witness_last_miss_addr, expected.witness_last_miss_addr);
+    assert_eq!(
+        cache.witness_last_miss_addr,
+        expected.witness_last_miss_addr
+    );
     assert_eq!(cache.adopted_summary.stable_root_count, 1);
 }
 
-/// d47's OWN rejection (Torn / HourLabelMismatch on its bracket) keeps the
-/// cache whole. This is the death-spiral case.
 #[test]
 fn d47s_own_rejection_keeps_roots_witness_and_walk() {
     let expected = adopted_cache_with_witness();
@@ -136,8 +128,6 @@ fn d47s_own_rejection_keeps_roots_witness_and_walk() {
     assert_cache_survived(&trackers.characters_leaders_cabinet_live, &expected);
 }
 
-/// Every domain rejected: the cache still stands (the blanket reset is not its
-/// floor).
 #[test]
 fn rejecting_every_domain_keeps_the_d47_cache() {
     let expected = adopted_cache_with_witness();
@@ -148,18 +138,6 @@ fn rejecting_every_domain_keeps_the_d47_cache() {
     assert_cache_survived(&trackers.characters_leaders_cabinet_live, &expected);
 }
 
-/// POISON set inside the refused frame (a torn root read, a refresh hold, a
-/// dead sweep epoch — since step 1b a clock verdict no longer poisons) is KEPT
-/// — it refuses until a successful adoption clears it. The wipe used to clear
-/// the poison, which was weaker.
-///
-/// kills: a carve-out that reset `skipped_root_rows` to 0 "because the frame
-/// was refused anyway" would let the next frame's NEGATIVE-BACKOFF early
-/// return (type roots unresolved, backoff window still armed — it returns
-/// before witness eligibility and before any renewed poisoning) publish the
-/// retained roots as CLEAN (the poison, not the dropped witness, is what the
-/// scheduled reader's rowless gate reads). The hold arm is not that path: it
-/// re-poisons through `domain47_note_refresh_hold` before publication.
 #[test]
 fn poison_set_in_the_refused_frame_is_kept_not_cleared() {
     let mut poisoned = adopted_cache_with_witness();
@@ -175,7 +153,10 @@ fn poison_set_in_the_refused_frame_is_kept_not_cleared() {
         cache.roots.skipped_root_rows, 0,
         "the poison must survive the reset; only a successful adoption clears it"
     );
-    assert!(cache.roots.has_stable_roots(), "poisoned roots are held, not destroyed");
+    assert!(
+        cache.roots.has_stable_roots(),
+        "poisoned roots are held, not destroyed"
+    );
     assert!(cache.witness.is_none());
     assert!(
         !domain47_witness_reuse_eligible(
@@ -188,8 +169,6 @@ fn poison_set_in_the_refused_frame_is_kept_not_cleared() {
     );
 }
 
-/// The whole-frame refusal salvage moves the cache to the published slot
-/// beside the country baselines.
 #[test]
 fn a_refused_frame_returns_the_d47_cache_to_the_published_slot() {
     let expected = adopted_cache_with_witness();
@@ -200,8 +179,6 @@ fn a_refused_frame_returns_the_d47_cache_to_the_published_slot() {
     assert_cache_survived(&published.characters_leaders_cabinet_live, &expected);
 }
 
-/// CONTROL: the fixture is a cache a wipe WOULD change, so the assertions above
-/// cannot pass against `Default`.
 #[test]
 fn the_fixture_is_not_the_default_cache() {
     let cache = adopted_cache_with_witness();

@@ -1,9 +1,3 @@
-//! Canonical typed recording-gap contract shared by producers and consumers.
-//!
-//! A gap describes trustworthy evidence that some game-state bytes were not
-//! observed. It must never be used to excuse malformed, misordered, or otherwise
-//! untrustworthy bytes; those remain stream corruption in the consumer.
-
 use crate::{
     CompactDomainId, COMPACT_STATUS_BRIDGE_UNAVAILABLE, COMPACT_STATUS_PARTIAL_DATA,
     COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_WORKER_PANIC,
@@ -44,13 +38,6 @@ pub const GAP_REASON_CODE_COVERAGE_SHORTFALL: u8 = 8;
 pub const GAP_REASON_CODE_BACKPRESSURE: u8 = 9;
 
 impl GapReason {
-    /// Every reason, for consumers that must handle all of them but cannot be
-    /// forced to by a `match`: the manifest ledger's name table and its
-    /// expander, and the round-trip test that pins the two together.
-    ///
-    /// `gap_reason_all_covers_every_decodable_reason` rebuilds this set from
-    /// `gap_reason_from_code` over the whole `u8` code space, so a variant that
-    /// can arrive off the wire and is missing here fails the suite.
     pub const ALL: [GapReason; 9] = [
         Self::Coalesced,
         Self::SkippedHour,
@@ -63,12 +50,6 @@ impl GapReason {
         Self::Backpressure,
     ];
 
-    /// The reason's name in the sealed manifest.
-    ///
-    /// THIS USED TO BE A MATCH INSIDE THE MANIFEST WRITER. The compacted gap
-    /// ledger has to expand names back into reasons, which would have made two
-    /// transcriptions of the same nine strings -- exactly the drift lane FJ
-    /// removed for `DomainGapReason`. One authority, both directions.
     pub const fn wire_name(self) -> &'static str {
         match self {
             Self::Coalesced => "coalesced",
@@ -83,7 +64,6 @@ impl GapReason {
         }
     }
 
-    /// The inverse of [`GapReason::wire_name`].
     pub fn from_wire_name(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -104,10 +84,6 @@ impl GapReason {
         }
     }
 
-    /// Return the deterministic dominant reason for a status-bit observation.
-    ///
-    /// The witness retains every observed gap-status bit; the reason is only
-    /// the canonical index used to classify that complete observation.
     pub const fn canonical_for_status_bits(status_bits: u32) -> Option<Self> {
         if status_bits == 0 || status_bits & !GAP_STATUS_MASK != 0 {
             None
@@ -137,7 +113,6 @@ pub const GAP_COUNTER_CODE_QUEUE_OVERRUN_HOURS: u8 = 2;
 pub const GAP_COUNTER_CODE_SINK_BACKPRESSURE_HOURS: u8 = 3;
 
 impl GapCounter {
-    /// Every counter, for the manifest name table and its inverse.
     pub const ALL: [GapCounter; 3] = [
         Self::CoalescedHours,
         Self::QueueOverrunHours,
@@ -152,9 +127,6 @@ impl GapCounter {
         }
     }
 
-    /// The counter's name in the sealed manifest. Moved here from the manifest
-    /// writer for the same reason as [`GapReason::wire_name`]: the compacted
-    /// ledger has to read it back.
     pub const fn wire_name(self) -> &'static str {
         match self {
             Self::CoalescedHours => "coalesced_hours",
@@ -163,7 +135,6 @@ impl GapCounter {
         }
     }
 
-    /// The inverse of [`GapCounter::wire_name`].
     pub fn from_wire_name(name: &str) -> Option<Self> {
         Self::ALL
             .into_iter()
@@ -205,24 +176,14 @@ pub enum GapWitness {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GapRecord {
-    /// First missing game hour, inclusive.
     pub hour_start: i32,
-    /// Last missing game hour, inclusive. Equal to `hour_start` for one hour.
     pub hour_end: i32,
     pub reason: GapReason,
-    /// Affected compact-domain ids. Empty means every domain.
     pub domains: Vec<CompactDomainId>,
     pub witness: GapWitness,
 }
 
 impl GapRecord {
-    /// Build the single canonical gap for a forward FRAME_END jump.
-    ///
-    /// The logical skipped interval is half-open
-    /// `[previous_hour + 1, next_hour)`. H4GP v2 retains inclusive endpoints,
-    /// so the wire stores `hour_end = next_hour - 1`; it must not be expanded
-    /// into one record per skipped hour. The `HourDiscontinuity` wire witness is
-    /// the v2 spelling of the TickDiscontinuity authority.
     pub fn skipped_tick_discontinuity_half_open(
         previous_hour: i32,
         next_hour: i32,
@@ -277,12 +238,6 @@ impl GapRecord {
                     hour_start: self.hour_start,
                     hour_end: self.hour_end,
                 })?;
-        // `inclusive_hour_count` only fails on i32/i64 overflow, and a width of
-        // exactly zero (`hour_end == hour_start - 1`) survives it as `Some(0)`.
-        // A gap that covers no hour is not a gap: `covers()` can never match it,
-        // it carries a reason code for an outcome that never happened, and the
-        // half-open forward-jump constructor relies on this check to refuse a
-        // one-hour step, which is a continuous stream rather than a jump.
         if hour_count == 0 {
             return Err(GapRecordValidationError::InvalidInclusiveRange {
                 hour_start: self.hour_start,
@@ -398,14 +353,6 @@ pub enum GapRecordValidationError {
         second_start: i32,
         second_end: i32,
     },
-    /// [`validate_gap_records_hour_ordered`] was handed a record starting
-    /// before the one it had already accepted.
-    ///
-    /// A separate outcome rather than a silent re-sort: the sweep answers the
-    /// overlap question by keeping only the records still open at the current
-    /// hour, so out-of-order input would let it MISS an overlap. A missed
-    /// overlap reads as a valid ledger, which is the one answer this must never
-    /// invent.
     NotHourOrdered {
         previous_start: i32,
         next_start: i32,
@@ -420,10 +367,6 @@ impl fmt::Display for GapRecordValidationError {
 
 impl std::error::Error for GapRecordValidationError {}
 
-/// Validate a complete gap ledger against the run's inclusive observed range.
-///
-/// Empty `domains` means all domains, so a global record overlaps every
-/// domain-specific record whose hour range intersects it.
 pub fn validate_gap_records(
     records: &[GapRecord],
     observed_hour_start: i32,
@@ -475,25 +418,6 @@ pub fn validate_gap_records(
     Ok(())
 }
 
-/// The same rule as [`validate_gap_records`], answered by a sweep over records
-/// delivered in non-decreasing `hour_start` order.
-///
-/// # Why a second entry point
-///
-/// [`validate_gap_records`] takes a slice and compares every pair, so it costs
-/// O(n^2) time and needs every row resident at once. A recorder ledger is one
-/// row per (game hour, domain) absence — 1.7 million rows at 68,300 game hours —
-/// and neither the time nor the residency survives that. This form holds only
-/// the records still OPEN at the hour it is on: sorted by `hour_start`, any
-/// earlier record that could still overlap the current one has not ended yet, so
-/// the open set is exactly the candidate set and everything before it can be
-/// dropped.
-///
-/// The two answer the same question. They can differ in WHICH error they name
-/// when an input has several, because this one interleaves the per-record checks
-/// with the sweep while the slice form runs them in two passes; the callers ask
-/// only whether the ledger is valid. `hour_ordered_validation_agrees_with_pairwise`
-/// holds them to the same verdict.
 pub fn validate_gap_records_hour_ordered<I>(
     records: I,
     observed_hour_start: i32,
@@ -508,8 +432,6 @@ where
             hour_end: observed_hour_end,
         });
     }
-    // The records that have started and not yet ended. Its size is the number of
-    // gaps open at one instant — a handful of domains — not the session length.
     let mut open: Vec<GapRecord> = Vec::new();
     let mut previous_start: Option<i32> = None;
     for record in records {
@@ -533,9 +455,6 @@ where
         }
         open.retain(|candidate| candidate.hour_end >= record.hour_start);
         for candidate in &open {
-            // `candidate.hour_start <= record.hour_start <= candidate.hour_end`
-            // after the retain above, so the hour ranges intersect and only the
-            // domain question is left.
             let overlap_domain = if candidate.domains.is_empty() || record.domains.is_empty() {
                 Some(None)
             } else {
@@ -661,10 +580,6 @@ fn write_u64(bytes: &mut [u8], offset: usize, value: u64) {
     bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
-/// Encode one canonical gap record in the dependency-free H4GP v2 envelope.
-///
-/// This is a ledger encoding, not an H4CR record type. It deliberately does
-/// not alter compact-stream framing or capture production.
 pub fn encode_gap_record(record: &GapRecord) -> Result<Vec<u8>, GapRecordCodecError> {
     if record.domains.len() > MAX_GAP_DOMAIN_COUNT {
         return Err(GapRecordCodecError::DomainCountTooLarge {
@@ -753,7 +668,6 @@ pub fn encode_gap_record(record: &GapRecord) -> Result<Vec<u8>, GapRecordCodecEr
     Ok(bytes)
 }
 
-/// Decode one canonical H4GP v1/v2 ledger entry and re-run semantic validation.
 pub fn decode_gap_record(bytes: &[u8]) -> Result<GapRecord, GapRecordCodecError> {
     if bytes.len() < GAP_RECORD_HEADER_LEN {
         return Err(GapRecordCodecError::TooShort);
@@ -918,16 +832,6 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// Whichever way a ledger is walked, it is the same ledger.
-    ///
-    /// The sweep replaces an O(n^2) pairwise loop on the recorder's finalize
-    /// path, so what has to hold is that it never says "valid" where the
-    /// pairwise form said "invalid" — a missed overlap would publish a ledger
-    /// that double-counts an hour. The cases below are built to make the sweep
-    /// fail if it purged the open set too eagerly (a long record still open
-    /// under several later ones), if it ignored the wildcard rule (an
-    /// empty-`domains` record beside a domain one), or if it compared only
-    /// adjacent records.
     #[test]
     fn hour_ordered_validation_agrees_with_pairwise() {
         fn shortfall(hour_start: i32, hour_end: i32, domains: Vec<CompactDomainId>) -> GapRecord {
@@ -954,23 +858,15 @@ mod tests {
             }
         }
 
-        // The expected verdict is written down per case, so a sweep that said
-        // "valid" for everything would fail here rather than merely agree with
-        // a pairwise loop that had been broken the same way.
         let cases: Vec<(bool, Vec<GapRecord>)> = vec![
-            // Disjoint by domain at one hour.
             (
                 true,
                 vec![shortfall(10, 10, vec![4]), shortfall(10, 10, vec![5])],
             ),
-            // The same domain twice at one hour.
             (
                 false,
                 vec![shortfall(10, 10, vec![4]), shortfall(10, 10, vec![4])],
             ),
-            // A long record for domain 4 and a later point record for it, with
-            // an unrelated domain in between: only a sweep that keeps the long
-            // record open finds this.
             (
                 false,
                 vec![
@@ -979,7 +875,6 @@ mod tests {
                     shortfall(30, 30, vec![4]),
                 ],
             ),
-            // The same, but the late record is for another domain.
             (
                 true,
                 vec![
@@ -988,13 +883,9 @@ mod tests {
                     shortfall(30, 30, vec![7]),
                 ],
             ),
-            // A wildcard record overlaps every domain record inside it.
             (false, vec![skipped(10, 20), shortfall(15, 15, vec![4])]),
-            // Two wildcards that touch but do not overlap.
             (true, vec![skipped(10, 12), skipped(13, 15)]),
-            // Two wildcards that do overlap.
             (false, vec![skipped(10, 14), skipped(12, 15)]),
-            // A record outside the observed range.
             (false, vec![shortfall(1, 1, vec![4])]),
             (true, vec![]),
         ];
@@ -1009,9 +900,6 @@ mod tests {
         }
     }
 
-    /// Out-of-order input is refused rather than answered. The sweep can only
-    /// see an overlap while both records are open, so a record that arrives
-    /// after its own hour has passed could be waved through.
     #[test]
     fn hour_ordered_validation_refuses_records_that_go_backwards() {
         let records = vec![
@@ -1266,17 +1154,6 @@ mod tests {
         );
     }
 
-    /// A measured-empty hour is not a recording gap.
-    ///
-    /// A gap is evidence that some game-state bytes were NOT OBSERVED. A domain
-    /// that reached its source and found nothing observed all of them; there
-    /// are simply no rows. Admitting it here would recreate the ambiguity the
-    /// badge exists to remove, one layer further down: the section-8 ledger
-    /// would carry an hour of missing data that is not missing.
-    ///
-    /// Production change that makes this fail: adding SOURCE_EMPTY to
-    /// `GAP_STATUS_MASK`, or to the recorder's `GAP_ELIGIBLE_STATUS_MASK`
-    /// (which is what feeds this function).
     #[test]
     fn a_measured_empty_status_word_is_never_a_gap_reason() {
         assert_eq!(
@@ -1465,17 +1342,6 @@ mod tests {
         );
     }
 
-    /// `GapReason::ALL` must hold every reason a record can arrive carrying.
-    ///
-    /// Rebuilt from the wire decoder rather than from a second list: a variant
-    /// given the next free code and never added to `ALL` is invisible to any
-    /// test written against `ALL` itself, and the compacted manifest gap ledger
-    /// resolves names through `from_wire_name`, which walks `ALL`. A reason the
-    /// producer can emit but `ALL` omits would seal a manifest no expander can
-    /// read back.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: assigning a tenth gap reason code
-    /// without adding the variant to `ALL`.
     #[test]
     fn gap_reason_all_covers_every_decodable_reason() {
         let decodable: BTreeSet<GapReason> = (0u8..=u8::MAX)
@@ -1486,20 +1352,21 @@ mod tests {
             enumerated, decodable,
             "GapReason::ALL and the wire decoder disagree about the reason set"
         );
-        assert_eq!(enumerated.len(), GapReason::ALL.len(), "ALL lists a duplicate");
+        assert_eq!(
+            enumerated.len(),
+            GapReason::ALL.len(),
+            "ALL lists a duplicate"
+        );
     }
 
-    /// Names are the manifest's only spelling of a reason, and the ledger
-    /// expander turns them back into reasons. A collision would make two
-    /// outcomes indistinguishable on the manifest; a broken inverse would make
-    /// an honest ledger unreadable.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: renaming one reason on only one
-    /// side of the pair, or giving two reasons the same name.
     #[test]
     fn gap_reason_wire_names_are_unique_and_round_trip() {
         let names: BTreeSet<&str> = GapReason::ALL.iter().map(|r| r.wire_name()).collect();
-        assert_eq!(names.len(), GapReason::ALL.len(), "two reasons share a name");
+        assert_eq!(
+            names.len(),
+            GapReason::ALL.len(),
+            "two reasons share a name"
+        );
         for reason in GapReason::ALL {
             assert_eq!(GapReason::from_wire_name(reason.wire_name()), Some(reason));
         }

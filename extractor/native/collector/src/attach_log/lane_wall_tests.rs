@@ -1,13 +1,7 @@
-//! `lane_wall_tests`, extracted verbatim from `attach_log.rs`.
-
 use std::collections::BTreeSet;
 
 use super::*;
 
-// Gate test (lever #5): the scheduler-assignment REPORT must match what
-// actually ran. Inject a fake domain set through the real
-// spawn_gated/ReaderGate path and check lane assignment + wall
-// accounting consistency.
 #[test]
 fn lane_assignment_reporting_matches_execution() {
     const PERMITS: usize = 3;
@@ -20,7 +14,6 @@ fn lane_assignment_reporting_matches_execution() {
         let handles: Vec<_> = (0..FAKE_DOMAINS)
             .map(|i| {
                 spawn_gated(scope, gref, tref, 300 + i, move || {
-                    // Busy window so lanes are actually contended.
                     for _ in 0..20_000 {
                         std::hint::spin_loop();
                     }
@@ -33,12 +26,10 @@ fn lane_assignment_reporting_matches_execution() {
         }
     });
     let spans = tracker.take_spans();
-    // Every injected domain reported exactly once.
     assert_eq!(spans.len(), FAKE_DOMAINS as usize);
     let mut tags: Vec<u16> = spans.iter().map(|s| s.tag).collect();
     tags.sort_unstable();
     assert_eq!(tags, (300..300 + FAKE_DOMAINS).collect::<Vec<_>>());
-    // Lane ids are real permit slots.
     for span in &spans {
         assert!(
             (span.lane as usize) < PERMITS,
@@ -47,7 +38,6 @@ fn lane_assignment_reporting_matches_execution() {
         );
         assert!(span.end_us >= span.start_us);
     }
-    // A lane is a mutual-exclusion slot: its spans must not overlap.
     for lane in 0..PERMITS as u16 {
         let mut lane_spans: Vec<&LaneSpan> = spans.iter().filter(|s| s.lane == lane).collect();
         lane_spans.sort_by_key(|s| s.start_us);
@@ -60,7 +50,6 @@ fn lane_assignment_reporting_matches_execution() {
             );
         }
     }
-    // The summary must agree with a manual recount of the same spans.
     let summary = summarize_lane_spans(&spans);
     assert_eq!(summary.main_wall_us, 0);
     assert!(!summary.lanes.is_empty());
@@ -234,45 +223,8 @@ fn lane_wall_probe_record_is_wellformed_probe_domain_perf() {
     }
 }
 
-/// The country bundle's sub-reads reach the wire under their OWN tags, and do
-/// so through a channel that is not a lane span.
-///
-/// WHAT THIS EXISTS FOR. `LW_TAG_COUNTRY_BUNDLE` is one gated worker, so
-/// `lw_d200_crit_us` and the lane units price the WHOLE bundle. On t55
-/// (2026-08-15, live, speed 5, 1944 world) that one tag was 99.2% of a 238 ms
-/// critical path against a 76 ms hour, and no counter anywhere said which of
-/// the bundle's seven sub-reads it was. `lw_cb{tag}_us` is that counter.
-///
-/// The recording is deliberately not a lane span, and this test pins both
-/// halves of that: the sub-reads must NOT appear in `spans` (they run inside
-/// the parent's span, so counting them there would push a lane's busy time past
-/// its wall), and they must still reach the probe record.
-///
-/// THE MULTI-SPEC READ BELOW IS NO LONGER A PRODUCTION SHAPE, and is kept
-/// deliberately. Until lane LE split them, focus and tech were one sub-read
-/// carrying two specs; every country sub-read now carries exactly one, so on a
-/// live roster `lw_cb{tag}_us` and "domain `tag` alone cost this" coincide. The
-/// two-spec case stays in this fixture because `country_lane_attribution`'s
-/// first-spec keying rule is still the contract — a future companion pairing
-/// would reach it — and a fixture that only ever passed single-spec reads could
-/// not tell first-keying from last-keying at all.
-///
-/// kills: `country_lane_attribution` keying on `specs.last()` instead of
-/// `specs.first()` -> the two-spec read reports as `lw_cb13_us` and the
-/// vector equality fails; dropping any returned read -> that tag's entry
-/// disappears; last-write-wins instead of summing -> the repeated tag reports
-/// 30 rather than 130; recording the sub-reads as lane spans instead ->
-/// `spans` is non-empty here and lane busy exceeds lane wall in production;
-/// routing them through `lw_domain_crit_unit_name` -> the emitted name is
-/// `lw_d12_crit_us`, which the host folds into
-/// `per_domain_critical_path_us_total` and double-counts against
-/// `lw_d200_crit_us`.
 #[test]
 fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
-    // The shape `read_compact_country_domain_bundles_parallel` returns: one
-    // read per sub-lane, each carrying the specs THAT LANE read — one spec each
-    // since lane LE split focus from tech. A two-spec read is exercised anyway,
-    // to keep the first-spec keying rule under test.
     let specs = compact_country_domain_specs();
     let spec_of = |id: u16| {
         *specs
@@ -292,13 +244,8 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
     let country_lanes = country_lane_attribution(&[
         read(&[COMPACT_DOMAIN_FUEL], 4_100),
         read(&[COMPACT_DOMAIN_POLITICS], 100),
-        // A sub-read over two specs, published under the FIRST. Production no
-        // longer emits this for 12+13 -- they are separate children now -- so
-        // this stands for the rule, not for a shape a capture will contain.
         read(&[COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH], 91_000),
-        // Two reads under the SAME tag must SUM, not last-write-win.
         read(&[COMPACT_DOMAIN_POLITICS], 30),
-        // A read naming no spec names no sub-lane and must not invent one.
         read(&[], 500_000),
     ]);
     assert_eq!(
@@ -309,8 +256,6 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
             (COMPACT_DOMAIN_POLITICS, 130),
         ]
     );
-    // Not a lane span, so no lane's busy time moves and nothing is recorded on
-    // a worker's thread.
     let tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     assert!(
         tracker.take_spans().is_empty(),
@@ -351,38 +296,17 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
         &summary,
         FrameCpuSplit::default(),
     );
-    let text = String::from_utf8_lossy(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..])
-        .into_owned();
+    let text =
+        String::from_utf8_lossy(&out[compact_contract::COMPACT_RECORD_HEADER_LEN..]).into_owned();
     for name in ["lw_cb10_us", "lw_cb12_us", "lw_cb14_us"] {
         assert!(text.contains(name), "missing unit {name}");
     }
-    // The whole is still published under the bundle's own tag, undisturbed.
     assert!(text.contains("lw_d200_crit_us"));
-    // And the parts did NOT go to the critical-path family, whose shares are
-    // divided by the critical wall.
     for name in ["lw_d10_crit_us", "lw_d12_crit_us", "lw_d14_crit_us"] {
         assert!(!text.contains(name), "sub-read leaked into {name}");
     }
 }
 
-/// The frame builder actually CALLS the attribution, and carries its result to
-/// the lane-wall summary.
-///
-/// The behavioural test above can only reach the pure function; building a real
-/// frame here is not possible, so deleting the one production call site — or
-/// replacing it with `Vec::new()` — left every assertion in it green (Codex
-/// gate finding, round 2). This pins the call site the way this file already
-/// pins other single-site production structure: against the collector's own
-/// source text.
-///
-/// It also pins the PLACEMENT, which is the round-2 defect itself. The
-/// attribution must be taken from the same drain that emits the bundle's
-/// records — after the last clock bracket of the frame — so it cannot delay a
-/// bracket opening. A call site that drifts back above the drain fails here.
-///
-/// kills: deleting the call site, replacing it with an empty vector, assigning
-/// `lane_wall.country_lanes` from anything else, or moving the call above the
-/// `country_reads.drain(..)` it must sit on.
 #[test]
 fn the_frame_builder_takes_the_country_attribution_off_the_bundle_drain() {
     let source = super::tests::collector_source_lf();
@@ -398,9 +322,6 @@ fn the_frame_builder_takes_the_country_attribution_off_the_bundle_drain() {
         1,
         "the summary's country lanes must come from that call and nothing else"
     );
-    // ON THE DRAIN, and above it by exactly one statement: the drain consumes
-    // `country_reads`, so the attribution cannot follow it, and every clock
-    // bracket in the frame has closed by the time the drain runs.
     let drain = "for read in country_reads.drain(..) {";
     assert_eq!(source.matches(drain).count(), 1);
     let call_at = source.find(call).expect("call site");
@@ -412,37 +333,10 @@ fn the_frame_builder_takes_the_country_attribution_off_the_bundle_drain() {
         "nothing may sit between the attribution and the drain it is taken \
          off; found: {between:?}"
     );
-    // And the assignment is downstream of both.
     assert!(source.find(assign).expect("assign site") > drain_at);
 }
 
-/// A gated worker's OWN cycles are folded into the frame's split, and the
-/// frame's process term covers the fan-out.
-///
-/// THE MEASUREMENT THIS EXISTS FOR. The capture witness records the target
-/// process's total CPU, and the collector is an injected DLL, so that total is
-/// the game AND us. A capture can therefore see the process go from 4.9 to 7.2
-/// busy cores on attach and still not say whether the game's own half moved --
-/// which is the entire question behind "a passive reader should not cost the
-/// host wall-clock". `process_cycles - worker_cycles` is the subtraction that
-/// answers it, and neither term existed on the wire before.
-///
-/// The workers below burn a real, unelidable amount of CPU (a volatile
-/// accumulator the optimiser cannot drop), so a split that reports zero ours,
-/// or that counts the workers but not their cycles, cannot pass.
-///
 /// MUTATION RUN (`--release`), verbatim:
-///  * `lanes.observe_worker_cycles(...)` deleted from `spawn_gated` ->
-///    `assertion `left == right` failed: every gated worker must contribute to
-///    the split, or the bound it supports covers fewer workers than the wire
-///    claims / left: 0 / right: 6`.
-///  * `observe_worker_cycles` folded the count but not the cycles
-///    (`fetch_add(0, ...)`) -> this test fails at the `worker_cycles > 0`
-///    assertion and `a_frame_with_no_process_counter_...` fails
-///    `left: 0 / right: 4242`.
-///  * `cpu_split` returned a hardcoded `worker_threads: 0` -> this test fails
-///    `left: 0 / right: 6` and `a_frame_with_no_process_counter_...` fails
-///    `left: 0 / right: 1`.
 #[test]
 fn the_frame_cpu_split_counts_every_gated_worker_and_its_own_cycles() {
     const PERMITS: usize = 2;
@@ -455,9 +349,6 @@ fn the_frame_cpu_split_counts_every_gated_worker_and_its_own_cycles() {
         let handles: Vec<_> = (0..WORKERS)
             .map(|i| {
                 spawn_gated(scope, gref, tref, 400 + i, move || {
-                    // Real work, not a sleep: a sleeping thread accrues no
-                    // cycles, so a sleep here would pass a split that measured
-                    // nothing.
                     let mut acc: u64 = 0;
                     for step in 0..2_000_000u64 {
                         acc = acc.wrapping_add(step ^ u64::from(i));
@@ -470,9 +361,6 @@ fn the_frame_cpu_split_counts_every_gated_worker_and_its_own_cycles() {
             handle.join().unwrap();
         }
     });
-    // Production closes the process term on the same statement that closes
-    // `worker_read_span_us`; without it the frame is correctly reported as
-    // unmeasurable, so the test has to do what production does.
     tracker.close_fanout_process_cycles();
     let split = tracker.cpu_split();
     assert_eq!(
@@ -490,9 +378,6 @@ fn the_frame_cpu_split_counts_every_gated_worker_and_its_own_cycles() {
         !split.process_cycles_missing,
         "the process cycle counter must be readable on a supported host"
     );
-    // The process ran the same workers plus this thread, so its term cannot be
-    // smaller than ours. This is the invariant the subtraction depends on: if
-    // it inverts, `process - workers` underflows into a nonsense game term.
     assert!(
         split.process_cycles >= split.worker_cycles,
         "process cycles {} < worker cycles {}; the subtraction that yields the \
@@ -502,26 +387,7 @@ fn the_frame_cpu_split_counts_every_gated_worker_and_its_own_cycles() {
     );
 }
 
-/// A frame whose process counter was refused contributes NOTHING to either
-/// term, and says why.
-///
-/// THE PAIRING RULE. The host sums the process and worker terms independently
-/// across the capture and subtracts the totals to get the game's own cycles.
-/// A frame that contributed a real worker term but no process term would shrink
-/// that difference by exactly its worker cycles -- with enough such frames it
-/// goes negative, and `frames_with_no_counter` can tell you the total is
-/// damaged but cannot repair it. So an unmeasurable frame contributes zero to
-/// BOTH and raises the flag; the ratio is then over fewer frames, which is a
-/// statement the flag makes and the totals no longer have to.
-///
-/// Three ways a frame can be unmeasurable, all checked: the counter was refused
-/// at the origin, the fan-out was never closed, and the counter did not advance
-/// across the interval.
-///
 /// MUTATION RUN (`--release`), verbatim: `cpu_split` changed to return the
-/// worker terms alongside a zero process term -> `assertion `left == right`
-/// failed: an unmeasurable frame must contribute nothing to the worker term
-/// either / left: 4242 / right: 0`.
 #[test]
 fn a_frame_with_no_process_counter_contributes_to_neither_term() {
     for (label, prepare) in [
@@ -532,9 +398,12 @@ fn a_frame_with_no_process_counter_contributes_to_neither_term() {
                 t.fanout_end_process_cycles.store(9_000, Ordering::Relaxed);
             }) as fn(&mut FrameLaneTracker),
         ),
-        ("the fan-out was never closed", |t: &mut FrameLaneTracker| {
-            t.origin_process_cycles = 1_000;
-        }),
+        (
+            "the fan-out was never closed",
+            |t: &mut FrameLaneTracker| {
+                t.origin_process_cycles = 1_000;
+            },
+        ),
         ("the counter went backwards", |t: &mut FrameLaneTracker| {
             t.origin_process_cycles = 9_000;
             t.fanout_end_process_cycles.store(1_000, Ordering::Relaxed);
@@ -555,29 +424,13 @@ fn a_frame_with_no_process_counter_contributes_to_neither_term() {
     }
 }
 
-/// The process term is bounded by the FAN-OUT, not by whenever the probe is
-/// built.
-///
-/// In production the probe is appended after the encode and attribution tail,
-/// several milliseconds of SERIAL COLLECTOR WORK after the last worker joined.
-/// A process term closed at probe time would include those cycles, be divided
-/// by a `lw_worker_span_us` that does not cover them, and hand the difference
-/// to the game as if the game had burned it. Here the tracker is closed, then
-/// a large amount of CPU is burned, then the split is taken: the burn must not
-/// appear.
-///
 /// MUTATION RUN (`--release`), verbatim: `cpu_split` reverted to sampling
-/// `process_cycle_counter()` itself instead of reading the stored fan-out close
-/// -> `assertion failed: split.process_cycles < burn_cycles / the process term
-/// grew by work done after the fan-out closed`.
 #[test]
 fn the_process_term_is_closed_at_the_fanout_not_at_probe_time() {
     let tracker = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     tracker.close_fanout_process_cycles();
     let closed_at = tracker.fanout_end_process_cycles.load(Ordering::Relaxed);
     assert_ne!(closed_at, 0, "the process counter must be readable");
-    // Burn enough that a term closed later could not be mistaken for one
-    // closed at the fan-out.
     let before = process_cycle_counter().expect("readable");
     let mut acc: u64 = 0;
     for step in 0..20_000_000u64 {
@@ -599,10 +452,6 @@ fn the_process_term_is_closed_at_the_fanout_not_at_probe_time() {
     );
 }
 
-/// All four CPU-split units reach the wire, including the flag.
-///
-/// Red if any is dropped from `append_compact_lane_wall_probe_record` -- a
-/// consumer would then read the remaining ones as complete.
 #[test]
 fn the_cpu_split_units_reach_the_probe() {
     let summary = summarize_lane_spans(&[]);
@@ -631,9 +480,6 @@ fn the_cpu_split_units_reach_the_probe() {
             process_cycles_missing: false,
         },
     );
-    // Decoded, not string-matched: the values are little-endian binary in the
-    // PDU1 trailer, and a test that only looked for the NAMES would pass with
-    // every unit carrying the same wrong number.
     let payload = &out[compact_contract::COMPACT_RECORD_HEADER_LEN..];
     let trailer = &payload[compact_contract::COMPACT_DOMAIN_PERF_BASE_LEN..];
     assert_eq!(
@@ -656,25 +502,9 @@ fn the_cpu_split_units_reach_the_probe() {
     }
 }
 
-/// The outside-build segments must reach the wire with THEIR OWN values, each
-/// under the name its code owns.
-///
-/// This is the whole point of the lane: the ~27 ms per frame that is not inside
-/// `build_compact_extraction_gate_records` was previously knowable only as
-/// `frame_period - frame_time_us`, a subtraction of two other numbers. A probe
-/// that emitted the segments under the wrong names, or emitted one segment's
-/// value twelve times, would look exactly as healthy in a manifest and would
-/// misattribute one call's milliseconds to another.
-///
-/// MUTATION RUN: `value: outside_build.us[index]` in the emission loop was
-/// changed to `value: outside_build.us[0]`, and the whole suite run in
 /// `--release`. Observed: this test failed with
-/// `segment 1 (wait) carries 1000 on the wire but the accumulator holds 2000`
-/// — the first segment's value published under every name. Restored.
 #[test]
 fn every_outside_build_segment_reaches_the_probe_under_its_own_name() {
-    // Distinct per segment, and distinct from every other value the probe
-    // carries, so a crossed wire cannot pass by coincidence.
     let mut outside = OutsideBuildSpans::default();
     for (index, slot) in outside.us.iter_mut().enumerate() {
         *slot = 1_000 + index as u64 * 1_000;
@@ -720,14 +550,6 @@ fn every_outside_build_segment_reaches_the_probe_under_its_own_name() {
     }
 }
 
-/// A ZERO segment is still emitted. "This call ran and cost nothing" and "this
-/// collector does not measure that call" are different facts, and a manifest
-/// that cannot tell them apart cannot price a change to that call.
-///
-/// MUTATION RUN: the emission `units.push(..)` was wrapped in
-/// `if outside_build.us[index] != 0 { .. }`, which is the shape
-/// `lw_hour_label_skew_abs` legitimately uses. Observed: this test failed with
-/// `a segment measured as zero must still be stated: lw_o0_us`. Restored.
 #[test]
 fn a_zero_outside_build_segment_is_stated_rather_than_omitted() {
     let summary = summarize_lane_spans(&[]);
@@ -762,28 +584,11 @@ fn a_zero_outside_build_segment_is_stated_rather_than_omitted() {
     }
 }
 
-/// `add_since` ADDS. Between two builds the loop can run several iterations —
-/// an hour that produced no sweep decision, a re-attempt after an uncertain
-/// campaign boundary — and each one's identity re-read and owner polls are
-/// time the next build was not running. An overwriting accumulator would
-/// report only the last iteration's cost and make the extra iterations free.
-///
-/// MUTATION RUN: `add_since`'s `slot.saturating_add(..)` was changed to a
 /// plain assignment, and this test re-run against it in `--release` after the
-/// assertion below was strengthened. Observed: it failed with `64 closes of one
-/// ageing span totalled 1001 us, which is no more than the 1001 us that span
-/// had aged by the end — that is what assignment gives`. The two figures being
-/// equal is the mutation's signature: assignment leaves exactly the last age
-/// read. Restored.
 #[test]
 fn outside_build_segments_accumulate_across_iterations() {
     const PASSES: u64 = 64;
     let mut outside = OutsideBuildSpans::default();
-    // ONE instant, aged past a millisecond, then closed against `PASSES`
-    // times. The instant keeps ageing, so the two arithmetics separate by a
-    // factor of `PASSES` rather than by a margin scheduler noise could cover:
-    // accumulation lands at or above `PASSES` ms, assignment lands at whatever
-    // the instant reads on the last pass, which is a few ms at most.
     let started = Instant::now();
     while started.elapsed() < Duration::from_millis(1) {
         std::hint::spin_loop();
@@ -793,20 +598,6 @@ fn outside_build_segments_accumulate_across_iterations() {
     }
     let elapsed_after_us = duration_micros_u64(started.elapsed());
     let total = outside.us[OutsideBuildSegment::Identity as usize];
-    // The separator, and exactly what it is worth. Under assignment the slot
-    // holds the age read on the LAST pass, which a monotonic clock guarantees
-    // is no greater than the age read here, one statement later — so the
-    // mutation cannot pass this assertion at all. That is the hole a floor
-    // alone left open: a stall inflates both sides of `total >= PASSES * 1_000`
-    // equally, so a descheduled thread could satisfy it under assignment.
-    //
-    // It is NOT symmetric, and the residual risk runs the other way. Correct
-    // accumulation fails here if this thread is descheduled between the last
-    // `add_since` and the reading below for longer than the sum of the first 63
-    // ages — about 63 ms. That is a false FAILURE, not a false pass, so it
-    // cannot hide the defect; it can only interrupt a build. Two clock reads
-    // one statement apart is as close as a test of a clock-reading function
-    // gets, and the remaining window is stated rather than called determinism.
     assert!(
         total > elapsed_after_us,
         "add_since must ACCUMULATE across the iterations between two builds: \
@@ -820,8 +611,6 @@ fn outside_build_segments_accumulate_across_iterations() {
          so the accumulated total cannot be under {} us; it was {total}",
         PASSES * 1_000
     );
-    // The other segments are untouched: a segment must never collect a
-    // neighbour's time.
     for (index, value) in outside.us.iter().enumerate() {
         if index != OutsideBuildSegment::Identity as usize {
             assert_eq!(*value, 0, "segment {index} collected another's time");
@@ -829,21 +618,6 @@ fn outside_build_segments_accumulate_across_iterations() {
     }
 }
 
-/// The `OutsideBuildSegment` discriminants ARE the wire codes. The producer
-/// indexes `OUTSIDE_BUILD_UNIT_NAMES` by `segment as usize`, so a discriminant
-/// that drifts from the contract table publishes one segment's milliseconds
-/// under another segment's name — silently, and in a manifest that reads as
-/// healthy.
-///
-/// MUTATION RUN: the contract entry `(3, "prepoll")` was changed to
-/// `(3, "prepub")`. Observed: this test failed with
-/// `OutsideBuildSegment::Prepoll has discriminant 3 but the contract gives
-/// code 3 to "prepub"`. Restored.
-///
-/// A discriminant mutation such as `Prepub = 5` is NOT the equivalent check:
-/// `Complete` already holds 5, and Rust rejects duplicate discriminants before
-/// the test can run. The mutation that reaches this assertion is a change to
-/// the contract table, which is where a real drift would happen anyway.
 #[test]
 fn outside_build_segment_discriminants_match_the_contract() {
     const DECLARED: &[(OutsideBuildSegment, &str)] = &[
@@ -869,8 +643,11 @@ fn outside_build_segment_discriminants_match_the_contract() {
     );
     for (segment, expected) in DECLARED {
         let code = *segment as usize;
-        let contract = compact_contract::diagnostic_channel::outside_build_segment_name(code as u16)
-            .unwrap_or_else(|| panic!("{segment:?} has discriminant {code}, outside the contract"));
+        let contract =
+            compact_contract::diagnostic_channel::outside_build_segment_name(code as u16)
+                .unwrap_or_else(|| {
+                    panic!("{segment:?} has discriminant {code}, outside the contract")
+                });
         assert_eq!(
             contract, *expected,
             "OutsideBuildSegment::{segment:?} has discriminant {code} but the \
@@ -879,25 +656,9 @@ fn outside_build_segment_discriminants_match_the_contract() {
     }
 }
 
-// Micro-cost proof (lever #5): run with
 //   cargo test -p collector --release lane_wall_micro_cost -- --ignored --nocapture
-// Budget: < 100 us/frame for the WHOLE added path (48 span records +
-// summary + probe-record encode).
 
-/// `BuildTail` is a SUBTRACTION, and the subtraction must never wrap.
-///
-/// `frame_time_us` is stamped inside `build_compact_extraction_gate_records`
-/// and can therefore only be smaller than the call's own wall time — but "can
-/// only be" is an argument about a monotonic clock and a call that returns,
-/// and a `-` would turn any violation of it into ~18 quintillion microseconds
-/// published as a frame segment. The whole `lw_o*` family exists to be
-/// believed, so the one arithmetic operation in it that can underflow is
-/// pinned.
-///
-/// MUTATION RUN: `outside_build_tail_us`'s `saturating_sub` was changed to a
 /// plain `-`. Observed under `--release`, which is what the gate runs: this
-/// test failed with
-/// `left: 18446744073709548616 right: 0`. Restored.
 #[test]
 fn a_build_tail_shorter_than_its_own_frame_time_records_zero() {
     assert_eq!(
@@ -910,75 +671,22 @@ fn a_build_tail_shorter_than_its_own_frame_time_records_zero() {
     assert_eq!(outside_build_tail_us(0, 0), 0);
 
     let mut outside = OutsideBuildSpans::default();
-    outside.add_us(OutsideBuildSegment::BuildTail, outside_build_tail_us(90_000, 93_000));
-    outside.add_us(OutsideBuildSegment::BuildTail, outside_build_tail_us(94_500, 93_000));
+    outside.add_us(
+        OutsideBuildSegment::BuildTail,
+        outside_build_tail_us(90_000, 93_000),
+    );
+    outside.add_us(
+        OutsideBuildSegment::BuildTail,
+        outside_build_tail_us(94_500, 93_000),
+    );
     assert_eq!(outside.us[OutsideBuildSegment::BuildTail as usize], 1_500);
 }
 
-// ---------------------------------------------------------------------------
-// Outside-build cost bench.
-//
 //   cargo test -p collector --release outside_build_preboundary_cost \
-//       -- --ignored --nocapture
-//
-// Ignored because it is a MEASUREMENT, not an assertion: it prices the parts of
-// the pre-boundary publication path that are pure CPU and are therefore
-// reproducible without a live game. The frame shape is transcribed from the
-// third mid-capture frame of `runs/live_unlock/t19` (read-only), decoded with
-// the H4CR header contract:
-//
-//   4,586,802 bytes / 121 records
-//   51 DOMAIN_PERF (13 with a non-zero status word), 48 DOMAIN_DATA,
-//   20 DOMAIN_GAP, 1 FRAME_DEGRADED, 1 FRAME_END
-//   largest records: d47 953 KB, d24 439 KB, d26 419 KB, d43 415 KB
-//
-// The shape is the point. "Each `insert_*_before_frame_end` memmoves a ~7 MB
-// record buffer" was the standing hypothesis for where the outside-build time
-// goes, and both halves of it are testable here: the walk visits 121 headers
-// spread over 4.6 MB (one cache line each, not 4.6 MB of traffic), and the
-// splice point is the LAST record in the buffer, so the tail it moves is one
-// FRAME_END and not the frame.
-//
-// Set `BATTLE_PLAN_LANE_AE_FRAME_BLOB` to a file holding a real frame's records to
-// price those bytes instead of the synthetic ones.
-//
-// MEASURED, six interleaved runs (three synthetic, three on t19's real frame
-// bytes) on the development machine, with every buffer and argument prepared
-// outside the clock. Medians of the real-bytes runs, with the observed range:
-//
-//   completeness walk                  32.1 us/frame   (31.9 - 32.3)
-//   H4FD insert, 64 KiB spare            8.6 us/frame   (8.2 - 8.7)
-//   H4FD insert, zero spare            513.6 us/frame   (512.8 - 516.4)
-//   degraded-frame log append          133.9 us/frame   (120.1 - 140.7)
-//   bare 4.59 MB clone                 476.2 us         (472.5 - 483.1)
-//
-// The two H4FD arms differ ONLY in spare capacity, and the run states which
-// side of the growth condition each landed on rather than assuming it: with
-// 65536 bytes spare against a 69-byte insertion, splice need not grow, and it
-// costs 8.6 us. With `shrink_to_fit` having left exactly zero spare, splice
-// must grow, and it costs 513.6 us — 37.4 us above the bare clone of the same
-// bytes, 476.2 us, which already includes its own allocation. That is the
-// reallocating case measured rather than argued, and it is still 0.5 ms.
-//
-// Production takes the first arm: `records` reaches these functions from a
-// `Vec` grown by `extend_from_slice`, whose doubling leaves spare capacity.
-//
-// THE HYPOTHESIS IS REFUTED, and the refutation is what this bench exists for.
-// The frame holds 121 records, not thousands, so a walk of every header touches
-// 121 cache lines and costs 32 us. The splice moves one FRAME_END record and
-// costs 8.6 us.
-//
-// Summed, the whole offline-measurable pre-boundary path is 0.17 ms/frame
-// against a ~27 ms outside-build interval: 0.6% of it. Even three inserts all
-// forced to reallocate — the worst case that can be constructed here — would be
-// 1.5 ms, under 6%. The outside-build time is therefore NOT record-buffer
-// handling, and the `lw_o*` segments in the next capture are what will say
-// where it is.
 #[test]
 #[ignore]
 fn outside_build_preboundary_cost() {
     const HOUR: i32 = 61_000_000;
-    // The twelve largest DATA payloads of that frame, in bytes.
     const DATA_PAYLOADS: &[usize] = &[
         953_474, 439_056, 418_872, 414_556, 396_512, 383_408, 245_973, 231_936, 163_984, 158_500,
         146_437, 89_981,
@@ -993,8 +701,6 @@ fn outside_build_preboundary_cost() {
         Err(_) => {
             let mut out: Vec<u8> = Vec::new();
             let mut sequence = 0u64;
-            // 51 PERF records; 13 carry a non-zero status word at +32, which is
-            // what puts a domain on the completeness walk's offender path.
             for index in 0..51u16 {
                 let mut payload = vec![0u8; 64];
                 if index < 13 {
@@ -1011,8 +717,6 @@ fn outside_build_preboundary_cost() {
                 );
                 sequence += 1;
             }
-            // 48 DATA records: the twelve measured large ones, then 36 more
-            // sized so the frame lands on t19's 4.59 MB.
             let large: usize = DATA_PAYLOADS.iter().sum();
             let remainder = 4_586_802usize.saturating_sub(large) / 36;
             for (index, len) in DATA_PAYLOADS
@@ -1077,7 +781,6 @@ fn outside_build_preboundary_cost() {
     let outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
     const REPS: u32 = 40;
 
-    // 1. The completeness walk: one pass over every header in the frame.
     let started = Instant::now();
     let mut findings = 0usize;
     for _ in 0..REPS {
@@ -1088,9 +791,6 @@ fn outside_build_preboundary_cost() {
         started.elapsed().as_secs_f64() * 1e6 / f64::from(REPS)
     );
 
-    // 2. A bare clone of the frame: the price of one full copy of these bytes,
-    //    which is what a "~7 MB memmove" would cost. Measured first so the
-    //    setup cost inside 3 and 4 is subtractable.
     let started = Instant::now();
     for _ in 0..REPS {
         let buffer = records.clone();
@@ -1103,29 +803,11 @@ fn outside_build_preboundary_cost() {
         domain_id: 47,
         status_flags: 2,
         non_tolerated_flags: 2,
-        // The bench measures the INSERTION, so the diagnosis only has to be
-        // encodable; the reserved undeclared pair is the shortest legal one and
-        // keeps the entry's variable part at its minimum, which is the
-        // conservative direction for a splice cost.
         predicate: compact_contract::diagnostic_channel::Predicate::undeclared(),
         authority: compact_contract::diagnostic_channel::Authority::SelfDomain,
         reason: "bench".to_string(),
     }];
 
-    // 3 and 4. The H4FD insertion, with the SETUP OUTSIDE THE CLOCK.
-    //
-    // The earlier form of these arms timed `buffer = records.clone()` (or
-    // `Vec::with_capacity` + `extend_from_slice`) together with the insertion
-    // and then subtracted a standalone clone, which folded the setup's
-    // allocator behaviour into the reported figure. Here each buffer is
-    // prepared first and only the `insert_*` call is inside the timer, so what
-    // is printed is the insertion and nothing else.
-    //
-    // The two arms differ ONLY in spare capacity, and the condition is stated
-    // as the code's own: `splice` grows when `capacity - len < encoded.len()`,
-    // not merely when `capacity == len`. `shrink_to_fit` is a request the
-    // allocator may decline, so the actual spare capacity of each prepared
-    // buffer is printed rather than assumed.
     let notice_len = compact_contract::COMPACT_RECORD_HEADER_LEN
         + compact_contract::frame_degraded::FrameDegradedRecordV2 {
             degraded_hour: last_hour,
@@ -1150,10 +832,6 @@ fn outside_build_preboundary_cost() {
         }),
     ] {
         let mut buffers: Vec<Vec<u8>> = (0..REPS).map(|_| prepare(&records)).collect();
-        // The argument list is built OUTSIDE the timer too. A `domains.clone()`
-        // written at the call site is argument evaluation, and argument
-        // evaluation happens after the clock is read — so the clone was being
-        // counted as insertion cost.
         let mut arguments: Vec<Vec<compact_contract::frame_degraded::FrameDegradedDomain>> =
             (0..REPS).map(|_| domains.clone()).collect();
         let spare: Vec<usize> = buffers
@@ -1170,10 +848,6 @@ fn outside_build_preboundary_cost() {
                 .unwrap();
             total += started.elapsed();
         }
-        // Strongest claim first. `max_spare < notice_len` implies
-        // `min_spare < notice_len`, so testing the minimum first made the mixed
-        // case unreachable and reported "MUST" for a set in which only some
-        // buffers had to grow.
         let growth = if max_spare < notice_len {
             "MUST"
         } else if min_spare < notice_len {
@@ -1189,9 +863,6 @@ fn outside_build_preboundary_cost() {
         );
     }
 
-    // 5. The degraded-frame line appended to `collector_worker_error.log`: an
-    //    open/append/close per degraded frame, on the sweep thread. Every frame
-    //    in t19 was degraded, so this ran 480 times out of 480.
     let started = Instant::now();
     for index in 0..REPS {
         record_attach_worker_error(

@@ -1,12 +1,3 @@
-//! Owner-runnable, signature-gated a729 producer for the final tooltip blob.
-//!
-//! Production observes the exact `CInGameIdler` update vtable slot. After the
-//! original update returns, A26 copies the exact post-layout text, owner
-//! identity, rectangle, viewport and a QPC timestamp in one observation. The
-//! front-end and nudge idlers are deliberately excluded from hourly in-game
-//! recording. A26 does not depend on A25, split newlines, infer source rows, or
-//! retain process pointers in the carrier.
-
 use crate::{
     ExactTooltipInstanceSource, RectI32, ResolvedTooltipInstance, SelectedPresentStamp,
     TooltipTraceFrame,
@@ -27,10 +18,6 @@ use windows_sys::Win32::System::Threading::GetCurrentProcess;
 pub const TOOLTIP_CONTROLLER_RVA: u32 = 0x002A_4080;
 pub const TOOLTIP_EXTENT_ACCESSOR_RVA: u32 = 0x0228_F100;
 pub const TOOLTIP_FINAL_TEXT_SETTER_RVA: u32 = 0x0228_EE80;
-/// `CInGameIdler` vtable and the sole production update slot which directly
-/// calls `TOOLTIP_CONTROLLER_RVA`. Exact-a729 FunctionEvidence proves the two
-/// other direct callers are `CFrontEndIdler` and `CNudgeIdler`, not production
-/// in-game recorder paths.
 pub const IN_GAME_IDLER_VTABLE_RVA: u32 = 0x0295_2510;
 pub const IN_GAME_IDLER_UPDATE_SLOT_RVA: u32 = 0x0295_2530;
 pub const IN_GAME_IDLER_UPDATE_RVA: u32 = 0x00DB_F240;
@@ -43,9 +30,6 @@ const HOVER_CONTEXT_OBJECT_OFFSET: usize = 0x140;
 const VIEWPORT_WIDTH_OFFSET: usize = 0x180;
 const VIEWPORT_HEIGHT_OFFSET: usize = 0x184;
 const TEXTBOX_AUTHORED_NAME_OFFSET: usize = 0x98;
-// ToolTip CTextBox at +0x130 before the controller computes and commits the
-// final rectangle. Read that proved producer field instead of walking through
-// the renderer child/layout implementation.
 const TEXTBOX_FINAL_TEXT_OFFSET: usize = 0x130;
 const CGUI_TYPE_OFFSET: usize = 0x60;
 const CGUI_TYPE_NAME_OFFSET: usize = 0x28;
@@ -62,13 +46,8 @@ const FINAL_TEXT_SETTER_SENTINEL: [u8; 16] = [
     0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18, 0x4C,
 ];
 
-/// Exact-a729 function-evidence manifest produced by the current 20-shard
-/// broker for the controller/layout closure.
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] =
     hex32(b"a23b63ccefc021eeced9a1a918588d3e2fbba07e5d1afb4d53f83cc7c1640177");
-/// Fresh exact-a729 source-closure export covering the controller and all
-/// three callers. RTTI/data evidence narrows shipped recording to the single
-/// `CInGameIdler` slot above.
 pub const NONSUSPENDING_SOURCE_MANIFEST_SHA256: [u8; 32] =
     hex32(b"d1cd35e661d9184f99e7efa3c8a7a92c5cf5976fd15df10bc449804c5f1bdb44");
 
@@ -180,20 +159,8 @@ impl A729ResolvedTooltipHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
-            //
-            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
-            // this product. `minhook_h4/vendor/src/hook.c`'s `EnableHookLL`
-            // writes the patch, then sets `isEnabled` and reports
-            // `MH_ERROR_MEMORY_PROTECT` if the protection restore or the
-            // instruction-cache flush did not complete. So this arm can be
-            // reached with a LIVE detour and a thread inside its body, which
-            // returns through the trampoline `remove` would free.
             let _ = unsafe { inline_detour::disable(target as *mut c_void) };
             if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
-                // RETAINED. `ORIGINAL_CONTROLLER` is kept deliberately: a
-                // detour that may still dispatch must find a callable original,
-                // or the game's own function is skipped.
                 return Err(format!(
                     "A26 tooltip controller hook enable failed: {status}; detour retained: {quiescence}"
                 ));
@@ -227,10 +194,6 @@ impl A729ResolvedTooltipHookOwner {
         A729ResolvedTooltipHookSource::new(self.epoch, pov_country_or_global)
     }
 
-    /// Clear all process-local observations at an authenticated campaign
-    /// boundary while retaining the same installed detour owner. Callbacks
-    /// racing after this mutex-protected reset belong to the new campaign;
-    /// no pre-boundary queue or selected-Present frontier is retained.
     pub fn reset_campaign_observations(&self) -> Result<(), String> {
         if !self.active || !INSTALLED.load(Ordering::Acquire) {
             return Err("A26 hook owner is not active".into());
@@ -271,8 +234,6 @@ fn clear_campaign_observations(state: &mut HookState) {
 impl Drop for A729ResolvedTooltipHookOwner {
     fn drop(&mut self) {
         if self.active && self.uninstall().is_err() {
-            // A failed teardown is not declared safe. Leave the installed bit
-            // set so the collector can pin its module instead of unloading it.
             INSTALLED.store(true, Ordering::Release);
         }
     }

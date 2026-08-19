@@ -96,15 +96,6 @@ impl OpaqueRootState {
     }
 }
 
-/// A validated pending delayed-event (wave-3 CDelayedEvent chain). Owner is
-/// the containing `CCountry+0x1290` vector, scope is `CDelayedEvent+0x18`, and
-/// originator is the independently constructor-supplied
-/// `CDelayedEvent+0xC0`; `combined_event_id` is CEvent+0x0C
-/// (namespace*100000+index); `scope_random` is the +0x1C/+0x20 seed pair;
-/// `due_remaining_hours` is CDelayedEvent+0xC4 (total remaining hours =
-/// months*720 + days*24 + hours, 17/17 oracle-validated). An out-of-bounds /
-/// torn due read is badged ABSENT (`None`, absent != 0) without dropping the
-/// row's validated identity fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DelayedEventRow {
     pub owner_tag_db_id: u32,
@@ -122,9 +113,6 @@ pub struct Domain51FrameInput {
     pub flag_scopes: Vec<FlagScopeRead>,
     pub delayed_events: OpaqueRootState,
     pub scripted_gui_open_state: OpaqueRootState,
-    /// Measured pending delayed-event rows. When non-empty, `delayed_events`
-    /// MUST be `MeasuredEmpty` (the root is resolved, not fixture-blocked);
-    /// the two are mutually exclusive, mirrored by the payload gate.
     pub delayed_event_rows: Vec<DelayedEventRow>,
 }
 
@@ -142,22 +130,13 @@ pub struct Domain51CollectedFrame {
     pub validated_scope_partial_failure: bool,
 }
 
-/// A13's production input.  Domain 51 owns only the authoritative
-/// global/country/state variable and flag snapshots.  Delayed-event lifecycle
-/// is domain 64/A19 and scripted-GUI runtime materialisation is domain 84/A38;
-/// neither can enter this carrier.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A13FrameInput {
     pub elapsed_wall_ms: u64,
     pub executable_sha256: [u8; 32],
-    /// H4CR frame label and two independent reads of `CGameState+0x468`.
-    /// A13 is a current-state snapshot, so crossing an engine-hour boundary
-    /// invalidates the whole family rather than mixing two simulation epochs.
     pub game_hour_raw: i32,
     pub observed_game_hour_before: i32,
     pub observed_game_hour_after: i32,
-    /// Nonzero caller-owned observation ordinal. It is process-local custody
-    /// only and is deliberately not serialized as portable identity.
     pub source_sequence: u64,
     pub variable_scopes: Vec<VariableScopeRead>,
     pub flag_scopes: Vec<FlagScopeRead>,
@@ -201,13 +180,6 @@ pub fn registration_descriptor() -> Domain51RegistrationDescriptor {
     }
 }
 
-/// Authenticate, canonicalise, and encode the A13-only production snapshot.
-///
-/// Scope coverage is witnessed twice: the independently collected variable
-/// and flag scope rosters must be identical.  This prevents a missing country
-/// or state from becoming a measured-empty family.  Rows are then ordered by
-/// `(scope_kind, owner_id, key/token)` so hash-container traversal order never
-/// leaks into portable replay identity.
 pub fn collect_a13_domain51_frame(
     mut input: A13FrameInput,
 ) -> Result<Domain51CollectedFrame, A13CarrierError> {
@@ -283,13 +255,21 @@ trait A13Scope {
 }
 
 impl A13Scope for VariableScopeRead {
-    fn scope_kind(&self) -> u32 { self.scope_kind }
-    fn owner_id(&self) -> u32 { self.owner_id }
+    fn scope_kind(&self) -> u32 {
+        self.scope_kind
+    }
+    fn owner_id(&self) -> u32 {
+        self.owner_id
+    }
 }
 
 impl A13Scope for FlagScopeRead {
-    fn scope_kind(&self) -> u32 { self.scope_kind }
-    fn owner_id(&self) -> u32 { self.owner_id }
+    fn scope_kind(&self) -> u32 {
+        self.scope_kind
+    }
+    fn owner_id(&self) -> u32 {
+        self.owner_id
+    }
 }
 
 fn validate_scope_identity(scope_kind: u32, owner_id: u32) -> Result<(), A13CarrierError> {
@@ -312,11 +292,17 @@ fn canonicalise_variable_scopes(scopes: &mut [VariableScopeRead]) -> Result<(), 
     for scope in scopes.iter_mut() {
         validate_scope_identity(scope.scope_kind, scope.owner_id)?;
         validate_status_shape(scope.status, scope.entries.is_empty())?;
-        scope.entries.sort_by(|left, right| left.key.cmp(&right.key));
+        scope
+            .entries
+            .sort_by(|left, right| left.key.cmp(&right.key));
         for entry in &scope.entries {
             validate_key(&entry.key)?;
         }
-        if scope.entries.windows(2).any(|rows| rows[0].key == rows[1].key) {
+        if scope
+            .entries
+            .windows(2)
+            .any(|rows| rows[0].key == rows[1].key)
+        {
             return Err(A13CarrierError::DuplicateIdentity);
         }
     }
@@ -346,7 +332,11 @@ fn canonicalise_flag_scopes(scopes: &mut [FlagScopeRead]) -> Result<(), A13Carri
                 .cmp(&right.token_id)
                 .then_with(|| left.key.cmp(&right.key))
         });
-        if scope.entries.windows(2).any(|rows| rows[0].token_id == rows[1].token_id) {
+        if scope
+            .entries
+            .windows(2)
+            .any(|rows| rows[0].token_id == rows[1].token_id)
+        {
             return Err(A13CarrierError::DuplicateIdentity);
         }
     }
@@ -439,10 +429,6 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
                 owner_id: scope.owner_id,
                 value_kind,
                 key: entry.key,
-                // The v2 named-flag wire identity is its authenticated key;
-                // numeric token identity is carried only by token-only rows.
-                // The A13 carrier still requires the source token above so a
-                // fabricated name-only entry can never enter this branch.
                 token_id: if value_kind == compact::VALUE_FLAG_TOKEN_ONLY {
                     entry.token_id
                 } else {
@@ -456,10 +442,6 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
         }
     }
 
-    // Measured delayed-event rows and the fixture-blocked opaque badge are
-    // mutually exclusive (mirrored by the payload gate). When the CDelayedEvent
-    // discovery resolved rows, emit them; the badge/UNRESOLVED-status path is
-    // skipped by passing MeasuredEmpty to append_opaque_root below.
     let delayed_events_state = if input.delayed_event_rows.is_empty() {
         input.delayed_events
     } else {
@@ -475,8 +457,6 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
                 value_raw: Some(row.scope_random as i64),
                 date_hour_raw: Some(row.scope_tag_db_id as i32),
                 deleted: false,
-                // Validated due-remaining-hours (CDelayedEvent+0xC4); badged
-                // absent on a torn/out-of-bounds read.
                 delayed_due_hours: row.due_remaining_hours,
             });
         }
@@ -769,8 +749,6 @@ mod tests {
             elapsed_wall_ms: 9,
             variable_scopes: vec![],
             flag_scopes: vec![],
-            // When rows are supplied, the fixture-blocked opaque badge state is
-            // ignored: the collector emits measured rows and MeasuredEmpty.
             delayed_events: OpaqueRootState::UnresolvedFixtureBlocked,
             scripted_gui_open_state: OpaqueRootState::NotRequested,
             delayed_event_rows: vec![
@@ -788,14 +766,12 @@ mod tests {
                     scope_tag_db_id: 68,
                     originator_tag_db_id: 2,
                     scope_random: 0x1,
-                    // Absent due (torn read badged absent, != 0).
                     due_remaining_hours: None,
                 },
             ],
         });
 
         assert_eq!(frame.row_count, 2);
-        // The measured rows resolve the root: the UNRESOLVED bit must be clear.
         assert_eq!(
             frame.status_flags & compact::STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,
             0
@@ -821,8 +797,6 @@ mod tests {
                 .copied(),
             Some(0)
         );
-        // Exactly one of the two rows carried a present due-remaining-hours
-        // value (the other was badged absent), round-tripped through encode.
         assert_eq!(
             summary
                 .data_units_total
@@ -830,18 +804,11 @@ mod tests {
                 .copied(),
             Some(1)
         );
-        // Delayed-event rows do not count as token-only flags.
         assert_eq!(frame.status_flags & compact::STATUS_FLAG_NAMES_PARTIAL, 0);
     }
 
     #[test]
     fn positive_empty_rooted_delayed_events_clear_the_unresolved_badge() {
-        // W12C: the rooted per-country vector walk can positively witness "no
-        // pending delayed events" — every guarded country validated and every
-        // vector had count 0. That resolves as `MeasuredEmpty` with zero rows.
-        // Unlike the old heap-sweep resolved-empty path (which was forced to the
-        // fixture-blocked badge, making bit 12 chronic), this must CLEAR the
-        // DELAYED_EVENTS_ROOT_UNRESOLVED bit and emit NO opaque badge row.
         let frame = collect_domain51_frame(Domain51FrameInput {
             elapsed_wall_ms: 4,
             variable_scopes: vec![country_vars(1)],
@@ -865,8 +832,6 @@ mod tests {
             "{:?}",
             summary.parse_errors
         );
-        // No measured delayed-event rows and, crucially, no opaque badge row
-        // (absent-or-zero: the decoder may or may not register a zero key).
         assert_eq!(
             summary
                 .data_units_total
@@ -887,9 +852,6 @@ mod tests {
 
     #[test]
     fn repeated_event_id_with_distinct_seed_is_not_a_duplicate() {
-        // A country can have the same event delayed more than once; the two
-        // rows share (owner, event_id) but differ in scope.random seed. The
-        // payload gate must NOT flag them as duplicate identity.
         let frame = collect_domain51_frame(Domain51FrameInput {
             elapsed_wall_ms: 1,
             variable_scopes: vec![],
@@ -941,7 +903,6 @@ mod tests {
             scripted_gui_open_state: OpaqueRootState::NotRequested,
             delayed_event_rows: vec![DelayedEventRow {
                 owner_tag_db_id: 2,
-                // namespace 0 -> combined id < 100_000 is invalid.
                 combined_event_id: 42,
                 scope_tag_db_id: 2,
                 originator_tag_db_id: 2,

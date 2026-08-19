@@ -26,8 +26,8 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(REPO_ROOT / "extractor" / "memory_reader"))
 sys.path.insert(0, str(REPO_ROOT / "extractor" / "memory_reader" / "live_layers"))
 
-import tag_table  # noqa: E402
-import winmem  # noqa: E402
+import tag_table
+import winmem
 
 EXPECTED_SHA256 = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 SOURCE_IDENTITY_SCHEMA = "occupation_resistance_compliance_live_probe_source_v1"
@@ -108,29 +108,7 @@ DIVISION_TEMPLATE_OFF_ID = 0x0C
 
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000
-# The 1 000-state / 10 000-province floors that used to sit here are gone. They
-# asserted that a real game has a vanilla-sized map, which is `history/states`
-# and `map/definition.csv` CONTENT, so a total conversion with a smaller map
-# failed this certifying probe outright. Every row this walk counts has already
-# passed the CProvince vtable and `id == array index` check, and every state
-# root the CState vtable plus a valid, conflict-free SID, so the floors added no
-# discrimination over the authentication above them. The Rust lane's identical
-# floors were removed in the same wave (lane GK's residual R3, closed by lane
-# HJ) -- this file mirrors `collector_module.rs` and must not drift from it.
 MAX_PROVINCE_COUNT = 65536
-# A COUNT and an ID are two questions, and `MAX_TAG_DB_ID = 1024` used to answer
-# both here. 1024 is 2.3x the vanilla country count of 439, so this probe -- the
-# lane's certifying live probe, source-bound into `replay_verify` -- reported a
-# modded game as having no countries at all, and discarded its high-id
-# occupation states as invalid.
-#
-# The count budget matches the tree's country-table family (65_536 slots, 8
-# bytes a pointer = a 512 KB walk). The identity ceiling is the
-# `_CountryLinkTags` index space's structural width -- NOT the country
-# database's, which is a different vector with its own live size; see
-# `collector_module.rs`'s `MAX_TAG_DB_ID` for why the distinction is
-# load-bearing here. Both are `i32::MAX - 1` for their own reasons, and the
-# probe must not merge them back.
 MAX_COUNTRY_TABLE_COUNT = 65536
 MAX_TAG_DB_ID = (1 << 31) - 2
 MAX_ABS_FIXED_RAW = 100_000_000
@@ -213,8 +191,6 @@ def resolve_state_roots(p):
     province_count = p.u32(game_state + CGAMESTATE_CPROVINCE_COUNT)
     if not is_heap_ptr(province_array):
         raise RuntimeError("CGameState CProvince array pointer is invalid")
-    # `< 2` stays refused, structurally: slot 0 is the vacant null province and
-    # the walk starts at 1, so counts of 0 and 1 both walk zero rows.
     if province_count < 2 or province_count > MAX_PROVINCE_COUNT:
         raise RuntimeError("CProvince count is outside lane bounds: %d" % province_count)
 
@@ -258,11 +234,6 @@ def resolve_state_roots(p):
         except OSError:
             invalid_state_links += 1
             continue
-        # The state id space is i32-wide (lane IA, claim_39c989ce13504504353c);
-        # 65535 was a guess and this probe is the lane's CERTIFYING path, so a
-        # ceiling here rejects exactly the high-state maps the collector now
-        # accepts. Lane GV's round-8 lesson: a sweep scoped to one language
-        # should say so, and this one did not have to.
         if not (1 <= state_id <= 2_147_483_646):
             invalid_state_links += 1
             continue
@@ -271,10 +242,6 @@ def resolve_state_roots(p):
             raise RuntimeError("state_id %d resolved to conflicting CState roots" % state_id)
         state_roots[state_id] = state_ptr
 
-    # Coherence, not a content floor: an array that DECLARES province_count
-    # slots and authenticates none of them is incoherent, and returning an
-    # empty result for it would certify "this game has no provinces". Mirrors
-    # collector_module.rs, which must not drift from this file.
     if province_rows == 0:
         raise RuntimeError(
             "CProvince array declares %d slots and authenticated none" % province_count

@@ -1,8 +1,3 @@
-//! The compiled test gates must still describe the environment this run sees.
-//!
-//! Without this, a stale build-script probe could leave a gated test `ignored`
-//! on a machine where its precondition is now available, or leave it runnable
-//! after the resource disappeared.
 
 include!("../test_gates.rs");
 

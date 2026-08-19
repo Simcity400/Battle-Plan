@@ -1,126 +1,19 @@
-//! Lane HO — the marker-edge measurement (task #193 stage 1).
-//!
-//! # What this is, and what it deliberately is not
-//!
-//! A DIAGNOSTIC-ONLY passive watcher. It samples two words of `CGameState` —
-//! the tick-busy marker byte `+0x4C0` and the hour scalar `+0x468` — and
-//! records their transitions with a monotonic timestamp. It installs no hook,
-//! patches no byte, changes no bracket, and takes part in no decision. With
-//! `BATTLE_PLAN_HO_MARKER_WATCH` unset it does not start: no thread, no read, no
-//! allocation.
-//!
-//! It exists to answer ONE question: **how long is the marker busy, and how
-//! much quiet time does its falling edge open into?** Every
-//! blocker that would let a marker-gated frame be WRONGLY ACCEPTED (N1, N2, N5,
-//! N6, N7, N8, and N9) is still open, so nothing this module measures may be
-//! read as evidence that a frame is clean or that the interval is quiescent.
-//! Mechanical feasibility only.
-//!
-//! # Why the two arms
-//!
-//! A tight sampling loop is the only way to resolve an edge to better than a
-//! scheduler quantum, and a tight sampling loop is also the most obvious way to
-//! PERTURB the thing being measured: it burns a core and it pulls
-//! `CGameState`'s cache lines to the watcher's core, so every engine store to
 //! them may pay coherence latency to reclaim ownership.
-//!
-//! So the window is cut into 200 ms epochs on a 5-epoch cycle: four SPIN
-//! epochs, then one LOW epoch. Both arms read BOTH fields; what separates them
-//! is RATE. SPIN samples as fast as the loop runs. LOW samples at roughly
-//! 1 kHz — four orders of magnitude less memory traffic — and is therefore a
-//! near-zero-load control taken IN THE SAME PROCESS, in the same window,
-//! against the same campaign. Comparing the engine's hour rate across the two
-//! epoch kinds is what says whether the spin moved the number it reported.
-//! Both arms therefore run inside the same process and campaign.
-//!
-//! The LOW arm reads the marker rather than skipping it, and that is a
-//! correctness requirement, not a convenience: an arm that carried the last
-//! SPIN value forward would make every excursion falling wholly inside a LOW
-//! epoch INVISIBLE, and short excursions fit inside one more often than long
-//! ones — a length-biased hole in exactly the distribution this lane exists to
-//! publish. A thousand one-byte reads a second cannot be the perturbation the
-//! control is looking for.
-//!
-//! # The uncertainty interval is recorded, not assumed — but it is a MODEL
-//!
-//! Every transition carries BOTH its own timestamp and the previous sample's,
-//! so no consumer has to guess the sampling resolution, and per-epoch
-//! min/max/sum sample gaps are published for the same reason. Because both arms
-//! observe every edge, a consumer never has to DROP a transition: it grades
-//! each one by the width of its own interval — tens of nanoseconds from the
-//! SPIN arm, about a millisecond from the LOW arm.
-//!
-//! **`(prev_t_ns, t_ns]` is NOT a rigorous bracket and must not be read as
-//! one.** The loop performs both loads and only THEN reads the clock, so the
-//! previous sample's load happened at or before `prev_t_ns`, and a transition
-//! can fall between that load and `prev_t_ns` — before that interval starts.
-//! Two consecutive samples can also share a timestamp, giving an empty
-//! interval, which no true bracket can be.
-//!
-//! `lo_t_ns` is what makes a rigorous bracket available, and it costs NOTHING
-//! per sample. Write `T_k` for the timestamp of sample `k` and `L_k` for when
-//! its loads happened. A transition seen at sample `k` occurred in
-//! `(L_{k-1}, L_k]`. The loop is sequential, so `T_{k-2} <= L_{k-1}`, and the
-//! clock is read after the loads, so `L_k <= T_k`. Therefore the transition
-//! occurred in the CLOSED interval **`[T_{k-2}, T_k]`** — and `T_{k-2}` is just
-//! the timestamp from two iterations ago, which this loop already has in a
-//! register. It is emitted as `lo_t_ns`.
-//!
-//! Closed, not half-open: the clock's resolution lets two samples share a
-//! timestamp, so `lo_t_ns == t_ns` occurs and a half-open spelling would make
-//! those intervals empty.
-//!
-//! So each transition carries three stamps: `lo_t_ns` (`T_{k-2}`, the sound
-//! lower bound), `prev_t_ns` (`T_{k-1}`, the tighter POINT ESTIMATE bound), and
-//! `t_ns` (`T_k`, sound upper bound). Doubling the clock reads to stamp either
-//! side of each load pair would give a tighter bracket still, and is
-//! deliberately not done: the clock read is the dominant cost of this loop, so
-//! paying it twice would change the very sampling rate the measurement
-//! characterises.
-//!
-//! # Raw loads, and the one residual that buys
-//!
-//! The sampling loop uses `read_volatile` on addresses authenticated once
-//! through the ordinary guarded primitives (`read_u64_stable` on the singleton
-//! slot, `read_scalar` on both fields). The guarded path is a region-gate plus
-//! an SEH/`NtReadVirtualMemory` copy per read; at this sample rate it would
-//! dominate the measurement it is supposed to take. The cost of the raw read is
-//! that a `CGameState` torn down mid-window (a campaign unload or reload) would
-//! leave the loop reading freed memory. The loop therefore re-reads the
-//! SINGLETON SLOT — which lives in the module image and is always mapped —
-//! every 4096 samples and aborts the whole run if it no longer names the
-//! object that was authenticated at start. A reload inside one 4096-sample
-//! window is the named residual; the measurement window is a single
-//! mid-campaign minute with no reload, and the abort is reported in the
-//! manifest either way.
 
 use super::*;
 
-/// Absolute path the manifest is written to. Unset or empty ⇒ the watcher
-/// never starts.
 pub(super) const HO_MARKER_WATCH_ENV: &str = "BATTLE_PLAN_HO_MARKER_WATCH";
-/// Window length in whole seconds. Default 60, clamped to 1..=600.
 pub(super) const HO_MARKER_WATCH_SECONDS_ENV: &str = "BATTLE_PLAN_HO_MARKER_WATCH_SECONDS";
 
 const DEFAULT_WINDOW_SECONDS: u64 = 60;
 const EPOCH_MS: u64 = 200;
-/// Four SPIN epochs then one LOW epoch: an 80 % measurement duty cycle with a
-/// control arm that is never smaller than a fifth of the window.
 const CYCLE_EPOCHS: u64 = 5;
 const LOW_EPOCH_PHASE: u64 = 4;
 const LOW_SAMPLE_SLEEP_US: u64 = 500;
-/// 400 k transitions. At the observed shape (a handful per game hour) a 60 s
-/// max-speed window produces low thousands; the cap exists so a pathological
-/// flapping field cannot grow this unboundedly inside the game process.
 const MAX_EVENTS: usize = 400_000;
 const MAX_EPOCHS: usize = 8_192;
 const SINGLETON_RECHECK_SAMPLES: u64 = 4_096;
 
-/// Which arm an epoch belongs to.
-///
-/// The cycle is fixed in code rather than configured: a run whose duty cycle
-/// could be dialled to 100 % would publish a distribution with no control
-/// beside it and nothing in the manifest would say so.
 fn epoch_is_spin(index: u64) -> bool {
     index % CYCLE_EPOCHS != LOW_EPOCH_PHASE
 }
@@ -135,8 +28,6 @@ fn window_seconds_from(raw: Option<&str>) -> u64 {
 struct Transition {
     seq: u64,
     epoch: u64,
-    /// `T_{k-2}`: the RIGOROUS lower bound on when this transition happened.
-    /// See the module header.
     lo_t_ns: u64,
     prev_t_ns: u64,
     t_ns: u64,
@@ -190,7 +81,6 @@ struct Config {
     window_seconds: u64,
 }
 
-/// Stops and joins the watcher thread when the capture scope ends.
 pub(super) struct Guard {
     shutdown: Arc<AtomicBool>,
     handle: Option<thread::JoinHandle<()>>,
@@ -205,22 +95,14 @@ impl Drop for Guard {
     }
 }
 
-/// Start the watcher, or return `None` and leave the process exactly as it was.
-///
-/// `gs_ptr` is the caller's already-authenticated `CGameState`. It is
-/// re-authenticated here against the module's own singleton slot rather than
-/// trusted, because this module then reads that object raw for a minute.
 pub(super) fn start(module_base: usize, gs_ptr: usize) -> Option<Guard> {
     let raw_path = std::env::var(HO_MARKER_WATCH_ENV).ok()?;
     let path = raw_path.trim().to_string();
     if path.is_empty() {
         return None;
     }
-    let window_seconds = window_seconds_from(
-        std::env::var(HO_MARKER_WATCH_SECONDS_ENV)
-            .ok()
-            .as_deref(),
-    );
+    let window_seconds =
+        window_seconds_from(std::env::var(HO_MARKER_WATCH_SECONDS_ENV).ok().as_deref());
     let singleton_slot = module_base
         .checked_add(compact_contract::build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA)?;
     let observed = read_u64_stable(singleton_slot)? as usize;
@@ -229,10 +111,6 @@ pub(super) fn start(module_base: usize, gs_ptr: usize) -> Option<Guard> {
     }
     let date_addr = gs_ptr.checked_add(GS_CURRENT_DATE_OFFSET)?;
     let marker_addr = gs_ptr.checked_add(GS_TICK_BUSY_MARKER_OFFSET)?;
-    // One guarded read of each field before the loop is allowed to touch them
-    // raw. `read_scalar`, not `read_u8_stable`: a double-read-stable probe of a
-    // field that legitimately flips would refuse to start the watcher for the
-    // exact reason the watcher exists.
     read_scalar::<4>(date_addr)?;
     read_scalar::<1>(marker_addr)?;
     let cfg = Config {
@@ -269,22 +147,9 @@ fn run(cfg: Config, shutdown: Arc<AtomicBool>) {
     let date_ptr = cfg.date_addr as *const i32;
     let slot_ptr = cfg.singleton_slot as *const u64;
 
-    // SAFETY (this read and every `read_volatile` below): `cfg.gs_ptr` was
-    // re-authenticated in `start` against the module's own singleton slot and
-    // both field addresses passed a guarded `read_scalar` probe, so they name
-    // committed, readable, naturally aligned words of the live `CGameState`.
-    // The singleton slot is re-read every `SINGLETON_RECHECK_SAMPLES` samples
-    // and the run aborts if the object is replaced; see the module header for
-    // the residual that leaves.
     let mut prev_marker = unsafe { core::ptr::read_volatile(marker_ptr) };
     let mut prev_date = unsafe { core::ptr::read_volatile(date_ptr) };
     let mut prev_t_ns = duration_nanos_u64(origin.elapsed());
-    // `T_{k-2}`. Seeded to the ORIGIN, not to `prev_t_ns`: the seed loads above
-    // happened BEFORE `prev_t_ns` was stamped, so a transition caught by the
-    // very first loop sample can precede `prev_t_ns`, and seeding there would
-    // publish a lower bound the transition is allowed to violate. Zero cannot
-    // be violated — nothing in this window precedes the origin — so the first
-    // sample's bracket is merely wide rather than wrong.
     let mut lo_t_ns = 0u64;
     let seed_marker = prev_marker;
     let seed_date = prev_date;
@@ -304,12 +169,6 @@ fn run(cfg: Config, shutdown: Arc<AtomicBool>) {
         let mut stat = EpochStat::new(epoch_index, spin, duration_nanos_u64(epoch_start));
         let mut since_recheck: u64 = 0;
         loop {
-            // BOTH arms read BOTH fields. An arm that carried the last SPIN
-            // value forward would erase every excursion contained entirely
-            // within a LOW epoch, and short excursions are contained more
-            // often than long ones — a length-biased hole in the published
-            // distribution. What separates the arms is the RATE at which these
-            // two loads are issued, which is the thing the control is for.
             let marker = unsafe { core::ptr::read_volatile(marker_ptr) };
             let date = unsafe { core::ptr::read_volatile(date_ptr) };
             let now = origin.elapsed();
@@ -503,27 +362,17 @@ fn render_manifest(
 mod tests {
     use super::*;
 
-    /// kills: widening the duty cycle so every epoch spins (or moving the LOW
-    /// phase off the end of the cycle). Either change publishes a marker
-    /// distribution with no near-zero-load control arm beside it, which is the
-    /// one thing that makes the numbers defensible against "the watcher moved
-    /// what it measured".
     #[test]
     fn every_fifth_epoch_is_the_low_load_control_arm() {
         let arms: Vec<bool> = (0..12).map(epoch_is_spin).collect();
         assert_eq!(
             arms,
-            vec![
-                true, true, true, true, false, true, true, true, true, false, true, true
-            ]
+            vec![true, true, true, true, false, true, true, true, true, false, true, true]
         );
         let spin = arms.iter().filter(|is_spin| **is_spin).count();
         assert_eq!(spin, 10, "80 % duty cycle");
     }
 
-    /// kills: dropping the range filter or the default, either of which lets a
-    /// stray environment value turn a bounded 60 s diagnostic window into an
-    /// unbounded one inside the game process.
     #[test]
     fn window_seconds_is_bounded_and_defaults_to_sixty() {
         assert_eq!(window_seconds_from(None), 60);
@@ -535,23 +384,14 @@ mod tests {
         assert_eq!(window_seconds_from(Some("600")), 600);
     }
 
-    /// kills: publishing the marker offset as anything other than the validated
-    /// `CGameState+0x4C0`, or the date offset drifting off `+0x468`. The whole
-    /// measurement is about the distance between those two fields' events.
     #[test]
     fn the_two_watched_fields_are_the_validated_addresses() {
         assert_eq!(GS_TICK_BUSY_MARKER_OFFSET, 0x4C0);
         assert_eq!(GS_CURRENT_DATE_OFFSET, 0x468);
     }
 
-    /// kills: emitting `lo_t_ns` as anything but the timestamp from TWO samples
-    /// ago — in particular collapsing it onto `prev_t_ns`, which is the exact
-    /// mistake that makes the published interval a point estimate rather than a
-    /// rigorous bracket. A consumer reading `(lo_t_ns, t_ns]` as sound would
-    /// then be wrong, and nothing in the manifest would say so.
     #[test]
     fn the_rigorous_lower_bound_lags_the_point_estimate_by_one_sample() {
-        // The loop's stamp rotation, in the order `run` performs it.
         let mut lo = 10u64;
         let mut prev = 20u64;
         let mut seen = Vec::new();
@@ -562,7 +402,10 @@ mod tests {
         }
         assert_eq!(seen, vec![(10, 20, 30), (20, 30, 40), (30, 40, 50)]);
         for (lo_t, prev_t, t) in seen {
-            assert!(lo_t < prev_t, "the rigorous bound must precede the estimate");
+            assert!(
+                lo_t < prev_t,
+                "the rigorous bound must precede the estimate"
+            );
             assert!(prev_t < t);
         }
     }

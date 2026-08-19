@@ -1,8 +1,3 @@
-//! Neutral launcher-equivalent effective VFS over already selected content layers.
-//!
-//! Local roots exist only while recording or playing. They are never serialized;
-//! portable identity is the exact [`UsedContentKey`] returned with every read.
-
 use crate::hud_role::validate_sha256;
 use crate::{normalize_game_relative_path, ContentLayerKind, LayerStorageKind, UsedContentKey};
 use sha2::{Digest, Sha256};
@@ -35,9 +30,6 @@ pub struct EffectiveVfsResolvedFile {
     pub bytes: Vec<u8>,
 }
 
-/// What one [`EffectiveVfs::walk_content_keys`] pass covered. Reported so a
-/// recording can state the size and cost of its own content census instead of
-/// leaving a reader to infer it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EffectiveVfsWalkStats {
     pub files: u64,
@@ -53,16 +45,11 @@ struct MountedLayer {
     local_source: PathBuf,
     source_container_sha256: Option<String>,
     replace_paths: BTreeSet<String>,
-    /// Mount-time index for archive layers: the archive is opened and its
-    /// central directory scanned exactly once; every entry name is normalized
-    /// (and case-insensitive duplicates refused) up front so per-file resolve
-    /// and listing never re-parse the archive.
     zip_index: Option<ZipLayerIndex>,
 }
 
 #[derive(Clone, Debug)]
 struct ZipLayerIndex {
-    /// Case-folded entry identity -> case-preserved spelling and archive index.
     entries: BTreeMap<String, (String, usize)>,
     archive: Arc<Mutex<zip::ZipArchive<fs::File>>>,
 }
@@ -83,9 +70,6 @@ impl EffectiveVfs {
         let mut layers = Vec::new();
         let mut prior_ordinal = None;
         for mount in mounts {
-            // Strictly increasing ordinals already make every
-            // (ordinal, kind, id) tuple unique; no separate identity set is
-            // needed.
             if mount.layer_id.trim().is_empty()
                 || mount.layer_id.chars().any(char::is_control)
                 || prior_ordinal.is_some_and(|prior| prior >= mount.ordinal)
@@ -140,13 +124,6 @@ impl EffectiveVfs {
             let mut replace_path_collisions = BTreeSet::new();
             for path in mount.replace_paths {
                 let normalized = normalize_game_relative_path(&path)?;
-                // REPETITION is decided on the Windows collision key (the
-                // previous `to_ascii_lowercase` was a no-op on an already
-                // ASCII-lowercased canonical form, so `gfx/entities` and
-                // `gfx/entities.` -- one directory on the host -- both mounted).
-                // The set kept for LOOKUP stays canonical: `resolve` matches a
-                // declared prefix against a logical parent, and a matching rule
-                // must not inherit the collision key's deliberate over-folding.
                 if normalized != path.replace('\\', "/")
                     || !replace_path_collisions.insert(crate::windows_collision_key(&normalized)?)
                     || !replace_paths.insert(normalized)
@@ -254,19 +231,6 @@ impl EffectiveVfs {
         Ok(resolved)
     }
 
-    /// Every logical path this VFS serves, winner-resolved, lowest to highest
-    /// priority — the identity half of [`list_all`] without its bytes.
-    ///
-    /// `list_all` materializes every payload into one `Vec`, which is fine for
-    /// a directory of catalogs and impossible for a whole install: the corpus
-    /// this walks on a stock the game with its DLC is 58,224 files and 10.01 GB.
-    /// This resolves one file at a time, hands its [`UsedContentKey`] to the
-    /// sink, and drops the bytes before reading the next, so peak memory is one
-    /// file rather than the install.
-    ///
-    /// The sink decides what to keep and may refuse (returning `Err`), which
-    /// stops the walk — that is how a caller enforces its own row/byte ceiling
-    /// without this function inventing one.
     pub fn walk_content_keys(
         &self,
         mut sink: impl FnMut(&str, UsedContentKey) -> Result<(), String>,
@@ -371,7 +335,8 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
                 .zip_index
                 .as_ref()
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
-            let Some((_, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase()) else {
+            let Some((_, entry_index)) = index.entries.get(&logical_path.to_ascii_lowercase())
+            else {
                 return Ok(None);
             };
             let mut archive = index
@@ -390,56 +355,6 @@ fn read_layer_file(layer: &MountedLayer, logical_path: &str) -> Result<Option<Ve
     }
 }
 
-/// THE point lookup inside one content layer, shared by both of this
-/// repository's layered-VFS implementations.
-///
-/// It pushes each requested component onto the layer root **literally** and
-/// asks the host filesystem about it. Nothing here folds case, strips anything,
-/// or compares one name against another: the volume decides what the name
-/// means, exactly as the engine's does.
-///
-/// WHY THAT IS THE RULE, from `hoi4.exe 1.19.2.0.a729`
-/// (`870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad`) — full
-/// working in `extractor/native/runs/la_two_vfs/ENGINE_LOOKUP_RULE_A729.txt`:
-///
-/// * `PHYSFS_stat` (`0x1424e0b00`) walks the search path and takes the FIRST
-///   hit. It has no ambiguity concept, so neither has this.
-/// * `sanitizePlatformIndependentPath` (`0x1424e3ff0`) rejects `:`, `\`, `.`
-///   and `..` components, collapses `//`, and copies every other byte
-///   **verbatim**. It folds nothing.
-/// * `verifyPath` (`0x1424e4250`) stats each `/`-separated ancestor prefix and
-///   refuses with `PHYSFS_ERR_SYMLINK_FORBIDDEN` if **any** of them is a
-///   symlink, without ever asking where the link points — which is why the
-///   refusal below is per component and unconditional rather than an
-///   "escapes the root" test.
-/// * `__PHYSFS_platformStat` (`0x1424ff8e0`) converts UTF-8 to UTF-16 and calls
-///   `GetFileAttributesExW` on the LITERAL path.
-///
-/// AND WHY NO TABLE COULD BE THE RULE, independently of that read: NTFS folds
-/// through the `$UpCase` file written when the volume was FORMATTED, and that
-/// table has changed across Windows versions — a mapping can be gained OR lost
-/// (see [`crate::windows_collision_key`]'s doc comment, which measured it). A
-/// fold compiled into this binary is therefore not even an upper bound on the
-/// playback volume's. Asking the volume is the only answer that is right on
-/// every volume, and it is what the engine does.
-///
-/// One deliberate departure, in the fail-closed direction, stated at its true
-/// width: this refuses EVERY reparse point -- symlink, junction, mount point,
-/// Cloud Files placeholder, any tag at all. The engine is narrower. It reads the
-/// reparse TAG (`__PHYSFS_platformStat` calls `FindFirstFileW` and compares
-/// against `IO_REPARSE_TAG_SYMLINK`) and treats only that one as a link, so
-/// content behind a junction or a placeholder is opened by the engine and
-/// refused here.
-///
-/// That is a knowing departure, not an oversight: refusing content is a named
-/// failure the operator can see, while following a reparse point out of the
-/// mounted layer would silently seal or serve content from somewhere else. An
-/// earlier version of this comment described only the junction case, which
-/// understated what the code does.
-///
-/// Returns `Ok(None)` when any component is absent — an absent path is not an
-/// error — and the final component's own [`LayerPathFacts`] otherwise, so the caller
-/// decides whether it wanted a file or a directory.
 pub fn resolve_literal_layer_path(
     root: &Path,
     logical_path: &str,
@@ -464,11 +379,6 @@ pub fn resolve_literal_layer_path(
     Ok(last_facts.map(|facts| (path, facts)))
 }
 
-/// What one existing path IS, in the only three terms any caller here needs.
-///
-/// Deliberately not `fs::Metadata`: producing one means going back through
-/// `std::fs`, and [`stat_ordinary`] exists precisely because `std::fs` is the
-/// wrong instrument for this question on Windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LayerPathFacts {
     pub is_dir: bool,
@@ -476,37 +386,10 @@ pub struct LayerPathFacts {
     is_reparse_point: bool,
 }
 
-/// Stat one path the way the ENGINE stats it, and in particular NOT the way
-/// `std::fs` does.
-///
-/// `std::fs` is unusable for this question on Windows, for a reason that is not
-/// obvious and cost this lane a review round: `maybe_verbatim` silently rewrites
-/// a path into the `\\?\` namespace once it approaches the legacy limit -- at
-/// Rust's conservative threshold, which is BELOW `MAX_PATH`, not at it. So a
-/// path in that window is handed to the kernel with Win32 parsing suppressed
-/// even though it is short enough for the engine to open normally, and it would
-/// answer differently from the engine on exactly the spellings this primitive
-/// exists to get right (trailing dots, `//`, DOS devices). Checking the length
-/// before calling `std::fs` does NOT fix that: the promotion happens below the
-/// limit being checked.
-///
-/// Calling `GetFileAttributesExW` directly is what removes the question. It is
-/// the same call `__PHYSFS_platformStat` (`0x1424ff8e0`) makes, on the same kind
-/// of ordinary path, so what Win32 does to the spelling here is what it does to
-/// the engine's.
-///
-/// Past `MAX_PATH` this reports ABSENT rather than erroring, because that is
-/// what the path IS to a process that is not long-path aware -- and the pinned
-/// executable is not (empty application manifest; `longPathAware` occurs zero
-/// times in the image; working cited on [`engine_namespace_root`]).
 #[cfg(windows)]
 fn stat_ordinary(path: &Path) -> Result<Option<LayerPathFacts>, String> {
     const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    /// `FILE_ATTRIBUTE_DEVICE | FILE_ATTRIBUTE_OFFLINE`. The engine tests
-    /// exactly this mask and classifies a match as its OTHER kind rather than
-    /// REGULAR (`__PHYSFS_platformStat`, `0x1424ff8e0`:
-    /// `if ((attributes & 0x1040) == 0) type = REGULAR; else type = OTHER;`).
     const FILE_ATTRIBUTE_NOT_REGULAR: u32 = 0x1040;
     const GET_FILE_EX_INFO_STANDARD: i32 = 0;
     const ERROR_FILE_NOT_FOUND: u32 = 2;
@@ -537,15 +420,9 @@ fn stat_ordinary(path: &Path) -> Result<Option<LayerPathFacts>, String> {
     }
 
     let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-    // NUL is checked BEFORE the length, so an over-long path that also contains
-    // one is still refused rather than quietly reported absent -- implementation
-    // A rejects NUL before it ever gets here, and the two must not part company
-    // over which failure they saw first.
     if wide.contains(&0) {
         return Err(format!("content path {} contains a NUL", path.display()));
     }
-    // The NUL is part of what must fit: a non-verbatim Win32 path is at most
-    // MAX_PATH units INCLUDING it, so the string itself is at most 259.
     if wide.len() >= ENGINE_MAX_PATH {
         return Ok(None);
     }
@@ -562,13 +439,6 @@ fn stat_ordinary(path: &Path) -> Result<Option<LayerPathFacts>, String> {
     if ok == 0 {
         let error = unsafe { GetLastError() };
         return match error {
-            // "It is not there" in all the shapes Win32 says it. A malformed or
-            // over-long name is ALSO absent rather than an error: it names no
-            // file, which is exactly what the engine would conclude.
-            // ERROR_ACCESS_DENIED, ERROR_NOT_READY and ERROR_INVALID_DRIVE are
-            // deliberately NOT here: they mean inaccessible or unavailable, not
-            // proven absent, and a mounted layer whose drive has gone away must
-            // fail loudly rather than resolve to nothing.
             ERROR_FILE_NOT_FOUND
             | ERROR_PATH_NOT_FOUND
             | ERROR_INVALID_NAME
@@ -586,19 +456,11 @@ fn stat_ordinary(path: &Path) -> Result<Option<LayerPathFacts>, String> {
     let is_dir = attributes & FILE_ATTRIBUTE_DIRECTORY != 0;
     Ok(Some(LayerPathFacts {
         is_dir,
-        // NOT simply `!is_dir`. `GetFileAttributesExW` has no positive
-        // "regular file" bit, so a device or an offline placeholder would
-        // otherwise be handed to callers as an ordinary file to read -- and both
-        // callers treat `is_file` as permission to read payload bytes. The
-        // engine does not: it classifies `attributes & 0x1040` as OTHER rather
-        // than REGULAR, and this mirrors that test exactly.
         is_file: !is_dir && attributes & FILE_ATTRIBUTE_NOT_REGULAR == 0,
         is_reparse_point: attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
     }))
 }
 
-/// Non-Windows hosts have no verbatim namespace and no `MAX_PATH`, so the
-/// portable call is the right one there.
 #[cfg(not(windows))]
 fn stat_ordinary(path: &Path) -> Result<Option<LayerPathFacts>, String> {
     match fs::symlink_metadata(path) {
@@ -612,50 +474,15 @@ fn stat_ordinary(path: &Path) -> Result<Option<LayerPathFacts>, String> {
     }
 }
 
-/// `MAX_PATH`. The full path, NUL included, must fit in this many UTF-16 units
-/// for a non-verbatim Win32 call, so the string itself may be at most 259.
 #[cfg(windows)]
 const ENGINE_MAX_PATH: usize = 260;
 
-/// The layer root as the ENGINE would name it: an ordinary DOS path, never the
-/// `\\?\` verbatim namespace.
-///
-/// Both callers hand this function a root they obtained differently -- the
-/// recorder canonicalizes its mount roots (`fs::canonicalize`, which on Windows
-/// returns a `\\?\` path), replay does not -- and the prefix is not cosmetic:
-/// a verbatim path reaches the kernel with Win32 parsing SUPPRESSED. Measured on
-/// the same fixture, same file: `common/ideas.txt.` resolves under the raw root
-/// and is absent under the canonicalized one. Two callers, one function, two
-/// answers. Stripping the prefix here is what makes the primitive a rule instead
-/// of a reflection of how its caller happened to spell the root.
-///
-/// The engine's spelling is the ordinary one: `__PHYSFS_platformStat`
-/// (`0x1424ff8e0`) transcodes the UTF-8 path it is handed straight into a buffer
-/// of exactly `strlen * 2 + 2` bytes and calls `GetFileAttributesExW` on it, so
-/// it adds no prefix of its own.
-///
-/// KNOWN LIMIT OF THAT READING, because it is load-bearing here: it proves the
-/// stat function adds no prefix, NOT that its caller passed none. The directory
-/// archiver's stat entry (`+0x68` in the archiver vtable), which joins the mount
-/// root to the sanitized path, is still unread.
-/// Works in UTF-16 code units, not `to_string_lossy`, because a lossy
-/// conversion would silently REWRITE a root containing unpaired surrogates --
-/// turning "the root I was given" into "a root that looks like it" without
-/// saying so.
-///
-/// Only the two verbatim forms that have an ordinary equivalent are converted.
-/// `\\?\Volume{GUID}\...` has none: dropping its prefix would leave
-/// `Volume{GUID}\...`, a RELATIVE path that resolves against the current
-/// directory -- a silently different location. Anything else verbatim is
-/// therefore refused rather than guessed at.
 #[cfg(windows)]
 fn engine_namespace_root(root: &Path) -> Result<PathBuf, String> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
 
     let wide: Vec<u16> = root.as_os_str().encode_wide().collect();
-    // ASCII-case-insensitive over UTF-16 units: only `\\?\UNC\`'s letters are
-    // ever compared this way, and Windows accepts either case there.
     let lower = |unit: u16| match unit {
         0x41..=0x5A => unit + 0x20,
         other => other,
@@ -674,16 +501,14 @@ fn engine_namespace_root(root: &Path) -> Result<PathBuf, String> {
         PathBuf::from(OsString::from_wide(&units))
     };
 
-    // A verbatim root may exist BECAUSE it needs verbatim semantics: `\\?\C:\a.`
-    // names a directory literally called `a.`, which the ordinary spelling
-    // `C:\a.` cannot address -- Win32 strips the dot and would reach `a`. If both
-    // exist, converting would silently select the wrong content, which is worse
-    // than refusing. So a verbatim root is only converted when every component
-    // survives ordinary parsing unchanged.
     let needs_verbatim = |from: usize| {
         let mut component = Vec::new();
         let mut offending = false;
-        for unit in wide[from..].iter().copied().chain(std::iter::once(u16::from(b'\\'))) {
+        for unit in wide[from..]
+            .iter()
+            .copied()
+            .chain(std::iter::once(u16::from(b'\\')))
+        {
             if unit == u16::from(b'\\') {
                 if matches!(component.last().copied(), Some(c) if c == u16::from(b'.') || c == u16::from(b' '))
                 {
@@ -710,8 +535,6 @@ fn engine_namespace_root(root: &Path) -> Result<PathBuf, String> {
     }
     if starts_with(r"\\?\") {
         let rest = &wide[r"\\?\".len()..];
-        // A drive-letter root is the one verbatim form with an exact ordinary
-        // equivalent: `\\?\C:\x` names the same object as `C:\x`.
         let is_drive = rest.len() >= 3
             && char::from_u32(u32::from(rest[0])).is_some_and(|c| c.is_ascii_alphabetic())
             && rest[1] == u16::from(b':')
@@ -742,10 +565,6 @@ fn engine_namespace_root(root: &Path) -> Result<PathBuf, String> {
     Ok(root.to_path_buf())
 }
 
-
-/// Open and scan an archive layer exactly once at mount, refusing invalid or
-/// case-insensitively duplicate entry names up front (the same refusals the
-/// per-read/per-list paths used to raise lazily).
 fn index_zip_layer(local_source: &Path, expected_sha256: &str) -> Result<ZipLayerIndex, String> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -754,8 +573,6 @@ fn index_zip_layer(local_source: &Path, expected_sha256: &str) -> Result<ZipLaye
         use std::os::windows::fs::OpenOptionsExt;
 
         // Retain one exact archive object for the mount lifetime and refuse
-        // concurrent replacement or writer opens on the production platform.
-        // FILE_SHARE_READ is deliberately allowed for independent readers.
         const FILE_SHARE_READ: u32 = 0x0000_0001;
         options.share_mode(FILE_SHARE_READ);
     }
@@ -833,8 +650,6 @@ fn list_layer_files(
                 .zip_index
                 .as_ref()
                 .ok_or("effective VFS archive layer is missing its mount-time index")?;
-            // Entry names were normalized and de-duplicated at mount; listing
-            // is a pure walk over the prebuilt index with no archive I/O.
             for (path, _) in index.entries.values() {
                 if path_is_under(path, prefix) && extension_matches(path, extension) {
                     paths.insert(path.to_ascii_lowercase(), path.clone());
@@ -897,9 +712,6 @@ fn normalize_archive_entry(name: &str) -> Result<String, String> {
     if slash.starts_with('/') || slash.contains('\0') {
         return Err("effective VFS archive contains an absolute entry path".into());
     }
-    // PHYSFS treats duplicate separators and `.` components as the same
-    // virtual name. Canonicalize those spellings before collision selection,
-    // while parent traversal and drive/URI grammars remain hard failures.
     let mut parts = Vec::new();
     for part in slash.split('/') {
         if part.is_empty() || part == "." {
@@ -1036,17 +848,8 @@ mod tests {
         assert_eq!(resolved[0], resolved[1]);
     }
 
-    /// A mounted layer may not declare one directory twice, and "twice" is a
-    /// Windows filesystem question: `gfx/replace` and `gfx/replace.` are one
-    /// directory on the playback host (measured: `gfx./u.asset` opened
-    /// `gfx/u.asset`). The old check lowercased an already-lowercased canonical
-    /// form, which was a no-op, so both mounted and the second declaration was
-    /// silently free.
     #[test]
     fn a_layer_declaring_one_directory_under_two_windows_spellings_is_refused() {
-        // NOT "gfx/replace " -- normalize_game_relative_path trims the whole
-        // string, so that spelling is refused by the already-canonical check
-        // and would exercise the wrong branch.
         for alias in ["gfx/replace.", "gfx/replace..", "gfx /replace"] {
             let root = temp("alias-replace");
             write(&root.join("game"), "gfx/fx/shared.shader", b"base");
@@ -1061,7 +864,6 @@ mod tests {
             );
             portable_test_fs_retry::remove_dir_all(root).unwrap();
         }
-        // ... while two genuinely different directories still mount.
         let root = temp("distinct-replace");
         write(&root.join("game"), "gfx/fx/shared.shader", b"base");
         write(&root.join("mod"), "gfx/fx/shared.shader", b"override");
@@ -1229,19 +1031,12 @@ mod tests {
 mod engine_namespace_tests {
     use super::*;
 
-    /// `sanitize_engine_path` had no direct test, and both callers pre-validate,
-    /// so removing its call from the primitive broke nothing. That made it
-    /// decorative. This exercises it directly.
-    ///
-    /// kills: deleting the `.`/`..` arm, the `:`/`\` arm, or the empty-collapse
-    /// each fail a row below.
     #[test]
     fn engine_path_grammar_matches_the_sanitizer() {
         assert_eq!(
             crate::sanitize_engine_path("gfx/unit.dds").unwrap(),
             "gfx/unit.dds"
         );
-        // Empty components COLLAPSE, they do not fail.
         assert_eq!(
             crate::sanitize_engine_path("gfx//unit.dds").unwrap(),
             "gfx/unit.dds"
@@ -1250,34 +1045,24 @@ mod engine_namespace_tests {
             crate::sanitize_engine_path("gfx/unit.dds/").unwrap(),
             "gfx/unit.dds"
         );
-        // `.` and `..` FAIL, they are not dropped.
         for bad in ["gfx/./unit.dds", "gfx/../unit.dds", ".", ".."] {
             assert!(
                 crate::sanitize_engine_path(bad).is_err(),
                 "{bad:?} must be refused by the engine grammar"
             );
         }
-        // `:` and `\` fail anywhere.
         for bad in [r"gfx\unit.dds", "c:/gfx/unit.dds", "gfx/a:b"] {
             assert!(
                 crate::sanitize_engine_path(bad).is_err(),
                 "{bad:?} must be refused by the engine grammar"
             );
         }
-        // A path that names nothing.
         assert!(crate::sanitize_engine_path("//").is_err());
     }
 
-    /// A verbatim root with no ordinary equivalent must REFUSE, not silently
-    /// become a relative path.
-    ///
-    /// kills: restoring the blanket verbatim strip turns the volume-GUID root
-    /// into `Volume{...}\game`, a path relative to the current directory, and
-    /// this test's `is_err` fails.
     #[cfg(windows)]
     #[test]
     fn a_verbatim_root_without_an_ordinary_equivalent_is_refused() {
-        // Drive-letter and UNC verbatim roots convert.
         assert_eq!(
             engine_namespace_root(Path::new(r"\\?\C:\game")).unwrap(),
             PathBuf::from(r"C:\game")
@@ -1286,20 +1071,15 @@ mod engine_namespace_tests {
             engine_namespace_root(Path::new(r"\\?\UNC\host\share\game")).unwrap(),
             PathBuf::from(r"\\host\share\game")
         );
-        // An ordinary root is untouched.
         assert_eq!(
             engine_namespace_root(Path::new(r"C:\game")).unwrap(),
             PathBuf::from(r"C:\game")
         );
-        // A volume-GUID root has no ordinary spelling, so it refuses.
         let guid = Path::new(r"\\?\Volume{00000000-0000-0000-0000-000000000000}\game");
         assert!(
             engine_namespace_root(guid).is_err(),
             "a volume-GUID root must refuse rather than become a relative path"
         );
-        // A verbatim root that EXISTS because it needs verbatim semantics must
-        // refuse too: `C:\mods\foo.` does not name the same object as
-        // `\\?\C:\mods\foo.`, so converting could select different content.
         assert!(
             engine_namespace_root(Path::new(r"\\?\C:\mods\foo.")).is_err(),
             "a verbatim root with a dot-terminated component must refuse"
@@ -1310,16 +1090,6 @@ mod engine_namespace_tests {
         );
     }
 
-    /// The primitive really does apply the engine grammar, rather than relying
-    /// on its callers to have done so.
-    ///
-    /// Both A and B pre-validate, so every path the differential can reach is
-    /// already clean by the time it arrives -- which meant deleting
-    /// `sanitize_engine_path`'s call from `resolve_literal_layer_path` broke no
-    /// test at all. Calling the primitive DIRECTLY is what pins it.
-    ///
-    /// kills: removing the `crate::sanitize_engine_path(logical_path)?` line
-    /// makes the `.`-component row resolve the fixture file instead of refusing.
     #[test]
     fn the_primitive_applies_the_engine_grammar_itself() {
         let root = std::env::temp_dir().join(format!(
@@ -1333,8 +1103,6 @@ mod engine_namespace_tests {
         fs::create_dir_all(root.join("common")).expect("create fixture");
         fs::write(root.join("common").join("ideas.txt"), b"ideas").expect("write fixture");
 
-        // The premise: the clean spelling resolves, so a refusal below is about
-        // the grammar and not about a missing fixture.
         assert!(
             resolve_literal_layer_path(&root, "common/ideas.txt")
                 .expect("clean spelling")
@@ -1348,7 +1116,6 @@ mod engine_namespace_tests {
                 "the primitive must apply the engine grammar to {bad:?} itself"
             );
         }
-        // An empty component COLLAPSES rather than refusing, and still resolves.
         assert!(
             resolve_literal_layer_path(&root, "common//ideas.txt")
                 .expect("collapsing spelling")

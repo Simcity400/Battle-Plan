@@ -1,51 +1,10 @@
-//! Releasing capture-spool storage that the checkpoint cache already owns.
-//!
-//! # The invariant
-//!
-//! At every instant, every captured hour is either durably in the checkpoint
-//! cache or still present in the spool. A crash of the fold or of the host
-//! never loses a recording.
-//!
 //! Nothing here releases a byte on the strength of an in-memory belief, and
-//! nothing takes a caller's word for how much is durable. A trim re-reads
-//! `checkpoints.h4cp` and `hour_index.h4ix` from disk and parses them with the
-//! same `snapshot::ReplayCacheReader` production replay uses, which binds the
-//! index to the decoded stream's length and SHA-256. The hour count and the
-//! decoded watermark are then read OUT of that parsed index, so a caller can
-//! name a spool but never name a watermark. The ordering is:
-//!
-//! 1. verify the artifacts (re-read, parsed, bound to this decoded stream,
-//!    directory synced) and derive the watermark from them,
-//! 2. pick the greatest storage frame boundary whose decoded offset is still
-//!    inside that derived range,
-//! 3. write the trim journal and fsync it — the journal is what a later reader
-//!    consults, so it becomes true *before* the bytes stop being there,
 //! 4. release the storage prefix.
-//!
-//! Every crash point is safe by construction. Before (3) the spool is whole.
-//! Between (3) and (4), or part-way through (4), the journal already names the
 //! live offset, so a reader starts at the first live frame and the released
-//! prefix is never interpreted; the worst outcome is storage that was
 //! journalled as released but is still allocated, which costs disk and never
-//! costs data. The forbidden state — bytes gone while the journal still claims
-//! the spool is whole — is unreachable because (4) never runs before (3) is
-//! durable.
-//!
 //! # Why a released prefix and not per-hour segment files
-//!
-//! The spool has one path, one length and one decoded-offset space, and about
-//! forty call sites in the recorder host depend on all three (the certified
-//! hour index literally stores decoded offsets into it, and the container
-//! packer streams it as a single entry). Splitting it into per-hour files
-//! would rewrite every one of those and change the sealed artifacts' notion of
-//! where an hour lives. Releasing a storage *prefix* instead keeps the path,
-//! the logical length and every offset exactly as they are, while still
 //! handing the clusters back to the filesystem: on NTFS the released range is
-//! deallocated, which `reclaimed_stored_bytes` measures as the drop in the
 //! file's size on disk rather than assuming. The unit of release is the
-//! storage frame, because a frame is the smallest span that can be dropped
-//! while leaving the remainder independently decodable — see
-//! `compact_stream::StreamWriter::create_with_frames`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,79 +16,28 @@ use snapshot::sha256::Sha256;
 use crate::duplex_session::rollover_fs::publish_immutable_descriptor;
 
 /// Sidecar naming the live region of a spool whose prefix was released.
-///
-/// The suffix is owned by `compact_stream`, because that crate's zero-offset
 /// entry points fail closed on its mere presence: a released prefix reads as
-/// zeros, and zeros are not the zstd magic, so a storage-blind reader would
-/// otherwise classify a compressed spool as raw and ingest the hole as
-/// content.
 pub const TRIM_JOURNAL_SUFFIX: &str = compact_stream::RELEASED_PREFIX_SIDECAR_SUFFIX;
 pub const TRIM_JOURNAL_SCHEMA: &str = "hoi4-spool-trim-journal-v1";
 
-/// Which artifacts to check, and which decoded stream they must belong to.
-///
-/// Note what this does NOT contain: how many hours the cache holds, or how far
-/// into the stream they reach. Those are DERIVED from the artifacts themselves
 /// by `verify_durable_receipt`, so a caller cannot authorise a release by
-/// asserting a watermark. All a caller supplies is the identity of the decoded
-/// stream - the capture's own rolling length and SHA-256 - and the artifacts
-/// must prove they were built from exactly that stream.
 #[derive(Debug, Clone)]
 pub struct DurableHourReceipt {
     pub checkpoint_cache_path: PathBuf,
     pub hour_index_path: PathBuf,
-    /// Decoded length of the spool, as the capture counted it.
     pub decoded_len: u64,
-    /// Decoded SHA-256 of the spool, as the capture rolled it.
     pub decoded_sha256: String,
-    /// The certifier's own published-coverage receipt, written beside the
-    /// artifacts (`snapshot::PUBLISHED_COVERAGE_FILE`).
     pub published_coverage_path: PathBuf,
-    /// The same coverage, as the fold reported it IN THIS PROCESS.
-    ///
-    /// Both are required, and they must agree. Two reviews rejected each of
-    /// them alone, for opposite reasons, and the pair is what answers both:
-    ///
-    /// * the in-memory value alone is a caller's claim -- round 2's objection.
-    ///   `min(index_ceiling, claim)` does not bound it either, because the
-    ///   ceiling IS the decoded length on exactly the stream shape that needs
-    ///   bounding (a terminal `FRAME_REFUSED`), so the minimum degenerates to
-    ///   the claim;
-    /// * the on-disk receipt alone is forgeable -- round 6's objection. Every
-    ///   anchor it carries (source identity, both artifact digests, hour count)
-    ///   is readable from the artifacts themselves, so a hybrid document with
-    ///   correct anchors and an invented in-range offset passes every check.
-    ///
-    /// Requiring both closes the live capture path, which is the only path that
     /// releases anything: the in-memory value comes from the cursor in the same
     /// process that is about to do the release, so writing files into the
-    /// artifact directory no longer moves the watermark.
-    ///
-    /// RESIDUAL, stated rather than implied, and stated no larger than it is.
-    /// Write access to the artifact directory alone is NOT enough: the trim
-    /// recomputes both artifact digests from the files it just read and
-    /// requires the sidecar to carry those same digests, so replacing the
-    /// cache and index leaves the old sidecar failing its binding, and
-    /// replacing all three still leaves the offset having to equal what the
-    /// fold reported in this process. What remains uncovered is an actor who
-    /// controls this process's memory AND the directory together; nothing here
-    /// defends against that, and neither does anything else in the recorder --
-    /// it is the same boundary the capture-pipe authentication already
-    /// declares out of threat model. Closing it would mean authenticating the
-    /// artifact directory as a signed unit, which is a different design.
     pub fold_covered_decoded_end: u64,
 }
 
-/// What the artifacts on disk actually prove.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedDurableHours {
     pub hour_count: u64,
-    /// Greatest `h4cr_end_offset` in the parsed index. The ceiling, not the
-    /// watermark: see `durable_decoded_end_offset`.
     pub indexed_decoded_end_offset: u64,
     /// Decoded H4CR offset the release is actually allowed to reach: the
-    /// MINIMUM of the index's ceiling and the fold's own published coverage.
-    /// Storage holding decoded bytes at or after this offset is never
     /// released.
     pub durable_decoded_end_offset: u64,
     pub checkpoint_cache_len: u64,
@@ -138,7 +46,6 @@ pub struct VerifiedDurableHours {
     pub hour_index_sha256: String,
 }
 
-/// Storage layout of a spool: where each independently-decodable frame starts.
 #[derive(Debug, Clone)]
 pub struct SpoolFrames {
     pub decoded_len: u64,
@@ -157,10 +64,6 @@ impl SpoolFrames {
         }
     }
 
-    /// The greatest frame start whose whole span is already durable.
-    ///
-    /// A boundary is only releasable if the decoded bytes BEFORE it are all
-    /// covered by the receipt, so the comparison is against the boundary's own
     /// decoded offset. The first boundary is `{0, 0}`, which releases nothing.
     pub fn releasable_boundary(
         &self,
@@ -175,19 +78,15 @@ impl SpoolFrames {
     }
 }
 
-/// What the spool looks like after a trim, and what it cost the filesystem.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrimJournal {
     pub schema: String,
     pub stream_file: String,
-    /// Storage encoding, so a reader opens the live region the same way the
     /// writer stored it instead of sniffing a released prefix's magic.
     pub compression: String,
     pub decoded_len: u64,
     pub stored_len: u64,
-    /// First storage byte still live. A reader MUST start here.
     pub live_stored_offset: u64,
-    /// Decoded offset that `live_stored_offset` corresponds to.
     pub live_decoded_offset: u64,
     /// Storage bytes the trim released.
     pub released_stored_bytes: u64,
@@ -198,15 +97,10 @@ pub struct TrimJournal {
 }
 
 impl TrimJournal {
-    /// Where the surviving storage starts, and how to decode it.
-    ///
-    /// Fails rather than guessing. Defaulting an unrecognised codec to raw
-    /// would hand a caller the still-COMPRESSED suffix as if it were H4CR --
     /// the same class of silent misread the released-prefix guard exists to
-    /// prevent, arrived at from the other direction.
     pub fn live_region(&self) -> Result<(u64, compact_stream::StreamCompression), String> {
-        let compression = compact_stream::StreamCompression::parse(&self.compression)
-            .ok_or_else(|| {
+        let compression =
+            compact_stream::StreamCompression::parse(&self.compression).ok_or_else(|| {
                 format!(
                     "trim journal for {} records an unknown storage encoding {:?}; the surviving \
                      region cannot be decoded",
@@ -220,30 +114,19 @@ impl TrimJournal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrimOutcome {
     /// Nothing was durable enough to release, or no frame boundary fell inside
-    /// the certified range. The spool is untouched.
     NothingReleasable { reason: String },
     Released {
         journal: TrimJournal,
-        /// Storage bytes the filesystem actually gave back, measured after the
         /// release from its own allocated-range map. Zero means the volume did
-        /// not deallocate; that is reported, never rounded up to success.
         reclaimed_stored_bytes: u64,
     },
 }
 
-/// Where a trim publishes its journal for this spelling of the spool path.
 pub fn journal_path(stream_path: &Path) -> PathBuf {
     compact_stream::released_prefix_sidecar(stream_path)
 }
 
-/// Read the trim journal, if this spool has one.
 pub fn read_journal(stream_path: &Path) -> Result<Option<TrimJournal>, String> {
-    // Every CANONICALISABLE spelling of this storage file, not just the one
-    // the caller used: an alias must not be able to look past the journal and
-    // then follow the alias to the trimmed bytes. Same rule, same helper, as
-    // the codec's own guard -- including the same documented residual, which is
-    // that an NTFS hard link is a second directory entry rather than a
-    // canonicalisable alias and is therefore NOT covered. See
     // `compact_stream::released_prefix_sidecars`.
     for path in compact_stream::released_prefix_sidecars(stream_path) {
         let bytes = match fs::read(&path) {
@@ -260,8 +143,6 @@ pub fn read_journal(stream_path: &Path) -> Result<Option<TrimJournal>, String> {
                 journal.schema
             ));
         }
-        // Validate here too, so a corrupt codec is a load error rather than a
-        // surprise at whatever later point someone asks for the live region.
         journal
             .live_region()
             .map_err(|error| format!("{}: {error}", path.display()))?;
@@ -270,12 +151,6 @@ pub fn read_journal(stream_path: &Path) -> Result<Option<TrimJournal>, String> {
     Ok(None)
 }
 
-/// Fail-closed guard for every consumer that reads the spool from offset zero.
-///
-/// A trimmed spool's leading bytes are gone; reading them back would silently
-/// produce zeros where stream content used to be. Any code path that has not
-/// been taught to start at the journal's live offset must call this first and
-/// refuse with the reason instead of decoding the hole.
 pub fn require_whole_spool(stream_path: &Path, consumer: &str) -> Result<(), String> {
     match read_journal(stream_path)? {
         None => Ok(()),
@@ -292,22 +167,8 @@ pub fn require_whole_spool(stream_path: &Path, consumer: &str) -> Result<(), Str
     }
 }
 
-/// Establish, from the artifacts on disk, which hours really are durable.
-///
 /// This is the whole authority for a release, so it never takes a caller's
-/// word for anything:
-///
-/// * both artifacts are read back from disk and parsed by the SAME reader
-///   production replay uses, `snapshot::ReplayCacheReader`, which binds the
-///   index to the decoded source length and SHA-256 and re-hashes the cache
-///   against the index. Fabricated bytes, or a real artifact pair from a
-///   different capture, cannot pass that binding;
-/// * the hour count and the decoded watermark are read OUT of the parsed
-///   index, never supplied. A caller therefore cannot name a watermark;
-/// * the artifacts' directory entries are synced, so a crash cannot reach a
-///   state where the cache file is unreachable while the spool prefix has
 ///   already been released. (On Windows that helper is a documented no-op:
-///   the product path is write-through.)
 pub fn verify_durable_receipt(
     receipt: &DurableHourReceipt,
 ) -> Result<VerifiedDurableHours, String> {
@@ -360,17 +221,8 @@ pub fn verify_durable_receipt(
             receipt.decoded_len, receipt.decoded_sha256
         )
     })?;
-    // A cache that cannot serve every hour it indexes is not durable, and this
-    // is the one place in the recorder where that distinction destroys data:
     // what follows releases the SPOOL bytes those hours came from, on the
-    // strength of the cache holding them. The reader now admits a cache with
-    // damaged records and confines the hours they reach (owner ruling
-    // 2026-08-12, task #191) — which is right for a replay consumer and wrong
-    // here, so the producer's stricter posture is stated explicitly rather than
-    // inherited from a door that no longer refuses.
-    //
     // kills: deleting this releases the source bytes of every hour a damaged
-    // record confines, leaving the recording with no copy of them at all.
     if let Some(confined) = reader.confined_hours().first() {
         return Err(format!(
             "the durable checkpoint cache cannot serve {} of the hours it indexes, so the spool \
@@ -398,13 +250,7 @@ pub fn verify_durable_receipt(
             receipt.decoded_len
         ));
     }
-    // The index's last hour is stretched to the decoded length so a seek can
     // replay it, which makes it a CEILING on what may be released and not a
-    // statement that the cache holds those bytes. A stream ending in a
-    // terminal FRAME_REFUSED is the case that separates the two: the refused
-    // hour published no world state, so its bytes live only in the spool. The
-    // certifier's own coverage receipt is what closes that gap, and it is read
-    // from disk and re-bound here rather than accepted from the caller.
     let checkpoint_cache_sha256 = Sha256::hex(&cache_bytes);
     let hour_index_sha256 = Sha256::hex(&index_bytes);
     let published_decoded_end_offset = read_published_coverage(
@@ -432,16 +278,6 @@ pub fn verify_durable_receipt(
     })
 }
 
-/// Read the certifier's published-coverage receipt and prove it belongs here.
-///
-/// What this establishes, precisely: the document names THIS capture (the
-/// decoded identity comes from the capture's own rolling hash, not from any
-/// file in this directory), and THESE artifacts (both digests were computed a
-/// few lines ago from the files just read), and it agrees with what the fold
-/// reported in this process. What it does NOT establish is authorship -- the
-/// document is not signed, and every anchor in it can be copied from the
-/// artifacts. That is why `fold_covered_decoded_end` is required alongside it;
-/// see its documentation for the exact bound and the residual.
 fn read_published_coverage(
     path: &Path,
     receipt: &DurableHourReceipt,
@@ -478,7 +314,11 @@ fn read_published_coverage(
         ));
     }
     for (label, actual, expected) in [
-        ("source_sha256", string("source_sha256")?, receipt.decoded_sha256.clone()),
+        (
+            "source_sha256",
+            string("source_sha256")?,
+            receipt.decoded_sha256.clone(),
+        ),
         (
             "checkpoint_cache_sha256",
             string("checkpoint_cache_sha256")?,
@@ -517,10 +357,6 @@ fn read_published_coverage(
             receipt.decoded_len
         ));
     }
-    // The durable document and the in-process fold must say the same thing. A
-    // document edited to raise the offset while keeping every anchor correct
-    // dies here, because the anchors are all copyable from the artifacts and
-    // this number is not.
     if published != receipt.fold_covered_decoded_end {
         return Err(format!(
             "published coverage {} records {published} decoded bytes, the fold reported {} in \
@@ -533,10 +369,7 @@ fn read_published_coverage(
 }
 
 /// Release the spool storage that `receipt` proves is already durable.
-///
-/// Returns without touching the spool when nothing is releasable. Never
 /// releases storage holding decoded bytes at or past
-/// `receipt.durable_decoded_end_offset`.
 pub fn trim_spool_prefix(
     stream_path: &Path,
     frames: &SpoolFrames,
@@ -546,9 +379,7 @@ pub fn trim_spool_prefix(
 }
 
 /// The trim, with the storage release injected.
-///
 /// The seam exists so a test can fail the release and observe what a crash at
-/// that instant leaves behind: the journal must already be durable. Production
 /// always passes `release_storage_prefix`.
 pub fn trim_spool_prefix_with_release(
     stream_path: &Path,
@@ -621,12 +452,8 @@ pub fn trim_spool_prefix_with_release(
         hour_index_sha256: verified.hour_index_sha256.clone(),
     };
 
-    // (3) The journal becomes true before the bytes stop being there. It is
-    // published immutably: the live offset a reader depends on is never
-    // rewritten, so no later step can move it out from under a reader.
     write_journal_durably(stream_path, &journal)?;
 
-    // (4) Now, and only now, hand the clusters back.
     let reclaimed_stored_bytes = release(stream_path, boundary.stored_offset).map_err(|error| {
         format!(
             "release spool prefix [0,{}) of {}: {error}",
@@ -654,8 +481,6 @@ fn write_journal_durably(stream_path: &Path, journal: &TrimJournal) -> Result<()
     publish_immutable_descriptor(root, name, &bytes)
 }
 
-/// Deallocate `[0, stored_offset)` of `path` and report the bytes the
-/// filesystem actually gave back.
 #[cfg(windows)]
 fn release_storage_prefix(path: &Path, stored_offset: u64) -> Result<u64, String> {
     use std::os::windows::io::AsRawHandle;
@@ -690,9 +515,6 @@ fn release_storage_prefix(path: &Path, stored_offset: u64) -> Result<u64, String
         fn GetLastError() -> u32;
     }
 
-    /// Bytes the volume actually has allocated for this file. For a sparse
-    /// file this drops as ranges are deallocated, which is what makes the
-    /// reclamation a measurement rather than an assumption.
     fn size_on_disk(path: &Path) -> Result<u64, String> {
         use std::os::windows::ffi::OsStrExt;
         let wide: Vec<u16> = path
@@ -705,7 +527,9 @@ fn release_storage_prefix(path: &Path, stored_offset: u64) -> Result<u64, String
         if low == INVALID_FILE_SIZE {
             let error = unsafe { GetLastError() };
             if error != 0 {
-                return Err(format!("GetCompressedFileSizeW failed with OS error {error}"));
+                return Err(format!(
+                    "GetCompressedFileSizeW failed with OS error {error}"
+                ));
             }
         }
         Ok((u64::from(high) << 32) | u64::from(low))
@@ -717,17 +541,11 @@ fn release_storage_prefix(path: &Path, stored_offset: u64) -> Result<u64, String
         .open(path)
         .map_err(|error| format!("open for release: {error}"))?;
     let handle = file.as_raw_handle() as *mut std::ffi::c_void;
-    // Flush first. Dirty cached pages left over from the capture writer would
-    // otherwise be written back AFTER the punch and silently re-allocate the
     // range that was just released, which is how this reclaimed nothing on the
-    // first measurement.
     file.sync_all()
         .map_err(|error| format!("flush spool before release: {error}"))?;
 
     let mut returned = 0u32;
-    // A non-sparse file cannot deallocate a range; SET_SPARSE is what makes the
-    // punch reclaim instead of merely zero. A volume that refuses it is
-    // reported, never silently treated as success.
     let sparse = unsafe {
         DeviceIoControl(
             handle,
@@ -767,9 +585,10 @@ fn release_storage_prefix(path: &Path, stored_offset: u64) -> Result<u64, String
         )
     };
     if punched == 0 {
-        return Err(format!("FSCTL_SET_ZERO_DATA failed with OS error {}", unsafe {
-            GetLastError()
-        }));
+        return Err(format!(
+            "FSCTL_SET_ZERO_DATA failed with OS error {}",
+            unsafe { GetLastError() }
+        ));
     }
     file.sync_all()
         .map_err(|error| format!("sync released spool: {error}"))?;
@@ -783,22 +602,18 @@ fn release_storage_prefix(path: &Path, stored_offset: u64) -> Result<u64, String
              size_on_disk_after={allocated_after} released={stored_offset}"
         );
     }
-    // Deliberately conservative. `allocated_before` is read from a file that is
-    // not yet sparse, so it reports the logical length rather than the
-    // cluster-rounded allocation, and NTFS only deallocates whole 64 KiB sparse
-    // allocation units. Both effects make this UNDER-report reclamation; it
-    // never claims more than the volume gave back.
     Ok(allocated_before.saturating_sub(allocated_after))
 }
 
 #[cfg(not(windows))]
 fn release_storage_prefix(_path: &Path, _stored_offset: u64) -> Result<u64, String> {
-    Err("spool trimming needs a filesystem that can deallocate a byte range; \
+    Err(
+        "spool trimming needs a filesystem that can deallocate a byte range; \
          this platform has no implementation"
-        .to_string())
+            .to_string(),
+    )
 }
 
-/// Convenience accessor used by the manifest writer.
 pub fn trim_summary_json(outcome: &TrimOutcome) -> serde_json::Value {
     match outcome {
         TrimOutcome::NothingReleasable { reason } => json!({

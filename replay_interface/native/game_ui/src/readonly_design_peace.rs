@@ -1,7 +1,3 @@
-//! XUI08 fail-closed production seam for inert designer and peace-conference views.
-//!
-//! Static GUI definitions supply chrome only. Every row, order, selection,
-//! displayed number and lifecycle result below must be producer-resolved.
 
 use crate::design_catalog::{
     AdmittedDesignCatalog, DesignKind,
@@ -245,9 +241,6 @@ pub struct PeaceParticipantRow {
 pub struct PeaceAllocationRow {
     pub source_record_id: String,
     pub ordinal: u32,
-    /// Snapshot-scoped row identity: conference reference, refresh epoch, and
-    /// source ordinal. Exact-a729 does not publish an intrinsic allocation id,
-    /// so this value must never be used as a cross-refresh lifecycle key.
     pub allocation_id: String,
     pub turn: u32,
     pub action_kind: String,
@@ -298,12 +291,7 @@ pub struct PeaceContestedPopup {
 pub struct PeaceResultRow {
     pub source_record_id: String,
     pub ordinal: u32,
-    /// Snapshot-scoped terminal-summary row identity. The engine exposes an
-    /// aggregate formatter, not a registered result object.
     pub result_id: String,
-    /// Nonempty only when the producer observed an exact engine join in the
-    /// same snapshot. Empty preserves the engine's unjoined terminal summary;
-    /// consumers must not infer a join from payload equality or row order.
     pub allocation_id: String,
     pub action_kind: String,
     pub actor_country_tag: String,
@@ -314,12 +302,6 @@ pub struct PeaceResultRow {
     pub outcome: DisplayAtom,
 }
 
-/// Pointer-free serialization of Clausewitz's registered object reference.
-///
-/// On exact-a729 the first word selects the reference table and the second
-/// word is the registered object id. The all-zero pair is the invalid
-/// sentinel. This is an engine identity; it must never be replaced with the
-/// resolved process pointer returned by the reference table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PeaceConferenceReference {
     pub object_type: u32,
@@ -359,16 +341,6 @@ pub struct ActivePeaceConferenceSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PeaceConferenceSnapshot {
-    /// The game state held no peace conference this hour — the ordinary hour of
-    /// a campaign, and the one the shipped recorder measures globally and
-    /// passively.
-    ///
-    /// Kept apart from [`PeaceConferenceSnapshot::Inactive`], which means a
-    /// peace WINDOW refresh boundary ran and found nothing. Both render no
-    /// panel, but they are different observations by different observers and
-    /// the read-only model does not merge them: `Inactive`'s provenance id is
-    /// built from a refresh sequence that a measured-empty hour does not have,
-    /// so folding the two would require inventing one.
     NoConferenceInProgress { source_record_id: String },
     Inactive { source_record_id: String },
     Active(ActivePeaceConferenceSnapshot),
@@ -409,7 +381,6 @@ impl AdmittedDesignerSnapshot {
     pub fn selected_design_id(&self) -> &str {
         &self.snapshot.selected_design_id
     }
-    /// Immutable producer-resolved render model. No displayed atom is recomputed.
     pub fn render_model(&self) -> &ReadOnlyDesignerSnapshot {
         &self.snapshot
     }
@@ -418,10 +389,6 @@ impl AdmittedDesignerSnapshot {
     }
 }
 
-/// The d85-to-XUI08 identity join. This is intentionally smaller than a full
-/// designer render snapshot: d85 authorizes the active family, exact controller
-/// order, and selected row only. Names, stats, modules and costs still require
-/// their independently complete producer-resolved snapshot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AdmittedSelectedDesignerIdentity {
     source_record_identity: String,
@@ -475,7 +442,6 @@ impl AdmittedPeaceConference {
             PeaceConferenceSnapshot::Active(value) => Some(value.conference_reference),
         }
     }
-    /// Immutable producer-resolved render model, including every ordered row.
     pub fn render_model(&self) -> &PeaceConferenceSnapshot {
         &self.snapshot
     }
@@ -541,9 +507,6 @@ fn exact_family_accepts_kind(family: SelectedDesignerFamilyExact, kind: DesignKi
     }
 }
 
-/// Admits only the already-validated replay-core d85 view and mechanically
-/// joins every stable identity to the portable catalog. No name, token, or
-/// authored ordering fallback is permitted.
 pub fn admit_exact_selected_designer_identity(
     catalog: &AdmittedDesignCatalog,
     exact: &SelectedDesignerIdentityExactView,
@@ -748,10 +711,6 @@ pub fn admit_peace_conference(
     snapshot: &PeaceConferenceSnapshot,
 ) -> Result<AdmittedPeaceConference, Xui08Rejection> {
     let active = match snapshot {
-        // Both no-panel dispositions admit on provenance alone; neither has a
-        // row graph to check. They stay distinct so the caller can still tell
-        // "the game state held no conference" from "a window refresh found
-        // none".
         PeaceConferenceSnapshot::NoConferenceInProgress { source_record_id }
         | PeaceConferenceSnapshot::Inactive { source_record_id } => {
             if !nonempty(source_record_id) {
@@ -1050,11 +1009,6 @@ pub fn admit_peace_conference(
     })
 }
 
-/// Bind the strict PCS3 passive-global observation to the XUI08 snapshot.
-/// Legacy PCS1 is retained only as an authenticated MEASURED-EMPTY or
-/// WINDOW-INACTIVE fallback — the two stay distinct, and neither renders a
-/// panel; its header-only active form can never authorize
-/// participant/allocation/result rows.
 pub fn peace_conference_snapshot_from_world(
     frame: &WorldFrame,
 ) -> Result<PeaceConferenceSnapshot, Xui08Rejection> {
@@ -1069,8 +1023,6 @@ pub fn peace_conference_snapshot_from_world(
             rendered_text: value.final_text.clone(),
         };
         return match &exact.observation {
-            // No refresh sequence exists for a measured-empty hour, so the
-            // provenance id is built from what the record actually carries.
             PeaceConferencePresentationObservationExact::NoConferenceInProgress {} => {
                 Ok(PeaceConferenceSnapshot::NoConferenceInProgress {
                     source_record_id: format!(

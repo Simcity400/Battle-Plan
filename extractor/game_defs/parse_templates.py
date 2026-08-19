@@ -56,7 +56,7 @@ def _load_subunits(layers) -> dict:
     """sub_unit (battalion) defs for the garrison/template COST join."""
     subunits = {}
     for rel, abspath in R.ordered_files(layers, "common/units", (".txt",)):
-        if Path(rel).parent.as_posix() != "common/units":  # top-level only
+        if Path(rel).parent.as_posix() != "common/units":
             continue
         try:
             root = R.parse_file(abspath)
@@ -133,13 +133,11 @@ def parse_templates(layers) -> dict:
                 "support_count": sum(sup_counts.values()),
                 "width_slots": width,
                 "manpower": int(manpower),
-                "equipment_need": eq_need,   # derived cost (battalion join)
+                "equipment_need": eq_need,
                 "source_file": rel,
             }
             templates.append(rec)
             if name:
-                # NOT lossy: one name (e.g. "Infantry Division") recurs across
-                # owners/compositions — keep ALL under the name.
                 by_name.setdefault(name, []).append(rec)
 
     return {

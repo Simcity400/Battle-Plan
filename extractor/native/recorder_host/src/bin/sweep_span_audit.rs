@@ -1,132 +1,13 @@
-//! WHERE THE SWEEP'S WALL GOES, derived from a capture's own wire.
-//!
-//! # Why this exists
-//!
-//! `lw_worker_span_us` — the fan-out wall — sat at a median of 60.5..63.9 ms
-//! across four consecutive trials (t27 61.8, t28 60.5, t29 63.9, t30 60.7) that
-//! varied everything reachable from outside the collector: cutting the longest
-//! single read (lane CW's d81 foreign-fold cut, t28), raising reader
-//! concurrency 12 -> 16 (t29), and halving the scheduler poll period (t30).
-//! None of the three moved it. A floor that is invariant to the longest job, to
-//! the worker count and to the poll rate is not a property of any one domain's
-//! read, and no aggregate the existing tooling prints can say what it IS.
-//!
-//! `hour_label_audit` answers a different question — which domain-hours were
-//! mislabelled and why — and deliberately reduces the lane-wall probe to the
-//! eight units that question needs. This tool reads the SAME probe records for
-//! the span decomposition instead, and adds the per-domain `DOMAIN_PERF`
-//! stream, which `hour_label_audit` ignores entirely.
-//!
-//! # The decomposition, exactly
-//!
-//! Every quantity below is a wire unit or a difference of wire units. Nothing
-//! here is modelled, and nothing is read from the collector source: if a term
-//! is not on the wire it is reported as absent rather than inferred.
-//!
-//! Per frame, from the domain-250 lane-wall probe:
-//!
-//! * `span` = `lw_worker_span_us`, the fan-out wall. THE number under study.
-//! * `prewarm` = `lw_prewarm_us`, the serial-prefix span BEFORE the fan-out
-//!   opens, and therefore not part of `span`. Through t50 this carried d47's
-//!   root prewarm (p50 ~34 ms); lane HT (2026-08-13) moved d47's discovery
-//!   inside its worker, so on later captures this unit is the residual ~0 of
-//!   the prefix and d47's discovery cost rides `lw_d47_inb_us` instead. The
-//!   unit is retained because its SAMPLE COUNT is the accounting join
-//!   ("frames - backpressure == prewarm samples").
-//! * `main_wall` = `lw_lmain_wall_us`, the sum of the MAIN-lane serial reads.
-//!   These run on the sweep thread inside the span — some before
-//!   `thread::scope` opens, some after it joins — so they are serial with the
-//!   whole fan-out.
-//! * `crit_wall` = `lw_crit_wall_us`, the widest single gated lane's span
-//!   (last end - first start on that lane).
-//! * `lane_busy_sum` = the sum of every `lw_l{N}_busy_us`, i.e. the total time
-//!   gated workers spent holding a permit. `lane_count` is how many lanes
-//!   reported.
-//!
-//! and the two derived terms the trials could not otherwise separate:
-//!
-//! * `uncovered` = `span - main_wall - crit_wall`. The part of the fan-out wall
-//!   that is neither a serial MAIN read nor covered by the busiest lane's own
-//!   span. It is an UPPER bound on ramp-plus-drain and it is COMPOUND: it
-//!   contains the spawn ramp before the critical lane's first worker started,
-//!   the drain after that lane's last worker ended, and every serial
-//!   main-thread stretch inside the span that records no lane span at all. It
-//!   is reported as the compound it is, never split by assertion.
-//! * `balanced` = `lane_busy_sum / lane_count`, the makespan a perfect
-//!   scheduler would reach if every job were divisible. With `longest_job` (the
-//!   largest per-domain `read_time_us` in the frame, bundles collapsed) this is
-//!   the standard `max(longest, total/machines)` list-scheduling LOWER BOUND —
-//!   a wall no ordering could beat, which is not the same as a wall some
-//!   ordering achieves. `gap_above_lower_bound = span - makespan_floor` is an
-//!   UPPER BOUND on what reordering could recover and never a measure of waste
-//!   (Codex review 019fd678-67c9-7703-a908-cca95f048ced, finding 3). Both
-//!   inherit the bundle heuristic below, so both are reported as heuristic.
-//!
-//! # Bundles are collapsed, and the collapse is a HEURISTIC
-//!
-//! `read_time_us` is NOT additive across domains: several domains share one
-//! read and publish the SAME elapsed time on each member's PERF record, so
-//! summing the column counts one read several times. This tool detects the
-//! sharing from the wire rather than from a hardcoded roster: within each
-//! frame, domains that publish a byte-identical nonzero `read_time_us` AND
-//! whose PERF records are emitted consecutively are treated as one job. The
-//! groups it finds are printed so a reader can check them against the source.
-//!
-//! WHAT THIS IS NOT (Codex review 019fd678-67c9-7703-a908-cca95f048ced,
-//! finding 2). It is not producer provenance, and it does not recover the
-//! scheduler's job list:
-//!
-//!  * The country worker is ONE top-level lane job, but inside it the producer
-//!    fans out again into up to seven `CompactBundleRead`s, each timing itself.
-//!    Only the members of the same INNER read necessarily match, which is why
-//!    t28 reports `[12, 13]` and never `[10..=17]`. The outer worker's lane
-//!    hold is not on the wire as a `read_time_us` at all, so THESE QUANTITIES
-//!    DO NOT DESCRIBE THE SCHEDULER'S JOB and their error has no reliable
-//!    direction: `job_count` normally OVERSTATES it (up to seven inner reads
-//!    counted where the schedule saw one job), `job_total` may land either side
-//!    (overlapping inner timings can exceed the outer wall, while the outer
-//!    spawn/join overhead is in none of them), and only `longest_job` has a
-//!    known direction — it can understate the outer lane hold.
-//!  * Two unrelated adjacent domains whose microsecond timings coincide are
-//!    over-grouped; a shared refusal publishing 0 is deliberately not grouped
-//!    at all (see `zero_read_times_never_collapse`).
-//!
-//! So `bundle_groups`, `job_count`, `job_total`, `longest_job`,
-//! `makespan_floor` and `gap_above_lower_bound` are HEURISTIC and are labelled in
-//! the printed report. The span decomposition itself — `span`, `main_wall`,
-//! `crit_wall`, `crit_busy`, `uncovered` and the per-domain critical-lane table
-//! — is not: every one of those is a producer unit or a difference of producer
-//! units, and no conclusion about where the span goes depends on the
-//! collapse.
-//!
-//! # The emission tail
-//!
-//! `DOMAIN_PERF` records carry the frame's emission `sequence`. The per-domain
-//! distribution of "rank counted from the end of the frame" is printed for the
-//! last positions, which is what turns "d54, d55, d81, d86 and d90 look like a
-//! fixed tail" into a count over every frame in the capture.
-//!
-//! # `--domain N`: inside one domain's read
-//!
-//! Once the decomposition names a domain as the span, the next question is where
-//! THAT domain's milliseconds go, and several producers already answer it: d81
-//! publishes a `d81_phase_*` block on its own PERF record, d53 publishes
-//! per-family timers, and so on. `--domain N` aggregates every diagnostic unit
-//! on domain N's own trailer across the capture, so the inside of the critical
-//! read is derived from the same stream as the outside — no new capture, and no
-//! second instrument to keep in step with the producer.
-
 use compact_contract::campaign_identity::COMPACT_RECORD_TYPE_STREAM_HEADER;
 use compact_contract::diagnostic_channel::{decode_units, DiagUnit, OUTSIDE_BUILD_SEGMENTS};
-use compact_contract::{
-    parse_compact_record_header, validate_compact_record_semantics, COMPACT_DOMAIN_PERF_BASE_LEN,
-    COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2,
-    COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
-    KnownRecordType,
-};
 #[cfg(test)]
 use compact_contract::COMPACT_RECORD_TYPE_FRAME_REFUSED;
+use compact_contract::{
+    parse_compact_record_header, validate_compact_record_semantics, KnownRecordType,
+    COMPACT_DOMAIN_PERF_BASE_LEN, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC,
+    COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2, COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
+};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::env;
@@ -134,11 +15,8 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::PathBuf;
 
-/// The reserved probe domain the lane-wall record rides on.
 const RC_PROBE_DOMAIN_ID: u16 = 250;
-/// How many trailing emission positions the tail census reports.
 const TAIL_DEPTH: usize = 12;
-/// How many domains the per-domain read-cost table prints.
 const DOMAIN_TABLE_LIMIT: usize = 24;
 
 fn main() {
@@ -227,9 +105,6 @@ fn usage() -> String {
     "usage: sweep_span_audit <collector_stream.bin> [--json out.json] [--domain N]".to_string()
 }
 
-// ---- per-frame accumulation ------------------------------------------------
-
-/// One domain's PERF record as it appeared in the frame.
 #[derive(Clone, Copy)]
 struct PerfRow {
     domain_id: u16,
@@ -249,9 +124,6 @@ impl FrameAccumulator {
     }
 }
 
-/// Every lane-wall unit this tool reads, kept as `Option` so "the collector did
-/// not emit it" and "it was zero" stay distinguishable — the same rule the
-/// producer applies when it omits a value unit and raises a `_missing` flag.
 #[derive(Clone, Default)]
 struct ProbeUnits {
     worker_span_us: Option<u64>,
@@ -262,23 +134,9 @@ struct ProbeUnits {
     main_wall_us: Option<u64>,
     mismatch_domains: Option<u64>,
     bracketed_domains: Option<u64>,
-    /// (lane id, wall_us, busy_us) for every named lane that reported.
     lanes: Vec<(u16, u64, u64)>,
-    /// `lw_o{n}_us`, indexed by segment code.
     outside: BTreeMap<u16, u64>,
-    /// `lw_d{tag}_crit_us` — per-domain busy on the critical lane only.
     crit_domains: Vec<(u16, u64)>,
-    /// The producer emitted `lw_lother_wall_us`, i.e. this frame ran more than
-    /// `LW_MAX_NAMED_LANES` (32) gated lanes and folded the surplus into one
-    /// WALL-only unit with no busy term and no lane count.
-    ///
-    /// Every lane-derived quantity is then built from a SUBSET of the frame's
-    /// lanes, so `lane_count`, `lane_busy_sum`, `balanced` and `makespan_floor`
-    /// are not what they claim (Codex review
-    /// 019fd678-67c9-7703-a908-cca95f048ced, finding 4). Production has never
-    /// run above 16 lanes, but this binary is handed arbitrary captures, and
-    /// silently reporting a partial sum as a total is exactly the drift the
-    /// rest of this tool refuses.
     lanes_truncated: bool,
 }
 
@@ -296,13 +154,8 @@ fn probe_units_from(units: &[DiagUnit]) -> ProbeUnits {
             "lw_lmain_wall_us" => probe.main_wall_us = Some(value),
             "lw_hour_label_mismatch_domains" => probe.mismatch_domains = Some(value),
             "lw_bracketed_domains" => probe.bracketed_domains = Some(value),
-            // Presence alone is the signal: the producer emits it only when
-            // some lane id was too high to name, and it carries no busy term.
             "lw_lother_wall_us" => probe.lanes_truncated = true,
             _ => {
-                // ORDER MATTERS. `lw_d81_crit_us` and `lw_l3_busy_us` share the
-                // `lw_` prefix and the `_us` suffix, so the most specific
-                // suffix is tested first; see the unit test that pins it.
                 if let Some(code) = name
                     .strip_prefix("lw_o")
                     .and_then(|rest| rest.strip_suffix("_us"))
@@ -342,7 +195,6 @@ fn upsert_lane(lanes: &mut Vec<(u16, u64, u64)>, lane: u16) -> &mut (u16, u64, u
     lanes.last_mut().expect("just pushed")
 }
 
-/// One frame, reduced to the terms the decomposition is stated in.
 #[derive(Clone, Serialize)]
 struct FrameSpan {
     span_us: u64,
@@ -354,29 +206,18 @@ struct FrameSpan {
     lane_count: u64,
     lane_busy_sum_us: u64,
     lane_wall_sum_us: u64,
-    /// `span - main_wall - crit_wall`, saturating. See the module docs: this is
-    /// COMPOUND and is never split here.
     uncovered_us: u64,
-    /// `lane_busy_sum / lane_count`.
     balanced_us: u64,
-    /// Largest single job in the frame, bundles collapsed.
     longest_job_us: u64,
-    /// `max(longest_job, balanced)` — the list-scheduling lower bound.
     makespan_floor_us: u64,
-    /// Sum of every collapsed job's `read_time_us` in the frame.
     job_total_us: u64,
     job_count: u64,
     mismatch_domains: u64,
     bracketed_domains: u64,
     outside_total_us: u64,
     outside_wait_us: u64,
-    /// See [`ProbeUnits::lanes_truncated`]. Frames carrying it are excluded
-    /// from every lane-derived distribution rather than folded in as if their
-    /// partial lane set were the whole one.
     lanes_truncated: bool,
 }
-
-// ---- scanning --------------------------------------------------------------
 
 #[derive(Default)]
 struct ScanState {
@@ -389,26 +230,15 @@ struct ScanState {
     frames: Vec<FrameSpan>,
     frames_seen: u64,
     frames_without_probe: u64,
-    /// Per-domain `read_time_us` samples, one per frame the domain appeared in.
     domain_read_us: BTreeMap<u16, Vec<u64>>,
-    /// Per-domain count of "was in the last N emitted PERF records", by depth.
     tail_rank_counts: BTreeMap<u16, BTreeMap<usize, u64>>,
-    /// Bundle groups keyed by their member list, counted over frames.
     bundle_groups: BTreeMap<Vec<u16>, u64>,
-    /// Per-lane busy samples, so lane imbalance is visible.
     lane_busy_us: BTreeMap<u16, Vec<u64>>,
     lane_wall_us: BTreeMap<u16, Vec<u64>>,
-    /// Per-domain critical-lane busy samples.
     crit_domain_us: BTreeMap<u16, Vec<u64>>,
     outside_us: BTreeMap<u16, Vec<u64>>,
-    /// `--domain N`: which producer's own trailer to aggregate, if any.
     inspect_domain: Option<u16>,
-    /// That producer's own diagnostic units, one sample per record that carried
-    /// the unit. Collected UNDECODED of meaning — this tool knows nothing about
-    /// what `d81_phase_hub_foreign_us` is, only that the producer published it.
     inspect_units: BTreeMap<String, Vec<u64>>,
-    /// `read_time_us` on the inspected domain's own records, so the phase block
-    /// can be checked against the total it decomposes.
     inspect_read_us: Vec<u64>,
 }
 
@@ -440,7 +270,9 @@ fn scan_stream(reader: &mut impl Read, state: &mut ScanState) -> Result<(), Stri
         let mut payload = Vec::new();
         payload
             .try_reserve_exact(header.payload_len)
-            .map_err(|error| format!("reserve {} bytes at {offset}: {error}", header.payload_len))?;
+            .map_err(|error| {
+                format!("reserve {} bytes at {offset}: {error}", header.payload_len)
+            })?;
         payload.resize(header.payload_len, 0);
         let payload_read = read_up_to(reader, &mut payload)
             .map_err(|error| format!("read payload at {offset}: {error}"))?;
@@ -479,8 +311,7 @@ fn process_record(
     let known_record_type = match KnownRecordType::try_from(header.record_type) {
         Ok(record_type) => record_type,
         Err(error) => {
-            state.unknown_record_type_records =
-                state.unknown_record_type_records.saturating_add(1);
+            state.unknown_record_type_records = state.unknown_record_type_records.saturating_add(1);
             state.parse_errors.push(format!(
                 "unknown record type at sequence {}: {error}",
                 header.sequence
@@ -488,13 +319,6 @@ fn process_record(
             return;
         }
     };
-    // Validate BEFORE any type-specific arm returns. FRAME_REFUSED used to be
-    // handled above this call and returned early, so this audit accepted every
-    // type-6 record as a refusal without ever reading its payload: a truncated
-    // one, or one written at an H4FR version this build cannot decode, dropped
-    // the open frame and produced no `parse_error` at all. An audit that
-    // silently discards a frame on a record it never checked is reporting a
-    // conclusion it did not reach.
     let semantics = validate_compact_record_semantics(
         header.domain_id,
         header.record_type,
@@ -514,15 +338,6 @@ fn process_record(
         return;
     }
 
-    // A refused frame published no sweep, so its partial accumulation describes
-    // nothing and is dropped rather than folded into the distributions. Exactly
-    // one H4FR version is legal on the wire and the validator above is what says
-    // so; a refusal this build cannot read still DROPS the frame -- the record
-    // type is the frame boundary and that much is legible from the header --
-    // but it no longer does so silently.
-    //
-    // How the other record types treat a semantics failure is deliberately
-    // unchanged: `semantics_ok` gates the PERF arm exactly as before.
     if known_record_type == KnownRecordType::FrameRefused {
         if let Err(error) = semantics {
             state.parse_errors.push(format!(
@@ -598,9 +413,6 @@ fn decode_probe_units(record_flags: u32, payload: &[u8]) -> Result<Option<Vec<Di
     Ok(Some(units))
 }
 
-/// Group this frame's PERF rows into JOBS. Domains that publish a byte-identical
-/// nonzero `read_time_us` in consecutively-emitted records share one read (see
-/// the module docs) and count once.
 fn collapse_bundles(perf: &[PerfRow]) -> Vec<(Vec<u16>, u64)> {
     let mut jobs: Vec<(Vec<u16>, u64)> = Vec::new();
     for row in perf {
@@ -614,14 +426,6 @@ fn collapse_bundles(perf: &[PerfRow]) -> Vec<(Vec<u16>, u64)> {
     jobs
 }
 
-/// THE DERIVATION, as a pure function of one frame's wire records.
-///
-/// Extracted from the scan so the whole chain — probe units in, `uncovered` /
-/// `balanced` / `makespan_floor` out — can be asserted from a synthetic frame
-/// rather than only through a 2 GB capture (Codex review
-/// 019fd678-67c9-7703-a908-cca95f048ced, finding 5). `None` when the probe
-/// carries no `lw_worker_span_us`, which is the one unit the whole
-/// decomposition is stated against.
 fn derive_frame_span(probe: &ProbeUnits, perf_by_sequence: &[PerfRow]) -> Option<FrameSpan> {
     let span_us = probe.worker_span_us?;
     let main_wall_us = probe.main_wall_us.unwrap_or(0);
@@ -716,8 +520,6 @@ fn finalize_frame(state: &mut ScanState) {
     }
 }
 
-// ---- reduction -------------------------------------------------------------
-
 #[derive(Clone, Serialize)]
 struct Stats {
     count: u64,
@@ -763,8 +565,6 @@ fn stats(values: &[u64]) -> Stats {
 struct DomainCost {
     domain_id: u16,
     read_time_us: Stats,
-    /// How often this domain was among the last [`TAIL_DEPTH`] PERF records,
-    /// and at which position from the end (0 == last).
     tail_positions: Vec<(usize, u64)>,
 }
 
@@ -791,10 +591,6 @@ struct OutsideSegment {
 #[derive(Serialize)]
 struct Report {
     input_path: String,
-    /// WHAT BUILD PRODUCED THIS STREAM, read from the session manifest beside
-    /// it. Every column below is a span in microseconds; a diagnostic collector
-    /// changes what those spans cost. `diagnostic_build` is null whenever the
-    /// answer is unknown — absence is never a clean build.
     collector_build: serde_json::Value,
     bytes_consumed: u64,
     records_seen: u64,
@@ -804,10 +600,6 @@ struct Report {
     frames_seen: u64,
     frames_without_probe: u64,
     frames_analysed: u64,
-    /// Frames excluded from every lane-derived column because the producer
-    /// folded lanes 32+ into `lw_lother_wall_us`. Nonzero means `balanced`,
-    /// `makespan_floor`, `gap_above_lower_bound` and the `lane_*` columns describe fewer
-    /// frames than `frames_analysed`.
     frames_with_truncated_lanes: u64,
     span_us: Stats,
     prewarm_us: Stats,
@@ -828,13 +620,6 @@ struct Report {
     bracketed_domains: Stats,
     outside_total_us: Stats,
     outside_wait_us: Stats,
-    /// `span - makespan_floor`: an UPPER BOUND on the wall any reordering of
-    /// the same jobs on the same lanes could recover, and not a measure of what
-    /// it would recover. `makespan_floor` is a lower bound on the achievable
-    /// makespan, so the distance to it is a bound on the opportunity and never
-    /// an observation of waste — and it inherits the bundle heuristic above, so
-    /// it is not exact either. Named for what it is rather than for what a
-    /// reader would like it to be.
     gap_above_lower_bound_us: Stats,
     domains: Vec<DomainCost>,
     bundle_groups: Vec<BundleGroup>,
@@ -857,10 +642,6 @@ impl ScanState {
         let column = |get: fn(&FrameSpan) -> u64| -> Stats {
             stats(&self.frames.iter().map(get).collect::<Vec<_>>())
         };
-        // Lane-derived columns see only the frames whose lane set was WHOLE.
-        // A frame that folded lanes 32+ into `lw_lother_wall_us` contributes a
-        // partial busy sum and an undercounted lane count, and averaging that
-        // in with complete frames produces a number that is neither.
         let lane_column = |get: fn(&FrameSpan) -> u64| -> Stats {
             stats(
                 &self
@@ -995,8 +776,6 @@ impl ScanState {
     }
 }
 
-// ---- printing --------------------------------------------------------------
-
 fn line(label: &str, stats: &Stats) {
     println!(
         "{label:<24} n={:<5} min={:<8} p25={:<8} p50={:<8} p75={:<8} p90={:<8} max={:<9} mean={:.1}",
@@ -1005,8 +784,6 @@ fn line(label: &str, stats: &Stats) {
 }
 
 fn print_report(report: &Report) {
-    // BEFORE the spans it qualifies. See `hour_label_audit` for why the banner
-    // leads rather than trails.
     print!(
         "{}",
         recorder_host::build_declaration::banner(&recorder_host::build_declaration::for_stream(
@@ -1046,7 +823,9 @@ fn print_report(report: &Report) {
     line("crit_busy", &report.crit_busy_us);
     line("prewarm (before span)", &report.prewarm_us);
     line("fanout_origin", &report.fanout_origin_us);
-    println!("\n-- what the schedule could not beat (HEURISTIC: bundle collapse, see module docs) --");
+    println!(
+        "\n-- what the schedule could not beat (HEURISTIC: bundle collapse, see module docs) --"
+    );
     line("longest_job", &report.longest_job_us);
     line("balanced (busy/lanes)", &report.balanced_us);
     line("makespan_floor (lower)", &report.makespan_floor_us);
@@ -1165,21 +944,10 @@ mod tests {
         .expect("a frame-level-only refusal is a complete record")
     }
 
-    /// This audit drops the open frame on a FRAME_REFUSED, and it used to do
-    /// that from the record TYPE alone -- the arm returned before the semantics
-    /// call, so a truncated refusal, or one written at an H4FR version this
-    /// build cannot decode, discarded a frame and produced no `parse_error`.
-    /// An audit that reports a conclusion it never checked is the shape this
-    /// closes.
-    ///
-    /// MUTATION: move the FRAME_REFUSED arm back above
-    /// `validate_compact_record_semantics`, or drop the `parse_errors.push`,
-    /// and the unreadable case below reports nothing.
     #[test]
     fn a_refusal_this_build_cannot_read_drops_the_frame_but_says_so() {
         let good = refusal_payload_v2();
 
-        // The legal version 2 record: frame dropped, nothing to report.
         let mut state = ScanState::default();
         state.current.perf.push(PerfRow {
             domain_id: 10,
@@ -1194,12 +962,12 @@ mod tests {
             state.parse_errors
         );
 
-        // The same record restamped at a version this build does not decode,
-        // and a truncated one. Both still drop the frame -- the boundary is
-        // legible from the header -- and both are now named.
         let mut future = good.clone();
         future[4..6].copy_from_slice(&3u16.to_le_bytes());
-        for (label, payload) in [("future version", future), ("truncated", good[..8].to_vec())] {
+        for (label, payload) in [
+            ("future version", future),
+            ("truncated", good[..8].to_vec()),
+        ] {
             let mut state = ScanState::default();
             state.current.perf.push(PerfRow {
                 domain_id: 10,
@@ -1224,13 +992,6 @@ mod tests {
         }
     }
 
-    /// Bundle members publish the SAME elapsed time on consecutive records, and
-    /// collapsing them is what keeps `longest_job` and `job_total` from
-    /// counting one read up to eight times.
-    ///
-    /// MUTATION: drop the `*cost == row.read_time_us` arm in `collapse_bundles`
-    /// and the eight country-bundle members become eight 9,000 us jobs, so
-    /// `job_total` reports 74,000 instead of 11,000 here.
     #[test]
     fn consecutive_identical_read_times_collapse_to_one_job() {
         let perf: Vec<PerfRow> = [
@@ -1260,12 +1021,6 @@ mod tests {
         assert_eq!(jobs.iter().map(|(_, cost)| *cost).sum::<u64>(), 11_000);
     }
 
-    /// A zero read time is NOT evidence of sharing — a rowless refusal and a
-    /// genuinely instant read both publish 0, and gluing those together would
-    /// invent a bundle out of the frame's failures.
-    ///
-    /// MUTATION: remove the `row.read_time_us != 0` guard and these three
-    /// unrelated domains collapse into one job.
     #[test]
     fn zero_read_times_never_collapse() {
         let perf: Vec<PerfRow> = [30u16, 31, 32]
@@ -1280,13 +1035,6 @@ mod tests {
         assert_eq!(collapse_bundles(&perf).len(), 3);
     }
 
-    /// Two domains with the same cost that are NOT emitted next to each other
-    /// are two jobs. Sharing is a property of one read publishing twice, which
-    /// shows up as adjacency in the emission order; equal costs alone are a
-    /// coincidence that the schedule must still pay for twice.
-    ///
-    /// MUTATION: match on cost alone, ignoring `jobs.last_mut()` adjacency, and
-    /// this returns 2 jobs instead of 3.
     #[test]
     fn equal_but_separated_read_times_stay_separate_jobs() {
         let perf: Vec<PerfRow> = [(40u16, 2_000u64), (41, 7_000), (42, 2_000)]
@@ -1303,13 +1051,6 @@ mod tests {
         assert_eq!(jobs.iter().map(|(_, cost)| *cost).sum::<u64>(), 11_000);
     }
 
-    /// The lane units arrive as two independent `lw_l{N}_wall_us` /
-    /// `lw_l{N}_busy_us` pairs in producer order, and both must land on the
-    /// same lane entry.
-    ///
-    /// MUTATION: make `upsert_lane` push unconditionally and `lane_count`
-    /// doubles, which halves `balanced` and would understate the schedule floor
-    /// by 2x.
     #[test]
     fn lane_wall_and_busy_units_fold_into_one_lane_entry() {
         let units = vec![
@@ -1326,12 +1067,6 @@ mod tests {
         assert_eq!(lanes[1], (1, 20_000, 18_000));
     }
 
-    /// `lw_d{tag}_crit_us` and `lw_l{lane}_wall_us` both start `lw_` and both
-    /// end `_us`; parsing one as the other silently moves a domain's busy time
-    /// into the lane table.
-    ///
-    /// MUTATION: reorder the `strip_prefix` arms so `lw_d81_crit_us` is tested
-    /// against the lane pattern first and this assertion fails.
     #[test]
     fn per_domain_crit_units_are_not_mistaken_for_lane_units() {
         let units = vec![
@@ -1343,26 +1078,6 @@ mod tests {
         assert_eq!(probe.lanes, vec![(3, 0, 6_000)]);
     }
 
-    /// THE WHOLE DERIVATION, from probe units to the published columns.
-    ///
-    /// The other tests here pin one helper each; this one asserts the numbers
-    /// the report is actually read from, on a frame whose every term is chosen
-    /// so that no two of them coincide (Codex review
-    /// 019fd678-67c9-7703-a908-cca95f048ced, finding 5).
-    ///
-    /// The frame: span 60,000; MAIN serial reads 2,000; widest lane 53,000; four
-    /// lanes busy 40,000 + 30,000 + 20,000 + 10,000 = 100,000. So
-    /// `uncovered = 60,000 - 2,000 - 53,000 = 5,000`,
-    /// `balanced = 100,000 / 4 = 25,000`, the longest collapsed job is 41,000
-    /// (the two-member bundle), `makespan_floor = max(41,000, 25,000) = 41,000`.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: subtracting `crit_busy` instead
-    /// of `crit_wall` in `uncovered` (they are within 41 us of each other on
-    /// real captures, so a real capture would NOT reveal the swap and this
-    /// fixture does); dividing `lane_wall_sum` rather than `lane_busy_sum` by
-    /// the lane count; or taking `min` instead of `max` for the makespan floor,
-    /// which would report the bound as 25,000 and make the fan-out look 16 ms
-    /// further from optimal than it is.
     #[test]
     fn the_span_decomposition_is_derived_from_the_probe_units_it_names() {
         let units = vec![
@@ -1403,20 +1118,11 @@ mod tests {
         assert_eq!(derived.balanced_us, 25_000);
         assert_eq!(derived.longest_job_us, 41_000);
         assert_eq!(derived.makespan_floor_us, 41_000);
-        // d12 and d13 collapse; d81 and d22 do not.
         assert_eq!(derived.job_count, 3);
         assert_eq!(derived.job_total_us, 51_000);
         assert!(!derived.lanes_truncated);
     }
 
-    /// A frame that ran more than 32 gated lanes reports its surplus as one
-    /// wall-only `lw_lother_wall_us`, so its busy sum and lane count are
-    /// PARTIAL and every lane-derived column has to exclude it.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping the
-    /// `lw_lother_wall_us` arm from the parser, which is the state this tool
-    /// shipped in — `balanced` would then be computed from a subset of lanes
-    /// and reported as if it were the whole schedule.
     #[test]
     fn a_frame_that_outran_the_named_lanes_marks_its_lane_columns_partial() {
         let units = vec![
@@ -1434,19 +1140,6 @@ mod tests {
         );
     }
 
-    /// ...and the REDUCER must actually drop it. Flagging the frame and then
-    /// averaging it in anyway is the failure this pair exists to prevent
-    /// (Codex review 019fd678-67c9-7703-a908-cca95f048ced, round 2).
-    ///
-    /// Two frames in, one complete and one truncated. Every lane-derived column
-    /// must report `count == 1`, every other column `count == 2`, and
-    /// `frames_analysed` must still be 2 — the frame is excluded from six
-    /// columns, not from the capture.
-    ///
-    /// WHAT PRODUCTION CHANGE MAKES THIS FAIL: swapping any of the six
-    /// `lane_column(...)` calls back to `column(...)`, or dropping the
-    /// `filter` from `gap_above_lower_bound`. Each would silently average a
-    /// partial lane set in with complete ones.
     #[test]
     fn the_reducer_drops_truncated_frames_from_lane_columns_and_keeps_them_elsewhere() {
         let base = vec![
@@ -1489,11 +1182,6 @@ mod tests {
         }
     }
 
-    /// The offset of `read_time_us` inside the DOMAIN_PERF payload is a wire
-    /// fact, and reading the wrong eight bytes yields `elapsed_wall_ms` — a
-    /// plausible-looking number that is not a read time at all.
-    ///
-    /// MUTATION: slice `0..8` instead of `8..16` and this returns 777.
     #[test]
     fn perf_read_time_is_read_from_the_declared_offset() {
         let mut payload = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];

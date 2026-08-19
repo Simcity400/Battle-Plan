@@ -1,13 +1,3 @@
-//! Recorder-owned CRP1/CRA1 rollover transaction.
-//!
-//! The transaction deliberately lives beside the one H4CT receive router.  It
-//! enforces the cross-pipe ordering law: receive and authenticate CRP1, drain
-//! the old H4CR stream contiguously through its advertised sequence, durably
-//! seal it, open the candidate sink, and only then send an accepting CRA1.
-//! Acceptance enters a second barrier; the next logical stream is not admitted
-//! until its canonical sequence-zero CID1 CFA1 matches the committed logical
-//! id, campaign-pair digest, and exact full-payload hash.
-
 use compact_contract::campaign_rollover::{
     decode_rollover_propose, encode_rollover_ack, RolloverAckV1, RolloverDecision,
     RolloverProposeV1,
@@ -23,7 +13,6 @@ use crate::duplex_session::identity_control::{
     RecorderIdentityControlDispatcher, ValidatedFirstCompactRecord,
 };
 
-/// Durable proof returned after the old H4CR source was read contiguously.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DrainedLogicalStream {
     pub logical_stream_id: u64,
@@ -32,8 +21,6 @@ pub struct DrainedLogicalStream {
     pub cid1_payload_sha256: [u8; 32],
 }
 
-/// Durable proof returned only after the old source is sealed and the new sink
-/// exists.  Implementations must not return while either operation is buffered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OpenedLogicalStream {
     pub sealed_logical_stream_id: u64,
@@ -50,15 +37,12 @@ pub trait RecorderRolloverStore {
         cancellation: &ControlCancellation,
     ) -> Result<DrainedLogicalStream, String>;
 
-    /// Fsync/seal the drained old source and create+fsync the candidate new sink.
-    /// The returned receipt is checked exactly before CRA1 acceptance is sent.
     fn durable_seal_and_open(
         &mut self,
         proposal: &RolloverProposeV1,
         drained: DrainedLogicalStream,
     ) -> Result<OpenedLogicalStream, String>;
 
-    /// Persist a terminal rejected proposal before the rejection is sent.
     fn durable_record_rejection(
         &mut self,
         proposal: &RolloverProposeV1,
@@ -78,10 +62,6 @@ pub enum RecorderRolloverPhase {
     Failed,
 }
 
-/// Move-only authority minted only after CRP1 authentication, durable old
-/// stream drain/seal, durable new-sink open, and accepting CRA1 transmission.
-/// The identity dispatcher consumes it to distinguish a legitimate second
-/// CFA1 from an unauthenticated retry of the first-only admission method.
 pub(crate) struct AuthenticatedRolloverRebind {
     current_logical_stream_id: u64,
     current_campaign_id: [u8; 32],
@@ -168,11 +148,7 @@ pub struct RecorderRolloverCoordinator {
 }
 
 impl RecorderRolloverCoordinator {
-    /// Bind rollover state only from the already durable-and-sent initial CFA1
-    /// authority. A caller cannot initialize rollover from an arbitrary hash.
-    pub fn new(
-        initial: &AcknowledgedFirstCompactRecord,
-    ) -> Result<Self, RecorderRolloverError> {
+    pub fn new(initial: &AcknowledgedFirstCompactRecord) -> Result<Self, RecorderRolloverError> {
         let acknowledgement = initial.first_record().acknowledgement();
         let Some(cid1) = initial.first_record().validated_cid1() else {
             return Err(RecorderRolloverError::InitialHeaderMismatch);
@@ -197,7 +173,6 @@ impl RecorderRolloverCoordinator {
         self.phase
     }
 
-    /// Receive one CRP1 and execute the complete durable-before-ack boundary.
     pub fn receive_drain_seal_open_and_ack<I, S>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -215,18 +190,9 @@ impl RecorderRolloverCoordinator {
         let frame = channel
             .recv_until(deadline, cancellation)
             .map_err(|error| self.fail(RecorderRolloverError::Transport(error.to_string())))?;
-        self.receive_frame_drain_seal_open_and_ack(
-            channel,
-            store,
-            frame,
-            deadline,
-            cancellation,
-        )
+        self.receive_frame_drain_seal_open_and_ack(channel, store, frame, deadline, cancellation)
     }
 
-    /// Execute a rollover from a frame already consumed by the single H4CT
-    /// router. This prevents the heartbeat loop and rollover transaction from
-    /// racing two independent receives on one ordered control channel.
     pub fn receive_frame_drain_seal_open_and_ack<I, S>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -350,10 +316,6 @@ impl RecorderRolloverCoordinator {
         Ok(proposal)
     }
 
-    /// Complete the second barrier as one authenticated identity-dispatch
-    /// transaction. The ordinary first-record method remains first-only; this
-    /// method supplies a move-only authority bound to both the accepted CRP1
-    /// campaign pair and the exact proposed CID1 bytes.
     pub fn acknowledge_new_header<I, S>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -452,8 +414,7 @@ mod tests {
     use std::time::Duration;
 
     use compact_contract::campaign_identity::{
-        encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
-        COMPACT_RECORD_TYPE_STREAM_HEADER,
+        encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_RECORD_TYPE_STREAM_HEADER,
     };
     use compact_contract::campaign_rollover::{encode_rollover_propose, RolloverReason};
 
@@ -717,14 +678,9 @@ mod tests {
             creation_filetime: u64::from(session_byte),
         };
         let capabilities = ControlCapabilities::auto_attach_duplex_rollover_v1();
-        let admission = ValidatedSessionCapability::admit(
-            capability,
-            peer,
-            peer,
-            capabilities,
-            capabilities,
-        )
-        .unwrap();
+        let admission =
+            ValidatedSessionCapability::admit(capability, peer, peer, capabilities, capabilities)
+                .unwrap();
         let payload = encode_rollover_propose(&proposal).unwrap();
         let inbound = encode_frame(session_id, 0, MessageKind::RolloverPropose, &payload).unwrap();
         DeadlineControlChannel::new(
@@ -759,12 +715,7 @@ mod tests {
         };
 
         coordinator
-            .receive_drain_seal_open_and_ack(
-                &mut channel,
-                &mut store,
-                deadline,
-                &cancellation,
-            )
+            .receive_drain_seal_open_and_ack(&mut channel, &mut store, deadline, &cancellation)
             .unwrap();
         assert!(matches!(
             coordinator.phase(),
@@ -787,7 +738,13 @@ mod tests {
         assert_eq!(coordinator.phase(), RecorderRolloverPhase::Streaming);
         assert_eq!(identity.bound_logical_stream_id(), Some(1));
         assert_eq!(identity.bound_campaign_id(), Some(proposed_campaign_id));
-        assert_eq!(acknowledged.first_record().acknowledgement().logical_stream_id, 1);
+        assert_eq!(
+            acknowledged
+                .first_record()
+                .acknowledgement()
+                .logical_stream_id,
+            1
+        );
         assert!(!identity.is_poisoned());
         assert!(!channel.is_poisoned());
         assert_eq!(
@@ -813,8 +770,6 @@ mod tests {
         let events = Rc::new(RefCell::new(Vec::new()));
         let initial = validated_identity(0, -1234, hour());
         let candidate = validated_identity(1, -1234, hour() - 1);
-        // The campaign pair still matches. Only the exact proposed CID1 bytes
-        // differ, proving that the second barrier authenticates both layers.
         let wrong_candidate = validated_identity(1, -1234, hour() - 2);
         assert_eq!(
             candidate.validated_cid1().unwrap().campaign_id(),
@@ -840,12 +795,7 @@ mod tests {
             events: events.clone(),
         };
         coordinator
-            .receive_drain_seal_open_and_ack(
-                &mut channel,
-                &mut store,
-                deadline,
-                &cancellation,
-            )
+            .receive_drain_seal_open_and_ack(&mut channel, &mut store, deadline, &cancellation)
             .unwrap();
 
         let error = match coordinator.acknowledge_new_header(

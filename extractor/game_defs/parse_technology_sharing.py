@@ -111,14 +111,10 @@ def _validate_categories_token_grammar(text: str, source: str) -> None:
         if kind == "rbrace":
             depth -= 1
             continue
-        # Direct fields of a top-level technology_sharing_group are at depth
-        # one.  A legitimate category whose literal ID is "categories" is at
-        # depth two and must not be mistaken for another field declaration.
         if depth != 1:
             continue
         if kind not in {"bare", "str"} or value.lower() != "categories":
             continue
-        # A scalar value literally named "categories" is not a field key.
         if index > 0 and tokens[index - 1][0] == "eq":
             continue
         if (
@@ -162,9 +158,6 @@ def _source_provenance(
     layer_ordinal = R._layer_prio_fn(layers)(path)
     layer = layers[layer_ordinal]
     meta = dict(getattr(layer, "meta", {}) or {})
-    # Layer position is the authority when older resolver layers do not carry a
-    # kind.  A mod is allowed to call itself "vanilla"; a display label must
-    # never be treated as a source-type discriminator.
     kind = meta.get("kind") or ("vanilla" if layer_ordinal == 0 else "mod")
     dlc_name = meta.get("dlc_name") if kind in {"dlc", "integrated_dlc"} else None
     mod_name = layer.label if kind == "mod" else None
@@ -232,8 +225,6 @@ def _definition(
     elif categories:
         category_scope = "explicit_category_list"
     else:
-        # The installed corpus contains an explicit empty block.  Preserve it,
-        # but do not claim engine semantics without runtime/static RE proof.
         category_scope = "explicit_empty_categories_semantics_unproven"
 
     row = {
@@ -354,10 +345,6 @@ def build(
             vanilla=vanilla,
             mods=mods,
             userdata=userdata,
-            # A missing explicitly requested mod or an unresolved entry in the
-            # implicit active_modset would make the catalog incomplete.  This
-            # standalone producer is an extraction authority, so it must fail
-            # closed in both cases.
             strict_mods=True,
         ),
         strict=True,

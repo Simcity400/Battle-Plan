@@ -1,13 +1,3 @@
-//! Exact-a729 detours for the production A30 controller carriers.
-//!
-//! The production scheduler installs these hooks only when compact domain 53
-//! is selected. The explicit evidence owner remains available behind its
-//! environment gate. Both modes arm a single expected controller refresh.
-//! Successful observations are
-//! encoded immediately as the pointer-free `AUGC`/`CIPC` payloads consumed by
-//! the domain-53 multiplex. Teardown disables outer producers first and does
-//! not remove a trampoline until all in-flight callbacks have quiesced.
-
 #![cfg(windows)]
 
 use crate::agency_upgrade_controller::{
@@ -69,29 +59,23 @@ pub const AGENCY_OWNER_RESOLVER_INSTRUCTIONS_SHA256: &str =
 pub const MAX_PENDING_RECORDS: usize = 1_024;
 
 const AGENCY_OUTER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54,
-    0x41, 0x56,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x56, 0x57, 0x41, 0x54, 0x41, 0x56,
 ];
 const AGENCY_MATERIALIZER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24,
-    0x18, 0x48,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48,
 ];
 const AGENCY_FILTER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24,
-    0x20, 0x48,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x48,
 ];
 const CIPHER_OUTER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-    0x56, 0x41,
+    0x48, 0x89, 0x4c, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
 ];
 const CIPHER_ROW_SENTINEL: [u8; 16] = [
-    0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57,
-    0x41, 0x54,
+    0x44, 0x88, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54,
 ];
 const AGENCY_OWNER_RESOLVER_RVA: usize = 0x0BA56A0;
 const AGENCY_OWNER_RESOLVER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x41, 0x35,
-    0xa2, 0x02,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x41, 0x35, 0xa2, 0x02,
 ];
 
 type ControllerOuterFn = unsafe extern "system" fn(usize);
@@ -153,9 +137,6 @@ pub struct CipherRefreshArm {
 }
 
 impl AgencyRefreshArm {
-    /// Bind an arm to the same complete country-table authority as domain 53.
-    /// The game-state and controller pointers are used only to arm this process
-    /// epoch and never enter the encoded carrier or receipt.
     pub fn from_domain53_authority(
         expected_controller: usize,
         game_state: usize,
@@ -258,7 +239,6 @@ pub struct Domain53ControllerEvidenceRecord {
 }
 
 impl Domain53ControllerEvidenceRecord {
-    /// Wrap the already pointer-free carrier as an ordinary domain-53 H4CR
     /// record. Sequence ownership remains with the collector/recorder caller.
     pub fn encode_h4cr(&self, h4cr_sequence: u64) -> Result<Vec<u8>, String> {
         if h4cr_sequence == 0 {
@@ -277,9 +257,11 @@ impl Domain53ControllerEvidenceRecord {
     pub fn validate_carrier(&self) -> Result<(), String> {
         let encoded_hour = match self.family {
             ControllerEvidenceFamily::AgencyUpgrade => {
-                crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(&self.payload)
-                    .map_err(|error| format!("A30 AUGC admission failed: {error:?}"))?
-                    .frame_hour
+                crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(
+                    &self.payload,
+                )
+                .map_err(|error| format!("A30 AUGC admission failed: {error:?}"))?
+                .frame_hour
             }
             ControllerEvidenceFamily::CipherCountry => {
                 crate::cipher_controller::CipherControllerRefresh::decode(&self.payload)
@@ -297,8 +279,6 @@ impl Domain53ControllerEvidenceRecord {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControllerEvidenceDiagnostics {
     pub retained_records: u64,
-    /// Refreshes for controller objects that the owner did not arm. They are
-    /// expected while evidence mode is installed and do not poison capture.
     pub ignored_unarmed_refreshes: u64,
     pub dropped_reentrant: u64,
     pub dropped_unreadable: u64,
@@ -389,9 +369,6 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Process-local discovery for the opt-in autonomous owner.  Addresses are
-/// consumed only to arm the next exact controller callback and are never
-/// serialized.
 pub fn discovered_controllers() -> Option<(usize, usize)> {
     let agency = LAST_AGENCY_CONTROLLER.load(Ordering::Acquire);
     let cipher = LAST_CIPHER_CONTROLLER.load(Ordering::Acquire);
@@ -399,9 +376,19 @@ pub fn discovered_controllers() -> Option<(usize, usize)> {
 }
 
 pub fn capture_complete() -> bool {
-    let Ok(queue) = queue().try_lock() else { return false };
-    queue.iter().filter(|row| row.family == ControllerEvidenceFamily::AgencyUpgrade).count() == 1
-        && queue.iter().filter(|row| row.family == ControllerEvidenceFamily::CipherCountry).count() == 1
+    let Ok(queue) = queue().try_lock() else {
+        return false;
+    };
+    queue
+        .iter()
+        .filter(|row| row.family == ControllerEvidenceFamily::AgencyUpgrade)
+        .count()
+        == 1
+        && queue
+            .iter()
+            .filter(|row| row.family == ControllerEvidenceFamily::CipherCountry)
+            .count()
+            == 1
 }
 
 pub fn arm_agency_refresh(arm: AgencyRefreshArm) -> Result<(), String> {
@@ -432,19 +419,21 @@ pub fn arm_cipher_refresh(arm: CipherRefreshArm) -> Result<(), String> {
 
 pub fn install_fixture_hooks() -> Result<InstalledHookAddresses, String> {
     if !evidence_activation_enabled() {
-        return Err(format!("A30 evidence hook requires {EVIDENCE_ACTIVATION_ENV}=1"));
+        return Err(format!(
+            "A30 evidence hook requires {EVIDENCE_ACTIVATION_ENV}=1"
+        ));
     }
     install_hooks(true)
 }
 
-/// Install the exact byte-gated observer for the ordinary compact-domain 53
-/// scheduler. No environment flag or fixture receipt is an activation input.
 pub fn install_production_hooks() -> Result<InstalledHookAddresses, String> {
     install_hooks(false)
 }
 
 fn install_hooks(evidence_install: bool) -> Result<InstalledHookAddresses, String> {
-    let _guard = INSTALL_LOCK.lock().map_err(|_| "A30 install lock poisoned")?;
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A30 install lock poisoned")?;
     if installed() {
         if EVIDENCE_INSTALL.load(Ordering::Acquire) != evidence_install {
             return Err("A30 controller hooks already belong to the other install mode".into());
@@ -467,12 +456,36 @@ fn install_hooks(evidence_install: bool) -> Result<InstalledHookAddresses, Strin
     reset_state(epoch)?;
     MODULE_BASE.store(base, Ordering::Release);
     let hooks = [
-        (sites.agency_owner_resolver, hook_agency_owner_resolver as *mut c_void, &ORIGINAL_AGENCY_OWNER_RESOLVER),
-        (sites.agency_outer, hook_agency_outer as *mut c_void, &ORIGINAL_AGENCY_OUTER),
-        (sites.agency_materializer, hook_agency_materializer as *mut c_void, &ORIGINAL_AGENCY_MATERIALIZER),
-        (sites.agency_filter, hook_agency_filter as *mut c_void, &ORIGINAL_AGENCY_FILTER),
-        (sites.cipher_outer, hook_cipher_outer as *mut c_void, &ORIGINAL_CIPHER_OUTER),
-        (sites.cipher_row, hook_cipher_row as *mut c_void, &ORIGINAL_CIPHER_ROW),
+        (
+            sites.agency_owner_resolver,
+            hook_agency_owner_resolver as *mut c_void,
+            &ORIGINAL_AGENCY_OWNER_RESOLVER,
+        ),
+        (
+            sites.agency_outer,
+            hook_agency_outer as *mut c_void,
+            &ORIGINAL_AGENCY_OUTER,
+        ),
+        (
+            sites.agency_materializer,
+            hook_agency_materializer as *mut c_void,
+            &ORIGINAL_AGENCY_MATERIALIZER,
+        ),
+        (
+            sites.agency_filter,
+            hook_agency_filter as *mut c_void,
+            &ORIGINAL_AGENCY_FILTER,
+        ),
+        (
+            sites.cipher_outer,
+            hook_cipher_outer as *mut c_void,
+            &ORIGINAL_CIPHER_OUTER,
+        ),
+        (
+            sites.cipher_row,
+            hook_cipher_row as *mut c_void,
+            &ORIGINAL_CIPHER_ROW,
+        ),
     ];
     let mut created = Vec::new();
     for (target, detour, original_slot) in hooks {
@@ -493,9 +506,14 @@ fn install_hooks(evidence_install: bool) -> Result<InstalledHookAddresses, Strin
             }
         }
     }
-    // Nested observers become active first; an outer hook is never able to
-    // publish a record while its inner observation boundary is absent.
-    for target in [sites.agency_owner_resolver, sites.agency_filter, sites.agency_materializer, sites.cipher_row, sites.agency_outer, sites.cipher_outer] {
+    for target in [
+        sites.agency_owner_resolver,
+        sites.agency_filter,
+        sites.agency_materializer,
+        sites.cipher_row,
+        sites.agency_outer,
+        sites.cipher_outer,
+    ] {
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             if let Err(cleanup) = rollback_created(&created) {
                 INSTALLED.store(true, Ordering::Release);
@@ -562,16 +580,23 @@ pub fn drain() -> Result<HookDrain, String> {
 
 pub fn receipt_from_drain(drain: &HookDrain) -> ControllerEvidenceReceipt {
     let sites = addresses(drain.module_base as usize);
-    let strict_sequence = drain.records.first().is_none_or(|record| record.sequence != 0)
-        && drain.records.windows(2).all(|pair| {
-            pair[0].sequence.checked_add(1) == Some(pair[1].sequence)
-        });
+    let strict_sequence = drain
+        .records
+        .first()
+        .is_none_or(|record| record.sequence != 0)
+        && drain
+            .records
+            .windows(2)
+            .all(|pair| pair[0].sequence.checked_add(1) == Some(pair[1].sequence));
     let domain53_multiplex_ready = drain.hook_epoch != 0
         && drain.module_base != 0
         && !drain.records.is_empty()
         && !drain.diagnostics.completeness_poisoned
         && strict_sequence
-        && drain.records.iter().all(|record| record.validate_carrier().is_ok());
+        && drain
+            .records
+            .iter()
+            .all(|record| record.validate_carrier().is_ok());
     ControllerEvidenceReceipt {
         schema: "hoi4.a30.controller_evidence.v1".into(),
         executable_sha256: EXECUTABLE_SHA256.into(),
@@ -606,14 +631,24 @@ pub fn visibility_products_from_drain(
     for record in &drain.records {
         match record.family {
             ControllerEvidenceFamily::AgencyUpgrade => {
-                if agency.is_some() { return Err("A30 drain repeats agency refresh".into()); }
-                agency = Some(crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(&record.payload)
-                    .map_err(|error| format!("A30 AUGC drain decode: {error:?}"))?);
+                if agency.is_some() {
+                    return Err("A30 drain repeats agency refresh".into());
+                }
+                agency = Some(
+                    crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(
+                        &record.payload,
+                    )
+                    .map_err(|error| format!("A30 AUGC drain decode: {error:?}"))?,
+                );
             }
             ControllerEvidenceFamily::CipherCountry => {
-                if cipher.is_some() { return Err("A30 drain repeats cipher refresh".into()); }
-                cipher = Some(crate::cipher_controller::CipherControllerRefresh::decode(&record.payload)
-                    .map_err(|error| format!("A30 CIPC drain decode: {error:?}"))?);
+                if cipher.is_some() {
+                    return Err("A30 drain repeats cipher refresh".into());
+                }
+                cipher = Some(
+                    crate::cipher_controller::CipherControllerRefresh::decode(&record.payload)
+                        .map_err(|error| format!("A30 CIPC drain decode: {error:?}"))?,
+                );
             }
         }
     }
@@ -624,30 +659,45 @@ pub fn visibility_products_from_drain(
 }
 
 pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
-    let _guard = INSTALL_LOCK.lock().map_err(|_| "A30 teardown lock poisoned")?;
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A30 teardown lock poisoned")?;
     if !installed() {
         return drain();
     }
     TEARING_DOWN.store(true, Ordering::Release);
     let sites = addresses(MODULE_BASE.load(Ordering::Acquire));
-    // Stop new atomic refreshes before disabling their nested observers.
     disable(sites.agency_outer)?;
     disable(sites.cipher_outer)?;
     wait_for_callbacks()?;
-    for target in [sites.agency_materializer, sites.agency_filter, sites.agency_owner_resolver, sites.cipher_row] {
+    for target in [
+        sites.agency_materializer,
+        sites.agency_filter,
+        sites.agency_owner_resolver,
+        sites.cipher_row,
+    ] {
         disable(target)?;
     }
     wait_for_callbacks()?;
-    let mut armed = armed().lock().map_err(|_| "A30 arm lock poisoned at teardown")?;
-    let unconsumed = u64::from(armed.agency.take().is_some())
-        + u64::from(armed.cipher.take().is_some());
+    let mut armed = armed()
+        .lock()
+        .map_err(|_| "A30 arm lock poisoned at teardown")?;
+    let unconsumed =
+        u64::from(armed.agency.take().is_some()) + u64::from(armed.cipher.take().is_some());
     drop(armed);
     if unconsumed != 0 {
         DROPPED_UNCONSUMED_ARM.fetch_add(unconsumed, Ordering::AcqRel);
         COMPLETENESS_POISONED.store(true, Ordering::Release);
     }
     let drained = drain()?;
-    for target in [sites.cipher_outer, sites.agency_outer, sites.cipher_row, sites.agency_materializer, sites.agency_filter, sites.agency_owner_resolver] {
+    for target in [
+        sites.cipher_outer,
+        sites.agency_outer,
+        sites.cipher_row,
+        sites.agency_materializer,
+        sites.agency_filter,
+        sites.agency_owner_resolver,
+    ] {
         match unsafe { inline_detour::remove(target as *mut c_void) } {
             Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
             Err(status) => return Err(format!("A30 hook remove failed at 0x{target:X}: {status}")),
@@ -660,7 +710,10 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
 
 unsafe extern "system" fn hook_agency_outer(controller: usize) {
     let _active = CallbackGuard::enter();
-    let Some(original) = original_outer(&ORIGINAL_AGENCY_OUTER) else { poison(&DROPPED_UNREADABLE); return };
+    let Some(original) = original_outer(&ORIGINAL_AGENCY_OUTER) else {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    };
     LAST_AGENCY_CONTROLLER.store(controller, Ordering::Release);
     if TEARING_DOWN.load(Ordering::Acquire) {
         unsafe { original(controller) };
@@ -677,18 +730,23 @@ unsafe extern "system" fn hook_agency_outer(controller: usize) {
         unsafe { original(controller) };
         return;
     };
-    OPEN_AGENCY.with(|slot| *slot.borrow_mut() = Some(OpenAgency {
-        builder: None,
-        arm: arm.clone(),
-        owner_resolved: false,
-        expected_controller: controller,
-        next_branch_index: 1,
-        pending_branch: None,
-        poisoned: false,
-    }));
+    OPEN_AGENCY.with(|slot| {
+        *slot.borrow_mut() = Some(OpenAgency {
+            builder: None,
+            arm: arm.clone(),
+            owner_resolved: false,
+            expected_controller: controller,
+            next_branch_index: 1,
+            pending_branch: None,
+            poisoned: false,
+        })
+    });
     unsafe { original(controller) };
     let open = OPEN_AGENCY.with(|slot| slot.borrow_mut().take());
-    let Some(mut open) = open else { poison(&DROPPED_UNREADABLE); return };
+    let Some(mut open) = open else {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    };
     if open.expected_controller != controller
         || !open.owner_resolved
         || open.poisoned
@@ -697,16 +755,20 @@ unsafe extern "system" fn hook_agency_outer(controller: usize) {
         poison(&DROPPED_UNREADABLE);
         return;
     }
-    let Some(builder) = open.builder.take() else { poison(&DROPPED_UNREADABLE); return };
+    let Some(builder) = open.builder.take() else {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    };
     match builder.finish().and_then(|refresh| refresh.encode()) {
-        Ok(payload) => retain(ControllerEvidenceFamily::AgencyUpgrade, arm.frame_hour, payload),
+        Ok(payload) => retain(
+            ControllerEvidenceFamily::AgencyUpgrade,
+            arm.frame_hour,
+            payload,
+        ),
         Err(_) => poison(&DROPPED_UNREADABLE),
     }
 }
 
-/// CCountry resolver. This closes the previous trust gap where the arm's human
-/// country could be accepted without proving that the active agency controller
-/// resolved the same country.
 unsafe extern "system" fn hook_agency_owner_resolver(country_id: usize) -> usize {
     let _active = CallbackGuard::enter();
     let address = ORIGINAL_AGENCY_OWNER_RESOLVER.load(Ordering::Acquire);
@@ -746,10 +808,19 @@ unsafe extern "system" fn hook_agency_owner_resolver(country_id: usize) -> usize
     result
 }
 
-unsafe extern "system" fn hook_agency_materializer(a1: usize, a2: usize, branch: usize, a4: usize, a5: usize) -> usize {
+unsafe extern "system" fn hook_agency_materializer(
+    a1: usize,
+    a2: usize,
+    branch: usize,
+    a4: usize,
+    a5: usize,
+) -> usize {
     let _active = CallbackGuard::enter();
     let address = ORIGINAL_AGENCY_MATERIALIZER.load(Ordering::Acquire);
-    if address == 0 { poison(&DROPPED_UNREADABLE); return 0; }
+    if address == 0 {
+        poison(&DROPPED_UNREADABLE);
+        return 0;
+    }
     let original: AgencyMaterializerFn = unsafe { mem::transmute(address) };
     OPEN_AGENCY.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -764,40 +835,57 @@ unsafe extern "system" fn hook_agency_materializer(a1: usize, a2: usize, branch:
     OPEN_AGENCY.with(|slot| {
         let mut slot = slot.borrow_mut();
         if let Some(open) = slot.as_mut() {
-            if open.pending_branch.is_some() { open.poisoned = true; }
+            if open.pending_branch.is_some() {
+                open.poisoned = true;
+            }
         }
     });
     result
 }
 
-unsafe extern "system" fn hook_agency_filter(source: usize, output: usize, predicate: usize) -> usize {
+unsafe extern "system" fn hook_agency_filter(
+    source: usize,
+    output: usize,
+    predicate: usize,
+) -> usize {
     let _active = CallbackGuard::enter();
     let address = ORIGINAL_AGENCY_FILTER.load(Ordering::Acquire);
-    if address == 0 { poison(&DROPPED_UNREADABLE); return 0; }
+    if address == 0 {
+        poison(&DROPPED_UNREADABLE);
+        return 0;
+    }
     let original: AgencyFilterFn = unsafe { mem::transmute(address) };
     let result = unsafe { original(source, output, predicate) };
     OPEN_AGENCY.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(open) = slot.as_mut() else { return };
-        let Some((branch_index, branch_definition)) = open.pending_branch.take() else { return };
+        let Some((branch_index, branch_definition)) = open.pending_branch.take() else {
+            return;
+        };
         let memory = InProcessMemory;
         let vector = memory.read_u64(output as u64);
         let count = output.checked_add(12).and_then(read_stable::<u32>);
         let observed = match (open.builder.as_mut(), vector, count) {
-            (Some(builder), Ok(vector), Some(count)) => builder.observe_filtered_branch(
-                &memory, branch_index, branch_definition, vector, count,
-            ).is_ok(),
+            (Some(builder), Ok(vector), Some(count)) => builder
+                .observe_filtered_branch(&memory, branch_index, branch_definition, vector, count)
+                .is_ok(),
             _ => false,
         };
-        if observed { open.next_branch_index = open.next_branch_index.saturating_add(1); }
-        else { open.poisoned = true; }
+        if observed {
+            open.next_branch_index = open.next_branch_index.saturating_add(1);
+        } else {
+            open.poisoned = true;
+        }
     });
     result
 }
 
 unsafe extern "system" fn hook_cipher_outer(controller: usize) {
     let _active = CallbackGuard::enter();
-    let Some(original) = original_outer(&ORIGINAL_CIPHER_OUTER) else { poison(&DROPPED_UNREADABLE); return };
+    let Some(original) = original_outer(&ORIGINAL_CIPHER_OUTER) else {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    };
     LAST_CIPHER_CONTROLLER.store(controller, Ordering::Release);
     if TEARING_DOWN.load(Ordering::Acquire) {
         unsafe { original(controller) };
@@ -815,23 +903,41 @@ unsafe extern "system" fn hook_cipher_outer(controller: usize) {
         return;
     };
     let builder = CipherControllerRefreshBuilder::begin(
-        arm.frame_hour, arm.owner_tag_db_id, arm.selected_target_tag_db_id,
-        arm.producer_record_identity, &arm.valid_country_tag_db_ids,
-    ).ok();
+        arm.frame_hour,
+        arm.owner_tag_db_id,
+        arm.selected_target_tag_db_id,
+        arm.producer_record_identity,
+        &arm.valid_country_tag_db_ids,
+    )
+    .ok();
     let poisoned = builder.is_none();
-    OPEN_CIPHER.with(|slot| *slot.borrow_mut() = Some(OpenCipher {
-        builder, expected_controller: controller, poisoned,
-    }));
+    OPEN_CIPHER.with(|slot| {
+        *slot.borrow_mut() = Some(OpenCipher {
+            builder,
+            expected_controller: controller,
+            poisoned,
+        })
+    });
     unsafe { original(controller) };
     let open = OPEN_CIPHER.with(|slot| slot.borrow_mut().take());
-    let Some(mut open) = open else { poison(&DROPPED_UNREADABLE); return };
+    let Some(mut open) = open else {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    };
     if open.expected_controller != controller || open.poisoned {
         poison(&DROPPED_UNREADABLE);
         return;
     }
-    let Some(builder) = open.builder.take() else { poison(&DROPPED_UNREADABLE); return };
+    let Some(builder) = open.builder.take() else {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    };
     match builder.finish().and_then(|refresh| refresh.encode()) {
-        Ok(payload) => retain(ControllerEvidenceFamily::CipherCountry, arm.frame_hour, payload),
+        Ok(payload) => retain(
+            ControllerEvidenceFamily::CipherCountry,
+            arm.frame_hour,
+            payload,
+        ),
         Err(_) => poison(&DROPPED_UNREADABLE),
     }
 }
@@ -839,13 +945,20 @@ unsafe extern "system" fn hook_cipher_outer(controller: usize) {
 unsafe extern "system" fn hook_cipher_row(row: usize, target_cid: usize, selected: u8) {
     let _active = CallbackGuard::enter();
     let address = ORIGINAL_CIPHER_ROW.load(Ordering::Acquire);
-    if address == 0 { poison(&DROPPED_UNREADABLE); return; }
+    if address == 0 {
+        poison(&DROPPED_UNREADABLE);
+        return;
+    }
     let original: CipherRowFn = unsafe { mem::transmute(address) };
     OPEN_CIPHER.with(|slot| {
         let mut slot = slot.borrow_mut();
         let Some(open) = slot.as_mut() else { return };
         let cid = read_stable::<u32>(target_cid);
-        if cid.is_none_or(|cid| open.builder.as_mut().is_none_or(|builder| builder.observe_bound_target(cid, selected).is_err())) {
+        if cid.is_none_or(|cid| {
+            open.builder
+                .as_mut()
+                .is_none_or(|builder| builder.observe_bound_target(cid, selected).is_err())
+        }) {
             open.poisoned = true;
         }
     });
@@ -854,42 +967,78 @@ unsafe extern "system" fn hook_cipher_row(row: usize, target_cid: usize, selecte
 
 fn take_agency_arm(controller: usize) -> Option<AgencyRefreshArm> {
     match armed().try_lock() {
-        Ok(mut armed) if armed.agency.as_ref().is_some_and(|arm| arm.expected_controller == controller) => armed.agency.take(),
+        Ok(mut armed)
+            if armed
+                .agency
+                .as_ref()
+                .is_some_and(|arm| arm.expected_controller == controller) =>
+        {
+            armed.agency.take()
+        }
         Ok(_) => None,
-        Err(_) => { poison(&DROPPED_LOCK_BUSY); None }
+        Err(_) => {
+            poison(&DROPPED_LOCK_BUSY);
+            None
+        }
     }
 }
 
 fn take_cipher_arm(controller: usize) -> Option<CipherRefreshArm> {
     match armed().try_lock() {
-        Ok(mut armed) if armed.cipher.as_ref().is_some_and(|arm| arm.expected_controller == controller) => armed.cipher.take(),
+        Ok(mut armed)
+            if armed
+                .cipher
+                .as_ref()
+                .is_some_and(|arm| arm.expected_controller == controller) =>
+        {
+            armed.cipher.take()
+        }
         Ok(_) => None,
-        Err(_) => { poison(&DROPPED_LOCK_BUSY); None }
+        Err(_) => {
+            poison(&DROPPED_LOCK_BUSY);
+            None
+        }
     }
 }
 
 fn validate_agency_arm(arm: &AgencyRefreshArm) -> Result<(), String> {
-    if arm.expected_controller == 0 || arm.owner_tag_db_id == 0
+    if arm.expected_controller == 0
+        || arm.owner_tag_db_id == 0
         || !arm.valid_country_tag_db_ids.contains(&arm.owner_tag_db_id)
         || arm.producer_record_identity.iter().all(|byte| *byte == 0)
-    { return Err("A30 agency arm is incomplete".into()); }
+    {
+        return Err("A30 agency arm is incomplete".into());
+    }
     Ok(())
 }
 
 fn validate_cipher_arm(arm: &CipherRefreshArm) -> Result<(), String> {
-    if arm.expected_controller == 0 || arm.owner_tag_db_id == 0
+    if arm.expected_controller == 0
+        || arm.owner_tag_db_id == 0
         || !arm.valid_country_tag_db_ids.contains(&arm.owner_tag_db_id)
-        || (arm.selected_target_tag_db_id != 0 && !arm.valid_country_tag_db_ids.contains(&arm.selected_target_tag_db_id))
+        || (arm.selected_target_tag_db_id != 0
+            && !arm
+                .valid_country_tag_db_ids
+                .contains(&arm.selected_target_tag_db_id))
         || arm.producer_record_identity.iter().all(|byte| *byte == 0)
-    { return Err("A30 cipher arm is incomplete".into()); }
+    {
+        return Err("A30 cipher arm is incomplete".into());
+    }
     Ok(())
 }
 
 fn retain(family: ControllerEvidenceFamily, frame_hour: u64, payload: Vec<u8>) {
     let sequence = NEXT_SEQUENCE.fetch_add(1, Ordering::AcqRel);
-    if sequence == 0 { poison(&DROPPED_OVERFLOW); return; }
+    if sequence == 0 {
+        poison(&DROPPED_OVERFLOW);
+        return;
+    }
     let record = Domain53ControllerEvidenceRecord {
-        sequence, thread_id: unsafe { GetCurrentThreadId() }, family, frame_hour, payload,
+        sequence,
+        thread_id: unsafe { GetCurrentThreadId() },
+        family,
+        frame_hour,
+        payload,
     };
     match queue().try_lock() {
         Ok(mut queue) if queue.len() < MAX_PENDING_RECORDS => queue.push_back(record),
@@ -906,12 +1055,24 @@ fn queue() -> &'static Mutex<VecDeque<Domain53ControllerEvidenceRecord>> {
 }
 
 fn reset_state(epoch: u64) -> Result<(), String> {
-    *armed().lock().map_err(|_| "A30 arm lock poisoned before install")? = ArmedRefreshes::default();
-    queue().lock().map_err(|_| "A30 queue lock poisoned before install")?.clear();
+    *armed()
+        .lock()
+        .map_err(|_| "A30 arm lock poisoned before install")? = ArmedRefreshes::default();
+    queue()
+        .lock()
+        .map_err(|_| "A30 queue lock poisoned before install")?
+        .clear();
     ACTIVE_HOOK_EPOCH.store(epoch, Ordering::Release);
     NEXT_SEQUENCE.store(1, Ordering::Release);
     TEARING_DOWN.store(false, Ordering::Release);
-    for counter in [&IGNORED_UNARMED_REFRESHES, &DROPPED_REENTRANT, &DROPPED_UNREADABLE, &DROPPED_LOCK_BUSY, &DROPPED_OVERFLOW, &DROPPED_UNCONSUMED_ARM] {
+    for counter in [
+        &IGNORED_UNARMED_REFRESHES,
+        &DROPPED_REENTRANT,
+        &DROPPED_UNREADABLE,
+        &DROPPED_LOCK_BUSY,
+        &DROPPED_OVERFLOW,
+        &DROPPED_UNCONSUMED_ARM,
+    ] {
         counter.store(0, Ordering::Release);
     }
     COMPLETENESS_POISONED.store(false, Ordering::Release);
@@ -945,12 +1106,14 @@ fn original_outer(slot: &AtomicUsize) -> Option<ControllerOuterFn> {
 
 pub(crate) struct InProcessMemory;
 impl Domain53Memory for InProcessMemory {
-    fn module_base(&self) -> u64 { MODULE_BASE.load(Ordering::Acquire) as u64 }
+    fn module_base(&self) -> u64 {
+        MODULE_BASE.load(Ordering::Acquire) as u64
+    }
     fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
-        let first = read_bytes(address as usize, len)
-            .ok_or(ExtractError::MemoryRead { address, len })?;
-        let second = read_bytes(address as usize, len)
-            .ok_or(ExtractError::MemoryRead { address, len })?;
+        let first =
+            read_bytes(address as usize, len).ok_or(ExtractError::MemoryRead { address, len })?;
+        let second =
+            read_bytes(address as usize, len).ok_or(ExtractError::MemoryRead { address, len })?;
         if first != second {
             return Err(ExtractError::Validation(
                 "a30_controller_evidence_torn_read".into(),
@@ -970,10 +1133,20 @@ fn read_value<T: Copy>(address: usize) -> Option<T> {
     Some(unsafe { ptr::read_unaligned(bytes.as_ptr().cast::<T>()) })
 }
 fn read_bytes(address: usize, len: usize) -> Option<Vec<u8>> {
-    if address == 0 || len == 0 { return None; }
+    if address == 0 || len == 0 {
+        return None;
+    }
     let mut bytes = vec![0u8; len];
     let mut read = 0usize;
-    let ok = unsafe { ReadProcessMemory(GetCurrentProcess(), address as *const c_void, bytes.as_mut_ptr().cast(), len, &mut read) };
+    let ok = unsafe {
+        ReadProcessMemory(
+            GetCurrentProcess(),
+            address as *const c_void,
+            bytes.as_mut_ptr().cast(),
+            len,
+            &mut read,
+        )
+    };
     (ok != 0 && read == len).then_some(bytes)
 }
 
@@ -998,8 +1171,11 @@ fn site_sentinels(sites: InstalledHookAddresses) -> [(usize, &'static [u8]); 6] 
     ]
 }
 fn verify_sentinel(address: usize, expected: &[u8]) -> Result<(), String> {
-    let actual = read_bytes(address, expected.len()).ok_or_else(|| format!("A30 sentinel unreadable at 0x{address:X}"))?;
-    if actual != expected { return Err(format!("A30 exact-a729 sentinel mismatch at 0x{address:X}")); }
+    let actual = read_bytes(address, expected.len())
+        .ok_or_else(|| format!("A30 sentinel unreadable at 0x{address:X}"))?;
+    if actual != expected {
+        return Err(format!("A30 exact-a729 sentinel mismatch at 0x{address:X}"));
+    }
     Ok(())
 }
 fn disable(target: usize) -> Result<(), String> {
@@ -1011,12 +1187,18 @@ fn disable(target: usize) -> Result<(), String> {
     }
 }
 fn rollback_created(created: &[usize]) -> Result<(), String> {
-    for target in created.iter().rev().copied() { disable(target)?; }
+    for target in created.iter().rev().copied() {
+        disable(target)?;
+    }
     wait_for_callbacks()?;
     for target in created.iter().rev().copied() {
         match unsafe { inline_detour::remove(target as *mut c_void) } {
             Ok(()) | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_NOT_CREATED)) => {}
-            Err(status) => return Err(format!("A30 rollback remove failed at 0x{target:X}: {status}")),
+            Err(status) => {
+                return Err(format!(
+                    "A30 rollback remove failed at 0x{target:X}: {status}"
+                ))
+            }
         }
     }
     Ok(())
@@ -1024,13 +1206,22 @@ fn rollback_created(created: &[usize]) -> Result<(), String> {
 fn wait_for_callbacks() -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
-        if Instant::now() >= deadline { return Err("A30 callbacks did not quiesce within 10 seconds".into()); }
+        if Instant::now() >= deadline {
+            return Err("A30 callbacks did not quiesce within 10 seconds".into());
+        }
         std::thread::yield_now();
     }
     Ok(())
 }
 fn clear_hook_state() {
-    for original in [&ORIGINAL_AGENCY_OUTER, &ORIGINAL_AGENCY_MATERIALIZER, &ORIGINAL_AGENCY_FILTER, &ORIGINAL_CIPHER_OUTER, &ORIGINAL_CIPHER_ROW, &ORIGINAL_AGENCY_OWNER_RESOLVER] {
+    for original in [
+        &ORIGINAL_AGENCY_OUTER,
+        &ORIGINAL_AGENCY_MATERIALIZER,
+        &ORIGINAL_AGENCY_FILTER,
+        &ORIGINAL_CIPHER_OUTER,
+        &ORIGINAL_CIPHER_ROW,
+        &ORIGINAL_AGENCY_OWNER_RESOLVER,
+    ] {
         original.store(0, Ordering::Release);
     }
     MODULE_BASE.store(0, Ordering::Release);
@@ -1045,9 +1236,18 @@ fn current_process_identity() -> ProcessIdentityReceipt {
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
     let process = unsafe { GetCurrentProcess() };
-    let has_times = unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) } != 0;
-    let create_time_100ns = if has_times { (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime) } else { 0 };
-    ProcessIdentityReceipt { pid: unsafe { GetCurrentProcessId() }, create_time_100ns, executable_sha256: EXECUTABLE_SHA256.into() }
+    let has_times =
+        unsafe { GetProcessTimes(process, &mut creation, &mut exit, &mut kernel, &mut user) } != 0;
+    let create_time_100ns = if has_times {
+        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime)
+    } else {
+        0
+    };
+    ProcessIdentityReceipt {
+        pid: unsafe { GetCurrentProcessId() },
+        create_time_100ns,
+        executable_sha256: EXECUTABLE_SHA256.into(),
+    }
 }
 fn sha256(bytes: &[u8]) -> String {
     let mut digest = Sha256::new();
@@ -1055,10 +1255,17 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", digest.finalize())
 }
 fn record_receipt(record: &Domain53ControllerEvidenceRecord) -> EncodedRecordReceipt {
-    let (owner_tag_db_id, selected_target_tag_db_id, producer_record_identity) = match record.family {
+    let (owner_tag_db_id, selected_target_tag_db_id, producer_record_identity) = match record.family
+    {
         ControllerEvidenceFamily::AgencyUpgrade => {
-            match crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(&record.payload) {
-                Ok(refresh) => (Some(refresh.owner_tag_db_id), None, Some(hex(&refresh.producer_record_identity))),
+            match crate::agency_upgrade_controller::AgencyUpgradeControllerRefresh::decode(
+                &record.payload,
+            ) {
+                Ok(refresh) => (
+                    Some(refresh.owner_tag_db_id),
+                    None,
+                    Some(hex(&refresh.producer_record_identity)),
+                ),
                 Err(_) => (None, None, None),
             }
         }
@@ -1097,12 +1304,16 @@ fn hook_site_receipts(sites: InstalledHookAddresses, module_base: usize) -> Vec<
         "6368de5e6359edf502702a93093e20a6ddb69bccd1b7bc7894ab185231b50f73",
         "00a567e6bd65a98ae4e3ebcd865f71bd14b85d984c134fdec97f21c2a8469842",
     ];
-    site_sentinels(sites).into_iter().zip(artifact_hashes).map(|((address, sentinel), artifact_sha256)| HookSiteReceipt {
-        rva: address.saturating_sub(module_base) as u32,
-        installed_address: address as u64,
-        sentinel_sha256: sha256(sentinel),
-        artifact_sha256: artifact_sha256.into(),
-    }).collect()
+    site_sentinels(sites)
+        .into_iter()
+        .zip(artifact_hashes)
+        .map(|((address, sentinel), artifact_sha256)| HookSiteReceipt {
+            rva: address.saturating_sub(module_base) as u32,
+            installed_address: address as u64,
+            sentinel_sha256: sha256(sentinel),
+            artifact_sha256: artifact_sha256.into(),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1111,14 +1322,9 @@ mod tests {
 
     fn cipher_record(frame_hour: u64) -> Domain53ControllerEvidenceRecord {
         let countries = BTreeSet::from([1, 2, 3]);
-        let mut builder = CipherControllerRefreshBuilder::begin(
-            frame_hour,
-            1,
-            2,
-            [0x5a; 32],
-            &countries,
-        )
-        .unwrap();
+        let mut builder =
+            CipherControllerRefreshBuilder::begin(frame_hour, 1, 2, [0x5a; 32], &countries)
+                .unwrap();
         builder.observe_bound_target(2, 1).unwrap();
         builder.observe_bound_target(3, 0).unwrap();
         Domain53ControllerEvidenceRecord {
@@ -1137,7 +1343,10 @@ mod tests {
         assert_eq!(&h4cr[..4], b"H4CR");
         assert_eq!(u64::from_le_bytes(h4cr[8..16].try_into().unwrap()), 41);
         assert_eq!(i32::from_le_bytes(h4cr[16..20].try_into().unwrap()), 900);
-        assert_eq!(u16::from_le_bytes(h4cr[20..22].try_into().unwrap()), crate::DOMAIN_ID);
+        assert_eq!(
+            u16::from_le_bytes(h4cr[20..22].try_into().unwrap()),
+            crate::DOMAIN_ID
+        );
         assert_eq!(&h4cr[32..], record.payload.as_slice());
     }
 

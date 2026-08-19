@@ -1,15 +1,4 @@
-//! Verdict tool for the passive capture harness.
-//!
-//! `Invoke-HeadlessRawCapture.ps1` appends every observation it takes to the
-//! witness JSONL -- including the one that ends the run, which the previous
-//! harness threw away by throwing before it wrote -- and then asks this tool
 //! whether the run may continue. Exit code 0 means continue, 3 means stop, and
-//! the reason is a single named failure on stderr.
-//!
-//! Keeping the decision here rather than in the harness is what makes it
-//! testable: the workspace has no PowerShell test runner, and every guard in
-//! this lane has to be provable by making a production change and watching a
-//! named test go red.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -87,8 +76,6 @@ fn main() -> ExitCode {
     let mut run = WitnessRun::new(args.policy);
     let mut fatal = None;
     for (index, line) in text.lines().enumerate() {
-        // PowerShell writes UTF-8 with a BOM; strip it rather than fail on the
-        // first line of every run.
         let line = line.trim_start_matches('\u{feff}').trim();
         if line.is_empty() {
             continue;
@@ -113,9 +100,6 @@ fn main() -> ExitCode {
         }
     }
 
-    // The interval report is written whatever the verdict: a run that ended on
-    // a failure is exactly the run whose paused/active split someone will want
-    // to read.
     if let Some(path) = args.intervals_out.as_ref() {
         let report = run.interval_report();
         match serde_json::to_string_pretty(&report) {

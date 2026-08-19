@@ -2,19 +2,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance, compact_status_unknown_flags_v1,
-    parse_compact_record_header, validate_compact_record_semantics, RecordFramingError,
-    COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN, COMPACT_FRAME_END_PAYLOAD_LEN,
-    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
-    COMPACT_STATUS_FAILURE_MASK, KnownRecordType,
+    parse_compact_record_header, validate_compact_record_semantics, KnownRecordType,
+    RecordFramingError, COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN,
+    COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
+    COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_FAILURE_MASK,
 };
 use recorder_host::domain_data_authority::{summarize_domain_data_payload, DomainDataContext};
 
-pub mod a729_focus_item_producer;
 #[cfg(windows)]
 pub mod a729_focus_item_hook;
 #[cfg(windows)]
 mod a729_focus_item_inline;
+pub mod a729_focus_item_producer;
 #[cfg(windows)]
 pub mod a729_research_ahead_hook;
 pub mod national_focus_presentation;
@@ -49,10 +49,6 @@ const DEPTH_STATUS_FOCUS_PAUSE_EXACT: u32 = 1 << 3;
 const DEPTH_STATUS_DECISION_TARGETS_EXACT: u32 = 1 << 4;
 const DEPTH_STATUS_DECISION_COOLDOWNS_EXACT: u32 = 1 << 5;
 const DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED: u32 = 1 << 6;
-// Bits 0..=5 are the legacy depth-authority word carried by every schema.
-// Bit 6 is a schema-v5-only statement about the independent direct-event
-// trailer.  Keep the masks separate: recognizing the v5 bit must never cause
-// a v1-v4 encoder to claim that a live direct-hook source was validated.
 const DEPTH_STATUS_LEGACY_KNOWN_MASK: u32 = DEPTH_STATUS_FOCUS_PAUSE_BADGED
     | DEPTH_STATUS_DECISION_TARGETS_BADGED
     | DEPTH_STATUS_DIRECT_EVENTS_DERIVED
@@ -125,16 +121,7 @@ const DECISION_TARGET_FLAG_KNOWN_MASK: u32 = DECISION_TARGET_FLAG_COUNTRY_TAG
     | DECISION_TARGET_FLAG_NUMERIC_ID
     | DECISION_TARGET_FLAG_RECORD_0X24;
 const DECISION_TARGET_UNKNOWN_ID: u32 = u32::MAX;
-/// Was `4096`, a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags). ENGINE-STRUCTURAL now: a country database id is admissible iff
-/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`.
 const DECISION_TARGET_MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
-/// The numeric decision target is a STATE identity, not an opaque number:
-/// `TargetedDecisionTarget::Numeric` becomes `panel::Target::State(state_id)`
-/// in `collector/src/a34_a40_evidence.rs`. So this was a state ceiling under a
-/// role name -- `1_000_000` -- and a name-based census could not see it. It is
-/// now the state id space's STRUCTURAL width
-/// (`claim_39c989ce13504504353c`).
 const DECISION_TARGET_MAX_NUMERIC_ID: u32 = (i32::MAX as u32) - 1;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -854,9 +841,6 @@ impl Deriver {
 }
 
 fn apply_required_badges(rows: &mut DepthFrameRows) {
-    // This helper builds the legacy derived/snapshot proof and its explicit
-    // unavailable badges.  Only the collector's authenticated schema-v5 path
-    // may set DIRECT_HOOK_SOURCE_VALIDATED and remove the direct-hook badge.
     rows.status_flags |= DEPTH_STATUS_LEGACY_KNOWN_MASK;
     rows.status_flags &= !DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED;
     push_badge_if_missing(
@@ -935,8 +919,12 @@ fn validate_authoritative_stream(
     require_owned_schema_v2: bool,
 ) -> AuthoritativeStreamValidation {
     let mut result = AuthoritativeStreamValidation::default();
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
-        result.errors.push(format!("stateful stream placement: {error}"));
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(raw)
+    {
+        result
+            .errors
+            .push(format!("stateful stream placement: {error}"));
     }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
@@ -1123,12 +1111,6 @@ fn validate_authoritative_stream(
                                 & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2
                                 == 0
                         {
-                            // Unflagged D45 is the lane-local v1 proof wire,
-                            // whose first word is decision_target_count. The
-                            // shared production decoder's legacy v1 predates
-                            // those target rows, so validate this proof-only
-                            // form with the lane decoder. Production FRD2 must
-                            // always take the shared flag-aware path below.
                             let local = decode_depth_payload(offset, record.payload);
                             if local.parse_errors.is_empty() {
                                 result
@@ -1163,11 +1145,6 @@ fn validate_authoritative_stream(
                                         && error.errors[0].contains("trailing byte(s)")
                                         && decode_decisions_payload(record.payload).is_ok() =>
                                 {
-                                    // D16's lane-local target extension is newer
-                                    // than the base shared D16 authority. Accept
-                                    // only the shared decoder's sole trailing-byte
-                                    // diagnostic after the extension decoder has
-                                    // independently consumed the entire suffix.
                                     result.data_status_by_hour_domain.insert(
                                         (record.game_hour_raw, record.domain_id),
                                         error.partial_authority.status_flags,
@@ -1349,9 +1326,14 @@ fn validate_authoritative_stream(
                 final_record_is_certified_frame_end = certified;
             }
             KnownRecordType::FreezeCensus => {
-                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(record.payload) {
+                if let Ok(census) =
+                    compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(
+                        record.payload,
+                    )
+                {
                     final_record_is_certified_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
-                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    release_epilogue_seen |= census.phase()
+                        == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
             KnownRecordType::ContentIdentityCensus
@@ -1623,8 +1605,6 @@ pub fn derive_depth_stream(raw: &[u8]) -> Result<DepthProof, String> {
         _ => 0,
     };
     proof.skipped_game_hours = skipped_hours(&frame_hours);
-    // Derivation uses the structural summary; the production gate requires an
-    // independently supplied positive duration target at its public boundary.
     let depth_gate = summarize_depth_stream(&proof.depth_stream);
     proof.focus_pause_badge_rows = depth_gate.focus_pause_badge_rows;
     proof.decision_target_rows = depth_gate.decision_target_rows;
@@ -1641,9 +1621,6 @@ pub fn encode_depth_payload(rows: &DepthFrameRows) -> Vec<u8> {
     let mut normalized = rows.clone();
     apply_required_badges(&mut normalized);
     let rows = &normalized;
-    // Lane-local proof format only. The shared H4CR D45 wire payload is
-    // collector-encoded, selected by the H4CR record-header schema-v2 flag, and
-    // redundantly sanity-checked with its FRD2 header by recorder_host.
     let mut payload = Vec::new();
     payload.extend_from_slice(
         &(rows.decision_targets.len().min(u32::MAX as usize) as u32).to_le_bytes(),
@@ -1925,16 +1902,6 @@ pub fn decode_depth_payload(offset: usize, payload: &[u8]) -> DepthGateSummary {
                 "offset {offset}: focus row {row_index} has exact completed-token flag without token"
             ));
         }
-        // A completed-count-increase row is legitimately token-less when the
-        // encoder could not resolve a focus token: completed_count ticked up
-        // while the country had no active national/continuous focus at either
-        // bracketing sample (focus_kind == 0) and completed_tokens surfaced no
-        // new token, so neither the EXACT nor INFERRED completed-token flag is
-        // set. This is the `focus_completed_unresolved_rows` state, not
-        // corruption: the completion delta and counts are still carried, so
-        // accepting it loses no data and fabricates no token. An EXACT/INFERRED
-        // completed row without a token stays a hard error, and kinds 2..=5
-        // always carry >=1 token, so this exemption stays tight and fail-closed.
         let unresolved_completion = kind == FOCUS_EVENT_COMPLETED_COUNT_INCREASED
             && flags & (FOCUS_FLAG_COMPLETED_TOKEN_EXACT | FOCUS_FLAG_COMPLETED_TOKEN_INFERRED)
                 == 0;
@@ -2453,10 +2420,7 @@ fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> 
     let header_len = read_u16_le(payload, 6) as usize;
     if !matches!(
         (schema_version, header_len),
-        (2, V2_HEADER_LEN)
-            | (3, V3_HEADER_LEN)
-            | (4, V3_HEADER_LEN)
-            | (5, V5_HEADER_LEN)
+        (2, V2_HEADER_LEN) | (3, V3_HEADER_LEN) | (4, V3_HEADER_LEN) | (5, V5_HEADER_LEN)
     ) {
         return Err(format!(
             "{DOMAIN_NAME} versioned header has version {schema_version} and length {header_len}"
@@ -2469,28 +2433,22 @@ fn normalize_depth_versioned_payload(payload: &[u8]) -> Result<Vec<u8>, String> 
         ));
     }
 
-    // V2/V3 share the legacy 16-byte decision-target prefix. V4/V5 extend that
-    // row by 12 bytes and V5 appends the pointer-free direct-transition
-    // trailer. Rebuild only the legacy D45 view consumed by this lane-local
-    // proof; the recorder remains the canonical detailed/v5 fold authority.
     let mut normalized = Vec::with_capacity(
         payload
             .len()
             .saturating_sub(header_len.saturating_sub(DEPTH_HEADER_LEN)),
     );
-    normalized.extend_from_slice(&payload[28..32]); // decision_target_count
-    normalized.extend_from_slice(&0u32.to_le_bytes()); // v1 reserved schema word
-    normalized.extend_from_slice(&payload[8..28]); // status + four row counts
-    normalized.extend_from_slice(&payload[32..52]); // observed counts + badge count
+    normalized.extend_from_slice(&payload[28..32]);
+    normalized.extend_from_slice(&0u32.to_le_bytes());
+    normalized.extend_from_slice(&payload[8..28]);
+    normalized.extend_from_slice(&payload[32..52]);
     if schema_version <= 3 {
         normalized.extend_from_slice(&payload[header_len..]);
     } else {
         normalize_v4_v5_depth_rows(payload, header_len, schema_version, &mut normalized)?;
     }
     let depth_status = read_u32_le(payload, 8);
-    if schema_version == 5
-        && depth_status & DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED == 0
-    {
+    if schema_version == 5 && depth_status & DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED == 0 {
         return Err(format!(
             "{DOMAIN_NAME} schema-v5 payload lacks validated direct-hook source"
         ));
@@ -2533,7 +2491,9 @@ fn normalize_v4_v5_depth_rows(
     }
     let fixed_len = research_count
         .checked_mul(RESEARCH_ETA_ROW_LEN)
-        .and_then(|len| len.checked_add(decision_status_count.checked_mul(DECISION_STATUS_ROW_LEN)?))
+        .and_then(|len| {
+            len.checked_add(decision_status_count.checked_mul(DECISION_STATUS_ROW_LEN)?)
+        })
         .ok_or_else(|| "v4/v5 fixed row length overflow".to_string())?;
     require_remaining(payload, cursor, fixed_len, "v4/v5 fixed rows")?;
     normalized.extend_from_slice(&payload[cursor..cursor + fixed_len]);
@@ -2565,9 +2525,6 @@ fn normalize_v4_v5_depth_rows(
             .get(cursor..)
             .ok_or_else(|| "v5 direct trailer offset overflow".to_string())?;
         let sequence_start = if direct_count == 0 {
-            // The hook epoch and sequence cursor survive logical-stream
-            // rollover. An empty first drain therefore establishes the new
-            // stream's process-wide baseline instead of implying sequence 1.
             32
         } else {
             require_remaining(
@@ -2608,9 +2565,6 @@ fn normalize_v4_v5_depth_rows(
     Ok(())
 }
 
-/// Gate a production D45 stream for an explicit commanded number of game-hour
-/// advancements. Because both endpoints must be closed, `N` advancements
-/// require exactly `N + 1` consecutive FRAME_ENDs.
 pub fn gate_existing_depth_stream(
     raw: &[u8],
     commanded_game_hour_advancements: i64,
@@ -4293,14 +4247,12 @@ mod tests {
             evidence_fixture: false,
             rows: Vec::new(),
         };
-        let trailer =
-            direct_frd_transitions_live::encode_authoritative_trailer(&batch).unwrap();
+        let trailer = direct_frd_transitions_live::encode_authoritative_trailer(&batch).unwrap();
         let mut payload = vec![0u8; 64];
         payload[0..4].copy_from_slice(b"FRD2");
         payload[4..6].copy_from_slice(&5u16.to_le_bytes());
         payload[6..8].copy_from_slice(&64u16.to_le_bytes());
-        payload[8..12]
-            .copy_from_slice(&DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED.to_le_bytes());
+        payload[8..12].copy_from_slice(&DEPTH_STATUS_DIRECT_HOOK_SOURCE_VALIDATED.to_le_bytes());
         payload.extend_from_slice(&trailer);
 
         let normalized = normalize_depth_versioned_payload(&payload)
@@ -4662,15 +4614,6 @@ mod tests {
 
     #[test]
     fn unresolved_focus_completion_gates_clean_and_counts_unresolved() {
-        // Emission/gate invariant regression for the 2026-07-09 speed-5
-        // production stream-corruption bug. A country's completed-focus count
-        // advances (43 -> 44) while it has no active national or continuous
-        // focus at either bracketing sample. The encoder can name no token, so
-        // it emits a COMPLETED_COUNT_INCREASED row with from/to/completed all
-        // empty -- the focus_completed_unresolved_rows state. The depth gate
-        // must accept it (no data loss, no fabricated token) rather than
-        // reporting "focus depth row N has no token context", which is what made
-        // the production compact stream NOT DECODABLE.
         let mut stream = Vec::new();
         let mut sequence = 1;
         let focus_1 = focus_payload(FocusState {
@@ -4713,8 +4656,6 @@ mod tests {
             "{:?}",
             proof.depth_parse_errors
         );
-        // The completion event is retained (not dropped) and classified as
-        // unresolved (neither exact nor inferred token).
         assert_eq!(proof.focus_event_rows, 1);
         assert_eq!(proof.focus_completed_unresolved_rows, 1);
         assert_eq!(proof.focus_completed_exact_rows, 0);
@@ -4723,9 +4664,6 @@ mod tests {
 
     #[test]
     fn tokenless_non_completion_row_still_fails_closed() {
-        // Corruption guard: the token-less exemption is scoped to
-        // COMPLETED_COUNT_INCREASED. A CURRENT_STARTED row (kind 2) with no
-        // tokens cannot be produced by the encoder and must still be rejected.
         let rows = DepthFrameRows {
             status_flags: 0,
             focus_events: vec![FocusEventRow {
@@ -4759,9 +4697,6 @@ mod tests {
 
     #[test]
     fn tokenless_inferred_completion_row_still_fails_closed() {
-        // Corruption guard: an INFERRED-flagged completion with no token bytes is
-        // inconsistent (the encoder sets INFERRED only when it attaches a token)
-        // and must stay a hard error, not be swallowed by the exemption.
         let rows = DepthFrameRows {
             status_flags: 0,
             focus_events: vec![FocusEventRow {
@@ -5159,31 +5094,8 @@ mod tests {
     }
 }
 
-/// EVERY HELD-FREEZE WINDOW IN THIS CRATE, READ.
-///
-/// This crate takes `inline_detour::freeze_process()` directly, which stops
-/// every other thread of the game. Until the guard drops, an allocation or a
-/// lock here is a HANG and not a slow path: the lock may be held by a thread
-/// that can no longer run, and the collector declares no `#[global_allocator]`,
-/// so Rust's allocator is `HeapAlloc` on the PROCESS DEFAULT HEAP -- the same
-/// heap the game's own threads reach through ordinary Win32 calls.
-///
-/// `inline_detour` has enforced this on its own windows for a long time. This
-/// crate did not, and the audit found real defects the first time it ran.
-///
-/// What production change would make this fail? Building an error string,
-/// collecting an iterator, taking a mutex, or growing a vector between the
-/// freeze and its drop -- at any call depth inside this crate, in any file
-/// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    /// How many findings this crate still carries, and WHICH ones.
-    ///
-    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted
-    /// findings, so any change to which ones exist fails here even when there
-    /// are the same number of them. Both may only move when a human decides
-    /// they should, and only DOWNWARD.
     const OPEN_FINDINGS: usize = 0;
     const OPEN_FINDINGS_FINGERPRINT: u64 = 14695981039346656037u64;
 

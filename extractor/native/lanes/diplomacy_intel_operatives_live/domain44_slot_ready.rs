@@ -543,8 +543,6 @@ mod tests {
 
     #[test]
     fn rejects_legacy_lifecycle_event_without_matching_source_proof() {
-        // Decoder compatibility for historical v20 payloads is intentional.
-        // This row must never be confused with current producer evidence.
         let mut snapshot = gap_badged_snapshot();
         snapshot.operatives.clear();
         snapshot.state_events.clear();
@@ -705,9 +703,6 @@ mod tests {
                     value_hash: stable_hash32("autonomy_ratio_50000"),
                     value_raw: 50_000,
                 },
-                // The derived relation-opinion event for (1 -> 2, 25) is no
-                // longer encoded (schema v2); the decoder rebuilds it from the
-                // opinion row, so the asserted state-event counts are unchanged.
                 StateEventRow {
                     owner_tag_db_id: 1,
                     target_tag_db_id: None,

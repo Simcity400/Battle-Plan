@@ -41,9 +41,6 @@ pub(crate) fn terrain_sample_uv(
     (u, v)
 }
 
-/// HLSL `frac(x)` is `x - floor(x)`. Rust's `f32::fract()` instead preserves
-/// the sign for negative inputs, which selects the wrong atlas tile edge for
-/// wrapped terrain coordinates west/south of the canonical map copy.
 pub(crate) fn hlsl_frac(value: f32) -> f32 {
     value - value.floor()
 }

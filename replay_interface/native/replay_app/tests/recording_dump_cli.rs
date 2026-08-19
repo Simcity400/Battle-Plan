@@ -10,12 +10,6 @@ fn fixture_path() -> PathBuf {
         .join("fixtures/positive/fx_owner_controller_flip.battleplan")
 }
 
-/// A `replay_app` invocation with every blocker-registry environment override
-/// stripped. `--validate-recording` and ordinary startup both run
-/// `reject_env_overrides` before doing anything else, so an inherited debug
-/// variable in a developer's shell would fail these tests on a perfectly
-/// healthy build. The names come from the registry itself (via
-/// `--list-blockers`), never from a list copied into this file.
 fn sanitized_command() -> Command {
     let names = registry_env_override_names();
     sanitized_command_with_env_override_names(&names)
@@ -93,21 +87,6 @@ fn invalid_canonical_dump_hour_exits_nonzero_with_requested_hour_and_valid_range
     }
 }
 
-// ---------------------------------------------------------------------------
-// Production dump contract, driven by the blocker registry itself.
-//
-// These replace the `replay_qa` "recording ingest + scrub" gate, which was built
-// against the OLD contract (a recording invocation could carry `--bundle`,
-// `--capture`, `--dump-zoom`, `--dump-center`) and can no longer fire at all now
-// that those are `Scope::ProductionRecording` registry rows. That gate also lived
-// in replay_qa's library, reachable only from `run_harness` and from no `#[test]`,
-// so it could rot green. Here it is an ordinary integration test over the BUILT
-// binary: it proves the shipped `replay_app` actually invokes the refusal, which
-// the unit test over `reject_production_recording_debug_cli` cannot.
-//
-// The token list is read from `--list-blockers` -- the registry's own mechanical
-// emission -- so this file never holds a second copy of a table the code owns.
-// ---------------------------------------------------------------------------
 
 const REFUSAL_MARKER: &str = "is blocked in production recording playback";
 
@@ -117,13 +96,7 @@ struct BlockerRow {
     scope: String,
 }
 
-/// Parse `--list-blockers`. Every deviation from the documented shape is a hard
-/// failure: a silently-skipped malformed line is exactly how a scoped row would
-/// stop being exercised without anyone noticing.
 fn list_blockers() -> Vec<BlockerRow> {
-    // `--list-blockers` is intercepted before `parse_cli` AND before
-    // `reject_env_overrides`, so it needs no environment sanitizing -- which is
-    // what lets `sanitized_command` bootstrap from it without recursing.
     let mut command = Command::new(env!("CARGO_BIN_EXE_replay_app"));
     command.arg("--list-blockers");
     let output = bounded_output(command);
@@ -156,13 +129,6 @@ fn list_blockers() -> Vec<BlockerRow> {
             7,
             "blocker row {index} is not 7 tab-separated fields: {line:?}"
         );
-        // Validate the two enumerated fields this test filters on. Without this,
-        // a row whose scope or surface kind is renamed or misspelled would simply
-        // stop matching the filter below and quietly stop being exercised, while
-        // the non-vacuity assertion still passed on the rows that survived. These
-        // are closed sets in the code (`Scope::as_str`, `Surface::kind_str`), so
-        // an unknown value means the emission changed and this test must be
-        // updated deliberately rather than silently narrowing its coverage.
         assert!(
             matches!(fields[2], "cli-switch" | "env-override"),
             "blocker row {index} has an unknown surface kind {:?}; \
@@ -182,9 +148,6 @@ fn list_blockers() -> Vec<BlockerRow> {
         });
     }
 
-    // The trailing sanctioned-environment section has a different arity. Assert
-    // its shape rather than letting a 4-field line be mistaken for a short
-    // blocker row.
     let env_header = lines
         .next()
         .expect("--list-blockers omitted the sanctioned environment section");
@@ -224,7 +187,6 @@ fn registry_env_override_names_from(rows: &[BlockerRow]) -> Vec<String> {
         .collect()
 }
 
-/// The production-recording-scoped CLI switches, from the registry.
 fn production_recording_scoped_tokens_from(rows: &[BlockerRow]) -> Vec<String> {
     let tokens: Vec<String> = rows
         .into_iter()
@@ -245,11 +207,6 @@ fn production_recording_scoped_tokens_from(rows: &[BlockerRow]) -> Vec<String> {
     tokens
 }
 
-/// A syntactically VALID argument for each scoped switch. It must parse, because
-/// the refusal is checked after `parse_cli` -- a malformed value would produce an
-/// ordinary usage error that names the same token and would be mistaken for a
-/// refusal. Fails closed on an unmapped token, mirroring how
-/// `recording_scoped_cli_present` in main.rs refuses to guess.
 fn probe_value(token: &str) -> &'static str {
     match token {
         "--bundle" => "probe_bundle_dir",
@@ -265,14 +222,6 @@ fn probe_value(token: &str) -> &'static str {
     }
 }
 
-/// Every production-recording-scoped CLI switch is refused by the BUILT binary,
-/// before the recording is even opened.
-///
-/// The invocation deliberately also carries an out-of-range `--dump-hour`, so it
-/// is hermetic: it can never reach the game install discovery, and the refusal must
-/// preempt even the invalid-hour preflight. The paired control below runs the
-/// identical argv WITHOUT a scoped switch and must reach that preflight instead,
-/// which is what stops this test from passing on a binary that refuses everything.
 #[test]
 fn production_recording_scoped_cli_switches_are_refused_by_the_built_binary() {
     let recording = fixture_path();
@@ -306,23 +255,16 @@ fn production_recording_scoped_cli_switches_are_refused_by_the_built_binary() {
             "{token} refusal wrote stdout: {}",
             String::from_utf8_lossy(&output.stdout)
         );
-        // Exact refusal shape. A parse error also exits non-zero and also names
-        // the token, so "non-zero and mentions the token" would be satisfied by
-        // a broken build.
         let expected_prefix = format!("replay_app: {token} {REFUSAL_MARKER}");
         assert!(
             stderr.starts_with(&expected_prefix),
             "{token} did not produce the registry refusal.\n  expected prefix: \
              {expected_prefix}\n  actual stderr: {stderr}"
         );
-        // The usage block itself contains the words "are blocked" for several
-        // switches, so a usage dump must be excluded explicitly.
         assert!(
             !stderr.contains("usage:"),
             "{token} produced a usage/parse diagnostic, not a registry refusal: {stderr}"
         );
-        // Ordering: the refusal must precede the dump-hour preflight, proving the
-        // switch is rejected before the recording is opened.
         assert!(
             !stderr.contains("requested canonical hour"),
             "{token} reached the dump-hour preflight; the refusal must come first: {stderr}"
@@ -330,9 +272,6 @@ fn production_recording_scoped_cli_switches_are_refused_by_the_built_binary() {
     }
 }
 
-/// Control for the test above: the identical argv with NO scoped switch is NOT
-/// refused by a blocker. Without this, the contract test would still pass if the
-/// binary had regressed into refusing every recording invocation.
 #[test]
 fn production_contract_recording_invocation_is_not_blocker_refused() {
     let recording = fixture_path();
@@ -354,21 +293,12 @@ fn production_contract_recording_invocation_is_not_blocker_refused() {
         !stderr.contains(REFUSAL_MARKER),
         "a plain production-contract recording invocation was blocker-refused: {stderr}"
     );
-    // It got past the registry gate and into the real preflight.
     assert!(
         stderr.contains("requested canonical hour"),
         "control invocation did not reach the dump-hour preflight: {stderr}"
     );
 }
 
-/// Ingest half of the retired scrub gate: the BUILT binary opens a committed,
-/// multi-hour, snapshot-native recording end to end. `--validate-recording` runs
-/// the whole recording through the exact playback open path and authenticates
-/// every indexed frame payload, and it needs no map bundle, no GPU and no the game
-/// install.
-///
-/// The hour span is asserted structurally rather than pinned to a golden number:
-/// a pinned count would be a second copy of a fact the fixture already owns.
 #[test]
 fn committed_multi_hour_recording_is_ingested_by_the_built_binary() {
     let recording = fixture_path();
@@ -389,7 +319,6 @@ fn committed_multi_hour_recording_is_ingested_by_the_built_binary() {
         "unexpected validator summary: {summary}"
     );
 
-    // `opened "<id>": <n> hour(s), <first>..=<last>`
     let tail = summary.split_once(": ").expect("summary has no ': '").1;
     let (count, span) = tail.split_once(" hour(s), ").expect("summary has no hour span");
     let count: usize = count.parse().expect("hour count is numeric");

@@ -1,63 +1,19 @@
-//! Build-agnostic admission contract for engine-owned function-pointer and
-//! vtable slots.
-//!
-//! The PE64 import-address-slot sites the crate already installs get their
-//! provenance for free: an import thunk names the DLL and symbol it dispatches
-//! to, the loader is the only writer, and the loader's own IAT is by
-//! construction the complete set of slots through which an imported function is
-//! reached from this image. None of that holds for a function the engine owns.
-//! An internal function has no thunk naming it, its pointer can be replicated
-//! into any number of engine-owned tables, and it can also be reached by a
-//! direct `CALL rel32` that never loads a pointer at all.
-//!
-//! That last case is the one this module exists for. A pointer-slot hook
-//! observes exactly the calls that dispatch *through* the slot. Calls that
-//! reach the same function directly are invisible to it, and an observer that
-//! silently misses them under-reports without ever failing. So a site is
-//! admitted only against an enumeration that reached a fixed point over *every*
-//! incoming edge, and only when that enumeration found no direct-call bypass to
-//! be blind to. An enumeration that did not converge, or that converged on a
-//! target which is also called directly, is refused here rather than installed
-//! and quietly trusted.
-//!
-//! Nothing in this module is PE-import-specific and nothing it produces may be
-//! attested as a PE import. The two genuine import sites keep their own
-//! `ExpectedPe64ImportAddressSlot` front and their own `pe64.…` primitive id;
-//! this front carries `ENGINE_OWNED_FUNCTION_POINTER_SLOT_PRIMITIVE_ID`.
-
 use sha2::{Digest, Sha256};
 
-/// Primitive id for an engine-owned function-pointer or vtable slot redirected
-/// by a naturally aligned atomic compare/exchange whose dispatch shim,
-/// callback, and unwind allocations are retained until process exit.
 pub const ENGINE_OWNED_FUNCTION_POINTER_SLOT_PRIMITIVE_ID: &str =
     "engine-owned-function-pointer-slot.aligned-usize-cas.process-lifetime.v1";
 
-/// Teardown policy id: the slot returns to the engine's own pointer by an
-/// atomic compare/exchange, and every allocation a target thread could still be
-/// executing inside stays mapped for the life of the process.
 pub const ENGINE_OWNED_FUNCTION_POINTER_SLOT_PROCESS_LIFETIME_POLICY_ID: &str =
     "engine-owned-function-pointer-slot.external-dispatch.process-lifetime.v1";
 
-/// Width of one slot. The primitive is 64-bit only: it exchanges exactly one
-/// naturally aligned pointer-sized word.
 pub const ENGINE_OWNED_SLOT_WIDTH_BYTES: u64 = 8;
 
-/// What kind of structure owns the slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum OwningStructureKind {
-    /// A C++ virtual function table. `base_rva` is the address an object's
-    /// first quadword points at, which is what makes the slot's identity
-    /// checkable independently of the slot address itself.
     Vtable,
-    /// An engine-owned array of function pointers that is not a vtable.
     FunctionPointerTable,
 }
 
-/// Identity of the structure that owns the slot, so a receipt names *what* was
-/// redirected and not merely *where*. A bare address cannot be reviewed; a
-/// vtable base plus an entry index can, because the derived slot address must
-/// reproduce the recorded one exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct OwningStructureIdentity {
     pub kind: OwningStructureKind,
@@ -67,7 +23,6 @@ pub struct OwningStructureIdentity {
 }
 
 impl OwningStructureIdentity {
-    /// The slot address this owner identity implies, or `None` on overflow.
     pub fn derived_slot_rva(&self) -> Option<u64> {
         u64::from(self.entry_index)
             .checked_mul(ENGINE_OWNED_SLOT_WIDTH_BYTES)
@@ -75,66 +30,39 @@ impl OwningStructureIdentity {
     }
 }
 
-/// One incoming edge that reaches the target *without* loading an admitted
-/// slot. A pointer-slot observer cannot see these, which is why recording one
-/// refuses the site instead of annotating it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct DirectCallBypass {
     pub caller_function_rva: u64,
     pub call_site_rva: u64,
 }
 
-/// Whether the incoming-edge enumeration reached a fixed point.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SlotEnumerationCompleteness {
-    /// Every reference to the target entry was recovered and classified as a
-    /// dispatch slot, a direct call, or non-dispatch metadata.
     Complete,
-    /// The enumeration did not converge. A site resting on it is refused.
     Incomplete,
 }
 
-/// The recovered incoming-edge census for one target function.
-///
-/// This is evidence, not configuration: `evidence_job_id` and
-/// `evidence_artifact_sha256` name the exact read-only analysis artifact the
-/// three lists were transcribed from, so a reviewer can re-derive them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SlotEnumerationEvidence {
     pub evidence_job_id: &'static str,
     pub evidence_artifact_sha256: [u8; 32],
-    /// Entry RVA of the function the slots dispatch to.
     pub target_function_rva: u64,
-    /// Every engine-owned pointer slot holding the target, ascending.
     pub slot_rvas: &'static [u64],
-    /// Every incoming edge that is *not* a slot load. Must be empty.
     pub direct_call_bypasses: &'static [DirectCallBypass],
-    /// References classified as unwind/`.pdata` metadata. Recorded so that the
-    /// classification of every non-slot reference is auditable. These are never
-    /// dispatch and are never patched.
     pub unwind_metadata_rvas: &'static [u64],
     pub completeness: SlotEnumerationCompleteness,
 }
 
-/// One requested engine-owned slot site, pinned to an exact module image.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedEngineOwnedFunctionPointerSlot {
     pub logical_name: &'static str,
-    /// SHA-256 of the exact module file this slot address was recovered from.
     pub module_sha256: [u8; 32],
     pub slot_rva: u64,
     pub owner: OwningStructureIdentity,
-    /// Entry RVA of the function the slot is expected to hold *before*
-    /// installation. The CAS compares against this and never blind-stores.
     pub expected_original_target_rva: u64,
     pub enumeration: &'static SlotEnumerationEvidence,
 }
 
-/// Every slot for one target, declared together.
-///
-/// Declaring the slots one at a time is what makes partial coverage possible,
-/// so the primitive does not offer that shape: only a roster mints installable
-/// sites, and a roster is admitted only when it covers its enumeration exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineOwnedSlotSiteRoster {
     pub target_logical_name: &'static str,
@@ -161,15 +89,10 @@ pub enum EngineOwnedSlotAdmissionError {
         entry_index: u32,
         entry_count: u32,
     },
-    /// The declared owner does not derive the declared slot. Either the slot
-    /// address or the structure identity is wrong, and a receipt naming both
-    /// would be internally inconsistent.
     SlotRvaIsNotTheOwningStructureEntry {
         slot_rva: u64,
         derived_slot_rva: Option<u64>,
     },
-    /// The incoming-edge census did not converge, so the slot roster below it
-    /// is a lower bound rather than a census.
     EnumerationIncomplete,
     EnumerationJobIdMissing,
     EnumerationArtifactDigestMissing,
@@ -178,21 +101,15 @@ pub enum EngineOwnedSlotAdmissionError {
         expected_original_target_rva: u64,
     },
     EnumerationSlotRosterEmpty,
-    /// Ascending order with no repeats: a census with a duplicate has not been
-    /// deduplicated and its length is not a slot count.
     EnumerationSlotRosterNotStrictlyAscending {
         index: usize,
     },
     EnumerationSlotRosterEntryNotPointerAligned {
         slot_rva: u64,
     },
-    /// This site names a slot its own enumeration does not list.
     EnumerationSlotRosterExcludesThisSlot {
         slot_rva: u64,
     },
-    /// The target is also reached without loading a slot. A pointer-slot
-    /// observer is structurally blind to these calls, so the site is refused
-    /// rather than installed and silently under-reported.
     UncoveredDirectCallBypass {
         bypass_count: usize,
         first_call_site_rva: u64,
@@ -299,14 +216,11 @@ pub enum EngineOwnedSlotRosterAdmissionError {
         slot_rva: u64,
         error: EngineOwnedSlotAdmissionError,
     },
-    /// A site in the roster covers a different target function.
     SiteTargetMismatch {
         slot_rva: u64,
         site_target_rva: u64,
         roster_target_rva: u64,
     },
-    /// Two sites cite different incoming-edge censuses for one target, so at
-    /// most one of them is current.
     SiteEnumerationsDisagree {
         slot_rva: u64,
     },
@@ -316,8 +230,6 @@ pub enum EngineOwnedSlotRosterAdmissionError {
     DuplicateSlot {
         slot_rva: u64,
     },
-    /// The enumeration lists a slot no site in the roster covers. Installing
-    /// the rest would leave a live dispatch path unobserved.
     SlotCoverageIncomplete {
         uncovered_slot_rva: u64,
     },
@@ -362,11 +274,6 @@ impl std::fmt::Display for EngineOwnedSlotRosterAdmissionError {
     }
 }
 
-/// A site that passed the per-site admission gate.
-///
-/// This is deliberately *not* installable on its own. Complete slot coverage is
-/// a property of the roster, not of any one site, so only
-/// [`admit_engine_owned_slot_site_roster`] mints the installable form.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdmittedEngineOwnedSlotSite {
     expected: ExpectedEngineOwnedFunctionPointerSlot,
@@ -388,11 +295,6 @@ impl AdmittedEngineOwnedSlotSite {
     }
 }
 
-/// One site of an admitted roster: the only installable engine-owned slot form.
-///
-/// The private `roster_sha256` cannot be produced outside this module, so an
-/// install path that accepts this type accepts only sites whose whole target
-/// roster was proved complete.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RosterAdmittedEngineOwnedSlotSite {
     site: AdmittedEngineOwnedSlotSite,
@@ -413,8 +315,6 @@ impl RosterAdmittedEngineOwnedSlotSite {
         self.site.enumeration_sha256
     }
 
-    /// Digest over the whole admitted roster. Every site of one roster carries
-    /// the same value, so a receipt names the coverage proof it rests on.
     pub fn roster_sha256(&self) -> [u8; 32] {
         self.roster_sha256
     }
@@ -424,7 +324,6 @@ impl RosterAdmittedEngineOwnedSlotSite {
     }
 }
 
-/// A whole target's slot coverage, proved complete.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AdmittedEngineOwnedSlotRoster {
     target_logical_name: &'static str,
@@ -456,7 +355,6 @@ fn digest_len_prefixed(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-/// Digest of one incoming-edge census, computed here and never transcribed.
 pub fn slot_enumeration_sha256(evidence: &SlotEnumerationEvidence) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"hoi4.production_hook.engine_owned_slot_enumeration.v1");
@@ -483,10 +381,7 @@ pub fn slot_enumeration_sha256(evidence: &SlotEnumerationEvidence) -> [u8; 32] {
     digest.finalize().into()
 }
 
-/// Digest of one engine-owned slot specification.
-pub fn engine_owned_slot_spec_sha256(
-    expected: ExpectedEngineOwnedFunctionPointerSlot,
-) -> [u8; 32] {
+pub fn engine_owned_slot_spec_sha256(expected: ExpectedEngineOwnedFunctionPointerSlot) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"hoi4.production_hook.engine_owned_function_pointer_slot_spec.v1");
     digest_len_prefixed(&mut digest, expected.logical_name.as_bytes());
@@ -519,10 +414,6 @@ fn roster_sha256(
     digest.finalize().into()
 }
 
-/// Admit one engine-owned slot site.
-///
-/// The result is intentionally not installable; see
-/// [`admit_engine_owned_slot_site_roster`].
 pub fn admit_engine_owned_function_pointer_slot_site(
     expected: ExpectedEngineOwnedFunctionPointerSlot,
 ) -> Result<AdmittedEngineOwnedSlotSite, EngineOwnedSlotAdmissionError> {
@@ -629,11 +520,6 @@ pub fn admit_engine_owned_function_pointer_slot_site(
     })
 }
 
-/// Admit a whole target's slots and prove the coverage complete.
-///
-/// Refuses unless the roster's slot set is exactly the enumeration's slot set:
-/// a target with two dispatch slots and one declared site is a live unobserved
-/// path, which is the same under-reporting failure as a direct-call bypass.
 pub fn admit_engine_owned_slot_site_roster(
     roster: EngineOwnedSlotSiteRoster,
 ) -> Result<AdmittedEngineOwnedSlotRoster, EngineOwnedSlotRosterAdmissionError> {
@@ -659,9 +545,11 @@ pub fn admit_engine_owned_slot_site_roster(
             });
         }
         if site.enumeration != reference.enumeration {
-            return Err(EngineOwnedSlotRosterAdmissionError::SiteEnumerationsDisagree {
-                slot_rva: site.slot_rva,
-            });
+            return Err(
+                EngineOwnedSlotRosterAdmissionError::SiteEnumerationsDisagree {
+                    slot_rva: site.slot_rva,
+                },
+            );
         }
         if site.module_sha256 != reference.module_sha256 {
             return Err(
@@ -686,9 +574,11 @@ pub fn admit_engine_owned_slot_site_roster(
     }
     for enumerated in reference.enumeration.slot_rvas {
         if !covered.contains(enumerated) {
-            return Err(EngineOwnedSlotRosterAdmissionError::SlotCoverageIncomplete {
-                uncovered_slot_rva: *enumerated,
-            });
+            return Err(
+                EngineOwnedSlotRosterAdmissionError::SlotCoverageIncomplete {
+                    uncovered_slot_rva: *enumerated,
+                },
+            );
         }
     }
     let roster_sha256 = roster_sha256(roster, &admitted);
@@ -744,9 +634,6 @@ mod tests {
         }
     }
 
-    // FALSIFIABILITY: delete the `derived_slot_rva != Some(expected.slot_rva)`
-    // refusal and this test goes green with an owner that does not derive its
-    // own slot, i.e. a receipt naming a structure it did not redirect.
     #[test]
     fn owner_identity_must_derive_the_slot_address() {
         assert!(admit_engine_owned_function_pointer_slot_site(site()).is_ok());
@@ -763,8 +650,6 @@ mod tests {
         );
     }
 
-    // FALSIFIABILITY: delete the `completeness != Complete` refusal and an
-    // enumeration that never converged is admitted as a census.
     #[test]
     fn incomplete_enumeration_is_refused() {
         static INCOMPLETE: SlotEnumerationEvidence = SlotEnumerationEvidence {
@@ -779,9 +664,6 @@ mod tests {
         );
     }
 
-    // FALSIFIABILITY: delete the `direct_call_bypasses.first()` refusal and a
-    // target that is also called directly is admitted, so the installed hook
-    // silently observes only part of its own traffic.
     #[test]
     fn a_direct_call_bypass_refuses_the_site() {
         static BYPASSED: SlotEnumerationEvidence = SlotEnumerationEvidence {
@@ -802,8 +684,6 @@ mod tests {
         );
     }
 
-    // FALSIFIABILITY: delete the `slot_rvas.contains(&expected.slot_rva)`
-    // refusal and a site may name a slot its own census never found.
     #[test]
     fn a_slot_outside_its_own_enumeration_is_refused() {
         let mut expected = site();
@@ -819,8 +699,6 @@ mod tests {
         );
     }
 
-    // FALSIFIABILITY: delete the strict-ascending check and a census listing
-    // one slot twice reports a slot count of two.
     #[test]
     fn a_repeated_enumeration_entry_is_refused() {
         static REPEATED: SlotEnumerationEvidence = SlotEnumerationEvidence {
@@ -839,9 +717,6 @@ mod tests {
         );
     }
 
-    // FALSIFIABILITY: delete the final `covered.contains(enumerated)` loop and
-    // a roster covering one of two enumerated slots is admitted, leaving the
-    // second slot's dispatch live and unobserved.
     #[test]
     fn a_roster_missing_an_enumerated_slot_is_refused() {
         const SECOND_SLOT: u64 = 0x29A_5920;
@@ -892,9 +767,11 @@ mod tests {
                 target_function_rva: LIFECYCLE_RVA,
                 sites: &PARTIAL,
             }),
-            Err(EngineOwnedSlotRosterAdmissionError::SlotCoverageIncomplete {
-                uncovered_slot_rva: SECOND_SLOT
-            })
+            Err(
+                EngineOwnedSlotRosterAdmissionError::SlotCoverageIncomplete {
+                    uncovered_slot_rva: SECOND_SLOT
+                }
+            )
         );
         let admitted = admit_engine_owned_slot_site_roster(EngineOwnedSlotSiteRoster {
             target_logical_name: "test.target",
@@ -910,9 +787,6 @@ mod tests {
                 && site.roster_slot_count() == 2));
     }
 
-    // FALSIFIABILITY: make `slot_enumeration_sha256` ignore
-    // `direct_call_bypasses` and these two censuses digest identically, so a
-    // receipt could no longer distinguish a bypassed target from a clean one.
     #[test]
     fn the_enumeration_digest_covers_the_bypass_list() {
         static BYPASSED: SlotEnumerationEvidence = SlotEnumerationEvidence {
@@ -928,9 +802,6 @@ mod tests {
         );
     }
 
-    // FALSIFIABILITY: drop `module_sha256` from
-    // `engine_owned_slot_spec_sha256` and one slot spec digests the same
-    // against two different builds.
     #[test]
     fn the_spec_digest_covers_the_module_identity() {
         let mut other = site();

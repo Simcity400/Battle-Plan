@@ -20,7 +20,6 @@ pub const ROW_KIND_CSUPPLY_PROVINCE_INPUT: u32 =
     domain44_contract::ROW_KIND_CSUPPLY_PROVINCE_INPUT;
 pub const ROW_KIND_COUNTRY_DISRUPTED_SUPPLY: u32 =
     domain44_contract::ROW_KIND_COUNTRY_DISRUPTED_SUPPLY;
-// Keep this lane-local, explicitly non-production candidate on a disjoint id.
 pub const ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE: u32 =
     domain44_contract::ROW_KIND_FOREIGN_HOMEBASE_PRESSURE_CANDIDATE;
 
@@ -74,8 +73,6 @@ pub const BADGE_COUNTRY_DISRUPTED_SOURCE_AVAILABLE: i32 =
 pub const BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE: i32 =
     domain44_contract::BADGE_FOREIGN_HOMEBASE_SOURCE_AVAILABLE;
 
-// Admission bounds live in `domain44_contract` so this gate and the recorder
-// authority cannot drift apart. See that module for the evidence behind each.
 pub const MAX_PROVINCE_ID: u32 = portable_admission::SUPPLY_MAX_PROVINCE_ID;
 pub const MAX_STATE_ID: u32 = domain44_contract::MAX_STATE_ID;
 pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
@@ -1043,8 +1040,6 @@ mod tests {
             .any(|err| err.contains("lack exact-source availability badge")));
     }
 
-    /// Header shape matching `fixture_rows()` exactly, so a test can mutate one
-    /// field and attribute every parse error to that mutation.
     fn fixture_header(rows: &[SupplyLogisticsRow]) -> SupplyLogisticsHeader {
         SupplyLogisticsHeader {
             elapsed_wall_ms: 1,
@@ -1070,17 +1065,8 @@ mod tests {
         decode_payload(0, &encode_payload(&header, &rows))
     }
 
-    /// The measured defect. Every one of run `live_unlock/t12`'s 63 excluded
-    /// DOMAIN_DATA records cited only `country_disrupted_supply_raw`, at these
-    /// raw values, on an unmodded save. The old ceiling was `FIXED_SCALE_RAW`
-    /// (100_000), which asserts the field is a ratio bounded by 1.0; the engine
-    /// stores a clamp-free signed i64 fixed-point (see the constant's note).
-    ///
-    /// Fails if `MAX_COUNTRY_DISRUPTED_SUPPLY_RAW` is put back to
-    /// `FIXED_SCALE_RAW`, or to anything below 499_175.
     #[test]
     fn admits_country_disrupted_supply_above_the_fixed_point_scale() {
-        // The full distinct set observed in the t12 exclusion ledger.
         const OBSERVED_T12_RAW: [i32; 24] = [
             103_673, 108_463, 109_723, 110_982, 110_983, 123_683, 127_458, 138_897, 143_657,
             162_695, 166_474, 176_715, 179_178, 206_947, 229_650, 293_657, 297_087, 317_178,
@@ -1101,18 +1087,13 @@ mod tests {
         }
     }
 
-    /// The widening must not open the gate. Fails if
-    /// `MAX_COUNTRY_DISRUPTED_SUPPLY_RAW` is widened to `i32::MAX`, or if the
-    /// non-negative half of the check is dropped.
     #[test]
     fn still_rejects_country_disrupted_supply_garbage() {
-        // Concrete values, not `MAX_COUNTRY_DISRUPTED_SUPPLY_RAW + 1`: a bound
-        // expressed in terms of itself can never catch a widened bound.
         for raw in [
-            100_000_001, // one past the installed ceiling
+            100_000_001,
             1_000_000_000,
             i32::MAX,
-            0x7f5a_1c30, // pointer-smear magnitude
+            0x7f5a_1c30,
             -1,
             i32::MIN,
         ] {
@@ -1126,8 +1107,6 @@ mod tests {
                 summary.parse_errors
             );
         }
-        // The boundary itself is admitted, pinning the bound rather than just
-        // its neighbourhood.
         let summary = decode_fixture_with_disrupted_value(MAX_COUNTRY_DISRUPTED_SUPPLY_RAW);
         assert!(
             summary.parse_errors.is_empty(),
@@ -1136,10 +1115,6 @@ mod tests {
         );
     }
 
-    /// `MAX_STATE_ID` was `1_081`, the vanilla state count. A mod that adds one
-    /// state made every province-logistics row invalid.
-    ///
-    /// Fails if `MAX_STATE_ID` is put back to `1_081`.
     #[test]
     fn admits_state_id_above_the_vanilla_state_count() {
         const VANILLA_STATE_COUNT: u32 = 1_081;
@@ -1157,26 +1132,6 @@ mod tests {
         );
     }
 
-    /// The state id space's boundary walk: every retired ceiling is admitted,
-    /// and only the structurally impossible words are refused.
-    ///
-    /// This test used to assert the OPPOSITE for three of these values. It
-    /// probed `[0, 65_536, 1_000_000, u32::MAX]` as things that must be
-    /// REJECTED, with a comment explaining that concrete values were chosen
-    /// deliberately because `MAX_STATE_ID + 1` "can never catch it being
-    /// widened". That reasoning was right while the bound was a guess, and it
-    /// is the reason the test had to change meaning rather than be re-pointed:
-    /// lane IA proved the state id space is `i32`-wide from the engine's own
-    /// sign-checked signed-int subscript (`ai_theatre_graph.cpp:0x86`,
-    /// `claim_39c989ce13504504353c`), so 65 536 and 1 000 000 are ORDINARY
-    /// state ids and refusing them was discarding rows the recorder had
-    /// collected correctly.
-    ///
-    /// kills: narrowing `MAX_STATE_ID` back to `65_535`, `70_000` or any other
-    /// content-scale number -- the admitted arm goes red. Also kills removing
-    /// the state-id check entirely, and WIDENING it past the structural edge --
-    /// the refused arm probes `i32::MAX` as a LITERAL, so a ceiling that grows
-    /// by one does not carry the probe along with it.
     #[test]
     fn the_state_id_boundary_walk_admits_every_retired_ceiling() {
         for state_id in [1u32, 65_535, 65_536, 70_000, 1_000_000, MAX_STATE_ID] {
@@ -1194,13 +1149,6 @@ mod tests {
                 summary.parse_errors
             );
         }
-        // `i32::MAX` is spelled as a LITERAL, deliberately. A probe derived as
-        // `MAX_STATE_ID + 1` tracks the constant, so widening the constant by
-        // one merely moves the probe with it and the fixture stays green while
-        // the first identity the engine's signed-int subscript cannot address
-        // becomes admitted. This test's own retired predecessor made exactly
-        // that point about content-scale ceilings; it applies to the structural
-        // edge too.
         for state_id in [0, MAX_STATE_ID + 1, 2_147_483_647, u32::MAX] {
             let mut rows = fixture_rows();
             rows.iter_mut()
@@ -1252,12 +1200,6 @@ mod tests {
         let rows = vec![SupplyLogisticsRow {
             row_kind: ROW_KIND_DIVISION_SUPPLY,
             entity_id: 7,
-            // Was `9_999_999`, which is an ORDINARY province id now that the
-            // ceiling is the id space's structural width rather than a
-            // content-scale guess. This test's job is to prove the province_id
-            // check EXISTS beside the other field checks, not to pin the
-            // ceiling -- that is the boundary walk's job -- so it uses the
-            // garbage word, which no widening of a real id space can admit.
             join_id: u32::MAX,
             owner_tag_db_id: 0,
             flags: ROW_FLAG_DIVISION_OWNER,
@@ -1427,17 +1369,6 @@ mod tests {
 
     #[test]
     fn rejects_malformed_badge_rows() {
-        // Row 0 carries the corruptions that are independent of badge
-        // identity: nonzero identity fields, nonzero reserved values, two
-        // badge bits at once, and a non-badge bit.
-        //
-        // Row 1 must be a *separate* row. `validate_badge_row` only resolves a
-        // `BadgeSpec` when `badge_flags.count_ones() == 1`, so a row carrying
-        // two wall bits can never reach the per-spec "<label> badge row ...
-        // has invalid code" branch. Asserting that message against row 0 was
-        // unreachable by construction and is what made this test fail. Row 1
-        // sets exactly one badge bit with the wrong code, which is the only
-        // shape that exercises that branch.
         let rows = vec![
             SupplyLogisticsRow {
                 row_kind: ROW_KIND_COMPUTED_BADGE,
@@ -1494,17 +1425,12 @@ mod tests {
             .parse_errors
             .iter()
             .any(|err| err.contains("non-badge flags")));
-        // The per-spec branch, reached only via row 1. This is the assertion
-        // that used to be unreachable.
         assert!(
             summary.parse_errors.iter().any(|err| err
                 .contains("supply logistics exact-supply badge row 1 has invalid code")),
             "per-spec badge code diagnosis missing from {:?}",
             summary.parse_errors
         );
-        // The single-badge row must NOT be accused of the multi-badge or
-        // non-badge-bit corruptions, otherwise the assertion above could be
-        // satisfied by a decoder that simply reports everything on every row.
         assert!(
             !summary
                 .parse_errors
@@ -1523,9 +1449,6 @@ mod tests {
         );
     }
 
-    /// A badge row whose single badge bit carries the *correct* code must
-    /// produce no per-spec complaint. Without this, `rejects_malformed_badge_rows`
-    /// would still pass if `validate_badge_row` flagged every code.
     #[test]
     fn accepts_badge_row_with_correct_code() {
         let rows = vec![SupplyLogisticsRow {

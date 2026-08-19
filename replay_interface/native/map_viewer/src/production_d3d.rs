@@ -1,10 +1,3 @@
-//! Capture-independent D3D11 execution contract for the production map.
-//!
-//! This module deliberately contains no capture-bundle adapter and no asset
-//! catalogue.  Static interpreters may submit a draw only after resolving all
-//! of its inputs through the replay-admitted effective VFS.  A semantic content
-//! binding without a complete draw descriptor is an omission, never a license
-//! to invent pipeline state or pixels.
 
 use crate::{
     production_main_scene_desc_from_outputs,
@@ -24,11 +17,6 @@ use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeMap;
 
-/// Execute the mandatory XMAP01+XMAP02 startup content operation on a real
-/// D3D11 device. This compiles the exact effective-VFS translation units,
-/// creates both shader objects, creates the exact DDS texture and its SRV, and
-/// returns only pointer-free identities. It submits no draw and creates no map
-/// pixels.
 #[cfg(windows)]
 pub fn execute_foundation_content_operation(
     resolver: &crate::GameFileResolver,
@@ -323,13 +311,8 @@ pub struct ProductionD3dOmission {
     pub reason: String,
 }
 
-/// GPU proof accumulated by the capture-independent product executor while it
-/// binds H to every exact selected-submit SnowMudTexture consumer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnowMudD3dExecutionProof {
-    /// Exact tight BGRA8 bytes copied from the mapped replay staging texture.
-    /// This is retained only in explicit H2 evidence mode; a hash alone cannot
-    /// serve as the raw replay-consumer observation required by G3.
     pub tight_readback_bytes: Vec<u8>,
     pub readback_sha256: String,
     pub mapped_row_pitch: u32,
@@ -338,8 +321,6 @@ pub struct SnowMudD3dExecutionProof {
     pub replaced_binding_count: u32,
 }
 
-/// Product-native proof that the exact occupation secondary packet was
-/// uploaded, read back byte-for-byte, and bound to both reflected consumers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OccupationSecondaryD3dExecutionProof {
     pub tight_readback_bytes: Vec<u8>,
@@ -356,8 +337,6 @@ pub struct PreparedProductionD3dFrame {
     pub content_manifest_sha256: String,
     pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
-    /// C03 receipt binding only. Exact D3D draw state already contains the
-    /// recorded camera effects, so execution must not reapply raw events.
     pub c03_camera_replay: Option<C03CameraReplayBinding>,
     pub target: Option<ProductionMainSceneTargetDesc>,
     pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
@@ -368,39 +347,19 @@ pub struct PreparedProductionD3dFrame {
     pub ordered_static_used_content: Vec<UsedContentKey>,
     pub ordered_static_programs: Vec<StaticMapPassProgram>,
     pub authenticated_texture_snapshots: Vec<replay_core::AuthenticatedTextureSnapshotPacket>,
-    /// Exact D81 semantic binding to the retained D80 railroad operations.
     pub rail_ribbon: Option<ExactRailD80Binding>,
-    /// B10 compatibility/admission state of the selected submit's D80 mapname
-    /// operations. Legacy draws are omitted before this frame can execute.
     pub mapname_d80_state: MapnameD80State,
-    /// Already-admitted C07 join. Every referenced operation must survive
-    /// materialization and execute through the ordinary static draw bridge.
     pub tree_runtime: Option<C07TreeRuntimeCarrier>,
-    /// Preparation-time seal over the exact materialized C07 operations and
-    /// their positions in the unified execution stream.
     pub tree_materialized_execution_sha256: Option<String>,
-    /// Exact S1 law/pass plan sealed to the materialized unified operations.
-    /// `None` is an explicit feature omission, never a neutral-shadow fallback.
     pub s1_shadow: Option<PreparedS1ShadowExecution>,
     pub ordered_runtime_draws: Vec<PreparedRuntimeDraw>,
     pub m02_combat: Option<replay_core::M02CombatFrame>,
     pub authenticated_ui_pass: Option<replay_core::AuthenticatedUiPass>,
     pub m03_arrows: Option<M03ArrowFrame>,
-    /// Exact semantic join to retained static normal/see-through railway
-    /// supply-map draws. Execution remains in the ordinary static stream.
     pub rail_supply_arrows: Option<RailSupplyArrowFrame>,
     pub omissions: Vec<ProductionD3dOmission>,
 }
 
-/// Exact precedence contract between the opaque D80 operation stream and the
-/// typed semantic building state exposed by D48.
-///
-/// `TypedSemanticStateOnly` is deliberately not pixel authority. It means the
-/// current world frame can answer building-state queries while visible object
-/// rendering remains omitted until an authenticated semantic producer joins
-/// those rows to exact operations. An executable D80 stream always wins as a
-/// complete ordered map program; pass tokens/content names are never used to
-/// classify a building subpass.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BuildingPresentationPriority {
@@ -446,21 +405,10 @@ pub struct ProductionD3dExecutionReceipt {
     pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
     pub c03_camera_replay: Option<C03CameraReplayBinding>,
-    /// Sealed pointer-free C07 coverage/pass/bucket identity actually admitted
-    /// by this execution. `None` means tree runtime was unavailable/omitted.
     pub tree_runtime_payload_sha256: Option<String>,
-    /// Exact selected-frame C07 operation payload/order seal validated again
-    /// immediately before backend execution.
     pub tree_materialized_execution_sha256: Option<String>,
-    /// Sealed pointer-free S1 shadow execution identity admitted by this
-    /// execution. This authenticates the carrier; it is not a pixel oracle.
     pub s1_shadow_payload_sha256: Option<String>,
-    /// Exact seal over the materialized S1 operation references and payloads
-    /// that passed the pre-execution validation. `None` is valid only for an
-    /// absent or exact zero-fade S1 carrier.
     pub s1_materialized_execution_sha256: Option<String>,
-    /// Distinguishes no carried mapname draw, a legacy draw omitted for lack of
-    /// the authenticated CB1 semantic, and authenticated executed authority.
     pub mapname_d80_state: MapnameD80State,
     pub target: Option<ProductionMainSceneTargetDesc>,
     pub ordered_draws: Vec<ProductionD3dExecutedDraw>,
@@ -469,8 +417,6 @@ pub struct ProductionD3dExecutionReceipt {
     pub deterministic_sha256: String,
 }
 
-/// Backend-neutral ordered execution boundary.  The Windows implementation can
-/// bind these calls to D3D11 while headless tests use a deterministic sink.
 pub trait ProductionD3dExecutionBridge {
     fn begin_frame(&mut self, frame: &PreparedProductionD3dFrame) -> Result<()>;
     fn execute_static_operation(
@@ -507,8 +453,6 @@ fn validate_provenance_sha256(value: &str, label: &str) -> Result<()> {
 }
 
 /// Join the production-map plan with independently generated static-pass
-/// programs. Missing programs remain feature-local omissions. Present programs
-/// fail closed on any order, descriptor, byte-range, or content-identity error.
 pub fn prepare_production_d3d_frame(
     frame: &PreparedProductionMapFrame,
     resources: &BTreeMap<String, ProductionMapResource>,
@@ -812,9 +756,6 @@ pub fn prepare_production_d3d_frame(
                 }
                 RenderExecutionRef::Runtime { .. } => true,
                 RenderExecutionRef::M03 { .. } => !omit_m03,
-                // M02 belongs to the complete swapchain UI pass. Until the
-                // product carries every intervening UI ordinal, executing it
-                // here would place it incorrectly after a flattened HUD.
                 RenderExecutionRef::M02 { .. } => false,
             })
             .cloned()

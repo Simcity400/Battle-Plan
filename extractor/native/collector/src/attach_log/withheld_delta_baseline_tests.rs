@@ -1,20 +1,5 @@
-//! Regression gate for the withheld delta baseline.
-//!
-//! A compact frame carrying any failure-class status bit is discarded whole by
-//! the recorder fold (`WorldFold::handle_compact_failure`) unless the domain has
-//! a `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry. None of the domains exercised
-//! here (29/30/31/32/34/36/38/42) has one, so the collector must NOT advance its
-//! delta baseline on such a frame — otherwise the rows the discarded frame
-//! carried are marked delivered and never re-sent, and the fold accumulator
-//! diverges from the collector's view for the rest of the campaign.
-//!
-//! Every test in this module fails if the baseline advance is restored.
-
 use super::*;
 
-/// Mirrors `WorldFold`'s keyed upsert/tombstone semantics for one domain:
-/// a failure-class frame is dropped whole and the accumulator is retained;
-/// otherwise every emitted row is applied (deleted rows remove their key).
 #[derive(Default)]
 struct FoldMirror<K: Ord + Clone, V: Clone> {
     accumulator: BTreeMap<K, V>,
@@ -37,8 +22,6 @@ impl<K: Ord + Clone, V: Clone> FoldMirror<K, V> {
         deleted: impl Fn(&R) -> bool,
         value: impl Fn(&R) -> V,
     ) {
-        // No domain under test has an expected-partial tolerance, so any
-        // failure-class bit discards the record before a single row is read.
         assert!(
             compact_contract::expected_partial_tolerance_applies(31, status_flags).is_none(),
             "d31 must stay untolerated for this mirror to model the fold"
@@ -89,9 +72,6 @@ fn superiority_row(variant_id: u32, amount_raw: i64) -> CompactAirSuperiorityInp
     }
 }
 
-// The exact bug reported for d31: an `invalid_air_wing_rows > 0` frame sets
-// PARTIAL_DATA, the fold discards the record, and the changes it carried must
-// still reach the fold on the next clean frame.
 #[test]
 fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     let mut tracker = CompactAirRegionActivityTracker::default();
@@ -108,7 +88,6 @@ fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
         );
     };
 
-    // Hour 1: clean baseline.
     let (rows, ..) = compact_air_region_activity_delta_rows(
         &mut tracker,
         vec![air_region_bucket(88, 1, 7, 100)],
@@ -117,8 +96,6 @@ fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     apply(&mut fold, 0, &rows);
     assert_eq!(fold.accumulator[&(88, 1, 7)], 100);
 
-    // Hour 2: one air wing failed to read -> PARTIAL_DATA. The bucket moved to
-    // 140 planes. The frame is discarded by the fold.
     let partial_status = COMPACT_STATUS_PARTIAL_DATA;
     let (rows, changed_rows, deleted_rows) = compact_air_region_activity_delta_rows(
         &mut tracker,
@@ -130,8 +107,6 @@ fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     apply(&mut fold, partial_status, &rows);
     assert_eq!(fold.dropped_frames, 1);
 
-    // Hour 3: clean read of the SAME 140 planes. With the baseline advanced by
-    // hour 2 this emits nothing and the fold is stuck at 100 forever.
     let (rows, changed_rows, _) = compact_air_region_activity_delta_rows(
         &mut tracker,
         vec![air_region_bucket(88, 1, 7, 140)],
@@ -147,9 +122,6 @@ fn d31_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     assert_eq!(tracker.previous[&(88, 1, 7)].plane_count, 140);
 }
 
-// A withheld FIRST frame must not seed a baseline: the following clean frame
-// still owes the fold a complete snapshot, not a delta against a set the fold
-// never received.
 #[test]
 fn d31_withheld_first_frame_does_not_seed_a_baseline() {
     let mut tracker = CompactAirRegionActivityTracker::default();
@@ -180,9 +152,6 @@ fn d31_withheld_first_frame_does_not_seed_a_baseline() {
     assert_eq!(rows.len(), 2);
 }
 
-// An air wing that failed to read makes its bucket disappear from the sample.
-// That is an unread bucket, never a deleted one: a withheld frame must not
-// tombstone it (and must not lose it either).
 #[test]
 fn d31_withheld_frame_never_tombstones_an_unread_bucket() {
     let mut tracker = CompactAirRegionActivityTracker::default();
@@ -195,7 +164,6 @@ fn d31_withheld_frame_never_tombstones_an_unread_bucket() {
         0,
     );
 
-    // Region 89's only wing was unreadable this frame.
     let (rows, changed_rows, deleted_rows) = compact_air_region_activity_delta_rows(
         &mut tracker,
         vec![air_region_bucket(88, 1, 7, 100)],
@@ -208,7 +176,6 @@ fn d31_withheld_frame_never_tombstones_an_unread_bucket() {
         "an unread bucket stays in the baseline so a real deletion is still detectable"
     );
 
-    // A genuine disappearance on a clean frame still tombstones.
     let (rows, _, deleted_rows) = compact_air_region_activity_delta_rows(
         &mut tracker,
         vec![air_region_bucket(88, 1, 7, 100)],
@@ -218,8 +185,6 @@ fn d31_withheld_frame_never_tombstones_an_unread_bucket() {
     assert!(rows.iter().any(|row| row.deleted && row.region_id == 89));
 }
 
-// d38 is the sibling bucket lane: same aggregate-over-wings shape, same fold
-// discard, same defect.
 #[test]
 fn d38_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     let mut tracker = CompactAirSuperiorityInputTracker::default();
@@ -251,7 +216,6 @@ fn d38_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     apply(&mut fold, 0, &rows);
     assert_eq!(fold.accumulator[&(88, 1, 7, 900)], 100_000);
 
-    // An unresolvable variant sets PARTIAL_DATA on a frame whose amount moved.
     let partial_status = COMPACT_STATUS_PARTIAL_DATA;
     let (rows, changed_rows, _) = compact_air_superiority_input_delta_rows(
         &mut tracker,
@@ -273,9 +237,6 @@ fn d38_partial_frame_change_is_redelivered_by_the_next_clean_frame() {
     assert_eq!(fold.accumulator[&(88, 1, 7, 900)], 140_000);
 }
 
-// d42 rows are INCREMENTS (loss/reinforcement deltas), so a discarded frame
-// whose baseline advanced drops those increments permanently. After a withheld
-// frame the next clean frame must carry the whole interval's movement.
 #[test]
 fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
     fn sample(count: u32) -> CompactAirStrengthSample {
@@ -295,11 +256,11 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
 
     let mut tracker = CompactAirStrengthDeltaTracker::default();
     let generations = CompactAirWingGenerationAuthority::default();
-    let (rows, ..) = compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(100)], 0);
+    let (rows, ..) =
+        compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(100)], 0);
     assert_eq!(rows.len(), 1);
     let generation_after_seed = generations.next_generation();
 
-    // 100 -> 90 on a discarded frame: the ten losses must not be consumed.
     let (rows, changed_rows, loss_rows, ..) = compact_air_strength_delta_rows(
         &mut tracker,
         &generations,
@@ -314,7 +275,6 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
         "a withheld frame returns before the mint loop, so it reserves nothing"
     );
 
-    // Clean frame at 85: the delta must cover the whole 100 -> 85 interval.
     let (rows, changed_rows, loss_rows, ..) =
         compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(85)], 0);
     assert_eq!((changed_rows, loss_rows), (1, 1));
@@ -323,10 +283,6 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
     assert_eq!(rows[0].new_count, 85);
 }
 
-// A scale mismatch is only observable mid-diff, so `compact_air_strength_delta_rows`
-// discovers after the fact that its caller will flag the frame PARTIAL. It must
-// withhold the baseline just the same, or the movement it saw is lost: an
-// unchanged next sample produces no delta at all.
 #[test]
 fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_frame() {
     fn sample(wing_id: u32, count: u32, equipment_amount_sum: i64) -> CompactAirStrengthSample {
@@ -355,15 +311,6 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     );
     let generation_after_seed = generations.next_generation();
 
-    // Wing 4 goes 100 -> 99 planes but its equipment sum moves off the
-    // whole-plane scale, and wing 5 appears for the first time on the same
-    // frame. The mismatch withholds the whole frame. Wing 5's number is NOT
-    // rewound with it -- the shared authority binds a number to a wing BODY, not
-    // to the frame that first saw it, so the observable property (wing 5 is
-    // published under that same number when a frame finally carries it) is
-    // preserved by reissue rather than by rollback. Rewinding would be wrong
-    // now: d30 and d32 read the same authority in the same frame and may
-    // already have published that number.
     let (rows, changed_rows, _, _, _, scale_mismatch_rows) = compact_air_strength_delta_rows(
         &mut tracker,
         &generations,
@@ -389,11 +336,6 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
          reaches the wire"
     );
 
-    // The very next samples are UNCHANGED from the withheld frame. Against an
-    // advanced baseline this would produce no delta at all and both the lost
-    // plane and wing 5's baseline row would never reach the fold; against the
-    // retained baseline they are still pending and are emitted as soon as they
-    // are representable.
     let (rows, changed_rows, loss_rows, _, _, scale_mismatch_rows) =
         compact_air_strength_delta_rows(
             &mut tracker,
@@ -416,7 +358,6 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
     );
 }
 
-// The remaining lanes in the class share the identical `*_delta_rows` shape.
 #[test]
 fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
     let ship = CompactShipRow {
@@ -561,9 +502,6 @@ fn sibling_lane_withheld_frames_keep_their_baselines_and_emit_nothing() {
     assert_eq!(rows.len(), 1, "d36 re-delivers on the next clean frame");
 }
 
-// The predicate must cover the whole failure vocabulary, not just PARTIAL_DATA:
-// a frame-scoped CONTROL_INVALID / NO_CLOCK / PROFILE_MISMATCH is fanned out to
-// every domain read and is discarded by the fold exactly the same way.
 #[test]
 fn withheld_predicate_covers_every_failure_class_bit() {
     for bit in 0..32u32 {
@@ -585,10 +523,6 @@ fn withheld_predicate_covers_every_failure_class_bit() {
     ));
 }
 
-// Guard the assumption the whole fix rests on: none of these domains may gain
-// an expected-partial tolerance without revisiting the collector, because their
-// rows are aggregates whose values (not just their presence) are corrupted by
-// an omitted source row.
 #[test]
 fn class_domains_have_no_expected_partial_tolerance() {
     for domain_id in [29u16, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 42, 46] {

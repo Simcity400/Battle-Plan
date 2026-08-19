@@ -1,8 +1,3 @@
-//! XMAP10 fail-closed CPU composition of the shared `standardfuncsgfx` SceneCB0.
-//!
-//! Every semantic byte is supplied by one typed producer patch. The only bytes
-//! synthesized by this module are HLSL register padding at 348..352 and
-//! 408..416, which are required to be zero.
 
 use crate::{xmap04_map_copy_receipt_set_sha256, Result, Xmap04MapCopyReceiptRow};
 use portable_render_stream::{ConstantBufferBinding, PreparedRenderTarget, RenderTargetDesc};
@@ -17,10 +12,6 @@ pub const XMAP10_SCENE_CB0_GLOBAL_TIME_OFFSET: usize = 236;
 pub const XMAP10_PRE_PARTICLE_SCENE_SCHEMA: &str = "hoi4.xmap10.pre-particle-scene.v1";
 pub const XMAP10_PRE_PARTICLE_OPERATION_ID: &str = "scene.pre_particles_complete";
 
-/// The exact ordered rows D3DCompile reflects for Paradox's translated
-/// `ConstantBuffer(0,0)`. Padding bytes are deliberately absent: they occupy
-/// storage but are not reflected variables. This table must remain identical
-/// to the XMAP04/XMAP07 compiled shader contract.
 const XMAP10_SCENE_CB0_REFLECTED_ROWS: &[(&str, u32, u32)] = &[
     ("ViewProjectionMatrix", 0, 64),
     ("InvViewProjMatrix", 64, 64),
@@ -476,8 +467,6 @@ pub struct Xmap07SnowMudScenePatch {
 }
 
 impl Xmap07SnowMudScenePatch {
-    /// Admit only the authenticated XMAP07 SnowMud contribution that belongs
-    /// to this exact aggregate SceneCB0 frame.
     pub fn from_xmap07(
         input: &crate::Xmap07SceneSnowMudInput,
         frame: &Xmap10SceneFrameIdentity,
@@ -585,27 +574,13 @@ impl Xmap09LightingScenePatch {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Xmap10PresentationScenePatch {
-    /// Monotonic viewer presentation sequence. It is intentionally separate
-    /// from replay hour because multiple displayed frames can share an hour.
     frame_sequence: u64,
-    /// Exact replay frame whose speed/pause state drove this presentation
-    /// update. A patch cannot be reused after a country/frame switch.
     replay_frame_identity_sha256: String,
-    /// Previous presentation-state receipt consumed by this update.
     prior_presentation_timing_receipt_sha256: String,
-    /// effective `NGraphics.LIGHT_HDR_RANGE` value otherwise.
     hdr_enabled: bool,
     effective_light_hdr_range: f32,
-    /// Exact-a729 SceneCB0 `vGlobalTime`: accumulated high-resolution
-    /// application/process elapsed seconds. This is presentation time, not the
-    /// replay hour or game clock.
     application_elapsed_seconds: f32,
-    /// Exact-a729 field historically labelled `MaxGameSpeed`: the smoothed
-    /// renderer day/night gate produced by the renderer/game-state/settings
-    /// path, not the configured game speed.
     day_night_gate_factor: f32,
-    /// Authenticates the external presentation-time/gate carrier. XMAP10 never
-    /// synthesizes either value from replay hour.
     presentation_timing_receipt_sha256: String,
 }
 
@@ -646,12 +621,6 @@ impl Xmap10PresentationScenePatch {
 pub const XMAP10_VIEWER_PRESENTATION_STATE_SCHEMA: &str =
     "hoi4.xmap10.viewer-presentation-state.a729.v1";
 
-/// Viewer-owned exact-a729 presentation clock and smoothed day/night gate.
-///
-/// The replay supplies only the authenticated pause/speed state. Elapsed
-/// process time, frame delta, and the day/night toggle are presentation state
-/// owned by the standalone viewer. The running receipt chains every update so
-/// callers cannot silently fork or reuse a stale gate value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xmap10ViewerPresentationState {
     pub schema: String,
@@ -666,12 +635,6 @@ pub struct Xmap10ViewerPresentationState {
     pub deterministic_sha256: String,
 }
 
-/// One authenticated input to the exact-a729 presentation recurrence. A
-/// contiguous Presented frame consumes one step from retained state. That
-/// constant-size state is the exact fold of the former ordered session
-/// timeline, so a transport discontinuity advances it once without retaining
-/// or replaying unbounded history. Native temporal GPU resources reset on
-/// their separate discontinuity lifecycle.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap10PresentationRecurrenceStep {
@@ -769,8 +732,6 @@ impl Xmap10ViewerPresentationState {
         f32::from_bits(self.application_elapsed_seconds_f32_bits)
     }
 
-    /// Advance from the current authenticated replay clock plus viewer-owned
-    /// presentation controls and return the exact SceneCB0 patch.
     pub fn advance(
         &mut self,
         world_frame: &replay_core::WorldFrame,
@@ -881,8 +842,6 @@ impl Xmap10ViewerPresentationState {
         self.deterministic_sha256 = viewer_presentation_state_digest(self);
         self.validate()?;
 
-        // MainScene is the authenticated R16G16B16A16_FLOAT HDR path, so the
-        // exact SceneCB0 writer stores 1.0 in HdrRange.
         Ok(Xmap10PresentationScenePatch {
             frame_sequence: self.frame_sequence,
             replay_frame_identity_sha256: self.replay_frame_identity_sha256.clone(),
@@ -981,9 +940,6 @@ impl PreparedXmap10SceneConstantBuffer {
     }
 }
 
-/// Packet-native handoff emitted after the shared SceneCB0 and MainScene
-/// bindings are complete, but before XMAP20 particles execute. It deliberately
-/// cannot carry any bright-pass, luminance, bloom, or RestoreScene operation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap10PreParticleSceneReceipt {
@@ -1315,10 +1271,6 @@ fn xmap10_scene_cb0_stage_layout(
     Ok((cbuffer.name.clone(), cbuffer.size, rows))
 }
 
-/// Validate one consumer stage's register-b0 layout against the canonical
-/// 416-byte aggregate SceneCB0. Shadow consumers use this because their pixel
-/// stage can legitimately omit SceneCB0 while the vertex stage still consumes
-/// the exact shared layout.
 pub fn xmap10_scene_cb0_stage_reflected_layout_sha256(
     bytecode: &[u8],
     stage: &str,
@@ -1344,9 +1296,6 @@ pub fn xmap10_scene_cb0_stage_reflected_layout_sha256(
     ))
 }
 
-/// Validate a consumer's compiled VS/PS register-b0 contract against the one
-/// canonical aggregate SceneCB0 owned by XMAP10. Consumer packets call this
-/// instead of defining packet-local layout-hash domains.
 pub fn xmap10_scene_cb0_reflected_layout_sha256(
     vertex_bytecode: &[u8],
     pixel_bytecode: &[u8],
@@ -1829,9 +1778,6 @@ mod native {
         D3D11_SUBRESOURCE_DATA, D3D11_USAGE_IMMUTABLE,
     };
 
-    /// Retained native SceneCB0 uploaded from the exact composed 416-byte
-    /// payload. The buffer is immutable for one prepared map view; callers
-    /// create a separate object for main/west/east view identities.
     pub struct NativeXmap10SceneConstantBuffer {
         buffer: D3dPtr<ID3D11Buffer>,
         prepared: PreparedXmap10SceneConstantBuffer,
@@ -1839,9 +1785,6 @@ mod native {
     }
 
     impl NativeXmap10SceneConstantBuffer {
-        /// # Safety
-        /// `device` must be a live D3D11 device for the caller's production
-        /// backend. The returned object owns the created buffer reference.
         pub unsafe fn create_on_device(
             device: *mut ID3D11Device,
             prepared: PreparedXmap10SceneConstantBuffer,
@@ -1891,9 +1834,6 @@ mod native {
             self.device_identity
         }
 
-        /// Seal one map-copy SceneCB0 against the concrete MainScene
-        /// allocation that every consumer will draw into. The returned view
-        /// borrows both COM owners and therefore cannot outlive either one.
         pub fn bind_main_scene<'a>(
             &'a self,
             pre_particle_scene: &'a Xmap10PreParticleSceneReceipt,
@@ -1946,9 +1886,6 @@ mod native {
         }
     }
 
-    /// Frozen native provider consumed by XMAP04, XMAP07, and XMAP08. All
-    /// durable identities are pointer-free; the raw COM objects are borrowed
-    /// solely for same-device draw admission.
     pub struct NativeXmap10MapCopySceneCb0View<'a> {
         scene_cb0: &'a NativeXmap10SceneConstantBuffer,
         main_scene: &'a NativeProductionMainSceneTarget,
@@ -2004,10 +1941,6 @@ mod native {
             &self.scene_cb0.prepared.descriptor.layout_sha256
         }
 
-        /// Exact `vGlobalTime` value from this immutable, authenticated
-        /// SceneCB0 payload. The XMAP16 arrow compositor consumes the same
-        /// application/render elapsed seconds instead of accepting a second
-        /// caller-controlled clock.
         pub fn application_elapsed_seconds(&self) -> f32 {
             let bytes: [u8; 4] = self.scene_cb0.prepared.bytes
                 [XMAP10_SCENE_CB0_GLOBAL_TIME_OFFSET..XMAP10_SCENE_CB0_GLOBAL_TIME_OFFSET + 4]

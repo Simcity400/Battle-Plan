@@ -1,10 +1,3 @@
-//! Map bundle loading for the replay product surface.
-//!
-//! Loads the gitignored Rust map bundle documented in
-//! Bundle"): `manifest.json`, `province_ids.r32` (little-endian u32 per
-//! pixel, row-major), plus the political JSON tables. Fails closed with
-//! generation guidance when the bundle is missing or malformed; nothing is
-//! fabricated.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,62 +7,38 @@ use crate::Result;
 
 /// gate for real HOI4-generated bundles.
 pub const PRODUCT_MAP_WIDTH: usize = 5632;
-/// See [`PRODUCT_MAP_WIDTH`].
 pub const PRODUCT_MAP_HEIGHT: usize = 2048;
 
 const BUNDLE_SCHEMA: &str = "battle-plan-rust-map-bundle-v1";
 
-/// The command a user runs to (re)generate the map bundle.
 pub fn generation_guidance() -> String {
     "generate the map bundle with:\n  cargo run --release -p map_viewer -- bundle --game \"<the game install dir>\"".to_string()
 }
 
-/// The capture-side provenance a bundle manifest must declare (FW7 H1):
-/// which game sources produced it (fnv1a64 identity hashes written by
-/// `map_viewer` at generation time) and which modset was in effect. Verified
-/// at load so a bundle with stripped or mangled provenance fails closed, and
-/// surfaced so consumers can compare the modset identity against the
-/// recording's.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BundleProvenance {
     /// Directory name of the game install the bundle was generated from.
     pub game_dir_name: String,
-    /// The `default.map` reference recorded by the generator.
     pub default_map: String,
-    /// fnv1a64 of `map/definition.csv` at generation time (16 lowercase hex).
     pub definition_csv_fnv1a64: String,
-    /// fnv1a64 of `map/provinces.bmp` at generation time (16 lowercase hex).
     pub provinces_bmp_fnv1a64: String,
-    /// fnv1a64 per declared visual source input (path -> 16 lowercase hex).
     pub visual_input_fnv1a64: BTreeMap<String, String>,
-    /// The capture-side canonical modset identity: `"vanilla"` for a no-mod
-    /// bundle (including a manifest with no `modset` block), otherwise the
-    /// 16-hex id derived from the resolved mod selection.
     pub modset_id: String,
-    /// Number of mods in the resolved selection (0 for vanilla).
     pub mod_count: usize,
 }
 
-/// In-memory map bundle: the static, grounded inputs of the replay map.
 pub struct MapBundle {
     pub width: usize,
     pub height: usize,
-    /// Little-endian u32 province id per pixel, row-major. CPU picking
-    /// authority; also uploaded once as an `R32_UINT` texture.
     pub province_ids: Vec<u32>,
-    /// Province id -> state id (`province_to_state.json`).
     pub province_to_state: BTreeMap<u32, u32>,
-    /// State id -> 1936 owner tag (`state_owner_1936.json`).
     pub state_owner_1936: BTreeMap<u32, String>,
-    /// Country tag -> RGB color (`country_colors.json`).
     pub country_colors: BTreeMap<String, [u8; 3]>,
-    /// Verified capture-side provenance (source hashes + modset identity).
     pub provenance: BundleProvenance,
 }
 
 impl std::fmt::Debug for MapBundle {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Compact by hand: the pixel planes are millions of entries.
         formatter
             .debug_struct("MapBundle")
             .field("width", &self.width)
@@ -84,7 +53,6 @@ impl std::fmt::Debug for MapBundle {
 }
 
 impl MapBundle {
-    /// Load a bundle directory, validating file shapes defensively.
     pub fn load(dir: &Path) -> Result<MapBundle> {
         if !dir.is_dir() {
             return Err(format!("bundle directory {} does not exist", dir.display()).into());
@@ -150,17 +118,6 @@ impl MapBundle {
         })
     }
 
-    ///
-    /// Country identity (tags/names/colors/cosmetics) is fully data-driven and
-    /// works for ANY modset, but the render pipeline still assumes the vanilla
-    /// MAP GEOMETRY size (the east-west wrap period in
-    /// [`crate::render`], the political-colour texture resolution in
-    /// `map_viewer::political_color_synthesis`, plus the captured-camera laws
-    /// are all tuned to 5632x2048). The overwhelming majority of mods keep the
-    /// vanilla map, so this holds; a total-conversion with a RESIZED map is
-    /// rejected here — fail-closed — rather than silently mis-rendered.
-    /// Lifting the assumption requires exact differently-sized map evidence for
-    /// wrap, camera, and colour behavior; it must not be guessed.
     pub fn validate_product_dimensions(&self) -> Result<()> {
         if self.width != PRODUCT_MAP_WIDTH || self.height != PRODUCT_MAP_HEIGHT {
             return Err(format!(
@@ -176,7 +133,6 @@ impl MapBundle {
         Ok(())
     }
 
-    /// Largest state id referenced by the static tables (0 when none).
     pub fn max_state_id(&self) -> u32 {
         let from_mapping = self.province_to_state.values().copied().max().unwrap_or(0);
         let from_owners = self
@@ -189,55 +145,18 @@ impl MapBundle {
     }
 }
 
-/// What reconciling a bundle's declared modset against a recording's own
-/// content manifest could actually establish.
-///
-/// The two identities are NOT mutually recomputable, and this type exists so
-/// that fact is recorded rather than papered over. The bundle's `modset_id` is
-/// `sha1_hex_16` over `[["workshop:<id>"|"name:<name>", "<version>"], ...]`
-/// (`map_viewer::mod_resolver::modset_id`), while a recorded
-/// [`replay_core::RecordedContentLayer`] carries a normalized descriptor
-/// `layer_id`, a `descriptor_sha256` and a `source_container_sha256` — but
-/// neither a mod version nor a workshop id. So exact identity equality between
-/// a modded bundle and a modded recording cannot be decided from the recorded
-/// evidence, and is never asserted.
-///
-/// What IS decidable on both sides, and cannot false-positive, is any
-/// DISPROOF of sameness. Two facts carry it: the vanilla/modded CLASS — the
-/// bundle publishes `mod_count == 0` exactly when its selection was empty
-/// (`modset_id(&[]) == "vanilla"`), and the recording declares its mod layers
-/// explicitly as [`replay_core::ContentLayerKind::Mod`] rows — and the ROSTER
-/// SIZE, since the bundle verifies `mod_count == mods.len()` at load while the
-/// recorder verifies its Mod-layer count equals the launch-bound mod roster.
-/// Equality of identities cannot be proven, but two different roster sizes
-/// cannot be the same roster. Either disagreement is returned as
-/// [`replay_core::SourceError::ModsetMismatch`] by
-/// [`reconcile_bundle_modset`] — the same typed class the snapshot container
-/// and the rollover authenticator already funnel into, which
-/// `validate::rejection_kind` maps to `RejectionKind::Modset`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BundleModsetAgreement {
-    /// Both sides declare the vanilla identity: the bundle resolved an empty
-    /// selection and the recording admitted no mod layer. Fully decided.
     AgreedVanilla,
-    /// Both sides declare a modded selection of the SAME size, so nothing in
-    /// the recorded evidence contradicts them, but the exact identities are
-    /// not comparable (see the type docs). Recorded as a degradation; never
-    /// reported as agreement. A size DIFFERENCE is not this variant — it is a
-    /// decidable disproof and is refused.
     ModdedIdentityNotComparable {
         bundle_modset_id: String,
         bundle_mod_count: usize,
         recording_mod_layer_count: usize,
     },
-    /// The recording carries no portable content manifest on this route, so it
-    /// declares no modset identity at all and nothing can be compared.
     RecordingIdentityAbsent { reason: String },
 }
 
 impl BundleModsetAgreement {
-    /// A one-line diagnostic for the launch log. Every variant renders; a
-    /// non-decidable outcome must never pass silently.
     pub fn diagnostic(&self) -> String {
         match self {
             Self::AgreedVanilla => {
@@ -262,21 +181,12 @@ impl BundleModsetAgreement {
         }
     }
 
-    /// True only for the one outcome that positively established agreement.
     pub fn is_decided(&self) -> bool {
         matches!(self, Self::AgreedVanilla)
     }
 }
 
-/// Reconcile a loaded bundle's declared modset against the recording's own
-/// content manifest at open.
-///
-/// This closes the FW7/FW11 seam: the bundle's province->state table becomes
-/// the anomaly authority for a recording (`AnomalyPolicy::with_known_provinces`
 /// in `timeline::build_provider`), so a bundle generated under a different
-/// modset silently mis-judges which province ids are real. A definite class
-/// disagreement is a typed refusal; anything the recorded evidence cannot
-/// decide is a typed recorded degradation. Neither outcome is silence.
 pub fn reconcile_bundle_modset(
     provenance: &BundleProvenance,
     manifest: Option<&replay_core::ContentManifest>,
@@ -291,19 +201,10 @@ pub fn reconcile_bundle_modset(
         .iter()
         .filter(|layer| layer.layer_kind == replay_core::ContentLayerKind::Mod)
         .count();
-    // The capture-side biconditional `modset_id(&[]) == "vanilla"` is already
-    // enforced at load by `verified_provenance`, so `mod_count == 0` and the
-    // literal vanilla id are the same fact here; read the count.
     let bundle_is_vanilla = provenance.mod_count == 0;
     let recording_is_vanilla = recording_mod_layer_count == 0;
     match (bundle_is_vanilla, recording_is_vanilla) {
         (true, true) => Ok(BundleModsetAgreement::AgreedVanilla),
-        // Both modded. The missing version/workshop id blocks PROVING the two
-        // rosters are the same, but it does not block DISPROVING it: the
-        // bundle verifies `mod_count == mods.len()` at load, and the recorder
-        // verifies its Mod-layer count equals the launch-bound mod roster, so
-        // both counts are exact roster sizes. Different sizes cannot be the
-        // same roster.
         (false, false) if provenance.mod_count != recording_mod_layer_count => {
             Err(replay_core::SourceError::ModsetMismatch(format!(
                 "map bundle declares modset {} with {} mod(s) but the recording admitted {} \
@@ -340,8 +241,6 @@ pub fn reconcile_bundle_modset(
     }
 }
 
-/// A generator-written fnv1a64 identity: exactly 16 lowercase hex digits
-/// (`map_viewer::util::fnv1a64_file` formats with `{hash:016x}`).
 fn is_fnv1a64_hex(value: &str) -> bool {
     value.len() == 16
         && value
@@ -371,13 +270,6 @@ fn provenance_hash(source: &serde_json::Value, key: &str) -> Result<String> {
     Ok(value)
 }
 
-/// FW7 H1 — verify the capture-side provenance contract at load. The
-/// generator (`map_viewer` bundle_gen) always writes a `source` block with
-/// the game-input fnv1a64 identities, and a `modset` block whenever a mod
-/// selection was resolved; a manifest with that provenance stripped or
-/// mangled is not a trustworthy bundle and fails closed with regeneration
-/// guidance. An absent `modset` block is the vanilla identity by the
-/// capture-side rule (`modset_id(&[]) == "vanilla"`).
 fn verified_provenance(manifest: &serde_json::Value) -> Result<BundleProvenance> {
     let source = manifest.get("source").ok_or_else(|| {
         format!(
@@ -393,9 +285,6 @@ fn verified_provenance(manifest: &serde_json::Value) -> Result<BundleProvenance>
     let default_map = provenance_str(source, "default_map")?;
     let definition_csv_fnv1a64 = provenance_hash(source, "definition_csv_fnv1a64")?;
     let provinces_bmp_fnv1a64 = provenance_hash(source, "provinces_bmp_fnv1a64")?;
-    // The generator always writes the visual-input hash map (bundle_gen
-    // populates it unconditionally), so its absence — like an empty map — is
-    // stripped provenance, not an older-but-valid bundle.
     let visual = source
         .get("visual_input_fnv1a64")
         .ok_or("manifest.json source.visual_input_fnv1a64 is missing (capture-side contract)")?
@@ -425,8 +314,6 @@ fn verified_provenance(manifest: &serde_json::Value) -> Result<BundleProvenance>
     }
 
     let (modset_id, mod_count) = match manifest.get("modset") {
-        // The generator omits the block entirely for an implicit vanilla
-        // selection; that is the vanilla identity by construction.
         None => ("vanilla".to_string(), 0usize),
         Some(modset) => {
             if !modset.is_object() {
@@ -460,10 +347,6 @@ fn verified_provenance(manifest: &serde_json::Value) -> Result<BundleProvenance>
                 )
                 .into());
             }
-            // The capture-side identity rule is a biconditional:
-            // `modset_id(&[]) == "vanilla"` and a non-empty selection always
-            // hashes to a non-vanilla id, so either contradiction is a
-            // mangled manifest.
             if modset_id == "vanilla" && mod_count != 0 {
                 return Err(format!(
                     "manifest.json modset claims the vanilla identity with {mod_count} mods"
@@ -661,7 +544,6 @@ pub(crate) mod tests {
 
     static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
-    /// Unique per-test directory under the system temp dir.
     pub(crate) fn unique_temp_dir(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -676,7 +558,6 @@ pub(crate) mod tests {
         dir
     }
 
-    /// A well-formed capture-side `source` provenance block for fixtures.
     pub(crate) fn fixture_source_block() -> serde_json::Value {
         serde_json::json!({
             "game_dir_name": "the game",
@@ -695,8 +576,6 @@ pub(crate) mod tests {
         fs::write(path, bytes).expect("write raw plane");
     }
 
-    /// Write a tiny synthetic 8x4 bundle. Provinces 1..=4 fill the four
-    /// horizontal quarters of every row.
     pub(crate) fn write_fixture_bundle(dir: &Path) {
         let width = 8usize;
         let height = 4usize;
@@ -888,7 +767,6 @@ pub(crate) mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    // ---- FW7 H1: load-time source-hash / modset provenance verification ----
 
     fn overwrite_manifest(dir: &Path, manifest: serde_json::Value) {
         fs::write(
@@ -928,7 +806,6 @@ pub(crate) mod tests {
                 .map(String::as_str),
             Some("00112233aabbccdd")
         );
-        // No modset block => the vanilla identity by the capture-side rule.
         assert_eq!(bundle.provenance.modset_id, "vanilla");
         assert_eq!(bundle.provenance.mod_count, 0);
         fs::remove_dir_all(&dir).ok();
@@ -956,8 +833,8 @@ pub(crate) mod tests {
     fn malformed_source_hashes_fail_closed() {
         for (key, bad) in [
             ("definition_csv_fnv1a64", "not-a-hash"),
-            ("definition_csv_fnv1a64", "0123456789ABCDEF"), // uppercase
-            ("provinces_bmp_fnv1a64", "0123"),              // short
+            ("definition_csv_fnv1a64", "0123456789ABCDEF"),
+            ("provinces_bmp_fnv1a64", "0123"),
         ] {
             let dir = unique_temp_dir("provenance_bad_hash");
             write_fixture_bundle(&dir);
@@ -975,7 +852,6 @@ pub(crate) mod tests {
 
     #[test]
     fn missing_or_empty_visual_input_hashes_fail_closed() {
-        // Deleted property: stripped provenance, refused.
         let dir = unique_temp_dir("provenance_visual_missing");
         write_fixture_bundle(&dir);
         let mut source = fixture_source_block();
@@ -988,7 +864,6 @@ pub(crate) mod tests {
         assert!(err.to_string().contains("visual_input_fnv1a64"), "{err}");
         fs::remove_dir_all(&dir).ok();
 
-        // Present but empty map: equally stripped, refused.
         let dir = unique_temp_dir("provenance_visual_empty");
         write_fixture_bundle(&dir);
         let mut source = fixture_source_block();
@@ -1001,8 +876,6 @@ pub(crate) mod tests {
 
     #[test]
     fn modset_vanilla_biconditional_is_enforced_both_ways() {
-        // Non-vanilla identity with zero mods contradicts the capture-side
-        // rule (an empty selection always hashes to "vanilla").
         let dir = unique_temp_dir("provenance_modset_reverse");
         write_fixture_bundle(&dir);
         let mut manifest = manifest_with(fixture_source_block());
@@ -1017,8 +890,6 @@ pub(crate) mod tests {
         assert!(err.to_string().contains("vanilla"), "{err}");
         fs::remove_dir_all(&dir).ok();
 
-        // An explicit zero-survivor selection publishing the vanilla identity
-        // is the legitimate shape and loads.
         let dir = unique_temp_dir("provenance_modset_explicit_vanilla");
         write_fixture_bundle(&dir);
         let mut manifest = manifest_with(fixture_source_block());
@@ -1037,7 +908,6 @@ pub(crate) mod tests {
 
     #[test]
     fn modset_block_is_verified_and_surfaced() {
-        // A consistent modset block loads and surfaces its identity.
         let dir = unique_temp_dir("provenance_modset_ok");
         write_fixture_bundle(&dir);
         let mut manifest = manifest_with(fixture_source_block());
@@ -1053,7 +923,6 @@ pub(crate) mod tests {
         assert_eq!(bundle.provenance.mod_count, 1);
         fs::remove_dir_all(&dir).ok();
 
-        // mod_count disagreeing with the mods array is refused.
         let dir = unique_temp_dir("provenance_modset_count");
         write_fixture_bundle(&dir);
         let mut manifest = manifest_with(fixture_source_block());
@@ -1068,7 +937,6 @@ pub(crate) mod tests {
         assert!(err.to_string().contains("mod_count"), "{err}");
         fs::remove_dir_all(&dir).ok();
 
-        // The vanilla identity with a non-empty mod list is a contradiction.
         let dir = unique_temp_dir("provenance_modset_vanilla");
         write_fixture_bundle(&dir);
         let mut manifest = manifest_with(fixture_source_block());
@@ -1084,7 +952,6 @@ pub(crate) mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    // ---- Bundle provenance vs recording modset reconciliation ----
 
     pub(crate) fn provenance_with(modset_id: &str, mod_count: usize) -> BundleProvenance {
         BundleProvenance {
@@ -1101,8 +968,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// A recording manifest whose ordered layers carry `mod_layers` mod rows on
-    /// top of the base layer.
     pub(crate) fn recording_manifest(mod_layers: usize) -> replay_core::ContentManifest {
         use replay_core::{
             ContentLayerKind, LayerStorageKind, RecordedContentLayer, SourceGameIdentity,
@@ -1157,12 +1022,8 @@ pub(crate) mod tests {
         }
     }
 
-    /// The gate scenario: a bundle/recording modset disagreement produces the
-    /// typed refusal the house already classifies as `RejectionKind::Modset`,
-    /// in BOTH directions.
     #[test]
     fn bundle_recording_modset_disagreement_is_a_typed_modset_mismatch() {
-        // Vanilla bundle, modded recording.
         let error = reconcile_bundle_modset(
             &provenance_with("vanilla", 0),
             Some(&recording_manifest(2)),
@@ -1177,7 +1038,6 @@ pub(crate) mod tests {
             "the refusal must name the evidence: {error}"
         );
 
-        // Modded bundle, vanilla recording.
         let error = reconcile_bundle_modset(
             &provenance_with("35bc3f7d45155d2b", 2),
             Some(&recording_manifest(0)),
@@ -1193,7 +1053,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Agreement is only claimed where it is actually decidable.
     #[test]
     fn matching_vanilla_identities_are_the_only_decided_agreement() {
         let agreement =
@@ -1203,10 +1062,6 @@ pub(crate) mod tests {
         assert!(agreement.is_decided());
     }
 
-    /// Two modded sides agree on CLASS only. The bundle digest is taken over
-    /// (workshop-or-name, version) pairs and a recorded layer carries neither,
-    /// so exact equality is undecidable and must be recorded as such — never
-    /// reported as a match.
     #[test]
     fn two_modded_sides_are_recorded_as_not_comparable_not_as_agreement() {
         let agreement = reconcile_bundle_modset(
@@ -1231,11 +1086,6 @@ pub(crate) mod tests {
 
     }
 
-    /// Undecidable does not mean unfalsifiable. Both counts are exact roster
-    /// sizes (the bundle verifies `mod_count == mods.len()`; the recorder
-    /// verifies its Mod-layer count equals the launch-bound roster), so two
-    /// different sizes DISPROVE sameness even though equal sizes cannot prove
-    /// it. That must refuse, not degrade.
     #[test]
     fn differing_modded_roster_sizes_are_a_decidable_disproof_and_refuse() {
         let error = reconcile_bundle_modset(
@@ -1251,7 +1101,6 @@ pub(crate) mod tests {
         assert!(message.contains("2 mod(s)"), "{message}");
         assert!(message.contains("3 mod layer(s)"), "{message}");
 
-        // The reverse direction is equally decidable.
         let error = reconcile_bundle_modset(
             &provenance_with("35bc3f7d45155d2b", 4),
             Some(&recording_manifest(1)),
@@ -1263,8 +1112,6 @@ pub(crate) mod tests {
         ));
     }
 
-    /// A route with no recorded manifest carries no modset identity at all.
-    /// The honest outcome is a recorded "cannot compare", not a pass.
     #[test]
     fn a_recording_without_a_manifest_is_recorded_as_not_comparable() {
         for provenance in [

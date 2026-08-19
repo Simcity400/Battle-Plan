@@ -1,21 +1,5 @@
-//! LAB1 validation bin: render the reconstructed country-label layout for the
-//! 1936 vanilla start over a blank land/water outline, for the full map and the
-//! Europe / Asia regions, and emit a JSON of per-country anchor / angle / size.
-//!
 //! Files-first: province geometry + ownership come from the committed rust map
 //! bundle (which is generated from the shipped map files); display strings come
-//! from `localisation/` through the mod-aware resolver. The placement law lives
-//! in `map_viewer::compute_country_label_placements` (see
-//! `map_label_law.rs`).
-//!
-//! Usage:
-//!   dump_map_labels --bundle <map_bundle dir> --game <the game dir> [--mod <dir>]...
-//!       --out <dir> [--region name:x:y:w:h]... [--language english]
-//!
-//! Outputs (in --out):
-//!   labels_full.bmp, labels_europe.bmp, labels_asia.bmp (or per --region)
-//!   map_label_layout.json  (per-country tag, name, anchor, angle, half_length,
-//!                           bow, world_height, pixel_count + baseline polyline)
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -31,7 +15,6 @@ use map_viewer::{
 };
 use serde::Serialize;
 
-/// Baseline samples written to the JSON polyline (for downstream tooling).
 const BASELINE_SAMPLES: usize = 9;
 
 #[derive(Clone, Debug, Serialize)]
@@ -51,14 +34,12 @@ struct LabelJson {
     name: String,
     anchor_x: f32,
     anchor_y: f32,
-    /// Orientation in degrees (map-pixel y-down space), for human reading.
     angle_deg: f32,
     angle_rad: f32,
     half_length: f32,
     bow: f32,
     world_height: f32,
     pixel_count: u64,
-    /// Baseline polyline in map-pixel space (BASELINE_SAMPLES points, t=-1..1).
     baseline: Vec<[f32; 2]>,
 }
 
@@ -79,10 +60,6 @@ fn main() -> Result<()> {
     let mut out = None;
     let mut regions: Vec<RegionSpec> = Vec::new();
     let mut language = "english".to_string();
-    // LABGRAD1 before/after switch: with `--home-only` the dump keeps ONLY each
-    // country's home component (the pre-LABGRAD1 one-label-per-country law,
-    // reproduced by filtering the per-component output to `is_home`). Default
-    // (off) renders the full per-component set (the graduated default).
     let mut home_only = false;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -128,8 +105,6 @@ fn main() -> Result<()> {
     };
     let mut placements = compute_country_label_placements(&inputs);
     if home_only {
-        // Reproduce the pre-LABGRAD1 one-label-per-country law for the "before"
-        // dump: keep only each tag's home (capital) component.
         placements.retain(|p| p.is_home);
     }
 
@@ -137,7 +112,6 @@ fn main() -> Result<()> {
         regions = default_regions(bundle.width, bundle.height);
     }
 
-    // Land mask once, for the outline underlay.
     let land = bundle.land_mask();
 
     let mut region_specs = Vec::new();
@@ -192,7 +166,6 @@ fn main() -> Result<()> {
             out.join(&region.file).display()
         );
     }
-    // Named spot-check for the three majors the spec calls out.
     for tag in ["GER", "SOV", "USA"] {
         if let Some(p) = placements.iter().find(|p| p.tag == tag) {
             println!(
@@ -243,8 +216,6 @@ struct LabelBundle {
     owners: BTreeMap<u32, String>,
     impassable_states: BTreeSet<u32>,
     province_importance: BTreeMap<u32, u64>,
-    /// Per-province land/water kind (`province_definitions.json`
-    /// `province_type`), for the RE-TITLE engine flag byte.
     province_type: BTreeMap<u32, ProvinceKind>,
 }
 
@@ -295,9 +266,6 @@ impl LabelBundle {
         })
     }
 
-    /// Land = any pixel with a nonzero province that maps to a state (owned or
-    /// not). Sea provinces have no state mapping, so this is a clean land/water
-    /// outline for the underlay.
     fn land_mask(&self) -> Vec<bool> {
         let mut mask = vec![false; self.width * self.height];
         for (i, &pid) in self.province_ids.iter().enumerate() {
@@ -360,8 +328,6 @@ fn read_u32_string(path: &Path) -> Result<BTreeMap<u32, String>> {
     Ok(out)
 }
 
-/// Read `province_definitions.json` into per-province land/water kind for the
-/// RE-TITLE engine flag byte. Missing file / entry -> land default.
 fn read_province_types(path: &Path) -> Result<BTreeMap<u32, ProvinceKind>> {
     let map: BTreeMap<String, serde_json::Value> = serde_json::from_slice(&read(path)?)?;
     let mut out = BTreeMap::new();
@@ -460,9 +426,6 @@ fn clamp_region(region: &mut RegionSpec, width: usize, height: usize) -> Result<
     Ok(())
 }
 
-/// Render one region: land/water outline underlay + each label's baseline arc
-/// (green), anchor cross (red), and a per-glyph box strip approximating the
-/// text extent (white), so the layout is eyeball-checkable without the font.
 fn render_region(
     bundle: &LabelBundle,
     land: &[bool],
@@ -471,16 +434,13 @@ fn render_region(
     region: &RegionSpec,
     path: &Path,
 ) -> Result<()> {
-    // Downscale large regions so the BMP stays a sane size. Pick a scale that
-    // keeps the longest side <= ~1600 px.
     let scale = (region.width.max(region.height) as f32 / 1600.0)
         .ceil()
         .max(1.0) as usize;
     let out_w = region.width / scale;
     let out_h = region.height / scale;
-    let mut pixels = vec![[20u8, 24u8, 30u8]; out_w * out_h]; // water
+    let mut pixels = vec![[20u8, 24u8, 30u8]; out_w * out_h];
 
-    // Land underlay (muted grey).
     for oy in 0..out_h {
         for ox in 0..out_w {
             let mx = region.x + ox * scale;
@@ -499,7 +459,6 @@ fn render_region(
     };
 
     for p in placements {
-        // Baseline arc in green.
         let mut prev: Option<(i32, i32)> = None;
         for i in 0..=32 {
             let t = (i as f32 / 32.0) * 2.0 - 1.0;
@@ -510,20 +469,15 @@ fn render_region(
             }
             prev = Some((lx, ly));
         }
-        // Text extent box strip in white: a rotated rectangle centred on the
-        // anchor, half_length long, world_height tall (approximates the glyphs).
         draw_text_box(&mut pixels, out_w, out_h, p, &to_local, [235, 235, 235]);
-        // Anchor cross in red.
         let (ax, ay) = to_local(p.anchor_x, p.anchor_y);
         draw_cross(&mut pixels, out_w, out_h, ax, ay, [235, 90, 80]);
-        let _ = names; // names are in the JSON; boxes stand in for glyphs here
+        let _ = names;
     }
 
     bmp_out::write_bmp24_rgb(path, out_w, out_h, &pixels)
 }
 
-/// Draw the rotated text-extent rectangle outline (the baseline chord +/-
-/// world_height/2 along the minor axis), sampling along the bowed baseline.
 fn draw_text_box(
     pixels: &mut [[u8; 3]],
     w: usize,
@@ -540,7 +494,6 @@ fn draw_text_box(
         let (bx, by) = p.baseline_point(t);
         let ang = p.tangent_angle(t);
         let (sin, cos) = ang.sin_cos();
-        // Minor-axis normal (-sin, cos).
         let (tx, ty) = (bx - half_h * sin, by + half_h * cos);
         let (bx2, by2) = (bx + half_h * sin, by - half_h * cos);
         let (tlx, tly) = to_local(tx, ty);

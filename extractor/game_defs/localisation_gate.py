@@ -31,17 +31,17 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-import resolver as R  # noqa: E402
-import source_inventory_layers as SIL  # noqa: E402
-import parse_localisation  # noqa: E402
-import parse_focus_def  # noqa: E402
-import parse_world_defs  # noqa: E402
-import parse_catalogs  # noqa: E402
-import parse_characters  # noqa: E402
-import parse_idea_tech_loc  # noqa: E402
-import parse_decisions  # noqa: E402
-from static_artifact_common import mods_from_arg  # noqa: E402
-from paradox_parser import Node  # noqa: E402
+import resolver as R
+import source_inventory_layers as SIL
+import parse_localisation
+import parse_focus_def
+import parse_world_defs
+import parse_catalogs
+import parse_characters
+import parse_idea_tech_loc
+import parse_decisions
+from static_artifact_common import mods_from_arg
+from paradox_parser import Node
 
 REPO_ROOT = _HERE.parent.parent
 GAME_ID = "static_localisation_join_r3"
@@ -114,14 +114,6 @@ def _report_strings(value: Any) -> Iterator[str]:
 
 
 def assert_no_report_path_leaks(report: dict[str, Any]) -> None:
-    # Scan the string VALUES, never the serialized document. `[A-Za-z]:[\\/]`
-    # applied to JSON text also matches an ordinary word ending in a colon
-    # whenever the next character is one JSON escapes with a backslash, because
-    # the escape supplies the "\" the pattern is looking for. Cargo emits
-    # exactly that: "...present in multiple build targets:\n" serializes as
-    # `targets:\\n`, whose `s:\` tripped this gate on every run and stopped the
-    # report from ever being written -- while a real `C:\Users\Example value is
-    # still caught here, unescaped, in the string it actually lives in.
     leaked: list[str] = []
     for text in _report_strings(report):
         leaked.extend(pat for pat in _FORBIDDEN_REPORT_PATTERNS if pat in text)
@@ -367,17 +359,6 @@ def _country_tag_loc_candidates(tag: str, ideology_groups: list[str]) -> list[di
     return candidates
 
 
-# --- N4/E11 RESOLVED JOIN TABLES ------------------------------------------
-#
-# The coverage report above records HOW MANY ids resolve; the replay UI needs
-# the actual id -> display-name lookups. These tables are the consumable form:
-# focus_id -> name, state_id -> name, victory-point provid -> name, and country
-# TAG -> name PLUS cosmetic-tag -> name (the live compact domain emits a
-# country's active cosmetic_tag string; the replay joins it flat, falling back
-# cosmetic_tags[active] ?? tags[base_tag] ?? tag). No fabrication: an id whose
-# best loc candidate is absent from every effective file is simply OMITTED from
-# the table (never guessed, never defaulted to the raw token). All mod-over-
-# vanilla via the shared layer priority.
 
 
 def _best_country_name(candidates: list[dict[str, str]], loc_names: dict[str, str]) -> str | None:
@@ -415,7 +396,6 @@ def build_resolved_joins(layers, loc_out: dict[str, Any]) -> dict[str, Any]:
     loc = R.load_loc(layers)
     ideology_groups = _ideology_groups(layers)
 
-    # Focus: parse_focus_def already loc-resolves each focus title.
     focus_out = parse_focus_def.parse_focus_defs(layers, loc)
     focus = {
         fid: rec["loc"]["title"]
@@ -423,23 +403,18 @@ def build_resolved_joins(layers, loc_out: dict[str, Any]) -> dict[str, Any]:
         if isinstance(rec.get("loc"), dict) and rec["loc"].get("title")
     }
 
-    # State + victory-point names (STATE_<id> / VICTORY_POINTS_<provid>).
     world_out = parse_world_defs.parse_world_defs(layers, loc)
     state = dict(world_out["state_names"])
     victory_point = dict(world_out["vp_names"])
 
-    # Country base tags -> best-resolving name.
     tags: dict[str, str] = {}
     for item in _country_tag_items(layers):
         if item.get("dynamic_tag"):
-            # dynamic country tags (D01..) get their origin name at runtime.
             continue
         name = _best_country_name(item.get("loc_candidates") or [], loc_names)
         if name:
             tags[item["id"]] = name
 
-    # Cosmetic tags -> name (same candidate rules; the id itself is the loc key
-    # shape, e.g. MAL_UK / MAL_UK_DEF / MAL_UK_ADJ + ideology variants).
     cosmetic_tags: dict[str, str] = {}
     for cid in _cosmetic_tag_ids(layers):
         name = _best_country_name(_country_tag_loc_candidates(cid, ideology_groups), loc_names)
@@ -637,7 +612,6 @@ def build_catalog(
             "closed_rows": [
                 "english localisation key -> {name, raw, source_layer, source_file}"
                 " effective mod-over-vanilla join",
-                # N4/E11: the consumable resolved id -> display-name join tables.
                 "focus id -> display name (resolved_joins.focus)",
                 "state id -> name (resolved_joins.state)",
                 "victory-point province id -> name (resolved_joins.victory_point)",
@@ -658,9 +632,6 @@ def build_catalog(
         "meta": loc_out["meta"],
         "source_files": source_files,
         "coverage": coverage,
-        # N4/E11: consumable id -> display-name join tables (additive; the
-        # recorder hashes the whole file and reads only schema/layers, and
-        # consumers read known keys — existing `keys`/`coverage` unchanged).
         "resolved_joins": resolved_joins,
         "keys": loc_out["keys"],
     }
@@ -782,9 +753,6 @@ def main() -> int:
     if not args.skip_pack:
         proof["pack_verify"] = run_pack_verify(args.out_dir)
     verify_rc = ((proof.get("pack_verify") or {}).get("verify") or {}).get("returncode")
-    # Fail closed if the resolved-join tables came back implausibly empty (a
-    # broken parser/loc join must NOT ship a hollow bundle that passed only on
-    # the raw key count). Vanilla has hundreds of focuses/states/VPs/tags.
     joins_ok = (
         joins["focus"] > 100
         and joins["state"] > 100

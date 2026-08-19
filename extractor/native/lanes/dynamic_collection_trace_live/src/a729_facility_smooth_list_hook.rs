@@ -1,12 +1,3 @@
-//! Exact-a729 facility-specialization smooth-list owner hook.
-//!
-//! The sole detour wraps `CFacilitiesTabView::SetupDerived`.  The original
-//! function has already enumerated every specialization token, constructed one
-//! `specialization_item` per token, appended the rows in source order, and
-//! completed list layout when this observer runs.  The observer then gates the
-//! concrete list, row, and scrollbar vtables and copies a pointer-free
-//! collection observation.  No generic list/layout function is detoured.
-
 use crate::{
     CollectionTrace, ExactControllerTraceSource, MaterializedSlotTrace, RectI32, SourceItemTrace,
 };
@@ -125,14 +116,13 @@ impl A729FacilitySmoothListHookOwner {
         verify_sentinel(target, &FACILITY_SETUP_SENTINEL, "facility SetupDerived")?;
         reset_state()?;
         let epoch = INSTALL_EPOCH
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
             .map_err(|_| "A28 facility install epoch exhausted".to_string())?
             + 1;
         let original = unsafe {
-            MinHook::create_hook(
-                target as *mut c_void,
-                hook_facility_setup as *mut c_void,
-            )
+            MinHook::create_hook(target as *mut c_void, hook_facility_setup as *mut c_void)
         }
         .map_err(|status| format!("A28 facility hook creation failed: {status}"))?;
         ORIGINAL_SETUP.store(original as usize, Ordering::Release);
@@ -140,23 +130,6 @@ impl A729FacilitySmoothListHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
-            //
-            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
-            // this product. Read `minhook_h4/vendor/src/hook.c`'s
-            // `EnableHookLL`: the fork deliberately writes the patch, then sets
-            // `isEnabled`/`queueEnable` and reports `MH_ERROR_MEMORY_PROTECT`
-            // when the protection restore or the instruction-cache flush did
-            // not complete -- "the bytes ARE written by the time these run, so
-            // the state is reported as it is". So this arm can be reached with
-            // a LIVE detour and a thread inside its body, which returns through
-            // the trampoline `remove` would free.
-            //
-            // Disable, drain, and only then free. A refusal RETAINS: the
-            // original pointer and module base are kept, because the detour may
-            // still dispatch into the callback and a zeroed original makes it
-            // skip the game's own function -- a mutated simulation, not a lost
-            // row.
             let _ = unsafe { inline_detour::disable(target as *mut c_void) };
             if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
                 return Err(format!(
@@ -187,9 +160,7 @@ impl A729FacilitySmoothListHookOwner {
         diagnostics()
     }
 
-    pub fn drain_observations(
-        &self,
-    ) -> Result<Vec<FacilitySmoothListObservation>, String> {
+    pub fn drain_observations(&self) -> Result<Vec<FacilitySmoothListObservation>, String> {
         if !self.active || !INSTALLED.load(Ordering::Acquire) {
             return Err("A28 facility hook owner is not active".into());
         }
@@ -203,10 +174,7 @@ impl A729FacilitySmoothListHookOwner {
         Ok(state.observations.drain(..).collect())
     }
 
-    pub fn drain_source(
-        &self,
-        frame_hour: u64,
-    ) -> Result<A729FacilitySmoothListSource, String> {
+    pub fn drain_source(&self, frame_hour: u64) -> Result<A729FacilitySmoothListSource, String> {
         let observations = self.drain_observations()?;
         A729FacilitySmoothListSource::try_from_observations(frame_hour, observations)
     }
@@ -354,9 +322,6 @@ impl FacilitySmoothListObservation {
 }
 
 unsafe extern "system" fn hook_facility_setup(owner: usize) {
-    // THE LEASE IS TAKEN BEFORE THE ADMISSION TEST, so the unadmitted
-    // arm below -- which still calls the game's original, through the
-    // trampoline -- is counted too.
     let in_flight = InFlight::enter();
     if !in_flight.admitted() {
         call_original(owner);
@@ -517,25 +482,11 @@ fn capture_post_return(owner: usize) -> Result<(), String> {
 struct InFlight;
 
 impl InFlight {
-    /// ALWAYS COUNTS, admitted or not.
-    ///
-    /// This used to return `None` when `CALLBACKS_OPEN` was already closed --
-    /// and the detour then went on to CALL THE ORIGINAL anyway, uncounted. That
-    /// is the exact thread teardown must wait for: it is inside this crate's
-    /// own detour body, which the freeze cannot see, and it RETURNS THROUGH THE
-    /// TRAMPOLINE that `inline_detour::remove` frees. A drain taken after
-    /// closing admission read zero straight past it.
-    ///
-    /// So entry and ADMISSION are now two different questions. The count says
-    /// "a thread is in the body"; [`InFlight::admitted`] says "and it may
-    /// capture". Closing the gate stops the capture and never stops the count.
     fn enter() -> Self {
         IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
         Self
     }
 
-    /// Whether this entrant may do the observation half. The call through the
-    /// original happens either way -- it is the game's own function.
     fn admitted(&self) -> bool {
         CALLBACKS_OPEN.load(Ordering::Acquire)
     }
@@ -616,7 +567,8 @@ fn require_positive_extent(extent: [i32; 2], label: &str) -> Result<(), String> 
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
-    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual =
+        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }

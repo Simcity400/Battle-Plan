@@ -1,11 +1,3 @@
-//! XUI16 production binding for occupation, resistance/compliance and garrisons.
-//!
-//! The binding consumes only typed replay leaves plus envelope-validated
-//! companion inputs. Its product entry point constructs alert/history rows from
-//! typed carriers and cross-checks the selected controller against the same
-//! frame.
-//! Effective-GUI geometry, viewer ordering, selection, clipping, and scroll
-//! state are never recorded.
 
 use crate::compose::ComposeOptions;
 use crate::assets::AssetResolver;
@@ -29,11 +21,6 @@ pub const OCCUPATION_COLLECTION_ACTIVITY: &str = "xui16/garrison_activity";
 pub const OCCUPATION_COLLECTION_EQUIPMENT_LOSSES: &str = "xui16/garrison_equipment_losses";
 pub const OCCUPATION_COLLECTION_ALERTS: &str = "xui16/garrison_alerts";
 
-/// XUI03 observer-owned semantic row identity.
-///
-/// This deliberately contains no panel-open state, selected row, scroll
-/// position, widget rectangle, materialized slot, clip rectangle, or viewport.
-/// Those are viewer state and effective-GUI layout, not replay semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverSemanticCollection {
     pub collection_id: &'static str,
@@ -45,7 +32,6 @@ pub struct ObserverSemanticCollection {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverSemanticRow {
     pub stable_item_id: String,
-    /// Declared engine ordinal admitted only after selected-controller joins.
     pub source_ordinal: u32,
 }
 
@@ -81,11 +67,6 @@ pub struct OccupationObserverCollections {
     pub alerts: ObserverSemanticCollection,
 }
 
-/// Exact engine-evaluated D66 supplement that replay-side code cannot
-/// reconstruct from game-authored files plus the existing WorldFrame.
-///
-/// This is a pointer-free port boundary. It carries semantic ordering and
-/// final engine text only; it never carries panel activation or widget state.
 pub type OccupationD66UiSupplement = replay_core::OccupationUiSupplementExact;
 pub type OccupationD66ControllerSupplement =
     replay_core::OccupationUiControllerSupplementExact;
@@ -96,7 +77,6 @@ pub type OccupationD66FormattedStateText =
 pub struct OccupationLawDefinition {
     pub token: String,
     pub display_name: String,
-    /// One-based frame in `GFX_occupation_policy_icon_strip`.
     pub icon_frame: usize,
     pub gui_order: i64,
 }
@@ -132,8 +112,6 @@ pub struct GarrisonActivityRow {
     pub state_id: u32,
     pub occupied_country_tag: String,
     pub attack_blocked: bool,
-    /// Exact activity token consumed by the successful/unblocked event branch.
-    /// A blocked event may carry no token when the engine does not consume one.
     pub resistance_activity: Option<String>,
     pub lost_manpower: i64,
     pub lost_equipment: i64,
@@ -147,16 +125,12 @@ pub struct GarrisonEquipmentLossRow {
     pub equipment_token: String,
     pub display_name: String,
     pub amount_lost: f64,
-    /// Exact history events contributing to this equipment-tab aggregate.
     pub contributing_activity_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GarrisonShortageEquipmentRow {
-    /// Stable `CEquipmentArchetype+0x418` identity from the exact alert
-    /// producer. This is deliberately not a save equipment-variant identity.
     pub archetype_id: u32,
-    /// Positive whole-unit deficit after the producer's exact /100000 law.
     pub whole_amount: i64,
 }
 
@@ -166,11 +140,8 @@ pub struct OccupationAlertRow {
     pub controller_tag: String,
     pub kind: String,
     pub severity: String,
-    /// Slot registered by `hoi4.exe` function `0x140aeeaa0`.
     pub registry_slot: u32,
-    /// `0x140afe8a0` returns false when a shortage activates this alert.
     pub predicate_returned: bool,
-    /// Exact signed fixed-point divisor used for equipment shortage children.
     pub equipment_fixed_point_divisor: i64,
     pub visible_order: u32,
     pub missing_manpower: i64,
@@ -179,9 +150,6 @@ pub struct OccupationAlertRow {
 }
 
 #[derive(Clone, Copy)]
-/// Fixture-only request shape for exercising the typed history/alert
-/// constructor. Product code cannot turn this into authority; it receives
-/// an admitted surface only from the assembler's atomic product method.
 pub struct OccupationFixtureSurfaceRequest<'a> {
     pub source_record_id: &'a str,
     pub frame: &'a WorldFrame,
@@ -192,14 +160,9 @@ pub struct OccupationFixtureSurfaceRequest<'a> {
     pub equipment_by_state: &'a BTreeMap<u32, Vec<GarrisonEquipmentRow>>,
     pub equipment_complete: bool,
     pub collections: &'a OccupationObserverCollections,
-    /// A25/A28-resolved location text keyed by exact history stable_event_id.
     pub activity_location_text: &'a BTreeMap<String, String>,
-    /// A25-resolved display names keyed by save equipment variant identity.
     pub equipment_display_names: &'a BTreeMap<(u32, u32), String>,
-    /// A25-resolved final alert text keyed by controller TAG.
     pub alert_resolved_text: &'a BTreeMap<String, String>,
-    /// Present only on the opaque product route. Fixture callers use the
-    /// independently typed legacy single-controller alert carrier.
     pub controller_supplement: Option<&'a OccupationD66ControllerSupplement>,
 }
 
@@ -306,10 +269,6 @@ impl std::fmt::Display for OccupationAssemblyGap {
     }
 }
 
-/// Replay-side XUI16 assembler. The resolver is already restricted to the
-/// replay's admitted effective VFS, so installed-but-unrecorded files are
-/// unreachable. Static authored definitions and localisation are loaded once;
-/// per-frame semantics come only from WorldFrame plus the exact D66 supplement.
 #[derive(Clone, Debug)]
 pub struct OccupationSurfaceAssembler {
     law_definitions_by_hash: BTreeMap<u32, OccupationLawDefinition>,
@@ -475,8 +434,6 @@ impl OccupationSurfaceAssembler {
         })
     }
 
-    /// Atomically assemble and admit against the same borrowed WorldFrame.
-    /// No independently movable input object crosses the product boundary.
     pub fn assemble_admitted(
         &self,
         frame: &WorldFrame,
@@ -497,8 +454,6 @@ impl OccupationSurfaceAssembler {
     }
 }
 
-/// Exact selected-controller XUI16 alert semantics joined to the D79
-/// current-active icon row that owns its always-on product pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OccupationAlertProductBinding {
     pub alert: OccupationAlertRow,
@@ -1218,18 +1173,8 @@ mod alert_join_tests {
         );
     }
 
-    /// kills: giving `cosmetic_tag` the generic optional-dimension rule.
-    ///
-    /// `ruling_ideology` is a plain leaf — a null there is a gap — but
-    /// `cosmetic_tag` is nullable, and the producer spends a marker byte
-    /// keeping "measured: no override" (JSON null) apart from "could not read
-    /// it" (no key). Route the cosmetic dimension back through
-    /// `admitted_optional_country_name_dimension` and the two swap: XUI16 would
-    /// name a country off its base TAG on the strength of a field D18 failed to
-    /// read, and refuse the countries D18 measured. GP-F23.
     #[test]
     fn country_name_dimensions_fall_back_only_for_explicit_absence() {
-        // The generic rule, still used for the ideology dimension.
         assert_eq!(
             admitted_optional_country_name_dimension(&Leaf::Absent, "ruling ideology"),
             Ok(None)
@@ -1246,7 +1191,6 @@ mod alert_join_tests {
             .is_err()
         );
 
-        // The nullable cosmetic rule.
         assert_eq!(
             crate::binding::admitted_cosmetic_override(&Leaf::Measured(Some(
                 "FRA_VICHY".to_string()
@@ -1278,8 +1222,6 @@ mod alert_join_tests {
         localisation
             .entries
             .insert("FRA".into(), "France".into());
-        // `Measured(None)` is the producer's measured "FRA has no cosmetic
-        // override", so the name resolves off the base TAG ladder.
         assert_eq!(
             resolve_admitted_country_name(
                 &localisation,
@@ -1297,9 +1239,6 @@ mod alert_join_tests {
         )
         .expect_err("unobtained ideology must reject");
         assert_eq!(rejected.0, "XUI16_IDEOLOGY_IDENTITY_UNAVAILABLE");
-        // ...and a cosmetic field D18 could not read is refused under its own
-        // code, rather than silently naming the country off its base TAG
-        // (GP-F23).
         let unread = resolve_admitted_country_name(
             &localisation,
             "FRA",
@@ -1470,9 +1409,6 @@ pub fn load_effective_occupation_law_definitions(
                         file.rel_path
                     ))
                 })?;
-            // Hidden/fallback laws may legitimately have no visible label.
-            // Preserve the empty lookup here; admit_state rejects it if that
-            // definition is ever selected for a visible row.
             let display_name = localisation.get(token).unwrap_or("");
             let hash = fnv1a32(token);
             if definitions
@@ -1902,11 +1838,6 @@ fn resolve_admitted_country_name<'a>(
     ruling_ideology: &Leaf<String>,
     cosmetic_tag: &Leaf<Option<String>>,
 ) -> std::result::Result<&'a str, (&'static str, String)> {
-    // `cosmetic_tag` is NULLABLE and does not share the generic rule above: the
-    // producer's measured "this country has no cosmetic override" is a JSON
-    // null (D18 marker 1) and is a measurement — the name resolves off the base
-    // TAG — while a field D18 could not read carries no key at all and is the
-    // state this gate must refuse. GP-F23.
     let cosmetic_tag = crate::binding::admitted_cosmetic_override(cosmetic_tag)
         .map_err(|detail| ("XUI16_COSMETIC_IDENTITY_UNAVAILABLE", detail.to_string()))?;
     let ruling_ideology =
@@ -2032,8 +1963,6 @@ pub struct OccupationMapModeStateInput {
     pub compliance: Option<f32>,
 }
 
-/// Shared state inputs for the resistance/compliance map modes. Unmeasured
-/// values remain `None`, so map composition can fail closed per state.
 pub fn occupation_map_mode_inputs(
     rows: &BTreeMap<u32, OccupationRow>,
 ) -> Vec<OccupationMapModeStateInput> {
@@ -2050,22 +1979,12 @@ pub fn occupation_map_mode_inputs(
         .collect()
 }
 
-/// Domain-model constructor retained for fixture coverage. Product code must
-/// use `OccupationSurfaceAssembler::assemble_admitted`; caller-supplied values
-/// here are never product authority.
 pub fn admit_occupation_fixture_from_world(
     request: OccupationFixtureSurfaceRequest<'_>,
 ) -> Result<AdmittedOccupationSurface, OccupationRejection> {
     admit_resolved_occupation_surface_from_world(request, false)
 }
 
-/// Join the XUI16 shortage/text row to the exact D79 alert slot before either
-/// packet can claim the not-enough-garrison alert as consumed by the product.
-///
-/// Slot 0x3f is the exact a729 registry identity. Its D79 atlas frame is
-/// independently validated by `alert_feed_from_frame`; XUI16 contributes the
-/// resolved tooltip text and exact shortage children. Measured-empty requires
-/// both carriers to agree that the slot is inactive.
 pub fn occupation_alert_product_binding(
     frame: &WorldFrame,
     pov_tag: &str,
@@ -2337,8 +2256,6 @@ fn fixture_garrison_alert_rows(
         .alert
         .as_ref()
         .ok_or(OccupationRejection::IncompleteProducer)?;
-    // The alert producer's exact measured-empty form is a complete
-    // predicate-true row, not `Present + None`.
     if alert.predicate_returned {
         return Ok(Vec::new());
     }
@@ -2656,9 +2573,6 @@ fn admit_state(
     })
 }
 
-/// Convert the save-backed typed carrier directly into XUI16 equipment rows.
-/// `None` means the carrier predates this field and the authenticated live
-/// producer may be used; measured false or malformed children fail closed.
 fn typed_garrison_equipment(
     row: &OccupationRow,
 ) -> Result<Option<Vec<GarrisonEquipmentRow>>, OccupationRejection> {
@@ -2687,9 +2601,6 @@ fn typed_garrison_equipment(
     }
 }
 
-/// Bind the authored single-state/country entry names. Dynamic row placement
-/// and scroll are viewer-owned and resolved from the effective GUI; the replay
-/// collection intentionally carries neither.
 pub fn apply_occupation_state_to_compose_options(
     state: &OccupationStatePresentation,
     options: &mut ComposeOptions,

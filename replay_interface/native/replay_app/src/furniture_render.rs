@@ -1,10 +1,3 @@
-//! Product D3D11 pass for VP/capital map furniture.
-//!
-//! The CPU law and fail-closed frame cache live in `map_furniture`; this file
-//! uploads resolver-decoded sprite assets and submits the emitted screen-space
-//! triangles. Resource values and VP/capital instant text use authenticated
-//! XMAP17 text executors on the same MainScene target; their semantics,
-//! authored geometry, order, and batch identities remain sealed by XMAP21.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::CString;
@@ -71,10 +64,7 @@ pub(crate) struct NeutralMapSceneQuadVertex {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct NeutralMapSceneQuad {
-    /// Stable caller-owned role token used to select an already-created SRV.
     pub(crate) texture_role: String,
-    /// Canonical TL,TR,BL,BR order. The backend alone expands this to the
-    /// exact TL,TR,BL / TR,BR,BL triangle-list order.
     pub(crate) vertices: [NeutralMapSceneQuadVertex; 4],
 }
 
@@ -589,8 +579,6 @@ impl FurnitureIconRenderer {
             let input_layout = ComPtr::from_raw(input_layout, "map-furniture icon input layout")?;
 
             let mut sampler_desc: D3D11_SAMPLER_DESC = mem::zeroed();
-            // CAPTURE: retained hoi4_frame68489.rdc event 19603/chunk 23249,
-            // event-scoped pipeline state for the Berlin VP draw.
             sampler_desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
             sampler_desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
             sampler_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
@@ -630,8 +618,6 @@ impl FurnitureIconRenderer {
                 ComPtr::from_raw(masked_flag_mask_sampler, "XMAP21 masked-flag mask sampler")?;
 
             let mut blend_desc: D3D11_BLEND_DESC = mem::zeroed();
-            // CAPTURE: same retained draw; RGB and alpha use the same
-            // SrcAlpha/InvSrcAlpha/Add factors.
             blend_desc.RenderTarget[0].BlendEnable = 1;
             blend_desc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
             blend_desc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
@@ -658,8 +644,6 @@ impl FurnitureIconRenderer {
             hr_ok(hr, "CreateBuffer for map furniture screen constants")?;
             let screen_cb = ComPtr::from_raw(screen_cb, "map-furniture screen constants")?;
 
-            // DERIVED capacity: six vertices per FILE victory-point entry; no
-            // fixed visual/content ceiling is introduced.
             let vertex_capacity = maximum_marker_count
                 .max(1)
                 .checked_mul(6)
@@ -711,9 +695,6 @@ impl FurnitureIconRenderer {
         }
     }
 
-    /// Execute already-prepared map-space GUI quads against an explicit,
-    /// authenticated map target. Semantics, placement, texture creation and
-    /// packet sealing remain caller-owned.
     pub(crate) unsafe fn execute_neutral(
         &self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -805,9 +786,6 @@ impl FurnitureIconRenderer {
                     let overlay = textures.iter().find(|binding| binding.role == overlay_role);
                     match (is_resource_flag_role(role), mask, overlay) {
                         (true, Some(mask), Some(overlay)) => {
-                            // Run the authenticated maskedflag shader on
-                            // D3D11. Hardware sampling owns min/mag/mip LOD;
-                            // there is no CPU interpolation surrogate.
                             (*context).PSSetShader(self.masked_flag_ps.as_raw(), ptr::null(), 0);
                             (*context).PSSetSamplers(
                                 0,
@@ -827,9 +805,6 @@ impl FurnitureIconRenderer {
                                 ((end_quad - first_quad) * 6) as UINT,
                                 (first_quad * 6) as UINT,
                             );
-                            // maskedShieldType's authored overlay is a second
-                            // native-size point-sampled child over the masked
-                            // base, preserving engine GUI blend order.
                             (*context).PSSetShader(self.ps.as_raw(), ptr::null(), 0);
                             (*context).PSSetSamplers(
                                 0,
@@ -849,10 +824,6 @@ impl FurnitureIconRenderer {
                             masked_flag_quad_count += end_quad - first_quad;
                         }
                         (false, None, None) => {
-                            // A masked group changes both the pixel shader and
-                            // sampler slot 0. Rebind the generic state for
-                            // every ordinary group so draw order cannot leak
-                            // the masked-flag point sampler into later quads.
                             (*context).PSSetShader(self.ps.as_raw(), ptr::null(), 0);
                             (*context).PSSetSamplers(
                                 0,
@@ -928,9 +899,6 @@ impl FurnitureRenderPass {
         let vp_defines = map_viewer::vp_icon_defines_from_resolver(resolver)?;
         let distance_defines = map_viewer::MapFurnitureDistanceDefines::from_resolver(resolver)?;
         let strip = map_viewer::load_vp_strip_asset(resolver)?;
-        // Exact-a729 preallocates 0x100 VP and 0xc0 capital icon roots. The
-        // typed carrier rejects duplicate ordinals and cannot address outside
-        // the engine manager's active root set.
         let icons = FurnitureIconRenderer::new(gfx, &strip, 0x100 + 0xc0)?;
         let resource_text =
             crate::map_labels::Xmap21ResourceTextRenderer::new(gfx, resolver, language)?;
@@ -1680,11 +1648,6 @@ impl FurnitureRenderPass {
         Ok(quads)
     }
 
-    /// Shared XMAP21 backend for already-prepared map-space GUI quads.
-    ///
-    /// This deliberately accepts no semantic map data. Callers retain
-    /// responsibility for exact placement, ordering, content resolution and
-    /// packet sealing; XMAP21 authenticates and executes only the final quads.
     pub(crate) unsafe fn execute_neutral_quads(
         &self,
         gfx: &Gfx,

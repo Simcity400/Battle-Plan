@@ -1,9 +1,3 @@
-//! Strict passive all-country XUI19 decision-evaluation carrier.
-//!
-//! This is a replay-file admission boundary, not an Extractor implementation.
-//! It accepts only an atomic current-hour census keyed to the complete D18
-//! country roster.  It never evaluates Clausewitz triggers, reads recorder UI
-//! state, or adapts the retired selected-Present decision-panel carrier.
 
 use crate::{D18CountryRosterView, ViewStatus};
 use serde::{Deserialize, Serialize};
@@ -16,10 +10,8 @@ pub const XUI19_SCHEMA: &str = "xui19.decision_evaluation_exact.v1";
 pub const XUI19_AUTHORITY: &str = "exact_a729_passive_all_country_decisions";
 pub const XUI19_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
-/// Hash of the exact-a729 function evidence manifest cited by the XUI19 law.
 pub const XUI19_EVIDENCE_MANIFEST_SHA256: &str =
     "59650965bd79b711974aa4f3cd8c34fdf1b111e36fa0a294916839955dac1ec1";
-/// SHA-256 of `rendering_laws/XUI19/producer_contract.json` with repository LF bytes.
 pub const XUI19_PRODUCER_CONTRACT_SHA256: &str =
     "3ccbe6eda7242394614b178e52390ca3050b16d6e5c30934db4e885ec666b14d";
 
@@ -69,13 +61,10 @@ pub enum DecisionTargetExactV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionCostExactV1 {
-    /// Engine fixed-point value after modifiers.
     pub value_raw: i64,
     pub scale: i64,
-    /// Engine resource identity, not a UI-selected icon name.
     pub resource_kind: String,
     pub custom_cost_available: Option<bool>,
-    /// Exact engine-formatted text in `localisation_language`.
     pub formatted_text: String,
 }
 
@@ -83,13 +72,11 @@ pub struct DecisionCostExactV1 {
 #[serde(deny_unknown_fields)]
 pub struct DecisionTimerExactV1 {
     pub kind: DecisionTimerKindExact,
-    /// Raw engine value and its proven scale/unit identity.
     pub value_raw: i64,
     pub scale: i64,
     pub unit: String,
     pub progress_current_raw: Option<i64>,
     pub progress_max_raw: Option<i64>,
-    /// Exact engine-formatted text in `localisation_language`.
     pub formatted_text: String,
 }
 
@@ -104,8 +91,6 @@ pub struct DecisionCardExactV1 {
     pub database_ordinal: u32,
     pub category_priority: i32,
     pub decision_priority: i32,
-    /// Rows are the complete engine-visible set.  This explicit witness keeps
-    /// a malformed producer from smuggling hidden definitions into the list.
     pub visible: bool,
     pub availability: DecisionCardAvailabilityExact,
     pub interface_state: u32,
@@ -136,16 +121,13 @@ pub struct DecisionCustomIconExactV1 {
 #[serde(deny_unknown_fields)]
 pub struct DecisionCategoryExactV1 {
     pub source_ordinal: u32,
-    /// Stable producer identity for this exact category row.
     pub source_record_id: String,
     pub category_id: String,
     pub category_priority: i32,
     pub name_text: String,
     pub description_text: String,
     pub custom_icon_definition_count: u32,
-    /// Complete engine-visible subset in authored declaration order.
     pub custom_icons: Vec<DecisionCustomIconExactV1>,
-    /// Exact engine order within this category.
     pub cards: Vec<DecisionCardExactV1>,
 }
 
@@ -161,9 +143,7 @@ pub struct DecisionCountryExactV1 {
     pub visible_card_count: u32,
     pub complete: bool,
     pub source_record_id: String,
-    /// Canonical hash of this row with this member cleared.
     pub source_record_sha256: String,
-    /// Exact category and card order selected by the engine.
     pub categories: Vec<DecisionCategoryExactV1>,
 }
 
@@ -182,14 +162,12 @@ pub struct DecisionEvaluationExactV1 {
     pub source_sequence: u64,
     pub batch_id_sha256: String,
     pub expected_country_count: u32,
-    /// Canonical SHA-256 of the ordered D18 `(tag, tag_db_id)` census.
     pub d18_roster_sha256: String,
     pub passive_all_country: bool,
     pub ui_open_independent: bool,
     pub recorder_pov_independent: bool,
     pub producer_complete: bool,
     pub previous_record_sha256: Option<String>,
-    /// Canonical hash of this carrier with this member cleared.
     pub record_sha256: String,
     pub countries: Vec<DecisionCountryExactV1>,
 }
@@ -267,8 +245,6 @@ pub fn carrier_record_sha256(carrier: &DecisionEvaluationExactV1) -> Option<Stri
     canonical_sha256(carrier, |value| value.record_sha256.clear())
 }
 
-/// Hash the complete ordered D18 identity census without depending on the
-/// replay carrier's independently supplied country rows.
 pub fn d18_roster_sha256(roster: &D18CountryRosterView) -> Option<String> {
     if roster.status != ViewStatus::Present {
         return None;
@@ -318,9 +294,6 @@ fn interface_state_matches_availability(
     cooldown_timer: bool,
 ) -> bool {
     if cooldown_timer {
-        // The exact engine cooldown branch is timer-owned and bypasses the
-        // ordinary interface-state family switch. `card_valid` separately
-        // requires the OnCooldown availability in both directions.
         return availability == DecisionCardAvailabilityExact::OnCooldown;
     }
     match interface_state {
@@ -371,8 +344,6 @@ fn card_valid(
         && text(&card.tooltip_text, false)
 }
 
-/// Admit the all-country carrier.  A malformed row rejects the whole hour;
-/// measured-empty countries remain Present with an empty category vector.
 pub fn admit_decision_evaluation(
     raw: &Map<String, Value>,
     expected_hour: i64,

@@ -1,9 +1,7 @@
-//! Conformance properties for the ordered-collection codecs.
-
 use wire_format::body::{
     apply_shaped, collection_stored_eq, decode_shaped_baseline, decode_shaped_delta, diff_shaped,
-    encode_baseline, encode_shaped_baseline, encode_shaped_delta, key,
-    CollectionDelta, CollectionState, Key, KeyedState, MinimalityError, Row,
+    encode_baseline, encode_shaped_baseline, encode_shaped_delta, key, CollectionDelta,
+    CollectionState, Key, KeyedState, MinimalityError, Row,
 };
 use wire_format::record::Record;
 use wire_format::schema::{Collection, Field, Schema, SchemaError, Shape};
@@ -70,14 +68,24 @@ fn mixed_schema() -> Schema {
 fn both_ordered_baselines_round_trip_source_order_without_sorting_or_deduplication() {
     let keyed_schema = ordered_keyed_schema();
     let keyed = CollectionState::OrderedKeyed(vec![
-        Row { key: key(&[9]), record: record(90) },
-        Row { key: key(&[2]), record: record(20) },
+        Row {
+            key: key(&[9]),
+            record: record(90),
+        },
+        Row {
+            key: key(&[2]),
+            record: record(20),
+        },
     ]);
     let mut bytes = Vec::new();
     encode_shaped_baseline(&keyed_schema, std::slice::from_ref(&keyed), &mut bytes).unwrap();
     let (decoded, used) = decode_shaped_baseline(&keyed_schema, &bytes, 0).unwrap();
     assert_eq!(used, bytes.len());
-    assert_eq!(decoded, vec![keyed], "non-ascending keys remain in source order");
+    assert_eq!(
+        decoded,
+        vec![keyed],
+        "non-ascending keys remain in source order"
+    );
 
     let occurrence_schema = occurrence_schema();
     let occurrence = CollectionState::OrderedOccurrence(vec![record(9), record(3), record(9)]);
@@ -153,7 +161,12 @@ fn an_unchanged_ordered_replacement_is_refused_on_write_and_read() {
         Err(MinimalityError::ReplacementMatchesPrior { collection_id: 1 })
     );
     assert_eq!(
-        decode_shaped_delta(&schema, std::slice::from_ref(&prior), &[0x01, 0x01, 0x07], 0),
+        decode_shaped_delta(
+            &schema,
+            std::slice::from_ref(&prior),
+            &[0x01, 0x01, 0x07],
+            0
+        ),
         Err(WireError::Corrupt(
             "ordered collection bit set with unchanged replacement"
         ))
@@ -173,7 +186,11 @@ fn a_zero_row_replacement_clears_a_nonempty_ordered_collection() {
         &mut bytes,
     )
     .unwrap();
-    assert_eq!(bytes, vec![0x01, 0x00], "bitmap then legal zero-row replacement");
+    assert_eq!(
+        bytes,
+        vec![0x01, 0x00],
+        "bitmap then legal zero-row replacement"
+    );
     let (decoded, used) =
         decode_shaped_delta(&schema, std::slice::from_ref(&prior), &bytes, 0).unwrap();
     assert_eq!(used, bytes.len());
@@ -208,8 +225,14 @@ fn a_set_bit_cannot_replace_an_empty_ordered_collection_with_empty() {
 fn ordered_keyed_lists_require_unique_keys_but_not_sorted_keys() {
     let schema = ordered_keyed_schema();
     let duplicate = CollectionState::OrderedKeyed(vec![
-        Row { key: key(&[5]), record: record(1) },
-        Row { key: key(&[5]), record: record(2) },
+        Row {
+            key: key(&[5]),
+            record: record(1),
+        },
+        Row {
+            key: key(&[5]),
+            record: record(2),
+        },
     ]);
     assert_eq!(
         encode_shaped_baseline(&schema, &[duplicate], &mut Vec::new()),
@@ -227,12 +250,21 @@ fn ordered_keyed_lists_require_unique_keys_but_not_sorted_keys() {
     );
 
     let descending = CollectionState::OrderedKeyed(vec![
-        Row { key: key(&[5]), record: record(1) },
-        Row { key: key(&[2]), record: record(2) },
+        Row {
+            key: key(&[5]),
+            record: record(1),
+        },
+        Row {
+            key: key(&[2]),
+            record: record(2),
+        },
     ]);
     let mut bytes = Vec::new();
     encode_shaped_baseline(&schema, std::slice::from_ref(&descending), &mut bytes).unwrap();
-    assert_eq!(decode_shaped_baseline(&schema, &bytes, 0).unwrap().0[0], descending);
+    assert_eq!(
+        decode_shaped_baseline(&schema, &bytes, 0).unwrap().0[0],
+        descending
+    );
 }
 
 #[test]
@@ -253,11 +285,6 @@ fn ordered_key_components_are_range_checked_on_write() {
 #[test]
 fn ordered_absolute_key_varints_reject_values_past_u64() {
     let schema = ordered_keyed_schema();
-    // Ten varint bytes whose last payload is 2 encode 2^64 and are therefore
-    // rejected by the varint grammar before an absolute `u64` key exists.
-    // Absolute-key decoding itself can only produce `u64`/`i64`, so its range
-    // check is defence in depth; the reachable post-decode overflow is the
-    // chained keyed-set case pinned by regression_r7.
     let mut hostile = vec![1];
     hostile.extend_from_slice(&[0x80; 9]);
     hostile.push(0x02);
@@ -302,10 +329,7 @@ fn a_mixed_frame_can_change_both_shapes_or_only_the_keyed_set() {
         assert!(collection_stored_eq(collection, &replayed[i], &both[i]).unwrap());
     }
 
-    let keyed_only = vec![
-        CollectionState::Keyed(keyed_next),
-        prior[1].clone(),
-    ];
+    let keyed_only = vec![CollectionState::Keyed(keyed_next), prior[1].clone()];
     let keyed_only_deltas: Vec<_> = schema
         .collections
         .iter()
@@ -332,12 +356,13 @@ fn the_keyed_compatibility_entry_point_is_byte_identical_to_the_shaped_path() {
     let mut state = KeyedState::new();
     state.insert(key(&[3]), record(7));
     let mut compatibility = Vec::new();
-    encode_baseline(&keyed_schema, std::slice::from_ref(&state), &mut compatibility).unwrap();
-    let head_bytes = vec![
-        1, // row count
-        3, // absolute first key
-        7, // full non-key record
-    ];
+    encode_baseline(
+        &keyed_schema,
+        std::slice::from_ref(&state),
+        &mut compatibility,
+    )
+    .unwrap();
+    let head_bytes = vec![1, 3, 7];
     assert_eq!(
         compatibility, head_bytes,
         "the compatibility entry point retains the HEAD keyed bytes"
@@ -438,9 +463,6 @@ fn untrusted_ordered_row_counts_are_bounded_before_allocation_or_looping() {
 
 #[test]
 fn a_fieldless_occurrence_decoder_still_cannot_run_an_unbounded_loop() {
-    // Public decoders can be handed a schema whose caller skipped validation.
-    // The structural byte bound therefore remains necessary even after
-    // `Schema::validate` makes this collection illegal.
     let schema = Schema {
         domain: 1,
         cadence_log2: 0,

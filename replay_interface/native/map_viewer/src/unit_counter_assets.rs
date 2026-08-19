@@ -187,9 +187,6 @@ pub struct ProgressBarAsset {
     pub name: String,
     pub texture_file1: String,
     pub texture_file2: String,
-    /// Engine-authored effect source. Clausewitz declarations commonly use a
-    /// `.lua` spelling for the sibling `.shader` program opened by the D3D
-    /// effect loader.
     pub effect_file: Option<String>,
     pub horizontal: Option<bool>,
     pub size: Option<GuiSize>,
@@ -204,8 +201,6 @@ pub struct UnitCounterGuiLayouts {
     pub navy: GuiContainerLayout,
     pub railway_gun: GuiContainerLayout,
     pub air_wing: GuiContainerLayout,
-    /// Land-only external item template. Its absence is retained so naval,
-    /// railway-gun, and air-only content does not fail during manifest load.
     pub active_ability_item: Option<GuiContainerLayout>,
 }
 
@@ -233,13 +228,8 @@ pub struct GuiControlLayout {
     pub source_line: usize,
     pub sprite_type: Option<String>,
     pub quad_texture_sprite: Option<String>,
-    /// Size of the immediate effective GUI parent. Required to evaluate
-    /// orientation-relative placement without guessing from the child.
     pub parent_size: Option<GuiSize>,
     pub position: Option<GuiPoint>,
-    /// Exact effective GUI base position after every ancestor placement has
-    /// been applied. Bits are retained because centered odd extents produce
-    /// half-pixel coordinates which cannot be represented by `GuiPoint`.
     pub effective_position_f32_bits: Option<[u32; 2]>,
     pub size: Option<GuiSize>,
     pub slot_size: Option<GuiSize>,
@@ -252,8 +242,6 @@ pub struct GuiControlLayout {
     pub rotation: Option<f32>,
     pub scale: Option<f32>,
     pub frame: Option<u32>,
-    /// Clausewitz GUI `centerPosition = yes`; controls with this flag position
-    /// their sprite around the declared point instead of using it as top-left.
     pub center_position: Option<bool>,
 }
 

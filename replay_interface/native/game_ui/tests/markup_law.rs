@@ -1,23 +1,13 @@
-//! FILE-derived gates for the inline text-markup law (`markup.rs`).
-//!
-//! These exercise the parser against the SHIPPED vanilla files, so they are
-//! skipped (not failed) when the game install is not present. Locate the game
-//! via `BATTLE_PLAN_GAME_ROOT`, else the default Steam path.
 
 use game_ui::assets::AssetResolver;
 use game_ui::loc::Localisation;
 use game_ui::markup::{parse, TextColorTable, Token, SECTION};
 use std::path::PathBuf;
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
 
-/// The `§`-code table decoded from `interface/core.gfx` must match the shipped
-/// values byte-for-byte, and be case-sensitive.
 #[test]
 #[cfg_attr(
     not(gate_hoi4_install),
@@ -28,7 +18,6 @@ fn text_color_table_matches_shipped_core_gfx() {
     let resolver = AssetResolver::new(vec![root]);
     let table = TextColorTable::load(&resolver).expect("core.gfx loads");
 
-    // core.gfx:796 textcolors block, verbatim.
     let expected: &[(char, [u8; 3])] = &[
         ('C', [35, 206, 255]),
         ('L', [195, 176, 145]),
@@ -61,7 +50,6 @@ fn text_color_table_matches_shipped_core_gfx() {
             "colour code §{code} must decode to {rgb:?}"
         );
     }
-    // Case sensitivity: distinct entries for b/B and g/G.
     assert_ne!(table.get('b'), table.get('B'));
     assert_ne!(table.get('g'), table.get('G'));
     assert!(
@@ -71,10 +59,6 @@ fn text_color_table_matches_shipped_core_gfx() {
     );
 }
 
-/// Every `§` colour code appearing in the shipped English localisation corpus
-/// must resolve against the file-derived table (or be the `§!` reset), and
-/// every string must tokenise without loss (concatenated text tokens equal the
-/// markup-stripped string). Proves the parser handles real content.
 #[test]
 #[cfg_attr(
     not(gate_hoi4_install),
@@ -96,11 +80,9 @@ fn shipped_english_localisation_tokenises_cleanly() {
     let mut icon_tokens = 0usize;
 
     for value in loc.entries.values() {
-        // Collect the raw §-codes used, verify each resolves or is a reset.
         let mut chars = value.chars().peekable();
         while let Some(ch) = chars.next() {
             if ch == SECTION {
-                // `§[expr]` is a dynamic-colour data function, not a code char.
                 if chars.peek() == Some(&'[') {
                     for next in chars.by_ref() {
                         if next == ']' {
@@ -130,7 +112,6 @@ fn shipped_english_localisation_tokenises_cleanly() {
             .filter(|t| matches!(t, Token::Icon { .. }))
             .count();
 
-        // Text tokens, concatenated, equal the plain-stripped string.
         let concat: String = tokens
             .iter()
             .filter_map(|t| match t {
@@ -145,8 +126,6 @@ fn shipped_english_localisation_tokenises_cleanly() {
         );
     }
 
-    // The shipped corpus only uses codes present in the table. If Paradox adds
-    // an unlisted code this fails loudly instead of silently mis-colouring.
     assert!(
         unknown_codes.is_empty(),
         "localisation uses §-codes absent from core.gfx: {unknown_codes:?}"

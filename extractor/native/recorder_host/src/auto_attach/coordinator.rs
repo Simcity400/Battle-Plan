@@ -1,13 +1,3 @@
-//! The resident auto-attach coordinator.
-//!
-//! One coordinator per Windows session drives every detected the game identity
-//! through the attach state machine. It is written as a deterministic
-//! `step()`-driven loop over injected trait objects (clock, probe, event
-//! source, environment, stager, spawner) so the whole control flow — dual-order
-//! discovery, the subscribe/snapshot race, PID reuse, WMI loss, identity
-//! fail-close, the no-double-inject guard, multi-instance, and crash recovery —
-//! is exercised by deterministic fakes with zero live game.
-
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::path::Path;
@@ -27,25 +17,14 @@ use super::sources::{
 use super::staging::{generate_attempt_id, generate_pipe_token, generate_secret_128};
 use super::state::{CandidateState, ReasonCode};
 
-/// Static configuration for a coordinator instance. No correctness policy is
-/// user-tunable; these are identity/location facts resolved at boot.
 pub struct CoordinatorConfig {
     pub coordinator_instance_id: String,
-    /// Output root for per-attempt run directories.
     pub out_root: PathBuf,
-    /// The coordinator's own Windows session id and token-SID hash, used to
-    /// prove a candidate is same-user/same-session. A candidate that
-    /// does not match is never admitted.
     pub own_session_id: u32,
     pub own_sid_hash: String,
-    /// The explicit/dev supervisor retains the legacy PID-owned visible-window
-    /// gate. The packaged headless recorder disables it so exact process
-    /// identity can admit injection before one-shot world/HUD setup callbacks.
     pub require_visible_window: bool,
 }
 
-/// The dependency bundle. Boxed trait objects so production wires real adapters
-/// and tests wire fakes.
 pub struct CoordinatorDeps {
     pub clock: Box<dyn Clock>,
     pub probe: Box<dyn ProcessProbe>,
@@ -55,12 +34,16 @@ pub struct CoordinatorDeps {
     pub spawner: Box<dyn WorkerSpawner>,
 }
 
-/// User-visible lifecycle facts emitted only after their authoritative journal
-/// transition succeeds. Capture correctness never depends on a UI consumer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SupervisorEvent {
-    RecordingStarted { pid: u32, run_dir: PathBuf },
-    RecordingSucceeded { pid: u32, replay_path: PathBuf },
+    RecordingStarted {
+        pid: u32,
+        run_dir: PathBuf,
+    },
+    RecordingSucceeded {
+        pid: u32,
+        replay_path: PathBuf,
+    },
     RecordingFailed {
         pid: u32,
         reason: ReasonCode,
@@ -75,35 +58,19 @@ pub struct Coordinator {
     registry: CandidateRegistry,
     journal: Journal,
     workers: BTreeMap<ProcessKey, Box<dyn WorkerHandle>>,
-    /// Recovered terminal generations that may be rearmed after an exact
-    /// Toolhelp absence proof for their staged collector DLL.
     recovered_rearm: BTreeMap<ProcessKey, PathBuf>,
     last_reconcile_ms: Option<u64>,
     force_reconcile: bool,
     started: bool,
     supervisor_events: Vec<SupervisorEvent>,
     readiness_diagnostics: BTreeMap<ProcessKey, String>,
-    /// Identities whose game build was already proved supported. The answer
-    /// cannot change while the process runs, and reading it costs a sha256 of
-    /// the game executable, so it is asked once and remembered.
     build_admitted: BTreeSet<ProcessKey>,
-    /// The host-facing sentence for a game this recorder does not know, once one
-    /// has been seen.
-    ///
-    /// A SUPERVISOR-terminal fact, not just a candidate-terminal one. Failing
-    /// the candidate alone would leave the recorder watching for a game that
-    /// cannot arrive — the host's install is the build it is, and only a
-    /// recorder update changes that — so the supervisor reads this, stops
-    /// cooperatively (finishing any recording already in flight), and hands the
-    /// sentence back to be shown, logged and exited on.
     unsupported_game_build: Option<String>,
 }
 
 impl Drop for Coordinator {
     fn drop(&mut self) {
         // `run_supervisor` propagates coordinator errors with `?`. Ownership is
-        // therefore the final safety net on every error and shutdown path: no
-        // worker may outlive the coordinator that authorizes it.
         for worker in self.workers.values_mut() {
             worker.request_stop();
         }
@@ -138,33 +105,18 @@ impl Coordinator {
         &self.registry
     }
 
-    /// Drain product-facing notifications after their transitions are durable.
     pub fn drain_supervisor_events(&mut self) -> Vec<SupervisorEvent> {
         std::mem::take(&mut self.supervisor_events)
     }
 
-    /// The host-facing sentence for a game this recorder does not know, if one
-    /// was seen since the last call.
-    ///
-    /// The supervisor reads this and STOPS. Waiting cannot turn an unknown build
-    /// into a known one, so a recorder that kept watching would be promising a
-    /// recording it can never make.
     pub fn take_unsupported_game_build(&mut self) -> Option<String> {
         self.unsupported_game_build.take()
     }
 
     /// Transfer every active candidate into explicit-stop ownership. Recording
-    /// workers retain their valid prefix and enter Finalizing; candidates that
-    /// never proved Recording fail closed. The caller must continue
-    /// [`Self::drive_shutdown`] until it returns true so completion/failure is
-    /// durably journalled rather than discarded by Drop.
     pub fn begin_explicit_stop(&mut self) -> Result<(), String> {
         let now = self.deps.clock.now_ms();
         let keys = self.registry.active_keys();
-        // Signal every child before any terminal transition removes a handle.
-        // `ChildWorkerHandle::drop` may wait through the graceful deadline, so
-        // this two-pass form makes all worker drain windows overlap instead of
-        // serializing one 30-second window per active game.
         for key in &keys {
             if let Some(worker) = self.workers.get_mut(key) {
                 worker.request_stop();
@@ -199,8 +151,6 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Poll only already-owned finalizers; discovery/injection is permanently
-    /// out of scope once explicit shutdown begins.
     pub fn drive_shutdown(&mut self) -> Result<bool, String> {
         let now = self.deps.clock.now_ms();
         let keys: Vec<_> = self.workers.keys().copied().collect();
@@ -210,15 +160,7 @@ impl Coordinator {
         Ok(self.workers.is_empty())
     }
 
-    /// Recover from a prior journal. Every nonterminal
-    /// identity that had COMMITTED an injection but whose completion is not
-    /// proven is poisoned as `Failed` so it can never be re-injected — the
-    /// SINGLE-INJECTION LAW under supervisor restart. If its live process is
-    /// gone we still record it terminal; if it is alive we still refuse to
-    /// touch it (we cannot prove the old module unloaded).
     pub fn recover_from_journal(&mut self) -> Result<usize, String> {
-        // Use the chain+anchor-validated bytes retained behind the still-open,
-        // deny-write/delete journal handles. Re-reading the pathname here would
         // release authority between validation and the recovery action.
         let records = self.journal.recovered_records().to_vec();
         let recovered = recover(&records);
@@ -226,8 +168,6 @@ impl Coordinator {
         let mut poisoned = 0;
         for r in recovered {
             if r.injection_committed {
-                // Fail-closed: never reinject a live process whose prior module
-                // we cannot prove unloaded.
                 let image = records
                     .iter()
                     .rev()
@@ -262,20 +202,12 @@ impl Coordinator {
             if r.last_state.is_terminal() {
                 continue;
             }
-            // Nonterminal, NOT committed (e.g. WaitingForWindow at crash): safe
-            // to re-detect fresh via the normal snapshot path — no seed needed.
         }
         Ok(poisoned)
     }
 
-    /// One coordinator iteration. Deterministic: does exactly the work implied
-    /// by the current clock and injected signals, then returns.
     pub fn step(&mut self) -> Result<(), String> {
         let now = self.deps.clock.now_ms();
-        // First step: subscribe (already done by the event source ctor) THEN
-        // enumerate a complete snapshot and drain queued events — the exact
-        // startup order. We enumerate first so game-first is closed
-        // even if no push events ever arrive.
         if !self.started {
             self.ingest_snapshot(now)?;
             self.started = true;
@@ -303,8 +235,6 @@ impl Coordinator {
         id.session_id == self.config.own_session_id && id.user_sid_hash == self.config.own_sid_hash
     }
 
-    /// Enumerate live processes, admit new same-user `hoi4.exe` identities, and
-    /// reconcile exits against the authoritative live set.
     fn ingest_snapshot(&mut self, now: u64) -> Result<(), String> {
         let snapshot = self.deps.probe.snapshot()?;
         let mut live: BTreeSet<ProcessKey> = BTreeSet::new();
@@ -314,9 +244,6 @@ impl Coordinator {
             if !name_is_hoi4(&e.name) {
                 continue;
             }
-            // Authority-grade identity from the live handle. A the game pid we cannot
-            // identify (access denied / different session) is NOT admitted —
-            // fail closed.
             let id = match self.deps.probe.identify(e.pid) {
                 Ok(id) => id,
                 Err(_) => {
@@ -336,7 +263,6 @@ impl Coordinator {
                 new_keys.push(key);
             }
         }
-        // Journal freshly detected identities.
         for key in new_keys {
             self.journal_transition(
                 key,
@@ -346,8 +272,6 @@ impl Coordinator {
                 None,
             )?;
         }
-        // Reconcile exits. A candidate absent from the authoritative live set has
-        // gone: pre-attach => clean terminal, post-commit => finalize flag.
         let changed =
             self.registry
                 .reconcile_snapshot(&live, &unresolved_pids, snapshot.complete, now);
@@ -366,8 +290,6 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Handle low-latency push events. Start events add via probe;
-    /// stop events are hints that force a prompt reconcile.
     fn ingest_events(&mut self, now: u64) -> Result<(), String> {
         let events = self.deps.events.drain_events();
         for ev in events {
@@ -410,9 +332,6 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Advance one candidate by at most one meaningful step, using injected
-    /// signals. Never advances into or past the injection commit line except via
-    /// the registry's guarded `advance` (SINGLE-INJECTION LAW).
     fn drive(&mut self, key: ProcessKey, now: u64) -> Result<(), String> {
         let state = match self.registry.get(&key) {
             Some(c) if !c.state.is_terminal() => c.state,
@@ -438,56 +357,19 @@ impl Coordinator {
                     }
                 }
                 let id = self.registry.get(&key).unwrap().identity.clone();
-                // THE PATCH-DAY GATE (owner ruling 2026-08-18), and the reason
-                // it sits HERE rather than beside the other executable-digest
-                // checks: every other one runs after the collector DLL is
-                // already mapped into the player's game. This candidate has
-                // been detected and identified and nothing else — no staging
-                // directory, no worker, no handle with write rights, no
-                // allocation, no patched byte. Refusing here is the only place
-                // that can honestly tell the host "nothing was changed in your
-                // game".
-                //
-                // TERMINAL, not a holding state. An unknown build does not
-                // become known by waiting, so retrying would only spin a
-                // message at the host forever; support arrives as a recorder
-                // update, which is what the message says to wait for.
-                //
-                // ASKED ONCE PER IDENTITY. `WaitingForIdentity` is a retry
-                // state — an unresolved modset holds a candidate here and the
-                // readiness probe comes round again — and answering costs a
-                // sha256 of a 53 MB file. Re-reading it on every probe would
-                // spend disk on the machine that is loading the game, to answer
-                // a question about an executable that cannot change while its
-                // own process runs.
                 if !self.build_admitted.contains(&key) {
                     if let GameBuildAdmission::Unsupported(refusal) =
                         self.deps.env.game_build_admission(&id)
                     {
                         let message = refusal.message();
-                        // Best-effort, and deliberately not `?`: the host has
-                        // already been told, and a receipt that cannot be
-                        // written must not turn a clean refusal into a
-                        // supervisor error.
                         let _ = crate::game_build::write_refusal_receipt(
                             &self.config.out_root,
                             refusal.as_ref(),
                         );
-                        // Recorded BEFORE the fallible journal write, and the
-                        // exit code armed with it. A journal or disk error on
-                        // the way out must not be able to replace "your game is
-                        // newer than this recorder" with a generic fatal and
-                        // exit 1 — the refusal is the answer, and everything
-                        // after it is bookkeeping.
                         self.unsupported_game_build
                             .get_or_insert_with(|| message.clone());
                         crate::game_build::arm_refusal_exit_code();
-                        self.fail(
-                            key,
-                            ReasonCode::UnsupportedGameBuild,
-                            now,
-                            Some(message),
-                        )?;
+                        self.fail(key, ReasonCode::UnsupportedGameBuild, now, Some(message))?;
                         return Ok(());
                     }
                     self.build_admitted.insert(key);
@@ -516,8 +398,6 @@ impl Coordinator {
                         )?;
                     }
                 } else {
-                    // Hold, fail-closed, backing off. Journal the first/new
-                    // bounded reason so a product restart never spins silently.
                     let mut detail = modset.reasons.join("; ");
                     if detail.len() > 2048 {
                         let mut boundary = 2048;
@@ -575,10 +455,6 @@ impl Coordinator {
         Ok(())
     }
 
-    /// `Preparing`: stage a fresh unique DLL, verify its hash, then — guarded by
-    /// the no-double-inject registry — spawn exactly one worker and commit to
-    /// `Injecting`. Any failure fails the attempt closed (loud); we
-    /// never leave a half-committed key that could be re-injected.
     fn prepare_and_inject(&mut self, key: ProcessKey, now: u64) -> Result<(), String> {
         let attempt_id = generate_attempt_id(&self.config.coordinator_instance_id, key, now);
         let (pipe_token, pipe_token_hash) = match generate_pipe_token() {
@@ -620,7 +496,6 @@ impl Coordinator {
             )?;
             return Ok(());
         }
-        // Guard BEFORE spawning: if the registry will not permit injection, stop.
         if !self.registry.may_start_injection(&key) {
             self.fail(
                 key,
@@ -630,12 +505,6 @@ impl Coordinator {
             )?;
             return Ok(());
         }
-        // Re-probe every authority field at the last possible point. The
-        // explicit/dev supervisor additionally re-proves a PID-owned visible
-        // window; the headless product intentionally injects before one exists
-        // so it can observe one-shot world/HUD setup callbacks. Cached registry
-        // identity is never sufficient because the PID may have been reused
-        // while staging.
         let expected_identity = self
             .registry
             .get(&key)
@@ -680,9 +549,6 @@ impl Coordinator {
             session_id: session_id.clone(),
             control_challenge,
         };
-        // This synced journal record is the commit line. It precedes child
-        // creation, so a crash cannot erase knowledge of a possibly-started
-        // injector. Every post-intent failure stays poisoned for this key.
         self.registry
             .advance(&key, CandidateState::Injecting, now)
             .map_err(|e| format!("commit injection intent: {e}"))?;
@@ -701,9 +567,6 @@ impl Coordinator {
         let handle = match self.deps.spawner.spawn(&spec) {
             Ok(h) => h,
             Err(e) => {
-                // The child never started, so no hook was installed. Fail closed
-                // and do NOT retry in the same process identity because an
-                // uncertain injection is not automatically safe to repeat.
                 self.fail(
                     key,
                     ReasonCode::DiskFailure,
@@ -717,17 +580,12 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Advance a committed candidate by polling its worker (liveness ladder:
-    /// heartbeat for residency, then a valid session frame for recording). Also
-    /// enforces the handshake deadline and the post-commit process-exit
-    /// finalization.
     fn drive_worker(&mut self, key: ProcessKey, now: u64) -> Result<(), String> {
         let (state, entered, gone) = {
             let c = self.registry.get(&key).unwrap();
             (c.state, c.state_entered_ms, c.process_gone_after_commit)
         };
 
-        // Post-commit process exit: finalize the valid prefix.
         if gone
             && matches!(
                 state,
@@ -750,8 +608,6 @@ impl Coordinator {
                 )?;
                 return Ok(());
             }
-            // Exited before a valid frame: no recording to finalize -> Failed
-            // (retains diagnostics; nothing to promote).
             self.fail(
                 key,
                 ReasonCode::ProcessExited,
@@ -761,7 +617,6 @@ impl Coordinator {
             return Ok(());
         }
 
-        // Handshake deadline: loud timeout, no second DLL.
         if state == CandidateState::Handshaking
             && now.saturating_sub(entered) > policy::HANDSHAKE_DEADLINE_MS
         {
@@ -780,7 +635,6 @@ impl Coordinator {
         let status = match self.workers.get_mut(&key) {
             Some(w) => w.poll(),
             None => {
-                // No worker but in a committed state: inconsistent -> fail closed.
                 self.fail(
                     key,
                     ReasonCode::HeartbeatMismatch,
@@ -802,10 +656,6 @@ impl Coordinator {
                 )?;
             }
             (CandidateState::Injecting, WorkerStatus::Attached) => {
-                // The live collector can complete its hello between supervisor
-                // polls. Preserve that proof instead of consuming it merely to
-                // enter Handshaking and then waiting forever for a duplicate
-                // Attached status that the proof reader correctly emits once.
                 self.transition(
                     key,
                     CandidateState::Handshaking,
@@ -842,9 +692,6 @@ impl Coordinator {
                     last_confirmed_hour,
                 },
             ) => {
-                // A worker may report Recording directly from Handshaking if the
-                // heartbeat and first frame arrive between polls; still route
-                // through the ladder via WaitingForWorld first if needed.
                 if state == CandidateState::Handshaking {
                     self.transition(
                         key,
@@ -888,7 +735,6 @@ impl Coordinator {
                 self.complete(key, now, replay_path)?;
             }
             (CandidateState::Recording, WorkerStatus::Complete { replay_path }) => {
-                // Worker jumped straight to complete: route through Finalizing.
                 self.transition(
                     key,
                     CandidateState::Finalizing,
@@ -911,18 +757,10 @@ impl Coordinator {
                     Some("worker completed before matched hello/first-frame proof".into()),
                 )?;
             }
-            // PATCH DAY, from the other direction: the worker got further than
-            // the coordinator's own gate and refused there. It is NOT a
-            // finalize failure — nothing was recorded and nothing broke — so it
-            // carries its own reason code, its own sentence, and the same
-            // supervisor-terminal effect as the coordinator's own refusal.
             (_, WorkerStatus::UnsupportedGameBuild { message }) => {
                 if let Some(worker) = self.workers.get_mut(&key) {
                     worker.request_stop();
                 }
-                // Recorded BEFORE the fallible journal write. A journal error
-                // must not be able to turn "your game is newer than this
-                // recorder" back into a generic fatal.
                 self.unsupported_game_build
                     .get_or_insert_with(|| message.clone());
                 crate::game_build::arm_refusal_exit_code();
@@ -934,7 +772,7 @@ impl Coordinator {
                 }
                 self.fail(key, ReasonCode::FinalizeVerifyFailed, now, Some(reason))?;
             }
-            _ => { /* no change this tick */ }
+            _ => {}
         }
         Ok(())
     }
@@ -961,15 +799,7 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Rearm only across a supervisor generation boundary and only when the
-    /// exact DLL path retained by the terminal journal generation is proven
-    /// absent from the same live process identity. Loaded, unsupported, or
-    /// ambiguous module enumeration leaves the identity terminal and blocked.
-    fn try_rearm_recovered(
-        &mut self,
-        identity: ProcessIdentity,
-        now: u64,
-    ) -> Result<bool, String> {
+    fn try_rearm_recovered(&mut self, identity: ProcessIdentity, now: u64) -> Result<bool, String> {
         let key = identity.key;
         let Some(dll_path) = self.recovered_rearm.get(&key).cloned() else {
             return Ok(false);
@@ -986,26 +816,10 @@ impl Coordinator {
             .probe
             .collector_module_residency(key.pid, &dll_path)
         {
-            // `Loaded` is TERMINAL for this process, not a state to wait out.
-            // A capture that enabled an inline detour pinned the collector
-            // against unload, so the module never becomes `Absent` again for
-            // this PID and no amount of retrying rearms it.
-            //
-            // That makes the `Absent` arm below unreachable for such a capture.
-            // It is kept, not deleted: a capture that enabled NO detour still
-            // unloads and still legitimately rearms, and the injection lease is
-            // a named mutex rather than a job-object membership, so nothing
-            // else forecloses the same PID. A repeatable loop therefore has to
-            // launch a fresh game per capture -- a real restriction the pin
-            // introduces, not one it inherited.
             Ok(CollectorModuleResidency::Loaded) | Err(_) => Ok(false),
             Ok(CollectorModuleResidency::Absent) => {
-                self.deps
-                    .stager
-                    .rearm_after_proven_unload(key, &dll_path)?;
-                let previous = self
-                    .registry
-                    .rearm_after_proven_unload(identity, now)?;
+                self.deps.stager.rearm_after_proven_unload(key, &dll_path)?;
+                let previous = self.registry.rearm_after_proven_unload(identity, now)?;
                 self.recovered_rearm.remove(&key);
                 self.journal_transition(
                     key,
@@ -1057,24 +871,11 @@ impl Coordinator {
                 detail: detail.clone(),
                 run_dir: self.run_dir_for(key),
             };
-            // ORDER MATTERS for exactly one reason code. Everywhere else the
-            // durable record comes first and the window is a consequence of it.
-            // For an unsupported game build the host's sentence outranks the
-            // bookkeeping: a journal that cannot be appended must not be able to
-            // leave the window showing "Recorder stopped because of an error"
-            // while the recorder already knows, and is about to exit on, the
-            // fact that their game is newer than it.
             let host_sentence_first = reason == ReasonCode::UnsupportedGameBuild;
             if host_sentence_first {
                 self.supervisor_events.push(event.clone());
             }
-            self.journal_transition(
-                key,
-                Some(from),
-                CandidateState::Failed,
-                reason,
-                detail,
-            )?;
+            self.journal_transition(key, Some(from), CandidateState::Failed, reason, detail)?;
             if !host_sentence_first {
                 self.supervisor_events.push(event);
             }
@@ -1169,8 +970,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::rc::Rc;
 
-    // ---- Fakes -------------------------------------------------------
-
     #[derive(Clone, Default)]
     struct FakeClock {
         now: Rc<RefCell<u64>>,
@@ -1186,21 +985,17 @@ mod tests {
         }
     }
     // SAFETY: single-threaded test use only; Rc is not Send but the trait
-    // requires Send. We wrap in a newtype asserting Send for the test harness.
     unsafe impl Send for FakeClock {}
 
     #[derive(Clone)]
     struct FakeProbe {
-        // pid -> identity
         table: Rc<RefCell<BTreeMap<u32, ProcessIdentity>>>,
-        // live pids present in the snapshot
         live: Rc<RefCell<Vec<u32>>>,
         fail_identify: Rc<RefCell<BTreeSet<u32>>>,
         snapshot_error: Rc<RefCell<Option<String>>>,
         snapshot_complete: Rc<RefCell<bool>>,
         identify_script: Rc<RefCell<BTreeMap<u32, VecDeque<ProcessIdentity>>>>,
-        module_residency:
-            Rc<RefCell<BTreeMap<(u32, String), CollectorModuleResidency>>>,
+        module_residency: Rc<RefCell<BTreeMap<(u32, String), CollectorModuleResidency>>>,
         module_probe_error: Rc<RefCell<Option<String>>>,
     }
     impl Default for FakeProbe {
@@ -1337,13 +1132,7 @@ mod tests {
     struct FakeEnv {
         window_ready: Rc<RefCell<bool>>,
         modset_resolved: Rc<RefCell<bool>>,
-        /// The game build this fake presents. `None` is the supported build —
-        /// the default, so every pre-existing gate test still exercises the
-        /// ordinary path unchanged. `Some(observed)` presents a build the
-        /// recorder does not know.
         unsupported_build: Rc<RefCell<Option<crate::game_build::ObservedGameBuild>>>,
-        /// How many times the coordinator asked. Proves the question is asked
-        /// once per candidate rather than in a retry loop.
         build_queries: Rc<RefCell<usize>>,
     }
     impl Default for FakeEnv {
@@ -1423,9 +1212,6 @@ mod tests {
     }
     unsafe impl Send for FakeStager {}
 
-    // A scripted worker: yields a sequence of statuses on successive polls,
-    // holding the last one forever. Records spawn count globally for the
-    // no-double-inject assertions.
     #[derive(Clone)]
     struct FakeSpawner {
         script: Rc<RefCell<Vec<WorkerStatus>>>,
@@ -1513,8 +1299,6 @@ mod tests {
             *self.drop_count.borrow_mut() += 1;
         }
     }
-
-    // ---- Harness -----------------------------------------------------
 
     const OWN_SESSION: u32 = 7;
     const OWN_SID: &str = "own-sid-hash";
@@ -1622,8 +1406,6 @@ mod tests {
         coord.registry().get(&key).map(|c| c.state)
     }
 
-    // ---- Patch day: an unknown game build ----------------------------
-
     fn unknown_build() -> crate::game_build::ObservedGameBuild {
         crate::game_build::ObservedGameBuild {
             display_version: "Operation Bombers v1.20.0.b100 (d300)".to_string(),
@@ -1647,11 +1429,6 @@ mod tests {
         root
     }
 
-    /// kills: deleting the build gate in `WaitingForIdentity`, or moving it
-    /// anywhere at or past `Preparing`. A candidate on an unknown build must
-    /// reach `Failed` having staged nothing and spawned no worker — the worker
-    /// is the only thing that ever writes into the game, so `spawn_count == 0`
-    /// IS "nothing was patched into the game".
     #[test]
     fn an_unknown_game_build_is_refused_before_anything_is_staged_or_injected() {
         let h = harness("patch_day_refuse", full_success_script());
@@ -1677,7 +1454,6 @@ mod tests {
             h.stager.staged.borrow()
         );
 
-        // The host is shown the message, once, and nothing else about it.
         let events = coord.drain_supervisor_events();
         let expected = crate::game_build::UnsupportedGameBuild {
             observed: unknown_build(),
@@ -1693,7 +1469,6 @@ mod tests {
             "expected exactly the unsupported-build message, got {events:?}"
         );
 
-        // ...and the same words are on the durable record and in the receipt.
         let records = read_all(&h.journal_path).unwrap();
         let terminal = records
             .iter()
@@ -1714,9 +1489,6 @@ mod tests {
         assert_eq!(value["recording_started"], false);
         assert_eq!(value["game_modified"], false);
 
-        // ...and it is the SUPERVISOR's outcome, not just the candidate's.
-        // Waiting cannot turn an unknown build into a known one, so a recorder
-        // that kept watching would be promising a recording it can never make.
         let taken = coord.take_unsupported_game_build();
         assert_eq!(
             taken.as_deref(),
@@ -1728,7 +1500,6 @@ mod tests {
             "the supervisor-terminal fact is handed over once"
         );
 
-        // Terminal means terminal: more ticks do not re-ask and do not retry.
         let asked_once = *h.env.build_queries.borrow();
         run_steps(&mut coord, &h.clock, 12);
         assert_eq!(*h.env.build_queries.borrow(), asked_once);
@@ -1739,9 +1510,6 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    /// kills: making the gate refuse everything, or leaving it armed on the
-    /// supported build. A known build takes exactly the path it always took,
-    /// and the gate is consulted before the modset resolver rather than after.
     #[test]
     fn a_known_game_build_takes_the_ordinary_path() {
         let h = harness("patch_day_known", full_success_script());
@@ -1761,12 +1529,6 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    /// kills: filing a worker's unsupported-build refusal as an ordinary
-    /// failure. Before this the worker's exit was read as
-    /// `FinalizeVerifyFailed`, its five-line sentence was cut to its last stderr
-    /// line and wrapped in "worker exited with …", the window told the host a
-    /// recording had failed, and the supervisor kept watching for a game that
-    /// cannot arrive.
     #[test]
     fn a_workers_unsupported_build_refusal_is_not_a_finalize_failure() {
         let message = crate::game_build::UnsupportedGameBuild {
@@ -1801,7 +1563,6 @@ mod tests {
             "the worker's own sentence must survive whole, under its own reason \
              code, got {events:?}"
         );
-        // ...and it stops the supervisor, exactly like the coordinator's own.
         assert_eq!(
             coord.take_unsupported_game_build().as_deref(),
             Some(message.as_str())
@@ -1816,11 +1577,6 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    /// kills: asking the build question again on every readiness probe.
-    /// `WaitingForIdentity` is a RETRY state — an unresolved modset holds a
-    /// candidate here across many ticks — and the answer costs a sha256 of a
-    /// 53 MB file that cannot change while its own process runs. Re-reading it
-    /// per probe spends disk on the machine that is loading the game.
     #[test]
     fn a_held_candidate_is_not_re_asked_about_its_build() {
         let h = harness("patch_day_held", full_success_script());
@@ -1841,10 +1597,6 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    /// kills: ordering the gate after the modset resolver. On patch day the
-    /// modset resolver may itself be unable to resolve (its own reader reads
-    /// the same install), and the host must still get the version sentence
-    /// rather than a modset diagnostic.
     #[test]
     fn the_build_gate_outranks_an_unresolved_modset() {
         let h = harness("patch_day_before_modset", full_success_script());
@@ -1871,11 +1623,8 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Dual startup order ------------------------------------------
-
     #[test]
     fn gate1_game_first_startup_snapshot_attaches() {
-        // Game already running before the coordinator starts (game-first).
         let h = harness("g1_gamefirst", full_success_script());
         h.probe.add(hoi4_identity(1000, 111));
         let mut coord = build(&h);
@@ -1900,15 +1649,11 @@ mod tests {
 
     #[test]
     fn gate1_app_first_wmi_start_attaches() {
-        // App started first; the game launches later and is seen via a WMI
-        // start event (app-first).
         let h = harness("g1_appfirst", full_success_script());
         let mut coord = build(&h);
-        // First step: empty snapshot, nothing detected.
         h.clock.set(10);
         coord.step().unwrap();
         assert!(coord.registry().is_empty());
-        // Game launches: probe learns it, WMI start fires.
         h.probe.add(hoi4_identity(2000, 222));
         h.events.push(RawProcessEvent::Start {
             pid: 2000,
@@ -1923,16 +1668,11 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Subscribe race / dedup --------------------------------------
-
     #[test]
     fn gate2_snapshot_and_wmi_produce_one_attempt() {
-        // The same game appears in BOTH the startup snapshot and a WMI start
-        // event; exactly one candidate, one injection.
         let h = harness("g2_race", full_success_script());
         h.probe.add(hoi4_identity(3000, 333));
         let mut coord = build(&h);
-        // Also deliver a duplicate WMI start for the same pid.
         h.events.push(RawProcessEvent::Start {
             pid: 3000,
             name: "HOI4.EXE".into(),
@@ -1951,8 +1691,6 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- PID reuse ---------------------------------------------------
-
     #[test]
     fn gate3_reused_pid_is_new_attempt() {
         let h = harness("g3_reuse", full_success_script());
@@ -1963,9 +1701,6 @@ mod tests {
             state_of(&coord, ProcessKey::new(4000, 444)),
             Some(CandidateState::Complete)
         );
-        // Old process exits; a NEW process reuses pid 4000 with a new FILETIME.
-        // Discovered via its WMI start event (app-first low-latency path) so we
-        // don't wait for the 30 s healthy reconcile in the test.
         h.probe.remove_live(4000);
         h.probe.add(hoi4_identity(4000, 999));
         h.events.push(RawProcessEvent::Start {
@@ -1990,18 +1725,14 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- WMI loss / recovery cadence ---------------------------------
-
     #[test]
     fn gate4_reconcile_cadence_tracks_health() {
         let h = harness("g4_health", full_success_script());
         let mut coord = build(&h);
-        // Healthy: 30s cadence. At t=10 first snapshot ran; not due again at 20s.
         h.clock.set(10);
         coord.step().unwrap();
         assert!(!coord.reconcile_due(20_000));
         assert!(coord.reconcile_due(40_000), "due after 30s healthy");
-        // Degraded: 2s cadence.
         h.events.set_health(WatcherHealth::Degraded);
         assert!(coord.reconcile_due(10 + 2_000));
         let _ = std::fs::remove_file(&h.journal_path);
@@ -2009,7 +1740,6 @@ mod tests {
 
     #[test]
     fn gate4_degraded_still_discovers_game_first() {
-        // With WMI degraded (no events), pure snapshot polling still attaches.
         let h = harness("g4_degraded", full_success_script());
         h.events.set_health(WatcherHealth::Degraded);
         h.probe.add(hoi4_identity(4200, 42));
@@ -2022,13 +1752,11 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Identity fail-close -----------------------------------------
-
     #[test]
     fn gate5_wrong_session_never_admitted() {
         let h = harness("g5_session", full_success_script());
         let mut bad = hoi4_identity(5000, 55);
-        bad.session_id = OWN_SESSION + 1; // different session
+        bad.session_id = OWN_SESSION + 1;
         h.probe.add(bad);
         let mut coord = build(&h);
         run_steps(&mut coord, &h.clock, 12);
@@ -2080,9 +1808,9 @@ mod tests {
             Some(CandidateState::WaitingForWindow)
         );
         assert_eq!(*h.spawner.spawn_count.borrow(), 0);
-        // Once the window appears, it proceeds.
         *h.env.window_ready.borrow_mut() = true;
-        h.clock.set(h.clock.now_ms() + policy::readiness_delay_ms(0));
+        h.clock
+            .set(h.clock.now_ms() + policy::readiness_delay_ms(0));
         run_steps(&mut coord, &h.clock, 12);
         assert_eq!(
             state_of(&coord, ProcessKey::new(5300, 58)),
@@ -2132,24 +1860,18 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Pipe barrier + injection uncertainty ------------------------
-
     #[test]
     fn gate6_no_heartbeat_never_reaches_recording() {
-        // Worker stuck in Handshaking forever: never reaches WaitingForWorld or
-        // Recording, and the deadline eventually fails it — with NO second DLL.
         let h = harness("g6_hb", vec![WorkerStatus::Handshaking]);
         h.probe.add(hoi4_identity(6000, 66));
         let mut coord = build(&h);
         run_steps(&mut coord, &h.clock, 12);
-        // It injected once and is Handshaking, not Recording.
         let s = state_of(&coord, ProcessKey::new(6000, 66)).unwrap();
         assert!(matches!(
             s,
             CandidateState::Handshaking | CandidateState::Injecting
         ));
         assert_eq!(*h.spawner.spawn_count.borrow(), 1);
-        // Advance well past the handshake deadline.
         h.clock.set(policy::HANDSHAKE_DEADLINE_MS + 1_000_000);
         coord.step().unwrap();
         assert_eq!(
@@ -2211,7 +1933,6 @@ mod tests {
                 run_dir: Some(run_dir),
             }] if detail == "hook rejected" && run_dir.starts_with("out")
         ));
-        // Even if it stays live and we keep stepping, no re-injection.
         run_steps(&mut coord, &h.clock, 12);
         assert_eq!(*h.spawner.spawn_count.borrow(), 1);
         let _ = std::fs::remove_file(&h.journal_path);
@@ -2230,8 +1951,6 @@ mod tests {
         );
         let _ = std::fs::remove_file(&h.journal_path);
     }
-
-    // ---- Multi-instance ----------------------------------------------
 
     #[test]
     fn gate9_two_games_attach_independently() {
@@ -2256,13 +1975,8 @@ mod tests {
         let _ = std::fs::remove_file(&h.journal_path);
     }
 
-    // ---- Crash recovery ----------------------------------------------
-
     #[test]
     fn gate10_recovery_poisons_committed_identity() {
-        // Simulate a prior run that committed an injection then crashed: the
-        // journal ends with the identity in Injecting. On restart the same live
-        // process must NEVER be re-injected.
         let path = journal_path("g10");
         {
             let mut j = Journal::open(&path).unwrap();
@@ -2297,7 +2011,6 @@ mod tests {
             spawner: FakeSpawner::new(full_success_script()),
             journal_path: path.clone(),
         };
-        // The same live process is still running.
         h.probe.add(hoi4_identity(10_000, 100));
         let mut coord = build(&h);
         let poisoned = coord.recover_from_journal().unwrap();
@@ -2324,7 +2037,6 @@ mod tests {
         let precommit = ProcessKey::new(11_002, 112);
         {
             let mut j = Journal::open(&path).unwrap();
-            // Completed identity.
             j.append(JournalRecord::transition(
                 0,
                 1,
@@ -2335,7 +2047,6 @@ mod tests {
                 ReasonCode::ReplayComplete,
             ))
             .unwrap();
-            // Pre-commit nonterminal (WaitingForWindow) — safe to re-detect.
             j.append(JournalRecord::transition(
                 0,
                 2,
@@ -2346,7 +2057,6 @@ mod tests {
                 ReasonCode::NoVisibleWindow,
             ))
             .unwrap();
-            // Committed nonterminal.
             j.append(JournalRecord::transition(
                 0,
                 3,
@@ -2396,8 +2106,7 @@ mod tests {
                 CandidateState::Injecting,
                 ReasonCode::Injected,
             );
-            injecting.exe_path =
-                Some(r"D:\Steam\common\the game\hoi4.exe".to_string());
+            injecting.exe_path = Some(r"D:\Steam\common\the game\hoi4.exe".to_string());
             injecting.staging_dir = Some(old_staging.display().to_string());
             journal.append(injecting).unwrap();
             journal
@@ -2444,13 +2153,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    // ---- Offline process-exit finalization ---------------------------
-
     #[test]
     fn gate11_recording_process_exit_finalizes_prefix() {
-        // Worker recording; the script ENDS at Recording so the worker holds
-        // there (it never self-finalizes). The game then exits and the
-        // coordinator must finalize the prefix on the process-gone signal.
         let h = harness(
             "g11_exit",
             vec![
@@ -2463,15 +2167,11 @@ mod tests {
         );
         h.probe.add(hoi4_identity(12_000, 120));
         let mut coord = build(&h);
-        // Drive to Recording (7 transitions from detection; the worker holds
-        // Recording thereafter).
         run_steps(&mut coord, &h.clock, 10);
         assert_eq!(
             state_of(&coord, ProcessKey::new(12_000, 120)),
             Some(CandidateState::Recording)
         );
-        // Game exits: removed from the live set AND a WMI stop hint forces a
-        // prompt reconcile (so we don't wait for the 30 s healthy cadence).
         h.probe.remove_live(12_000);
         h.events.push(RawProcessEvent::Stop {
             pid: 12_000,
@@ -2497,7 +2197,6 @@ mod tests {
         assert!(recs.iter().any(|r| r.state_to == CandidateState::Injecting));
         assert!(recs.iter().any(|r| r.state_to == CandidateState::Recording));
         assert!(recs.iter().any(|r| r.state_to == CandidateState::Complete));
-        // No raw secrets in the journal file.
         let text = std::fs::read_to_string(&h.journal_path).unwrap();
         assert!(!text.contains("\"user_sid\":"));
         assert!(!text.contains("\"pipe_token\":"));
@@ -2719,9 +2418,6 @@ mod tests {
         assert_eq!(*h.spawner.spawn_count.borrow(), 1, "worker must be live");
         assert_eq!(*h.spawner.drop_count.borrow(), 0, "worker still supervised");
 
-        // Force the actual `coord.step()?` propagation path used by
-        // `run_supervisor`: a stop hint requests an immediate authoritative
-        // snapshot, and that snapshot fails while the worker is still live.
         h.events.push(RawProcessEvent::Stop {
             pid: 14_008,
             name: "hoi4.exe".to_string(),
@@ -2734,9 +2430,6 @@ mod tests {
             "{error}"
         );
 
-        // `run_supervisor` now returns via `?`, dropping the coordinator. Its
-        // Drop requests stop; the concrete ChildWorkerHandle Drop synchronously
-        // waits/reaps (covered by the live subprocess test in auto_attach.rs).
         drop(coord);
         assert_eq!(*h.spawner.stop_count.borrow(), 1, "worker was not stopped");
         assert_eq!(

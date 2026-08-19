@@ -164,9 +164,6 @@ fn negative_fixtures_are_rejected_with_precise_errors() {
     for entry in negative {
         let name = entry["name"].as_str().expect("negative name");
         let rel = entry["path"].as_str().expect("negative path");
-        // The manifest records the shipped product-open expectation. The
-        // capability-free replay_core entry point intentionally refuses a
-        // compact-only package before inspecting the decoder-only schema.
         let expected = if name == "neg_empty_snapshot_index" {
             "empty snapshot index"
         } else {
@@ -189,20 +186,6 @@ fn negative_fixtures_are_rejected_with_precise_errors() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Recording relocation, at the READER boundary.
-//
-// A `.battleplan` is the sole runtime interface between the extractor and the
-// replayer (SINGLE-FILE LAW), so the bytes are the whole recording: where the
-// file sits, and what it is called, must change nothing about what the reader
-// answers. Nothing else in the workspace states that at this boundary.
-// `replay_fixture_gen`'s `generated_fixture_set_is_byte_identical_after_relocation`
-// proves the GENERATOR is relocation-stable (it regenerates from two roots and
-// compares the produced bytes); it never reopens a produced file from a second
-// path. `map_viewer`'s `relocated_replay_and_install_produce_identical_plan` and
-// `game_ui`'s `portable_manifest_rebinds_after_game_profile_and_replay_relocation`
-// relocate the INSTALL / content roots, not the recording.
-// ---------------------------------------------------------------------------
 
 fn unique_relocation_root(tag: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -220,11 +203,6 @@ fn unique_relocation_root(tag: &str) -> PathBuf {
     root
 }
 
-/// Windows denies a delete/rename handle to a `.battleplan` for as long as the
-/// container is open (`open_retained_container_file`), and a virus scanner that
-/// is still reading a freshly written file produces the same `os error 32`.
-/// Every reader in these tests is dropped before any removal; this only absorbs
-/// the scanner window.
 fn remove_dir_all_with_retry(path: &Path) {
     let mut last = None;
     for attempt in 0..40u32 {
@@ -246,11 +224,6 @@ fn remove_dir_all_with_retry(path: &Path) {
     );
 }
 
-/// Write `bytes` to `path`, absorbing the same transient `os error 32` window
-/// `remove_dir_all_with_retry` does: a scanner that opened the file this test
-/// wrote a moment ago denies the next writer for as long as it holds it. This is
-/// environment noise, not reader behaviour, and must not be able to fail a test
-/// about relocation.
 fn write_with_retry(path: &Path, bytes: &[u8]) {
     let mut last = None;
     for attempt in 0..40u32 {
@@ -271,7 +244,6 @@ fn write_with_retry(path: &Path, bytes: &[u8]) {
     );
 }
 
-/// Count the entries of `dir`, absorbing the same transient window.
 fn entry_count(dir: &Path) -> usize {
     let mut last = None;
     for attempt in 0..40u32 {
@@ -292,11 +264,6 @@ fn entry_count(dir: &Path) -> usize {
     );
 }
 
-/// Place `bytes` at `<root>/<sub>/<name>`, in a directory of its own that holds
-/// nothing else. A reader that REQUIRED anything beside the recording — a
-/// sidecar index, a neighbouring `manifest.json`, a cache file — would find
-/// nothing to read here; the shipped corpus directory it was copied from holds
-/// twenty recordings and a `manifest.json`.
 fn place_alone(root: &Path, sub: &str, name: &str, bytes: &[u8]) -> PathBuf {
     let dir = root.join(sub);
     std::fs::create_dir_all(&dir).unwrap_or_else(|err| panic!("create {}: {err}", dir.display()));
@@ -328,14 +295,6 @@ struct RawFrameReading {
     rest: Map<String, Value>,
 }
 
-/// A SAMPLE of what the reader answers about one recording, in a form that
-/// carries no path of its own. Exhaustive over the decoded content — the whole
-/// raw body of every hour, and the `WorldTimeline` read-back of every top-level
-/// domain in it — but NOT over the reader's whole surface: see the "does NOT
-/// kill" list on `relocating_a_recording_changes_nothing_the_reader_answers`
-/// for what is left out and why. Types without `PartialEq` are captured through
-/// their derived `Debug`, which prints every field, so a path that reached one
-/// of the sampled ones shows up as a difference.
 #[derive(Debug)]
 struct RecordingReading {
     game_id: String,
@@ -353,35 +312,15 @@ struct RecordingReading {
     timeline_game_id: String,
     timeline_hours: Vec<i64>,
     timeline_warnings: Vec<String>,
-    /// The metadata `WorldTimeline` re-exposes from its source, read through the
-    /// timeline's own accessors rather than assumed to be pass-throughs.
     timeline_metadata: String,
-    /// `WorldTimeline::admit_playback_content` against a fixed probe inventory.
     admission: String,
-    /// `(hour, Debug of the timeline's own per-hour accessors)` at each RECORDED
-    /// hour.
     timeline_per_hour: Vec<(i64, String)>,
-    /// `(hour, "<route>.<domain>", value)` for every top-level domain of the
-    /// frame each of the four routes to that hour resolves to, taken from that
-    /// frame's OWN `WorldFrame::raw` map. Not a shared key set: a route that
-    /// invented a domain, or dropped one, changes this list's length and its
-    /// entries.
     timeline_domains: Vec<(i64, String, Option<Value>)>,
-    /// `(hour, WorldFrame::coverage_warnings)` — the coverage OUTCOME, which
-    /// the deleted renderer test reached only indirectly, through pixels.
     coverage_warnings: Vec<(i64, Vec<String>)>,
-    /// `(hour, Debug of the typed views `typed_views_debug` names)` — a
-    /// spot-check that the DERIVED layer is reached at all, not a survey of it.
-    /// `WorldFrame` has many more typed accessors and no way to enumerate them;
-    /// the exhaustive statement here is the raw/timeline-domain comparison the
-    /// derived layer is computed from.
     typed_views: Vec<(i64, String)>,
 }
 
 impl RecordingReading {
-    /// Short, located descriptions of every disagreement. Returning the list
-    /// (rather than comparing two whole readings with `assert_eq!`) keeps a
-    /// failure legible: these frames are tens of thousands of JSON nodes each.
     fn differences(&self, other: &RecordingReading) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         let mut scalar = |field: &str, a: String, b: String| {
@@ -561,16 +500,6 @@ impl RecordingReading {
     }
 }
 
-/// FOUR SELECTED arms of [`RecordingReading::differences`], by the prefixes each
-/// writes. Each of these four must be observed reporting a difference somewhere
-/// in the corpus; see `relocating_a_recording_changes_nothing_the_reader_answers`.
-///
-/// This is a sample, not a census: the remaining scalar arms (warnings,
-/// declared coverage, the manifests, the catalogs, `dates`, `hours`,
-/// `coverage_warnings`) have no self-check, because two shipped fixtures do not
-/// reliably differ in each of them and this table only records arms that a real
-/// pair can demonstrate. Deleting one of those scalar comparisons would not be
-/// caught here.
 const COMPARISON_FAMILIES: &[(&str, &[&str])] = &[
     ("game id", &["game_id:", "timeline_game_id:"]),
     (
@@ -587,11 +516,6 @@ const COMPARISON_FAMILIES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// A fixed, deliberately non-matching playback inventory for
-/// `WorldTimeline::admit_playback_content`. It is not a claim about any real
-/// install: it is a constant probe, so the report that comes back is derived
-/// entirely from the RECORDING's own content manifest — which is the thing that
-/// must not change when the recording moves.
 fn relocation_probe_inventory() -> replay_core::PlaybackContentInventory {
     replay_core::PlaybackContentInventory {
         source_game: replay_core::SourceGameIdentity {
@@ -630,32 +554,6 @@ fn typed_views_debug(frame: &WorldFrame) -> String {
     )
 }
 
-/// Open `path` and read back the sampled surfaces `RecordingReading` documents
-/// — every accessor `ReplaySource` and `WorldTimeline` answer WITHOUT an
-/// argument, plus per-hour dates, raw bodies, domains, coverage warnings and
-/// the typed views `typed_views_debug` names, `WorldTimeline`'s own per-hour
-/// `date_at` / `lookup_hour` / `declared_gap_at`, its `admit_playback_content`
-/// against a fixed probe inventory, and all FOUR routes to a recorded hour —
-/// `frame`, `state_at`, `seek` and `play_to`, which are not interchangeable
-/// (`play_to` deliberately folds a v4 delta chain by an independent loop).
-///
-/// What it leaves out, and why — no claim of completeness beyond this list:
-///   * `ReplaySource::static_artifact` and `WorldTimeline::static_artifact`:
-///     name-keyed, with no enumeration API, so nothing can reach them.
-///   * `WorldTimeline::coverage_state_at`, whose distinctive answer is the
-///     DeclaredGap arm, and which reduces to the frame routes above at a
-///     recorded hour. Its input, the declared coverage, is compared; the shipped
-///     corpus declares no gaps, so nothing here would exercise the other arm.
-///   * `WorldTimeline::open_with_config` at any budget other than the default.
-///     `open` delegates to it, so the function IS executed, but only with
-///     `TimelineConfig::default()`; a branch reachable only under another cache
-///     budget is not covered.
-///   * The scrub contract at UNRECORDED hours. Every hour asked here is one the
-///     recording carries; how an unrecorded hour resolves against the spine is a
-///     different property from relocation.
-///
-/// Every handle is dropped before this returns, so the caller may delete or
-/// overwrite the file it just read.
 fn read_recording(path: &Path) -> Result<RecordingReading, String> {
     let source = open_recording(path).map_err(|err| err.to_string())?;
     let game_id = source.game_id().to_string();
@@ -687,10 +585,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
     let timeline_game_id = timeline.game_id().to_string();
     let timeline_hours = timeline.hours().to_vec();
     let timeline_warnings = timeline.warnings().to_vec();
-    // `WorldTimeline` re-exposes the source's metadata through its own
-    // accessors. They are read here rather than assumed to be pass-throughs: a
-    // path reaching one of them alone would otherwise change nothing anyone
-    // compares.
     let timeline_metadata = format!(
         "first_hour={:?} last_hour={:?} declared_coverage={:?} content_manifest={:?} \
          campaign_identity={:?} product_admission={:?} prefold_receipt={:?} \
@@ -706,11 +600,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
         timeline.decision_catalog(),
         timeline.frame_cache_entries(),
     );
-    // `admit_playback_content` answers about THIS RECORDING's content manifest,
-    // measured against a supplied inventory. The inventory below is a fixed,
-    // deliberately non-matching probe: what is compared is the recording-derived
-    // report it produces, which names the recording's own requirements, and that
-    // must not change when the recording moves.
     let admission = format!(
         "{:?}",
         timeline.admit_playback_content(&relocation_probe_inventory())
@@ -720,11 +609,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
     let mut coverage_warnings = Vec::new();
     let mut typed_views = Vec::new();
     for &hour in &timeline_hours {
-        // All FOUR public routes to a recorded hour, not just `frame`. They are
-        // not interchangeable: `play_to` deliberately runs an INDEPENDENT fold
-        // for a v4 delta anchor rather than the accumulator `seek` uses, so a
-        // path reaching only that fold would be invisible if this read `frame`
-        // alone.
         let routes = [
             (
                 "frame",
@@ -741,10 +625,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
             ),
         ];
         for (label, resolved) in &routes {
-            // Each route's OWN complete map, through `WorldFrame::raw`, not a
-            // key set borrowed from the source frame: a route that INVENTED a
-            // domain the source never carried would be invisible to a borrowed
-            // key set, because nothing would ever ask for the invented key.
             for (key, value) in resolved.raw() {
                 timeline_domains.push((hour, format!("{label}.{key}"), Some(value.clone())));
             }
@@ -752,12 +632,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
         }
         let frame = &routes[0].1;
         coverage_warnings.push((hour, frame.coverage_warnings().to_vec()));
-        // The timeline's own per-hour accessors, for the same reason the
-        // argument-free ones above are read: `WorldTimeline::date_at` and
-        // `declared_gap_at` wrap the source's answers, and a path reaching one
-        // of the wrappers alone would change nothing else compared here. Asked
-        // only at RECORDED hours; the scrub primitives that resolve arbitrary
-        // requested hours are a different property and are not this test's.
         timeline_per_hour.push((
             hour,
             format!(
@@ -794,55 +668,6 @@ fn read_recording(path: &Path) -> Result<RecordingReading, String> {
     })
 }
 
-/// Copying a shipped recording to a second directory, under a second name,
-/// changes nothing the reader answers.
-///
-/// kills: any path-derived state in the reader.
-///   * `game_id()` answered from the file STEM instead of the container index.
-///     `positive_fixtures_load_and_match_manifest_probes` asserts
-///     `source.game_id() == name` at the ONE path whose stem already equals
-///     that name, so it passes for a stem-derived id; the copies here are
-///     renamed `relocated-<name>.battleplan`, so a stem-derived id reads
-///     `relocated-<name>` and both the `game_id` comparison and the two
-///     `assert_eq!`s below fail.
-///   * the opened path, or anything derived from it, reaching one of the
-///     surfaces `read_recording` samples: `warnings`, `declared_coverage`, the
-///     content manifest, campaign identity, product admission, prefold receipt,
-///     the design / decision catalogs, `date_at`, the raw decoded body of
-///     every hour, the `WorldTimeline` read-back of every one of those
-///     top-level domains, `WorldFrame::coverage_warnings`, and the typed views
-///     `typed_views_debug` names. `open_store_impl` already threads
-///     `path.display()` in as `source_label`; one more `format!` from it
-///     reaching any of those lands in the reading and differs between the two
-///     locations. The raw-body comparison is exhaustive over the decoded
-///     content — every top-level domain of every hour — so a path reaching
-///     DECODED data is caught wherever it lands.
-///   * a MANDATORY read of something beside the recording (a sidecar index, a
-///     neighbouring `manifest.json`, a cache file next to the container): the
-///     relocated copy is alone in its directory, so the open fails outright.
-///   * a reader that LEAVES an extra directory entry beside the recording after
-///     the read returns: the directory is re-counted at that point and must
-///     still hold exactly one entry. A sibling created and removed inside the
-///     read, or created asynchronously after the count, is not caught — this is
-///     one observation in time, not a filesystem trace.
-///
-/// What it does NOT kill, stated so the comment does not claim more than the
-/// assertions distinguish:
-///   * a producer-side absolute path baked into the container BYTES. Those
-///     bytes are copied verbatim, so a leaked recorder path is identical at
-///     both locations. That is the recorder's guard, not this one.
-///   * an OPTIONAL read of an external path (a sibling, the working directory,
-///     an install root) whose fallback reproduces the same answer the bytes
-///     would have given. Equality of two readings cannot separate "read the
-///     bytes" from "read something else that happens to agree"; what makes that
-///     distinction is `the_reader_follows_the_bytes_at_a_fixed_path`, and only
-///     for the bytes it corrupts.
-///   * `ReplaySource::static_artifact` / `WorldTimeline::static_artifact`,
-///     which take an artifact NAME and expose no enumeration, so nothing here
-///     samples them; and the typed accessors `typed_views_debug` does not name.
-///     Note also that for the shipped corpus the design / decision / prefold
-///     options are all `None` — those three comparisons are real but currently
-///     compare absence to absence.
 #[test]
 fn relocating_a_recording_changes_nothing_the_reader_answers() {
     let root = fixture_root();
@@ -853,17 +678,9 @@ fn relocating_a_recording_changes_nothing_the_reader_answers() {
     assert_eq!(positive.len(), 19, "the shipped positive corpus");
 
     let relocation_root = unique_relocation_root("positive");
-    // Two shapes on purpose. The plain one is the ordinary case; the second
-    // carries spaces and non-ASCII, which is where a Windows path that is
-    // re-encoded on its way through the reader (a lossy `to_string_lossy`, an
-    // ANSI round trip) stops naming the file it was built from.
     let locations: [&str; 2] = ["plain", "with spaces and unicode ünïcödé 日本語"];
 
     let outcome = std::panic::catch_unwind(|| {
-        // The previous fixture's reading, kept only to prove that
-        // `RecordingReading::differences` can report a difference at all. An
-        // "identical" verdict from a comparator that always returns nothing is
-        // not evidence, and no assertion below would notice.
         let mut previous: Option<(&str, RecordingReading)> = None;
         let mut families_that_fired: BTreeSet<&str> = BTreeSet::new();
 
@@ -874,7 +691,6 @@ fn relocating_a_recording_changes_nothing_the_reader_answers() {
             let canonical = read_recording(&canonical_path)
                 .unwrap_or_else(|err| panic!("{name}: open canonical fixture: {err}"));
 
-            // The reading must be substantive, or "identical" says nothing.
             assert!(!canonical.frames.is_empty(), "{name}: no frames read");
             assert!(
                 canonical
@@ -906,15 +722,6 @@ fn relocating_a_recording_changes_nothing_the_reader_answers() {
                     "the comparator called two different recordings ({previous_name} and {name}) \
                      identical; it cannot report a difference, so its verdicts below mean nothing"
                 );
-                // Not merely "non-empty": the four families in
-                // `COMPARISON_FAMILIES` must each be shown to fire somewhere in
-                // the corpus, or deleting all but one of them would still
-                // satisfy the check above. (Only those four — the scalar arms
-                // are unchecked; see the table.) Accumulated across the 18
-                // adjacent pairs rather than required of each one, because two
-                // fixtures can genuinely differ in their recorded bodies and
-                // still present identical typed views, which is exactly what
-                // `fx_dlc_language_variation` and `fx_research_focus` do.
                 for (family, prefixes) in COMPARISON_FAMILIES {
                     if cross
                         .iter()
@@ -937,11 +744,6 @@ fn relocating_a_recording_changes_nothing_the_reader_answers() {
                 );
                 let relocated = read_recording(&moved)
                     .unwrap_or_else(|err| panic!("{name} at {location:?}: open relocated: {err}"));
-                // Reading a recording must leave nothing behind beside it. A
-                // spool or cache directory is only ever created through the
-                // explicit spooled-decoder entry points, which take the caller's
-                // own base; the capability-free `open_recording` used here must
-                // write nothing.
                 let parent = moved.parent().expect("the relocated copy has a parent");
                 assert_eq!(
                     entry_count(parent),
@@ -956,10 +758,6 @@ fn relocating_a_recording_changes_nothing_the_reader_answers() {
                     moved.display(),
                     differences.join("\n  ")
                 );
-                // Stated separately from the whole-reading comparison because a
-                // reader that answered one CONSTANT id everywhere satisfies the
-                // comparison above, and this is the field a stem-derived reader
-                // would rewrite.
                 assert_eq!(
                     relocated.game_id, name,
                     "{name}: the game id after relocation must still be the recorded one"
@@ -984,33 +782,6 @@ fn relocating_a_recording_changes_nothing_the_reader_answers() {
     }
 }
 
-/// A recording that is refused is refused identically from any path, and the
-/// refusal names no path.
-///
-/// kills: a refusal message built from the opened pathname. `open_store_impl`
-/// formats `no game found ... under {source_label}` from `path.display()`
-/// today; widening that spelling to the refusals these fixtures reach — or
-/// adding the path to the `SourceError::Open` / `NotFound` renderings on the
-/// routes they take — makes the two messages differ. Three checks, because
-/// equality alone has holes:
-///   * equality of the two messages — kills any leak of a path that differs
-///     between the two locations, which is all of both paths but the drive;
-///   * the marker, which is in the relocated copy's directory AND in its file
-///     name and in neither canonical path — kills a leak of just the file name
-///     or just the containing directory;
-///   * no backslash anywhere in the message — kills a leak of a SHARED prefix,
-///     which equality cannot see: `path.ancestors().last()` renders `C:\` at
-///     both locations, and a partial-path leak of any depth carries a
-///     separator.
-/// The forward slash cannot be forbidden in the same way, because two of these
-/// four refusals legitimately name an IN-CONTAINER entry
-/// (`payload/<game>/000016959360.snapshot.json`, `payload/<game>/collector_raw/
-/// compact_stream.jsonl`) and those are not pathnames on disk. So the backslash
-/// check is Windows-shaped, and what escapes it is a leak that carries no
-/// separator at all (a bare `C:`) or one rendered with `/` instead of `\`.
-/// `negative_fixtures_are_rejected_with_precise_errors` sees none of this: it
-/// opens each negative fixture once, at one path, and only asserts a substring
-/// is present.
 #[test]
 fn a_refused_recording_is_refused_the_same_way_from_any_path() {
     let root = fixture_root();
@@ -1025,9 +796,6 @@ fn a_refused_recording_is_refused_the_same_way_from_any_path() {
         for entry in negative {
             let name = entry["name"].as_str().expect("negative name");
             let rel = entry["path"].as_str().expect("negative path");
-            // Same carve-out as `negative_fixtures_are_rejected_with_precise_errors`:
-            // the capability-free entry point refuses a compact-only package
-            // before it reaches the decoder-only schema the manifest records.
             let expected = if name == "neg_empty_snapshot_index" {
                 "empty snapshot index"
             } else {
@@ -1066,9 +834,6 @@ fn a_refused_recording_is_refused_the_same_way_from_any_path() {
                 canonical, relocated,
                 "{name}: the refusal changed when the recording moved"
             );
-            // (`.battleplan` is deliberately NOT forbidden: `open .battleplan:`
-            // is a fixed route label in the adapter's rendering, not a
-            // pathname.)
             for must_not_appear in [
                 marker.to_string(),
                 moved.display().to_string(),
@@ -1080,13 +845,6 @@ fn a_refused_recording_is_refused_the_same_way_from_any_path() {
                      not the bytes: {relocated:?}"
                 );
             }
-            // The shared-prefix leak equality is blind to. Every path this test
-            // opens is absolute, so any part of one that names a directory
-            // carries a separator; the four refusals carry no backslash today.
-            // The literal `'\\'` rather than `MAIN_SEPARATOR`: forbidding the
-            // platform separator would forbid `/` on a Unix host, and two of
-            // these refusals name an in-container entry with `/` in it, which
-            // is not a pathname on disk.
             for message in [&canonical, &relocated] {
                 assert!(
                     !message.contains('\\'),
@@ -1102,46 +860,11 @@ fn a_refused_recording_is_refused_the_same_way_from_any_path() {
     }
 }
 
-/// The reader reads the BYTES, not the path: at one fixed path, changing the
-/// bytes changes the answer, and restoring them restores it.
-///
-/// This is what stops the relocation test above from being satisfiable by a
-/// reader that ignores its input — a constant reading, or one memoised per
-/// process, is identical everywhere and would pass it. Here the pathname never
-/// changes across the three opens, so nothing about the path can explain the
-/// difference; and the corrupt bytes are then refused from a second path with
-/// the identical message, so nothing about the path explains the refusal
-/// either.
-///
-/// kills: a cache of the whole open result — the admitted source, or a complete
-/// decoded reading — keyed by PATHNAME or by `(pathname, length)`, since the
-/// corrupt copy has exactly the length of the pristine one (asserted below).
-/// Such a cache answers `Ok` for the corrupt file and the `panic!` fires.
-///
-/// It does NOT kill:
-///   * a cache that also keys on mtime, which every write here changes. A test
-///     could hold mtime still — `File::set_times` with a saved `FileTimes` —
-///     and this one does not.
-///   * a cache of some LATER stage — an admission sub-decision, a decoded
-///     frame — that is only consulted after the container structure is re-read.
-///     The corruption here is byte 0, the ZIP local file header signature, so
-///     the refusal happens before any such cache would be reached. The deep
-///     form of that (a payload byte changed after hashing) is the shipped
-///     `neg_bad_snapshot_hash` fixture, but it is refused at two DIFFERENT
-///     paths in `a_refused_recording_is_refused_the_same_way_from_any_path`, so
-///     it is not a fixed-path hit against a stage cache either.
 #[test]
 fn the_reader_follows_the_bytes_at_a_fixed_path() {
     let root = fixture_root();
     let pristine = std::fs::read(root.join("positive/fx_topbar_scalars_sweep.battleplan"))
         .expect("read fx_topbar_scalars_sweep");
-    // A format-determined corruption, not a lucky offset: byte 0 of a ZIP is
-    // the first byte of the mandatory local file header signature `PK\x03\x04`,
-    // wherever the archive was repacked from and whatever it contains, so this
-    // stays a corruption for any future regeneration of the corpus. (A deeper
-    // corruption — a payload byte changed after hashing — is a shipped fixture
-    // in its own right, `neg_bad_snapshot_hash`, and
-    // `a_refused_recording_is_refused_the_same_way_from_any_path` relocates it.)
     assert_eq!(
         &pristine[..4],
         b"PK\x03\x04",
@@ -1182,8 +905,6 @@ fn the_reader_follows_the_bytes_at_a_fixed_path() {
             differences.join("\n  ")
         );
 
-        // The same corrupt bytes, a different directory and a different name:
-        // the refusal must be word for word the one above.
         let elsewhere = place_alone(
             &relocation_root,
             "elsewhere/deeper",

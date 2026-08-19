@@ -1,31 +1,3 @@
-//! Timeline → topbar / ideology bindings. The chrome law the
-//! layout side is gated by the owning composition modules and tests.
-//!
-//! This module is the *population* seam: it maps `replay_core`'s typed
-//! `WorldFrame` views (topbar scalars, country identity) onto the
-//! layout-only [`TopbarBinding`] and the ideology-keyed flag/localisation
-//! candidates. It parses no recording bytes — every value comes through a
-//! typed view. It fabricates no value: a `Leaf` that is
-//! `Absent`/`Unobtained`, or a view whose status is not `Present`, renders
-//! the **fail-closed absent form** (a `None` field / empty candidate set),
-//! never a default like `0`.
-//!
-//! ## Number formatting is UNKNOWN
-//!
-//! the game's topbar number formatting (thousands separators, rounding,
-//! percent-vs-fraction display, +/- coloring) is engine-computed and is not
-//! cited from any shipped `.gui`/localisation file in this decoupled context.
-//! The legacy data-only binding retains each raw measured value. The shipping
-//! observer never displays that provisional string: it replaces every
-//! UNKNOWN-formatted value with exact A25 final setter bytes for the same
-//! frame, selected country, view and element, or omits the element and reports
-//! a named gap.
-//!
-//! The data-only binding retains proven percent projections for
-//! `world_tension_percent`, `stability` and `war_support` (see
-//! `apply_scalars`). The shipping observer still requires A25 final bytes for
-//! their actual labels, so even a proven unit conversion is not mistaken for
-//! proof of the engine's string formatting.
 
 use crate::hud::{OutlinerBinding, OutlinerRowBinding};
 use crate::loc::Localisation;
@@ -41,10 +13,6 @@ use replay_core::{
 };
 use std::collections::BTreeMap;
 
-/// Render an `f64` leaf as its raw shortest round-trip decimal, or `None`
-/// (the fail-closed absent form) when the value was never measured.
-///
-/// UNKNOWN formatting: no percent scaling / grouping / rounding is applied.
 fn raw_f64(leaf: &Leaf<f64>) -> Option<String> {
     match leaf {
         Leaf::Measured(v) => Some(format!("{v}")),
@@ -52,7 +20,6 @@ fn raw_f64(leaf: &Leaf<f64>) -> Option<String> {
     }
 }
 
-/// Render an `i64` leaf as its raw decimal, or `None` when unmeasured.
 fn raw_i64(leaf: &Leaf<i64>) -> Option<String> {
     match leaf {
         Leaf::Measured(v) => Some(format!("{v}")),
@@ -60,8 +27,6 @@ fn raw_i64(leaf: &Leaf<i64>) -> Option<String> {
     }
 }
 
-/// Non-negative `i64` leaf → `u32` for [`FactoryCounts`]; `None` if unmeasured
-/// or negative (fail-closed, never coerced to a default).
 fn measured_u32(leaf: &Leaf<i64>) -> Option<u32> {
     match leaf {
         Leaf::Measured(v) if *v >= 0 => u32::try_from(*v).ok(),
@@ -69,9 +34,6 @@ fn measured_u32(leaf: &Leaf<i64>) -> Option<u32> {
     }
 }
 
-/// Measured 0..=1 fraction for an authored progress bar. Non-finite or
-/// out-of-range values fail closed instead of being clamped into a plausible
-/// display value.
 fn measured_ratio(leaf: &Leaf<f64>) -> Option<f32> {
     match leaf {
         Leaf::Measured(value) if value.is_finite() && (0.0..=1.0).contains(value) => {
@@ -81,19 +43,8 @@ fn measured_ratio(leaf: &Leaf<f64>) -> Option<f32> {
     }
 }
 
-/// Map one country's [`TopbarScalars`] view onto the layout-only
-/// [`TopbarBinding`] text/count fields, fail-closed. The flag/ideology
-/// identity fields are filled separately by [`apply_identity`].
-///
-/// Every field is the raw measured value or `None`; see the module header for
-/// the UNKNOWN-formatting rationale.
 fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.political_power = raw_f64(&scalars.political_power);
-    // stability / war_support are recorded as 0.0..=1.0 ratios
-    // and the shipped topbar
-    // shows them as percentages. They therefore take the SAME percent
-    // projection as the sibling `world_tension_percent` below
-    // (`topbar::format_percent`), not the generic raw fallback.
     binding.stability_percent = scalars
         .stability
         .measured()
@@ -107,13 +58,8 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.army_experience = raw_f64(&scalars.xp_army);
     binding.navy_experience = raw_f64(&scalars.xp_navy);
     binding.air_experience = raw_f64(&scalars.xp_air);
-    // A17 is applied after this generic scalar projection: its displayed value
-    // additionally requires the D18 identity and exact NUK1 sidecar.
     binding.nukes = None;
     binding.fuel = raw_f64(&scalars.fuel_current);
-    // The engine getter is fixed3 percent (0..=100000 => 0.000..=100.000%),
-    // carried as the equivalent fixed5 ratio 0.0..=1.0. This scalar therefore
-    // has a proven percent projection rather than the generic raw fallback.
     binding.world_tension_percent = scalars
         .world_tension
         .measured()
@@ -127,8 +73,6 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
     binding.convoys = raw_f64(&scalars.convoys);
     binding.supply_ratio = measured_ratio(&scalars.supply_ratio);
 
-    // Factory triple: only bound when all three counts are measured, so a
-    // partial capture never renders a mixed real/zero triple.
     binding.factory_counts = match (
         measured_u32(&scalars.factories_civ),
         measured_u32(&scalars.factories_mil),
@@ -141,14 +85,9 @@ fn apply_scalars(binding: &mut TopbarBinding, scalars: &TopbarScalars) {
         }),
         _ => None,
     };
-    // The single-count `factory_text` alias is left absent; the triple above is
-    // the measured form. (Its `/`-join is UNKNOWN formatting — see report.)
     binding.factory_text = None;
 }
 
-/// Join the D18 identity retained by the recorder to the exact d83 sidecar.
-/// A scalar with the same numeric total is not sufficient: two countries can
-/// legitimately have equal stockpiles, so identity and value must both agree.
 fn apply_exact_nuke_stockpile(
     binding: &mut TopbarBinding,
     frame: &WorldFrame,
@@ -199,10 +138,6 @@ fn exact_nuke_display_value(
     }
 }
 
-/// Map the three unambiguous ratio leaves onto their exact authored bars.
-/// `xp_ratio` remains intentionally unused: the recording carries one value,
-/// while the topbar has distinct army/navy/air overlays, so assigning it to
-/// any or all three would fabricate a join.
 fn apply_ratios(binding: &mut TopbarBinding, ratios: &TopbarRatios) {
     binding.industrial_ratio = measured_ratio(&ratios.industrial_ratio);
     binding.convoys_ratio = measured_ratio(&ratios.convoy_ratio);
@@ -216,8 +151,6 @@ fn alert_text(leaf: &Leaf<i64>) -> Option<String> {
     }
 }
 
-/// Bind every independently measured a729 topbar alert badge. The exact
-/// controller producers hide both text and background at zero.
 fn apply_alerts(binding: &mut TopbarBinding, alerts: &replay_core::TopbarAlerts) {
     binding.initiative = alert_text(&alerts.initiative);
     binding.decision_available_items = alert_text(&alerts.decisions_available);
@@ -243,17 +176,6 @@ fn apply_exact_decision_alerts(binding: &mut TopbarBinding, frame: &WorldFrame, 
         (panel.timeout_alert_count > 0).then(|| panel.timeout_alert_count.to_string());
 }
 
-/// The measured cosmetic OVERRIDE, for a rendering path that has no way to
-/// refuse and must key a flag or a name for every frame it is handed.
-///
-/// `cosmetic_tag` is nullable (`replay_core::CountryIdentity::cosmetic_tag`):
-/// `Measured(None)` is the producer's measured "this country has NO cosmetic
-/// override", which is precisely the instruction to key off the base TAG, i.e.
-/// the same `None` a rendering path already falls back to. `Absent` and
-/// `Unobtained` collapse to that fallback too, because a shield still has to be
-/// drawn — the states are only separable where the consumer is allowed to
-/// refuse (XUI13/XUI15/XUI16 and XMAP05/XMAP17 do, and use
-/// [`admitted_cosmetic_override`]).
 pub(crate) fn rendered_cosmetic_override(leaf: &Leaf<Option<String>>) -> Option<&str> {
     match leaf {
         Leaf::Measured(Some(tag)) => Some(tag.as_str()),
@@ -261,18 +183,6 @@ pub(crate) fn rendered_cosmetic_override(leaf: &Leaf<Option<String>>) -> Option<
     }
 }
 
-/// The cosmetic override for an ADMISSION path, which may refuse.
-///
-/// Admits the producer's two measured states — an override, and a measured
-/// "there is no override" — and refuses the two that are gaps: `Absent` (D18
-/// marker 0, the engine field could not be read, so a country whose real name
-/// and flag come from an override would silently render under its base TAG) and
-/// `Unobtained` (a null country object or a wrong-typed leaf). A blank measured
-/// override is a malformed measurement.
-///
-/// GP-F23: these gates used to admit `Absent` and refuse the producer's
-/// measured "no override", which is each state mistaken for the other, and the
-/// refused one is the common case.
 pub(crate) fn admitted_cosmetic_override(
     leaf: &Leaf<Option<String>>,
 ) -> std::result::Result<Option<&str>, &'static str> {
@@ -285,23 +195,6 @@ pub(crate) fn admitted_cosmetic_override(
     }
 }
 
-/// The cosmetic override for a consumer that keys a flag off a
-/// [`TopbarBinding`] but IS allowed to refuse — XUI19's custom-icon and
-/// country-target flags (`production_renderer.rs`).
-///
-/// `TopbarBinding::cosmetic_tag` is a RENDERING field: it is built with
-/// [`rendered_cosmetic_override`], so a country whose cosmetic field D18 could
-/// not read arrives here indistinguishable from one measured as having no
-/// override. That is right for the topbar, which must draw a shield either way,
-/// and wrong for XUI19, which returns `Result` and would otherwise search the
-/// base-TAG flag ladder — and find it, because base flags ship — painting the
-/// WRONG flag for a country that really does carry an override. So XUI19 asks
-/// the identity directly.
-///
-/// `None` identity is deliberately NOT a refusal: a flag tag with no entry in
-/// the country-identity view has no cosmetic leaf to misread, which is a
-/// different gap under the binding's own bare-tag fallback, not one of GP-F23's
-/// three cosmetic states.
 pub(crate) fn admitted_flag_cosmetic(
     identity: Option<&CountryIdentity>,
 ) -> std::result::Result<Option<&str>, &'static str> {
@@ -311,33 +204,19 @@ pub(crate) fn admitted_flag_cosmetic(
     }
 }
 
-/// Fill the flag/ideology identity fields from a [`CountryIdentity`] view.
-/// A `ruling_ideology` that is absent/unobtained stays `None`, as does a
-/// `cosmetic_tag` with no measured override, so flag selection falls back
-/// exactly as the shipped inventory dictates.
 fn apply_identity(binding: &mut TopbarBinding, pov_tag: &str, identity: &CountryIdentity) {
     binding.country_tag = Some(pov_tag.to_string());
     binding.country_ideology = identity.ruling_ideology.measured().cloned();
     binding.cosmetic_tag = rendered_cosmetic_override(&identity.cosmetic_tag).map(str::to_string);
 }
 
-/// Build the topbar binding for `pov_tag` at one world frame (D1 + D2
-/// population). Returns a fully fail-closed binding: when the topbar-scalar
-/// view is not `Present` for this POV, the scalar fields stay `None`; when the
-/// identity view is not `Present`, the flag falls back to the bare tag.
-///
-/// The layout is untouched — this only fills the binding the existing
-/// `compose_topbar` consumes.
 pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBinding {
     let mut binding = TopbarBinding::default();
 
-    // Identity first, so a POV with no scalar row still keys its flag.
     if frame.country_identities_status() == ViewStatus::Present {
         if let Some(identity) = frame.country_identity(pov_tag) {
             apply_identity(&mut binding, pov_tag, identity);
         } else {
-            // Country absent from a present identity view: still name the tag
-            // so the base flag resolves; ideology/cosmetic stay absent.
             binding.country_tag = Some(pov_tag.to_string());
         }
     } else {
@@ -360,17 +239,11 @@ pub fn topbar_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> TopbarBin
         }
     }
 
-    // d87 is independently authority- and SelectedPresent-joined.
     apply_exact_decision_alerts(&mut binding, frame, pov_tag);
 
     binding
 }
 
-/// One observer-HUD field which cannot be populated from replay gamestate.
-///
-/// This is deliberately a named data boundary instead of an empty string or a
-/// plausible zero. The viewer owns which country is displayed, but that does
-/// not create controller results which the recording never carried.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverTopbarGap {
     pub field: &'static str,
@@ -378,7 +251,6 @@ pub struct ObserverTopbarGap {
     pub reason: &'static str,
 }
 
-/// State-first topbar result for the replay observer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverTopbarBinding {
     pub binding: TopbarBinding,
@@ -411,8 +283,6 @@ fn require_exact_observer_format(
         return;
     }
     if let Some(runtime) = runtime_rows.get(element) {
-        // The final bytes are used only to establish element visibility here;
-        // Compositor consumes the authenticated context itself.
         *provisional = runtime
             .exact
             .as_ref()
@@ -427,17 +297,6 @@ fn require_exact_observer_format(
     }
 }
 
-/// Build the observer-selected country's topbar without recorded
-/// selected-Present controller state.
-///
-/// In particular this path does not consult d79's recorder-owned alert bag or
-/// d87's selected-Present decision panel. Scalars, identity, exact stockpile,
-/// and the clock are ordinary gamestate. A25 is admitted only as the exact
-/// final-text producer for UNKNOWN scalar formatting; its frame/country/view/
-/// element join cannot select controller state for another owner. Alert
-/// controller outputs are admitted only when an independently typed gamestate
-/// family proves the displayed value. Today D65 proves unread prototype
-/// rewards; the other alert badges remain named, feature-local gaps.
 pub fn topbar_binding_from_observer_frame(
     frame: &WorldFrame,
     country_tag: &str,
@@ -651,8 +510,6 @@ pub fn topbar_binding_from_observer_frame(
     .map(str::to_string)
     .collect();
 
-    // D65 is ordinary per-country gamestate and carries the exact unread
-    // count. Overflow is an unavailable value, never a saturated badge.
     let prototype_total = if frame.special_project_programs_status() == ViewStatus::Present {
         match frame.special_project_programs(country_tag) {
             Leaf::Measured(programs) => programs.iter().try_fold(0u64, |sum, row| {
@@ -730,10 +587,6 @@ pub fn topbar_binding_from_observer_frame(
     }
 }
 
-/// Exact D57 WT3X tooltip/popup population seam. This deliberately returns
-/// one complete optional binding: a partial ledger, unresolved D18 identity,
-/// missing policy threshold, or missing decay input keeps both consumers
-/// closed instead of mixing authenticated and fabricated fields.
 pub fn world_tension_consumers_from_frame(
     frame: &WorldFrame,
     pov_tag: &str,
@@ -741,16 +594,6 @@ pub fn world_tension_consumers_from_frame(
     crate::world_tension::binding_from_frame(frame, pov_tag)
 }
 
-/// The LAB4 ideology-resolved country **display-name** localisation key
-/// candidates, most specific first (the label law in
-/// `map_label_law.rs`):
-/// `<cosmetic>_<ideology>` → `<cosmetic>` → `<tag>_<ideology>` → `<tag>` →
-/// bare `<tag>`. A key is only emitted when its inputs exist; the bare tag is
-/// always the final fail-closed fallback.
-///
-/// This is a pure key-precedence function — resolution against a
-/// [`crate::loc::Localisation`] (via the GameFileResolver) is
-/// [`resolve_country_name`].
 pub fn country_name_key_candidates(
     tag: &str,
     ideology: Option<&str>,
@@ -768,18 +611,12 @@ pub fn country_name_key_candidates(
         out.push(format!("{tag_upper}_{ideology}"));
     }
     out.push(tag_upper.clone());
-    // Bare tag as the last-ditch fallback (dedup if it already equals <tag>).
     if out.last().map(String::as_str) != Some(tag_upper.as_str()) {
         out.push(tag_upper);
     }
     out
 }
 
-/// The ideology-keyed flag-texture candidates for a POV's topbar shield, in
-/// engine precedence (cosmetic before tag, `_<ideology>` before base), pinned
-/// to the `gfx/flags/medium/` folder used by topbar `GFX_shield_medium`. Thin
-/// wrapper over [`flag_candidates_for_size`] keyed
-/// off a [`CountryIdentity`] view.
 pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<String> {
     flag_candidates_for_size(
         Some(tag),
@@ -790,9 +627,6 @@ pub fn topbar_flag_key_candidates(tag: &str, identity: &CountryIdentity) -> Vec<
     )
 }
 
-/// Resolve the LAB4 display name against a loaded localisation, returning the
-/// first candidate key that exists plus the value. Fail-closed: if no key is
-/// present, returns the bare tag as `(tag, tag)` — never a fabricated name.
 pub fn resolve_country_name(
     loc: &crate::loc::Localisation,
     tag: &str,
@@ -808,47 +642,17 @@ pub fn resolve_country_name(
     (tag_upper.clone(), tag_upper)
 }
 
-// ===========================================================================
-// D3 — Outliner (army / navy / air unit lists) population
-// ===========================================================================
-//
-// The outliner layout consumer is [`crate::hud::OutlinerBinding`] (flat row
-// list). This seam turns the `replay_core` per-hour unit views
-// (`division_units` / `fleets` / `wings`) into POV-keyed army/navy/air rows.
-//
-// FILE labels:
-//   * Row *icon* sprites (`GFX_theatre_army_shield` / `_task_force_shield` /
-//     `_air_force_shield`) are FILE — the shipped `interface/theatreselector`
-//     sprites already resolved by the outliner layout gate in `hud.rs`.
-//   * Row *text* is the unit UID (`div_uid` / `task_force_uid` / `wing_uid`).
-//     the game's outliner shows a formatted unit *name* + status; no shipped file
-//     citation for that formatter exists in this decoupled context, so the row
-//     label is the raw stable identity string (UNKNOWN formatting, rendered
-//     raw rather than interpreted).
-//   * Row *progress* is fail-closed `None` — no cited law maps unit
-//     strength/org onto the outliner progress bar.
-//
-// Fail-closed: a unit whose `owner` leaf is not `Measured` cannot be attributed
-// to any POV and is omitted from every POV list. A domain that is
-// absent/unavailable yields an empty list plus the carried [`ViewStatus`].
 
-/// The theatre-shield icon sprites keyed per unit branch (FILE:
-/// `interface/theatreselector.gfx`, same sprites the outliner layout gate
-/// resolves in `hud.rs`).
 pub const OUTLINER_ARMY_ICON: &str = "GFX_theatre_army_shield";
 pub const OUTLINER_NAVY_ICON: &str = "GFX_theatre_task_force_shield";
 pub const OUTLINER_AIR_ICON: &str = "GFX_theatre_air_force_shield";
 
-/// One populated outliner row: the stable unit identity plus its branch icon.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutlinerUnitRow {
-    /// The unit UID (`div_uid` / `task_force_uid` / `wing_uid`) — the row key.
     pub uid: String,
-    /// Branch icon sprite (one of the `OUTLINER_*_ICON` constants).
     pub icon_sprite: String,
 }
 
-/// POV-keyed army/navy/air lists plus each branch's source-view status.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OutlinerUnitLists {
     pub pov_tag: String,
@@ -860,16 +664,10 @@ pub struct OutlinerUnitLists {
     pub air_status: ViewStatus,
 }
 
-/// True when a leaf owner string equals `pov_tag` (measured only).
 fn owner_is(owner: &Leaf<String>, pov_tag: &str) -> bool {
     matches!(owner, Leaf::Measured(tag) if tag == pov_tag)
 }
 
-/// Build the POV-keyed army/navy/air outliner lists for one world frame (D3).
-///
-/// Army rows come from `division_units` (row key `div_uid`), navy rows from
-/// `fleets` (row key `task_force_uid` — the addressable presence unit), and air
-/// rows from `wings` (row key `wing_uid`); each is owner-filtered to `pov_tag`.
 pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: &str) -> OutlinerUnitLists {
     let army = frame
         .division_units()
@@ -909,9 +707,6 @@ pub fn outliner_unit_lists_from_frame(frame: &WorldFrame, pov_tag: &str) -> Outl
     }
 }
 
-/// Flatten the typed army→navy→air lists into the layout-only
-/// [`OutlinerBinding`] the existing outliner compositor consumes. Row text is
-/// the raw UID (UNKNOWN formatting) and progress is fail-closed `None`.
 pub fn outliner_binding_from_lists(lists: &OutlinerUnitLists) -> OutlinerBinding {
     let mut rows = Vec::with_capacity(lists.army.len() + lists.navy.len() + lists.air.len());
     for row in lists.army.iter().chain(&lists.navy).chain(&lists.air) {
@@ -927,55 +722,18 @@ pub fn outliner_binding_from_lists(lists: &OutlinerUnitLists) -> OutlinerBinding
     }
 }
 
-/// Convenience: build the flat outliner binding for a POV directly from a
-/// frame (D3 population path used by the HUD).
 pub fn outliner_binding_from_frame(frame: &WorldFrame, pov_tag: &str) -> OutlinerBinding {
     outliner_binding_from_lists(&outliner_unit_lists_from_frame(frame, pov_tag))
 }
 
-// ===========================================================================
-// D4 — Country / diplomacy panel (read-only) population
-// ===========================================================================
-//
-// Bound from `replay_core`'s [`DiplomacyView`] (requirements items 8/8b):
-//   * `factions`  — the global faction-membership matrix (name, leader,
-//     sorted members), from each country's `politics.faction`.
-//   * `relations` — one row per *other* country from `pov_tag`'s perspective,
-//     each flag `Some(bool)` only when the pair leaf is `Measured`, else
-//     `None` (fail-closed; an unrecorded relation is never asserted false).
-//   * `wars`      — the POV's belligerents (relation rows with `at_war ==
-//     Some(true)`), i.e. the panel's war rows.
-//   * `subject_autonomy` - A16's complete authenticated current-status set,
-//     filtered to rows involving the POV. State identities remain raw hashes;
-//     no unproven display-name or formatting join is introduced here.
-//
-// KNOWN VIEW GAPS (data present in the recording but NOT surfaced by the
-// read-only `DiplomacyView`, so absent here):
-//   * `diplomacy_world.wars` war objects (attackers/defenders/front/start) —
-//     the view exposes only per-pair `at_war` booleans, so a war's belligerent
-//     grouping is reconstructed from directional pairs, not read as an object.
-//   * `diplomacy_live.war_relations` casualties — not surfaced.
-//   * `diplomacy.relation_flags` — the view derives the same facts from the
-//     per-country lists, so this is redundant and unread.
-// Faction roster completeness is surfaced independently below; unavailable is
-// never represented as an available empty roster.
 
-/// One faction and its membership (D4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FactionRow {
-    /// Authoritative roster identity. Legacy recordings may carry a display
-    /// name; current d53 rows carry their numeric faction id while name_hash
-    /// has no certified localisation resolver.
     pub faction_name: String,
-    /// The member flagged `is_leader`, when the recording marks one.
     pub leader: Option<String>,
-    /// Member tags, sorted ascending.
     pub members: Vec<String>,
 }
 
-/// One directed relation row `pov_tag → other_tag` (D4). Each flag is
-/// `Some(bool)` only when the pair leaf was measured; `None` is fail-closed
-/// "not recorded", never a fabricated `false`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RelationRow {
     pub other_tag: String,
@@ -988,9 +746,6 @@ pub struct RelationRow {
     pub subject: Option<bool>,
 }
 
-/// One authenticated A16 autonomy row involving the selected country. State
-/// identities remain exact hashes because no reviewed localisation join for
-/// autonomy-state definitions is part of this binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubjectAutonomyPanelRow {
     pub counterpart: Option<String>,
@@ -1008,27 +763,16 @@ pub struct SubjectAutonomyPanelRow {
     pub direction: Option<SubjectAutonomyDirection>,
 }
 
-/// Read-only country/diplomacy panel binding for one POV at one hour (D4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DiplomacyPanelBinding {
     pub pov_tag: String,
-    /// `true` only when the underlying `DiplomacyView` status is `Present`.
     pub available: bool,
-    /// Independent roster availability. Overall diplomacy can be available
-    /// while d53 faction membership is unavailable for this hour.
     pub factions_available: bool,
-    /// Preserves unavailable vs measured-empty vs measured-nonempty for the UI.
     pub faction_roster_status: FactionRosterStatus,
-    /// Global faction-membership matrix, sorted by roster identity.
     pub factions: Vec<FactionRow>,
-    /// `pov_tag → other` relation rows, one per other country, sorted by tag.
     pub relations: Vec<RelationRow>,
-    /// The POV's belligerents (relation rows with `at_war == Some(true)`).
     pub wars: Vec<String>,
-    /// `true` only when the complete A16 current-status set was measured.
     pub subject_autonomy_available: bool,
-    /// Exact current autonomy rows involving the POV. An available empty list
-    /// is distinct from an unavailable source via `subject_autonomy_available`.
     pub subject_autonomy: Vec<SubjectAutonomyPanelRow>,
 }
 
@@ -1039,9 +783,6 @@ fn bool_opt(leaf: &Leaf<bool>) -> Option<bool> {
     }
 }
 
-/// Co-derive roster status and rows from the one typed d53/legacy roster leaf.
-/// Country politics cannot create, suppress, or assign membership rows;
-/// faction_is_leader only decorates a member already in that roster.
 fn faction_rows(view: &DiplomacyView) -> (FactionRosterStatus, Vec<FactionRow>) {
     match &view.faction_members {
         Leaf::Measured(by_faction) if by_faction.is_empty() => {
@@ -1074,7 +815,6 @@ fn faction_rows(view: &DiplomacyView) -> (FactionRosterStatus, Vec<FactionRow>) 
     }
 }
 
-/// `pov_tag → other` relation rows (one per other country in the view).
 fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
     let mut rows = Vec::new();
     for other in view.countries.keys() {
@@ -1097,16 +837,6 @@ fn relation_rows(view: &DiplomacyView, pov_tag: &str) -> Vec<RelationRow> {
     rows
 }
 
-/// Resolve the POV tag's numeric database identity for the D53 subject-
-/// autonomy join, namespace-safely.
-///
-/// The d18 `_r2_tag_db_id` map is authoritative: when the frame carries a
-/// measured id for `pov_tag`, that id is the ONLY numeric identity used. The
-/// canonical-numeric-spelling fallback (subject-autonomy
-/// identity law) applies only when `pov_tag` is NOT a recorded country tag —
-/// a real three-character tag may be all digits (e.g. `"123"`), and parsing
-/// it would otherwise match unrelated rows whose `*_tag_db_id` happens to
-/// equal that spelling while the tag's own database id differs.
 fn resolve_pov_numeric_identity(
     frame: &WorldFrame,
     view: &DiplomacyView,
@@ -1122,8 +852,6 @@ fn resolve_pov_numeric_identity(
         || frame.politics_detail(pov_tag).is_some()
         || frame.countries().contains_key(pov_tag);
     if recorded_tag {
-        // A recorded tag whose database id is unmeasured this hour: numeric
-        // matching is disabled rather than guessed from the spelling.
         None
     } else {
         pov_tag.parse::<u32>().ok()
@@ -1182,9 +910,6 @@ fn subject_autonomy_rows(
     (true, projected)
 }
 
-/// Build the read-only diplomacy panel for `pov_tag` at one world frame (D4).
-/// When the diplomacy view is not `Present`, returns the fail-closed empty
-/// binding (`available: false`, no faction/relation rows).
 pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> DiplomacyPanelBinding {
     let view = frame.diplomacy();
     if view.status != ViewStatus::Present {
@@ -1219,31 +944,7 @@ pub fn diplomacy_panel_from_frame(frame: &WorldFrame, pov_tag: &str) -> Diplomac
     }
 }
 
-// ===========================================================================
-// D6 — Replay-native date/speed clock
-// ===========================================================================
-//
-// The topbar clock shows the RECORDING's current time (from the frame's own
-// `date` string) plus the replay app's PLAYBACK speed (the transport step). It
-// parses no recording bytes: the date is a typed `WorldFrame::date()` view.
-//
-// Format law (FILE): `topbar::format_topbar_datetime` — the shipped
-// `interface/topbar.gui` `DateText` placeholder `"7:00 29, September 1939"`
-// (`{hour}:00 {day}, {MonthName} {year}`) + the `core_l_english.yml` month
-// names. The month name is resolved through the recording's localisation so a
-// non-English recording renders its own month names.
-//
-// The speed is the transport `speed_step` (a *playback* control) mapped onto
-// the five topbar speed-step buttons; it is **FIT (product UX)**, not the
-// engine game-speed law (see `replay_app::transport`). It is NOT the
-// recording's own `world.scenario.speed` — that is the game's recorded speed,
-// a separate datum this clock deliberately does not display.
 
-/// Month-name localisation keys the clock resolves, index 0..=11 == the shipped
-/// `core_l_english.yml` `January`..`December` keys (FILE). Shipping playback
-/// keeps the selected key inside the `$KEY$` template until the compositor so
-/// its exact, unambiguous source is checked and recorded with every other
-/// resolved localisation key.
 pub const TOPBAR_CLOCK_MONTH_LOC_KEYS: [&str; 12] = [
     "January",
     "February",
@@ -1259,7 +960,6 @@ pub const TOPBAR_CLOCK_MONTH_LOC_KEYS: [&str; 12] = [
     "December",
 ];
 
-/// A parsed Clausewitz `Y.M.D.H` recording date.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClockDate {
     pub year: i64,
@@ -1268,11 +968,6 @@ pub struct ClockDate {
     pub hour: u32,
 }
 
-/// Parse a Clausewitz recording date string (`Y.M.D.H`). Fail-closed: returns
-/// `None` unless year/month/day/hour all
-/// parse, `month` is 1..=12, `day` is 1..=31, and `hour` is 0..=23. A
-/// date-only `Y.M.D` string is refused — the clock renders the hour, and a
-/// missing hour must not become a fabricated midnight.
 pub fn parse_clock_date(date: &str) -> Option<ClockDate> {
     let mut parts = date.trim().split('.');
     let year: i64 = parts.next()?.trim().parse().ok()?;
@@ -1293,8 +988,6 @@ pub fn parse_clock_date(date: &str) -> Option<ClockDate> {
     })
 }
 
-/// FILE clock format `{hour}:00 {day}, {MonthName} {year}` (see the module note
-/// and `topbar::format_topbar_datetime`).
 fn format_clock_date(date: ClockDate, month_name: &str) -> String {
     format!(
         "{}:00 {}, {} {}",
@@ -1302,17 +995,12 @@ fn format_clock_date(date: ClockDate, month_name: &str) -> String {
     )
 }
 
-/// Build the authored topbar date template while preserving its month
-/// localisation key for the compositor's normal provenance gate.
 fn format_topbar_date_template(date: &str) -> Option<String> {
     let parsed = parse_clock_date(date)?;
     let key = TOPBAR_CLOCK_MONTH_LOC_KEYS[(parsed.month - 1) as usize];
     Some(format_clock_date(parsed, &format!("${key}$")))
 }
 
-/// Format a recording date string for non-product callers which explicitly
-/// need a final string. The month must have one exact source; missing or
-/// ambiguous definitions fail closed instead of fabricating the English key.
 pub fn format_topbar_date(date: &str, loc: &Localisation) -> Option<String> {
     let parsed = parse_clock_date(date)?;
     let key = TOPBAR_CLOCK_MONTH_LOC_KEYS[(parsed.month - 1) as usize];
@@ -1321,9 +1009,6 @@ pub fn format_topbar_date(date: &str, loc: &Localisation) -> Option<String> {
     Some(format_clock_date(parsed, month))
 }
 
-/// English-month variant needing no `Localisation`: the month names are the
-/// shipped `core_l_english.yml` values (FILE, via `topbar::month_name_english`).
-/// Used by the product overlay where a full localisation is not threaded.
 pub fn format_topbar_date_english(date: &str) -> Option<String> {
     let parsed = parse_clock_date(date)?;
     Some(format_clock_date(
@@ -1332,26 +1017,16 @@ pub fn format_topbar_date_english(date: &str) -> Option<String> {
     ))
 }
 
-/// Replay-native clock binding (D6): the recording's current time (FILE-
-/// template) + the replay app's playback speed step, ready to merge onto a
-/// [`TopbarBinding`]. The compositor resolves that template so the month's
-/// exact localisation source is included in `ComposeReport`. Fail-closed: a
-/// frame with no/unparseable date leaves `date_time` `None`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClockBinding {
     pub date_time: Option<String>,
     pub speed: Option<u8>,
 }
 
-/// Map the replay transport's 0-based `speed_step` onto the topbar's five
-/// speed-step buttons: step `i` lights buttons `1..=i+1`. Clamped to 1..=5.
-/// (Playback control — FIT product UX; see the module note.)
 pub fn playback_speed_button(speed_step: usize) -> u8 {
     (speed_step + 1).min(5) as u8
 }
 
-/// Build the clock binding for one world frame + the current playback speed
-/// step (D6). The date uses the recording's localisation month names.
 pub fn clock_binding_from_frame(
     frame: &WorldFrame,
     playback_speed_step: usize,
@@ -1363,29 +1038,12 @@ pub fn clock_binding_from_frame(
     }
 }
 
-/// Merge a [`ClockBinding`] onto a [`TopbarBinding`] (D6 population seam). The
-/// layout is untouched; this only fills the `date_time`/`speed` fields the
-/// existing `compose_topbar` consumes.
 pub fn apply_clock(binding: &mut TopbarBinding, clock: &ClockBinding) {
     binding.date_time = clock.date_time.clone();
     binding.speed = clock.speed;
 }
 
-// ===========================================================================
-// D7 — Tile (state) tooltip content binding
-// ===========================================================================
-//
-// the game's state tooltip is computed-not-stored (a localised sentence + building
-// breakdown). Only the *data* it keys on — the state's owner and controller
-// tags — is timeline-derived; this seam surfaces exactly that, fail-closed, and
-// leaves the localised sentence composition descoped.
-// Row text formatting is UNKNOWN → the raw stable tag is carried, never a
-// fabricated localised phrase.
 
-/// Read-only state tooltip data bound from the timeline (D7). `owner` comes
-/// from `owner_by_state`, `controller` from `control_by_state`; each is `Some`
-/// only when the map leaf is `Measured` (fail-closed, never a fabricated tag).
-/// `available` mirrors the owner-view status for this frame.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StateTooltipBinding {
     pub state_id: u32,
@@ -1394,9 +1052,6 @@ pub struct StateTooltipBinding {
     pub available: bool,
 }
 
-/// Build the read-only state tooltip binding for `state_id` at one world frame
-/// (D7). A state absent from the map layers yields `owner`/`controller` `None`
-/// (fail-closed) while still reporting the frame's view availability.
 pub fn state_tooltip_from_frame(frame: &WorldFrame, state_id: u32) -> StateTooltipBinding {
     let owner = frame
         .owner_by_state()
@@ -1500,9 +1155,6 @@ mod tests {
 
     fn identity(ideology: Option<&str>, cosmetic: Option<&str>) -> CountryIdentity {
         CountryIdentity {
-            // `None` here means "this country has no cosmetic override", which
-            // is the producer's MEASURED state (D18 marker 1 / JSON null), not
-            // a gap — see `replay_core::CountryIdentity::cosmetic_tag`.
             cosmetic_tag: Leaf::Measured(cosmetic.map(str::to_string)),
             ruling_ideology: match ideology {
                 Some(i) => Leaf::Measured(i.to_string()),
@@ -1514,23 +1166,8 @@ mod tests {
         }
     }
 
-    /// kills: letting an ADMITTING flag consumer key off the rendering
-    /// spelling of the cosmetic identity (GP-F23).
-    ///
-    /// `TopbarBinding::cosmetic_tag` is built with
-    /// [`rendered_cosmetic_override`], which has to collapse all three
-    /// non-override states to `None` because the topbar must draw a shield
-    /// whatever the recording says. XUI19 keys its custom-icon and
-    /// decision-target flags off that same binding but returns `Result`, so
-    /// routing it through the rendering spelling means a country whose cosmetic
-    /// field D18 could NOT read resolves down the base-TAG ladder — which
-    /// succeeds, because base flags ship — and paints the wrong flag instead of
-    /// refusing. Point XUI19 back at `binding.cosmetic_tag` and the second
-    /// assertion below goes green while the frame goes wrong.
     #[test]
     fn admitting_flag_consumers_separate_an_unread_cosmetic_from_a_measured_none() {
-        // The rendering spelling cannot tell the three non-override states
-        // apart, and must not: it always has something to draw.
         for leaf in [
             Leaf::Measured(None),
             Leaf::Absent,
@@ -1543,7 +1180,6 @@ mod tests {
             Some("RAJ_UK")
         );
 
-        // The admitting spelling does tell them apart.
         assert_eq!(
             admitted_flag_cosmetic(Some(&identity(Some("neutrality"), None))),
             Ok(None),
@@ -1557,14 +1193,11 @@ mod tests {
             admitted_flag_cosmetic(Some(&unread)).is_err(),
             "an unread cosmetic field must refuse, not resolve down the base-TAG ladder"
         );
-        // A flag tag with no identity row at all is a different gap, left to
-        // the binding's own bare-tag fallback.
         assert_eq!(admitted_flag_cosmetic(None), Ok(None));
     }
 
     #[test]
     fn name_key_precedence_cosmetic_ideology_tag() {
-        // Cosmetic + ideology present → the full LAB4 ladder.
         assert_eq!(
             country_name_key_candidates(
                 "GER",
@@ -1578,12 +1211,10 @@ mod tests {
                 "GER".to_string(),
             ]
         );
-        // No cosmetic → tag ladder only.
         assert_eq!(
             country_name_key_candidates("GER", Some("fascism"), None),
             vec!["GER_fascism".to_string(), "GER".to_string()]
         );
-        // No ideology, no cosmetic → bare tag only (single entry, deduped).
         assert_eq!(
             country_name_key_candidates("ger", None, None),
             vec!["GER".to_string()]
@@ -1679,12 +1310,10 @@ mod tests {
 
     #[test]
     fn topbar_date_reproduces_shipped_gui_placeholder() {
-        // interface/topbar.gui DateText placeholder is "7:00 29, September 1939".
         assert_eq!(
             format_topbar_date_english("1939.9.29.7").as_deref(),
             Some("7:00 29, September 1939")
         );
-        // Midnight on new year, no leading zeros.
         assert_eq!(
             format_topbar_date_english("1936.1.1.0").as_deref(),
             Some("0:00 1, January 1936")
@@ -1694,14 +1323,12 @@ mod tests {
     #[test]
     fn topbar_date_fail_closed_on_bad_input() {
         assert_eq!(format_topbar_date_english(""), None);
-        // Date-only (no hour) is refused — a missing hour must not render as
-        // a fabricated midnight.
         assert_eq!(format_topbar_date_english("1944.12.25"), None);
         assert_eq!(parse_clock_date("1944.12.25"), None);
         assert_eq!(format_topbar_date_english("hour:5"), None);
-        assert_eq!(format_topbar_date_english("1936.13.1.0"), None); // month OOR
-        assert_eq!(format_topbar_date_english("1936.1.0.0"), None); // day 0
-        assert_eq!(format_topbar_date_english("1936.1.1.24"), None); // hour OOR
+        assert_eq!(format_topbar_date_english("1936.13.1.0"), None);
+        assert_eq!(format_topbar_date_english("1936.1.0.0"), None);
+        assert_eq!(format_topbar_date_english("1936.1.1.24"), None);
     }
 
     #[test]
@@ -1736,7 +1363,7 @@ mod tests {
         assert_eq!(playback_speed_button(0), 1);
         assert_eq!(playback_speed_button(1), 2);
         assert_eq!(playback_speed_button(4), 5);
-        assert_eq!(playback_speed_button(7), 5); // clamp at 5 buttons
+        assert_eq!(playback_speed_button(7), 5);
     }
 
     fn all_absent_scalars() -> TopbarScalars {
@@ -1779,10 +1406,6 @@ mod tests {
         assert_eq!(binding.air_experience.as_deref(), Some("500"));
     }
 
-    /// The stability / war-support topbar ratios are percent-projected via the
-    /// SAME rule as the sibling `world_tension_percent`: `format_percent` of
-    /// the measured 0..=1 fraction, string-exact. Unmeasured leaves stay the
-    /// fail-closed `None`, never `"0%"`.
     #[test]
     fn stability_and_war_support_project_percent_like_world_tension() {
         let mut scalars = all_absent_scalars();
@@ -1791,11 +1414,8 @@ mod tests {
         scalars.world_tension = Leaf::Measured(0.74);
         let mut binding = TopbarBinding::default();
         apply_scalars(&mut binding, &scalars);
-        // Pin the exact projected strings...
         assert_eq!(binding.stability_percent.as_deref(), Some("74%"));
         assert_eq!(binding.war_support_percent.as_deref(), Some("31%"));
-        // ...and pin the rule itself against the sibling projection: the same
-        // fraction renders identically through both fields.
         assert_eq!(binding.stability_percent, binding.world_tension_percent);
         assert_eq!(
             binding.war_support_percent,
@@ -1815,7 +1435,6 @@ mod tests {
         assert_eq!(unobtained.war_support_percent, None);
     }
 
-    // ---- D53 subject-autonomy POV identity (namespace-safe numeric join) ----
 
     fn autonomy_view(
         rows: Vec<replay_core::SubjectAutonomyCurrentRow>,
@@ -1848,10 +1467,6 @@ mod tests {
         }
     }
 
-    /// A POV whose resolved database id is 456 must join ONLY id-456 rows —
-    /// never a row whose id happens to equal the POV tag's numeric spelling
-    /// (the `"123"`-as-real-TAG collision), and a POV with no numeric
-    /// identity joins no row at all.
     #[test]
     fn subject_autonomy_numeric_join_uses_resolved_id_not_tag_spelling() {
         let view = autonomy_view(vec![autonomy_row(123, 7), autonomy_row(456, 8)]);
@@ -1917,7 +1532,6 @@ mod tests {
 
     #[test]
     fn pov_numeric_identity_resolves_through_d18_map_before_spelling() {
-        // A real recorded tag "123" whose d18 database id is 456.
         let timeline = frame_from_json(serde_json::json!({
             "countries": { "123": { "_r2_tag_db_id": 456 } }
         }));
@@ -1928,12 +1542,8 @@ mod tests {
             Some(456),
             "the d18 map is authoritative over the numeric spelling"
         );
-        // A numeric spelling that is NOT a recorded tag keeps the deliberate
-        // canonical-numeric-spelling fallback identity.
         assert_eq!(resolve_pov_numeric_identity(&frame, view, "789"), Some(789));
 
-        // A recorded tag with an unmeasured id disables numeric matching
-        // rather than guessing from the spelling.
         let timeline = frame_from_json(serde_json::json!({
             "countries": { "123": {} }
         }));

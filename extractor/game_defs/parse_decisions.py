@@ -132,10 +132,6 @@ def _target_metadata(body: Node) -> dict:
     country_target_raw = first_scalar(body, "country_target")
     state_target_raw = first_scalar(body, "state_target")
 
-    # Target selectors are not booleans in every valid game definition.  For
-    # example, `state_target = any_controlled_state` still declares a state
-    # target even though boolish() intentionally returns None for that token.
-    # Only an explicit false/no disables a present target declaration.
     def declared_target(raw: str | None) -> bool | None:
         if raw is None:
             return None

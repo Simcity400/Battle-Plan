@@ -1,134 +1,57 @@
-//! LAB3: decode of the CAPTURED engine `mapname` label vertex buffer and the
-//! law-vs-engine residual it validates.
-//!
-//! This module is the capture-side counterpart to [`crate::map_label_law`]: it
-//! never feeds the runtime label path (captures validate, they do not drive
-//! render). It exists so a test can decode
-//! the REAL captured bytes with field-level assertions and so the placement
-//! law's arc model can be scored against the engine's own glyph geometry.
-//!
-//! ## VB layout (ground truth = the captured VS input signature)
-//!
-//! The `mapname` draw is a non-indexed `Draw`, topology `TRIANGLELIST` (D3D
-//! primitive-topology 4), of `6 * glyph_count` vertices. The vertex layout is
-//! the reflected input signature of VS `4e1b73f39c128df0` (the captured
-//! `input_layout.elements`, which equals the shipped
-//! `gfx/FX/mapname.shader:29`-`33` `VS_INPUT`):
-//!
-//! | field    | semantic  | DXGI format                | offset | size |
-//! |----------|-----------|----------------------------|--------|------|
-//! | position | POSITION  | 6  = R32G32B32_FLOAT       | 0      | 12   |
-//! | uv       | TEXCOORD0 | 16 = R32G32_FLOAT          | 12     | 8    |
-//!
-//! stride = 20 bytes (matches the captured `vertex_buffers[0].stride`).
-//!
-//! `position` is a **world-space** point on the map plane: the shader does
-//! `float4 vPos = float4(v.vPosition, 1.0f); vPos = mul(ViewProjectionMatrix,
-//! vPos)` (`gfx/FX/mapname.shader:51`,`:55`) and `Out.vPrepos = v.vPosition.xyz`
-//! (`:61`) — no arc/spacing math runs in the shader, so ALL placement,
-//! curvature, letter-spacing and size are baked into these world XYZ by the
-//! engine CPU-side. `uv` indexes the pre-coloured `hoi_mapfont4` atlas.
-//!
-//! Per glyph the 6 vertices are two triangles of the quad in the fixed order
-//! `TL, TR, BL, TR, BR, BL` (verified on the captured `SOVIETUNION` draw: the
-//! per-glyph UV bbox matches one `.fnt` char rect to 0.0 texels).
 
 use std::collections::BTreeMap;
 
-/// Bytes per captured mapname vertex (`float3 position + float2 uv`).
-///
-/// GROUND TRUTH: captured `vertex_buffers[0].stride = 20`, and the reflected
-/// input layout places POSITION (DXGI 6, R32G32B32_FLOAT) at offset 0 and
-/// TEXCOORD0 (DXGI 16, R32G32_FLOAT) at offset 12 → 12 + 8 = 20.
 pub const MAPNAME_VERTEX_STRIDE: usize = 20;
-/// Vertices per glyph quad (two triangles, `TRIANGLELIST`).
 pub const VERTS_PER_GLYPH: usize = 6;
-/// Byte offset of the POSITION field (reflected `aligned_byte_offset = 0`).
 pub const POSITION_OFFSET: usize = 0;
-/// Byte offset of the TEXCOORD0 field (reflected `aligned_byte_offset = 12`).
 pub const TEXCOORD_OFFSET: usize = 12;
 
-/// One decoded vertex: world-space map-plane position + atlas UV.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MapnameVertex {
-    /// World X (east), map-plane units (== province-raster X).
     pub x: f32,
-    /// World Y (map-plane height; ~10 for the captured labels).
     pub y: f32,
-    /// World Z (north/south), map-plane units (== province-raster Y axis).
     pub z: f32,
-    /// Atlas U in [0,1] (multiply by `scale_w` for texels).
     pub u: f32,
-    /// Atlas V in [0,1] (multiply by `scale_h` for texels).
     pub v: f32,
 }
 
-/// One decoded glyph quad (its four distinct corners + UV rect in texels).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphQuad {
-    /// Top-left corner (world XZ), = vertex 0 of the 6.
     pub tl: (f32, f32),
-    /// Top-right corner (world XZ), = vertex 1.
     pub tr: (f32, f32),
-    /// Bottom-left corner (world XZ), = vertex 2.
     pub bl: (f32, f32),
-    /// Bottom-right corner (world XZ), = vertex 4.
     pub br: (f32, f32),
-    /// Near-constant map-plane height Y of the quad.
     pub y: f32,
-    /// UV rect in texels: `(x, y, width, height)`.
     pub uv_texels: (f32, f32, f32, f32),
-    /// Baseline midpoint (midpoint of the bottom edge BL–BR), world XZ.
     pub baseline_mid: (f32, f32),
-    /// Cap height: distance TL→BL (top edge to bottom edge), world units.
     pub cap_height: f32,
-    /// Glyph advance width: distance TL→TR (top edge), world units.
     pub advance_width: f32,
 }
 
-/// A fully decoded captured label: its glyph quads plus the fitted baseline.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DecodedLabel {
-    /// Number of glyph quads (`draw_count / 6`).
     pub glyph_count: usize,
-    /// Reconstructed text (one char per quad; spaces are not in the VB).
     pub text: String,
-    /// The decoded glyph quads, in draw order.
     pub glyphs: Vec<GlyphQuad>,
-    /// Baseline-arc fit of the glyph midpoints (the engine's own baseline).
     pub fit: BaselineFit,
 }
 
-/// A quadratic-arc fit of the per-glyph baseline midpoints, in the SAME frame
-/// [`crate::map_label_law::CountryLabelPlacement`] uses — this is what makes the
-/// residual a direct law-vs-engine comparison.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BaselineFit {
-    /// Centroid of the glyph baseline midpoints (world XZ).
     pub anchor_x: f32,
     pub anchor_z: f32,
-    /// Principal-axis angle (radians) in world XZ, folded to `(-pi/2, pi/2]`.
     pub angle: f32,
-    /// Half the along-axis span of the midpoints (world units).
     pub half_length: f32,
-    /// Quadratic bow: signed perpendicular peak offset (world units).
     pub bow: f32,
-    /// Mean glyph cap height (world units) — the engine label size.
     pub cap_height: f32,
-    /// RMS perpendicular residual of the midpoints to the fitted arc (world u).
     pub residual_rms: f32,
-    /// Max perpendicular residual to the fitted arc (world units).
     pub residual_max: f32,
 }
 
-/// Errors decoding a captured mapname VB.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
-    /// Buffer length is not a whole number of `MAPNAME_VERTEX_STRIDE` vertices.
     BadStride { len: usize, stride: usize },
-    /// Vertex count is not a whole number of `VERTS_PER_GLYPH` glyph quads.
     BadGlyphCount { verts: usize },
-    /// Empty buffer.
     Empty,
 }
 
@@ -151,8 +74,6 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-/// Decode the raw captured VB bytes into per-vertex position+uv, using the
-/// reflected stride/offsets. No interpretation beyond the byte layout.
 pub fn decode_vertices(bytes: &[u8]) -> Result<Vec<MapnameVertex>, DecodeError> {
     if bytes.is_empty() {
         return Err(DecodeError::Empty);
@@ -182,10 +103,6 @@ pub fn decode_vertices(bytes: &[u8]) -> Result<Vec<MapnameVertex>, DecodeError> 
     Ok(out)
 }
 
-/// Group decoded vertices into glyph quads (6 verts each, `TL,TR,BL,TR,BR,BL`).
-///
-/// Positions are taken in the world XZ plane (Y is the near-constant map-plane
-/// height, carried per quad). UV texels use the atlas `scale_w`/`scale_h`.
 pub fn glyph_quads(
     verts: &[MapnameVertex],
     scale_w: f32,
@@ -200,7 +117,6 @@ pub fn glyph_quads(
     let mut quads = Vec::with_capacity(verts.len() / VERTS_PER_GLYPH);
     for chunk in verts.chunks_exact(VERTS_PER_GLYPH) {
         let (tl, tr, bl, br) = (chunk[0], chunk[1], chunk[2], chunk[4]);
-        // UV bbox over all six verts (robust to corner order).
         let us = chunk.iter().map(|v| v.u);
         let vs = chunk.iter().map(|v| v.v);
         let u0 = us.clone().fold(f32::INFINITY, f32::min);
@@ -230,10 +146,6 @@ pub fn glyph_quads(
     Ok(quads)
 }
 
-/// Fit a quadratic baseline arc to the glyph baseline midpoints, in the frame
-/// [`crate::map_label_law::CountryLabelPlacement`] uses (centroid anchor, PCA
-/// angle, quadratic bow), and report the perpendicular residual. This is the
-/// engine's own baseline — the yardstick the placement law must reproduce.
 pub fn fit_baseline(quads: &[GlyphQuad]) -> Option<BaselineFit> {
     let n = quads.len();
     if n < 2 {
@@ -259,10 +171,8 @@ pub fn fit_baseline(quads: &[GlyphQuad]) -> Option<BaselineFit> {
     cxx /= nf;
     czz /= nf;
     cxz /= nf;
-    // PCA angle of the largest-variance eigenvector, folded so text reads L→R.
     let (angle, _major_var, _minor_var) = crate::principal_axis(cxx, czz, cxz);
     let (sin, cos) = angle.sin_cos();
-    // Project each midpoint to (u along axis, v perpendicular).
     let mut us = Vec::with_capacity(n);
     let mut vs = Vec::with_capacity(n);
     for &(x, z) in &mids {
@@ -273,7 +183,6 @@ pub fn fit_baseline(quads: &[GlyphQuad]) -> Option<BaselineFit> {
     }
     let umax = us.iter().cloned().fold(0.0f64, |a, u| a.max(u.abs()));
     let half_length = umax;
-    // Quadratic v = a0 + a2*s^2, s = u/umax (drop the odd term, symmetric domain).
     let scale = if umax > 1e-9 { umax } else { 1.0 };
     let s: Vec<f64> = us.iter().map(|u| u / scale).collect();
     let sum_s2 = s.iter().map(|x| x * x).sum::<f64>();
@@ -288,7 +197,6 @@ pub fn fit_baseline(quads: &[GlyphQuad]) -> Option<BaselineFit> {
     } else {
         (sum_v / nf, 0.0)
     };
-    // Residual: perpendicular offset minus the quadratic model.
     let mut sum_sq = 0.0;
     let mut max_abs = 0.0f64;
     for i in 0..n {
@@ -304,7 +212,6 @@ pub fn fit_baseline(quads: &[GlyphQuad]) -> Option<BaselineFit> {
         anchor_z: mean_z as f32,
         angle: angle as f32,
         half_length: half_length as f32,
-        // Peak bow is the centre offset from the chord through the ends: -a2.
         bow: -a2 as f32,
         cap_height: cap_height as f32,
         residual_rms: residual_rms as f32,
@@ -312,7 +219,6 @@ pub fn fit_baseline(quads: &[GlyphQuad]) -> Option<BaselineFit> {
     })
 }
 
-/// A `.fnt` char rect used to recover a glyph's character from its UV bbox.
 #[derive(Clone, Copy, Debug)]
 pub struct FntChar {
     pub id: u32,
@@ -320,15 +226,9 @@ pub struct FntChar {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// Pen advance (font px) — the BMFont `xadvance` metric (spaces carry a
-    /// nonzero advance but a zero-area rect).
     pub xadvance: f32,
 }
 
-/// Parse the BMFont *text* `.fnt` header we need: `scaleW`/`scaleH` and the char
-/// rects. This is deliberately a tiny local parser (the bin reads a shipped
-/// game file directly, like `dump_map_labels`); `game_ui::font` has the full
-/// parser for the render path.
 pub fn parse_fnt_chars(text: &str) -> (f32, f32, Vec<FntChar>) {
     let mut scale_w = 0.0f32;
     let mut scale_h = 0.0f32;

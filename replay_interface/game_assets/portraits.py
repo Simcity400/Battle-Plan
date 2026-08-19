@@ -32,9 +32,6 @@ import json
 import sys
 from pathlib import Path
 
-# Reuse the existing, already-built pipeline pieces. Do NOT re-implement the
-# Clausewitz parser, the .gfx walker, the TGA/DDS(DXT+DX10) loader, or the
-# slice/save logic -- import them.
 import extract as ex
 from extract import (
     HERE,
@@ -49,11 +46,6 @@ from extract import (
 from paradox_parser import parse
 
 
-# --------------------------------------------------------------------------
-# Effective load-set roots (mod-overrides-dlc-overrides-vanilla, by rel path /
-# by sprite name). Order matters: later roots win. Within vanilla, integrated
-# DLC and stand-alone DLC packs each carry their own interface/ + gfx/ subtree.
-# --------------------------------------------------------------------------
 def discover_roots(vanilla: Path, mod: Path | None) -> list[Path]:
     """Return the ordered list of asset roots to overlay.
 
@@ -91,8 +83,6 @@ def build_overlay_map(roots: list[Path], subdir: str, exts) -> dict:
         for p in root.rglob("*"):
             if p.is_file() and p.suffix.lower() in exts:
                 if subdir == "gfx":
-                    # texturefile strings are root-relative ("gfx/...") -> key
-                    # by path relative to the ROOT so they line up with .gfx refs
                     rel = p.relative_to(base).as_posix()
                 else:
                     rel = p.relative_to(base / subdir).as_posix()
@@ -116,22 +106,18 @@ def build_portrait_sprite_map(roots: list[Path]) -> tuple[dict, list]:
         for path in sorted(idir.rglob("*.gfx")):
             try:
                 text = path.read_bytes().decode("latin-1")
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 dup_log.append({"name": "<read-error>", "file": str(path), "error": str(e)})
                 continue
             try:
                 root = parse(text)
-                # source_rel = root-relative for traceability
                 src_rel = path.relative_to(base).as_posix()
                 parse_gfx_file(root, src_rel, sprites, dup_log)
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 dup_log.append({"name": "<parse-error>", "file": str(path), "error": str(e)})
     return sprites, dup_log
 
 
-# --------------------------------------------------------------------------
-# Referenced-name harvest from the save-oracle outputs
-# --------------------------------------------------------------------------
 _PORTRAIT_KEYS = ("portrait_gfx", "gfx")
 
 
@@ -149,7 +135,7 @@ def harvest_referenced_names(output_dir: Path) -> dict:
             continue
         try:
             data = json.loads(fp.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             continue
 
         def walk(o):
@@ -167,9 +153,6 @@ def harvest_referenced_names(output_dir: Path) -> dict:
     return {k: sorted(v) for k, v in refs.items()}
 
 
-# --------------------------------------------------------------------------
-# Name -> texture resolution
-# --------------------------------------------------------------------------
 def resolve_reference(name: str, sprite_index: dict, sprite_index_lc: dict,
                       gfx_map: dict):
     """Resolve a referenced portrait name to (texture_abs_path, how, texrel).
@@ -183,7 +166,6 @@ def resolve_reference(name: str, sprite_index: dict, sprite_index_lc: dict,
         the path straight against the texture map.
     Returns (Path|None, reason_str, texrel_or_None).
     """
-    # Raw-path form: value already looks like a gfx/... texture path.
     low = name.lower()
     if low.endswith((".dds", ".tga", ".png")) or low.startswith("gfx/"):
         texrel = ex.normalize_texpath(name)
@@ -192,11 +174,6 @@ def resolve_reference(name: str, sprite_index: dict, sprite_index_lc: dict,
             return src, "raw_path", texrel
         return None, "raw_path_texture_not_found", texrel
 
-    # Sprite-name form. Consult the case-insensitive index FIRST: it is built
-    # last-wins per lowercased name across load order, so a DLC/mod definition
-    # correctly overrides a differently-cased vanilla one (e.g. vanilla
-    # GFX_Portrait_Foo vs DLC GFX_portrait_foo). Exact-match is only a redundant
-    # fallback (identical result when no case collision exists).
     sp = sprite_index_lc.get(low) or sprite_index.get(name)
     if sp is None:
         return None, "sprite_name_undefined", None
@@ -209,19 +186,11 @@ def resolve_reference(name: str, sprite_index: dict, sprite_index_lc: dict,
     return None, "texture_not_found", texrel
 
 
-# --------------------------------------------------------------------------
-# Main build
-# --------------------------------------------------------------------------
 def run(args) -> int:
-    from PIL import Image  # noqa: F401  ensure Pillow present early
+    from PIL import Image
 
     vanilla = Path(args.vanilla)
     mod = Path(args.mod) if args.mod else None
-    # Required. This used to default into the acquisition tree, which made a
-    # replay-side asset builder open a path under extractor/ with no caller
-    # asking for it — a filesystem reach across the replay/acquisition boundary
-    # that the cargo dependency gate cannot see. The caller names the directory
-    # now; nothing here knows where the save oracle writes.
     if not args.save_output:
         print("ERROR: --save-output is required (the save_oracle output dir "
               "holding characters.json + intel.json)")
@@ -243,35 +212,25 @@ def run(args) -> int:
           f"(vanilla + {len(roots) - (2 if mod else 1)} dlc packs"
           f"{' + mod' if mod else ''})")
 
-    # ---- 1. parse all portrait sprite defs --------------------------------
     sprites, dup_log = build_portrait_sprite_map(roots)
-    # case-insensitive index for tolerant lookup
     sprite_index_lc = {k.lower(): v for k, v in sprites.items()}
     print(f"[*] parsed sprite definitions across all roots -> {len(sprites)} "
           f"unique sprite names ({len(dup_log)} dup/override events)")
 
-    # ---- 2. texture overlay map (gfx/** across all roots) -----------------
     gfx_map = build_overlay_map(roots, "gfx", (".dds", ".tga", ".png"))
     print(f"[*] texture overlay map: {len(gfx_map)} gfx files")
 
-    # ---- 3. harvest referenced names --------------------------------------
     refs = harvest_referenced_names(output_dir)
     print(f"[*] referenced portrait names from save outputs: {len(refs)} "
           f"(from {output_dir})")
 
-    # ---- 4. resolve + convert ---------------------------------------------
     manifest_portraits: dict = {}
     misses: list = []
     converted = 0
     failures: list = []
     frame_anomalies: list = []
-    # de-dupe by resolved texture so the ~1500 names sharing a few dozen generic
-    # textures don't each re-decode/re-write the same PNG. Cache the conversion
-    # result (png paths + dims) keyed by absolute source path.
     tex_cache: dict[str, dict] = {}
 
-    # We only convert textures that are actually referenced (keeps output to the
-    # faces the replay needs, not all ~10k portrait art files on disk).
     for name in sorted(refs):
         src, how, texrel = resolve_reference(
             name, sprites, sprite_index_lc, gfx_map)
@@ -286,7 +245,6 @@ def run(args) -> int:
         cached = tex_cache.get(src_key)
         if cached is None:
             if args.manifest_only:
-                # resolve + report coverage only; record metadata, skip bytes.
                 cached = {"png": [], "width": None, "height": None,
                           "source_file": _root_rel(src, roots), "skipped": True}
                 tex_cache[src_key] = cached
@@ -295,7 +253,6 @@ def run(args) -> int:
                 out_base = out_assets / safe
                 try:
                     im = load_texture(src)
-                    # Portraits are single-frame; pass 1 explicitly.
                     pngs, anomaly = slice_and_save(im, 1, out_base, safe)
                     if anomaly:
                         frame_anomalies.append(anomaly)
@@ -306,7 +263,7 @@ def run(args) -> int:
                     }
                     tex_cache[src_key] = cached
                     converted += 1
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     failures.append({"name": name, "texture": texrel,
                                      "reason": f"{type(e).__name__}: {e}"})
                     continue
@@ -322,7 +279,6 @@ def run(args) -> int:
             entry["width"], entry["height"] = cached["width"], cached["height"]
         manifest_portraits[name] = entry
 
-    # ---- 5. coverage report -----------------------------------------------
     total_refs = len(refs)
     resolved = len(manifest_portraits)
     miss_by_reason: dict[str, int] = {}
@@ -358,7 +314,6 @@ def run(args) -> int:
     (HERE / "portraits_report.json").write_text(json.dumps(diag, indent=1),
                                                 encoding="utf-8")
 
-    # ---- console summary (ASCII only) -------------------------------------
     print("\n==== PORTRAIT EXTRACTION SUMMARY ====")
     print(f"referenced portrait names : {total_refs}")
     print(f"resolved -> manifest      : {resolved}  "
@@ -377,7 +332,6 @@ def run(args) -> int:
     return 0
 
 
-# small helper kept module-level so run() stays readable ------------------
 def _root_rel(src: Path, roots: list[Path]):
     """Return src as a path relative to whichever asset root contains it
     (root-relative, e.g. 'gfx/leaders/GER/foo.dds'); never an absolute/personal

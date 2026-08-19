@@ -1,11 +1,3 @@
-//! Fail-closed provenance binding for a production scientists stream proof.
-//!
-//! H4CR bytes prove wire semantics, not that those bytes came from the loaded
-//! collector DLL or the claimed game process.  Production certification must
-//! additionally consume this independently emitted source report and bind its
-//! exact bytes, collector image, game image, process/module identity, route,
-//! and stream hashes.  This module never manufactures source evidence.
-
 use crate::{
     CHARACTER_OFF_SCIENTIST_PTR, CHARACTER_OFF_TYPE, CHARACTER_TYPE, CHARACTER_VTABLE_RVA_870EBF,
     COUNTRY_OFF_SCIENTIST_ROSTER, SCIENTIST_OFF_SKILLS_PTR, SCIENTIST_ROSTER_VECTOR,

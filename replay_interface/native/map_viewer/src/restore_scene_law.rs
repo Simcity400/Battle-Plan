@@ -1,24 +1,12 @@
-//! Pure CPU reference for the game's full `RestoreScene` pixel law.
-//!
-//! This module deliberately models the production/full path only. Callers must
-//! supply the composed 32^3 color-correction cube, bloom sample, average
-//! luminance, and grade constants. There are no feature switches and no
-//! identity-resource fallback.
 
 use crate::{ColorCorrectionLut, Result};
 
-/// `gfx/FX/constants.fxh:117-119`.
 pub const RESTORE_SCENE_LUMINANCE_VECTOR: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
 pub const RESTORE_SCENE_COLOR_CUBE_EDGE: usize = 32;
 pub const RESTORE_SCENE_COLOR_CUBE_WIDTH: usize =
     RESTORE_SCENE_COLOR_CUBE_EDGE * RESTORE_SCENE_COLOR_CUBE_EDGE;
 
-/// A checked borrowed view of the exact 1024x32 (32^3) RestoreScene LUT.
-///
-/// [`ColorCorrectionLut`] remains the owning, game-file-derived resource.
-/// Constructing this view fails closed if a different cube shape or a
-/// non-finite texel is supplied.
 #[derive(Clone, Copy, Debug)]
 pub struct RestoreSceneColorCube32<'a> {
     lut: &'a ColorCorrectionLut,
@@ -74,11 +62,6 @@ impl<'a> TryFrom<&'a ColorCorrectionLut> for RestoreSceneColorCube32<'a> {
     }
 }
 
-/// Required `RestoreScene` grade inputs.
-///
-/// These values come from the admitted PostEffect constants and luminance
-/// resource. Construction rejects absent/invalid values rather than turning
-/// off exposure or grading.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RestoreSceneGrade {
     hsv: [f32; 4],
@@ -137,15 +120,6 @@ impl RestoreSceneGrade {
     }
 }
 
-/// Full `restorescene.shader` pixel order:
-///
-/// 1. add bloom to the linear MainScene sample;
-/// 2. apply exposure using MiddleGrey / AverageLuminance;
-/// 3. apply the Uncharted 2 tone curve;
-/// 4. saturate, sample the 32^3 LUT, shift HSV, balance color, and apply
-///    levels (0.04, 0.8).
-///
-/// Bloom is intentionally required and is added before the nonlinear tone map.
 pub fn restore_scene_pixel_rgb(
     scene_rgb: [f32; 3],
     bloom_rgb: [f32; 3],
@@ -168,7 +142,6 @@ pub fn restore_scene_pixel_rgb(
     Ok(apply_levels(color, 0.04, 0.8))
 }
 
-/// `gfx/FX/restorescene.shader:135-140`, `ADJUSTED_EXPOSURE` branch.
 pub fn restore_scene_exposure_rgb(
     rgb: [f32; 3],
     middle_grey: f32,
@@ -178,8 +151,6 @@ pub fn restore_scene_exposure_rgb(
     rgb.map(|channel| channel * scale)
 }
 
-/// `gfx/FX/restorescene.shader:194-202`, followed by the final saturate at
-/// line 223.
 pub fn restore_scene_tone_map_rgb(rgb: [f32; 3]) -> [f32; 3] {
     let exposure_bias = 1.0;
     let white_point = 11.2;
@@ -193,11 +164,6 @@ pub fn restore_scene_tone_map_rgb(rgb: [f32; 3]) -> [f32; 3] {
     })
 }
 
-/// `gfx/FX/restorescene.shader:90-109`.
-///
-/// The cube is a 1024x32 strip: 32 blue slices laid out horizontally.
-/// Hardware bilinear filtering is mirrored within the strip and the shader's
-/// explicit interpolation is mirrored between blue slices.
 pub fn sample_restore_scene_color_cube(
     lut: RestoreSceneColorCube32<'_>,
     rgb: [f32; 3],
@@ -270,7 +236,6 @@ fn apply_color_balance(rgb: [f32; 3], color_balance: [f32; 3]) -> [f32; 3] {
     ])
 }
 
-/// `standardfuncsgfx.fxh:172-176`.
 fn apply_levels(rgb: [f32; 3], min_input: f32, max_input: f32) -> [f32; 3] {
     let denom = max_input - min_input;
     rgb.map(|channel| ((channel - min_input).clamp(0.0, 1.0) / denom).clamp(0.0, 1.0))

@@ -1,14 +1,3 @@
-//! Exact-a729 current-state proof for an observation-free D71 frame.
-//!
-//! The passive Air/MIO hooks intentionally do not drive the client. When
-//! neither controller materializer runs during an hour, this probe follows the
-//! authenticated `CInGameIdler` singleton to its live GUI registry and asks
-//! for the same two authored windows used by the engine setup routines. A
-//! clean empty D71 frame is admitted only when both runtime windows exist and
-//! both carry the engine's inactive bit. An active or unreadable window stays
-//! unavailable; no foreground input, coordinates, panel activation, or GUI
-//! construction is performed.
-
 use core::ffi::c_void;
 use std::mem;
 use std::ptr;
@@ -52,11 +41,8 @@ struct EngineStringView {
     capacity: usize,
 }
 
-type WindowLookupFn =
-    unsafe extern "system" fn(usize, *const EngineStringView, u8) -> usize;
+type WindowLookupFn = unsafe extern "system" fn(usize, *const EngineStringView, u8) -> usize;
 
-/// Opaque same-hour proof. Only this module can construct it, so the sealed
-/// Air/MIO source cannot be opened by a caller-supplied boolean.
 #[derive(Clone, Copy, Debug)]
 pub struct A729InactiveControllerProof {
     frame_hour: u64,
@@ -68,9 +54,6 @@ impl A729InactiveControllerProof {
     }
 }
 
-/// Returns `Some` only when both tracked controller windows are present and
-/// inactive in the engine-owned registry. `None` means at least one controller
-/// is active, so absence of a materializer observation remains fail-closed.
 pub fn prove_all_tracked_controllers_inactive(
     frame_hour: u64,
 ) -> Result<Option<A729InactiveControllerProof>, String> {

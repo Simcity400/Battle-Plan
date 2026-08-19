@@ -1,9 +1,3 @@
-//! Frame-independent abnormal-capture termination notice (`H4AT`).
-//!
-//! This record says only that the producer stopped abnormally. It deliberately
-//! carries no game-hour or domain-coverage claim; the enclosing H4CR header must
-//! use the frame control domain and the zero hour sentinel.
-
 pub const CAPTURE_TERMINATION_MAGIC: &[u8; 4] = b"H4AT";
 pub const CAPTURE_TERMINATION_VERSION: u16 = 1;
 pub const CAPTURE_TERMINATION_HEADER_LEN: usize = 24;
@@ -69,11 +63,6 @@ pub struct CaptureTerminationRecordV1 {
 }
 
 impl CaptureTerminationRecordV1 {
-    /// Total, bounded encoder for the failure path itself.
-    ///
-    /// Arbitrarily long detail is cut on a UTF-8 boundary and marked truncated;
-    /// it is never rejected. This intentionally does not reuse any frame, gap,
-    /// or refusal encoder that may be the component which just failed.
     pub fn encode_bounded(
         reasons: CaptureTerminationReasons,
         elapsed_wall_ms: u64,
@@ -124,9 +113,8 @@ impl CaptureTerminationRecordV1 {
                 "capture termination header length {header_len} is not {CAPTURE_TERMINATION_HEADER_LEN}"
             ));
         }
-        let reasons = CaptureTerminationReasons::from_bits(u16::from_le_bytes([
-            payload[8], payload[9],
-        ]))?;
+        let reasons =
+            CaptureTerminationReasons::from_bits(u16::from_le_bytes([payload[8], payload[9]]))?;
         let flags = u16::from_le_bytes([payload[10], payload[11]]);
         let unknown_flags = flags & !CAPTURE_TERMINATION_FLAG_KNOWN_MASK;
         if unknown_flags != 0 {
@@ -134,9 +122,8 @@ impl CaptureTerminationRecordV1 {
                 "capture termination flags contain unknown bits {unknown_flags:#06x}"
             ));
         }
-        let detail_len = u32::from_le_bytes([
-            payload[12], payload[13], payload[14], payload[15],
-        ]) as usize;
+        let detail_len =
+            u32::from_le_bytes([payload[12], payload[13], payload[14], payload[15]]) as usize;
         if detail_len > CAPTURE_TERMINATION_MAX_DETAIL_LEN {
             return Err(format!(
                 "capture termination detail length {detail_len} exceeds {CAPTURE_TERMINATION_MAX_DETAIL_LEN}"

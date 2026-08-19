@@ -87,8 +87,6 @@ use std::io;
 
 pub type Result<T> = std::result::Result<T, GameUiError>;
 
-/// Shared hash-format law: exactly 64 lowercase ASCII hexadecimal digits, the
-/// canonical rendering of a SHA-256 digest in this crate's manifests.
 pub(crate) fn is_lowercase_sha256(value: &str) -> bool {
     value.len() == 64
         && value

@@ -1,38 +1,21 @@
-//! Fail-closed product composition for sealed stitching inputs.
-//!
-//! Live capture owns segment formation and sealing. Once it has immutable
-//! [`SegmentInput`] values and an exact payload source, this module is the one
-//! production routing seam: plan, refuse uncertain inputs without publishing,
-//! or atomically publish the validated v2 container. Keeping the seam here also
-//! gives offline tests the exact call graph without enabling auto-attach or
-//! launching the game.
-
 use std::path::Path;
 
-use super::publish::{
-    publish_stitched_container_retained_with_rebuilt_wire, PublishReport,
-    RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
-};
 #[cfg(test)]
 use super::publish::{
     publish_stitched_container, publish_stitched_container_retained, StitchedPayloadSource,
+};
+use super::publish::{
+    publish_stitched_container_retained_with_rebuilt_wire, PublishReport,
+    RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
 };
 use super::{plan_stitch, SegmentInput, StitchOutcome, StitchRequiredInputs, StitchedPlan};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProductStitchOutcome {
-    /// Inputs could not prove one campaign/order. No destination was touched.
     KeptSeparate { reason: String },
-    /// A v2 stitched container was fully validated and atomically published.
     Published(PublishReport),
 }
 
-/// Plan and publish one sealed product stitch.
-///
-/// This function deliberately accepts no defaults: caller-supplied deterministic
-/// inputs, sealed segments, payload authority, and an explicit `.battleplan`
-/// destination are all required. A planner refusal is a successful fail-closed
-/// outcome, not an I/O error, and never calls the publisher.
 #[cfg(test)]
 pub fn publish_product_stitch<S: StitchedPayloadSource>(
     game_id: &str,
@@ -50,9 +33,6 @@ pub fn publish_product_stitch<S: StitchedPayloadSource>(
     )
 }
 
-/// Production retained-handle variant. Planning semantics match the fixture
-/// seam above, while large payloads stream into the unpublished sibling temp
-/// and are never returned as resident byte vectors.
 #[cfg(test)]
 pub fn publish_product_stitch_retained<S: RetainedStitchedPayloadSource>(
     game_id: &str,
@@ -70,16 +50,7 @@ pub fn publish_product_stitch_retained<S: RetainedStitchedPayloadSource>(
     )
 }
 
-/// Production stitch with a rebuilt-wire bundle prepared only after the
-/// planner has selected the final immutable branch graph.
-///
-/// `prepare` receives that exact [`StitchedPlan`]. A planner refusal never calls
-/// it. A successful preparation still cannot publish until the typed product
-/// has independently refolded its retained H4CR authority.
-pub fn publish_product_stitch_retained_with_rebuilt_wire<
-    S: RetainedStitchedPayloadSource,
-    P,
->(
+pub fn publish_product_stitch_retained_with_rebuilt_wire<S: RetainedStitchedPayloadSource, P>(
     game_id: &str,
     required_inputs: StitchRequiredInputs,
     segments: Vec<SegmentInput>,
@@ -98,7 +69,10 @@ where
         |plan, destination| {
             let rebuilt_wire = prepare(plan)?;
             publish_stitched_container_retained_with_rebuilt_wire(
-                plan, source, rebuilt_wire, destination,
+                plan,
+                source,
+                rebuilt_wire,
+                destination,
             )
         },
     )

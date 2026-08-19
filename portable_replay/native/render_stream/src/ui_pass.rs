@@ -1,11 +1,3 @@
-//! Exact selected-Present UI-pass operation carrier.
-//!
-//! The pass owns one exact target. M02 operations reference the existing draw
-//! carrier; all other operations carry a VFS-authenticated dynamic element
-//! identity plus either an exact generic pipeline draw or one of the proven
-//! typed paint commands. No opaque submission or product-surface hash can be
-//! executed through this schema.
-
 use super::{
     check_sha256, collect_static_draw_used_content, decimal_u64, validate_static_map_draw,
     validate_static_target, M02CombatDrawRef, RenderTargetDesc, StaticMapDraw, UsedContentKey,
@@ -30,23 +22,13 @@ pub struct AuthenticatedUiPass {
     pub last_sequence: u64,
     pub ui_pass_draw_count: u32,
     pub target: RenderTargetDesc,
-    /// Exact selected-Present selector receipt consumed by the producer.
     pub selected_present_receipt_sha256: String,
-    /// In-process a729 selector receipt before projection into the portable
-    /// `SelectedPresentReceipt`. Both hashes are retained because they seal
-    /// different canonical payloads.
     pub producer_selection_receipt_sha256: String,
-    /// Exact complete zero-through-N-minus-one GUI frontier receipt.
     pub source_frontier_sha256: String,
-    /// Same-launch input-family observation receipt used for variant
-    /// admission. This binds the pass itself to the authority-level variant.
     pub recorded_input_receipt_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_mapmode_state: Option<ActiveMapmodeState>,
     pub ui_pass_operations: Vec<UiPassOperation>,
-    /// SHA-256 over the complete typed pass frontier, target, optional
-    /// mapmode provenance, and ordered operation stream. This makes target
-    /// retargeting and operation reordering independently tamper evident.
     pub pass_identity_sha256: String,
 }
 
@@ -70,8 +52,6 @@ pub struct HudCommand {
     pub placement: HudPlacement,
     pub execution: HudCommandExecution,
     pub ordered_effective_vfs_used_content: Vec<UsedContentKey>,
-    /// SHA-256 over the typed identity, placement, execution, exact ordered
-    /// content, and pass target. It never hashes a process-local pointer.
     pub command_identity_sha256: String,
 }
 
@@ -81,9 +61,6 @@ pub struct HudCommandIdentity {
     pub authored_surface_identity: String,
     pub runtime_root: String,
     pub selected_gui_definition: UsedContentKey,
-    /// Pointer-free token assigned by the authenticated GUI owner producer.
-    /// It is carried through replay so the owner/paint join cannot collapse
-    /// to matching authored strings after process pointers are erased.
     #[serde(with = "decimal_u64")]
     pub engine_instance_token: u64,
     pub child_path: Vec<u32>,
@@ -103,15 +80,8 @@ pub struct HudPlacement {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HudCommandExecution {
-    /// Existing fully explicit generic D3D draw carrier. No map-only state is
-    /// defaulted: shader, resources, pipeline, geometry, viewport/scissor, and
-    /// output target are all present and revalidated here.
-    ExactPipeline {
-        draw: UiExactPipelineDraw,
-    },
-    InterpretedPaint {
-        paint: HudPaintCommand,
-    },
+    ExactPipeline { draw: UiExactPipelineDraw },
+    InterpretedPaint { paint: HudPaintCommand },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,9 +104,6 @@ pub enum HudPaintCommand {
     },
     Text {
         runtime_text_context_id: String,
-        /// Exact A25 identity tuple carried alongside the context ID. These
-        /// are recorded runtime tokens, never values looked up from a
-        /// built-in vanilla view or widget catalog.
         runtime_text_frame_hour: i64,
         runtime_text_pov_country_or_global: String,
         runtime_text_view_id: String,
@@ -144,12 +111,7 @@ pub enum HudPaintCommand {
         rgba: [u8; 4],
         horizontal_alignment: TextHorizontalAlignment,
         layout_inputs: TextLayoutInputs,
-        /// Ordered exact bindings for the primary font followed by every
-        /// fallback font admitted by the runtime-text record. Playback must
-        /// resolve these content indices directly; it may not search paths.
         font_bindings: Vec<FontBinding>,
-        /// Ordered exact bindings for every inline sprite identity admitted by
-        /// the runtime-text record. Playback must not discover sprite assets.
         inline_icon_bindings: Vec<InlineIconBinding>,
     },
     MaskedSprite {
@@ -174,8 +136,6 @@ pub enum TextHorizontalAlignment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TextLayoutInputs {
-    /// Inputs sufficient to reproduce layout from the joined runtime text and
-    /// authenticated effective-VFS font/icon assets.
     AuthoredReproducible {
         authored_rect_offsets: TextRectOffsets,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -184,12 +144,6 @@ pub enum TextLayoutInputs {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         clip_rect_offsets: Option<TextRectOffsets>,
     },
-    /// Captured glyph/icon x/y and its optional layout clip are already
-    /// relative to the owning element's top-left. Playback translates them by
-    /// the HUD destination left/top, intersects the translated layout clip
-    /// with the HUD clip, and applies no DPI scaling. The runs remain in
-    /// `WorldFrame::runtime_text`; the context ID plus recorded
-    /// hour/POV/view/element tuple is the exact A25 join.
     CapturedRuntime,
 }
 
@@ -363,10 +317,7 @@ impl AuthenticatedUiPass {
                         return Err("UI-pass HUD command identity is duplicated".into());
                     }
                     let surface = command.identity.authored_surface_identity.clone();
-                    let owner = (
-                        surface.clone(),
-                        command.identity.engine_instance_token,
-                    );
+                    let owner = (surface.clone(), command.identity.engine_instance_token);
                     let root = command.identity.runtime_root.clone();
                     if root_by_owner
                         .insert(owner.clone(), root.clone())
@@ -378,10 +329,7 @@ impl AuthenticatedUiPass {
                         );
                     }
                     if definition_by_owner
-                        .insert(
-                            owner,
-                            command.identity.selected_gui_definition.clone(),
-                        )
+                        .insert(owner, command.identity.selected_gui_definition.clone())
                         .is_some_and(|prior| prior != command.identity.selected_gui_definition)
                     {
                         return Err(
@@ -389,11 +337,7 @@ impl AuthenticatedUiPass {
                                 .into(),
                         );
                     }
-                    let paint_key = (
-                        surface,
-                        command.identity.engine_instance_token,
-                        root,
-                    );
+                    let paint_key = (surface, command.identity.engine_instance_token, root);
                     if last_paint_by_owner
                         .insert(paint_key, command.identity.paint_ordinal)
                         .is_some_and(|prior| command.identity.paint_ordinal <= prior)
@@ -434,8 +378,6 @@ impl HudCommand {
         Ok(format!("{:x}", hasher.finalize()))
     }
 
-    /// Validate one independently captured HUD command against the exact UI
-    /// pass target before it is admitted into a complete pass frontier.
     pub fn validate(&self, target: &RenderTargetDesc) -> Result<(), String> {
         self.identity.validate()?;
         self.placement.validate(target)?;

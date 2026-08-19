@@ -81,9 +81,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Top-level equipments archetype index (id,type) -> archetype name
-# ---------------------------------------------------------------------------
 
 def _parse_equipments_index(tz, index):
     """equipments={ <archetype>={ id={id type} ... } } -> {(id,type): archetype}."""
@@ -103,9 +100,6 @@ def _parse_equipments_index(tz, index):
             index[(eid, etype)] = arch_name
 
 
-# ---------------------------------------------------------------------------
-# (A) deployment conveyor
-# ---------------------------------------------------------------------------
 
 def _parse_equipment_amounts(tz):
     """equipment={ id={id type} amount=N } list -> [(id,type,amount)]."""
@@ -269,9 +263,6 @@ def _parse_deployment_block(tz, rec):
                 _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# (B) legacy expeditionary: divisions whose logical_country != controller tag
-# ---------------------------------------------------------------------------
 
 def _parse_units_for_expeditionary(tz, controller, store):
     """Walk ``units={ division={..} fleet={..} }`` for the CONTROLLER tag.
@@ -319,9 +310,6 @@ def _parse_units_for_expeditionary(tz, controller, store):
             })
 
 
-# ---------------------------------------------------------------------------
-# Countries pass
-# ---------------------------------------------------------------------------
 
 def _parse_countries(tz, conv_by_tag, rein_by_tag, exped):
     for tag, opener in iter_block_entries(tz):
@@ -344,15 +332,9 @@ def _parse_countries(tz, conv_by_tag, rein_by_tag, exped):
                     _parse_units_for_expeditionary(tz, tag, exped)
                 else:
                     _skip_block_body(tz)
-        # A successfully parsed country is an exact save-side completeness
-        # witness even when its deployment vector is absent/empty.  Preserve
-        # that distinction instead of dropping proven-empty countries.
         conv_by_tag[tag] = crec["conveyors"]
 
 
-# ---------------------------------------------------------------------------
-# Build
-# ---------------------------------------------------------------------------
 
 def _join_equipment(raw, arch_index, unknown):
     out = []
@@ -388,7 +370,6 @@ def build(text, source, was_melted):
 
     unknown: set = set()
 
-    # Finalize per-country conveyors (join equipment-in-transit).
     countries = {}
     n_conveyors = 0
     n_lines = 0
@@ -427,7 +408,6 @@ def build(text, source, was_melted):
             "conveyor_count": len(conveyors),
         }
 
-    # Finalize expeditionary pairs.
     expeditionary = []
     for (owner, controller), divs in sorted(exped["pairs"].items()):
         expeditionary.append({

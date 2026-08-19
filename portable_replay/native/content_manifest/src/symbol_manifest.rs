@@ -1,10 +1,3 @@
-//! Deterministic file-global symbol assignment for the `PROJECT.md` heading
-//! "Time, identity, sessions, and files".
-//!
-//! The container supplies append ordinals, branch ids, ticks, and authenticated
-//! branch visibility. This module assigns stable ids and preserves the complete
-//! append ledger; it does not infer a global order from branch-local clocks.
-
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,16 +6,12 @@ use std::marker::PhantomData;
 
 pub const SYMBOL_MANIFEST_SCHEMA: &str = "hoi4.portable-symbol-manifest.v1";
 
-/// Untrusted-input limits. They are format-reader safety bounds, not expected
-/// campaign sizes.
 pub const MAX_SYMBOLS: usize = 1_000_000;
 pub const MAX_SYMBOL_BYTES: usize = 65_536;
 pub const MAX_TOTAL_SYMBOL_BYTES: usize = 128 * 1024 * 1024;
 pub const MAX_BATCHES: usize = 10_000_000;
 pub const MAX_AVAILABILITY_EVENTS: usize = 10_000_000;
 pub const MAX_SYMBOL_MANIFEST_JSON_BYTES: usize = 256 * 1024 * 1024;
-/// Largest raw JSON string token accepted before serde is invoked. JSON can
-/// spell one decoded UTF-8 byte as a six-byte `\u00XX` escape.
 pub const MAX_RAW_JSON_STRING_BYTES: usize = MAX_SYMBOL_BYTES * 6;
 
 struct BoundedVecVisitor<T> {
@@ -288,11 +277,7 @@ impl<'de> Visitor<'de> for SymbolBatchVisitor {
         let branch = map.next_value()?;
         expect_field(&mut map, BatchField::Tick, "tick")?;
         let tick = map.next_value()?;
-        expect_field(
-            &mut map,
-            BatchField::AvailableSymbols,
-            "available_symbols",
-        )?;
+        expect_field(&mut map, BatchField::AvailableSymbols, "available_symbols")?;
         let available_symbols = map.next_value_seed(BoundedVecSeed::<SymbolId>::new(
             "symbol availability events in one batch",
             self.availability_limit,
@@ -339,9 +324,8 @@ impl<'de> DeserializeSeed<'de> for SymbolBatchesSeed {
             where
                 A: SeqAccess<'de>,
             {
-                let mut batches = Vec::with_capacity(
-                    sequence.size_hint().unwrap_or(0).min(self.batch_limit),
-                );
+                let mut batches =
+                    Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(self.batch_limit));
                 let mut availability_count = 0usize;
                 while batches.len() < self.batch_limit {
                     let remaining = self.availability_limit - availability_count;
@@ -433,11 +417,7 @@ impl<'de> Deserialize<'de> for BatchField {
     }
 }
 
-fn expect_field<'de, A, F>(
-    map: &mut A,
-    expected: F,
-    name: &'static str,
-) -> Result<(), A::Error>
+fn expect_field<'de, A, F>(map: &mut A, expected: F, name: &'static str) -> Result<(), A::Error>
 where
     A: MapAccess<'de>,
     F: Deserialize<'de> + PartialEq,
@@ -565,11 +545,7 @@ impl<'de> Visitor<'de> for SymbolManifestVisitor {
         let base_bytes: usize = base_symbols.iter().map(String::len).sum();
         let remaining_symbols = self.symbol_limit - base_symbols.len();
         let remaining_bytes = self.symbol_byte_limit - base_bytes;
-        expect_field(
-            &mut map,
-            ManifestField::OverflowSymbols,
-            "overflow_symbols",
-        )?;
+        expect_field(&mut map, ManifestField::OverflowSymbols, "overflow_symbols")?;
         let overflow_symbols = map.next_value_seed(SymbolVecSeed {
             label: "overflow symbols",
             count_limit: remaining_symbols,
@@ -642,16 +618,12 @@ fn preflight_json_string_tokens(bytes: &[u8]) -> Result<(), SymbolManifestError>
                 return Err(SymbolManifestError::JsonStringTooLarge);
             }
         }
-        // Leave malformed unterminated strings to serde's syntax diagnostic.
         index = index.saturating_add(1);
     }
     Ok(())
 }
 
-/// A file-global symbol id. Zero is valid.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct SymbolId(u64);
 
@@ -660,7 +632,6 @@ impl SymbolId {
         self.0
     }
 
-    /// Convert an untrusted raw word only after checking it against a manifest.
     pub fn from_raw_checked(
         raw: u64,
         manifest: &SymbolManifest,
@@ -669,10 +640,7 @@ impl SymbolId {
     }
 }
 
-/// Container-owned position of one complete symbol observation batch.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppendPoint {
     pub ordinal: u64,
@@ -680,13 +648,6 @@ pub struct AppendPoint {
     pub tick: u64,
 }
 
-/// Complete append-ledger entry.
-///
-/// `available_symbols` contains only availability events created at this
-/// point. It may be empty when the complete observation batch contained only
-/// base symbols or overflow symbols already visible on this branch. It may
-/// refer to an existing file-global id when the same symbol independently
-/// becomes available on a divergent branch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolBatch {
     pub ordinal: u64,
@@ -705,11 +666,6 @@ impl SymbolBatch {
     }
 }
 
-/// Portable assignment and complete availability history.
-///
-/// Ids are implicit array positions: `base_symbols`, then `overflow_symbols`.
-/// Overflow strings occur once even if their availability history has events
-/// on several divergent branches.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SymbolManifest {
     pub schema: String,
@@ -718,10 +674,7 @@ pub struct SymbolManifest {
     pub batches: Vec<SymbolBatch>,
 }
 
-/// Recorder-local numeric content reference.
-#[derive(
-    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContentIdSource {
     pub namespace: String,
@@ -737,7 +690,6 @@ impl ContentIdSource {
     }
 }
 
-/// One authenticated symbol observation and optional runtime source binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolObservation {
     pub symbol: String,
@@ -770,21 +722,36 @@ pub enum SymbolManifestError {
     InvalidSymbol(String),
     InvalidNamespace(String),
     BaseNotStrictlySorted,
-    BatchOrdinalNotContiguous { expected: u64, actual: u64 },
-    BatchInstantRepeated { branch: u32, tick: u64 },
+    BatchOrdinalNotContiguous {
+        expected: u64,
+        actual: u64,
+    },
+    BatchInstantRepeated {
+        branch: u32,
+        tick: u64,
+    },
     BranchTickNotIncreasing {
         branch: u32,
         previous: u64,
         next: u64,
     },
     BatchSymbolsNotStrictlySorted(AppendPoint),
-    BatchSymbolRepeated { point: AppendPoint, id: u64 },
+    BatchSymbolRepeated {
+        point: AppendPoint,
+        id: u64,
+    },
     RedundantSameBranchAvailability {
         point: AppendPoint,
         id: u64,
     },
-    BaseSymbolAvailability { point: AppendPoint, id: u64 },
-    SymbolIntroducedOutOfOrder { point: AppendPoint, id: u64 },
+    BaseSymbolAvailability {
+        point: AppendPoint,
+        id: u64,
+    },
+    SymbolIntroducedOutOfOrder {
+        point: AppendPoint,
+        id: u64,
+    },
     OverflowSymbolNeverIntroduced(String),
     AmbiguousContentId {
         source: ContentIdSource,
@@ -904,9 +871,7 @@ fn bytewise_cmp(left: &str, right: &str) -> std::cmp::Ordering {
 }
 
 fn validate_symbol(symbol: &str) -> Result<(), SymbolManifestError> {
-    if symbol.is_empty()
-        || symbol.len() > MAX_SYMBOL_BYTES
-        || symbol.chars().any(char::is_control)
+    if symbol.is_empty() || symbol.len() > MAX_SYMBOL_BYTES || symbol.chars().any(char::is_control)
     {
         return Err(SymbolManifestError::InvalidSymbol(symbol.to_string()));
     }
@@ -980,8 +945,7 @@ impl SymbolManifest {
         let mut availability_count = 0usize;
 
         for (index, batch) in self.batches.iter().enumerate() {
-            let expected =
-                u64::try_from(index).map_err(|_| SymbolManifestError::TooManyBatches)?;
+            let expected = u64::try_from(index).map_err(|_| SymbolManifestError::TooManyBatches)?;
             if batch.ordinal != expected {
                 return Err(SymbolManifestError::BatchOrdinalNotContiguous {
                     expected,
@@ -1066,19 +1030,16 @@ impl SymbolManifest {
         Ok(())
     }
 
-    /// Canonical JSON is compact UTF-8 with the serde declaration field order.
     pub fn encode_json(&self) -> Result<Vec<u8>, SymbolManifestError> {
         self.validate()?;
-        let bytes =
-            serde_json::to_vec(self).map_err(|error| SymbolManifestError::Json(error.to_string()))?;
+        let bytes = serde_json::to_vec(self)
+            .map_err(|error| SymbolManifestError::Json(error.to_string()))?;
         if bytes.len() > MAX_SYMBOL_MANIFEST_JSON_BYTES {
             return Err(SymbolManifestError::JsonTooLarge);
         }
         Ok(bytes)
     }
 
-    /// Decode only the one canonical byte representation accepted by
-    /// [`Self::encode_json`]. Whitespace and reordered object fields fail.
     pub fn decode_json(bytes: &[u8]) -> Result<Self, SymbolManifestError> {
         if bytes.len() > MAX_SYMBOL_MANIFEST_JSON_BYTES {
             return Err(SymbolManifestError::JsonTooLarge);
@@ -1087,8 +1048,8 @@ impl SymbolManifest {
         let manifest: Self = serde_json::from_slice(bytes)
             .map_err(|error| SymbolManifestError::Json(error.to_string()))?;
         manifest.validate()?;
-        let canonical =
-            serde_json::to_vec(&manifest).map_err(|error| SymbolManifestError::Json(error.to_string()))?;
+        let canonical = serde_json::to_vec(&manifest)
+            .map_err(|error| SymbolManifestError::Json(error.to_string()))?;
         if canonical != bytes {
             return Err(SymbolManifestError::NonCanonicalJson);
         }
@@ -1123,7 +1084,6 @@ impl SymbolManifest {
             .ok_or_else(|| SymbolManifestError::UnknownSymbol(symbol.to_string()))
     }
 
-    /// Checked public conversion for ids decoded outside serde.
     pub fn require_raw_id(&self, raw: u64) -> Result<SymbolId, SymbolManifestError> {
         let id = SymbolId(raw);
         self.symbol(id)
@@ -1154,13 +1114,6 @@ impl SymbolManifest {
         }))
     }
 
-    /// Resolve an id only if at least one recorded availability event is
-    /// visible from `target`.
-    ///
-    /// Base symbols are universal. Same-branch visibility is decided locally.
-    /// Every possibly relevant different-branch event is passed, with both
-    /// append ordinals and both branch/tick coordinates, to the authenticated
-    /// container callback. Callback failure is propagated.
     pub fn symbol_available_at<F>(
         &self,
         id: SymbolId,
@@ -1173,11 +1126,12 @@ impl SymbolManifest {
         let symbol = self
             .symbol(id)
             .ok_or(SymbolManifestError::UnknownSymbolId(id.get()))?;
-        if usize::try_from(id.get()).ok().is_some_and(|index| index < self.base_symbols.len()) {
+        if usize::try_from(id.get())
+            .ok()
+            .is_some_and(|index| index < self.base_symbols.len())
+        {
             return Ok(Some(symbol));
         }
-        // Local proof is authoritative and does not depend on the availability
-        // of an unrelated branch graph.
         if self.availability_points(id)?.any(|source| {
             source.branch == target.branch
                 && source.tick <= target.tick
@@ -1198,7 +1152,6 @@ impl SymbolManifest {
     }
 }
 
-/// Recorder-side builder and runtime source resolver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolManifestBuilder {
     manifest: SymbolManifest,
@@ -1303,8 +1256,7 @@ impl SymbolManifestBuilder {
                     });
                 }
             }
-            if let Some(existing_symbol) =
-                staged.insert(source.clone(), observation.symbol.clone())
+            if let Some(existing_symbol) = staged.insert(source.clone(), observation.symbol.clone())
             {
                 if existing_symbol != observation.symbol {
                     return Err(SymbolManifestError::AmbiguousContentId {
@@ -1318,14 +1270,7 @@ impl SymbolManifestBuilder {
         Ok(staged)
     }
 
-    /// Rehydrate ephemeral runtime bindings after loading a manifest.
-    ///
-    /// This never creates ids, batches, or availability events. Every symbol
-    /// must already be present, and the operation is transactional.
-    pub fn bind_existing_sources<I>(
-        &mut self,
-        observations: I,
-    ) -> Result<(), SymbolManifestError>
+    pub fn bind_existing_sources<I>(&mut self, observations: I) -> Result<(), SymbolManifestError>
     where
         I: IntoIterator<Item = SymbolObservation>,
     {
@@ -1343,12 +1288,6 @@ impl SymbolManifestBuilder {
         Ok(())
     }
 
-    /// Append one complete container-ordered observation batch.
-    ///
-    /// `point.ordinal` must be the next ordinal; branch-local ticks must
-    /// increase, but ticks on different branches have no global order.
-    /// `event_is_visible` authenticates cross-branch visibility for existing
-    /// overflow symbols. The operation is transactional.
     pub fn observe_batch<I, F>(
         &mut self,
         point: AppendPoint,
@@ -1399,8 +1338,10 @@ impl SymbolManifestBuilder {
 
         let observations: Vec<_> = observations.into_iter().collect();
         let staged_bindings = self.stage_bindings(&observations)?;
-        let mut observed_symbols: Vec<String> =
-            observations.iter().map(|item| item.symbol.clone()).collect();
+        let mut observed_symbols: Vec<String> = observations
+            .iter()
+            .map(|item| item.symbol.clone())
+            .collect();
         observed_symbols.sort_by(|left, right| bytewise_cmp(left, right));
         observed_symbols.dedup();
 
@@ -1435,20 +1376,17 @@ impl SymbolManifestBuilder {
             return Err(SymbolManifestError::TooManySymbols);
         }
 
-        // Decide all visibility before mutating anything.
         let mut needs_event = BTreeSet::new();
         for symbol in &observed_symbols {
             let Some(id) = self.by_symbol.get(symbol).copied() else {
                 needs_event.insert(symbol.clone());
                 continue;
             };
-            let index =
-                usize::try_from(id.get()).map_err(|_| SymbolManifestError::UnknownSymbolId(id.get()))?;
+            let index = usize::try_from(id.get())
+                .map_err(|_| SymbolManifestError::UnknownSymbolId(id.get()))?;
             if index < self.manifest.base_symbols.len() {
                 continue;
             }
-            // Exhaust same-branch proof before consulting the external graph:
-            // an irrelevant callback failure must not mask local visibility.
             let locally_visible = self.manifest.availability_points(id)?.any(|source| {
                 source.branch == point.branch
                     && source.tick <= point.tick
@@ -1805,8 +1743,7 @@ mod tests {
             }
         }
 
-        let mut vector_decoder =
-            serde_json::Deserializer::from_slice(br#"[0,1,not-valid-json]"#);
+        let mut vector_decoder = serde_json::Deserializer::from_slice(br#"[0,1,not-valid-json]"#);
         let vector_error =
             deserialize_bounded_vec::<_, Sentinel, 1>(&mut vector_decoder, "test values")
                 .unwrap_err();
@@ -1818,9 +1755,9 @@ mod tests {
         let mut batch_decoder = serde_json::Deserializer::from_slice(bytes);
         let batch_error =
             deserialize_batches_with_limits::<_, 4, 2>(&mut batch_decoder).unwrap_err();
-        assert!(batch_error
-            .to_string()
-            .contains("symbol availability events in one batch exceeds the 0-element decode limit"));
+        assert!(batch_error.to_string().contains(
+            "symbol availability events in one batch exceeds the 0-element decode limit"
+        ));
     }
 
     #[test]
@@ -1870,7 +1807,10 @@ mod tests {
             bytes,
             br#"{"schema":"hoi4.portable-symbol-manifest.v1","base_symbols":["AST","USA"],"overflow_symbols":["dynamic_a","dynamic_z"],"batches":[{"ordinal":0,"branch":2,"tick":17,"available_symbols":[2,3]}]}"#
         );
-        assert_eq!(SymbolManifest::decode_json(&bytes).unwrap(), *builder.manifest());
+        assert_eq!(
+            SymbolManifest::decode_json(&bytes).unwrap(),
+            *builder.manifest()
+        );
         let mut padded = bytes.clone();
         padded.push(b'\n');
         assert_eq!(

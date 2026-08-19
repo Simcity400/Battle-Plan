@@ -1,11 +1,3 @@
-//! E20 exact-a729 country army-upgrade request carrier (compact domain 93).
-//!
-//! This is the country `upgrades` save field, not intelligence-agency upgrades
-//! and not the equipment-design upgrade-level maps carried by d39/d40.  The
-//! exact owner is `CCountry+0xF80 -> CArmyUpgradesStatus`; each tracked
-//! `CArmyUpgradesRequests` is keyed by its owning `CArmy` persistent ID and
-//! carries `request`, `total`, and optional `CUpgradeDelivery` state.
-
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 93;
@@ -47,25 +39,8 @@ pub const ARMY_PERSISTENT_VTABLE_OFF: u64 = 0x10;
 pub const ARMY_PERSISTENT_VTABLE_RVA: u64 = 0x2943CB0;
 pub const ARMY_ID_OFF: u64 = 0x18;
 pub const ARMY_ID_TYPE: u32 = 4_713;
-/// The second handle type the same `CDivision` body carries.
-///
-/// `ARMY_VTABLE_RVA`/`ARMY_PERSISTENT_VTABLE_RVA` are the production
-/// `DIVISION_WRAPPER_VTABLE_RVA`/`DIVISION_VTABLE_RVA` pair, and
-/// `ARMY_ID_OFF` is that wrapper's body `+0x08` type / `+0x0C` id. The
-/// collector's own division reader has accepted `{4713, 51}` behind the
-/// vtable guard since the wrapper-observed alt type was found on the
-/// country-wrapper path; this domain reaches the very same body through the
-/// very same kind of country wrapper (`CCountry+0xF80` ->
-/// `CArmyUpgradesStatus` -> `CArmyUpgradesRequests+0x20`) and must accept
-/// the same set. Requiring `4713` alone refuses upgrade groups the engine
-/// legitimately keeps: in the exact save this build was captured from, the
-/// first country in the roster owns 381 divisions with an `upgrades`
-/// request block and 41 of them serialise `id.type = 51`.
 pub const ARMY_ID_ALT_TYPE: u32 = 51;
 
-/// The identity guard for this domain is the wrapper/body vtable pair; the
-/// handle type is the engine's own unit-body type, which is not a single
-/// value.
 pub fn is_army_identity_type(kind: u32) -> bool {
     kind == ARMY_ID_TYPE || kind == ARMY_ID_ALT_TYPE
 }
@@ -88,19 +63,8 @@ pub const PRODUCED_ALLOW_ZERO_OFF: u64 = 0x58;
 pub const PRODUCED_ROW_STRIDE: u64 = 0x10;
 
 pub const FIXED_POINT_SCALE: i64 = 100_000;
-/// Fail-closed ceiling on the number of country rows an AUR1 snapshot carries.
-///
-/// Was `2_048` — a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags), which refused an overhaul's whole payload on both sides. A
-/// country count is content, so it is now the structural row width, and
-/// `bounded_count` takes its real ceiling from what the remaining payload can
-/// hold. The per-country limits below are different questions and unchanged.
 pub const MAX_COUNTRIES: usize = i32::MAX as usize;
 
-/// The smallest number of payload bytes one country entry can consume:
-/// `tag_db_id` 4 plus `group_count` 4, with zero groups. A count-prefixed
-/// section divides the bytes it has left by this so a stream-supplied count can
-/// never size an allocation.
 const MIN_COUNTRY_ENTRY_LEN: usize = 8;
 pub const MAX_GROUPS_PER_COUNTRY: usize = 4_096;
 pub const MAX_REQUEST_ROWS_PER_GROUP: usize = 4_096;
@@ -163,8 +127,6 @@ pub struct ProducedEquipmentRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpgradeDeliveryRow {
     pub status: u32,
-    /// Present exactly when the serializer's `status == 1` branch emits the
-    /// `progress` token. Bytes at +0x10 are not semantic in other states.
     pub progress_raw: Option<i64>,
     pub total_progress_raw: i64,
     pub allow_zero_entries: bool,
@@ -245,7 +207,10 @@ pub enum CarrierError {
         object_ptr: u64,
         source: Box<CarrierError>,
     },
-    Memory { address: u64, width: usize },
+    Memory {
+        address: u64,
+        width: usize,
+    },
     Invalid(String),
     Truncated,
     TrailingBytes,
@@ -278,14 +243,14 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
     let mut countries = Vec::with_capacity(roots.len());
     let mut total_leaf_rows = 0usize;
     for root in roots {
-        if root.tag_db_id == 0
-            || root.object_ptr == 0
-            || !country_ids.insert(root.tag_db_id)
-        {
+        if root.tag_db_id == 0 || root.object_ptr == 0 || !country_ids.insert(root.tag_db_id) {
             return invalid("AUR1 country identity is zero or duplicated");
         }
         let groups_result = (|| -> Result<Vec<ArmyUpgradeGroup>, CarrierError> {
-            let owner = read_u64(memory, add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?)?;
+            let owner = read_u64(
+                memory,
+                add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
+            )?;
             let mut groups = Vec::new();
             if owner == 0 {
                 return Ok(groups);
@@ -370,8 +335,10 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
                 MAX_GROUPS_PER_COUNTRY,
                 "army-upgrade group",
             )? != (begin, count)
-                || read_u64(memory, add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?)?
-                    != owner
+                || read_u64(
+                    memory,
+                    add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
+                )? != owner
             {
                 return invalid("AUR1 country/status graph changed during snapshot");
             }
@@ -475,7 +442,10 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
         )?;
         let mut produced = Vec::with_capacity(produced_count);
         for produced_index in 0..produced_count {
-            let row = add(produced_begin, (produced_index as u64) * PRODUCED_ROW_STRIDE)?;
+            let row = add(
+                produced_begin,
+                (produced_index as u64) * PRODUCED_ROW_STRIDE,
+            )?;
             let equipment_ptr = read_u64(memory, row)?;
             produced.push(ProducedEquipmentRow {
                 equipment_variant: read_equipment_id(memory, module_base, equipment_ptr)?,
@@ -770,9 +740,15 @@ pub fn decode_payload(payload: &[u8]) -> Result<ArmyUpgradeFrame, CarrierError> 
     let frame_hour = reader.u64()?;
     for (expected, label) in [
         (EXECUTABLE_SHA256, "executable"),
-        (STATUS_REQUEST_PERSISTENCE_MANIFEST_SHA256, "request persistence"),
+        (
+            STATUS_REQUEST_PERSISTENCE_MANIFEST_SHA256,
+            "request persistence",
+        ),
         (DELIVERY_PERSISTENCE_MANIFEST_SHA256, "delivery persistence"),
-        (PRODUCED_POOL_PERSISTENCE_MANIFEST_SHA256, "produced pool persistence"),
+        (
+            PRODUCED_POOL_PERSISTENCE_MANIFEST_SHA256,
+            "produced pool persistence",
+        ),
         (CARMY_IDENTITY_MANIFEST_SHA256, "CArmy identity"),
         (LIVE_AST_ROWS_SHA256, "live AST request rows"),
         (LIVE_AST_ARMY_IDS_SHA256, "live AST CArmy identities"),
@@ -788,10 +764,6 @@ pub fn decode_payload(payload: &[u8]) -> Result<ArmyUpgradeFrame, CarrierError> 
     let snapshot = if has_snapshot {
         let source_sequence = reader.u64()?;
         let country_count = reader.bounded_count(MAX_COUNTRIES, "country")?;
-        // `MAX_COUNTRIES` is now the structural row width rather than a
-        // content-scale guess, so it no longer incidentally bounds this
-        // allocation. What does is the payload: a country entry is at least
-        // MIN_COUNTRY_ENTRY_LEN bytes, so the bytes still ahead cap the count.
         if country_count > reader.remaining() / MIN_COUNTRY_ENTRY_LEN {
             return invalid("AUR1 country count exceeds the payload's capacity");
         }
@@ -803,10 +775,8 @@ pub fn decode_payload(payload: &[u8]) -> Result<ArmyUpgradeFrame, CarrierError> 
             let mut groups = Vec::with_capacity(group_count);
             for _ in 0..group_count {
                 let army = reader.id()?;
-                let request_count =
-                    reader.bounded_count(MAX_REQUEST_ROWS_PER_GROUP, "request")?;
-                let delivery_count =
-                    reader.bounded_count(MAX_DELIVERIES_PER_GROUP, "delivery")?;
+                let request_count = reader.bounded_count(MAX_REQUEST_ROWS_PER_GROUP, "request")?;
+                let delivery_count = reader.bounded_count(MAX_DELIVERIES_PER_GROUP, "delivery")?;
                 leaves = leaves
                     .checked_add(request_count)
                     .and_then(|value| value.checked_add(delivery_count))
@@ -840,8 +810,8 @@ pub fn decode_payload(payload: &[u8]) -> Result<ArmyUpgradeFrame, CarrierError> 
                     if reader.bytes(3)? != [0, 0, 0] {
                         return invalid("AUR1 delivery reserved bytes are nonzero");
                     }
-                    let produced_count = reader
-                        .bounded_count(MAX_PRODUCED_ROWS_PER_DELIVERY, "produced")?;
+                    let produced_count =
+                        reader.bounded_count(MAX_PRODUCED_ROWS_PER_DELIVERY, "produced")?;
                     leaves = leaves
                         .checked_add(produced_count)
                         .ok_or_else(|| CarrierError::Invalid("AUR1 leaf count overflow".into()))?;
@@ -986,9 +956,6 @@ impl<'a> Reader<'a> {
         Ok(value)
     }
 
-    /// Bytes left. A count-prefixed section whose ceiling is not a small
-    /// constant divides this by its minimum entry size, so a stream-supplied
-    /// count can never size an allocation.
     fn remaining(&self) -> usize {
         self.payload.len().saturating_sub(self.at)
     }
@@ -1045,7 +1012,10 @@ mod tests {
                 countries: vec![CountryArmyUpgradeRow {
                     tag_db_id: 67,
                     groups: vec![ArmyUpgradeGroup {
-                        army: PersistentId { kind: 4713, id: 14646 },
+                        army: PersistentId {
+                            kind: 4713,
+                            id: 14646,
+                        },
                         requests: vec![ArmyUpgradeRequestRow {
                             equipment_variant: PersistentId { kind: 70, id: 5149 },
                             request_raw: 700_000,
@@ -1119,12 +1089,12 @@ mod tests {
         }
     }
 
-    /// One country owning exactly one upgrade group whose `CArmy` handle
-    /// carries `army_kind`. Every other node is the exact-a729 shape, so the
-    /// only thing under test is the handle-type admission.
     fn single_group_memory(army_kind: u32, army_id: u32) -> SparseMemory {
         let mut memory = SparseMemory::default();
-        memory.u64(FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF, FIXTURE_STATUS);
+        memory.u64(
+            FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF,
+            FIXTURE_STATUS,
+        );
 
         memory.u64(FIXTURE_STATUS, FIXTURE_BASE + STATUS_VTABLE_RVA);
         memory.u64(
@@ -1187,8 +1157,8 @@ mod tests {
     #[test]
     fn native_read_still_refuses_a_handle_type_outside_the_unit_body_set() {
         for kind in [0, 1, EQUIPMENT_VARIANT_ID_TYPE, 52, 4_712] {
-            let error = read_single_group(kind)
-                .expect_err("a non-unit-body handle type must stay refused");
+            let error =
+                read_single_group(kind).expect_err("a non-unit-body handle type must stay refused");
             assert!(
                 matches!(&error, CarrierError::CountryRead { source, .. }
                     if matches!(&**source, CarrierError::Invalid(reason)

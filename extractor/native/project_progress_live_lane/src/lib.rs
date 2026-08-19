@@ -455,8 +455,6 @@ pub fn read_breakthrough_rows<M: ProjectMemory>(
     if !is_live_heap_ptr(header) || size > MAX_PROJECT_BREAKTHROUGH_ROWS {
         return Err("breakthrough header/size invalid".to_string());
     }
-    // `tree+0x08` owns the sentinel/header pointer and the sentinel's +0x00
-    // link is the first in-order node; +0x08 is its parent link.
     let root = mem
         .read_u64(header)
         .map(|v| v as usize)
@@ -505,9 +503,6 @@ pub fn read_breakthrough_rows<M: ProjectMemory>(
     Ok(rows)
 }
 
-/// Read and country-atomically merge breakthrough rows from all contiguous
-/// a729 CProgramStatus category records. Identical handles are deduplicated;
-/// conflicting values or any malformed record tree reject the snapshot.
 pub fn read_breakthrough_rows_from_status_records<M: ProjectMemory>(
     mem: &M,
     status_ptr: usize,
@@ -535,8 +530,6 @@ pub fn read_breakthrough_rows_from_status_records<M: ProjectMemory>(
         let breakthrough_addr = record
             .checked_add(PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH)
             .ok_or_else(|| "breakthrough address overflow".to_string())?;
-        // Fail closed: read_breakthrough_rows validates the complete tree and
-        // returns no prefix when size/count, nodes, or values are torn.
         let mut record_handles = BTreeSet::new();
         for row in read_breakthrough_rows(
             mem,
@@ -1433,7 +1426,6 @@ mod tests {
             header,
             &[(node, 22_214, 10)],
         );
-        // Advertise two nodes while retaining only the one-node prefix.
         mem.write_u64(
             status + PROJECT_PROGRAM_STATUS_OFF_BREAKTHROUGH + 0x10,
             2,

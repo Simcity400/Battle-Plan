@@ -1,10 +1,3 @@
-//! Strict passive XUI20 combat-panel presentation carrier.
-//!
-//! The ordinary combat domains preserve game state, but they do not contain
-//! every controller-evaluated text, sprite, visibility, row order, tooltip,
-//! or terminal-result value used by the five combat windows.  This carrier is
-//! the explicit producer/consumer seam for those presentation facts.  It is
-//! global, window-open independent, and recorder-POV independent.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,8 +6,6 @@ pub const XUI20_SCHEMA_VERSION: u32 = 1;
 pub const XUI20_AUTHORITY: &str = "exact_a729_passive_global_combat_presentation";
 pub const XUI20_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
-// These are hashes of the packaged producer/evidence manifests. They are
-// deliberately exact identities rather than syntax-shaped producer claims.
 pub const XUI20_PRODUCER_CONTRACT_MANIFEST_SHA256: &str =
     "25434ecaa4eca68a9c8e577a717365a09573669fa21b56177a95e02aaf8ee498";
 pub const XUI20_EVIDENCE_MANIFEST_SHA256: &str =
@@ -88,8 +79,6 @@ impl CombatPanelKindExact {
     }
 }
 
-/// One exact child step. `child_ordinal` is the absolute authored child index;
-/// `authored_name` seals that the index still denotes the producer's element.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CombatElementPathStepExact {
@@ -114,8 +103,6 @@ pub struct CombatTooltipExact {
     pub delayed: Option<CombatFinalTextExact>,
 }
 
-/// A typed controller-evaluated value applied to one authored element. Paths
-/// are relative to the panel root or, for a dynamic row, its cloned template.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CombatElementBindingExact {
@@ -129,9 +116,6 @@ pub enum CombatElementBindingExact {
         sprite_name: String,
         tooltip: Option<CombatTooltipExact>,
     },
-    /// Effective game-file texture selected by engine code for an authored
-    /// sprite shell whose `.gfx` declaration intentionally has no
-    /// `texturefile` (for example a country flag stripe).
     Texture {
         path: CombatElementPathExact,
         texture_path: String,
@@ -193,8 +177,6 @@ impl CombatElementBindingExact {
     }
 }
 
-/// One controller-cloned row. The parent path points to the authored grid or
-/// container; `source_ordinal` is the engine order used by its layout law.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CombatDynamicRowExact {

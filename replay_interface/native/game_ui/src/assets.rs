@@ -15,8 +15,6 @@ pub struct AssetResolver {
     content_manifest_digest: Option<String>,
     product_modset_sha256: Option<String>,
     admitted_content: Option<BTreeMap<String, replay_core::UsedContentKey>>,
-    /// Owns the immutable snapshot backing `restricted_files`. Paths must not
-    /// outlive the admission bytes they name.
     admission_lease: Option<map_viewer::ContentAdmissionLease>,
 }
 
@@ -55,8 +53,6 @@ impl AssetResolver {
         }
     }
 
-    /// Adapt the central launcher-equivalent resolver to the path-based UI
-    /// decoders while preserving the replay manifest's exact allowlist.
     pub fn from_restricted_game_files(
         resolver: &map_viewer::RestrictedGameFileResolver<'_>,
     ) -> Result<Self> {
@@ -143,9 +139,6 @@ impl AssetResolver {
         Ok(assets)
     }
 
-    /// Restrict UI decoding to an exact set of portable used-content rows.
-    /// Every row must be the central admission's winner for the same logical
-    /// path; installed-but-unrecorded content is never made reachable.
     pub fn from_used_content_rows(
         resolver: &map_viewer::GameFileResolver,
         admission: &replay_core::ValidatedContentAdmission,
@@ -159,10 +152,6 @@ impl AssetResolver {
         )
     }
 
-    /// Restricted product resolver with independently authenticated,
-    /// case-preserved engine enumeration spellings. Lookup and portable
-    /// identity remain case-folded; only parse-order provenance uses these
-    /// spellings.
     pub fn from_used_content_rows_with_engine_spellings(
         resolver: &map_viewer::GameFileResolver,
         admission: &replay_core::ValidatedContentAdmission,
@@ -240,10 +229,6 @@ impl AssetResolver {
         Ok(assets)
     }
 
-    /// Restrict UI decoding to the exact content rows recorded for a set of
-    /// semantic-consumer prefixes. This is the product HUD adapter: non-UI
-    /// content and unrelated dormant UI files remain inaccessible even when
-    /// they are required elsewhere by the same replay.
     pub fn from_content_consumer_prefixes(
         resolver: &map_viewer::GameFileResolver,
         admission: &replay_core::ValidatedContentAdmission,
@@ -327,8 +312,6 @@ impl AssetResolver {
             .get(&normalize_rel_path(rel_path).to_ascii_lowercase())
     }
 
-    /// Whether this resolver is the portable, manifest-bound product
-    /// capability rather than a raw install/user-data probe.
     pub fn has_portable_content_admission(&self) -> bool {
         self.restricted_files.is_some()
             && self.content_manifest_digest.is_some()
@@ -734,7 +717,7 @@ pub fn normalize_rel_path(value: &str) -> String {
         .trim_matches('"')
         .trim_start_matches("./")
         .to_string();
-    while out.contains("//") {
+    while out.contains("
         out = out.replace("//", "/");
     }
     out.trim_matches('/')

@@ -1,10 +1,3 @@
-//! Viewer-owned production-map foundation transport.
-//!
-//! This envelope is deliberately separate from [`crate::ProductionRenderFrame`].
-//! The latter retains recorder-selected presentation for historical UI
-//! compatibility and evidence. A production map consumes only this module's
-//! presentation-independent family dispositions.
-
 use portable_content_manifest::UsedContentKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -200,10 +193,12 @@ impl FoundationRenderEnvelope {
     }
 
     pub fn gaps(&self) -> impl Iterator<Item = (&MapVisualFamily, &FoundationGap)> {
-        self.families.iter().filter_map(|row| match &row.disposition {
-            FamilyDisposition::Unavailable { gap } => Some((&row.family, gap)),
-            _ => None,
-        })
+        self.families
+            .iter()
+            .filter_map(|row| match &row.disposition {
+                FamilyDisposition::Unavailable { gap } => Some((&row.family, gap)),
+                _ => None,
+            })
     }
 
     pub fn is_complete(&self) -> bool {
@@ -225,10 +220,7 @@ fn validate_disposition(row: &FamilyCoverageRow) -> Result<(), String> {
             if payload_schema.trim().is_empty() {
                 return Err(format!("{:?} has a blank payload schema", row.family));
             }
-            validate_sha256(
-                producer_registration_sha256,
-                "family producer registration",
-            )?;
+            validate_sha256(producer_registration_sha256, "family producer registration")?;
             validate_sha256(payload_sha256, "family payload")?;
             let mut operation_ids = BTreeSet::new();
             let mut prior_order = None;
@@ -355,10 +347,7 @@ mod tests {
         assert!(missing.validate().unwrap_err().contains("incomplete"));
         let mut reordered = envelope();
         reordered.families.swap(0, 1);
-        assert!(reordered
-            .validate()
-            .unwrap_err()
-            .contains("identity/order"));
+        assert!(reordered.validate().unwrap_err().contains("identity/order"));
         let mut value = serde_json::to_value(envelope()).unwrap();
         value
             .as_object_mut()

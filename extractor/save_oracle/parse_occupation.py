@@ -362,8 +362,6 @@ def _parse_countries(tz, by_tag):
                     _parse_collaboration(tz, rec)
                 else:
                     _skip_block_body(tz)
-        # Keep a country if it administers ANY occupied territory, OR if it has a
-        # non-default occupation law set (so the backstop preserves law choices).
         if rec["occupied"] or rec["default_law"] or rec["resistance_attack_log"]:
             by_tag[tag] = rec
 

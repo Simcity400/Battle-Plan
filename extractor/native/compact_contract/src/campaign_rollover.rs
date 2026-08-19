@@ -1,10 +1,3 @@
-//! Canonical CRP1/CRA1 campaign-rollover control payloads.
-//!
-//! This module is dependency-neutral and shared by the collector and recorder.
-//! It supplies the exact-byte foundation only; the active auto-attach capability
-//! word deliberately does not advertise rollover until the live drain/durable-
-//! close/new-header lifecycle has passed its owner gates.
-
 use crate::calendar::hour_index_from_raw;
 
 pub const ROLLOVER_PROPOSE_MAGIC: &[u8; 4] = b"CRP1";
@@ -53,16 +46,9 @@ pub struct RolloverProposeV1 {
     pub last_admitted_h4cr_sequence: u64,
     pub boundary_game_hour_raw: i32,
     pub reason: RolloverReason,
-    /// Digest of the current engine-persisted `(game_unique_id,
-    /// game_unique_seed)` pair. This is CID1's campaign id, not a payload hash.
     pub current_campaign_id: [u8; 32],
-    /// Digest of the proposed engine-persisted identity pair.
     pub proposed_campaign_id: [u8; 32],
-    /// SHA-256 of the complete current CID1 payload, including its observation
-    /// hour and witnesses. It authenticates exact bytes but does not define
-    /// campaign equality.
     pub current_cid1_payload_sha256: [u8; 32],
-    /// SHA-256 of the exact sequence-zero CID1 payload expected after CRA1.
     pub proposed_cid1_payload_sha256: [u8; 32],
     pub proposal_nonce: u64,
 }
@@ -122,8 +108,6 @@ pub struct RolloverAckV1 {
     pub proposed_logical_stream_id: u64,
     pub proposal_nonce: u64,
     pub decision: RolloverDecision,
-    /// Zero iff accepted; a rejected proposal must carry a nonzero closed-owner
-    /// error code. Interpretation belongs to the recorder policy layer.
     pub error_code: u16,
 }
 
@@ -195,7 +179,6 @@ pub fn encode_rollover_propose(
     out[16..24].copy_from_slice(&value.last_admitted_h4cr_sequence.to_le_bytes());
     out[24..28].copy_from_slice(&value.boundary_game_hour_raw.to_le_bytes());
     out[28..30].copy_from_slice(&(value.reason as u16).to_le_bytes());
-    // flags at 30..32 remain zero.
     out[32..64].copy_from_slice(&value.current_campaign_id);
     out[64..96].copy_from_slice(&value.proposed_campaign_id);
     out[96..128].copy_from_slice(&value.current_cid1_payload_sha256);
@@ -236,7 +219,6 @@ pub fn encode_rollover_ack(
     out[16..24].copy_from_slice(&value.proposal_nonce.to_le_bytes());
     out[24..26].copy_from_slice(&(value.decision as u16).to_le_bytes());
     out[26..28].copy_from_slice(&value.error_code.to_le_bytes());
-    // reserved at 28..32 remains zero.
     Ok(out)
 }
 

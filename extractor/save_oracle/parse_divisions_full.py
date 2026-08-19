@@ -285,8 +285,6 @@ def parse_text(text):
     return divisions, meta
 
 
-# The complete stored field set (audit's 33-field record), for the manifest /
-# field-presence report. Some are optional per-division (move/fuel/bonus/etc.).
 DIVISION_FIELD_SET = [
     "div_id", "div_type", "owner", "location_province", "script_id",
     "template_id", "template_type", "division_name",
@@ -302,7 +300,6 @@ def build(text, source, was_melted):
     divisions, meta = parse_text(text)
     n = len(divisions)
 
-    # Field-presence: how many divisions carry each (optional) field non-null.
     presence = {f: 0 for f in DIVISION_FIELD_SET}
     for d in divisions:
         for f in DIVISION_FIELD_SET:
@@ -348,7 +345,6 @@ def build(text, source, was_melted):
     for f in DIVISION_FIELD_SET:
         pct = round(100.0 * presence[f] / n, 1) if n else 0.0
         lines.append(f"   {f:<28} {presence[f]:>5} ({pct}%)")
-    # a sample fully-populated division
     sample = next((d for d in divisions if d.get("dig_in") is not None
                    and d.get("army_manpower")), divisions[0] if divisions else None)
     if sample:

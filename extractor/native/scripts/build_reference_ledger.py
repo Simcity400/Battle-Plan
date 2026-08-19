@@ -40,15 +40,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# Extensions whose contents are scanned for references to other files.
 TEXT_SUFFIXES = {
     ".rs", ".py", ".ps1", ".psm1", ".c", ".h", ".cpp", ".hpp", ".toml", ".md",
     ".json", ".jsonl", ".csv", ".txt", ".yml", ".yaml", ".cfg", ".ini", ".bat",
     ".sh", ".sha256", ".gitignore", ".lock", ".java", ".patch", ".log",
 }
 
-# Extensions a reference token may end with. Kept explicit so that prose like
-# "version 1.19.2.0" is not mistaken for a filename.
 REF_SUFFIXES = (
     "rs|py|ps1|psm1|c|h|cpp|hpp|toml|md|json|jsonl|csv|txt|yml|yaml|bin|dds|png|"
     "jpg|sha256|patch|log|dll|exe|hoi4replay|lock|java|bat|sh"
@@ -56,11 +53,6 @@ REF_SUFFIXES = (
 REF_TOKEN = re.compile(rf"[A-Za-z0-9_./\\-]+\.(?:{REF_SUFFIXES})\b")
 SHA256_TOKEN = re.compile(r"\b[0-9a-fA-F]{64}\b")
 
-# Some corpora are referenced as a directory, never file by file. The two
-# largest are O04/offline_rdc_join/{baseline_data,changed_data}: 3,867 numbered
-# RenderDoc blobs each, consumed as a set by fold_check/src/tests.rs and
-# lanes/air_combat_losses_live/domain42_compact.rs. A file-only graph reports
-# all 7,734 as uncited, which is false and would license deleting them.
 DIR_TOKEN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./\\-]*[A-Za-z0-9_]")
 
 CODE_SUFFIXES = {
@@ -70,12 +62,6 @@ CODE_SUFFIXES = {
 
 MAX_SCAN_BYTES = 8 * 1024 * 1024
 
-# Files that tooling discovers by convention rather than by being named. Nothing
-# ever "cites" .gitignore, so a pure citation graph reports it as dead — and the
-# first run of this ledger did exactly that, taking the repo's .gitignore and
-# .gitattributes with it. Line-ending normalization for the whole tree lives in
-# .gitattributes, so losing it silently rewrites every file Git next touches.
-# These are never deletion candidates at any citation count.
 PROTECTED_BASENAMES = {
     ".gitignore", ".gitattributes", ".gitmodules", ".editorconfig",
     ".dockerignore", ".npmrc", ".nvmrc", "cargo.toml", "cargo.lock",
@@ -83,22 +69,13 @@ PROTECTED_BASENAMES = {
     "tox.ini", "makefile", "dockerfile", "rustfmt.toml", "clippy.toml",
     "rust-toolchain", "rust-toolchain.toml", "license", "license.md",
     "license.txt", "notice", "codeowners",
-    # Entry-point documentation is found by a human opening the directory, or by
-    # the forge rendering it. Nothing links to a README for the same reason
-    # nothing links to a front door.
     "readme.md", "readme", "readme.txt", "agents.md", "project.md",
 }
 PROTECTED_DIR_PARTS = {".github", ".cargo", ".config"}
 
-# Rust declares modules by NAME, never by filename: `mod read_only_scheduler;`
-# refers to read_only_scheduler.rs, which a filename-token scanner cannot see.
-# Without this rule, load-bearing module files can be misclassified as uncited.
 RUST_MOD_DECL = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;",
                            re.MULTILINE)
 
-# Targets Cargo and pytest discover by location or filename pattern, with no
-# declaration anywhere: crate roots, auto-discovered bins/tests/benches/examples,
-# and test_*.py / *_test.py. Absence of a citation says nothing about these.
 def discovered_by_convention(path: str) -> bool:
     parts = path.split("/")
     name = parts[-1]
@@ -145,8 +122,8 @@ def default_repo() -> Path:
     this script, so a wrong answer falls back to the plain parent walk rather
     than being trusted.
     """
-    here = Path(__file__).resolve().parent            # <repo>/extractor/native/scripts
-    walked = here.parents[2]                          # <repo>
+    here = Path(__file__).resolve().parent
+    walked = here.parents[2]
     try:
         out = subprocess.run(["git", "-C", str(here), "rev-parse", "--show-toplevel"],
                              check=True, capture_output=True, text=True,
@@ -154,7 +131,6 @@ def default_repo() -> Path:
         top = out.stdout.strip()
         if top:
             root = Path(top).resolve()
-            # Only trust a root this script actually lives under.
             if root == here or root in here.parents:
                 return root
     except (OSError, subprocess.CalledProcessError):
@@ -230,17 +206,12 @@ def main() -> int:
 
     kind = {p: classify(p) for p in paths}
 
-    # basename -> the tracked paths that share it. Ambiguous basenames are
-    # reported rather than silently attributed to one file.
     by_basename: dict[str, list[str]] = defaultdict(list)
     by_fullpath: dict[str, str] = {}
     for p in paths:
         by_basename[Path(p).name.lower()].append(p)
         by_fullpath[normalize(p)] = p
 
-    # Directory index, so a corpus cited only as a directory is not reported as
-    # a pile of uncited files. Only directories at least two levels deep are
-    # considered, so that naming "extractor" does not vouch for the whole tree.
     dir_children: dict[str, list[str]] = defaultdict(list)
     for p in paths:
         parts = normalize(p).split("/")
@@ -250,7 +221,6 @@ def main() -> int:
     for d in dir_children:
         dir_by_name[d.rsplit("/", 1)[-1]].append(d)
 
-    # Hash every tracked file so SHA pins can be resolved to their target.
     sha_to_path: dict[str, str] = {}
     file_sha: dict[str, str] = {}
     for p in paths:
@@ -262,7 +232,6 @@ def main() -> int:
         file_sha[p] = digest
         sha_to_path.setdefault(digest, p)
 
-    # Single scan pass over every text file in the repo.
     cites: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     citers: dict[str, set[str]] = defaultdict(set)
     sha_hits: dict[str, set[str]] = defaultdict(set)
@@ -273,8 +242,6 @@ def main() -> int:
     for citer in paths:
         suffix = Path(citer).suffix.lower()
         if suffix not in TEXT_SUFFIXES:
-            # Extensionless files are still scanned when they sniff as text;
-            # 7,736 tracked files have no extension at all.
             if suffix or not looks_textual(repo / citer):
                 continue
         text = read_text(repo / citer)
@@ -302,9 +269,6 @@ def main() -> int:
             target = by_fullpath.get(token)
             if target is None:
                 candidates = by_basename.get(Path(token).name, [])
-                # A bare basename that matches exactly one tracked file is an
-                # unambiguous citation. More than one and it proves nothing
-                # about which file was meant, so it is not counted.
                 if len(candidates) == 1:
                     target = candidates[0]
             if target is None or target == citer:
@@ -316,8 +280,6 @@ def main() -> int:
             if len(citers[target]) < 12:
                 citers[target].add(citer)
 
-        # Resolve `mod NAME;` against the declaring file's own directory, which
-        # is exactly how rustc resolves it: NAME.rs or NAME/mod.rs beside it.
         if citer.endswith(".rs"):
             here = normalize(citer).rsplit("/", 1)[0]
             for match in RUST_MOD_DECL.finditer(text):
@@ -336,11 +298,6 @@ def main() -> int:
 
     print(f"scanned text files: {scanned}", file=sys.stderr)
 
-    # A cited directory vouches ONLY for its direct children. Any ancestor rule
-    # launders a whole tree: one mention of "re_evidence" would otherwise vouch
-    # for all 11,153 files beneath it, which proves nothing about any of them.
-    # Direct-children-only matches the actual pattern this exists for — a set of
-    # sibling blobs consumed together.
     file_dir_citation: dict[str, tuple[str, dict[str, int]]] = {}
     for p in paths:
         parent = normalize(p).rsplit("/", 1)[0]

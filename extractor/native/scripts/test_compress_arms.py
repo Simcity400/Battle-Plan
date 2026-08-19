@@ -14,7 +14,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import compress_arms  # noqa: E402
+import compress_arms
 
 
 def write_arm(tmp_path, name, hour_sizes, hours=None):
@@ -35,31 +35,21 @@ def write_arm(tmp_path, name, hour_sizes, hours=None):
     return bytes(data), offsets
 
 
-# --- clock_span_bounds, the whole of the new slicing rule --------------------
 
 
 def test_contiguous_hours_slice_identically_in_both_modes():
-    # 100 contiguous hours: the offset index and the clock block coincide, which
-    # is the case every measurement published so far was taken on. The clock
-    # bounds must therefore be exactly the index bounds.
     hours = list(range(1000, 1100))
     bounds = compress_arms.clock_span_bounds(hours, 48)
     assert bounds == [(0, 48), (48, 96), (96, 100)]
 
 
 def test_an_excluded_hour_moves_the_clock_boundary_but_not_the_index_boundary():
-    # 60 contiguous hours with hours 1010..1019 excluded (a failure-status run,
-    # say). Measured hour 10 is game hour 1020, so the first clock block holds
-    # only 10 measured hours, not 48 — while index mode would still cut at 48.
     hours = [h for h in range(1000, 1060) if not 1010 <= h < 1020]
     bounds = compress_arms.clock_span_bounds(hours, 48)
-    # Block 0 is game hours 1000..1047 -> the 38 measured hours in that range.
     measured_in_block0 = sum(1 for h in hours if h - hours[0] < 48)
     assert bounds[0] == (0, measured_in_block0)
     assert measured_in_block0 == 38
-    # And the index-mode cut would have been at 48, which is inside block 1.
     assert bounds != [(0, 48), (48, 50)]
-    # Every measured hour is covered exactly once, in order, with no gaps.
     assert bounds[0][0] == 0
     assert bounds[-1][1] == len(hours)
     for (_, end), (start, _) in zip(bounds, bounds[1:]):
@@ -67,9 +57,6 @@ def test_an_excluded_hour_moves_the_clock_boundary_but_not_the_index_boundary():
 
 
 def test_a_wholly_empty_clock_block_produces_no_span():
-    # A capture that skips a whole 48-hour block emits no span for it rather
-    # than an empty one — an empty span would compress to a nonzero frame header
-    # and inflate the total for hours that carry nothing.
     hours = [1000, 1001, 1200, 1201]
     bounds = compress_arms.clock_span_bounds(hours, 48)
     assert bounds == [(0, 2), (2, 4)]
@@ -89,9 +76,6 @@ def test_a_non_positive_span_is_refused():
 
 
 def test_hours_that_are_not_ordered_still_cover_every_hour_once():
-    # The bins emit hours in order, so this is defensive rather than expected —
-    # but a slicing rule that could drop or duplicate an hour would silently
-    # change a size, which is the one thing this module must not do.
     hours = [1000, 1001, 1049, 1002, 1050]
     bounds = compress_arms.clock_span_bounds(hours, 48)
     assert bounds[0][0] == 0
@@ -100,7 +84,6 @@ def test_hours_that_are_not_ordered_still_cover_every_hour_once():
         assert end == start
 
 
-# --- the two mode paths through the compressor -------------------------------
 
 
 def test_clock_and_index_totals_agree_on_a_contiguous_capture(tmp_path):
@@ -128,7 +111,6 @@ def test_clock_mode_refuses_an_hours_list_that_does_not_match_the_offsets(tmp_pa
         compress_arms.compressed_in_clock_spans(data, offsets, [1, 2], 48)
 
 
-# --- the CLI, including the default-unchanged guarantee ----------------------
 
 
 def run_main(tmp_path, args, capsys):
@@ -137,8 +119,6 @@ def run_main(tmp_path, args, capsys):
 
 
 def test_default_invocation_is_unchanged_and_needs_no_hours_file(tmp_path, capsys):
-    # The default path must not read, require, or notice a `.hours` file: every
-    # published measurement was taken without one.
     write_arm(tmp_path, "ship_dNN", [100, 200, 300, 400])
     write_arm(tmp_path, "wire_new", [50, 60, 70, 80])
     assert not (tmp_path / "ship_dNN.hours").exists()

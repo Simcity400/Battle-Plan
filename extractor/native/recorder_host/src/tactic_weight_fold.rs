@@ -1,9 +1,3 @@
-//! Deferred fold/projection support for compact domain 96 (`PTW1`).
-//!
-//! Kept independent of the collector producer: `world_fold` owns record
-//! ordering and status handling, while this module owns strict decode, the
-//! same-boundary D92 identity join, and pointer-free JSON projection.
-
 use std::collections::BTreeMap;
 
 use compact_contract::preferred_tactic::PreferredTacticRow;
@@ -42,13 +36,6 @@ impl TacticWeightFoldState {
             self.current = None;
             return Ok(decoded.status_flags);
         }
-        // `observed_country_count` witnesses the D92 roster the producer walked,
-        // and the producer proves `count == preferred.rows.len()` before it
-        // encodes (`compact_contract/src/tactic_weight.rs:355`). D18 is a
-        // different, deliberately filtered enumeration (`attach_log.rs:30886`)
-        // and must never stand in for this count: on `runs/batch3/deepwar_c`
-        // PTW1 carries 439 while D18 publishes 356. D18's own relationship to
-        // D92 is enforced upstream, by D92's containment gate.
         if decoded.observed_country_count as usize != preferred_rows.len()
             || decoded.source_sequence != preferred_source_sequence
         {

@@ -1,4 +1,3 @@
-//! Shipping XUI18 authored compositor and viewer-owned lifecycle.
 
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor, UiAssetCache};
@@ -130,10 +129,6 @@ pub fn compose_power_balance_surface(
         let timer = format!("{prefix}timer_text");
         let target_flag = format!("{prefix}target_flag");
         let target_frame = format!("{prefix}target_flag_frame");
-        // The authored templates contain controller-owned positive/negative
-        // progress bars which the generic compositor otherwise paints at its
-        // 100% default. D74P4 carries no decision-progress authority, so both
-        // bars stay hidden until a future exact carrier explicitly owns them.
         hide_unauthenticated_decision_progress(&mut options, &prefix);
         options
             .text_overrides
@@ -181,10 +176,6 @@ pub fn compose_power_balance_surface(
     }
 
     let mut compositor = Compositor::with_cache(resolver, registry, cache);
-    // The engine positions the marker and dynamically cloned range splitters
-    // against the effective bar widget. Derive that geometry from the exact
-    // winning GUI and selected sprite instead of reusing vanilla pixel
-    // literals: mods may move or resize any of these authored assets.
     options.position_overrides.remove("position_marker");
     let mut range_probe = range_template.clone();
     range_probe.name = "xui18_range_geometry_probe".into();

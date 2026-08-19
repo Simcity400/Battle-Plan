@@ -55,10 +55,6 @@ UNIT_SUBDIR, UNIT_EXTS = GATE.STATIC_SUBDIRS["unit_definition_files"]
 EQUIPMENT_SUBDIR, EQUIPMENT_EXTS = GATE.STATIC_SUBDIRS["equipment_definition_files"]
 TEMPLATE_SUBDIR, TEMPLATE_EXTS = GATE.STATIC_SUBDIRS["division_template_files"]
 
-# `common/units/equipment` sits UNDER `common/units`, and the file map recurses,
-# so the unit-definition map legitimately also carries the equipment blocks.
-# That overlap is the gate's real shape; these cases assert it rather than
-# arranging a tree where it cannot happen.
 UNIT_PATH = f"{UNIT_SUBDIR}/infantry.txt"
 EQUIPMENT_PATH = f"{EQUIPMENT_SUBDIR}/infantry.txt"
 TEMPLATE_PATH = f"{TEMPLATE_SUBDIR}/GER_1936.txt"
@@ -99,7 +95,6 @@ class ModOverlay(unittest.TestCase):
         write(self.vanilla, UNIT_PATH, VANILLA_INFANTRY)
         write(self.vanilla, EQUIPMENT_PATH, VANILLA_EQUIPMENT)
         write(self.vanilla, TEMPLATE_PATH, VANILLA_TEMPLATE)
-        # What `is_vanilla_root` requires of an install root.
         (self.vanilla / "hoi4.exe").write_bytes(b"not the real executable")
         self.mod.mkdir(parents=True, exist_ok=True)
 
@@ -165,7 +160,6 @@ class ModOverlay(unittest.TestCase):
             GATE.sha256_bytes((self.mod / UNIT_PATH).read_bytes()),
             "the recorded source digest must be the file that actually won",
         )
-        # ONE definition, not two: an override replaces, it does not append.
         self.assertEqual(
             [key for key in blocks if key.startswith("infantry")], ["infantry"]
         )
@@ -261,14 +255,11 @@ class ModOverlay(unittest.TestCase):
             units["infantry"]["source_sha256"],
             GATE.sha256_bytes((self.mod / UNIT_PATH).read_bytes()),
         )
-        # The layer list the artifact publishes is the one it resolved from.
         self.assertEqual(
             [(row["label"], row["root"]) for row in catalog["layers"]],
             [("vanilla", str(self.vanilla.resolve())), ("test_mod", str(self.mod))],
         )
         self.assertEqual(catalog["counts"]["unit_definitions"], len(units))
-        # The published digest covers the resolved content, so a layer swap
-        # cannot leave the artifact's identity unchanged.
         without_digest = {
             key: value for key, value in catalog.items() if key != "artifact_sha256"
         }
@@ -306,7 +297,6 @@ class ModOverlay(unittest.TestCase):
         self.assertEqual(
             mod_layer["label"], "Test Mod", "the label is the descriptor's name"
         )
-        # No descriptor means no replacement: the same tree keeps vanilla.
         self.assertIn("infantry", self.catalog(None)["catalog"]["unit_definitions"])
 
 

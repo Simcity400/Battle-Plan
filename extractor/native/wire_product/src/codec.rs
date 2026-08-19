@@ -1,6 +1,4 @@
-use crate::model::{
-    ArtifactRole, BranchParent, BranchSpec, BundleEntryDescriptor, ProductError,
-};
+use crate::model::{ArtifactRole, BranchParent, BranchSpec, BundleEntryDescriptor, ProductError};
 use std::collections::{BTreeMap, BTreeSet};
 
 const BUNDLE_MAGIC: &[u8; 4] = b"H4WB";
@@ -71,14 +69,17 @@ fn encode_bundle_metadata_descriptors<'a>(
         )));
     }
     descriptors.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
-    if descriptors.windows(2).any(|pair| pair[0].path == pair[1].path) {
+    if descriptors
+        .windows(2)
+        .any(|pair| pair[0].path == pair[1].path)
+    {
         return Err(ProductError::new(
             "rebuilt-wire artifact paths are not unique",
         ));
     }
     let mut out = Vec::new();
     preamble(&mut out, BUNDLE_MAGIC);
-    out.push(0); // hourly tick grid
+    out.push(0);
     out.extend_from_slice(&[0; 7]);
     out.extend_from_slice(&content_manifest_sha256);
     out.extend_from_slice(&definition_csv_sha256);
@@ -194,7 +195,11 @@ pub(crate) fn decode_branches(bytes: &[u8]) -> Result<Vec<BranchSpec>, ProductEr
                     "parent-absent branch carries nonzero parent fields",
                 ))
             }
-            _ => return Err(ProductError::new("branch parent discriminator is not 0 or 1")),
+            _ => {
+                return Err(ProductError::new(
+                    "branch parent discriminator is not 0 or 1",
+                ))
+            }
         };
         branches.push(BranchSpec {
             branch,
@@ -226,9 +231,6 @@ pub(crate) fn validate_branches(branches: &[BranchSpec]) -> Result<(), ProductEr
     if root.parent.is_some() {
         return Err(ProductError::new("branch zero cannot have a parent"));
     }
-    // Validate every direct edge before any transitive walk. Otherwise an
-    // earlier branch can traverse through a later malformed branch and turn
-    // adversarial bytes into an indexing panic.
     for branch in branches {
         if branch.session_fingerprint == [0; 32] {
             return Err(ProductError::new(format!(
@@ -258,9 +260,6 @@ pub(crate) fn validate_branches(branches: &[BranchSpec]) -> Result<(), ProductEr
             }
         }
     }
-    // Functional-graph traversal with memoized completion. Every branch enters
-    // and leaves the visiting state once, so a deep valid rollover chain is
-    // not re-walked from each descendant.
     let mut visit = BTreeMap::<u32, u8>::new();
     for branch in branches {
         if visit.get(&branch.branch) == Some(&2) {
@@ -271,9 +270,7 @@ pub(crate) fn validate_branches(branches: &[BranchSpec]) -> Result<(), ProductEr
         loop {
             match visit.get(&cursor.branch).copied() {
                 Some(2) => break,
-                Some(1) => {
-                    return Err(ProductError::new("branch ancestry contains a cycle"))
-                }
+                Some(1) => return Err(ProductError::new("branch ancestry contains a cycle")),
                 None => {}
                 Some(_) => unreachable!("branch visit state is internal"),
             }
@@ -305,9 +302,7 @@ fn validate_branch_count(count: usize) -> Result<(), ProductError> {
     Ok(())
 }
 
-pub(crate) fn encode_schemas(
-    definitions: &[SchemaDefinition],
-) -> Result<Vec<u8>, ProductError> {
+pub(crate) fn encode_schemas(definitions: &[SchemaDefinition]) -> Result<Vec<u8>, ProductError> {
     validate_schema_registry(definitions)?;
     let mut ordered = definitions.to_vec();
     ordered.sort_by_key(|definition| (definition.schema_hash, definition.domain));
@@ -434,11 +429,7 @@ mod branch_validation_tests {
             .to_string()
             .contains("invalid parent 1"));
 
-        let cycle = [
-            branch(0, None),
-            branch(1, Some(2)),
-            branch(2, Some(1)),
-        ];
+        let cycle = [branch(0, None), branch(1, Some(2)), branch(2, Some(1))];
         assert!(validate_branches(&cycle)
             .unwrap_err()
             .to_string()

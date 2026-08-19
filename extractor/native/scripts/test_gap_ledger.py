@@ -21,7 +21,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import gap_ledger  # noqa: E402  (path is set immediately above)
+import gap_ledger
 
 VECTOR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "gap_ledger_conformance.json")
@@ -187,7 +187,6 @@ class Compatibility(unittest.TestCase):
                 expand({"gap_ledger": ledger})
             self.assertIn("does not define", str(caught.exception))
 
-        # Nested objects are closed too: a witness and an anchored tick.
         ledger = json.loads(json.dumps(base))
         ledger["gaps"]["classes"][0]["witness"]["novel"] = 1
         with self.assertRaises(gap_ledger.GapLedgerError):
@@ -215,8 +214,6 @@ class Compatibility(unittest.TestCase):
                 expand({"gap_ledger": ledger})
             self.assertIn("does not define", str(caught.exception))
 
-        # AND THE LEDGER ITSELF, which is the last container: closing the classes
-        # and then their tables still left this escape one level farther out.
         for expand in (gap_ledger.expand_gaps, gap_ledger.expand_domain_gap_outcomes):
             ledger = json.loads(json.dumps(base))
             ledger["novel_ledger_field"] = 1
@@ -245,7 +242,6 @@ class Compatibility(unittest.TestCase):
                 with self.assertRaises(gap_ledger.GapLedgerError) as caught:
                     expand({"gap_ledger": ledger})
                 self.assertIn("note", str(caught.exception))
-        # A DIFFERENT string is still fine: the prose is not load-bearing.
         ledger = json.loads(json.dumps(base))
         ledger["note"] = "anything at all"
         self.assertTrue(gap_ledger.expand_gaps({"gap_ledger": ledger}))
@@ -313,8 +309,6 @@ class Compatibility(unittest.TestCase):
         `classes` array regardless of what it says it is."""
         with open(VECTOR, encoding="utf-8") as handle:
             ledger = json.load(handle)["gap_ledger"]
-        # `2.0` is included deliberately: `2.0 == 2` in Python, so the obvious
-        # equality test admits a version the recorder cannot write.
         for broken in ({**ledger, "version": gap_ledger.GAP_LEDGER_VERSION + 1},
                        {**ledger, "version": float(gap_ledger.GAP_LEDGER_VERSION)},
                        {**ledger, "schema": "some-other-ledger"}):
@@ -327,7 +321,6 @@ class Compatibility(unittest.TestCase):
         self.assertFalse(gap_ledger.ledger_present({"record_count": 5}))
         empty = {"gap_ledger": gap_ledger.pack_rows_for_tests()}
         self.assertTrue(gap_ledger.ledger_present(empty))
-        # An EMPTY ledger reads, and reads as empty. A MISSING one raises.
         self.assertEqual(gap_ledger.expand_gaps(empty), [])
         with self.assertRaises(gap_ledger.GapLedgerError):
             gap_ledger.expand_gaps({"record_count": 5})
@@ -399,12 +392,8 @@ class Compatibility(unittest.TestCase):
             ("domain_gap_outcomes", "reason"), ("domain_gap_outcomes", "part"),
             ("gaps", "reason"), ("gaps", "grouping"),
         ]
-        # An explicit ordinal is the same shape of hazard: it reaches a caller as
-        # a row field the caller then compares and orders by.
         explicit = json.loads(json.dumps(base))
         explicit["domain_gap_outcomes"]["ordinal_encoding"] = "explicit"
-        # The lane table has to GO, or the branch-field guard refuses first and
-        # this subcase stops testing the ordinal element type at all.
         del explicit["domain_gap_outcomes"]["lane_ordinal_first"]
         for class_ in explicit["domain_gap_outcomes"]["classes"]:
             hours = sum(run[1] for run in class_["hour_runs"])
@@ -429,10 +418,6 @@ class Compatibility(unittest.TestCase):
         WHAT PRODUCTION CHANGE MAKES THIS FAIL: `return dict(template)`."""
         with open(VECTOR, encoding="utf-8") as handle:
             base = json.load(handle)["gap_ledger"]
-        # `{}` and `"7"` are illegal for EVERY numeric witness field. Range is
-        # asserted separately, on the fields that really are `u32` on the wire --
-        # an offset like `previous_hour_rel` is legitimately negative, so a blind
-        # range sweep would be asserting the opposite of the contract.
         for index, class_ in enumerate(base["gaps"]["classes"]):
             for field, value in list(class_["witness"].items()):
                 if field == "kind" or not isinstance(value, int):
@@ -520,7 +505,6 @@ class Compatibility(unittest.TestCase):
                 expand({"gap_ledger": ledger})
             self.assertIn(fragment, str(caught.exception))
 
-        # A per-domain GAP class, found by its tag rather than by position.
         ledger = json.loads(json.dumps(base))
         index = next(i for i, class_ in enumerate(ledger["gaps"]["classes"])
                      if class_["grouping"] == "per_domain")
@@ -555,7 +539,6 @@ class Compatibility(unittest.TestCase):
         with self.assertRaises(gap_ledger.GapLedgerError):
             gap_ledger.expand_domain_gap_outcomes({"gap_ledger": ledger})
 
-        # A tick stated as an offset that RESOLVES below zero is the same fact.
         ledger = json.loads(json.dumps(base))
         ledger["domain_gap_outcomes"]["classes"][0]["tick_before"] = {"rel": -(2 ** 40)}
         with self.assertRaises(gap_ledger.GapLedgerError):
@@ -584,16 +567,10 @@ class Compatibility(unittest.TestCase):
         with self.assertRaises(gap_ledger.GapLedgerError):
             gap_ledger.expand_domain_gap_outcomes({"gap_ledger": duplicated})
 
-        # The out-of-range lane is the one a class ACTUALLY expands to, and its
-        # `part` is kept, so the entry still matches a real lane. Mutating an
-        # unused entry instead would raise through the unused-lane check with the
-        # range guard deleted -- a test that cannot fail. The message is asserted
-        # for the same reason.
         used = base["domain_gap_outcomes"]["lane_ordinal_first"][0]
         for bad in (-1, 65536):
             wide = json.loads(json.dumps(base))
             wide["domain_gap_outcomes"]["lane_ordinal_first"][0]["domain_id"] = bad
-            # Point a class at the same out-of-range domain, so the lane is used.
             for class_ in wide["domain_gap_outcomes"]["classes"]:
                 class_["domains"] = [d if d != used["domain_id"] else bad
                                      for d in class_["domains"]]
@@ -687,7 +664,6 @@ class Compatibility(unittest.TestCase):
             expand = (gap_ledger.expand_gaps if table == "gaps"
                       else gap_ledger.expand_domain_gap_outcomes)
             split = json.loads(json.dumps(base))
-            # Split the first run of the first class that has one to split.
             done = False
             for class_ in split[table]["classes"]:
                 for index, (first, count) in enumerate(class_["hour_runs"]):
@@ -699,8 +675,6 @@ class Compatibility(unittest.TestCase):
                 if done:
                     break
             self.assertTrue(done, f"the vector has no multi-hour run in {table}")
-            # Neither the hours nor the rows changed, so only the canonical-form
-            # check can refuse this.
             with self.assertRaises(gap_ledger.GapLedgerError) as caught:
                 expand({"gap_ledger": split})
             self.assertIn("maximal", str(caught.exception))

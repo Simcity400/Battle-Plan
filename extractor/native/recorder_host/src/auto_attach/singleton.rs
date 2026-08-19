@@ -16,7 +16,6 @@ extern "system" {
 const ERROR_ALREADY_EXISTS: u32 = 183;
 
 /// Owned named-mutex guard. Dropping the sole value releases the supervisor
-/// lease; it is deliberately neither Clone nor Copy.
 pub struct SupervisorMutex {
     handle: Handle,
 }

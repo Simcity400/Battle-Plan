@@ -1,10 +1,3 @@
-//! Real app-device execution for the XMAP08 river and strait programs.
-//!
-//! XMAP08 owns its static textures, geometry, shader programs, sampler state,
-//! and fixed pipeline state. Runtime terrain, water, lighting, and
-//! screen-shadow resources remain typed inputs from
-//! XMAP04/XMAP07/XMAP09/XMAP10. The executor refuses a draw unless every
-//! reflected resource and constant buffer is present and content-addressed.
 
 use crate::{
     production_features::xmap08::{
@@ -729,12 +722,7 @@ pub struct Xmap08D3dHandoffReceipt {
 }
 
 impl Xmap08D3dHandoffReceipt {
-    /// Prove that both XMAP08 passes completed for the exact prepared frame.
-    ///
-    /// An empty admitted draw set is a completed pass with zero executions and
-    /// no ready-draw contract. A non-empty set must execute every retained
     /// draw and publish the authenticated ready-draw contract generated from
-    /// its actual bound resources and constant buffers.
     pub fn validate_complete_for_authority(
         &self,
         frame_sha256: &str,
@@ -1001,8 +989,6 @@ pub struct Xmap08RiverTemporalBinding {
 }
 
 impl Xmap08RiverTemporalBinding {
-    /// Bind XMAP08 to the exact viewer-time and replay-season values already
-    /// authenticated by XMAP07 for the same replay and camera frame.
     pub fn from_xmap07(
         water: &crate::PreparedWaterFrame,
         camera_frame_sha256: &str,
@@ -1037,8 +1023,6 @@ pub struct Xmap08RiverShadowMatrixBinding {
 }
 
 impl Xmap08RiverShadowMatrixBinding {
-    /// Adapt XMAP09's authenticated shadow matrix only for an effective river
-    /// shader whose reflection retains `ShadowMapTextureMatrix`.
     pub fn from_xmap09(frame: &crate::PreparedXmap09LightingFrame) -> Result<Self> {
         frame.validate()?;
         let binding = frame.shadow_map_texture_matrix()?;
@@ -1081,13 +1065,6 @@ impl Xmap08RiverShadowMatrixBinding {
     }
 }
 
-/// XMAP10-owned, per-map-copy aggregate SceneCB0. XMAP08 never patches or
-/// reuploads this buffer: the exact compositor bytes are borrowed and bound
-/// directly for the matching XMAP04 map-copy row.
-///
-/// # Safety
-/// Implementors must keep `raw_buffer()` alive on the draw device and every
-/// identity must describe that exact retained buffer.
 #[cfg(windows)]
 pub unsafe trait NativeXmap08SceneConstantBuffer:
     crate::NativeXmap04UnderwaterSceneConstantBuffer
@@ -1101,13 +1078,6 @@ pub unsafe trait NativeXmap08SceneConstantBuffer:
     fn raw_main_scene_color_texture(&self) -> *mut winapi::um::d3d11::ID3D11Texture2D;
 }
 
-/// Borrowed XMAP04/XMAP07/XMAP09/XMAP10 shader resource used by the optimized river
-/// program. Water content resources are replay-scoped and deliberately have
-/// no camera identity; lighting/shadow resources are camera-scoped.
-///
-/// # Safety
-/// Implementors must keep `raw_shader_resource_view()` alive on the draw
-/// device and every identity must describe that exact retained resource.
 #[cfg(windows)]
 pub unsafe trait NativeXmap08RiverShaderResource {
     fn owner_packet(&self) -> &str;
@@ -1293,12 +1263,8 @@ unsafe impl NativeXmap08SceneConstantBuffer for crate::NativeXmap10MapCopySceneC
 
 #[cfg(windows)]
 pub struct NativeXmap08RiverProviderInputs<'a> {
-    /// Exact XMAP04/XMAP07/XMAP09/XMAP10 resources retained by the optimized river program.
-    /// XMAP05 resources are borrowed directly from `political`.
     pub shader_resources: &'a [&'a dyn NativeXmap08RiverShaderResource],
-    /// One XMAP10 aggregate CB0 per XMAP04 canonical map-copy row.
     pub scene_cb0_by_map_copy: &'a [&'a dyn NativeXmap08SceneConstantBuffer],
-    /// Required only when the effective high-GFX program retains CB2.
     pub point_lights_cb2: Option<&'a dyn crate::NativeXmap04UnderwaterPointLightsConstantBuffer>,
     pub temporal: &'a Xmap08RiverTemporalBinding,
     pub shadow_matrix: Option<&'a Xmap08RiverShadowMatrixBinding>,
@@ -1352,9 +1318,6 @@ struct NativeStaticResource {
 
 #[cfg(windows)]
 impl NativeXmap08RiversStraitsHandoff {
-    /// Upload the complete XMAP08-owned portion of the river/strait pass.
-    ///
-    /// # Safety
     /// `device` must remain live for the lifetime of the returned handoff.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -1448,11 +1411,6 @@ impl NativeXmap08RiversStraitsHandoff {
         })
     }
 
-    /// Replace frame-dependent geometry/program uploads without accepting a
-    /// stale handoff identity.
-    ///
-    /// # Safety
-    /// `device` must be the same live device used by `create_on_device`.
     pub unsafe fn update_frame(
         &mut self,
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -1477,13 +1435,6 @@ impl NativeXmap08RiversStraitsHandoff {
         &self.receipt
     }
 
-    /// Execute every admitted strait view on the application's actual scene
-    /// target. Vanilla's optimized strait program retains only XMAP08's
-    /// admitted DiffuseTexture and camera CB0; effective mod shaders also
-    /// receive any reflected XMAP05 FoW resources through the typed provider.
-    ///
-    /// # Safety
-    /// `context` and `target` must belong to the device used for this handoff.
     pub unsafe fn execute_straits(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -1676,12 +1627,6 @@ impl NativeXmap08RiversStraitsHandoff {
         Ok(&self.receipt)
     }
 
-    /// Execute every admitted river strip only after XMAP04/XMAP07/XMAP09/
-    /// XMAP10 provide the real reflected runtime resources and full scene
-    /// constants.
-    ///
-    /// # Safety
-    /// All pointers must belong to the same device used for this handoff.
     pub unsafe fn execute_rivers(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -2078,10 +2023,6 @@ unsafe fn validate_buffer_device(
 }
 
 fn river_flow_direction_f32_bits(render_group: u8) -> u32 {
-    // through the largest retained `record + 0x24` value, writing -1.0 for an
-    // even loop index and +1.0 for an odd index before drawing that group.
-    // Evidence job 20260730T123519Z-xmap08-river-render-group-direction-fina-80bf83a9,
-    // decompile SHA-256 9913e0a2c517408ed2c87eabf9a952eaadf445056f486dfc78e93b32eb70812e.
     if render_group & 1 == 0 {
         (-1.0f32).to_bits()
     } else {
@@ -3555,9 +3496,9 @@ fn constant_buffer_descriptor_sha256(
     bytes.extend_from_slice(&byte_len.to_le_bytes());
     bytes.extend_from_slice(&winapi::um::d3d11::D3D11_USAGE_DEFAULT.to_le_bytes());
     bytes.extend_from_slice(&winapi::um::d3d11::D3D11_BIND_CONSTANT_BUFFER.to_le_bytes());
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // CPUAccessFlags
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // MiscFlags
-    bytes.extend_from_slice(&0u32.to_le_bytes()); // StructureByteStride
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes.extend_from_slice(format!("{variables:?}").as_bytes());
     Ok(Sha256::hex(&bytes))
 }

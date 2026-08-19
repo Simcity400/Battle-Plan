@@ -1,38 +1,13 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
-//! Pointer-free carrier and row codec for the D45 schema-v5 direct-transition
-//! trailer.
-//!
-//! This crate does not define a new compact domain. Its Windows a729 adapter is
-//! engineering-complete for the pinned executable; every transient owner, subject,
-//! and argument pointer is replaced with a capture-local opaque instance ID
-//! before publication. Raw pointers, pointer hashes, and absolute virtual
-//! addresses have no fields in this wire format.
-//!
-//! The original six a729 roots and the X10 direct invocation roots are
-//! statically authoritative under the exact-20 receipts bound below. Those
-//! receipts prove root identity and static contracts. Production scheduling is
-//! authorized for the pinned build; every individual install still has to pass
-//! the exact target sentinels, required-root mask, ordered drain, and
-//! fail-closed runtime status before any row is authoritative.
-
 use std::fmt;
 
 #[cfg(windows)]
 pub mod a729_hook;
 
 pub const STATIC_EXACT20_ROOT_AUTHORITY: bool = true;
-/// Historical cross-run receipt state. It remains diagnostic and must never be
-/// fabricated merely to authorize the exact-build hook.
 pub const LIVE_INVOCATION_AUTHORITY: bool = false;
-/// Installation authority comes from the pinned binary plus the independently
-/// verified roots. Each capture establishes its own live authority through the
-/// installed-root mask, ordered drain, and fail-closed status.
 pub const PRODUCTION_INSTALL_AUTHORIZED: bool = STATIC_EXACT20_ROOT_AUTHORITY;
-/// Production authority schedules the already authenticated exact-build seam.
-/// `LIVE_INVOCATION_AUTHORITY` remains a historical receipt fact, not a
-/// permanent kill switch: live authority is established independently for
-/// each capture by the install/drain contract above.
 pub const PRODUCTION_AUTHORITY: bool = PRODUCTION_INSTALL_AUTHORIZED;
 pub const PRODUCTION_ACTIVATION: bool = PRODUCTION_AUTHORITY;
 
@@ -91,9 +66,6 @@ pub const ROOT_RVA_TARGETED_DECISION_CANCEL_EFFECT_A729: u32 = 0x0071_b7d0;
 pub const ROOT_RVA_TARGETED_DECISION_REMOVE_EFFECT_A729: u32 = 0x0071_be10;
 pub const ROOT_RVA_TARGETED_DECISION_TIMEOUT_EFFECT_A729: u32 = 0x0071_c130;
 
-/// The exact-20 root set includes the five narrow direct-event roots and the
-/// broader decision-lifecycle correlation boundary. The sixth root is not a
-/// direct-event kind and is intentionally absent from [`DirectEventKind`].
 pub const AUTHORITY_EXACT20_ROOT_RVAS_A729: [u32; AUTHORITY_EXACT20_ROOT_COUNT] = [
     ROOT_RVA_FOCUS_COMPLETED_A729,
     ROOT_RVA_RESEARCH_COMPLETED_A729,
@@ -103,8 +75,6 @@ pub const AUTHORITY_EXACT20_ROOT_RVAS_A729: [u32; AUTHORITY_EXACT20_ROOT_COUNT] 
     ROOT_RVA_DECISION_LIFECYCLE_CORRELATION_A729,
 ];
 
-/// The five legacy post-return boundaries plus seven X10 entry boundaries
-/// retained by the a729 static RE lane.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum DirectEventKind {
@@ -216,10 +186,6 @@ impl DirectEventKind {
     }
 }
 
-/// Capture-local monotonic ID assigned before a value enters the carrier.
-///
-/// `0` is the only absent value. The ID is deliberately not stable across
-/// process launches and must never be derived from pointer bits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct OpaqueInstanceId(u64);
@@ -243,7 +209,6 @@ impl OpaqueInstanceId {
     }
 }
 
-/// Allocates opaque IDs without accepting an address or address-sized input.
 #[derive(Debug)]
 struct OpaqueInstanceIdAllocator {
     next: u64,
@@ -266,11 +231,6 @@ impl OpaqueInstanceIdAllocator {
     }
 }
 
-/// Fixed-width authenticated observation summary around the rooted call.
-///
-/// Adapter-specific flags distinguish pre-copied scalar state from a
-/// post-return marker; consumers must not assume that every field was safely
-/// dereferenced on both sides of the call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DirectEventStateSummary {
     pub state_bits: u64,
@@ -278,33 +238,21 @@ pub struct DirectEventStateSummary {
     pub remaining_raw: i32,
 }
 
-/// Pointer-free 120-byte row suitable for a D45 schema-v5 payload trailer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectEventRow {
     pub sequence: u64,
     pub kind: DirectEventKind,
     pub thread_id: u32,
     pub game_hour_raw: i32,
-    /// RVA relative to the authenticated a729 image base, never a VA.
     pub root_rva: u32,
     pub owner_instance_id: OpaqueInstanceId,
     pub subject_instance_id: OpaqueInstanceId,
     pub argument_instance_id: OpaqueInstanceId,
     /// Stable engine owner key where the exact ABI exposes one (for example a
-    /// country tag database id). Zero means the root has no proved portable
-    /// owner-key decode.
     pub owner_key: u64,
-    /// FNV-1a-64 of the exact authored subject token. Zero means the subject
-    /// token layout is not proved for this root. This is never computed from a
-    /// pointer or address.
     pub subject_token_hash: u64,
-    /// Exact stable engine key when the subject has no proved authored-token
-    /// layout. Currently this is `CTechnology+0x08` for research completion.
-    /// It is never synthesized from the capture-local opaque instance id.
     pub subject_key: u64,
-    /// Exact adapter-defined scalar/flag bits observed on entry.
     pub input_bits: u64,
-    /// Exact adapter-defined scalar/flag bits observed on return.
     pub return_bits: u64,
     pub before: DirectEventStateSummary,
     pub after: DirectEventStateSummary,
@@ -358,15 +306,12 @@ impl DirectEventRow {
             || self.after.progress_raw != self.before.progress_raw
             || self.after.remaining_raw != self.before.remaining_raw
         {
-            // These roots prove that the invocation returned. They do not
-            // claim that an arbitrary object was safely re-read after return.
             return Err(CarrierError::InvalidReturnObservation);
         }
         Ok(())
     }
 }
 
-/// Input accepted by [`DirectEventCarrier`]; sequence is assigned globally.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnsequencedDirectEventRow {
     pub kind: DirectEventKind,
@@ -385,10 +330,6 @@ pub struct UnsequencedDirectEventRow {
     pub after: DirectEventStateSummary,
 }
 
-/// One serialized sequence space shared by every rooted event kind.
-///
-/// A multi-threaded adapter must hold this value behind one mutex. The carrier
-/// itself intentionally contains no hook-runtime or platform dependency.
 #[derive(Debug)]
 pub struct DirectEventCarrier {
     next_sequence: u64,
@@ -398,17 +339,11 @@ pub struct DirectEventCarrier {
     poisoned: bool,
 }
 
-/// One loss-free drain from one installed hook epoch. Empty drains are
-/// authoritative: `sequence_cursor` names the next row that would be emitted,
-/// so consumers can distinguish measured-empty from a missed drain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectEventBatch {
     pub hook_epoch: u64,
     pub drain_sequence: u64,
     pub installed_root_mask: u64,
-    /// Cumulative mask of event kinds observed in this hook epoch. Unlike the
-    /// installed-root mask, this is a live witness and may legitimately be
-    /// zero in a measured-empty baseline drain.
     pub observed_kind_mask: u64,
     pub sequence_cursor: u64,
     pub producer_complete: bool,
@@ -425,7 +360,9 @@ impl DirectEventBatch {
             return Err(CarrierError::ZeroDrainSequence);
         }
         if self.installed_root_mask != D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK {
-            return Err(CarrierError::IncompleteInstalledRootMask(self.installed_root_mask));
+            return Err(CarrierError::IncompleteInstalledRootMask(
+                self.installed_root_mask,
+            ));
         }
         if self.observed_kind_mask & !D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK != 0
             || self
@@ -433,7 +370,9 @@ impl DirectEventBatch {
                 .iter()
                 .any(|row| self.observed_kind_mask & row.kind.root_mask_bit() == 0)
         {
-            return Err(CarrierError::InvalidObservedKindMask(self.observed_kind_mask));
+            return Err(CarrierError::InvalidObservedKindMask(
+                self.observed_kind_mask,
+            ));
         }
         if self.sequence_cursor == 0 {
             return Err(CarrierError::ZeroSequence);
@@ -450,7 +389,11 @@ impl DirectEventBatch {
         let expected_cursor = self
             .rows
             .last()
-            .map(|row| row.sequence.checked_add(1).ok_or(CarrierError::SequenceSpaceExhausted))
+            .map(|row| {
+                row.sequence
+                    .checked_add(1)
+                    .ok_or(CarrierError::SequenceSpaceExhausted)
+            })
             .transpose()?
             .unwrap_or(self.sequence_cursor);
         if expected_cursor != self.sequence_cursor {
@@ -488,7 +431,6 @@ impl DirectEventCarrier {
         })
     }
 
-    /// Allocates from the same capture-global authority that owns sequencing.
     pub fn allocate_instance_id(&mut self) -> Result<OpaqueInstanceId, CarrierError> {
         if self.poisoned {
             return Err(CarrierError::CarrierPoisoned);
@@ -555,7 +497,6 @@ impl DirectEventCarrier {
         self.poisoned
     }
 
-    /// Drains typed rows without resetting the capture-global sequence.
     pub fn drain_rows(&mut self) -> Result<Vec<DirectEventRow>, CarrierError> {
         if self.poisoned {
             return Err(CarrierError::CarrierPoisoned);
@@ -565,7 +506,6 @@ impl DirectEventCarrier {
         Ok(rows)
     }
 
-    /// Encodes and drains one trailer without resetting the global sequence.
     pub fn drain_trailer(&mut self) -> Result<Vec<u8>, CarrierError> {
         if self.poisoned {
             return Err(CarrierError::CarrierPoisoned);
@@ -588,9 +528,15 @@ pub enum CarrierError {
     ProducerIncomplete,
     IncompleteInstalledRootMask(u64),
     InvalidObservedKindMask(u64),
-    SequenceCursorMismatch { expected: u64, actual: u64 },
+    SequenceCursorMismatch {
+        expected: u64,
+        actual: u64,
+    },
     TrailerLengthOverflow,
-    TrailerLengthMismatch { expected: usize, actual: usize },
+    TrailerLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
     InvalidKind(u32),
     MissingInstanceId,
     MissingOwnerInstanceId,
@@ -608,13 +554,21 @@ pub enum CarrierError {
     },
     InvalidInvocationObservation,
     InvalidReturnObservation,
-    UnexpectedInitialSequence { expected: u64, actual: u64 },
-    SequenceDiscontinuity { previous: u64, actual: u64 },
+    UnexpectedInitialSequence {
+        expected: u64,
+        actual: u64,
+    },
+    SequenceDiscontinuity {
+        previous: u64,
+        actual: u64,
+    },
     SequenceSpaceExhausted,
     InstanceIdSpaceExhausted,
     CarrierPoisoned,
     QueueCapacityZero,
-    PendingQueueFull { capacity: usize },
+    PendingQueueFull {
+        capacity: usize,
+    },
 }
 
 impl fmt::Display for CarrierError {
@@ -674,12 +628,14 @@ pub fn decode_row(bytes: &[u8]) -> Result<DirectEventRow, CarrierError> {
     Ok(row)
 }
 
-/// Encodes only the future D45-v5 trailer; the caller owns the FRD2 header and
-/// all pre-existing row families.
 pub fn encode_trailer(rows: &[DirectEventRow]) -> Result<Vec<u8>, CarrierError> {
     let sequence_cursor = rows
         .last()
-        .map(|row| row.sequence.checked_add(1).ok_or(CarrierError::SequenceSpaceExhausted))
+        .map(|row| {
+            row.sequence
+                .checked_add(1)
+                .ok_or(CarrierError::SequenceSpaceExhausted)
+        })
         .transpose()?
         .unwrap_or(1);
     encode_authoritative_trailer(&DirectEventBatch {
@@ -731,7 +687,6 @@ pub fn encode_authoritative_trailer(batch: &DirectEventBatch) -> Result<Vec<u8>,
     Ok(trailer)
 }
 
-/// Decodes one trailer and binds its first row to the consumer's global cursor.
 pub fn decode_trailer(
     trailer: &[u8],
     expected_first_sequence: u64,
@@ -898,7 +853,11 @@ mod tests {
             subject_instance_id: subject,
             argument_instance_id: argument,
             owner_key: if kind.requires_owner_key() { 1 } else { 0 },
-            subject_token_hash: if kind.requires_subject_token_hash() { 1 } else { 0 },
+            subject_token_hash: if kind.requires_subject_token_hash() {
+                1
+            } else {
+                0
+            },
             subject_key: if kind.requires_subject_key() { 1 } else { 0 },
             input_bits: 0,
             return_bits: 1,

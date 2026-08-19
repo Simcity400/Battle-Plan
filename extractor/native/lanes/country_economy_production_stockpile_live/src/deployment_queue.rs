@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=ef66c76c707c5c840c3b39a0e4aea9cea473157d7392e50126aa6406a7738829
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=cd0e1eed4d8767af23c3d745c2ff369f1fa78e514c9a77ab4f6ef9acdfc54631
 pub const DEPLOYMENT_QUEUE_SCHEMA_VERSION: u32 = d11_grammar::deployment::SchemaVersion::V2.wire();
 pub const DEPLOYMENT_QUEUE_HEADER_LEN: usize = d11_grammar::deployment::HEADER_LEN;
 pub const DEPLOYMENT_CONVEYOR_ID_TYPE: u32 = d11_grammar::deployment::CONVEYOR_ID_TYPE;
@@ -24,9 +24,6 @@ const MAX_STRING_BYTES: usize = 16 * 1024;
 pub struct DeploymentEquipmentRow {
     pub ordinal: u32,
     pub equipment_id: u32,
-    /// Save serialization may preserve an equipment identity whose catalog
-    /// archetype cannot be resolved. `None` is exact unresolved state, not an
-    /// empty string.
     pub archetype: Option<String>,
     pub amount: f64,
 }
@@ -35,7 +32,6 @@ pub struct DeploymentEquipmentRow {
 pub struct DeploymentLineRow {
     pub ordinal: u32,
     pub line_id: u32,
-    /// The nested division-name object may omit its serializer-backed order.
     pub name_order: Option<i32>,
     pub amount: i32,
     pub training: Option<f64>,
@@ -63,8 +59,6 @@ pub struct DeploymentConveyorRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeploymentCountryRow {
     pub tag_db_id: u32,
-    /// `true` is a positive full-vector witness, including `conveyors=[]`.
-    /// `false` means unreadable/unknown and therefore requires an empty carrier.
     pub queue_complete: bool,
     pub conveyors: Vec<DeploymentConveyorRow>,
 }
@@ -217,12 +211,6 @@ pub struct DeploymentQueueFrame {
     pub countries: Vec<DeploymentCountryRow>,
 }
 
-/// Encode the exact save/live-neutral X4 deployment carrier.
-///
-/// The codec is provenance-neutral. It preserves authenticated identities and
-/// nested ordering so the current exact-a729 native producer and the historical
-/// save oracle feed the same pointer-free contract; provenance is bound by the
-/// enclosing PDQ1 fold receipt, never inferred from these bytes alone.
 pub fn encode_deployment_queue_payload(
     elapsed_wall_ms: u64,
     changed_country_rows: u32,
@@ -357,38 +345,19 @@ pub fn decode_deployment_queue_payload(payload: &[u8]) -> Result<DeploymentQueue
     Ok(summary)
 }
 
-/// Decode and retain the complete pointer-free carrier. Consumers must use
-/// this entry point rather than reparsing around the strict identity, ordering,
-/// nullability, and trailing-byte gates enforced here.
 pub fn decode_deployment_queue_frame(payload: &[u8]) -> Result<DeploymentQueueFrame, String> {
-    let country_cursor = d11_grammar::deployment::walk(payload)
-        .map_err(format_deployment_grammar_violation)?;
+    let country_cursor =
+        d11_grammar::deployment::walk(payload).map_err(format_deployment_grammar_violation)?;
     decode_deployment_queue_frame_from_cursor(payload, country_cursor)
 }
 
-/// Apply the deployment semantic policy to a carrier already opened by the
-/// shared structural leaf. This lets enclosing D11 readers decide schema
-/// fatality before any nested body is consumed without starting a second walk.
 pub fn decode_deployment_queue_frame_from_cursor(
     payload: &[u8],
     country_cursor: d11_grammar::deployment::CountryCursor,
 ) -> Result<DeploymentQueueFrame, String> {
-    // The cursor and the payload arrive as INDEPENDENT arguments, so the
-    // cursor's header is not proof of what these bytes say. A caller could
-    // open a v2 frame, then hand the cursor here beside a v1 payload, and
-    // every check below -- the schema refusal included -- would be reading the
-    // wrong frame's header while the body came from this one. Read this
-    // payload's OWN header first and require the two to agree.
-    // (Codex round-18 finding 1: empty v1 and v2 frames are both 40 bytes with
-    // zero counts, so the substitution decoded clean and bypassed the refusal.)
     let preview = d11_grammar::deployment::read_header_preview(payload)
         .map_err(format_deployment_grammar_violation)?;
     let header = *country_cursor.header();
-    // EVERY header word, not just the version. Comparing versions alone still
-    // accepted a cursor opened over a DIFFERENT frame of the same version:
-    // two empty v2 frames differing only in `elapsed_wall_ms` decoded clean and
-    // reported the cursor's elapsed time for the other frame's bytes (Codex
-    // round-19). The header is nine words; all nine must be the same nine.
     if preview.elapsed_wall_ms != header.elapsed_wall_ms
         || preview.country_count != header.country_count
         || preview.changed_country_rows != header.changed_country_rows
@@ -416,19 +385,7 @@ pub fn decode_deployment_queue_frame_from_cursor(
     let declared_conveyors = header.declared_conveyors;
     let declared_lines = header.declared_lines;
     let declared_equipment = header.declared_equipment;
-    // OWNER RULING (2026-08-16): the gate accepts only what the shipping
-    // recorder writes, and the recorder writes schema v2. There is no
     // old-format support before release, so a v1 carrier is REFUSED here
-    // rather than decoded under a legacy policy.
-    //
-    // This is not the same call as PLIC v1/v2, which stays widened: the
-    // shipping producer emits both PLIC versions and live capture files carry
-    // both, so refusing v1 there would reject real data. No capture carries a
-    // v1 deployment carrier.
-    //
-    // `SchemaVersion` and the v1 arm of the LEAF stay: the leaf is a grammar
-    // library and describes the format that exists. This is the GATE's policy,
-    // stated where the policy belongs.
     if preview.schema_version == d11_grammar::deployment::SchemaVersion::V1.wire() {
         return Err(format!(
             "deployment schema v{} is refused: the recorder writes v{}, and no pre-release support exists for the older layout",
@@ -455,9 +412,11 @@ pub fn decode_deployment_queue_frame_from_cursor(
             .next(payload)
             .map_err(format_deployment_grammar_violation)?
         {
-            d11_grammar::deployment::CountryStep::Country { index, row, conveyors } => {
-                (index, row, conveyors)
-            }
+            d11_grammar::deployment::CountryStep::Country {
+                index,
+                row,
+                conveyors,
+            } => (index, row, conveyors),
             d11_grammar::deployment::CountryStep::End(end) => {
                 observed_conveyors = end.totals.conveyors;
                 observed_lines = end.totals.lines;
@@ -492,11 +451,13 @@ pub fn decode_deployment_queue_frame_from_cursor(
                 "deployment country {tag_db_id} conveyor count exceeds declared remainder"
             ));
         }
-        let mut conveyor_cursor = conveyors_block.open(payload)
+        let mut conveyor_cursor = conveyors_block
+            .open(payload)
             .map_err(format_deployment_grammar_violation)?;
         let mut conveyors = Vec::with_capacity(conveyor_count as usize);
         while conveyor_cursor.remaining() != 0 {
-            let fixed = conveyor_cursor.next(payload)
+            let fixed = conveyor_cursor
+                .next(payload)
                 .map_err(format_deployment_grammar_violation)?;
             let conveyor_ordinal = fixed.index as u32;
             let row = fixed.row;
@@ -523,10 +484,14 @@ pub fn decode_deployment_queue_frame_from_cursor(
                     "deployment invalid conveyor identity/body {conveyor_id}"
                 ));
             }
-            let name_item = fixed.name.read_name(payload)
+            let name_item = fixed
+                .name
+                .read_name(payload)
                 .map_err(format_deployment_grammar_violation)?;
             let name = deployment_string(payload, name_item.name, "deployment conveyor name")?;
-            let role_item = name_item.role.read_role(payload)
+            let role_item = name_item
+                .role
+                .read_role(payload)
                 .map_err(format_deployment_grammar_violation)?;
             let role = deployment_string(payload, role_item.row.role, "deployment conveyor role")?;
             observed_conveyors = observed_conveyors
@@ -537,11 +502,14 @@ pub fn decode_deployment_queue_frame_from_cursor(
                     "deployment conveyor {conveyor_id} line count exceeds declared remainder"
                 ));
             }
-            let mut line_cursor = role_item.lines.open(payload)
+            let mut line_cursor = role_item
+                .lines
+                .open(payload)
                 .map_err(format_deployment_grammar_violation)?;
             let mut lines = Vec::with_capacity(line_count as usize);
             while line_cursor.remaining() != 0 {
-                let fixed = line_cursor.next(payload)
+                let fixed = line_cursor
+                    .next(payload)
                     .map_err(format_deployment_grammar_violation)?;
                 let line_ordinal = fixed.index as u32;
                 let row = fixed.row;
@@ -602,11 +570,14 @@ pub fn decode_deployment_queue_frame_from_cursor(
                         "deployment line {line_id} equipment count exceeds declared remainder"
                     ));
                 }
-                let mut equipment_cursor = fixed.equipment.open(payload)
+                let mut equipment_cursor = fixed
+                    .equipment
+                    .open(payload)
                     .map_err(format_deployment_grammar_violation)?;
                 let mut equipment_in_transit = Vec::with_capacity(equipment_count as usize);
                 while equipment_cursor.remaining() != 0 {
-                    let item = equipment_cursor.next(payload)
+                    let item = equipment_cursor
+                        .next(payload)
                         .map_err(format_deployment_grammar_violation)?;
                     let equipment_ordinal = item.index as u32;
                     let row = item.row;
@@ -615,7 +586,8 @@ pub fn decode_deployment_queue_frame_from_cursor(
                     let equipment_type = row.id_type;
                     let equipment_flags = row.flags;
                     let amount = f64::from_bits(row.amount_bits);
-                    let archetype = row.archetype
+                    let archetype = row
+                        .archetype
                         .map(|span| deployment_string(payload, span, "deployment archetype"))
                         .transpose()?;
                     equipment_cursor = item.next;
@@ -640,7 +612,8 @@ pub fn decode_deployment_queue_frame_from_cursor(
                         amount,
                     });
                 }
-                line_cursor = equipment_cursor.into_end()
+                line_cursor = equipment_cursor
+                    .into_end()
                     .map_err(format_deployment_grammar_violation)?;
                 lines.push(DeploymentLineRow {
                     ordinal,
@@ -663,7 +636,8 @@ pub fn decode_deployment_queue_frame_from_cursor(
                     equipment_in_transit,
                 });
             }
-            conveyor_cursor = line_cursor.into_end()
+            conveyor_cursor = line_cursor
+                .into_end()
                 .map_err(format_deployment_grammar_violation)?;
             conveyors.push(DeploymentConveyorRow {
                 ordinal,
@@ -683,25 +657,23 @@ pub fn decode_deployment_queue_frame_from_cursor(
             queue_complete,
             conveyors,
         });
-        country_cursor = conveyor_cursor.into_end()
+        country_cursor = conveyor_cursor
+            .into_end()
             .map_err(format_deployment_grammar_violation)?;
     }
-    // The COUNTRY count belongs in this comparison too, and its absence was the
-    // last hole in the carrier check (Codex round 20). The header agreement
-    // above proves the cursor was opened over THESE bytes; it does not prove
-    // the cursor is still at their START. A cursor already advanced past the
-    // only country walks straight to `End`, and a country with no conveyors
-    // declares 0/0/0, so the three counts below matched and the frame decoded
-    // clean with zero countries while its header said one.
-    //
-    // Checking the OUTCOME rather than the cursor's position closes it whatever
-    // state the cursor arrives in: what was decoded must be what the header
-    // describes.
     let observed_countries = u32::try_from(countries.len())
         .map_err(|_| "deployment decoded country count exceeds u32".to_string())?;
-    if (observed_countries, observed_conveyors, observed_lines, observed_equipment)
-        != (country_count, declared_conveyors, declared_lines, declared_equipment)
-    {
+    if (
+        observed_countries,
+        observed_conveyors,
+        observed_lines,
+        observed_equipment,
+    ) != (
+        country_count,
+        declared_conveyors,
+        declared_lines,
+        declared_equipment,
+    ) {
         return Err(format!(
             "deployment declared/observed count mismatch: declared {country_count}/{declared_conveyors}/{declared_lines}/{declared_equipment}, observed {observed_countries}/{observed_conveyors}/{observed_lines}/{observed_equipment}"
         ));
@@ -714,15 +686,16 @@ pub fn decode_deployment_queue_frame_from_cursor(
     })
 }
 
-
-
 fn deployment_string(
     payload: &[u8],
     span: d11_grammar::Span,
     label: &str,
 ) -> Result<String, String> {
     if span.len > MAX_STRING_BYTES {
-        return Err(format!("{label} length {} exceeds {MAX_STRING_BYTES}", span.len));
+        return Err(format!(
+            "{label} length {} exceeds {MAX_STRING_BYTES}",
+            span.len
+        ));
     }
     Ok(std::str::from_utf8(&payload[span.start..span.end])
         .map_err(|_| format!("{label} is not UTF-8"))?
@@ -731,9 +704,16 @@ fn deployment_string(
 pub fn format_deployment_grammar_violation(
     violation: d11_grammar::deployment::Violation,
 ) -> String {
-    use d11_grammar::deployment::{Block, DqCallerDefect as CallerDefect, DqSection as Section, DqViolationKind as ViolationKind};
+    use d11_grammar::deployment::{
+        Block, DqCallerDefect as CallerDefect, DqSection as Section,
+        DqViolationKind as ViolationKind,
+    };
     match violation.kind {
-        ViolationKind::Need { section, needed, available } => {
+        ViolationKind::Need {
+            section,
+            needed,
+            available,
+        } => {
             let label = match section {
                 Section::Header => "deployment header",
                 Section::Country => "deployment country row",
@@ -752,23 +732,35 @@ pub fn format_deployment_grammar_violation(
                     .saturating_sub(violation.at)
                     .saturating_sub(d11_grammar::deployment::STRING_PREFIX_LEN);
                 if declared_len > MAX_STRING_BYTES {
-                    return format!(
-                        "{label} length {declared_len} exceeds {MAX_STRING_BYTES}"
-                    );
+                    return format!("{label} length {declared_len} exceeds {MAX_STRING_BYTES}");
                 }
             }
             format!("{label} truncated: need {needed}, have {available}")
         }
         ViolationKind::UnknownSchema { version, reserved }
-        | ViolationKind::HeaderReserved { version, value: reserved } => {
+        | ViolationKind::HeaderReserved {
+            version,
+            value: reserved,
+        } => {
             format!("deployment invalid schema/reserved {version}/{reserved}")
         }
-        ViolationKind::CountCannotFit { block, count, remaining, minimum_row_len } => {
+        ViolationKind::CountCannotFit {
+            block,
+            count,
+            remaining,
+            minimum_row_len,
+        } => {
             let label = match block {
                 Block::Countries => "country",
-                Block::Conveyors if violation.at == d11_grammar::deployment::HEADER_LEN => "declared conveyor",
-                Block::Lines if violation.at == d11_grammar::deployment::HEADER_LEN => "declared line",
-                Block::Equipment if violation.at == d11_grammar::deployment::HEADER_LEN => "declared equipment",
+                Block::Conveyors if violation.at == d11_grammar::deployment::HEADER_LEN => {
+                    "declared conveyor"
+                }
+                Block::Lines if violation.at == d11_grammar::deployment::HEADER_LEN => {
+                    "declared line"
+                }
+                Block::Equipment if violation.at == d11_grammar::deployment::HEADER_LEN => {
+                    "declared equipment"
+                }
                 Block::Conveyors => "conveyor",
                 Block::Lines => "line",
                 Block::Equipment => "equipment",
@@ -778,10 +770,17 @@ pub fn format_deployment_grammar_violation(
                 remaining / minimum_row_len
             )
         }
-        ViolationKind::TrailingBytes { consumed, available } => {
+        ViolationKind::TrailingBytes {
+            consumed,
+            available,
+        } => {
             format!("deployment trailing bytes: consumed {consumed} of {available}")
         }
-        ViolationKind::ArithmeticOverflow { operation, left, right } => {
+        ViolationKind::ArithmeticOverflow {
+            operation,
+            left,
+            right,
+        } => {
             format!("deployment count overflow ({operation:?}, {left}, {right})")
         }
         ViolationKind::CallerDefect(CallerDefect::BlockNotConsumed { block, remaining }) => {
@@ -815,11 +814,6 @@ fn validate_optional_nonnegative_i64(
     }
     Ok(())
 }
-
-
-
-
-
 
 #[cfg(test)]
 mod tests {
@@ -875,16 +869,7 @@ mod tests {
         assert_eq!(frame.countries, vec![country]);
     }
 
-    /// kills: deleting the `SchemaVersion::V1` refusal in
-    /// `decode_deployment_queue_frame_from_cursor` makes this decode succeed.
-    ///
-    /// OWNER RULING (2026-08-16): the gate accepts only what the shipping
     /// recorder writes, and it writes schema v2. There is no pre-release support
-    /// for the older layout, so a v1 carrier is refused by NAME rather than
-    /// decoded under a legacy policy. The leaf still describes v1 -- it is a
-    /// grammar library, and the format exists -- which is why this test builds a
-    /// real v1 frame through the leaf's own encoder rather than hand-corrupting a
-    /// version word.
     #[test]
     fn gate_refuses_a_deployment_carrier_written_in_schema_v1() {
         let words = d11_grammar::deployment::HeaderWords {
@@ -906,21 +891,10 @@ mod tests {
             "the refusal must name the version it refused, got: {error}"
         );
 
-        // And the v2 equivalent still decodes, so the refusal is the VERSION and
-        // not the empty frame.
         let v2 = encode_deployment_queue_payload(9, 0, 0, &[]).unwrap();
         decode_deployment_queue_payload(&v2).expect("schema v2 is what ships");
     }
 
-    /// kills: reverting the refusal to read `header.schema_version` (the
-    /// CURSOR's) instead of `preview.schema_version` (these bytes'), or deleting
-    /// the cursor/payload agreement check, lets this decode return `Ok`.
-    ///
-    /// `decode_deployment_queue_frame_from_cursor` takes the payload and the
-    /// cursor as INDEPENDENT arguments, so the cursor's header is not proof of
-    /// what the payload says. An empty v1 frame and an empty v2 frame are both
-    /// 40 bytes with zero counts, so a v2 cursor paired with v1 bytes used to
-    /// walk clean past the owner's refusal.
     #[test]
     fn gate_refuses_v1_bytes_carried_in_on_a_v2_cursor() {
         let words = d11_grammar::deployment::HeaderWords {
@@ -930,11 +904,13 @@ mod tests {
         };
         let v1 = d11_grammar::deployment::encode_v1(words, &[]).unwrap();
         let v2 = encode_deployment_queue_payload(9, 0, 0, &[]).unwrap();
-        assert_eq!(v1.len(), v2.len(), "the substitution needs two frames of one size");
+        assert_eq!(
+            v1.len(),
+            v2.len(),
+            "the substitution needs two frames of one size"
+        );
 
-        // A cursor legitimately opened over the v2 frame ...
         let cursor = d11_grammar::deployment::walk(&v2).expect("v2 walks");
-        // ... handed to the decoder beside the v1 bytes.
         let error = decode_deployment_queue_frame_from_cursor(&v1, cursor)
             .expect_err("v1 bytes must be refused however the cursor was opened");
         assert!(
@@ -943,10 +919,6 @@ mod tests {
         );
     }
 
-    /// kills: narrowing the carrier-agreement check back to the schema version
-    /// alone. Two empty v2 frames that differ only in `elapsed_wall_ms` then
-    /// decode clean, and the frame reports the CURSOR's elapsed time for the
-    /// other frame's bytes.
     #[test]
     fn gate_refuses_a_same_version_cursor_opened_over_a_different_frame() {
         let first = encode_deployment_queue_payload(1, 0, 0, &[]).unwrap();
@@ -963,15 +935,6 @@ mod tests {
         );
     }
 
-    /// kills: dropping `observed_countries`/`country_count` from the
-    /// declared/observed comparison at the end of
-    /// `decode_deployment_queue_frame_from_cursor`.
-    ///
-    /// The header-agreement check proves the cursor was opened over THESE bytes.
-    /// It does not prove the cursor is still at their START. A cursor already
-    /// advanced past the only country walks straight to `End`, and a country with
-    /// no conveyors declares 0/0/0, so the conveyor/line/equipment counts matched
-    /// and the frame decoded clean with ZERO countries while its header said one.
     #[test]
     fn gate_refuses_a_cursor_already_advanced_past_the_first_country() {
         let country = DeploymentCountryRow {
@@ -980,14 +943,13 @@ mod tests {
             conveyors: Vec::new(),
         };
         let payload = encode_deployment_queue_payload(9, 1, 0, &[country]).unwrap();
-        // Sanity: the honest path decodes exactly one country.
         assert_eq!(
-            decode_deployment_queue_payload(&payload).unwrap().country_rows,
+            decode_deployment_queue_payload(&payload)
+                .unwrap()
+                .country_rows,
             1
         );
 
-        // Now advance a cursor past that country and hand it back with the same
-        // bytes, so every header word still agrees.
         let cursor = d11_grammar::deployment::walk(&payload).expect("v2 walks");
         let advanced = match cursor.next(&payload).expect("first country") {
             d11_grammar::deployment::CountryStep::Country { conveyors, .. } => conveyors
@@ -1058,7 +1020,6 @@ mod tests {
     #[test]
     fn decoder_rejects_wrong_identity_type_and_duplicate_ids() {
         let mut payload = encode_deployment_queue_payload(9, 1, 0, &[exact_country()]).unwrap();
-        // Header 40 + country 16 + conveyor ordinal/id => type at +64.
         payload[64..68].copy_from_slice(&63u32.to_le_bytes());
         assert!(decode_deployment_queue_payload(&payload)
             .unwrap_err()

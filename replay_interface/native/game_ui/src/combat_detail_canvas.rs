@@ -1,14 +1,3 @@
-//! XUI20 authored-canvas and viewer-selection contract.
-//!
-//! The combat/loss packet spans five engine-owned windows.  This module
-//! discovers their winning definitions from the effective VFS, retains the
-//! exact authored templates they clone, binds viewer-owned selection to one
-//! replay hour and one complete engine identity, and refuses composition
-//! before a pixel is drawn while a visible semantic family is unavailable.
-//!
-//! It deliberately does not turn d55 damage accumulators into casualties,
-//! aggregate d86 rows into combat results, infer survivors from the absence of
-//! a sink row, or manufacture equipment/ship presentation identities.
 
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor, DebugRect};
@@ -29,9 +18,6 @@ use replay_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Engine-selected controller roots.  The first, second, and fifth are exact
-/// a729 strings cited by the XUI20 Ghidra jobs; the remaining two are the
-/// winning FILE definitions consumed by their engine controllers.
 pub const LAND_COMBAT_ROOT: &str = replay_core::XUI20_LAND_COMBAT_ROOT;
 pub const NAVAL_COMBAT_ROOT: &str = replay_core::XUI20_NAVAL_COMBAT_ROOT;
 pub const COMBAT_LOG_ROOT: &str = replay_core::XUI20_COMBAT_LOG_ROOT;
@@ -46,9 +32,6 @@ pub const XUI20_CANVAS_ROOTS: &[&str] = &[
     NAVAL_RESULTS_ROOT,
 ];
 
-/// Dynamic definitions cloned by the five controllers.  These are names in
-/// the engine's one case-insensitive GUI_TYPE registry, not vanilla paths;
-/// effective-VFS last-parsed-wins selection is applied before they are read.
 pub const XUI20_DYNAMIC_TEMPLATES: &[&str] = replay_core::XUI20_DYNAMIC_TEMPLATE_NAMES;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,8 +40,6 @@ pub struct Xui20AuthoredElement {
     pub source_file: String,
     pub window_id: String,
     pub root: GuiElement,
-    /// Constructs the current compositor cannot reproduce exactly.  They are
-    /// retained as a completeness input rather than silently discarded.
     pub unsupported: BTreeSet<String>,
 }
 
@@ -118,9 +99,6 @@ fn require_winner(
     Ok(authored(row))
 }
 
-/// Load the exact effective-VFS winners for every XUI20 root and clone
-/// template.  No vanilla filename is used for selection: mods may replace a
-/// same-path file or move a winning definition to another interface file.
 pub fn load_xui20_authored_canvas_catalog(
     resolver: &AssetResolver,
 ) -> Result<Xui20AuthoredCanvasCatalog> {
@@ -204,13 +182,9 @@ impl Xui20ViewerPanel {
     }
 }
 
-/// Pure playback state.  The recorder's selected combat/window/scroll state
-/// is never consulted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Xui20ViewerState {
     pub panel: Option<Xui20ViewerPanel>,
-    /// The frame for which `panel` was selected.  A seek invalidates the
-    /// selection until the viewer explicitly selects a new identity.
     pub selected_hour: Option<i64>,
     pub primary_scroll_px: i32,
     pub secondary_scroll_px: i32,
@@ -277,8 +251,6 @@ impl Xui20CanvasRoute {
         self.presentation.complete && self.root.unsupported.is_empty()
     }
 
-    /// Production completeness gate.  Call this before constructing a
-    /// `Compositor`; a partial XUI20 panel must never reach a render target.
     pub fn require_composable(&self) -> std::result::Result<(), String> {
         if !self.root.unsupported.is_empty() {
             return Err(format!(
@@ -321,9 +293,6 @@ fn scoped_binding_is_active(
     binding.combat_log_tab.is_none() || binding.combat_log_tab == selected_tab
 }
 
-/// Direct texture reads are outside the authored `.gfx` dependency walk, so
-/// the shipping renderer must explicitly admit every active one before the
-/// compositor receives an asset resolver.
 pub(crate) fn active_texture_paths(route: &Xui20CanvasRoute) -> BTreeSet<String> {
     let tab = selected_tab(&route.panel);
     route
@@ -380,9 +349,6 @@ fn selection_matches(
     }
 }
 
-/// Bind the viewer selection to the exact frame and authenticated authored
-/// winner. A successful route is complete input for the strict XUI20
-/// compositor; missing or mismatched producer data fails closed here.
 pub fn admit_xui20_canvas_route(
     resolver: &AssetResolver,
     frame: &WorldFrame,
@@ -1640,8 +1606,6 @@ mod tests {
         );
     }
 
-    /// Evidence tier only: the installed game corpus is not a deterministic
-    /// default-test prerequisite.
     #[test]
     #[ignore = "requires the installed the game authored GUI corpus"]
     fn installed_vanilla_xui20_roots_and_templates_are_composable_and_all_five_families_render() {
@@ -1738,10 +1702,6 @@ mod tests {
                         .get(sprite_name)
                         .is_some_and(|sprite| sprite.primary_texture().is_none())
                 }) {
-                    // `interface/mapicons.gfx` explicitly declares flag-stripe
-                    // sprites without texturefile because engine code selects
-                    // the proper country flag. Exercise that exact production
-                    // binding seam with an installed effective flag texture.
                     bindings.push(replay_core::CombatScopedBindingExact {
                         combat_log_tab: None,
                         binding: CombatElementBindingExact::Texture {

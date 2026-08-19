@@ -1,8 +1,3 @@
-//! Typed Replay-owned carriers for XUI26 frontend/meta presentation.
-//!
-//! These values are final producer observations, not instructions to infer UI
-//! state from authored names.  The consumer additionally binds every semantic
-//! key to the selected effective-VFS role index before a panel can compose.
 
 use crate::world::ViewStatus;
 use serde::{Deserialize, Serialize};
@@ -159,10 +154,6 @@ impl Xui26ReplayPayload {
         }
     }
 
-    /// Family-domain collection groups in canonical host order. Keeping each
-    /// group separate prevents a carrier from preserving one flattened row
-    /// sequence while moving bookmark/country/rule (or analogous) rows into
-    /// the wrong authored collection.
     fn collection_groups(&self) -> Option<Vec<(String, Vec<String>)>> {
         let prefixed = |prefix: &str, values: &[String]| {
             values
@@ -242,10 +233,6 @@ pub enum Xui26ElementSemantic {
     Progress { numerator: u64, denominator: u64 },
 }
 
-/// One exact authored row instance in producer order. The producer supplies
-/// semantic membership and the effective-VFS template identity; Replay
-/// re-admits that template and derives all geometry, clipping and paint order
-/// from the authenticated authored collection law.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xui26ReplayCollectionRow {
@@ -279,12 +266,9 @@ impl Xui26ReplayCollectionRow {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xui26ReplayCollection {
-    /// Typed family-domain group, independently joined to an exact authored
-    /// host/template law by `game_ui`.
     pub group_id: String,
     pub collection_element_id: String,
     pub complete: bool,
-    /// Exact effective template retained even for measured-empty membership.
     pub empty_template_source_path: String,
     pub empty_template_source_content_sha256: String,
     pub empty_template_surface_id: String,
@@ -338,8 +322,6 @@ pub struct Xui26ReplayFamilyCarrier {
     pub source_record_id: String,
     pub source_content_sha256: String,
     pub complete: bool,
-    /// Canonical SHA-256 of this carrier with this field empty. This binds the
-    /// typed domain payload and final element semantics into one record.
     pub record_sha256: String,
     pub payload: Xui26ReplayPayload,
     pub element_semantics: BTreeMap<String, Xui26ElementSemantic>,

@@ -1,8 +1,3 @@
-//! A20/X9 replay-product seam for exact special-project counters and
-//! breakthrough specialization identity.
-//!
-//! Raw D41 JSON never crosses this boundary. The app consumes replay_core's
-//! owner-joined typed view and game_ui repeats the authority, completeness,
 //! identity, and exact-bound checks before exposing a selected-country model.
 
 use game_ui::special_projects::{

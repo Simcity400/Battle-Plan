@@ -41,18 +41,10 @@ from pathlib import Path
 
 import resolver as R
 
-# Reuse the exact tolerant loc-line grammar the shared resolver already
-# audited (key : optional-version "quoted value" [# comment]) so this module
-# can never drift from ``resolver.LocDB``'s parsing rule.
 _LOC_LINE = R._LOC_LINE
 
-# §-color codes (``§Y...``, ``§!`` reset) and the rare ``\x15`` variant. Same
-# pattern as ``resolver.LocDB._COLOR`` — stripped for the CLEAN name only, the
-# raw value keeps them verbatim.
 _COLOR = re.compile(r"§.|\x15.")
 
-# Interpolation markers we deliberately do NOT resolve (leave the template in
-# both raw and clean forms); recorded per-key as a coverage note.
 _VAR_TOKEN = re.compile(r"\$[A-Za-z0-9_.]+\$")
 _SCOPE_TOKEN = re.compile(r"\[[^\[\]]*\]")
 
@@ -90,7 +82,7 @@ def _iter_loc_lines(text: str):
         if not s or s.startswith("#"):
             continue
         if s.endswith(":") and '"' not in s:
-            continue  # the `l_english:` header (or a stray bare-key line)
+            continue
         m = _LOC_LINE.match(line)
         if not m:
             continue
@@ -143,7 +135,7 @@ def parse_localisation(layers, language: str = "english") -> dict:
                 by_layer_override[label] = by_layer_override.get(label, 0) + 1
             else:
                 by_layer_new[label] = by_layer_new.get(label, 0) + 1
-            keys[key] = entry  # later (higher-prio) layer wins, as engine does
+            keys[key] = entry
         if added_here:
             files_read += 1
 

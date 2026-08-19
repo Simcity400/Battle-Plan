@@ -1,9 +1,3 @@
-//! Exact O04 city-instance semantic carrier.
-//!
-//! This carrier joins the captured city generator row to the already-carried
-//! entity submissions. It never creates another draw or reconstructs a city
-//! from map inputs.
-
 use super::{check_sha256, decimal_u64, RenderOutputRef, UsedContentKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -33,7 +27,6 @@ pub struct O04CityFrame {
     #[serde(with = "decimal_u64")]
     pub last_sequence: u64,
     pub cities: Vec<O04CitySemantic>,
-    /// Exact display-submit order of every output referenced by `cities`.
     pub ordered_outputs: Vec<RenderOutputRef>,
 }
 
@@ -52,7 +45,6 @@ pub struct O04CitySemantic {
     pub mesh: UsedContentKey,
     pub world_transform_4x4_f32_bits: [u32; 16],
     pub citylight_state: O04CitylightState,
-    /// Complete output set for this one entity instance, in display order.
     pub referenced_outputs: Vec<RenderOutputRef>,
 }
 

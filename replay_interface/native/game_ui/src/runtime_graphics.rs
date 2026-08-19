@@ -1,8 +1,3 @@
-//! XUI07 runtime sprite/frame, shader-state, clipping, opacity, and blend laws.
-//!
-//! Built-in shading covers only byte-bearing shipped shader laws. Other effect
-//! families are admitted only with producer-resolved shaded RGBA and provenance;
-//! this module never substitutes a visually tuned approximation.
 
 use crate::assets::AssetResolver;
 use crate::authored_role_index::{AuthenticatedGuiRoleIndex, StrictAuthoredPanelAdmission};
@@ -80,7 +75,6 @@ pub fn modulate_rgba(pixel: RgbaF32, color: RgbaF32) -> RgbaF32 {
     RgbaF32(std::array::from_fn(|index| pixel.0[index] * color.0[index]))
 }
 
-/// Exact `static_button.shader` pixel law after horizontal frame selection.
 pub fn shade_static_button(base: RgbaF32, color: RgbaF32) -> RgbaF32 {
     modulate_rgba(base, color)
 }
@@ -95,9 +89,6 @@ fn luminance(pixel: RgbaF32) -> f32 {
     pixel.0[0] * 0.212671 + pixel.0[1] * 0.715160 + pixel.0[2] * 0.072169
 }
 
-/// Exact non-`ANIMATED`, non-`MASKING` `buttonstate.shader` state law.
-/// Animated/masked variants are refused by the product compositor because the
-/// disabled shader grayscales before those stages and requires more inputs.
 pub fn shade_buttonstate(
     base_after_animation_and_mask: RgbaF32,
     color: RgbaF32,
@@ -182,7 +173,6 @@ fn shade_buttonstate_only_disable(
     modulate_rgba(out, color)
 }
 
-/// Exact `buttonstate_blendframes.shader` state shader.
 pub fn shade_buttonstate_blendframes(
     current: RgbaF32,
     next: RgbaF32,
@@ -222,7 +212,6 @@ pub enum SpriteAnimationBlendMode {
     Normal,
 }
 
-/// Exact `sprite_animation.fxh::Blend` law.
 pub fn blend_sprite_animation(
     dest: RgbaF32,
     source: RgbaF32,
@@ -285,12 +274,6 @@ impl ClipRect {
     }
 }
 
-/// Fixed-function blend state used by the shipped UI shaders.
-///
-/// The shader overrides RGB to source=`src_alpha`,
-/// destination=`inv_src_alpha`. Exact-a729's blend-state initializer retains
-/// the omitted separate-alpha defaults source=`one`, destination=`zero`, so
-/// output alpha is the post-shader source alpha.
 pub fn blend_src_alpha_inv_src_alpha(dest: RgbaF32, source: RgbaF32) -> RgbaF32 {
     let source_factor = source.0[3];
     let dest_factor = 1.0 - source_factor;
@@ -302,11 +285,6 @@ pub fn blend_src_alpha_inv_src_alpha(dest: RgbaF32, source: RgbaF32) -> RgbaF32 
     ])
 }
 
-/// Fixed-function blend state authored by exact-a729 `gfx/FX/text.shader`.
-///
-/// RGB uses the ordinary source-alpha law, while alpha uses the explicit
-/// `BlendOpAlpha = max`. This is intentionally separate from both the sprite
-/// shaders' source-alpha replacement and the legacy straight-alpha helper.
 pub fn blend_text_src_alpha_inv_src_alpha_max_alpha(dest: RgbaF32, source: RgbaF32) -> RgbaF32 {
     let source_factor = source.0[3];
     let dest_factor = 1.0 - source_factor;
@@ -384,9 +362,6 @@ const SPRITE_ANIMATION_INCLUDE_SHA256: &str =
     "b32e1007b2e41df9ad3c41f49c6df32b7f7fce58bf0f86f55207505a1382238f";
 const SPRITE_ANIMATION_INCLUDE_BYTES: u64 = 4_204;
 
-/// Authenticate the exact effective buttonstate shader closure used by XUI23.
-/// The path, bytes, and ordered include closure must equal the pinned a729 law;
-/// name substrings, alternate variants, and modified overrides are refused.
 pub(crate) fn authenticate_xui23_buttonstate_shader(
     resolver: &AssetResolver,
     sprite: &SpriteDefinition,
@@ -435,9 +410,6 @@ pub(crate) fn authenticate_xui23_buttonstate_shader(
     Ok(())
 }
 
-/// Authenticate the exact effective linear progress shader used by the two
-/// XUI23 ability timer overlays. Missing/default, alternate, and modified
-/// effects are refused instead of being interpreted as exact-a729 progress.
 pub(crate) fn authenticate_xui23_progress_shader(
     resolver: &AssetResolver,
     sprite: &SpriteDefinition,
@@ -490,17 +462,12 @@ pub struct RuntimeGraphicsRequest {
     pub sprite_name: String,
     pub frame_count: usize,
     pub one_based_frame: u32,
-    /// Selects the shader Effect variant independently of animation frame.
     pub interaction_effect: ButtonVisualState,
     pub shading_path: ShadingPath,
-    /// Required for effect families not covered by the built-in shader laws.
     pub producer_resolved_rgba: Option<RgbaF32>,
-    /// Exact shader constant. This is not an application tint fallback.
     pub color: RgbaF32,
-    /// Exact engine shader constants used by the interaction transition.
     pub time: f32,
     pub animation_time: f32,
-    /// Mandatory for `buttonstate_blendframes.shader`, forbidden otherwise.
     pub next_one_based_frame: Option<u32>,
     pub clip: ClipRect,
     pub opacity: f32,
@@ -583,9 +550,6 @@ impl AdmittedRuntimeGraphics {
     }
 }
 
-/// Validate arithmetic invariants for law tests. This deliberately leaves the
-/// shader-law seal empty, so its result is rejected by the pixel entry point.
-/// Product code must use one of the authenticated content-bound constructors.
 pub fn admit_runtime_graphics(
     request: &RuntimeGraphicsRequest,
 ) -> Result<AdmittedRuntimeGraphics, RuntimeGraphicsRejection> {
@@ -637,12 +601,6 @@ pub fn admit_runtime_graphics(
     })
 }
 
-/// Strict XUI07 product admission over a manifest-bound authored element.
-///
-/// The authored role token carries the exact effective shader and include
-/// content keys. Built-in CPU laws are admitted only for byte-identical
-/// exact-a729 source. Modified or unknown effects are refused locally; caller-
-/// supplied `ShadingPath` never chooses a law.
 fn admit_content_bound_runtime_graphics(
     index: &AuthenticatedGuiRoleIndex,
     admission: &ValidatedContentAdmission,
@@ -679,11 +637,6 @@ fn admit_content_bound_runtime_graphics(
     Ok(admitted)
 }
 
-/// Bind XUI04's sealed viewer-widget state to XUI07's exact shader law.
-///
-/// Frame, interaction effect and transition epoch are not caller fields. The
-/// token is rejoined to this exact index/panel/element before conversion to
-/// the shipped shader's seconds-valued constants.
 pub(crate) fn admit_authenticated_widget_runtime_graphics(
     index: &AuthenticatedGuiRoleIndex,
     admission: &ValidatedContentAdmission,
@@ -725,8 +678,6 @@ pub(crate) fn admit_authenticated_widget_runtime_graphics(
         .map_err(|_| RuntimeGraphicsRejection::SpriteFrameCountMismatch)?;
     let law = authenticate_builtin_shader_law(sprite)?;
     if law == AuthenticatedUiShaderLaw::ButtonStateBlendFrames {
-        // XUI04 authenticates the current semantic frame and effect epoch, but
-        // not the engine's separate NextOffset frame. Never invent it.
         return Err(RuntimeGraphicsRejection::MissingNextFrame);
     }
     if state.observed_at_micros() < state.effect_entered_at_micros() {
@@ -746,9 +697,6 @@ pub(crate) fn admit_authenticated_widget_runtime_graphics(
             shading_path: law.shading_path(),
             producer_resolved_rgba: None,
             color: RgbaF32(sprite.authored_color_rgba_f32_bits.map(f32::from_bits)),
-            // Exact shader structure subtracts two independently uploaded f32
-            // constants. Converting the delta first changes rounding and is
-            // therefore not the same law.
             time: state.observed_at_micros() as f32 / 1_000_000.0,
             animation_time: state.effect_entered_at_micros() as f32 / 1_000_000.0,
             next_one_based_frame: None,
@@ -758,12 +706,6 @@ pub(crate) fn admit_authenticated_widget_runtime_graphics(
     )
 }
 
-/// Bind an explicit replay-semantic frame to one manifest-authenticated
-/// non-widget sprite.
-///
-/// This is the passive/blendframe counterpart to XUI04's widget-state join.
-/// The caller supplies only engine-domain frame constants; shader family,
-/// texture identity, color, and element identity remain manifest-owned.
 pub(crate) fn admit_authenticated_semantic_runtime_graphics(
     manager: &ReplayOwnedWindowManager,
     frame_authority: &AuthenticatedReplayFrameAuthority,
@@ -836,11 +778,6 @@ pub(crate) fn admit_authenticated_semantic_runtime_graphics(
     )
 }
 
-/// Bind one localisation inline-sprite occurrence to the sealed effective
-/// dynamic-sprite registry and the current owner-panel frame transaction.
-///
-/// Source token parsing and decoded dimensions stay in the text compositor;
-/// this boundary admits only exact registry identity, zero/default effect law,
 /// authored colour, frame, clip, and current runtime ownership.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn admit_authenticated_dynamic_sprite_runtime_graphics(
@@ -1119,16 +1056,9 @@ pub struct AuthenticatedSpriteGeometry {
     pub y: i32,
     pub width: usize,
     pub height: usize,
-    /// Authored nine-slice border in source pixels.
     pub border: Option<(usize, usize)>,
 }
 
-/// Apply an already authenticated exact-a729 built-in shader law to shipping
-/// RGBA. Sampling is selected by the exact admitted shader law: the ordinary
-/// and only-disable button shaders use linear sampling, while static-button
-/// and the no-down variants use point sampling. The authored clip, opacity and
-/// fixed blend state are applied in the same pass so callers cannot
-/// accidentally fall back to the generic compositor's different alpha law.
 pub(crate) fn draw_authenticated_sprite_pixels(
     destination: &mut RgbaImage,
     draw: crate::compose::AuthenticatedSpriteDraw<'_>,
@@ -1335,9 +1265,6 @@ pub(crate) fn admit_authenticated_progress_draw<'a>(
         return Err(RuntimeGraphicsRejection::SpriteFrameCountMismatch);
     }
     if fill.effect == ProgressEffect::MinMaxColor {
-        // The Color effect has no texture inputs and requires two exact
-        // engine-uploaded float4 constants. ProgressFill intentionally does
-        // not invent them.
         return Err(RuntimeGraphicsRejection::MissingProducerResolvedShading);
     }
     Ok(AuthenticatedProgressDraw {

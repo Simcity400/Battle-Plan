@@ -1,10 +1,3 @@
-//! XMAP20 presentation-independent particle/effect preparation.
-//!
-//! The portable frame supplies an unconditional semantic lifecycle census and
-//! exact post-simulation packet bytes. This module closes the effective-VFS
-//! and authored-trigger joins. It deliberately does not accept a
-//! `ProductionRenderFrame`, recorder SceneCB0, recorder camera, or recorder
-//! output target.
 
 use crate::{
     FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
@@ -26,11 +19,6 @@ pub const XMAP20_TRIGGER_RECEIPT_SCHEMA: &str = "hoi4.xmap20.authored-trigger.a7
 pub const XMAP20_ASSIGNED_STAGE_NAME: &str = "particles_effects";
 pub const XMAP20_ASSIGNED_OPERATION_NAME: &str = "particles.effects.draw";
 
-/// Exact authored row selected by the semantic owner of one effect.
-///
-/// Entity-anchored rows are supplied by XMAP13's admitted entity/state census.
-/// Other semantic owners may implement the same interface, but no caller may
-/// manufacture a row from a runtime pointer or selected draw.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap20TriggerReceipt {
@@ -44,15 +32,9 @@ pub struct Xmap20TriggerReceipt {
     pub authored_event_index: u32,
     pub authored_effect_index: u32,
     pub particle_token: String,
-    /// Exact authored node token. `None` means the source event omitted the
-    /// field; XMAP20 never manufactures a root/default node.
     pub node_token: Option<String>,
-    /// Exact authored time bits. `None` preserves omission without guessing
-    /// the engine parser's effective default.
     pub time_f32_bits: Option<u32>,
-    /// Authored presence/value, not a replay-chosen default.
     pub keep_particle: Option<bool>,
-    /// Authored presence/value, not a replay-chosen default.
     pub trigger_once: Option<bool>,
     pub owner_admission_sha256: String,
     pub deterministic_sha256: String,
@@ -137,9 +119,6 @@ pub trait Xmap20TriggerProvider {
     fn trigger_for_effect(&self, effect: &Xmap20ActiveEffect) -> Result<Xmap20TriggerReceipt>;
 }
 
-/// Exact production trigger router. Entity anchors are authenticated by the
-/// presentation-independent XMAP13 census; world/weather anchors are
-/// authenticated by XMAP19. No generic or recorder-derived fallback exists.
 pub struct Xmap20ProductionTriggerProvider<'a> {
     pub entity_identities: &'a crate::Xmap13EffectIdentityProvider,
     pub weather: &'a crate::PreparedXmap19WeatherFrame,
@@ -285,8 +264,6 @@ pub struct PreparedXmap20Frame {
     pub admission: Xmap20EffectAdmission,
     pub trigger_receipts: Vec<Xmap20TriggerReceipt>,
     pub ordered_used_content: Vec<UsedContentKey>,
-    /// Packet output targets and recorder scene constants remain evidence only.
-    /// The XMAP20 app executor binds XMAP03/XMAP09/XMAP10 providers instead.
     pub ordered_particles: Vec<ParticlePacket>,
     pub deterministic_sha256: String,
 }

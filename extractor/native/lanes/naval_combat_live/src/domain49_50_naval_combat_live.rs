@@ -16,11 +16,6 @@ pub const DOMAIN_NAVAL_COMBAT_LIFECYCLE_NAME: &str = "naval_combat_lifecycle_liv
 pub const DOMAIN_NAVAL_COMBAT_MEMBERS: u16 = 50;
 pub const DOMAIN_NAVAL_COMBAT_MEMBERS_NAME: &str = "naval_combat_members_live";
 
-/// Version 2 changes the two positioning cells from rounded milli-units to the
-/// exact signed fixed-point x100000 values stored at CNavalCombatant+0x138.
-/// The row length is unchanged: both exact values fit in the existing i32
-/// cells because the producer is admitted only in the closed [0, 100000]
-/// interval.
 pub const SCHEMA_VERSION: u16 = 2;
 pub const PAYLOAD_HEADER_LEN: usize = 28;
 pub const LIFECYCLE_ROW_LEN: usize = 72;
@@ -30,12 +25,6 @@ pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
 pub const STATUS_LOCATION_CANDIDATE_UNVALIDATED: u32 = 1 << 11;
-/// All currently assigned global compact-status bits. Domain 49's bit 11 is a
-/// lane-local fail-closed badge and is masked before global interpretation.
-///
-/// Re-exported, not re-declared, for the same reason `FAILURE_STATUS_MASK`
-/// below is: a local `(1 << 14) - 1` became wrong the moment the contract
-/// assigned bit 14, and would have rejected a valid record.
 const KNOWN_COMPACT_STATUS_FLAGS: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
 
@@ -93,13 +82,6 @@ pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPAC
 pub const MAX_GROUP_INDEX: u32 = 64;
 pub const MAX_MEMBER_INDEX: u32 = 1_000;
 pub const MAX_BATTLE_SLOT_INDEX: u32 = 4_096;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-///
-/// Was `1_000_000`. This constant is named for the FIELD (`location`) rather
-/// than the SPACE, which is why lane IA's name-based census -- built around
-/// `MAX_PROVINCE_ID` and `MAX_STATE_ID` -- did not see it for fourteen review
-/// rounds. The value it bounds is read from an authenticated `CProvince` and is
-/// a province id like any other.
 pub const MAX_LOCATION_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_REGION_ID: u32 = 100_000;
 pub const MAX_DESIGNED_STRENGTH_RAW: u32 = 1_000_000_000;
@@ -109,9 +91,6 @@ pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
 pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const CSHIP_TYPE_TAG: u32 = 51;
 
-///
-/// The legacy wire field and presence flag retain their `state_bitmask`
-/// spelling for schema compatibility. The value is an enum, not a bit set.
 pub const FEX_STATE_UNINITIALIZED: u32 = 0;
 pub const FEX_STATE_WAITING: u32 = 1;
 pub const FEX_STATE_FIGHTING: u32 = 2;
@@ -173,13 +152,9 @@ pub struct LifecycleRow {
     pub region_id: Option<u32>,
     pub attacker_member_count: Option<u32>,
     pub defender_member_count: Option<u32>,
-    /// Exact signed fixed-point x100000 `CNavalCombatant+0x138` producer output.
     pub attacker_positioning_raw: Option<i32>,
-    /// Exact signed fixed-point x100000 `CNavalCombatant+0x138` producer output.
     pub defender_positioning_raw: Option<i32>,
-    /// Exact signed fixed-point x100000 `CNavalCombatant+0x150` producer output.
     pub attacker_anti_air_raw: Option<i64>,
-    /// Exact signed fixed-point x100000 `CNavalCombatant+0x150` producer output.
     pub defender_anti_air_raw: Option<i64>,
 }
 
@@ -500,9 +475,6 @@ pub fn decode_stream(data: &[u8]) -> Result<GateSummary, Vec<String>> {
     }
 }
 
-/// Decoded lifecycle rows for the shared recorder world-fold. Mirrors the
-/// encoder's `LifecycleRow` (present-flag driven Options) so a fold can apply
-/// upsert/delete to a persistent naval-combat state map.
 pub fn decode_lifecycle_rows(payload: &[u8]) -> Result<(u32, Vec<LifecycleRow>), Vec<String>> {
     let mut errors = Vec::new();
     let Some((header, rows)) = decode_lifecycle_payload(0, payload, &mut errors) else {
@@ -540,8 +512,6 @@ pub fn decode_lifecycle_rows(payload: &[u8]) -> Result<(u32, Vec<LifecycleRow>),
     Ok((header.status_flags, decoded))
 }
 
-/// Decoded member rows for the shared recorder world-fold. Mirrors the
-/// encoder's `MemberRow`.
 pub fn decode_member_rows(payload: &[u8]) -> Result<(u32, Vec<MemberRow>), Vec<String>> {
     let mut errors = Vec::new();
     let Some((header, rows)) = decode_member_payload(0, payload, &mut errors) else {
@@ -714,7 +684,9 @@ pub fn decode_members_data_payload(offset: usize, payload: &[u8]) -> PayloadDeco
 
 pub fn gate_stream(data: &[u8]) -> GateResult {
     let mut errors = Vec::new();
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(data) {
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(data)
+    {
         errors.push(format!("stateful stream placement: {error}"));
     }
     let records = match decode_records(data) {
@@ -822,8 +794,6 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     }
                 }
 
-                // Domain 250 is recorder-excluded instrumentation and is not
-                // part of FRAME_END emitted-domain accounting.
                 if record.domain_id != 250 {
                     frame_emitted_perf_records = frame_emitted_perf_records.saturating_add(1);
                 }
@@ -968,9 +938,9 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                                 ));
                             }
                             let exact_side_scalar_flags = LIFECYCLE_ATTACKER_POSITIONING_PRESENT
-                                    | LIFECYCLE_DEFENDER_POSITIONING_PRESENT
-                                    | LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT
-                                    | LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT;
+                                | LIFECYCLE_DEFENDER_POSITIONING_PRESENT
+                                | LIFECYCLE_ATTACKER_ANTI_AIR_PRESENT
+                                | LIFECYCLE_DEFENDER_ANTI_AIR_PRESENT;
                             if !parent_deleted
                                 && row.flags & exact_side_scalar_flags != exact_side_scalar_flags
                             {
@@ -1189,11 +1159,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                             }
                         }
                     }
-                    _ => {
-                        // Unowned domain payloads are intentionally opaque here. Their
-                        // H4CR envelope and placement in the physical frame were already
-                        // certified above.
-                    }
+                    _ => {}
                 }
             }
             compact_contract::KnownRecordType::FrameEnd => {
@@ -1357,9 +1323,14 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                 }
             }
             compact_contract::KnownRecordType::FreezeCensus => {
-                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(record.payload) {
+                if let Ok(census) =
+                    compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(
+                        record.payload,
+                    )
+                {
                     final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
-                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    release_epilogue_seen |= census.phase()
+                        == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
             compact_contract::KnownRecordType::ContentIdentityCensus
@@ -2282,8 +2253,8 @@ fn validate_lifecycle_row(row: &LifecycleRow) -> Result<(), String> {
         }
     }
     for positioning in [row.attacker_positioning_raw, row.defender_positioning_raw]
-    .into_iter()
-    .flatten()
+        .into_iter()
+        .flatten()
     {
         if !(0..=MAX_POSITIONING_RAW).contains(&positioning) {
             return Err("invalid lifecycle positioning_raw".to_string());

@@ -1,10 +1,3 @@
-//! XUI16 resistance/compliance map-mode color law.
-//!
-//! `common/defines/00_graphics.lua` supplies the non-initialized color and both
-//! ordered five-component stop tables (`level, r, g, b, a`).  The same file
-//! explicitly says colors are linearly interpolated between the two closest
-//! stops.  Duplicate thresholds are intentional: an initialized value exactly
-//! on a duplicated threshold selects the last stop at that threshold.
 
 use crate::mod_resolver::GameFileResolver;
 use crate::Result;

@@ -43,28 +43,8 @@ TEXT_SUFFIXES = {".md", ".json", ".jsonl", ".txt", ".csv", ".py", ".rs", ".ps1",
                  ".c", ".h", ".toml", ".yml", ".yaml"}
 MAX_BYTES = 4 * 1024 * 1024
 
-# ---------------------------------------------------------------------------
-# What this generator must NOT read: its own answer, coming back at it.
-#
-# The map is meant to be a function of the source tree. Everything below is a
-# copy of a PREVIOUS map, so scanning it makes each run a fixed-point iteration
-# over the last run's output instead: a path listed in a row carries that row's
-# dNN token, so the row re-elects the file that quotes it, and every artifact
-# that quotes the map inherits every domain the map mentions.
-#
-# The excluded copies:
-#
-#  1. OUR_OUTPUT -- the CSV is tracked and `.csv` is in TEXT_SUFFIXES, so the
-#     generator would otherwise read the file it is about to overwrite.
-#
-#  2. EVIDENCE -- `runs/` is an append-only evidence archive that quotes
 #     generated inventories. Including it would make the map describe copies
-#     of prior inventories rather than the source tree.
-#
 # NOT excluded, deliberately: coverage_audit/atlas_generated/ is generated too,
-# but from save-game corpora, not from this map -- it is outside this cycle and
-# dropping it would lose real signal.
-# ---------------------------------------------------------------------------
 OUR_OUTPUT = "extractor/coverage_audit/reference_ledger/domain_file_map.csv"
 HEADER = ["domain_id", "domain_name", "file_count", "files"]
 EVIDENCE_DIR = "runs/"
@@ -131,8 +111,8 @@ def default_repo() -> Path:
     this script, so a wrong answer falls back to the plain parent walk rather
     than being trusted.
     """
-    here = Path(__file__).resolve().parent            # <repo>/extractor/native/scripts
-    walked = here.parents[2]                          # <repo>
+    here = Path(__file__).resolve().parent
+    walked = here.parents[2]
     try:
         out = subprocess.run(["git", "-C", str(here), "rev-parse", "--show-toplevel"],
                              check=True, capture_output=True, text=True,
@@ -140,7 +120,6 @@ def default_repo() -> Path:
         top = out.stdout.strip()
         if top:
             root = Path(top).resolve()
-            # Only trust a root this script actually lives under.
             if root == here or root in here.parents:
                 return root
     except (OSError, subprocess.CalledProcessError):
@@ -163,7 +142,6 @@ def domain_tokens(repo: Path) -> tuple[dict[int, set[str]], dict[int, str]]:
     """The registry's id -> (tokens that imply this domain, registered name)."""
     registry_path = repo / "extractor" / "native" / "domain_registry.json"
     registry = json.loads(registry_path.read_text(encoding="utf-8"))["domains"]
-    # id -> (registry name, tokens that imply this domain)
     tokens: dict[int, set[str]] = {}
     names: dict[int, str] = {}
     for d in registry:
@@ -175,17 +153,8 @@ def domain_tokens(repo: Path) -> tuple[dict[int, set[str]], dict[int, str]]:
         t = {f"d{did}", f"d{did:02d}", f"domain {did}", f"domain_{did}",
              f"domain{did}"}
         if name:
-            # Same distinctiveness test for the registered name itself. The
-            # infrastructure domains are called "clock" and "frame" -- ordinary
-            # words that appear in thousands of unrelated files. For those, the
-            # dNN id token is the only trustworthy evidence.
             if "_" in name:
                 t.add(name.lower())
-            # Lane directories often drop the _live suffix, but only accept the
-            # bare stem when it is distinctive. Stems like "production", "frame"
-            # and "clock" are ordinary English and ordinary code identifiers:
-            # accepting them attributed 1,347 files to d11 and 1,294 to d1000,
-            # which is noise, not evidence.
             stem = name.lower().removesuffix("_live")
             if "_" in stem and len(stem) >= 12:
                 t.add(stem)
@@ -202,12 +171,6 @@ def build_map(repo: Path) -> tuple[dict[int, set[str]], dict[int, str], int,
     `oversize` names the files the MAX_BYTES guard did not read."""
     tokens, names = domain_tokens(repo)
 
-    # Tokenize each file once and look tokens up, rather than running ~350
-    # regexes across every document. The pattern-per-domain approach was O(
-    # patterns x text) and did not finish in ten minutes; this is O(text).
-    # Whole-token matching also removes the substring hazard for free: `d5`
-    # cannot match inside `d53`, and `baseline_data` cannot match inside
-    # `accepts_zero_delta_baseline_data_record`.
     token_owner: dict[str, set[int]] = collections.defaultdict(set)
     for did, ts in tokens.items():
         for tok in ts:
@@ -230,11 +193,6 @@ def build_map(repo: Path) -> tuple[dict[int, set[str]], dict[int, str], int,
         full = repo / rel
         try:
             if full.stat().st_size > MAX_BYTES:
-                # A file over the guard is NOT evidence that it names no domain;
-                # it is a file this run did not read. Reported by name, because
-                # the silent version of this line is how the collector's own
-                # `attach_log.rs` left 55 domain rows the day it grew past 4 MB
-                # -- with nothing in the output saying the corpus had shrunk.
                 oversize.append((rel, full.stat().st_size))
                 continue
             text = scannable_text(
@@ -339,10 +297,6 @@ def main() -> int:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
     if args.check:
-        # What a run did NOT read belongs in EVERY run's output, including this
-        # one -- the gate is the invocation most likely to be the only one a
-        # reader ever sees, so hiding the skips here is where the silence would
-        # come back.
         report_oversize(oversize, sys.stderr)
         if not out_path.is_file():
             print(f"MISSING: {OUR_OUTPUT} is not in this tree", file=sys.stderr)

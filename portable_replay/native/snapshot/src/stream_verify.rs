@@ -1,33 +1,14 @@
-//! STREAMING `.battleplan` verifier (bounded memory).
-//!
-//! Path-based [`crate::container::Container`] opens retain a bounded file-backed
-//! archive; byte-buffer opens remain available for fixtures. The recorder must
-//! still self-verify a container whose raw-stream entry can be many GiB without
-//! ever materializing it. This module re-reads the finished container
-//! FROM DISK, one entry at a time, seeking to each local header and streaming its
-//! compressed bytes through the decompressor while hashing incrementally. Peak
-//! memory is O(one chunk + retained entry metadata + the manifest JSON), not
-//! O(archive): central-directory records are parsed incrementally. It performs
-//! the same integrity checks the in-RAM reader does
-//! (manifest digest, per-entry sha256, manifest↔zip coverage, declared-size
-//! agreement) and, for the collector stream entry, returns its decompressed
-//! sha256 so the caller can compare it to the capture-time hash (the streaming
-//! replacement for the old in-RAM "packed stream bytes == pipe bytes" compare).
-
 use crate::canon::manifest_canonical_bytes;
 use crate::container::{MAX_ENTRIES, MAX_TOTAL_BYTES};
 use crate::sha256::{to_hex, Sha256};
+#[cfg(test)]
+use crate::zip::MAX_READER_ENTRIES;
 use crate::zip::{
     legacy_path_key, portable_path_key, validate_path, validate_path_legacy_v1,
     validate_payload_path, validate_payload_path_legacy_v1, INITIAL_ENTRY_RESERVE,
     MAX_CONTAINER_ENTRY_BYTES, MAX_MANIFEST_BYTES, STREAMING_MAX_CONTAINER_ENTRY_BYTES,
     ZIP32_MAX_FIELD_VALUE, ZIP_METHOD_DEFLATE, ZIP_METHOD_STORE, ZIP_METHOD_ZSTD, ZSTD_WINDOW_LOG,
 };
-/// The generic ZIP reader ceiling. Container admission uses the stricter
-/// product policy above; this stays reachable for the low-level tests that pin
-/// the generic parser's own behaviour.
-#[cfg(test)]
-use crate::zip::MAX_READER_ENTRIES;
 use flate2::read::DeflateDecoder;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -53,30 +34,15 @@ const KNOWN_FEATURES: &[&str] = &[
     FEATURE_PORTABLE_CONTENT_MANIFEST_V2,
 ];
 
-/// What a successful streaming verification observed.
 #[derive(Debug, Clone, Default)]
 pub struct StreamVerifyReport {
-    /// Number of manifest-listed entries whose bytes were re-read and hash-matched.
     pub entries_verified: usize,
-    /// Decompressed sha256 of the unique canonical entry whose role matched
-    /// the requested stream role, if found.
     pub stream_entry_sha256: Option<String>,
-    /// Decompressed byte length of that stream entry.
     pub stream_entry_bytes: u64,
-    /// Sum of every entry's uncompressed size (integrity accounting only).
     pub total_uncompressed: u64,
-    /// Entry path -> the decompressed sha256 this pass actually observed.
-    ///
-    /// Reported so a caller can bind a receipt minted BEFORE packing to the
-    /// bytes that were packed. Nothing else can: the packer hashes whatever
-    /// occupies a path at pack time and records that in the manifest, so a
-    /// pre-pack check of the same path proves nothing about the container
-    /// (Codex review rounds 5 and 6). These digests come from the retained
-    /// creation handle, not from a second open by name.
     pub entry_sha256_by_path: std::collections::BTreeMap<String, String>,
 }
 
-/// A central-directory record we serve.
 #[derive(Debug)]
 pub(crate) struct CdEntry {
     pub(crate) name: String,
@@ -91,9 +57,6 @@ pub(crate) struct CdEntry {
     pub(crate) local_header_off: u64,
 }
 
-/// File-backed archive used by the product reader. It retains one pinned file
-/// handle for central-directory parsing and lazy authenticated payload reads;
-/// the complete container never resides in a `Vec<u8>`.
 pub(crate) struct FileBackedArchive {
     file: Mutex<File>,
     file_len: u64,
@@ -102,9 +65,6 @@ pub(crate) struct FileBackedArchive {
 }
 
 impl FileBackedArchive {
-    /// Hash a retained container handle before any ZIP parsing begins. The
-    /// caller must move this same handle into [`FileBackedArchive::open`] and
-    /// compare the result with [`Self::whole_file_receipt`] after parsing.
     pub(crate) fn whole_file_receipt_before_open(file: &mut File) -> Result<(u64, String), String> {
         let file_len = file
             .metadata()
@@ -132,9 +92,6 @@ impl FileBackedArchive {
         &self.entries
     }
 
-    /// Derive a whole-container receipt through the exact retained handle.
-    /// The pathname is never resolved or reopened, and length is checked both
-    /// before and after hashing so a persistent concurrent resize fails closed.
     pub(crate) fn whole_file_receipt(&self) -> Result<(u64, String), String> {
         let mut file = self
             .file
@@ -182,13 +139,6 @@ impl FileBackedArchive {
         Ok((bytes, sha256))
     }
 
-    /// Decompress one entry directly into a caller-owned writer while deriving
-    /// the same CRC/size/SHA evidence as an ordinary authenticated read. This
-    /// path is intentionally available only on the retained file-backed
-    /// archive: it never materializes the complete entry in memory.
-    /// As above, preserving the typed failure CLASS ([`EntryFailure`]) so a
-    /// corrupted payload does not reach the container layer as an untyped
-    /// string alongside every other refusal reason.
     pub(crate) fn copy_entry_to_writer<W: Write>(
         &self,
         index: usize,
@@ -284,26 +234,11 @@ fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
     ]))
 }
 
-/// Verify a finished `.battleplan` on disk with bounded memory. `game_id` and
-/// `stream_role` identify the collector raw-stream entry whose decompressed
-/// sha256 is returned for the capture-hash compare. Every entry is hash-checked
-/// against the manifest; any mismatch, coverage gap, or digest failure is a hard
-/// error (fail-closed), mirroring [`crate::container::Container::open`].
 pub fn verify_replay_container_streaming(
     path: &Path,
     game_id: &str,
     stream_role: &str,
 ) -> Result<StreamVerifyReport, String> {
-    // TEST-ONLY: wait out a real-time scanner still holding a file this process
-    // wrote moments ago. On Windows a scanner opens a freshly written file with
-    // a share mode that refuses other openers, so the open below returns
-    // `os error 32` — the flake this guard exists for. It is RETAINED for the
-    // whole call (an open-and-drop probe leaves the gap unheld), every failure
-    // is ignored, and its own share mode admits an ordinary reader, so a
-    // missing file or a real refusal reaches the real open exactly as before.
-    //
-    // It sits at the crate's own reader rather than at each test, because every
-    // test in this crate reads back through here and a per-test list goes stale.
     #[cfg(test)]
     let _scanner_guard = portable_test_fs_retry::open(path).ok();
     let mut file =
@@ -311,10 +246,6 @@ pub fn verify_replay_container_streaming(
     verify_replay_container_streaming_file(&mut file, game_id, stream_role)
 }
 
-/// Verify through a caller-owned open file handle. The caller controls the
-/// handle's access and sharing policy and can keep this exact object open after
-/// verification (for example, through an atomic rename-by-handle promotion).
-/// The verifier never re-opens or resolves a pathname.
 pub fn verify_replay_container_streaming_file(
     file: &mut File,
     game_id: &str,
@@ -328,32 +259,12 @@ pub fn verify_replay_container_streaming_file(
     )
 }
 
-/// Whether the sealed container is required to carry the raw collector stream.
-///
-/// A recording is composed of the delta cache (what replay consumes), the raw
-/// wire stream, and fixed overhead. The raw stream is optional in the sealed
-/// container: the recorder builds the cache from the run-dir stream and then
-/// decides whether to package the stream itself. This selector is how a caller
-/// states which composition it is verifying, so an ABSENT stream is either the
-/// declared composition or a hard error — never an unnoticed gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamEntryPolicy {
-    /// The stream role must be present exactly once at the canonical path.
     Required,
-    /// The stream role may be absent. When present it is still held to the
-    /// exact same uniqueness and canonical-path rules as [`Self::Required`];
-    /// only the zero-entry case is admitted.
     Optional,
 }
 
-/// Verify through a caller-owned handle while binding the requested stream role
-/// to an explicit game-relative payload path.
-///
-/// The raw stream is REQUIRED by this entry point. Callers that seal a
-/// cache-only recording must use
-/// [`verify_replay_container_streaming_file_at_path_with_policy`] and pass
-/// [`StreamEntryPolicy::Optional`] explicitly, so omitting the stream is always
-/// a stated decision rather than a silent absence.
 pub fn verify_replay_container_streaming_file_at_path(
     file: &mut File,
     game_id: &str,
@@ -369,8 +280,6 @@ pub fn verify_replay_container_streaming_file_at_path(
     )
 }
 
-/// Verify through a caller-owned handle, stating whether the raw collector
-/// stream is part of this recording's composition.
 pub fn verify_replay_container_streaming_file_at_path_with_policy(
     mut file: &mut File,
     game_id: &str,
@@ -383,18 +292,8 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         .map_err(|e| format!("stat container: {e}"))?
         .len();
 
-    // The path-policy selector is authenticated inside manifest.json, so the
-    // structural pass must begin with the historical grammar. It rejects
-    // traversal/absolute/device paths but deliberately does not impose NFC or
-    // full Unicode-caseless identity before the manifest version is known.
-    //
-    // The entry-count ceiling is the PRODUCT-OPEN one, not the generic ZIP
-    // reader's: this function is the recorder's pre-promotion gate, and a gate
-    // that admits more than `Container::open` will accept green-lights
-    // containers the viewer deterministically refuses (FW4 / R1-6).
     let (entries, central_directory_off) =
         read_central_directory_with_limit_policy(&mut file, file_len, MAX_ENTRIES as u64, false)?;
-    // Same total-uncompressed admission the viewer applies at open.
     let mut total_uncompressed: u64 = 0;
     for entry in &entries {
         total_uncompressed = total_uncompressed.saturating_add(entry.uncomp_size);
@@ -406,7 +305,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
     }
     validate_local_headers_file(&mut file, &entries, file_len, central_directory_off)?;
 
-    // --- manifest.json (read + parse + digest) ---
     let man_entry = entries
         .iter()
         .find(|e| e.name == "manifest.json")
@@ -444,7 +342,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         ));
     }
 
-    // --- manifest entry table: path -> (sha, bytes, role) ---
     let man_entries = manifest
         .get("entries")
         .and_then(Value::as_array)
@@ -494,10 +391,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         }
     }
 
-    // The capture hash binds to one object, not merely to a role label. A
-    // second role-bearing decoy must not be able to overwrite the report after
-    // the canonical stream has been hashed, and a lone role at any other path
-    // is not the captured stream for this game.
     let canonical_stream_path = format!("payload/{game_id}/{stream_payload_path}");
     let mut stream_role_paths = by_path
         .iter()
@@ -508,9 +401,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
     stream_role_paths.sort_unstable();
     match stream_role_paths.as_slice() {
         [path] if *path == canonical_stream_path => {}
-        // A cache-only recording carries no raw stream entry. Admitted only
-        // when the caller declared that composition; a Required verification
-        // still falls through to the exact same error as before.
         [] if stream_policy == StreamEntryPolicy::Optional => {}
         [path] => {
             return Err(format!(
@@ -525,8 +415,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         }
     }
 
-    // Coverage: every zip payload entry is in the manifest with the declared size,
-    // and every manifest entry exists in the zip (no stowaways, no phantoms).
     let mut zip_names: HashMap<&str, &CdEntry> = HashMap::new();
     for e in &entries {
         if e.name == "manifest.json" {
@@ -564,8 +452,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
         }
     }
 
-    // --- hash EVERY payload entry from disk (bounded), tracking only the
-    // unique canonical stream object established above ---
     let mut report = StreamVerifyReport::default();
     for e in &entries {
         if e.name == "manifest.json" {
@@ -602,9 +488,6 @@ pub fn verify_replay_container_streaming_file_at_path_with_policy(
     Ok(report)
 }
 
-/// Select the same versioned path namespace as `Container::open`. This is kept
-/// next to the streaming verifier because it must make the decision before any
-/// archive/manifest path join is trusted.
 fn manifest_uses_unicode_paths(manifest: &Value) -> Result<bool, String> {
     let container_version = manifest
         .get("container_version")
@@ -691,8 +574,6 @@ fn versioned_path_key(name: &str, payload: bool, unicode_paths: bool) -> Result<
     }
 }
 
-/// Locate the End-Of-Central-Directory and parse central-directory records
-/// incrementally, retaining only the metadata needed for later reads.
 #[cfg(test)]
 fn read_central_directory(file: &mut File, file_len: u64) -> Result<Vec<CdEntry>, String> {
     read_central_directory_with_limit(file, file_len, MAX_READER_ENTRIES)
@@ -716,12 +597,6 @@ fn read_central_directory_with_limit_policy(
     if file_len < 22 {
         return Err("container too small for an EOCD".to_string());
     }
-    // The EOCD sits within the last 22 + 0xFFFF bytes (comment cap). Include
-    // the Zip64 locator + minimum Zip64 EOCD before it so the locator is always
-    // inside the scanned tail; the Zip64 EOCD record itself is then reached by
-    // FOLLOWING the locator's declared offset (parse_zip64_eocd), because a
-    // record with an extensible data sector can validly start before any fixed
-    // tail window.
     let tail_len = (EOCD_MIN_LEN + 0xFFFF + ZIP64_LOCATOR_LEN + ZIP64_EOCD_MIN_LEN).min(file_len);
     let tail_start = file_len - tail_len;
     let mut tail = vec![0u8; tail_len as usize];
@@ -731,10 +606,6 @@ fn read_central_directory_with_limit_policy(
         .map_err(|e| format!("read eocd tail: {e}"))?;
 
     let eocd = find_eocd(&tail).ok_or_else(|| "no EOCD record found".to_string())?;
-    // Mirror the in-RAM reader's EOCD strictness (zip.rs): multi-disk and split
-    // central directories are refused, and ordinary EOCD fields must agree with
-    // their Zip64 counterparts — a container the in-RAM reader refuses must
-    // never be promoted by the recorder-side verifier.
     let disk_no = rd_u16(&tail, eocd + 4).ok_or("truncated eocd")?;
     let cd_disk = rd_u16(&tail, eocd + 6).ok_or("truncated eocd")?;
     if disk_no != 0 || cd_disk != 0 {
@@ -794,8 +665,6 @@ fn read_central_directory_with_limit_policy(
             tail_start + eocd as u64,
         )
     };
-    // The central directory must end exactly at its end record (same anchor the
-    // in-RAM reader enforces): no unaccounted bytes between CD and (Zip64) EOCD.
     let actual_cd_end = cd_off
         .checked_add(cd_size)
         .ok_or_else(|| "central directory range overflows".to_string())?;
@@ -925,8 +794,6 @@ fn read_central_directory_with_limit_policy(
         if !seen.insert(name.clone()) {
             return Err(format!("duplicate entry name {name}"));
         }
-        // case-insensitive collision (would clobber on Windows/macOS unpack);
-        // same rule as the in-RAM reader.
         let collision_key = if unicode_v2 {
             portable_path_key(&name)
         } else {
@@ -975,16 +842,6 @@ fn find_zip64_locator(tail: &[u8], eocd: usize) -> Option<usize> {
     (rd_u32(tail, off) == Some(ZIP64_LOCATOR_SIG)).then_some(off)
 }
 
-/// Returns `(total_entries, cd_size, cd_off, zip64_eocd_abs)` — the last is the
-/// ABSOLUTE file offset of the Zip64 EOCD record, i.e. where the central
-/// directory must end. The record is located by FOLLOWING the locator's
-/// declared offset (exactly like the in-RAM reader) instead of requiring it to
-/// start inside the fixed scanned tail: a valid extensible data sector plus a
-/// max-size EOCD comment (or a sector larger than 65,535 bytes) pushes the
-/// record before the tail, and the streaming verifier must accept every Zip64
-/// EOCD the in-memory parser accepts. Only the fixed 56-byte prefix is ever
-/// materialized; a record spanning more than [`ZIP64_EOCD_MAX_SPAN`] bytes
-/// before its locator is a typed refusal.
 fn parse_zip64_eocd(
     file: &mut File,
     tail: &[u8],
@@ -1000,13 +857,9 @@ fn parse_zip64_eocd(
         return Err("multi-disk Zip64 archives are not supported".to_string());
     }
     let locator_abs = tail_start + locator as u64;
-    // Shared placement policy (see `zip::validate_zip64_eocd_placement`): the
-    // record_size half runs below, once the record has been materialized.
     crate::zip::validate_zip64_eocd_placement(zip64_eocd_abs, locator_abs, None)?;
     let mut record = [0u8; ZIP64_EOCD_MIN_LEN as usize];
     if zip64_eocd_abs >= tail_start {
-        // Fast path: the record's fixed prefix already sits inside the scanned
-        // tail (span >= 56 guarantees the slice ends at/before the locator).
         let off = usize::try_from(zip64_eocd_abs - tail_start)
             .map_err(|_| "Zip64 EOCD offset too large".to_string())?;
         let record_len = record.len();
@@ -1037,9 +890,6 @@ fn parse_zip64_eocd(
     Ok((total_entries, cd_size, cd_off, zip64_eocd_abs))
 }
 
-/// Zip64 extra-field parsing is shared with the in-RAM reader (one parser, one
-/// strictness: duplicate 0x0001 fields and malformed extra buffers are refused
-/// identically by both readers).
 fn parse_zip64_extra(
     extra: &[u8],
     need_uncomp: bool,
@@ -1050,11 +900,6 @@ fn parse_zip64_extra(
         .map_err(|e| e.to_string())
 }
 
-/// Validate every local header and complete physical entry region without
-/// decoding payload bytes, including central-directory order and EXACT physical
-/// coverage. Mirrors `ZipArchive::validate_local_headers` (FW4 / R1-3): only
-/// rejecting overlap left prefixes and gaps outside every integrity layer, and
-/// this is the recorder's own pre-promotion gate.
 fn validate_local_headers_file(
     file: &mut File,
     entries: &[CdEntry],
@@ -1203,31 +1048,10 @@ fn validate_entry_structure(
     })
 }
 
-/// True when a decompressor's `io::Error` is a CODEC failure over the declared
-/// payload bytes rather than an underlying source/destination I/O failure.
-///
-/// `flate2` and `zstd` synthesize their decode failures with
-/// `io::Error::new(..)`, which carries NO raw OS error code; a genuine read
-/// failure on the retained file handle always propagates one. The presence of
-/// an OS error code is therefore the discriminator: without it the failure
-/// describes the declared payload bytes, with it the failure describes the
-/// source handle and says nothing about the stored bytes.
-///
-/// (The `kind()` is deliberately not used: `zstd` reports checksum/format
-/// failures as `ErrorKind::Other`, so keying on `InvalidData` would silently
-/// reclassify real payload corruption as malformation.)
 fn decoder_error_is_payload(error: &std::io::Error) -> bool {
     error.raw_os_error().is_none()
 }
 
-/// One file-backed entry-verification failure, carrying its CLASS alongside the
-/// reason text.
-///
-/// The file-backed reader reports every reason as a string, which merged a
-/// corrupted payload (a failed CRC-32 / declared length over these exact bytes)
-/// with an ordinary malformed-archive refusal. Callers that must tell those
-/// apart — the container layer, and the product surface above it — read
-/// [`EntryFailure::is_integrity`] instead of matching on the message.
 #[derive(Debug)]
 pub(crate) struct EntryFailure {
     reason: String,
@@ -1235,16 +1059,12 @@ pub(crate) struct EntryFailure {
 }
 
 impl EntryFailure {
-    /// A malformed / unsupported / unreadable archive: the bytes were never
-    /// authenticated against a declared digest.
     pub(crate) fn malformed(reason: String) -> Self {
         Self {
             reason,
             integrity: false,
         }
     }
-    /// The stored bytes disagree with the archive's own declared integrity
-    /// fields for this entry.
     pub(crate) fn integrity(reason: String) -> Self {
         Self {
             reason,
@@ -1260,8 +1080,6 @@ impl EntryFailure {
 }
 
 impl From<String> for EntryFailure {
-    /// Every reason that reaches this conversion came from a helper that does
-    /// not authenticate bytes against a digest, so it is malformation.
     fn from(reason: String) -> Self {
         Self::malformed(reason)
     }
@@ -1269,13 +1087,10 @@ impl From<String> for EntryFailure {
 
 impl std::fmt::Display for EntryFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Renders the EXACT text the pre-typed String produced.
         f.write_str(&self.reason)
     }
 }
 
-/// Read + decompress one entry FULLY into RAM. Only used for small entries
-/// (manifest.json); large entries go through [`hash_entry_streaming`].
 fn read_entry_bytes(file: &mut File, e: &CdEntry) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     entry_integrity_inner(file, e, Some(&mut out), false, MAX_CONTAINER_ENTRY_BYTES)
@@ -1283,8 +1098,6 @@ fn read_entry_bytes(file: &mut File, e: &CdEntry) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// Stream + decompress one entry, returning `(sha256_hex, uncompressed_len)`
-/// without holding the decompressed bytes.
 fn hash_entry_streaming(file: &mut File, e: &CdEntry) -> Result<(String, u64), String> {
     let (digest, len) =
         entry_integrity_inner(file, e, None, true, STREAMING_MAX_CONTAINER_ENTRY_BYTES)
@@ -1295,9 +1108,6 @@ fn hash_entry_streaming(file: &mut File, e: &CdEntry) -> Result<(String, u64), S
     ))
 }
 
-/// Shared core: seek to the entry's data and stream it through the decompressor,
-/// always deriving CRC-32 and optionally deriving SHA-256 and/or collecting the
-/// bytes. Enforces the declared uncompressed size.
 fn entry_integrity_inner(
     file: &mut File,
     e: &CdEntry,
@@ -1311,14 +1121,16 @@ fn entry_integrity_inner(
             e.name, e.comp_size, e.uncomp_size, output_cap
         )));
     }
-    // local file header: read fixed 30 bytes, then name+extra len to find data.
     let mut lfh = [0u8; 30];
     file.seek(SeekFrom::Start(e.local_header_off))
         .map_err(|err| format!("seek local header {}: {err}", e.name))?;
     file.read_exact(&mut lfh)
         .map_err(|err| format!("read local header {}: {err}", e.name))?;
     if rd_u32(&lfh, 0) != Some(LFH_SIG) {
-        return Err(EntryFailure::malformed(format!("entry {}: bad local header signature", e.name)));
+        return Err(EntryFailure::malformed(format!(
+            "entry {}: bad local header signature",
+            e.name
+        )));
     }
     let lh_version_needed = rd_u16(&lfh, 4).unwrap();
     let lh_flags = rd_u16(&lfh, 6).unwrap();
@@ -1328,9 +1140,6 @@ fn entry_integrity_inner(
     let lh_crc32 = rd_u32(&lfh, 14).unwrap();
     let lh_comp_size = rd_u32(&lfh, 18).unwrap() as u64;
     let lh_uncomp_size = rd_u32(&lfh, 22).unwrap() as u64;
-    // Mirror the in-RAM reader's local/central agreement checks
-    // (zip.rs validate_local_entry) exactly: a container the product reader
-    // refuses must never pass the recorder-side streaming verifier.
     if lh_version_needed != e.version_needed {
         return Err(EntryFailure::malformed(format!(
             "entry {}: local/central version-needed mismatch (local {lh_version_needed}, central {})",
@@ -1344,7 +1153,10 @@ fn entry_integrity_inner(
         )));
     }
     if lh_method != e.method {
-        return Err(EntryFailure::malformed(format!("entry {}: local/central method mismatch", e.name)));
+        return Err(EntryFailure::malformed(format!(
+            "entry {}: local/central method mismatch",
+            e.name
+        )));
     }
     if lh_mod_time != e.mod_time || lh_mod_date != e.mod_date {
         return Err(EntryFailure::malformed(format!(
@@ -1373,7 +1185,10 @@ fn entry_integrity_inner(
     file.read_exact(&mut local_extra)
         .map_err(|err| format!("read local extra {}: {err}", e.name))?;
     if local_name != e.name.as_bytes() {
-        return Err(EntryFailure::malformed(format!("entry {}: local/central name mismatch", e.name)));
+        return Err(EntryFailure::malformed(format!(
+            "entry {}: local/central name mismatch",
+            e.name
+        )));
     }
     if e.flags & 0x0008 == 0 {
         let need_uncomp = lh_uncomp_size == u32::MAX as u64;
@@ -1403,8 +1218,6 @@ fn entry_integrity_inner(
             )));
         }
     } else if lh_crc32 != 0 || lh_comp_size != 0 || lh_uncomp_size != 0 {
-        // Same rule as the in-RAM reader: with general-purpose bit 3 the local
-        // crc/size fields carry no authority and MUST be zero.
         return Err(EntryFailure::malformed(format!(
             "entry {}: data-descriptor local crc/size fields must be zero",
             e.name
@@ -1413,7 +1226,6 @@ fn entry_integrity_inner(
     file.seek(SeekFrom::Start(data_start))
         .map_err(|err| format!("seek entry data {}: {err}", e.name))?;
 
-    // A sink that owns the hasher and optionally collects decompressed output.
     let sink = HashSink {
         hasher: calculate_sha256.then(Sha256::new),
         crc32: crc32fast::Hasher::new(),
@@ -1424,13 +1236,6 @@ fn entry_integrity_inner(
 
     let final_sink = match e.method {
         ZIP_METHOD_STORE => {
-            // STORE: comp_size == uncomp_size; stream raw bytes through the sink.
-            // Deliberately NOT the integrity class: this can fail because the
-            // source file changed underneath the retained handle (which
-            // `validate_file_length` brackets) or because the caller-owned
-            // destination writer failed. Neither proves the stored bytes are
-            // corrupt. A STORE payload that IS corrupt reads fine and then
-            // fails the declared length/CRC checks below, which are typed.
             let mut s = sink;
             stream_n(file, e.comp_size, |chunk| {
                 s.write_all(chunk).map_err(|e| e.to_string())
@@ -1454,12 +1259,8 @@ fn entry_integrity_inner(
                 if n == 0 {
                     break;
                 }
-                // The sink is caller-owned; a write failure is not evidence
-                // about the stored bytes.
                 s.write_all(&out[..n]).map_err(|error| error.to_string())?;
             }
-            // Match the in-memory reader: every byte inside the declared
-            // compressed region must belong to the deflate stream.
             if dec.total_in() != e.comp_size {
                 return Err(EntryFailure::malformed(format!(
                     "entry {}: trailing bytes after deflate stream",
@@ -1478,9 +1279,6 @@ fn entry_integrity_inner(
         ZIP_METHOD_ZSTD => {
             let mut s = sink;
             {
-                // Peek the frame magic before decoding: libzstd consumes a
-                // skippable frame silently, so consumption accounting alone
-                // cannot see it. Rewind to data_start afterwards.
                 let mut magic = [0u8; 4];
                 let peeked = read_up_to(file, &mut magic, e.comp_size)?;
                 crate::zip::reject_leading_zstd_skippable_frame(
@@ -1519,17 +1317,10 @@ fn entry_integrity_inner(
                     }
                     s.write_all(&out[..n]).map_err(|err| err.to_string())?;
                 }
-                // Match the in-memory reader: every byte inside the declared
-                // compressed region must belong to the single zstd frame,
-                // whether it is still buffered in the decoder's window or
-                // never pulled from the bounded reader behind it.
                 let buffered = dec.finish();
                 let still_buffered = buffered.buffer().len() as u64;
                 let never_read = buffered.into_inner().limit();
                 if still_buffered != 0 || never_read != 0 {
-                    // Structural, not payload-integrity: the region's shape is
-                    // wrong, no stored hash/CRC claim has been contradicted.
-                    // Same class as the deflate arm's trailing-bytes refusal.
                     return Err(EntryFailure::malformed(format!(
                         "entry {}: {} bytes inside the declared zstd region follow its single frame",
                         e.name,
@@ -1554,10 +1345,6 @@ fn entry_integrity_inner(
     };
 
     let uncomp_len = final_sink.len;
-    // The two checks below are PAYLOAD-INTEGRITY failures: the archive's own
-    // declared length/CRC-32 for these exact bytes did not hold. Typed apart
-    // from every other reason so the container layer can classify a corrupted
-    // payload without matching on error text.
     if uncomp_len != e.uncomp_size {
         return Err(EntryFailure::integrity(format!(
             "entry {}: decompressed {uncomp_len} bytes != declared {}",
@@ -1566,9 +1353,6 @@ fn entry_integrity_inner(
     }
     let crc32 = final_sink.crc32.finalize();
     if crc32 != e.crc32 {
-        // Keep the historical "crc32 mismatch" phrase — the negative-fixture
-        // manifest and replay_app's fixture table pin it as the stable
-        // substring for this refusal class.
         return Err(EntryFailure::integrity(format!(
             "entry {}: crc32 mismatch: {crc32:08x} != central {:08x}",
             e.name, e.crc32
@@ -1586,8 +1370,6 @@ fn entry_integrity_inner(
     ))
 }
 
-/// Read at most `buf.len()` bytes, never crossing `available`. Returns how many
-/// landed. Used only to peek a frame magic; the caller re-seeks afterwards.
 fn read_up_to(file: &mut File, buf: &mut [u8], available: u64) -> Result<usize, String> {
     let want = usize::try_from(available.min(buf.len() as u64))
         .map_err(|_| "peek length does not fit usize".to_string())?;
@@ -1672,7 +1454,6 @@ fn data_descriptor_candidate_file(
         .ok_or_else(|| format!("entry {}: data descriptor end overflow", e.name))
 }
 
-/// Read exactly `n` bytes from `file` in chunks, handing each chunk to `f`.
 fn stream_n(
     file: &mut File,
     n: u64,
@@ -1690,7 +1471,6 @@ fn stream_n(
     Ok(())
 }
 
-/// A `Write` sink that always derives CRC-32 and optionally hashes/copies.
 struct HashSink<'a> {
     hasher: Option<Sha256>,
     crc32: crc32fast::Hasher,
@@ -1727,7 +1507,6 @@ impl Write for HashSink<'_> {
     }
 }
 
-/// Backwards scan for the EOCD signature within a tail buffer.
 fn find_eocd(tail: &[u8]) -> Option<usize> {
     if tail.len() < 22 {
         return None;
@@ -1757,16 +1536,6 @@ fn eocd_comment_ends_at_eof(tail: &[u8], off: usize) -> bool {
 #[cfg(test)]
 mod tests {
 
-    /// `Container::open` with the whole fixture tree held across it.
-    ///
-    /// Every test here writes a container and opens it on the next line, which
-    /// on Windows is exactly when a real-time scanner holds the file and the
-    /// open returns `os error 32`. The guard lives in the TEST module, not in
-    /// `open_retained_container_file`: that function's exact source lines are
-    /// registered in the replay side's pathname-capability audit
-    /// (`replay_core/src/source.rs`), and editing a production file-access site
-    /// to carry test scaffolding both fails that gate and puts test-only text
-    /// into a production registry.
     fn open_container_guarded(
         path: &std::path::Path,
         expected: &ExpectedIdentity,
@@ -2106,9 +1875,6 @@ mod tests {
 
     #[test]
     fn streaming_decoder_refuses_deflate_trailing_bytes() {
-        // The same [valid deflate stream][garbage] fixture the in-RAM reader
-        // refuses: the write-side decoder must also fail (the two readers must
-        // never disagree about the same container).
         let dir = TmpDir::new("deflate_trailing");
         let clean_path = dir.join("clean.zip");
         fs::write(&clean_path, crate::zip::test_deflate_zip_with_trailing(0)).unwrap();
@@ -2124,9 +1890,6 @@ mod tests {
         let entries = read_central_directory(&mut file, len).expect("structure still parses");
         let err = hash_entry_streaming(&mut file, &entries[0])
             .expect_err("trailing bytes after the deflate stream must be refused");
-        // Since the 2026-07-19 strictness port the streaming path raises the
-        // in-RAM reader's canonical trailing-bytes refusal directly; the older
-        // incidental short-write/inflate refusals remain acceptable spellings.
         assert!(
             err.contains("trailing bytes after deflate stream")
                 || err.contains("failed to write whole buffer")
@@ -2135,9 +1898,6 @@ mod tests {
         );
     }
 
-    /// FW4 / R1-1, streaming half. The recorder's own pre-promotion gate runs
-    /// through this path, so it must refuse exactly what the in-RAM reader
-    /// refuses (`zip::tests::zstd_skippable_frames_inside_comp_region_are_refused`).
     #[test]
     fn streaming_reader_rejects_zstd_skippable_frames_inside_comp_region() {
         use crate::zip::ZstdSmuggle;
@@ -2169,16 +1929,10 @@ mod tests {
         }
     }
 
-    /// FW4 / R1-6. The recorder's pre-promotion gate must not admit what the
-    /// viewer refuses. It used to allow 10,000,000 entries (the generic ZIP
-    /// reader ceiling) and had no total-uncompressed rejection at all, while
-    /// `Container::open_strict` caps at 2,000,000 entries and 64 GiB.
     #[test]
     fn streaming_verifier_applies_the_product_open_entry_ceiling() {
         let dir = TmpDir::new("verifier_admission_parity");
         let path = dir.join("too_many_entries.battleplan");
-        // Between the product ceiling and the generic ZIP ceiling: the old gate
-        // accepted this structure, the viewer never would.
         let hostile_count = MAX_ENTRIES as u64 + 1;
         assert!(hostile_count < MAX_READER_ENTRIES);
         fs::write(&path, zip64_empty_with_entry_count(hostile_count, 0)).unwrap();
@@ -2226,9 +1980,6 @@ mod tests {
         assert!(entries.is_empty());
     }
 
-    /// Empty Zip64 archive whose EOCD record carries a `sector_len`-byte
-    /// zip64 extensible data sector (record size declares it) plus an EOCD
-    /// comment — the layouts that push the record before a fixed scanned tail.
     fn zip64_empty_with_extensible_sector(sector_len: usize, comment_len: usize) -> Vec<u8> {
         let mut out = Vec::new();
         let zip64_eocd_off = out.len() as u64;
@@ -2240,8 +1991,8 @@ mod tests {
         out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&0u64.to_le_bytes());
         out.extend_from_slice(&0u64.to_le_bytes());
-        out.extend_from_slice(&0u64.to_le_bytes()); // cd size
-        out.extend_from_slice(&0u64.to_le_bytes()); // cd offset
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
         out.extend(std::iter::repeat(0xEEu8).take(sector_len));
 
         out.extend_from_slice(&ZIP64_LOCATOR_SIG.to_le_bytes());
@@ -2265,9 +2016,6 @@ mod tests {
     fn streaming_zip64_extensible_data_sector_before_tail_is_accepted() {
         let dir = TmpDir::new("zip64_sector");
 
-        // Nonempty extensible sector + max-size EOCD comment: the record
-        // starts before the fixed scanned tail and must be reached through
-        // the locator, exactly as the in-memory parser does.
         let path = dir.join("sector_max_comment.battleplan");
         fs::write(&path, zip64_empty_with_extensible_sector(4096, 0xFFFF)).unwrap();
         let mut file = portable_test_fs_retry::open(&path).unwrap();
@@ -2276,8 +2024,6 @@ mod tests {
             .expect("Zip64 EOCD with extensible data sector and max comment parses");
         assert!(entries.is_empty());
 
-        // A sector larger than 65,535 bytes alone pushes the record out of
-        // any comment-sized tail window.
         let path = dir.join("large_sector.battleplan");
         fs::write(&path, zip64_empty_with_extensible_sector(70_000, 0)).unwrap();
         let mut file = portable_test_fs_retry::open(&path).unwrap();
@@ -2300,15 +2046,8 @@ mod tests {
         let len = file.metadata().unwrap().len();
         let err = read_central_directory(&mut file, len)
             .expect_err("a record spanning past the sane cap is a typed refusal");
-        // The cap is now SHARED with the in-RAM reader, so the phrase is
-        // "reader cap" rather than the verifier-only wording it once had.
         assert!(err.contains("reader cap"), "{err}");
 
-        // FW4 / R1-5: the in-RAM reader must refuse the identical bytes. Before
-        // the parsers were shared it followed the locator offset with no
-        // precedence requirement and no span cap, so `Container::from_bytes*`
-        // (production, via the stitch publisher) admitted what `Container::open`
-        // deterministically refused.
         let err = match crate::zip::ZipArchive::parse(zip64_empty_with_extensible_sector(
             2 * 1024 * 1024,
             0,
@@ -2319,11 +2058,6 @@ mod tests {
         assert!(err.to_string().contains("reader cap"), "{err}");
     }
 
-    /// Shift a whole single-entry ZIP32 archive forward by `prefix` bytes of
-    /// carrier data, rewriting the central-directory local-header offset and the
-    /// EOCD central-directory offset so every declared value stays consistent.
-    /// Nothing in the ZIP grammar itself objects; only exact physical coverage
-    /// notices the bytes.
     fn archive_with_unaccounted_prefix(prefix: usize) -> Vec<u8> {
         let base = crate::zip::test_deflate_zip_with_trailing(0);
         let eocd = base.len() - 22;
@@ -2334,20 +2068,13 @@ mod tests {
         let eocd = out.len() - 22;
         let shifted_cd_off = (cd_off + prefix) as u32;
         out[eocd + 16..eocd + 20].copy_from_slice(&shifted_cd_off.to_le_bytes());
-        // Central-directory record local-header offset lives at cd + 42.
         let cdh = cd_off + prefix;
         out[cdh + 42..cdh + 46].copy_from_slice(&(prefix as u32).to_le_bytes());
         out
     }
 
-    /// FW4 / R1-3. A 77-byte prefix with consistently shifted offsets was
-    /// accepted by BOTH readers: the in-RAM validator rejected only reversal and
-    /// overlap, and the streaming one started `previous_end` at 0 and only
-    /// checked for overlap. The carrier bytes are covered by no CRC, no
-    /// SHA-256, and no size field.
     #[test]
     fn unaccounted_prefix_bytes_are_refused_by_both_readers() {
-        // Control: the unshifted archive still validates in both readers.
         let clean = archive_with_unaccounted_prefix(0);
         crate::zip::ZipArchive::parse(clean.clone())
             .expect("control archive parses")
@@ -2359,7 +2086,8 @@ mod tests {
         fs::write(&clean_path, &clean).unwrap();
         let mut file = portable_test_fs_retry::open(&clean_path).unwrap();
         let len = file.metadata().unwrap().len();
-        let (entries, cd_off) = read_central_directory_with_limit(&mut file, len, MAX_READER_ENTRIES).unwrap();
+        let (entries, cd_off) =
+            read_central_directory_with_limit(&mut file, len, MAX_READER_ENTRIES).unwrap();
         validate_local_headers_file(&mut file, &entries, len, cd_off)
             .expect("control archive covers itself exactly (streaming)");
 
@@ -2388,15 +2116,9 @@ mod tests {
         );
     }
 
-    /// FW4 / R1-5 + R1-3 extension: neither Zip64 parser used to check the
-    /// DECLARED record size against the locator, so an undeclared gap between
-    /// the record's declared end and its locator was accepted by both. Both
-    /// readers must now refuse it.
     #[test]
     fn zip64_record_size_must_reach_its_locator_in_both_readers() {
-        // Sector bytes are physically present but NOT declared by record_size.
         let mut bytes = zip64_empty_with_extensible_sector(64, 0);
-        // Rewrite the declared record size back down to the bare 44 bytes.
         bytes[4..12].copy_from_slice(&44u64.to_le_bytes());
 
         let err = match crate::zip::ZipArchive::parse(bytes.clone()) {
@@ -2423,14 +2145,9 @@ mod tests {
 
     #[test]
     fn streaming_verifier_rejects_local_header_identity_drift() {
-        // The in-RAM reader (zip.rs validate_local_entry) refuses local
-        // headers whose version-needed or modification timestamp disagree
-        // with the central directory; the streaming verifier must refuse the
-        // same bytes (the two readers must never disagree about a container).
         let dir = TmpDir::new("local_header_drift");
         let base = crate::zip::test_deflate_zip_with_trailing(0);
 
-        // Control: the untampered entry hashes cleanly.
         let clean_path = dir.join("clean.zip");
         fs::write(&clean_path, &base).unwrap();
         let mut file = portable_test_fs_retry::open(&clean_path).unwrap();
@@ -2438,9 +2155,8 @@ mod tests {
         let entries = read_central_directory(&mut file, len).unwrap();
         hash_entry_streaming(&mut file, &entries[0]).expect("clean entry hashes");
 
-        // Local version-needed drifts from the central directory.
         let mut tampered = base.clone();
-        tampered[4] = tampered[4].wrapping_add(1); // LFH at 0; version-needed at +4
+        tampered[4] = tampered[4].wrapping_add(1);
         let path = dir.join("version_drift.zip");
         fs::write(&path, &tampered).unwrap();
         let mut file = portable_test_fs_retry::open(&path).unwrap();
@@ -2450,9 +2166,8 @@ mod tests {
             .expect_err("local/central version-needed drift must be refused");
         assert!(err.contains("version-needed mismatch"), "{err}");
 
-        // Local modification time drifts from the central directory.
         let mut tampered = base.clone();
-        tampered[10] = tampered[10].wrapping_add(1); // LFH mod-time at +10
+        tampered[10] = tampered[10].wrapping_add(1);
         let path = dir.join("timestamp_drift.zip");
         fs::write(&path, &tampered).unwrap();
         let mut file = portable_test_fs_retry::open(&path).unwrap();
@@ -2465,9 +2180,6 @@ mod tests {
 
     #[test]
     fn streaming_verifier_requires_zero_local_fields_with_data_descriptor() {
-        // With general-purpose bit 3 the in-RAM reader requires the local
-        // crc/size fields to be ZERO (zip.rs); the streaming verifier must
-        // refuse the same nonzero-field container instead of promoting it.
         let dir = TmpDir::new("dd_zero_fields");
         let (container_path, _, _) = build_store_streaming_container(&dir, "dd_zero_fields");
         let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
@@ -2583,17 +2295,9 @@ mod tests {
         (container_path, stream_bytes, stream_sha)
     }
 
-    /// Build a `.battleplan` via the STREAMING packer (a large streamed stream
-    /// entry + two file-backed snapshot entries + one small in-RAM index entry),
-    /// then confirm: (1) the streaming verifier hash-matches every entry and
-    /// returns the stream role's sha; (2) the EXISTING in-RAM `Container` reader
-    /// still opens it and can read each entry back individually (backward-compat
-    /// of the data-descriptor zip); (3) a one-byte tamper of the stream on-disk is
-    /// caught by the streaming verifier.
     #[test]
     fn streaming_pack_roundtrips_and_verifies() {
         let dir = TmpDir::new("roundtrip");
-        // A stream large enough to exercise multi-chunk streaming compression.
         let stream_path = dir.join("collector_stream.bin");
         let mut stream_bytes = Vec::new();
         for i in 0..(5 * 1024 * 1024u32) {
@@ -2653,19 +2357,16 @@ mod tests {
             .unwrap();
         }
 
-        // (1) streaming verify
         let report =
             verify_replay_container_streaming(&container_path, "g", "collector_compact_stream")
                 .expect("streaming verify passes");
-        assert_eq!(report.entries_verified, 4); // index + 2 snapshots + stream
+        assert_eq!(report.entries_verified, 4);
         assert_eq!(
             report.stream_entry_sha256.as_deref(),
             Some(stream_sha.as_str())
         );
         assert_eq!(report.stream_entry_bytes, stream_bytes.len() as u64);
 
-        // (2) product file-backed reader opens the streamed container and reads
-        // each entry back individually (data-descriptor ZIP is compatible).
         let container = open_container_guarded(&container_path, &ExpectedIdentity::default())
             .expect("file-backed Container opens streamed container");
         let got_stream = container
@@ -2677,10 +2378,8 @@ mod tests {
             .unwrap();
         assert_eq!(got_a, br#"{"hour_index":0,"x":1}"#);
 
-        // (3) tamper the stream on disk -> streaming verify must reject.
         let bad_path = dir.join("bad.battleplan");
         let mut bytes = portable_test_fs_retry::read(&container_path).unwrap();
-        // flip a byte in the compressed stream region (well before the central dir).
         bytes[200] ^= 0xff;
         fs::write(&bad_path, &bytes).unwrap();
         let tampered = portable_test_fs_retry::with_read_guard(&bad_path, || {
@@ -2806,19 +2505,8 @@ mod tests {
         );
     }
 
-    /// The opt-in high-compression profile (level 19 at window-27 + LDM) MUST
-    /// remain losslessly reversible, and the container it
-    /// produces MUST decode under the production window cap (the weaker-PC
-    /// decode bound). This is the zero-data-loss proof for the level flip:
-    /// pack a realistic mixed payload (long repetitive runs to exercise LDM at
-    /// window 27, interleaved with incompressible random blocks) through the
-    /// exact production packing entry point at an EXPLICIT {19, 27} profile,
-    /// then read every byte back and assert identity.
     #[test]
     fn max_level_window27_roundtrip_is_byte_lossless() {
-        // The production default prioritizes prompt finalization. Pin it so a
-        // future silent change trips this test while retaining the explicit
-        // max-level roundtrip below.
         assert_eq!(
             DEFAULT_ZSTD_COMPRESSION_LEVEL, 3,
             "production default zstd level must remain level 3"
@@ -2828,15 +2516,10 @@ mod tests {
         let encoded_path = dir.join("collector_stream.bin");
         let replay_path = dir.join("level19.battleplan");
 
-        // ~1.75 MiB: repetitive runs (LDM-matchable across a wide window) spliced
-        // with random blocks that cannot be compressed, so a lossy round-trip
-        // would diverge somewhere.
         let mut raw = Vec::with_capacity(1_835_008);
         let mut state: u32 = 0x1234_5678;
         for block in 0..112u32 {
-            // 8 KiB repetitive
             raw.extend(std::iter::repeat((block & 0xff) as u8).take(8 * 1024));
-            // 8 KiB pseudo-random (xorshift; no Math.random needed, deterministic)
             for _ in 0..(8 * 1024) {
                 state ^= state << 13;
                 state ^= state >> 17;
@@ -2879,15 +2562,6 @@ mod tests {
             sha256: Some(stream_sha.clone()),
         }];
 
-        // THE CEILING PROFILE: the hardest setting this project may pack at,
-        // and the widest window a reader must handle. It was level 19 until the
-        // owner capped compression at 3 (2026-08-16) so that size wins have to
-        // come from the encoding; `CompressionProfile::validate` now refuses 19
-        // outright, and a test that packs at a level production cannot use
-        // proves nothing about production. The PROPERTY is unchanged -- a
-        // container packed at the hardest admissible setting round-trips byte
-        // for byte under the production window cap -- and it is now asserted at
-        // the setting production actually reaches.
         let profile = CompressionProfile {
             zstd_level: crate::pack::MAX_ZSTD_COMPRESSION_LEVEL,
             zstd_window_log: crate::zip::ZSTD_WINDOW_LOG,
@@ -2908,8 +2582,6 @@ mod tests {
             .unwrap();
         }
 
-        // (1) streaming verify decodes under the production window cap and the
-        // capture-time sha256 matches the decoded stream.
         let report =
             verify_replay_container_streaming(&replay_path, "g", "collector_compact_stream")
                 .expect("max-level/window-27 container verifies under the production window cap");
@@ -2919,7 +2591,6 @@ mod tests {
         );
         assert_eq!(report.stream_entry_bytes, raw.len() as u64);
 
-        // (2) the entry really is zstd (a silent STORE would hide a level bug).
         let mut file = portable_test_fs_retry::open(&replay_path).unwrap();
         let file_len = file.metadata().unwrap().len();
         let entries = read_central_directory(&mut file, file_len).unwrap();
@@ -2932,7 +2603,6 @@ mod tests {
             ZIP_METHOD_ZSTD
         );
 
-        // (3) full byte-identity through the production reader = zero data loss.
         let container =
             open_container_guarded(&replay_path, &crate::ExpectedIdentity::default()).unwrap();
         let got = container
@@ -2942,10 +2612,6 @@ mod tests {
         assert!(got == raw, "max-level round-trip must be byte-identical");
     }
 
-    /// The decompressor-error discriminator itself. A codec failure is
-    /// synthesized with `io::Error::new` and carries no OS code; a genuine read
-    /// failure on the retained handle always carries one and says nothing about
-    /// the stored bytes.
     #[test]
     fn only_decoder_errors_without_an_os_code_describe_the_payload() {
         for kind in [
@@ -2959,7 +2625,6 @@ mod tests {
                 "a synthesized codec failure ({kind:?}) describes the payload"
             );
         }
-        // A real handle failure, not evidence about the stored bytes.
         for code in [5, 38, 1117] {
             let io = std::io::Error::from_raw_os_error(code);
             assert!(
@@ -2969,10 +2634,6 @@ mod tests {
         }
     }
 
-    /// R5-H3. The archive's own declared length/CRC failing, and the declared
-    /// payload region failing to be READ or DECOMPRESSED, are both the
-    /// payload-INTEGRITY class. Structural refusals must stay malformed —
-    /// otherwise "these bytes are corrupt" stops meaning anything.
     #[test]
     fn payload_data_failures_are_the_integrity_class_and_structural_ones_are_not() {
         let dir = TmpDir::new("entry_failure_class");
@@ -2996,8 +2657,6 @@ mod tests {
                 .expect("stream entry")
         };
 
-        // (1) Corrupt compressed bytes: the zstd decoder fails inside the
-        // declared region. This is the class the earlier revision lost.
         let mut corrupt = portable_test_fs_retry::read(&container_path).unwrap();
         corrupt[(data_start + comp_size / 2) as usize] ^= 0x40;
         let archive = archive_for(&corrupt, "corrupt_payload");
@@ -3010,8 +2669,6 @@ mod tests {
             "a mutated payload is the integrity class: {failure}"
         );
 
-        // (2) A mutated zstd FRAME HEADER: the decoder cannot even be built
-        // over the declared region. Same class — the payload does not decode.
         let mut bad_header = portable_test_fs_retry::read(&container_path).unwrap();
         for offset in 0..4u64 {
             bad_header[(data_start + offset) as usize] ^= 0x5a;
@@ -3026,8 +2683,6 @@ mod tests {
             "an undecodable payload is the integrity class: {failure}"
         );
 
-        // (3) Structural control: a local file header whose signature is gone
-        // is a malformed archive, NOT corrupt authenticated bytes.
         let mut structural = portable_test_fs_retry::read(&container_path).unwrap();
         let header_off = {
             let mut file = portable_test_fs_retry::open(&container_path).unwrap();
@@ -3437,7 +3092,6 @@ mod tests {
         }
     }
 
-    /// STORE (uncompressed) streaming entries verify too.
     #[test]
     fn streaming_pack_store_method_verifies() {
         let dir = TmpDir::new("store");
@@ -3459,7 +3113,7 @@ mod tests {
             decoded_len: None,
             role: "collector_compact_stream",
             hour_index: None,
-            sha256: None, // exercise the pack-side hash path
+            sha256: None,
         }];
         let container_path = dir.join("store.battleplan");
         {
@@ -3470,7 +3124,7 @@ mod tests {
                 &[],
                 &streaming,
                 &PackIdentity::default(),
-                false, // STORE
+                false,
                 &mut out,
             )
             .unwrap();

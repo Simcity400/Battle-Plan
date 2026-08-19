@@ -1,10 +1,3 @@
-//! Neutral live joins between engine content opens, D3D creation, reflection,
-//! and exact d77/d80 semantic authority.
-//!
-//! Nothing in this module assigns a vanilla role or path. The hook supplies
-//! authenticated observations; these materializers only validate exact joins
-//! and convert them into the existing strict raw contracts.
-
 use super::*;
 use portable_content_manifest::{normalize_game_relative_path, UsedContentKey};
 use sha2::{Digest, Sha256};
@@ -13,8 +6,6 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawEffectiveVfsWinnerRow {
     pub content: RawVfsContentIdentity,
-    /// Hash of an archive/container when the winning file came from one.
-    /// Directory-backed winners retain `None`.
     pub source_container_sha256: Option<String>,
     pub source_byte_offset: u64,
     pub source_byte_count: u64,
@@ -50,8 +41,6 @@ impl RawEffectiveVfsWinnerRow {
     }
 }
 
-/// Fully admitted, ephemeral winner index delivered by the authenticated H4CT
-/// channel. This type is never serialized into the portable replay wholesale.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawEffectiveVfsWinnerIndexBinding {
     pub process_start_nonce: u64,
@@ -173,8 +162,6 @@ pub enum RawD3dCreatedObjectKind {
     ComputeShader,
 }
 
-/// Exact engine resolver/open observation before a parser or resource builder
-/// consumes the returned stream/data handle.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawEffectiveVfsOpenObservation {
     pub observation_sequence: u64,
@@ -241,8 +228,6 @@ impl RawEffectiveVfsOpenObservation {
     }
 }
 
-/// D3D creation event whose source range explicitly names the engine open
-/// receipt. Pointer/hash coincidence alone is never accepted as correlation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawD3dContentCreationObservation {
     pub creation_sequence: u64,
@@ -354,8 +339,6 @@ pub struct RawShaderReflectedResource {
     pub ordered_variables: Vec<RawReflectedConstantBufferVariable>,
 }
 
-/// Materialized output of D3DReflect (or an authenticated compiler observer)
-/// for the exact bytecode passed to shader creation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawShaderBytecodeReflectionObservation {
     pub reflection_sequence: u64,
@@ -377,8 +360,6 @@ pub struct RawShaderBytecodeReflectionObservation {
 pub struct RawReflectedStageSemantics {
     pub stage: RawShaderStage,
     pub entry_token: String,
-    /// Complete ordered reflection output, including resource kinds not yet
-    /// representable by the strict d77/d80 draw contracts.
     pub ordered_resources: Vec<RawShaderReflectedResource>,
     pub ordered_texture_semantics: Vec<RawTextureSemantic>,
     pub ordered_sampler_semantics: Vec<RawSamplerSemantic>,
@@ -387,8 +368,6 @@ pub struct RawReflectedStageSemantics {
     pub ordered_outputs: Vec<RawShaderSignatureParameter>,
 }
 
-/// B10 pointer-free semantic emitted only after the complete reflected
-/// mapname VS+PS/program discriminator succeeds.
 pub const MAPNAME_TRANSP_OFFSET_SEMANTIC: &str =
     "gfx/FX/mapname.shader:ConstantBuffer(1,32):Transp_OffsetX";
 
@@ -539,9 +518,6 @@ pub enum RawRegisteredRenderTargetKind {
     OpaqueRenderTarget { source_flags_u32: u32 },
 }
 
-/// Exact post-success target registration joined to one observed OM use.
-/// Pointer fields are transient registry keys only. Stable tokens are derived
-/// solely from the producer, generation/order, kind, and complete descriptors.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRenderTargetRegistrationObservation {
     pub registration_sequence: u64,

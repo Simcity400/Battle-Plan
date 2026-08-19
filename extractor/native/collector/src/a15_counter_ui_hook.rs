@@ -1,11 +1,3 @@
-//! Exact-a729 land-counter training/dig-in presentation observer.
-//!
-//! The observer brackets `CUnitCounterItem`'s land badge update, records every
-//! division accepted by the update's exact eligibility producer, and publishes
-//! only the post-update GUI visibility/frame result for the same game hour.
-//! D20 readers admit a row only when its division id and current raw hour match;
-//! missing, stale, overflowing, or unreadable observations remain absent.
-
 use core::ffi::c_void;
 use minhook::MinHook;
 use std::cell::RefCell;
@@ -25,7 +17,6 @@ const GAME_STATE_CURRENT_DATE_OFFSET: usize = 0x468;
 const COUNTER_KIND_OFFSET: usize = 0x180;
 const COUNTER_DIG_CONTROL_OFFSET: usize = 0xd8;
 const COUNTER_TRAINING_CONTROL_OFFSET: usize = 0xf8;
-/// Exact-a729 `CUnitCounterItem` member bound from the literal
 const COUNTER_INVALID_ORDERS_CONTROL_OFFSET: usize = 0x88;
 const CONTROL_STATE_OFFSET: usize = 0x75;
 const CONTROL_VISIBLE_MASK: u8 = 8;
@@ -69,14 +60,11 @@ static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct CounterObservation {
     pub training_visible: bool,
-    /// `0` hidden, `1` visible/not-all-capped, `2` visible/all-capped.
     pub dig_in_frame: u8,
-    /// Present only when the evidence-only producer was explicitly activated.
     pub invalid_orders_visible: Option<bool>,
 }
 
 struct ObservationSlot {
-    /// `(raw_hour as u32) << 32 | division_id`; zero is never published.
     key: AtomicU64,
     bits: AtomicU64,
 }
@@ -128,7 +116,11 @@ impl OpenCounterUpdate {
     }
 
     fn push_member(&mut self, body: usize, eligibility: u8) {
-        if body == 0 || self.members[..self.count].iter().any(|row| row.body == body) {
+        if body == 0
+            || self.members[..self.count]
+                .iter()
+                .any(|row| row.body == body)
+        {
             return;
         }
         if self.count == MAX_MEMBERS {
@@ -171,19 +163,20 @@ unsafe extern "system" fn hook_counter_update(
     arg5: i32,
 ) -> u64 {
     let guard = CallbackGuard::enter();
-    let original: CounterUpdateFn = unsafe {
-        mem::transmute(ORIGINAL_COUNTER_UPDATE.load(Ordering::Acquire))
-    };
-    let land_counter = guard.captures() && read_value::<u32>(counter + COUNTER_KIND_OFFSET) == Some(0);
-    let opened = land_counter && OPEN_UPDATE.with(|slot| {
-        let mut slot = slot.borrow_mut();
-        if slot.is_some() {
-            false
-        } else {
-            *slot = Some(OpenCounterUpdate::new(counter));
-            true
-        }
-    });
+    let original: CounterUpdateFn =
+        unsafe { mem::transmute(ORIGINAL_COUNTER_UPDATE.load(Ordering::Acquire)) };
+    let land_counter =
+        guard.captures() && read_value::<u32>(counter + COUNTER_KIND_OFFSET) == Some(0);
+    let opened = land_counter
+        && OPEN_UPDATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            if slot.is_some() {
+                false
+            } else {
+                *slot = Some(OpenCounterUpdate::new(counter));
+                true
+            }
+        });
     let result = unsafe { original(counter, arg2, arg3, arg4, arg5) };
     if opened {
         let update = OPEN_UPDATE.with(|slot| slot.borrow_mut().take());
@@ -196,9 +189,8 @@ unsafe extern "system" fn hook_counter_update(
 
 unsafe extern "system" fn hook_member_eligibility(wrapper: usize) -> u8 {
     let guard = CallbackGuard::enter();
-    let original: MemberEligibilityFn = unsafe {
-        mem::transmute(ORIGINAL_MEMBER_ELIGIBILITY.load(Ordering::Acquire))
-    };
+    let original: MemberEligibilityFn =
+        unsafe { mem::transmute(ORIGINAL_MEMBER_ELIGIBILITY.load(Ordering::Acquire)) };
     let result = unsafe { original(wrapper) };
     if guard.captures() {
         OPEN_UPDATE.with(|slot| {
@@ -212,9 +204,8 @@ unsafe extern "system" fn hook_member_eligibility(wrapper: usize) -> u8 {
 
 unsafe extern "system" fn hook_training_predicate(body: usize) -> u8 {
     let guard = CallbackGuard::enter();
-    let original: TrainingPredicateFn = unsafe {
-        mem::transmute(ORIGINAL_TRAINING_PREDICATE.load(Ordering::Acquire))
-    };
+    let original: TrainingPredicateFn =
+        unsafe { mem::transmute(ORIGINAL_TRAINING_PREDICATE.load(Ordering::Acquire)) };
     let result = unsafe { original(body) };
     if guard.captures() {
         OPEN_UPDATE.with(|slot| {
@@ -234,12 +225,10 @@ fn publish_update(update: OpenCounterUpdate) {
     let Some(raw_hour) = current_raw_hour() else {
         return;
     };
-    let Some(training_visible) = control_visible(update.counter, COUNTER_TRAINING_CONTROL_OFFSET) else {
+    let Some(training_visible) = control_visible(update.counter, COUNTER_TRAINING_CONTROL_OFFSET)
+    else {
         return;
     };
-    // This is a mechanical postcondition on the exact predicate call and the
-    // post-update control state. A mismatch is safer as absence than as a
-    // guessed replay badge.
     if training_visible != update.training_predicate_true {
         return;
     }
@@ -267,8 +256,6 @@ fn publish_update(update: OpenCounterUpdate) {
         _ => return,
     };
     let invalid_orders_visible = if INVALID_ORDERS_ACTIVATED.load(Ordering::Acquire) {
-        // This is the postcondition of the engine's own land-counter update,
-        // not a replay-side inference from orders or movement.
         match control_visible(update.counter, COUNTER_INVALID_ORDERS_CONTROL_OFFSET) {
             Some(visible) => Some(visible),
             None => return,
@@ -387,14 +374,29 @@ pub(crate) fn install(module_base: usize, game_state: usize) -> Result<(), Strin
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(());
     }
-    if module_base == 0 || game_state == 0 || read_value::<i32>(game_state + GAME_STATE_CURRENT_DATE_OFFSET).is_none() {
+    if module_base == 0
+        || game_state == 0
+        || read_value::<i32>(game_state + GAME_STATE_CURRENT_DATE_OFFSET).is_none()
+    {
         return Err("A15 counter hook received an unreadable module/game-state root".into());
     }
     let specs = hook_specs(module_base);
     for (label, target, sentinel) in [
-        ("land counter update", specs[0].0, COUNTER_UPDATE_SENTINEL.as_slice()),
-        ("member eligibility", specs[1].0, MEMBER_ELIGIBILITY_SENTINEL.as_slice()),
-        ("training predicate", specs[2].0, TRAINING_PREDICATE_SENTINEL.as_slice()),
+        (
+            "land counter update",
+            specs[0].0,
+            COUNTER_UPDATE_SENTINEL.as_slice(),
+        ),
+        (
+            "member eligibility",
+            specs[1].0,
+            MEMBER_ELIGIBILITY_SENTINEL.as_slice(),
+        ),
+        (
+            "training predicate",
+            specs[2].0,
+            TRAINING_PREDICATE_SENTINEL.as_slice(),
+        ),
     ] {
         verify_sentinel(label, target, sentinel)?;
     }
@@ -419,14 +421,18 @@ pub(crate) fn install(module_base: usize, game_state: usize) -> Result<(), Strin
             }
             Err(status) => {
                 let rollback = rollback(&specs, created, 0);
-                return Err(format!("A15 hook creation failed at 0x{target:X}: {status}{rollback}"));
+                return Err(format!(
+                    "A15 hook creation failed at 0x{target:X}: {status}{rollback}"
+                ));
             }
         }
     }
     for (enabled, (target, _, _)) in specs.iter().enumerate() {
         if let Err(status) = unsafe { inline_detour::enable(*target as *mut c_void) } {
             let rollback = rollback(&specs, created, enabled);
-            return Err(format!("A15 hook enable failed at 0x{target:X}: {status}{rollback}"));
+            return Err(format!(
+                "A15 hook enable failed at 0x{target:X}: {status}{rollback}"
+            ));
         }
     }
     INSTALLED.store(true, Ordering::Release);
@@ -455,7 +461,10 @@ pub(crate) fn uninstall() -> Result<(), String> {
     }
     if !failures.is_empty() {
         BROKEN.store(true, Ordering::Release);
-        return Err(format!("A15 hook disable incomplete at {}; process restart required", failures.join(", ")));
+        return Err(format!(
+            "A15 hook disable incomplete at {}; process restart required",
+            failures.join(", ")
+        ));
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
@@ -473,7 +482,10 @@ pub(crate) fn uninstall() -> Result<(), String> {
     }
     if !failures.is_empty() {
         BROKEN.store(true, Ordering::Release);
-        return Err(format!("A15 hook removal incomplete at {}; process restart required", failures.join(", ")));
+        return Err(format!(
+            "A15 hook removal incomplete at {}; process restart required",
+            failures.join(", ")
+        ));
     }
     OPEN_UPDATE.with(|slot| *slot.borrow_mut() = None);
     MODULE_BASE.store(0, Ordering::Release);
@@ -488,9 +500,21 @@ type HookSpec = (usize, *mut c_void, &'static AtomicUsize);
 
 fn hook_specs(base: usize) -> [HookSpec; 3] {
     [
-        (base + COUNTER_LAND_UPDATE_RVA, hook_counter_update as *mut c_void, &ORIGINAL_COUNTER_UPDATE),
-        (base + MEMBER_ELIGIBILITY_RVA, hook_member_eligibility as *mut c_void, &ORIGINAL_MEMBER_ELIGIBILITY),
-        (base + TRAINING_PREDICATE_RVA, hook_training_predicate as *mut c_void, &ORIGINAL_TRAINING_PREDICATE),
+        (
+            base + COUNTER_LAND_UPDATE_RVA,
+            hook_counter_update as *mut c_void,
+            &ORIGINAL_COUNTER_UPDATE,
+        ),
+        (
+            base + MEMBER_ELIGIBILITY_RVA,
+            hook_member_eligibility as *mut c_void,
+            &ORIGINAL_MEMBER_ELIGIBILITY,
+        ),
+        (
+            base + TRAINING_PREDICATE_RVA,
+            hook_training_predicate as *mut c_void,
+            &ORIGINAL_TRAINING_PREDICATE,
+        ),
     ]
 }
 
@@ -502,25 +526,9 @@ fn rollback(specs: &[HookSpec], created: usize, enabled: usize) -> String {
             failures.push(format!("0x{target:X} disable: {status}"));
         }
     }
-    // QUIESCED: `DRAINING` closed above, every enabled target disabled, and the
-    // in-flight count observed at zero here -- the same three steps `uninstall`
-    // takes, and for the same reason.
-    //
-    // THIS IS NOT THE VACUOUS CREATE-ONLY CASE, and the parameter list is the
-    // proof: `enabled` is how many of these targets were ENABLED, so whenever
-    // it is non-zero a game thread can be inside `hook_counter_update` right
-    // now, and the trampoline the loop below frees is what its call through the
-    // original returns into. The freeze inside `remove` cannot see that thread:
-    // the detour body is this module's own function, at an address
-    // `inline_detour` is never told. Classifying this path as create-only
-    // because it is named `rollback` is what a name-based audit does.
     let deadline = Instant::now() + Duration::from_secs(5);
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
         if Instant::now() >= deadline {
-            // RETAINED, not freed: the targets are disabled so nothing new can
-            // enter them, and every trampoline stays allocated for whoever is
-            // still inside. `BROKEN` is the same latch a non-quiescing
-            // `uninstall` sets.
             BROKEN.store(true, Ordering::Release);
             return "; rollback incomplete: callbacks did not quiesce, hooks retained".to_string();
         }

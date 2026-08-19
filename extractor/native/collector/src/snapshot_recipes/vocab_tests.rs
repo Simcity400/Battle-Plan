@@ -1,16 +1,8 @@
-//! The 2026-08-09 vocabulary amendment, one test per thing lane FX proved the
-//! substrate could not say.
-//!
-//! Each test names the PRODUCTION CHANGE that makes it fail. A test whose
-//! answer does not depend on the mechanism it is named after is decoration, and
-//! this file exists because nine mechanisms were added at once.
-
 use super::annot::StridedMask;
 use super::executor::{
     observe, validate, Admissibility, CarrySource, CloseStage, CloseWhen, ClosingProgram,
-    CompareMask,
-    CountExpr, CountTerm, DisagreeAction, ObservationConfig, OpMod, Probe, Recipe, RecipeOp,
-    RecipeOutcome, RejectAction, RelWindow, Root, SampleSpec, SnapshotBuild, Tolerance,
+    CompareMask, CountExpr, CountTerm, DisagreeAction, ObservationConfig, OpMod, Probe, Recipe,
+    RecipeOp, RecipeOutcome, RejectAction, RelWindow, Root, SampleSpec, SnapshotBuild, Tolerance,
 };
 use super::synthetic::{MutatingMemory, SyntheticMemory};
 use super::view::ViewRefusal;
@@ -37,26 +29,11 @@ fn refusal_of(build: &SnapshotBuild, id: u32) -> Option<RefusalRecord> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// M1. A count derived from an expression over copied header fields
-// ---------------------------------------------------------------------------
-
-/// d81's hash tables are `mask + max_probe + 2` slots long, because
-/// `select_secondary` starts at the masked slot, advances without wrapping, and
-/// reads the terminating marker one slot past its last admitted step. A recipe
-/// that could only name ONE count field would copy `mask + 1` slots and stop
-/// short of the probe tail — quietly, with a `Captured` outcome and a table
-/// that does not contain the entry the reader is looking for.
-///
-/// MUTATION: delete `constant` from the sum in `evaluate_count` (or drop a
-/// term) and the tail slot stops being covered; the assertion below fails
-/// because the view refuses the bytes.
 #[test]
 fn a_derived_extent_covers_the_probe_tail_a_single_count_field_would_miss() {
     const HEADER: u64 = 0x10_0000;
     const TABLE: u64 = 0x20_0000;
     const STRIDE: u32 = 0x18;
-    // mask 7 (so 8 masked slots) + max_probe 2 + 2 = 12 slots.
     const MASK: u32 = 7;
     const MAX_PROBE: u8 = 2;
     const DERIVED: u64 = (MASK + 1 + MAX_PROBE as u32 + 1) as u64;
@@ -74,7 +51,6 @@ fn a_derived_extent_covers_the_probe_tail_a_single_count_field_would_miss() {
             next: vec![1],
         },
         RecipeOp::DecodeExtent {
-            // Ignored: the modifier supplies the count.
             count_offset: 0x34,
             count_width: 4,
             ptr_offset: 0x08,
@@ -110,14 +86,22 @@ fn a_derived_extent_covers_the_probe_tail_a_single_count_field_would_miss() {
             },
         )],
     );
-    let recipe = Recipe::new(RecipeId(1), ConsumerId(1), ops.clone(), vec![Root {
-        op: 0,
-        addr: HEADER,
-    }])
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops.clone(),
+        vec![Root {
+            op: 0,
+            addr: HEADER,
+        }],
+    )
     .with_mods(table);
 
     let build = observe(&[recipe], &memory, config()).expect("custody");
-    assert!(refusal_of(&build, 1).is_none(), "the derived extent captures");
+    assert!(
+        refusal_of(&build, 1).is_none(),
+        "the derived extent captures"
+    );
     let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
     let last = TABLE + (DERIVED - 1) * u64::from(STRIDE);
     assert!(
@@ -129,12 +113,15 @@ fn a_derived_extent_covers_the_probe_tail_a_single_count_field_would_miss() {
         "and nothing past the derived count",
     );
 
-    // The control: the same recipe WITHOUT the expression reads the mask alone
-    // and copies seven slots, so it stops five short of the tail.
-    let plain = Recipe::new(RecipeId(1), ConsumerId(1), ops, vec![Root {
-        op: 0,
-        addr: HEADER,
-    }]);
+    let plain = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops,
+        vec![Root {
+            op: 0,
+            addr: HEADER,
+        }],
+    );
     let build = observe(&[plain], &memory, config()).expect("custody");
     let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
     assert!(
@@ -143,9 +130,6 @@ fn a_derived_extent_covers_the_probe_tail_a_single_count_field_would_miss() {
     );
 }
 
-/// A count expression is a LENGTH, so its arithmetic has to refuse rather than
-/// wrap. Summed in `u64` a header of `u64::MAX` fields lands on a small,
-/// admissible count and the recipe copies a table it never checked.
 #[test]
 fn a_count_expression_that_overflows_refuses_instead_of_wrapping() {
     const HEADER: u64 = 0x10_0000;
@@ -214,24 +198,6 @@ fn a_count_expression_that_overflows_refuses_instead_of_wrapping() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// M2. Carried context, and per-instance table bindings
-// ---------------------------------------------------------------------------
-
-/// A province id decoded at the topology has to select into a table two waves
-/// later. Before this the key could only be read at an offset from the CURRENT
-/// site, so the id had to be a field of whatever object the join stood on —
-/// which it is not.
-///
-/// WHAT MAKES THIS NON-VACUOUS: the extent copies the whole array, so asserting
-/// that the selected ROW is present would pass whatever the join did. The
-/// assertion is on the object the selected row POINTS AT, which is reached only
-/// by following the joined row, and the row-0 object is asserted absent.
-///
-/// MUTATION: make `resolve_carry` return `site.carry` unconditionally (ignore
-/// the modifier) and the join keys on nothing — the recipe refuses
-/// `CarryNotSet`. Point the carry at a different offset and it follows row 0's
-/// pointer instead, which the second assertion catches.
 #[test]
 fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
     const ROOT: u64 = 0x10_0000;
@@ -247,7 +213,6 @@ fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
     memory.map_zeroed(HOP, 0x20);
     memory.map_zeroed(HEADER, 0x20);
     memory.map_zeroed(TABLE, 8 * STRIDE as usize);
-    // The id lives at the ROOT and nowhere else.
     memory.write_u32(ROOT + 0x10, 3);
     memory.write_u64(ROOT, HOP);
     memory.write_u64(HOP, HEADER);
@@ -264,35 +229,28 @@ fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
         RecipeId(1),
         ConsumerId(1),
         vec![
-            // 0 root object
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![1],
             },
-            // 1 carry the id, then hop
             RecipeOp::DecodePointer {
                 offset: 0,
                 guard: None,
                 next: 2,
             },
-            // 2 the intermediate object
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![3],
             },
-            // 3 hop again
             RecipeOp::DecodePointer {
                 offset: 0,
                 guard: None,
                 next: 4,
             },
-            // 4 the table header: register the array AND run the join over it
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![5, 6],
             },
-            // 5 register the table. Its elements do NOT follow their pointers:
-            // the only route to a row object is the join.
             RecipeOp::DecodeExtent {
                 count_offset: 0,
                 count_width: 4,
@@ -305,27 +263,22 @@ fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
                 register: Some(TableId(1)),
                 element: vec![9],
             },
-            // 6 join by the CARRIED id
             RecipeOp::JoinBounded {
                 table: TableId(1),
                 key_offset: 0,
                 key_width: 4,
                 next: 7,
             },
-            // 7 the selected row
             RecipeOp::CopyHeader {
                 size: STRIDE,
                 next: vec![8],
             },
-            // 8 follow the selected row's pointer
             RecipeOp::DecodePointer {
                 offset: 0,
                 guard: None,
                 next: 10,
             },
-            // 9 freeze
             RecipeOp::Freeze,
-            // 10 the row's object
             RecipeOp::CopyHeader {
                 size: 0x10,
                 next: vec![9],
@@ -357,7 +310,11 @@ fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
     ));
 
     let build = observe(&[recipe], &memory, config()).expect("custody");
-    assert!(refusal_of(&build, 1).is_none(), "{:?}", refusal_of(&build, 1));
+    assert!(
+        refusal_of(&build, 1).is_none(),
+        "{:?}",
+        refusal_of(&build, 1)
+    );
     let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
     assert_eq!(
         view.u64_le(ROW_OBJECT + 3 * OBJECT_STRIDE)
@@ -370,37 +327,6 @@ fn a_key_decoded_at_one_site_selects_a_row_two_waves_later() {
     );
 }
 
-/// A carried-key join can anchor on the interval its KEY came from, so the
-/// object it stands on no longer has to be copied from `+0`.
-///
-/// This is lane GC's residual 7, in a synthetic shape. The branch reaches a
-/// rail-info-like object and copies only the window the reader consumes,
-/// `[+0x38, +0x48)`, leaving the object's low `0x38` bytes uncopied — which is
-/// what a plan wants when the object may straddle a confirmed-range boundary
-/// with its prefix unreadable. The join then stands on the object's base, and
-/// the base is not owned.
-///
-/// WHAT MAKES THIS NON-VACUOUS: it is run BOTH ways over the same memory, the
-/// same recipe and the same fixture, and the two arms disagree. Without the
-/// modifier the anchor is `owners.find(site.base)` and the recipe refuses
-/// `FieldNotCaptured` on the object's unread base; with it the join resolves
-/// and the row it selects is reachable in the view. A test that only ran the
-/// second arm would pass just as well if the anchoring change had done nothing
-/// but widen the copy.
-///
-/// kills:
-///  * deleting the `modifier.anchor_on_carry_holder` branch in the
-///    `key_from_carry` arm, or making it fall back to `owners.find(site.base)`
-///    when the holder is absent — arm two goes back to `FieldNotCaptured`;
-///  * dropping the holder in `resolve_carry` (returning `None` for the `Field`
-///    source) — arm two refuses `CarryHolderUnknown` instead of resolving;
-///  * gating the holder lookup per OP instead of per RECIPE — the carry is set
-///    at op 2 and read at op 6, so a per-op gate records no holder and arm two
-///    refuses `CarryHolderUnknown`.
-///
-/// It does NOT kill removing the `validate` rule; that is
-/// `anchoring_without_a_carried_key_is_malformed`'s job, and this test would
-/// pass unchanged without it.
 #[test]
 fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
     const ROOT: u64 = 0x10_0000;
@@ -411,8 +337,6 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
     const ROW_OBJECT: u64 = 0x40_0000;
     const OBJECT_STRIDE: u64 = 0x1000;
     const STRIDE: u32 = 0x10;
-    // The window the reader actually consumes, far enough into the object that
-    // copying from `+0` is a materially different request.
     const CONSUMED_OFFSET: i64 = 0x38;
     const CONSUMED_LEN: u32 = 0x10;
 
@@ -421,38 +345,28 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
             RecipeId(1),
             ConsumerId(1),
             vec![
-                // 0 root: carries the key, and reaches both the table header
-                //   and the info object.
                 RecipeOp::CopyHeader {
                     size: 0x20,
                     next: vec![1, 2],
                 },
-                // 1 the table header
                 RecipeOp::DecodePointer {
                     offset: 0x08,
                     guard: None,
                     next: 3,
                 },
-                // 2 a hop, so the join lands a wave AFTER the extent that
-                //   registers its table rather than beside it. Intra-wave
-                //   registration order is the task queue's and this test is
-                //   about the anchor, not about that.
                 RecipeOp::DecodePointer {
                     offset: 0x10,
                     guard: None,
                     next: 11,
                 },
-                // 3 register the table
                 RecipeOp::CopyHeader {
                     size: 0x20,
                     next: vec![5],
                 },
-                // 4 the info object's consumed window, and nothing else
                 RecipeOp::CopyRanges {
                     windows: vec![RelWindow::new(CONSUMED_OFFSET, CONSUMED_LEN)],
                     next: vec![6],
                 },
-                // 5 the table array
                 RecipeOp::DecodeExtent {
                     count_offset: 0,
                     count_width: 4,
@@ -465,38 +379,30 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
                     register: Some(TableId(1)),
                     element: vec![9],
                 },
-                // 6 the join, standing on the info object's UNCOPIED base
                 RecipeOp::JoinBounded {
                     table: TableId(1),
                     key_offset: 0,
                     key_width: 4,
                     next: 7,
                 },
-                // 7 the selected row
                 RecipeOp::CopyHeader {
                     size: STRIDE,
                     next: vec![8],
                 },
-                // 8 follow it
                 RecipeOp::DecodePointer {
                     offset: 0,
                     guard: None,
                     next: 10,
                 },
-                // 9 freeze
                 RecipeOp::Freeze,
-                // 10 the row's object
                 RecipeOp::CopyHeader {
                     size: 0x10,
                     next: vec![9],
                 },
-                // 11 the hop object, whose pointer reaches the info object
                 RecipeOp::CopyHeader {
                     size: 0x20,
                     next: vec![12],
                 },
-                // 12 the info object, reached by pointer. Its base is NOT
-                //    copied: op 4 copies only the consumed window.
                 RecipeOp::DecodePointer {
                     offset: 0,
                     guard: None,
@@ -508,11 +414,6 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
         .with_mods(mods(
             13,
             &[
-                // The carry sits on the DECODE op that leaves the root, not on
-                // the root copy itself: `validate` refuses a carry modifier on a
-                // copy op, and the site here still stands on the root's copied
-                // bytes, so `+0x18` reads the same word and the holder is the
-                // root header's own interval.
                 (
                     2,
                     OpMod {
@@ -540,9 +441,6 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
     memory.map_zeroed(HOP, 0x20);
     memory.map_zeroed(HEADER, 0x20);
     memory.map_zeroed(TABLE, 8 * STRIDE as usize);
-    // The info object exists from its base; what the RECIPE does not do is copy
-    // that base. The precondition being modelled is the plan's, not the
-    // memory's: a plan that must copy `+0` cannot choose not to.
     memory.map_zeroed(INFO, 0x80);
     memory.write_u32(ROOT + 0x18, 3);
     memory.write_u64(ROOT + 0x08, HEADER);
@@ -557,8 +455,6 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
         memory.write_u64(TABLE + slot * u64::from(STRIDE), object);
     }
 
-    // ARM ONE: today's anchor. The join's own base is not captured, so the
-    // recipe refuses even though the key it needs was captured elsewhere.
     let without = observe(&[build_recipe(false)], &memory, config()).expect("custody");
     let refusal = refusal_of(&without, 1).expect("the unanchored join must refuse");
     assert!(
@@ -567,13 +463,8 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
         refusal.refusal
     );
 
-    // ARM TWO: anchored on the key's holder. Same memory, same copies.
     let with = observe(&[build_recipe(true)], &memory, config()).expect("custody");
-    assert!(
-        refusal_of(&with, 1).is_none(),
-        "{:?}",
-        refusal_of(&with, 1)
-    );
+    assert!(refusal_of(&with, 1).is_none(), "{:?}", refusal_of(&with, 1));
     let view = with.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
     assert_eq!(
         view.u64_le(ROW_OBJECT + 3 * OBJECT_STRIDE)
@@ -586,34 +477,11 @@ fn a_carried_key_join_can_anchor_on_the_interval_its_key_came_from() {
     );
 }
 
-/// Recording the carry's holder cost no width on the hot structs.
-///
-/// `CarrySlot` is memcpy'd into and out of the wave queue and the site stack
-/// once per task and once per decode site — the substrate's own bench measured
-/// +23% on `dispatch: construct + queue push` and +81% on
-/// `dispatch: decode_wave` for a spelling of the CARRY ALONE that was eight
-/// bytes wider. The holder had to fit in the padding, and it does.
-///
-/// kills: widening the holder to a `u64` (8 + 8 + 2 = 24 after alignment), or
-/// spelling it `Option<IntervalId>` (which has no niche here, so 8 + 8 + 2 =
-/// 24). Both also widen `CopyTask` and `DecodeSite`.
-///
-/// It does NOT kill adding a third `bool`: `u64` + `u32` + three `bool`s is 15
-/// bytes and still pads to 16. The padding is the budget this test protects,
-/// not the field count.
 #[test]
 fn carry_slot_is_still_sixteen_bytes() {
     assert_eq!(std::mem::size_of::<super::executor::CarrySlot>(), 16);
 }
 
-/// A carry that was never read out of any interval cannot be an anchor, and
-/// says so rather than borrowing one.
-///
-/// kills: making the missing-holder arm fall through to
-/// `owners.find(site.base)`, which would silently restore the old anchor for a
-/// constant carry and re-impose the base copy it was meant to remove; and
-/// reporting `CarryNotSet`, which would send a reader looking for an absent
-/// `carry` modifier that is in fact present.
 #[test]
 fn anchoring_on_a_constant_carry_is_refused_by_name() {
     const ROOT: u64 = 0x10_0000;
@@ -652,9 +520,6 @@ fn anchoring_on_a_constant_carry_is_refused_by_name() {
                 key_width: 4,
                 next: 3,
             },
-            // A join's `next` must be a COPY op; a `Freeze` there is a
-            // structural defect and would refuse before the modifier is
-            // reached, which is not what this test is about.
             RecipeOp::CopyHeader {
                 size: STRIDE,
                 next: vec![4],
@@ -666,10 +531,6 @@ fn anchoring_on_a_constant_carry_is_refused_by_name() {
     .with_mods(mods(
         5,
         &[(
-            // Both the carry and the anchoring sit on the join: a carry
-            // modifier is illegal on a copy op, and `resolve_carry` runs at the
-            // top of the join's own arm, so the constant is in force before the
-            // key is taken.
             2,
             OpMod {
                 carry: Some(CarrySource::Constant(1)),
@@ -689,10 +550,6 @@ fn anchoring_on_a_constant_carry_is_refused_by_name() {
     );
 }
 
-/// The vocabulary is opt-in per op, and a spelling that could not mean anything
-/// is a structural defect rather than a silent no-op.
-///
-/// kills: deleting the `anchor_on_carry_holder` clause from `validate`.
 #[test]
 fn anchoring_without_a_carried_key_is_malformed() {
     let ops = vec![
@@ -706,10 +563,6 @@ fn anchoring_without_a_carried_key_is_malformed() {
             key_width: 4,
             next: 2,
         },
-        // The join's `next` is a COPY op, so the recipe is structurally sound
-        // and the ONLY thing wrong with it is the modifier. A `Freeze` here
-        // would refuse `ExpectedCopyOp` first and the test would pass without
-        // the rule it is named after ever running.
         RecipeOp::CopyHeader {
             size: 8,
             next: vec![3],
@@ -720,7 +573,10 @@ fn anchoring_without_a_carried_key_is_malformed() {
         RecipeId(1),
         ConsumerId(1),
         ops.clone(),
-        vec![Root { op: 0, addr: 0x10_0000 }],
+        vec![Root {
+            op: 0,
+            addr: 0x10_0000,
+        }],
     )
     .with_mods(mods(
         4,
@@ -740,12 +596,14 @@ fn anchoring_without_a_carried_key_is_malformed() {
         })
     ));
 
-    // And on an op that is not a join at all.
     let anchored_on_a_copy = Recipe::new(
         RecipeId(1),
         ConsumerId(1),
         ops,
-        vec![Root { op: 0, addr: 0x10_0000 }],
+        vec![Root {
+            op: 0,
+            addr: 0x10_0000,
+        }],
     )
     .with_mods(mods(
         4,
@@ -767,15 +625,6 @@ fn anchoring_without_a_carried_key_is_malformed() {
     ));
 }
 
-/// One logical table decoded once per instance used to overwrite its own
-/// binding, so the last registration won and every earlier join silently
-/// indexed the wrong array.
-///
-/// WHAT MAKES THIS NON-VACUOUS: both arrays are copied whole by their extents,
-/// so the assertion is again on the object the joined row POINTS AT. Owner A
-/// asks for row 2 and owner B for row 3; under a single binding both joins land
-/// in whichever table registered last, and exactly one of the two expected
-/// objects is missing.
 #[test]
 fn two_instances_of_one_table_stay_independently_addressable() {
     const OWNER_A: u64 = 0x10_0000;
@@ -800,10 +649,8 @@ fn two_instances_of_one_table_stay_independently_addressable() {
             memory.write_u64(table + slot * u64::from(STRIDE), object);
         }
     }
-    // Each owner carries its own instance id and its own key.
     memory.write_u32(OWNER_A + 0x10, 0);
     memory.write_u32(OWNER_B + 0x10, 1);
-    // Owner A asks for row 2 of ITS table; owner B asks for row 3 of ITS.
     memory.write_u32(OWNER_A + 0x14, 2);
     memory.write_u32(OWNER_B + 0x14, 3);
 
@@ -872,7 +719,11 @@ fn two_instances_of_one_table_stay_independently_addressable() {
     .with_mods(mods(7, &[(1, instance.clone()), (2, instance)]));
 
     let build = observe(&[recipe], &memory, config()).expect("custody");
-    assert!(refusal_of(&build, 1).is_none(), "{:?}", refusal_of(&build, 1));
+    assert!(
+        refusal_of(&build, 1).is_none(),
+        "{:?}",
+        refusal_of(&build, 1)
+    );
     let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
     assert_eq!(
         view.u64_le(ROWS_A + 2 * OBJECT_STRIDE)
@@ -891,17 +742,6 @@ fn two_instances_of_one_table_stay_independently_addressable() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// M3. Pointer admissibility
-// ---------------------------------------------------------------------------
-
-/// Without a window the substrate follows a pointer the reader would have
-/// rejected. If the address happens to be readable it copies a wrong object and
-/// reports `Captured`; if it does not, a typed `InvalidPointer` becomes a
-/// generic memory refusal that gaps the whole recipe.
-///
-/// MUTATION: make `Admissibility::admits` return `true` unconditionally and the
-/// rejection count drops to zero while the branch is followed.
 #[test]
 fn an_inadmissible_pointer_is_named_and_not_followed() {
     const ROOT: u64 = 0x10_0000;
@@ -913,7 +753,6 @@ fn an_inadmissible_pointer_is_named_and_not_followed() {
     memory.map_zeroed(GOOD, 0x20);
     memory.map_zeroed(OUTSIDE, 0x20);
     memory.write_u64(ROOT, GOOD);
-    // Readable, correctly aligned, and outside the heap window.
     memory.write_u64(ROOT + 8, OUTSIDE);
 
     let window = Admissibility {
@@ -988,15 +827,16 @@ fn an_inadmissible_pointer_is_named_and_not_followed() {
     assert_eq!(rejections[0].witness.subject, ROOT);
 
     let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
-    assert!(view.bytes(GOOD, 8).is_ok(), "the admitted branch still runs");
+    assert!(
+        view.bytes(GOOD, 8).is_ok(),
+        "the admitted branch still runs"
+    );
     assert!(
         view.bytes(OUTSIDE, 8).is_err(),
         "and the rejected pointer was not followed",
     );
 }
 
-/// The other half of the ruling: a recipe may declare the rejection fatal, and
-/// then it is a named refusal rather than a crash or a silent copy.
 #[test]
 fn a_fatal_rejection_names_the_window_it_failed() {
     const ROOT: u64 = 0x10_0000;
@@ -1057,17 +897,6 @@ fn a_fatal_rejection_names_the_window_it_failed() {
     assert_eq!(record.witness.read_width, 8);
 }
 
-// ---------------------------------------------------------------------------
-// M4. The adjacent A/B pair
-// ---------------------------------------------------------------------------
-
-/// Memory that hands back a different byte on ONE nominated copy and the
-/// original on every other.
-///
-/// This is the shape the opening/closing witness structurally cannot see: a
-/// write that happened and was undone between the two waves. It is also
-/// precisely what `read_u64_stable` catches in production, which is why the
-/// substrate not being able to express it was a gap and not a preference.
 #[derive(Debug)]
 struct TearingMemory {
     inner: SyntheticMemory,
@@ -1091,9 +920,6 @@ impl SnapshotMemory for TearingMemory {
     }
 }
 
-/// MUTATION: set `SampleSpec::count` to 1 in `copy_attributes` (i.e. ignore the
-/// modifier) and the tear goes unseen — the consumer publishes an image the
-/// copier took mid-write.
 #[test]
 fn an_adjacent_pair_catches_a_tear_the_closing_witness_cannot() {
     const OBJECT: u64 = 0x10_0000;
@@ -1133,9 +959,6 @@ fn an_adjacent_pair_catches_a_tear_the_closing_witness_cannot() {
         ))
     };
 
-    // Copy 1 is the opening image, copy 2 the adjacent sample, copy 3 the
-    // close. Tear the SECOND one only: opening and closing agree, so the
-    // closing witness certifies an object that was written under the copier.
     let memory = TearingMemory {
         inner,
         tear_on: std::cell::Cell::new(2),
@@ -1155,7 +978,6 @@ fn an_adjacent_pair_catches_a_tear_the_closing_witness_cannot() {
         Some(GapReason::SamplesDisagreed { .. })
     ));
 
-    // The control: one sample, same memory, same tear. Nothing sees it.
     let mut inner = SyntheticMemory::new();
     inner.map_zeroed(OBJECT, 0x20);
     inner.write_u64(OBJECT, 0x1122_3344_5566_7788);
@@ -1175,13 +997,6 @@ fn an_adjacent_pair_catches_a_tear_the_closing_witness_cannot() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// M5. A refusal carries its witness
-// ---------------------------------------------------------------------------
-
-/// `(recipe, span)` cannot reproduce d81's first failure. This pins the fields
-/// the executor is in a position to fill at a join, which is the site with the
-/// most of them.
 #[test]
 fn a_refusal_carries_the_stage_subject_index_and_value_that_caused_it() {
     const HEADER: u64 = 0x10_0000;
@@ -1191,7 +1006,6 @@ fn a_refusal_carries_the_stage_subject_index_and_value_that_caused_it() {
     memory.map_zeroed(TABLE, 4 * 8);
     memory.write_u32(HEADER, 4);
     memory.write_u64(HEADER + 8, TABLE);
-    // The key is out of range of the four-element table.
     memory.write_u32(HEADER + 0x10, 9);
 
     let recipe = Recipe::new(
@@ -1244,29 +1058,22 @@ fn a_refusal_carries_the_stage_subject_index_and_value_that_caused_it() {
 
     let build = observe(&[recipe], &memory, config()).expect("custody");
     let record = refusal_of(&build, 1).expect("refused");
-    assert!(matches!(record.refusal, Refusal::JoinOutOfRange { key: 9, .. }));
+    assert!(matches!(
+        record.refusal,
+        Refusal::JoinOutOfRange { key: 9, .. }
+    ));
     assert_eq!(record.witness.stage, 42, "the stage the reader calls this");
     assert_eq!(record.witness.op, 2);
     assert_eq!(record.witness.subject, HEADER);
     assert_eq!(record.witness.raw, 9, "the key that was out of range");
     assert_eq!(record.witness.related, TABLE, "the table it indexed");
-    // And the gap the consumer is handed carries the same record, rather than
-    // making it fetch one.
     assert_eq!(
         build.snapshot.gap_reason(ConsumerId(1)),
         Some(GapReason::Refused(record)),
     );
 }
 
-// ---------------------------------------------------------------------------
-// RULING A. Over-read gaps only what is consumed
-// ---------------------------------------------------------------------------
-
-/// A copy plan must take supersets. Before this ruling one unreadable bucket in
-/// a table the reader never indexes cost the whole frame.
-///
 /// MUTATION: make `acquire` return `Ok(Err(hole))` regardless of tolerance and
-/// the recipe refuses, so the two readable windows stop being readable.
 #[test]
 fn an_unreadable_span_in_a_speculative_copy_refuses_only_the_reads_that_touch_it() {
     const A: u64 = 0x10_0000;
@@ -1295,10 +1102,12 @@ fn an_unreadable_span_in_a_speculative_copy_refuses_only_the_reads_that_touch_it
     ];
 
     let memory = build_memory();
-    let recipe = Recipe::new(RecipeId(1), ConsumerId(1), ops.clone(), vec![Root {
-        op: 0,
-        addr: A,
-    }])
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops.clone(),
+        vec![Root { op: 0, addr: A }],
+    )
     .with_mods(mods(
         2,
         &[(
@@ -1327,27 +1136,18 @@ fn an_unreadable_span_in_a_speculative_copy_refuses_only_the_reads_that_touch_it
         other => panic!("a read that touches the void must name it, got {other:?}"),
     }
 
-    // The control: the same shape at the default tolerance is the old
-    // behaviour, unchanged. Guarantee 1 is not weakened for anyone who did not
-    // ask.
     let memory = build_memory();
-    let strict = Recipe::new(RecipeId(1), ConsumerId(1), ops, vec![Root { op: 0, addr: A }]);
+    let strict = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops,
+        vec![Root { op: 0, addr: A }],
+    );
     let build = observe(&[strict], &memory, config()).expect("custody");
     let record = refusal_of(&build, 1).expect("Required still refuses the recipe");
     assert!(matches!(record.refusal, Refusal::MemoryUnreadable { .. }));
 }
 
-// ---------------------------------------------------------------------------
-// RULING B. Comparison masks, closure order, elision
-// ---------------------------------------------------------------------------
-
-/// The bytes a reader does not consume must not gap it. d81's rail header has
-/// four dead bytes inside its window; d47's map header has a LIVE pointer field
-/// sitting BETWEEN two compared words. Under a whole-interval comparison either
-/// one manufactures a torn gap out of a write the reader never looks at.
-///
-/// MUTATION: ignore the consumption in `close_witnesses` and compare whole
-/// intervals; the first half of this test fails immediately.
 #[test]
 fn a_write_between_the_compared_words_does_not_gap_the_reader() {
     const OBJECT: u64 = 0x10_0000;
@@ -1358,7 +1158,6 @@ fn a_write_between_the_compared_words_does_not_gap_the_reader() {
         memory.write_u64(OBJECT + 0x10, 0x2222);
         memory
     };
-    // Consumed: [0,8) and [0x10,0x18). The live field at +8 is in neither.
     let masked = |edits: Vec<(u64, Vec<u8>)>| {
         let recipe = Recipe::new(
             RecipeId(1),
@@ -1401,8 +1200,6 @@ fn a_write_between_the_compared_words_does_not_gap_the_reader() {
     );
     assert!(closed.snapshot.gap_reason(ConsumerId(1)).is_none());
 
-    // The control: a write INSIDE a compared window still gaps, so the mask
-    // narrows the comparison and does not disable it.
     let closed = masked(vec![(OBJECT, 0xEEu64.to_le_bytes().to_vec())]);
     assert_eq!(closed.witness.changed.len(), 1);
     assert!(matches!(
@@ -1411,8 +1208,6 @@ fn a_write_between_the_compared_words_does_not_gap_the_reader() {
     ));
 }
 
-/// A per-element mask over a decoded extent, stated once for the whole array
-/// rather than once per element.
 #[test]
 fn an_extent_mask_is_per_element_and_costs_one_entry() {
     const HEADER: u64 = 0x10_0000;
@@ -1458,7 +1253,6 @@ fn an_extent_mask_is_per_element_and_costs_one_entry() {
         &[(
             1,
             OpMod {
-                // Only the first four bytes of each 0x20-byte element.
                 compare: CompareMask {
                     windows: vec![RelWindow::new(0, 4)],
                 },
@@ -1467,7 +1261,6 @@ fn an_extent_mask_is_per_element_and_costs_one_entry() {
         )],
     ));
 
-    // Write into the unconsumed tail of one element, between the waves.
     let memory = MutatingMemory::new(
         inner.clone(),
         3,
@@ -1476,15 +1269,15 @@ fn an_extent_mask_is_per_element_and_costs_one_entry() {
     let closed = observe(&[recipe.clone()], &memory, config())
         .expect("custody")
         .close_witnesses();
-    assert!(memory.mutation_applied(), "the fixture must actually mutate");
+    assert!(
+        memory.mutation_applied(),
+        "the fixture must actually mutate"
+    );
     assert!(
         closed.witness.changed.is_empty(),
         "the write is outside every element's consumed window",
     );
 
-    // THE CONTROL, four bytes lower: inside the consumed window of the SAME
-    // element. Without it, deleting the strided comparison entirely would still
-    // pass this test — every write would look unconsumed.
     let memory = MutatingMemory::new(
         inner,
         3,
@@ -1499,7 +1292,6 @@ fn an_extent_mask_is_per_element_and_costs_one_entry() {
         1,
         "a write inside an element's consumed window must still gap",
     );
-    // And the mask is one entry, not 64.
     let strided: usize = closed
         .snapshot
         .intervals()
@@ -1507,11 +1299,12 @@ fn an_extent_mask_is_per_element_and_costs_one_entry() {
         .filter_map(|record| closed.snapshot.annotations().consumption(record.id()))
         .map(|consumption| consumption.strided.len())
         .sum();
-    assert_eq!(strided, 1, "a per-element mask is stated once for the array");
+    assert_eq!(
+        strided, 1,
+        "a per-element mask is stated once for the array"
+    );
 }
 
-/// A declared closure order must actually happen, and it must differ from
-/// interval-id order or the declaration means nothing.
 #[test]
 fn a_closing_program_runs_its_stages_in_the_declared_order() {
     const FIRST: u64 = 0x10_0000;
@@ -1524,12 +1317,10 @@ fn a_closing_program_runs_its_stages_in_the_declared_order() {
         RecipeId(1),
         ConsumerId(1),
         vec![
-            // op 0 copies FIRST and carries stage 2
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![2],
             },
-            // op 1 copies SECOND and carries stage 1
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![2],
@@ -1538,10 +1329,7 @@ fn a_closing_program_runs_its_stages_in_the_declared_order() {
             RecipeOp::Freeze,
         ],
         vec![
-            Root {
-                op: 0,
-                addr: FIRST,
-            },
+            Root { op: 0, addr: FIRST },
             Root {
                 op: 1,
                 addr: SECOND,
@@ -1603,10 +1391,6 @@ fn a_closing_program_runs_its_stages_in_the_declared_order() {
     );
 }
 
-/// d81 elides its selector close in favour of the later source-position read
-/// and keeps the selector's attribution. The elision has to be RECORDED, or the
-/// failure of the covering close cannot be reported in the elided site's
-/// clothes.
 #[test]
 fn an_elided_stage_is_recorded_against_the_stage_that_covers_it() {
     const SHARED: u64 = 0x10_0000;
@@ -1628,9 +1412,6 @@ fn an_elided_stage_is_recorded_against_the_stage_that_covers_it() {
             RecipeOp::WitnessClose { next: vec![3] },
             RecipeOp::Freeze,
         ],
-        // Both roots stand on the SAME address, so deduplication gives one
-        // interval carrying both stages — which is exactly d81's coincident
-        // selector and source slots.
         vec![
             Root {
                 op: 0,
@@ -1687,16 +1468,6 @@ fn an_elided_stage_is_recorded_against_the_stage_that_covers_it() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// MID-WALK CLOSURE (lane GC). FY residual 1: closes interleaved with
-// discovery, not "every forward wave, then one closing wave".
-// ---------------------------------------------------------------------------
-
-/// The staged world both mid-walk tests use: a root object whose first eight
-/// bytes point at a child object one wave down.
-///
-/// `back_reference` makes the root ALSO point at itself, which is how the
-/// reopen test gets a later wave to reach an interval an earlier wave closed.
 fn mid_walk_world(back_reference: bool) -> SyntheticMemory {
     const ROOT: u64 = 0x10_0000;
     const CHILD: u64 = 0x20_0000;
@@ -1711,25 +1482,20 @@ fn mid_walk_world(back_reference: bool) -> SyntheticMemory {
 
 const MID_WALK_ROOT: u64 = 0x10_0000;
 
-/// `root -> child`, with the root's stage closing at `root_when` and the
-/// child's in the final wave.
 fn mid_walk_recipe(root_when: CloseWhen) -> Recipe {
     Recipe::new(
         RecipeId(1),
         ConsumerId(1),
         vec![
-            // 0 the root object
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![1, 3],
             },
-            // 1 its pointer
             RecipeOp::DecodePointer {
                 offset: 0,
                 guard: None,
                 next: 2,
             },
-            // 2 the child, one wave down
             RecipeOp::CopyHeader {
                 size: 0x10,
                 next: vec![4],
@@ -1777,40 +1543,17 @@ fn mid_walk_recipe(root_when: CloseWhen) -> Recipe {
     })
 }
 
-/// THE POINT OF THE WHOLE TOPOLOGY CHANGE: a write that lands AFTER the stage
-/// closed does not gap it, and the identical write under the identical program
-/// with `CloseWhen::Final` does.
-///
-/// The two arms differ in ONE token — the root stage's `when` — so anything the
-/// fixture, the recipe or the mutation could be doing by accident is doing it
-/// to both. d81's rail header is this shape: it is closed inside the province's
-/// own iteration, and a write to a province the walk has already passed is not
-/// a torn read of that province.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: `mid_walk_close` never matching its
-/// wave (`CloseWhen::AfterWave(_) => false`), the mid-walk call being dropped
-/// from the wave loop, or `closing_schedule` re-scheduling an interval that
-/// already carries a closing offset — all three put the root's image back at
-/// the end, where the write precedes it.
 #[test]
 fn a_stage_that_closed_mid_walk_is_not_gapped_by_a_later_write() {
-    // The mutation lands immediately before the THIRD copy. Under mid-walk
-    // closure the first two copies are the root's opening image and its
-    // closing image, so the write is after both; under final closure they are
-    // the root's opening image and the child's, and every close is still to
-    // come. Counted rather than assumed, below.
     const TRIGGER: u64 = 3;
-    let edit = vec![(MID_WALK_ROOT + 0x08, 0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes().to_vec())];
+    let edit = vec![(
+        MID_WALK_ROOT + 0x08,
+        0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes().to_vec(),
+    )];
 
     let mid = MutatingMemory::new(mid_walk_world(false), TRIGGER, edit.clone());
-    let build = observe(
-        &[mid_walk_recipe(CloseWhen::AfterWave(0))],
-        &mid,
-        config(),
-    )
-    .expect("custody");
-    // The root's close really did run at wave 0: it is the first entry of the
-    // one closing sequence, ahead of the child that closed in the final wave.
+    let build =
+        observe(&[mid_walk_recipe(CloseWhen::AfterWave(0))], &mid, config()).expect("custody");
     let order: Vec<u64> = build
         .closing_order
         .iter()
@@ -1830,10 +1573,6 @@ fn a_stage_that_closed_mid_walk_is_not_gapped_by_a_later_write() {
         "the mid-walk close is the head of the sequence: {order:?}",
     );
     assert_eq!(order.len(), 2, "both intervals are closed exactly once");
-    // EXACTLY ONCE, asserted rather than implied by the length. An interval
-    // closed by the mid-walk pass and closed AGAIN by the final wave would
-    // publish a later image than the program asked for, and the length alone
-    // cannot see it — the second close would have to displace something.
     let mut once = build.closing_order.clone();
     once.sort();
     once.dedup();
@@ -1855,7 +1594,6 @@ fn a_stage_that_closed_mid_walk_is_not_gapped_by_a_later_write() {
         closed.snapshot.gap_reason(ConsumerId(1)),
     );
 
-    // THE CONTROL, and it is the same everything with one token changed.
     let late = MutatingMemory::new(mid_walk_world(false), TRIGGER, edit);
     let closed = observe(&[mid_walk_recipe(CloseWhen::Final)], &late, config())
         .expect("custody")
@@ -1871,20 +1609,9 @@ fn a_stage_that_closed_mid_walk_is_not_gapped_by_a_later_write() {
     );
 }
 
-/// The fail-closed edge. A wave AFTER the declared one reaches an interval the
-/// stage already closed, and the recipe REFUSES rather than serving bytes its
-/// witness never covered.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping the `closing_offset`
-/// test from `mid_walk_note`, which turns a witness for the wrong window into
-/// a silent `Captured`.
 #[test]
 fn a_wave_that_reaches_an_already_closed_interval_refuses() {
     let memory = mid_walk_world(true);
-    // Op 2 copies eight bytes at the address op 1 decoded — which the back
-    // reference makes the ROOT itself. It is a different op, so discovery does
-    // not prune it, and its request lands inside the interval op 0 owns and
-    // stage 1 closed at the end of wave 0.
     let recipe = Recipe::new(
         RecipeId(1),
         ConsumerId(1),
@@ -1961,24 +1688,9 @@ fn a_wave_that_reaches_an_already_closed_interval_refuses() {
     }
 }
 
-/// The OTHER half of the fail-closed edge: a stage whose interval is first
-/// reached AFTER the wave it declared.
-///
-/// The close it asked for cannot happen — that wave is over — and letting it
-/// fall through to the final wave would take a LATER image than the program
-/// asked for while still reporting the declared topology. So it refuses, and
-/// against every consumer that reached the interval rather than against
-/// whichever request happened to be last.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: removing the `wave < depth` arm of
-/// `mid_walk_close`, which puts the interval back in the final schedule and
-/// makes the observation report a topology it did not run.
 #[test]
 fn a_stage_reached_after_its_declared_close_refuses() {
     let memory = mid_walk_world(false);
-    // Stage 1 declares `AfterWave(0)` but sits on the CHILD op, which is first
-    // copied at wave 1. Nothing carries the stage at wave 0, so wave 0's pass
-    // closes nothing and wave 1 finds a candidate whose close is already past.
     let recipe = Recipe::new(
         RecipeId(1),
         ConsumerId(1),
@@ -2037,62 +1749,14 @@ fn a_stage_reached_after_its_declared_close_refuses() {
     }
 }
 
-/// A dependency edge attached AFTER its parent's closing witness was taken is
-/// still an edge, and a changed witness on that parent still invalidates
-/// through it.
-///
-/// This is the property that says a graph mutation is not a byte mutation, and
-/// it is worth a test because this lane spent three review rounds assuming
-/// otherwise and refusing the shape. `witness.rs` compares post-bracket and
-/// builds its `children` map from the FINAL snapshot's links, so WHEN an edge
-/// was added does not matter; only that it is there when the walk runs.
-///
-/// The world gives one object two discoverers. `left` and `right` are separate
-/// intervals, both point at `shared`, and both reach it through the SAME op —
-/// so whichever is discovered second produces a task that is a duplicate under
-/// the visited key `(recipe, op, address)` and is PRUNED, with a parent the
-/// expanded task does not share. Both discovery orders are run, so one arm is
-/// the pruned-`right` case whichever way the queue orders them. `right` closes
-/// mid-walk at the end of the wave that copied it, a full wave before
-/// `link_pruned` runs at all, and the fixture rewrites `right` between its two
-/// images so its witness CHANGES. `shared` can then only be invalidated through
-/// an edge naming `right`: `left` is the only other parent and it never changed.
-///
-/// kills:
-///  * dropping a pruned task whose parent is closed (the "its edge is
-///    redundant" argument) — `shared` stops being invalidated;
-///  * refusing it instead, in `link_pruned_into` or by putting `task.parent`
-///    back into `mid_walk_reopened`'s loop — the recipe refuses
-///    `ClosedIntervalReopened` and there are no rows to invalidate. That second
-///    mutation is not hypothetical: it was in this tree, and it took 25 tests
-///    with it, including the shipped d81 plan;
-///  * dropping `add_edge` from the pruned path entirely — same failure.
-///
-/// It does NOT kill the SPAN half of `mid_walk_reopened` (bytes copied into an
-/// interval after its closing image): no request here reaches a closed
-/// interval. `a_wave_that_reaches_an_already_closed_interval_refuses` owns that.
 #[test]
 fn a_pruned_duplicates_edge_onto_a_closed_parent_is_kept_and_still_invalidates() {
     const ROOT: u64 = 0x10_0000;
     const LEFT: u64 = 0x21_0000;
     const RIGHT: u64 = 0x22_0000;
     const SHARED: u64 = 0x30_0000;
-    // Copies, in order: 1 root (wave 0), 2 left, 3 right (wave 1), 4 right's
-    // MID-WALK closing image, 5 shared (wave 2), then the final wave's closes.
-    // The edit lands immediately before copy 4, so it is after `right`'s
-    // opening image and inside its closing one — which is what makes the
-    // witness change — and `shared` is copied after it, so nothing about the
-    // pointer graph moves.
     const TRIGGER: u64 = 4;
 
-    // RUN BOTH DISCOVERY ORDERS. Which of the two tasks is expanded and which
-    // is pruned follows from the order the root's two decode sites are listed
-    // in, and that is an executor detail this test must not depend on: if
-    // `right` happened to be discovered FIRST, its edge would come from the
-    // ordinary path and the pruned one would be `left`'s, which this test's
-    // assertion cannot see. Running the recipe with the two `next` orders makes
-    // one of the two arms the pruned case whichever way the queue orders them,
-    // and both arms must invalidate.
     let run = |left_first: bool| {
         let mut world = SyntheticMemory::new();
         world.map_zeroed(ROOT, 0x20);
@@ -2104,79 +1768,73 @@ fn a_pruned_duplicates_edge_onto_a_closed_parent_is_kept_and_still_invalidates()
         world.write_u64(LEFT, SHARED);
         world.write_u64(RIGHT, SHARED);
         world.write_u64(SHARED, 0xC0DE);
-        // NOT the pointer word. A changed pointer would be a different
-        // experiment.
-        let edit = vec![(RIGHT + 0x08, 0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes().to_vec())];
+        let edit = vec![(
+            RIGHT + 0x08,
+            0xFFFF_FFFF_FFFF_FFFFu64.to_le_bytes().to_vec(),
+        )];
         let memory = MutatingMemory::new(world, TRIGGER, edit);
 
         let recipe = Recipe::new(
-        RecipeId(1),
-        ConsumerId(1),
-        vec![
-            // 0 the root, wave 0. Both its pointers are read out of ONE
-            //   interval, so the fork has to happen a wave lower.
-            RecipeOp::CopyHeader {
-                size: 0x20,
-                next: if left_first { vec![1, 2] } else { vec![2, 1] },
-            },
-            RecipeOp::DecodePointer {
-                offset: 0,
-                guard: None,
-                next: 3,
-            },
-            RecipeOp::DecodePointer {
-                offset: 0x08,
-                guard: None,
-                next: 4,
-            },
-            // 3 left, wave 1.
-            RecipeOp::CopyHeader {
-                size: 0x20,
-                next: vec![5],
-            },
-            // 4 right, wave 1: the interval that closes mid-walk and changes.
-            RecipeOp::CopyHeader {
-                size: 0x20,
-                next: vec![6],
-            },
-            // 5 and 6 continue into op 7 at the same address, which is what
-            //   makes the two tasks duplicates by the visited key.
-            RecipeOp::DecodePointer {
-                offset: 0,
-                guard: None,
-                next: 7,
-            },
-            RecipeOp::DecodePointer {
-                offset: 0,
-                guard: None,
-                next: 7,
-            },
-            // 7 the shared object, wave 2.
-            RecipeOp::CopyHeader {
-                size: 0x10,
-                next: vec![8],
-            },
-            RecipeOp::Freeze,
-        ],
-        vec![Root { op: 0, addr: ROOT }],
-    )
-    .with_mods(mods(
-        9,
-        &[(
-            4,
-            OpMod {
+            RecipeId(1),
+            ConsumerId(1),
+            vec![
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: if left_first { vec![1, 2] } else { vec![2, 1] },
+                },
+                RecipeOp::DecodePointer {
+                    offset: 0,
+                    guard: None,
+                    next: 3,
+                },
+                RecipeOp::DecodePointer {
+                    offset: 0x08,
+                    guard: None,
+                    next: 4,
+                },
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: vec![5],
+                },
+                RecipeOp::CopyHeader {
+                    size: 0x20,
+                    next: vec![6],
+                },
+                RecipeOp::DecodePointer {
+                    offset: 0,
+                    guard: None,
+                    next: 7,
+                },
+                RecipeOp::DecodePointer {
+                    offset: 0,
+                    guard: None,
+                    next: 7,
+                },
+                RecipeOp::CopyHeader {
+                    size: 0x10,
+                    next: vec![8],
+                },
+                RecipeOp::Freeze,
+            ],
+            vec![Root { op: 0, addr: ROOT }],
+        )
+        .with_mods(mods(
+            9,
+            &[(
+                4,
+                OpMod {
+                    stage: 1,
+                    ..OpMod::default()
+                },
+            )],
+        ))
+        .with_closing(ClosingProgram {
+            stages: vec![CloseStage {
                 stage: 1,
-                ..OpMod::default()
-            },
-        )],
-    ))
-    .with_closing(ClosingProgram {
-        stages: vec![CloseStage {
-            stage: 1,
-            elide_into: None,
-            when: CloseWhen::AfterWave(1),
-        }],
-    });
+                elide_into: None,
+                when: CloseWhen::AfterWave(1),
+            }],
+        });
 
         let build = observe(&[recipe], &memory, config()).expect("custody");
         assert!(
@@ -2229,29 +1887,12 @@ fn a_pruned_duplicates_edge_onto_a_closed_parent_is_kept_and_still_invalidates()
     }
 }
 
-/// RULING A, on the DECODE side: a field lost to this recipe's own scoped void
-/// stops the branch, and a field the recipe never asked for still refuses it.
-///
-/// Both arms read a pointer at the same offset of the same object. In the first
-/// the object was SPECULATIVELY copied and the engine refused it, so the void
-/// already records why and the branch simply ends — every other row of the
-/// speculative copy still publishes, which is the whole of ruling A. In the
-/// second the recipe never copied the bytes at all, which is a recipe defect
-/// and is fatal.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: `field_not_captured` raising
-/// `Refusal::FieldNotCaptured` unconditionally, which is what every decode site
-/// did before — and which turns one unreadable page inside an over-read into
-/// the loss of the whole consumer's hour.
 #[test]
 fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses() {
     const TABLE: u64 = 0x10_0000;
     const READABLE: u64 = 0x20_0000;
     let page = SCOPED_VOID_GRANULARITY_BYTES;
 
-    // A two-page table. The second page is unreadable; the first holds a
-    // pointer at offset 0 to a readable object, so the branch that does not
-    // touch the void must still publish.
     let world = || {
         let mut memory = SyntheticMemory::new();
         memory.map_zeroed(TABLE, page as usize);
@@ -2262,8 +1903,6 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
         memory
     };
 
-    // ARM ONE: the whole table is copied speculatively, so the second page is
-    // a void and the pointer read at its start is lost TO THAT VOID.
     let scoped = Recipe::new(
         RecipeId(1),
         ConsumerId(1),
@@ -2277,7 +1916,6 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
                 guard: None,
                 next: 3,
             },
-            // The read that lands in the void.
             RecipeOp::DecodePointer {
                 offset: page as u32,
                 guard: None,
@@ -2310,10 +1948,13 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
         refusal_of(&build, 1),
     );
     assert!(
-        build.report_for(RecipeId(1)).expect("reported").scoped_voids >= 1,
+        build
+            .report_for(RecipeId(1))
+            .expect("reported")
+            .scoped_voids
+            >= 1,
         "the fixture must actually void a page, or the arms are the same test",
     );
-    // And the branch that never touched the void published its object.
     let closed = build.close_witnesses();
     let view = closed
         .snapshot
@@ -2324,14 +1965,11 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
         "the readable half of the speculative copy still publishes",
     );
 
-    // ARM TWO: the same read, at the same offset, out of bytes the recipe never
-    // asked for. Nothing is voided; the recipe under-copied, and that is fatal.
     let short = Recipe::new(
         RecipeId(2),
         ConsumerId(2),
         vec![
             RecipeOp::CopyRanges {
-                // Only the FIRST page, so `+page` was never requested.
                 windows: vec![RelWindow::new(0, 8)],
                 next: vec![1],
             },
@@ -2357,11 +1995,6 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
         record.refusal,
     );
 
-    // ARM THREE: A NEIGHBOUR'S VOID IS NOT YOURS, even when the two recipes
-    // share a `RecipeId` — which the substrate does not make unique (Codex
-    // 019fe9b6, finding A). The first recipe voids the page speculatively; the
-    // second reads out of it having asked for nothing there, and must still
-    // refuse.
     let voider = Recipe::new(
         RecipeId(3),
         ConsumerId(3),
@@ -2385,7 +2018,6 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
             },
         )],
     ));
-    // The SAME `RecipeId`, deliberately.
     let borrower = Recipe::new(
         RecipeId(3),
         ConsumerId(4),
@@ -2409,8 +2041,6 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
     );
     let memory = world();
     let build = observe(&[voider, borrower], &memory, config()).expect("custody");
-    // Position 1 is the borrower. It never asked for the page, so the
-    // neighbour's void does not excuse it.
     let record = match build
         .report_for(RecipeId(3))
         .map(|report| report.outcome)
@@ -2431,17 +2061,11 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
          field, even under a shared RecipeId: {borrower_refused:?}",
     );
 
-    // ARM FOUR: PARTIAL OVERLAP IS NOT COVERAGE. The scoped request is ONE
-    // byte at the void's start, so the void intersects an eight-byte decode
-    // there — but seven of those bytes were never requested by anybody, and
-    // suppressing the refusal would let an under-copy through because a
-    // neighbouring page happened to be bad.
     let straddler = Recipe::new(
         RecipeId(5),
         ConsumerId(5),
         vec![
             RecipeOp::CopyRanges {
-                // The first page (readable) and ONE byte of the second.
                 windows: vec![RelWindow::new(0, page as u32 + 1)],
                 next: vec![1],
             },
@@ -2478,14 +2102,9 @@ fn a_field_lost_to_a_scoped_void_stops_the_branch_and_one_never_copied_refuses()
     );
 }
 
-/// A program whose declared sequence and declared waves disagree is refused
-/// before any memory is touched: "the listed order is the order that ran" has
-/// to be one claim, not two that a reader reconciles.
 #[test]
 fn a_closing_program_whose_waves_run_backwards_is_malformed() {
     let recipe = mid_walk_recipe(CloseWhen::Final);
-    // Stage 1 listed first but closing LAST; stage 2 listed second and closing
-    // at wave 0.
     let backwards = Recipe::new(
         recipe.id,
         recipe.consumer,
@@ -2511,7 +2130,6 @@ fn a_closing_program_whose_waves_run_backwards_is_malformed() {
         validate(&backwards).is_err(),
         "a program whose waves run backwards down the list is malformed",
     );
-    // And the same program with the two `when`s the right way round is not.
     let forwards = Recipe::new(
         recipe.id,
         recipe.consumer,
@@ -2536,16 +2154,6 @@ fn a_closing_program_whose_waves_run_backwards_is_malformed() {
     assert!(validate(&forwards).is_ok());
 }
 
-// ---------------------------------------------------------------------------
-// RULING C. Value-conditional copy selection
-// ---------------------------------------------------------------------------
-
-/// The structural case: a discriminant in already-copied bytes says which of
-/// two layouts the object has, and therefore which window to copy next.
-///
-/// MUTATION: make `evaluate_probe` return `Some(true)` unconditionally and the
-/// inline arm is taken for the out-of-line object, so the copy lands on bytes
-/// that are not the payload.
 #[test]
 fn a_conditional_copies_the_layout_its_probe_selects() {
     const INLINE: u64 = 0x10_0000;
@@ -2555,8 +2163,6 @@ fn a_conditional_copies_the_layout_its_probe_selects() {
     memory.map_zeroed(INLINE, 0x40);
     memory.map_zeroed(OUTLINE, 0x40);
     memory.map_zeroed(PAYLOAD, 0x40);
-    // Discriminant at +0: 1 means the payload is inline, 0 means it is behind
-    // the pointer at +0x10.
     memory.write_u32(INLINE, 1);
     memory.write_u64(INLINE + 0x20, 0xDEAD);
     memory.write_u32(OUTLINE, 0);
@@ -2567,12 +2173,10 @@ fn a_conditional_copies_the_layout_its_probe_selects() {
         RecipeId(1),
         ConsumerId(1),
         vec![
-            // 0 the head, which is all the probe may look at
             RecipeOp::CopyHeader {
                 size: 0x18,
                 next: vec![1],
             },
-            // 1 the conditional
             RecipeOp::SelectByValue {
                 probe: Probe::FieldEquals {
                     offset: 0,
@@ -2582,12 +2186,10 @@ fn a_conditional_copies_the_layout_its_probe_selects() {
                 then: 2,
                 otherwise: Some(3),
             },
-            // 2 inline: take the tail of the same object
             RecipeOp::CopyRanges {
                 windows: vec![RelWindow::new(0x20, 8)],
                 next: vec![5],
             },
-            // 3 out of line: take the pointer field, then follow it
             RecipeOp::CopyRanges {
                 windows: vec![RelWindow::new(0x10, 8)],
                 next: vec![4],
@@ -2616,7 +2218,11 @@ fn a_conditional_copies_the_layout_its_probe_selects() {
     );
 
     let build = observe(&[recipe], &memory, config()).expect("custody");
-    assert!(refusal_of(&build, 1).is_none(), "{:?}", refusal_of(&build, 1));
+    assert!(
+        refusal_of(&build, 1).is_none(),
+        "{:?}",
+        refusal_of(&build, 1)
+    );
     let view = build.snapshot.view_for(ConsumerId(1), HOUR).expect("view");
     assert_eq!(
         view.u64_le(INLINE + 0x20).expect("inline tail copied"),
@@ -2629,9 +2235,6 @@ fn a_conditional_copies_the_layout_its_probe_selects() {
     );
 }
 
-/// The other conditional d81 needs: try the wide window, and on a DISAGREEMENT
-/// between its two back-to-back images fall back to the narrow reads. The probe
-/// compares copied bytes and nothing else leaves the op.
 #[test]
 fn a_conditional_can_fall_back_when_the_wide_windows_samples_disagree() {
     const OBJECT: u64 = 0x10_0000;
@@ -2649,9 +2252,7 @@ fn a_conditional_can_fall_back_when_the_wide_windows_samples_disagree() {
             },
             RecipeOp::SelectByValue {
                 probe: Probe::SamplesAgree { offset: 0, len: 16 },
-                // Agreed: the wide window stands, nothing more is copied.
                 then: 2,
-                // Disagreed: take the narrow scalars separately.
                 otherwise: Some(3),
             },
             RecipeOp::CopyRanges {
@@ -2676,8 +2277,6 @@ fn a_conditional_can_fall_back_when_the_wide_windows_samples_disagree() {
             OpMod {
                 samples: SampleSpec {
                     count: 2,
-                    // The reader resolves the disagreement itself, so it must
-                    // NOT be gapped for it.
                     on_disagree: DisagreeAction::Record,
                 },
                 ..OpMod::default()
@@ -2698,7 +2297,6 @@ fn a_conditional_can_fall_back_when_the_wide_windows_samples_disagree() {
         "a disagreement must select the fallback shape",
     );
 
-    // And when the two images agree, the fallback is not taken.
     let mut inner = SyntheticMemory::new();
     inner.map_zeroed(OBJECT, 0x40);
     inner.write_u64(OBJECT, 0x1234);
@@ -2716,9 +2314,6 @@ fn a_conditional_can_fall_back_when_the_wide_windows_samples_disagree() {
     );
 }
 
-/// A conditional that quietly does nothing is a short result reported as
-/// success, which is the one outcome the whole limit discipline exists to
-/// prevent.
 #[test]
 fn a_conditional_with_no_arm_refuses_rather_than_stopping_quietly() {
     const OBJECT: u64 = 0x10_0000;
@@ -2761,12 +2356,6 @@ fn a_conditional_with_no_arm_refuses_rather_than_stopping_quietly() {
     ));
 }
 
-// ---------------------------------------------------------------------------
-// The structural checks on the vocabulary itself
-// ---------------------------------------------------------------------------
-
-/// A partial modifier table would apply an op's qualifications to its
-/// neighbour, which is indistinguishable from a table an edit has misaligned.
 #[test]
 fn a_modifier_table_is_empty_or_complete() {
     let ops = vec![
@@ -2776,8 +2365,13 @@ fn a_modifier_table_is_empty_or_complete() {
         },
         RecipeOp::Freeze,
     ];
-    let recipe = Recipe::new(RecipeId(1), ConsumerId(1), ops, vec![Root { op: 0, addr: 8 }])
-        .with_mods(vec![OpMod::default()]);
+    let recipe = Recipe::new(
+        RecipeId(1),
+        ConsumerId(1),
+        ops,
+        vec![Root { op: 0, addr: 8 }],
+    )
+    .with_mods(vec![OpMod::default()]);
     assert!(matches!(
         validate(&recipe),
         Err(Refusal::Malformed {
@@ -2787,8 +2381,6 @@ fn a_modifier_table_is_empty_or_complete() {
     ));
 }
 
-/// A qualification an op cannot honour would be silently ignored, and a recipe
-/// author would believe a bound was in force that nothing applies.
 #[test]
 fn a_modifier_on_an_op_that_cannot_honour_it_is_malformed() {
     let cases: Vec<(OpMod, &str)> = vec![
@@ -2844,9 +2436,6 @@ fn a_modifier_on_an_op_that_cannot_honour_it_is_malformed() {
     }
 }
 
-/// The bounds ruling C rests on. A probe past
-/// [`MAX_PROBE_COMPARE_BYTES`] is not a bounded read of copied bytes, and a
-/// sample count past [`MAX_ADJACENT_SAMPLES`] is custody nobody admitted.
 #[test]
 fn the_conditional_and_sample_bounds_are_enforced_before_execution() {
     let wide = Recipe::new(
@@ -2908,9 +2497,6 @@ fn the_conditional_and_sample_bounds_are_enforced_before_execution() {
     ));
 }
 
-/// A mask window that reaches outside the object its op copies would narrow the
-/// closing comparison to bytes the interval does not hold — i.e. compare
-/// nothing and certify anyway.
 #[test]
 fn a_mask_that_reaches_outside_its_copy_is_malformed() {
     let recipe = Recipe::new(
@@ -2943,8 +2529,6 @@ fn a_mask_that_reaches_outside_its_copy_is_malformed() {
     ));
 }
 
-/// Elision only points FORWARDS. A programme that could elide into an earlier
-/// stage would be claiming a witness taken before the bytes it certifies.
 #[test]
 fn a_closing_program_cannot_elide_backwards_or_name_an_unused_stage() {
     let build = |stages: Vec<CloseStage>| {
@@ -3003,15 +2587,6 @@ fn a_closing_program_cannot_elide_backwards_or_name_an_unused_stage() {
     ));
 }
 
-/// SENTINEL. A narrowed consumption with nothing in it must compare as CHANGED,
-/// not as agreed.
-///
-/// "Nothing was compared, therefore nothing moved" is a witness certifying an
-/// object it never looked at, and it is reachable the moment a mask resolves to
-/// no bytes inside the interval it lands on. The executor prevents that state
-/// (an empty resolved mask falls back to `consume_all`); this pins the fallback
-/// underneath it, because the two defences fail in opposite directions and only
-/// one of them is in the file a future mask change would touch.
 #[test]
 fn an_empty_consumption_compares_as_changed_not_as_agreed() {
     let consumption = super::annot::Consumption {
@@ -3026,12 +2601,6 @@ fn an_empty_consumption_compares_as_changed_not_as_agreed() {
     );
 }
 
-/// SENTINEL. A mask whose windows land outside the request it qualifies makes
-/// the interval fully consumed rather than emptily consumed.
-///
-/// This is the executor-side half of the defence above. A `CopyRanges` op whose
-/// mask names bytes of a DIFFERENT window than the one that reached this
-/// interval used to record `{full: false, spans: []}`.
 #[test]
 fn a_mask_that_resolves_to_nothing_inside_its_interval_consumes_all_of_it() {
     const A: u64 = 0x10_0000;
@@ -3045,9 +2614,6 @@ fn a_mask_that_resolves_to_nothing_inside_its_interval_consumes_all_of_it() {
         RecipeId(1),
         ConsumerId(1),
         vec![
-            // Two windows, far enough apart to be two intervals. The mask names
-            // bytes of the FIRST one only, so it resolves to nothing inside the
-            // second.
             RecipeOp::CopyRanges {
                 windows: vec![RelWindow::new(0, 8), RelWindow::new(0x10_0000, 8)],
                 next: vec![1],
@@ -3070,9 +2636,6 @@ fn a_mask_that_resolves_to_nothing_inside_its_interval_consumes_all_of_it() {
         )],
     ));
 
-    // FIRST, the quiet frame. This is the half that separates "fully consumed"
-    // from "empty and failing closed": under the fail-closed fallback alone,
-    // an interval no mask reaches would gap on EVERY frame, changed or not.
     let quiet = MutatingMemory::new(inner.clone(), u64::MAX, Vec::new());
     let closed = observe(&[recipe.clone()], &quiet, config())
         .expect("custody")
@@ -3082,8 +2645,6 @@ fn a_mask_that_resolves_to_nothing_inside_its_interval_consumes_all_of_it() {
         "an unchanged interval must not gap merely because a mask missed it",
     );
 
-    // THEN the write. It is outside every mask window, and it must still gap:
-    // the mask said nothing about this interval, so all of it is consumed.
     let memory = MutatingMemory::new(inner, 3, vec![(B, 0xEEu64.to_le_bytes().to_vec())]);
     let closed = observe(&[recipe], &memory, config())
         .expect("custody")
@@ -3095,17 +2656,6 @@ fn a_mask_that_resolves_to_nothing_inside_its_interval_consumes_all_of_it() {
     );
 }
 
-/// SENTINEL. A recipe that reaches an interval ANOTHER recipe already copied
-/// cannot be told its A/B pair was taken.
-///
-/// Adjacent samples are taken while a hole is being filled. Deduplication means
-/// the second recipe has no hole, so no second image exists and no disagreement
-/// can be found — a consumer that asked for torn detection being told the bytes
-/// are clean because nobody looked. The sampling is recorded as INCOMPLETE
-/// instead, and an incomplete pair gaps.
-///
-/// MUTATION: delete the `reconcile_samples` call from the dependency attach and
-/// consumer 2 publishes an image nothing certified.
 #[test]
 fn a_shared_interval_cannot_certify_a_pair_it_never_took() {
     const OBJECT: u64 = 0x10_0000;
@@ -3122,7 +2672,6 @@ fn a_shared_interval_cannot_certify_a_pair_it_never_took() {
             RecipeOp::Freeze,
         ]
     };
-    // Recipe 1 copies first and asks for ONE image.
     let first = Recipe::new(
         RecipeId(1),
         ConsumerId(1),
@@ -3132,8 +2681,6 @@ fn a_shared_interval_cannot_certify_a_pair_it_never_took() {
             addr: OBJECT,
         }],
     );
-    // Recipe 2 reaches the same bytes and asks for a PAIR. It will not get one:
-    // by the time it arrives the interval exists and the moment has passed.
     let second = Recipe::new(
         RecipeId(2),
         ConsumerId(2),
@@ -3185,14 +2732,6 @@ fn a_shared_interval_cannot_certify_a_pair_it_never_took() {
     );
 }
 
-/// SENTINEL, and the other half of the same rule. Two consumers share one
-/// interval; A asks for two images and gets them, B asks for three. B is short
-/// and A is not, on the same interval at the same moment — and the policies are
-/// per consumer too, so A electing `Record` cannot be overruled by B, and B
-/// electing `Gap` cannot be downgraded by A.
-///
-/// MUTATION: store `wanted`/`gap_on_disagree` interval-wide instead of per ask
-/// and one of the two assertions below fails whichever way the flag is joined.
 #[test]
 fn one_consumers_stricter_sample_request_does_not_reach_its_neighbour() {
     const OBJECT: u64 = 0x10_0000;
@@ -3229,7 +2768,6 @@ fn one_consumers_stricter_sample_request_does_not_reach_its_neighbour() {
         ))
     };
 
-    // A copies first and gets its pair. B deduplicates onto it and wants three.
     let closed = observe(
         &[
             build(1, 1, 2, DisagreeAction::Record),
@@ -3262,15 +2800,6 @@ fn one_consumers_stricter_sample_request_does_not_reach_its_neighbour() {
     );
 }
 
-/// SENTINEL. A consumer that elected to resolve a disagreement ITSELF is not
-/// gapped by one, even when its neighbour on the same interval would be.
-///
-/// `DisagreeAction::Record` exists for exactly one reader shape — d81's active
-/// window samples up to three times and stops when two agree — and a policy
-/// that its neighbour can overrule is not a policy.
-///
-/// MUTATION: make `opted_out_of_gapping` return false and consumer 1 is gapped
-/// for a disagreement it said it would handle.
 #[test]
 fn a_consumer_that_resolves_disagreements_itself_is_not_gapped_by_one() {
     const OBJECT: u64 = 0x10_0000;
@@ -3310,8 +2839,6 @@ fn a_consumer_that_resolves_disagreements_itself_is_not_gapped_by_one() {
         ))
     };
 
-    // Recipe 1 copies first and takes the pair; the SECOND image is torn.
-    // Recipe 2 deduplicates onto the same interval and wants to be gapped.
     let memory = TearingMemory {
         inner,
         tear_on: std::cell::Cell::new(2),
@@ -3348,14 +2875,6 @@ fn a_consumer_that_resolves_disagreements_itself_is_not_gapped_by_one() {
     );
 }
 
-/// SENTINEL. Two requests from the SAME consumer are judged separately.
-///
-/// A met gapping request and an unmet non-gapping one must not combine into an
-/// unmet gapping request — which is what merging `wanted` by max and
-/// `gap_on_disagree` by OR produces, and it gaps a consumer for an image only
-/// the non-gapping request ever wanted.
-///
-/// MUTATION: restore the merge in `SampleImages::ask` and consumer 7 is gapped.
 #[test]
 fn two_requests_from_one_consumer_do_not_combine_into_a_third() {
     const OBJECT: u64 = 0x10_0000;
@@ -3366,7 +2885,6 @@ fn two_requests_from_one_consumer_do_not_combine_into_a_third() {
     let build = |id: u32, count: u8, on_disagree: DisagreeAction| {
         Recipe::new(
             RecipeId(id),
-            // THE SAME CONSUMER, reached by two recipes.
             ConsumerId(7),
             vec![
                 RecipeOp::CopyHeader {
@@ -3393,8 +2911,6 @@ fn two_requests_from_one_consumer_do_not_combine_into_a_third() {
         ))
     };
 
-    // Request A: two images, gap me. It is MET — two images are taken.
-    // Request B: three images, I will handle it. It is UNMET, and non-gapping.
     let closed = observe(
         &[
             build(1, 2, DisagreeAction::Gap),
@@ -3418,7 +2934,6 @@ fn two_requests_from_one_consumer_do_not_combine_into_a_third() {
     );
 }
 
-/// Memory that refuses the Nth copy and serves every other.
 #[derive(Debug)]
 struct FlakyMemory {
     inner: SyntheticMemory,
@@ -3439,22 +2954,6 @@ impl SnapshotMemory for FlakyMemory {
     }
 }
 
-/// SENTINEL. The joined sample spec decides HOW MANY IMAGES TO TAKE and is
-/// never itself a request.
-///
-/// A coalesced copy serves the requests of several ops. Taking the maximum
-/// count and the strictest policy is right for the copier — it must satisfy the
-/// strictest op — and wrong as a consumer request: a recipe whose two ops ask
-/// for `(2, Gap)` and `(3, Record)` would be credited with `(3, Gap)`, a
-/// request neither op made, and gapped for a third image only the non-gapping
-/// op ever wanted.
-///
-/// This is the COALESCED-SOURCE path, which two separate recipes cannot reach:
-/// their requests deduplicate downstream instead of merging into one planned
-/// copy. One recipe, one consumer, two ops at the same address.
-///
-/// MUTATION: record an ask from `attributes` in `take_adjacent_samples` and the
-/// consumer is gapped.
 #[test]
 fn a_coalesced_copys_joined_spec_is_not_recorded_as_a_request() {
     const OBJECT: u64 = 0x10_0000;
@@ -3466,8 +2965,6 @@ fn a_coalesced_copys_joined_spec_is_not_recorded_as_a_request() {
         RecipeId(1),
         ConsumerId(1),
         vec![
-            // Two ops, same address, same width: one coalesced copy serving
-            // two requests.
             RecipeOp::CopyHeader {
                 size: 0x20,
                 next: vec![2],
@@ -3496,7 +2993,6 @@ fn a_coalesced_copys_joined_spec_is_not_recorded_as_a_request() {
             (
                 0,
                 OpMod {
-                    // Satisfied: two images are taken.
                     samples: SampleSpec {
                         count: 2,
                         on_disagree: DisagreeAction::Gap,
@@ -3507,7 +3003,6 @@ fn a_coalesced_copys_joined_spec_is_not_recorded_as_a_request() {
             (
                 1,
                 OpMod {
-                    // Unmet — and it said it would handle that itself.
                     samples: SampleSpec {
                         count: 3,
                         on_disagree: DisagreeAction::Record,
@@ -3518,8 +3013,6 @@ fn a_coalesced_copys_joined_spec_is_not_recorded_as_a_request() {
         ],
     ));
 
-    // Copy 1 is the opening image, copy 2 the second, copy 3 the third — which
-    // the engine refuses. Two images are held against a request for three.
     let memory = FlakyMemory {
         inner,
         refuse_on: 3,
@@ -3541,23 +3034,10 @@ fn a_coalesced_copys_joined_spec_is_not_recorded_as_a_request() {
     );
 }
 
-/// SENTINEL. Narrowing a refused scoped copy must not walk off the top of the
-/// address space.
-///
-/// A span whose exclusive end is past 2^64 is representable — `Span::end_excl`
-/// is a `u128` for that reason — but its midpoint is not a `u64` sum. Wrapping
-/// it splits the request into a tail page and a page at address ZERO, and the
-/// second half then copies and OWNS unrelated bytes at the bottom of the
-/// address space.
-///
-/// MUTATION: replace the checked split with `split as u64` and this test either
-/// panics on the subtraction or reports a different refusal.
 #[test]
 fn narrowing_a_scoped_copy_at_the_top_of_the_address_space_refuses() {
     const TOP: u64 = u64::MAX - 0x1FFF;
     let mut memory = SyntheticMemory::new();
-    // Mapped, readable, and one byte too short for the request: the copy is
-    // refused, which is what sends it into the narrowing path.
     memory.map_zeroed(TOP, 0x1000);
     memory.map_zeroed(0, 0x1000);
 
@@ -3591,7 +3071,6 @@ fn narrowing_a_scoped_copy_at_the_top_of_the_address_space_refuses() {
         "got {:?}",
         record.refusal,
     );
-    // And nothing at the bottom of the address space was copied or owned.
     assert!(
         build
             .snapshot
@@ -3602,9 +3081,6 @@ fn narrowing_a_scoped_copy_at_the_top_of_the_address_space_refuses() {
     );
 }
 
-/// SENTINEL. Every entry point that hands out bytes must consult the void set.
-/// `translate` returns an arena offset rather than bytes, and it is the one that
-/// is easy to forget.
 #[test]
 fn every_view_entry_point_names_a_void_rather_than_calling_it_uncaptured() {
     const A: u64 = 0x10_0000;
@@ -3652,13 +3128,6 @@ fn every_view_entry_point_names_a_void_rather_than_calling_it_uncaptured() {
     }
 }
 
-/// SENTINEL, through the EXECUTOR. Two recipes share one interval; one declares
-/// a mask and the other does not. A write to a byte only the mask excludes must
-/// still gap, because the unmasked recipe reads it.
-///
-/// The `Annotations`-level test below states the same rule as a unit; this one
-/// states it as a property of the copier, and it is the one that fails if the
-/// attach pass ever stops recording the unmasked contributor.
 #[test]
 fn a_recipe_without_a_mask_keeps_its_neighbours_whole_comparison() {
     const OBJECT: u64 = 0x10_0000;
@@ -3693,7 +3162,6 @@ fn a_recipe_without_a_mask_keeps_its_neighbours_whole_comparison() {
             },
         )],
     ));
-    // Same object, same width, no mask at all.
     let plain = Recipe::new(
         RecipeId(2),
         ConsumerId(2),
@@ -3711,13 +3179,6 @@ fn a_recipe_without_a_mask_keeps_its_neighbours_whole_comparison() {
         }],
     );
 
-    // A byte the mask excludes, and which recipe 2 therefore reads.
-    //
-    // TRIGGER 2, and the number matters: recipe 1's opening copy is the first
-    // and recipe 2 DEDUPLICATES onto it, so the second copy of the observation
-    // is the closing one. A trigger of 3 would land after everything and the
-    // fixture would write nothing at all — which is why `mutation_applied` is
-    // asserted rather than assumed.
     let memory = MutatingMemory::new(inner, 2, vec![(OBJECT + 0x10, vec![0xEE])]);
     let closed = observe(&[masked, plain], &memory, config())
         .expect("custody")
@@ -3733,9 +3194,6 @@ fn a_recipe_without_a_mask_keeps_its_neighbours_whole_comparison() {
     );
 }
 
-/// SENTINEL. An interval one contributor reads whole cannot be narrowed by
-/// another contributor's mask. A mask that could would hide a real torn read
-/// from the reader that consumes those bytes.
 #[test]
 fn an_unmasked_contributor_makes_the_whole_interval_consumed_again() {
     let mut annot = super::annot::Annotations::new();
@@ -3745,7 +3203,6 @@ fn an_unmasked_contributor_makes_the_whole_interval_consumed_again() {
     assert!(!annot.consumption(id).expect("recorded").full);
     annot.consume_all(id);
     assert!(annot.consumption(id).expect("recorded").full);
-    // And a later mask cannot un-say it.
     annot.consume_spans(id, &[Span::new(0x1000, 8)]);
     annot.consume_strided(
         id,
@@ -3761,39 +3218,8 @@ fn an_unmasked_contributor_makes_the_whole_interval_consumed_again() {
     assert!(consumption.spans.is_empty() && consumption.strided.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Residual 5. A recipe decodes only out of bytes its own consumer asked for
-// ---------------------------------------------------------------------------
-
 /// SENTINEL for the ownership check on `read_uint`.
-///
-/// The arena is one buffer and the interval map is observation-wide, so
-/// `read_uint` used to resolve any address ANY recipe in the observation had
-/// copied. Recipe A could therefore decode a pointer, a count or a probe out
-/// of recipe B's bytes and report `Captured` over a value it never asked to
-/// see — and then build a discovery edge across that custody boundary.
-///
-/// The fixture is the smallest shape that exhibits it, and the ORDER of the two
-/// recipes is what makes it a test of REACH rather than of interval membership.
-/// B runs first and copies the whole thirty-two bytes, so there is exactly ONE
-/// interval; A deduplicates into it and is recorded as a dependent whose reach
-/// is the eight bytes it asked for. Both arms therefore resolve the SAME
-/// interval, and the only thing that differs is how far inside it A reached.
-///
-/// Run A first instead and A owns `[ROOT, ROOT+8)` while B owns the hole after
-/// it — two intervals — and the test would pass against a check that only asked
-/// whether the consumer depends on the interval at all. That is the weaker
-/// predicate this must not accept, so it is deliberately not the shape used.
-///
 /// THE CONTROL ARM IS THE HALF THAT MAKES THIS A TEST OF OWNERSHIP. Widen A's
-/// header to sixteen bytes — same interval, wider reach — and the SAME read at
-/// the SAME address succeeds and the target is copied. So the refusal below is
-/// about how far A asked, not about whether the bytes are there.
-///
-/// MUTATION: drop the `reach_of` consultation from `Observation::read_uint`
-/// (serve the read whenever an interval contains it) and the first arm's
-/// assertion fails — recipe 1 reports `Captured` and copies `TARGET` out of a
-/// pointer it does not own.
 #[test]
 fn a_recipe_cannot_decode_out_of_another_recipes_copy() {
     const ROOT: u64 = 0x10_0000;
@@ -3837,13 +3263,9 @@ fn a_recipe_cannot_decode_out_of_another_recipes_copy() {
             ],
             vec![Root { op: 0, addr: ROOT }],
         );
-        // B FIRST. See the header: it is what makes both arms resolve one
-        // interval, so the check under test is the reach and not the
-        // membership.
         observe(&[neighbour, reader], &memory, config()).expect("custody")
     };
 
-    // A asked for eight bytes and reads at offset eight.
     let refused = build(8);
     assert_eq!(
         refusal_of(&refused, 1).map(|record| record.refusal),
@@ -3872,7 +3294,6 @@ fn a_recipe_cannot_decode_out_of_another_recipes_copy() {
         "the bytes are in the arena and owned — the refusal is about custody",
     );
 
-    // The control arm: the same read, by a recipe that asked for it.
     let allowed = build(0x10);
     assert_eq!(
         allowed.report_for(RecipeId(1)).expect("reported").outcome,
@@ -3889,25 +3310,7 @@ fn a_recipe_cannot_decode_out_of_another_recipes_copy() {
     );
 }
 
-/// SENTINEL, and the reason it is a second test rather than another arm of the
-/// one above.
-///
-/// `Probe::SamplesAgree` is the ONE decode path that does not go through
-/// `read_uint`: it compares two arena images rather than decoding a value, so
 /// it resolves the interval itself and the ownership check has to be spelled at
-/// it separately. Without that, a recipe cannot read a neighbour's bytes but
-/// CAN ask whether they were stable, and pick a branch on the answer.
-///
-/// Same shape as above, and the same ordering argument: recipe 2 runs first and
-/// copies and samples the whole sixteen bytes, so there is ONE interval with
-/// one pair of images. Recipe 1 deduplicates into it with a reach of eight
-/// bytes and probes at offset eight. Both arms resolve the same interval and
-/// the same images; only the reach differs, so a check that merely asked
-/// whether recipe 1 depends on the interval would not pass this.
-///
-/// MUTATION: drop the `reaches` consultation from `Probe::SamplesAgree` in
-/// `evaluate_probe` and the first arm reports `Captured` — recipe 1 selects its
-/// `then` arm out of recipe 2's images.
 #[test]
 fn a_sample_probe_cannot_read_another_recipes_images() {
     const OBJECT: u64 = 0x10_0000;
@@ -3985,8 +3388,6 @@ fn a_sample_probe_cannot_read_another_recipes_images() {
         RecipeOutcome::Captured,
     );
 
-    // The control arm: the same probe, over an interval this recipe owns and
-    // sampled itself. The images agree, so the `then` arm runs.
     let allowed = build(0x10);
     assert_eq!(
         allowed.report_for(RecipeId(1)).expect("reported").outcome,

@@ -1,18 +1,3 @@
-//! A minimal, hardened, READ-ONLY ZIP reader for the `.battleplan` container.
-//!
-//! Scope on purpose: just enough to enumerate the central directory and read one
-//! entry's decompressed bytes (STORE, DEFLATE, or Zstandard method 93). It does
-//! NOT extract to disk, so zip-slip/symlink/device-name *extraction* attacks do
-//! not apply to this path, but it still validates every path
-//! so a caller that does materialize files is handed only safe names.
-//!
-//! Hardening: rejects duplicate entry names, validates paths, supports Zip64
-//! metadata explicitly, cross-checks every local file header against the central
-//! directory, provides whole-archive payload CRC validation, enforces the
-//! declared uncompressed size per entry, and keeps the in-RAM reader's 2 GiB
-//! materialization cap separate from the streaming verifier's larger multi-GiB
-//! cap.
-
 use flate2::read::DeflateDecoder;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -28,57 +13,20 @@ const ZIP64_EXTRA_ID: u16 = 0x0001;
 
 pub const ZIP_METHOD_STORE: u16 = 0;
 pub const ZIP_METHOD_DEFLATE: u16 = 8;
-/// Zstandard compression method registered in APPNOTE.TXT as method 93.
 pub const ZIP_METHOD_ZSTD: u16 = 93;
-/// Writer/reader zstd window. `2^27` = 128 MiB.
 pub const ZSTD_WINDOW_LOG: u32 = 27;
 
-/// ZIP32 scalar-field maximum that is not the Zip64 sentinel.
 pub const ZIP32_MAX_FIELD_VALUE: u64 = (u32::MAX as u64) - 1;
-/// ZIP32 EOCD entry-count maximum that is not the Zip64 sentinel.
 pub const ZIP32_MAX_ENTRY_COUNT: usize = (u16::MAX as usize) - 1;
-/// Per-entry cap for the in-RAM container reader. It materializes entries.
 pub const MAX_CONTAINER_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Per-entry cap for streaming verification/writing paths. These paths never
-/// materialize the entry and exist specifically for multi-GiB compact streams.
 pub const STREAMING_MAX_CONTAINER_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024 * 1024;
-/// Admission ceiling for `manifest.json`, applied to BOTH its compressed and
-/// its uncompressed size, in BOTH readers, BEFORE any decode.
-///
-/// The manifest is the one entry every reader materializes and strictly
-/// JSON-parses before anything else has been authenticated, so the generic
-/// 2 GiB per-entry cap is not a bound on it in any useful sense: a 260 KB
-/// container declaring a 256 MiB DEFLATE manifest already costs ~21 s and
-/// ~4.5 GiB peak, and JSON tree construction is superlinear from there (FW4 /
-/// R1-2). 64 MiB is still enormously generous — a manifest row is on the order
-/// of 200 bytes, so this admits a few hundred thousand entries.
 pub const MAX_MANIFEST_BYTES: u64 = 64 * 1024 * 1024;
-/// Hard central-directory entry-count cap enforced before allocating entry vectors.
-/// Ten million entries is far above any plausible replay and prevents hostile
-/// Zip64 EOCD counts from driving unbounded reserves before CD validation.
 pub const MAX_READER_ENTRIES: u64 = 10_000_000;
-/// Initial reserve cap for parsed entries; the parser grows if needed after the
-/// central directory proves real instead of trusting an EOCD-controlled count.
 pub const INITIAL_ENTRY_RESERVE: usize = 64 * 1024;
 
-/// Fixed prefix length of a Zip64 end-of-central-directory record.
 pub(crate) const ZIP64_EOCD_MIN_LEN: u64 = 56;
-/// Bytes allowed between a Zip64 EOCD record's start and its locator: the
-/// 56-byte fixed prefix plus the record's zip64 extensible data sector. Real
-/// sectors are tiny; the cap bounds the window fail-closed. SHARED by the
-/// in-RAM and file-backed parsers — a differential here means one reader
-/// admits a container the other refuses.
 pub(crate) const ZIP64_EOCD_MAX_SPAN: u64 = 1024 * 1024;
 
-/// The one Zip64 EOCD placement policy both readers apply, given the record's
-/// absolute start and its locator's absolute start.
-///
-/// * the record must PRECEDE its locator (a record reachable only through an
-///   EOCD comment after the locator is an unaccounted structure channel);
-/// * the fixed prefix must fit;
-/// * the declared `record_size` must place the record's end EXACTLY at the
-///   locator, so no undeclared gap or oversized extensible sector survives;
-/// * the whole span stays under the shared cap.
 pub(crate) fn validate_zip64_eocd_placement(
     record_abs: u64,
     locator_abs: u64,
@@ -102,10 +50,9 @@ pub(crate) fn validate_zip64_eocd_placement(
         if record_size < 44 {
             return Err("truncated Zip64 EOCD size".to_string());
         }
-        // The record is `signature (4) | size field (8) | size bytes`.
-        let declared_end = record_size.checked_add(12).ok_or_else(|| {
-            "Zip64 EOCD declared record size overflows its record".to_string()
-        })?;
+        let declared_end = record_size
+            .checked_add(12)
+            .ok_or_else(|| "Zip64 EOCD declared record size overflows its record".to_string())?;
         if declared_end != span {
             return Err(format!(
                 "Zip64 EOCD declares {record_size} record bytes ending at {} but its locator starts at {locator_abs}",
@@ -116,7 +63,6 @@ pub(crate) fn validate_zip64_eocd_placement(
     Ok(span)
 }
 
-/// A single central-directory record we care about.
 #[derive(Debug, Clone)]
 pub struct ZipEntry {
     pub name: String,
@@ -128,7 +74,6 @@ pub struct ZipEntry {
     pub crc32: u32,
     pub comp_size: u64,
     pub uncomp_size: u64,
-    /// offset of the local file header within the archive
     pub local_header_off: u64,
 }
 
@@ -145,11 +90,6 @@ pub enum ZipError {
         got: u64,
     },
     Decompress(String),
-    /// The stored payload bytes disagree with the archive's own declared
-    /// integrity fields (CRC-32). Typed — rather than folded into
-    /// [`ZipError::Unsupported`] — so a corrupted payload is classifiable
-    /// without matching on error text. Renders exactly as the pre-typed
-    /// `Unsupported` did, so every message contract holds verbatim.
     PayloadIntegrity(String),
 }
 
@@ -170,7 +110,6 @@ impl std::fmt::Display for ZipError {
                 "zip entry {name}: decompressed {got} bytes != declared {declared}"
             ),
             ZipError::Decompress(e) => write!(f, "zip decompress: {e}"),
-            // Renders the EXACT text the pre-typed Unsupported produced.
             ZipError::PayloadIntegrity(w) => write!(f, "zip unsupported: {w}"),
         }
     }
@@ -201,14 +140,9 @@ fn rd_u64(b: &[u8], off: usize) -> Option<u64> {
     ]))
 }
 
-/// A ZIP archive held entirely in memory (the per-snapshot caller still reads
-/// one entry at a time).
 pub struct ZipArchive {
     data: Vec<u8>,
     entries: Vec<ZipEntry>,
-    /// exact entry name -> index into `entries` (names are unique: exact and
-    /// case-insensitive duplicates are rejected at parse), so [`ZipArchive::by_name`]
-    /// is O(1) instead of a linear scan per lookup.
     name_index: HashMap<String, usize>,
     central_directory_off: usize,
 }
@@ -240,29 +174,12 @@ impl ZipArchive {
         &self.entries
     }
 
-    /// Parse the central directory of an in-memory ZIP under the GENERIC
-    /// SAFE-ZIP policy, validating + de-duping every name. Supports Zip64
-    /// metadata; `read_entry` still enforces the in-RAM materialization cap.
-    ///
-    /// Generic means generic (FW4 / R1-8): this applies the portable path rules
-    /// — no traversal, no absolute or device names, no case/NFC lookalikes — but
-    /// it deliberately does NOT impose the replay container's `payload/` root,
-    /// entry-count, total-size, or manifest policy, because it is also the
-    /// parser for archives that are not replay containers. The replay-container
-    /// policy lives in [`crate::container::Container::from_bytes_strict`] /
-    /// [`crate::container::Container::open_strict`], which additionally enforce
-    /// the payload root (via `validate_payload_path*`) and the shared admission
-    /// caps. Do not read a successful `parse` as "this is a valid container".
     pub fn parse(data: Vec<u8>) -> Result<ZipArchive, ZipError> {
         let archive = Self::parse_with_entry_limit(data, MAX_READER_ENTRIES)?;
         archive.validate_portable_paths(true)?;
         Ok(archive)
     }
 
-    /// Parse with a caller-specific entry ceiling applied before allocating the
-    /// entry vector. Container open has a stricter cap than generic ZIP tooling;
-    /// applying it at the EOCD boundary prevents hostile archives from forcing
-    /// work or allocation toward the broader reader ceiling first.
     pub(crate) fn parse_with_entry_limit(
         data: Vec<u8>,
         max_entries: u64,
@@ -352,10 +269,6 @@ impl ZipArchive {
         }
 
         let mut entries = Vec::with_capacity(total.min(INITIAL_ENTRY_RESERVE));
-        // Two owned copies of each name, not three: `name_index` detects exact
-        // duplicates by itself, so the separate `seen` set it used to shadow was
-        // pure per-entry amplification before any semantic processing had run
-        // (FW4 / R1-7). `seen_ci` stays — its key is a DIFFERENT string.
         let mut name_index: HashMap<String, usize> = HashMap::new();
         let mut seen_ci: HashSet<String> = HashSet::new();
         let mut p = cd_off;
@@ -432,18 +345,10 @@ impl ZipArchive {
                 lho32 as u64
             };
 
-            // The container version lives inside manifest.json, so the low-level
-            // parse may enforce only the legacy-v1 grammar here. Container::open
-            // applies the v2 NFC/caseless policy after authenticating the
-            // manifest version. Generic ZipArchive::parse applies v2 above.
             validate_path_legacy_v1(&name)?;
-            // The index insert IS the exact-duplicate check. Check order is
-            // preserved (exact before case-insensitive) so refusal messages
-            // stay byte-stable.
             if name_index.insert(name.clone(), entries.len()).is_some() {
                 return Err(ZipError::DuplicateName(name));
             }
-            // case-insensitive collision (would clobber on Windows/macOS unpack)
             if !seen_ci.insert(legacy_path_key(&name)?) {
                 return Err(ZipError::DuplicateName(format!(
                     "{name} (case-insensitive)"
@@ -505,23 +410,10 @@ impl ZipArchive {
         Ok(())
     }
 
-    /// Exact-name lookup (deliberately NOT case-insensitive: case lookalikes are
-    /// already rejected at parse, and lookups must stay byte-exact).
     pub fn by_name(&self, name: &str) -> Option<&ZipEntry> {
         self.name_index.get(name).map(|&i| &self.entries[i])
     }
 
-    /// Cross-check every local file header against its central-directory record
-    /// before callers trust any payload. Central-directory order must also be
-    /// physical local-header order, and the entry regions must COVER the whole
-    /// pre-central-directory area exactly: first region at offset 0, each
-    /// region starting where the previous one ended, the last ending at the
-    /// central directory.
-    ///
-    /// Non-overlap alone is not enough (FW4 / R1-3). It leaves every gap — a
-    /// file prefix, inter-entry padding, a trailing pad before the central
-    /// directory — outside every CRC, every SHA-256, and every size check, so
-    /// arbitrary bytes ride inside an otherwise fully authenticated container.
     pub fn validate_local_headers(&self) -> Result<(), ZipError> {
         let mut previous: Option<(&ZipEntry, LocalEntryRegion)> = None;
         let mut covered_through = 0usize;
@@ -565,9 +457,6 @@ impl ZipArchive {
         Ok(())
     }
 
-    /// Re-derive the uncompressed length and CRC-32 for every stored payload.
-    /// Compressed entries are decoded through a declared-size-bounded reader, so
-    /// callers can gate archive open without materializing every entry.
     pub fn validate_payloads(&self) -> Result<(), ZipError> {
         for entry in &self.entries {
             let region = self.validate_local_entry(entry)?;
@@ -779,10 +668,6 @@ impl ZipArchive {
             ZIP_METHOD_DEFLATE => {
                 let mut dec = DeflateDecoder::new(comp);
                 let derived = crc32_and_len(&mut dec, entry.uncomp_size.saturating_add(1))?;
-                // A read-side deflate decoder stops at deflate stream end
-                // without touching trailing input; bytes smuggled after the
-                // stream (but inside comp_size) would otherwise pass every
-                // integrity check while never being covered by any hash.
                 if dec.total_in() != comp.len() as u64 {
                     return Err(ZipError::Decompress(format!(
                         "entry {}: trailing bytes after deflate stream",
@@ -794,10 +679,6 @@ impl ZipArchive {
             ZIP_METHOD_ZSTD => {
                 let mut dec = single_frame_zstd_decoder(comp, &entry.name)?;
                 let derived = crc32_and_len(&mut dec, entry.uncomp_size.saturating_add(1))?;
-                // Same property the DEFLATE arm enforces above, reached a
-                // different way: libzstd would silently swallow a skippable
-                // frame, so consumption alone proves nothing. One ordinary
-                // frame must cover the declared region exactly.
                 require_zstd_slice_fully_consumed(dec.finish(), &entry.name)?;
                 derived
             }
@@ -839,8 +720,6 @@ impl ZipArchive {
         }
     }
 
-    /// Read + decompress one entry's bytes. Enforces the declared uncompressed
-    /// size exactly and keeps the normal container reader capped at 2 GiB.
     pub fn read_entry(&self, e: &ZipEntry) -> Result<Vec<u8>, ZipError> {
         if e.uncomp_size > MAX_CONTAINER_ENTRY_BYTES {
             return Err(ZipError::Unsupported(format!(
@@ -861,8 +740,6 @@ impl ZipArchive {
                     .take(cap)
                     .read_to_end(&mut out)
                     .map_err(|err| ZipError::Decompress(err.to_string()))?;
-                // See validate_payload_crc: trailing bytes inside the declared
-                // comp region are uncovered by any integrity layer — refuse.
                 if dec.total_in() != comp.len() as u64 {
                     return Err(ZipError::Decompress(format!(
                         "entry {}: trailing bytes after deflate stream",
@@ -879,9 +756,6 @@ impl ZipArchive {
                     .take(cap)
                     .read_to_end(&mut out)
                     .map_err(|err| ZipError::Decompress(err.to_string()))?;
-                // See validate_payload_crc: bytes inside the declared comp
-                // region that no zstd frame covers are covered by no integrity
-                // layer at all — refuse.
                 require_zstd_slice_fully_consumed(dec.finish(), &e.name)?;
                 out
             }
@@ -906,18 +780,9 @@ impl ZipArchive {
     }
 }
 
-/// First four bytes of a Zstandard *skippable* frame. libzstd's streaming
-/// decoder consumes these silently and emits nothing, so a skippable frame is a
-/// perfect carrier for bytes that live inside a declared compressed region yet
-/// are covered by no CRC, no SHA-256, and no size check. A `total_in`-style
-/// accounting check does NOT catch this: consumption already equals `comp_size`.
-/// The only fix is to refuse the shape.
 pub(crate) const ZSTD_SKIPPABLE_MAGIC_LOW: u32 = 0x184D_2A50;
 pub(crate) const ZSTD_SKIPPABLE_MAGIC_HIGH: u32 = 0x184D_2A5F;
 
-/// Refuse a compressed region that opens with a skippable frame. Method-93
-/// entries this reader accepts are single ordinary frames written by
-/// [`crate::pack`]'s one `zstd::stream::write::Encoder` per entry.
 pub(crate) fn reject_leading_zstd_skippable_frame(
     first_four: Option<[u8; 4]>,
     name: &str,
@@ -934,9 +799,6 @@ pub(crate) fn reject_leading_zstd_skippable_frame(
     Ok(())
 }
 
-/// Build the ONE decoder shape this reader accepts for method 93: window-capped
-/// and stopped after a single frame, with a leading skippable frame refused up
-/// front. Both in-RAM zstd paths go through here so they cannot drift apart.
 pub(crate) fn single_frame_zstd_decoder<'a>(
     comp: &'a [u8],
     name: &str,
@@ -950,8 +812,6 @@ pub(crate) fn single_frame_zstd_decoder<'a>(
     Ok(dec)
 }
 
-/// After a single-frame decode, NO byte of the declared compressed region may
-/// remain: not in the decoder's own buffered window, not in the slice behind it.
 pub(crate) fn require_zstd_slice_fully_consumed(
     reader: std::io::BufReader<&[u8]>,
     name: &str,
@@ -1061,10 +921,6 @@ fn parse_zip64_eocd(data: &[u8], locator: usize) -> Result<(u64, u64, u64, u64),
             "multi-disk Zip64 archives are not supported".into(),
         ));
     }
-    // Same placement policy the file-backed parser applies: precedence, fixed
-    // prefix, exact declared end at the locator, shared span cap. Before this
-    // was shared, `Container::from_bytes*` (production, via the stitch
-    // publisher) accepted Zip64 layouts `Container::open` refused.
     validate_zip64_eocd_placement(zip64_eocd_off, locator as u64, None)
         .map_err(ZipError::Unsupported)?;
     let off = usize::try_from(zip64_eocd_off)
@@ -1150,11 +1006,6 @@ pub(crate) fn parse_zip64_extra(
     Ok(zip64.unwrap_or_default())
 }
 
-/// Test-only fixture builder shared with `stream_verify` tests: a minimal
-/// one-entry ZIP whose DEFLATE comp region is `[valid deflate stream][garbage]`
-/// with `comp_size` covering both (`garbage == 0` is the clean control).
-/// CRC/uncomp_size are correct for the decoded stream, so ONLY a
-/// consumed-all-input check can catch the smuggled bytes.
 #[cfg(test)]
 pub(crate) fn test_deflate_zip_with_trailing(garbage: usize) -> Vec<u8> {
     use std::io::Write;
@@ -1167,58 +1018,50 @@ pub(crate) fn test_deflate_zip_with_trailing(garbage: usize) -> Vec<u8> {
     let name = b"payload/g/blob.bin";
 
     let mut out = Vec::new();
-    // local file header
     out.extend_from_slice(&LFH_SIG.to_le_bytes());
-    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&ZIP_METHOD_DEFLATE.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
     out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
     out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(name);
     out.extend_from_slice(&comp);
     let cd_off = out.len();
-    // central directory header
     out.extend_from_slice(&CDH_SIG.to_le_bytes());
-    out.extend_from_slice(&20u16.to_le_bytes()); // version made by
-    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&ZIP_METHOD_DEFLATE.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
     out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
     out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
-    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
-    out.extend_from_slice(&0u16.to_le_bytes()); // disk start
-    out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
-    out.extend_from_slice(&0u32.to_le_bytes()); // external attrs
-    out.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(name);
     let cd_size = out.len() - cd_off;
-    // EOCD
     out.extend_from_slice(&EOCD_SIG.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // disk no
-    out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
-    out.extend_from_slice(&1u16.to_le_bytes()); // entries on disk
-    out.extend_from_slice(&1u16.to_le_bytes()); // total entries
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&(cd_size as u32).to_le_bytes());
     out.extend_from_slice(&(cd_off as u32).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+    out.extend_from_slice(&0u16.to_le_bytes());
     out
 }
 
-/// Test-only fixture: a one-entry ZIP whose `manifest.json` DEFLATEs to a few
-/// hundred KB but declares roughly `uncompressed_bytes` of syntactically valid,
-/// array-heavy JSON. CRC and sizes are all correct, so nothing but an explicit
-/// manifest-size admission gate stands between the reader and materializing +
-/// strict-parsing the whole thing (FW4 / R1-2).
 #[cfg(test)]
 pub(crate) fn test_zip_with_manifest_bomb(uncompressed_bytes: usize) -> Vec<u8> {
     use std::io::Write;
@@ -1229,9 +1072,9 @@ pub(crate) fn test_zip_with_manifest_bomb(uncompressed_bytes: usize) -> Vec<u8> 
     let mut uncomp_size = 0usize;
 
     let emit = |bytes: &[u8],
-                    enc: &mut flate2::write::DeflateEncoder<Vec<u8>>,
-                    crc: &mut crc32fast::Hasher,
-                    uncomp_size: &mut usize| {
+                enc: &mut flate2::write::DeflateEncoder<Vec<u8>>,
+                crc: &mut crc32fast::Hasher,
+                uncomp_size: &mut usize| {
         crc.update(bytes);
         enc.write_all(bytes).unwrap();
         *uncomp_size += bytes.len();
@@ -1293,34 +1136,20 @@ pub(crate) fn test_zip_with_manifest_bomb(uncompressed_bytes: usize) -> Vec<u8> 
     out
 }
 
-/// Where a smuggled Zstandard skippable frame sits inside a declared compressed
-/// region. Used by the shared method-93 fixture below.
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ZstdSmuggle {
-    /// Control: exactly one ordinary frame covers the region.
     None,
-    /// `[ordinary frame][skippable frame]` — libzstd's default multi-frame
-    /// decoder consumes the skippable frame and reports full consumption, so a
-    /// `total_in`-style check sees nothing wrong.
     Trailing,
-    /// `[skippable frame][ordinary frame]` — same silent consumption, ahead of
-    /// the real data.
     Leading,
 }
 
-/// Test-only fixture shared with `stream_verify` tests: a minimal one-entry ZIP
-/// whose method-93 comp region optionally carries a skippable frame. CRC and
-/// `uncomp_size` are correct for the decoded stream and `comp_size` covers the
-/// smuggled bytes, so ONLY single-frame + exact-consumption accounting catches
-/// them.
 #[cfg(test)]
 pub(crate) fn test_zstd_zip_with_skippable(smuggle: ZstdSmuggle) -> Vec<u8> {
     let plain: Vec<u8> = b"zstd skippable-frame coverage payload ".repeat(8);
     let crc = crc32fast::hash(&plain);
     let frame = zstd::stream::encode_all(plain.as_slice(), 3).unwrap();
 
-    // A skippable frame is `magic (LE u32) | length (LE u32) | length bytes`.
     let mut skippable = Vec::new();
     skippable.extend_from_slice(&ZSTD_SKIPPABLE_MAGIC_LOW.to_le_bytes());
     skippable.extend_from_slice(&8u32.to_le_bytes());
@@ -1335,51 +1164,49 @@ pub(crate) fn test_zstd_zip_with_skippable(smuggle: ZstdSmuggle) -> Vec<u8> {
 
     let mut out = Vec::new();
     out.extend_from_slice(&LFH_SIG.to_le_bytes());
-    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&ZIP_METHOD_ZSTD.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
     out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
     out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(name);
     out.extend_from_slice(&comp);
     let cd_off = out.len();
     out.extend_from_slice(&CDH_SIG.to_le_bytes());
-    out.extend_from_slice(&20u16.to_le_bytes()); // version made by
-    out.extend_from_slice(&20u16.to_le_bytes()); // version needed
-    out.extend_from_slice(&0u16.to_le_bytes()); // flags
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&20u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&ZIP_METHOD_ZSTD.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod time
-    out.extend_from_slice(&0u16.to_le_bytes()); // mod date
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
     out.extend_from_slice(&crc.to_le_bytes());
     out.extend_from_slice(&(comp.len() as u32).to_le_bytes());
     out.extend_from_slice(&(plain.len() as u32).to_le_bytes());
     out.extend_from_slice(&(name.len() as u16).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // extra len
-    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
-    out.extend_from_slice(&0u16.to_le_bytes()); // disk start
-    out.extend_from_slice(&0u16.to_le_bytes()); // internal attrs
-    out.extend_from_slice(&0u32.to_le_bytes()); // external attrs
-    out.extend_from_slice(&0u32.to_le_bytes()); // local header offset
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(name);
     let cd_size = out.len() - cd_off;
     out.extend_from_slice(&EOCD_SIG.to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // disk no
-    out.extend_from_slice(&0u16.to_le_bytes()); // cd disk
-    out.extend_from_slice(&1u16.to_le_bytes()); // entries on disk
-    out.extend_from_slice(&1u16.to_le_bytes()); // total entries
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&0u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
     out.extend_from_slice(&(cd_size as u32).to_le_bytes());
     out.extend_from_slice(&(cd_off as u32).to_le_bytes());
-    out.extend_from_slice(&0u16.to_le_bytes()); // comment len
+    out.extend_from_slice(&0u16.to_le_bytes());
     out
 }
 
-/// Scan backwards for the End-Of-Central-Directory signature (handles a ZIP
-/// comment up to 64 KiB). Returns the EOCD record offset.
 fn find_eocd(data: &[u8]) -> Option<usize> {
     if data.len() < 22 {
         return None;
@@ -1408,8 +1235,6 @@ fn eocd_comment_ends_at_eof(data: &[u8], off: usize) -> bool {
         == Some(data.len())
 }
 
-/// Path rules. Reject anything that could escape a payload root or collide on a
-/// real filesystem.
 pub fn validate_path(name: &str) -> Result<(), ZipError> {
     validate_path_legacy_v1(name)?;
     if name.nfc().ne(name.chars()) {
@@ -1418,23 +1243,20 @@ pub fn validate_path(name: &str) -> Result<(), ZipError> {
     Ok(())
 }
 
-/// Historical container-v1 path grammar. V1 pre-dates the NFC/caseless-v2
-/// rule and therefore retains byte spelling plus ASCII-only case folding.
 pub(crate) fn validate_path_legacy_v1(name: &str) -> Result<(), ZipError> {
     let bad = |n: &str| Err(ZipError::BadPath(n.to_string()));
     if name.is_empty() {
         return bad(name);
     }
     if name.contains('\\') {
-        return bad(name); // ambiguous separator
+        return bad(name);
     }
     if name.starts_with('/') {
-        return bad(name); // absolute
+        return bad(name);
     }
     if name.contains("//") {
-        return bad(name); // UNC-ish / empty component
+        return bad(name);
     }
-    // drive letter like "C:" anywhere
     if name.contains(':') {
         return bad(name);
     }
@@ -1443,12 +1265,11 @@ pub(crate) fn validate_path_legacy_v1(name: &str) -> Result<(), ZipError> {
     }
     for comp in name.split('/') {
         if comp == "." || comp == ".." {
-            return bad(name); // traversal
+            return bad(name);
         }
         if comp.ends_with(' ') || comp.ends_with('.') {
-            return bad(name); // Windows trims these and aliases another name
+            return bad(name);
         }
-        // Windows reserved device names (case-insensitive, with or without ext)
         let stem = comp
             .split('.')
             .next()
@@ -1466,7 +1287,6 @@ pub(crate) fn validate_path_legacy_v1(name: &str) -> Result<(), ZipError> {
     Ok(())
 }
 
-/// Container payload paths must be descendants of `payload/`. The sole legal
 /// top-level ZIP member, `manifest.json`, is generated and handled separately.
 pub(crate) fn validate_payload_path(name: &str) -> Result<(), ZipError> {
     validate_path(name)?;
@@ -1489,12 +1309,6 @@ pub(crate) fn legacy_path_key(name: &str) -> Result<String, ZipError> {
     Ok(name.to_ascii_lowercase())
 }
 
-/// Filesystem collision key shared by the in-memory and streaming readers.
-/// Paths are required to be NFC first. Uppercase-then-lowercase expansion,
-/// followed by NFC again, is deliberately conservative for portable extraction:
-/// it catches multi-codepoint and contextual caseless aliases such as
-/// `Straße`/`STRASSE` and Greek final sigma that lowercase-only mapping misses.
-/// The serialized path itself is never changed.
 pub(crate) fn portable_path_key(name: &str) -> Result<String, ZipError> {
     validate_path(name)?;
     let uppercase: String = name.chars().flat_map(char::to_uppercase).collect();
@@ -1510,15 +1324,15 @@ mod tests {
         let mut out = Vec::new();
         let zip64_eocd_off = out.len() as u64;
         out.extend_from_slice(&ZIP64_EOCD_SIG.to_le_bytes());
-        out.extend_from_slice(&44u64.to_le_bytes()); // size after this field
-        out.extend_from_slice(&45u16.to_le_bytes()); // version made by
-        out.extend_from_slice(&45u16.to_le_bytes()); // version needed
-        out.extend_from_slice(&0u32.to_le_bytes()); // disk
-        out.extend_from_slice(&0u32.to_le_bytes()); // central dir disk
+        out.extend_from_slice(&44u64.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&45u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
         out.extend_from_slice(&total_entries.to_le_bytes());
         out.extend_from_slice(&total_entries.to_le_bytes());
-        out.extend_from_slice(&0u64.to_le_bytes()); // central dir size
-        out.extend_from_slice(&0u64.to_le_bytes()); // central dir offset
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
 
         out.extend_from_slice(&ZIP64_LOCATOR_SIG.to_le_bytes());
         out.extend_from_slice(&0u32.to_le_bytes());
@@ -1585,15 +1399,12 @@ mod tests {
 
     #[test]
     fn hostile_bytes_error_never_panic() {
-        // empty, too-short, garbage, and fake EOCD variants must all return Err
-        // cleanly.
         for input in [
             vec![],
             b"PK".to_vec(),
             vec![0u8; 21],
             b"PK\x05\x06 not enough".to_vec(),
             {
-                // a valid-looking EOCD that claims a CD far out of range
                 let mut v = vec![0u8; 22];
                 v[0..4].copy_from_slice(&EOCD_SIG.to_le_bytes());
                 v[16..20].copy_from_slice(&0xFFFF_FFFEu32.to_le_bytes());
@@ -1601,7 +1412,6 @@ mod tests {
                 v
             },
             {
-                // Zip64 sentinel without the required locator.
                 let mut v = vec![0u8; 22];
                 v[0..4].copy_from_slice(&EOCD_SIG.to_le_bytes());
                 v[10..12].copy_from_slice(&u16::MAX.to_le_bytes());
@@ -1636,11 +1446,6 @@ mod tests {
         );
     }
 
-    /// FW4 / R1-1. Method 93 had no consumed-input accounting at all, and the
-    /// obvious `total_in`-style fix does not work: libzstd's default decoder
-    /// consumes a skippable frame silently, so consumption already equals
-    /// `comp_size`. Only single-frame decoding plus an exact leftover check
-    /// refuses the carrier — in BOTH positions.
     #[test]
     fn zstd_skippable_frames_inside_comp_region_are_refused() {
         let clean = test_zstd_zip_with_skippable(ZstdSmuggle::None);
@@ -1682,7 +1487,6 @@ mod tests {
 
     #[test]
     fn deflate_trailing_bytes_inside_comp_region_are_refused() {
-        // Control: an exact-length deflate stream passes CRC validation and reads.
         let clean = test_deflate_zip_with_trailing(0);
         let archive = ZipArchive::parse(clean).expect("clean archive parses");
         archive
@@ -1694,9 +1498,6 @@ mod tests {
             .clone();
         archive.read_entry(&entry).expect("clean entry reads");
 
-        // Hostile: garbage after the deflate stream, inside the declared
-        // comp_size. Length, CRC, and (any) content hash all cover only the
-        // DECODED stream, so the trailing check is the only line of defense.
         let dirty = test_deflate_zip_with_trailing(16);
         let archive = ZipArchive::parse(dirty).expect("structure still parses");
         let err = archive

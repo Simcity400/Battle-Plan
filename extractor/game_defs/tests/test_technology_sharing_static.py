@@ -11,12 +11,12 @@ _HERE = Path(__file__).resolve().parent
 _DEFS = _HERE.parent
 sys.path.insert(0, str(_DEFS))
 
-import parse_technology_sharing as P  # noqa: E402
-import resolver as R  # noqa: E402
-import technology_sharing_static_gate as G  # noqa: E402
-import build_all as B  # noqa: E402
-import live_binding_resolver as LR  # noqa: E402
-from static_artifact_common import canonical_json, sha256_bytes, source_inventory  # noqa: E402
+import parse_technology_sharing as P
+import resolver as R
+import technology_sharing_static_gate as G
+import build_all as B
+import live_binding_resolver as LR
+from static_artifact_common import canonical_json, sha256_bytes, source_inventory
 
 
 def _write(root: Path, rel: str, text: str) -> Path:

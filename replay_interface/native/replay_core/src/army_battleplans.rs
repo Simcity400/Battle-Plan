@@ -1,9 +1,3 @@
-//! Typed replay view for exact a729 domain-54 battleplan orders.
-//!
-//! The recorder folds the authenticated compact carrier under
-//! `order_of_battle.extra.army_battleplans_depth_live`. This parser deliberately
-//! rejects partial identities, invented legacy per-order stance/aggressiveness
-//! values, and geometry outside the statically proven type-specific laws.
 
 use crate::{ViewStatus, WorldFrame};
 use serde_json::{Map, Value};
@@ -34,19 +28,13 @@ pub struct ArmyBattleplanOrderKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ArmyBattleplanGeometry {
-    /// Type 1 move, type 2 line, or type 3 invasion ordered province geometry.
     PathProvinces(Vec<u32>),
-    /// Type 4 paradrop endpoints: first +0x70 province and +0xB8 target.
     Paradrop {
         source_province_id: u32,
         target_province_id: u32,
     },
-    /// Type 5 area-defense target-state membership.
     TargetStates(Vec<u32>),
-    /// A supported type-1/type-2/type-3/type-4 order whose current geometry observation was
-    /// not exact. No empty path is promoted as measured geometry.
     Unavailable,
-    /// An unknown/modded type. No geometry is inferred.
     Unsupported,
 }
 
@@ -134,8 +122,6 @@ impl ArmyBattleplansView {
 }
 
 impl WorldFrame {
-    /// Exact stable order instances, ordered membership, supported geometry,
-    /// and active/execution state for this replay hour.
     pub fn army_battleplans(&self) -> ArmyBattleplansView {
         let manager = self.army_orders_group_manager();
         parse_army_battleplans(self.raw(), &manager)
@@ -295,9 +281,6 @@ fn parse_order(row: &Map<String, Value>, _index: usize) -> Option<ArmyBattleplan
         "active_status",
         "stance_status",
     ];
-    // Legacy rows contain the 18 original fields and are unambiguously army
-    // owned. Typed rows add owner_kind + owner_id while retaining army_id as
-    // the compatibility alias (null for an army-group owner).
     let has_base_fields = FIELDS.iter().all(|field| row.contains_key(*field))
         && row.contains_key("aggressiveness_status");
     let legacy = row.len() == FIELDS.len() + 1

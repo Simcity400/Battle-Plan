@@ -1,9 +1,3 @@
-//! A31 exact national-focus presentation transport (compact domain 89).
-//!
-//! The wire owns only pointer-free identities. Process addresses are accepted
-//! solely by the lane-local a729 observer and must be replaced with stable
-//! focus-definition ids before a [`Snapshot`] reaches this module.
-
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 89;
@@ -23,9 +17,6 @@ pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
 pub const EXACT20_JOB_RECEIPT_SHA256: [u8; 32] =
     hex32(b"b1c9d8c0678956f17bea2e7f9e06e7ff4baf31254c11b3c983a9a5ca9ae2d04b");
 
-/// The ordinary collector owns the exact passive hook and selected-Present
-/// transaction. Missing callbacks emit typed unavailable; fixtures are not a
-/// global production gate.
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 
@@ -62,17 +53,12 @@ pub enum AuthorityState {
 pub struct FocusPresentationItem {
     pub focus_id: String,
     pub source_ordinal: u32,
-    /// Final item+0x540 state: 0 unavailable, 1 complete, 2 available, 3 active.
     pub presentation_state_code: u8,
-    /// Exact final integer passed by 0x141bb5df0, never a progress-days estimate.
     pub display_progress_percent: u8,
     pub highlight_glow_visible: bool,
     pub historical_marker_visible: bool,
     pub joint_viewing_country_tag: Option<String>,
-    /// Exact selected-Present operations emitted for this focus. These are
-    /// measured GUI-pass ordinals, not inferred widget or asset counts.
     pub selected_present_ui_operation_ordinals: Vec<u32>,
-    /// Exact screen-space union of those operations in the selected Present.
     pub selected_present_screen_rect: RectI32,
 }
 
@@ -95,11 +81,7 @@ pub struct Snapshot {
     pub producer_record_identity: String,
     pub expected_visible_item_count: u32,
     pub visible_items: Vec<FocusPresentationItem>,
-    /// Exact selected-Present operations owned by the registered focus-canvas
-    /// root but not by one focus item (backgrounds, connectors, viewport).
     pub selected_present_canvas_operation_ordinals: Vec<u32>,
-    /// Strictly ordered complete union of every focus-item and canvas-level
-    /// operation owned by the registered runtime root.
     pub selected_present_ui_operation_order: Vec<u32>,
 }
 
@@ -122,7 +104,6 @@ impl RectI32 {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedPresentBinding {
-    /// QPC frontier after the paired dynamic/detail refresh completed.
     pub materialization_qpc_ticks: u64,
     pub selected_present_global_order: u32,
     pub selected_present_candidate_id: u64,
@@ -130,11 +111,8 @@ pub struct SelectedPresentBinding {
     pub selected_present_qpc_ticks: u64,
     pub selected_present_cutoff_qpc_ticks: u64,
     pub qpc_frequency_hz: u64,
-    /// Canonical portable-render-stream `SelectedPresentReceipt` digest.
     pub selected_present_receipt_sha256: String,
-    /// Canonical `AuthenticatedUiPass::pass_identity_sha256`.
     pub selected_present_pass_identity_sha256: String,
-    /// Pointer-free owner token shared by every carried focus operation.
     pub selected_present_engine_instance_token: u64,
     pub authored_surface_identity: String,
     pub runtime_root_identity: String,
@@ -144,10 +122,8 @@ pub struct SelectedPresentBinding {
     pub clip_rect: RectI32,
     pub content_extent_pixels: [i32; 2],
     pub viewport_extent_pixels: [i32; 2],
-    /// Exact fixed-5 screen-space origin and explicit pan translation.
     pub canvas_origin_pixels_fixed5: [i64; 2],
     pub pan_pixels_fixed5: [i64; 2],
-    /// Raw IEEE-754 X/Y scale bits from the selected Present.
     pub canvas_scale_bits: [u32; 2],
 }
 
@@ -237,10 +213,7 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<(), CarrierError> {
     validate_snapshot_inner(snapshot, true)
 }
 
-/// Validate the completed semantic callback snapshot before the common GUI
 /// bridge supplies selected-Present operation ownership. Operation vectors
-/// must still be empty at this boundary; partially populated or guessed
-/// mappings are forbidden.
 pub fn validate_semantic_snapshot(snapshot: &Snapshot) -> Result<(), CarrierError> {
     validate_snapshot_inner(snapshot, false)
 }
@@ -803,11 +776,6 @@ fn encode_hex(bytes: &[u8]) -> String {
     output
 }
 
-/// Portable Clausewitz focus-definition identity. The engine definition
-/// pointer is resolved before this boundary; host paths, pointer spellings,
-/// and path separators are never valid substitutes for the authored token.
-/// Dots, dashes, and `@` remain available to mods in addition to the usual
-/// ASCII alphanumeric/underscore spelling.
 pub fn valid_focus_id(value: &str) -> bool {
     const MAX_FOCUS_ID_BYTES: usize = 128;
     let bytes = value.as_bytes();

@@ -151,8 +151,6 @@ pub fn run_cli() -> Result<()> {
             let target_tile_size = optional_u32_arg(&args, "--target-tile-size")?.unwrap_or(128);
             let output = value_after(&args, "--out").map(PathBuf::from);
             let report_path = value_after(&args, "--report").map(PathBuf::from);
-            // Diagnostic: restrict which tiles draw (world "x0,z0,x1,z1"),
-            // for bisecting composite-vs-isolated tile deviations.
             let cull_rect = match value_after(&args, "--cull-rect") {
                 Some(spec) => {
                     let parts: Vec<f32> = spec
@@ -167,10 +165,6 @@ pub fn run_cli() -> Result<()> {
                 }
                 None => None,
             };
-            // Canonical scene CB0 source: chunk templates were captured across
-            // different frames (sun/time/snow drift over the session), so the
-            // product render substitutes one frame's scene constants. Defaults
-            // to the map_frame_bundle.json beside the library when present.
             let scene_frame_bundle = value_after(&args, "--scene-frame-bundle")
                 .map(PathBuf::from)
                 .or_else(|| {
@@ -232,11 +226,6 @@ pub fn run_cli() -> Result<()> {
             let compare_each_draw = args.iter().any(|arg| arg == "--compare-each-draw");
             let compare_final_reference = !args.iter().any(|arg| arg == "--skip-reference-compare");
             let map_clock_time = optional_nonnegative_f32_arg(&args, "--map-clock-time")?;
-            // WATER1 --water-full: upload the real reflection cube (byte-identical
-            // to the shipped map/terrain/reflection.dds) in the world-synthesis
-            // water pass instead of the mean-color flatten. Default OFF keeps the
-            // render byte-identical. Only affects the non-reference (world
-            // synthesis) path, i.e. when --map-clock-time is supplied.
             let water_full = args.iter().any(|arg| arg == "--water-full");
             let resolver = optional_runtime_game_file_resolver(&args)?;
             let terrain_bundle = match resolver.as_ref() {
@@ -252,10 +241,6 @@ pub fn run_cli() -> Result<()> {
                 terrain_bundle.production_camera_from_capture()?
             };
             let mut renderer = NativeD3d11TerrainRenderer::new()?.with_water_full(water_full);
-            // WATER2: thread the mod-aware resolver so --water-full can
-            // reconstruct pdxmap.shader Effect underwater for the real
-            // WaterRefraction seafloor pass. Fail closed if --water-full is set
-            // without a resolvable game dir.
             if water_full {
                 let resolver = resolver.clone().ok_or(
                     "--water-full needs a resolvable game directory (pass --game <the game dir> \
@@ -263,23 +248,9 @@ pub fn run_cli() -> Result<()> {
                 )?;
                 renderer = renderer.with_underwater_resolver(resolver);
             }
-            // WATER1/REFLECT: when a resolver is available, decode + byte-verify
-            // the mod-aware map/terrain/reflection.dds for the ReflectionCubeMap
-            // slot (PROVENANCE-only; pixels provably unchanged for vanilla). Only
-            // affects the paths that actually upload the real cube (--water-full
-            // / reference replay); the flag-OFF mean-color flatten never reaches
-            // the decode. Threaded whenever a resolver exists so the cube is
-            // resolver-derived, not capture-provenance, wherever the real cube is
-            // uploaded.
             if let Some(resolver) = resolver.clone() {
                 renderer = renderer.with_reflection_resolver(resolver);
             }
-            // RES2: the optional layers take the SAME resolver as the terrain
-            // bundle. They used to load resolver-less even when `--game` was
-            // supplied, which left their vanilla sources uncertified for no
-            // reason and (once the production vanilla-source gate exists) would
-            // refuse a legitimate pre-FW7 multilayer capture that the local
-            // effective VFS can verify perfectly well.
             let water_bundle = water_map_frame_bundle
                 .as_ref()
                 .map(|path| match resolver.as_ref() {

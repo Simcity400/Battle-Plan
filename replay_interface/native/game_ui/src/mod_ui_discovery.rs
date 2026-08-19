@@ -14,11 +14,8 @@ pub struct DiscoveredPanel {
     pub name: String,
     pub element_type: String,
     pub source_file: String,
-    /// True when the admitted effective winner comes from a mod layer.
     #[serde(default)]
     pub mod_layer_winner: bool,
-    /// Historical raw-root evidence only. Product discovery cannot classify
-    /// add versus override because losing layers are outside its capability.
     pub mod_added_file: bool,
 }
 
@@ -45,57 +42,17 @@ pub struct ModUiDiscovery {
     pub localisation_keys: usize,
     pub panels: Vec<DiscoveredPanel>,
     pub scripted_localisation: Vec<ScriptedLocalisationDefinition>,
-    /// `.gui` files whose parse needed Clausewitz error recovery, with counts.
-    /// Reported, not disqualifying: vanilla the game 1.19.2 ships four
-    /// brace-damaged `.gui` files (see
-    /// `definition_admission::FileAdmission::parse_recoveries`), so a
-    /// recovery cannot be the difference between admitted and not.
     pub recovery_parsed_gui_files: Vec<String>,
-    /// `.gui` files whose BYTES were destroyed at decode, with event counts.
-    ///
-    /// Unlike `recovery_parsed_gui_files` this one DOES disqualify: a recovery
-    /// means the parse resynchronized over ambiguous syntax and the shipped
-    /// game itself needs it, whereas destroyed bytes mean content this
-    /// discovery genuinely did not see. Measured on the shipped the game 1.19.2
-    /// corpus this is empty (zero destructive decode events across 8318 files),
-    /// so a non-empty list really does mean mod content was lost.
     #[serde(default)]
     pub decode_lossy_gui_files: Vec<String>,
-    /// `.gfx` files whose BYTES were destroyed at decode, with event counts.
-    /// Same contract as [`ModUiDiscovery::decode_lossy_gui_files`].
     #[serde(default)]
     pub decode_lossy_gfx_files: Vec<String>,
-    /// Localisation `.yml` files whose BYTES were destroyed at decode.
-    ///
-    /// Deliberately NOT merged into
-    /// [`ModUiDiscovery::localisation_parse_failures`], which means unreadable
-    /// files and lines that could not be interpreted. Byte-level loss is a
-    /// different layer and is invisible to that one: a U+FFFD substituted
-    /// inside a quoted value leaves a perfectly well-formed `KEY: "value"`
-    /// line, so the line parser reports nothing while the displayed string is
-    /// not the file's string.
     #[serde(default)]
     pub decode_lossy_localisation_files: Vec<String>,
-    /// Unreadable or line-damaged localisation files, carried through from
-    /// `Localisation::parse_failures` instead of being discarded (R11).
-    /// Measured: the shipped `localisation/english` corpus produces none
-    /// across 206 files / 129,087 lines, so this list being non-empty really
-    /// does mean localisation content was lost.
     pub localisation_parse_failures: Vec<String>,
-    /// True only when no discovered input was lost. This used to be a literal
-    /// `true` on every successful call (R11 C6) — a statement about the code
-    /// path rather than about the content.
     pub production_admitted: bool,
 }
 
-/// Discover every admitted runtime UI definition for the playback viewer's
-/// selected language.
-///
-/// This is the only product entry point. It accepts an already restricted,
-/// manifest-bound `AssetResolver`; raw install and user-data paths are not
-/// reachable here. Every file enumerated below is therefore an authenticated
-/// winner in the replay's effective VFS, and an unadmitted transitive input is
-/// unavailable rather than silently read from the machine.
 pub fn discover_admitted_runtime_mod_ui(
     resolver: &AssetResolver,
     localisation_language: &str,
@@ -108,11 +65,6 @@ pub fn discover_admitted_runtime_mod_ui(
     discover_with_resolver(resolver, localisation_language, None)
 }
 
-/// Non-product evidence seam retained for the historical XUI24 fixture corpus.
-///
-/// Shipped playback must call [`discover_admitted_runtime_mod_ui`]. Keeping
-/// this name explicit prevents a later product caller from accidentally
-/// reintroducing raw launcher paths as a fallback.
 pub fn discover_runtime_mod_ui_from_userdir_for_evidence(
     game_root: &Path,
     userdata: &Path,
@@ -184,11 +136,6 @@ fn discover_with_resolver(
                 .is_some_and(|game_root| is_mod_added(game_root, &row.source_file, &gui_files)),
         })
         .collect::<Vec<_>>();
-    // Losing-layer presence is not part of a UsedContentKey. Product
-    // discovery can state which effective winners are non-base, but cannot
-    // guess whether a non-base winner added or overrode a base identity.
-    // Historical evidence fixtures still retain the old split because their
-    // raw base root is explicitly supplied to this non-product helper.
     let (mod_added_gui_files, overridden_gui_files) = if let Some(game_root) = evidence_game_root {
         (
             gui_files
@@ -214,19 +161,7 @@ fn discover_with_resolver(
     let decode_lossy_gui_files = catalog.decode_lossy_files();
     let decode_lossy_gfx_files = registry.decode_lossy_files();
     let localisation_parse_failures = localisation.parse_failures.clone();
-    // A SEPARATE field, not merged into localisation_parse_failures: that field
-    // is named and documented as unreadable/line-parse damage, and folding
-    // byte-level loss into it would silently widen an existing status exactly
-    // as folding decode loss into `recoveries` would have.
     let decode_lossy_localisation_files = localisation.decode_lossy_files.clone();
-    // A localisation file that could not be read, or a line that could not be
-    // interpreted, is content this discovery silently did not see. That, not
-    // the mere fact that the function returned, is what admission means.
-    //
-    // A `.gui` file whose bytes were destroyed at decode is the same kind of
-    // loss one layer down, so it counts the same way. Dropping it here would
-    // let the serialized result claim "no discovered input was lost" over
-    // damage the catalog had already measured.
     let production_admitted = localisation_parse_failures.is_empty()
         && decode_lossy_gui_files.is_empty()
         && decode_lossy_gfx_files.is_empty()
@@ -276,13 +211,6 @@ fn is_mod_layer_winner(resolver: &AssetResolver, rel: &str) -> Option<bool> {
 
 fn parse_scripted_localisation(file: &ResolvedFile) -> Result<Vec<ScriptedLocalisationDefinition>> {
     let bytes = std::fs::read(&file.path)?;
-    // Destroyed bytes here are refused, not merely recorded — the same stance
-    // this function already takes on parse recoveries, and for the same reason:
-    // unlike `.gui`, the scripted-localisation corpus ships clean, so a strict
-    // gate cannot refuse the base game. Measured: zero destructive decode events
-    // across the shipped install. A U+FFFD inside a `name` or
-    // `localization_key` is syntactically valid and would otherwise bind an
-    // identity that was never in the file.
     let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
     if decode_events != 0 {
         return Err(GameUiError::parse(format!(

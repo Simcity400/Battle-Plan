@@ -1,4 +1,3 @@
-//! Fail-closed XN13 dynamic 3D-unit presentation admission.
 
 use std::collections::BTreeSet;
 use std::error::Error;

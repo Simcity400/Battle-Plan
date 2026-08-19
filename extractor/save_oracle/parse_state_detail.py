@@ -72,7 +72,6 @@ def _parse_buildings(tz):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             out[key] = out.get(key, 0) + _read_building_level(tz)
-        # bare/scalar building entries ignored
     return out
 
 
@@ -199,7 +198,6 @@ def build(text, source, was_melted):
     script_dir = Path(__file__).resolve().parent
     prov_to_state, ptos_path = _load_province_to_state(script_dir)
 
-    # Fold province buildings + VP into their state.
     folded = 0
     for pid_str, prec in provinces.items():
         try:
@@ -254,8 +252,7 @@ def build(text, source, was_melted):
     lines.append(f"occupied      : {occupied} states have resistance data")
     lines.append(f"prov detail   : {len(provinces)} provinces w/ VP or buildings, "
                  f"{folded} folded (ptos loaded={ptos_path is not None})")
-    # spot-check a known industrial state and an occupied one.
-    s64 = states.get("64")  # GER core (Berlin area)
+    s64 = states.get("64")
     if s64:
         lines.append(f"state 64      : owner={s64['owner']} "
                      f"cat={s64['state_category']} "

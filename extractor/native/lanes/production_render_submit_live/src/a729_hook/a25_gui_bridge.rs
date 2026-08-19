@@ -1,9 +1,4 @@
-//! A25 GUI list/owner/final-D3D bridge.
-//!
-//! The exact GUI-list and virtual-render hooks are installed as part of the
-//! authenticated render lifecycle. Optional pointer-bearing diagnostics remain
 //! behind an explicit output environment variable; production ownership never
-//! depends on that variable or on persisted diagnostic bytes.
 
 use super::*;
 use portable_content_manifest::{normalize_game_relative_path, ContentLayerKind, UsedContentKey};
@@ -155,8 +150,6 @@ struct RuntimeAuthoredIdentity {
     source_line: u32,
 }
 
-/// Process-local identity for an exact common-GUI traversal root. Pointer
-/// fields are erased before any portable replay carrier is produced.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedPresentGuiRootRegistration {
     pub candidate_submit_index: u64,
@@ -179,9 +172,7 @@ pub struct SelectedPresentGuiDrawCapture {
     pub node_ordinal: u32,
     pub owner_begin_qpc_ticks: u64,
     pub owner_game_hour_raw: Option<i32>,
-    /// Process-local join key only; consumers must erase it before publication.
     pub graphical_node_ptr: usize,
-    /// Process-local join key only; consumers must erase it before publication.
     pub runtime_widget_ptr: usize,
     pub operation: crate::a25_runtime_text_present::CommonGuiOperationIdentity,
     pub root: Option<SelectedPresentGuiRootRegistration>,
@@ -490,13 +481,6 @@ struct PointerFreeCap6PayloadBinding {
     descriptor_sha256: Option<String>,
 }
 
-/// Inline-hook installation for the A25 common-GUI owner bridge. This is
-/// reverse-engineering evidence, not shipped behaviour: it is compiled only in
-/// the standalone `re_evidence` hook harness, which is the sole owner of the
-/// minhook-backed `unshipped_inline_hooks` backend. The production workspace
-/// never enables `unshipped-render-evidence`, so this function does not exist
-/// in any shipped artifact. Production drives the passive draw accounting in
-/// this module directly from the render-submit path instead.
 #[cfg(feature = "unshipped-render-evidence")]
 pub(super) fn install(module_base: usize) -> Result<(), String> {
     if INSTALLED.load(Ordering::Acquire) {
@@ -596,7 +580,6 @@ pub(super) fn install(module_base: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Teardown counterpart of [`install`]. Evidence-only for the same reason.
 #[cfg(feature = "unshipped-render-evidence")]
 pub(super) fn uninstall() -> Result<(), String> {
     if !INSTALLED.load(Ordering::Acquire) {
@@ -735,10 +718,6 @@ pub(super) fn discard_candidate() {
     ACTIVE_OWNER_RUN.with(|run| *run.borrow_mut() = None);
 }
 
-/// Queues one selected-Present GUI draw with no active Present candidate. That
-/// is a state only an installed bridge can reach, and
-/// [`static_d3d_captures_for_active_candidate`] refuses it rather than reporting
-/// zero rows. Tests use it to prove a caller never reached the bridge at all.
 #[cfg(test)]
 pub(super) fn queue_draw_without_active_candidate_for_test() {
     let mut state = STATE
@@ -746,25 +725,27 @@ pub(super) fn queue_draw_without_active_candidate_for_test() {
         .lock()
         .expect("A25 GUI bridge test state poisoned");
     state.current_candidate = None;
-    state.selected_present_gui_draws.push(SelectedPresentGuiDrawCapture {
-        candidate_submit_index: 1,
-        candidate_frame_sequence: 1,
-        list_invocation_ordinal: 1,
-        node_ordinal: 0,
-        owner_begin_qpc_ticks: 1,
-        owner_game_hour_raw: None,
-        graphical_node_ptr: 0x1000,
-        runtime_widget_ptr: 0x2000,
-        operation: crate::a25_runtime_text_present::CommonGuiOperationIdentity {
-            engine_instance_token: 1,
-            paint_ordinal: 0,
-        },
-        root: None,
-        authored_node: None,
-        authored_child_path: None,
-        graphical_child_path: None,
-        static_d3d_captures: Vec::new(),
-    });
+    state
+        .selected_present_gui_draws
+        .push(SelectedPresentGuiDrawCapture {
+            candidate_submit_index: 1,
+            candidate_frame_sequence: 1,
+            list_invocation_ordinal: 1,
+            node_ordinal: 0,
+            owner_begin_qpc_ticks: 1,
+            owner_game_hour_raw: None,
+            graphical_node_ptr: 0x1000,
+            runtime_widget_ptr: 0x2000,
+            operation: crate::a25_runtime_text_present::CommonGuiOperationIdentity {
+                engine_instance_token: 1,
+                paint_ordinal: 0,
+            },
+            root: None,
+            authored_node: None,
+            authored_child_path: None,
+            graphical_child_path: None,
+            static_d3d_captures: Vec::new(),
+        });
 }
 
 #[cfg(test)]
@@ -806,11 +787,6 @@ pub(super) fn bind_effective_vfs_winner_index(
     }
     binding.validate()?;
     let mut gui_definitions = BTreeMap::new();
-    // `binding.validate()` above authenticates every canonically ordered row
-    // and the complete-row digest once. These are direct immutable references
-    // into that validated vector, so calling `authorize_content` per row would
-    // re-hash the full index for every GUI winner (quadratic on the production
-    // roster) without adding any authority.
     for raw in binding.ordered_rows.iter().filter(|row| {
         row.content.logical_path.starts_with("interface/")
             && row.content.logical_path.ends_with(".gui")
@@ -884,11 +860,6 @@ fn authenticated_font_asset_receipts(
         .iter()
         .map(|row| (row.content.logical_path.as_str(), &row.content))
         .collect::<BTreeMap<_, _>>();
-    // Index numbered bitmap-font atlases once. The former implementation
-    // rescanned the complete production VFS for every .fnt winner (415 full
-    // scans over the current 57,951-row effective roster). Iterating `rows`
-    // preserves the same canonical path ordering that the per-font sort
-    // previously supplied.
     let mut numbered_atlases = BTreeMap::<&str, Vec<(&str, &crate::RawVfsContentIdentity)>>::new();
     for (&path, &content) in &rows {
         let Some(without_extension) = path.strip_suffix(".dds") else {
@@ -1283,9 +1254,6 @@ fn maybe_allocate_common_gui_operation(
     allocate_common_gui_operation(pending, list_invocation_ordinal, node_ordinal).map(Some)
 }
 
-/// Trampoline for the evidence-only inline hook installed by [`install`].
-/// Compiled only in the `re_evidence` hook harness; never present in a
-/// shipped artifact. See [`install`] for the full rationale.
 #[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_gui_list_consumer(graphics: usize, list: usize) {
     let _callback = CallbackFlight::enter();
@@ -1383,9 +1351,6 @@ unsafe extern "system" fn hook_gui_list_consumer(graphics: usize, list: usize) {
     finish_list(invocation_ordinal, query_performance_counter().unwrap_or(0));
 }
 
-/// Trampoline for the evidence-only inline hook installed by [`install`].
-/// Compiled only in the `re_evidence` hook harness; never present in a
-/// shipped artifact. See [`install`] for the full rationale.
 #[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_instant_text_render(
     layout_object: usize,
@@ -1507,9 +1472,6 @@ fn begin_production_owner_scope(
     )
 }
 
-/// Trampoline for the evidence-only inline hook installed by [`install`].
-/// Compiled only in the `re_evidence` hook harness; never present in a
-/// shipped artifact. See [`install`] for the full rationale.
 #[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_units_stack_update(
     stack: usize,
@@ -1529,9 +1491,6 @@ unsafe extern "system" fn hook_units_stack_update(
     }
 }
 
-/// Trampoline for the evidence-only inline hook installed by [`install`].
-/// Compiled only in the `re_evidence` hook harness; never present in a
-/// shipped artifact. See [`install`] for the full rationale.
 #[cfg(feature = "unshipped-render-evidence")]
 unsafe extern "system" fn hook_generic_sprite_render(
     layout_object: usize,

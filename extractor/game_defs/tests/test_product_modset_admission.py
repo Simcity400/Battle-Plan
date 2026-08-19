@@ -24,19 +24,16 @@ GAME_DEFS = Path(__file__).resolve().parents[1]
 if str(GAME_DEFS) not in sys.path:
     sys.path.insert(0, str(GAME_DEFS))
 
-import live_binding_resolver as LR  # noqa: E402
-import prepare_product_modset_capture as PREPARE  # noqa: E402
-import product_modset_admission as PMA  # noqa: E402
-import static_bundle as SB  # noqa: E402
+import live_binding_resolver as LR
+import prepare_product_modset_capture as PREPARE
+import product_modset_admission as PMA
+import static_bundle as SB
 
 
 SYNTHETIC_VERSION = "Synthetic Fixture v1.19.2.0.a729 (test) build time: never"
 
 
 def _write(path: Path, text: str) -> None:
-    # Bytes, not write_text: the corpus this builds is hashed, and on Windows
-    # write_text would translate "\n" to "\r\n", so a corpus retained as
-    # evidence would stop matching its own recorded digests after checkout.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(text.encode("utf-8"))
 
@@ -54,7 +51,6 @@ def _redigest(document: dict[str, Any]) -> dict[str, Any]:
     return document
 
 
-# Descriptor ids deliberately out of mount order: the a729 planner sorts them.
 _MODDED_SPECS: list[tuple[str, str]] = [
     ("mod/zz-synthetic-last.mod", "Synthetic Zed Mod"),
     ("mod/aa-synthetic-first.mod", "Synthetic Alpha Mod"),
@@ -70,24 +66,10 @@ class SyntheticModset:
         self.userdir = root / "userdir"
         _write(self.vanilla / "common" / "base.txt", "synthetic vanilla payload")
 
-        # The corpus carries the engine's own install-root write sinks, because
-        # a fixture without them cannot tell "excluded" from "absent" -- the
-        # same blindness that let the v1 base derivation live untested.  Two of
-        # the three are present so the observation is a strict subset, and a
-        # deeper file of the SAME NAME is content: the exclusion is a whole-path
-        # match in the base namespace, not a basename filter, and only this row
-        # can fail if that is ever loosened.
         _write(self.vanilla / "console_history.txt", "tag fra\ninstantconstruction\n")
         _write(self.vanilla / "imgui.ini", "[Window][Debug##Default]\nPos=60,60\n")
         _write(self.vanilla / "common" / "console_history.txt", "authored content, not a sink")
 
-        # Every real install carries integrated_dlc layers (4 on the host this
-        # was developed against), and the corpus must too.  Without one, the
-        # retired v1 base digest (`vanilla` minus `dlc/`) and the base-namespace
-        # digest (`vanilla` minus `dlc/` AND `integrated_dlc/`) are computed
-        # over the SAME files and no fixture can tell the two derivations
-        # apart -- which is exactly why the v1 defect was invisible to tests
-        # while every production corpus carried it.
         self.integrated_dlc = [
             ("dlc903_synthetic_integrated", "Synthetic Integrated Pack"),
         ]
@@ -101,8 +83,6 @@ class SyntheticModset:
                 f"synthetic integrated payload for {dlc_id}",
             )
 
-        # Three installed products: two the engine activated (one of which the
-        # launcher profile did not ask for) and one it did not.
         self.installed_dlc = [
             ("dlc900_synthetic_alpha", "Synthetic Alpha Pack"),
             ("dlc901_synthetic_beta", "Synthetic Beta Pack"),
@@ -120,8 +100,6 @@ class SyntheticModset:
         self.active_dlc_ids = ["dlc900_synthetic_alpha", "dlc901_synthetic_beta"]
         self.launcher_disabled_dlc_ids = ["dlc901_synthetic_beta"]
 
-        # Mods carry no dependencies, so the a729 planner leaves every mod at
-        # priority 10000 and the mount order is the descriptor-id byte order.
         sources: list[dict[str, Any]] = []
         for token, name in sorted(mod_specs, key=lambda row: LR._engine_byte_key(row[0])):
             descriptor = self.userdir / token
@@ -196,8 +174,6 @@ class SyntheticModset:
                 "content_sha256": base["content_sha256"],
             }
         ]
-        # The mounted namespace order IS the engine mount order the resolver
-        # authenticated; load_order records exactly that sequence.
         for namespace in self.inventory["namespaces"]:
             if namespace["binding"] not in {"active_product", "active_mod"}:
                 continue
@@ -261,10 +237,6 @@ class SyntheticModset:
             "effective_launch_dlc_ids": list(self.active_dlc_ids),
             "descriptorless_asset_layers": [],
             "excluded_descriptorless_asset_layers": [],
-            # Derived exactly as production derives it, over this corpus's own
-            # root, rather than transcribed: a fixture that hand-writes the
-            # observation cannot notice the resolver and the authority drifting
-            # apart.
             "engine_runtime_artifacts": {
                 "schema": LR.ENGINE_RUNTIME_ARTIFACTS_SCHEMA,
                 "class": LR.ENGINE_RUNTIME_ARTIFACTS_CLASS,
@@ -388,10 +360,6 @@ class ProvenanceAdmissionTests(unittest.TestCase):
         self.assertEqual(modded["policy_sha256"], plain["policy_sha256"])
 
     def test_player_authored_mod_display_names_cannot_break_the_handoff(self) -> None:
-        # Mod compat is an acceptance gate: a player may name a mod anything,
-        # including something shaped like a path or a hex pointer.  The receipt
-        # is embedded in the pointer-free capture handoff, so it must stay
-        # clean whatever the descriptor says.
         fixture = SyntheticModset(
             self.root / "hostile-names",
             mod_specs=[
@@ -514,7 +482,6 @@ class ProvenanceAdmissionTests(unittest.TestCase):
         )
         self.assertEqual(row["content_sha256"], reconstructed)
         self.assertNotEqual(fixture.retired_v1_base_digest(), reconstructed)
-        # ... and the row it builds satisfies the join every consumer applies.
         SB.join_base_layer_to_inventory([row], fixture.inventory)
 
     def test_resolver_refuses_an_effective_vfs_without_exactly_one_base(self) -> None:
@@ -584,12 +551,9 @@ class ProvenanceAdmissionTests(unittest.TestCase):
         self.assertEqual(vanilla_row["kind"], "vanilla")
         self.assertEqual(vanilla_row["content_sha256"], reconstructed)
 
-        # The corpus must be able to tell the two derivations apart, or the
-        # equality above would hold for a v1 recording too and prove nothing.
         retired = fixture.retired_v1_base_digest()
         self.assertNotEqual(retired, reconstructed)
 
-        # ... and a corpus carrying the retired digest is refused, named.
         documents = fixture.documents()
         documents["load_order"]["items"][0]["content_sha256"] = retired
         _redigest(documents["load_order"])
@@ -741,9 +705,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
                 LR.ENGINE_RUNTIME_ARTIFACTS_SHA256 = original
 
     def test_authority_is_the_exact_implemented_excluded_class(self) -> None:
-        # kills: adding or removing a row in the JSON without moving the code
-        # mirror -- i.e. redefining what the product key measures by editing one
-        # file.  Also kills the digest pin being dropped.
         authority = LR.load_engine_runtime_artifacts()
         self.assertEqual(
             tuple(row["relpath"] for row in authority["artifacts"]),
@@ -773,8 +734,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
         image is named here, and none of them is a content read" -- stops being
         provable at that moment, and a silent skip would hide that.
         """
-        # kills: adding a row whose census was copied from another row, trimming
-        # a row's reference list, or pruning the raw sweep the class rests on.
         evidence_dir = GAME_DEFS.parent / "native/runs/jq_console_key"
         sweeps = sorted(evidence_dir.glob("re_string_xrefs*.txt"))
         self.assertTrue(sweeps, f"the retained string-xref sweep is missing from {evidence_dir}")
@@ -801,8 +760,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             declared = set(evidence["reference_addresses"])
             if evidence["string_pointer_address"]:
                 declared.add(evidence["string_pointer_address"])
-            # The sweep also lists the literal's own occurrence address, which
-            # is the string, not a reference to it.
             declared.add(evidence["string_address"])
             self.assertEqual(
                 declared,
@@ -816,8 +773,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             )
 
     def test_edited_authority_is_refused_by_its_digest_pin(self) -> None:
-        # kills: removing the digest pin, which is the only thing standing
-        # between "one authority" and "a file anyone can widen".
         with tempfile.TemporaryDirectory(prefix="runtime-artifacts-") as raw:
             path = Path(raw) / "engine_runtime_artifacts.json"
             path.write_bytes(LR.ENGINE_RUNTIME_ARTIFACTS_PATH.read_bytes() + b"\n")
@@ -827,9 +782,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
                 LR.load_engine_runtime_artifacts(path)
 
     def test_a_nested_path_cannot_join_the_class(self) -> None:
-        # kills: relaxing the bare-name rule.  A relpath with a directory
-        # component sits inside a namespace the VFS really does resolve, where
-        # an exclusion would delete real content from the key without trace.
         value = self._authority()
         value["artifacts"][0]["relpath"] = "common/console_history.txt"
         with self.assertRaisesRegex(
@@ -838,8 +790,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             self._load_edited(value)
 
     def test_an_unevidenced_path_cannot_join_the_class(self) -> None:
-        # kills: dropping the evidence validation, which is what makes this an
-        # engine-derived class instead of a filename list.
         value = self._authority()
         del value["artifacts"][0]["evidence"]["writer_function"]
         with self.assertRaisesRegex(LR.ResolutionError, "evidence is malformed"):
@@ -850,8 +800,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             self._load_edited(value)
 
     def test_authority_for_another_engine_build_is_refused(self) -> None:
-        # kills: carrying these addresses forward across an engine bump, where
-        # the sinks are re-proved or they are not this class.
         value = self._authority()
         value["engine_build_id"] = "a730"
         with self.assertRaisesRegex(LR.ResolutionError, "sinks are not the RE'd ones"):
@@ -863,10 +811,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
 
     def test_using_the_console_does_not_move_the_product_modset_key(self) -> None:
         """The whole point, end to end over the synthetic corpus."""
-        # kills: the exclusion not reaching the key -- remove the
-        # exclude_relpaths argument at the base namespace and the second key
-        # differs, because the sink feeds the base content digest, the
-        # load-order base row, the namespace digest and the row digest.
         with tempfile.TemporaryDirectory(prefix="console-key-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             before = fixture.product()["product_modset_sha256"]
@@ -890,15 +834,12 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             rebuilt.report = rebuilt._build_report()
             self.assertEqual(rebuilt.product()["product_modset_sha256"], before)
             self.assertEqual(rebuilt.admit()["product_modset_sha256"], before)
-            # The account followed the install: the third sink appeared.
             self.assertEqual(
                 rebuilt.admit()["engine_runtime_artifacts"]["observed_in_base_layer"],
                 ["console_history.txt", "imgui.ini", "imgui_log.txt"],
             )
 
     def test_real_content_of_the_same_name_still_moves_the_key(self) -> None:
-        # kills: widening the exclusion to a basename filter, which would stop
-        # the key from noticing an edit to authored content.
         with tempfile.TemporaryDirectory(prefix="console-key-content-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             before = fixture.product()["product_modset_sha256"]
@@ -917,8 +858,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             self.assertNotEqual(fixture.product()["product_modset_sha256"], before)
 
     def test_a_mod_layer_keeps_a_file_of_the_same_name(self) -> None:
-        # kills: applying the exclusion to every namespace instead of the base
-        # alone, which would silently drop a modder's file from the key.
         with tempfile.TemporaryDirectory(prefix="console-key-mod-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             before = fixture.product()["product_modset_sha256"]
@@ -947,11 +886,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             self.assertNotEqual(fixture.product()["product_modset_sha256"], before)
 
     def test_a_differently_cased_spelling_on_disk_is_still_excluded(self) -> None:
-        # kills: removing `_ascii_fold` from either side of the hash_tree
-        # comparison.  Windows filesystems are case-insensitive, so the same
-        # sink can appear on disk under any spelling; a case-sensitive compare
-        # would let `Console_History.TXT` back into the base digest on one host
-        # and not another, which is a platform-dependent product key.
         with tempfile.TemporaryDirectory(prefix="console-key-case-") as raw:
             root = Path(raw) / "vanilla"
             _write(root / "common" / "base.txt", "payload")
@@ -967,8 +901,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             self.assertEqual(excluded, absent)
 
     def test_a_differently_cased_base_row_is_still_refused_by_admission(self) -> None:
-        # kills: removing the fold from the admission obligation's row check,
-        # which would let a stale inventory through on its spelling alone.
         with tempfile.TemporaryDirectory(prefix="console-key-case-admit-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             stale = deepcopy(fixture.inventory)
@@ -998,12 +930,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
                 PMA._engine_runtime_artifacts_excluded(stale, fixture.report)
 
     def test_the_production_capture_driver_pins_the_current_admission_schema(self) -> None:
-        # kills: bumping ADMISSION_SCHEMA without updating the PowerShell
-        # capture driver.  That driver hard-compares the schema string, so a
-        # stale pin means every production capture runs a SUCCESSFUL admission
-        # and is then thrown away as "noncanonical" -- a failure no Python or
-        # Rust gate in this repository can see, because the join is in a shell
-        # script.  Found by review after this lane bumped v3 -> v4.
         driver = (
             GAME_DEFS.parent / "native/scripts/Start-Hoi4ProductionCaptureSafe.ps1"
         ).resolve()
@@ -1015,7 +941,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
         self.assertEqual(pinned, {PMA.ADMISSION_SCHEMA})
 
     def test_the_base_namespace_never_lists_a_sink(self) -> None:
-        # kills: the enumeration-side exclusion, directly.
         with tempfile.TemporaryDirectory(prefix="console-key-rows-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             base = {
@@ -1032,9 +957,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
             self.assertIn("common/console_history.txt", base_paths)
 
     def test_an_inventory_built_without_the_exclusion_is_refused(self) -> None:
-        # kills: the admission obligation.  This is the shape a resolver that
-        # predates the ruling emits, and it must be refused by name rather than
-        # admitted into a key that means something else.
         with tempfile.TemporaryDirectory(prefix="console-key-refuse-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             stale = LR.recompute_source_inventory(
@@ -1070,10 +992,6 @@ class EngineRuntimeArtifactDomainTests(unittest.TestCase):
                 PMA._engine_runtime_artifacts_excluded(stale, fixture.report)
 
     def test_a_report_from_another_excluded_class_is_refused(self) -> None:
-        # kills: the report half of the obligation.  A clean install has no
-        # console history at all, so the row check above passes vacuously on it
-        # and only this refuses a capture resolved under a different domain --
-        # which is every capture recorded before this change.
         with tempfile.TemporaryDirectory(prefix="console-key-report-") as raw:
             fixture = SyntheticModset(Path(raw), mod_specs=_MODDED_SPECS)
             report = deepcopy(fixture.report)

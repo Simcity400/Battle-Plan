@@ -1,14 +1,4 @@
-//! A reference `.battleplan` PACKER (writer side).
-//!
 //! NOTE ON OWNERSHIP: this Rust packer is both the production streaming writer
-//! used by `recorder_host` finalization and the reference/test fixture builder.
-//! It is loss-LESS by
-//! construction: payload files are stored as RAW BYTES, never re-serialized, so
-//! the Absent/null/0 trichotomy, the rollback filenames, and compact-JSON
-//! formatting all survive unchanged.
-//!
-//! It also backs a tiny CLI (`src/bin/pack_replay.rs`) so a directory store can be
-//! packed/round-tripped from the command line for verification.
 
 use crate::canon::manifest_canonical_bytes;
 use crate::sha256::{to_hex, Sha256};
@@ -26,17 +16,13 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::Path;
 
-/// One file to pack: a container path + its RAW bytes + a role label.
 pub struct PackEntry {
     pub path: String,
     pub bytes: Vec<u8>,
-    pub role: &'static str, // "index" | "snapshot" | "timeline"
+    pub role: &'static str,
     pub hour_index: Option<i64>,
 }
 
-/// One borrowed file to pack. This is the production-friendly variant used when
-/// the caller already owns large immutable payload buffers and should not clone
-/// them just to build the container.
 pub struct BorrowedPackEntry<'a> {
     pub path: String,
     pub bytes: &'a [u8],
@@ -44,8 +30,6 @@ pub struct BorrowedPackEntry<'a> {
     pub hour_index: Option<i64>,
 }
 
-/// One file-backed entry to pack. The container stores the file's exact bytes,
-/// but the packer does not require the caller to keep those bytes resident.
 pub struct FileBackedPackEntry<'a> {
     pub path: String,
     pub file_path: &'a Path,
@@ -53,35 +37,16 @@ pub struct FileBackedPackEntry<'a> {
     pub hour_index: Option<i64>,
 }
 
-/// One STREAMING file-backed entry — like [`FileBackedPackEntry`] but the bytes
-/// are compressed and written in bounded-memory chunks (see
-/// [`write_zip_file_streaming`]) instead of the whole file being read into RAM.
-/// This is what lets the recorder append a multi-GB raw compact stream to the
-/// container without ever materializing it. `sha256`, when supplied, is the
-/// caller-computed digest of the decoded bytes (e.g. the capture-time rolling
-/// hash of the pipe stream). It seeds the manifest without a separate hash
-/// pass, but the exact decoded bytes emitted into the ZIP are hashed in that
-/// same write pass and must match before the manifest is written. When `None`,
-/// the packer streams the file once to establish the expected digest first and
-/// again to write-and-verify it.
 pub struct StreamingFileEntry<'a> {
     pub path: String,
     pub file_path: &'a Path,
-    /// Storage encoding of file_path. The container entry always receives the
-    /// decoded bytes, so its payload and manifest hash remain canonical H4CR.
     pub source_compression: compact_stream::StreamCompression,
-    /// Exact decoded byte length when source_compression is zstd. Supplying this
-    /// avoids a separate decompression pass merely to size the manifest entry.
     pub decoded_len: Option<u64>,
     pub role: &'static str,
     pub hour_index: Option<i64>,
     pub sha256: Option<String>,
 }
 
-/// One authenticated large entry supplied through a caller-owned retained
-/// source. `source_id` is opaque to the packer; the ordered streaming callback
-/// must copy that source into the unpublished ZIP sink and the packer proves
-/// the exact declared length and SHA-256 during the same write pass.
 pub struct VerifiedPackEntry {
     pub path: String,
     pub source_id: usize,
@@ -91,37 +56,19 @@ pub struct VerifiedPackEntry {
     pub hour_index: Option<i64>,
 }
 
-/// One entry in a caller-defined global ZIP order. Small canonical metadata can
-/// remain borrowed while large payloads stay file-backed; unlike the older
-/// grouped mixed packers, this representation preserves one exact ordering
-/// across both source kinds.
 pub enum OrderedStreamingPackEntry<'a> {
     Borrowed(BorrowedPackEntry<'a>),
     File(StreamingFileEntry<'a>),
     Verified(VerifiedPackEntry),
 }
 
-/// The container's OWN schema version: the value a writer puts in
-/// `PackIdentity::schema_version`, which lands in `manifest.json.schema_version`
-/// and in `index.json.schema_version`. It names the replay snapshot/index
-/// contract.
-///
-/// It is NOT a session-format identifier. A recorder manifest states its own
-/// format in its own `schema` field, in its own vocabulary, and the two must
-/// never be compared against each other. Writers and readers both take the
-/// container value from HERE so a change on one side cannot silently strand the
-/// other — which is exactly what happened when the recorder moved off the
-/// session identifier and the verification gate kept expecting it.
 pub const CONTAINER_SCHEMA_VERSION: &str = "1";
 
-/// Identity recorded into the manifest (the values the capture read at session
-/// start — all already redacted of personal paths upstream).
 #[derive(Clone, Default)]
 pub struct PackIdentity {
     pub schema_version: Option<String>,
     pub build_exe_sha256: Option<String>,
     pub build_pinned: bool,
-    /// the whole provenance.mod object (or None = mod-set not read)
     pub mod_identity: Option<Value>,
     pub created_utc: Option<String>,
     pub content_manifest: Option<portable_content_manifest::ContentManifest>,
@@ -194,88 +141,23 @@ fn portable_content_required_features(
     features
 }
 
-/// Knobs for building deliberately-malformed containers in tests (never used by
-/// the production/CLI path). All default to "well-formed".
 #[derive(Clone, Default)]
 pub struct PackOptions {
-    /// omit `manifest.json` entirely (-> the recovery-only / NoManifest case)
     pub omit_manifest: bool,
-    /// inject a `required_features` the reader will not know (-> forward-compat reject)
     pub inject_required_feature: Option<String>,
-    /// REPLACE the whole `required_features` field with an arbitrary JSON value
-    /// (e.g. a STRING instead of an array) to exercise the reader's malformed-type
-    /// fail-closed path. Takes precedence over `inject_required_feature`.
     pub required_features_raw: Option<Value>,
-    /// append a zip entry that is NOT listed in the manifest (-> stowaway reject).
-    /// `(path, bytes)`; the manifest digest stays valid because the entry never
-    /// enters the manifest — exactly the tamper case the reader must catch.
     pub inject_stowaway: Option<(String, Vec<u8>)>,
-    /// Duplicate the first raw role member with the same value after the
-    /// semantic manifest and digest are complete. Ordinary last-wins decoding
-    /// would preserve the semantic value and valid digest.
     pub inject_duplicate_role_member: bool,
-    /// Replace the first manifest entry's role with an arbitrary raw value.
     pub first_role_raw: Option<Value>,
-    /// PRODUCTION: the `container_version` to declare (default `None` -> 1). A
-    /// stitched (reload/relaunch) container sets this to 2 (the `PROJECT.md`
-    /// heading "Portable boundary"). Not a negative-test knob.
     pub container_version: Option<u64>,
-    /// PRODUCTION: the `required_features` to declare (default `None` -> `[]`). A
-    /// stitched container sets `["timeline_segments_v1"]`. Distinct from the
-    /// negative-test injectors above; `required_features_raw` and
-    /// `inject_required_feature` still take precedence for malformed-input tests.
     pub required_features: Option<Vec<String>>,
 }
 
-/// Default zstd compression level for production `.battleplan` payload entries.
-///
-/// Level 3 keeps the window-27 decoder contract while avoiding the excessive
-/// single-core finalization time observed when packaging full-roster, per-hour
-/// snapshots at level 19. The earlier B3 corpus result remains useful as an
-/// opt-in size tradeoff: level 19 packed 9.65 GB decoded to 42.37 MB, 28.2%
-/// smaller than level 3, but production now prioritizes prompt finalization.
 pub const DEFAULT_ZSTD_COMPRESSION_LEVEL: i32 = 3;
-/// Backward-compatible alias for callers/tests that referenced the old constant.
 pub const ZSTD_COMPRESSION_LEVEL: i32 = DEFAULT_ZSTD_COMPRESSION_LEVEL;
-/// THE CEILING, not a default. No packer in this project may compress harder
-/// than level 3 (owner ruling 2026-08-16: "the compression must be no more than
-/// level 3 so all of the wins must come pre compression").
-///
-/// The rule exists to stop the compressor being used to hide an oversized
-/// format. Every byte saved by turning this up is a byte the ENCODING should
-/// not have emitted, and the saving is taken at finalize's expense on every
-/// future recording -- the level-19 corpus result above bought 28.2% for a
-/// single-core finalize time this project has already refused once.
-///
-/// Until now it was a default with nothing behind it: `--replay-zstd-level N`
-/// bound straight through to the encoder and `validate` checked only the window
-/// log, so any level up to 22 packed silently.
 pub const MAX_ZSTD_COMPRESSION_LEVEL: i32 = 3;
-/// The floor this path accepts. Negative levels are libzstd's FAST modes, not
-/// harder ones, so they sit under the ceiling by definition; the bound is here
-/// so a wild value is refused by name rather than deep inside libzstd.
 pub const MIN_ZSTD_COMPRESSION_LEVEL: i32 = -7;
-/// The smallest zstd window log accepted by libzstd.
 pub const MIN_ZSTD_WINDOW_LOG: u32 = 10;
-/// Entries smaller than this stay STORE even under the zstd policy.
-///
-/// The policy is a pure size floor: at or above it EVERY entry is compressed.
-/// It used to additionally consult a three-name allowlist (`*.snapshot.json`,
-/// `/collector_raw/`, `/production_render_blobs/`), which left every other
-/// large payload STORED at full size. Measured on the sealed t26 recording the
-/// entries that allowlist excluded were 160,247,978 bytes of pure JSON — the
-/// recorder manifest, all six static catalogs, `index.json` and `timeline.json`
-/// — with no already-compressed image or archive data among them; at this
-/// profile's level they pack to 10,711,580 bytes (93.3% smaller). The exclusion
-/// was an oversight, not an incompressibility finding, and it also silently
-/// covered the `replay_decoder` hour index and checkpoint cache, which are the
-/// artifacts that replace the per-hour JSON entirely.
-///
-/// Below the floor a zstd frame's own header and checksum can cost more than
-/// the payload saves, and the container carries many tiny descriptors.
-/// Genuinely incompressible bytes need no special case: zstd emits stored
-/// blocks for them, bounding the worst case at a small per-frame overhead
-/// rather than expansion.
 pub const ZSTD_MIN_ENTRY_BYTES: u64 = 16 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,8 +177,6 @@ impl Default for CompressionProfile {
 
 impl CompressionProfile {
     pub fn validate(self) -> std::io::Result<()> {
-        // THE LEVEL CEILING IS CHECKED FIRST, because it is the one a caller
-        // can raise from the command line. See `MAX_ZSTD_COMPRESSION_LEVEL`.
         if self.zstd_level > MAX_ZSTD_COMPRESSION_LEVEL {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -423,10 +303,6 @@ impl ZipCompression {
     }
 }
 
-/// Build a complete `.battleplan` (manifest written last) from the given entries.
-/// `game_id` must be the game the entries belong to (their paths are
-/// `payload/<game_id>/...`). `deflate` toggles per-entry compression (the reader
-/// handles both; STORE keeps the test fully deterministic).
 pub fn pack(
     game_id: &str,
     entries: &[PackEntry],
@@ -447,9 +323,6 @@ pub fn pack_borrowed(
     pack_borrowed_with(game_id, entries, identity, deflate, &PackOptions::default())
 }
 
-/// Streaming equivalent of [`pack_borrowed`]. It writes the completed container
-/// to `writer` instead of first materializing the whole `.battleplan` as one
-/// contiguous `Vec<u8>`.
 pub fn pack_borrowed_to_writer<W: Write>(
     game_id: &str,
     entries: &[BorrowedPackEntry<'_>],
@@ -467,9 +340,6 @@ pub fn pack_borrowed_to_writer<W: Write>(
     )
 }
 
-/// Mixed memory/file-backed variant for production paths with large entries
-/// already spilled to disk. File-backed entries are hashed by streaming from
-/// disk and are read one-at-a-time when written to the container.
 pub fn pack_mixed_to_writer<W: Write>(
     game_id: &str,
     borrowed_entries: &[BorrowedPackEntry<'_>],
@@ -582,9 +452,7 @@ pub fn pack_mixed_to_writer<W: Write>(
         )?;
         file_count += 1;
     }
-    for (e, (expected_sha256, expected_len)) in
-        file_entries.iter().zip(file_expectations.iter())
-    {
+    for (e, (expected_sha256, expected_len)) in file_entries.iter().zip(file_expectations.iter()) {
         write_zip_file_from_path(
             writer,
             &mut central,
@@ -618,17 +486,6 @@ pub fn pack_mixed_to_writer<W: Write>(
     Ok(())
 }
 
-/// Streaming production packer: like [`pack_mixed_to_writer`] but the large
-/// `streaming_entries` (the raw compact stream) are compressed and appended in
-/// bounded-memory chunks, so peak memory stays O(one chunk) regardless of stream
-/// length. `borrowed_entries` (index/timeline/manifest/static) are small and
-/// stay in RAM; `file_entries` (per-hour snapshots) are read one-at-a-time.
-///
-/// The written ZIP uses a trailing data descriptor for each streaming entry (the
-/// crc/sizes are unknown until the whole entry is written), and records the true
-/// crc/sizes in the central directory, which is the authority our reader
-/// ([`crate::zip`]) trusts. The legacy `deflate` flag keeps the old STORE vs
-/// DEFLATE writer behavior for fixtures and old tooling.
 pub fn pack_streaming_to_writer<W: Write>(
     game_id: &str,
     borrowed_entries: &[BorrowedPackEntry<'_>],
@@ -650,11 +507,6 @@ pub fn pack_streaming_to_writer<W: Write>(
     )
 }
 
-/// Options-aware streaming writer whose entry slice is already in the exact
-/// desired ZIP order. This is the production seam for stitched containers:
-/// canonical metadata stays borrowed, raw streams and snapshots are consumed
-/// from files in bounded chunks, and the v2 feature/options contract is kept
-/// identical to the in-memory packer.
 pub fn pack_ordered_streaming_to_writer_with_options<W, F>(
     game_id: &str,
     entries: &[OrderedStreamingPackEntry<'_>],
@@ -901,8 +753,6 @@ where
     Ok(())
 }
 
-/// Production streaming writer: STORE tiny entries and Zstandard-compress large
-/// compact-stream / snapshot JSON entries using method 93.
 pub fn pack_streaming_zstd_to_writer<W: Write>(
     game_id: &str,
     borrowed_entries: &[BorrowedPackEntry<'_>],
@@ -922,7 +772,6 @@ pub fn pack_streaming_zstd_to_writer<W: Write>(
     )
 }
 
-/// Production streaming writer with an explicit zstd compression profile.
 pub fn pack_streaming_zstd_to_writer_with_profile<W: Write>(
     game_id: &str,
     borrowed_entries: &[BorrowedPackEntry<'_>],
@@ -1071,9 +920,7 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
         )?;
         file_count += 1;
     }
-    for (e, (expected_sha256, expected_len)) in
-        file_entries.iter().zip(file_expectations.iter())
-    {
+    for (e, (expected_sha256, expected_len)) in file_entries.iter().zip(file_expectations.iter()) {
         write_zip_file_from_path(
             writer,
             &mut central,
@@ -1090,9 +937,8 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
         )?;
         file_count += 1;
     }
-    for (e, (expected_sha256, expected_len)) in streaming_entries
-        .iter()
-        .zip(streaming_expectations.iter())
+    for (e, (expected_sha256, expected_len)) in
+        streaming_entries.iter().zip(streaming_expectations.iter())
     {
         write_zip_file_streaming(
             writer,
@@ -1125,7 +971,6 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
     Ok(())
 }
 
-/// As [`pack`] but with [`PackOptions`] for negative-test fixtures.
 pub fn pack_with(
     game_id: &str,
     entries: &[PackEntry],
@@ -1145,7 +990,6 @@ pub fn pack_with(
     pack_borrowed_with(game_id, &borrowed_entries, identity, deflate, opts)
 }
 
-/// As [`pack_borrowed`] but with [`PackOptions`] for negative-test fixtures.
 pub fn pack_borrowed_with(
     game_id: &str,
     entries: &[BorrowedPackEntry<'_>],
@@ -1158,8 +1002,6 @@ pub fn pack_borrowed_with(
     Ok(out)
 }
 
-/// As [`pack_borrowed_to_writer`] but with [`PackOptions`] for negative-test
-/// fixtures.
 pub fn pack_borrowed_with_writer<W: Write>(
     game_id: &str,
     entries: &[BorrowedPackEntry<'_>],
@@ -1175,7 +1017,6 @@ pub fn pack_borrowed_with_writer<W: Write>(
     )?;
     validate_distinct_paths(entries.iter().map(|entry| entry.path.as_str()))?;
 
-    // --- manifest entries (sha + bytes), in canonical path order ---
     let mut manifest_entries: Vec<Value> = Vec::with_capacity(entries.len());
 
     let mut counts_snapshots = 0u64;
@@ -1198,7 +1039,6 @@ pub fn pack_borrowed_with_writer<W: Write>(
         }
         manifest_entries.push(ent);
     }
-    // canonical path order so the manifest entry list is stable
     manifest_entries.sort_by(|a, b| {
         a["path"]
             .as_str()
@@ -1212,7 +1052,6 @@ pub fn pack_borrowed_with_writer<W: Write>(
             .insert("role".into(), raw.clone());
     }
 
-    // --- the manifest object (digest filled in below) ---
     let required_features = match (&opts.required_features_raw, &opts.inject_required_feature) {
         (Some(raw), _) => raw.clone(),
         (None, Some(f)) => json!([f]),
@@ -1268,8 +1107,6 @@ pub fn pack_borrowed_with_writer<W: Write>(
         file_count += 1;
     }
 
-    // inject a stowaway (a zip entry the manifest does not list) BEFORE the
-    // manifest, so the reader's coverage check sees an uncovered entry.
     if let Some((path, data)) = &opts.inject_stowaway {
         write_zip_file(
             writer,
@@ -1284,8 +1121,6 @@ pub fn pack_borrowed_with_writer<W: Write>(
         file_count += 1;
     }
 
-    // manifest.json is written last. The omit-manifest test fixture
-    // produces a recovery-only file (no manifest) to exercise the NoManifest path.
     if !opts.omit_manifest {
         let mut manifest_bytes = serde_json::to_vec(&manifest).expect("manifest serializes");
         if opts.inject_duplicate_role_member {
@@ -2394,7 +2229,8 @@ mod tests {
                 .validate()
                 .expect_err(&format!("level {level} must be refused"));
             assert!(
-                err.to_string().contains("exceeds the maximum this project packs at"),
+                err.to_string()
+                    .contains("exceeds the maximum this project packs at"),
                 "level {level} was refused for the wrong reason: {err}"
             );
         }
@@ -2416,13 +2252,22 @@ mod tests {
         let big = vec![b'{'; ZSTD_MIN_ENTRY_BYTES as usize * 2];
         let small = vec![b'{'; ZSTD_MIN_ENTRY_BYTES as usize - 1];
         let over_floor = [
-            ("payload/g/recorder/native_session_manifest.json", "recorder_manifest"),
+            (
+                "payload/g/recorder/native_session_manifest.json",
+                "recorder_manifest",
+            ),
             (
                 "payload/g/static/localisation_join/localisation_catalog.json",
                 "static_artifact",
             ),
-            ("payload/g/replay_decoder/checkpoints.h4cp", crate::replay_cache::CHECKPOINT_CACHE_ROLE),
-            ("payload/g/replay_decoder/hour_index.h4ix", crate::replay_cache::HOUR_INDEX_ROLE),
+            (
+                "payload/g/replay_decoder/checkpoints.h4cp",
+                crate::replay_cache::CHECKPOINT_CACHE_ROLE,
+            ),
+            (
+                "payload/g/replay_decoder/hour_index.h4ix",
+                crate::replay_cache::HOUR_INDEX_ROLE,
+            ),
             ("payload/g/index.json", "index"),
         ];
         let mut entries = over_floor

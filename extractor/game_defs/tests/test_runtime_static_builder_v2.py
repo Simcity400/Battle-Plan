@@ -13,13 +13,13 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import build_runtime_static_bundle as B  # noqa: E402
-import build_all as BUILD_ALL  # noqa: E402
-import live_binding_resolver as LR  # noqa: E402
-import prepare_product_modset_capture as PREPARE  # noqa: E402
-import source_inventory_layers as SIL  # noqa: E402
-import static_bundle as SB  # noqa: E402
-import verify_product_modset_capture_ready as VERIFY_PREPARED  # noqa: E402
+import build_runtime_static_bundle as B
+import build_all as BUILD_ALL
+import live_binding_resolver as LR
+import prepare_product_modset_capture as PREPARE
+import source_inventory_layers as SIL
+import static_bundle as SB
+import verify_product_modset_capture_ready as VERIFY_PREPARED
 
 
 def test_all_static_entrypoints_treat_empty_explicit_modset_as_vanilla_only():
@@ -344,8 +344,6 @@ def _offline_preparation_fixture(tmp_path: Path) -> tuple[Path, Path]:
                 "creation_filetime_utc": 133700000000000000,
                 "exe_sha256": exe_sha,
             },
-            # This fixture install owns no DLC, so the engine roster the
-            # provenance policy reads is the mod roster alone.
             "runtime": {
                 "first_time": "00:00:00",
                 "version": "Fixture v1.19.2.0.a729 build time: never",
@@ -523,9 +521,6 @@ def _rebind_runtime_artifact_authority(
     path.write_bytes(json.dumps(document, indent=2).encode("utf-8") + b"\n")
     monkeypatch.setattr(LR, "ENGINE_RUNTIME_ARTIFACTS_PATH", path)
     monkeypatch.setattr(LR, "ENGINE_RUNTIME_ARTIFACTS_SHA256", SB.sha256_file(path))
-    # The report must name the authority the resolution ran under, which under
-    # this simulation is the rebound one.  Admission refuses any other, and that
-    # refusal is what makes every pre-ruling capture stop opening.
     report_path = bindings / "resolution_report.json"
     report = SB.load_object(report_path, "fixture resolution report")
     report["engine_runtime_artifacts"]["authority_sha256"] = SB.sha256_file(path)
@@ -541,8 +536,6 @@ def test_offline_product_modset_preparation_is_path_free_and_reproducible(
     _retain_process_bound_ui14_evidence(exe, bindings)
     monkeypatch.setattr(PREPARE.RB, "build", _fake_product_bundle_build)
 
-    # No registry entry is authored for this modset anywhere: the canonical
-    # mechanism policy admits it from its own resolution provenance.
     first = PREPARE.prepare_offline(
         exe=exe, bindings=bindings, output=tmp_path / "prepared-a",
     )

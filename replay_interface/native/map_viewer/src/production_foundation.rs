@@ -1,9 +1,3 @@
-//! XMAP01 viewer-owned production foundation.
-//!
-//! The normal product route enters here with one semantic [`WorldFrame`],
-//! viewer-local presentation state, an admitted XMAP00 gap projection, and the
-//! exact XMAP01+XMAP02 content-operation receipt. Recorder-selected
-//! presentation is not an argument and cannot be recovered through this API.
 
 use crate::{MapAuthorityAdmission, MapAuthorityAdmittedInput, MapAuthorityGap, Result};
 use portable_render_stream::{
@@ -18,10 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const FOUNDATION_CONTENT_EXECUTION_RECEIPT_SCHEMA: &str =
     "hoi4.foundation-content-execution.v1";
 
-/// Resolve the engine-proven XMAP02 operation from admitted content and
-/// execute it on a real D3D11 device. Map dimensions come from the effective
-/// `map/provinces.bmp` winner; no vanilla dimensions or tuple are supplied by
-/// the caller.
 #[cfg(windows)]
 pub fn execute_foundation_content_preflight(
     resolver: &crate::GameFileResolver,
@@ -30,13 +20,9 @@ pub fn execute_foundation_content_preflight(
 ) -> Result<FoundationContentExecutionReceipt> {
     validate_sha256(content_authority_sha256, "shipping content authority")?;
     let (map_width, map_height) = foundation_map_dimensions(resolver, admission)?;
-    // exact-a729's live DX11 branch is false; max_texture_dimension is unused
-    // on that branch and remains zero rather than a guessed device cap.
     let request =
         resolver.foundation_content_request(admission, map_width, map_height, false, 0)?;
     let resolved = resolver.resolve_foundation_content(&request, admission)?;
-    // Exercise the portable XMAP02 identity codec in the real caller before
-    // any host resource is created.
     let bytes = serde_json::to_vec(&resolved)?;
     let decoded: portable_content_manifest::foundation::ResolvedFoundationContent =
         serde_json::from_slice(&bytes)?;
@@ -80,30 +66,18 @@ pub(crate) fn bmp_dimensions(bytes: &[u8]) -> Result<(u32, u32)> {
     Ok((width as u32, height.unsigned_abs()))
 }
 
-/// Viewer-local state. No member can be sourced from the recorder's camera,
-/// selected Present, map-mode selection, hover, GUI, or input state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewerOwnedMapState {
     pub viewport_width: u32,
     pub viewport_height: u32,
-    /// XMAP03 viewer-owned camera payload. Recorder camera carriers cannot be
-    /// converted into this type. `None` is a typed unavailable state.
     pub camera: Option<crate::ViewerMapCameraState>,
     pub observer_country_id: Option<String>,
     pub map_mode_id: String,
-    /// Viewer-owned monotone epoch incremented only when `map_mode_id`
-    /// changes. Camera, selection, and playback revisions cannot masquerade
-    /// as a map-mode transition.
     pub map_mode_selection_epoch: u64,
     pub selected_object_ids: Vec<String>,
     pub input_revision: u64,
-    /// Viewer/render-clock seconds consumed by animated map shaders. This is
-    /// never sourced from the recorder and is carried as exact f32 bits so a
-    /// prepared frame cannot silently change due to host float conversion.
     pub animation_time_f32_bits: u32,
-    /// Viewer-local elapsed real time for exact presentation recurrences.
-    /// This is never recorder timing.
     pub frame_delta_seconds_f32_bits: u32,
 }
 
@@ -151,10 +125,6 @@ impl ViewerOwnedMapState {
     }
 }
 
-/// Receipt for the real reusable content preflight. XMAP02 resolves every
-/// identity through the effective VFS; XMAP01 compiles/loads the exact program
-/// and creates the exact GPU resource/descriptor state before issuing this
-/// receipt. It is not a draw and contains no fabricated map pixels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FoundationContentExecutionReceipt {
@@ -162,8 +132,6 @@ pub struct FoundationContentExecutionReceipt {
     pub content_manifest_sha256: String,
     pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
-    /// Canonical XMAP02 authority derived from the recording manifest,
-    /// admitted effective VFS, and actual mounted resolver.
     pub content_authority_sha256: String,
     pub resolved_operation_sha256: String,
     pub ordered_program_stage_sha256: Vec<String>,
@@ -230,41 +198,21 @@ pub struct FoundationFeatureContext<'a> {
     pub world_frame: &'a WorldFrame,
     pub viewer: &'a ViewerOwnedMapState,
     pub map_authority_gaps: &'a [MapAuthorityGap],
-    /// The XMAP00 inputs this hour's authority admitted from the authenticated
-    /// `WorldFrame` under an owner-proven production contract. An input is in
-    /// exactly one of this slice and `map_authority_gaps`, never both.
     pub map_authority_admitted: &'a [MapAuthorityAdmittedInput],
     assigned_stage_schedule: Option<&'a portable_render_stream::AssignedStageSchedule>,
     pub product_modset_sha256: &'a str,
     pub effective_vfs_manifest_sha256: &'a str,
     pub foundation_content_operation_sha256: &'a str,
     pub viewer_state_sha256: &'a str,
-    /// Earlier XMAP04 output in canonical family order. Later map-space
-    /// consumers reuse its exact admitted map-copy set rather than deriving a
-    /// second camera-footprint approximation.
     pub prepared_terrain: Option<&'a crate::PreparedTerrainFrame>,
-    /// Earlier promoted family output in the canonical family order. XMAP13
-    /// consumes XMAP05's exact visibility classification through this typed
-    /// dependency; it never constructs a second FoW view.
     pub prepared_political: Option<&'a crate::PreparedPoliticalFrame>,
-    /// Earlier same-hour XMAP13 output in canonical family order. XMAP14 uses
-    /// this typed identity provider for complete participant joins.
     pub prepared_units: Option<&'a crate::PreparedXmap13Frame>,
-    /// Exact current-hour XMAP13 identity authority consumed by XMAP15. It is
-    /// derived from `prepared_units` in canonical family order and is never a
-    /// recorder-selected presentation carrier.
     pub xmap15_units:
         Option<&'a dyn crate::production_features::xmap15::Xmap15UnitIdentityProvider>,
     pub xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
 }
 
 impl FoundationFeatureContext<'_> {
-    /// Require the authenticated assignment for one exact packet-owned stage.
-    ///
-    /// The private adapter-core constructor carries no schedule while the
-    /// product graph is being assembled. The public product constructor
-    /// installs the sealed schedule before registering any stage-consuming
-    /// adapter; this lookup never substitutes a packet-local ordinal.
     pub fn require_assigned_stage(
         &self,
         stage_name: &str,
@@ -283,57 +231,22 @@ impl FoundationFeatureContext<'_> {
 
 pub struct FoundationFeatureOutput {
     pub disposition: FamilyDisposition,
-    /// XMAP04's capture-independent terrain geometry for the shipping
-    /// foundation consumer. Only the Terrain family may populate this field.
     pub prepared_terrain: Option<crate::PreparedTerrainFrame>,
-    /// XMAP05's replay-epoch political, GradientBorder, IntelMap, and
-    /// presentation-independent visibility payload. Only
-    /// PoliticalFillGradients may populate it; FogOfWar binds its companion
-    /// digest from the same shared producer.
     pub prepared_political: Option<crate::PreparedPoliticalFrame>,
-    /// XMAP06's replay-epoch thin-border geometry and admitted material
-    /// identities. Only ThinBorders may populate this field. Exact draw order
-    /// and fade remain separate fail-closed draw-contract concerns. The
-    /// geometry may therefore accompany a typed Unavailable disposition.
     pub prepared_thin_borders: Option<crate::PreparedThinBorderFrame>,
-    /// XMAP09's exact semantic lighting resources and viewer-camera shadow
-    /// handoff. Only the LightingShadows family may populate this field.
     pub prepared_lighting: Option<crate::PreparedXmap09LightingFrame>,
-    /// XMAP19's presentation-independent weather membership, authored content
-    /// joins, exact camera visibility/playback law, and temporal epoch input.
-    /// Only WeatherAtmosphere may populate this field.
     pub prepared_weather: Option<crate::PreparedXmap19WeatherFrame>,
-    /// XMAP08's executable river geometry, exact adjacency records, and
-    /// compiled river/strait programs.
     pub prepared_rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
-    /// XMAP07's executable water/ice program, runtime SnowMud texture,
-    /// refraction target contract, quad, and temporal payload.
     pub prepared_water: Option<crate::PreparedWaterFrame>,
-    /// XMAP20's unconditional lifecycle/content/packet preparation. Only the
-    /// ParticlesEffects family may populate it.
     pub prepared_effects: Option<crate::PreparedXmap20Frame>,
-    /// XMAP13's presentation-independent unit/entity preparation. Only
-    /// UnitsCounters may populate it.
     pub prepared_units: Option<crate::PreparedXmap13Frame>,
-    /// XMAP14's viewer-projected, effective-content-authenticated combat
-    /// indicator compositor payload. Only CombatMarkers may populate it.
     pub prepared_combat: Option<crate::PreparedXmap14Frame>,
-    /// XMAP15's exact current-hour orders/fronts/movement state. Only
-    /// OrdersFrontsArrows may populate it.
     pub prepared_orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
-    /// XMAP16's presentation-independent rail/supply payload. Only RailSupply
-    /// may populate this field.
     pub prepared_rail_supply: Option<crate::PreparedXmap16Frame>,
-    /// XMAP18's viewer-owned selection and exact composition authority. Only
-    /// MapModes may populate this field.
     pub prepared_map_modes: Option<crate::PreparedMapModeFrame>,
-    /// Every unresolved XMAP00 input the adapter consumed or converted to its
-    /// own exact unavailable state. The dispatch rejects unclaimed gaps.
     pub consumed_gap_ids: Vec<String>,
 }
 
-/// One promoted packet adapter. Later XMAP packets implement this trait in
-/// their predeclared feature module and register exactly their owned family.
 pub trait ProductionMapFeatureAdapter {
     fn family(&self) -> MapVisualFamily;
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput>;
@@ -415,10 +328,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         }
     }
 
-    /// Prepare with the exact optional XMAP12 per-frame carriers. Absence is
-    /// represented by XMAP12's typed-unavailable family row; it is never
-    /// replaced with recorder presentation, a prior-hour carrier, or a
-    /// synthesized default.
     pub fn prepare_with_xmap12_inputs(
         &self,
         world_frame: &WorldFrame,
@@ -443,9 +352,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         )
     }
 
-    /// Prepare the current product graph with exact XMAP12 carriers and an
-    /// explicit viewer-owned XMAP15 plan selection. The selection is never
-    /// recovered from recorder presentation.
     pub fn prepare_with_xmap12_and_xmap15_inputs(
         &self,
         world_frame: &WorldFrame,
@@ -486,9 +392,6 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
     }
 }
 
-/// Assemble the schedule-independent adapter core. This is private so callers
-/// cannot mistake an incomplete intermediate graph for the promoted product
-/// graph.
 fn foundation_feature_adapter_core(
     resolver: &crate::GameFileResolver,
     admission: &replay_core::ValidatedContentAdmission,
@@ -548,22 +451,6 @@ fn foundation_feature_adapter_core(
     Ok(adapters)
 }
 
-/// Seal the complete assigned-stage topology consumed by the promoted product
-/// foundation. Packet-local topology helpers remain packet evidence; this
-/// neutral aggregate owns only the product census and the proven stage edges.
-/// Exact-a729's core-map caller places XMAP08 rivers/straits after XMAP06's
-/// early-border draws, XMAP16 rails before XMAP11 trees before XMAP07 water, XMAP06 late borders
-/// after water, and XMAP16 supply arrows after that complete core-map block.
-/// XMAP20 particles follow the supply-arrow manager. XMAP15's map-scene orders
-/// precede XMAP13's map-icon-manager counters. Exact-a729's map-icon manager
-/// then paints XMAP14 combat buckets 9/10/11 after counter bucket 1 and before
-/// XMAP16 hub bucket 26.
-/// XMAP16 hubs and XMAP21 furniture
-/// do not have one unconditional edge: exact map-icon buckets put VP/resource
-/// furniture before hubs and raid furniture after hubs. XMAP18's authenticated
-/// furniture-state handoff orders XMAP21 prepare before XMAP21 execute without
-/// inventing a cross-family draw edge. Lighting and weather preparation
-/// otherwise retain only their independently proven dependencies.
 pub fn product_foundation_assigned_stage_topology(
 ) -> Result<portable_render_stream::AssignedStageTopology> {
     use crate::production_features::{
@@ -700,10 +587,6 @@ pub fn product_foundation_assigned_stage_topology(
     .map_err(Into::into)
 }
 
-/// Construct the product adapter graph with the authenticated schedule required
-/// by any packet that emits assigned-stage operations. The neutral provider
-/// validates the exact census and dependency graph before an adapter can
-/// observe an ordinal.
 pub fn product_feature_adapters_with_assigned_stage_schedule(
     resolver: &crate::GameFileResolver,
     admission: &replay_core::ValidatedContentAdmission,
@@ -752,24 +635,11 @@ pub struct PreparedFoundationFrame {
     pub envelope: FoundationRenderEnvelope,
     pub terrain: crate::PreparedTerrainFrame,
     pub political: crate::PreparedPoliticalFrame,
-    /// Populated by the public product adapter constructor, which installs the
-    /// authenticated schedule before registering XMAP06. `None` remains only
-    /// for lower-level adapter-graph tests and cannot be produced by the
-    /// promoted product constructor.
     pub thin_borders: Option<crate::PreparedThinBorderFrame>,
     pub lighting: Option<crate::PreparedXmap09LightingFrame>,
-    /// XMAP11's effective-content and viewer-derived tree census. Present and
-    /// authenticated-empty family rows both retain the complete prepared frame.
     pub trees: Option<crate::PreparedTreeFrame>,
-    /// XMAP12's exact current city/building/ambient draw census and unchanged
-    /// L03 caster rows. `None` is valid only alongside XMAP12's explicit
-    /// typed-unavailable family disposition.
     pub xmap12: Option<crate::PreparedXmap12RenderFrame>,
-    /// `None` is the exact typed-unavailable state when the independent
-    /// weather visual-epoch carrier has not been recorded.
     pub weather: Option<crate::PreparedXmap19WeatherFrame>,
-    /// Prepared XMAP08 provider payload. It is populated only by the
-    /// schedule-bearing product graph.
     pub rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
     pub water: crate::PreparedWaterFrame,
     pub effects: Option<crate::PreparedXmap20Frame>,
@@ -777,12 +647,7 @@ pub struct PreparedFoundationFrame {
     pub combat: Option<crate::PreparedXmap14Frame>,
     pub orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
     pub rail_supply: Option<crate::PreparedXmap16Frame>,
-    /// XMAP18's viewer-selected map-mode composition. The product adapter graph
-    /// always registers XMAP18, so this is mandatory on product frames.
     pub map_modes: crate::PreparedMapModeFrame,
-    /// XMAP17's semantic, effective-content-derived country/state map-name
-    /// program and glyph geometry. Product construction requires this payload;
-    /// lower-level adapter tests may omit the dedicated adapter.
     pub labels: Option<crate::PreparedMapLabelFrame>,
 }
 
@@ -941,9 +806,6 @@ fn validate_xmap16_operation_rows(
     Ok(())
 }
 
-/// Execute every predeclared adapter slot and construct the complete portable
-/// family manifest. Missing slots are typed `Unavailable`; no family can
-/// silently disappear from preparation.
 pub fn prepare_foundation_frame(
     world_frame: &WorldFrame,
     viewer: &ViewerOwnedMapState,
@@ -1438,9 +1300,6 @@ fn prepare_foundation_frame_inner(
         });
     }
 
-    // A promoted adapter set may not strand an XMAP00 semantic gap outside the
-    // exhaustive family projection. While a slot is unimplemented, the
-    // canonical slot gap subsumes its owner's unproved semantic inputs.
     for authority_gap in map_admission.gaps() {
         if consumed.contains(&authority_gap.input_id) {
             continue;
@@ -1465,13 +1324,10 @@ fn prepare_foundation_frame_inner(
         content_manifest_sha256: manifest_sha256.clone(),
         product_modset_sha256: manifest.product_modset_sha256.clone(),
         effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
-        // The sealed receipt binds the XMAP02 canonical shipping authority,
-        // resolved operation, compiled stages, and created resource/descriptor.
         foundation_content_operation_sha256: content_receipt.deterministic_sha256.clone(),
         families,
     };
     envelope.validate()?;
-    // The real wire codec is exercised here, not only in a test helper.
     let envelope = FoundationRenderEnvelope::decode_json(&envelope.encode_json()?)
         .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     let terrain =
@@ -1890,10 +1746,6 @@ impl FoundationPlaybackState {
         self.admit_with_nonblocking_family(candidate, None)
     }
 
-    /// Product playback may continue with an exact current-hour foundation
-    /// when RailSupply alone is typed unavailable. No prior-hour XMAP16 state
-    /// is reused, and every other unavailable family remains a fatal blocker
-    /// at [`require_fresh_foundation_frame`].
     pub fn admit_allowing_xmap16_unavailable(
         &mut self,
         candidate: FoundationRenderEnvelope,

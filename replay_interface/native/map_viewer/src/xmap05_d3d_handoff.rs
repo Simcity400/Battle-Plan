@@ -1,5 +1,3 @@
-//! App-device upload handoff for XMAP05 political, GradientBorder, and IntelMap
-//! resources.
 
 use crate::{
     PreparedPoliticalFrame, Result, TerrainDependentResourceBinding, Xmap05GeneratedTexture,
@@ -49,10 +47,6 @@ struct NativeXmap05TextureUpload {
 
 #[cfg(windows)]
 impl NativeXmap05PoliticalHandoff {
-    /// Upload all six XMAP05 resources to the application's D3D11 device.
-    ///
-    /// # Safety
-    /// `device` must be a live `ID3D11Device`.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         frame: &PreparedPoliticalFrame,
@@ -66,10 +60,6 @@ impl NativeXmap05PoliticalHandoff {
         Ok(Self { resources, receipt })
     }
 
-    /// Replace every upload atomically at the replay-epoch boundary.
-    ///
-    /// # Safety
-    /// `device` must be the same live device used by `create_on_device`.
     pub unsafe fn update_frame(
         &mut self,
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -96,7 +86,6 @@ impl NativeXmap05PoliticalHandoff {
         Ok(self.shader_resource(symbol)?.shader_resource_view)
     }
 
-    /// Return an authenticated typed view of an XMAP05-owned app-device SRV.
     pub fn shader_resource(&self, symbol: &str) -> Result<NativeXmap05ShaderResource<'_>> {
         let resource = self
             .resources
@@ -127,7 +116,6 @@ impl NativeXmap05PoliticalHandoff {
         self.shader_resource("GradientBorderChannel2")
     }
 
-    /// The authenticated XMAP05 provider required by pdxwater PS slot 14.
     pub fn gradient_border_channel3(&self) -> Result<NativeXmap05ShaderResource<'_>> {
         self.shader_resource("GradientBorderChannel3")
     }

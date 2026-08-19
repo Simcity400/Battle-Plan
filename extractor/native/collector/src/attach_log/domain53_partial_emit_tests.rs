@@ -1,5 +1,3 @@
-//! `domain53_partial_emit_tests`, extracted verbatim from `attach_log.rs`.
-
 use super::*;
 use diplomacy53::compact::{
     CountryDiplomacyRow, OpinionRow, SubjectAutonomyStatusRow, ROW_ID_DELETED,
@@ -34,12 +32,6 @@ fn rows(countries: Vec<CountryDiplomacyRow>, opinions: Vec<OpinionRow>) -> Extra
     }
 }
 
-// The partial-frame delta behavior lives in the opt-in `DeltaPartial` mode;
-// these tests exercise it. (`Delta` — the default — keeps today's full
-// re-emit on partial frames; see `default_delta_mode_re_emits_full_on_partial`.)
-// Mirrors the collector caller's SUCCESS path: run apply_emit_mode, then
-// commit the returned baseline mutation (the gate always passes in these
-// row-level tests). A failure-path test would simply drop the commit.
 fn apply(
     r: ExtractedDomain53Rows,
     status: u32,
@@ -63,21 +55,15 @@ fn is_delta(status: u32) -> bool {
     status & COMPACT_STATUS_DELTA_DATA != 0
 }
 
-// The DEFAULT `Delta` mode is byte-identical to today on partial frames: it
-// re-emits the full read (no delta), and does NOT seed or advance the delta
-// baseline from a partial frame. This is the guard that keeps the measured
-// +46-68 ms/frame partial-diff CPU cost OFF the default capture hot path.
 #[test]
 fn default_delta_mode_re_emits_full_on_partial() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
-    // Establish a clean baseline in Delta mode.
     apply_mode(
         rows(vec![], vec![op(1, 2, 5)]),
         CLEAN,
         D53EmitMode::Delta,
         &mut tracker,
     );
-    // A partial frame under Delta re-emits its full read unchanged.
     let (emitted, status) = apply_mode(
         rows(vec![], vec![op(1, 2, 6), op(1, 3, 9)]),
         PARTIAL,
@@ -94,7 +80,6 @@ fn default_delta_mode_re_emits_full_on_partial() {
         vec![op(1, 2, 6), op(1, 3, 9)],
         "full read re-emitted"
     );
-    // Baseline untouched by the partial frame.
     assert_eq!(
         tracker.last_emitted.opinions.get(&(1, 2)).unwrap().opinion,
         5
@@ -102,9 +87,6 @@ fn default_delta_mode_re_emits_full_on_partial() {
     assert!(tracker.last_emitted.opinions.get(&(1, 3)).is_none());
 }
 
-// A clean baseline followed by an UNCHANGED tolerated-partial frame: the
-// legacy path re-emitted the full read; now it emits a DELTA|PARTIAL with
-// ZERO base rows, and the baseline is untouched.
 #[test]
 fn unchanged_partial_emits_zero_base_rows() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -129,7 +111,6 @@ fn unchanged_partial_emits_zero_base_rows() {
         "unchanged rows are not re-emitted"
     );
     assert_eq!(emitted.countries.len(), 0);
-    // Baseline pinned across the partial.
     assert_eq!(
         tracker.last_emitted.opinions.get(&(1, 2)).unwrap().opinion,
         5
@@ -237,7 +218,6 @@ fn unproven_subject_autonomy_is_withheld_and_remains_typed_partial_debt() {
     assert_eq!(complete.subject_autonomy_statuses.len(), 1);
 }
 
-// A genuine change on a partial frame emits ONLY the changed row.
 #[test]
 fn changed_opinion_on_partial_emits_only_that_row() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -255,9 +235,6 @@ fn changed_opinion_on_partial_emits_only_that_row() {
     assert_eq!(emitted.opinions, vec![op(1, 2, 6)]);
 }
 
-// The baseline is NEVER advanced on a partial frame, so a value pushed on
-// one partial and reverted on the next is corrected WITHOUT a projection
-// accumulator (the fold re-seeds from the pinned baseline every hour).
 #[test]
 fn partial_never_advances_baseline_reverted_value_recorrected() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -279,13 +256,6 @@ fn partial_never_advances_baseline_reverted_value_recorrected() {
     );
 }
 
-// A baseline row absent from a partial read is tombstoned. The collector
-// cannot distinguish a torn read from a genuine deletion (the extractor
-// reports only a skipped-row COUNT, not keys), so it tombstones EVERY
-// absent baseline row (tombstone-all). This reproduces today's full-emit
-// snapshot byte-identically — today's seed-from-empty full-emit likewise
-// drops both torn and deleted rows for the hour. See the plan doc for why
-// tombstone-all was chosen over positive-absence-only tombstones.
 #[test]
 fn absent_baseline_row_is_tombstoned_on_partial() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -305,15 +275,9 @@ fn absent_baseline_row_is_tombstoned_on_partial() {
     assert_ne!(tomb.src_tag_db_id & ROW_ID_DELETED, 0, "deleted bit set");
     assert_eq!(tomb.src_tag_db_id & !ROW_ID_DELETED, 1);
     assert_eq!(tomb.target_tag_db_id, 3);
-    // Baseline still holds the tombstoned key (a future clean frame decides
-    // whether it is truly gone); pinned across the partial.
     assert!(tracker.last_emitted.opinions.contains_key(&(1, 3)));
 }
 
-// The FIRST frame of a session is emitted in full (no delta) and seeds the
-// baseline EVEN IF it is partial — deep-war captures are all-partial from
-// frame 1, so gating the baseline on a clean frame would leave delta
-// permanently off there. Subsequent partial frames then emit DELTA|PARTIAL.
 #[test]
 fn partial_first_frame_is_full_and_seeds_baseline() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -326,28 +290,18 @@ fn partial_first_frame_is_full_and_seeds_baseline() {
         "first frame seeds the baseline even when partial"
     );
 
-    // The very next partial frame now emits a DELTA|PARTIAL vs that baseline.
     let (delta, dstatus) = apply(rows(vec![], vec![op(1, 2, 6)]), PARTIAL, &mut tracker);
     assert!(is_delta(dstatus) && dstatus & PARTIAL == PARTIAL);
     assert_eq!(delta.opinions, vec![op(1, 2, 6)]);
-    // Baseline still pinned at the frame-1 value (partial never advances it).
     assert_eq!(
         tracker.last_emitted.opinions.get(&(1, 2)).unwrap().opinion,
         5
     );
 }
 
-// REGRESSION (Codex refutation finding 3/4): an EMPTY first frame (a
-// success frame carrying zero rows) must still seed the baseline exactly
-// once. With the old `last_emitted.is_empty()` sentinel it did NOT — the
-// next non-empty frame RE-SEEDED, desyncing from the fold (which keys off
-// `delta_baselines_seen`, set on the first frame) and silently dropping
-// rows. The `baseline_seeded` bit fixes it: the first non-empty frame emits
-// a DELTA (diffed against the empty baseline), not a full re-seed.
 #[test]
 fn empty_first_frame_seeds_and_next_frame_deltas() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
-    // H0: empty success frame, partial.
     let (e0, s0) = apply(rows(vec![], vec![]), PARTIAL, &mut tracker);
     assert!(
         !is_delta(s0),
@@ -360,9 +314,6 @@ fn empty_first_frame_seeds_and_next_frame_deltas() {
     );
     assert!(tracker.last_emitted.is_empty(), "seeded baseline is empty");
 
-    // H1: rows appear. The FIX makes this a DELTA (vs the empty baseline),
-    // NOT a full re-seed — so the fold, seeding from its empty baseline,
-    // reconstructs the rows exactly.
     let (e1, s1) = apply(rows(vec![], vec![op(1, 2, 5)]), PARTIAL, &mut tracker);
     assert!(
         is_delta(s1),
@@ -374,22 +325,12 @@ fn empty_first_frame_seeds_and_next_frame_deltas() {
         vec![op(1, 2, 5)],
         "row emitted as new vs the empty baseline"
     );
-    // Baseline still empty (partial never advances) -> H2 re-emits it,
-    // which is lossless (fold rebuilds it each hour from the empty base).
     assert!(tracker.last_emitted.is_empty());
     let (e2, s2) = apply(rows(vec![], vec![op(1, 2, 5)]), PARTIAL, &mut tracker);
     assert!(is_delta(s2));
     assert_eq!(e2.opinions, vec![op(1, 2, 5)]);
 }
 
-// REGRESSION (Codex refutation finding B): a frame that WOULD seed or
-// advance the baseline but then FAILS the post-build gate must not mutate
-// the tracker — otherwise the collector runs ahead of the fold (which
-// rejects the failed frame) and a later delta applies against the wrong
-// base. The mutation is returned as a commit and applied only on success;
-// dropping the commit (simulating a failed gate) leaves the baseline intact.
-// A clean frame after a run of partials advances the baseline (so later
-// partials diff against the fresher authoritative read).
 #[test]
 fn clean_frame_after_partials_advances_baseline() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -400,8 +341,6 @@ fn clean_frame_after_partials_advances_baseline() {
         5
     );
 
-    // A non-first clean frame is a plain DELTA (delta vs baseline, no
-    // PARTIAL bit) and DOES advance the baseline (unlike a partial).
     let (_clean2, s) = apply(rows(vec![], vec![op(1, 2, 9)]), CLEAN, &mut tracker);
     assert!(is_delta(s), "non-first clean frame emits a delta");
     assert_eq!(s & PARTIAL, 0, "clean frame carries no partial bit");
@@ -418,8 +357,6 @@ fn clean_frame_after_partials_advances_baseline() {
     );
 }
 
-// Full emit mode is untouched by the partial-delta change: it clears the
-// baseline and returns the full read even on a partial frame.
 #[test]
 fn full_mode_unaffected_on_partial() {
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
@@ -442,19 +379,6 @@ fn full_mode_unaffected_on_partial() {
     );
 }
 
-// The air-disclosure threshold rides EVERY emitted frame, including deltas.
-//
-// The recorder's per-hour accumulator resets at each hour boundary, so a
-// threshold carried only on full frames would be missing from every hour whose
-// first d53 record is a delta -- which, once the delta baseline is seeded, is
-// essentially every hour. The whole air-disclosure row would then read "not
-// known" in production while reading correctly in every offline fixture, and
-// the intel map it is compared against is carried on the same delta frames.
-//
-// kills: dropping `air_disclosure_threshold_raw` from the delta emission in
-// `compact_domain53_apply_emit_mode` (the delta frame's threshold falls back to
-// the struct default `None`), and any change that emits it only when the frame
-// is full.
 #[test]
 fn the_air_disclosure_threshold_rides_delta_frames_too() {
     fn rows_with_threshold(
@@ -469,7 +393,6 @@ fn the_air_disclosure_threshold_rides_delta_frames_too() {
     }
 
     let mut tracker = CompactDiplomacyIntelOperativesLiveTracker::default();
-    // Frame 1 seeds the baseline and is emitted in full.
     let (seed, seed_status) = apply(
         rows_with_threshold(vec![op(1, 2, 5)], Some(30_000)),
         CLEAN,
@@ -478,7 +401,6 @@ fn the_air_disclosure_threshold_rides_delta_frames_too() {
     assert!(!is_delta(seed_status), "the first frame is not a delta");
     assert_eq!(seed.air_disclosure_threshold_raw, Some(30_000));
 
-    // Frame 2 IS a delta -- and still carries the threshold.
     let (delta, delta_status) = apply(
         rows_with_threshold(vec![op(1, 2, 6)], Some(30_000)),
         CLEAN,
@@ -491,8 +413,6 @@ fn the_air_disclosure_threshold_rides_delta_frames_too() {
         "a delta frame must carry the gate's right-hand side, not only its left"
     );
 
-    // A delta frame whose define could not be read carries nothing, which is
-    // the only spelling of "not read" -- never a substituted default.
     let (unread, unread_status) = apply(
         rows_with_threshold(vec![op(1, 2, 7)], None),
         CLEAN,

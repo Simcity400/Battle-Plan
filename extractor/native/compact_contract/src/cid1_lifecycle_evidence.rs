@@ -1,13 +1,3 @@
-//! Explicit, machine-local permit for CID1 lifecycle evidence collection.
-//!
-//! This is deliberately separate from every ordinary product activation latch.
-//! It exists only so the repository-owned lifecycle owner can collect the live
-//! S/D/M evidence required to decide whether those latches may later be changed.
-//! A caller must opt in with an immutable, content-addressed permit carrying two
-//! fresh nonces and bindings to the exact arm request, owner profile, contract,
-//! and supported executable. Missing, malformed, moved, or changed permits fail
-//! closed.
-
 use std::path::PathBuf;
 
 use crate::campaign_identity::Sha256;
@@ -45,8 +35,6 @@ fn value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     line.strip_prefix(key)?.strip_prefix('=')
 }
 
-/// Returns true only for the repository-owned, nonce-bound lifecycle evidence
-/// permit. It never consults or alters an ordinary product activation latch.
 pub fn cid1_lifecycle_evidence_permit_enabled() -> bool {
     if !matches!(
         std::env::var(CID1_LIFECYCLE_EVIDENCE_ENABLE_ENV).as_deref(),

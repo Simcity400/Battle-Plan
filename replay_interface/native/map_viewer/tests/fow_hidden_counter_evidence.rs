@@ -1,14 +1,4 @@
-//! Wave-9 hidden-counter evidence gate.
-//!
-//! CAPTURE source: `%LOCALAPPDATA%/hoi4_renderdoc/mined/hoi4_frame69592`
-//! (FoW ON) and `hoi4_frame71288` (FoW OFF). Draw families are identified by
-//! the bound resource descriptors documented in `lane_reports/w9-fow-producer`:
-//! land base 198x27, land overlay 30x20, naval base 222x36. WVP xy lives at
-//! bytes 48..56 of buffer 647577 CB-write blobs; the corrected evidence chunks
-//! are 35813/35824 and 36070/36081, not their following draw chunks.
 
-/// The crate's gate table, included so this test resolves the evidence store
-/// through EXACTLY the candidate list the build-time probe used.
 #[allow(dead_code)]
 mod corpus {
     include!("../test_gates.rs");
@@ -199,8 +189,6 @@ fn counter_frame_evidence(frame_dir: &Path) -> TestResult<CounterFrameEvidence> 
     Ok(evidence)
 }
 
-// Was a static `#[ignore]`, so it never ran under the standing `Mode Final`
-// gate even on a machine that holds the mined store.
 #[test]
 #[cfg_attr(not(gate_renderdoc_mined), ignore = "the mined RenderDoc evidence store (set BATTLE_PLAN_RENDERDOC_MINED, else %LOCALAPPDATA%\\hoi4_renderdoc\\mined)")]
 fn wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes() {
@@ -218,8 +206,6 @@ fn wave9_hidden_counter_gate_reads_draws_and_wvp_cb_writes() {
     assert_eq!(off.land_wvp_xy.difference(&on.land_wvp_xy).count(), 10);
     assert_eq!(on.land_wvp_xy.difference(&off.land_wvp_xy).count(), 0);
 
-    // Corrected CAPTURE attribution: bytes are in the CB-write members, not
-    // the following draw chunks 35818 and 36075.
     let first = read_zip_member(
         &root.join("hoi4_frame71288").join("cb_blobs.zip"),
         "35813_647577.bin",

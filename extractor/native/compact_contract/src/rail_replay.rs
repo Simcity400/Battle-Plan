@@ -1,12 +1,3 @@
-//! Domain 81 `rail_replay_state_live` payload contract.
-//!
-//! The payload is a pointer-free full snapshot of the exact data consumed by
-//! the pinned a729 `CRailwayGfx` rebuild: one engine-selected world anchor per
-//! rail province and the ordered `(neighbor_province_id, edge_level)` rows from
-//! that province's `RailwayInfo`. The renderer joins reciprocal rows and uses
-//! `min(level_a, level_b)`; the wire deliberately preserves both directed
-//! values so that law can be replayed mechanically.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOMAIN_ID: u16 = 81;
@@ -15,8 +6,6 @@ pub const PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"RRL1");
 pub const PAYLOAD_VERSION_V1: u16 = 1;
 pub const PAYLOAD_VERSION_V2: u16 = 2;
 pub const PAYLOAD_VERSION_V3: u16 = 3;
-/// V3 replaces the invalid UI-owned cached-frame source with raw simulation
-/// rows. V1/V2 remain decode-only compatibility formats.
 pub const PAYLOAD_VERSION: u16 = PAYLOAD_VERSION_V3;
 pub const HEADER_LEN: usize = 40;
 pub const ROW_LEN: usize = 32;
@@ -29,19 +18,9 @@ pub const ROW_FLAG_ACTIVE_TERMINAL: u8 = 1;
 pub const ROW_FLAG_HUB_SUBTYPE: u8 = 1;
 pub const ROW_FLAG_HUB_NAVAL_OVERLAY_VISIBLE: u8 = 1 << 1;
 pub const ROW_FLAG_HUB_KNOWN: u8 = ROW_FLAG_HUB_SUBTYPE | ROW_FLAG_HUB_NAVAL_OVERLAY_VISIBLE;
-/// A v1 fallback explicitly distinguishes unavailable from a measured-empty
-/// hub set. The promoted collector emits this only when its complete
-/// authenticated owner-vector double-read cannot be obtained.
 pub const PAYLOAD_FLAG_HUB_FRAMES_UNAVAILABLE: u32 = 1;
-/// Historical schema-v2 presentation-cache completeness bit. V2 is
-/// decode-only and is not a production authority.
 pub const PAYLOAD_FLAG_HUB_FRAMES_COMPLETE: u32 = 1 << 1;
-/// Schema v3 contains a complete, pointer-free snapshot of the raw simulation
-/// inputs required by the pinned supply-node rendering law.
 pub const PAYLOAD_FLAG_HUB_SIMULATION_COMPLETE: u32 = 1 << 2;
-/// Frozen Wave 2 exact-ten authority for D81. These hashes are duplicated in
-/// `D81_PROMOTION_MANIFEST_20260720.json`; changing any input requires a new
-/// reviewed promotion manifest rather than silently moving the authority.
 pub const D81_EXACT10_REEXPORT_RECEIPT_SHA256: &str =
     "00108a3ce3a5419d3ce9c161af810f9540e711adbb703d7fb44e05ad95f1e4f4";
 pub const D81_EXACT10_POOL_RECEIPT_SHA256: &str =
@@ -61,8 +40,6 @@ pub const D81_OWNER_SUPPLEMENT_PCODE_MANIFEST_SHA256: &str =
 pub const D81_OWNER_SUPPLEMENT_NO_PCODE_MANIFEST_SHA256: &str =
     "bc0a7c92bb400a5505b92ea4c0d490b14f97bb82593bda8ca6c246d7347d8840";
 
-/// V2 cached-frame capture is retained solely for decoding historical local
-/// evidence. Its source is UI-owned and is not a production authority.
 pub const HUB_FRAME_OWNER_ROUTE_PROMOTED: bool = false;
 pub const HUB_FRAME_V2_ENCODER_PROMOTED: bool = false;
 pub const HUB_FRAME_V2_FOLD_PROMOTED: bool = false;
@@ -72,8 +49,6 @@ pub const MAX_PROVINCES: usize = 20_000;
 pub const MAX_NEIGHBORS_PER_PROVINCE: usize = 64;
 pub const MAX_RAIL_ROWS: usize = MAX_PROVINCES * (MAX_NEIGHBORS_PER_PROVINCE + 1);
 pub const MAX_HUB_FRAMES: usize = MAX_PROVINCES * 2;
-/// The sparse per-country supply tables are bounded independently from the
-/// province carrier. Each logical simulation row consumes two physical
 /// 32-byte rows so the existing row ABI stays fixed.
 pub const MAX_HUB_SIMULATION_ROWS: usize = MAX_PROVINCES * 64;
 pub const MAX_ROWS: usize = MAX_RAIL_ROWS + MAX_HUB_SIMULATION_ROWS * 2;
@@ -94,17 +69,11 @@ pub struct RailNeighborState {
 pub struct RailProvinceState {
     pub province_id: u32,
     pub active_terminal: bool,
-    /// 0 selects `CProvince+0x14e4`; 1 selects `CProvince+0x14f0`.
     pub anchor_variant: u8,
-    /// Raw IEEE-754 f32 bits in engine x/y/z order.
     pub anchor_bits: [u32; 3],
-    /// Exact engine order. No numeric ordering is imposed because the renderer
-    /// consumes producer order; only uniqueness is required.
     pub neighbors: Vec<RailNeighborState>,
 }
 
-/// Historical pointer-free schema-v2 presentation-cache state. Retained for
-/// decoding local evidence only; production v3 does not capture these values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RailHubFrameState {
     pub province_id: u32,
@@ -114,11 +83,6 @@ pub struct RailHubFrameState {
     pub naval_overlay_visible: bool,
 }
 
-/// Raw simulation inputs for one `(pov country, province, subtype)` identity.
-///
-/// No selected province, effective render country, UI cache, or derived frame
-/// is present. The replay consumer supplies viewer inputs independently and
-/// applies the pinned rendering law mechanically.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RailHubSimulationState {
     pub pov_country_id: u32,
@@ -135,7 +99,6 @@ pub struct RailHubSimulationState {
     pub fallback_record: bool,
 }
 
-/// decode-only v2 compatibility and pinned-law tests; v3 does not capture it.
 pub fn common_icon_frame_from_selector(selector: u32) -> Option<u8> {
     match selector {
         0 => Some(1),
@@ -185,9 +148,6 @@ pub fn encode_payload(
     )
 }
 
-/// Encode an authenticated, complete D81 snapshot. This function is only the
-/// pointer-free carrier seam. The collector calls it only when its complete
-/// authenticated double-read returns `Some`, including measured empty.
 pub fn encode_payload_with_hub_frames(
     provinces: &[RailProvinceState],
     hub_frames: &[RailHubFrameState],
@@ -212,11 +172,6 @@ pub fn encode_payload_with_hub_frames(
     )
 }
 
-/// Encode the production D81 v3 simulation-source snapshot.
-///
-/// A successful call always carries a complete simulation row set, including
-/// the measured-empty case. Acquisition failure is represented by the
-/// enclosing domain's H4DG terminal outcome, never by a partial D81 payload.
 pub fn encode_payload_with_hub_simulation(
     provinces: &[RailProvinceState],
     rows: &[RailHubSimulationState],

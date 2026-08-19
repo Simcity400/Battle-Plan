@@ -17,19 +17,11 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import parse_market_extra as pmx  # noqa: E402
-import parse_deployment as pdep   # noqa: E402
+import parse_market_extra as pmx
+import parse_deployment as pdep
 
 
-# ---------------------------------------------------------------------------
-# Synthetic melts
-# ---------------------------------------------------------------------------
 
-# Market: an equipments index for the archetype join; a top-level
-# equipment_market with one contract (price_levels empty, like the real save) +
-# a requests list; per-country equipment_market for ROM (a subsidy to CZE) and
-# HUN (a trigger-targeted subsidy, no targets list). GER market_stockpile is
-# present to confirm it is SKIPPED (owned by market.json), not double-emitted.
 MARKET_SYN = """
 date=1940.9.10.13
 version="Operation Postern v1.19.1.0"
@@ -102,13 +94,6 @@ countries={
 """
 
 
-# Deployment: equipments index; ENG with a deployment conveyor (1 line, training
-# set + equipment-in-transit) PLUS the sibling deployment SETTINGS (must be
-# skipped) and a reinforcement priority; FRA with a conveyor line that has only
-# max_training (no `training` key, like the real Paratroopers line) and 2 equips;
-# TUR with an EMPTY reinforcement block and exact empty queue; SOV with a
-# lent (expeditionary) division (logical_country=ENG inside SOV's units), plus a
-# normal SOV-owned division.
 DEPLOY_SYN = """
 date=1940.9.10.13
 version="Operation Postern v1.19.1.0"
@@ -212,20 +197,15 @@ def _build_deploy():
     return outputs["deployment.json"], report
 
 
-# ---------------------------------------------------------------------------
-# (a) MARKET EXTRA: price-levels / subsidies / requests
-# ---------------------------------------------------------------------------
 
 def test_market_contract_price_levels_block_present_but_empty():
     out, _ = _build_market()
     st = out["meta"]["stats"]
-    # one contract carrying a (empty) price_levels block
     assert st["contracts_with_price_levels_block"] == 1
     assert st["contract_price_level_entries"] == 0
     assert st["nonempty_price_level_entries"] == 0
     c = out["contracts"][0]
     assert c["seller"] == "ENG" and c["buyer"] == "FRA"
-    # read_id_block returns a tuple in-memory (JSON-serializes as [126, 81]).
     assert tuple(c["contract_id"]) == (126, 81)
     assert c["price_levels"] == []
 
@@ -253,17 +233,14 @@ def test_market_subsidy_trigger_variant():
     s = hun["subsidies"][0]
     assert s["cic"] == 1000.0
     assert s["archetype"] == "small_plane_airframe"
-    assert s["targets"] == []                     # trigger-targeted, no list
+    assert s["targets"] == []
     assert s["trigger"] == "is_allied_seller_trigger"
 
 
 def test_market_does_not_emit_stockpile_or_automation():
     out, _ = _build_market()
-    # GER only has a stockpile + automation (no price_levels content / subsidies)
-    # -> NOT carried here (that is market.json's job). BUL likewise.
     assert "GER" not in out["countries"]
     assert "BUL" not in out["countries"]
-    # the two real subsidy countries ARE present
     assert set(out["countries"]) == {"ROM", "HUN"}
     assert out["meta"]["stats"]["country_subsidies"] == 2
 
@@ -276,19 +253,15 @@ def test_market_no_path_leak():
     assert out["meta"]["save_date"] == "1940.9.10.13"
 
 
-# ---------------------------------------------------------------------------
-# (b) DEPLOYMENT conveyor
-# ---------------------------------------------------------------------------
 
 def test_deploy_conveyor_counts():
     out, _ = _build_deploy()
     st = out["meta"]["stats"]
     assert out["meta"]["military_deployment_line_index"] == "9001"
     assert out["meta"]["military_deployment_conveyor_index"] == "501"
-    assert st["countries_with_conveyor"] == 2          # ENG, FRA
+    assert st["countries_with_conveyor"] == 2
     assert st["total_conveyors"] == 2
     assert st["total_deploying_unit_lines"] == 2
-    # ENG line: 2 equips; FRA line: 2 equips -> 4
     assert st["total_equipment_in_transit_entries"] == 4
 
 
@@ -319,10 +292,8 @@ def test_deploy_line_without_training_key():
     out, _ = _build_deploy()
     fra = out["countries"]["FRA"]
     ln = fra["conveyors"][0]["lines"][0]
-    # the real Paratroopers line has only max_training, no `training` key
     assert ln["training"] is None
     assert ln["max_training"] == 0.9455
-    # unknown equip id 99999 -> archetype null + counted
     arches = {e["archetype"] for e in ln["equipment_in_transit"]}
     assert None in arches
     assert out["meta"]["stats"]["unknown_equipment_ids"] == 1
@@ -330,8 +301,6 @@ def test_deploy_line_without_training_key():
 
 def test_deploy_skips_settings_blocks():
     out, _ = _build_deploy()
-    # ENG's deployment also had default_hq_template / unit_modifiers /
-    # unlocked_subunits / initial_carrier_air_wing_deployment -> none leak in.
     eng = out["countries"]["ENG"]
     assert set(eng.keys()) == {"queue_complete", "reinforcement_priority", "conveyors",
                                "conveyor_count"}
@@ -344,21 +313,15 @@ def test_deploy_reinforcement_priority():
     assert out["countries"]["ENG"]["reinforcement_priority"] == 3
     assert out["countries"]["FRA"]["reinforcement_priority"] == 2
     assert out["countries"]["SOV"]["reinforcement_priority"] == 1
-    # TUR has an EMPTY reinforcement block and no conveyor.  It is retained as
-    # an exact proven-empty queue instead of being confused with unreadable.
     assert out["countries"]["TUR"]["queue_complete"] is True
     assert out["countries"]["TUR"]["conveyors"] == []
     assert out["meta"]["stats"]["countries_with_reinforcement_priority"] == 3
 
 
-# ---------------------------------------------------------------------------
-# (c) LEGACY EXPEDITIONARY (owner != controller)
-# ---------------------------------------------------------------------------
 
 def test_expeditionary_lent_division_detected():
     out, _ = _build_deploy()
     st = out["meta"]["stats"]
-    # ENG owns 1 division controlled by SOV (logical_country=ENG inside SOV).
     assert st["expeditionary_pairs"] == 1
     assert st["expeditionary_divisions"] == 1
     e = out["expeditionary"][0]
@@ -371,8 +334,6 @@ def test_expeditionary_lent_division_detected():
 
 def test_expeditionary_own_units_not_flagged():
     out, _ = _build_deploy()
-    # ENG's own division (id 10, logical_country=ENG inside ENG) and SOV's own
-    # (id 21) are NOT expeditionary. 3 land divisions scanned total.
     assert out["meta"]["stats"]["divisions_scanned"] == 3
     pairs = {(e["owner"], e["controller"]) for e in out["expeditionary"]}
     assert ("ENG", "ENG") not in pairs
@@ -387,9 +348,6 @@ def test_deploy_no_path_leak():
     assert "DEPLOYMENT" in report.upper()
 
 
-# ---------------------------------------------------------------------------
-# OPTIONAL: cross-check against the real campaign melt if present
-# ---------------------------------------------------------------------------
 
 _MELT = (Path(__file__).resolve().parent.parent
          / "re_scratch" / "campaign_melt_1940.txt")
@@ -403,10 +361,9 @@ def test_real_melt_market_extra_if_present():
     out = outputs["market_extra.json"]
     st = out["meta"]["stats"]
     assert st["contracts_with_price_levels_block"] == 7
-    assert st["nonempty_price_level_entries"] == 0            # auto-price world
-    assert st["pending_requests"] == 1                # request id 144
+    assert st["nonempty_price_level_entries"] == 0
+    assert st["pending_requests"] == 1
     assert out["requests"] == [144]
-    # 4 subsidy countries: HUN, PER, ROM, YUG
     assert set(out["countries"]) == {"HUN", "PER", "ROM", "YUG"}
     assert st["country_subsidies"] == 4
     assert out["countries"]["ROM"]["subsidies"][0]["targets"] == ["CZE"]
@@ -427,11 +384,9 @@ def test_real_melt_deployment_if_present():
     assert st["total_deploying_unit_lines"] == 57
     assert st["total_equipment_in_transit_entries"] == 226
     assert st["countries_with_reinforcement_priority"] == 45
-    # no active expeditionary forces in this save; 1654 land divisions scanned
     assert st["expeditionary_pairs"] == 0
     assert st["divisions_scanned"] == 1654
     assert st["unknown_equipment_ids"] == 0
-    # known ENG conveyor
     eng = out["countries"]["ENG"]
     names = {c["name"] for c in eng["conveyors"]}
     assert "Infantry 1936 L" in names
@@ -449,7 +404,7 @@ def _run_standalone():
         except AssertionError as exc:
             failed += 1
             print(f"FAIL {name}: {exc}")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failed += 1
             print(f"ERROR {name}: {exc!r}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")

@@ -1,11 +1,3 @@
-//! Fail-closed, pointer-free receipt for one generic GUI paint scope.
-//!
-//! This module deliberately does not classify unit counters. It authenticates
-//! the generic outer GUI traversal, one already byte-gated final-draw wrapper,
-//! authored GUI identity supplied by the owner resolver, and every D3D payload
-//! hash in one selected Present. A caller may submit the resulting receipt to
-//! D80/UI assembly only after `materialize_gui_paint_receipt` succeeds.
-
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{HudCommand, RenderTargetDesc};
 use serde::{Deserialize, Serialize};
@@ -21,16 +13,12 @@ use crate::{
 
 pub const GUI_RENDER_2D_TREE_RVA: u32 = 0x0222_84b0;
 pub const GUI_RENDER_2D_TREE_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
-    0x57,
+    0x48, 0x89, 0x5c, 0x24, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
 ];
 pub const GUI_RENDER_2D_TREE_INSTRUCTIONS_SHA256: &str =
     "e85d8e23b8f5f869287654827c4bb0d60cd691916ed2d540e305e895b6e4280e";
 pub const GUI_RENDER_2D_TREE_EVIDENCE_MANIFEST_SHA256: &str =
     "0b1f8e644087b46b5dfbd69252b2160d73ab56b500905a7923fc6a097ab0722d";
-/// Frozen exact-10 replacement authority for the retained CAP6 executable
-/// findings. These receipts authenticate static RE provenance only; they are
-/// deliberately insufficient to activate live owner/path-to-draw capture.
 pub const GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256: &str =
     "00108a3ce3a5419d3ce9c161af810f9540e711adbb703d7fb44e05ad95f1e4f4";
 pub const GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256: &str =
@@ -52,47 +40,28 @@ pub const GUI_PAINT_EXACT10_CAP6_ARTIFACTS_SHA256: [&str; 11] = [
     "54d753943aabdabd6a7ccf6222bc7b14a71c60679ad916d866329487c17af887",
     "74ba4709ad0c169547f4b07f8abad42d79e7a4488175af3ecebfd9b8731491bb",
 ];
-pub const GUI_PAINT_A729_EXECUTABLE_SHA256: &str =
-    portable_render_stream::A729_EXECUTABLE_SHA256;
-/// Exact a729 primary and secondary `CUnitCounterItem` vtable RVAs.  These
-/// come from the constructor at RVA `0x018BE360`; they classify a live owner
-/// object only and are never a substitute for the owner/path-to-draw receipt.
+pub const GUI_PAINT_A729_EXECUTABLE_SHA256: &str = portable_render_stream::A729_EXECUTABLE_SHA256;
 pub const A729_UNIT_COUNTER_ITEM_PRIMARY_VTABLE_RVA: u32 = 0x029F_F890;
 pub const A729_UNIT_COUNTER_ITEM_SECONDARY_VTABLE_RVA: u32 = 0x029F_F930;
-/// Constructor-written discriminator at `CUnitCounterItem + 0x180`.
 pub const A729_UNIT_COUNTER_ITEM_KIND_OFFSET: usize = 0x180;
-/// The schema/materializer is complete, but no retained or live observation
-/// yet authenticates a GUI owner/path scope to these final-draw wrappers.
-/// Production must remain zero-draw until the live producer flips this only
-/// after recording and revalidating such a receipt.
 pub const GUI_PAINT_LIVE_RECEIPT_PROVEN: bool = false;
-/// Filled only after an authority-gated owner-control observation exists.
-/// `None` keeps activation mechanically impossible in this build.
 pub const GUI_PAINT_AUTHORITY_MANIFEST_SHA256: Option<&str> = None;
-/// Filled only after a controlled same-Present owner/path-to-draw receipt has
-/// been observed. It may not be substituted by a texture/ordinal classifier.
 pub const GUI_PAINT_CONTROL_OBSERVATION_SHA256: Option<&str> = None;
 
 const MAX_ACTIVE_GUI_PAINT_SCOPES: usize = 64;
 const MAX_PENDING_GUI_PAINT_PRESENTS: usize = 8;
 const MAX_PENDING_GUI_PAINT_RECEIPTS: usize = 16_384;
 const MAX_COMPLETED_GUI_PAINT_FRONTIERS: usize = 8;
-/// Bound raw lowerings retained under one owner operation. The portable
-/// operation ordinal is shared by every lowering in that scope; A25 mixed
-/// glyph/icon text may therefore contain more than one D3D draw.
 const MAX_DRAWS_PER_GUI_PAINT_CANDIDATE_SCOPE: usize = MAX_PENDING_GUI_PAINT_RECEIPTS;
 
 const DRAW_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x8b, 0xf8, 0x8b, 0xda,
-    0x85,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x8b, 0xf8, 0x8b, 0xda, 0x85,
 ];
 const DRAW_INDEXED_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x8b, 0xf9, 0x8b, 0xda,
-    0x85,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x41, 0x8b, 0xf9, 0x8b, 0xda, 0x85,
 ];
 const INSTANCED_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x30, 0x41, 0x8b, 0xf8, 0x8b, 0xda,
-    0x85,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x30, 0x41, 0x8b, 0xf8, 0x8b, 0xda, 0x85,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,10 +129,6 @@ impl GuiPaintFinalDrawHook {
     }
 }
 
-/// The exact hook bytes observed before a scope is accepted. The outer hook is
-/// a traversal boundary, not a counter discriminator; the final-draw hook only
-/// authenticates lowering. The pointer-bearing owner join below is still
-/// mandatory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawGuiPaintHookReceipt {
     pub executable_sha256: String,
@@ -177,9 +142,6 @@ pub struct RawGuiPaintHookReceipt {
     pub final_draw_sentinel: [u8; 16],
 }
 
-/// Extractor-local identity observation. Pointers are used only to prove that
-/// the owner resolver, runtime root, and graphical traversal refer to the same
-/// live scope; none is copied into `GuiPaintReceipt`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawGuiPaintOwnerObservation {
     pub owner_observation_sequence: u64,
@@ -200,8 +162,6 @@ pub struct RawGuiPaintOwnerObservation {
     pub paint_ordinal: u32,
 }
 
-/// Authenticated object kinds selected by the exact a729
-/// `CUnitCounterItem` constructor before it resolves the authored GUI tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum A729UnitCounterOwnerKind {
@@ -229,15 +189,6 @@ impl A729UnitCounterOwnerKind {
     }
 }
 
-/// Classify one live a729 counter owner after the owner resolver has read the
-/// primary vtable, secondary vtable, and constructor discriminator from the
-/// same object.  The portable GUI identity is also required to prove the
-/// effective-VFS definition, runtime root, and authored surface.
-///
-/// This deliberately does not inspect texture hashes, tint values, or fixed
-/// UI ordinals.  Success identifies the owner kind but still does not grant
-/// draw authority: the enclosing same-Present frontier must independently
-/// pass `materialize_gui_paint_frontier` and the frozen live authority latch.
 pub fn classify_a729_unit_counter_owner(
     owner: &RawGuiPaintOwnerObservation,
     secondary_vtable_rva: u32,
@@ -250,8 +201,7 @@ pub fn classify_a729_unit_counter_owner(
         return Err("GUI paint owner is not the exact a729 CUnitCounterItem type".into());
     }
     let kind = A729UnitCounterOwnerKind::from_discriminator(constructor_kind)?;
-    if owner.selected_gui_definition.normalized_game_relative_path
-        != "interface/mapicons.gui"
+    if owner.selected_gui_definition.normalized_game_relative_path != "interface/mapicons.gui"
         || owner.runtime_root != "mapicons_container"
         || owner.authored_surface_identity != kind.authored_surface()
     {
@@ -260,9 +210,6 @@ pub fn classify_a729_unit_counter_owner(
     Ok(kind)
 }
 
-/// Pointer-free fingerprint of one exact D3D lowering inside the GUI scope.
-/// Aggregate hashes cover exact ordered bindings, including valid empty lists;
-/// the member lists make shader/resource/CB provenance independently auditable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintDrawFingerprint {
@@ -282,9 +229,6 @@ pub struct GuiPaintDrawFingerprint {
     pub draw_payload_sha256: String,
 }
 
-/// One raw paint-scope observation. Entry/exit sequences come from the outer
-/// GUI hook; draw sequences come from the byte-gated final-draw hook. Exact
-/// adjacency is required, so an interleaved or partially observed scope fails.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawGuiPaintObservation {
     pub hooks: RawGuiPaintHookReceipt,
@@ -303,21 +247,12 @@ pub struct RawGuiPaintObservation {
     pub expected_first_ui_ordinal: u32,
     pub expected_last_ui_ordinal: u32,
     pub complete_ui_operation_count: u32,
-    /// Exact selected UI-pass target observed with this owner scope. Every
-    /// draw fingerprint must bind its canonical descriptor digest.
     pub selected_ui_pass_target: RenderTargetDesc,
-    /// Generic non-A25 command materialized from the same raw D3D scope. A25
-    /// text leaves this absent and is materialized only after the owner-glyph
-    /// join. No placeholder command is permitted.
     pub pre_materialized_command: Option<HudCommand>,
     pub owner: RawGuiPaintOwnerObservation,
     pub draws: Vec<GuiPaintDrawFingerprint>,
 }
 
-/// Hook-time observation buffered under the concrete Present candidate before
-/// the hour-level selector can know which candidate is authoritative. The
-/// selected-Present digest is deliberately absent and is injected only by the
-/// deferred materializer after the a729 selection receipt recomputes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawGuiPaintCandidateObservation {
     pub hooks: RawGuiPaintHookReceipt,
@@ -365,7 +300,6 @@ pub struct GuiPaintDrawOrdinalSpan {
     pub draw_count: u32,
 }
 
-/// Portable admission receipt produced before D80/UI carrier emission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintReceipt {
@@ -391,9 +325,6 @@ pub struct GuiPaintReceipt {
     pub receipt_sha256: String,
 }
 
-/// Complete zero-through-N-minus-one UI frontier for one selected Present.
-/// D80/UI assembly should accept this wrapper, never an unvalidated loose list
-/// of command receipts.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintReceiptFrontier {
@@ -410,8 +341,6 @@ pub struct GuiPaintReceiptFrontier {
     pub frontier_sha256: String,
 }
 
-/// Validate and erase every process pointer. No asset, ordinal interval, CB
-/// value, or replay UID is interpreted as a widget role here.
 pub fn materialize_gui_paint_receipt(
     raw: RawGuiPaintObservation,
 ) -> Result<GuiPaintReceipt, String> {
@@ -435,7 +364,9 @@ pub fn materialize_gui_paint_receipt(
         || raw.nested_scope_count != 0
         || raw.intervening_non_draw_event_count != 0
     {
-        return Err("GUI paint scope is nested, interleaved, or has invalid entry/exit order".into());
+        return Err(
+            "GUI paint scope is nested, interleaved, or has invalid entry/exit order".into(),
+        );
     }
     let draw_count = u32::try_from(raw.draws.len())
         .map_err(|_| "GUI paint draw count exceeds u32".to_string())?;
@@ -498,17 +429,12 @@ pub fn materialize_gui_paint_receipt(
 }
 
 impl GuiPaintReceipt {
-    /// Revalidate a deserialized receipt immediately before UI carrier
-    /// emission. This catches mutation, truncation, reordering, or a receipt
-    /// copied across Present/epoch boundaries.
     pub fn validate_for_emission(&self) -> Result<(), String> {
         if self.executable_sha256 != GUI_PAINT_A729_EXECUTABLE_SHA256
-            || self.exact10_reexport_receipt_sha256
-                != GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
+            || self.exact10_reexport_receipt_sha256 != GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
             || self.exact10_job_bindings_sha256 != GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256
             || self.exact10_pool_status_sha256 != GUI_PAINT_EXACT10_POOL_STATUS_SHA256
-            || self.exact10_identity_manifest_sha256
-                != GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
+            || self.exact10_identity_manifest_sha256 != GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
             || self.process_start_nonce == 0
             || self.hook_epoch_nonce == 0
             || self.selected_submit_index == 0
@@ -538,19 +464,14 @@ impl GuiPaintReceipt {
             .map_err(|_| "GUI paint receipt draw count exceeds u32".to_string())?;
         if count == 0
             || self.draw_ordinal_span.draw_count != count
-            || self.draw_ordinal_span.last_ui_ordinal
-                != self.draw_ordinal_span.first_ui_ordinal
+            || self.draw_ordinal_span.last_ui_ordinal != self.draw_ordinal_span.first_ui_ordinal
             || self.identity.paint_ordinal != self.draw_ordinal_span.first_ui_ordinal
             || self.draw_ordinal_span.last_ui_ordinal >= self.complete_ui_operation_count
         {
             return Err("GUI paint portable ordinal span/frontier is invalid".into());
         }
-        validate_portable_draws(
-            &self.ordered_draws,
-            self.draw_ordinal_span.first_ui_ordinal,
-        )?;
-        if sha256_json(&self.ordered_draws, "ordered GUI paint draws")?
-            != self.ordered_draws_sha256
+        validate_portable_draws(&self.ordered_draws, self.draw_ordinal_span.first_ui_ordinal)?;
+        if sha256_json(&self.ordered_draws, "ordered GUI paint draws")? != self.ordered_draws_sha256
         {
             return Err("GUI paint ordered-draw digest mismatch".into());
         }
@@ -562,9 +483,6 @@ impl GuiPaintReceipt {
     }
 }
 
-/// Assemble the only admissible input to UI carrier emission. Gaps,
-/// duplicates, overlaps, cross-Present rows, and interleaved global draw order
-/// reject the complete frontier.
 pub fn materialize_gui_paint_frontier(
     ordered_receipts: Vec<GuiPaintReceipt>,
 ) -> Result<GuiPaintReceiptFrontier, String> {
@@ -675,9 +593,6 @@ pub struct GuiPaintActivationAuthority {
     pub hook_set_receipt_sha256: String,
 }
 
-/// Authority for the one-time control probe used to obtain the missing live
-/// owner/path-to-draw observation.  This mode can produce a diagnostic receipt
-/// but can never feed D80/UI or satisfy production activation by itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuiPaintControlProbeAuthority {
     pub executable_sha256: String,
@@ -688,18 +603,12 @@ pub struct GuiPaintControlProbeAuthority {
     pub exact10_pool_status_sha256: String,
     pub exact10_identity_manifest_sha256: String,
     pub hook_set_receipt_sha256: String,
-    /// Hash of the immutable harness request which names the selected GUI
-    /// definition/root and capture boundary. It is evidence metadata only.
     pub probe_request_sha256: String,
     pub probe_nonce: u64,
-    /// Private constructor seal binding this authority to the recomputed
-    /// selected-Present receipt. External callers cannot mint this field.
     selected_runtime_binding_sha256: String,
 }
 
 impl GuiPaintControlProbeAuthority {
-    /// Bind the control probe to the same selected Present and early-launch
-    /// hook set already authenticated by the production render runtime.
     #[cfg(windows)]
     pub fn from_selected_render_frame(
         selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
@@ -707,7 +616,11 @@ impl GuiPaintControlProbeAuthority {
         probe_nonce: u64,
     ) -> Result<Self, String> {
         crate::a729_hook::validate_selected_render_frame_receipt(selected)?;
-        selected.selected.runtime.catalog.validate_launch_binding()?;
+        selected
+            .selected
+            .runtime
+            .catalog
+            .validate_launch_binding()?;
         let frame = &selected.selected.frame;
         let catalog = &selected.selected.runtime.catalog;
         if catalog.process.executable_sha256 != GUI_PAINT_A729_EXECUTABLE_SHA256
@@ -766,9 +679,6 @@ pub enum GuiPaintInstrumentationMode {
     Production,
 }
 
-/// Pointer-free output of control-probe mode. `promotion_allowed` is a frozen
-/// false field, not a caller option. A later reviewed source change must bind
-/// the accepted receipt hash into the production constants separately.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GuiPaintControlObservationReceipt {
@@ -794,12 +704,10 @@ impl GuiPaintControlObservationReceipt {
         if self.schema != "hoi4.a729.gui-paint-control-observation.v1"
             || self.promotion_allowed
             || self.executable_sha256 != GUI_PAINT_A729_EXECUTABLE_SHA256
-            || self.exact10_reexport_receipt_sha256
-                != GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
+            || self.exact10_reexport_receipt_sha256 != GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
             || self.exact10_job_bindings_sha256 != GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256
             || self.exact10_pool_status_sha256 != GUI_PAINT_EXACT10_POOL_STATUS_SHA256
-            || self.exact10_identity_manifest_sha256
-                != GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
+            || self.exact10_identity_manifest_sha256 != GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
             || self.probe_nonce == 0
             || self.buffered_candidate_observation_count == 0
         {
@@ -836,10 +744,7 @@ impl GuiPaintControlObservationReceipt {
             selected_submit_index: self.frontier.selected_submit_index,
             selected_frame_sequence: self.frontier.selected_frame_sequence,
             selected_present_global_order: self.frontier.selected_present_global_order,
-            selected_present_receipt_sha256: self
-                .frontier
-                .selected_present_receipt_sha256
-                .clone(),
+            selected_present_receipt_sha256: self.frontier.selected_present_receipt_sha256.clone(),
         };
         if control_probe_runtime_binding_sha256(
             &self.executable_sha256,
@@ -873,10 +778,6 @@ pub struct GuiPaintPresentKey {
 }
 
 impl GuiPaintPresentKey {
-    /// Construct the key only after recomputing the current a729 runtime's
-    /// selected-Present receipt. This is the supported hook path; copying
-    /// retained ordinals or pointers into the public wire shape is rejected by
-    /// the recomputation step.
     #[cfg(windows)]
     pub fn from_selected_render_frame(
         selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
@@ -894,8 +795,6 @@ impl GuiPaintPresentKey {
     }
 }
 
-/// Present identity available at hook time, before the hour selector can
-/// compute the selected-Present receipt digest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GuiPaintCandidateKey {
     pub process_start_nonce: u64,
@@ -930,9 +829,6 @@ struct ActiveGuiPaintCandidateScope {
     intervening_non_draw_event_count: u32,
 }
 
-/// Hook-time queue which never guesses a future selection digest. The live
-/// producer owns one instance per process/hook epoch and drains it only after
-/// the selected render receipt is recomputed.
 pub struct GuiPaintCandidateCapture {
     executable_sha256: String,
     process_start_nonce: u64,
@@ -1022,8 +918,7 @@ impl GuiPaintCandidateCapture {
             || draw.global_render_sequence <= scope.start.scope_entry_global_sequence
             || scope.draws.len() >= MAX_DRAWS_PER_GUI_PAINT_CANDIDATE_SCOPE
             || scope.draws.last().is_some_and(|previous| {
-                previous.global_render_sequence.checked_add(1)
-                    != Some(draw.global_render_sequence)
+                previous.global_render_sequence.checked_add(1) != Some(draw.global_render_sequence)
                     || previous.ui_ordinal != draw.ui_ordinal
                     || previous.d3d_capture_sequence >= draw.d3d_capture_sequence
             });
@@ -1047,8 +942,7 @@ impl GuiPaintCandidateCapture {
                 self.telemetry.rejected_scope_count.saturating_add(1);
             return Err("GUI paint candidate non-draw event has no active scope".into());
         };
-        self.telemetry.rejected_scope_count =
-            self.telemetry.rejected_scope_count.saturating_add(1);
+        self.telemetry.rejected_scope_count = self.telemetry.rejected_scope_count.saturating_add(1);
         Err("GUI paint candidate scope was interleaved by a non-draw event".into())
     }
 
@@ -1121,19 +1015,19 @@ impl GuiPaintCandidateCapture {
         }
         let candidates = self.completed.drain(..).collect::<Vec<_>>();
         let buffered_count = candidates.len() as u64;
-        let selected_frontier = match materialize_gui_paint_frontier_from_selected(selected, candidates)
-        {
-            Ok(frontier) => frontier,
-            Err(error) => {
-                self.telemetry.discarded_non_selected_observation_count = self
-                    .telemetry
-                    .discarded_non_selected_observation_count
-                    .saturating_add(buffered_count);
-                self.telemetry.rejected_scope_count =
-                    self.telemetry.rejected_scope_count.saturating_add(1);
-                return Err(error);
-            }
-        };
+        let selected_frontier =
+            match materialize_gui_paint_frontier_from_selected(selected, candidates) {
+                Ok(frontier) => frontier,
+                Err(error) => {
+                    self.telemetry.discarded_non_selected_observation_count = self
+                        .telemetry
+                        .discarded_non_selected_observation_count
+                        .saturating_add(buffered_count);
+                    self.telemetry.rejected_scope_count =
+                        self.telemetry.rejected_scope_count.saturating_add(1);
+                    return Err(error);
+                }
+            };
         self.telemetry.selected_observation_count = self
             .telemetry
             .selected_observation_count
@@ -1232,10 +1126,6 @@ pub fn materialize_gui_paint_frontier_from_selected(
     })
 }
 
-/// Materialize hook-time candidates only after the current runtime selects and
-/// authenticates one Present. This is the chronological capture path: hooks
-/// buffer candidate observations without guessing a future selection digest;
-/// the non-selected candidates never receive a portable receipt.
 #[cfg(windows)]
 pub fn materialize_gui_paint_control_observation_from_selected(
     selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
@@ -1279,9 +1169,7 @@ pub fn materialize_gui_paint_control_observation_from_selected(
             selected_submit_index: candidate.candidate_submit_index,
             selected_frame_sequence: candidate.candidate_frame_sequence,
             selected_present_global_order: candidate.candidate_present_global_order,
-            selected_present_receipt_sha256: present
-                .selected_present_receipt_sha256
-                .clone(),
+            selected_present_receipt_sha256: present.selected_present_receipt_sha256.clone(),
             scope_entry_global_sequence: candidate.scope_entry_global_sequence,
             scope_exit_global_sequence: candidate.scope_exit_global_sequence,
             scope_depth_at_entry: candidate.scope_depth_at_entry,
@@ -1302,10 +1190,9 @@ pub fn materialize_gui_paint_control_observation_from_selected(
     }
     let selected_observation_count = u32::try_from(receipts.len())
         .map_err(|_| "GUI paint selected observation count exceeds u32".to_string())?;
-    let discarded_non_selected_candidate_observation_count =
-        buffered_candidate_observation_count
-            .checked_sub(selected_observation_count)
-            .ok_or_else(|| "GUI paint candidate accounting underflowed".to_string())?;
+    let discarded_non_selected_candidate_observation_count = buffered_candidate_observation_count
+        .checked_sub(selected_observation_count)
+        .ok_or_else(|| "GUI paint candidate accounting underflowed".to_string())?;
     let frontier = materialize_gui_paint_frontier(receipts)?;
     seal_gui_paint_control_observation(
         &authority,
@@ -1398,9 +1285,6 @@ fn gui_paint_instrumentation_state() -> &'static Mutex<GuiPaintInstrumentationSt
         .get_or_init(|| Mutex::new(GuiPaintInstrumentationState::default()))
 }
 
-/// Activation is impossible while either frozen authority digest is absent or
-/// while `GUI_PAINT_LIVE_RECEIPT_PROVEN` remains false. This is intentionally a
-/// code-change gate: runtime callers cannot invent authority strings.
 pub fn activate_gui_paint_instrumentation(
     authority: &GuiPaintActivationAuthority,
 ) -> Result<(), String> {
@@ -1420,12 +1304,10 @@ pub fn activate_gui_paint_instrumentation(
         && authority.executable_sha256 == GUI_PAINT_A729_EXECUTABLE_SHA256
         && authority.process_start_nonce != 0
         && authority.hook_epoch_nonce != 0
-        && authority.exact10_reexport_receipt_sha256
-            == GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
+        && authority.exact10_reexport_receipt_sha256 == GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
         && authority.exact10_job_bindings_sha256 == GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256
         && authority.exact10_pool_status_sha256 == GUI_PAINT_EXACT10_POOL_STATUS_SHA256
-        && authority.exact10_identity_manifest_sha256
-            == GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
+        && authority.exact10_identity_manifest_sha256 == GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
         && check_sha256(&authority.authority_manifest_sha256, "authority manifest").is_ok()
         && check_sha256(&authority.control_observation_sha256, "control observation").is_ok()
         && check_sha256(&authority.hook_set_receipt_sha256, "hook-set receipt").is_ok();
@@ -1484,9 +1366,6 @@ pub fn activate_gui_paint_instrumentation(
     Ok(())
 }
 
-/// Arm the exact hook pair for a diagnostic control observation without
-/// changing any production gate. This is the only mode intended before the
-/// CAP6 human discriminator sweeps.
 pub fn activate_gui_paint_control_probe(
     authority: &GuiPaintControlProbeAuthority,
 ) -> Result<(), String> {
@@ -1502,12 +1381,10 @@ pub fn activate_gui_paint_control_probe(
         && authority.process_start_nonce != 0
         && authority.hook_epoch_nonce != 0
         && authority.probe_nonce != 0
-        && authority.exact10_reexport_receipt_sha256
-            == GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
+        && authority.exact10_reexport_receipt_sha256 == GUI_PAINT_EXACT10_REEXPORT_RECEIPT_SHA256
         && authority.exact10_job_bindings_sha256 == GUI_PAINT_EXACT10_JOB_BINDINGS_SHA256
         && authority.exact10_pool_status_sha256 == GUI_PAINT_EXACT10_POOL_STATUS_SHA256
-        && authority.exact10_identity_manifest_sha256
-            == GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
+        && authority.exact10_identity_manifest_sha256 == GUI_PAINT_EXACT10_IDENTITY_MANIFEST_SHA256
         && check_sha256(&authority.hook_set_receipt_sha256, "hook-set receipt").is_ok()
         && check_sha256(&authority.probe_request_sha256, "control-probe request").is_ok()
         && check_sha256(
@@ -1563,18 +1440,13 @@ pub fn gui_paint_product_emission_is_active() -> bool {
     if !gui_paint_instrumentation_is_active() {
         return false;
     }
-    gui_paint_instrumentation_state()
-        .lock()
-        .is_ok_and(|state| {
-            state.activation_authority.is_some()
-                && state.control_probe_authority.is_none()
-                && state.candidate_capture.is_some()
-        })
+    gui_paint_instrumentation_state().lock().is_ok_and(|state| {
+        state.activation_authority.is_some()
+            && state.control_probe_authority.is_none()
+            && state.candidate_capture.is_some()
+    })
 }
 
-/// Start a hook-time GUI scope under its concrete Present candidate. Unlike
-/// `begin_gui_paint_scope`, this production path never accepts or predicts a
-/// selected-Present receipt digest.
 pub fn begin_gui_paint_candidate_scope(
     thread_token: u64,
     start: GuiPaintCandidateScopeStart,
@@ -1649,9 +1521,6 @@ pub fn end_gui_paint_candidate_scope(
         )
 }
 
-/// Recompute selection first, then materialize and publish exactly the GUI
-/// observations belonging to that selected Present. All other candidate rows
-/// are accounted and discarded inside `GuiPaintCandidateCapture`.
 #[cfg(windows)]
 pub fn publish_selected_gui_paint_candidate_frontier(
     selected: &crate::a729_hook::RawSelectedRenderFrameCapture,
@@ -1685,8 +1554,8 @@ pub fn publish_selected_gui_paint_candidate_frontier(
     Ok(frontier_sha256)
 }
 
-pub fn gui_paint_candidate_capture_telemetry(
-) -> Result<GuiPaintCandidateCaptureTelemetry, String> {
+pub fn gui_paint_candidate_capture_telemetry() -> Result<GuiPaintCandidateCaptureTelemetry, String>
+{
     let state = gui_paint_instrumentation_state()
         .lock()
         .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
@@ -1697,14 +1566,7 @@ pub fn gui_paint_candidate_capture_telemetry(
         .ok_or_else(|| "GUI paint production candidate capture is absent".to_string())
 }
 
-/// Start one diagnostic paint scope after owner resolution. Production uses
-/// `begin_gui_paint_candidate_scope` because a hook-time producer cannot know
-/// the future selected-Present receipt digest accepted by this legacy control
-/// shape. `thread_token` is extractor-local and erased before materialization.
-pub fn begin_gui_paint_scope(
-    thread_token: u64,
-    start: GuiPaintScopeStart,
-) -> Result<(), String> {
+pub fn begin_gui_paint_scope(thread_token: u64, start: GuiPaintScopeStart) -> Result<(), String> {
     if !gui_paint_instrumentation_is_active() {
         record_inactive(|telemetry| &mut telemetry.inactive_begin_count);
         return Err("GUI paint instrumentation activation latch is false".into());
@@ -1727,22 +1589,25 @@ pub fn begin_gui_paint_scope(
         .lock()
         .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
     let state = &mut *state;
-    let authority_matches = state.control_probe_authority.as_ref().is_some_and(|authority| {
-        authority.executable_sha256 == start.hooks.executable_sha256
-            && authority.hook_set_receipt_sha256 == start.hooks.hook_set_receipt_sha256
-            && authority.process_start_nonce == start.present.process_start_nonce
-            && authority.hook_epoch_nonce == start.present.hook_epoch_nonce
-            && control_probe_runtime_binding_sha256(
-                &authority.executable_sha256,
-                authority.process_start_nonce,
-                authority.hook_epoch_nonce,
-                &authority.hook_set_receipt_sha256,
-                &authority.probe_request_sha256,
-                authority.probe_nonce,
-                &start.present,
-            )
-            .is_ok_and(|binding| binding == authority.selected_runtime_binding_sha256)
-    });
+    let authority_matches = state
+        .control_probe_authority
+        .as_ref()
+        .is_some_and(|authority| {
+            authority.executable_sha256 == start.hooks.executable_sha256
+                && authority.hook_set_receipt_sha256 == start.hooks.hook_set_receipt_sha256
+                && authority.process_start_nonce == start.present.process_start_nonce
+                && authority.hook_epoch_nonce == start.present.hook_epoch_nonce
+                && control_probe_runtime_binding_sha256(
+                    &authority.executable_sha256,
+                    authority.process_start_nonce,
+                    authority.hook_epoch_nonce,
+                    &authority.hook_set_receipt_sha256,
+                    &authority.probe_request_sha256,
+                    authority.probe_nonce,
+                    &start.present,
+                )
+                .is_ok_and(|binding| binding == authority.selected_runtime_binding_sha256)
+        });
     if !authority_matches {
         bump(
             &mut state.telemetry.invalid_owner_or_hook_drop_count,
@@ -1780,8 +1645,6 @@ pub fn begin_gui_paint_scope(
     Ok(())
 }
 
-/// Record one exact lowering observed while the owner scope is active. Any
-/// hook-kind/order mismatch drops the whole scope immediately.
 pub fn record_gui_paint_draw(
     thread_token: u64,
     draw: GuiPaintDrawFingerprint,
@@ -1832,9 +1695,6 @@ pub fn record_gui_paint_draw(
     Ok(())
 }
 
-/// Non-draw work inside a command makes its one-to-one lowering ambiguous.
-/// The count is retained until end-scope so materialization records the exact
-/// rejection rather than silently truncating the command.
 pub fn note_gui_paint_non_draw_event(thread_token: u64) -> Result<(), String> {
     if !gui_paint_instrumentation_is_active() {
         record_inactive(|telemetry| &mut telemetry.inactive_non_draw_count);
@@ -1870,8 +1730,6 @@ pub fn note_gui_paint_non_draw_event(thread_token: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Close a generic paint scope after its last lowering and queue the portable
-/// receipt under its exact selected Present.
 pub fn end_gui_paint_scope(
     thread_token: u64,
     scope_exit_global_sequence: u64,
@@ -1948,7 +1806,11 @@ pub fn end_gui_paint_scope(
         return Err("GUI paint pending receipt queue is full".into());
     }
     let receipt_sha256 = receipt.receipt_sha256.clone();
-    state.pending_receipts.entry(present).or_default().push(receipt);
+    state
+        .pending_receipts
+        .entry(present)
+        .or_default()
+        .push(receipt);
     bump(
         &mut state.telemetry.materialized_receipt_count,
         &mut state.telemetry.telemetry_counter_overflow_count,
@@ -1956,11 +1818,7 @@ pub fn end_gui_paint_scope(
     Ok(receipt_sha256)
 }
 
-/// PresentEnd is the only publication boundary. Active scopes and receipts for
-/// any other Present are dropped, never carried forward by timing proximity.
-pub fn publish_gui_paint_present_frontier(
-    present: &GuiPaintPresentKey,
-) -> Result<String, String> {
+pub fn publish_gui_paint_present_frontier(present: &GuiPaintPresentKey) -> Result<String, String> {
     if !gui_paint_instrumentation_is_active() {
         record_inactive(|telemetry| &mut telemetry.inactive_present_count);
         return Err("GUI paint instrumentation activation latch is false".into());
@@ -2050,9 +1908,6 @@ pub fn drain_gui_paint_frontiers() -> Result<Vec<GuiPaintReceiptFrontier>, Strin
     Ok(state.completed_frontiers.drain(..).collect())
 }
 
-/// Drain diagnostic observations from control-probe mode. The returned rows
-/// carry an immutable `promotion_allowed=false` and cannot be consumed by the
-/// production frontier drain above.
 pub fn drain_gui_paint_control_observations(
 ) -> Result<Vec<GuiPaintControlObservationReceipt>, String> {
     if !gui_paint_instrumentation_is_active() {
@@ -2062,19 +1917,17 @@ pub fn drain_gui_paint_control_observations(
     let mut state = gui_paint_instrumentation_state()
         .lock()
         .map_err(|_| "GUI paint instrumentation state is poisoned".to_string())?;
-    let authority = state
-        .control_probe_authority
-        .clone()
-        .ok_or_else(|| {
-            "GUI paint control-probe drain is unavailable in production mode".to_string()
-        })?;
+    let authority = state.control_probe_authority.clone().ok_or_else(|| {
+        "GUI paint control-probe drain is unavailable in production mode".to_string()
+    })?;
     if state.activation_authority.is_some() {
         return Err("GUI paint control-probe and production authorities overlap".into());
     }
     let mut observations = Vec::with_capacity(state.completed_frontiers.len());
     for frontier in state.completed_frontiers.drain(..) {
-        let buffered_candidate_observation_count = u32::try_from(frontier.ordered_receipts.len())
-            .map_err(|_| "GUI paint buffered candidate count exceeds u32".to_string())?;
+        let buffered_candidate_observation_count =
+            u32::try_from(frontier.ordered_receipts.len())
+                .map_err(|_| "GUI paint buffered candidate count exceeds u32".to_string())?;
         observations.push(seal_gui_paint_control_observation(
             &authority,
             frontier,
@@ -2113,8 +1966,6 @@ fn seal_gui_paint_control_observation(
     Ok(observation)
 }
 
-/// Disable instrumentation and account for every row that cannot survive
-/// module/process teardown. Returned telemetry is pointer-free.
 pub fn teardown_gui_paint_instrumentation() -> Result<GuiPaintInstrumentationSnapshot, String> {
     GUI_PAINT_INSTRUMENTATION_ACTIVE.store(false, Ordering::Release);
     let mut state = gui_paint_instrumentation_state()
@@ -2253,10 +2104,7 @@ fn validate_selected_ui_target(
         return Err("GUI paint selected UI target has an invalid extent/sample count".into());
     }
     let digest = sha256_json(target, "selected GUI paint target")?;
-    if draws
-        .iter()
-        .any(|draw| draw.output_target_sha256 != digest)
-    {
+    if draws.iter().any(|draw| draw.output_target_sha256 != digest) {
         return Err("GUI paint draw target digest differs from its exact target descriptor".into());
     }
     Ok(())
@@ -2307,9 +2155,8 @@ fn bump_telemetry_field(
         Some(next) => *field(telemetry) = next,
         None => {
             *field(telemetry) = u64::MAX;
-            telemetry.telemetry_counter_overflow_count = telemetry
-                .telemetry_counter_overflow_count
-                .saturating_add(1);
+            telemetry.telemetry_counter_overflow_count =
+                telemetry.telemetry_counter_overflow_count.saturating_add(1);
         }
     }
 }
@@ -2333,8 +2180,7 @@ fn validate_hook_receipt(hooks: &RawGuiPaintHookReceipt) -> Result<(), String> {
         || hooks.render_tree_rva != GUI_RENDER_2D_TREE_RVA
         || hooks.render_tree_sentinel != GUI_RENDER_2D_TREE_SENTINEL
         || hooks.render_tree_instructions_sha256 != GUI_RENDER_2D_TREE_INSTRUCTIONS_SHA256
-        || hooks.render_tree_evidence_manifest_sha256
-            != GUI_RENDER_2D_TREE_EVIDENCE_MANIFEST_SHA256
+        || hooks.render_tree_evidence_manifest_sha256 != GUI_RENDER_2D_TREE_EVIDENCE_MANIFEST_SHA256
         || hooks.final_draw_rva != hooks.final_draw_kind.expected_rva()
         || hooks.final_draw_sentinel != hooks.final_draw_kind.expected_sentinel()
     {
@@ -2444,13 +2290,15 @@ fn validate_portable_draws(
     let mut previous_global: Option<u64> = None;
     let mut previous_capture = None;
     for draw in draws {
-        if draw.ui_ordinal != first_ui_ordinal || draw.global_render_sequence == 0
+        if draw.ui_ordinal != first_ui_ordinal
+            || draw.global_render_sequence == 0
             || draw.d3d_capture_sequence == 0
             || draw.ordered_shader_bindings.is_empty()
         {
             return Err("GUI paint draw order or shader frontier is incomplete".into());
         }
-        if previous_global.is_some_and(|value| value.checked_add(1) != Some(draw.global_render_sequence))
+        if previous_global
+            .is_some_and(|value| value.checked_add(1) != Some(draw.global_render_sequence))
             || previous_capture.is_some_and(|value| value >= draw.d3d_capture_sequence)
         {
             return Err("GUI paint draws are duplicated, interleaved, or out of order".into());
@@ -2485,11 +2333,7 @@ fn validate_portable_draws(
             check_sha256(&binding.resource_payload_sha256, "resource payload")?;
             check_sha256(&binding.view_descriptor_sha256, "resource view descriptor")?;
         }
-        for (binding_index, binding) in draw
-            .ordered_constant_buffer_bindings
-            .iter()
-            .enumerate()
-        {
+        for (binding_index, binding) in draw.ordered_constant_buffer_bindings.iter().enumerate() {
             if draw.ordered_constant_buffer_bindings[..binding_index]
                 .iter()
                 .any(|prior| prior.stage == binding.stage && prior.slot == binding.slot)
@@ -2515,7 +2359,10 @@ fn validate_portable_draws(
         for (label, hash) in [
             ("shader bindings", &draw.shader_bindings_sha256),
             ("resource bindings", &draw.resource_bindings_sha256),
-            ("constant-buffer bindings", &draw.constant_buffer_bindings_sha256),
+            (
+                "constant-buffer bindings",
+                &draw.constant_buffer_bindings_sha256,
+            ),
             ("geometry", &draw.geometry_sha256),
             ("pipeline", &draw.pipeline_sha256),
             ("output target", &draw.output_target_sha256),
@@ -2671,8 +2518,7 @@ fn control_observation_body_sha256(
             probe_request_sha256: &observation.probe_request_sha256,
             probe_nonce: observation.probe_nonce,
             selected_runtime_binding_sha256: &observation.selected_runtime_binding_sha256,
-            buffered_candidate_observation_count: observation
-                .buffered_candidate_observation_count,
+            buffered_candidate_observation_count: observation.buffered_candidate_observation_count,
             discarded_non_selected_candidate_observation_count: observation
                 .discarded_non_selected_candidate_observation_count,
             frontier_sha256: &observation.frontier.frontier_sha256,
@@ -2742,10 +2588,9 @@ mod instrumentation_tests {
                 hook_set_receipt_sha256: hash('b'),
                 render_tree_rva: GUI_RENDER_2D_TREE_RVA,
                 render_tree_sentinel: GUI_RENDER_2D_TREE_SENTINEL,
-                render_tree_instructions_sha256:
-                    GUI_RENDER_2D_TREE_INSTRUCTIONS_SHA256.into(),
-                render_tree_evidence_manifest_sha256:
-                    GUI_RENDER_2D_TREE_EVIDENCE_MANIFEST_SHA256.into(),
+                render_tree_instructions_sha256: GUI_RENDER_2D_TREE_INSTRUCTIONS_SHA256.into(),
+                render_tree_evidence_manifest_sha256: GUI_RENDER_2D_TREE_EVIDENCE_MANIFEST_SHA256
+                    .into(),
                 final_draw_kind: GuiPaintFinalDrawHook::Draw,
                 final_draw_rva: PARTICLE_FINAL_DRAW_RVA,
                 final_draw_sentinel: DRAW_SENTINEL,
@@ -2839,8 +2684,7 @@ mod instrumentation_tests {
             ui_ordinal: 0,
             d3d_capture_sequence: 1,
             final_draw_kind: GuiPaintFinalDrawHook::Draw,
-            shader_bindings_sha256: sha256_json(&ordered_shader_bindings, "test shaders")
-                .unwrap(),
+            shader_bindings_sha256: sha256_json(&ordered_shader_bindings, "test shaders").unwrap(),
             resource_bindings_sha256: sha256_json(&ordered_resource_bindings, "test resources")
                 .unwrap(),
             constant_buffer_bindings_sha256: sha256_json(
@@ -2861,13 +2705,9 @@ mod instrumentation_tests {
     #[test]
     fn candidate_scope_retains_multiple_lowerings_under_one_operation_ordinal() {
         let scope = start(present(1));
-        let mut capture = GuiPaintCandidateCapture::new(
-            GUI_PAINT_A729_EXECUTABLE_SHA256.into(),
-            1,
-            2,
-            hash('b'),
-        )
-        .unwrap();
+        let mut capture =
+            GuiPaintCandidateCapture::new(GUI_PAINT_A729_EXECUTABLE_SHA256.into(), 1, 2, hash('b'))
+                .unwrap();
         capture
             .begin_scope(
                 44,
@@ -2896,17 +2736,6 @@ mod instrumentation_tests {
         assert_eq!(capture.completed_observation_count(), 1);
     }
 
-    /// Poison-tolerant: the five tests that take this guard share one lock and
-    /// one set of process-global instrumentation singletons, so `unwrap()` here
-    /// let the first test that panicked while holding the guard convert the
-    /// other four into `PoisonError` panics — five reported failures for one
-    /// real defect, and a workspace count that moved with test order.
-    ///
-    /// Recovering the guard hides nothing: the test that panicked still fails
-    /// and is still named. The `teardown_gui_paint_instrumentation` below is
-    /// what makes recovery sound — it restores the shared state before the next
-    /// test observes it, and its `unwrap` stays, because a teardown that cannot
-    /// clean up is a real defect rather than collateral from a prior panic.
     fn lock_and_reset() -> std::sync::MutexGuard<'static, ()> {
         let guard = TEST_LOCK
             .get_or_init(|| Mutex::new(()))
@@ -2994,7 +2823,10 @@ mod instrumentation_tests {
         assert!(result.is_err());
         assert!(!gui_paint_instrumentation_is_active());
         let after = gui_paint_instrumentation_snapshot().unwrap().telemetry;
-        assert_eq!(after.activation_attempt_count, before.activation_attempt_count + 1);
+        assert_eq!(
+            after.activation_attempt_count,
+            before.activation_attempt_count + 1
+        );
         assert_eq!(
             after.activation_rejection_count,
             before.activation_rejection_count + 1
@@ -3019,7 +2851,10 @@ mod instrumentation_tests {
             before.inactive_non_draw_count + 1
         );
         assert_eq!(after.inactive_end_count, before.inactive_end_count + 1);
-        assert_eq!(after.inactive_present_count, before.inactive_present_count + 1);
+        assert_eq!(
+            after.inactive_present_count,
+            before.inactive_present_count + 1
+        );
         assert_eq!(after.inactive_drain_count, before.inactive_drain_count + 1);
     }
 
@@ -3049,8 +2884,6 @@ mod instrumentation_tests {
         record_gui_paint_draw(1, draw()).unwrap();
         end_gui_paint_scope(1, 13, 1).unwrap();
         publish_gui_paint_present_frontier(&first).unwrap();
-        // A diagnostic activation is bound to one exact selected-Present receipt.
-        // Reuse that authority while creating independent pending and active rows.
         let second = present(1);
         begin_gui_paint_scope(2, start(second.clone())).unwrap();
         record_gui_paint_draw(2, draw()).unwrap();

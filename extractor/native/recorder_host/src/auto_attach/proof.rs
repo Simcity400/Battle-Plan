@@ -1,5 +1,3 @@
-//! Typed H4CT status proof shared by the supervisor and its worker child.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -14,8 +12,6 @@ use crate::control_transport::{
 };
 
 const PAYLOAD_SCHEMA: u16 = 1;
-// Pinned to the shared codec's constants so the recorder's admission lengths
-// and the collector client's shared encoder can never drift.
 const COLLECTOR_HELLO_LEN: usize =
     compact_contract::control_transport::payloads::COLLECTOR_HELLO_LEN;
 const COLLECTOR_HELLO_WITH_CAPABILITIES_LEN: usize =
@@ -76,10 +72,6 @@ fn hex_nibble(byte: u8) -> Option<u8> {
 }
 
 pub fn collector_hello_payload(expectation: &ProofExpectation) -> Vec<u8> {
-    // Single implementation of the H4CT payload layout lives in the shared
-    // `compact_contract` codec; this stays a thin, byte-identical adapter over
-    // the recorder's `ProofExpectation` so the collector and recorder can never
-    // encode a different CollectorHello.
     compact_contract::control_transport::payloads::encode_collector_hello(
         &compact_contract::control_transport::payloads::CollectorHelloV1 {
             pid: expectation.pid,
@@ -102,17 +94,10 @@ pub fn validate_collector_hello(
     Ok(())
 }
 
-/// Encode the duplex hello form whose final word is the collector's closed H4CT
-/// capability claim. The durable supervisor-status adapter uses the historical
-/// 68-byte forwarded proof; the combined H4CR/H4CT worker consumes this exact
-/// 72-byte product-admission form.
 pub fn collector_hello_with_capabilities_payload(
     expectation: &ProofExpectation,
     capabilities: ControlCapabilities,
 ) -> Vec<u8> {
-    // Byte-identical adapter over the shared H4CT codec: the collector client
-    // encodes its hello through the exact same function, so the two endpoints
-    // cannot produce different admission bytes.
     compact_contract::control_transport::payloads::encode_collector_hello_with_capabilities(
         &compact_contract::control_transport::payloads::CollectorHelloV1 {
             pid: expectation.pid,
@@ -126,9 +111,6 @@ pub fn collector_hello_with_capabilities_payload(
     )
 }
 
-/// Decode and bind a collector-originated hello to the retained attempt facts.
-/// Capabilities are never accepted as an out-of-band caller argument: the
-/// exact bytes authenticated by H4CT framing are the only source of the claim.
 pub fn decode_collector_hello_capabilities(
     payload: &[u8],
     expectation: &ProofExpectation,
@@ -152,7 +134,6 @@ pub fn decode_collector_hello_capabilities(
 }
 
 pub fn heartbeat_proof_payload(expectation: &ProofExpectation, sequence: u64) -> Vec<u8> {
-    // Byte-identical adapter over the shared H4CT codec (see above).
     compact_contract::control_transport::payloads::encode_heartbeat_proof(
         &compact_contract::control_transport::payloads::HeartbeatProofV1 {
             challenge: expectation.challenge,
@@ -251,11 +232,6 @@ impl<W: Write> WorkerProofEmitter<W> {
         })
     }
 
-    /// A successful connection to the coordinator-minted, per-attempt data pipe
-    /// is the residency hello. `loaded_dll_sha256` is the retained backing-file
-    /// hash and may be emitted only after direct target-memory immutable-image
-    /// proof matched the locally loaded module; it is never a cached assertion.
-    /// No hook return or child liveness alone can call this.
     pub fn report_connected(&mut self, loaded_dll_sha256: [u8; 32]) -> Result<(), String> {
         if self.hello_emitted {
             return Err("collector hello already emitted".to_string());
@@ -278,7 +254,6 @@ impl<W: Write> WorkerProofEmitter<W> {
         Ok(())
     }
 
-    /// Report only after the complete first H4CR header plus payload was read.
     pub fn report_first_complete_record(&mut self, sequence: u64) -> Result<(), String> {
         if !self.hello_emitted {
             return Err("first-record proof cannot precede collector hello".to_string());
@@ -297,21 +272,11 @@ impl<W: Write> WorkerProofEmitter<W> {
         Ok(())
     }
 
-    /// Forward a recorder-authenticated recurring H4CT heartbeat to the
-    /// supervisor after Recording admission. The durable file is only a
-    /// parent/child status transport; the proof's authority still comes from
-    /// the admitted collector H4CT exchange.
     pub fn report_recurring_heartbeat(&mut self, sequence: u64) -> Result<(), String> {
         if !self.first_record_emitted {
             return Err("recurring heartbeat cannot precede first-record proof".to_string());
         }
-        // The first-world data reader can outrun the collector's frame-level
-        // progress publication, and an authenticated logical-stream rollover
-        // intentionally resets the exact H4CR sequence to zero. H4CT validates
-        // those exact per-stream values before they reach this bridge. The
-        // supervisor's durable status stream has no logical-stream-id field, so
         // publish a process-lifetime high-water mark rather than making either
-        // legitimate reset look like a forged regression.
         let sequence = monotonic_worker_proof_sequence(self.last_reported_sequence, sequence);
         self.channel
             .send(
@@ -324,10 +289,6 @@ impl<W: Write> WorkerProofEmitter<W> {
     }
 }
 
-/// Per-attempt, recorder-owned status stream used between the worker process
-/// and the resident supervisor.  H4CT remains the authority for the contained
-/// hello/heartbeat facts; this file makes their delivery durable across a
-/// supervisor crash and removes stdout from the product protocol.
 pub const WORKER_PROOF_FILE_NAME: &str = "worker_status.h4ct";
 pub const WORKER_PROOF_PATH_ENV: &str = "BATTLE_PLAN_AUTO_ATTACH_PROOF_PATH";
 
@@ -336,9 +297,6 @@ pub struct DurableProofWriter {
 }
 
 impl DurableProofWriter {
-    /// Open only the exact recorder-created file inside this attempt's output
-    /// directory.  The supervisor retains a no-delete handle from before child
-    /// creation, so this open cannot be redirected by path replacement.
     pub fn open_existing(path: &Path, out_dir: &Path) -> Result<Self, String> {
         let expected = out_dir.join(WORKER_PROOF_FILE_NAME);
         let metadata = fs::symlink_metadata(path)
@@ -365,7 +323,6 @@ impl DurableProofWriter {
         #[cfg(windows)]
         {
             use std::os::windows::fs::OpenOptionsExt;
-            // Share read/write with the retained supervisor handle, but deny
             // delete/rename for the lifetime of this writer.
             const FILE_SHARE_READ: u32 = 0x0000_0001;
             const FILE_SHARE_WRITE: u32 = 0x0000_0002;
@@ -389,10 +346,6 @@ impl Write for DurableProofWriter {
     }
 }
 
-/// Tail reader for the retained supervisor handle.  Regular-file EOF means
-/// "not appended yet", not terminal EOF.  The owning child handle sets `stop`
-/// only after process exit or teardown; already-appended bytes are consumed
-/// before the reader returns EOF, so exit cannot race the final proof frame.
 pub struct DurableProofTail {
     file: File,
     stop: Arc<AtomicBool>,
@@ -422,9 +375,6 @@ impl Read for DurableProofTail {
     }
 }
 
-/// Create the durable status file before the worker process exists and retain
-/// the read handle with delete sharing denied. `create_new` makes stale residue
-/// fail closed instead of appending to another attempt's transcript.
 pub fn create_durable_proof_file(path: PathBuf) -> Result<File, String> {
     let mut options = OpenOptions::new();
     options.read(true).write(true).create_new(true);
@@ -443,8 +393,6 @@ pub fn create_durable_proof_file(path: PathBuf) -> Result<File, String> {
     Ok(file)
 }
 
-/// The generic PERF envelope immediately preceding a candidate world DATA
-/// record. PERF alone is telemetry and can never prove Recording.
 #[derive(Clone, Copy)]
 struct DomainPerfEvidence {
     header: compact_contract::CompactRecordHeader,
@@ -456,9 +404,6 @@ struct DomainPerfEvidence {
     status_flags: u32,
 }
 
-/// Opaque authority that a complete H4CR PERF/DATA pair passed the production
-/// first-world-record gate. It is deliberately non-`Clone`: the duplex state
-/// transition consumes the one proof produced by the stream validator.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ValidatedCompactRecordProof {
     header: compact_contract::CompactRecordHeader,
@@ -498,31 +443,12 @@ impl ValidatedCompactRecordProof {
     }
 }
 
-/// Re-exported, not re-declared: a local `(1 << 14) - 1` silently rejected the
-/// measured-empty badge the moment the contract assigned bit 14.
 const FIRST_PROOF_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
-/// Incremental, bounded gate for the first semantically valid world record.
-/// A proof requires a clean full-baseline PERF -> DATA pair for an actually
-/// scheduled domain, a plausible Clausewitz clock, an explicit domain-correct
-/// real-material predicate, and a payload accepted by the production world
-/// fold. Domains without a vetted predicate are insufficient proof and leave
-/// the gate waiting.
-///
-/// Threat-model boundary: arbitrary code already executing inside the retained
-/// the game process can read the staged session secret and originate the pipe
-/// stream, while truly simultaneous equal-rights external injection can race
-/// the final module-absence check. Those residuals are explicitly out of the
-/// proof's threat model and require an architectural trust boundary or OS code
-/// integrity policy; they are not described as fail-closed or repairable with
-/// another in-process nonce or HMAC.
 pub struct FirstCompactRecordGate {
     buffered: Vec<u8>,
     expected_domain_ids: BTreeSet<u16>,
     last_sequence: Option<u64>,
-    /// The collector emits the complete PERF roster before the complete DATA
-    /// roster for an hour. Retain at most one clean PERF record per expected
-    /// domain until its matching DATA record or the canonical FRAME_END.
     pending_perf: BTreeMap<u16, DomainPerfEvidence>,
 }
 
@@ -569,9 +495,6 @@ impl FirstCompactRecordGate {
             if self.buffered.len() < record_len {
                 return Ok(None);
             }
-            // H4FC is deliberately sequence 1 and uses the zero no-hour
-            // sentinel. It must reach the exhaustive dispatch below without
-            // being mistaken for a world record with an implausible clock.
             let carries_no_world_hour = matches!(
                 compact_contract::KnownRecordType::try_from(header.record_type),
                 Ok(compact_contract::KnownRecordType::FreezeCensus
@@ -645,9 +568,6 @@ impl FirstCompactRecordGate {
             })?;
         match record_type {
             compact_contract::KnownRecordType::DomainPerf => {
-                // Always discard an older candidate for this domain first. An
-                // invalid/non-baseline PERF record must never leave a previous
-                // clean candidate available for a later DATA record.
                 self.pending_perf.remove(&header.domain_id);
                 if let Some(evidence) =
                     parse_domain_perf_evidence(header, payload, &self.expected_domain_ids)?
@@ -676,8 +596,6 @@ impl FirstCompactRecordGate {
                 self.pending_perf.clear();
                 Ok(false)
             }
-            // Neither proves nor disturbs a first world record: both are
-            // session-scoped and claim no hour and no domain.
             compact_contract::KnownRecordType::FreezeCensus
             | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader => Ok(false),
@@ -729,9 +647,6 @@ fn parse_domain_perf_evidence(
         ));
     }
     if has_trailer {
-        // Both defined trailer versions are accepted. Pinning this proof to
-        // version 1 would have rejected every record the current collector
-        // writes.
         let trailer_version = if payload.len() >= BASE_LEN + TRAILER_HEADER_LEN {
             read_u16(payload, BASE_LEN + 4)
         } else {
@@ -799,10 +714,6 @@ fn parse_domain_perf_evidence(
     let clean_baseline = status_flags & !FIRST_PROOF_KNOWN_STATUS_MASK == 0
         && !compact_contract::compact_status_is_failure(global_status)
         && global_status & compact_contract::COMPACT_STATUS_DELTA_DATA == 0;
-    // These counters are domain-specific (some count roots, others child
-    // units), so cross-counter ordering is not a valid generic invariant.
-    // Requiring each to be nonzero rejects empty/degenerate telemetry while
-    // the production fold below owns the domain-specific structural checks.
     let plausible_counts =
         row_count > 0 && changed_rows > 0 && unit_count > 0 && changed_unit_count > 0;
 
@@ -826,13 +737,9 @@ fn data_record_matches_perf(
     perf: DomainPerfEvidence,
 ) -> Result<bool, String> {
     let Some(allowed_record_flags) = proof_allowed_data_record_flags(header.domain_id) else {
-        // Structural default-deny: a scheduled domain is not proof-capable
-        // merely because its DATA prefix resembles another domain's layout.
         return Ok(false);
     };
     if header.record_flags & !allowed_record_flags != 0 {
-        // Invalid DATA flags make this pair insufficient; the stream remains
-        // available for capture and a later qualifying pair may still prove.
         return Ok(false);
     }
     if payload.len() < 8 || read_u64(payload, 0) != perf.elapsed_wall_ms {
@@ -843,9 +750,6 @@ fn data_record_matches_perf(
         10 => d10_fuel_data_matches_perf(payload, perf),
         44 => d44_supply_data_matches_perf(payload, perf),
         68 => d68_session_header_data_matches_perf(payload, perf),
-        // Keep this arm even though the whitelist above already denies it:
-        // adding a flag allowance alone must never silently make a new domain
-        // proof-capable without an explicit real-material predicate.
         _ => false,
     };
     Ok(matches)
@@ -853,8 +757,6 @@ fn data_record_matches_perf(
 
 fn proof_allowed_data_record_flags(domain_id: u16) -> Option<u32> {
     match domain_id {
-        // These production writers emit DATA with record_flags == 0. PERF's
-        // diagnostic-trailer flag and d45's schema flag are invalid here.
         10 | 44 | 68 => Some(0),
         _ => None,
     }
@@ -877,7 +779,6 @@ fn d10_fuel_data_matches_perf(payload: &[u8], perf: DomainPerfEvidence) -> bool 
     const HEADER_LEN: usize = 24;
     const ROW_LEN: usize = 40;
     const SCALE_RAW: u32 = 32_768;
-    // Mirrors the production collector read_country_fuel emission bound.
     const MAX_FUEL_MEASURE_RAW: i64 = 1_000_000_000i64 * SCALE_RAW as i64;
 
     if payload.len() < HEADER_LEN {
@@ -913,7 +814,6 @@ fn d10_fuel_data_matches_perf(payload: &[u8], perf: DomainPerfEvidence) -> bool 
         if tag_db_id == 0
             || tag_db_id > compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID
             || !seen_tag_db_ids.insert(tag_db_id)
-            // The production d10 encoder always sets the fuel-present bit.
             || row_flags != 1
             || !(0..=MAX_FUEL_MEASURE_RAW).contains(&current_raw)
             || !(0..=MAX_FUEL_MEASURE_RAW).contains(&max_raw)
@@ -926,8 +826,6 @@ fn d10_fuel_data_matches_perf(payload: &[u8], perf: DomainPerfEvidence) -> bool 
             current_raw != 0 || max_raw != 0 || gain_raw != 0 || cost_raw != 0;
     }
 
-    // Production d10 PERF counts all resolved roots, while DATA carries only
-    // countries with a fuel row. Its unit counters bind to emitted DATA rows.
     has_real_fuel_material
         && perf.row_count >= row_count
         && perf.changed_rows == changed_rows
@@ -1012,8 +910,6 @@ fn d44_supply_data_matches_perf(payload: &[u8], perf: DomainPerfEvidence) -> boo
         return false;
     }
 
-    // The five mandatory computed-badge rows are diagnostics. Only province,
-    // division, or csupply entity rows can satisfy real material.
     observed_roots == perf.row_count
         && perf.changed_rows == changed_rows
         && emitted_rows == perf.unit_count
@@ -1030,9 +926,6 @@ fn d68_session_header_data_matches_perf(payload: &[u8], perf: DomainPerfEvidence
         return false;
     }
 
-    // Production emits exactly one top-level session-header unit in PERF.
-    // DATA has no generic row counters: offset 8 is field-presence bits and
-    // offset 12 is the real status consumed by fold_session_header.
     perf.row_count == 1
         && perf.changed_rows == 1
         && perf.unit_count == 1
@@ -1069,9 +962,6 @@ fn world_fold_proves_material_record(
     Ok(match header.domain_id {
         10 => folded_fuel_has_real_material(&candidate),
         44 => folded_supply_has_real_material(&candidate),
-        // d68 is last-value-wins, so a present scalar zero is preserved by the
-        // fold but is not material proof. Inspect the production-folded
-        // session_header and require a real nonzero/nonempty field.
         68 => folded_session_header_has_real_material(&candidate),
         _ => false,
     })
@@ -1333,8 +1223,6 @@ mod tests {
         );
     }
 
-    /// kills: applying the generic plausible-hour check before recognizing
-    /// sequence-1 H4FC makes attach proof reject the mandated zero sentinel.
     #[test]
     fn install_freeze_census_precedes_first_world_proof_without_proving_world() {
         use compact_contract::freeze_census_record::{
@@ -1466,9 +1354,6 @@ mod tests {
             .is_none());
     }
 
-    /// `2_049` used to be out of range and is an ordinary country id now that
-    /// the ceiling is the engine's id-space width, so the probe moves to one
-    /// past the real ceiling.
     #[test]
     fn round6_d10_out_of_range_nonzero_fuel_does_not_prove_recording() {
         let out_of_range = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID + 1;
@@ -1533,8 +1418,6 @@ mod tests {
             68,
             compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF,
             0,
-            // The old generic DATA parser read d68 presence=DLCS as row_count,
-            // the real DATA status as changed_rows, and player=0 as status.
             &domain_perf_payload(
                 2,
                 compact_contract::COMPACT_STATUS_DELTA_DATA,

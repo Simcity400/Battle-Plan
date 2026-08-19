@@ -1,19 +1,8 @@
-// Gate table for `replay_app`. Included by BOTH `build.rs` (which turns each
-// probe into a `cfg`) and `tests/gate_currency.rs` (which re-runs each probe to
-// prove the compiled `cfg` still matches reality), so the build-time and
-// run-time views of a precondition cannot drift apart.
-//
-// Every `#[test]` in this crate that needs one of these preconditions carries
-// `#[cfg_attr(not(<cfg>), ignore = "requires ...")]` and calls the matching
-// `replay_test_gates::require_*` accessor in its body. It must never `return`
-// early on a missing precondition: libtest reports that as a pass.
 pub const RESTORE_GATE_1_COLOR_CUBE_REL: &str = concat!(
     "restore_gate_1\\",
     "restore_frame_draw_map_frame_shared_payload_ps_srv_ColorCube_fb9c4f759c5171c9.d3d11"
 );
 
-/// Root of the preserved capture corpus the grading-law gates are anchored to.
-/// `BATTLE_PLAN_CAPTURES_ROOT` overrides the machine-local mount.
 pub fn captures_root() -> std::path::PathBuf {
     std::env::var_os("BATTLE_PLAN_CAPTURES_ROOT").or_else(|| std::env::var_os("HOI4_CAPTURES_ROOT"))
         .map(std::path::PathBuf::from)

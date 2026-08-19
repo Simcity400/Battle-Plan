@@ -1,11 +1,3 @@
-//! Pointer-free compact transport for authenticated convoy terminal attacks.
-//!
-//! `CTA1` is the exact single-event carrier captured at the pre-collapse
-//! terminal producer. `CTA2` is the domain-90 batch envelope consumed by the
-//! collector. It preserves producer order and the exact same-hour D70 mutation
-//! proof; it never serializes a process pointer or reconstructs a route from a
-//! terminal monthly bucket.
-
 use crate::convoy_terminal_attribution::{
     CarrierDecodeError, ConvoyTerminalAttributionCarrier, CARRIER_LEN,
 };
@@ -14,46 +6,17 @@ pub const DOMAIN_CONVOY_TRANSPORT_ATTACK: u16 = 90;
 pub const DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME: &str = "convoy_transport_attack_live";
 
 pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
-/// v2 claims header word 188 -- the last reserved word -- for
-/// `resolver_unbound_convoy_clients`. v1 declared it reserved-zero, so a v1
-/// decoder would refuse any v2 batch that carries a nonzero count rather than
-/// silently reading a partial resolver as a complete one; the version bump
-/// makes that refusal explicit instead of accidental.
-/// v3 appends eight telemetry words at 192..256, splitting the two aggregate
-/// drop counters into the sites they were hiding and adding the signed distance
-/// a refused receipt sat from the live engine clock.
-///
-/// The bump is required rather than cosmetic: a v2 decoder computes the payload
-/// length from `BATCH_HEADER_LEN`, so it would read a v3 batch's first row out
-/// of the appended words and refuse it as a length or carrier error. The
-/// version says which layout the bytes are in instead of leaving that to be
-/// inferred from a failure.
 pub const BATCH_VERSION: u16 = 3;
 pub const BATCH_HEADER_LEN: usize = 256;
-/// Where the fifteen v2 telemetry words start.
 const V2_TELEMETRY_WORDS_OFF: usize = 32;
-/// Where the eight v3 telemetry words start -- past the end of the v2 header,
-/// so no v2 field moves.
 const V3_TELEMETRY_WORDS_OFF: usize = 192;
 const V3_TELEMETRY_WORDS: usize = 8;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
 pub const BATCH_FLAG_HOOK_INSTALLED: u32 = 1 << 1;
-/// Some resolver publication in this capture was PARTIAL -- it could not bind
-/// every convoy member the d49/d50 walk saw.
-///
-/// Monotonic and never cleared, unlike the per-batch
-/// `resolver_unbound_convoy_clients` count. A batch that decodes incomplete is
-/// published but its queue reservation is rolled back, so its rows are
-/// re-drained on a later frame; if the only marker of partiality were the
-/// per-frame count, those rows could be re-encoded under a later complete
-/// resolver and claim an exhaustive event set they were never captured under.
-/// Every other input to `exact_events_complete` is monotonic for the same
-/// reason.
 pub const BATCH_FLAG_RESOLVER_EVER_PARTIAL: u32 = 1 << 2;
-pub const BATCH_KNOWN_FLAGS: u32 = BATCH_FLAG_COMPLETE_EXACT_EVENTS
-    | BATCH_FLAG_HOOK_INSTALLED
-    | BATCH_FLAG_RESOLVER_EVER_PARTIAL;
+pub const BATCH_KNOWN_FLAGS: u32 =
+    BATCH_FLAG_COMPLETE_EXACT_EVENTS | BATCH_FLAG_HOOK_INSTALLED | BATCH_FLAG_RESOLVER_EVER_PARTIAL;
 pub const MAX_BATCH_ROWS: usize = 4_096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,38 +61,16 @@ pub struct ConvoyTransportAttackTelemetry {
     pub dropped_teardown: u64,
     pub dropped_nested: u64,
     pub dropped_capture_busy: u64,
-    /// The AGGREGATE of the four hour sites below. Kept as it was so counts
-    /// from earlier captures stay directly comparable; it is no longer the only
-    /// thing that knows an hour drop happened.
     pub dropped_hour_or_epoch: u64,
-    /// The aggregate of the two resolver sites below, for the same reason.
     pub dropped_resolver: u64,
     pub dropped_candidate: u64,
-    /// The pre-call stable hour read failed, so there was no live hour to
-    /// compare anything against.
     pub dropped_pre_hour_unreadable: u64,
-    /// A live hour WAS read and a published receipt existed, and the two named
-    /// different hours. This is the arm that says the sweep's publication and
-    /// the engine clock disagree; `receipt_hour_lag_max` /
-    /// `receipt_hour_lead_max` say by how much and in which direction.
     pub dropped_receipt_hour_mismatch: u64,
-    /// The post-call stable hour read failed.
     pub dropped_post_hour_unreadable: u64,
-    /// The engine hour changed between `prepare_observation` and
-    /// `complete_observation`, i.e. the capture straddled an hour boundary.
     pub dropped_post_hour_changed: u64,
-    /// No resolver snapshot could be obtained at all.
     pub dropped_resolver_snapshot_absent: u64,
-    /// A snapshot existed but carried no publication (`publication_sequence`
-    /// zero).
     pub dropped_resolver_unpublished: u64,
-    /// Running maximum of `engine_hour - receipt_hour` over refused receipts
-    /// where that difference was non-negative: how far BEHIND the live clock
-    /// the newest publication fell.
     pub receipt_hour_lag_max: u64,
-    /// Running maximum of `receipt_hour - engine_hour` over refused receipts
-    /// where the receipt was AHEAD of the live clock. Nonzero is a clock
-    /// inversion, which is a different defect from a slow publisher.
     pub receipt_hour_lead_max: u64,
     pub dropped_d70_pre: u64,
     pub dropped_d70_post: u64,
@@ -139,11 +80,6 @@ pub struct ConvoyTransportAttackTelemetry {
 }
 
 impl ConvoyTransportAttackTelemetry {
-    /// The per-site splits are deliberately absent from this list. Each is a
-    /// strict subset of `dropped_hour_or_epoch` or `dropped_resolver`, which
-    /// are here, so adding them changes no answer; and the two `*_hour_*_max`
-    /// words are distances, not drops -- a maximum is not a count and must
-    /// never make `exact_events_complete` false on its own.
     pub fn has_drop(&self) -> bool {
         [
             self.dropped_no_original,
@@ -176,14 +112,7 @@ pub struct ConvoyTransportAttackWitness {
     pub resolver_game_hour_raw: i32,
     pub resolver_member_bindings: u32,
     pub resolver_route_bindings: u32,
-    /// Convoy members of the publishing d49/d50 walk whose client handle or
-    /// route could not be bound. Nonzero means the resolver in force for this
-    /// batch was PARTIAL: the bound clients resolve normally, the unbound ones
-    /// refuse per event. It is the wire-visible denominator that keeps a
-    /// partial batch from being read as an exhaustive one.
     pub resolver_unbound_convoy_clients: u32,
-    /// Monotonic: any publication in this capture was partial. See
-    /// [`BATCH_FLAG_RESOLVER_EVER_PARTIAL`].
     pub resolver_ever_partial: bool,
     pub telemetry: ConvoyTransportAttackTelemetry,
 }
@@ -194,22 +123,9 @@ impl ConvoyTransportAttackWitness {
             && self.queue_drain_complete
             && self.remaining_events == 0
             && self.active_callbacks == 0
-            // A partial resolver refuses every event belonging to a convoy
-            // member it could not bind, so the drained set cannot be claimed
-            // exhaustive. Those refusals also raise a drop counter, but that
-            // counter alone does not say WHICH subsystem lost them; this makes
-            // the resolver's own partiality independently disqualifying.
             && self.resolver_unbound_convoy_clients == 0
-            // The monotonic form of the same fact. The count above describes
-            // only the publication in force for THIS batch; rolled-back rows
-            // outlive their batch, so the latch is what they cannot shed.
             && !self.resolver_ever_partial
-            // A freshly installed observer can produce a complete measured-
-            // empty drain before the first d49/d50 resolver publication. Any
-            // callback in that interval increments a drop counter, so only a
-            // genuinely zero-callback drain may omit resolver custody.
-            && (self.telemetry.callbacks_seen == 0
-                || self.resolver_publication_sequence != 0)
+            && (self.telemetry.callbacks_seen == 0 || self.resolver_publication_sequence != 0)
             && self.telemetry.callbacks_seen == self.telemetry.original_calls
             && self.telemetry.callbacks_seen == self.telemetry.events_emitted
             && self.producer_sequence_next
@@ -248,8 +164,6 @@ impl From<CarrierDecodeError> for BatchDecodeError {
     }
 }
 
-/// Encode one complete drain in callback producer order. The caller must not
-/// sort rows: `producer_sequence` is the durable event ordinal.
 pub fn encode_convoy_transport_attack_batch(
     rows: &[ConvoyTransportAttackRow],
     witness: ConvoyTransportAttackWitness,
@@ -307,8 +221,6 @@ pub fn encode_convoy_transport_attack_batch(
     write_u32(&mut out, 180, witness.resolver_member_bindings);
     write_u32(&mut out, 184, witness.resolver_route_bindings);
     write_u32(&mut out, 188, witness.resolver_unbound_convoy_clients);
-    // CTA2 v3 words, appended past the end of the v2 header so every v2 field
-    // keeps the offset it had. The header grows; nothing moves.
     for (index, value) in [
         witness.telemetry.dropped_pre_hour_unreadable,
         witness.telemetry.dropped_receipt_hour_mismatch,
@@ -329,8 +241,6 @@ pub fn encode_convoy_transport_attack_batch(
         validate_row(row)?;
         let base = BATCH_HEADER_LEN + index * BATCH_ROW_LEN;
         let carrier = row.carrier.encode();
-        // CTA1 encode is infallible, so round-trip validation here prevents an
-        // invalid in-memory value from entering a production payload.
         ConvoyTerminalAttributionCarrier::decode(&carrier)?;
         out[base..base + CARRIER_LEN].copy_from_slice(&carrier);
         out[base + 96] = row.d70.kind as u8;
@@ -358,15 +268,12 @@ pub fn decode_convoy_transport_attack_batch(
     {
         return Err(BatchDecodeError::VersionOrLayout);
     }
-    // Word 188 is `resolver_unbound_convoy_clients` from v2 on; only 10 and 20
-    // remain reserved-zero.
     if read_u16(bytes, 10)? != 0 || read_u32(bytes, 20)? != 0 {
         return Err(BatchDecodeError::Reserved);
     }
     let flags = read_u32(bytes, 16)?;
     if flags & !BATCH_KNOWN_FLAGS != 0
-        || flags & BATCH_FLAG_COMPLETE_EXACT_EVENTS != 0
-            && flags & BATCH_FLAG_HOOK_INSTALLED == 0
+        || flags & BATCH_FLAG_COMPLETE_EXACT_EVENTS != 0 && flags & BATCH_FLAG_HOOK_INSTALLED == 0
     {
         return Err(BatchDecodeError::Flags);
     }
@@ -442,9 +349,7 @@ pub fn decode_convoy_transport_attack_batch(
             return Err(BatchDecodeError::Reserved);
         }
         let row = ConvoyTransportAttackRow {
-            carrier: ConvoyTerminalAttributionCarrier::decode(
-                &bytes[base..base + CARRIER_LEN],
-            )?,
+            carrier: ConvoyTerminalAttributionCarrier::decode(&bytes[base..base + CARRIER_LEN])?,
             d70: ConvoyD70MutationProof {
                 kind: ConvoyD70MutationKind::decode(bytes[base + 96])?,
                 ordinal: read_u32(bytes, base + 100)?,
@@ -460,9 +365,7 @@ pub fn decode_convoy_transport_attack_batch(
     validate_producer_order(&rows)?;
     validate_mutation_chain(&rows)?;
     validate_witness(&witness, rows.len())?;
-    if witness.exact_events_complete()
-        != (flags & BATCH_FLAG_COMPLETE_EXACT_EVENTS != 0)
-    {
+    if witness.exact_events_complete() != (flags & BATCH_FLAG_COMPLETE_EXACT_EVENTS != 0) {
         return Err(BatchDecodeError::InvalidWitness("complete_flag"));
     }
     Ok(DecodedConvoyTransportAttackBatch {
@@ -473,9 +376,10 @@ pub fn decode_convoy_transport_attack_batch(
 }
 
 fn validate_producer_order(rows: &[ConvoyTransportAttackRow]) -> Result<(), BatchDecodeError> {
-    if rows.windows(2).any(|pair| {
-        pair[0].carrier.producer_sequence >= pair[1].carrier.producer_sequence
-    }) {
+    if rows
+        .windows(2)
+        .any(|pair| pair[0].carrier.producer_sequence >= pair[1].carrier.producer_sequence)
+    {
         return Err(BatchDecodeError::ProducerOrder);
     }
     Ok(())
@@ -531,26 +435,24 @@ fn validate_row(row: &ConvoyTransportAttackRow) -> Result<(), BatchDecodeError> 
                 || proof.after_rows != proof.before_rows
                 || proof.ordinal >= proof.before_rows
                 || proof.before_count == 0
-                || proof.after_count != proof.before_count.checked_add(1).ok_or(
-                    BatchDecodeError::InvalidMutationProof("increment_count_overflow"),
-                )?
+                || proof.after_count
+                    != proof.before_count.checked_add(1).ok_or(
+                        BatchDecodeError::InvalidMutationProof("increment_count_overflow"),
+                    )?
             {
-                return Err(BatchDecodeError::InvalidMutationProof(
-                    "increment_existing",
-                ));
+                return Err(BatchDecodeError::InvalidMutationProof("increment_existing"));
             }
         }
         ConvoyD70MutationKind::AppendFirstSeen => {
-            if proof.after_rows != proof.before_rows.checked_add(1).ok_or(
-                BatchDecodeError::InvalidMutationProof("append_row_count_overflow"),
-            )?
+            if proof.after_rows
+                != proof.before_rows.checked_add(1).ok_or(
+                    BatchDecodeError::InvalidMutationProof("append_row_count_overflow"),
+                )?
                 || proof.ordinal != proof.before_rows
                 || proof.before_count != 0
                 || proof.after_count != 1
             {
-                return Err(BatchDecodeError::InvalidMutationProof(
-                    "append_first_seen",
-                ));
+                return Err(BatchDecodeError::InvalidMutationProof("append_first_seen"));
             }
         }
     }
@@ -714,28 +616,6 @@ mod tests {
         assert_eq!(decoded.rows, expected);
     }
 
-    /// Law: the eight CTA2 v3 words reach the wire and come back with their own
-    /// values, and none of them collides with a v2 field.
-    ///
-    /// # The defect this closes
-    ///
-    /// t26's d90 trailer said `dropped_hour_or_epoch = 83` and nothing more.
-    /// Four unrelated refusals report through that one word, so the capture
-    /// could not say which of them lost the 109 transport-attack events. These
-    /// eight words are the split. They are only worth anything if they survive
-    /// encode/decode carrying DISTINCT values -- a layout slip that aliased two
-    /// of them onto one offset, or onto a v2 field, would publish a confident
-    /// wrong answer, which is worse than the aggregate that at least admitted
-    /// it did not know.
-    ///
-    /// Every value below is distinct and none is zero, so any aliasing shows up
-    /// as a wrong number rather than as a coincidentally equal one. The v2
-    /// fields are re-asserted in the same test because "no v2 field moved" is
-    /// the other half of appending to a frozen header.
-    ///
-    /// MUTATION RUN: change `V3_TELEMETRY_WORDS_OFF` from 192 to 184.
-    /// OBSERVED: FAILED, `resolver_route_bindings` reads back 101 instead of 2
-    /// -- the first v3 word landed on top of two v2 fields.
     #[test]
     fn cta2_v3_telemetry_words_round_trip_without_disturbing_v2() {
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
@@ -748,7 +628,6 @@ mod tests {
         witness.telemetry.dropped_resolver_unpublished = 106;
         witness.telemetry.receipt_hour_lag_max = 107;
         witness.telemetry.receipt_hour_lead_max = 108;
-        // The aggregates the split sits under, so the two are checked together.
         witness.telemetry.dropped_hour_or_epoch = 101 + 102 + 103 + 104;
         witness.telemetry.dropped_resolver = 105 + 106;
 
@@ -772,7 +651,6 @@ mod tests {
         assert_eq!(telemetry.dropped_hour_or_epoch, 410);
         assert_eq!(telemetry.dropped_resolver, 211);
 
-        // No v2 field moved.
         assert_eq!(decoded.witness.resolver_publication_sequence, 3);
         assert_eq!(decoded.witness.resolver_game_hour_raw, 61_000_000);
         assert_eq!(decoded.witness.resolver_member_bindings, 4);
@@ -782,9 +660,6 @@ mod tests {
         assert_eq!(decoded.rows, rows);
     }
 
-    /// The partial batch must SURVIVE. If the collector ever goes back to
-    /// discarding a drain whose resolver was partial, these rows disappear and
-    /// this fails on the row assertions.
     #[test]
     fn cta2_publishes_rows_captured_under_a_partial_resolver() {
         let expected = vec![
@@ -795,15 +670,10 @@ mod tests {
         witness.resolver_unbound_convoy_clients = 1;
         let encoded = encode_convoy_transport_attack_batch(&expected, witness).unwrap();
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
-        // The readable events are on the wire...
         assert_eq!(decoded.rows, expected);
-        // ...and the batch does not claim to be exhaustive.
         assert!(!decoded.exact_events_complete);
     }
 
-    /// The partiality must be RECORDED, and must survive the round trip as an
-    /// exact count rather than a bit. If the field is dropped from the header
-    /// the count reads back 0 and this fails.
     #[test]
     fn cta2_carries_the_exact_unbound_convoy_client_count() {
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
@@ -824,17 +694,15 @@ mod tests {
         }
     }
 
-    /// A batch whose header claims completeness while carrying unbound clients
-    /// is refused outright, so the flag cannot be forged independently of the
-    /// count.
     #[test]
     fn cta2_rejects_a_complete_flag_over_a_partial_resolver() {
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
         let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
-        assert!(decode_convoy_transport_attack_batch(&encoded)
-            .unwrap()
-            .exact_events_complete);
-        // Flip only the count; the COMPLETE flag in the header stays set.
+        assert!(
+            decode_convoy_transport_attack_batch(&encoded)
+                .unwrap()
+                .exact_events_complete
+        );
         encoded[188..192].copy_from_slice(&1u32.to_le_bytes());
         assert_eq!(
             decode_convoy_transport_attack_batch(&encoded),
@@ -842,42 +710,33 @@ mod tests {
         );
     }
 
-    /// Law: partiality cannot be laundered by a rollback and re-drain.
-    ///
-    /// A batch that decodes incomplete is published but its queue reservation
-    /// is rolled back, so its rows are drained again on a later frame. If the
-    /// only marker of a partial resolver were the per-frame count, those rows
-    /// would re-encode under the next complete publication (count back to 0)
-    /// and claim an exhaustive event set they were never captured under. The
-    /// monotonic latch is what they cannot shed.
     #[test]
     fn cta2_rows_redrained_under_a_later_complete_resolver_stay_incomplete() {
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
 
-        // Frame N: partial resolver. Incomplete, and the collector rolls the
-        // reservation back, so these rows survive into a later drain.
         let mut partial = witness(&rows);
         partial.resolver_unbound_convoy_clients = 2;
         partial.resolver_ever_partial = true;
         let encoded = encode_convoy_transport_attack_batch(&rows, partial).unwrap();
-        assert!(!decode_convoy_transport_attack_batch(&encoded)
-            .unwrap()
-            .exact_events_complete);
+        assert!(
+            !decode_convoy_transport_attack_batch(&encoded)
+                .unwrap()
+                .exact_events_complete
+        );
 
-        // Frame N+1: the publication in force is now complete, so the
-        // per-frame count is 0 -- but the latch persists and the SAME rows
-        // still cannot claim exhaustiveness.
         let mut later = witness(&rows);
         later.resolver_unbound_convoy_clients = 0;
         later.resolver_ever_partial = true;
         let encoded = encode_convoy_transport_attack_batch(&rows, later).unwrap();
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
-        assert!(decoded.witness.resolver_ever_partial, "latch must round-trip");
+        assert!(
+            decoded.witness.resolver_ever_partial,
+            "latch must round-trip"
+        );
         assert!(
             !decoded.exact_events_complete,
             "a capture that was ever partial can never claim an exhaustive event set"
         );
-        // The rows themselves are still published -- partial data still seals.
         assert_eq!(decoded.rows, rows);
     }
 
@@ -901,9 +760,7 @@ mod tests {
         write_u32(&mut encoded, BATCH_HEADER_LEN + 116, 9);
         assert_eq!(
             decode_convoy_transport_attack_batch(&encoded),
-            Err(BatchDecodeError::InvalidMutationProof(
-                "increment_existing"
-            ))
+            Err(BatchDecodeError::InvalidMutationProof("increment_existing"))
         );
     }
 
@@ -921,10 +778,11 @@ mod tests {
         encoded.push(0);
         assert_eq!(
             decode_convoy_transport_attack_batch(&encoded),
-            Err(BatchDecodeError::Length(BATCH_HEADER_LEN + BATCH_ROW_LEN + 1))
+            Err(BatchDecodeError::Length(
+                BATCH_HEADER_LEN + BATCH_ROW_LEN + 1
+            ))
         );
     }
-
 
     #[test]
     fn cta2_marks_any_drop_or_queue_residue_incomplete() {
@@ -949,9 +807,11 @@ mod tests {
             ..ConvoyTransportAttackWitness::default()
         };
         let encoded = encode_convoy_transport_attack_batch(&[], prepublication).unwrap();
-        assert!(decode_convoy_transport_attack_batch(&encoded)
-            .unwrap()
-            .exact_events_complete);
+        assert!(
+            decode_convoy_transport_attack_batch(&encoded)
+                .unwrap()
+                .exact_events_complete
+        );
 
         let postpublication = ConvoyTransportAttackWitness {
             resolver_publication_sequence: 7,
@@ -959,19 +819,23 @@ mod tests {
             ..prepublication
         };
         let encoded = encode_convoy_transport_attack_batch(&[], postpublication).unwrap();
-        assert!(decode_convoy_transport_attack_batch(&encoded)
-            .unwrap()
-            .exact_events_complete);
+        assert!(
+            decode_convoy_transport_attack_batch(&encoded)
+                .unwrap()
+                .exact_events_complete
+        );
 
         let mut dropped = prepublication;
         dropped.telemetry.callbacks_seen = 1;
         dropped.telemetry.original_calls = 1;
         dropped.telemetry.dropped_resolver = 1;
-        assert!(!decode_convoy_transport_attack_batch(
-            &encode_convoy_transport_attack_batch(&[], dropped).unwrap(),
-        )
-        .unwrap()
-        .exact_events_complete);
+        assert!(
+            !decode_convoy_transport_attack_batch(
+                &encode_convoy_transport_attack_batch(&[], dropped).unwrap(),
+            )
+            .unwrap()
+            .exact_events_complete
+        );
     }
 
     #[test]

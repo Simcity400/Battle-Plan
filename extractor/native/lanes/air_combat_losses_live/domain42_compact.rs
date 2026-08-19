@@ -3,9 +3,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DOMAIN_ID: u16 = 42;
 pub const DOMAIN_NAME: &str = "air_combat_losses_live";
 pub const HEADER_LEN: usize = 48;
-// This row is 76 bytes: the fixed u32/i32 fields are followed by three i64
-// equipment amount fields plus the wave-3 per-wing cumulative scalars
-// (air_accidents u32 @68, experience_raw i32 @72).
 pub const ROW_LEN: usize = 76;
 pub const STALE_ROW_LEN_64_REJECTION_GUARD: usize = 64;
 pub const EQUIPMENT_AMOUNT_PER_PLANE: i64 = 100_000;
@@ -17,22 +14,14 @@ pub const ROW_FLAG_REINFORCEMENT: u32 = 1 << 1;
 pub const ROW_FLAG_DELETED: u32 = 1 << 2;
 pub const ROW_FLAG_MISSION_REGION: u32 = 1 << 3;
 pub const ROW_FLAG_EQUIPMENT_SCALE_OK: u32 = 1 << 4;
-/// air_accidents/experience_raw were measured for this row (absent != 0).
 pub const ROW_FLAG_WING_SCALARS: u32 = 1 << 5;
-/// First observation of this wing body: a state baseline row, not an event.
 pub const ROW_FLAG_STATE_BASELINE: u32 = 1 << 6;
-/// air_accidents or experience_raw changed vs the previous sample.
 pub const ROW_FLAG_WING_SCALAR_CHANGE: u32 = 1 << 7;
 
-/// Was `1_024`, a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags). ENGINE-STRUCTURAL now, by the same derivation `MAX_WING_ID` below
-/// already uses: a country database id is admissible iff
-/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`.
 pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_WING_ID: u32 = i32::MAX as u32;
 pub const MAX_PLANES: u32 = 10_000_000;
 pub const MAX_MISSION_REGION_ID: u32 = 65_535;
-// Wing experience is cumulative XP, fixed-x100000 (not a 0..1 ratio).
 pub const MAX_EXPERIENCE_RAW: i32 = 1_000_000_000;
 pub const REGION_STATS_TRAILER_MAGIC: u32 = 0x3152_3441;
 pub const REGION_STATS_TRAILER_VERSION: u16 = 2;

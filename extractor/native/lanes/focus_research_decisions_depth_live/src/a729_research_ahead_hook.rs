@@ -1,11 +1,3 @@
-//! Exact-a729 observed producer for A29 research ahead-of-time substitutions.
-//!
-//! This is deliberately not a second implementation of the penalty formula.
-//! The hook joins the active `CTechnology` selected by the UI producer to the
-//! exact fixed-5 substitution records consumed by the localization engine.
-//! Process pointers are retained only until the collector joins the receipt to
-//! its same-hour active research-slot walk.
-
 use core::ffi::c_void;
 use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
@@ -17,9 +9,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use windows_sys::Win32::System::Diagnostics::Debug::{
-    ReadProcessMemory, RtlCaptureStackBackTrace,
-};
+use windows_sys::Win32::System::Diagnostics::Debug::{ReadProcessMemory, RtlCaptureStackBackTrace};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
@@ -40,16 +30,14 @@ pub const RED_NAME_RVA: usize = 0x0292_DD78;
 pub const REDUCED_YEARS_NAME_RVA: usize = 0x0292_DD68;
 pub const YEARS_NAME_RVA: usize = 0x0292_DD5C;
 
-pub const EXACT_ROOT_JOB_ID: &str =
-    "20260720T124311Z-w5-a29-effective-producer-roots-e50d79d0";
+pub const EXACT_ROOT_JOB_ID: &str = "20260720T124311Z-w5-a29-effective-producer-roots-e50d79d0";
 pub const EXACT_ROOT_MANIFEST_SHA256: &str =
     "82884a9a122f95298d5068bdb68590806346c2c1ac274ca3b56889bb0e5abcc2";
 pub const SENTINEL_JOB_ID: &str =
     "20260720T130641Z-w5-a29-hook-sentinels-and-substitution-i-9016d012";
 pub const SENTINEL_DUMP_SHA256: &str =
     "3fbca6726f09499e6cf1961969ae4154b9c265f8e5c688f8d939d8397387cee2";
-pub const ACTION_GATE_JOB_ID: &str =
-    "20260721T075619Z-wave6-a29-active-ahead-ui-producer-ced43f28";
+pub const ACTION_GATE_JOB_ID: &str = "20260721T075619Z-wave6-a29-active-ahead-ui-producer-ced43f28";
 pub const ACTION_GATE_MANIFEST_SHA256: &str =
     "8d802c9eb2fe5e78ab52d7512d8d01dd5793b9c29fac8627c17fb6cafcc621ba";
 pub const ACTION_GATE_DECOMPILE_SHA256: &str =
@@ -64,20 +52,16 @@ pub const EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
 const UI_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
-    0x41,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41,
 ];
 const UI_YEAR_HELPER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d,
-    0x3e,
+    0x48, 0x89, 0x5c, 0x24, 0x18, 0x55, 0x56, 0x41, 0x56, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x3e,
 ];
 const PRODUCER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
-    0x55,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
 ];
 const FORMATTER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x41, 0x56, 0x41, 0x57,
-    0x48,
+    0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x41, 0x56, 0x41, 0x57, 0x48,
 ];
 const TECHNOLOGY_TEMPLATE_OFFSET: usize = 0x160;
 const TECHNOLOGY_REDUCTION_OFFSET: usize = 0x1c0;
@@ -95,8 +79,7 @@ const MAX_QUEUE: usize = 4096;
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
 
 type UiProducerFn = unsafe extern "system" fn(usize, usize, usize) -> usize;
-type UiYearHelperFn =
-    unsafe extern "system" fn(usize, *mut i64, usize, i64, i64) -> *mut i64;
+type UiYearHelperFn = unsafe extern "system" fn(usize, *mut i64, usize, i64, i64) -> *mut i64;
 type EffectiveProducerFn =
     unsafe extern "system" fn(usize, *mut i64, usize, usize, i64, i64) -> *mut i64;
 type LocalizationFn = unsafe extern "system" fn(usize, usize, usize, u32) -> usize;
@@ -195,7 +178,6 @@ pub struct SelectedPresentStamp {
     pub selected_qpc_ticks: u64,
     pub selection_cutoff_qpc_ticks: u64,
     pub qpc_frequency_hz: u64,
-    /// Canonical portable-render-stream `SelectedPresentReceipt` digest.
     pub selected_present_receipt_sha256: String,
 }
 
@@ -249,17 +231,6 @@ fn gate_open() -> bool {
     INSTALLED.load(Ordering::Acquire) && !TEARDOWN_ACTIVE.load(Ordering::Acquire)
 }
 
-// `pub fn installed() -> bool` USED TO SIT HERE and is deleted, not left for a
-// future caller (lane LE). Its one consumer was d13's read cache, which took an
-// uncached read whenever this hook was installed so a synchronously observed
-// producer receipt could never be hidden behind a cached row. That cache is
-// gone -- its fingerprint carried the frame's game hour against a
-// once-per-game-hour sweep and so could never hit -- and with no cache there is
-// nothing left to bypass. `gate_open` stays: the hook's own paths use it.
-
-/// Registers the one additional exact-a729 localization observer which shares
-/// this detour. The formatter trampoline remains owned and called exactly once
-/// by A29.
 pub fn register_shared_localization_observer(
     observer: SharedLocalizationObserver,
 ) -> Result<(), String> {
@@ -278,7 +249,11 @@ pub fn unregister_shared_localization_observer() {
 }
 
 pub fn drain() -> Result<Vec<SelectedPresentResearchAheadObservation>, String> {
-    if let Some(reason) = fatal().lock().map_err(|_| "A29 fatal mutex poisoned")?.clone() {
+    if let Some(reason) = fatal()
+        .lock()
+        .map_err(|_| "A29 fatal mutex poisoned")?
+        .clone()
+    {
         return Err(reason);
     }
     let mut queue = sealed_queue()
@@ -287,10 +262,6 @@ pub fn drain() -> Result<Vec<SelectedPresentResearchAheadObservation>, String> {
     Ok(queue.drain(..).collect())
 }
 
-/// Bind only producer observations which were complete before the selected
-/// presentation. Rows after that presentation remain pending for a later
-/// frame; stale earlier-hour rows are discarded without ever becoming
-/// authority.
 pub fn seal_selected_present(stamp: SelectedPresentStamp) -> Result<u32, String> {
     if stamp.candidate_count == 0
         || stamp.selected_ordinal >= stamp.candidate_count
@@ -303,7 +274,11 @@ pub fn seal_selected_present(stamp: SelectedPresentStamp) -> Result<u32, String>
     {
         return Err("A29 selected-Present stamp is incomplete".into());
     }
-    if let Some(reason) = fatal().lock().map_err(|_| "A29 fatal mutex poisoned")?.clone() {
+    if let Some(reason) = fatal()
+        .lock()
+        .map_err(|_| "A29 fatal mutex poisoned")?
+        .clone()
+    {
         return Err(reason);
     }
     let mut raw = queue().lock().map_err(|_| "A29 queue mutex poisoned")?;
@@ -357,7 +332,9 @@ pub fn seal_selected_present(stamp: SelectedPresentStamp) -> Result<u32, String>
 }
 
 pub fn install() -> Result<InstalledAddresses, String> {
-    let _guard = INSTALL_LOCK.lock().map_err(|_| "A29 install mutex poisoned")?;
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A29 install mutex poisoned")?;
     if gate_open() {
         return Ok(addresses(MODULE_BASE.load(Ordering::Acquire)));
     }
@@ -370,7 +347,11 @@ pub fn install() -> Result<InstalledAddresses, String> {
     }
     let resolved = addresses(base);
     for (target, sentinel, label) in [
-        (resolved.ui_year_producer, &UI_SENTINEL[..], "UI year producer"),
+        (
+            resolved.ui_year_producer,
+            &UI_SENTINEL[..],
+            "UI year producer",
+        ),
         (
             resolved.ui_year_helper,
             &UI_YEAR_HELPER_SENTINEL[..],
@@ -433,7 +414,10 @@ pub fn install() -> Result<InstalledAddresses, String> {
             );
         }
     }
-    queue().lock().map_err(|_| "A29 queue mutex poisoned")?.clear();
+    queue()
+        .lock()
+        .map_err(|_| "A29 queue mutex poisoned")?
+        .clear();
     sealed_queue()
         .lock()
         .map_err(|_| "A29 selected-Present queue mutex poisoned")?
@@ -444,7 +428,9 @@ pub fn install() -> Result<InstalledAddresses, String> {
 }
 
 pub fn uninstall() -> Result<(), String> {
-    let _guard = INSTALL_LOCK.lock().map_err(|_| "A29 install mutex poisoned")?;
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A29 install mutex poisoned")?;
     if !HOOK_SET_PRESENT.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -523,12 +509,6 @@ fn disable_targets(resolved: InstalledAddresses) -> Result<(), String> {
 }
 
 fn remove_targets(resolved: InstalledAddresses) -> Result<(), String> {
-    // DRAINED-BY-CALLER: both callers -- the teardown and `rollback_install` --
-    // call `disable_targets` and then spin on `IN_FLIGHT` until it reads zero,
-    // refusing if it does not, before reaching here. This helper is the free
-    // and nothing else, and the drain belongs where the whole set is disabled:
-    // draining per target would measure a count the other targets keep
-    // refilling.
     let mut errors = Vec::new();
     for target in targets(resolved) {
         match unsafe { inline_detour::remove(target as *mut c_void) } {
@@ -624,7 +604,8 @@ unsafe extern "system" fn hook_ui_year_helper(
                 .technology_address
                 .checked_add(TECHNOLOGY_REDUCTION_OFFSET)
                 .and_then(read_process_value::<i64>);
-            if observed_template != Some(template) || observed_reduction != Some(applied_reduction) {
+            if observed_template != Some(template) || observed_reduction != Some(applied_reduction)
+            {
                 Some("A29 year action helper arguments differ from the selected active technology")
             } else {
                 None
@@ -703,7 +684,8 @@ unsafe extern "system" fn hook_effective_producer(
         || ui.applied_reduction_years_raw != applied_reduction
         || ui.baseline_reduction_years_raw != baseline_reduction
     {
-        context.invalid_reason = Some("A29 effective producer differs from the exact year action helper transaction");
+        context.invalid_reason =
+            Some("A29 effective producer differs from the exact year action helper transaction");
     } else {
         let observed_template = context
             .technology_address
@@ -848,19 +830,13 @@ fn publish_completed(context: ProducerContext, output_penalty: *mut i64) {
     let output_value = read_process_value::<i64>(output_penalty as usize);
     let observed = match context.observed {
         Some(observed) => observed,
-        None if output_value == Some(0) => {
-            // Exact 0x140ABE4C0 no-display branch: the producer writes zero
-            // and emits no substitution array; 0x141BCEA60 consumes the empty
-            // localized output as NO_RESEARCH_PENALTY. Preserve the producer's
-            // observed aggregate argument, but manufacture no display value.
-            ObservedSubstitutions {
-                branch: 0,
-                ahead_of_time_years_raw: 0,
-                ahead_of_time_penalty_raw: 0,
-                ahead_of_time_reduction_years_raw: context.applied_reduction_years_raw,
-                ahead_of_time_reduced_penalty_raw: 0,
-            }
-        }
+        None if output_value == Some(0) => ObservedSubstitutions {
+            branch: 0,
+            ahead_of_time_years_raw: 0,
+            ahead_of_time_penalty_raw: 0,
+            ahead_of_time_reduction_years_raw: context.applied_reduction_years_raw,
+            ahead_of_time_reduced_penalty_raw: 0,
+        },
         None => {
             poison(
                 "A29 nonzero effective producer returned without observed localization substitutions",
@@ -953,8 +929,8 @@ fn qpc_now() -> Option<(u64, u64)> {
 fn immediate_game_return_rva() -> Option<u32> {
     let base = MODULE_BASE.load(Ordering::Acquire);
     let pe_offset = read_process_value::<u32>(base.checked_add(0x3c)?)? as usize;
-    let image_size = read_process_value::<u32>(base.checked_add(pe_offset)?.checked_add(0x50)?)?
-        as usize;
+    let image_size =
+        read_process_value::<u32>(base.checked_add(pe_offset)?.checked_add(0x50)?)? as usize;
     let mut stack = [ptr::null_mut::<c_void>(); 8];
     let count = unsafe {
         RtlCaptureStackBackTrace(0, stack.len() as u32, stack.as_mut_ptr(), ptr::null_mut())

@@ -114,7 +114,7 @@ def parse_index(path):
             "checkpoint_position": reader.u32(),
             "delta_steps": reader.u32(),
         }
-        reader.take(32)  # world_json_sha256
+        reader.take(32)
         entry["date"] = reader.string()
         entry["position"] = position
         entry["is_checkpoint"] = entry["checkpoint_position"] == position
@@ -141,26 +141,15 @@ def main():
     curve = []
     total_hours = len(hours)
     for interval in [int(v) for v in args.intervals.split(",") if v.strip()]:
-        # Which hours become checkpoints at this interval: hour 0 and every
-        # `interval`-th hour after it, matching `ReplayCacheEncoder`'s rule that
-        # a new checkpoint is cut once `delta_steps` would reach the interval.
         checkpoint_positions = set(range(0, total_hours, interval))
-        # Hours that stay deltas keep the exact record this build produced.
         measured_delta_bytes = sum(
             h["cache_record_len"] for h in hours
             if h["position"] not in checkpoint_positions and not h["is_checkpoint"]
         )
-        # First modelled term: an hour promoted to a checkpoint has no
-        # checkpoint encoding in this build. Hours that were already
-        # checkpoints and stay checkpoints keep their measured size.
         modelled = [h for h in hours
                     if h["position"] in checkpoint_positions and not h["is_checkpoint"]]
         kept_checkpoints = [h for h in hours
                             if h["position"] in checkpoint_positions and h["is_checkpoint"]]
-        # Second modelled term: a checkpoint hour in this build that becomes a
-        # DELTA at a longer interval has no delta encoding here, so it is priced
-        # at the mean delta. At interval 644 these three records carry that
-        # row's entire projected saving.
         demoted = [h for h in hours
                    if h["is_checkpoint"] and h["position"] not in checkpoint_positions]
         projected = (

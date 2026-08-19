@@ -1,10 +1,3 @@
-//! Replay-owned XUI10 national-focus scene preparation and composition.
-//!
-//! The producer-facing wire schema is intentionally not defined here.  This
-//! module starts after a future canonical carrier has authenticated and folded
-//! one complete selected-country/hour scene.  It joins that evaluated scene to
-//! D12/FILE semantics, clones only effective-VFS authored templates, and keeps
-//! open/pan/selection state in the viewer.
 
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor, DebugRect};
@@ -35,7 +28,6 @@ pub struct EvaluatedFocusProgress {
 pub struct EvaluatedFocusNode {
     pub focus_id: String,
     pub source_ordinal: u32,
-    /// Final canvas-local pixel position produced with the effective GUI law.
     pub canvas_position_pixels: [i32; 2],
     pub presentation_state_code: u8,
     pub display_progress_percent: u8,
@@ -43,8 +35,6 @@ pub struct EvaluatedFocusNode {
     pub highlight_glow_visible: bool,
     pub historical_marker_visible: bool,
     pub joint_viewing_country_tag: Option<String>,
-    /// Exact effective-GFX flag token selected for the viewing country. It is
-    /// present iff `joint_viewing_country_tag` is present.
     pub joint_viewing_flag_sprite: Option<String>,
 }
 
@@ -54,11 +44,8 @@ pub struct EvaluatedFocusLinkTile {
     pub from_focus_id: String,
     pub to_focus_id: String,
     pub mutually_exclusive: bool,
-    /// Evaluated runtime width. Required only for the authored exclusive
-    /// container, whose GUI declaration intentionally has width one.
     pub container_width_pixels: Option<i32>,
     pub canvas_position_pixels: [i32; 2],
-    /// Ordered, evaluated operations for every direct authored sprite child.
     pub child_operations: Vec<EvaluatedFocusLinkChildOperation>,
 }
 
@@ -71,8 +58,6 @@ pub struct EvaluatedFocusLinkChildOperation {
     pub local_position_pixels: [i32; 2],
 }
 
-/// Post-carrier scene. A canonical WorldFrame carrier must authenticate these
-/// fields before constructing this value; this is not a replacement wire schema.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvaluatedFocusScene {
     pub frame_hour: u64,
@@ -213,9 +198,6 @@ impl FocusViewerState {
         self.selected_focus_id = None;
     }
 
-    /// Country switches and non-adjacent seeks invalidate every focus-local
-    /// interaction value. No stale selection or pan survives into a different
-    /// semantic tree.
     pub fn reset_for_seek_or_country_change(&mut self) {
         *self = Self::default();
     }

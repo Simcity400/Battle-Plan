@@ -1,94 +1,12 @@
-//! Exact-a729 all-country theatre-selector carrier (compact domain 98, `THS2`).
-//!
-//! # Why this carrier exists
-//!
-//! The replay observer selects any country it likes. The XUI07 theatre-selector
-//! panel therefore needs an ordered land/navy/air theatre hierarchy for *every*
-//! selectable country, not for the recorder's own current country. The `THS1`
-//! predecessor walked exactly one country -- the recorder POV -- so it could
-//! never authorize a differently-selected observer country, and no other
-//! compact domain preserves theatre parentage, engine order, and the air
-//! hierarchy together.
-//!
-//! # Shape
-//!
-//! One frame carries:
-//!
-//! * an authority envelope (executable SHA-256, producer manifests, frame hour,
-//!   source sequence, elapsed collection time, schema version, producer-complete
-//!   flag, explicit unavailable form);
-//! * the producer-observed content identity -- ordered mod/DLC layers, the
-//!   localization language, and the localization content hash -- so replay can
-//!   compare its own winning effective VFS before it renders any
-//!   engine-materialized display name;
-//! * the complete D18 selectable-country census; and
-//! * exactly one section per census country, each either `Admitted` (possibly
-//!   *measured empty*) or `Unavailable` with an explicit machine reason.
-//!
-//! # Fail-closed law
-//!
-//! A country section is rejected *whole*. A malformed, duplicated,
-//! out-of-order, cross-owner, orphaned, wrong-hour or incomplete walk yields
-//! `SectionAdmission::Unavailable`, never a partial prefix and never an empty
-//! theatre list. `Admitted` with zero theatres means *measured empty* and is a
-//! distinct, positive observation.
-//!
-//! # What this carrier deliberately does not claim
-//!
-//! Several controller fields named by the dependency contract are still absent
-//! here. They are carried as explicit `Unavailable` variants (see
-//! [`PriorityOrdinal`]) or omitted keys rather than guessed, defaulted, or
-//! substituted from UI strings or sprite frames. See
-//! `UNCAPTURED_CONTROLLER_FIELDS` for the enumerated list.
-//!
-//! What is *not* true of that list is that the read laws are unknown. XUI07's
-//! `manifest.json` carries function-level `controller_law_evidence` for every
-//! one of them; the gap is implementation, and for two of them it is an
-//! architectural blocker rather than missing evidence.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOMAIN_ID: u16 = 98;
 pub const DOMAIN_NAME: &str = "theatre_selector_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
-/// Bumped to 4 when the land/navy theatre rows and the army/army-group member
-/// rows gained their measured controller leaves. Encoder and decoder move
-/// together in this file, so an older payload is rejected outright rather than
-/// partially understood.
-///
-/// This is **not** the XUI07 replay schema 6, and — as specified today — it
-/// never can be. Schema 6 hard-requires `combat_log_owned` on every land
-/// controller as a `bool_field` with no null branch, and lane HV proved that
-/// leaf is **client-local UI state**, not authoritative per-country state: its
-/// receiver is a single `CCombatLogView` hanging off the client HUD root at
-/// `CInGameIdler + 0x6b8`, one instance per client, and the earlier briefs'
-/// premise that it lives at `country + 0x2a0` is factually wrong. A
-/// host-side all-country producer has nothing to read, so no amount of work in
-/// this crate closes that row.
-///
-/// The other schema-6 blocker did close: the strategic-region `pinned_frame`
-/// map-mode key is no longer an engine virtual call at all. It is not emitted
-/// here because THS2 carries no strategic-region rows yet and a lone field on
-/// an absent row is bytes replay cannot consume; the rest of that subtree is
-/// not implemented.
-///
-/// So the version stays at 4 deliberately. Bumping it would ship a shape replay
-/// refuses anyway, with the difference that the refusal would look like a
-/// producer bug instead of the schema disagreement it is.
 pub const SCHEMA_VERSION: u32 = 4;
 
-/// Fail-closed ceiling on the number of country rows a THS2 census or section
-/// list carries.
-///
-/// Was `4_096` — a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags), which refused the whole carrier on an overhaul. A country count
-/// is content, so it is now the structural row width; the decode bounds each
-/// count by what the remaining payload can hold, which is the bound that
-/// actually protects the allocation.
 pub const MAX_COUNTRIES: usize = i32::MAX as usize;
 
-/// One census entry is a 4-byte `owner_tag_db_id`; one section is at least that
-/// plus an `admitted` bool and three reserved bytes.
 const MIN_CENSUS_ENTRY_LEN: usize = 4;
 const MIN_SECTION_ENTRY_LEN: usize = 8;
 pub const MAX_THEATRES_PER_SECTION: usize = 16_384;
@@ -98,7 +16,6 @@ pub const MAX_FREE_WINGS_PER_SECTION: usize = 20_000;
 pub const MAX_DISPLAY_NAME_BYTES: usize = 4_096;
 pub const MAX_CONTENT_LAYERS: usize = 4_096;
 pub const MAX_TOKEN_BYTES: usize = 1_024;
-/// Highest alert-category ordinal the a729 alert manager scans.
 pub const MAX_ALERT_CATEGORY: u32 = 0x51;
 
 pub const EXECUTABLE_SHA256: [u8; 32] =
@@ -112,37 +29,7 @@ pub const RESERVE_NAVY_FILTER_MANIFEST_SHA256: [u8; 32] =
 pub const AIR_AND_NAVY_LAW_MANIFEST_SHA256: [u8; 32] =
     hex32(b"eee5a6c973edc425a709864071f940ebb002b4f741d138f09864dab4dc017ed6");
 
-/// Controller fields the XUI07 dependency contract names as producer
-/// dependencies that this carrier does not yet transport. Every one is
-/// transported as an explicit unavailable variant or an omitted key, never as a
-/// default. This list is asserted by test so it cannot silently drift from the
-/// shipped representation.
-///
-/// # What this list does and does not mean
-///
-/// It used to say that "no exact a729 read law is established" for these. That
-/// was never true as a blanket claim and is now removed: XUI07's
-/// `manifest.json` `controller_law_evidence` carries function-level artifacts
-/// for all of them. Each remaining row has one of exactly two causes:
-///
-/// * **Unimplemented** -- the law is a plain field read (or a walk over
-///   structures this producer already reaches) and nothing but work stands
-///   between it and capture. Every `strategic_region_*` row is in this class,
-///   including the `pinned_frame` that used to be a virtual: lane HV resolved
-///   that dispatch to a pure field chain, so what is left
-///   there is the rest of the strategic subtree, not research.
-/// * **Not authoritative state** -- the value is local client UI state, which
-///   this recorder does not capture at all (it records host-visible
-///   authoritative state, never client UI). Only the three
 ///   `*.combat_log_ownership_and_eligibility` rows are in this class, and they
-///   are permanent: lane HV proved the law's receiver is a single per-client
-///   `CCombatLogView`, not a per-country object. Reading it and
-///   labelling it as every country's state would be a false measurement, which
-///   is worse than the named absence carried here.
-///
-/// No row is "blocked on an engine virtual" any more. That category is retired:
-/// one member of it was devirtualized and the other turned out to be the wrong
-/// kind of state.
 pub const UNCAPTURED_CONTROLLER_FIELDS: &[&str] = &[
     "navy_theater_fleet_item.live_spotting_state",
     "navy_theater_fleet_item.exercise_stop_at_max_state",
@@ -244,12 +131,9 @@ impl ObjectKind {
     }
 }
 
-/// Content layer the producer observed as part of the engine's ordered
-/// mod/DLC content identity. `ordinal` is the engine's load order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentLayer {
     pub ordinal: u32,
-    /// `base`, `integrated_dlc`, `dlc`, or `mod`.
     pub layer_kind: ContentLayerKind,
     pub layer_id: String,
     pub content_sha256: [u8; 32],
@@ -279,141 +163,47 @@ impl ContentLayerKind {
 pub mod engine_localisation_provenance;
 pub mod engine_modset_provenance;
 
-/// Producer-observed identity of everything that can change an
-/// engine-materialized display string. Replay must independently resolve its
-/// own winning effective VFS and refuse when these do not match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentIdentity {
-    /// Producer-observed active localization language token, e.g. `l_english`.
     pub language: String,
-    /// Hash over the producer-observed localization content that backs every
-    /// engine-materialized display name in this frame.
     pub localization_content_sha256: [u8; 32],
-    /// The **intended** content stack, ordered, as the host resolved it from
-    /// `dlc_load.json` and the descriptors on disk. Ascending by `ordinal` with
-    /// no gaps.
-    ///
-    /// This is a hypothesis about what the game would load. It is kept because
-    /// only the host can supply content digests and the executable's identity,
-    /// and because it is the record of what was *asked for*.
     pub ordered_layers: Vec<ContentLayer>,
-    /// What the **running engine** actually held for mods and DLC.
-    ///
-    /// Carried alongside `ordered_layers` rather than replacing it, because the
-    /// two answer different questions and the interesting cases are the ones
-    /// where they disagree — see [`EngineContentRoster`].
     pub engine_roster: EngineContentRoster,
 }
 
-/// The engine's own mod and DLC state, read out of the running game.
-///
-/// # Reading a disagreement off this
-///
-/// Nothing here is reconciled against [`ContentIdentity::ordered_layers`]. Both
-/// sides travel intact so a consumer can *see* the difference rather than be
-/// told about it. Three kinds of disagreement are directly visible:
-///
-/// * A `requested_mods` entry with no matching `discovered` entry — the
-///   launcher selected a mod the engine never found.
-/// * A `discovered` entry with `selected` set and `mounted` clear — the engine
-///   found it, would have used it, and the mount failed.
-/// * An `ordered_layers` entry naming a mod that `discovered` does not — the
-///   host's disk scan and the engine's enumeration disagree about what exists.
-///
-/// None of these is an error. A recording of a half-broken install is a valid
-/// recording of a half-broken install, and refusing it would throw away exactly
-/// the evidence that makes the recording worth having.
-///
-/// # What is deliberately not here
-///
-/// Absolute local paths. The engine's PhysicsFS search path is what proves
-/// `mounted` and it is full of machine-specific directories, so it stays in the
-/// producer and only the per-entry conclusion crosses the wire.
-///
-/// An engine load *ordinal*. The engine frees its sorted array before
-/// returning, so no live structure holds one; inventing one would mean
-/// reproducing the comparator, which is the mistake this roster exists to
-/// retire. `kind` is the priority class the engine sorts on, which is the part
-/// that is real.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EngineContentRoster {
-    /// `dlc_load.json`'s `enabled_mods`, in file order, as the engine parsed it.
     pub requested_mods: Vec<String>,
-    /// `dlc_load.json`'s `disabled_dlcs`, in file order, as the engine parsed it.
     pub requested_disabled_dlcs: Vec<String>,
-    /// Everything the engine found, in the producer's canonical order.
     pub discovered: Vec<EngineRosterEntry>,
-    /// The producer's digest over this roster's portable content.
     pub roster_sha256: [u8; 32],
 }
 
-/// One mod or DLC the engine held live.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineRosterEntry {
-    /// `Dlc` or `Mod`. `Base` and `IntegratedDlc` never appear here: the
-    /// engine's own tag distinguishes only those two.
     pub kind: ContentLayerKind,
-    /// The `dlc_load.json`-relative descriptor entry, e.g. `mod/example.mod`.
-    /// Empty when the engine holds none, which is why it is length-prefixed
-    /// with a presence flag rather than required to be non-empty.
     pub descriptor_entry: String,
-    /// The engine's canonical name for the entry, empty when it holds none.
     pub name: String,
-    /// Whether the engine's own selection predicate would have used this entry.
     pub selected: bool,
-    /// Whether this entry's location is in the engine's search path.
     pub mounted: bool,
 }
 
-/// Where a carried display string came from.
-///
-/// The engine stores theatre and air-group names as runtime strings on the
-/// object itself -- a player rename writes that field directly -- so there is
-/// no localization key to carry for them. Declaring the provenance explicitly
-/// keeps replay from treating a runtime string as a localization lookup it
-/// could re-resolve, and keeps a future keyed name from being confused with a
-/// runtime one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NameProvenance {
-    /// Read from the engine object's own runtime string field. Authoritative
-    /// only together with the frame's `ContentIdentity`.
     EngineRuntimeString,
-    /// Materialized by the engine from this localization key.
     LocalizationKey(String),
 }
 
-/// A controller ordinal the producer either measured exactly or explicitly
-/// could not establish.
-///
-/// The dependency contract requires a current priority ordinal on several
-/// selector rows. Land and navy theatre rows now carry a measured ordinal --
-/// the engine field the panel reads, not the `ordinal + 1` frame it writes to
-/// the widget. The air rows still ship `Unavailable` because their ordinal is
-/// the *modal admitted wing priority*, which needs the wing census law that is
-/// not implemented here.
-///
-/// `Unavailable` is a deliberate, inspectable hole: it is never defaulted to
-/// zero and never inferred from a sprite frame, which the contract forbids as
-/// substitute semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PriorityOrdinal {
     Unavailable,
     Measured(u32),
 }
 
-/// The three orders-group icon states an army or army-group row exposes.
-///
-/// These are the *final controller booleans*, which is what the contract asks
-/// for: the engine's own visibility decision, not the offsets it decided from.
-/// The two implications below are the engine's law rather than a convention, so
-/// they are validated instead of documented -- a pair that violates them was
-/// not produced by the law it claims to come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ArmyOrdersVisibility {
     pub training_visible: bool,
-    /// Shown only together with training.
     pub stop_at_max_visible: bool,
-    /// Mutually exclusive with training.
     pub border_conflict_visible: bool,
 }
 
@@ -440,20 +230,10 @@ pub struct MemberRow {
     pub parent_kind: ObjectKind,
     pub parent_id: u32,
     pub engine_order: u32,
-    /// Exact reserve classification for navy fleets. False for every other
-    /// kind.
     pub reserve_navy: bool,
     pub display_name: Option<String>,
     pub name_provenance: Option<NameProvenance>,
-    /// `air_theatre_group_item` carries a current priority ordinal the panel
-    /// needs. Its law is the modal-wing-priority selection, which this producer
-    /// does not implement, so every member ships `Unavailable` rather than a
-    /// default.
     pub priority_ordinal: PriorityOrdinal,
-    /// Measured orders-group icon state. `Some` exactly for `Army` and
-    /// `ArmyGroup` rows: those are the only kinds the engine binds an
-    /// orders group to, so `Some` on any other kind would be a claim about a
-    /// controller that does not exist.
     pub orders_visibility: Option<ArmyOrdersVisibility>,
 }
 
@@ -466,13 +246,8 @@ pub struct TheatreRow {
     pub display_name: String,
     pub name_provenance: NameProvenance,
     pub priority_ordinal: PriorityOrdinal,
-    /// Measured delete eligibility. `Some` exactly for `LandTheatre`: the
-    /// predicate is over the land theatre's own member vector, and no navy or
-    /// air row has a delete button to be eligible for.
     pub delete_eligible: Option<bool>,
     pub members: Vec<MemberRow>,
-    /// Exact alert-manager category ordinals, ascending in engine scan order.
-    /// Land theatres only.
     pub alert_categories: Vec<u32>,
 }
 
@@ -480,45 +255,27 @@ pub struct TheatreRow {
 pub struct FreeAirWingRow {
     pub wing_id: u32,
     pub engine_order: u32,
-    /// `air_theatre_free_wings_item` carries a current priority ordinal. Its
-    /// law is the same modal-wing-priority selection as the air theatre's, and
-    /// it is unimplemented here for the same reason, so this ships
-    /// `Unavailable`.
     pub priority_ordinal: PriorityOrdinal,
 }
 
-/// The measured content of one admitted country section. Empty vectors mean
-/// *measured empty*, which is a positive observation and not a rejection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SectionBody {
     pub theatres: Vec<TheatreRow>,
     pub free_air_wings: Vec<FreeAirWingRow>,
 }
 
-/// Machine reason a whole country section was refused. Exhaustive so a
-/// consumer can never see an unclassified rejection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum SectionRejection {
-    /// A source read was torn, out of bounds, or not an admitted pointer.
     SourceUnreadable = 1,
-    /// An identity appeared twice inside the section.
     DuplicateIdentity = 2,
-    /// Engine order was not contiguous from zero within an owner/kind.
     NonContiguousOrder = 3,
-    /// A row's owner did not match the section owner.
     CrossOwnerRow = 4,
-    /// A member referenced a parent the section does not carry.
     OrphanRow = 5,
-    /// A vtable, type tag, or backreference failed its exact-a729 check.
     IdentityAuthenticationFailed = 6,
-    /// The walk did not finish; a partial prefix was discarded.
     IncompleteWalk = 7,
-    /// A display string was torn, empty, over-long, or not UTF-8.
     DisplayNameUnreadable = 8,
-    /// The section was collected against a different frame hour.
     FrameHourMismatch = 9,
-    /// A carried count exceeded a declared bound.
     BoundExceeded = 10,
 }
 
@@ -542,9 +299,7 @@ impl SectionRejection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SectionAdmission {
-    /// The whole section was refused. Never an empty theatre list.
     Unavailable(SectionRejection),
-    /// The section was walked completely; contents may be measured empty.
     Admitted(SectionBody),
 }
 
@@ -556,11 +311,8 @@ pub struct CountrySection {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TheatreSelectorSnapshot {
-    /// Complete D18 selectable-country census, strictly ascending.
     pub census: Vec<u32>,
-    /// Exactly one section per census entry, in census order.
     pub sections: Vec<CountrySection>,
-    /// True only when every census country produced an admitted section.
     pub producer_complete: bool,
 }
 
@@ -577,7 +329,6 @@ pub struct TheatreSelectorFrame {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub frame_hour: u64,
-    /// Strictly increasing across frames of one recording. Never zero.
     pub source_sequence: u64,
     pub authority: AuthorityState,
     pub content_identity: Option<ContentIdentity>,
@@ -592,9 +343,6 @@ pub enum CarrierError {
     TrailingBytes,
 }
 
-/// Enforces the strictly-increasing source-sequence law across frames. A
-/// carrier alone cannot see its neighbours, so the ordering law lives here and
-/// the consumer drives it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SourceSequenceGate {
     last: Option<u64>,
@@ -605,7 +353,6 @@ impl SourceSequenceGate {
         Self { last: None }
     }
 
-    /// Accepts only a nonzero sequence strictly greater than the previous one.
     pub fn admit(&mut self, source_sequence: u64) -> Result<(), CarrierError> {
         if source_sequence == 0 {
             return invalid("THS2 source sequence is zero");
@@ -618,16 +365,10 @@ impl SourceSequenceGate {
     }
 }
 
-/// The producer seam. The collector implements this over the live process; a
-/// fixture implements it in tests. Per-country failures are returned as
-/// `SectionRejection` so one bad country never destroys the frame, while a
-/// census or identity failure fails the whole frame.
 pub trait ExactTheatreSelectorSource {
     fn is_exact_a729_theatre_selector_source(&self) -> bool;
-    /// Complete D18 selectable-country census.
     fn read_country_census(&self) -> Result<Vec<u32>, CarrierError>;
     fn read_content_identity(&self) -> Result<ContentIdentity, CarrierError>;
-    /// Walk one country. Returning `Err` rejects only this section.
     fn read_country_section(&self, owner_tag_db_id: u32) -> Result<SectionBody, SectionRejection>;
 }
 
@@ -714,14 +455,6 @@ fn validate_content_identity(identity: &ContentIdentity) -> Result<(), CarrierEr
     validate_engine_roster(&identity.engine_roster)
 }
 
-/// Bound the engine roster without inventing rules about its contents.
-///
-/// Deliberately absent: any uniqueness requirement, and any requirement that a
-/// roster entry line up with `ordered_layers`. The engine keys its two maps
-/// independently and nothing stops two entries sharing a descriptor entry, so a
-/// uniqueness rule here would refuse launches the engine itself runs. And the
-/// whole point of carrying both sides is that they are allowed to disagree --
-/// cross-checking them here would turn the signal into a refusal.
 fn validate_engine_roster(roster: &EngineContentRoster) -> Result<(), CarrierError> {
     if roster.requested_mods.len() > MAX_CONTENT_LAYERS
         || roster.requested_disabled_dlcs.len() > MAX_CONTENT_LAYERS
@@ -734,9 +467,6 @@ fn validate_engine_roster(roster: &EngineContentRoster) -> Result<(), CarrierErr
         .iter()
         .chain(roster.requested_disabled_dlcs.iter())
     {
-        // These come straight out of `dlc_load.json`, where an empty entry is
-        // not a thing the launcher writes; the wire codec cannot carry one
-        // either, so an empty value here means a producer bug.
         if requested.is_empty() || requested.len() > MAX_TOKEN_BYTES {
             return invalid("THS2 engine roster requested entry is invalid");
         }
@@ -754,11 +484,7 @@ fn validate_engine_roster(roster: &EngineContentRoster) -> Result<(), CarrierErr
     Ok(())
 }
 
-fn validate_name(
-    name: &str,
-    provenance: &NameProvenance,
-    what: &str,
-) -> Result<(), CarrierError> {
+fn validate_name(name: &str, provenance: &NameProvenance, what: &str) -> Result<(), CarrierError> {
     if name.is_empty() || name.len() > MAX_DISPLAY_NAME_BYTES {
         return invalid(format!("THS2 {what} display name length is invalid"));
     }
@@ -770,10 +496,7 @@ fn validate_name(
     Ok(())
 }
 
-fn validate_section_body(
-    owner_tag_db_id: u32,
-    body: &SectionBody,
-) -> Result<(), CarrierError> {
+fn validate_section_body(owner_tag_db_id: u32, body: &SectionBody) -> Result<(), CarrierError> {
     if body.theatres.len() > MAX_THEATRES_PER_SECTION
         || body.free_air_wings.len() > MAX_FREE_WINGS_PER_SECTION
     {
@@ -782,9 +505,6 @@ fn validate_section_body(
     let mut theatre_ids = BTreeSet::new();
     let mut expected_theatre_order = BTreeMap::new();
     let mut total_members = 0usize;
-    // Member identity is unique across the whole section, not merely within one
-    // theatre. Scoping it per theatre would admit the same fleet or wing under
-    // two different parents.
     let mut member_ids = BTreeSet::new();
     for theatre in &body.theatres {
         if !theatre.kind.is_theatre()
@@ -797,17 +517,9 @@ fn validate_section_body(
             return invalid("THS2 theatre owner does not match its section");
         }
         validate_name(&theatre.display_name, &theatre.name_provenance, "theatre")?;
-        // Delete eligibility is a land-row controller leaf. Carrying it on a
-        // navy or air row would assert a measurement of a control the engine
-        // never binds there.
         if theatre.delete_eligible.is_some() != (theatre.kind == ObjectKind::LandTheatre) {
             return invalid("THS2 delete eligibility is not confined to land theatres");
         }
-        // Which rows carry a measured priority is itself part of the schema,
-        // in both directions. A land or navy row that ships `Unavailable` has
-        // silently lost a leaf this producer implements, and an air row that
-        // ships `Measured` has invented one it does not: the air ordinal is a
-        // modal selection over a wing census, not a field.
         let priority_is_implemented = matches!(
             theatre.kind,
             ObjectKind::LandTheatre | ObjectKind::NavyTheatre
@@ -815,9 +527,7 @@ fn validate_section_body(
         if theatre.priority_ordinal.measured().is_some() != priority_is_implemented {
             return invalid("THS2 theatre priority disposition does not match its kind");
         }
-        let expected = expected_theatre_order
-            .entry(theatre.kind)
-            .or_insert(0_u32);
+        let expected = expected_theatre_order.entry(theatre.kind).or_insert(0_u32);
         if theatre.engine_order != *expected {
             return invalid("THS2 theatre kind order is not contiguous");
         }
@@ -890,13 +600,10 @@ fn validate_section_body(
             if !parent_valid || (member.reserve_navy && member.kind != ObjectKind::Fleet) {
                 return invalid("THS2 member parent/reserve law is invalid");
             }
-            // No member kind has an implemented priority law yet, so a
-            // measured member ordinal could only have been invented.
             if member.priority_ordinal != PriorityOrdinal::Unavailable {
                 return invalid("THS2 member priority has no implemented read law");
             }
-            let expects_orders =
-                matches!(member.kind, ObjectKind::Army | ObjectKind::ArmyGroup);
+            let expects_orders = matches!(member.kind, ObjectKind::Army | ObjectKind::ArmyGroup);
             match member.orders_visibility {
                 Some(orders) if expects_orders => {
                     if !orders.law_holds() {
@@ -904,11 +611,7 @@ fn validate_section_body(
                     }
                 }
                 None if !expects_orders => {}
-                _ => {
-                    return invalid(
-                        "THS2 orders-group visibility is not confined to army rows",
-                    )
-                }
+                _ => return invalid("THS2 orders-group visibility is not confined to army rows"),
             }
             let expected = expected_member_order
                 .entry((
@@ -940,8 +643,6 @@ fn validate_section_body(
         {
             return invalid("THS2 free-wing identity/order is invalid or duplicated");
         }
-        // "Ungrouped" and "in a group" are mutually exclusive states of one
-        // wing. A wing in both lists is a contradiction, not two rows.
         if member_ids.contains(&(ObjectKind::AirWing, wing.wing_id)) {
             return invalid("THS2 free wing is also carried as a grouped member");
         }
@@ -993,8 +694,7 @@ fn validate_frame(frame: &TheatreSelectorFrame) -> Result<(), CarrierError> {
             }
         }
         AuthorityState::ExactA729 => {
-            let (Some(identity), Some(snapshot)) =
-                (&frame.content_identity, &frame.snapshot)
+            let (Some(identity), Some(snapshot)) = (&frame.content_identity, &frame.snapshot)
             else {
                 return invalid("THS2 exact frame must carry identity and sections");
             };
@@ -1405,11 +1105,6 @@ fn string(out: &mut Vec<u8>, value: &str) {
     u32v(out, value.len() as u32);
     out.extend_from_slice(value.as_bytes());
 }
-/// A string that may legitimately be empty.
-///
-/// The plain `string` codec rejects a zero length, which is right for tokens
-/// that must exist. An engine roster entry can genuinely hold an empty name, so
-/// presence is flagged separately instead of an empty value being made illegal.
 fn opt_string(out: &mut Vec<u8>, value: &str) {
     out.push(u8::from(!value.is_empty()));
     out.extend_from_slice(&[0; 3]);
@@ -1430,8 +1125,6 @@ fn provenance(out: &mut Vec<u8>, value: &NameProvenance) {
         }
     }
 }
-/// A boolean that may legitimately be absent. Presence and value are separate
-/// bytes so an absent leaf can never be read back as `false`.
 fn opt_bool(out: &mut Vec<u8>, value: Option<bool>) {
     out.push(u8::from(value.is_some()));
     out.push(u8::from(value.unwrap_or(false)));
@@ -1469,8 +1162,6 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    /// Bytes left. A count-prefixed section divides this by its minimum entry
-    /// size so a stream-supplied count can never size an allocation.
     fn remaining(&self) -> usize {
         self.payload.len().saturating_sub(self.at)
     }

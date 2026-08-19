@@ -79,7 +79,6 @@ def _parse_option(node: Node, loc):
     if not isinstance(node, Node):
         return None
     name = node.get("name")
-    # name may itself be a {text= trigger=} block (rare conditional button text)
     if isinstance(name, Node):
         name_key = _scalar(name.get("text"))
     else:
@@ -132,12 +131,11 @@ def parse_events(layers, loc) -> dict:
     namespaces: set[str] = set()
     collisions: list[dict] = []
     files_parsed = 0
-    # Stable load order (vanilla before mod, then relpath), path-boundary-safe.
     ordered = R.ordered_files(layers, "events", (".txt",))
     for rel, abspath in ordered:
         try:
             root = R.parse_file(abspath)
-        except Exception as e:  # never let one bad file kill the catalog
+        except Exception as e:
             print(f"[events] WARN parse failed {rel}: {e}", file=sys.stderr)
             continue
         files_parsed += 1
@@ -155,7 +153,7 @@ def parse_events(layers, loc) -> dict:
                         "first": events[rec["id"]]["source_file"],
                         "override": rel,
                     })
-                events[rec["id"]] = rec  # last-parsed (mod after vanilla) wins
+                events[rec["id"]] = rec
     return {
         "meta": {
             "files_parsed": files_parsed,

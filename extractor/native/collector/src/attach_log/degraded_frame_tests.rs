@@ -1,41 +1,7 @@
-//! The producer half of the degraded-frame contract.
-//!
-//! Frame completeness was all-or-nothing across the whole scheduled roster: any
-//! domain whose non-tolerated status flags fired refused the entire frame. Three
-//! walked live captures carried `FRAME_END`x1, `DOMAIN_GAP`x73 and
-//! `FRAME_REFUSED`xN, and not one `DOMAIN_DATA` record -- so `accepted_hours`
-//! was zero in every capture the project has ever taken, and no domain fix could
-//! be verified end to end because nothing was ever published to verify against.
-//!
-//! These tests pin the split that ends that, and the guards that keep it honest.
-//! The rule is applied to every scheduled domain by one classifier; there is no
-//! per-domain branch anywhere in it, and no domain opts in.
-
 use super::*;
 
 const TEST_HOUR: i32 = 60_831_436;
 
-/// The completeness walk gained a producer-outcome ledger when the producer
-/// migration landed, and these hand-assembled frames have to answer for it.
-///
-/// An EMPTY ledger is NOT the faithful lift, which is worth stating because it
-/// is the obvious one. Domains 18, 29 and 47 are all in `MIGRATED_OUTCOME_DOMAINS`,
-/// and a migrated site records an outcome on its FAILURE path by construction --
-/// so a failing migrated domain with no ledger entry means the site was
-/// bypassed, which the walk correctly reports as a frame-level
-/// `migrated_site_published_outcome` finding and which correctly REFUSES the
-/// frame. Passing an empty ledger here would therefore not be "these tests do
-/// not care about outcomes"; it would silently convert every per-domain fault
-/// in this module into a frame fault and test the opposite of what these tests
-/// are named for.
-///
-/// So the ledger is built to match the frame: every domain the frame shows
-/// FAILING gets the failure outcome its producer would have recorded. Clean
-/// domains get nothing, exactly as a passing read leaves nothing to diagnose.
-///
-/// Falsifiability is unchanged -- these tests assert the DEGRADED/REFUSED split
-/// and the notice's contents, and breaking the split turns them red. What the
-/// ledger removes is a second, unrelated reason for them to be red.
 fn outcomes_for(
     failing_domains: &[(u16, u32)],
 ) -> compact_contract::domain_outcome::DomainOutcomeLedger {
@@ -45,12 +11,6 @@ fn outcomes_for(
     };
     let mut ledger = DomainOutcomeLedger::new();
     for (domain_id, status_flags) in failing_domains {
-        // The outcome must DERIVE the bits the record publishes, not merely
-        // exist. `audit_published_status` raises a frame-level
-        // `published_status_matches_outcome` finding when an offender's word
-        // carries less than its outcome claims, and that finding refuses the
-        // frame -- so a fixture whose ledger and PERF word disagree would test
-        // the audit rather than the degraded/refused split these tests name.
         let completion = if status_flags & COMPACT_STATUS_SOURCE_UNAVAILABLE != 0 {
             ReadCompletion::DidNotComplete
         } else {
@@ -81,8 +41,6 @@ fn outcomes_for(
     ledger
 }
 
-/// For a frame with no failing domain at all: nothing failed, so nothing was
-/// diagnosed, and the empty ledger is the honest state.
 fn no_outcomes() -> compact_contract::domain_outcome::DomainOutcomeLedger {
     outcomes_for(&[])
 }
@@ -97,9 +55,6 @@ fn frame_end_payload() -> Vec<u8> {
     vec![0u8; 32]
 }
 
-/// Assemble a frame exactly as the scheduler does: one PERF record per domain,
-/// then a single trailing `FRAME_END`. Returns the bytes and the sequence the
-/// next record would take.
 fn assembled_frame(perf_domains: &[(u16, u32)]) -> (Vec<u8>, u64) {
     let mut records = Vec::new();
     let mut sequence = 1u64;
@@ -128,9 +83,6 @@ fn assembled_frame(perf_domains: &[(u16, u32)]) -> (Vec<u8>, u64) {
     (records, sequence)
 }
 
-/// Walk a frame and return `(sequence, domain_id, record_type, payload)` for
-/// every record, so a test can assert on the published bytes rather than on the
-/// producer's intent.
 fn walk(records: &[u8]) -> Vec<(u64, u16, u16, Vec<u8>)> {
     let mut out = Vec::new();
     let mut offset = 0usize;
@@ -150,12 +102,6 @@ fn walk(records: &[u8]) -> Vec<(u64, u16, u16, Vec<u8>)> {
     out
 }
 
-/// THE producer deliverable: a frame whose only objections are per-domain
-/// PUBLISHES, carrying a notice that names those domains and nothing else.
-///
-/// Domains 29 and 47 have no `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry, so
-/// their bits are genuine untolerated defects -- the shape that refused every
-/// live frame.
 #[test]
 fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them() {
     let (mut records, mut next_sequence) = assembled_frame(&[
@@ -202,9 +148,6 @@ fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them(
     .expect("the notice must splice into the frame");
 
     let walked = walk(&records);
-    // The notice rides INSIDE the frame, immediately before FRAME_END. A
-    // consumer therefore cannot read the published hour without also reading
-    // which of its domains are unknown.
     let (notice_sequence, notice_domain, notice_type, notice_payload) =
         walked[walked.len() - 2].clone();
     assert_eq!(notice_domain, compact_contract::COMPACT_DOMAIN_FRAME);
@@ -214,8 +157,6 @@ fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them(
     );
     let (frame_end_sequence, _, frame_end_type, _) = walked[walked.len() - 1];
     assert_eq!(frame_end_type, COMPACT_RECORD_TYPE_FRAME_END);
-    // FRAME_END is renumbered past the notice, so the stream sequence stays
-    // contiguous -- a gap here is a hard boundary violation downstream.
     assert_eq!(notice_sequence, frame_end_sequence_before);
     assert_eq!(frame_end_sequence, notice_sequence + 1);
     assert_eq!(next_sequence, frame_end_sequence + 1);
@@ -224,39 +165,12 @@ fn a_frame_whose_only_faults_are_per_domain_publishes_with_a_notice_naming_them(
         compact_contract::frame_degraded::FrameDegradedRecordV2::decode(&notice_payload).unwrap();
     assert_eq!(notice.degraded_hour, TEST_HOUR);
     assert_eq!(notice.declared_domain_ids(), vec![29, 47]);
-    // Every entry carries a typed reason. An entry with an empty reason is
-    // refused by the codec, so a published degradation always says why.
-    assert!(notice.domains.iter().all(|domain| !domain.reason.is_empty()));
+    assert!(notice
+        .domains
+        .iter()
+        .all(|domain| !domain.reason.is_empty()));
 }
 
-// `a_worker_success_does_not_turn_a_partially_migrated_domain_failure_into_a_frame_fault`
-// stood here. It walked the 17-entry `PARTIALLY_MIGRATED_OUTCOME_DOMAINS`
-// exemption list and asserted that each member's silent failure stayed a
-// per-domain degradation carrying the reserved `undeclared` predicate.
-//
-// Deleted with the list, not orphaned: the property it asserted is now held for
-// EVERY declared domain, and held better, by
-// `no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome` --
-// which no longer skips those 17, and which asserts a SUBSTANTIATED predicate
-// rather than the reserved one. Keeping this test would have required keeping
-// the list it iterates, and asserting `undeclared` on domains that now name a
-// real diagnosis.
-
-/// Closes live_unlock/t9 and t10. D65 and D66 used to migrate only their
-/// worker-join boundary: a normal join recorded `worker_completed` while a
-/// failure found inside either reader reached PERF through the legacy
-/// status/diagnostic channel alone, so the frame saw a failing record with only
-/// a success behind it. Their emit sites now run `record_reader_status_outcome`
-/// over whatever bits the read added to the frame's base, so the deciding
-/// failure IS in the ledger and the walk classifies it `Declared` — a
-/// per-domain degradation carrying a real predicate, not the reserved
-/// `undeclared` and not a frame fault.
-///
-/// Production change that makes this fail: dropping the
-/// `record_reader_status_outcome` call from either emit site, which leaves the
-/// walk to report `migrated_site_published_outcome`. That the domains are not
-/// excepted from the finding is no longer an assertion this test can make: the
-/// exemption list is deleted and there is nothing left to be off.
 #[test]
 fn d65_and_d66_reader_failures_declare_their_own_outcome() {
     for domain_id in [
@@ -269,8 +183,6 @@ fn d65_and_d66_reader_failures_declare_their_own_outcome() {
             domain_id,
             compact_contract::domain_outcome::READ_PREDICATE_WORKER_COMPLETED,
         );
-        // Exactly what the emit site does: the frame base was clean and the
-        // read came back with SOURCE_UNAVAILABLE | PARTIAL_DATA on it.
         let published = record_reader_status_outcome(
             &mut outcomes,
             domain_id,
@@ -288,7 +200,9 @@ fn d65_and_d66_reader_failures_declare_their_own_outcome() {
         let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
 
         assert!(
-            findings.iter().all(|finding| finding.frame_finding.is_none()),
+            findings
+                .iter()
+                .all(|finding| finding.frame_finding.is_none()),
             "domain {domain_id} reader failure became a frame fault: {:?}",
             findings
                 .iter()
@@ -316,29 +230,6 @@ fn d65_and_d66_reader_failures_declare_their_own_outcome() {
     }
 }
 
-/// The behavioural test above proves the classification is right once the emit
-/// site records the outcome. This proves the emit sites still do — every domain
-/// here is a domain nothing exempts from the finding, so a deleted call is not
-/// a lost diagnostic, it is a refused frame.
-///
-/// D18 joined the list when its CIM1 membership sub-statuses started reaching
-/// the published PERF word. Before that, `runs/live_unlock/t21` delivered 282
-/// d18 hours whose cores read had failed, whose PERF word was `0x0`, and which
-/// the frame's `H4FD` notice therefore never named — while the host ledger
-/// recorded 282 source-unavailable domain-hours for the same domain from the
-/// same capture.
-///
-/// D91 joined for the same reason on the other side of the same wire: its emit
-/// site published the exact reader's SOURCE_UNAVAILABLE word with nothing in
-/// the ledger, so the completeness walk classified it `MigratedButSilent` and
-/// raised `migrated_site_published_outcome` as a FRAME finding -- t55 carried
-/// that finding on 960 of 960 refused frames.
-///
-/// Production change that makes this fail: dropping the
-/// `record_reader_status_outcome` call from D18's, D65's, D66's or D91's emit
-/// block in `build_compact_extraction_gate_records`, pointing one of them at a
-/// different domain, or adding a fifth site without deciding whether the domain
-/// it speaks for still needs one.
 #[test]
 fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
     const SOURCE: &str = include_str!("../attach_log.rs");
@@ -362,7 +253,6 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
         {
             continue;
         }
-        // The ledger argument is first, the domain constant second.
         let domain = lines[start + offset + 1..(start + offset + 5).min(end)]
             .iter()
             .map(|line| line.trim().trim_end_matches(','))
@@ -386,15 +276,6 @@ fn d18_d65_d66_and_d91_emit_sites_route_their_status_word_through_the_ledger() {
     );
 }
 
-/// `record_reader_status_outcome` has to be TOTAL over the failure bits it
-/// speaks for, because that totality is the whole safety argument for taking
-/// D65 and D66 off the partial-migration exemption: no enumeration of the
-/// readers' guards is being trusted, only the claim that every bit a reader can
-/// add is named here and derives back to the same word.
-///
-/// Production change that makes this fail: adding a bit to
-/// `READER_OWNED_FAILURE_BITS` without teaching the mapping to reproduce it, or
-/// letting a non-failing outcome be recorded for a failing word.
 #[test]
 fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     let domain_id = COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE;
@@ -403,8 +284,14 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     while bit != 0 {
         if READER_OWNED_FAILURE_BITS & bit != 0 {
             let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
-            let published =
-                record_reader_status_outcome(&mut outcomes, domain_id, 0, bit, String::new, Vec::new());
+            let published = record_reader_status_outcome(
+                &mut outcomes,
+                domain_id,
+                0,
+                bit,
+                String::new,
+                Vec::new(),
+            );
             assert_eq!(published, bit, "bit {bit:#010x} was not derived back");
             let outcome = outcomes
                 .get(domain_id)
@@ -424,7 +311,6 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     }
     assert_eq!(covered, READER_OWNED_FAILURE_BITS);
 
-    // A clean read records nothing and leaves the join's success standing.
     let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
     record_read_succeeded(
         &mut outcomes,
@@ -434,11 +320,11 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     let published =
         record_reader_status_outcome(&mut outcomes, domain_id, 0, 0, String::new, Vec::new());
     assert_eq!(published, 0);
-    assert!(!outcomes.get(domain_id).expect("success stands").is_failure());
+    assert!(!outcomes
+        .get(domain_id)
+        .expect("success stands")
+        .is_failure());
 
-    // A panicked worker is already diagnosed, and its panic message is the only
-    // artefact naming the cause. Deriving a second failure from the stand-in
-    // read's bits would displace it with a restatement of those bits.
     let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
     record_worker_panic_outcome(&mut outcomes, domain_id, &"the walk tripped an assert");
     let panic_status = COMPACT_STATUS_WORKER_PANIC | COMPACT_STATUS_PARTIAL_DATA;
@@ -463,9 +349,6 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
         "the panic outcome must still agree with the published word"
     );
 
-    // A frame-scoped bit the derivation CAN reproduce is declared, with the
-    // authority pointing at the frame rather than at this domain: the read
-    // completed, and the record is an offender anyway.
     for (frame_bit, expected_predicate) in [
         (
             COMPACT_STATUS_NO_CLOCK,
@@ -505,10 +388,6 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
         );
     }
 
-    // A frame-scoped bit no `DomainOutcome` field can derive is NOT claimed:
-    // an outcome that cannot reproduce it would make the record and the
-    // diagnosis disagree. Both readers refuse before this can happen; see
-    // `d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own`.
     let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
     let published = record_reader_status_outcome(
         &mut outcomes,
@@ -522,20 +401,6 @@ fn record_reader_status_outcome_is_total_over_the_bits_it_claims() {
     assert!(outcomes.get(domain_id).is_none());
 }
 
-/// The safety argument for taking D65 and D66 off
-/// the partial-migration exemption has to cover the FRAME's bits too: a
-/// domain whose read succeeded still publishes a failing word if the frame's
-/// prologue put a failure bit in the base, and with no outcome behind it that
-/// is the `MigratedButSilent` finding that refuses the hour.
-///
-/// This walks all five declared frame-scoped writes and pins how each is
-/// covered. `PROFILE_MISMATCH` is the one that needs a producer change: both
-/// readers now refuse it rather than walk offsets measured against a different
-/// build, which gives the emit site a bit of the domain's OWN to substantiate.
-///
-/// Production change that makes this fail: removing either reader's
-/// profile-mismatch refusal, or adding a sixth frame-scoped base status write
-/// whose bit neither the derivation nor a reader accounts for.
 #[test]
 fn d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own() {
     let state = super::tests::empty_collector_state();
@@ -555,11 +420,15 @@ fn d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own() {
         Some(CompactSpecialProjectProgramFailureReason::ProfileMismatch)
     );
 
-    // And the bit they added is one the emit site can substantiate, so the
-    // record reaches the completeness walk Declared rather than silent.
     for (domain_id, status) in [
-        (COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE, d66.status_flags),
-        (COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE, d65.status_flags),
+        (
+            COMPACT_DOMAIN_OCCUPATION_STATE_EXTRAS_LIVE,
+            d66.status_flags,
+        ),
+        (
+            COMPACT_DOMAIN_SPECIAL_PROJECT_PROGRAMS_LIVE,
+            d65.status_flags,
+        ),
     ] {
         let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
         record_read_succeeded(
@@ -579,7 +448,9 @@ fn d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own() {
         let (records, _) = assembled_frame(&[(domain_id, published)]);
         let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
         assert!(
-            findings.iter().all(|finding| finding.frame_finding.is_none()),
+            findings
+                .iter()
+                .all(|finding| finding.frame_finding.is_none()),
             "domain {domain_id} under a profile mismatch became a frame fault: {:?}",
             findings
                 .iter()
@@ -589,18 +460,6 @@ fn d65_and_d66_refuse_a_profile_mismatch_with_a_bit_of_their_own() {
     }
 }
 
-/// The complementary guard: this patch must not globally downgrade a bypassed
-/// migrated site. D72's ordinary failure sites are wired into the ledger, so a
-/// failing PERF word accompanied only by a success outcome is still an internal
-/// producer contradiction and must refuse the frame.
-///
-/// The sweep is what keeps this from being fatal to the other 72 domains, and
-/// it runs where production runs it: BEFORE the walk. This test deliberately
-/// does not run it, because what it pins is the walk's own verdict on a bypass.
-///
-/// Production change that makes this fail: removing the `MigratedButSilent`
-/// frame finding from the completeness walk, or re-introducing an exemption
-/// list that suppresses it for a declared domain.
 #[test]
 fn a_fully_migrated_site_that_publishes_failure_after_only_success_still_refuses() {
     let domain_id = COMPACT_DOMAIN_RESOLVED_TOOLTIP_INSTANCES_LIVE;
@@ -625,13 +484,11 @@ fn a_fully_migrated_site_that_publishes_failure_after_only_success_still_refuses
     ));
 }
 
-/// A domain inside its expected-partial tolerance is NOT a degradation. The
-/// frame stays complete and no notice is produced -- the two states must never
-/// collapse into one another.
 #[test]
 fn a_tolerated_partial_leaves_the_frame_complete_and_produces_no_notice() {
     for tolerance in compact_contract::COMPACT_EXPECTED_PARTIAL_TOLERANCES {
-        let (records, _) = assembled_frame(&[(18, 0), (tolerance.domain_id, tolerance.tolerated_flags)]);
+        let (records, _) =
+            assembled_frame(&[(18, 0), (tolerance.domain_id, tolerance.tolerated_flags)]);
         let findings = compact_frame_completeness_findings(&records, TEST_HOUR, &no_outcomes());
         assert!(
             findings.is_empty(),
@@ -645,14 +502,8 @@ fn a_tolerated_partial_leaves_the_frame_complete_and_produces_no_notice() {
     }
 }
 
-/// A fault in the FRAME still refuses the whole frame. A degraded frame is only
-/// meaningful if a consumer can attribute the degradation to a specific,
-/// well-formed hour, so anything that undermines the frame's identity, boundary
-/// or grammar keeps the old all-or-nothing verdict.
 #[test]
 fn a_frame_level_fault_still_refuses_the_whole_frame() {
-    // 1. A record stamped with a different hour than the frame: the frame's
-    //    identity is not trustworthy.
     let (records, _) = assembled_frame(&[(18, 0)]);
     let findings = compact_frame_completeness_findings(&records, TEST_HOUR + 1, &no_outcomes());
     assert!(!findings.is_empty());
@@ -664,7 +515,6 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
         "an hour mismatch must refuse, never degrade"
     );
 
-    // 2. No FRAME_END: the frame has no boundary.
     let mut headless = Vec::new();
     append_compact_record(
         &mut headless,
@@ -681,8 +531,6 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
         FrameCompletenessVerdict::Refused
     ));
 
-    // 3. A FRAME_END carrying a failure status: the frame's own telemetry says
-    //    the hour is bad, which is not one domain's problem.
     let mut bad_frame_end = Vec::new();
     let mut frame_end = frame_end_payload();
     frame_end[24..28].copy_from_slice(&COMPACT_STATUS_NO_CLOCK.to_le_bytes());
@@ -711,22 +559,10 @@ fn a_frame_level_fault_still_refuses_the_whole_frame() {
     ));
 }
 
-/// The case that matters most, and the one the other refusal test misses: a
-/// framing fault ALONGSIDE per-domain faults.
-///
-/// A mutation that made framing findings fall through instead of refusing was
-/// invisible to the test above, because with only framing findings the degraded
-/// list came out empty and the fallback still refused. That is precisely the
-/// dangerous shape -- a frame with an untrustworthy hour AND a failing domain
-/// would have published, with the notice quietly vouching for the rest of a
-/// frame whose identity was never established.
 #[test]
 fn a_framing_fault_refuses_even_when_per_domain_faults_could_have_degraded() {
     let (records, _) = assembled_frame(&[(18, 0), (29, COMPACT_STATUS_PARTIAL_DATA)]);
     let outcomes = outcomes_for(&[(29, COMPACT_STATUS_PARTIAL_DATA)]);
-    // Walking against the wrong hour makes EVERY record raise a framing
-    // finding, while domain 29 also raises its per-domain objection. The
-    // per-domain half must not be able to carry the frame.
     let findings = compact_frame_completeness_findings(&records, TEST_HOUR + 1, &outcomes);
     assert!(
         findings.iter().any(|finding| finding.offender.is_none()),
@@ -746,9 +582,6 @@ fn a_framing_fault_refuses_even_when_per_domain_faults_could_have_degraded() {
     );
 }
 
-/// A domain whose status word could not even be READ cannot be classified, so
-/// it must not be published as degraded. Publishing it would assert bits nobody
-/// read -- the mislabel this record exists to prevent, in its worst form.
 #[test]
 fn a_perf_record_too_short_to_carry_a_status_refuses_rather_than_guessing() {
     let mut records = Vec::new();
@@ -781,43 +614,8 @@ fn a_perf_record_too_short_to_carry_a_status_refuses_rather_than_guessing() {
     );
 }
 
-/// A failing domain that says nothing still gets a non-empty, countable reason.
-///
-/// Some scheduled domains attach no diagnostic units at all. Their failures
-/// used to arrive as a bare status bit, and an entry with an EMPTY reason is
-/// refused by the codec -- so without a name for the condition, a silent domain
-/// would have made its whole frame unpublishable. That is still the property,
-/// and it is still what this test is for.
-///
-/// REWRITTEN twice over by the producer migration, in both its subject and its
-/// literal, and neither change weakens it:
-///
-/// * SUBJECT. Domain 29 is in `MIGRATED_OUTCOME_DOMAINS`, and a migrated site
-///   records an outcome on its failure path by construction -- so a failing
-///   migrated domain that says nothing is a producer regression, which the walk
-///   now reports as a frame-level finding and which REFUSES the frame. That is
-///   correct, and it means "a silent domain degrades" is no longer a thing that
-///   can be asked of a migrated domain at all. It is still exactly the question
-///   for a domain the migration has not reached, so the test asks it there, and
-///   asserts the domain's non-migrated status so that migrating it later turns
-///   this red rather than silently retargeting the test.
-/// * LITERAL. The shared name is no longer the string
-///   `FRAME_DEGRADED_REASON_UNDIAGNOSED` composed by the collector; it is the
-///   reserved `Predicate::undeclared()` the offender carries, rendered into the
-///   reason. The property -- one SHARED, non-empty, countable marker, the same
-///   for every silent domain -- is asserted directly instead of through the
-///   literal, which is what it was standing in for.
 #[test]
 fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
-    // Not migrated, and asserted rather than assumed: the whole scenario is
-    // "the producer declared nothing", which for a migrated domain is a frame
-    // fault instead.
-    // DERIVED from the contract, not hand-picked. This test used to name
-    // domains 19 and 25, which the contract does not assign at all -- so the
-    // scenario it built was a degradation of a domain that does not exist, and
-    // it only stayed green because the codec had no rule against that. Choosing
-    // the ids here means the test retargets itself as domains migrate instead
-    // of asking a future reader to "pick another one".
     let candidates: Vec<u16> = compact_contract::ASSIGNED_COMPACT_DOMAINS
         .iter()
         .filter(|descriptor| descriptor.schedulable)
@@ -840,15 +638,11 @@ fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
     let FrameCompletenessVerdict::Degraded(domains) = classify_frame_completeness(&findings) else {
         panic!("a lone per-domain fault must degrade");
     };
-    // Non-empty: an empty reason is what the codec refuses, and refusing it
     // here is what would have re-deadlocked the frame.
     assert!(
         !domains[0].reason.is_empty(),
         "a silent domain must still carry a reason"
     );
-    // SHARED: a second, different silent domain must produce the SAME marker,
-    // because that is what makes the silence countable in one pass over a
-    // stream rather than a per-domain string a consumer has to enumerate.
     let (other_records, _) =
         assembled_frame(&[(other_silent_domain, COMPACT_STATUS_SOURCE_UNAVAILABLE)]);
     let other_findings =
@@ -858,10 +652,6 @@ fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
     else {
         panic!("a lone per-domain fault must degrade");
     };
-    // Two places carry the marker, and both are asserted because they are read
-    // by different consumers. The OFFENDER carries the reserved predicate, which
-    // is the machine-countable form; the DEGRADED entry carries the reason text,
-    // which is what an existing consumer logs.
     let undeclared = compact_contract::diagnostic_channel::Predicate::undeclared();
     for (label, found) in [("first", &findings), ("second", &other_findings)] {
         let offender = found
@@ -873,11 +663,6 @@ fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
             "a producer that declared nothing must be stamped with the reserved              undeclared predicate, which is what makes the silence countable"
         );
     }
-    // SHARED: strip the per-domain prefix and the two reasons must be the SAME
-    // string. Asserting equality rather than a literal is deliberate -- it is
-    // the property ("one name for every silent domain") rather than today's
-    // spelling of it, so rewording the marker keeps this green while giving any
-    // ONE domain its own variant turns it red.
     let strip = |domain_id: u16, reason: &str| {
         reason
             .strip_prefix(&format!("domain {domain_id}: "))
@@ -890,7 +675,6 @@ fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
         "every silent domain must be named by the SAME marker, not a per-domain one"
     );
     // And it is publishable: a silent domain must not be able to re-deadlock a
-    // whole frame just by failing to explain itself.
     let mut records = records;
     let mut next_sequence = 3u64;
     insert_frame_degraded_notice_before_frame_end(
@@ -902,30 +686,12 @@ fn a_failing_domain_with_no_diagnostic_units_is_named_undiagnosed_not_blank() {
     .expect("an undiagnosed failure must still be statable");
 }
 
-/// The correctness guard for cross-frame deltas, proved for EVERY domain rather
-/// than argued for one.
-///
-/// A degraded domain publishes nothing usable this hour, and the recorder fold
-/// discards its record. If the collector advanced that domain's delta baseline
-/// anyway, the rows the discarded frame carried would be marked delivered and
-/// never re-sent, and the fold accumulator would diverge for the rest of the
-/// campaign. That is why the degraded publication path can commit the frame's
-/// trackers wholesale: the freeze is per domain and already happened at
-/// row-build time.
-///
-/// Degraded implies withheld, universally: `Degraded` means the NORMALIZED
-/// status has failure-class bits, normalizing only ever clears bits, so the raw
-/// status has them too -- which is exactly `compact_delta_baseline_withheld`.
 #[test]
 fn every_degraded_status_withholds_its_delta_baseline_for_every_domain() {
     let tolerance_domains: Vec<u16> = compact_contract::COMPACT_EXPECTED_PARTIAL_TOLERANCES
         .iter()
         .map(|tolerance| tolerance.domain_id)
         .collect();
-    // Domains with lane-local status bits (49/51/53/60/99) are included on
-    // purpose: their badges are stripped before classification, and this is
-    // where a normalization mistake would show up as a degraded domain whose
-    // baseline was allowed to advance.
     let mut domains: Vec<u16> = vec![18, 29, 30, 47, 49, 51, 53, 60, 91, 99];
     domains.extend(tolerance_domains);
 
@@ -953,23 +719,6 @@ fn every_degraded_status_withholds_its_delta_baseline_for_every_domain() {
     );
 }
 
-/// Where the degraded notice STOPS, pinned so it is inherited as a fact rather
-/// than rediscovered.
-///
-/// The completeness gate builds per-domain objections only inside its
-/// `DOMAIN_PERF` branch. It has no `DOMAIN_GAP` branch at all, so a domain that
-/// arrives as a gap is structurally unable to become a named degraded domain --
-/// and `replace_rejected_domain_records_with_gaps` (this file) deletes the
-/// emitted records of any domain outside the clock brackets and substitutes a
-/// `ClockUnreadable` gap BEFORE this walk ever runs.
-///
-/// That is not a silent pass-through on the wire: `DOMAIN_GAP` is a first-class
-/// typed outcome and the recorder fold already treats a gapped domain as unknown
-/// for the hour, so such a domain is never mistaken for complete. What IS wrong,
-/// and is a pre-existing defect this record does not fix, is that the
-/// substituted reason says `ClockUnreadable` whatever the real cause was. A
-/// uniform per-domain outcome contract has to reach that substitution point, or
-/// it will keep laundering causes exactly here.
 #[test]
 fn a_gapped_domain_is_accounted_by_its_gap_record_and_never_by_the_notice() {
     let mut records = Vec::new();
@@ -982,8 +731,6 @@ fn a_gapped_domain_is_accounted_by_its_gap_record_and_never_by_the_notice() {
         0,
         &perf_payload_with_status(0),
     );
-    // A gap for domain 29. Its contents are irrelevant to this assertion and
-    // that is the finding: the gate never inspects a gap record at all.
     append_compact_record(
         &mut records,
         2,
@@ -1018,34 +765,17 @@ fn a_gapped_domain_is_accounted_by_its_gap_record_and_never_by_the_notice() {
     );
 }
 
-/// Two objections for one domain mean the frame's per-domain PERF cardinality
-/// is broken. That is a frame fault, not a degradation, and the notice must not
-/// silently merge them -- a merged entry would pick one domain's bits and
-/// discard the other's.
 #[test]
 fn one_domain_objecting_twice_is_a_frame_fault_not_a_merged_entry() {
-    let (records, _) =
-        assembled_frame(&[(29, COMPACT_STATUS_PARTIAL_DATA), (29, COMPACT_STATUS_NO_CLOCK)]);
-    // The ledger holds ONE outcome per domain, which is the production shape:
-    // a domain reads once and diagnoses once. That is exactly why this frame is
-    // broken, and it is why the count below is no longer pinned -- see the
-    // assertion's own comment.
+    let (records, _) = assembled_frame(&[
+        (29, COMPACT_STATUS_PARTIAL_DATA),
+        (29, COMPACT_STATUS_NO_CLOCK),
+    ]);
     let findings = compact_frame_completeness_findings(
         &records,
         TEST_HOUR,
         &outcomes_for(&[(29, COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_NO_CLOCK)]),
     );
-    // The exact COUNT is deliberately not asserted any more. It used to be 2 --
-    // one objection per duplicated PERF record -- and the producer migration
-    // legitimately adds more: each duplicate also publishes a status word that
-    // disagrees with the domain's single outcome, which `audit_published_status`
-    // reports as its own frame-level finding. Pinning the count would make this
-    // test fail whenever the walk gains a NEW true thing to say about the same
-    // broken frame, which is not what it is for.
-    //
-    // What it is for is asserted below, and neither half is weakened: both
-    // duplicated objections are still raised as per-domain offenders, and the
-    // verdict is still REFUSED rather than a merged degradation.
     assert_eq!(
         findings
             .iter()
@@ -1064,22 +794,20 @@ fn one_domain_objecting_twice_is_a_frame_fault_not_a_merged_entry() {
     ));
 }
 
-/// Splicing into a frame that is not shaped the way the scheduler builds them
-/// fails closed. The caller turns that into a refusal, so a degradation that
-/// cannot be STATED never becomes a silently-degraded frame.
 #[test]
 fn a_notice_that_cannot_be_spliced_fails_closed() {
-    let degraded = vec![compact_contract::frame_degraded::FrameDegradedDomain::from_status(
-        29,
-        COMPACT_STATUS_PARTIAL_DATA,
-        compact_contract::frame_degraded::FrameDegradedDiagnosis::undeclared(
-            compact_contract::diagnostic_channel::Authority::SelfDomain,
-            "d29_invalid_air_wing_rows=3",
-        ),
-    )
-    .unwrap()];
+    let degraded = vec![
+        compact_contract::frame_degraded::FrameDegradedDomain::from_status(
+            29,
+            COMPACT_STATUS_PARTIAL_DATA,
+            compact_contract::frame_degraded::FrameDegradedDiagnosis::undeclared(
+                compact_contract::diagnostic_channel::Authority::SelfDomain,
+                "d29_invalid_air_wing_rows=3",
+            ),
+        )
+        .unwrap(),
+    ];
 
-    // No FRAME_END at all.
     let mut headless = Vec::new();
     append_compact_record(
         &mut headless,
@@ -1099,7 +827,6 @@ fn a_notice_that_cannot_be_spliced_fails_closed() {
     )
     .is_err());
 
-    // FRAME_END for a different hour than the notice.
     let (mut records, mut next_sequence) = assembled_frame(&[(29, COMPACT_STATUS_PARTIAL_DATA)]);
     assert!(insert_frame_degraded_notice_before_frame_end(
         &mut records,
@@ -1110,31 +837,15 @@ fn a_notice_that_cannot_be_spliced_fails_closed() {
     .is_err());
 }
 
-/// The degraded summary the capture loop writes to `collector_worker_error.log`
-/// must reach the operator WHOLE.
-///
-/// This is the artifact a human reads when a capture publishes an hour with
-/// domains marked unknown, and it carries one typed reason per degraded domain.
-/// A single worker-error record bounds its text at `RECORD_TEXT_LIMIT`; the
-/// summary for a fully degraded roster is an order of magnitude past that, so
-/// the record used to end mid-domain and every reason after the cut was
-/// destroyed -- exactly when the run most needed diagnosing.
-///
-/// Production change that makes this fail: `attach_worker_error_record_bytes`
-/// calling the single-record `format_record` instead of `format_records`.
 #[test]
 fn a_full_roster_degraded_summary_reaches_the_log_whole() {
     use compact_contract::worker_error_record as record_format;
 
-    // The shape the capture loop builds, at the scheduled roster's size, with
-    // each reason at the wire's own per-domain bound.
     let reason_len = compact_contract::frame_degraded::FRAME_DEGRADED_MAX_REASON_LEN;
     let last_domain = 99u16;
     let summary = (0..73u16)
         .map(|index| {
             let domain = if index == 72 { last_domain } else { index };
-            // ASCII only, so the text appears verbatim in a `{:?}` rendering
-            // and this test is not measuring the escape rules.
             format!(
                 "d{domain}:{:#010x}[{}]",
                 COMPACT_STATUS_SOURCE_UNAVAILABLE,
@@ -1151,22 +862,24 @@ fn a_full_roster_degraded_summary_reaches_the_log_whole() {
         "a full-roster summary must not be squeezed into one record"
     );
 
-    // Every record is independently intact and attributable to this process,
-    // which is what lets the host read them at all.
     let pid = unsafe { GetCurrentProcessId() };
     let creation = current_process_creation_filetime().unwrap_or(0);
     let header = record_format::owned_header(pid, creation);
     let suffix = record_format::owned_suffix(pid);
     let mut carried = String::new();
     for record in &records {
-        let line = record.strip_suffix('\n').expect("record ends with a newline");
+        let line = record
+            .strip_suffix('\n')
+            .expect("record ends with a newline");
         let body = record_format::owned_body(line.as_bytes(), &header, &suffix)
             .expect("every chunk must be an intact record the host can own");
         carried.push_str(&String::from_utf8_lossy(body));
     }
 
-    // The LAST degraded domain's reason is the one a truncating writer loses.
-    let tail = format!("d{last_domain}:{:#010x}[", COMPACT_STATUS_SOURCE_UNAVAILABLE);
+    let tail = format!(
+        "d{last_domain}:{:#010x}[",
+        COMPACT_STATUS_SOURCE_UNAVAILABLE
+    );
     assert!(
         carried.contains(&tail),
         "the last degraded domain's reason must survive to the log"
@@ -1178,17 +891,6 @@ fn a_full_roster_degraded_summary_reaches_the_log_whole() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The silent-PERF class, closed for every declared domain at once
-// ---------------------------------------------------------------------------
-
-/// Every failure bit a DOMAIN READ can put on its own PERF word — which is
-/// exactly `READER_OWNED_FAILURE_BITS`, spelled out here so that adding a bit to
-/// that constant without extending this list is visible.
-///
-/// The other four members of `COMPACT_STATUS_FAILURE_MASK` are absent on
-/// purpose, and `a_frame_prologue_bit_alone_is_left_to_refuse_the_frame` below
-/// is where that is asserted rather than assumed.
 const EVERY_READER_OWNED_FAILURE_BIT: &[u32] = &[
     COMPACT_STATUS_SOURCE_UNAVAILABLE,
     COMPACT_STATUS_PARTIAL_DATA,
@@ -1197,32 +899,6 @@ const EVERY_READER_OWNED_FAILURE_BIT: &[u32] = &[
     COMPACT_STATUS_CONTROL_INVALID,
 ];
 
-/// THE CLASS KILLER.
-///
-/// `migrated_site_published_outcome` was fixed for D91 by lane KT and then
-/// reported again, by the very next capture, for domains 36 and 38. It is not a
-/// per-domain defect: `MIGRATED_OUTCOME_DOMAINS` declares a domain migrated on
-/// the strength of its WORKER JOIN, and every one of those domains whose reader
-/// can return a failing status word without panicking is latently in the class.
-/// So this asserts the property for EVERY declared domain and EVERY failure bit
-/// the contract has, rather than for the two the last capture happened to name.
-///
-/// The `before` half is what stops this being vacuous: it proves each case
-/// really did produce the frame-refusing finding, so a sweep that silently
-/// stopped firing would fail here rather than pass trivially.
-///
-/// EVERY declared domain means every one of them. This walk used to skip the 17
-/// members of a hand-written partial-migration exemption list, on the ground
-/// that they kept the reserved `undeclared` predicate and so were never in the
-/// class. That list is deleted: with the sweep in place the exemption bought
-/// those domains a WORSE answer than the one this test asserts, so the `continue`
-/// that guarded them is gone and they are held to the same property as the rest.
-///
-/// Production change that makes this fail: deleting the
-/// `substantiate_silent_domain_outcomes` call before `FRAME_END`, narrowing it
-/// so it stops covering a bit or a domain, adding a domain to
-/// `MIGRATED_OUTCOME_DOMAINS` whose emit path can bypass it, or re-introducing
-/// an exemption that suppresses the finding for a declared domain.
 #[test]
 fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
     let mut exercised = 0usize;
@@ -1233,12 +909,8 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
                     domain_id, bit,
                 );
             if failed == 0 {
-                // A tolerated PARTIAL for this domain is not an offence at all,
-                // so there is no finding to kill.
                 continue;
             }
-            // The exact input state the defect needs: the worker join recorded
-            // SUCCESS, and nothing else spoke.
             let mut outcomes = compact_contract::domain_outcome::DomainOutcomeLedger::new();
             record_read_succeeded(
                 &mut outcomes,
@@ -1247,7 +919,6 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
             );
             let (records, _) = assembled_frame(&[(domain_id, bit)]);
 
-            // BEFORE: this is the frame-refusing finding, on this domain, now.
             let before = compact_frame_completeness_findings(&records, TEST_HOUR, &outcomes);
             assert!(
                 before.iter().any(|finding| {
@@ -1267,7 +938,6 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
                 "domain {domain_id} with status {bit:#010x} must refuse the frame before the sweep"
             );
 
-            // AFTER: the sweep runs where production runs it.
             let substantiated = substantiate_silent_domain_outcomes(&records, &mut outcomes, 0);
             assert_eq!(
                 substantiated, 1,
@@ -1283,23 +953,27 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
             assert!(
                 after.iter().all(|finding| finding.frame_finding.is_none()),
                 "domain {domain_id} with status {bit:#010x} still carries a FRAME finding: {:?}",
-                after.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+                after
+                    .iter()
+                    .map(|finding| &finding.text)
+                    .collect::<Vec<_>>()
             );
-            // Substantiating must not trade one frame-refusing finding for
-            // another: an outcome claiming a bit the record does not carry
-            // would raise `published_status_matches_outcome` instead.
             assert!(
-                !after.iter().any(|finding| finding
-                    .frame_finding
-                    .as_ref()
-                    .is_some_and(|frame| frame.predicate.name
-                        == "published_status_matches_outcome")),
+                !after
+                    .iter()
+                    .any(|finding| finding
+                        .frame_finding
+                        .as_ref()
+                        .is_some_and(
+                            |frame| frame.predicate.name == "published_status_matches_outcome"
+                        )),
                 "domain {domain_id} with status {bit:#010x} made the record and the diagnosis \
                  disagree: {:?}",
-                after.iter().map(|finding| &finding.text).collect::<Vec<_>>()
+                after
+                    .iter()
+                    .map(|finding| &finding.text)
+                    .collect::<Vec<_>>()
             );
-            // The domain is EXCLUDED AND ACCOUNTED -- the partial-data law --
-            // rather than taking the frame down with it.
             let FrameCompletenessVerdict::Degraded(degraded) = classify_frame_completeness(&after)
             else {
                 panic!(
@@ -1309,7 +983,6 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
             };
             assert_eq!(degraded.len(), 1);
             assert_eq!(degraded[0].domain_id, domain_id);
-            // ...and it says why, in a string a stream census can count.
             assert!(
                 degraded[0].reason.contains("recorded no outcome of its own"),
                 "domain {domain_id} with status {bit:#010x} degraded without naming the silence: {}",
@@ -1324,9 +997,6 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
             exercised += 1;
         }
     }
-    // The loop above must actually have run. A `MIGRATED_OUTCOME_DOMAINS` that
-    // emptied itself, or a tolerance that swallowed every bit, would otherwise
-    // make every assertion above unreachable and this test green.
     assert!(
         exercised >= MIGRATED_OUTCOME_DOMAINS.len(),
         "only {exercised} (domain, bit) cases ran across {} declared domains",
@@ -1334,15 +1004,6 @@ fn no_migrated_domain_can_publish_a_failing_perf_word_without_an_outcome() {
     );
 }
 
-/// The sweep speaks only for the record in front of it.
-///
-/// A domain that DID diagnose its own failure keeps its producer's reason: the
-/// sweep would otherwise overwrite the one artefact naming the real cause with
-/// a restatement of the bits, which is the same loss
-/// `record_worker_panic_outcome` exists to prevent.
-///
-/// Production change that makes this fail: dropping the `MigratedButSilent`
-/// guard and substantiating every failing record unconditionally.
 #[test]
 fn the_sweep_never_displaces_a_producers_own_diagnosis() {
     let domain_id = COMPACT_DOMAIN_AIR_VARIANT_RESERVES;
@@ -1374,12 +1035,6 @@ fn the_sweep_never_displaces_a_producers_own_diagnosis() {
     );
 }
 
-/// A CLEAN record is not swept. The sweep exists to stop a failing word from
-/// refusing the frame; inventing a failure for a domain that succeeded would be
-/// the same accounting defect pointed the other way.
-///
-/// Production change that makes this fail: sweeping on record type alone instead
-/// of on the tolerance-adjusted failure flags.
 #[test]
 fn the_sweep_leaves_a_clean_record_alone() {
     let domain_id = COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS;
@@ -1400,53 +1055,9 @@ fn the_sweep_leaves_a_clean_record_alone() {
     );
 }
 
-/// The BOUNDARY of the sweep, asserted rather than assumed.
-///
-/// A domain whose only failure bit is one the outcome vocabulary cannot speak
-/// for is deliberately NOT swept: `DomainOutcome::is_failure` is decided by
-/// completion/extent/clock/authority, and every one of those derives a bit
-/// inside `DERIVED_STATUS_MASK`, so any outcome recorded for such a word would
-/// claim a bit the record does not carry and trade one frame-refusing finding
-/// for `published_status_matches_outcome`.
-///
-/// That is safe because the state is not reachable from a READ. THIS IS NOW A
-/// CLAIM ABOUT EVERY DECLARED DOMAIN, not about the domains left over after an
-/// exemption list: the list is deleted, so `bridge_unavailable` can no longer be
-/// waved away as "that domain is excepted anyway". Two independent things keep
-/// it off a published word — d47's scheduled reader replaces any non-tolerated
-/// adapter result with a rowless `SOURCE_UNAVAILABLE | PARTIAL_DATA` frame, and
-/// the bit's single writer pairs it (asserted in that crate by
-/// `an_unavailable_country_bridge_publishes_a_word_an_outcome_can_speak_for`).
-/// The first of those is the one a change elsewhere could silently break, and
-/// the assertion at the head of this test pins the condition it turns on.
-/// What is left is the frame's own prologue: `state_unavailable`,
-/// `profile_mismatch` and `no_scalar_source` are each set exactly once, in the
-/// frame-scoped status prologue. So reaching here means the FRAME failed, every
-/// domain inherited its word, and the frame is refused by the FRAME_END status
-/// finding -- the correct verdict for a frame-wide fault, and not the accounting
-/// defect the sweep removes.
-///
-/// `bridge_unavailable` is still exercised below, and it must be: the pairing
-/// lives in another crate, so what this asserts is the collector's half -- an
-/// unpaired bit, wherever it came from, is left to refuse the frame rather than
-/// papered over by an outcome that cannot derive it.
-///
-/// Production change that makes this fail: sweeping unconditionally on
-/// `failed != 0` (the outcome claims `source_unavailable`, the record does not
-/// carry it, and the walk objects), or dropping the FRAME_END status finding
-/// that makes refusing the frame here correct for its own reason.
 #[test]
 fn a_frame_prologue_bit_alone_is_left_to_refuse_the_frame() {
     let domain_id = COMPACT_DOMAIN_AIR_VARIANT_RESERVES;
-    // The precondition the whole d47 argument turns on, pinned where the
-    // argument is made. d47's scheduled reader only replaces its adapter's word
-    // with the rowless `SOURCE_UNAVAILABLE | PARTIAL_DATA` frame when the shared
-    // tolerance leaves something non-tolerated; if `BRIDGE_UNAVAILABLE` were
-    // ever admitted to that tolerance the finalizer would stop firing and a bit
-    // this sweep cannot speak for would reach a published PERF word.
-    //
-    // kills: adding BRIDGE_UNAVAILABLE to d47's
-    // `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry.
     assert_ne!(
         compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
             COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
@@ -1491,13 +1102,6 @@ fn a_frame_prologue_bit_alone_is_left_to_refuse_the_frame() {
     }
 }
 
-/// The frame's word makes every domain an offender, and the sweep must not turn
-/// that into a per-domain accusation against reads that succeeded.
-///
-/// Production change that makes this fail: dropping the `frame_base_status`
-/// argument, or computing `own_bits` against zero -- either makes the outcome
-/// say this domain's reader failed to return its rows when the only thing wrong
-/// with the hour was the frame's clock.
 #[test]
 fn a_bit_the_frame_contributed_is_attributed_to_the_frame() {
     let domain_id = COMPACT_DOMAIN_AIR_SUPERIORITY_INPUTS;
@@ -1521,11 +1125,6 @@ fn a_bit_the_frame_contributed_is_attributed_to_the_frame() {
         ),
         "a bit the domain did not add is not the domain's defect"
     );
-    // The predicate says what this outcome IS -- a diagnosis reconstructed from
-    // the record -- for a frame-contributed bit exactly as for a reader's own.
-    // WHO the failure belongs to is the authority above, and that is the field
-    // a consumer must read to tell the two apart; overloading the predicate
-    // with it would cost the countable silent-producer signal.
     assert_eq!(
         outcome.predicate.code.get(),
         compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD
@@ -1537,31 +1136,6 @@ fn a_bit_the_frame_contributed_is_attributed_to_the_frame() {
     );
 }
 
-/// The class killer above proves the SWEEP closes the class. This proves the
-/// sweep is actually wired in, which the behavioural test cannot: it calls the
-/// helper itself, so deleting the production call leaves it green.
-///
-/// The rule is positional AND structural: every frame this function seals must
-/// have been swept first, from the same block.
-/// `build_compact_extraction_gate_records` has two exits that seal a frame --
-/// the state-unavailable early return and the ordinary one -- and each
-/// `append_compact_frame_end_record(` in it must be preceded by a
-/// `substantiate_silent_domain_outcomes(` at the SAME brace depth, with no other
-/// frame seal in between.
-///
-/// The depth is what stops the obvious way to satisfy a textual scan while
-/// changing nothing: `if false { substantiate_silent_domain_outcomes(..) }`
-/// immediately before the seal reads as preceding it and never runs.
-///
-/// And it is honest about its limit. A source scan cannot prove the call
-/// EXECUTES, only that it sits where execution reaches it unconditionally.
-/// Proving execution means driving the gate function, which needs a live game
-/// process; the behavioural tests above prove what the sweep DOES, and this
-/// proves it is where the frame passes.
-///
-/// Production change that makes this fail: deleting either call, moving one
-/// after the seal it protects, gating one behind a condition, or adding a third
-/// sealing exit without one.
 #[test]
 fn every_frame_seal_is_preceded_by_the_silent_outcome_sweep() {
     const SOURCE: &str = include_str!("../attach_log.rs");
@@ -1577,9 +1151,6 @@ fn every_frame_seal_is_preceded_by_the_silent_outcome_sweep() {
             .position(|line| *line == "}")
             .expect("the gate function ends at a column-zero brace");
 
-    // Brace depth relative to the function body, computed off CODE only: the
-    // same string-literal stripper the frame-scoped status scan uses, so a `{}`
-    // inside a reason string cannot move it.
     let mut depth = 0i32;
     let mut swept_at: Option<i32> = None;
     let mut seals = 0usize;
@@ -1587,8 +1158,6 @@ fn every_frame_seal_is_preceded_by_the_silent_outcome_sweep() {
     for line in &lines[start..end] {
         let trimmed = line.trim_start();
         let code = super::tests::without_string_literals(trimmed);
-        // The depth a statement sits AT is the depth left after this line's own
-        // closers, before its openers.
         let depth_here = depth - code.matches('}').count() as i32;
         if trimmed.starts_with("substantiate_silent_domain_outcomes(") {
             swept_at = Some(depth_here);
@@ -1609,26 +1178,16 @@ fn every_frame_seal_is_preceded_by_the_silent_outcome_sweep() {
         }
         depth = depth - code.matches('}').count() as i32 + code.matches('{').count() as i32;
     }
-    // The scan must have found the thing it is policing. A renamed function or
-    // a changed call spelling would otherwise make this pass vacuously.
     assert!(
         seals >= 2,
         "expected both sealing exits of the gate function, found {seals}"
     );
-    assert!(sweeps >= seals, "found {sweeps} sweep(s) for {seals} seal(s)");
+    assert!(
+        sweeps >= seals,
+        "found {sweeps} sweep(s) for {seals} seal(s)"
+    );
 }
 
-/// The reserved predicate the sweep publishes is a REAL one, constructible from
-/// the contract's table, and distinct from the frame finding it replaces.
-///
-/// `migrated_site_published_outcome` is deliberately absent from
-/// `READ_PREDICATES` -- it is the completeness walk's own predicate, not a check
-/// a producer runs -- so an outcome that tried to carry it would silently
-/// degrade to `Predicate::undeclared()` and the countable signal would be lost
-/// in exactly the way that looks fine in review.
-///
-/// Production change that makes this fail: pointing the sweep at the frame
-/// finding's code, or at any code not declared in the table.
 #[test]
 fn the_substantiated_outcome_carries_a_typed_countable_predicate() {
     let domain_id = COMPACT_DOMAIN_AIR_VARIANT_RESERVES;
@@ -1654,8 +1213,6 @@ fn the_substantiated_outcome_carries_a_typed_countable_predicate() {
         compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD
     );
     assert_eq!(outcome.predicate.name, "outcome_substantiated_from_record");
-    // ...and it is a code a consumer can count, which is the whole reason it
-    // exists rather than being left as prose in the reason string.
     assert_eq!(
         compact_contract::domain_outcome::read_predicate_name(
             compact_contract::domain_outcome::READ_PREDICATE_OUTCOME_SUBSTANTIATED_FROM_RECORD

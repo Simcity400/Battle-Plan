@@ -1,13 +1,3 @@
-//! the game bitmap font loading for replay-app overlay text.
-//!
-//! Grounding: a font NAME is resolved directly from the active modset's
-//! `interface/core.gfx` `bitmapfonts` block through [`GameFileResolver`]. The
-//! `.fnt` files and glyph atlas pages are then resolved from the same game/mod
-//! file view. No committed extracted manifest participates in product loading.
-//!
-//! `game_ui` owns BMFont parsing and DDS/TGA page decoding. This module
-//! converts the decoded pages into the replay renderer's white-RGB,
-//! coverage-alpha atlas format before the D3D overlay uploads them.
 
 use std::collections::HashMap;
 use std::fs;
@@ -24,14 +14,6 @@ use portable_content_manifest::paradox_text::{
     decode_text, destructive_event_count, diagnose_text_decode,
 };
 
-/// Refuse content whose BYTES were destroyed at decode.
-///
-/// Both font-path decoders here read PATHS out of the decoded text (atlas page
-/// names, core.gfx font paths) and then resolve them, so a replacement
-/// character produces a binding the file never named. Only DESTRUCTIVE loss
-/// qualifies; Latin-1 is preserved losslessly by `decode_text`, as the shipped
-/// game requires. Measured: zero destructive events across the shipped .gfx and
-/// .fnt corpora, so this cannot refuse the base game.
 fn reject_font_decode_damage(bytes: &[u8], source: &str) -> Result<()> {
     let events = destructive_event_count(&diagnose_text_decode(bytes));
     if events != 0 {
@@ -40,16 +22,8 @@ fn reject_font_decode_damage(bytes: &[u8], source: &str) -> Result<()> {
     Ok(())
 }
 
-/// The font the overlay renders with.
-///
-/// The in-game clock/date readout (`interface/ingameclock.gui` -> `time_text`)
-/// uses this bitmap font. Its pages ship as DDS, so loading goes through
-/// `game_ui`.
 pub const OVERLAY_FONT_NAME: &str = "hoi_18mbs";
 
-/// One glyph from the BMFont `char` table. Coordinates are texels in the
-/// owning page; offsets/advance are pixels relative to the pen position at
-/// the line top (BMFont semantics).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Glyph {
     pub x: u32,
@@ -59,29 +33,19 @@ pub struct Glyph {
     pub xoffset: i32,
     pub yoffset: i32,
     pub xadvance: i32,
-    /// Index into [`Font::pages`] (already offset for multi-.fnt fonts).
     pub page: usize,
 }
 
-/// A decoded glyph atlas page: RGBA8, rows top-down.
 #[derive(Clone)]
 pub struct FontPage {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
-    /// SHIPPED mip levels 1.. (each `(width, height, rgba)`), decoded from the
-    /// font DDS's own mip chain. The engine samples the map-label atlas with
-    /// trilinear filtering + a -0.4 LOD bias (`gfx/FX/mapname.shader`
-    /// Samplers; frame4700 binds `hoi_mapfont4` with mips=4), so mid-zoom
-    /// titles blend mips 1-2 — uploading mip 0 alone rendered them sharper
-    /// and darker-cored than the engine. Empty for TGA pages / compressed
-    /// chains (single-mip upload, the pre-mip behaviour).
     pub mips: Vec<(u32, u32, Vec<u8>)>,
 }
 
 impl std::fmt::Debug for FontPage {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Compact by hand: the pixel plane is large.
         formatter
             .debug_struct("FontPage")
             .field("width", &self.width)
@@ -92,35 +56,18 @@ impl std::fmt::Debug for FontPage {
     }
 }
 
-/// How a font's atlas pages encode glyph pixels, deciding how
-/// [`coverage_atlas_rgba`] converts them for the overlay shader.
-///
-/// the game map/UI fonts (`hoi_mapfont4`, `hoi_18mbs`) ship **pre-coloured**
-/// atlases: each glyph is a full-colour image (dark body + light rim baked in)
-/// How decoded font atlas pages are converted. Product overlay text uses
-/// coverage mode; preserved-color mode is retained only in tests for the
-/// captured map-font evidence gates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AtlasMode {
-    /// White RGB, alpha = extracted glyph coverage.
     Coverage,
-    /// Native atlas RGBA passed straight through (pre-coloured, outlined glyphs).
     PreservedColor,
 }
 
-/// A loaded game font: merged glyph/kerning tables plus decoded pages.
 #[derive(Clone)]
 pub struct Font {
     pub name: String,
-    /// Line height in pixels (BMFont `common lineHeight`).
     pub line_height: i32,
-    /// Baseline offset from the line top (BMFont `common base`). Layout
-    /// anchors at the line top so this is unused today; kept because it is
-    /// real glyph-metric data future parity work (e.g. baseline-aligned
-    /// mixed fonts) needs.
     #[cfg_attr(not(test), allow(dead_code))]
     pub base: i32,
-    /// Default text color from `interface/core.gfx` (`0xAARRGGBB`).
     pub default_color: u32,
     glyphs: HashMap<u32, Glyph>,
     kernings: HashMap<(u32, u32), i32>,
@@ -129,7 +76,6 @@ pub struct Font {
 
 impl std::fmt::Debug for Font {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Compact by hand: the page pixel planes are large.
         formatter
             .debug_struct("Font")
             .field("name", &self.name)
@@ -146,7 +92,6 @@ impl std::fmt::Debug for Font {
     }
 }
 
-/// One positioned glyph quad: screen-pixel rect + normalized UV rect.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GlyphQuad {
     pub page: usize,
@@ -160,26 +105,16 @@ pub struct GlyphQuad {
     pub v1: f32,
 }
 
-/// Result of laying out one line of text.
 pub struct TextLayout {
     pub quads: Vec<GlyphQuad>,
-    /// Characters with no glyph in the font. The font's missing-glyph
-    /// behavior is skip-and-record: no advance, no substitute box.
     pub missing: Vec<char>,
-    /// Total pen advance in pixels (kerning included).
     pub advance: f32,
 }
 
-/// Font NAME -> files/color, resolved from `interface/core.gfx`.
-/// Language-specific `bitmapfont_override` file lists may replace the base
-/// files while retaining the base color, exactly as `core.gfx` declares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontSpec {
     pub name: String,
-    /// Game-relative `.fnt` paths without extension (e.g.
-    /// "gfx/fonts/garamond_16").
     pub files: Vec<String>,
-    /// `0xAARRGGBB` default text color from core.gfx.
     pub color: u32,
 }
 
@@ -190,8 +125,6 @@ pub struct OverlayFontSelection {
     pub root: PathBuf,
 }
 
-/// Resolve `font_name` through `interface/core.gfx` and load it from the game
-/// install at `game_root` with a vanilla-only resolver.
 #[cfg(test)]
 pub fn load_game_font(game_root: &Path, font_name: &str) -> Result<Font> {
     let resolver = GameFileResolver::vanilla(game_root.to_path_buf())?;
@@ -211,10 +144,6 @@ pub fn load_game_font_for_language_from_resolver(
     Font::load_from_resolver_with_mode(resolver, &spec, AtlasMode::Coverage)
 }
 
-/// Exact effective-VFS files opened by [`load_game_font_from_resolver`], in
-/// loader order. This deliberately resolves the GUI alias through core.gfx
-/// first; a coincidental `gfx/fonts/{alias}.fnt` must not replace the file(s)
-/// selected by the product loader.
 pub fn game_font_dependency_paths(
     resolver: &GameFileResolver,
     font_name: &str,
@@ -312,7 +241,6 @@ pub fn load_overlay_font(resolver: &GameFileResolver) -> Result<OverlayFontSelec
     })
 }
 
-/// Parse `interface/core.gfx` and pull out one `bitmapfont` spec.
 pub fn font_spec_from_core_gfx(text: &str, font_name: &str, source: &str) -> Result<FontSpec> {
     let tokens = lex_pdx_tokens(text);
     let Some((start, end)) = find_assigned_block(&tokens, 0, tokens.len(), "bitmapfonts") else {
@@ -612,7 +540,6 @@ fn lex_pdx_tokens(text: &str) -> Vec<String> {
     tokens
 }
 
-/// Parse a core.gfx `0xAARRGGBB` color string.
 fn parse_argb_color(text: &str) -> Result<u32> {
     let hex = text
         .strip_prefix("0x")
@@ -626,10 +553,6 @@ fn parse_argb_color(text: &str) -> Result<u32> {
 }
 
 impl Font {
-    /// Load and merge the spec's `.fnt` files through `game_ui` (first file
-    /// wins for duplicated glyph ids / kerning pairs, matching a
-    /// latin-first merge). The mod-aware resolver supplies the BMFont and
-    /// page file paths; `game_ui` supplies DDS/TGA page decoding.
     #[cfg(test)]
     pub fn load(game_root: &Path, spec: &FontSpec) -> Result<Font> {
         let resolver = GameFileResolver::vanilla(game_root.to_path_buf())?;
@@ -742,18 +665,6 @@ impl Font {
         self.kernings.len()
     }
 
-    /// Capital-letter glyph height in font px — the modal height of the
-    /// present `A`..`Z` glyphs, falling back to the line height when the font
-    /// has no capitals.
-    ///
-    /// NAME2: the engine's country-name size law (LAB3, fitted on decoded
-    /// engine glyph quads) is expressed in CAP heights — the quad heights of
-    /// capital letters — while BMFont's `lineHeight` includes ascent/descent
-    /// padding (`hoi_mapfont4`: capitals are 55 px in an 84 px line). Scaling
-    /// a label by `world_height / line_height` therefore renders capitals at
-    /// only ~65% of the law's size; consumers of the cap-height law must
-    /// divide by THIS metric. Derived from the loaded font, so mods with
-    /// different metrics are honoured.
     pub fn cap_height(&self) -> i32 {
         let mut counts: HashMap<u32, u32> = HashMap::new();
         for id in b'A'..=b'Z' {
@@ -770,10 +681,6 @@ impl Font {
             .unwrap_or(self.line_height)
     }
 
-    /// Extract the font metrics the engine label law consumes. Missing glyphs
-    /// fail closed for product label generation; the mapname VB has no fallback
-    /// substitute box, so silently dropping a character would move every later
-    /// glyph station.
     pub fn label_text_metrics(&self, text: &str) -> Result<LabelTextMetrics> {
         let mut advances = Vec::with_capacity(text.chars().count());
         let mut straight_layout_stations = Vec::with_capacity(text.chars().count());
@@ -828,26 +735,10 @@ impl Font {
         })
     }
 
-    /// Lay out one line of text with the pen starting at (`origin_x`,
-    /// `origin_y`) = the line's top-left. Kerning pairs apply between
-    /// consecutive present glyphs; characters without a glyph are skipped
-    /// and recorded (never a substitute box).
     pub fn layout_text(&self, origin_x: f32, origin_y: f32, text: &str) -> TextLayout {
         self.layout_text_tracked(origin_x, origin_y, text, 0.0)
     }
 
-    /// [`Self::layout_text`] with uniform additive letter TRACKING: `tracking`
-    /// font px are added to the pen after EVERY character slot (spaces
-    /// included — a word gap spans two slots and receives two increments).
-    ///
-    /// NAME2 (ENGINE-MEASURED, session_MAPNAME_7B decoded mapname VBs): the
-    /// engine justifies short country names across their baseline exactly this
-    /// way — per-gap pen deltas exceed the font xadvance by a CONSTANT per
-    /// label (IRAN +61 fnt px/gap, FRANCE +12, a tiny island UNITED KINGDOM
-    /// +121 whose across-the-space D->K gap measures +239 ≈ 2 increments,
-    /// proving the additive-per-slot form), independent of glyph widths
-    /// (additive, not a multiplicative stretch), and never negative (long
-    /// names lay out at natural advances, residuals ±2 px).
     pub fn layout_text_tracked(
         &self,
         origin_x: f32,
@@ -860,9 +751,6 @@ impl Font {
         let mut pen = origin_x;
         let mut previous: Option<u32> = None;
         for ch in text.chars() {
-            // Glyph ids in the game fonts are single-byte ANSI or Unicode code
-            // points depending on the export; both agree with `char as u32`
-            // for ASCII, which is all the overlay emits today.
             let id = ch as u32;
             let Some(glyph) = self.glyphs.get(&id) else {
                 missing.push(ch);
@@ -900,7 +788,6 @@ impl Font {
         }
     }
 
-    /// Measure one line: (total advance, line height) in pixels.
     pub fn measure(&self, text: &str) -> (u32, u32) {
         let layout = self.layout_text(0.0, 0.0, text);
         (
@@ -924,16 +811,9 @@ fn game_ui_font_name(relative: &str) -> Result<String> {
     }
 }
 
-/// Convert a decoded atlas page for the overlay shader per [`AtlasMode`].
-///
-/// * [`AtlasMode::Coverage`] collapses to white RGB + extracted coverage alpha
-///   (the legacy overlay behaviour, unchanged so its dumps stay byte-identical).
-/// * Test-only [`AtlasMode::PreservedColor`] copies the decoded RGBA straight
-///   through for captured map-font evidence gates.
 fn atlas_rgba(image: &RgbaImage, glyph_channel: Option<usize>, mode: AtlasMode) -> Vec<u8> {
     match mode {
         AtlasMode::Coverage => coverage_atlas_rgba(image, glyph_channel),
-        // `RgbaImage` is already the R,G,B,A byte order the overlay uploads.
         AtlasMode::PreservedColor => image.pixels.clone(),
     }
 }
@@ -969,7 +849,6 @@ fn usize_to_u32(value: usize, what: &str) -> Result<u32> {
 struct LoadedBitmapPage {
     id: u32,
     image: RgbaImage,
-    /// Decoded DDS mip levels 1.. (see [`FontPage::mips`]); empty for TGA.
     mip_images: Vec<RgbaImage>,
 }
 
@@ -1059,23 +938,9 @@ fn resolve_bitmap_font_page_path(
     Err(format!("no texture page found for font {name} page {page_id}").into())
 }
 
-/// The paths a declared `page file=` name may denote, in priority order.
-///
-/// `name` keeps any subdirectory below `gfx/fonts/` (see `game_ui_font_name`),
-/// so `gfx/fonts/korean/hoi_18.fnt` arrives here as `korean/hoi_18`. The
-/// descriptor's OWN directory therefore has to be tried before the flat legacy
-/// root: a Korean descriptor must bind the Korean atlas, never the Latin
-/// `gfx/fonts/` one that happens to share the file name. The inferred
-/// candidates below already had this property because the subdirectory rides
-/// along in `name`; only the declared name was resolved root-first. Mirrors
-/// `game_ui::font::declared_page_candidates`.
 fn font_page_declared_candidates(name: &str, declared: &str) -> Vec<String> {
     let rel = normalize_rel_path(declared);
     let mut candidates = Vec::new();
-    // ONLY an explicit `gfx/...` name is already an effective-VFS path. A
-    // relative name that merely contains a separator is still relative TO THE
-    // DESCRIPTOR, so it must be rebased first; treating it as a VFS path (as
-    // this parser used to) skipped the descriptor's own directory entirely.
     let explicit_vfs_path = rel
         .get(..4)
         .is_some_and(|prefix| prefix.eq_ignore_ascii_case("gfx/"));
@@ -1093,12 +958,6 @@ fn font_page_declared_candidates(name: &str, declared: &str) -> Vec<String> {
     candidates
 }
 
-/// `name` keeps any subdirectory below `gfx/fonts/`, so these land beside the
-/// descriptor for nested fonts.
-///
-/// The unsuffixed candidates are offered for page 0 ONLY: the unsuffixed atlas
-/// is page 0's plane, so letting page 1 fall back to it binds the wrong plane.
-/// Mirrors `game_ui::font::inferred_page_candidates`.
 fn inferred_font_page_candidates(name: &str, page_id: u32) -> Vec<String> {
     let mut candidates = Vec::new();
     if page_id == 0 {
@@ -1128,16 +987,6 @@ fn decode_resolved_font_page(
                     path.display()
                 )
             })?;
-            // Prefer the SHIPPED mip chain (see FontPage::mips). ONLY an
-            // unsupported (compressed) format falls back to the historical
-            // mip-0 decode.
-            //
-            // The old `_` arm swallowed every error: a file with a complete
-            // mip 0 but a truncated deeper level — which `dds::decode_bytes`
-            // still decodes — silently degraded to `mip_images = Vec::new()`,
-            // contradicting the shipped-mip requirement documented on
-            // `dds::decode_mip_chain_bytes` (R11 C3). A malformed chain is now
-            // a hard error; only the documented format fallback survives.
             match dds::decode_mip_chain_bytes(&bytes) {
                 Ok(mut levels) if !levels.is_empty() => {
                     let image = levels.remove(0);
@@ -1197,7 +1046,6 @@ fn decode_resolved_font_page(
     })
 }
 
-/// Parsed contents of one BMFont **text** `.fnt` file.
 #[allow(dead_code)]
 #[derive(Debug)]
 struct ParsedFnt {
@@ -1206,15 +1054,11 @@ struct ParsedFnt {
     scale_w: u32,
     scale_h: u32,
     glyph_channel: Option<usize>,
-    /// Declared page file names by page id; `None` for pages the file never
-    /// declares (garamond-style exports have no `page` lines at all).
     page_files: Vec<Option<String>>,
     glyphs: Vec<(u32, Glyph)>,
     kernings: Vec<(u32, u32, i32)>,
 }
 
-/// Parse the AngelCode BMFont text format. the game ships only this format;
-/// the binary format ("BMF\x03") fails closed.
 fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
     if bytes.starts_with(b"BMF") {
         return Err(format!(
@@ -1223,12 +1067,6 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
         )
         .into());
     }
-    // The old note here claimed a lossy decode was safe because only numeric
-    // fields were read. That is not true: `page file=` names are read from this
-    // same text and resolved to atlas paths, so a destroyed byte yields a path
-    // the descriptor never named. Use the layer's decoder (which preserves
-    // Latin-1 losslessly instead of destroying it, as the engine does) and
-    // refuse anything it could not decode without loss.
     reject_font_decode_damage(bytes, source)?;
     let text = decode_text(bytes);
 
@@ -1271,8 +1109,6 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
             "char" => {
                 let id = required_int(&fields, "id", source)?;
                 if id < 0 {
-                    // BMFont uses id=-1 for the "missing char" glyph; the
-                    // fail-closed policy is skip-and-record, so drop it.
                     continue;
                 }
                 let id = u32::try_from(id)
@@ -1324,7 +1160,6 @@ fn parse_fnt_text(bytes: &[u8], source: &str) -> Result<ParsedFnt> {
                     signed_i32(amount, "kerning amount", source)?,
                 ));
             }
-            // "chars"/"kernings" count lines and anything unknown: ignored.
             _ => {}
         }
     }
@@ -1367,8 +1202,6 @@ fn bmfont_glyph_channel_from_common(fields: &HashMap<String, String>) -> Option<
     .find_map(|(key, channel)| (optional_int(fields, key) == Some(0)).then_some(channel))
 }
 
-/// Split a BMFont line into its tag and key=value fields. Values may be
-/// quoted and contain spaces (`face="Century Gothic"`).
 fn parse_line_fields(line: &str) -> (String, HashMap<String, String>) {
     let mut tokens: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -1709,7 +1542,6 @@ mod tests {
     /// A declared name that merely CONTAINS a separator is still relative to
     /// the descriptor, so it is rebased first; the old raw-VFS reading is kept
     /// only as the second tier. This pins the "relative, but not explicit
-    /// `gfx/`" distinction that the old `rel.contains('/')` early return erased.
     #[test]
     fn relative_declared_subpath_is_rebased_before_the_raw_vfs_reading() {
         assert_eq!(
@@ -1721,7 +1553,6 @@ mod tests {
         );
     }
 
-    /// The unsuffixed atlas is page 0's plane; page 1 must never borrow it.
     #[test]
     fn inferred_candidates_offer_the_unsuffixed_atlas_only_for_page_zero() {
         assert_eq!(
@@ -1742,8 +1573,6 @@ mod tests {
         );
     }
 
-    /// Synthetic garamond-style .fnt: no page/count lines, ANSI ids,
-    /// trailing spaces — the oldest export style the game ships.
     const GARAMOND_STYLE_FNT: &str = "\
 info face=\"Test Face\" size=16 bold=0 italic=0 charset=\"ANSI\" stretchH=100 smooth=0 aa=1 padding=2,2,2,2 spacing=1,1
 common lineHeight=16 base=12 scaleW=8 scaleH=8 pages=1
@@ -1753,8 +1582,6 @@ char id=86   x=4     y=0     width=3     height=6     xoffset=0     yoffset=2   
 kerning first=65  second=86 amount=-2
 ";
 
-    /// Synthetic cg-style .fnt: page/chars-count lines, quoted face with a
-    /// space, unicode ids — the newer export style.
     const CG_STYLE_FNT: &str = "\
 info face=\"Century Gothic\" size=16 bold=1 italic=0 charset=\"\" unicode=1 stretchH=100 smooth=1 aa=2 padding=3,3,3,3 spacing=1,1 outline=0
 common lineHeight=16 base=13 scaleW=8 scaleH=8 pages=1 packed=0 alphaChnl=1 redChnl=0 greenChnl=0 blueChnl=0
@@ -1793,21 +1620,20 @@ kernings count=0
         }
     }
 
-    /// A 2x2 test image as (x, y) -> RGBA: distinct corner colors.
     fn test_pixels() -> [[u8; 4]; 4] {
         [
-            [255, 0, 0, 255],  // (0,0) top-left red
-            [0, 255, 0, 128],  // (1,0) top-right green
-            [0, 0, 255, 255],  // (0,1) bottom-left blue
-            [255, 255, 0, 64], // (1,1) bottom-right yellow
+            [255, 0, 0, 255],
+            [0, 255, 0, 128],
+            [0, 0, 255, 255],
+            [255, 255, 0, 64],
         ]
     }
 
     fn tga_header(image_type: u8, bpp: u8, descriptor: u8) -> Vec<u8> {
         let mut header = vec![0u8; 18];
         header[2] = image_type;
-        header[12] = 2; // width 2
-        header[14] = 2; // height 2
+        header[12] = 2;
+        header[14] = 2;
         header[16] = bpp;
         header[17] = descriptor;
         header
@@ -1887,14 +1713,12 @@ kernings count=0
     #[test]
     fn tga_decodes_32bit_uncompressed_bottom_up() {
         let pixels = test_pixels();
-        // Bottom-up file order: bottom row first.
         let mut bytes = tga_header(2, 32, 0x08);
         for [r, g, b, a] in [pixels[2], pixels[3], pixels[0], pixels[1]] {
-            bytes.extend_from_slice(&[b, g, r, a]); // BGRA on disk
+            bytes.extend_from_slice(&[b, g, r, a]);
         }
         let page = decode_tga(&bytes, "test.tga").expect("decodes");
         assert_eq!((page.width, page.height), (2, 2));
-        // Output is top-down RGBA.
         assert_eq!(&page.rgba[0..4], &pixels[0]);
         assert_eq!(&page.rgba[4..8], &pixels[1]);
         assert_eq!(&page.rgba[8..12], &pixels[2]);
@@ -1921,14 +1745,12 @@ kernings count=0
     fn tga_decodes_32bit_rle_and_ignores_v2_footer() {
         let pixels = test_pixels();
         let mut bytes = tga_header(10, 32, 0x20);
-        // RLE packet: (0,0) repeated twice, then a raw packet of 2 pixels.
         bytes.push(0x81);
         bytes.extend_from_slice(&[pixels[0][2], pixels[0][1], pixels[0][0], pixels[0][3]]);
         bytes.push(0x01);
         for [r, g, b, a] in [pixels[2], pixels[3]] {
             bytes.extend_from_slice(&[b, g, r, a]);
         }
-        // TGA v2 footer (present on the real garamond pages): ignored.
         bytes.extend_from_slice(&[0u8; 8]);
         bytes.extend_from_slice(b"TRUEVISION-XFILE.\0");
         let page = decode_tga(&bytes, "test.tga").expect("decodes");
@@ -1948,7 +1770,7 @@ kernings count=0
     #[test]
     fn tga_rejects_truncated_pixel_data() {
         let mut bytes = tga_header(2, 32, 0x20);
-        bytes.extend_from_slice(&[0u8; 7]); // less than 2x2x4
+        bytes.extend_from_slice(&[0u8; 7]);
         let err = decode_tga(&bytes, "short.tga").expect_err("must fail");
         assert!(err.to_string().contains("expected 16"), "{err}");
     }
@@ -1956,20 +1778,15 @@ kernings count=0
     #[test]
     fn tga_rejects_truncated_rle_stream() {
         let mut bytes = tga_header(10, 32, 0x20);
-        bytes.push(0x83); // RLE run of 4 but no pixel follows
+        bytes.push(0x83);
         let err = decode_tga(&bytes, "short_rle.tga").expect_err("must fail");
         assert!(err.to_string().contains("truncated"), "{err}");
     }
 
-    /// A tiny pre-coloured atlas like `hoi_mapfont4`: glyph interior is dark
-    /// (rgb≈0) with high coverage alpha, edge is light (rgb≈255) with partial
-    /// alpha, background has zero alpha. Two pixels are enough to pin the modes.
     fn precolored_page() -> RgbaImage {
         RgbaImage {
             width: 2,
             height: 1,
-            // pixel 0: dark glyph body (rgb 10, a 200); pixel 1: transparent bg
-            // (rgb 140, a 0) — the grey the old "255-R" law turned into a box.
             pixels: vec![10, 10, 10, 200, 140, 140, 140, 0],
         }
     }
@@ -1978,18 +1795,11 @@ kernings count=0
     fn preserved_color_mode_passes_atlas_rgba_through() {
         let page = precolored_page();
         let out = atlas_rgba(&page, Some(0), AtlasMode::PreservedColor);
-        // Native RGBA preserved verbatim: the dark body keeps its colour and
-        // coverage, and the zero-alpha background stays fully transparent (no
-        // black box).
         assert_eq!(out, vec![10, 10, 10, 200, 140, 140, 140, 0]);
     }
 
     #[test]
     fn coverage_mode_is_unchanged_for_the_overlay_path() {
-        // The legacy coverage law (redChnl=0 -> "255 - R") must stay bit-for-bit
-        // so the overlay clock dumps remain byte-identical; this documents the
-        // exact bug the map path avoids (the transparent grey background becomes
-        // a semi-opaque box: 255 - 140 = 115).
         let page = precolored_page();
         let out = atlas_rgba(&page, Some(0), AtlasMode::Coverage);
         assert_eq!(out, vec![0xFF, 0xFF, 0xFF, 245, 0xFF, 0xFF, 0xFF, 115]);
@@ -2114,8 +1924,6 @@ kernings count=0
         fs::write(interface.join("core.gfx"), CORE_GFX_FIXTURE).expect("write core.gfx");
         write_font(&root, "a", GARAMOND_STYLE_FNT, [255, 255, 255, 255]);
         write_font(&root, "b", GARAMOND_STYLE_FNT, [255, 255, 255, 255]);
-        // A coincidental descriptor named after the GUI alias is not what the
-        // product loader opens and must not replace core.gfx's fontfiles list.
         write_font(
             &root,
             "ListFont",
@@ -2168,9 +1976,7 @@ kernings count=0
     fn measure_applies_advances_and_kerning() {
         let parsed = parse_fnt_text(GARAMOND_STYLE_FNT.as_bytes(), "test.fnt").expect("parses");
         let font = font_from(parsed, 0xFFFF_FFFF);
-        // "AV": 5 (A advance) - 2 (kerning) + 4 (V advance) = 7.
         assert_eq!(font.measure("AV"), (7, 16));
-        // Kerning does not apply across a missing glyph.
         assert_eq!(font.measure("A V"), (5 + 4 + 4, 16));
         assert_eq!(font.measure(""), (0, 16));
     }
@@ -2180,8 +1986,6 @@ kernings count=0
         let parsed = parse_fnt_text(GARAMOND_STYLE_FNT.as_bytes(), "test.fnt").expect("parses");
         let font = font_from(parsed, 0xFFFF_FFFF);
         let layout = font.layout_text(0.0, 0.0, "AZV");
-        // Z has no glyph: skipped with no advance, recorded, and it breaks
-        // the A-V kerning pair (pen = 5 + 4 = 9).
         assert_eq!(layout.missing, vec!['Z']);
         assert_eq!(layout.quads.len(), 2);
         assert_eq!(layout.advance, 9.0);
@@ -2191,29 +1995,20 @@ kernings count=0
     fn cap_height_is_the_modal_capital_glyph_height() {
         let parsed = parse_fnt_text(GARAMOND_STYLE_FNT.as_bytes(), "test.fnt").expect("parses");
         let font = font_from(parsed, 0xFFFF_FFFF);
-        // A (65) and V (86) both have height 6 -> cap height 6, NOT the
-        // 16 px line height (the NAME2 engine size law is in cap heights).
         assert_eq!(font.cap_height(), 6);
     }
 
     #[test]
     fn tracked_layout_adds_uniform_advance_per_character_slot() {
-        // NAME2 engine law shape: uniform ADDITIVE tracking per character
-        // slot, spaces included (the captured across-the-space gap measures
-        // two increments).
         let parsed = parse_fnt_text(GARAMOND_STYLE_FNT.as_bytes(), "test.fnt").expect("parses");
         let font = font_from(parsed, 0xFFFF_FFFF);
         let layout = font.layout_text_tracked(0.0, 0.0, "A AV", 10.0);
-        // Pen: A(5)+10 | space(4)+10 | A(5)+10 kern(A,V)-2 | V(4)+10.
         assert_eq!(layout.quads.len(), 3);
         let a2 = &layout.quads[1];
-        // Second A pen = 5+10+4+10 = 29; xoffset 1 -> x0 = 30.
         assert_eq!(a2.x0, 30.0);
         let v = &layout.quads[2];
-        // V pen = 29+5+10-2 = 42; xoffset 0 -> x0 = 42.
         assert_eq!(v.x0, 42.0);
         assert_eq!(layout.advance, 5.0 + 4.0 + 5.0 + 4.0 + 4.0 * 10.0 - 2.0);
-        // tracking = 0 reproduces the natural layout exactly.
         let natural = font.layout_text(0.0, 0.0, "A AV");
         let tracked_zero = font.layout_text_tracked(0.0, 0.0, "A AV", 0.0);
         assert_eq!(natural.advance, tracked_zero.advance);
@@ -2229,9 +2024,7 @@ kernings count=0
         assert_eq!((a.x0, a.y0, a.x1, a.y1), (11.0, 22.0, 15.0, 28.0));
         assert_eq!((a.u0, a.v0, a.u1, a.v1), (0.0, 0.0, 0.5, 0.75));
         let v = &layout.quads[1];
-        // Pen after A = 10+5, kerning -2, xoffset 0 -> x0 = 13.
         assert_eq!((v.x0, v.y0), (13.0, 22.0));
-        // Space glyph (width 1, height 0) produces no quad but advances.
         let with_space = font.layout_text(0.0, 0.0, "A A");
         assert_eq!(with_space.quads.len(), 2);
         assert_eq!(with_space.advance, 5.0 + 4.0 + 5.0);
@@ -2243,7 +2036,6 @@ kernings count=0
         let fonts_dir = dir.join("gfx").join("fonts");
         fs::create_dir_all(&fonts_dir).expect("create fonts dir");
         fs::write(fonts_dir.join("testfont.fnt"), GARAMOND_STYLE_FNT).expect("write fnt");
-        // 8x8 32-bit top-down TGA, all white.
         let mut tga = vec![0u8; 18];
         tga[2] = 2;
         tga[12] = 8;
@@ -2284,9 +2076,6 @@ kernings count=0
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// Uncompressed A8R8G8B8 DDS header + as many mip levels as `levels`
-    /// supplies. `declared_mips` is what the header claims, which is not
-    /// necessarily what the file carries.
     fn a8r8g8b8_dds(width: u32, height: u32, declared_mips: u32, levels: u32) -> Vec<u8> {
         let mut data = vec![0u8; 128];
         data[0..4].copy_from_slice(b"DDS ");
@@ -2295,7 +2084,7 @@ kernings count=0
         data[16..20].copy_from_slice(&width.to_le_bytes());
         data[28..32].copy_from_slice(&declared_mips.to_le_bytes());
         data[76..80].copy_from_slice(&32u32.to_le_bytes());
-        data[80..84].copy_from_slice(&0x40u32.to_le_bytes()); // DDPF_RGB
+        data[80..84].copy_from_slice(&0x40u32.to_le_bytes());
         data[88..92].copy_from_slice(&32u32.to_le_bytes());
         data[92..96].copy_from_slice(&0x00ff_0000u32.to_le_bytes());
         data[96..100].copy_from_slice(&0x0000_ff00u32.to_le_bytes());
@@ -2312,10 +2101,6 @@ kernings count=0
 
     #[test]
     fn negative_bmfont_counts_and_coordinates_are_typed_refusals() {
-        // Every one of these fields is unsigned in the BMFont format, was read
-        // as i64 and cast unchecked. `pages=-1` became `usize::MAX` and then
-        // `vec![None; usize::MAX]` — an infallible allocation, i.e. an abort;
-        // `x=-1` became `u32::MAX` and then overflowed `x + width`, a panic
         // under the workspace's release overflow-checks.
         let head = "info face=\"T\"\n";
         let cases = [
@@ -2367,17 +2152,13 @@ kernings count=0
 
     #[test]
     fn a_truncated_mip_chain_is_an_error_not_a_silent_mip_zero_degrade() {
-        // R11 C3: the fallback arm was `_`, so a file with a complete mip 0
-        // and a missing declared level fell through to `decode_bytes` and
-        // produced `mips: []` — contradicting the shipped-mip requirement
-        // documented on `dds::decode_mip_chain_bytes`.
         let dir = crate::bundle::tests::unique_temp_dir("font_mip_truncated");
         let fonts_dir = dir.join("gfx").join("fonts");
         fs::create_dir_all(&fonts_dir).expect("create fonts dir");
         fs::write(fonts_dir.join("mipfont.fnt"), GARAMOND_STYLE_FNT).expect("write fnt");
         fs::write(
             fonts_dir.join("mipfont.dds"),
-            a8r8g8b8_dds(8, 8, 2, 1), // declares 2 levels, carries 1
+            a8r8g8b8_dds(8, 8, 2, 1),
         )
         .expect("write dds");
         let spec = FontSpec {
@@ -2408,8 +2189,6 @@ kernings count=0
         assert_eq!((font.pages[0].mips[0].0, font.pages[0].mips[0].1), (4, 4));
         fs::remove_dir_all(&dir).ok();
 
-        // The one documented fallback: a compressed page has no mip-chain
-        // decoder, so mip 0 alone is still correct.
         let dir = crate::bundle::tests::unique_temp_dir("font_mip_dxt1");
         let fonts_dir = dir.join("gfx").join("fonts");
         fs::create_dir_all(&fonts_dir).expect("create fonts dir");
@@ -2421,7 +2200,7 @@ kernings count=0
         dxt[16..20].copy_from_slice(&8u32.to_le_bytes());
         dxt[28..32].copy_from_slice(&1u32.to_le_bytes());
         dxt[76..80].copy_from_slice(&32u32.to_le_bytes());
-        dxt[80..84].copy_from_slice(&0x4u32.to_le_bytes()); // DDPF_FOURCC
+        dxt[80..84].copy_from_slice(&0x4u32.to_le_bytes());
         dxt[84..88].copy_from_slice(b"DXT1");
         dxt.extend(std::iter::repeat(0xFFu8).take(2 * 2 * 8));
         fs::write(fonts_dir.join("dxtfont.dds"), &dxt).expect("write dds");
@@ -2437,8 +2216,6 @@ kernings count=0
 
     #[test]
     fn load_falls_back_to_stem_tga_when_declared_page_is_missing() {
-        // Real-install case: cg_16b.fnt declares cg_16d.tga which does not
-        // exist; the shipped texture is cg_16b.tga.
         let dir = crate::bundle::tests::unique_temp_dir("font_fallback");
         let fonts_dir = dir.join("gfx").join("fonts");
         fs::create_dir_all(&fonts_dir).expect("create fonts dir");
@@ -2615,10 +2392,6 @@ kernings count=0
         assert!(!selection.font.pages.is_empty());
     }
 
-    /// The vanilla install root, with its shipped overlay font present.
-    /// Panics rather than returning `None`: callers are gated on
-    /// `gate_hoi4_install`, so an absent install or an absent shipped font is
-    /// a failure, never a silent skip that libtest would report as a pass.
     fn real_install_root() -> PathBuf {
         let root = replay_test_gates::require_vanilla_game_root();
         replay_test_gates::require_existing_file(

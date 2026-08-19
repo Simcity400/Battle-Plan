@@ -17,12 +17,12 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-import resolver as R  # noqa: E402
-import source_inventory_layers as SIL  # noqa: E402
-import parse_idea_tech_loc  # noqa: E402
-import parse_localisation  # noqa: E402
-import localisation_gate  # noqa: E402
-from static_artifact_common import (  # noqa: E402
+import resolver as R
+import source_inventory_layers as SIL
+import parse_idea_tech_loc
+import parse_localisation
+import localisation_gate
+from static_artifact_common import (
     add_layer_args,
     canonical_json,
     layer_summary,
@@ -142,12 +142,6 @@ def build_catalog(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, A
         },
     }
     catalog = {
-        # v2 widens `tokens.technologies` with the authored `start_year`.
-        # A hard bump rather than an additive field: on a v1 catalog an absent
-        # `start_year` means "this generator never emitted one", on a v2 catalog
-        # it means "this technology authors none", and the consumer's
-        # authored-year authentication silently weakens under the first reading.
-        # The consumer pins v2 exactly, so a stale catalog is refused instead.
         "schema": "idea_tech_loc_xref_static.static_artifact.v2",
         "artifact_kind": "deterministic_static_replay_enrichment",
         "scope": {
@@ -247,13 +241,6 @@ def main() -> int:
         "warnings": catalog["meta"].get("warnings", []),
         "syntax_allowlist_hits": catalog["meta"].get("syntax_allowlist_hits", []),
         "wrapper_allowlist_hits": catalog["meta"].get("wrapper_allowlist_hits", []),
-        # Named, not fatal FOR THE CATALOG: a technology whose authored start
-        # year cannot be resolved keeps its row, and the row says so
-        # (`start_year_unresolved`). The consumer then REFUSES to present a
-        # derived ahead-of-time quartet for that one technology rather than
-        # authenticating it against the weaker check -- so the cost of an
-        # unreadable year is one technology's live row, not the catalog and not
-        # the capture.
         "start_year_unresolved": catalog["meta"]["tech_start_year_unresolved"],
         "start_year_repeated_agreeing": catalog["meta"]["tech_start_year_repeated_agreeing"],
     }

@@ -1,14 +1,3 @@
-//! Hostile-input allocation regressions for the certified replay cache
-//! (FW4 / R2-1, R2-2).
-//!
-//! Both cases are authenticated, self-consistent artifacts: the index binds the
-//! cache length and SHA-256, and the cache header carries the source digest. The
-//! only hostile field is a declared collection count. Before the fix each count
-//! was checked against a global constant only and then handed straight to
-//! `Vec::with_capacity`, so a few hundred bytes could request multiple GiB and
-//! take the process down through `handle_alloc_error` — an ABORT, not a typed
-//! refusal. These tests pin the typed refusal.
-
 use portable_replay_format::replay_cache::{
     CacheBuildHour, CacheIdentityMode, CertifiedReplayCache, ReplayCacheEncoder, ReplayHourIndex,
 };
@@ -17,13 +6,6 @@ use portable_replay_format::sha256::Sha256;
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 
-/// The H4CP generation these hand-built hostile inputs must claim, READ OUT OF A
-/// CACHE THE REAL ENCODER JUST WROTE rather than copied here as a literal.
-///
-/// A stale literal is refused by the header check before a single allocation
-/// bound is ever exercised, which is how the revive's 4 -> 5 bump silently
-/// disarmed all four of these tests. It went stale again on the number delta's
-/// 5 -> 6 bump. Deriving it is what stops the next bump doing it a third time.
 fn format_version() -> u16 {
     let mut encoder = ReplayCacheEncoder::new(Vec::new(), &hex32(0xab), 8).expect("encoder");
     encoder
@@ -42,7 +24,6 @@ fn format_version() -> u16 {
     u16::from_le_bytes([cache[4], cache[5]])
 }
 const RECORD_CHECKPOINT: u8 = 1;
-/// `H4CP` + version + flags + 32-byte source digest.
 const CACHE_HEADER_LEN: u64 = 4 + 2 + 2 + 32;
 
 fn hex32(byte: u8) -> String {
@@ -78,8 +59,6 @@ fn put_varint(out: &mut Vec<u8>, mut value: u64) {
     }
 }
 
-/// One authenticated cache holding a single checkpoint record whose binary-JSON
-/// payload is exactly `[tag][count]` — a declared collection with no elements.
 fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     let source_sha = hex32(0xcd);
     let source_len = 100u64;
@@ -98,7 +77,7 @@ fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     let record_offset = cache.len() as u64;
     cache.push(RECORD_CHECKPOINT);
     cache.extend_from_slice(&[0, 0, 0]);
-    cache.extend_from_slice(&0i64.to_le_bytes()); // hour index
+    cache.extend_from_slice(&0i64.to_le_bytes());
     cache.extend_from_slice(&(payload.len() as u64).to_le_bytes());
     cache.push(0);
     cache.extend_from_slice(&payload);
@@ -110,41 +89,33 @@ fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     index.extend_from_slice(INDEX_MAGIC);
     index.extend_from_slice(&format_version().to_le_bytes());
     index.extend_from_slice(&0u16.to_le_bytes());
-    index.push(1); // IdentityV1
+    index.push(1);
     index.extend_from_slice(&[0, 0, 0]);
-    index.extend_from_slice(&2u32.to_le_bytes()); // checkpoint interval hours
+    index.extend_from_slice(&2u32.to_le_bytes());
     index.extend_from_slice(&source_len.to_le_bytes());
     index.extend_from_slice(&cache_len.to_le_bytes());
     index.extend_from_slice(&digest_of(&source_sha));
     index.extend_from_slice(&digest_of(&cache_sha));
     put_string(&mut index, "g");
     put_string(&mut index, "1");
-    index.extend_from_slice(&1u64.to_le_bytes()); // hour count
-    index.extend_from_slice(&0i64.to_le_bytes()); // hour_index
-    index.extend_from_slice(&0u64.to_le_bytes()); // h4cr start
-    index.extend_from_slice(&source_len.to_le_bytes()); // h4cr end
+    index.extend_from_slice(&1u64.to_le_bytes());
+    index.extend_from_slice(&0i64.to_le_bytes());
+    index.extend_from_slice(&0u64.to_le_bytes());
+    index.extend_from_slice(&source_len.to_le_bytes());
     index.extend_from_slice(&record_offset.to_le_bytes());
     index.extend_from_slice(&record_len.to_le_bytes());
-    index.extend_from_slice(&0u32.to_le_bytes()); // checkpoint position
-    index.extend_from_slice(&0u32.to_le_bytes()); // delta steps
-    index.extend_from_slice(&digest_of(&hex32(0x00))); // world json sha
-    // H4IX v4's per-record digest, and it is the REAL one: this artifact is
-    // hostile in one declared COUNT and honest in every binding, so the reader
-    // has to reach the decoder to refuse it. A wrong digest here would confine
-    // the hour at admission and prove nothing about the allocation path.
+    index.extend_from_slice(&0u32.to_le_bytes());
+    index.extend_from_slice(&0u32.to_le_bytes());
+    index.extend_from_slice(&digest_of(&hex32(0x00)));
     index.extend_from_slice(&digest_of(&Sha256::hex(
         &cache[record_offset as usize..(record_offset + record_len) as usize],
     )));
     put_string(&mut index, "1936.1.1.1");
-    // H4IX v4: the excluded-hour section. This artifact serves its one hour and
-    // names no hole, which is what an uninjured recording looks like.
-    index.extend_from_slice(&0u64.to_le_bytes()); // excluded hour count
+    index.extend_from_slice(&0u64.to_le_bytes());
 
     (index, cache, source_len, source_sha)
 }
 
-/// R2-1: `decode_value`'s array arm. `268,435,456 * size_of::<Value>()` is
-/// 8 GiB on a 64-bit target; the whole cache is a few hundred bytes.
 #[test]
 fn array_count_beyond_remaining_input_is_a_typed_refusal_not_an_abort() {
     let (index_bytes, cache, source_len, source_sha) = hostile_cache(5, 0x1000_0000);
@@ -163,7 +134,6 @@ fn array_count_beyond_remaining_input_is_a_typed_refusal_not_an_abort() {
     );
 }
 
-/// R2-1: the same shape through `decode_value`'s object arm.
 #[test]
 fn object_count_beyond_remaining_input_is_a_typed_refusal() {
     let (index_bytes, cache, source_len, source_sha) = hostile_cache(6, 0x1000_0000);
@@ -176,11 +146,8 @@ fn object_count_beyond_remaining_input_is_a_typed_refusal() {
     );
 }
 
-/// R2-2: `ReplayHourIndex::from_bytes` reserved `hour_count` entries (96 bytes
-/// each) before proving a single entry followed the count.
 #[test]
 fn hour_count_beyond_remaining_input_is_a_typed_refusal() {
-    // Declare the global maximum hour count and supply zero entry bytes.
     let source_sha = hex32(0xcd);
     let mut hostile = Vec::new();
     hostile.extend_from_slice(INDEX_MAGIC);
@@ -189,8 +156,8 @@ fn hour_count_beyond_remaining_input_is_a_typed_refusal() {
     hostile.push(1);
     hostile.extend_from_slice(&[0, 0, 0]);
     hostile.extend_from_slice(&2u32.to_le_bytes());
-    hostile.extend_from_slice(&100u64.to_le_bytes()); // source len
-    hostile.extend_from_slice(&CACHE_HEADER_LEN.to_le_bytes()); // cache len
+    hostile.extend_from_slice(&100u64.to_le_bytes());
+    hostile.extend_from_slice(&CACHE_HEADER_LEN.to_le_bytes());
     hostile.extend_from_slice(&digest_of(&source_sha));
     hostile.extend_from_slice(&digest_of(&hex32(0x11)));
     put_string(&mut hostile, "g");
@@ -209,8 +176,6 @@ fn hour_count_beyond_remaining_input_is_a_typed_refusal() {
     );
 }
 
-/// The bound must not refuse an ordinary artifact: a real encoder round-trip
-/// still parses and reconstructs.
 #[test]
 fn ordinary_encoder_output_still_round_trips() {
     use portable_replay_format::replay_cache::{
@@ -241,7 +206,10 @@ fn ordinary_encoder_output_still_round_trips() {
         .unwrap();
     let index_bytes = index.to_bytes().unwrap();
     assert_eq!(
-        ReplayHourIndex::from_bytes(&index_bytes).unwrap().hours().len(),
+        ReplayHourIndex::from_bytes(&index_bytes)
+            .unwrap()
+            .hours()
+            .len(),
         5
     );
     let certified = CertifiedReplayCache::open(&index_bytes, cache, 500, &source_sha).unwrap();

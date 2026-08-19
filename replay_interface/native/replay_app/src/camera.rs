@@ -1,8 +1,3 @@
-//! Viewer-owned product camera.
-//!
-//! The public center/zoom projection is retained for the existing renderer
-//! boundary, but production input mutates the authenticated XMAP03 3D state.
-//! A legacy 2D instance remains only for the explicit debug bundle/dump route.
 
 use map_viewer::ViewerMapCameraState;
 
@@ -12,7 +7,6 @@ use crate::Result;
 pub struct Camera {
     pub center_x: f64,
     pub center_y: f64,
-    /// Screen pixels per map pixel.
     pub zoom: f64,
     map_w: f64,
     map_h: f64,
@@ -20,7 +14,6 @@ pub struct Camera {
 }
 
 impl Camera {
-    /// Camera fitted so the whole map is visible in the given screen.
     pub fn fit(map_w: usize, map_h: usize, screen_w: f64, screen_h: f64) -> Camera {
         let map_w = (map_w.max(1)) as f64;
         let map_h = (map_h.max(1)) as f64;
@@ -56,7 +49,6 @@ impl Camera {
         self.viewer_state.as_ref()
     }
 
-    /// Reset to whole-map fit for the given screen size.
     pub fn reset_fit(&mut self, screen_w: f64, screen_h: f64) -> Result<()> {
         if let Some(state) = &mut self.viewer_state {
             let width = screen_w.max(1.0).round() as u32;
@@ -75,7 +67,6 @@ impl Camera {
         Ok(())
     }
 
-    /// Screen position -> continuous (unwrapped) map position.
     pub fn screen_to_map(&self, sx: f64, sy: f64, screen_w: f64, screen_h: f64) -> (f64, f64) {
         if let Some(state) = &self.viewer_state {
             return state
@@ -90,9 +81,6 @@ impl Camera {
         )
     }
 
-    /// Continuous map position -> screen position (inverse of
-    /// [`Camera::screen_to_map`]; does not itself apply wrapping). Used
-    /// by the transform round-trip tests; overlays will use it next.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn map_to_screen(&self, mx: f64, my: f64, screen_w: f64, screen_h: f64) -> (f64, f64) {
         (
@@ -101,19 +89,14 @@ impl Camera {
         )
     }
 
-    /// Wrap a continuous map x into `[0, map_w)` (east-west wrap).
     pub fn wrap_x(&self, x: f64) -> f64 {
         x.rem_euclid(self.map_w)
     }
 
-    /// Map height in map pixels (needed to flip between this camera's
-    /// bmp-style y-down coordinates and the renderer's world z-up).
     pub fn map_h(&self) -> f64 {
         self.map_h
     }
 
-    /// Pan by a screen-pixel delta through the viewer-owned 3D ground
-    /// projection. Positive x moves east and positive y moves south.
     pub fn pan_screen(&mut self, dx: f64, dy: f64, screen_h: f64) -> Result<()> {
         if let Some(state) = &mut self.viewer_state {
             state.pan_screen(dx as f32, dy as f32)?;
@@ -169,8 +152,6 @@ impl Camera {
         Ok(())
     }
 
-    /// Wrap the horizontal center. Vertical center clamping is not performed:
-    /// C03 refutes a center clamp and requires projected ground intersections.
     pub fn normalize(&mut self, _screen_h: f64) {
         if self.viewer_state.is_some() {
             self.sync_projection()
@@ -210,7 +191,6 @@ mod tests {
         assert_close(camera.center_y, 1024.0, "fit center y");
         let expected_zoom = (SCREEN_W / 5632.0).min(SCREEN_H / 2048.0);
         assert_close(camera.zoom, expected_zoom, "fit zoom");
-        // The whole map must fit inside the screen at fit zoom.
         assert!(5632.0 * camera.zoom <= SCREEN_W + 1e-9);
         assert!(2048.0 * camera.zoom <= SCREEN_H + 1e-9);
     }
@@ -243,7 +223,6 @@ mod tests {
         let mut camera = Camera::fit(5632, 2048, SCREEN_W, SCREEN_H);
         camera.zoom = 2.0;
         camera.center_x = 10.0;
-        // Pan far enough west that the unwrapped center goes negative.
         camera.pan_screen(-100.0, 0.0, SCREEN_H).unwrap();
         assert!(camera.center_x >= 0.0 && camera.center_x < 5632.0);
         assert_close(camera.center_x, 5632.0 + 10.0 - 50.0, "wrapped center");

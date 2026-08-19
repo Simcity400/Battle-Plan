@@ -1,21 +1,5 @@
-//! `pack_replay` — reference CLI to PACK a directory snapshot store into a
-//! `.battleplan`, and to VERIFY a `.battleplan` round-trips byte-identically.
-//!
-//! This is the REFERENCE (and a real, usable) implementation of the finalize
-//! step; the production streaming writer lives in the Python capture loop.
-//! It is loss-less by construction: payload files are read + stored as RAW
-//! BYTES, never re-serialized.
-//!
-//! Usage:
-//!   pack_replay pack   <store_root> <game_id> <out.battleplan>
-//!   pack_replay verify <in.battleplan> [<store_root> <game_id>]   # byte-identity check
-//!
-//! `pack` reads the store's `index.json`, packs every `index.snapshots[*].file`
-//! (+ index + timeline if present), and stamps build/mod identity FROM THE FIRST
-//! SNAPSHOT's provenance (so the container's identity == what was captured).
-
-use serde_json::Value;
 use portable_replay_format::{pack, Container, ExpectedIdentity, PackEntry, PackIdentity};
+use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -89,7 +73,6 @@ fn cmd_pack(args: &[String]) -> i32 {
                 return 1;
             }
         };
-        // pull identity from the FIRST snapshot's provenance/header (once)
         if !took_identity {
             if let Ok(snap) = serde_json::from_slice::<Value>(&bytes) {
                 identity.schema_version = snap
@@ -101,7 +84,6 @@ fn cmd_pack(args: &[String]) -> i32 {
                     .and_then(|pr| pr.get("mod"))
                     .cloned()
                     .filter(|v| !v.is_null());
-                // build exe hash, if the capture recorded it in provenance.memory
                 identity.build_exe_sha256 = snap
                     .get("provenance")
                     .and_then(|pr| pr.get("memory"))
@@ -119,7 +101,6 @@ fn cmd_pack(args: &[String]) -> i32 {
         });
     }
 
-    // optional timeline.json
     let tpath = gdir.join("timeline.json");
     if let Ok(tb) = fs::read(&tpath) {
         entries.push(PackEntry {
@@ -137,7 +118,6 @@ fn cmd_pack(args: &[String]) -> i32 {
             return 1;
         }
     };
-    // Publish atomically by writing the temporary container before rename.
     if let Err(e) = publish_verified_container(&out, &container) {
         eprintln!("pack: durable publication failed: {e}");
         return 1;
@@ -160,8 +140,7 @@ fn publish_verified_container(out: &Path, bytes: &[u8]) -> Result<(), String> {
 
     let parent = out.parent().filter(|path| !path.as_os_str().is_empty());
     if let Some(parent) = parent {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create output directory: {error}"))?;
+        fs::create_dir_all(parent).map_err(|error| format!("create output directory: {error}"))?;
     }
     let file_name = out
         .file_name()
@@ -208,8 +187,8 @@ fn publish_verified_container(out: &Path, bytes: &[u8]) -> Result<(), String> {
     sync_published_parent(&anchored_out)
         .map_err(|error| format!("sync output directory: {error}"))?;
 
-    let published = fs::read(&anchored_out)
-        .map_err(|error| format!("read published container: {error}"))?;
+    let published =
+        fs::read(&anchored_out).map_err(|error| format!("read published container: {error}"))?;
     if published != bytes {
         return Err("published container differs from verified temporary bytes".into());
     }
@@ -288,7 +267,6 @@ fn sync_published_parent(out: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn sync_published_parent(_out: &Path) -> std::io::Result<()> {
-    // MoveFileExW below carries MOVEFILE_WRITE_THROUGH.
     Ok(())
 }
 
@@ -350,7 +328,6 @@ fn cmd_verify(args: &[String]) -> i32 {
         c.unsigned
     );
 
-    // optional byte-identity check against the source store
     if let (Some(root), Some(game)) = (args.get(3), args.get(4)) {
         let gdir = Path::new(root).join(game);
         for s in &c.index().snapshots {
@@ -362,11 +339,7 @@ fn cmd_verify(args: &[String]) -> i32 {
                     return 1;
                 }
             };
-            // re-derive the container's stored bytes by hashing both sides; the
-            // reader already guarantees the served bytes == manifest hash, so equal
-            // sha over the source proves byte-identity.
             let want = portable_replay_format::sha256::Sha256::hex(&orig_bytes);
-            // find the manifest entry hash for this file
             let path = format!("payload/{game}/{}", s.file);
             let got = c
                 .manifest()
@@ -395,8 +368,6 @@ fn cmd_verify(args: &[String]) -> i32 {
 }
 
 fn now_utc() -> String {
-    // dependency-free UTC stamp: seconds since epoch -> RFC3339-ish. We avoid
-    // pulling chrono into this crate; the exact wall time is informational.
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)

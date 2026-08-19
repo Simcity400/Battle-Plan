@@ -1,10 +1,3 @@
-//! Exact-a729 current-POV province visibility producer.
-//!
-//! The engine owns a complete byte vector indexed by province database ID.
-//! This lane preserves those bytes verbatim. It deliberately does not invent
-//! spotted-unit rows: the province-intel producer does not prove that separate
-//! unit-culling domain.
-
 pub use compact_contract::pov_visibility::{
     PovVisibilitySnapshot, CARRIER_MAGIC, CARRIER_VERSION, DOMAIN_ID, MAX_POV_COUNTRY_ID,
     MAX_PROVINCE_SLOTS,

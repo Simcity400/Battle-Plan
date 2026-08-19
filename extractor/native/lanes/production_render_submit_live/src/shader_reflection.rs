@@ -1,11 +1,3 @@
-//! Exact creation-time D3D11 shader reflection for d77/d80 authority.
-//!
-//! This module reflects the byte-for-byte payload already retained by
-//! `RawShaderCreation`. It does not inspect filenames, symbols, bound slots, or
-//! a vanilla catalog. The engine program-registration observer supplies the
-//! program pointer and entry token; D3DReflect supplies the ordered signature,
-//! resource, and constant-buffer descriptors.
-
 #![cfg(windows)]
 
 use crate::{
@@ -32,15 +24,11 @@ impl Drop for Reflection {
     fn drop(&mut self) {
         if !self.0.is_null() {
             // SAFETY: D3DReflect returned this live COM interface and this
-            // wrapper owns exactly one reference.
             unsafe { (*self.0).Release() };
         }
     }
 }
 
-/// Reflect one exact shader-creation payload into the neutral live-authority
-/// contract. `reflection_sequence` is allocated by the same hook-wide ordered
-/// observation clock as the creation/program receipts.
 pub fn reflect_shader_creation(
     creation: &RawShaderCreation,
     reflection_sequence: u64,
@@ -57,7 +45,6 @@ pub fn reflect_shader_creation(
 
     let mut raw = ptr::null_mut::<c_void>();
     // SAFETY: the byte slice is live for the call; the output pointer is owned
-    // by `Reflection` after a successful HRESULT.
     let hr = unsafe {
         D3DReflect(
             creation.bytecode.captured_bytes.as_ptr().cast(),
@@ -112,7 +99,6 @@ fn reflect_signatures(
     for index in 0..count {
         let mut desc: D3D11_SIGNATURE_PARAMETER_DESC = unsafe { mem::zeroed() };
         // SAFETY: the reflection interface is live and `index < count` came
-        // from its shader descriptor.
         let hr = unsafe {
             if input {
                 (*reflection).GetInputParameterDesc(index, &mut desc)
@@ -149,7 +135,6 @@ fn reflect_resources(
     for index in 0..count {
         let mut desc: D3D11_SHADER_INPUT_BIND_DESC = unsafe { mem::zeroed() };
         // SAFETY: the reflection interface is live and `index < count` came
-        // from its shader descriptor.
         let hr = unsafe { (*reflection).GetResourceBindingDesc(index, &mut desc) };
         if !SUCCEEDED(hr) {
             return Err(format!(

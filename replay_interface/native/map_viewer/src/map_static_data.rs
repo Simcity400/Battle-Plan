@@ -14,7 +14,6 @@ pub struct MapBuildingPlacement {
     pub state_id: u32,
     pub building: String,
     pub pos: [f32; 3],
-    /// Vanilla stores map building rotations in radians.
     pub rotation: f32,
     pub adjacent_sea_province: u32,
 }
@@ -22,8 +21,6 @@ pub struct MapBuildingPlacement {
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnitStackPlacement {
     pub province_id: u32,
-    /// Raw engine-side stack slot kind. The current vanilla file observed by the
-    /// gated test uses values 0..=38; the semantic enum is not shipped here.
     pub kind_raw: u32,
     pub pos: [f32; 3],
     pub rotation: f32,
@@ -56,7 +53,6 @@ pub struct ShowOnMapBuilding {
     pub show_on_map_meshes: Option<u32>,
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn map_building_placements_from_game_dir(game_dir: &Path) -> Result<Vec<MapBuildingPlacement>> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     map_building_placements_from_resolver(&resolver)
@@ -93,7 +89,6 @@ pub fn map_building_placements_from_source(source: &str) -> Result<Vec<MapBuildi
     })
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn unit_stack_placements_from_game_dir(game_dir: &Path) -> Result<Vec<UnitStackPlacement>> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     unit_stack_placements_from_resolver(&resolver)
@@ -125,7 +120,6 @@ pub fn unit_stack_placements_from_source(source: &str) -> Result<Vec<UnitStackPl
     })
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn railway_segments_from_game_dir(game_dir: &Path) -> Result<Vec<RailwaySegment>> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     railway_segments_from_resolver(&resolver)
@@ -177,7 +171,6 @@ pub fn railway_segments_from_source(source: &str) -> Result<Vec<RailwaySegment>>
     Ok(segments)
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn supply_nodes_from_game_dir(game_dir: &Path) -> Result<Vec<SupplyNode>> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     supply_nodes_from_resolver(&resolver)
@@ -196,7 +189,6 @@ pub fn supply_nodes_from_source(source: &str) -> Result<Vec<SupplyNode>> {
     })
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn weather_positions_from_game_dir(game_dir: &Path) -> Result<Vec<WeatherPosition>> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     weather_positions_from_resolver(&resolver)
@@ -226,7 +218,6 @@ pub fn weather_positions_from_source(source: &str) -> Result<Vec<WeatherPosition
     })
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn show_on_map_buildings_from_game_dir(game_dir: &Path) -> Result<Vec<ShowOnMapBuilding>> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     show_on_map_buildings_from_resolver(&resolver)
@@ -1079,10 +1070,6 @@ mod tests {
         assert!((-6.05..=-6.03).contains(&min_rotation), "{min_rotation}");
         assert!((6.27..=6.29).contains(&max_rotation), "{max_rotation}");
 
-        // buildings.txt position stats: every locator must be finite and sit
-        // in the map's world quadrant (x,z >= 0). Vanilla map world extent is
-        // 5632 x 2048; a generous ceiling catches parse-shift corruption
-        // without hard-coding an over-tight bound.
         let mut bounds = [[f32::INFINITY, f32::NEG_INFINITY]; 3];
         for placement in &buildings {
             for axis in 0..3 {

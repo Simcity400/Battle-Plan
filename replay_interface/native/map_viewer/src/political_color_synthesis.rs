@@ -28,22 +28,14 @@ pub struct PoliticalColorSynthesis {
     class_by_texel: Vec<PoliticalColorTexelClass>,
 }
 
-/// Political topology consumed by the exact-a729 GradientBorder producer.
-/// Region zero is outside/no-controller. Every non-zero region is a stable
-/// controller tag for the current replay epoch.
 #[derive(Clone, Debug)]
 pub(crate) struct GradientBorderPoliticalInputs {
-    /// Controller region indexed by exact province database id. The engine
-    /// constructs edge records on the full-resolution province-id raster
-    /// before reducing the completed layer for the terrain texture.
     pub(crate) province_regions: Vec<u32>,
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) regions: Vec<u32>,
     pub(crate) land_mask: Vec<bool>,
     pub(crate) region_colors: Vec<[u8; 3]>,
-    /// Full-resolution province-raster pixel area per controller region. This
-    /// is the exact field consumed by the a729 country thickness callback.
     pub(crate) region_areas: Vec<u32>,
 }
 
@@ -125,12 +117,6 @@ pub struct PoliticalColorComparisonReport {
     pub mismatch_samples: Vec<PoliticalColorMismatchSample>,
     pub all_captured_texels_transparent_zero: bool,
     pub all_synthesized_texels_transparent_zero: bool,
-    /// True when both the synthesized and captured secondary maps are fully
-    /// transparent. A byte-exact / 100% match in this state is a *vacuous*
-    /// agreement (transparent == transparent); it does NOT validate the
-    /// province-id -> occupation-stripe mapping, because no non-transparent
-    /// texel was ever exercised. Downstream readers must not treat a vacuous
-    /// match as proof of the political color law.
     pub validation_is_vacuous: bool,
     pub static_occupied_texels: usize,
     pub notes: Vec<String>,
@@ -192,12 +178,6 @@ impl PoliticalColorTexelClass {
     }
 }
 
-/// Per-state owner/controller for one moment. In the static path both come
-/// from the 1936 `history/states` initial block; in the A5 timeline path they
-/// are filled from the `WorldTimeline` `owner_by_state` / `control_by_state`
-/// views (see [`crate::keying::KeyingTables`]). `None` means "not keyed for
-/// this state at this moment" — the fill law falls back / fails closed, never
-/// invents a tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitialStateControl {
     pub owner: Option<String>,
@@ -208,15 +188,6 @@ pub fn synthesize_political_colors(resolver: &GameFileResolver) -> Result<Politi
     synthesize_political_colors_impl(resolver, None)
 }
 
-/// A5 timeline-keyed political fill: identical to [`synthesize_political_colors`]
-/// but the owner-by-state, state controller, and per-tag cosmetic color come
-/// from a scrubbed [`KeyingTables`] (built from a `WorldTimeline` frame) instead
-/// of the static 1936 history parse. The province raster, definitions, state
-/// topology (province->state, impassable), and BASE country colors are still
-/// file-derived (they are not recording state); only the political keying is
-/// swapped. On the 1936 baseline moment this yields byte-identical output to the
-/// static path when the timeline carries the same owner/controller/cosmetic
-/// (the A5 t0 gate).
 pub fn synthesize_political_colors_with_keying(
     resolver: &GameFileResolver,
     keying: &KeyingTables,
@@ -295,10 +266,7 @@ fn validate_xmap05_province_census(
     Ok(())
 }
 
-/// Resolve the complete file-derived XMAP05 raster topology for one replay
 /// epoch. Political ownership/control comes from `keying`; province identity,
-/// state membership, land eligibility, and country colours come from the
-/// effective VFS. No captured presentation texture participates.
 pub(crate) fn xmap05_raster_inputs_with_keying(
     resolver: &GameFileResolver,
     keying: &KeyingTables,
@@ -332,12 +300,6 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
         country_roster,
     )?;
 
-    // XMAP05 owns both state- and province-control authority. the game's normal
-    // political/GradientBorder path is state-controller keyed, while the
-    // independent province mirror is consumed by country-label placement.
-    // Admit the shared political resource only when the two controller views
-    // describe the same land topology. A province-level divergence is not
-    // guessed into a state colour or silently ignored.
     let eligible_provinces = definitions
         .iter()
         .filter_map(|(&province_id, definition)| {
@@ -446,9 +408,6 @@ pub(crate) fn xmap05_raster_inputs_with_keying(
     for y in 0..height {
         for x in 0..width {
             let texel = y * width + x;
-            // The exact half-resolution lookup samples the center-selected
-            // source pixel: x=2*x+1 and, after the engine's output-row flip,
-            // y=map_height-2*y-2. No 2x2 vote or tie-break exists.
             let source = xmap05_half_res_source_index(provinces.width, provinces.height, x, y);
             let province_id = provinces.ids[source];
             let state_id = province_to_state.get(&province_id).copied().unwrap_or(0);
@@ -488,10 +447,6 @@ pub(crate) fn xmap05_half_res_source_index(
     source_y * map_width + source_x
 }
 
-/// Shared body of the static and A5 timeline-keyed synthesis entry points.
-/// Everything file-derived (province raster, definitions, state topology,
-/// dimension law) is identical between the two paths; only the political
-/// keying source (owner/controller/cosmetic) is selected by `keying`.
 fn synthesize_political_colors_impl(
     resolver: &GameFileResolver,
     keying: Option<&KeyingTables>,
@@ -533,8 +488,6 @@ fn synthesize_political_colors_impl(
             (&static_owners, &static_controls, &static_country_colors)
         }
         Some(keying) => {
-            // Topology (province->state, impassable) is not recording state; keep it
-            // file-derived. Keying (owner/controller/cosmetic) comes from the timeline.
             keyed_country_colors = country_colors_from_game_resolver_with_cosmetics(
                 resolver,
                 &keying.cosmetic_by_tag,
@@ -600,10 +553,6 @@ fn synthesize_political_colors_impl(
     })
 }
 
-/// The shared per-texel political-fill loop used by both the static and the
-/// A5 timeline-keyed entry points, so the two paths are byte-identical by
-/// construction when fed the same keying. Returns
-/// `(owner_color_bytes, secondary_color_bytes, class_by_texel)`.
 fn render_political_texels(
     texture_width: usize,
     texture_height: usize,
@@ -619,12 +568,6 @@ fn render_political_texels(
     let mut secondary_color_bytes = vec![0u8; texture_width * texture_height * 4];
     let mut class_by_texel =
         vec![PoliticalColorTexelClass::UnknownProvince; texture_width * texture_height];
-    // The per-texel result depends only on the province id (~13-17k distinct
-    // values across ~2.9M texels), so memoize per province id. The cache is
-    // filled LAZILY in raster order: only province ids an actual texel samples
-    // are ever evaluated, which keeps output bytes, class_by_texel, and error
-    // behavior (including which fail-closed error fires first) exactly
-    // identical to the unmemoized loop.
     let mut colors_by_province =
         BTreeMap::<u32, (PoliticalColorTexelClass, Option<[u8; 4]>, Option<[u8; 4]>)>::new();
 
@@ -678,14 +621,6 @@ pub fn compare_political_colors_to_capture(
     Ok(report)
 }
 
-/// Core of the capture comparison: takes an already-built synthesis so callers
-/// that need both the synthesis output and the comparison (the dump path) run
-/// the 2816x1024 political fill exactly once. Owns ALL capture-side
-/// validations (byte length vs synthesized, byte length vs capture JSON,
-/// FNV-1a64 integrity, captured descriptor law) and runs them fail-closed
-/// before the texel comparison. Returns the validated captured bytes alongside
-/// the report so downstream consumers (diff heatmap) never re-read the capture
-/// through an unvalidated path.
 fn compare_synthesized_to_capture(
     synthesized: &PoliticalColorSynthesis,
     capture_dir: &Path,
@@ -1122,9 +1057,6 @@ fn validate_captured_province_secondary_descriptor(
     Ok(())
 }
 
-/// Fail-closed test for a fully transparent secondary color map: every RGBA
-/// texel must be exactly `[0,0,0,0]`. A non-multiple-of-4 length is treated as
-/// non-transparent so a malformed buffer can never masquerade as "all zero".
 fn secondary_map_all_transparent(bytes: &[u8]) -> bool {
     bytes.len() % 4 == 0 && bytes.chunks_exact(4).all(|px| px == [0u8, 0, 0, 0])
 }
@@ -1261,31 +1193,25 @@ mod tests {
 
     #[test]
     fn all_transparent_detection_is_fail_closed() {
-        // A genuinely all-zero RGBA buffer is transparent.
         assert!(secondary_map_all_transparent(&[0u8; 16]));
         assert!(secondary_map_all_transparent(&[]));
-        // Any single non-zero channel (including a non-zero alpha) is not transparent.
         assert!(!secondary_map_all_transparent(&[0, 0, 0, 1]));
         assert!(!secondary_map_all_transparent(&[7, 0, 0, 0]));
         let mut buf = vec![0u8; 4096];
-        buf[2050] = 255; // one stray texel deep in the buffer
+        buf[2050] = 255;
         assert!(!secondary_map_all_transparent(&buf));
-        // A malformed (non-multiple-of-4) buffer must never report transparent.
         assert!(!secondary_map_all_transparent(&[0u8; 5]));
         assert!(!secondary_map_all_transparent(&[0u8; 3]));
     }
 
     #[test]
     fn vacuous_match_requires_both_sides_transparent() {
-        // Both transparent -> vacuous (a 100% match here proves nothing).
         let captured = vec![0u8; 4096];
         let synth = vec![0u8; 4096];
         let cap0 = secondary_map_all_transparent(&captured);
         let syn0 = secondary_map_all_transparent(&synth);
         assert!(cap0 && syn0);
         assert!(cap0 && syn0, "both transparent must flag vacuous");
-        // A non-transparent captured map makes the comparison non-vacuous even
-        // if the synthesized side is transparent.
         let mut captured_nz = vec![0u8; 4096];
         captured_nz[7] = 128;
         assert!(!secondary_map_all_transparent(&captured_nz));
@@ -1317,7 +1243,6 @@ mod tests {
         sea.province_type = "sea".to_string();
         definitions.insert(2, sea);
         definitions.insert(3, land_definition());
-        // Province id 0 is deliberately absent: unknown-province texels.
         let provinces = BmpIds {
             width: 4,
             height: 2,
@@ -1384,9 +1309,6 @@ mod tests {
             &country_colors,
         )
         .expect("render succeeds");
-        // Sampled texels must match the unmemoized per-texel law exactly. The
-        // prime stride keeps the test fast while covering every province band
-        // (each band is 704 texels wide) and both vertical halves.
         for y in (0..PROVINCE_COLOR_MAP_HEIGHT).step_by(53) {
             for x in (0..PROVINCE_COLOR_MAP_WIDTH).step_by(53) {
                 let texel_index = y * PROVINCE_COLOR_MAP_WIDTH + x;
@@ -1425,8 +1347,6 @@ mod tests {
                 );
             }
         }
-        // Spot-check that each fixture class actually appeared (the fixture
-        // exercises equal-owner, sea, occupied, and unknown provinces).
         let counts = class_counts(&class_by_texel);
         assert_eq!(
             counts.values().sum::<usize>(),
@@ -1449,8 +1369,6 @@ mod tests {
             state_controls,
             mut country_colors,
         ) = memoized_render_fixture();
-        // Province 3's state owner is POL; removing its color must refuse the
-        // whole render, exactly as the unmemoized loop did.
         country_colors.remove("POL");
         let err = render_political_texels(
             PROVINCE_COLOR_MAP_WIDTH,
@@ -1487,9 +1405,6 @@ mod tests {
 
     #[test]
     fn xmap05_half_resolution_selects_the_center_pixel_without_a_vote() {
-        // For a 4x4 source, output (0,0) selects source (1,2). A 2x2 block
-        // may contain any three other identities; they never participate in a
-        // majority or numeric tie-break.
         assert_eq!(xmap05_half_res_source_index(4, 4, 0, 0), 2 * 4 + 1);
         assert_eq!(xmap05_half_res_source_index(4, 4, 1, 1), 0 * 4 + 3);
     }

@@ -10,9 +10,6 @@ use game_ui::gfx::SpriteRegistry;
 use game_ui::loc::Localisation;
 use std::path::PathBuf;
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }

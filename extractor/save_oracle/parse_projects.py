@@ -53,9 +53,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# special projects: program_status.project_pool.project.<token>
-# ---------------------------------------------------------------------------
 
 def _parse_progress(tz):
     """progress={ current_state=N prototype_state={ project_progress iterations
@@ -180,9 +177,6 @@ def _parse_project(tz, token):
                 rec["phase_progress"] = pr["phase_progress"]
                 rec["stopping_phase_progress"] = pr["stopping_phase_progress"]
             elif k == "flags":
-                # flags={ <project_flag>={ value date } ... } -> keep name+value+date.
-                # These are PROJECT flags (set by fired prototype rewards;
-                # later rewards test has_project_flag to alter weights).
                 flags = []
                 for fk, fo in iter_block_entries(tz):
                     if fo is LBRACE:
@@ -231,9 +225,6 @@ def _parse_project_pool(tz):
     return projects
 
 
-# ---------------------------------------------------------------------------
-# facilities: program_status.program
-# ---------------------------------------------------------------------------
 
 def _parse_delayed(tz):
     """delayed_dismantle_facility / delayed_unassigned_scientist =
@@ -287,7 +278,6 @@ def _parse_program(tz):
             if k == "id":
                 rec["id"], rec["type"] = read_id_block(tz)
             elif k == "scientist":
-                # scientist={ scientist={id type} delayed_unassigned_scientist={..} }
                 for sk, so in iter_block_entries(tz):
                     if so is not LBRACE:
                         continue
@@ -301,7 +291,6 @@ def _parse_program(tz):
             elif k == "delayed_dismantle_facility":
                 rec["dismantle"] = _parse_delayed(tz)
             elif k == "delayed_unassigned_scientist":
-                # also seen at program level in some saves
                 rec["unassigned_scientist"] = _parse_delayed(tz)
             elif k == "supply":
                 rec["supply"] = _parse_supply(tz)
@@ -324,9 +313,6 @@ def _parse_program(tz):
     return rec
 
 
-# ---------------------------------------------------------------------------
-# program_status (per country)
-# ---------------------------------------------------------------------------
 
 def _parse_program_status(tz):
     projects = []
@@ -370,15 +356,10 @@ def _parse_countries(tz, by_tag):
                     ps_found = True
                 else:
                     _skip_block_body(tz)
-            # scalars at country level ignored
-        # countries with no program_status simply never appear in by_tag
         if not ps_found:
             pass
 
 
-# ---------------------------------------------------------------------------
-# scientists: top-level characters.{historical,dynamic}.character
-# ---------------------------------------------------------------------------
 
 def _parse_scientist_block(tz):
     """scientist={ traits={..} skills={ specialization_*={ level } ... } }."""
@@ -392,7 +373,6 @@ def _parse_scientist_block(tz):
                 for sk, so in iter_block_entries(tz):
                     if so is not LBRACE:
                         continue
-                    # specialization_X={ } (no level) or { level=N }
                     lvl = 0
                     for lk, lo in iter_block_entries(tz):
                         if lo is LBRACE:
@@ -405,7 +385,6 @@ def _parse_scientist_block(tz):
             else:
                 _skip_block_body(tz)
             continue
-        # ignore scalars
     return traits, skills
 
 
@@ -461,9 +440,6 @@ def _parse_characters(tz, scientists):
             _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# build
-# ---------------------------------------------------------------------------
 
 _SPECS = ("specialization_nuclear", "specialization_naval",
           "specialization_air", "specialization_land")
@@ -481,13 +457,11 @@ def build(text, source, was_melted):
         scalar_keys=("date", "version", "player"),
     )
 
-    # Index scientists by char id for the facility cross-ref.
     sci_by_id = {}
     for s in scientists:
         if s["char_id"] is not None:
             sci_by_id[s["char_id"]] = s
 
-    # Build per-country records.
     countries = {}
     total_projects = total_started = total_completed = total_facilities = 0
     for tag, rec in sorted(by_tag.items()):
@@ -495,22 +469,16 @@ def build(text, source, was_melted):
         facilities = rec["facilities"]
         started = [p for p in projects if p["start"]]
         completed = [p for p in projects if p["completed"]]
-        # "active" = started but not yet completed (in progress). Note this is
-        # NOT the same as "currently worked at a facility" (see in_facility).
         active = [p for p in started if not p["completed"]]
 
-        # Tokens currently assigned to a facility (program.project=<token>).
         worked = {f.get("active_project") for f in facilities
                   if f.get("active_project")}
 
-        # Cross-ref each facility to its assigned scientist (token / loc-key,
-        # NOT a resolved display name).
         for f in facilities:
             sid = f.get("scientist_id")
             s = sci_by_id.get(sid) if sid is not None else None
             f["scientist_token"] = s["token"] if s else None
             d = f.get("dismantle") or {}
-            # dismantle countdown has advanced past 0 -> a dismantle is queued.
             f["dismantle_in_progress"] = bool(d.get("current"))
 
         total_projects += len(projects)
@@ -537,7 +505,6 @@ def build(text, source, was_melted):
             "breakthrough": rec["breakthrough"],
         }
 
-    # Per-country scientist roster (grouped by country tag).
     sci_by_country = {}
     for s in scientists:
         c = s["country"]
@@ -600,7 +567,6 @@ def build(text, source, was_melted):
         "scientists": sci_by_country,
     }
 
-    # ---- validation report ----
     ger = countries.get("GER", {})
     ger_sci = sci_by_country.get("GER", [])
     lines = ["=== SPECIAL-PROJECTS / FACILITIES / SCIENTISTS ORACLE VALIDATION ==="]

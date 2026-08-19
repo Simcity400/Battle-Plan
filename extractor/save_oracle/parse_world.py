@@ -36,9 +36,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# tech_sharing_group  (repeated top-level key)
-# ---------------------------------------------------------------------------
 
 def _parse_tech_sharing(tz, groups):
     rec = {"id": None, "bonuses": [], "countries": []}
@@ -57,9 +54,6 @@ def _parse_tech_sharing(tz, groups):
     groups.append(rec)
 
 
-# ---------------------------------------------------------------------------
-# faction_system
-# ---------------------------------------------------------------------------
 
 def _parse_faction_system(tz, factions):
     for key, opener in iter_block_entries(tz):
@@ -68,13 +62,11 @@ def _parse_faction_system(tz, factions):
         if key != "countries":
             _skip_block_body(tz)
             continue
-        # countries={ <num>={ index data={...} } { index data={...} } ... }
-        # entries are a mix of `<key>={...}` and anonymous `{...}` blocks.
         _parse_faction_entries(tz, factions)
 
 
 def _parse_faction_entries(tz, factions):
-    depth = 1  # countries '{' consumed
+    depth = 1
     while depth > 0:
         tok = tz.next()
         if tok is None:
@@ -83,7 +75,6 @@ def _parse_faction_entries(tz, factions):
             depth -= 1
             continue
         if tok is LBRACE:
-            # anonymous faction entry
             factions.append(_parse_faction_member(tz))
             continue
         key = atom_value(tok)
@@ -97,7 +88,6 @@ def _parse_faction_entries(tz, factions):
                 rec = _parse_faction_member(tz)
                 rec["key"] = key
                 factions.append(rec)
-            # scalar: ignore
 
 
 def _parse_faction_member(tz):
@@ -132,9 +122,6 @@ def _parse_faction_member(tz):
     return rec
 
 
-# ---------------------------------------------------------------------------
-# power_balance
-# ---------------------------------------------------------------------------
 
 def _parse_power_balance(tz, bops):
     for key, opener in iter_block_entries(tz):
@@ -185,14 +172,11 @@ def _parse_bop_entry(tz):
     return rec
 
 
-# ---------------------------------------------------------------------------
-# variables / flags / saved_event_target
-# ---------------------------------------------------------------------------
 
 def _parse_variables(tz, variables):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
-            _skip_block_body(tz)  # nested (e.g. random={...}) ignored
+            _skip_block_body(tz)
             continue
         v = atom_value(opener)
         if v is None:
@@ -217,7 +201,6 @@ def _parse_flags(tz, flags):
                 elif k == "date":
                     date = vv
             flags[key] = {"value": value, "date": date}
-        # scalar flags (rare) ignored
 
 
 def _parse_saved_event_target(tz, targets):
@@ -238,9 +221,6 @@ def _parse_saved_event_target(tz, targets):
     targets.append(rec)
 
 
-# ---------------------------------------------------------------------------
-# build
-# ---------------------------------------------------------------------------
 
 def build(text, source, was_melted):
     tech_groups = []

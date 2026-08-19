@@ -1,8 +1,3 @@
-//! Typed D69 technology-sharing runtime consumer.
-//!
-//! The runtime group token is an engine intern ordinal.  This parser preserves
-//! it exactly and validates the paired member/bonus arrays, but deliberately
-//! does not reinterpret the ordinal as a definition index or string hash.
 
 use crate::{Leaf, WorldFrame};
 use serde::Deserialize;
@@ -19,8 +14,6 @@ pub struct TechnologySharingRuntimeView {
 #[derive(Clone, Debug, PartialEq)]
 pub struct TechnologySharingRuntimeGroup {
     pub runtime_ordinal: u32,
-    /// Exact reverse lookup of `runtime_ordinal` through the synchronized
-    /// engine lexer table. Legacy TSG2 recordings retain Unobtained.
     pub definition_id: Leaf<String>,
     pub members: Vec<TechnologySharingRuntimeMember>,
 }
@@ -71,9 +64,6 @@ struct RuntimeMember {
     dynamic_bonus: f64,
 }
 
-/// Consume the exact top-level D69 value already decoded into `WorldFrame`.
-/// Missing and explicit-null retain the replay trichotomy.  Malformed present
-/// data is an error and cannot become a measured-empty group set.
 pub fn technology_sharing_runtime(
     frame: &WorldFrame,
 ) -> Result<TechnologySharingRuntimeView, TechnologySharingRuntimeError> {

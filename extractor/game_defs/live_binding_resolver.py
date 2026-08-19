@@ -294,12 +294,6 @@ def load_engine_runtime_artifacts(path: Path | None = None) -> dict[str, Any]:
         _required_hex_address(
             evidence.get("sink_binding_function"), f"{relpath}.sink_binding_function"
         )
-        # writer_function is OPTIONAL on purpose.  Where the open site reaches
-        # the path through a library's sink FIELD rather than through the
-        # literal, no address for it has been read out of the image, and
-        # claiming one would be asserting more than the evidence shows.  What is
-        # never optional is the census below, which is the property the class
-        # actually rests on.
         _required_hex_address(
             evidence.get("writer_function"), f"{relpath}.writer_function", optional=True
         )
@@ -314,17 +308,6 @@ def load_engine_runtime_artifacts(path: Path | None = None) -> dict[str, Any]:
             _required_hex_address(reference, f"{relpath}.reference_addresses[{position}]")
         if len(references) != len({*references}):
             raise ResolutionError(f"engine runtime artifact {relpath} repeats a reference address")
-        # THE COMPLETENESS CLAIM.  The census is the total number of references
-        # to this literal found in the image sweep, and every one of them must be
-        # named above (plus the pointer slot).  What THIS check can prove is
-        # internal consistency only: a row that named two of five real references
-        # and declared a census of two would pass here while leaving three
-        # unexamined sites, any of which could be a content read that makes the
-        # file real product content.  The independent half lives in
-        # tests/test_product_modset_admission.py::
-        # test_every_census_matches_the_retained_string_xref_sweep, which
-        # re-derives both the address set and the count from the raw Ghidra sweep
-        # retained in runs/jq_console_key/ and requires exact equality.
         census = evidence.get("reference_census")
         accounted = len(references) + (1 if evidence.get("string_pointer_address") else 0)
         if not isinstance(census, int) or isinstance(census, bool) or census != accounted:
@@ -381,8 +364,6 @@ def observe_engine_runtime_artifacts(
 def parse_descriptor(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise ResolutionError(f"missing descriptor: {path}")
-    # Clausewitz descriptors are byte strings.  Latin-1 is the lossless
-    # one-byte mapping also used by the production replay resolver.
     text = path.read_bytes().decode("latin-1")
     matches: dict[str, list[str]] = {}
     for key, quoted, bare in DESCRIPTOR_RE.findall(text):
@@ -480,9 +461,6 @@ def _engine_mount_plan(
     if not plan:
         return []
 
-    # Bellman-Ford form of the engine's repeated relaxation.  A stable plan
-    # exists after at most N-1 propagation rounds; a change in round N proves
-    # an active dependency cycle.
     changed = False
     for round_index in range(len(plan)):
         changed = False
@@ -865,10 +843,6 @@ def recompute_source_inventory(
         })
         rows.extend({"namespace_ordinal": ordinal, **row} for row in inventory)
 
-    # The base namespace is the only one the engine mounts from its own working
-    # directory, so it is the only one whose walk can pick up the executable's
-    # write sinks.  Every other namespace is passed nothing: a mod or DLC layer
-    # that happens to contain a file of the same name owns it as content.
     add_namespace(
         "vanilla", "vanilla", "vanilla", vanilla,
         allow_empty=False, exclude_top={"dlc", "integrated_dlc"},
@@ -903,9 +877,6 @@ def recompute_source_inventory(
     if asset_only & set(descriptor_by_id):
         raise ResolutionError("descriptor-backed DLC cannot be classified asset-only")
 
-    # Descriptorless asset namespaces are deliberately excluded by production
-    # interpreters.  Keep their deterministic evidence rows ahead of mounted
-    # selected content without letting their names influence the engine plan.
     for dlc_id in sorted(asset_only, key=_engine_byte_key):
         root = vanilla / "dlc" / dlc_id
         add_namespace(
@@ -1648,11 +1619,6 @@ def resolve_live_bindings(
         )
     dlc_by_id = {row["id"]: row for row in dlc_rows}
     mod_by_id = {row["id"]: row for row in mod_rows}
-    # The effective-VFS inventory is built BEFORE the load order because the
-    # base layer's content digest IS the inventory's base namespace digest.
-    # Recording anything else -- as v1 did, with a second full-tree hash over
-    # `vanilla` minus `dlc/` only -- puts a digest in the product-modset key
-    # that no consumer holding the inventory can reconstruct.
     source_inventory = recompute_source_inventory(
         vanilla,
         resolved_mod_sources,

@@ -45,7 +45,6 @@ from pathlib import Path
 import resolver as R
 from paradox_parser import Node
 
-# Structural keys (everything else top-level = effect/modifier row).
 _STRUCT = {
     "folder", "track", "name", "description", "icon", "icon_frame",
     "available", "xp_cost", "xp_type", "ai_will_do", "tracks", "rewards",
@@ -55,10 +54,6 @@ _STRUCT = {
     "xor", "mutually_exclusive", "milestones",
 }
 
-# Doctrine-view grid geometry (interface/doctrines/doctrines_view.gui tracks_grid
-# slotsize = { width=@doctrine_track_width height=@doctrine_track_height }). Tracks
-# are columns; subdoctrine slots stack down a track. Row pitch is the per-milestone
-# step inside a track column (the track is 764px tall; ~7 milestones -> ~96px).
 _TRACK_COL_W = 424
 _TRACK_ROW_H = 96
 
@@ -107,7 +102,6 @@ def _effects(node: Node):
         if not k or k.lower() in _STRUCT:
             continue
         out[k] = _plain(v)
-    # rewards={} carry named sub-effect groups (the on-hover effect rows)
     rw = node.get("rewards")
     if isinstance(rw, Node):
         out["_rewards"] = {k: _plain(v) for k, v in rw.entries if k}
@@ -130,13 +124,12 @@ def _parse_dir(layers, subdir, kind, by_id, order, collisions):
                 "name": _scalar(body.get("name")),
                 "description": _scalar(body.get("description")),
                 "folder": _scalar(body.get("folder")),
-                "tracks_member": _tracks_of(body),       # tracks this node sits on
-                "track": (_tracks_of(body) or [None])[0],  # primary track (compat)
+                "tracks_member": _tracks_of(body),
+                "track": (_tracks_of(body) or [None])[0],
                 "icon": _scalar(body.get("icon")),
                 "xp_cost": body.get("xp_cost"),
                 "xp_type": _scalar(body.get("xp_type")),
-                "tracks": _atoms(body.get("tracks")),     # grand doctrine -> tracks
-                # mutual exclusion / replacement edges
+                "tracks": _atoms(body.get("tracks")),
                 "xor": sorted(set(
                     t for blk in body.get_all("xor") for t in _atoms(blk))),
                 "mutually_exclusive": sorted(set(
@@ -147,13 +140,11 @@ def _parse_dir(layers, subdir, kind, by_id, order, collisions):
                              else ([body.get("replaces")]
                                    if isinstance(body.get("replaces"), str)
                                    else [])),
-                # position(s) resolved in a second pass once tracks are known.
-                # ``position`` = primary; ``positions`` = one per member track.
                 "position": None,
                 "positions": None,
                 "effects": _effects(body),
                 "source_file": rel,
-                "_decl_order": len(order),   # global declaration order (stable)
+                "_decl_order": len(order),
             }
             if nid in by_id and by_id[nid]["source_file"] != rel:
                 collisions.append({"id": nid, "kind": kind,
@@ -179,7 +170,6 @@ def _resolve_doctrine_geometry(by_id: dict):
     tracks = {n: r for n, r in by_id.items() if r["kind"] == "track"}
     subs = {n: r for n, r in by_id.items() if r["kind"] == "subdoctrine"}
 
-    # folder of each track := folder of (any) grand doctrine that lists it.
     track_folder: dict[str, str] = {}
     folder_track_order: dict[str, list] = {}
     for gid, g in sorted(grands.items(), key=lambda kv: kv[1]["_decl_order"]):
@@ -189,16 +179,11 @@ def _resolve_doctrine_geometry(by_id: dict):
             col_list = folder_track_order.setdefault(fol, [])
             if tr not in col_list:
                 col_list.append(tr)
-    # track column index within its folder
     track_col: dict[str, int] = {}
     for fol, cols in folder_track_order.items():
         for i, tr in enumerate(cols):
             track_col[tr] = i
 
-    # subdoctrine row index within EACH of its tracks, by declaration order. A
-    # node that sits on several tracks (the special-forces nodes carry
-    # ``track = { special_forces_first special_forces_second }``) is placed in
-    # EVERY member column so no track is left with an empty grid (Codex R2 #3).
     rows_seen: dict[str, int] = {}
 
     def _place(track):
@@ -220,10 +205,9 @@ def _resolve_doctrine_geometry(by_id: dict):
     for sid, s in sorted(subs.items(), key=lambda kv: kv[1]["_decl_order"]):
         member = s["tracks_member"] or [None]
         placements = [_place(tr) for tr in member]
-        s["positions"] = placements          # one per member track (multi-column)
-        s["position"] = placements[0]        # primary (compat / single-track view)
+        s["positions"] = placements
+        s["position"] = placements[0]
 
-    # grand doctrines: header position above their first track column
     for gid, g in grands.items():
         first_tr = g["tracks"][0] if g["tracks"] else None
         col = track_col.get(first_tr, 0)
@@ -231,7 +215,6 @@ def _resolve_doctrine_geometry(by_id: dict):
                          "x": col * _TRACK_COL_W, "y": -_TRACK_ROW_H,
                          "folder": g["folder"], "source": "grand_header"}
 
-    # tracks: column header at row -1
     for tid, t in tracks.items():
         col = track_col.get(tid)
         if col is None:
@@ -242,14 +225,12 @@ def _resolve_doctrine_geometry(by_id: dict):
                          "folder": track_folder.get(tid) or _sf_folder(tid),
                          "source": "track_header"}
 
-    # implicit XOR groups: grand doctrines sharing a folder are one-of
     folder_grands: dict[str, list] = {}
     for gid, g in grands.items():
         folder_grands.setdefault(g["folder"], []).append(gid)
     grand_xor_groups = {fol: sorted(ids) for fol, ids in folder_grands.items()
                         if len(ids) > 1}
 
-    # explicit subdoctrine XOR edge count
     explicit_xor = sum(1 for s in subs.values() if s["xor"])
 
     no_pos = [n for n, r in by_id.items()
@@ -270,8 +251,6 @@ def _resolve_doctrine_geometry(by_id: dict):
     }
 
 
-# special-forces tracks (special_forces_first/second) get columns appended after
-# the grand-doctrine-listed tracks so SF nodes still land in a renderable column.
 def _sf_col(track, track_col):
     if track is None:
         return None
@@ -308,7 +287,7 @@ def parse_doctrines(layers) -> dict:
     counts = {}
     for r in by_id.values():
         counts[r["kind"]] = counts.get(r["kind"], 0) + 1
-        r.pop("_decl_order", None)   # internal ordering helper; not for consumers
+        r.pop("_decl_order", None)
     return {
         "meta": {
             "node_count": len(by_id),

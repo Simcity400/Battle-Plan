@@ -110,20 +110,15 @@ from deep_common import (
     to_int, read_scalar_list,
 )
 
-# Military role sub-block keys (general / field marshal / admiral).
 MIL_ROLE_KEYS = {
     "corps_commander": "general",
     "field_marshal": "field_marshal",
     "navy_leader": "admiral",
 }
 
-# Recognised ace plane categories (prefix of the `modifier` token).
 ACE_CATEGORIES = ("fighter", "bomber", "support", "cas", "naval")
 
 
-# ---------------------------------------------------------------------------
-# id={id type} reader (local; never touch deep_common)
-# ---------------------------------------------------------------------------
 
 def _read_id(tz):
     _id = _type = None
@@ -141,9 +136,6 @@ def _read_id(tz):
     return _id, _type
 
 
-# ---------------------------------------------------------------------------
-# (b) ACES
-# ---------------------------------------------------------------------------
 
 ACE_TIERS = ("good", "unique", "genius")
 
@@ -161,7 +153,6 @@ def _split_modifier(mod):
         return None, None
     if "_" in mod:
         cat, tier = mod.rsplit("_", 1)
-        # if the trailing token isn't a known tier, fall back to the prefix split
         if tier.lower() not in ACE_TIERS:
             for c in ACE_CATEGORIES:
                 if mod.lower().startswith(c + "_"):
@@ -177,10 +168,9 @@ def _parse_ace(tz):
         "name": None, "surname": None, "callsign": None,
         "modifier": None, "ace_category": None, "tier": None,
         "portrait": None,
-        "alive": True,            # field is absent when the ace is alive
+        "alive": True,
         "handled": None,
         "kill_type": None,
-        # killer_name is an object ref (id+type) despite the key name; keep both
         "killer_id": None, "killer_type": None, "killer_country": None,
     }
     for k, op in iter_block_entries(tz):
@@ -217,9 +207,6 @@ def _parse_ace(tz):
     return rec
 
 
-# ---------------------------------------------------------------------------
-# (a) COMMANDER ABILITIES (cooldown gate carried on the mil-role block)
-# ---------------------------------------------------------------------------
 
 def _parse_mil_cooldown(tz, role_label):
     """A corps_commander / field_marshal / navy_leader block: harvest the
@@ -262,9 +249,6 @@ def _is_gated(rec):
     return bool(rec["cooldown_reason"] or rec["captured"])
 
 
-# ---------------------------------------------------------------------------
-# character_manager: walk every character for its mil-role cooldown/capture
-# ---------------------------------------------------------------------------
 
 def _parse_character(tz, cooldowns, captures):
     """One ``character={...}`` def. Records any mil-role cooldown/capture and the
@@ -305,13 +289,10 @@ def _parse_character_manager(tz, cooldowns, captures):
                 _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# (c) OFFICER CORPS: politics.ideas + timed_idea
-# ---------------------------------------------------------------------------
 
 def _parse_politics(tz):
     """politics={ ideas={tok tok ...} timed_idea={idea= days=} ... } -> dict."""
-    out = {"ideas": [], "timed": {}}  # timed: token -> days remaining
+    out = {"ideas": [], "timed": {}}
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
             if k == "ideas":
@@ -337,9 +318,6 @@ def _parse_politics(tz):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Per-country pass: aces + politics(officer-corps spirits)
-# ---------------------------------------------------------------------------
 
 def _parse_one_country(tz, tag, aces_by_tag, politics_by_tag):
     aces = []
@@ -352,7 +330,6 @@ def _parse_one_country(tz, tag, aces_by_tag, politics_by_tag):
                 politics = _parse_politics(tz)
             else:
                 _skip_block_body(tz)
-        # scalars ignored
     if aces:
         aces_by_tag[tag] = aces
     politics_by_tag[tag] = politics
@@ -365,15 +342,12 @@ def _parse_countries(tz, aces_by_tag, politics_by_tag):
         _parse_one_country(tz, tag, aces_by_tag, politics_by_tag)
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 def parse_abilities_text(text: str):
-    aces_by_tag: dict = {}       # TAG -> [ace,...]
-    politics_by_tag: dict = {}   # TAG -> {ideas,timed}
-    cooldowns: list = []         # gated mil-leaders (cooldown or captured)
-    captures: list = []          # captured mil-leaders
+    aces_by_tag: dict = {}
+    politics_by_tag: dict = {}
+    cooldowns: list = []
+    captures: list = []
     meta = dc.top_level_pass(
         text,
         {
@@ -403,7 +377,6 @@ def build(text, source, was_melted):
     (aces_by_tag, politics_by_tag,
      cooldowns, captures, meta) = parse_abilities_text(text)
 
-    # --- (a) commander abilities: group gated leaders by country -------------
     commander_abilities = {}
     for m in cooldowns:
         tag = m.get("country") or "?"
@@ -418,11 +391,8 @@ def build(text, source, was_melted):
             "location": m["location"],
         })
 
-    # --- (c) officer corps: spirits + captured-generals tallies --------------
-    # enemy generals THIS country holds = captures grouped by captured_by;
-    # this country's OWN generals captured = captures grouped by home country.
-    held_by = {}   # captor TAG -> count
-    own_lost = {}  # home TAG  -> count
+    held_by = {}
+    own_lost = {}
     for m in captures:
         if m.get("captured_by"):
             held_by[m["captured_by"]] = held_by.get(m["captured_by"], 0) + 1
@@ -440,11 +410,9 @@ def build(text, source, was_melted):
             "captured_enemy_generals": held_by.get(tag, 0),
             "own_generals_captured": own_lost.get(tag, 0),
         }
-        # only emit if there's something to say
         if spirits or rec["captured_enemy_generals"] or rec["own_generals_captured"]:
             officer_corps[tag] = rec
 
-    # --- (b) aces output ------------------------------------------------------
     aces_out = {}
     total_aces = 0
     aces_alive = 0
@@ -459,10 +427,6 @@ def build(text, source, was_melted):
                 "ace_category": a["ace_category"], "tier": a["tier"],
                 "portrait": a["portrait"],
                 "alive": a["alive"],
-                # Preserve the serialized death-processing bit.  A5's
-                # independent lifecycle fixture joins this field directly to
-                # CAceEntry+0x16C; dropping it here made that join impossible
-                # even though _parse_ace had already parsed the token.
                 "handled": a["handled"],
                 "kill_type": a["kill_type"],
                 "killer_id": a["killer_id"],
@@ -527,7 +491,6 @@ def build(text, source, was_melted):
         "officer_corps": dict(sorted(officer_corps.items())),
     }
 
-    # ---- validation report -------------------------------------------------
     st = out["meta"]["stats"]
     lines = ["=== COMMANDER-ABILITIES / ACES / OFFICER-CORPS ORACLE VALIDATION ==="]
     lines.append(f"source        : {source.name} (melted={was_melted})")
@@ -541,12 +504,10 @@ def build(text, source, was_melted):
                  f"{st['captured_commanders']} captured")
     lines.append(f"officer corps : {st['countries_with_officer_corps']} countries "
                  f"with spirits/captures")
-    # per-country ace breakdown
     if aces_out:
         brk = ", ".join(f"{t}:{v['count']}" for t, v in
                         sorted(aces_out.items(), key=lambda x: -x[1]['count']))
         lines.append(f" aces by tag  : {brk}")
-    # GER spot-check (richest ace roster in the campaign melt)
     ger = aces_out.get("GER")
     if ger and ger["aces"]:
         a0 = ger["aces"][0]

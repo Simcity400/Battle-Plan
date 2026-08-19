@@ -1,8 +1,3 @@
-//! Shipping XUI05 boundary.
-//!
-//! The exact tooltip laws live in `game_ui`, where fact discovery, lifecycle,
-//! placement, and rasterization remain sealed. `replay_app` only joins the
-//! authenticated XUI02/XUI04 hover to the shipping manager framebuffer.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xui05ProductRouteStatus {
@@ -12,8 +7,6 @@ pub struct Xui05ProductRouteStatus {
     pub feature_local_refusals: &'static [&'static str],
 }
 
-/// Report the active product boundary without accepting recorder POV,
-/// selected-Present pixels, caller-authored rectangles, or unverified text.
 pub fn xui05_product_route_status() -> Xui05ProductRouteStatus {
     Xui05ProductRouteStatus {
         packet: "XUI05",

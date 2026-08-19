@@ -1,12 +1,3 @@
-//! XUI25 display/language/input variant admission.
-//!
-//! There is deliberately no nearest-resolution, nearest-scale, language
-//! fallback, inferred font substitution, or reconstructed focus traversal in
-//! this module. Product playback selects its key from the local playback
-//! profile and the input family implemented by the actual client event pump.
-//! Recorder/session presentation state is not an input. File-derived layout
-//! laws can be used inside an envelope, but a changed viewport, GUI scale,
-//! language, glyph set, or input mode is a distinct envelope.
 
 use crate::is_lowercase_sha256;
 use crate::runtime_graphics::ClipRect;
@@ -30,12 +21,8 @@ impl PixelExtent {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum InputVariant {
-    /// Current proven envelope: pointer-family dispatch. Authored keyboard
-    /// shortcuts may invoke actions, but are not a focus-traversal graph.
     MouseKeyboard,
-    /// Reserved until a producer-authenticated focus traversal exists.
     Keyboard,
-    /// Reserved until a producer-authenticated focus traversal exists.
     Controller,
 }
 
@@ -50,8 +37,6 @@ pub enum DisplayMode {
 pub struct DisplayVariantKey {
     pub physical_viewport: PixelExtent,
     pub min_gui: PixelExtent,
-    /// Exact IEEE-754 bits read from the producing session. Using bits avoids
-    /// decimal re-rounding and makes 1.0 distinct from any neighbouring value.
     pub gui_scale_f32_bits: u32,
     pub display_mode: DisplayMode,
     pub localisation_language: String,
@@ -59,8 +44,6 @@ pub struct DisplayVariantKey {
 }
 
 impl DisplayVariantKey {
-    /// Build the exact product key from machine-local playback settings and
-    /// the input family accepted by the running client.
     pub fn from_playback_environment(
         environment: &map_viewer::PlaybackEnvironment,
         input_variant: InputVariant,
@@ -114,8 +97,6 @@ impl DisplayVariantKey {
         Ok(key)
     }
 
-    /// Historical evidence adapter for validating old XUI25 carrier fixtures.
-    /// Shipped product composition must use [`Self::from_playback_environment`].
     pub fn from_session_metadata(
         display: &DisplayVariantMetadata,
         localisation_language: &str,
@@ -170,9 +151,6 @@ impl DisplayVariantKey {
     }
 }
 
-/// Product-owned display/language/input profile. It is deliberately a newtype
-/// so product APIs cannot accidentally accept a key decoded from replay
-/// session metadata.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PlaybackUiProfile {
     key: DisplayVariantKey,
@@ -229,8 +207,6 @@ pub struct FontRunBinding {
     pub font_id: String,
     pub font_file_sha256: String,
     pub glyph_atlas_sha256: String,
-    /// Hash of the exact ordered glyph-id/metrics/UV set consumed by this run.
-    /// The atlas alone does not prove which glyph subset or ordering was used.
     pub glyph_set_sha256: String,
     pub first_glyph: u32,
     pub glyph_count: u32,
@@ -239,8 +215,6 @@ pub struct FontRunBinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedClip {
     pub element_id: String,
-    /// Final half-open physical-pixel scissor after parent/viewport
-    /// intersection. XUI07 owns the intersection law.
     pub clip: ClipRect,
 }
 
@@ -248,7 +222,6 @@ pub struct ResolvedClip {
 pub struct FocusVariantState {
     pub active_window_id: String,
     pub focused_widget_id: String,
-    /// Exact producer order for the selected input mode.
     pub traversal: Vec<String>,
 }
 
@@ -265,12 +238,8 @@ pub struct VariantEnvelope {
     pub source_record_id: String,
     pub evidence_manifest_sha256: String,
     pub key: DisplayVariantKey,
-    /// Producer-resolved logical root size. No scale formula is inferred.
     pub logical_root: PixelExtent,
-    /// Hash of the producer-resolved layout for this exact key.
     pub logical_layout_sha256: String,
-    /// Hash of the admitted physical-pixel oracle. Envelopes without an exact
-    /// pixel oracle are unsupported rather than borrowed from another key.
     pub pixel_oracle_sha256: String,
     pub font_runs: Vec<FontRunBinding>,
     pub clips: Vec<ResolvedClip>,
@@ -293,11 +262,6 @@ pub struct VariantCatalog {
     envelopes: Vec<VariantEnvelope>,
 }
 
-/// Product contract for a renderer that has exactly one mechanically proven
-/// key but does not own a complete `VariantEnvelope` (layout/pixel/font
-/// oracle). This is deliberately narrower than `VariantCatalog`: it may gate
-/// an independently authenticated renderer, but it must never be presented as
-/// catalog-envelope selection or used to borrow a neighbouring key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExactKeyVariantContract {
     admitted: DisplayVariantKey,
@@ -343,8 +307,6 @@ impl VariantCatalog {
         Ok(Self { envelopes })
     }
 
-    /// Exact selection only. Unsupported aspect ratios, UI scales, languages,
-    /// or input modes never borrow a neighbouring envelope.
     pub fn select(&self, key: &DisplayVariantKey) -> Result<&VariantEnvelope, VariantRejection> {
         self.envelopes
             .iter()
@@ -352,9 +314,6 @@ impl VariantCatalog {
             .ok_or_else(|| VariantRejection::UnsupportedExactVariant(key.clone()))
     }
 
-    /// Select after an in-session variant change. A key change requires the
-    /// producer-authenticated post-resize transition embedded in the target
-    /// envelope; replay does not scale the previous layout forward.
     pub fn select_after_transition(
         &self,
         previous: &DisplayVariantKey,

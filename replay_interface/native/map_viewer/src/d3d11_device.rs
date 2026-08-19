@@ -494,8 +494,6 @@ pub(crate) struct NativeD3d11PreparedShaderResource {
 pub(crate) enum NativeD3d11ShaderResourceSource {
     CapturedBundleTexture,
     AppOwnedTerrainColorSnapshot,
-    /// WATER2 (`--water-full`): bound at render time to the underwater seafloor
-    /// pass's SRV (the real `WaterRefraction`).
     UnderwaterPass,
 }
 
@@ -504,32 +502,9 @@ pub(crate) enum NativeD3d11ShaderResourceSource {
 pub(crate) enum NativeD3d11WaterRefractionSource {
     CapturedBundleTexture,
     AppOwnedTerrainColorSnapshot,
-    /// WATER2 (`--water-full`): the real seafloor render. The water pass binds
-    /// the offscreen `NativeD3d11UnderwaterPass` target (a re-render of the
-    /// terrain geometry with `PixelShaderUnderwater`) as `WaterRefraction`
-    /// instead of the app-owned approximation snapshot. See
-    /// [`crate::underwater_pass`] and [`crate::water_law`].
     UnderwaterPass,
 }
 
-/// Reflection-cube upload policy for the `ReflectionCubeMap` slot (slot 8,
-/// `texCUBE(reflect(vEyeDir, normal))` at pdxwater.shader:326).
-///
-/// This is a SEPARATE axis from [`NativeD3d11WaterRefractionSource`]: the
-/// refraction enum selects where the WaterRefraction (slot 5) input comes
-/// from, while this selects how the reflection cube is uploaded. The two
-/// travel together but must not be conflated (a mean-color cube can pair
-/// with either refraction source).
-///
-/// - `MeanColorFlatten`: the old world-synthesis compatibility path. The
-///   captured cube is collapsed to its mean colour in a 1x1x6 cube so that
-///   replaying the captured (camera-relative) cube faces at a different camera
-///   does not paint bright/dark seams across the ocean. Product water replay now
-///   blocks this path when a non-reference water pass is present.
-/// - `ShippedFileCube`: the `--water-full` path. Uploads the REAL captured
-///   256x256x6 nine-mip cube (validated for shape, fail-closed) which is
-///   byte-identical to the shipped, mod-resolvable `map/terrain/reflection.dds`
-///   This restores directional reflections.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum NativeD3d11ReflectionCubeSource {
@@ -559,16 +534,9 @@ pub(crate) struct NativeD3d11TerrainColorSnapshotPipeline {
 #[cfg(windows)]
 pub(crate) struct NativeD3d11AppOwnedShaderResources<'a> {
     pub(crate) terrain_color_snapshot: Option<&'a D3dPtr<ID3D11ShaderResourceView>>,
-    /// WATER2 (`--water-full`): the underwater seafloor pass's SRV, bound as
-    /// the real `WaterRefraction` for the water/rivers/borders/trees passes.
     pub(crate) underwater_refraction: Option<&'a D3dPtr<ID3D11ShaderResourceView>>,
 }
 
-/// Pick the hardware adapter with the most dedicated video memory. This is a
-/// hybrid rig (RTX 5090 dGPU + Radeon iGPU) and every capture was rendered by
-/// the game on the dGPU; byte-exact replay depends on rasterizing with the
-/// same GPU, so device creation pins the high-memory adapter instead of
-/// trusting the D3D11 default (which Windows may route per app/power state).
 #[cfg(windows)]
 unsafe fn native_d3d11_preferred_adapter() -> Option<D3dPtr<winapi::shared::dxgi::IDXGIAdapter1>> {
     use winapi::shared::dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1};
@@ -629,7 +597,6 @@ pub(crate) unsafe fn native_d3d11_create_device() -> Result<NativeD3d11Device> {
         D3D_FEATURE_LEVEL_10_0,
     ];
     let mut feature_level = D3D_FEATURE_LEVEL_11_0;
-    // With an explicit adapter D3D11 requires D3D_DRIVER_TYPE_UNKNOWN.
     let adapter = native_d3d11_preferred_adapter();
     let (adapter_ptr, driver_type) = match adapter.as_ref() {
         Some(adapter) => (
@@ -1260,11 +1227,7 @@ pub(crate) unsafe fn native_d3d11_prepare_map_frame(
         app_camera,
         restore_pre_draw_outputs,
         NativeD3d11WaterRefractionSource::CapturedBundleTexture,
-        // Standalone terrain/map frame prep: use the real captured cube where a
-        // ReflectionCubeMap slot exists (byte-identical to reflection.dds).
         NativeD3d11ReflectionCubeSource::ShippedFileCube,
-        // Standalone frame prep has no resolver threaded here -> keep the
-        // captured-payload upload (byte-identical to prior behaviour).
         None,
         false,
     )?;
@@ -1349,11 +1312,7 @@ pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_synthesis_frame(
     let (target, depth) = native_d3d11_draw_output_merger_targets(&plan.template_draw)?;
     let render_target = native_d3d11_create_render_target(device, target)?;
     let depth_target = native_d3d11_create_depth_stencil(device, depth)?;
-    // CHUNK1: `synthetic_payloads` is empty for the default capture-clone path
-    // (flag-OFF => byte-identical: the template draw's VB/IB/CB1 are read from
     // the captured files). Under `--chunks-from-files` it carries the generated
-    // slot0/index/slot1-pool/CB1 bytes keyed by the same file names, so the
-    // template draw is materialized from files+law, hash-checked identical.
     let template_draw = native_d3d11_prepare_draw(
         device,
         bundle_dir,
@@ -1363,10 +1322,7 @@ pub(crate) unsafe fn native_d3d11_prepare_terrain_chunk_synthesis_frame(
         Some(app_camera),
         false,
         NativeD3d11WaterRefractionSource::CapturedBundleTexture,
-        // Terrain chunk template draw has no ReflectionCubeMap slot, so this is
-        // inert here; ShippedFileCube keeps the "use real captured data" intent.
         NativeD3d11ReflectionCubeSource::ShippedFileCube,
-        // No ReflectionCubeMap slot in the chunk template draw -> resolver inert.
         None,
         "terrain chunk synthesis",
         true,
@@ -1484,9 +1440,7 @@ unsafe fn native_d3d11_prepare_terrain_chunk_library_pass(
                 Some(app_camera),
                 false,
                 NativeD3d11WaterRefractionSource::CapturedBundleTexture,
-                // Terrain library pass has no ReflectionCubeMap slot (inert).
                 NativeD3d11ReflectionCubeSource::ShippedFileCube,
-                // No ReflectionCubeMap slot in the library pass -> resolver inert.
                 None,
                 "terrain",
                 false,
@@ -1965,8 +1919,6 @@ pub(crate) fn native_d3d11_render_prepared_terrain_chunk_synthesis(
     }
 }
 
-/// Wrap-aware (east-west, the game map width 5632) intersection of a tile's
-/// ground square with a cull rect `[min_x, min_z, max_x, max_z]`.
 #[cfg(windows)]
 fn terrain_chunk_tile_intersects_world_rect(
     tile_min_x: f32,
@@ -3230,16 +3182,6 @@ pub(crate) unsafe fn native_d3d11_prepare_vertex_buffers(
             binding,
             "vertex buffer",
         )?;
-        // The capture records the byte range the draw consumed, not the
-        // game's full pool buffer. An input-layout element can read PAST the
-        // stride of the last vertex (measured: live_PAN2's water quad declares
-        // POSITION as R16G16B16A16_SINT — an 8-byte fetch on a 4-byte-stride,
-        // 16-byte buffer — so vertex 3's fetch ran off the end; in-game the
-        // pool was larger, but a tight replay buffer makes the GPU return
-        // zeros for the whole fetch, collapsing the strip's second triangle
-        // and cutting water coverage along the map diagonal). Zero padding is
-        // exact for consumption: the in-bounds components are unchanged and
-        // the shader never reads the out-of-stride tail.
         const VERTEX_FETCH_PAD_BYTES: usize = 16;
         bytes.extend_from_slice(&[0u8; VERTEX_FETCH_PAD_BYTES]);
         let buffer = native_d3d11_create_buffer(device, binding, &bytes, "vertex buffer")?;
@@ -3562,9 +3504,6 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
         if resource.declared_name.as_deref() == Some(WATER_REFRACTION_RESOURCE_SYMBOL)
             && water_refraction_source == NativeD3d11WaterRefractionSource::UnderwaterPass
         {
-            // WATER2 --water-full: the WaterRefraction slot is filled by the
-            // real seafloor render (bound at render time from the underwater
-            // pass SRV), not the captured texture and not the approximation.
             views.push(NativeD3d11PreparedShaderResource {
                 stage: resource.stage.clone(),
                 slot: resource.slot,
@@ -3579,18 +3518,6 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
                 == NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot
             && reflection_cube_source == NativeD3d11ReflectionCubeSource::MeanColorFlatten
         {
-            // Legacy no-water-bundle world-synthesis path; product replay blocks
-            // this approximation whenever a water pass is present.
-            //
-            // NOTE (WATER1, verified): the earlier premise that "the game
-            // re-renders the reflection cube around the live camera every
-            // frame" is FALSE. The captured ReflectionCubeMap is byte-identical
-            // (all 6 faces x 9 mips) to the STATIC shipped, mod-resolvable file
-            // map/terrain/reflection.dds. So the
-            // mean-color flatten is not required for correctness at other
-            // cameras - it is only the conservative default kept for flag-OFF
-            // byte-identity. Under --water-full the real cube is uploaded via
-            // the generic path below (NativeD3d11ReflectionCubeSource::ShippedFileCube).
             let file = resource.file.as_ref().ok_or_else(|| {
                 format!(
                     "production native D3D11 terrain replay blocked: draw {} ReflectionCubeMap slot {} has no raw texture payload file",
@@ -3621,41 +3548,15 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
             textures.push(texture);
             continue;
         }
-        // --water-full (ShippedFileCube): the ReflectionCubeMap real-cube path
-        // falls through to the generic validated upload below, but first assert
-        // the exact SHIPPED cube contract so a shape-valid-but-wrong cube cannot
-        // be uploaded in place of map/terrain/reflection.dds. The shipped asset
-        // is 256x256, 9 mips, 6 faces (TEXTURECUBE), B8G8R8A8_UNORM_SRGB
-        // (DXGI 91). Fail closed on any deviation.
         let is_reflection_cube = resource.declared_name.as_deref() == Some("ReflectionCubeMap");
         if is_reflection_cube
             && reflection_cube_source == NativeD3d11ReflectionCubeSource::ShippedFileCube
         {
             native_d3d11_validate_shipped_reflection_cube_contract(draw.draw_index, resource)?;
         }
-        // WATER1/REFLECT: when a reflection resolver is present, produce the
-        // ReflectionCubeMap texels by decoding + repacking the mod-aware
-        // map/terrain/reflection.dds (driven by resource.subresources[]) instead
-        // of reading the captured .d3d11 payload verbatim. PROVENANCE-only: the
-        // descriptor/SRV/format (DXGI 91) below are unchanged; only the byte
-        // SOURCE flips. For vanilla the decoded buffer is BYTE-VERIFIED equal to
-        // the captured payload (fail closed on mismatch); for a mod with no
-        // matching capture (byte_len/hash still describe the captured shape, but
-        // no matching payload) the verify is exact against whatever the bundle
-        // recorded. A decode error (e.g. a modded DX10/BC/non-cube DDS) is FATAL
-        // — never a silent fallback to the captured bytes, which would hide the
-        // very divergence this change exists to expose (Codex-reviewed).
         let raw = if is_reflection_cube {
             if let Some(resolver) = reflection_resolver {
                 let decoded = decode_reflection_cube_payload(resolver, resource)?;
-                // Byte-verify against the captured payload. The bundle carries
-                // file + byte_len + fnv1a64 for every non-null validated SRV
-                // (enforced upstream in validate_native_d3d11_replay_payloads),
-                // and the builder promises byte-verification when a resolver is
-                // present — so a missing file/hash here is a FATAL contract
-                // violation, not a silent unverified upload (Codex-flagged). Full
-                // byte-equality is the proof; the FNV/len check inside
-                // read_map_frame_resource_payload is the fast checkpoint.
                 let file = resource.file.as_ref().ok_or_else(|| {
                     format!(
                         "production native D3D11 terrain replay blocked: draw {} ReflectionCubeMap \
@@ -3695,8 +3596,6 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
                 }
                 decoded
             } else {
-                // No reflection resolver -> keep today's captured-file upload
-                // (byte-identical fallback).
                 let file = resource.file.as_ref().ok_or_else(|| {
                     format!(
                         "production native D3D11 terrain replay blocked: draw {} shader resource {:?} slot {} has no raw texture payload file",
@@ -3782,17 +3681,12 @@ pub(crate) unsafe fn native_d3d11_prepare_shader_resources(
     Ok((textures, views))
 }
 
-/// Build a 1x1x6 cube texture holding the mean color of a captured
-/// B8G8R8A8 reflection-cube payload (see the ReflectionCubeMap branch in
-/// `native_d3d11_prepare_shader_resources`).
 #[cfg(windows)]
 unsafe fn native_d3d11_uniform_reflection_cube(
     device: &D3dPtr<ID3D11Device>,
     resource: &MapFrameTextureBinding,
     raw: &[u8],
 ) -> Result<(D3dPtr<ID3D11Texture2D>, D3dPtr<ID3D11ShaderResourceView>)> {
-    // Formats 87 (B8G8R8A8_UNORM) / 91 (B8G8R8A8_UNORM_SRGB) are the only
-    // observed reflection-cube payloads; fail closed otherwise.
     if resource.dxgi_format != 87 && resource.dxgi_format != 91 {
         return Err(format!(
             "production native D3D11 terrain replay blocked: ReflectionCubeMap payload format {} has no mean-color path",
@@ -3859,16 +3753,6 @@ unsafe fn native_d3d11_uniform_reflection_cube(
     Ok((texture, srv))
 }
 
-/// Assert the exact SHIPPED reflection-cube contract before the `--water-full`
-/// real-cube upload (`NativeD3d11ReflectionCubeSource::ShippedFileCube`).
-///
-/// The shipped, mod-resolvable `map/terrain/reflection.dds` — proven
-/// byte-identical to the captured cube — is
-/// `256x256`, `9` mips, `6` faces (`TEXTURECUBE`), `B8G8R8A8_UNORM_SRGB`
-/// (DXGI 91). The generic payload validator checks internal shape/coverage
-/// consistency but not this specific asset contract, so a shape-valid but
-/// wrong-provenance cube could otherwise slip through under `--water-full`.
-/// Fail closed on any deviation. Flag-OFF never reaches here.
 #[cfg(windows)]
 pub(crate) fn native_d3d11_validate_shipped_reflection_cube_contract(
     draw_index: u32,
@@ -5194,12 +5078,7 @@ pub(crate) fn native_d3d11_read_buffer_file(
     read_verified_map_frame_file(bundle_dir, file, binding.byte_len, hash, role)
 }
 
-/// CHUNK1: synthetic-payload-aware variant of [`native_d3d11_read_buffer_file`].
-/// If `synthetic_payloads` carries a payload for the binding's file (e.g. the
 /// generated terrain-chunk slot0/index/slot1-pool/CB1 under `--chunks-from-files`),
-/// its bytes are used (after the same length+hash guard); otherwise the captured
-/// file on disk is read. With an EMPTY payload map this is byte-identical to
-/// `native_d3d11_read_buffer_file` (flag-OFF path unchanged).
 pub(crate) fn native_d3d11_read_buffer_file_or_payload(
     bundle_dir: &Path,
     synthetic_payloads: &BTreeMap<String, MapFrameSyntheticPayload>,

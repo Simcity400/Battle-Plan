@@ -1,10 +1,3 @@
-//! Exact-a729 acquisition hooks for the C07/O05 generic map-building carrier.
-//!
-//! This module is deliberately process-local. It snapshots complete
-//! `CGraphicalMap::UpdateProvinces` building scopes, consumes transient record
-//! and entity pointers only for joins, and exposes a pointer-free selected-
-//! Present observation to the collector.
-
 use super::{
     capture_present_game_hour_raw, query_performance_counter, query_performance_frequency,
     read_bytes, read_u32, read_usize, verify_sentinel, STATE,

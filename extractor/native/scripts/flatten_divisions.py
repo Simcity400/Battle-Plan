@@ -1,9 +1,3 @@
-# Flatten the real D04 save's division extract into the whitespace format
-# bench_real_d20.rs reads: one line per division,
-#   div_id div_type owner_idx location_province template_id organisation strength
-# template_id is -1 when the save did not resolve one. Owner tags are mapped to
-# a dense index (the current compact row also stores a u32 tag id, so both
-# formats carry the same information class).
 import json
 import sys
 
@@ -13,7 +7,7 @@ OUT = sys.argv[1]
 d = json.load(open(SRC, encoding="utf-8"))
 divs = d["divisions"]
 owners = sorted({x["owner"] for x in divs if x.get("owner")})
-owner_idx = {t: i + 1 for i, t in enumerate(owners)}  # 0 reserved for "no owner"
+owner_idx = {t: i + 1 for i, t in enumerate(owners)}
 
 rows = 0
 with open(OUT, "w", encoding="ascii") as f:

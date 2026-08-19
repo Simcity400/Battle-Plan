@@ -501,8 +501,6 @@ fn unified_order_rejects_duplicate_unknown_and_omitted_static_operations() {
     );
 }
 
-/// Structurally complete draw packet for boundary fixtures that must never be
-/// executed; the typed refusal under test fires before any field is read.
 fn fixture_static_draw() -> replay_core::StaticMapDraw {
     use replay_core::{
         BlendDesc, BlendFactor, BlendOperation, BufferSource, Comparison, CompiledShaderPayload,
@@ -594,8 +592,6 @@ fn fixture_static_draw() -> replay_core::StaticMapDraw {
                 antialiased_line_enabled: false,
             },
             samplers: Vec::new(),
-            // Same canonical POSITION/R32G32_FLOAT vertex contract used by
-            // the executable offscreen production-draw fixture below.
             input_layout: vec![InputElementDesc {
                 semantic_token: "POSITION".into(),
                 semantic_index: 0,
@@ -805,9 +801,6 @@ fn rail_authority_content_is_added_once_and_required_by_receipt_validation() {
 fn m03_carrier_without_cross_family_order_is_a_typed_refusal() {
     use replay_core::{M03ArrowDraw, M03ArrowDrawMember, M03ArrowDrawRef, M03StableKey};
 
-    // A populated M03 carrier with no authoritative cross-family execution
-    // order must be refused, never silently executed with the M03 draws
-    // absent from bridge calls and the receipt.
     let mut frame = prepared_static_frame(Vec::new());
     frame.m03_arrows = Some(replay_core::M03ArrowFrame {
         schema: "hoi4.production-m03-order-movement-arrows.v1".into(),
@@ -847,7 +840,6 @@ fn m03_carrier_without_cross_family_order_is_a_typed_refusal() {
         error.contains("M03 arrow draws have no authoritative cross-family execution order"),
         "{error}"
     );
-    // The refusal is total: nothing was drawn behind the missing order.
     assert_eq!(bridge.calls, vec!["begin:false"]);
 }
 

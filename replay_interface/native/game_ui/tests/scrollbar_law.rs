@@ -9,8 +9,6 @@ const A729: ScrollbarCarrierAuthority = ScrollbarCarrierAuthority::ExactA729Runt
 
 #[test]
 fn retained_frame36172_legacy_geometry_joins_fixed_thumb_law() {
-    // UI06 retained pixel oracle: leading 16px control at y=544, trailing
-    // control at y=1120, fixed 16px thumb, travel 544, observed offset 288.
     let rect = legacy_thumb_rect(LegacyScrollbarCarrier {
         authority: A729,
         axis: ScrollbarAxis::Vertical,
@@ -39,7 +37,7 @@ fn extended_nonzero_minimum_and_half_away_rounding_are_exact() {
         travel_pixels: (101, 0),
     })
     .expect("exact extended carrier");
-    assert_eq!(pixel, (61, 20)); // 101 * 0.5 = 50.5 -> 51
+    assert_eq!(pixel, (61, 20));
 }
 
 #[test]

@@ -1,33 +1,18 @@
 //! Portable ownership boundary for compact-stream decoders.
-//!
-//! The portable format crate owns the request/result contract, but deliberately
-//! does not contain an H4CR parser or a world fold. A producer implementation
-//! must consume the complete verified raw stream, certify physical EOF and the
-//! closed-hour boundary, and only then return [`crate::PrefoldedReplay`]. This
-//! keeps the one production fold in its owning distribution while allowing a
-//! standalone replay consumer to depend on this neutral contract rather than
-//! an extractor library.
 
 use crate::PrefoldedReplay;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
 
-/// Manifest role of the canonical compact record stream in a replay container.
 pub const COMPACT_STREAM_ROLE: &str = "collector_compact_stream";
 
-/// Framing mode selected from authenticated recorder metadata before a
-/// complete compact stream is handed to a production decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrefoldStreamIdentityMode {
     Legacy,
     IdentityV1,
 }
 
-/// Owned input to one complete certified pre-fold operation.
-///
 /// Ownership is intentional: a container reader can transfer its verified
-/// entry bytes without an additional full-stream copy, and no borrowed prefix
-/// can escape while certification is still in progress.
 #[derive(Debug)]
 pub struct CertifiedPrefoldRequest {
     game_id: String,
@@ -37,10 +22,6 @@ pub struct CertifiedPrefoldRequest {
 }
 
 impl CertifiedPrefoldRequest {
-    /// Construct a request over physically raw H4CR bytes.
-    ///
-    /// ZIP/zstd decoding belongs to the authenticated container/file boundary;
-    /// this seam receives the resulting raw record stream only.
     pub fn try_new(
         game_id: impl Into<String>,
         raw_h4cr: Vec<u8>,
@@ -96,27 +77,16 @@ impl CertifiedPrefoldRequest {
     }
 }
 
-/// A decoder that exposes no folded prefix and returns only a fully certified,
-/// immutable replay.
-///
-/// Implementations MUST drive their canonical production fold through physical
-/// EOF and reject malformed framing, payload, sequence, and hour boundaries.
-/// Returning a successfully decoded prefix is a contract violation. The
-/// portable result type independently rechecks game/schema/hour identity.
 pub trait CertifiedPrefoldDecoder: Send + Sync {
     /// Stable diagnostic identity for errors and release manifests.
     fn decoder_id(&self) -> &'static str;
 
-    /// Consume and certify the entire request before returning any hours.
     fn decode_certified(
         &self,
         request: CertifiedPrefoldRequest,
     ) -> Result<PrefoldedReplay, PrefoldDecodeError>;
 }
 
-/// Invoke a decoder and mechanically bind its result back to the requested
-/// game identity. Consumers should use this function instead of calling the
-/// trait method directly.
 pub fn decode_certified_prefolded(
     decoder: &dyn CertifiedPrefoldDecoder,
     request: CertifiedPrefoldRequest,
@@ -145,7 +115,6 @@ pub fn decode_certified_prefolded(
     })
 }
 
-/// Immutable source binding minted by the portable invocation wrapper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefoldSourceReceipt {
     decoder_id: String,
@@ -193,8 +162,6 @@ impl PrefoldSourceReceipt {
     }
 }
 
-/// A pre-folded replay bound to the exact verified stream bytes and decoder
-/// capability that produced it.
 #[derive(Debug, Clone)]
 pub struct CertifiedPrefoldedReplay {
     replay: PrefoldedReplay,
@@ -223,12 +190,6 @@ impl std::ops::Deref for CertifiedPrefoldedReplay {
     }
 }
 
-/// Owned request for the bounded, disk-backed variant of the portable decoder
-/// seam. `raw_h4cr_path` identifies a private, already authenticated spool file
-/// for diagnostics and portable implementations, while hardened process-boundary
-/// implementations may transfer and consume the retained open file capability
-/// instead of resolving this path again. `snapshot_dir` is an empty private
-/// directory owned by the caller.
 #[derive(Debug)]
 pub struct CertifiedPrefoldSpoolRequest {
     game_id: String,
@@ -333,9 +294,6 @@ impl CertifiedPrefoldSpoolRequest {
     }
 }
 
-/// One immutable file in a certified disk-backed pre-fold result. Only a
-/// single normal path component is admitted, preventing a decoder from
-/// escaping the caller-owned snapshot directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrefoldedSpoolEntry {
     hour_index: i64,
@@ -399,7 +357,6 @@ impl PrefoldedSpoolEntry {
     }
 }
 
-/// Portable manifest for lazily loaded, disk-backed canonical snapshots.
 #[derive(Debug, Clone)]
 pub struct PrefoldedSpool {
     game_id: String,
@@ -467,9 +424,6 @@ impl PrefoldedSpool {
     }
 }
 
-/// Bounded decoder capability. Implementations must authenticate the complete
-/// source file against the request receipt, drive the one production fold to a
-/// certified EOF, and spill exactly one immutable snapshot per closed hour.
 pub trait CertifiedPrefoldSpoolDecoder: Send + Sync {
     fn decoder_id(&self) -> &'static str;
     fn decode_certified_spool(

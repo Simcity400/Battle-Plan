@@ -96,8 +96,6 @@ fn push_h4cr_record(
 
 fn perf_payload(status: u32) -> Vec<u8> {
     let mut payload = vec![0u8; 40];
-    // Nonzero row-count/changed-count values guard the canonical status
-    // offset: consumers must read [32..36], never the historical [16..20].
     payload[16..20].copy_from_slice(&9u32.to_le_bytes());
     payload[20..24].copy_from_slice(&7u32.to_le_bytes());
     payload[32..36].copy_from_slice(&status.to_le_bytes());
@@ -1126,7 +1124,10 @@ fn authenticated_h4dg_torn_gap_preserves_tick_witness_and_rebaselines() {
         .iter()
         .find(|entry| entry.role == ArtifactRole::GapRecord)
         .map(|entry| {
-            wire_format::gap::decode_record(&portable_test_fs_retry::read(&entry.file_path).unwrap()).unwrap()
+            wire_format::gap::decode_record(
+                &portable_test_fs_retry::read(&entry.file_path).unwrap(),
+            )
+            .unwrap()
         })
         .unwrap();
     assert_eq!(gap.reason, GapReason::TornSweep);
@@ -1139,8 +1140,6 @@ fn authenticated_h4dg_torn_gap_preserves_tick_witness_and_rebaselines() {
     );
 }
 
-// Falsifiability: mapping authenticated overrun and sink-backpressure H4DG
-// outcomes to the same shared counter makes the exact witness assertion fail.
 #[test]
 fn authenticated_h4dg_overrun_and_backpressure_use_distinct_shared_counters() {
     use compact_contract::{DomainGapReason, DomainGapRecordV1};
@@ -1202,7 +1201,10 @@ fn authenticated_h4dg_overrun_and_backpressure_use_distinct_shared_counters() {
             .iter()
             .find(|entry| entry.role == ArtifactRole::GapRecord)
             .map(|entry| {
-                wire_format::gap::decode_record(&portable_test_fs_retry::read(&entry.file_path).unwrap()).unwrap()
+                wire_format::gap::decode_record(
+                    &portable_test_fs_retry::read(&entry.file_path).unwrap(),
+                )
+                .unwrap()
             })
             .unwrap();
         assert_eq!(gap.reason, GapReason::Backpressure);
@@ -1437,8 +1439,6 @@ fn authenticated_h4dg_ordinals_are_exact_zero_based_per_domain_part() {
     }
 }
 
-// Falsifiability: sharing H4DG ordinal state across domains or parts rejects
-// the independent D18 State/Event/Both ordinal-zero outcomes in this stream.
 #[test]
 fn authenticated_h4dg_parts_have_independent_per_domain_outcome_lanes() {
     use compact_contract::{DomainGapPart, DomainGapReason, DomainGapRecordV1};

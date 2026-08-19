@@ -137,8 +137,6 @@ def identity_to_vtables(pe, class_name, col_offset):
             tds.append(td_rva)
     results = []
     for td_rva in tds:
-        # find COLs whose pTypeDescriptor == td_rva (u32 at COL+12) with a
-        # valid self-referential pSelf — scan for the raw u32 and validate.
         for pos in pe.find_all(struct.pack("<I", td_rva)):
             col_rva = pe.off_to_rva(pos - 12)
             if col_rva is None:
@@ -148,7 +146,6 @@ def identity_to_vtables(pe, class_name, col_offset):
                 continue
             if col["offset"] != col_offset:
                 continue
-            # vtable = location whose preceding qword is the COL's VA
             col_va = pe.image_base + col_rva
             for vpos in pe.find_all(struct.pack("<Q", col_va)):
                 vt_rva = pe.off_to_rva(vpos + 8)

@@ -3,11 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Upper bound on individual identifier gaps enumerated in a refusal message.
-/// The count is always exact; only the enumeration is bounded.
 pub(crate) const MAX_REPORTED_ID_GAPS: usize = 20;
 
-/// Fold a gap list into a single typed refusal, or `Ok(())` when there are none.
 pub(crate) fn refuse_on_id_gaps(what: &str, gaps: &[String]) -> Result<()> {
     if gaps.is_empty() {
         return Ok(());
@@ -27,23 +24,6 @@ pub(crate) fn refuse_on_id_gaps(what: &str, gaps: &[String]) -> Result<()> {
     .into())
 }
 
-/// FW7-F6: `history/states` identifiers are loaded fail-closed.
-///
-/// The previous loop dropped any state file with no parseable `id` with a bare
-/// `continue`, and let a duplicate state id overwrite the earlier entry — but
-/// *non-atomically*: `state_owners` and `province_to_state` were mutated before
-/// `states.insert`, so the overwritten state's owner row and its province
-/// mappings survived pointing at a state whose `StateMeta` no longer listed
-/// them. A province claimed by two distinct states was likewise resolved
-/// last-writer-wins in `province_to_state` while both `StateMeta.provinces`
-/// lists kept it. None of this reached the caller; the return type carried only
-/// the maps.
-///
-/// Each of those is now a typed gap, collected across the whole directory (so
-/// one run names every defect rather than only the first) and returned as a
-/// single refusal. The mutation order is also fixed: nothing is written until
-/// the file is known to be admissible, so no partial state can survive.
-/// This mirrors the gap discipline already used by `rail_files::rail_polylines`.
 pub(crate) fn load_states(
     state_files: &[(String, PathBuf)],
 ) -> Result<(
@@ -58,8 +38,6 @@ pub(crate) fn load_states(
     decode_states(&sources)
 }
 
-/// Parse already-admitted state bytes without reopening the effective files.
-/// Each tuple is `(effective name, diagnostic source, Latin-1 source)`.
 pub(crate) fn decode_states(
     state_sources: &[(String, String, String)],
 ) -> Result<(
@@ -130,8 +108,6 @@ pub(crate) fn decode_states(
             ));
             continue;
         }
-        // Admissible: only now is anything written, so no map can retain a row
-        // belonging to a state that was superseded or refused.
         state_source.insert(state_id, name.clone());
         if let Some(owner) = parse_word_value(&text, "owner") {
             state_owners.insert(state_id, owner);
@@ -158,13 +134,6 @@ pub(crate) fn decode_states(
     Ok((states, province_to_state, state_owners))
 }
 
-/// FW7-F6: `map/strategicregions` identifiers are loaded fail-closed, on the
-/// same terms as [`load_states`]. Previously a region file with no parseable
-/// `id` was dropped silently, a duplicate region id was dropped silently
-/// first-writer-wins (the opposite of `load_states`' last-writer-wins, for no
-/// stated reason), and a province listed by two regions was resolved
-/// last-writer-wins in `province_to_region` while both regions kept it in their
-/// province list and their `province_count`.
 pub(crate) fn load_strategic_regions(
     region_files: &[(String, PathBuf)],
 ) -> Result<(
@@ -249,15 +218,6 @@ pub(crate) fn load_country_colors(resolver: &FileResolver) -> Result<BTreeMap<St
             colors.insert(tag.clone(), color);
         }
     }
-    // NAME1: the 1936 cosmetic-tag color overrides (see
-    // apply_cosmetic_color_overrides). India must render as the BRITISH RAJ
-    // red, not the RAJ base orange.
-    // FW7 (Codex addition 4): this was `.unwrap_or_default()`, which turned any
-    // resolver enumeration failure into an empty file list. Under a modded set
-    // that silently discarded the whole 1936 cosmetic-tag history and fell back
-    // to base country colors — the exact class of mod loss forbidden by the
-    // `PROJECT.md` heading "Content and mod contract", and invisible in the
-    // output. Carry the resolver error instead.
     let history_files = resolver
         .resolve_dir_files_recursive("history/countries", Some("txt"))
         .map_err(|error| -> Box<dyn std::error::Error> {
@@ -266,8 +226,6 @@ pub(crate) fn load_country_colors(resolver: &FileResolver) -> Result<BTreeMap<St
         })?;
     let mut cosmetic_tags = cosmetic_tags_1936_from_history_files(&history_files)?;
     // NAME1b: DLC-conditional cosmetics. The bundle is generated without a
-    // recording, so it assumes all DLC present (the common install + the
-    // frame4700 byte target): Canada -> CAN_UK, Congo -> COG_belgian_congo.
     merge_dlc_conditional_cosmetics(&mut cosmetic_tags, &history_files, |_| true)?;
     let cosmetic_colors =
         if let Some(path) = resolver.resolve_optional_file("common/countries/cosmetic.txt")? {
@@ -279,9 +237,6 @@ pub(crate) fn load_country_colors(resolver: &FileResolver) -> Result<BTreeMap<St
     Ok(colors)
 }
 
-/// NAME1b: merge DLC-conditional `set_cosmetic_tag`s into a base cosmetic map
-/// under a DLC predicate (a conditional overrides the base for its tag when its
-/// `has_dlc`/`NOT has_dlc` condition holds). Shared by both color-bake paths.
 pub(crate) fn merge_dlc_conditional_cosmetics(
     cosmetic_tags: &mut BTreeMap<String, String>,
     history_files: &[(String, PathBuf)],
@@ -303,11 +258,6 @@ pub(crate) fn merge_dlc_conditional_cosmetics(
     Ok(())
 }
 
-/// Base tag colors WITHOUT any cosmetic-tag override: `common/country_tags`
-/// per-country files plus `common/countries/colors.txt` overrides. The A5
-/// timeline path re-applies cosmetic overrides on top of this base using the
-/// recording's per-moment cosmetic tags (see
-/// [`country_colors_from_game_resolver_with_cosmetics`]).
 pub(crate) fn load_base_country_colors_from_game_resolver(
     resolver: &GameFileResolver,
 ) -> Result<BTreeMap<String, [u8; 3]>> {
@@ -329,8 +279,6 @@ pub(crate) fn load_base_country_colors_from_game_resolver(
     Ok(colors)
 }
 
-/// Load `common/countries/cosmetic.txt` (cosmetic tag -> map color), or an
-/// empty map when the file is absent.
 pub(crate) fn load_cosmetic_colors_from_game_resolver(
     resolver: &GameFileResolver,
 ) -> Result<BTreeMap<String, [u8; 3]>> {
@@ -341,10 +289,6 @@ pub(crate) fn load_cosmetic_colors_from_game_resolver(
     }
 }
 
-/// A5 timeline color path: base tag colors with the *recording's* per-moment
-/// cosmetic tags applied (NAME1 color override), instead of the 1936-history
-/// cosmetic parse. `cosmetic_by_tag` comes from the `WorldTimeline`
-/// `country_identities` cosmetic view (see [`crate::keying::KeyingTables`]).
 pub(crate) fn country_colors_from_game_resolver_with_cosmetics(
     resolver: &GameFileResolver,
     cosmetic_by_tag: &BTreeMap<String, String>,
@@ -358,13 +302,6 @@ pub(crate) fn country_colors_from_game_resolver_with_cosmetics(
 pub(crate) fn load_country_colors_from_game_resolver(
     resolver: &GameFileResolver,
 ) -> Result<BTreeMap<String, [u8; 3]>> {
-    // NAME1: the 1936 cosmetic-tag color overrides (static-file path).
-    // FW7 (Codex addition 4): this was `.unwrap_or_default()`, which turned any
-    // resolver enumeration failure into an empty file list. Under a modded set
-    // that silently discarded the whole 1936 cosmetic-tag history and fell back
-    // to base country colors — the exact class of mod loss forbidden by the
-    // `PROJECT.md` heading "Content and mod contract", and invisible in the
-    // output. Carry the resolver error instead.
     let history_files = resolver
         .resolve_dir_files_recursive("history/countries", Some("txt"))
         .map_err(|error| -> Box<dyn std::error::Error> {
@@ -372,26 +309,10 @@ pub(crate) fn load_country_colors_from_game_resolver(
                 .into()
         })?;
     let mut cosmetic_tags = cosmetic_tags_1936_from_history_files(&history_files)?;
-    // NAME1b: DLC-conditional cosmetics, all-DLC assumed for the bundle.
     merge_dlc_conditional_cosmetics(&mut cosmetic_tags, &history_files, |_| true)?;
     country_colors_from_game_resolver_with_cosmetics(resolver, &cosmetic_tags)
 }
 
-/// NAME1: tag -> 1936 cosmetic tag from `history/countries/<TAG> - *.txt`.
-///
-/// The engine's `set_cosmetic_tag = X` effect overrides a country's displayed
-/// NAME (localisation keys `X_<ideology>` / `X`, shipped in
-/// `countries_cosmetic_l_english.yml`) and its map COLOR
-/// (`common/countries/cosmetic.txt` `X = { color = ... }`). Vanilla 1936 sets
-/// it unconditionally for 13 countries (e.g. `RAJ - British Raj.txt:244`
-/// `set_cosmetic_tag = RAJ_UK` — "British Raj", rgb 170/10/10).
-///
-/// This parses ONLY the unconditional (brace depth 0) assignments. The
-/// DLC-conditional ones (`if = { limit = { has_dlc ... } set_cosmetic_tag }`,
-/// vanilla CAN/COG) are handled by
-/// [`dlc_conditional_cosmetics_from_text`] + [`merge_dlc_conditional_cosmetics`]
-/// (NAME1b). The remainder (CZE/MEN/SPR: focus/civil-war/event effects with
-/// non-DLC limits) are NOT 1936 start state and are correctly skipped by both.
 pub(crate) fn cosmetic_tags_1936_from_history_files(
     files: &[(String, PathBuf)],
 ) -> Result<BTreeMap<String, String>> {
@@ -408,40 +329,17 @@ pub(crate) fn cosmetic_tags_1936_from_history_files(
     Ok(out)
 }
 
-/// NAME1b: a `set_cosmetic_tag` that a country's 1936 history applies only
-/// when a DLC condition holds — `if = { limit = { has_dlc = "X" } ...
-/// set_cosmetic_tag = Y }` (or its `NOT = { has_dlc = "X" }` fallback). The
-/// engine evaluates `has_dlc` against the ACTIVE DLC set at game start, so the
-/// displayed name + map colour differ with/without the DLC (vanilla:
-/// `CAN - Canada.txt` → CAN_UK "Canada"/rgb 119,48,39 WITH Together for
-/// Victory, CAN_ALY WITHOUT; `COG - Congo.txt` → COG_belgian_congo WITH
-/// Gotterdammerung). This is the files-grounded answer to the user's
-/// no-DLC-compatibility requirement. Production replay resolution is bound to
-/// `SessionMetadataView.active_dlcs` by `map_furniture`; static bundle baking
-/// passes an explicit all-DLC predicate for the frame4700 byte target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConditionalCosmetic {
-    /// The cosmetic tag applied when the condition holds.
     pub cosmetic: String,
-    /// The DLC name the `has_dlc` check names.
     pub dlc: String,
-    /// True iff the limit is `NOT = { has_dlc = ... }` (the fallback branch,
-    /// applied when the DLC is ABSENT).
     pub negated: bool,
 }
 
-/// Parse the DLC-conditional `set_cosmetic_tag` blocks from one country history
-/// file (comments already stripped by the caller). Only TOP-LEVEL
-/// `if = { limit = { <pure has_dlc> } ... set_cosmetic_tag = Y }` blocks
-/// qualify — the `limit` must contain a `has_dlc` (optionally wrapped in a
-/// single `NOT`) and NOTHING ELSE, so ideology/flag/civil-war-gated cosmetics
-/// (SPR nationalist Spain, CZE fall-of-the-republic) are NOT misread as start
-/// state. Deterministic, in file order.
 pub(crate) fn dlc_conditional_cosmetics_from_text(text: &str) -> Vec<ConditionalCosmetic> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0usize;
-    // Walk top-level `if`/`IF` tokens at depth 0.
     let mut depth = 0i32;
     while i < bytes.len() {
         match bytes[i] {
@@ -464,7 +362,6 @@ pub(crate) fn dlc_conditional_cosmetics_from_text(text: &str) -> Vec<Conditional
                     i += 1;
                     continue;
                 }
-                // Find the block after `if =`.
                 let mut j = i + 2;
                 while j < bytes.len() && bytes[j].is_ascii_whitespace() {
                     j += 1;
@@ -481,7 +378,6 @@ pub(crate) fn dlc_conditional_cosmetics_from_text(text: &str) -> Vec<Conditional
                     i += 1;
                     continue;
                 }
-                // Balance the if-block.
                 let body_start = j + 1;
                 let mut d = 1i32;
                 let mut k = body_start;
@@ -494,12 +390,8 @@ pub(crate) fn dlc_conditional_cosmetics_from_text(text: &str) -> Vec<Conditional
                     k += 1;
                 }
                 if d != 0 {
-                    // Unterminated block: the closing `}` was never found, so
-                    // `k - 1` may land inside a multi-byte (latin1-decoded)
-                    // char. Nothing after this point is parseable.
                     break;
                 }
-                // d == 0 guarantees bytes[k - 1] is the ASCII '}'.
                 let body = &text[body_start..k - 1];
                 if let Some(entry) = conditional_cosmetic_from_if_body(body) {
                     out.push(entry);
@@ -511,12 +403,8 @@ pub(crate) fn dlc_conditional_cosmetics_from_text(text: &str) -> Vec<Conditional
     out
 }
 
-/// Given the body of a top-level `if { }`, return its DLC-conditional cosmetic
-/// iff the `limit` is a pure `has_dlc` (optionally single-`NOT`) check and a
-/// `set_cosmetic_tag` is present at the if-body top level.
 fn conditional_cosmetic_from_if_body(body: &str) -> Option<ConditionalCosmetic> {
     let cosmetic = parse_top_level_word_value(body, "set_cosmetic_tag")?;
-    // Extract the `limit = { ... }` sub-block.
     let limit = extract_braced_block(body, "limit")?;
     let (dlc, negated) = parse_pure_has_dlc(&limit)?;
     Some(ConditionalCosmetic {
@@ -526,8 +414,6 @@ fn conditional_cosmetic_from_if_body(body: &str) -> Option<ConditionalCosmetic> 
     })
 }
 
-/// The brace-balanced content of the first `key = { ... }` block at the top
-/// level of `text` (comments stripped). Returns the inner text (no braces).
 fn extract_braced_block(text: &str, key: &str) -> Option<String> {
     let bytes = text.as_bytes();
     let key_bytes = key.as_bytes();
@@ -569,11 +455,8 @@ fn extract_braced_block(text: &str, key: &str) -> Option<String> {
                                 k += 1;
                             }
                             if d != 0 {
-                                // Unterminated block: `k - 1` may land inside
-                                // a multi-byte (latin1-decoded) char.
                                 return None;
                             }
-                            // d == 0 guarantees bytes[k - 1] is the ASCII '}'.
                             return Some(text[start..k - 1].to_string());
                         }
                     }
@@ -585,13 +468,8 @@ fn extract_braced_block(text: &str, key: &str) -> Option<String> {
     None
 }
 
-/// Parse a `limit` body that must be a PURE has_dlc test: either
-/// `has_dlc = "X"` or `NOT = { has_dlc = "X" }`, with no other tokens. Returns
-/// `(dlc_name, negated)`; `None` if the limit has any other condition (so
-/// non-DLC gates are rejected). The DLC name is a quoted string.
 fn parse_pure_has_dlc(limit: &str) -> Option<(String, bool)> {
     let trimmed = limit.trim();
-    // Strip a single NOT = { ... } wrapper.
     let (inner, negated) = if let Some(rest) = trimmed.strip_prefix("NOT") {
         let rest = rest.trim_start();
         let rest = rest.strip_prefix('=')?.trim_start();
@@ -601,20 +479,17 @@ fn parse_pure_has_dlc(limit: &str) -> Option<(String, bool)> {
     } else {
         (trimmed.to_string(), false)
     };
-    // The remaining must be exactly `has_dlc = "X"`.
     let rest = inner.strip_prefix("has_dlc")?.trim_start();
     let rest = rest.strip_prefix('=')?.trim_start();
     let rest = rest.strip_prefix('"')?;
     let end = rest.find('"')?;
     let dlc = &rest[..end];
-    // Nothing but whitespace may follow the closing quote.
     if !rest[end + 1..].trim().is_empty() {
         return None;
     }
     Some((dlc.to_string(), negated))
 }
 
-/// Collect DLC-conditional cosmetics per tag across all history files.
 pub(crate) fn dlc_conditional_cosmetics_1936_from_history_files(
     files: &[(String, PathBuf)],
 ) -> Result<BTreeMap<String, Vec<ConditionalCosmetic>>> {
@@ -632,12 +507,7 @@ pub(crate) fn dlc_conditional_cosmetics_1936_from_history_files(
     Ok(out)
 }
 
-/// First `key = <word>` assignment at BRACE DEPTH 0 (comments already
-/// stripped). Unlike `parse_word_value`, assignments nested inside any `{}`
-/// block (if/limit, scoped effects, date blocks) are ignored.
 pub(crate) fn parse_top_level_word_value(text: &str, key: &str) -> Option<String> {
-    // Byte-wise scan: history files are latin1-decoded and may contain
-    // multi-byte UTF-8 chars, so no `&text[i..]` slicing at arbitrary offsets.
     let bytes = text.as_bytes();
     let key_bytes = key.as_bytes();
     let is_word_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -668,7 +538,6 @@ pub(crate) fn parse_top_level_word_value(text: &str, key: &str) -> Option<String
                                 j += 1;
                             }
                             if j > start {
-                                // Word bytes are pure ASCII by construction.
                                 return Some(
                                     String::from_utf8_lossy(&bytes[start..j]).into_owned(),
                                 );
@@ -685,11 +554,6 @@ pub(crate) fn parse_top_level_word_value(text: &str, key: &str) -> Option<String
     None
 }
 
-/// Parse `common/countries/cosmetic.txt`: `<cosmetic_tag> = { color = ... }`
-/// blocks. Cosmetic identifiers are long mixed-case words (`RAJ_UK`,
-/// `URG_is_unaligned_...`), unlike the 2-3 char tags in `colors.txt`, so this
-/// scans generic identifiers. Both `rgb {}` and `hsv {}` colors ship in the
-/// vanilla file; `parse_color_assignment` handles both.
 pub(crate) fn load_cosmetic_colors(path: &Path) -> Result<BTreeMap<String, [u8; 3]>> {
     let mut out = BTreeMap::new();
     if !path.is_file() {
@@ -732,10 +596,6 @@ pub(crate) fn load_cosmetic_colors(path: &Path) -> Result<BTreeMap<String, [u8; 
     Ok(out)
 }
 
-/// Overlay the 1936 cosmetic colors onto the base tag colors: a country whose
-/// history sets a cosmetic tag takes that cosmetic's `cosmetic.txt` color. A
-/// cosmetic tag without a color entry keeps the base color (the cosmetic then
-/// only affects the display name).
 pub(crate) fn apply_cosmetic_color_overrides(
     colors: &mut BTreeMap<String, [u8; 3]>,
     cosmetic_tags: &BTreeMap<String, String>,
@@ -1212,8 +1072,6 @@ pub(crate) fn parse_shader_float_constant(text: &str, key: &str) -> Option<f32> 
         if !line.contains(key) {
             continue;
         }
-        // A line can mention the key without assigning it (e.g. a `//` doc
-        // comment); skip it rather than aborting the whole scan.
         let Some((left, right)) = line.split_once('=') else {
             continue;
         };
@@ -1237,8 +1095,6 @@ pub(crate) fn parse_shader_float3_constant(text: &str, key: &str) -> Option<[f32
         if !line.contains(key) {
             continue;
         }
-        // A line can mention the key without a parseable assignment (e.g. a
-        // `//` doc comment); skip it so a later real definition still parses.
         let Some((left, right)) = line.split_once('=') else {
             continue;
         };
@@ -1972,13 +1828,11 @@ set_cosmetic_tag = RAJ_UK\n";
             parse_top_level_word_value(text, "set_cosmetic_tag"),
             Some("RAJ_UK".to_string())
         );
-        // Only-nested: no top-level assignment exists.
         let nested_only = "if = {\n\tset_cosmetic_tag = SPR_nationalist_spain\n}\n";
         assert_eq!(
             parse_top_level_word_value(nested_only, "set_cosmetic_tag"),
             None
         );
-        // Key-suffix words must not match (e.g. another_set_cosmetic_tag).
         let suffixed = "another_set_cosmetic_tag = NOPE\nset_cosmetic_tag = YES_1\n";
         assert_eq!(
             parse_top_level_word_value(suffixed, "set_cosmetic_tag"),
@@ -2015,7 +1869,6 @@ set_cosmetic_tag = RAJ_UK\n";
         ]);
         let cosmetic_tags = BTreeMap::from([
             ("RAJ".to_string(), "RAJ_UK".to_string()),
-            // Cosmetic without a color entry: base color must survive.
             ("GER".to_string(), "GER_NO_COLOR".to_string()),
         ]);
         let cosmetic_colors = BTreeMap::from([("RAJ_UK".to_string(), [170u8, 10, 10])]);
@@ -2024,10 +1877,6 @@ set_cosmetic_tag = RAJ_UK\n";
         assert_eq!(colors.get("GER"), Some(&[50, 60, 70]));
     }
 
-    /// NAME1 evidence gate against the real vanilla files: India (RAJ) must
-    /// resolve the BRITISH RAJ cosmetic name and color, and the DLC/event-
-    /// gated cosmetic tags must NOT leak in (they live inside if/limit
-    /// blocks the replay does not evaluate).
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),
@@ -2045,23 +1894,18 @@ set_cosmetic_tag = RAJ_UK\n";
             Some("RAJ_UK"),
             "RAJ - British Raj.txt sets RAJ_UK at top level"
         );
-        // The unconditional 1936 set (verified by brace-depth scan of the
-        // shipped files).
         for tag in [
             "BRM", "GRE", "ICE", "INS", "JOR", "KUW", "LEB", "MAL", "PAL", "RAJ", "SYR", "TUR",
             "URG",
         ] {
             assert!(cosmetic_tags.contains_key(tag), "missing top-level {tag}");
         }
-        // Gated-only countries must be absent (their set_cosmetic_tag is
-        // inside if/limit blocks).
         for tag in ["BUL", "CAN", "COG", "CZE", "MEN", "SPR", "XSM"] {
             assert!(
                 !cosmetic_tags.contains_key(tag),
                 "{tag} cosmetic tag is DLC/event-gated and must not parse as 1936 state"
             );
         }
-        // Color law end-to-end: RAJ takes the RAJ_UK cosmetic red.
         let colors = load_country_colors_from_game_resolver(&resolver).expect("colors");
         assert_eq!(
             colors.get("RAJ"),
@@ -2225,8 +2069,6 @@ set_cosmetic_tag = RAJ_UK\n";
 
     #[test]
     fn dlc_conditional_cosmetics_parse_canada_both_branches() {
-        // NAME1b: the exact shape of `CAN - Canada.txt` (vanilla): two
-        // top-level if-blocks, mutually exclusive on Together for Victory.
         let text = "\
 capital = 468\n\
 if = {\n\
@@ -2258,7 +2100,6 @@ if = {\n\
 
     #[test]
     fn dlc_conditional_cosmetics_parse_congo_single_positive() {
-        // `COG - Congo.txt`: one positive-only `IF`/`has_dlc` block.
         let text = "\
 IF = {\n\
 \tlimit = {\n\t\thas_dlc = \"Gotterdammerung\"\n\t}\n\
@@ -2276,15 +2117,11 @@ IF = {\n\
 
     #[test]
     fn dlc_conditional_cosmetics_reject_non_dlc_and_nested_gates() {
-        // SPR civil-war cosmetics sit inside deeper political/event blocks with
-        // NON-has_dlc limits -> must NOT be read as start-state DLC gates.
         let spain = "\
 country_event = {\n\
 \tif = {\n\t\tlimit = { has_country_flag = SPR_civil_war }\n\t\tset_cosmetic_tag = SPR_nationalist_spain\n\t}\n\
 }\n";
         assert!(dlc_conditional_cosmetics_from_text(spain).is_empty());
-        // A top-level if whose limit mixes has_dlc with another condition is not
-        // a pure DLC gate (could carry ideology/date state we do not evaluate).
         let mixed = "\
 if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag = FOO\n}\n";
         assert!(dlc_conditional_cosmetics_from_text(mixed).is_empty());
@@ -2306,22 +2143,15 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
 
     #[test]
     fn unterminated_brace_blocks_do_not_panic_on_non_ascii_tails() {
-        // An unterminated top-level if-block whose text ends in a non-ASCII
-        // char (latin1-decoded history files) must not panic on a byte-slice
-        // boundary; it yields no cosmetics.
         let unterminated_non_ascii = "if = { limit = { has_dlc = \"X\" } é";
         assert!(dlc_conditional_cosmetics_from_text(unterminated_non_ascii).is_empty());
-        // Text ending exactly at the opening '{'.
         let ends_at_open = "if = {";
         assert!(dlc_conditional_cosmetics_from_text(ends_at_open).is_empty());
-        // Same for extract_braced_block: an unterminated `limit = {` must
-        // return None, not panic.
         assert_eq!(
             extract_braced_block("limit = { has_dlc = \"X\" é", "limit"),
             None
         );
         assert_eq!(extract_braced_block("limit = {", "limit"), None);
-        // A well-formed block still parses.
         assert_eq!(
             extract_braced_block("limit = { has_dlc = \"X\" }", "limit"),
             Some(" has_dlc = \"X\" ".to_string())
@@ -2339,9 +2169,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         }
     }
 
-    /// FW7-F6: well-formed state files still load, and the parsing behavior the
-    /// old test pinned alongside the silent drops (repeated `victory_points`
-    /// accumulation, `impassable = yes`, absent `owner`) is unchanged.
     #[test]
     fn load_states_parses_well_formed_files() {
         let dir = crate::test_support::temp_test_dir("load_states_wellformed");
@@ -2375,8 +2202,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6 regression: a state file with no parseable `id` used to vanish
-    /// with a bare `continue`. It is now a named gap in a refusal.
     #[test]
     fn load_states_refuses_file_without_id() {
         let dir = crate::test_support::temp_test_dir("load_states_no_id");
@@ -2391,11 +2216,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6 regression: duplicate state ids used to overwrite last-writer-wins
-    /// and — worse — non-atomically, so the superseded state's owner row and its
-    /// province mappings survived pointing at a `StateMeta` that no longer
-    /// listed them (the old test asserted `province_to_state[10] == 5` while
-    /// `states[5].provinces == [11, 12]`).
     #[test]
     fn load_states_refuses_duplicate_state_ids_without_partial_mutation() {
         let dir = crate::test_support::temp_test_dir("load_states_dup_id");
@@ -2415,9 +2235,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6 regression: one province listed by two distinct states used to be
-    /// resolved last-writer-wins in `province_to_state` while both
-    /// `StateMeta.provinces` lists kept it.
     #[test]
     fn load_states_refuses_province_claimed_by_two_states() {
         let dir = crate::test_support::temp_test_dir("load_states_dup_province");
@@ -2439,8 +2256,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6: every gap in the directory is named in one refusal, not just the
-    /// first — one run tells the operator the whole story.
     #[test]
     fn load_states_reports_every_gap_in_one_refusal() {
         let dir = crate::test_support::temp_test_dir("load_states_all_gaps");
@@ -2481,10 +2296,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6 regression: the region loader dropped a missing id silently and
-    /// resolved a duplicate id first-writer-wins — the opposite of `load_states`'
-    /// last-writer-wins, for no stated reason. Both are refusals now, and both
-    /// loaders behave identically.
     #[test]
     fn load_strategic_regions_refuses_missing_and_duplicate_ids() {
         let dir = crate::test_support::temp_test_dir("load_regions_gaps");
@@ -2515,7 +2326,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6 regression: a province listed by two strategic regions.
     #[test]
     fn load_strategic_regions_refuses_province_claimed_twice() {
         let dir = crate::test_support::temp_test_dir("load_regions_dup_province");
@@ -2537,7 +2347,6 @@ if = {\n\tlimit = { has_dlc = \"X\" ruling_party = fascism }\n\tset_cosmetic_tag
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// FW7-F6: the enumeration in a refusal is bounded but the count is exact.
     #[test]
     fn id_gap_refusal_bounds_the_enumeration_but_not_the_count() {
         let gaps = (0..MAX_REPORTED_ID_GAPS + 5)

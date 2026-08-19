@@ -1,67 +1,3 @@
-//! Modset + game-build binding for the session manifest. See `PROJECT.md`
-//! heading "Content and mod contract".
-//!
-//! Every capture records WHICH game build, enabled mods, and enabled DLCs the
-//! evidence was taken against, because all downstream joins (static catalogs,
-//! validation bounds, RE'd offsets) are only valid against the recording's
-//! modset — a modded recording silently joined against vanilla catalogs is the
-//! worst-gap failure mode the plan names. Resolution is FAIL-CLOSED and
-//! NEVER GUESSES: every step that cannot be proven records an error string and
-//! drops `resolved` to false; the manifest then carries the partial evidence
-//! plus the reasons, and downstream consumers must treat an unresolved modset
-//! as "unknown", not "vanilla".
-//!
-//! G2 gate amendments (2026-07-11, REFUTED -> fix round):
-//! - `dlc_load.json` fields must be PRESENT and WELL-TYPED: a missing or
-//!   mistyped `enabled_mods`/`disabled_dlcs` fails closed (a `{}` document
-//!   previously resolved as confident vanilla — the exact silent-vanilla trap).
-//! - Every `disabled_dlcs` entry must match an INSTALLED census key exactly;
-//!   an unmatched key is ambiguity (case/format drift could silently enable a
-//!   disabled DLC) and fails closed.
-//! - A mod descriptor must carry `path=`/`archive=` (and parse at least one
-//!   recognized field) or the binding is incomplete -> fail closed.
-//! - Mod CONTENT gets a fingerprint (file count + total bytes + max mtime,
-//!   bounded walk) — a Workshop update that leaves the descriptor untouched
-//!   changes the fingerprint. This is a fingerprint, not a proof; the
-//!   descriptor sha stays the text binding.
-//! - The exe hash records size+mtime BEFORE and re-checks AFTER hashing; a
-//!   mid-hash mutation fails closed. (The pathname-vs-mapped-image race
-//!   cannot be fully closed from user mode; the stability check plus recording
-//!   the path narrows it and is recorded as a residual.)
-//! - `dlc_load.json` mtime and the process start time are both recorded; a
-//!   config file NEWER than the process start means the launcher state may not
-//!   be the state the game was started with -> fail closed (evidence kept).
-//! - `user_dir_source` records probed-vs-override provenance.
-//! - When `resolved` is false the JSON nests all evidence under
-//!   `partial_evidence` so a naive consumer reading `enabled_mods` at the top
-//!   level finds NOTHING rather than a vanilla-looking answer.
-//!
-//! G2-regen amendments (2026-07-12, REFUTED 5 BLOCKER + 2 MAJOR -> this round):
-//! - Duplicate-key detection compares DECODED key names (spelling one
-//!   `enabled_mods` key with a backslash-u escape of the underscore previously
-//!   bypassed the raw-slice comparison while serde kept the last, empty,
-//!   value — silent vanilla).
-//! - The chosen user dir (override AND probed) must be CORROBORATED against
-//!   the attached process: the dir's `logs/` must have been written at/after
-//!   process start (the running game writes its logs there continuously). A
-//!   stale or wrong-but-well-formed directory no longer resolves.
-//! - Mod content is BOUND by a SHA-256 over sorted relative paths + file
-//!   bytes (double-pass stability bracket); the (count, bytes, max-mtime)
-//!   tuple stays as cheap metadata but no longer carries the binding (rename /
-//!   same-length edits / same-second edits defeated it).
-//! - ALL mod/DLC disk evidence must PREDATE process start: a descriptor,
-//!   content file, or installed-DLC descriptor written at/after launch means
-//!   the disk no longer proves what the running process loaded (Workshop
-//!   update between launch and attach) -> fail closed.
-//! - `dlc_load.json` is read TWICE and must be byte-identical (an atomic
-//!   same-mtime replacement — OneDrive sync — defeated the mtime-only
-//!   bracket). Residual: a replacement completing before the first read with
-//!   a preserved mtime is indistinguishable from user mode; recorded here.
-//! - A descriptor carrying BOTH `path=` and `archive=`, or repeating either,
-//!   is ambiguous (engine precedence unproven) -> fail closed.
-//! - The repack path (main.rs) now refuses manifests without a current-schema
-//!   `modset` object (legacy/absent bindings cannot be reconstructed).
-
 use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fs;
@@ -76,30 +12,10 @@ use snapshot::sha256::{to_hex, Sha256};
 #[path = "auto_attach/modset.rs"]
 mod auto_attach_modset;
 
-/// How a path is spelled inside a resolution failure.
-///
-/// A diagnostic is the least load-bearing thing in the session manifest and it
-/// used to be the one thing that could destroy a recording: the portable
-/// projection reduces a string that IS a path, but a path EMBEDDED in prose
-/// survived it and then tripped the seal-time rejector. Capture t55 lost 91
-/// game hours to `$.modset.errors[0]` for that reason. Errors here therefore
-/// name a file the way the container names one — by its final component —
-/// using the sealer's own function so the two can never disagree.
-///
-/// The absolute path is not lost: `exe_path`, `pdx_user_dir` and the descriptor
-/// paths are recorded as fields, and the RUN-DIRECTORY copy of the manifest
-/// keeps those absolute for local recovery and audit.
 fn portable_path(path: &Path) -> String {
     crate::portable_manifest::redact_absolute_path_string(&path.display().to_string())
 }
 
-/// A resolution failure: a STABLE CODE a consumer can branch on, plus prose for
-/// a human.
-///
-/// The code exists because prose was already being parsed as a protocol —
-/// same-process settings recovery matched on the English prefix
-/// "settings.txt launch settings unresolved:", so rewording a message silently
-/// disabled a recovery path. Nothing branches on `detail`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModsetError {
     pub code: &'static str,
@@ -107,13 +23,6 @@ pub struct ModsetError {
 }
 
 impl ModsetError {
-    /// Compose the failure, guaranteeing it can cross the container boundary.
-    ///
-    /// The per-site spelling above is the fix; this is the backstop for text
-    /// this module did not compose itself — an `io::Error` that quotes a path,
-    /// or a future edit that forgets. A detail that still cannot travel is
-    /// dropped rather than shipped, because a diagnostic is never worth a
-    /// refused seal.
     fn new(code: &'static str, detail: String) -> Self {
         let portable = detail
             .split_whitespace()
@@ -140,8 +49,6 @@ impl std::fmt::Display for ModsetError {
     }
 }
 
-/// Stable failure codes. Adding a case adds a constant; nothing matches on
-/// prose.
 pub mod codes {
     pub const EXE_PATH_QUERY: &str = "exe_path_query_failed";
     pub const EXE_HASH: &str = "exe_hash_failed";
@@ -171,7 +78,6 @@ pub mod codes {
     pub const DLC_DISPLAY_NAME: &str = "dlc_display_name_unresolved";
     pub const EXE_NO_PARENT: &str = "exe_path_has_no_parent";
 
-    // Settings binding (kept separate from the content binding above).
     pub const SETTINGS_UNREADABLE: &str = "settings_unreadable";
     pub const SETTINGS_LANGUAGE_ABSENT: &str = "settings_language_absent";
     pub const SETTINGS_NO_PROCESS_START: &str = "settings_process_start_unavailable";
@@ -183,9 +89,6 @@ pub mod codes {
 type Handle = *mut c_void;
 
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-/// Bounded mod-content walk: enough for any real mod, refuses runaway trees.
-/// `pub` because the repack validator mirrors it: a resolved manifest
-/// claiming a fingerprint above this bound is live-impossible.
 pub const MOD_CONTENT_MAX_FILES: usize = 200_000;
 
 extern "system" {
@@ -206,7 +109,6 @@ extern "system" {
     ) -> i32;
 }
 
-// --- Restart Manager (modset re-gate finding 1): which PIDs hold a file ---
 const CCH_RM_SESSION_KEY: usize = 32;
 const CCH_RM_MAX_APP_NAME: usize = 255;
 const CCH_RM_MAX_SVC_NAME: usize = 63;
@@ -254,8 +156,6 @@ extern "system" {
     fn RmEndSession(session: u32) -> u32;
 }
 
-/// True iff `pid` holds an open handle to `file` (Restart Manager query).
-/// Errors are RM-session failures, distinct from a clean "not held".
 fn file_held_by_pid(file: &Path, pid: u32) -> Result<bool, String> {
     use std::os::windows::ffi::OsStrExt;
     unsafe {
@@ -295,12 +195,11 @@ fn file_held_by_pid(file: &Path, pid: u32) -> Result<bool, String> {
                 &mut reasons,
             );
             if rc == 0 {
-                return Ok(false); // nobody holds it
+                return Ok(false);
             }
             if rc != ERROR_MORE_DATA {
                 return Err(format!("RmGetList size probe failed: {rc}"));
             }
-            // Headroom for holders appearing between the two calls.
             let capacity = needed.saturating_add(4) as usize;
             let mut infos: Vec<RmProcessInfo> = vec![std::mem::zeroed(); capacity];
             let mut count = capacity as u32;
@@ -322,71 +221,26 @@ fn file_held_by_pid(file: &Path, pid: u32) -> Result<bool, String> {
     }
 }
 
-/// One enabled mod, resolved from its launcher-listed `.mod` descriptor.
 #[derive(Debug, Clone)]
 pub struct ResolvedMod {
-    /// The descriptor path exactly as listed in `dlc_load.json`.
     pub descriptor_entry: String,
-    /// The absolute descriptor path that was actually read (if found).
     pub descriptor_path: Option<PathBuf>,
-    /// sha256 of the descriptor text — the "same mod text" binding.
     pub descriptor_sha256: Option<String>,
     pub name: Option<String>,
     pub version: Option<String>,
     pub remote_file_id: Option<String>,
-    /// The mod content location the descriptor points at (`path=`/`archive=`).
     pub content_path: Option<String>,
-    /// Cheap content metadata of the location `content_path` names:
-    /// (file_count, total_bytes, max_mtime_unix). METADATA ONLY — the binding
-    /// is `content_sha256` (G2-regen finding 3: this tuple is systematically
-    /// non-unique). None when the content location could not be walked (which
-    /// also fails resolution closed).
     pub content_fingerprint: Option<(u64, u64, i64)>,
-    /// SHA-256 over the content: sorted relative paths + per-file length +
-    /// file bytes (or the single archive file), computed under a double-pass
-    /// stability bracket. THE content binding. None -> resolution fails closed.
     pub content_sha256: Option<String>,
-    /// Newest mtime observed anywhere in the content walk (full precision,
-    /// for the evidence-predates-launch check). None when unknown.
     pub content_max_mtime: Option<SystemTime>,
-    /// Descriptor file mtime (full precision, same check).
     pub descriptor_mtime: Option<SystemTime>,
-    /// True when the descriptor repeats `path=`/`archive=` or carries both —
-    /// the effective content location is ambiguous (G2-regen finding 6).
     pub content_location_conflict: bool,
 }
 
-/// How well the recording knows the settings the running game is using.
-///
-/// SEPARATE FROM THE CONTENT BINDING ON PURPOSE. `settings.txt` contributes
-/// only the localisation language and the display variant; the mods and DLC
-/// come from `dlc_load.json` and the `dlc/` census. Folding both into one
-/// `resolved` bit meant a settings failure erased a fully proven mod/DLC
-/// binding — which is what happened on 2026-08-15: the game rewrites
-/// `settings.txt` during load, so on any hand-launched game the pre-launch
-/// mtime rule can never pass, the whole report went unresolved, and the
-/// attach-and-play path could record nothing content-bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsAuthority {
-    /// The file was proven byte-stable and written BEFORE the process started,
-    /// so the running game read exactly these bytes. The strongest statement,
-    /// and the only one available when the launch is ours to arrange.
     PreLaunchBracketed,
-    /// A previous recorder generation proved `PreLaunchBracketed` for this
-    /// exact still-live process identity, and the file still says the same
-    /// thing semantically.
     SameProcessAuthority,
-    /// The file's mtime is at/after process start. The game itself rewrites
-    /// `settings.txt` while loading, so this is the ORDINARY case for a game
-    /// the player launched.
-    ///
-    /// DELIBERATELY NOT CALLED "the game's own rewrite": nothing here proves
-    /// WHO wrote the file, and no cheap Windows call can attribute a write
-    /// that has already happened. It also does not prove the values are the
-    /// ones the process is using — a window can be resized, and the driver can
-    /// negotiate a different mode, after the file was written. It is what the
-    /// disk says, observed under the same stability bracket, and it is
-    /// recorded as an observation.
     PostLaunchDiskObservation,
 }
 
@@ -399,40 +253,23 @@ impl SettingsAuthority {
         }
     }
 
-    /// Whether the running process is PROVEN to have read these bytes.
     pub fn is_launch_proven(self) -> bool {
         matches!(self, Self::PreLaunchBracketed | Self::SameProcessAuthority)
     }
 }
 
-/// The settings half of the launch binding.
 #[derive(Debug, Clone, Default)]
 pub struct SettingsBinding {
-    /// `None` when no settings could be read at all.
     pub authority: Option<SettingsAuthority>,
     pub errors: Vec<ModsetError>,
-    /// `language=`. Never defaulted when the file or field is unavailable.
     pub language: Option<String>,
-    /// Exact display inputs from the same stable read as `language`. Numeric
-    /// scale identity is carried as IEEE-754 bits; no replay-side decimal
-    /// re-rounding is permitted.
     pub display: Option<DisplayVariantSettings>,
-    /// Digest of the settings file as read when the recorder attached.
     pub attach_sha256: Option<String>,
-    /// Digest of the same file re-read as the capture window closed, while the
-    /// process identity was still live.
     pub seal_sha256: Option<String>,
-    /// Whether the attach-time and capture-close reads agreed SEMANTICALLY
-    /// (the game reorders and reformats the file, so byte equality is not the
-    /// question). `None` when the second observation could not be taken.
-    ///
-    /// This is an ENDPOINT comparison, not a claim about the whole window: a
-    /// change made and undone between the two reads passes it.
     pub endpoint_semantics_equal: Option<bool>,
 }
 
 impl SettingsBinding {
-    /// Record a settings failure from outside this module.
     pub fn fail_public(&mut self, code: &'static str, detail: String) {
         self.fail(code, detail);
     }
@@ -444,7 +281,6 @@ impl SettingsBinding {
         self.errors.push(ModsetError::new(code, detail));
     }
 
-    /// Language and display are both present under a stated authority.
     pub fn is_readable(&self) -> bool {
         self.authority.is_some() && self.language.is_some() && self.display.is_some()
     }
@@ -470,10 +306,6 @@ impl SettingsBinding {
                 "borderless": display.borderless,
                 "display_mode": display.display_mode,
             })),
-            // BOTH endpoints, and neither one promoted to "the" settings hash.
-            // The file can be reformatted between them while meaning the same
-            // thing, and a single digest would then have to lie about one of
-            // the two reads.
             "attach_settings_sha256": self.attach_sha256,
             "seal_settings_sha256": self.seal_sha256,
             "endpoint_semantics_equal": self.endpoint_semantics_equal,
@@ -481,14 +313,6 @@ impl SettingsBinding {
     }
 }
 
-/// The full modset + game-build binding, plus every resolution failure met on
-/// the way.
-///
-/// `content_resolved` covers the executable, the corroborated user directory,
-/// `dlc_load.json`, every enabled mod's descriptor and content, and the
-/// installed-DLC census. It is true ONLY when that whole chain proved out. The
-/// settings are a SEPARATE binding with its own state — see
-/// [`SettingsBinding`].
 #[derive(Debug, Clone)]
 pub struct ModsetReport {
     pub content_resolved: bool,
@@ -498,47 +322,24 @@ pub struct ModsetReport {
     pub exe_size_bytes: Option<u64>,
     pub exe_sha256: Option<String>,
     pub user_dir: Option<PathBuf>,
-    /// "override" (--pdx-user-dir) or "probed". A wrong override remains the
-    /// recorded suspect when a binding later proves wrong.
     pub user_dir_source: Option<&'static str>,
-    /// dlc_load.json mtime (unix seconds) and the game process creation time
-    /// (unix seconds), both recorded so config-newer-than-process is provable.
     pub dlc_load_mtime_unix: Option<i64>,
-    /// SHA-256 of the exact byte-identical `dlc_load.json` reads used below.
-    /// This binds requested launcher selection evidence without another read.
     pub dlc_load_sha256: Option<String>,
     pub process_start_unix: Option<i64>,
-    /// The same creation time at FULL PRECISION (FILETIME 100ns ticks).
-    ///
-    /// `process_start_unix` is the recorded, human-readable value and is
-    /// floored to whole seconds; comparing identity with it would accept a PID
-    /// reused by a process created inside the same second as the game.
     pub process_start_filetime: Option<u64>,
     pub enabled_mods: Vec<ResolvedMod>,
     pub installed_dlcs: Vec<String>,
     pub disabled_dlcs: Vec<String>,
     pub enabled_dlcs: Vec<String>,
-    /// Installed descriptor path -> descriptor `name=` display value. A
-    /// descriptor whose name cannot be read stays present with a null value;
-    /// the corresponding resolution failure is recorded in `errors`.
     pub dlc_display_names: BTreeMap<String, Option<String>>,
-    /// Installed descriptor path -> exact launch-bound descriptor evidence.
-    /// The name and raw hash come from one byte-identical pre-start read.
     pub dlc_descriptor_evidence: BTreeMap<String, Option<DlcDescriptorEvidence>>,
 }
 
 impl ModsetReport {
-    /// `language=` from settings.txt in the same corroborated Paradox user
-    /// directory. Never defaulted when the file or field is unavailable.
-    ///
-    /// Read it together with `settings.authority`: an unproven authority means
-    /// this is what the disk says, not what the process is proven to have read.
     pub fn localisation_language(&self) -> Option<&String> {
         self.settings.language.as_ref()
     }
 
-    /// Exact display inputs from the same stable settings.txt read as
-    /// [`Self::localisation_language`].
     pub fn display_variant(&self) -> Option<&DisplayVariantSettings> {
         self.settings.display.as_ref()
     }
@@ -565,14 +366,6 @@ pub struct DisplayVariantSettings {
     pub settings_file_sha256: String,
 }
 
-/// Exact launch-bound settings evidence retained across recorder generations
-/// for one still-live process identity. the game rewrites `settings.txt` during
-/// startup on some machines, so a recorder restart cannot re-prove the
-/// pre-process mtime even though the first generation already did. This cache
-/// is usable only for the identical PID+creation-FILETIME, executable hash,
-/// canonical user directory, and semantically identical current settings.
-/// the game may rewrite formatting/order after launch, so byte equality is not a
-/// valid same-process reuse requirement.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SameProcessSettingsAuthority {
@@ -585,8 +378,7 @@ struct SameProcessSettingsAuthority {
     display_variant: DisplayVariantSettings,
 }
 
-const SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA: &str =
-    "hoi4_same_process_settings_authority_v1";
+const SAME_PROCESS_SETTINGS_AUTHORITY_SCHEMA: &str = "hoi4_same_process_settings_authority_v1";
 
 pub fn same_process_settings_authority_path(
     product_root: &Path,
@@ -601,20 +393,12 @@ pub fn same_process_settings_authority_path(
         ))
 }
 
-/// Persist a newly proven launch-bound settings snapshot, or recover it after
-/// a recorder-only restart when the ordinary resolver's sole failure is the
-/// expected post-start `settings.txt` rewrite. Any mismatch leaves the report
-/// unresolved.
 pub fn apply_same_process_settings_authority(
     report: &mut ModsetReport,
     authority_path: &Path,
     pid: u32,
     process_creation_filetime: u64,
 ) -> Result<(), String> {
-    // PUBLISH. A launch-proven settings read is the thing worth retaining
-    // across a recorder restart, and it is now published on its own merits:
-    // the CONTENT binding's state is a different proof and has no say in
-    // whether these settings were proven.
     if report
         .settings
         .authority
@@ -644,11 +428,6 @@ pub fn apply_same_process_settings_authority(
         return create_or_validate_same_process_settings_authority(authority_path, &authority);
     }
 
-    // RECOVER. Only the post-launch observation is upgradable: it is the case
-    // where an earlier generation may already have proven what this one cannot
-    // re-prove. The match is on the settings binding's own state — it used to
-    // be on the English prefix of an error string, so rewording a diagnostic
-    // silently disabled recovery.
     if report.settings.authority != Some(SettingsAuthority::PostLaunchDiskObservation) {
         return Ok(());
     }
@@ -696,19 +475,9 @@ pub fn apply_same_process_settings_authority(
         return Err("same-process settings authority current semantic settings mismatch".into());
     }
     report.settings.language = Some(authority.localisation_language);
-    // THE ATTACH DIGEST FOLLOWS THE DISPLAY IT DESCRIBES. It means "the digest
-    // of the read these display values came from", and the values now come from
-    // the authority file rather than from this process's own attach read. the game
-    // reorders and reformats settings.txt while meaning the same thing, so the
-    // two digests genuinely differ on a semantic match -- which is the case
-    // this recovery exists for. Leaving the newer digest in place published a
-    // display whose digest described a different read, and every consumer that
-    // reassembles the display from the attach digest refused the container.
     report.settings.attach_sha256 = Some(authority.display_variant.settings_file_sha256.clone());
     report.settings.display = Some(authority.display_variant);
     report.settings.authority = Some(SettingsAuthority::SameProcessAuthority);
-    // The recovery upgraded the AUTHORITY, not the reading: the failures that
-    // explain why the ordinary pre-launch proof was unavailable stay recorded.
     Ok(())
 }
 
@@ -806,11 +575,6 @@ impl ModsetReport {
             .iter()
             .map(ModsetError::to_string)
             .collect::<Vec<_>>();
-        // The vocabulary is stated, and a reader that does not know it must
-        // refuse rather than guess. `resolved` no longer answers "were the
-        // settings proven" — that question moved to `settings_binding` — so a
-        // v1 reader silently treating this as a v1 document would be reading a
-        // stronger claim than the document makes.
         let mut doc = if self.content_resolved {
             let mut doc = json!({
                 "schema": MODSET_BINDING_SCHEMA,
@@ -824,9 +588,6 @@ impl ModsetReport {
             }
             doc
         } else {
-            // FAIL-CLOSED SHAPE (G2 finding 8): a naive consumer looking for
-            // top-level enabled_mods/dlc on an UNRESOLVED report finds nothing
-            // — partial evidence cannot be misread as a vanilla binding.
             json!({
                 "schema": MODSET_BINDING_SCHEMA,
                 "resolved": false,
@@ -841,26 +602,12 @@ impl ModsetReport {
     }
 }
 
-/// The `modset` object's own vocabulary.
-///
-/// v2 split the settings binding out of `resolved`. The rename is deliberate
-/// and the schema is checked where the document is re-read (fold-and-repack),
-/// because in v1 `resolved:true` also asserted that the running process was
-/// PROVEN to have read the recorded settings, and in v2 it does not.
 pub const MODSET_BINDING_SCHEMA: &str = "hoi4_modset_binding_v2";
 
-/// Resolve the recording modset for the attached game process. Never fails —
-/// every problem lands in `errors` and clears `resolved`.
 pub fn resolve_modset(pid: u32, user_dir_override: Option<&Path>) -> ModsetReport {
     resolve_modset_inner(pid, user_dir_override, None)
 }
 
-/// Resolve a process that is still held by this recorder's
-/// `CREATE_SUSPENDED` authority. The caller has already selected both exact
-/// paths and the command line contains this exact `-userdir`; requiring a
-/// game-held log handle here would be impossible because no game instruction
-/// has run yet. All file/directory stability and pre-process-time checks remain
-/// identical to attached-process resolution.
 pub(crate) fn resolve_suspended_launch_modset(
     pid: u32,
     expected_executable: &Path,
@@ -894,8 +641,6 @@ fn resolve_modset_inner(
         dlc_display_names: BTreeMap::new(),
         dlc_descriptor_evidence: BTreeMap::new(),
     };
-    // A CONTENT resolution failure. Paths are spelled with `portable_path` so
-    // the diagnostic can cross the container boundary — see `ModsetError`.
     macro_rules! fail {
         ($code:expr, $($arg:tt)*) => {{
             report.content_resolved = false;
@@ -903,7 +648,6 @@ fn resolve_modset_inner(
         }};
     }
 
-    // --- game build binding ---
     match query_process_image_path(pid) {
         Ok(exe) => {
             if let Some(expected) = suspended_expected_executable {
@@ -949,7 +693,6 @@ fn resolve_modset_inner(
         }
     };
 
-    // --- Paradox user dir + dlc_load.json ---
     let located_user_dir = if suspended_expected_executable.is_some() {
         user_dir_override
             .ok_or_else(|| "suspended launch omitted its exact user directory".to_string())
@@ -968,8 +711,6 @@ fn resolve_modset_inner(
     };
     let user_dir_corroborated = match located_user_dir {
         Ok((dir, source)) => {
-            // Discovery has already run the PID-held-log corroboration across
-            // every physical candidate and required exactly one survivor.
             report.user_dir = Some(dir);
             report.user_dir_source = Some(source);
             true
@@ -980,29 +721,6 @@ fn resolve_modset_inner(
         }
     };
 
-    // --- settings binding (language + display) ---
-    //
-    // Evidence from the SAME user directory whose live log handle corroborates
-    // dlc_load.json. A merely probed/overridden path is not sufficient
-    // provenance for settings.txt.
-    //
-    // The mtime rule is a STATEMENT OF AUTHORITY, not an admission gate. It was
-    // written to stop a THIRD PARTY's post-launch rewrite (a launcher, a
-    // Workshop update) being read as the state the process launched with — the
-    // same worry that still fails dlc_load.json closed below. But the game writes
-    // settings.txt itself while loading, so on a game the player launched the
-    // file is ALWAYS newer than the process, and refusing there took the whole
-    // report down with it: the attach-and-play path could never resolve, never
-    // prove content, and packaged none of its static artifacts. It also could
-    // not seal, because the refusal's own text quoted the absolute path.
-    //
-    // So the read is admitted and the STRENGTH of what it proves is recorded.
-    // Nothing here claims to know who wrote the file: `PostLaunchDiskObservation`
-    // says only that this is what the disk held, read under the same stability
-    // bracket. What binds it to the recording is the endpoint re-read at
-    // capture close (`observe_settings_at_capture_close`) and, for the
-    // language, the collector's independent refusal of any engine table whose
-    // active language token disagrees.
     if !user_dir_corroborated {
         report.settings.fail(
             codes::SETTINGS_NO_USER_DIR,
@@ -1015,8 +733,6 @@ fn resolve_modset_inner(
                     Ok(read) => (SettingsAuthority::PreLaunchBracketed, Ok(read)),
                     Err(pre_launch_error) => match read_launch_settings_observed(user_dir) {
                         Ok(read) => (SettingsAuthority::PostLaunchDiskObservation, Ok(read)),
-                        // Both failed: report the PRE-LAUNCH failure, which is
-                        // the one that says why the strong proof is missing.
                         Err(_) => (
                             SettingsAuthority::PostLaunchDiskObservation,
                             Err(pre_launch_error),
@@ -1057,12 +773,8 @@ fn resolve_modset_inner(
     let mut disabled_dlcs: Vec<String> = Vec::new();
     if let Some(user_dir) = report.user_dir.clone() {
         let dlc_load_path = user_dir.join("dlc_load.json");
-        // Stability bracket (re-gate finding 4): capture mtime, read, re-check.
         let mtime_before = fs::metadata(&dlc_load_path).and_then(|m| m.modified()).ok();
         report.dlc_load_mtime_unix = mtime_before.map(system_time_unix);
-        // Launcher-state provenance (re-gate finding 3+4): FULL-PRECISION
-        // compare; an absent mtime or a config at/after process start both
-        // fail closed (can't prove the running game used this config).
         match (mtime_before, process_start) {
             (Some(mtime), Some(start)) if mtime >= start => fail!(
                 codes::DLC_LOAD_MTIME_AT_OR_AFTER_START,
@@ -1080,9 +792,6 @@ fn resolve_modset_inner(
         match fs::read_to_string(&dlc_load_path) {
             Ok(text) => match serde_json::from_str::<Value>(&text) {
                 Ok(doc) => {
-                    // Re-check mtime AFTER the read: a launcher rewrite between
-                    // the metadata read and the content read would otherwise
-                    // pair new content with the old, accepted timestamp.
                     let mtime_after = fs::metadata(&dlc_load_path).and_then(|m| m.modified()).ok();
                     if mtime_after != mtime_before {
                         fail!(
@@ -1090,13 +799,6 @@ fn resolve_modset_inner(
                             "dlc_load.json changed while being read (mtime moved)"
                         );
                     }
-                    // G2-regen finding 5: an atomic replacement can PRESERVE
-                    // the mtime (OneDrive sync, copied-file install), so the
-                    // mtime bracket alone is insufficient. Read the file a
-                    // second time and require byte-identical content. Residual
-                    // (documented): a replacement completing before the FIRST
-                    // read with a preserved mtime is indistinguishable from
-                    // user mode; both reads then see the same (new) bytes.
                     match fs::read_to_string(&dlc_load_path) {
                         Ok(text_again) if text_again == text => {
                             report.dlc_load_sha256 = Some(Sha256::hex(text.as_bytes()));
@@ -1110,18 +812,12 @@ fn resolve_modset_inner(
                             "dlc_load.json second stability read failed: {e}"
                         ),
                     }
-                    // Duplicate top-level keys (re-gate finding 2): serde_json
-                    // silently keeps the last, so a lenient document can hide
-                    // an ambiguous enabled_mods/disabled_dlcs behind an empty
-                    // override. Reject any duplicated object key at depth 1.
                     if let Err(dup) = reject_duplicate_top_level_keys(&text) {
                         fail!(
                             codes::DLC_LOAD_DUPLICATE_KEYS,
                             "dlc_load.json top-level key scan rejected: {dup}"
                         );
                     }
-                    // G2 finding 2: absent or mistyped fields are NOT empty
-                    // lists — they are unproven state and fail closed.
                     match required_string_array(&doc, "enabled_mods") {
                         Ok(enabled_mods) => {
                             for entry in enabled_mods {
@@ -1132,9 +828,6 @@ fn resolve_modset_inner(
                                         "mod descriptor unreadable: {entry:?}"
                                     );
                                 } else if resolved.content_location_conflict {
-                                    // G2-regen finding 6: repeated or competing
-                                    // path=/archive= — the effective content
-                                    // location is unproven engine semantics.
                                     fail!(
                                         codes::MOD_CONTENT_LOCATION_AMBIGUOUS,
                                         "mod descriptor content location ambiguous \
@@ -1153,10 +846,6 @@ fn resolve_modset_inner(
                                         resolved.content_path
                                     );
                                 }
-                                // G2-regen finding 4: descriptor or content
-                                // written AT/AFTER process start means the disk
-                                // no longer proves what the running process
-                                // loaded (Workshop update post-launch).
                                 if let Some(start) = process_start {
                                     match resolved.descriptor_mtime {
                                         Some(m) if m >= start => fail!(
@@ -1184,11 +873,17 @@ fn resolve_modset_inner(
                                 report.enabled_mods.push(resolved);
                             }
                         }
-                        Err(e) => fail!(codes::DLC_LOAD_ENABLED_MODS, "dlc_load.json enabled_mods: {e}"),
+                        Err(e) => fail!(
+                            codes::DLC_LOAD_ENABLED_MODS,
+                            "dlc_load.json enabled_mods: {e}"
+                        ),
                     }
                     match required_string_array(&doc, "disabled_dlcs") {
                         Ok(list) => disabled_dlcs = list,
-                        Err(e) => fail!(codes::DLC_LOAD_DISABLED_DLCS, "dlc_load.json disabled_dlcs: {e}"),
+                        Err(e) => fail!(
+                            codes::DLC_LOAD_DISABLED_DLCS,
+                            "dlc_load.json disabled_dlcs: {e}"
+                        ),
                     }
                 }
                 Err(e) => fail!(codes::DLC_LOAD_PARSE, "dlc_load.json parse failed: {e}"),
@@ -1202,19 +897,10 @@ fn resolve_modset_inner(
     }
     report.disabled_dlcs = disabled_dlcs.clone();
 
-    // --- installed / enabled DLC census (game_root/dlc/<dir>/<name>.dlc) ---
     if let Some(exe) = report.exe_path.clone() {
         match exe.parent() {
             Some(game_root) => match census_installed_dlcs(game_root) {
                 Ok((installed, census_max_mtime)) => {
-                    // Modset re-gate finding 2 (empty-census arm): a real the game
-                    // install always carries dlc/ descriptors; an EMPTY census
-                    // (dlc/ removed/emptied — possibly post-launch) has no
-                    // timestamp to order against process start and would
-                    // resolve with vanilla-looking empty DLC arrays. Fail
-                    // closed. Stability: a second census must reproduce the
-                    // first exactly (same identity rule as dlc_load.json's
-                    // double read).
                     if installed.is_empty() || census_max_mtime.is_none() {
                         fail!(
                             codes::DLC_CENSUS_EMPTY,
@@ -1222,9 +908,6 @@ fn resolve_modset_inner(
                              the DLC set the process loaded"
                         );
                     }
-                    // G2-regen finding 4 (DLC arm): an installed-DLC descriptor
-                    // written at/after process start means the census describes
-                    // a different DLC set than the one the process loaded.
                     if let (Some(start), Some(newest)) = (process_start, census_max_mtime) {
                         if newest >= start {
                             fail!(
@@ -1234,9 +917,6 @@ fn resolve_modset_inner(
                             );
                         }
                     }
-                    // G2 finding 6: every disabled key must match an installed
-                    // census key EXACTLY, else the subtraction is unproven
-                    // (format/case drift could silently re-enable a DLC).
                     for disabled in &disabled_dlcs {
                         if !installed.iter().any(|rel| rel == disabled) {
                             fail!(
@@ -1251,9 +931,6 @@ fn resolve_modset_inner(
                         .filter(|rel| !disabled_dlcs.iter().any(|d| d == *rel))
                         .cloned()
                         .collect();
-                    // Display names are read INSIDE the census bracket. Each
-                    // descriptor is also double-read with a metadata bracket
-                    // and must predate launch.
                     let (display_names, descriptor_evidence, display_name_errors) =
                         resolve_dlc_display_names(game_root, &installed, process_start);
                     report.dlc_display_names = display_names;
@@ -1269,7 +946,10 @@ fn resolve_modset_inner(
                             "installed-DLC census changed while display names were being read \
                              (unstable between passes)"
                         ),
-                        Err(e) => fail!(codes::DLC_CENSUS_UNSTABLE, "dlc census stability pass failed: {e}"),
+                        Err(e) => fail!(
+                            codes::DLC_CENSUS_UNSTABLE,
+                            "dlc census stability pass failed: {e}"
+                        ),
                     }
                     report.installed_dlcs = installed;
                 }
@@ -1289,7 +969,8 @@ struct FileStamp {
 }
 
 fn file_stamp(path: &Path) -> Result<FileStamp, String> {
-    let metadata = fs::metadata(path).map_err(|e| format!("{} metadata: {e}", portable_path(path)))?;
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("{} metadata: {e}", portable_path(path)))?;
     let modified = metadata
         .modified()
         .map_err(|e| format!("{} mtime: {e}", portable_path(path)))?;
@@ -1334,9 +1015,6 @@ fn validate_stable_text_read(
     String::from_utf8(first).map_err(|e| format!("{} is not UTF-8: {e}", portable_path(path)))
 }
 
-/// Read one launch-bound text file with both a metadata stability bracket and
-/// two byte-identical reads. Equality with process start fails closed because
-/// it cannot prove that the running process saw these bytes.
 fn read_text_stable_before_start(path: &Path, process_start: SystemTime) -> Result<String, String> {
     let bytes = read_bytes_stable_before_start(path, process_start)?;
     String::from_utf8(bytes).map_err(|e| format!("{} is not UTF-8: {e}", portable_path(path)))
@@ -1368,8 +1046,6 @@ fn read_text_stable(path: &Path) -> Result<String, String> {
     String::from_utf8(first).map_err(|e| format!("{} is not UTF-8: {e}", portable_path(path)))
 }
 
-/// Return the exact bytes from the same pre-start, metadata-bracketed,
-/// byte-identical read used for descriptor parsing and hashing.
 fn read_bytes_stable_before_start(
     path: &Path,
     process_start: SystemTime,
@@ -1405,9 +1081,6 @@ fn read_bytes_stable_before_start(
     Ok(first)
 }
 
-/// Read all launch-bound variant inputs from one byte-identical settings.txt
-/// snapshot. This prevents language and display metadata from being bound to
-/// different file generations.
 fn read_launch_settings(
     user_dir: &Path,
     process_start: SystemTime,
@@ -1417,17 +1090,6 @@ fn read_launch_settings(
     parse_settings_text(&text)
 }
 
-/// The same read WITHOUT the pre-process-start requirement.
-///
-/// Every other guarantee is identical — same metadata bracket, same two
-/// byte-identical reads, same strict parse — so what this drops is exactly one
-/// claim: that the running process is proven to have read these bytes. The
-/// caller records that as [`SettingsAuthority::PostLaunchDiskObservation`] and
-/// never as a launch proof.
-///
-/// It exists because the game rewrites `settings.txt` while it loads, which
-/// makes the pre-start rule unsatisfiable on a game the player launched — and
-/// the recorder attaching to a game the player launched is the product.
 fn read_launch_settings_observed(
     user_dir: &Path,
 ) -> Result<(Option<String>, DisplayVariantSettings), String> {
@@ -1436,20 +1098,6 @@ fn read_launch_settings_observed(
     parse_settings_text(&text)
 }
 
-/// Take the closing observation of `settings.txt`, while the recorded process
-/// identity is still live.
-///
-/// WHAT THIS PROVES, EXACTLY: the settings read when the recorder attached and
-/// the settings on disk as the capture window closed say the same thing
-/// SEMANTICALLY. It does NOT prove the values held for the whole window — a
-/// change made and undone between the two reads passes it — which is why the
-/// recorded field is named `endpoint_semantics_equal` and not "stable".
-///
-/// It must be called while the game is still the process the report resolved
-/// against. After the game exits, an exit-time rewrite would be compared as
-/// though it described the recording, and the PID could even have been reused.
-/// A dead or replaced process identity is recorded as a failure, never as a
-/// disagreement.
 pub fn observe_settings_at_capture_close(report: &mut ModsetReport, pid: u32) {
     let Some(attach_display) = report.settings.display.clone() else {
         return;
@@ -1457,9 +1105,6 @@ pub fn observe_settings_at_capture_close(report: &mut ModsetReport, pid: u32) {
     let Some(user_dir) = report.user_dir.clone() else {
         return;
     };
-    // FULL-PRECISION identity. A whole-second comparison accepts a PID reused
-    // by a process created inside the same second, and would then compare
-    // another process's settings against this recording's.
     match (
         query_process_creation_filetime(pid),
         report.process_start_filetime,
@@ -1557,10 +1202,7 @@ fn parse_settings_text(text: &str) -> Result<(Option<String>, DisplayVariantSett
     ))
 }
 
-fn same_display_semantics(
-    left: &DisplayVariantSettings,
-    right: &DisplayVariantSettings,
-) -> bool {
+fn same_display_semantics(left: &DisplayVariantSettings, right: &DisplayVariantSettings) -> bool {
     left.physical_width == right.physical_width
         && left.physical_height == right.physical_height
         && left.min_gui_width == right.min_gui_width
@@ -1592,9 +1234,6 @@ fn required_yes_no(text: &str, key: &str, context: &str) -> Result<bool, String>
     }
 }
 
-/// Return a unique object assignment's interior. The scanner tracks comments,
-/// quoted strings and brace nesting, so same-named keys in nested objects do
-/// not satisfy the requested scope.
 fn clausewitz_object_field<'a>(text: &'a str, wanted: &str) -> Result<Option<&'a str>, String> {
     let bytes = text.as_bytes();
     let mut index = 0usize;
@@ -1778,9 +1417,6 @@ fn matching_brace(bytes: &[u8], open: usize) -> Result<usize, String> {
     Err("unbalanced object brace".into())
 }
 
-/// Parse a single line-oriented Clausewitz `key = "value"` assignment.
-/// Duplicate target keys and any malformed target assignment are ambiguous and
-/// fail closed. Only explicit quoted-string escapes are accepted.
 fn clausewitz_string_field(text: &str, wanted: &str) -> Result<Option<String>, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut found: Option<String> = None;
@@ -1840,9 +1476,6 @@ fn clausewitz_string_field(text: &str, wanted: &str) -> Result<Option<String>, S
     Ok(found)
 }
 
-/// Resolve display names without inventing a fallback from directory/file
-/// names. Every installed path gets a map entry; unreadable or nameless
-/// descriptors carry null plus a fail-closed resolution note.
 fn resolve_dlc_display_names(
     game_root: &Path,
     installed: &[String],
@@ -1906,8 +1539,6 @@ fn resolve_dlc_display_names(
     (names, evidence, errors)
 }
 
-/// A field that MUST exist as an array of strings. Anything else is unproven
-/// launcher state, not an empty list.
 fn required_string_array(doc: &Value, key: &str) -> Result<Vec<String>, String> {
     let field = doc
         .get(key)
@@ -1925,13 +1556,6 @@ fn required_string_array(doc: &Value, key: &str) -> Result<Vec<String>, String> 
         .collect()
 }
 
-/// The final component of a live process's executable image.
-///
-/// Exposed because "is that pid one of US" is a question outside this module —
-/// crash recovery has to distinguish a finalizer still working in a run
-/// directory from any other process that happens to hold the same pid — and it
-/// must be answered with the same call the modset binding already trusts rather
-/// than a second opinion.
 pub fn process_image_file_name(pid: u32) -> Result<String, String> {
     let image = query_process_image_path(pid)?;
     image
@@ -1940,10 +1564,6 @@ pub fn process_image_file_name(pid: u32) -> Result<String, String> {
         .ok_or_else(|| format!("process {pid} image path has no file name"))
 }
 
-/// The full path of a live process's executable, read through a QUERY-ONLY
-/// handle. Nothing here can mutate the target, which is why the patch-day build
-/// gate (`crate::game_build`) is allowed to reach the game's files through it
-/// before any injection authority is taken.
 pub fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -1963,17 +1583,6 @@ pub fn query_process_image_path(pid: u32) -> Result<PathBuf, String> {
     }
 }
 
-/// Process creation time as a full-precision `SystemTime` (FILETIME 100ns
-/// ticks -> unix epoch). Full precision matters: the launcher-state ordering
-/// check must not floor two sub-second-apart events into one equal second
-/// (re-gate finding 3).
-/// The process creation FILETIME exactly as Windows reports it — 100ns ticks,
-/// no floor, no epoch conversion.
-///
-/// This is the process IDENTITY half of (pid, creation time). Anything that
-/// asks "is that still the same process" must compare this, not a whole-second
-/// stamp: PIDs are reused, and a reuse inside the same second is exactly the
-/// case a floored comparison cannot see.
 pub fn query_process_creation_filetime(pid: u32) -> Result<u64, String> {
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
@@ -2002,7 +1611,6 @@ fn query_process_start(pid: u32) -> Result<SystemTime, String> {
         if ok == 0 {
             return Err(format!("GetProcessTimes({pid}) failed"));
         }
-        // FILETIME: 100ns ticks since 1601-01-01. Unix epoch offset in ticks:
         const UNIX_EPOCH_TICKS: u64 = 116_444_736_000_000_000;
         if creation < UNIX_EPOCH_TICKS {
             return Err("process creation time precedes the unix epoch".to_string());
@@ -2012,8 +1620,6 @@ fn query_process_start(pid: u32) -> Result<SystemTime, String> {
     }
 }
 
-/// Whole-second unix stamp of a `SystemTime`, for human-readable manifest
-/// fields ONLY — never for the ordering comparison (that uses full precision).
 fn system_time_unix(t: SystemTime) -> i64 {
     match t.duration_since(SystemTime::UNIX_EPOCH) {
         Ok(d) => d.as_secs() as i64,
@@ -2021,12 +1627,6 @@ fn system_time_unix(t: SystemTime) -> i64 {
     }
 }
 
-/// Reject a JSON document that repeats any object key at the TOP level.
-/// `serde_json` silently keeps the last value for a duplicate key, so a
-/// lenient `{"enabled_mods":[...],"enabled_mods":[]}` could resolve as an
-/// empty (vanilla-looking) modset. A minimal depth-aware, string-aware scan
-/// collects depth-1 keys and fails on the first repeat. Input is already
-/// proven valid JSON by the caller's parse.
 fn reject_duplicate_top_level_keys(text: &str) -> Result<(), String> {
     let bytes = text.as_bytes();
     let mut i = 0usize;
@@ -2038,8 +1638,6 @@ fn reject_duplicate_top_level_keys(text: &str) -> Result<(), String> {
     while i < bytes.len() {
         let b = bytes[i];
         if in_string {
-            // Non-key strings (values, nested keys) are skipped whole here;
-            // top-level keys are captured at the opening-quote branch below.
             if escaped {
                 escaped = false;
             } else if b == b'\\' {
@@ -2052,8 +1650,6 @@ fn reject_duplicate_top_level_keys(text: &str) -> Result<(), String> {
         }
         match b {
             b'"' => {
-                // String opening. If at depth 1 and a key is expected, read it
-                // whole here (escape-aware) so we can record it.
                 if depth == 1 && expecting_key {
                     let start = i + 1;
                     let mut j = start;
@@ -2409,13 +2005,6 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
             "name" => resolved.name = Some(value),
             "version" => resolved.version = Some(value),
             "remote_file_id" => resolved.remote_file_id = Some(value),
-            // Re-gate finding 5: an EMPTY path=/archive= names no content
-            // location (joining "" with user_dir would fingerprint the whole
-            // user dir). Leave content_path None so the caller fails closed.
-            // G2-regen finding 6: a SECOND content-location key (repeated
-            // path=, repeated archive=, or both present — empty or not) makes
-            // the effective location ambiguous (engine precedence unproven);
-            // the caller fails resolution closed on the conflict flag.
             "path" | "archive" => {
                 content_location_keys += 1;
                 if content_location_keys > 1 {
@@ -2429,7 +2018,6 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
         }
     }
     if resolved.content_location_conflict {
-        // Don't bind ambiguous content; the caller records the failure.
         resolved.content_path = None;
     }
     if let Some(content) = resolved.content_path.as_deref() {
@@ -2455,24 +2043,13 @@ fn resolve_mod_descriptor(user_dir: &Path, entry: &str) -> ResolvedMod {
     resolved
 }
 
-/// The content binding for one mod: an exact SHA-256 plus cheap metadata.
 struct HashedContent {
     files: u64,
     bytes: u64,
-    /// Newest mtime anywhere in the walk, full precision (for the
-    /// evidence-predates-launch check).
     max_mtime: SystemTime,
-    /// SHA-256 over sorted relative paths + per-file length + file bytes.
     sha256: String,
 }
 
-/// Metadata pass over a content location: (files, bytes, max_mtime) plus the
-/// sorted relative file list. Any unreadable entry/metadata/mtime fails the
-/// pass closed (re-gate finding 6). The bounded walk REFUSES (None) past
-/// `MOD_CONTENT_MAX_FILES` rather than silently truncating.
-/// Bounded directory count for a mod content walk (modset re-gate finding 5:
-/// only FILES were bounded, so an empty directory reparse cycle looped
-/// forever without ever failing closed).
 const MOD_CONTENT_MAX_DIRS: usize = 50_000;
 
 fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathBuf>)> {
@@ -2486,11 +2063,6 @@ fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathB
     let mut files = 0u64;
     let mut dirs = 0usize;
     let mut bytes = 0u64;
-    // Modset re-gate finding 2: DIRECTORY mtimes join the maximum. An NTFS
-    // rename preserves the file's own mtime but updates the parent directory,
-    // so a post-launch renamed tree was invisible to the file-only maximum
-    // (both hash passes already saw the new path; the launch-order check did
-    // not). The root and every traversed directory now contribute.
     let mut max_mtime: Option<SystemTime> = fs::metadata(root).ok()?.modified().ok();
     let mut rel_paths: Vec<PathBuf> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -2499,12 +2071,6 @@ fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathB
         for entry in entries {
             let entry = entry.ok()?;
             let path = entry.path();
-            // Modset re-gate finding 5: refuse symlinks/reparse points
-            // outright (fail closed) — following them let a junction cycle
-            // walk forever (no file ever incremented the bound), and a link
-            // escaping the content root would bind foreign content.
-            // `DirEntry::metadata()` does not follow symlinks, so file_type
-            // here is the LINK's own type.
             let file_type = entry.file_type().ok()?;
             if file_type.is_symlink() {
                 return None;
@@ -2531,21 +2097,12 @@ fn walk_content_metadata(root: &Path) -> Option<(u64, u64, SystemTime, Vec<PathB
         }
     }
     if files == 0 {
-        // An empty content dir binds nothing — treat as not bindable.
         return None;
     }
     rel_paths.sort();
     Some((files, bytes, max_mtime?, rel_paths))
 }
 
-/// Exact content binding under a double-pass stability bracket (G2-regen
-/// finding 3: the old (count, bytes, max-mtime) tuple was systematically
-/// non-unique — renames, same-length edits, and same-second edits all
-/// collided). SHA-256 over: for each file in sorted relative-path order, the
-/// path (forward-slash, utf-8) + 0x00 + the file length (LE u64) + the file
-/// bytes. The metadata walk runs BEFORE and AFTER hashing and must agree, and
-/// each file's streamed byte count must match its listed length — an
-/// incoherent walk (content changing underneath) fails closed.
 fn hash_content_stable(root: &Path) -> Option<HashedContent> {
     let (files, bytes, max_mtime, rel_paths) = walk_content_metadata(root)?;
     let mut hasher = Sha256::new();
@@ -2575,7 +2132,6 @@ fn hash_content_stable(root: &Path) -> Option<HashedContent> {
             return None;
         }
     }
-    // Stability bracket: the metadata pass must reproduce exactly.
     let (files_after, bytes_after, max_mtime_after, rel_after) = walk_content_metadata(root)?;
     if (files, bytes, max_mtime) != (files_after, bytes_after, max_mtime_after)
         || rel_paths != rel_after
@@ -2590,16 +2146,10 @@ fn hash_content_stable(root: &Path) -> Option<HashedContent> {
     })
 }
 
-/// Enumerate installed DLC descriptors as game-root-relative
-/// forward-slash paths (`dlc/dlc023_man_the_guns/dlc023.dlc`) — the exact key
-/// format `dlc_load.json.disabled_dlcs` uses, so the subtraction is a string
-/// match with no normalization guesswork (and `resolve_modset` REFUSES any
-/// disabled key that matches no installed entry).
-/// Also returns the newest `.dlc` descriptor mtime (full precision) so the
-/// caller can prove the census predates process start (G2-regen finding 4).
 fn census_installed_dlcs(game_root: &Path) -> Result<(Vec<String>, Option<SystemTime>), String> {
     let dlc_root = game_root.join("dlc");
-    let entries = fs::read_dir(&dlc_root).map_err(|e| format!("{}: {e}", portable_path(&dlc_root)))?;
+    let entries =
+        fs::read_dir(&dlc_root).map_err(|e| format!("{}: {e}", portable_path(&dlc_root)))?;
     let mut installed = Vec::new();
     let mut newest: Option<SystemTime> = None;
     for entry in entries {
@@ -2707,9 +2257,6 @@ mod tests {
         let mut proven = authority_report(&dir, settings_sha256);
         apply_same_process_settings_authority(&mut proven, &authority_path, 77, 88).unwrap();
 
-        // the game may rewrite the same effective settings with different spacing
-        // and field order after launch. The immutable launch authority remains
-        // valid for the identical live process.
         let rewritten_text = "graphics={ borderless=yes fullScreen=no \
             max_refresh_rate=75 refreshRate=60 gui_scale=1.000000 \
             min_gui={y=720 x=1280} size={y=1080 x=1920} }\n\
@@ -2719,12 +2266,8 @@ mod tests {
         rewritten.settings.authority = Some(SettingsAuthority::PostLaunchDiskObservation);
         rewritten.settings.language = None;
         rewritten.settings.display = None;
-        // This process read the REWRITTEN file, so its attach digest is that
-        // file's. The recovery is about to publish the ORIGINAL display.
         rewritten.settings.attach_sha256 = Some(Sha256::hex(rewritten_text.as_bytes()));
         apply_same_process_settings_authority(&mut rewritten, &authority_path, 77, 88).unwrap();
-        // The CONTENT binding was never in question here, and the recovery
-        // upgrades the SETTINGS authority rather than a single global bit.
         assert!(rewritten.content_resolved);
         assert_eq!(
             rewritten.settings.authority,
@@ -2739,14 +2282,6 @@ mod tests {
             rewritten.display_variant().unwrap().settings_file_sha256,
             Sha256::hex(initial.as_bytes())
         );
-        // THE ATTACH DIGEST FOLLOWS THE DISPLAY IT DESCRIBES. It means "the
-        // digest of the read these display values came from", and the recovery
-        // has just replaced those values with the authority's. Leaving this
-        // process's own digest in place published a display whose digest named
-        // a different read of the file -- and every consumer reassembles the
-        // display from this digest, so all of them refused the container. The
-        // two digests genuinely differ here: that semantic-match-despite-a-
-        // rewrite is the whole case this recovery exists for.
         assert_ne!(
             Sha256::hex(rewritten_text.as_bytes()),
             Sha256::hex(initial.as_bytes())
@@ -2765,14 +2300,11 @@ mod tests {
         changed.settings.authority = Some(SettingsAuthority::PostLaunchDiskObservation);
         changed.settings.language = None;
         changed.settings.display = None;
-        assert!(apply_same_process_settings_authority(
-            &mut changed,
-            &authority_path,
-            77,
-            88
-        )
-        .unwrap_err()
-        .contains("current semantic settings mismatch"));
+        assert!(
+            apply_same_process_settings_authority(&mut changed, &authority_path, 77, 88)
+                .unwrap_err()
+                .contains("current semantic settings mismatch")
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2797,25 +2329,20 @@ mod tests {
         let (files, bytes, _mtime) = resolved.content_fingerprint.expect("fingerprint");
         assert_eq!((files, bytes), (1, 5));
 
-        // Content change WITHOUT a descriptor change moves the fingerprint.
         fs::write(dir.join("mod").join("test").join("b.txt"), b"world!").unwrap();
         let again = resolve_mod_descriptor(&dir, "mod/test.mod");
         assert_eq!(again.descriptor_sha256, resolved.descriptor_sha256);
         assert_ne!(again.content_fingerprint, resolved.content_fingerprint);
 
-        // A missing descriptor stays evidence-free (caller records the error).
         let missing = resolve_mod_descriptor(&dir, "mod/absent.mod");
         assert!(missing.descriptor_sha256.is_none());
         assert!(missing.descriptor_path.is_none());
 
-        // A descriptor without path=/archive= parses but carries no content
-        // binding — the caller fails resolution closed on that.
         fs::write(dir.join("mod").join("nopath.mod"), "name=\"X\"\n").unwrap();
         let nopath = resolve_mod_descriptor(&dir, "mod/nopath.mod");
         assert!(nopath.descriptor_sha256.is_some());
         assert!(nopath.content_path.is_none());
 
-        // BOM-prefixed first key still parses (finding 7).
         fs::write(
             dir.join("mod").join("bom.mod"),
             "\u{feff}name=\"Bom\"\npath=\"mod/test\"\n",
@@ -2829,18 +2356,15 @@ mod tests {
 
     #[test]
     fn missing_or_mistyped_dlc_load_fields_fail_closed() {
-        // `{}`: both fields absent -> both errors, never "vanilla".
         let empty: Value = serde_json::from_str("{}").unwrap();
         assert!(required_string_array(&empty, "enabled_mods").is_err());
         assert!(required_string_array(&empty, "disabled_dlcs").is_err());
 
-        // Wrong types fail closed.
         let corrupt: Value =
             serde_json::from_str(r#"{"enabled_mods":"corrupt","disabled_dlcs":[1]}"#).unwrap();
         assert!(required_string_array(&corrupt, "enabled_mods").is_err());
         assert!(required_string_array(&corrupt, "disabled_dlcs").is_err());
 
-        // The real shape passes.
         let ok: Value = serde_json::from_str(
             r#"{"enabled_mods":["mod/a.mod"],"disabled_dlcs":["dlc/d/d.dlc"]}"#,
         )
@@ -2877,8 +2401,6 @@ mod tests {
                 "dlc/dlc023_man_the_guns/dlc023.dlc".to_string(),
             ]
         );
-        // Freshly-written census files carry a real newest mtime — the
-        // evidence-predates-launch check compares against this.
         assert!(census_max_mtime.is_some());
         let disabled = vec!["dlc/dlc013_sabaton/dlc013.dlc".to_string()];
         let enabled: Vec<&String> = installed
@@ -2910,9 +2432,10 @@ mod tests {
             .iter()
             .all(|error| error.contains("recorded null") && error.contains("at/after")));
 
-        // Every installed path remains present when its descriptor becomes
-        // unreadable; the value is null and the failure note is explicit.
-        portable_test_fs_retry::remove_file(root.join("dlc").join("dlc013_sabaton").join("dlc013.dlc")).unwrap();
+        portable_test_fs_retry::remove_file(
+            root.join("dlc").join("dlc013_sabaton").join("dlc013.dlc"),
+        )
+        .unwrap();
         let (after_remove, after_remove_evidence, errors) =
             resolve_dlc_display_names(&root, &installed, Some(launch));
         assert!(after_remove["dlc/dlc013_sabaton/dlc013.dlc"].is_none());
@@ -2920,28 +2443,12 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("recorded null"));
 
-        // An unmatched disabled key is detectable by the same exact-match rule
-        // resolve_modset enforces (fails closed there).
         let drifted = "DLC/dlc013_sabaton/dlc013.dlc".to_string();
         assert!(!installed.iter().any(|rel| rel == &drifted));
 
         fs::remove_dir_all(&root).ok();
     }
 
-    /// THE t55 DEFECT, as a unit.
-    ///
-    /// the game rewrites `settings.txt` while it loads, so on a game the player
-    /// launched the file is always newer than the process. That used to void
-    /// the WHOLE report — mods, DLC and executable included — which refused the
-    /// content proof, unpackaged every static artifact, and (because the
-    /// refusal quoted the absolute path) refused the seal.
-    ///
-    /// The settings must degrade to an OBSERVATION and take nothing else with
-    /// them.
-    ///
-    /// Production change that would make this fail: restoring the pre-launch
-    /// mtime requirement as an admission gate for settings, or folding the
-    /// settings state back into `content_resolved`.
     #[test]
     fn a_post_launch_settings_rewrite_degrades_the_settings_and_nothing_else() {
         let dir = temp_dir("post_launch_settings");
@@ -2951,11 +2458,11 @@ mod tests {
              fullScreen=no\nborderless=yes\n}\n";
         fs::write(dir.join("settings.txt"), text).unwrap();
 
-        // The file exists and parses, but it was written AFTER the process
-        // started — the ordinary case for a hand-launched game.
         let launched_before_the_write = std::time::UNIX_EPOCH;
-        assert!(read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60))
-            .is_ok());
+        assert!(
+            read_launch_settings(&dir, SystemTime::now() + std::time::Duration::from_secs(60))
+                .is_ok()
+        );
         assert!(read_launch_settings(&dir, launched_before_the_write).is_err());
 
         let (language, display) = read_launch_settings_observed(&dir).expect("observed read");
@@ -2963,7 +2470,6 @@ mod tests {
         assert_eq!(display.physical_width, 2752);
         assert_eq!(display.settings_file_sha256, Sha256::hex(text.as_bytes()));
 
-        // And the observation is never dressed up as a launch proof.
         assert!(!SettingsAuthority::PostLaunchDiskObservation.is_launch_proven());
         assert!(SettingsAuthority::PreLaunchBracketed.is_launch_proven());
         assert!(SettingsAuthority::SameProcessAuthority.is_launch_proven());
@@ -2975,12 +2481,6 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    /// A resolution failure must be able to cross the container boundary. This
-    /// is the exact string capture t55 died on.
-    ///
-    /// Production change that would make this fail: spelling a path with
-    /// `Path::display()` in a diagnostic again, or dropping the backstop in
-    /// `ModsetError::new`.
     #[test]
     fn a_resolution_failure_carries_no_absolute_path() {
         let spelled = ModsetError::new(
@@ -3003,7 +2503,6 @@ mod tests {
         )
         .expect("a diagnostic must be portable");
 
-        // The backstop catches text this module did not compose itself.
         let leaked = ModsetError::new(
             codes::DLC_LOAD_READ,
             r"dlc_load.json read failed at C:\Users\Example\dlc_load.json: denied".to_string(),
@@ -3016,13 +2515,6 @@ mod tests {
         assert!(!leaked.detail.contains("someone"), "{}", leaked.detail);
     }
 
-    /// The closing observation must refuse to compare against a process that is
-    /// no longer the one that was recorded. An exit-time rewrite — or a reused
-    /// PID — would otherwise be reported as a settings disagreement inside the
-    /// recording.
-    ///
-    /// Production change that would make this fail: dropping the process
-    /// identity check from `observe_settings_at_capture_close`.
     #[test]
     fn the_closing_settings_observation_refuses_a_lost_process_identity() {
         let dir = temp_dir("closing_observation");
@@ -3033,10 +2525,6 @@ mod tests {
         fs::write(dir.join("settings.txt"), text).unwrap();
         let mut report = authority_report(&dir, Sha256::hex(text.as_bytes()));
 
-        // This process is alive, but it did not start when the report says the
-        // game did, so the identity does not match. The comparison is on the
-        // FULL-PRECISION creation time: a whole-second stamp would accept a pid
-        // reused inside the same second as the game.
         report.process_start_filetime = Some(1);
         observe_settings_at_capture_close(&mut report, std::process::id());
         assert!(report.settings.endpoint_semantics_equal.is_none());
@@ -3045,12 +2533,9 @@ mod tests {
             Some(codes::SETTINGS_ENDPOINT_PROCESS_GONE)
         );
 
-        // With the identity intact the endpoints are compared, and a semantic
-        // rewrite between them is not a disagreement.
         report.settings.errors.clear();
         report.process_start_filetime =
             Some(query_process_creation_filetime(std::process::id()).unwrap());
-        // Same second, different process: the identity must still be refused.
         let same_second_other_identity = report.process_start_filetime.unwrap() + 1;
         let mut reused_pid = report.clone();
         reused_pid.process_start_filetime = Some(same_second_other_identity);
@@ -3072,7 +2557,6 @@ mod tests {
         assert!(report.settings.seal_sha256.is_some());
         assert_ne!(report.settings.seal_sha256, report.settings.attach_sha256);
 
-        // A real change IS a disagreement.
         fs::write(
             dir.join("settings.txt"),
             text.replace("x=1920", "x=1600").as_str(),
@@ -3196,8 +2680,6 @@ mod tests {
     #[test]
     fn ambiguous_or_missing_user_dir_fails_closed_and_records_source() {
         let dir = temp_dir("override");
-        // Override without dlc_load.json inside: must FAIL, never fall back to
-        // probing (an explicit pin that does not prove out is an error).
         let err = locate_user_dir(std::process::id(), Some(&dir)).unwrap_err();
         assert!(err.contains("does not contain dlc_load.json"), "{err}");
 
@@ -3238,8 +2720,6 @@ mod tests {
             dlc_descriptor_evidence: BTreeMap::new(),
         };
         let doc = report.as_json();
-        // A naive consumer reading top-level lists on an unresolved report
-        // finds NOTHING (fail-closed shape).
         assert!(doc.get("enabled_mods").is_none());
         assert!(doc.get("dlc").is_none());
         assert_eq!(doc["resolved"], Value::Bool(false));
@@ -3250,9 +2730,6 @@ mod tests {
             doc["partial_evidence"]["dlc_display_names"]["dlc/a/a.dlc"],
             "A"
         );
-        // The settings binding is its own claim, present in BOTH shapes, and
-        // an unavailable authority is stated rather than implied by an absent
-        // language.
         assert!(doc["settings_binding"]["authority"].is_null());
         assert_eq!(doc["settings_binding"]["launch_proven"], Value::Bool(false));
         assert!(doc["settings_binding"]["language"].is_null());
@@ -3266,60 +2743,43 @@ mod tests {
         assert!(doc.get("partial_evidence").is_none());
         assert!(doc["dlc"]["enabled"].is_array());
         assert_eq!(doc["dlc_display_names"]["dlc/a/a.dlc"], "A");
-        // A resolved CONTENT chain does NOT assert anything about settings:
-        // this is the split that lets a hand-launched game record a proven
-        // mod/DLC binding while its settings are only observed.
         assert!(doc["settings_binding"]["language"].is_null());
         assert!(doc.get("localisation_language").is_none());
     }
 
     #[test]
     fn duplicate_top_level_keys_are_rejected() {
-        // serde_json accepts this (keeps the last), so the structural scan is
-        // the only line of defense against the silent-vanilla override.
         let dup = r#"{"enabled_mods":["mod/a.mod"],"enabled_mods":[],"disabled_dlcs":[]}"#;
         assert!(serde_json::from_str::<Value>(dup).is_ok());
         let err = reject_duplicate_top_level_keys(dup).unwrap_err();
         assert!(err.contains("enabled_mods"));
 
-        // A NESTED repeat of the same name is fine (different object).
         let nested =
             r#"{"enabled_mods":["mod/a.mod"],"meta":{"enabled_mods":1},"disabled_dlcs":[]}"#;
         assert!(reject_duplicate_top_level_keys(nested).is_ok());
 
-        // The name appearing inside a string VALUE is not a key.
         let in_value = r#"{"note":"enabled_mods twice","enabled_mods":["x"]}"#;
         assert!(reject_duplicate_top_level_keys(in_value).is_ok());
 
-        // Escaped quote inside a value does not desync the scanner.
         let escaped = r#"{"a":"he said \"enabled_mods\"","enabled_mods":[]}"#;
         assert!(reject_duplicate_top_level_keys(escaped).is_ok());
     }
 
     #[test]
     fn unicode_escaped_duplicate_keys_are_rejected() {
-        // G2-regen finding 1: serde_json decodes an escaped-underscore
-        // spelling of enabled_mods to the same key and keeps the LAST (empty)
-        // value; a raw-slice comparison saw two distinct strings and passed.
-        // The scanner must compare DECODED names.
-        // `\ u 0 0 5 f` assembled via concat! so the escape sequence exists
-        // only in the JSON under test, never in this source file.
         const ESCAPED_UNDERSCORE: &str = concat!(r"\u", "005f");
         let dup = format!(
             r#"{{"enabled_mods":["mod/a.mod"],"enabled{}mods":[],"disabled_dlcs":[]}}"#,
             ESCAPED_UNDERSCORE
         );
         let parsed: Value = serde_json::from_str(&dup).unwrap();
-        // Confirm the trap is real: serde sees ONE key holding the empty list.
         assert_eq!(parsed["enabled_mods"], serde_json::json!([]));
         let err = reject_duplicate_top_level_keys(&dup).unwrap_err();
         assert!(err.contains("enabled_mods"), "{err}");
 
-        // Mixed escape forms of the same name are also duplicates.
         let dup2 = format!(r#"{{"abc":1,"ab{}":2}}"#, concat!(r"\u", "0063"));
         assert!(reject_duplicate_top_level_keys(&dup2).is_err());
 
-        // Distinct decoded names stay accepted.
         let ok = r#"{"enabled_mods":[],"disabled_dlcs":[]}"#;
         assert!(reject_duplicate_top_level_keys(ok).is_ok());
     }
@@ -3335,7 +2795,6 @@ mod tests {
             decode_json_string(r#"a\"b\\c\/d\n"#).unwrap(),
             "a\"b\\c/d\n"
         );
-        // Surrogate pair: U+1F600.
         assert_eq!(
             decode_json_string(&format!(
                 "{}{}",
@@ -3345,7 +2804,6 @@ mod tests {
             .unwrap(),
             "\u{1F600}"
         );
-        // Unpaired surrogate fails closed.
         assert!(decode_json_string(r"\uD83D").is_err());
         assert!(decode_json_string(r"\uZZZZ").is_err());
         assert!(decode_json_string(r"dangling\").is_err());
@@ -3353,8 +2811,6 @@ mod tests {
 
     #[test]
     fn competing_or_repeated_content_locations_are_conflicts() {
-        // G2-regen finding 6: last-wins content selection is unproven engine
-        // semantics — both-present and repeated keys must fail closed.
         let dir = temp_dir("conflict");
         fs::create_dir_all(dir.join("mod").join("a")).unwrap();
         fs::write(dir.join("mod").join("a").join("f.txt"), b"x").unwrap();
@@ -3378,7 +2834,6 @@ mod tests {
         assert!(repeat.content_location_conflict);
         assert!(repeat.content_path.is_none());
 
-        // A single location stays bound.
         fs::write(dir.join("mod").join("one.mod"), "path=\"mod/a\"\n").unwrap();
         let one = resolve_mod_descriptor(&dir, "mod/one.mod");
         assert!(!one.content_location_conflict);
@@ -3390,8 +2845,6 @@ mod tests {
 
     #[test]
     fn content_sha256_catches_what_the_tuple_fingerprint_misses() {
-        // G2-regen finding 3: (count, bytes, max-mtime) collides on renames
-        // and same-length edits. The sha256 binding must not.
         let dir = temp_dir("sha");
         let content = dir.join("mod").join("m");
         fs::create_dir_all(&content).unwrap();
@@ -3403,8 +2856,6 @@ mod tests {
         let sha_before = before.content_sha256.clone().expect("sha");
         let (files_b, bytes_b, _) = before.content_fingerprint.expect("tuple");
 
-        // RENAME: file mtime is preserved, count and bytes unchanged — the
-        // old tuple is blind to this; the sha must move.
         fs::rename(content.join("a.txt"), content.join("b.txt")).unwrap();
         let renamed = resolve_mod_descriptor(&dir, "mod/m.mod");
         let (files_r, bytes_r, _) = renamed.content_fingerprint.expect("tuple");
@@ -3419,7 +2870,6 @@ mod tests {
             "sha256 must catch a rename"
         );
 
-        // SAME-LENGTH EDIT: count/bytes unchanged; sha must move.
         let sha_renamed = renamed.content_sha256.clone().unwrap();
         fs::write(content.join("b.txt"), b"HELLO").unwrap();
         let edited = resolve_mod_descriptor(&dir, "mod/m.mod");
@@ -3434,29 +2884,23 @@ mod tests {
     fn user_dir_corroboration_requires_pid_held_log_handle() {
         // Modset re-gate finding 1: mtime liveness was not ownership (any
         // writer touching logs/ passed). Ownership = the attached PID holds
-        // an open handle to a file under logs/ (Restart Manager query).
         let dir = temp_dir("corrob");
         let my_pid = std::process::id();
 
-        // No logs dir at all -> fail closed.
         assert!(corroborate_user_dir_live(&dir, my_pid).is_err());
 
-        // Empty logs dir -> fail closed.
         fs::create_dir_all(dir.join("logs")).unwrap();
         assert!(corroborate_user_dir_live(&dir, my_pid).is_err());
 
-        // A log file EXISTS but nobody holds it open -> mere presence (or a
         // third-party write) is NOT ownership -> fail closed.
         let log = dir.join("logs").join("game.log");
         fs::write(&log, b"[12:00] boot").unwrap();
         let err = corroborate_user_dir_live(&dir, my_pid).unwrap_err();
         assert!(err.contains("holds no open handle"), "{err}");
 
-        // THIS process holds the handle -> corroborated for OUR pid...
         let held =
             portable_test_fs_retry::open_with(fs::OpenOptions::new().append(true), &log).unwrap();
         assert!(corroborate_user_dir_live(&dir, my_pid).is_ok());
-        // ...but NOT for a different pid (the wrong-process case).
         assert!(corroborate_user_dir_live(&dir, my_pid.wrapping_add(7919)).is_err());
         drop(held);
 
@@ -3465,12 +2909,6 @@ mod tests {
 
     #[test]
     fn user_dir_corroboration_refuses_junction_redirected_logs() {
-        // Fix-round re-gate finding 1: a WRONG user dir whose logs/ is a
-        // JUNCTION into the real logs dir must NOT corroborate — Restart
-        // Manager would truthfully report the attached PID holding the
-        // junction TARGET, corroborating a directory whose dlc_load.json the
-        // process never read. Junction creation (mklink /J) needs no
-        // privileges or Developer Mode, unlike file symlinks.
         let real = temp_dir("junct_real");
         let fake = temp_dir("junct_fake");
         let my_pid = std::process::id();
@@ -3480,21 +2918,10 @@ mod tests {
         fs::write(&log, b"[12:00] boot").unwrap();
         let held =
             portable_test_fs_retry::open_with(fs::OpenOptions::new().append(true), &log).unwrap();
-        // Sanity: the REAL dir corroborates while we hold the handle.
         corroborate_user_dir_live(&real, my_pid).unwrap();
 
         let fake_logs = fake.join("logs");
-        // Retried only when Windows failed to *start* `cmd.exe`: under a full
-        // `--workspace` run, concurrent process creation intermittently dies
-        // with `STATUS_DLL_INIT_FAILED` (`0xC000_0142`) before `mklink` ever
         // runs. `mklink`'s own refusals use exit code 1 and still fail on the
-        // first attempt, so this cannot mask a junction that was not created —
-        // and the `is_file` assertion below independently proves the junction
-        // really resolves before the refusal being tested is asserted. The code
-        // is matched exactly rather than by the NTSTATUS range `>= 0xC000_0000`,
-        // which is not exclusive to the loader: a child may pass any 32-bit value
-        // to `ExitProcess`, `TerminateProcess` may impose one, and an unhandled
-        // exception surfaces as its own status code.
         const MAX_ATTEMPTS: u32 = 5;
         const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
         for attempt in 1..=MAX_ATTEMPTS {
@@ -3518,10 +2945,7 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
         }
-        // The junction genuinely reaches the held file — exactly the state
-        // that fooled the pre-fix check...
         assert!(fake_logs.join("game.log").is_file());
-        // ...but corroboration refuses the alias.
         let err = corroborate_user_dir_live(&fake, my_pid).unwrap_err();
         assert!(
             err.contains("refusing to corroborate through an alias"),
@@ -3539,10 +2963,8 @@ mod tests {
         fs::create_dir_all(dir.join("mod")).unwrap();
         fs::write(dir.join("mod").join("e.mod"), "name=\"E\"\npath=\"\"\n").unwrap();
         let resolved = resolve_mod_descriptor(&dir, "mod/e.mod");
-        // An empty path= names no content location -> None -> caller fails closed.
         assert!(resolved.content_path.is_none());
         assert!(resolved.content_fingerprint.is_none());
         fs::remove_dir_all(&dir).ok();
     }
-
 }

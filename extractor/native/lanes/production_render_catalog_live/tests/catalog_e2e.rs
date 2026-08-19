@@ -185,11 +185,6 @@ fn manifest() -> ContentManifest {
         ],
         manifest_digest_sha256: None,
     };
-    // A row won by a ZipArchive layer carries the layer's archive digest as
-    // its source digest - that is the only shape the recorder's admission
-    // emits, and manifest validation now binds it (content_manifest R3-2).
-    // Directory-layer wins keep source == payload, which required() already
-    // produces.
     for row in value.required_content.iter_mut() {
         if row.content.winning_layer_ordinal == 1 {
             row.content.source_sha256 = hash("archive:dlc-used".as_bytes());

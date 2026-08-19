@@ -1,15 +1,3 @@
-//! Exact a729 `SDynamicModifierEntry` value/duration slice (A18).
-//!
-//! The container/definition identity walk remains owned by domain 67. This
-//! module decodes only an already-validated 0x40-byte entry, preserving raw
-//! fixed-point values and the serialized remaining-day counter. The engine
-//! decrements that counter on its daily country tick and removes zero-valued
-//! entries; the tick phase is not encoded here, so this slice deliberately
-//! does not invent an absolute expiry hour. Any incoherent vector rejects the
-//! whole entry. Static authority is bound by
-//! `H_A18_EXACT20_AUTHORITY_RECEIPT_20260720.json`; production activation still
-//! requires the separate runtime instance/removal gate.
-
 pub const ENTRY_STRIDE: u64 = 0x40;
 pub const ENTRY_DAYS_REMAINING_OFF: u64 = 0x10;
 pub const ENTRY_DEF_PTR_OFF: u64 = 0x18;
@@ -29,8 +17,6 @@ pub struct TimedModifierInstance {
     pub remaining_days: Option<u32>,
 }
 
-/// Host-local validated read. `definition_ptr` must be resolved to the
-/// pointer-free definition id before `instance` can enter a compact payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedTimedModifierRead {
     pub definition_ptr: u64,
@@ -44,7 +30,11 @@ pub enum ReadError {
     InvalidEnabled(u8),
     InvalidDays(i32),
     NullDefinition,
-    InvalidValueHeader { begin: u64, capacity: u32, count: u32 },
+    InvalidValueHeader {
+        begin: u64,
+        capacity: u32,
+        count: u32,
+    },
     TornValue(u32),
     TornEntry,
 }
@@ -103,12 +93,20 @@ pub fn read_timed_instance<M: EntryMemory>(
     let capacity = header0.value_capacity;
     let count = header0.value_count;
     if count > capacity || count > MAX_VALUE_COUNT || (count != 0 && begin == 0) {
-        return Err(ReadError::InvalidValueHeader { begin, capacity, count });
+        return Err(ReadError::InvalidValueHeader {
+            begin,
+            capacity,
+            count,
+        });
     }
     let mut values_raw = Vec::with_capacity(count as usize);
     for index in 0..count as u64 {
         let address = begin
-            .checked_add(index.checked_mul(VALUE_STRIDE).ok_or(ReadError::AddressOverflow)?)
+            .checked_add(
+                index
+                    .checked_mul(VALUE_STRIDE)
+                    .ok_or(ReadError::AddressOverflow)?,
+            )
             .ok_or(ReadError::AddressOverflow)?;
         let value0 = memory.read_u64(address)? as i64;
         let value1 = memory.read_u64(address)? as i64;
@@ -140,13 +138,24 @@ mod tests {
     struct Mem(BTreeMap<u64, u64>);
     impl EntryMemory for Mem {
         fn read_u8(&self, address: u64) -> Result<u8, ReadError> {
-            self.0.get(&address).copied().map(|v| v as u8).ok_or(ReadError::Memory(address))
+            self.0
+                .get(&address)
+                .copied()
+                .map(|v| v as u8)
+                .ok_or(ReadError::Memory(address))
         }
         fn read_u32(&self, address: u64) -> Result<u32, ReadError> {
-            self.0.get(&address).copied().map(|v| v as u32).ok_or(ReadError::Memory(address))
+            self.0
+                .get(&address)
+                .copied()
+                .map(|v| v as u32)
+                .ok_or(ReadError::Memory(address))
         }
         fn read_u64(&self, address: u64) -> Result<u64, ReadError> {
-            self.0.get(&address).copied().ok_or(ReadError::Memory(address))
+            self.0
+                .get(&address)
+                .copied()
+                .ok_or(ReadError::Memory(address))
         }
     }
 
@@ -156,7 +165,8 @@ mod tests {
         let mut mem = Mem::default();
         mem.0.insert(entry + ENTRY_DEF_PTR_OFF, 0x4000_0000);
         mem.0.insert(entry + ENTRY_ENABLED_OFF, 1);
-        mem.0.insert(entry + ENTRY_DAYS_REMAINING_OFF, days as u32 as u64);
+        mem.0
+            .insert(entry + ENTRY_DAYS_REMAINING_OFF, days as u32 as u64);
         mem.0.insert(entry + ENTRY_VALUE_BEGIN_OFF, values);
         mem.0.insert(entry + ENTRY_VALUE_CAPACITY_OFF, 4);
         mem.0.insert(entry + ENTRY_VALUE_COUNT_OFF, 3);
@@ -187,19 +197,28 @@ mod tests {
     fn impossible_count_fails_closed() {
         let (mut mem, entry) = fixture(1);
         mem.0.insert(entry + ENTRY_VALUE_COUNT_OFF, 257);
-        assert!(matches!(read_timed_instance(&mem, entry), Err(ReadError::InvalidValueHeader { .. })));
+        assert!(matches!(
+            read_timed_instance(&mem, entry),
+            Err(ReadError::InvalidValueHeader { .. })
+        ));
     }
 
     #[test]
     fn negative_non_sentinel_duration_fails_closed() {
         let (mem, entry) = fixture(-2);
-        assert_eq!(read_timed_instance(&mem, entry), Err(ReadError::InvalidDays(-2)));
+        assert_eq!(
+            read_timed_instance(&mem, entry),
+            Err(ReadError::InvalidDays(-2))
+        );
     }
 
     #[test]
     fn null_definition_fails_closed_before_values_are_admitted() {
         let (mut mem, entry) = fixture(1);
         mem.0.insert(entry + ENTRY_DEF_PTR_OFF, 0);
-        assert_eq!(read_timed_instance(&mem, entry), Err(ReadError::NullDefinition));
+        assert_eq!(
+            read_timed_instance(&mem, entry),
+            Err(ReadError::NullDefinition)
+        );
     }
 }

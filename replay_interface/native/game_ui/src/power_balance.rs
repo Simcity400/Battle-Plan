@@ -1,10 +1,3 @@
-//! XUI18 power-balance definition, runtime admission, and presentation law.
-//!
-//! Static balance/range/modifier structure comes from the effective
-//! `common/bop` catalog. Live value, side identities and country membership
-//! come only from `replay_core::PowerBalanceStateExactView`. Engine-resolved runtime
-//! leaves that cannot be reconstructed from those sources are supplied by an
-//! authenticated all-country supplement and are rejected when incomplete.
 
 use crate::assets::AssetResolver;
 use crate::compose::ComposeOptions;
@@ -171,9 +164,6 @@ struct RawCatalogRoot {
 
 #[derive(Deserialize)]
 struct RawCatalogs {
-    /// Kept as ordered entries rather than a map so that duplicate textual
-    /// keys in the extractor JSON survive deserialization and are refused as
-    /// `StaticCatalogError::DuplicateBalance` instead of silently last-winning.
     #[serde(deserialize_with = "deserialize_balance_entries")]
     power_balances: Vec<(String, RawBalance)>,
 }
@@ -429,7 +419,6 @@ pub struct PowerBalanceRuntimeTextProvenance {
     pub setter_caller_rva: Option<u32>,
     pub formatter_entry_rva: Option<u32>,
     pub identity_source: RuntimeTextIdentitySource,
-    /// Exact commitment carried by A25 for `final_text_utf8`.
     pub final_text_sha256: String,
 }
 
@@ -440,9 +429,6 @@ pub enum PowerBalanceDecisionTextRole {
     Timer,
 }
 
-/// Typed edge from one presentation field to the A25 context that produced
-/// that field. Context records remain deduplicated; equal fields may lawfully
-/// share one context while retaining two distinct edges.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PowerBalanceRuntimeTextSlot {
     LauncherPercentage,
@@ -502,13 +488,8 @@ pub struct PowerBalanceRuntimeSupplement {
     pub launcher_glow_visible: bool,
     pub bar_state: BarState,
     pub range_indicator_frame: usize,
-    /// Engine-resolved final local top-left for the code-positioned
-    /// `range_indicator` prototype. Its authored offset alone is insufficient
-    /// to recover the engine-selected anchor.
     pub range_indicator_top_left: [i32; 2],
     pub trend: Option<PowerBalanceTrendInput>,
-    /// Complete resolved output of `GetPowerBalanceModDesc`. An empty string is
-    /// a measured empty aggregate, not missing data.
     pub power_balance_modifier_desc: String,
     pub decisions_complete: bool,
     pub decisions: Vec<PowerBalanceDecisionInput>,
@@ -569,8 +550,6 @@ pub struct PowerBalancePresentation {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AdmittedPowerBalanceScreen {
-    /// The GUI/GFX are in vanilla in a729. Runtime visibility is gated by an
-    /// active measured balance for the current country, not by an entitlement.
     HiddenNoActiveBalance,
     Visible(Vec<PowerBalancePresentation>),
 }
@@ -841,12 +820,6 @@ fn measured_live_row(
     row: &PowerBalanceStateRecordExact,
 ) -> Result<MeasuredLiveRow<'_>, PowerBalanceRejection> {
     let value = row.value_raw_fixed5 as f64 / 100_000.0;
-    // Side identities are admitted on shape here; whether a side EXISTS is
-    // decided against the balance's own authored definition in `admit_one`,
-    // which is where the certified installed content are in hand. The engine can
-    // legitimately hold a trending side that is neither left nor right (the
-    // load path writes any valid side of the definition straight to the
-    // trending pointer), so refusing that here would drop a real row.
     if row.balance_id.trim().is_empty()
         || row.left_side_id.trim().is_empty()
         || row.right_side_id.trim().is_empty()
@@ -923,10 +896,6 @@ fn admit_one(
     {
         return Err(PowerBalanceRejection::MissingRuntimeProvenance);
     }
-    // Every side identity the recording carries must be a side this balance
-    // actually authors. That is the mod-aware check the producer cannot make:
-    // it reads pointers out of the definition's side array and has no access
-    // to the files that array was built from.
     if definition.side(row.left_side).is_none()
         || definition.side(row.right_side).is_none()
         || definition.side(row.trending_side).is_none()
@@ -986,9 +955,6 @@ fn admit_one(
     let bar_matches_engine_state = match runtime.bar_state {
         BarState::StableLeft => row.value < 0.0,
         BarState::StableRight => row.value >= 0.0,
-        // Moving direction is the independently observed change sign. The
-        // trending-side definition is retained separately and must not be
-        // reinterpreted as that sign by the replay layer.
         BarState::MovingLeft | BarState::MovingRight => true,
     };
     if !bar_matches_engine_state {
@@ -1226,9 +1192,6 @@ fn normalize_value(value: f64) -> f32 {
     ((value + 1.0) * 0.5) as f32
 }
 
-/// Bind one admitted panel to the authored element names. Range splitters and
-/// decision cards are dynamic collections and remain typed rows for XUI03 to
-/// materialize in their preserved order.
 pub fn apply_power_balance_to_compose_options(
     panel: &PowerBalancePresentation,
     options: &mut ComposeOptions,
@@ -1262,9 +1225,6 @@ pub fn apply_power_balance_to_compose_options(
     );
 }
 
-/// Bind the adjacent country-politics launcher owned by XUI11. These values
-/// remain engine-resolved A37 inputs; the replay never derives the displayed
-/// percentage/level strings, active icon, or glow state from the panel value.
 pub fn apply_power_balance_launcher_to_compose_options(
     panel: &PowerBalancePresentation,
     options: &mut ComposeOptions,
@@ -1304,7 +1264,6 @@ mod tests {
     };
     use replay_core::{PowerBalanceStateCadenceExact, PowerBalanceStateRecordExact};
 
-    /// One recorded record, with the trending side under the test's control.
     fn state_record(trending_side_id: &str) -> PowerBalanceStateRecordExact {
         PowerBalanceStateRecordExact {
             source_record_id: "d74:900:0:ITA_power_balance".into(),
@@ -1326,27 +1285,17 @@ mod tests {
         }
     }
 
-    // kills: reinstating "the trending side must be the left or the right side"
-    // in `measured_live_row`. The engine's load path writes any valid side of
-    // the balance's own definition straight to the trending pointer and returns
-    // without recomputing it, so a third side is engine state; refusing it here
-    // would drop a real row from the panel. Whether the side EXISTS is decided
-    // against the authored definition in `admit_one`, not here.
     #[test]
     fn a_trending_side_that_is_neither_left_nor_right_is_admitted() {
         let row = state_record("ITA_army_side");
         let measured = measured_live_row(&row).expect("a third trending side is engine state");
         assert_eq!(measured.trending_side, "ITA_army_side");
 
-        // A balance whose authored left and right sides are the same is also
-        // the engine's business, not this consumer's.
         let mut same = state_record("ITA_grand_council_side");
         same.right_side_id = same.left_side_id.clone();
         assert!(measured_live_row(&same).is_ok());
     }
 
-    // kills: dropping the shape check that replaced the identity rule. An empty
-    // trending token is not a third side, it is a missing one.
     #[test]
     fn an_empty_trending_side_is_still_refused() {
         assert!(matches!(
@@ -1355,9 +1304,6 @@ mod tests {
         ));
     }
 
-    /// A minimal balance body that passes `convert_definition` unchanged, so a
-    /// duplicated key exercises the `DuplicateBalance` refusal rather than an
-    /// earlier structural error.
     fn balance_body(id: &str) -> String {
         format!(
             r#"{{

@@ -80,7 +80,7 @@ def _parse_trucks(tz):
     with the raw tokenizer (each entry is a top-level ``{ ... }`` with no key).
     """
     out = []
-    depth = 1  # the truck '{' was already consumed by the caller
+    depth = 1
     while depth > 0:
         tok = tz.next()
         if tok is None:
@@ -90,7 +90,6 @@ def _parse_trucks(tz):
             continue
         if tok is LBRACE:
             out.append(_parse_truck_record(tz))
-        # stray atoms/'=' ignored
     return out
 
 
@@ -104,7 +103,7 @@ def _parse_node_id(tz):
 def _parse_settings(tz):
     """settings={ node={ id={prov area} data={ disabled motorization_level={..}}} ...}."""
     node_count = 0
-    motorized = []  # nodes with an explicit per-country motorization override
+    motorized = []
     for key, opener in iter_block_entries(tz):
         if opener is not LBRACE:
             continue
@@ -131,7 +130,6 @@ def _parse_settings(tz):
                                         levels[kt] = lv
                             else:
                                 _skip_block_body(tz)
-                        # scalar data fields (disabled) ignored
                 else:
                     _skip_block_body(tz)
         if levels:
@@ -221,7 +219,7 @@ def _parse_foreign_homebase(tz):
     ``{ fields }`` -> closing ``}`` of the wrapper.
     """
     out = []
-    depth = 1  # the foreign_homebase_nodes '{' was already consumed by caller
+    depth = 1
     while depth > 0:
         tok = tz.next()
         if tok is None:
@@ -230,32 +228,27 @@ def _parse_foreign_homebase(tz):
             depth -= 1
             continue
         if tok is LBRACE:
-            # entered one anonymous wrapper block: expect `<prov> { ... }`
-            # (note: space-separated, NOT `prov = { ... }`).
             while True:
                 t2 = tz.next()
                 if t2 is None or t2 is RBRACE:
                     break
                 if t2 is LBRACE:
-                    # the value block for the province key just read
                     rec = _parse_homebase_fields(tz)
                     out.append(rec)
                     continue
                 kp = atom_value(t2)
                 if kp is None:
                     continue
-                # `kp` is the province key; the next token may be '=' or a '{'.
                 nxt = tz.peek()
                 if nxt is EQUALS:
-                    tz.next()  # '='
+                    tz.next()
                     nxt = tz.peek()
                 if nxt is LBRACE:
-                    tz.next()  # consume '{'
+                    tz.next()
                     rec = _parse_homebase_fields(tz)
                     if rec["province"] is None:
                         rec["province"] = to_int(kp)
                     out.append(rec)
-                # scalar/other: ignore
     return out
 
 

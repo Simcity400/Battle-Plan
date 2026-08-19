@@ -82,9 +82,6 @@ pub struct TerrainChunkSynthesisSmokeReport {
     pub target_width: u32,
     pub target_height: u32,
     pub target_format: u32,
-    /// Map frame bundle whose scene CB0 (sun/time/snow/fog state) replaced the
-    /// chunk templates' per-frame scene constants; None means the templates'
-    /// own captured frame state was replayed verbatim.
     #[serde(default)]
     pub scene_frame_bundle: Option<String>,
     pub lod_mappings: Vec<TerrainChunkSynthesisLodMapping>,
@@ -164,11 +161,6 @@ impl TerrainChunkSynthesisPlan {
     }
 }
 
-/// The default (uniform single-LOD) plan. Per-tile CB1 `vSnap` detail-edge
-/// flags are DERIVED through the LODSNAP law
-/// ([`crate::terrain_vsnap_from_neighbour_lods`]): every in-grid neighbour is
-/// at the same `target_tile_size` and the world-rect boundary has none, so the
-/// derived mask is all-zero by law — never a fabricated default (R14/R15).
 pub fn terrain_chunk_synthesis_plan(
     library: &NativeD3d11TerrainChunkLibrary,
     target_tile_size: u32,
@@ -177,8 +169,6 @@ pub fn terrain_chunk_synthesis_plan(
     terrain_chunk_synthesis_plan_with_detail_flags(library, target_tile_size, world_rect, false)
 }
 
-/// The byte-exact validation plan: each tile's `vSnap` is the CAPTURED CB1
-/// record for that origin, and a missing record is a typed blocker.
 pub(crate) fn terrain_chunk_synthesis_validation_plan(
     library: &NativeD3d11TerrainChunkLibrary,
     target_tile_size: u32,
@@ -806,23 +796,11 @@ fn terrain_chunk_synthesis_tiles(
             )?;
             let origin_key = terrain_chunk_origin_key(min_x, min_z)?;
             let detail_edge_flags = match captured_detail_edge_flags_by_origin {
-                // Validation plan: the captured CB1 vSnap for this origin is
-                // the byte-exact oracle. A missing record is a typed blocker —
-                // zeros are never fabricated in its place (R14/R15 additional
-                // finding).
                 Some(flags) => flags.get(&origin_key).copied().ok_or_else(|| {
                     format!(
                         "production terrain chunk synthesis blocked: validation plan has no captured CB1 detail-edge flags (vSnap) for tile origin ({min_x}, {min_z}); zeros are never fabricated in place of the captured record"
                     )
                 })?,
-                // Default plan: DERIVE vSnap through the LODSNAP law
-                // (`terrain_vsnap_from_neighbour_lods`) instead of defaulting.
-                // The synthesized grid is uniform single-LOD: every in-grid
-                // neighbour is at `target_tile_size` (same LOD -> 0.0) and the
-                // world-rect boundary has no neighbour (-> 0.0), so the derived
-                // mask is all-zero BY LAW, not by a plausible default. Edge
-                // order per `TerrainTileEdge`: [bottom(-Z), top(+Z), left(-X),
-                // right(+X)].
                 None => terrain_vsnap_from_neighbour_lods(
                     target_tile_size,
                     [

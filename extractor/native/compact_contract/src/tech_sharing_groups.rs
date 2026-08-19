@@ -1,8 +1,5 @@
-//! Domain 69 `tech_sharing_groups_live` payload contract and encoder.
-
 use std::collections::BTreeSet;
 
-/// One technology-sharing group in the domain 69 snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechSharingGroupRow {
     pub id_token: u32,
@@ -11,30 +8,20 @@ pub struct TechSharingGroupRow {
 
 const ROW_LEN: usize = 12;
 
-/// Exact engine scale of the signed fixed-point dynamic bonus values.
-///
-/// Static RE for build 870ebf proves that the scalar parser stores five
-/// decimal places in a signed i64 and that `modify_tech_sharing_bonus` adds the
-/// parsed value to the member-paired slot.  This is the dynamic adjustment,
-/// not a pre-computed total including the static definition's base bonus.
 pub const TECH_SHARING_BONUS_FIXED5_SCALE: i64 = 100_000;
 
-/// One logical member and its same-index dynamic technology-sharing bonus.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechSharingMemberBonus {
     pub member_tag_db_id: u32,
     pub dynamic_bonus_raw_fixed5: i64,
 }
 
-/// One technology-sharing group in the paired-member/bonus schema.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechSharingGroupBonusRow {
     pub id_token: u32,
     pub members: Vec<TechSharingMemberBonus>,
 }
 
-/// Same D69 row plus the exact definition ID resolved from the synchronized
-/// engine lexer table at `runtime_ordinal`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TechSharingGroupDefinitionRow {
     pub runtime_ordinal: u32,
@@ -42,7 +29,6 @@ pub struct TechSharingGroupDefinitionRow {
     pub members: Vec<TechSharingMemberBonus>,
 }
 
-/// Decoded domain 69 payload with the proven paired bonus semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedTechSharingGroupsBonusPayload {
     pub elapsed_wall_ms: u64,
@@ -50,15 +36,11 @@ pub struct DecodedTechSharingGroupsBonusPayload {
     pub rows: Vec<TechSharingGroupBonusRow>,
 }
 
-/// `TSG2` encoded little-endian in the paired-bonus payload header.
 pub const TECH_SHARING_BONUS_PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"TSG2");
-/// Explicit paired-bonus payload schema version.
 pub const TECH_SHARING_BONUS_PAYLOAD_VERSION: u32 = 2;
 const BONUS_HEADER_LEN: usize = 24;
 const MEMBER_BONUS_LEN: usize = 12;
 
-/// `TSG3` preserves the TSG2 member/bonus rows and adds the exact
-/// runtime-ordinal -> definition-ID reverse mapping.
 pub const TECH_SHARING_DEFINITION_PAYLOAD_MAGIC: u32 = u32::from_le_bytes(*b"TSG3");
 pub const TECH_SHARING_DEFINITION_PAYLOAD_VERSION: u32 = 3;
 const DEFINITION_HEADER_LEN: usize = 28;
@@ -70,18 +52,9 @@ pub struct DecodedTechSharingGroupsDefinitionPayload {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub rows: Vec<TechSharingGroupDefinitionRow>,
-    /// False only for a retained legacy TSG2 payload. No consumer may infer a
-    /// definition join when this is false.
     pub definition_ids_present: bool,
 }
 
-/// Encode the production domain 69 DATA payload.
-///
-/// Wire layout:
-/// - header: `elapsed_wall_ms(u64) group_count(u32) status_flags(u32)`
-/// - one fixed 12-byte row per group:
-///   `id_token(u32) member_count(u32) member_blob_offset(u32)`
-/// - one concatenated member blob of `u32` country tag database IDs
 pub fn encode_payload(
     rows: &[TechSharingGroupRow],
     elapsed_wall_ms: u64,
@@ -109,20 +82,6 @@ pub fn encode_payload(
     payload
 }
 
-/// Encode the paired-member/bonus domain 69 DATA payload.
-///
-/// Wire layout:
-/// - header: `elapsed_wall_ms(u64) group_count(u32) status_flags(u32)` then
-///   `magic="TSG2"(u32) schema_version=2(u32)`
-/// - one fixed 12-byte row per group:
-///   `id_token(u32) member_count(u32) pair_blob_offset(u32)`
-/// - one concatenated pair blob in row/member order; each 12-byte pair is
-///   `member_tag_db_id(u32) dynamic_bonus_raw_fixed5(i64)`
-///
-/// Consumers must require the magic and schema version before interpreting the
-/// row table. The extra header and wider pair blob are also incompatible with
-/// the legacy member-only decoder's exact-coverage checks, including for zero
-/// groups/members.
 pub fn encode_payload_with_bonuses(
     rows: &[TechSharingGroupBonusRow],
     elapsed_wall_ms: u64,
@@ -153,8 +112,7 @@ pub fn encode_payload_with_bonuses(
         let mut member_ids = BTreeSet::new();
         for (member_index, member) in row.members.iter().enumerate() {
             if member.member_tag_db_id == 0
-                || member.member_tag_db_id
-                    > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
+                || member.member_tag_db_id > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
             {
                 return Err(format!(
                     "tech-sharing row {row_index} member {member_index} has invalid tag_db_id {}",
@@ -170,9 +128,6 @@ pub fn encode_payload_with_bonuses(
         }
     }
 
-    // The wire offset is u32. Reject an unrepresentable aggregate before byte
-    // capacity calculation/allocation rather than discovering it while writing
-    // the row table after a potentially huge allocation.
     checked_pair_total_u32(pair_total)?;
 
     let row_bytes = rows
@@ -213,7 +168,6 @@ pub fn encode_payload_with_bonuses(
     Ok(payload)
 }
 
-/// Decode and structurally validate the paired-member/bonus domain 69 payload.
 pub fn decode_payload_with_bonuses(
     payload: &[u8],
 ) -> Result<DecodedTechSharingGroupsBonusPayload, String> {
@@ -320,10 +274,6 @@ pub fn decode_payload_with_bonuses(
     })
 }
 
-/// Encode D69 with the exact definition ID resolved from the engine lexer
-/// table. The definition blob is exact-covered in row order; every row stores
-/// both offset and length so no delimiter or host string convention is
-/// implicit.
 pub fn encode_payload_with_definition_ids(
     rows: &[TechSharingGroupDefinitionRow],
     elapsed_wall_ms: u64,
@@ -366,8 +316,7 @@ pub fn encode_payload_with_definition_ids(
         let mut member_ids = BTreeSet::new();
         for (member_index, member) in row.members.iter().enumerate() {
             if member.member_tag_db_id == 0
-                || member.member_tag_db_id
-                    > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
+                || member.member_tag_db_id > crate::build_profile::DOMAIN69_MAX_MEMBER_TAG_DB_ID
             {
                 return Err(format!(
                     "tech-sharing row {row_index} member {member_index} has invalid tag_db_id {}",
@@ -437,8 +386,6 @@ pub fn encode_payload_with_definition_ids(
     Ok(payload)
 }
 
-/// Decode current TSG3 and retained legacy TSG2. A legacy row deliberately
-/// receives an empty `definition_id` and `definition_ids_present=false`.
 pub fn decode_payload_with_definition_ids(
     payload: &[u8],
 ) -> Result<DecodedTechSharingGroupsDefinitionPayload, String> {

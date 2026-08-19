@@ -4,8 +4,6 @@ use crate::Result;
 
 const GRAPHICS_DEFINES_REL: &str = "common/defines/00_graphics.lua";
 
-/// Political-mapmode scene CB0 defines. These feed the captured pdxmap shader
-/// path; they do not synthesize political textures.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PoliticalSceneDefines {
     pub(crate) outline_cutoff_strategic: f32,

@@ -31,8 +31,6 @@ RT_FRAME_DEGRADED = 7
 
 STATUS_DELTA_DATA = 1 << 10
 
-# Domains that do NOT use the shared 20-byte DOMAIN_DATA payload header, so
-# reading a status word at payload[16..20] is not promised for them.
 NON_SHARED_HEADER_DOMAINS = {48, 53, 83, 91, 93}
 
 _HDR = struct.Struct("<4sHHQiHHII")
@@ -41,12 +39,6 @@ _HDR = struct.Struct("<4sHHQiHHII")
 def walk(path):
     """Yield (offset, sequence, game_hour, domain_id, record_type, payload_len,
     record_flags, payload_memoryview)."""
-    # Plain buffered reads, not mmap. An mmap here has to hand the caller a
-    # memoryview slice per record, and any one of those slices that outlives
-    # the walk keeps the mapping exported, so the file stays open on Windows
-    # for the life of the process and nothing downstream can delete or rewrite
-    # what it just read. The walk is sequential and header-dominated, so the
-    # mapping bought nothing to pay for that.
     with open(path, "rb") as handle:
         off = 0
         while True:
@@ -88,21 +80,17 @@ def main():
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
 
-    # per-domain accumulators
     stats = defaultdict(lambda: {
         "data_records": 0,
         "data_payload_bytes": 0,
         "data_record_bytes": 0,
         "gaps": 0,
-        # split by "did a DOMAIN_GAP for this domain intervene since my last DATA?"
         "after_own_gap_records": 0,
         "after_own_gap_payload": 0,
         "steady_records": 0,
         "steady_payload": 0,
-        # first DATA record of the domain (seeds the pin) -- counted in neither split
         "seed_records": 0,
         "seed_payload": 0,
-        # delta bit
         "delta_records": 0,
         "delta_payload": 0,
         "keyframe_records": 0,
@@ -176,14 +164,6 @@ def main():
         steady_mean = (s["steady_payload"] / s["steady_records"]) if s["steady_records"] else None
         gap_mean = (s["after_own_gap_payload"] / s["after_own_gap_records"]) if s["after_own_gap_records"] else None
         delta_mean = (s["delta_payload"] / s["delta_records"]) if s["delta_records"] else None
-        # NAIVE prize only, kept because it is the number the earlier hand
-        # tabulations used and a reader comparing against them needs it.
-        # It assumes a post-own-gap record shrinks to this domain's mean steady
-        # payload, which is wrong twice: the mean averages populations that do
-        # not belong together (d47 and d51 emit ~0.1 KB most hours and ~931 KB /
-        # ~572 KB on the rest), and a record spanning k hours carries more than
-        # one hour's change. `cc_pin_prize_v2.py` is the number to quote; this
-        # one overstates it by 3x on t26 (752.64 MiB against 255.10 MiB).
         if steady_mean is not None and gap_mean is not None and gap_mean > steady_mean:
             pin_prize = int(round(s["after_own_gap_payload"] - s["after_own_gap_records"] * steady_mean))
         else:

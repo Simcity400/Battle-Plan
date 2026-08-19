@@ -91,10 +91,6 @@ impl PlatformRoot {
             };
             let entries = list_directory(parent_fd)?;
             let mut opened_id = object_id(opened.fd.as_raw_fd())?;
-            // Within one already-verified parent mount, the atomic d_ino from
-            // readdir is the binding key. Do not fold st_dev into this
-            // same-parent comparison: overlayfs may report a different st_dev
-            // for a child while statx proves one mount instance.
             opened_id.volume = 0;
             validate_binding(expected, expected, &opened_id, &listed_objects(&entries))?;
 

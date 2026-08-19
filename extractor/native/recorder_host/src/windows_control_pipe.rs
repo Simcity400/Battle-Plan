@@ -1,9 +1,3 @@
-//! Offline Windows H4CT listener and overlapped-I/O foundation.
-//!
-//! Nothing in this module injects a DLL or activates auto-attach. The type-state
-//! API exists so future activation can require proof that a restrictive,
-//! overlapped duplex listener was created before the one permitted injection.
-
 use std::fmt;
 use std::io;
 
@@ -15,7 +9,6 @@ use crate::control_transport::{
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RestrictiveSecurityPolicy {
-    /// LocalSystem remains off unless packaging later proves it is required.
     pub allow_local_system: bool,
 }
 
@@ -60,8 +53,6 @@ impl From<io::Error> for ControlPipeError {
     }
 }
 
-/// Mockable Windows boundary. Production uses [`WindowsPipeBackend`]; tests can
-/// inject listener, connect, identity, deadline, and cancellation faults.
 pub trait ControlPipeBackend {
     type Listener;
     type Io: DeadlineControlIo;
@@ -81,8 +72,6 @@ pub trait ControlPipeBackend {
         cancellation: &ControlCancellation,
     ) -> Result<Self::Io, ControlPipeError>;
 
-    /// Must be backed by `GetNamedPipeClientProcessId` and a fresh process
-    /// creation-FILETIME query in the production implementation.
     fn peer_identity(
         &mut self,
         io: &Self::Io,
@@ -91,13 +80,10 @@ pub trait ControlPipeBackend {
     ) -> Result<ControlPeerIdentity, ControlPipeError>;
 }
 
-/// Unforgeable outside this module. Future injection wiring should require a
-/// borrow of this proof before invoking the existing one-shot injector.
 pub struct ListenerReadyProof {
     _private: (),
 }
 
-/// Type-state representing a secured H4CT listener created before injection.
 pub struct PreparedControlListener<B: ControlPipeBackend> {
     backend: B,
     listener: B::Listener,
@@ -128,11 +114,6 @@ impl<B: ControlPipeBackend> PreparedControlListener<B> {
         &self.ready
     }
 
-    /// Accept one peer and return the deadline-bearing raw transport only after
-    /// the restrictive listener has re-read and matched its PID + process
-    /// creation FILETIME. This narrow seam is for fixed, feature-local typed
-    /// handshakes (currently direct-capture READY/ACK); it does not admit the
-    /// general H4CT message dispatcher or bypass capability admission.
     pub fn accept_and_identify(
         mut self,
         expected_peer: ControlPeerIdentity,
@@ -164,8 +145,6 @@ impl<B: ControlPipeBackend> PreparedControlListener<B> {
         Ok(io)
     }
 
-    /// Consume the prepared listener, accept exactly one client, re-read its
-    /// identity, and construct the only deadline-bearing channel form.
     pub fn accept_and_admit(
         mut self,
         session_id: [u8; 16],
@@ -376,8 +355,6 @@ mod win32 {
 
     impl SecurityDescriptor {
         fn restrictive(policy: RestrictiveSecurityPolicy) -> io::Result<Self> {
-            // OW is the object's owner-rights SID. The protected DACL has no
-            // inherited or Everyone ACE; LocalSystem is opt-in only.
             let sddl = if policy.allow_local_system {
                 "D:P(A;;GA;;;OW)(A;;GA;;;SY)"
             } else {
@@ -455,8 +432,6 @@ mod win32 {
     }
 
     // `WindowsControlIo` uniquely owns a kernel handle. Moving that ownership
-    // to the recorder's control worker is safe: the handle is never aliased and
-    // all I/O remains serialized by the owning worker.
     unsafe impl Send for WindowsControlIo {}
 
     #[derive(Default)]
@@ -698,9 +673,7 @@ mod win32 {
                 GetOverlappedResult(handle.raw(), &mut operation.overlapped, &mut ignored, 0);
             }
         } else {
-            // The buffer, OVERLAPPED, event, and pipe handle must outlive an
             // unreaped operation. Transfer all of them to process-lifetime
-            // quarantine rather than returning stack-backed memory to Rust.
             handle.quarantine(operation);
         }
         Err(io::Error::new(kind, "H4CT operation retired terminally"))

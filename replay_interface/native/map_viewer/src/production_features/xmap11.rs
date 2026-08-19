@@ -1,8 +1,3 @@
-//! XMAP11 trees and vegetation production adapter.
-//!
-//! The product path starts from effective installed content plus the current replay
-//! hour and viewer-owned XMAP03/XMAP04 camera state. The retained C07 submit is
-//! deliberately not accepted here.
 
 use crate::{
     prepare_xmap11_tree_frame, FoundationFeatureContext, FoundationFeatureOutput,

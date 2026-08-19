@@ -1,76 +1,13 @@
-//! The collector's worker-error record: one shared format, written by the
-//! collector and read by the recorder host.
-//!
-//! `collector_worker_error.log` sits beside `collector.dll`. It is opened
-//! append-only, is never truncated, accumulates across days, and is shared by
-//! every collector loaded from that directory. A reader therefore cannot
-//! attribute a record to one capture by file position, and a single append is
-//! not guaranteed to be atomic: `write_all` may retry after a short write, so
-//! two writers that each split can interleave arbitrarily.
-//!
-//! Each record is one physical line carrying everything needed to decide
 //! ownership on its own:
-//!
-//! ```text
-//! pid=<pid> ctime=<creation> len=<NNNNNNNN> sum=<XXXXXXXX> <body>
-//! ```
-//!
-//! * `pid` and `ctime` identify the writing process instance. A pid alone is
-//!   only unique while that process object lives.
-//! * `len` is the exact byte length of `body`, in a fixed-width field so
-//!   declaring the length cannot change it.
-//! * `sum` is a digest over `body`. Length alone only proves a body is the
-//!   right SIZE; the digest proves it is the right BYTES, so an interleaving
-//!   that happens to substitute an equal-length run is rejected too.
-//! * `body` ends with `end=pid=<pid>`.
-//!
-//! Both halves of this contract live here so the writer and the reader cannot
-//! drift apart.
 
-/// Width of the fixed-width byte-length field.
 pub const LEN_FIELD_WIDTH: usize = 8;
-/// Width of the fixed-width body digest field.
 pub const SUM_FIELD_WIDTH: usize = 8;
-/// Longest error text kept in one record. Bounding the record keeps the append
-/// a single small write, which is what makes interleaving unlikely at all.
-///
-/// This is a bound on ONE RECORD, and deliberately not a bound on one ERROR:
-/// see [`format_records`], which splits a long error across several records
-/// rather than destroying its tail.
 pub const RECORD_TEXT_LIMIT: usize = 3072;
 
-/// The most records one error may be split across by [`format_records`].
-///
-/// The largest producer is the collector's `frame_degraded` summary, which
-/// names every domain that went unknown for an hour with that domain's own
-/// typed reason. Its worst case is bounded by the wire record it mirrors:
-/// `frame_degraded::FRAME_DEGRADED_MAX_REASON_LEN` (512) per domain plus the
-/// `d<id>:0x........[]` framing and a separator, so roughly 530 bytes per
-/// degraded domain. At the 73-domain scheduled roster that is under 39 KB --
-/// thirteen records -- and this cap leaves it a fivefold margin while still
-/// refusing an absurd one.
-///
-/// Exceeding it is not silent. Every chunk is labelled `i/n` with the TRUE
-/// `n`, so a reader that receives fewer records than `n` can see exactly how
-/// many were dropped, and by how much the cap was passed.
 pub const MAX_RECORD_CHUNKS: usize = 64;
 
-/// Largest `n` a reader will believe in a `i/n` chunk label.
-///
-/// Distinct from [`MAX_RECORD_CHUNKS`], which bounds what is WRITTEN. A label
-/// legitimately declares more than that -- the excess is exactly how a reader
-/// learns the cap was passed -- but [`reassemble_records`] sizes a slot table
-/// from the declared total, so an unbounded one is an allocation a foreign or
-/// corrupt record gets to choose. Sixty-four times the write cap leaves the
-/// real overrun signal intact while refusing an absurd one.
 pub const MAX_DECLARED_CHUNK_TOTAL: usize = MAX_RECORD_CHUNKS * 64;
 
-/// FNV-1a over the body bytes, folded to 32 bits.
-///
-/// This detects accidental interleaving and truncation, which is what the log
-/// is exposed to. It is deliberately not a cryptographic commitment: anyone who
-/// can forge a colliding body can also overwrite `collector.dll` in the same
-/// directory, so a stronger digest would not buy a stronger guarantee.
 pub fn body_digest(body: &[u8]) -> u32 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in body {
@@ -80,7 +17,6 @@ pub fn body_digest(body: &[u8]) -> u32 {
     ((hash >> 32) as u32) ^ (hash as u32)
 }
 
-/// Build the exact bytes of one record, including its terminating newline.
 pub fn format_record(pid: u32, creation_filetime: u64, phase: &str, error: &str) -> String {
     let mut text = format!("{error:?}");
     if text.len() > RECORD_TEXT_LIMIT {
@@ -101,28 +37,11 @@ pub fn format_record(pid: u32, creation_filetime: u64, phase: &str, error: &str)
     )
 }
 
-/// Byte length this character contributes to a `{:?}` rendering of the string
-/// containing it.
-///
-/// `char::escape_debug` is a strict UPPER bound on what `str`'s own `Debug`
-/// spells for the same character: `str` escapes grapheme-extended characters
-/// only in leading position and never escapes `'`, while this escapes both
-/// unconditionally. Over-estimating is the safe direction -- it makes a chunk
-/// slightly shorter than it had to be -- and under-estimating would silently
-/// hand `format_record` a chunk it then truncates, which is the whole defect
-/// this splitter exists to remove.
 fn debug_escaped_len(character: char) -> usize {
     character.escape_debug().map(char::len_utf8).sum()
 }
 
-/// Split one error into the largest pieces that each still render inside
-/// [`RECORD_TEXT_LIMIT`] once `{:?}`-escaped.
-///
-/// Splits on CHARACTER boundaries of the raw text, never inside an escape
-/// sequence: each piece is independently valid UTF-8 and is escaped on its own,
-/// so no piece can end mid-`\u{...}`.
 fn split_error_text(error: &str) -> Vec<&str> {
-    // Two bytes of the budget always go to the surrounding quotes.
     let budget = RECORD_TEXT_LIMIT.saturating_sub(2);
     let mut pieces = Vec::new();
     let mut start = 0usize;
@@ -136,30 +55,12 @@ fn split_error_text(error: &str) -> Vec<&str> {
         }
         used += cost;
     }
-    // The tail, and the empty error: an empty piece is still a record, because
-    // "this phase failed and said nothing" is itself the report.
     pieces.push(&error[start..]);
     pieces
 }
 
-/// Next reason ORDINAL this load will mint. Starts at 1.
-static NEXT_REASON_ORDINAL: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(1);
+static NEXT_REASON_ORDINAL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
-/// A reason id, unique among the reasons one reader can see together.
-///
-/// The high half is a per-LOAD salt and the low half a counter, and the salt is
-/// what makes the id sufficient. A counter alone is unique only within one load
-/// of this code, and the reader's grouping key is (reason id, phase) among
-/// records attributed to one process instance -- so a collector unloaded and
-/// re-injected into the same game process would restart at 1, and the reader
-/// would join the first reason of the second capture onto the first reason of
-/// the first. Both are that pid and creation time's records, so nothing else in
-/// the envelope separates them, and the result would be one merged text that
-/// reads as complete.
-///
-/// The salt is forced non-zero, so a zero id remains a parse failure rather than
-/// a plausible first reason.
 fn next_reason_id() -> u64 {
     use core::sync::atomic::Ordering;
     static SALT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
@@ -174,36 +75,12 @@ fn next_reason_id() -> u64 {
     (salt << 32) | (ordinal & 0xFFFF_FFFF)
 }
 
-/// The marker that opens a chunk label, chosen so it cannot occur in a phase.
-/// Every phase this crate's callers pass is a bare identifier.
 const CHUNK_LABEL_MARKER: &str = "#r";
 
-/// Build every record needed to carry one error, in order.
-///
-/// A single-record error is byte-identical to [`format_record`], phase and all.
-/// A longer one is CHUNKED rather than cut: each record carries
-/// `phase#r<reason_id>#i/n` and its own share of the text, so the reason a
-/// degraded frame gives survives to whoever reads the log instead of ending at
-/// an arbitrary buffer size. Each record is still one small self-validating
-/// append, which is the property the per-record bound exists to protect.
-///
-/// The REASON ID is what makes reassembly possible at all. The log is shared
-/// and append-only, a single append is not atomic, and one process writes many
-/// errors: `i/n` alone cannot say which reason a chunk belongs to, so two
-/// interleaved multi-chunk reports reassemble into one nonsense string. The id
-/// is minted per call from a process-local counter, so two identical reasons
-/// written back to back stay two reasons.
-pub fn format_records(
-    pid: u32,
-    creation_filetime: u64,
-    phase: &str,
-    error: &str,
-) -> Vec<String> {
+pub fn format_records(pid: u32, creation_filetime: u64, phase: &str, error: &str) -> Vec<String> {
     format_records_with_reason_id(pid, creation_filetime, phase, error, next_reason_id())
 }
 
-/// [`format_records`] with the reason id supplied, so the chunking and the
-/// reassembly are testable as pure functions.
 pub fn format_records_with_reason_id(
     pid: u32,
     creation_filetime: u64,
@@ -224,52 +101,36 @@ pub fn format_records_with_reason_id(
             format_record(
                 pid,
                 creation_filetime,
-                &format!("{phase}{CHUNK_LABEL_MARKER}{reason_id:016x}#{}/{total}", index + 1),
+                &format!(
+                    "{phase}{CHUNK_LABEL_MARKER}{reason_id:016x}#{}/{total}",
+                    index + 1
+                ),
                 piece,
             )
         })
         .collect()
 }
 
-/// The chunk label a chunked record carries in its phase field.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ChunkLabel {
-    /// The phase as it would have been written unchunked.
     pub phase: String,
-    /// Which reason these chunks belong to.
     pub reason_id: u64,
-    /// 1-based position of this chunk.
     pub index: usize,
-    /// How many chunks the reason NEEDED. May exceed [`MAX_RECORD_CHUNKS`], and
-    /// that is how a reader learns the cap was passed.
     pub total: usize,
 }
 
-/// One record's body, split into the parts a reader needs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ParsedBody<'a> {
-    /// The phase field exactly as written, chunk label and all.
     pub phase_field: &'a str,
-    /// Present when the phase field carries a chunk label.
     pub chunk: Option<ChunkLabel>,
-    /// The `{:?}`-rendered error text, quotes included.
     pub escaped_text: &'a str,
 }
 
-/// Split one record body (`phase=... error=... end=pid=...`) into its parts.
-///
-/// Returns `None` for anything that is not that shape. The closing stamp is
-/// located from the END, because the error text is free-form and may itself
-/// contain the literal `end=pid=`.
 pub fn parse_body(body: &str) -> Option<ParsedBody<'_>> {
     let rest = body.strip_prefix("phase=")?;
     let (phase_field, rest) = rest.split_once(" error=")?;
     let stamp = rest.rfind(" end=pid=")?;
     let escaped_text = &rest[..stamp];
-    // A phase field carrying the chunk MARKER but no parseable label is a
-    // malformed record, not an unchunked one. Downgrading it would report a
-    // single arbitrary slice of some longer reason as a complete error --
-    // silently, and with the reason's own text as the evidence for it.
     let chunk = parse_chunk_label(phase_field);
     if chunk.is_none() && phase_field.contains(CHUNK_LABEL_MARKER) {
         return None;
@@ -291,10 +152,6 @@ fn parse_chunk_label(phase_field: &str) -> Option<ChunkLabel> {
     let (index, total) = position.split_once('/')?;
     let index: usize = index.parse().ok()?;
     let total: usize = total.parse().ok()?;
-    // `total` is the count the writer NEEDED and may legitimately exceed
-    // `MAX_RECORD_CHUNKS` -- that is how a reader learns the cap was passed --
-    // but a reassembler sizes a slot table from it, so it cannot be unbounded.
-    // Past this ceiling the label is not something this contract wrote.
     if index == 0 || total == 0 || index > total || total > MAX_DECLARED_CHUNK_TOTAL {
         return None;
     }
@@ -306,22 +163,12 @@ fn parse_chunk_label(phase_field: &str) -> Option<ChunkLabel> {
     })
 }
 
-/// Invert the `{:?}` rendering [`format_record`] applied.
-///
-/// Only the escapes `char::escape_debug` can emit are accepted; anything else
-/// is a malformed record and returns `None` rather than a guess. The input
-/// includes the surrounding quotes.
 pub fn unescape_debug_text(escaped: &str) -> Option<String> {
     let inner = escaped.strip_prefix('"')?.strip_suffix('"')?;
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
     while let Some(character) = chars.next() {
         if character != '\\' {
-            // `format_record` escapes both of these unconditionally, so a raw
-            // one means the text was not produced by this contract's writer.
-            // Copying it through would turn noncanonical noise into a plausible
-            // reason -- and a raw `"` would additionally let a body claim a
-            // shorter text than it carries.
             if character == '"' || character.is_control() {
                 return None;
             }
@@ -457,9 +304,7 @@ pub fn reassemble_records(bodies: &[&str]) -> Vec<ReassembledError> {
         // declaration stays -- it is what sized the slot table -- but the
         // disagreement is reported, because a text assembled under a total that
         // is in dispute is not a complete text.
-        if out[slot].chunks_expected != label.total
-            && !out[slot].conflicting_chunks.contains(&0)
-        {
+        if out[slot].chunks_expected != label.total && !out[slot].conflicting_chunks.contains(&0) {
             out[slot].conflicting_chunks.push(0);
         }
         let Some(cell) = chunks[slot].get_mut(label.index - 1) else {
@@ -697,7 +542,9 @@ mod tests {
         let suffix = owned_suffix(4321);
         let mut recovered = String::new();
         for (index, record) in records.iter().enumerate() {
-            let line = record.strip_suffix('\n').expect("record ends with a newline");
+            let line = record
+                .strip_suffix('\n')
+                .expect("record ends with a newline");
             // Every chunk is a COMPLETE record in its own right: the reader
             // validates each independently, so a lost or interleaved chunk
             // costs that chunk and nothing else.
@@ -724,7 +571,6 @@ mod tests {
                 "chunk {} was truncated by format_record, so the split budget is wrong",
                 index + 1
             );
-            // Undo the `{:?}` rendering the same way the writer applied it.
             recovered.push_str(&unescape_debug(text));
         }
         assert_eq!(
@@ -733,7 +579,6 @@ mod tests {
         );
     }
 
-    /// Minimal inverse of `{:?}` for the escapes this text can contain.
     fn unescape_debug(text: &str) -> String {
         let inner = text
             .strip_prefix('"')
@@ -759,20 +604,12 @@ mod tests {
         out
     }
 
-    /// No chunk may exceed the per-record bound, whatever the text is made of.
-    ///
-    /// The budget is computed from `char::escape_debug`, so a character whose
-    /// escaped form is far longer than its raw form is exactly what would break
-    /// a byte-counting splitter.
-    ///
-    /// Production change that makes this fail: `split_error_text` measuring raw
-    /// byte length instead of escaped length.
     #[test]
     fn no_chunk_exceeds_the_single_record_bound() {
         for error in [
-            "\u{7}".repeat(RECORD_TEXT_LIMIT), // escapes to \u{7}, 6 bytes each
-            "\"\\\n\t".repeat(RECORD_TEXT_LIMIT / 2), // two bytes each
-            "é".repeat(RECORD_TEXT_LIMIT),    // two raw bytes, one escaped char
+            "\u{7}".repeat(RECORD_TEXT_LIMIT),
+            "\"\\\n\t".repeat(RECORD_TEXT_LIMIT / 2),
+            "é".repeat(RECORD_TEXT_LIMIT),
             "A".repeat(RECORD_TEXT_LIMIT * 3),
         ] {
             for record in format_records(4321, 77, "capture", &error) {
@@ -797,26 +634,30 @@ mod tests {
         }
     }
 
-    /// A short error is still exactly one record, with its phase untouched.
-    /// The chunk labelling must not appear on the overwhelmingly common case.
     #[test]
     fn a_short_error_is_one_unlabelled_record() {
         let records = format_records(4321, 77, "capture", "something broke");
         assert_eq!(records.len(), 1);
-        assert_eq!(records[0], format_record(4321, 77, "capture", "something broke"));
-        assert!(records[0].contains("phase=capture error="), "{}", records[0]);
+        assert_eq!(
+            records[0],
+            format_record(4321, 77, "capture", "something broke")
+        );
+        assert!(
+            records[0].contains("phase=capture error="),
+            "{}",
+            records[0]
+        );
     }
 
-    /// An error past the chunk cap loses records, but says so: `n` is the
-    /// count that was NEEDED, so the shortfall is arithmetic, not a guess.
-    ///
-    /// Production change that makes this fail: labelling chunks `i/emitted`
-    /// instead of `i/total`.
     #[test]
     fn passing_the_chunk_cap_is_countable_from_the_records_themselves() {
         let error = "A".repeat(RECORD_TEXT_LIMIT * (MAX_RECORD_CHUNKS + 7));
         let records = format_records_with_reason_id(4321, 77, "capture", &error, 0x5EED);
-        assert_eq!(records.len(), MAX_RECORD_CHUNKS, "the cap bounds what is emitted");
+        assert_eq!(
+            records.len(),
+            MAX_RECORD_CHUNKS,
+            "the cap bounds what is emitted"
+        );
         let declared: usize = records[0]
             .split(&format!("phase=capture#r{:016x}#1/", 0x5EEDu64))
             .nth(1)
@@ -830,8 +671,6 @@ mod tests {
         );
     }
 
-    /// Build the long multi-domain `frame_degraded` reason the chunking exists
-    /// for: every scheduled domain named with its own typed reason.
     fn multi_domain_degraded_reason(domains: usize) -> String {
         format!(
             "hour 60831436 published with degraded domains: {}",
@@ -845,17 +684,6 @@ mod tests {
         )
     }
 
-    /// THE ROUND TRIP: a long multi-domain reason written as chunks and read
-    /// back is the SAME STRING, byte for byte.
-    ///
-    /// Chunking alone did not achieve this. The chunks carried `i/n` and no
-    /// reason id, so a reader had no way to know which reason a chunk belonged
-    /// to and did not try: it joined whole physical records to a byte cap and
-    /// appended `[truncated]`. The text the collector wrote reached nobody.
-    ///
-    /// Production change that makes this fail: dropping the reason id from the
-    /// chunk label (`{phase}#{i}/{total}`), or `reassemble_records` joining
-    /// chunks in arrival order instead of by index.
     #[test]
     fn a_long_multi_domain_reason_survives_the_round_trip_whole() {
         let error = multi_domain_degraded_reason(40);
@@ -868,13 +696,11 @@ mod tests {
 
         let header = owned_header(4321, 77);
         let suffix = owned_suffix(4321);
-        // Deliver the chunks OUT OF ORDER, with the last one first. The log is
-        // shared and append-only; nothing guarantees a reader sees a reason's
-        // records contiguously, and an index that is only decorative would pass
-        // a test that fed them in order.
         let mut delivered: Vec<String> = Vec::new();
         for record in records.iter().rev() {
-            let line = record.strip_suffix('\n').expect("record ends with a newline");
+            let line = record
+                .strip_suffix('\n')
+                .expect("record ends with a newline");
             let body = owned_body(line.as_bytes(), &header, &suffix)
                 .expect("each chunk must be an intact owned record");
             delivered.push(String::from_utf8(body.to_vec()).expect("chunk body is UTF-8"));
@@ -882,26 +708,23 @@ mod tests {
         let bodies: Vec<&str> = delivered.iter().map(String::as_str).collect();
 
         let reasons = reassemble_records(&bodies);
-        assert_eq!(reasons.len(), 1, "one reason, not one per record: {reasons:?}");
+        assert_eq!(
+            reasons.len(),
+            1,
+            "one reason, not one per record: {reasons:?}"
+        );
         let reason = &reasons[0];
         assert_eq!(reason.phase, "frame_degraded");
         assert!(reason.reason_id.is_some());
         assert_eq!(reason.chunks_expected, records.len());
         assert_eq!(reason.chunks_present, records.len());
         assert!(reason.complete(), "{:?}", reason.missing_chunks);
-        assert_eq!(reason.text, error, "the reassembled reason must be the whole original");
+        assert_eq!(
+            reason.text, error,
+            "the reassembled reason must be the whole original"
+        );
     }
 
-    /// Two reasons written back to back do not merge, even with the same phase
-    /// and identical text.
-    ///
-    /// This is the whole argument for the reason id. `i/n` alone cannot tell
-    /// "chunk 2 of the first report" from "chunk 2 of the second", so a reader
-    /// that grouped on the phase would interleave them into one nonsense string
-    /// and call it complete.
-    ///
-    /// Production change that makes this fail: minting the reason id from the
-    /// phase or from the error text instead of a per-call counter.
     #[test]
     fn two_reports_of_the_same_reason_stay_two_reasons() {
         let error = multi_domain_degraded_reason(12);
@@ -912,7 +735,6 @@ mod tests {
         let header = owned_header(4321, 77);
         let suffix = owned_suffix(4321);
         let mut bodies = Vec::new();
-        // Interleaved, which is what a shared append-only log actually does.
         for index in 0..first.len().max(second.len()) {
             for record in [first.get(index), second.get(index)].into_iter().flatten() {
                 let line = record.strip_suffix('\n').expect("newline");
@@ -923,7 +745,11 @@ mod tests {
         let bodies: Vec<&str> = bodies.iter().map(String::as_str).collect();
 
         let reasons = reassemble_records(&bodies);
-        assert_eq!(reasons.len(), 2, "the two reports must stay apart: {reasons:?}");
+        assert_eq!(
+            reasons.len(),
+            2,
+            "the two reports must stay apart: {reasons:?}"
+        );
         for reason in &reasons {
             assert!(reason.complete(), "{reason:?}");
             assert_eq!(reason.text, error);
@@ -934,28 +760,17 @@ mod tests {
         );
     }
 
-    /// A reason id is unique across a RELOAD of this code inside one process,
-    /// not merely across calls within one load.
-    ///
-    /// The reader's grouping key is (reason id, phase) among records attributed
-    /// to one process instance. A collector unloaded and re-injected into the
-    /// same game process writes under the same pid and creation time, so if the
-    /// counter restarted at 1 the second capture's first reason would be joined
-    /// onto the first capture's first reason and read as one complete text.
-    ///
-    /// A test cannot reload the module, so it asserts the property that makes a
-    /// reload safe: the id is not a small ordinal, and its high half -- the
-    /// per-load salt -- is non-zero and shared by every id this load mints.
-    ///
-    /// Production change that makes this fail: minting the id from the ordinal
-    /// counter alone.
     #[test]
     fn a_reason_id_is_not_a_bare_ordinal_a_reload_would_repeat() {
         let first = next_reason_id();
         let second = next_reason_id();
         assert_ne!(first, second);
         let salt = |id: u64| id >> 32;
-        assert_ne!(salt(first), 0, "the per-load salt must be non-zero: {first:#018x}");
+        assert_ne!(
+            salt(first),
+            0,
+            "the per-load salt must be non-zero: {first:#018x}"
+        );
         assert_eq!(
             salt(first),
             salt(second),
@@ -968,17 +783,14 @@ mod tests {
         );
     }
 
-    /// A chunk that never arrives is NAMED, and the reason says so instead of
-    /// reading as complete.
-    ///
-    /// Production change that makes this fail: `reassemble_records` pushing
-    /// present chunks without reserving the absent positions, so a hole closes
-    /// up silently.
     #[test]
     fn a_missing_chunk_is_named_not_silently_closed_over() {
         let error = multi_domain_degraded_reason(30);
         let records = format_records(4321, 77, "frame_degraded", &error);
-        assert!(records.len() >= 3, "need at least three chunks to drop a middle one");
+        assert!(
+            records.len() >= 3,
+            "need at least three chunks to drop a middle one"
+        );
 
         let header = owned_header(4321, 77);
         let suffix = owned_suffix(4321);
@@ -1005,19 +817,6 @@ mod tests {
         );
     }
 
-    /// Two records claiming the same chunk of the same reason cannot both be
-    /// true, and the result must NOT read as a complete text.
-    ///
-    /// The shared log is append-only and every record is validated on its own,
-    /// so a foreign build, a retry that changed its mind, or a reason id
-    /// collision can put two different `#1/2` records in front of one reader.
-    /// Keeping the first silently produced a hybrid -- the first record's chunk
-    /// 1 joined to the second's chunk 2 -- reported complete, with a text
-    /// neither writer ever wrote.
-    ///
-    /// Production change that makes this fail: `reassemble_records` keeping the
-    /// first copy without recording the disagreement (`if cell.is_none() { *cell
-    /// = Some(text) }`).
     #[test]
     fn two_records_claiming_one_chunk_make_the_reason_conflicted_not_complete() {
         let reason_id = 0xABCDu64;
@@ -1042,7 +841,6 @@ mod tests {
         );
         assert!(reasons[0].missing_chunks.is_empty(), "nothing is missing");
 
-        // An IDENTICAL duplicate is a retry, not a disagreement.
         let repeated = [body(1, 2, "A1"), body(1, 2, "A1"), body(2, 2, "A2")];
         let repeated: Vec<&str> = repeated.iter().map(String::as_str).collect();
         let reasons = reassemble_records(&repeated);
@@ -1051,14 +849,6 @@ mod tests {
         assert_eq!(reasons[0].text, "A1A2");
     }
 
-    /// A later record of the same reason declaring a DIFFERENT total is the
-    /// same disagreement one level up, and is reported at position 0.
-    ///
-    /// `#1/2` followed by `#2/3` used to reassemble as a complete `2/2`,
-    /// because a later total was never compared with the first.
-    ///
-    /// Production change that makes this fail: dropping the
-    /// `out[slot].chunks_expected != label.total` comparison.
     #[test]
     fn a_disagreeing_declared_total_is_a_conflict_not_a_complete_reason() {
         let reason_id = 0x1234u64;
@@ -1079,16 +869,6 @@ mod tests {
         assert!(!reasons[0].complete(), "{:?}", reasons[0]);
     }
 
-    /// A phase field carrying the chunk MARKER but no parseable label is a
-    /// malformed record, not an unchunked one.
-    ///
-    /// `parse_chunk_label` refuses an absurd total, a zero reason id and an
-    /// out-of-range index by returning `None` -- and `parse_body` used to hand
-    /// that back as an ordinary phase, so one arbitrary slice of a longer reason
-    /// was reported as a whole, complete error.
-    ///
-    /// Production change that makes this fail: dropping the
-    /// `phase_field.contains(CHUNK_LABEL_MARKER)` guard from `parse_body`.
     #[test]
     fn a_marker_bearing_body_with_an_unparseable_label_is_refused() {
         for phase_field in [
@@ -1108,26 +888,19 @@ mod tests {
                 "and it must not reassemble into a complete unchunked error: {body}"
             );
         }
-        // The same body with no marker at all is still an ordinary record.
         let plain = "phase=capture error=\"x\" end=pid=1";
         assert!(parse_body(plain).is_some());
     }
 
-    /// The unescape refuses text `format_record` could not have written.
-    ///
-    /// Every non-backslash character used to be copied through, so a raw
-    /// interior quote or a raw control byte became part of a "recovered" reason.
-    /// A raw `"` is the dangerous one: `"a"b"` returned `a"b`, i.e. a body
-    /// claiming a shorter text than it carries.
-    ///
-    /// Production change that makes this fail: removing the
-    /// `character == '"' || character.is_control()` refusal.
     #[test]
     fn the_unescape_refuses_text_the_writer_could_not_have_produced() {
-        assert_eq!(unescape_debug_text("\"a\"b\""), None, "a raw interior quote");
+        assert_eq!(
+            unescape_debug_text("\"a\"b\""),
+            None,
+            "a raw interior quote"
+        );
         assert_eq!(unescape_debug_text("\"a\tb\""), None, "a raw control byte");
         assert_eq!(unescape_debug_text("\"a\nb\""), None);
-        // The canonical renderings of the same characters still round-trip.
         assert_eq!(
             unescape_debug_text(&format!("{:?}", "a\"b")).as_deref(),
             Some("a\"b")
@@ -1138,12 +911,6 @@ mod tests {
         );
     }
 
-    /// Passing the write cap is ARITHMETIC in the reassembled reason, not a
-    /// suspicion: the declared total is the count that was needed, so every
-    /// dropped position is named.
-    ///
-    /// Production change that makes this fail: labelling chunks `i/emitted`, or
-    /// `reassemble_records` sizing its slot table from what arrived.
     #[test]
     fn passing_the_write_cap_names_every_dropped_chunk() {
         let error = "A".repeat(RECORD_TEXT_LIMIT * (MAX_RECORD_CHUNKS + 3));
@@ -1177,15 +944,16 @@ mod tests {
         );
     }
 
-    /// An unchunked record still parses, and carries no chunk label at all --
-    /// so the overwhelmingly common single-record case is untouched by any of
-    /// this.
     #[test]
     fn an_unchunked_record_parses_with_no_chunk_label() {
         let line = format_record(4321, 77, "capture", "something broke");
         let line = line.strip_suffix('\n').expect("newline");
-        let body = owned_body(line.as_bytes(), &owned_header(4321, 77), &owned_suffix(4321))
-            .expect("intact record");
+        let body = owned_body(
+            line.as_bytes(),
+            &owned_header(4321, 77),
+            &owned_suffix(4321),
+        )
+        .expect("intact record");
         let body = core::str::from_utf8(body).expect("UTF-8");
         let parsed = parse_body(body).expect("an ordinary record parses");
         assert_eq!(parsed.phase_field, "capture");
@@ -1196,11 +964,6 @@ mod tests {
         );
     }
 
-    /// The unescape is the exact inverse of what the writer applied, for every
-    /// escape `{:?}` can produce -- including `\u{...}` and NUL.
-    ///
-    /// Production change that makes this fail: dropping the `'u'` arm, or
-    /// treating an unknown escape as a literal instead of refusing.
     #[test]
     fn the_unescape_inverts_every_escape_the_writer_can_emit() {
         for original in [
@@ -1219,16 +982,14 @@ mod tests {
             );
         }
         assert_eq!(unescape_debug_text("no quotes"), None);
-        assert_eq!(unescape_debug_text("\"\\q\""), None, "an unknown escape must refuse");
+        assert_eq!(
+            unescape_debug_text("\"\\q\""),
+            None,
+            "an unknown escape must refuse"
+        );
         assert_eq!(unescape_debug_text("\"\\u{zz}\""), None);
     }
 
-    /// A declared total no writer of this contract could have produced is
-    /// rejected as a label, so a foreign record cannot choose a reassembler's
-    /// allocation.
-    ///
-    /// Production change that makes this fail: removing the
-    /// `total > MAX_DECLARED_CHUNK_TOTAL` clause from `parse_chunk_label`.
     #[test]
     fn an_absurd_declared_chunk_total_is_not_a_chunk_label() {
         let body = format!(
@@ -1240,9 +1001,6 @@ mod tests {
             parse_chunk_label("capture#r0000000000000007#1/4097").is_none(),
             "a total past the ceiling is not a label"
         );
-        // And because the marker IS present, the body as a whole is refused
-        // rather than downgraded to an unchunked record -- see
-        // `a_marker_bearing_body_with_an_unparseable_label_is_refused`.
         assert!(parse_body(&body).is_none());
         let ok = format!(
             "phase=capture#r{:016x}#1/{MAX_DECLARED_CHUNK_TOTAL} error=\"x\" end=pid=1",

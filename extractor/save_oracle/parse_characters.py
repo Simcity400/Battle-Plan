@@ -74,7 +74,6 @@ from deep_common import (
     to_int, to_float, read_scalar_list,
 )
 
-# Military role sub-block keys (in-game label in comments).
 MIL_ROLE_KEYS = {
     "corps_commander": "general",
     "field_marshal": "field_marshal",
@@ -82,9 +81,6 @@ MIL_ROLE_KEYS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# id={id type} reader (kept local so we never touch deep_common)
-# ---------------------------------------------------------------------------
 
 def _read_id(tz):
     _id = _type = None
@@ -102,9 +98,6 @@ def _read_id(tz):
     return _id, _type
 
 
-# ---------------------------------------------------------------------------
-# character_manager: the full character definitions
-# ---------------------------------------------------------------------------
 
 def _parse_portraits(tz):
     """portraits={ civilian|army|navy={ small|large="GFX_..." } ... } -> dict."""
@@ -195,15 +188,14 @@ def _parse_mil_role(tz, role_label):
     rec = {
         "role": role_label,
         "unit_leader_id": None, "unit_leader_type": None,
-        "level": None,            # `skill` = overall leader level
-        "experience": None,       # role XP toward next level (may be negative)
+        "level": None,
+        "experience": None,
         "attack": None, "defense": None,
-        "planning": None, "logistics": None,        # army
-        "maneuvering": None, "coordination": None,  # navy
+        "planning": None, "logistics": None,
+        "maneuvering": None, "coordination": None,
         "traits": [], "script_id": None,
         "preferred_tactic": None, "penalty": None,
         "captured": False, "captured_by": None, "location": None,
-        # filled in the join phase:
         "assignment": None,
     }
     for k, op in iter_block_entries(tz):
@@ -255,9 +247,9 @@ def _parse_character(tz):
         "char_id": None, "char_type": None,
         "token": None, "name": None, "country": None, "gender": None,
         "gfx": None, "portraits": {},
-        "country_leader": None,   # active/possible leadership entry(ies)
-        "advisor_roles": [],      # list of advisor dicts (cabinet/high cmd/etc.)
-        "military": None,         # the corps_commander/field_marshal/navy_leader
+        "country_leader": None,
+        "advisor_roles": [],
+        "military": None,
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -314,9 +306,6 @@ def _parse_character_manager(tz, chars_by_key):
                 _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# Per-country: roster (character_status) + command-group assignments
-# ---------------------------------------------------------------------------
 
 def _parse_characters_roster(tz):
     """countries.<TAG>.characters={ character_status={...} ... } -> list.
@@ -392,7 +381,6 @@ def _parse_theatre(tz, assignments):
             elif k == "orders_group":
                 name, lid = _read_group_leader_name(tz)
                 if lid is not None:
-                    # don't clobber an army-group assignment with an army one
                     assignments.setdefault(
                         lid, {"kind": "army", "name": name})
             else:
@@ -460,7 +448,6 @@ def _parse_country_leader_ref(tz):
             break
         if tok is LBRACE:
             ideology, char_id, char_type = _read_anon_block(tz)
-        # any stray atoms ignored
     return ideology, char_id, char_type
 
 
@@ -508,7 +495,7 @@ def _parse_politics(tz):
 def _parse_one_country(tz, tag, rosters, assignments_by_tag, politics_by_tag):
     """Walk a single country block's direct children we care about."""
     roster = []
-    assignments = {}   # unit_leader_id -> {kind,name}
+    assignments = {}
     politics = {"ruling_party": None, "parties": {}}
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -522,7 +509,6 @@ def _parse_one_country(tz, tag, rosters, assignments_by_tag, politics_by_tag):
                 politics = _parse_politics(tz)
             else:
                 _skip_block_body(tz)
-        # scalars ignored
     rosters[tag] = roster
     assignments_by_tag[tag] = assignments
     politics_by_tag[tag] = politics
@@ -536,15 +522,12 @@ def _parse_countries(tz, rosters, assignments_by_tag, politics_by_tag):
                            politics_by_tag)
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
 
 def parse_characters_text(text: str):
-    chars_by_key: dict = {}     # (id,type=73) -> character def
-    rosters: dict = {}          # TAG -> [character_status,...]
-    assignments_by_tag: dict = {}  # TAG -> {unit_leader_id: {kind,name}}
-    politics_by_tag: dict = {}  # TAG -> {ruling_party, parties}
+    chars_by_key: dict = {}
+    rosters: dict = {}
+    assignments_by_tag: dict = {}
+    politics_by_tag: dict = {}
     meta = dc.top_level_pass(
         text,
         {
@@ -559,9 +542,6 @@ def parse_characters_text(text: str):
     return chars_by_key, rosters, assignments_by_tag, politics_by_tag, meta
 
 
-# ---------------------------------------------------------------------------
-# Build per-country output
-# ---------------------------------------------------------------------------
 
 def _mil_to_out(mil, assignment):
     return {
@@ -581,7 +561,7 @@ def _mil_to_out(mil, assignment):
         "captured_by": mil["captured_by"],
         "location": mil["location"],
         "unit_leader_id": mil["unit_leader_id"],
-        "assignment": assignment,   # {kind,name} or None (unassigned/reserve)
+        "assignment": assignment,
     }
 
 
@@ -590,7 +570,6 @@ def _leader_record(chars_by_key, char_id, char_type, ideology):
     cdef = chars_by_key.get((char_id, char_type))
     if cdef is None:
         return None
-    # find the matching country_leaders entry for this ideology (for traits)
     traits = []
     expire = None
     for cl in (cdef.get("country_leader") or []):
@@ -615,25 +594,23 @@ def build(text, source, was_melted):
      politics_by_tag, meta) = parse_characters_text(text)
 
     countries = {}
-    # validation accumulators
     total_generals = total_fms = total_admirals = 0
     total_advisors = total_leaders = 0
     assign_resolved = assign_total = 0
-    missing_defs = 0   # roster handle with no character_manager def
+    missing_defs = 0
 
     for tag, roster in sorted(rosters.items()):
         assignments = assignments_by_tag.get(tag, {})
         politics = politics_by_tag.get(tag, {})
         c = {
             "leader": None,
-            "party_leaders": [],   # the 4 ideology-group leaders + popularity
+            "party_leaders": [],
             "ruling_party": politics.get("ruling_party"),
             "generals": [], "field_marshals": [], "admirals": [],
-            "advisors": [],     # cabinet / high command / theorists / chiefs
+            "advisors": [],
             "counts": {},
         }
 
-        # --- ACTIVE leader: politics.parties[ruling_party].country_leader -----
         ruling = politics.get("ruling_party")
         for grp, p in (politics.get("parties") or {}).items():
             if p.get("char_id") is None:
@@ -658,7 +635,6 @@ def build(text, source, was_melted):
                 missing_defs += 1
                 continue
 
-            # --- military leader ------------------------------------------
             if st["is_unit_leader"] and cdef.get("military"):
                 mil = cdef["military"]
                 ulid = mil["unit_leader_id"]
@@ -680,7 +656,6 @@ def build(text, source, was_melted):
                 else:
                     c["generals"].append(rec); total_generals += 1
 
-            # --- advisor / cabinet / high command / theorist --------------
             if st["is_advisor"] and cdef.get("advisor_roles"):
                 for adv in cdef["advisor_roles"]:
                     c["advisors"].append({
@@ -702,7 +677,6 @@ def build(text, source, was_melted):
             "advisors": len(c["advisors"]),
             "roster_size": len(roster),
         }
-        # only emit countries that actually have characters
         if roster:
             countries[tag] = c
 
@@ -746,7 +720,6 @@ def build(text, source, was_melted):
         "countries": countries,
     }
 
-    # ---- validation report -------------------------------------------------
     st = out["meta"]["stats"]
     ger = countries.get("GER", {})
     lines = ["=== CHARACTERS / COMMANDERS ORACLE VALIDATION ==="]

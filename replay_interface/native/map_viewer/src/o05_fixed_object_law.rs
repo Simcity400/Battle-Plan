@@ -1,14 +1,3 @@
-//! O05 production admission for static-building semantic identities and the
-//! four proven fixed map objects.
-//!
-//! Static building identity is source identity, never render identity:
-//! `map/buildings.txt@<raw-source-sha256>#L<one-based-source-line>`. Mesh,
-//! damage variant, LOD and current visibility are deliberately absent from the
-//! key. The fixed-object path is narrower: only the three vanilla ambient
-//! furniture rows and the Prague landmark have complete source/asset/matrix
-//! joins. They are admitted only when every participating resolver-selected
-//! file has the exact frozen SHA-256. A mod override therefore fails closed
-//! until an equivalent evidence packet exists for that source set.
 
 use crate::{GameFileResolver, MapBuildingPlacement, Result};
 use serde::{Deserialize, Serialize};
@@ -18,7 +7,6 @@ use std::fs;
 
 pub const O05_MAP_BUILDINGS_SOURCE: &str = "map/buildings.txt";
 
-/// Exact game-file identities joined by O05 `fixed_object_semantics.json`.
 pub const O05_FIXED_OBJECT_SOURCE_HASHES: &[(&str, &str)] = &[
     (
         "map/ambient_object.txt",
@@ -73,14 +61,12 @@ impl O05FixedObjectClass {
 pub struct O05FixedObjectAdmission {
     pub semantic_id: String,
     pub class: O05FixedObjectClass,
-    /// Exact retained O05 insertion ordinal among the 50-object answer key.
     pub retained_oracle_ordinal: u32,
     pub source_mesh: String,
     pub shape: String,
     pub source_position: [f32; 3],
     pub source_rotation: f32,
     pub axis_scales: [f32; 3],
-    /// Draw-consumed 64-byte WorldMatrix prefix, byte-exact from O05.
     pub world_matrix_raw: Vec<u8>,
 }
 
@@ -179,7 +165,6 @@ pub fn o05_fixed_object_source_hashes_from_resolver(
     Ok(hashes)
 }
 
-/// Fail-closed fixed-object admission from already measured source hashes.
 pub fn admit_o05_fixed_objects(
     source_hashes: &BTreeMap<String, String>,
 ) -> Result<Vec<O05FixedObjectAdmission>> {
@@ -229,9 +214,6 @@ pub fn o05_static_building_source_identities_from_resolver(
     o05_static_building_source_identities_from_source(&bytes)
 }
 
-/// Parse every static source row and bind it to the raw selected file hash.
-/// Malformed non-comment rows reject the whole source; no row is guessed or
-/// silently renumbered.
 pub fn o05_static_building_source_identities_from_source(
     source_bytes: &[u8],
 ) -> Result<Vec<O05StaticBuildingSourceIdentity>> {

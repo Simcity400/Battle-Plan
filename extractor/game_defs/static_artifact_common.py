@@ -87,13 +87,6 @@ def _syntax_allowlist_hit(rel: str, error: ValueError, allowlist: dict[str, dict
         return None
     message = str(error)
     expected = entry.get("error_contains")
-    # Exact-suffix match, NOT substring: the error messages end with the
-    # documented quirk (e.g. "(depth 1)"), and a substring test would let a
-    # more-broken file matching "(depth 1)" as a prefix of "(depth 1X)" slip
-    # through. endswith pins the exact depth. The downstream wrapper-presence
-    # gate (idea/tech/decisions/GFX all require their top-level block) is the
-    # completeness backstop if a file loses real content while still ending at
-    # the same brace depth.
     if expected and not message.endswith(expected):
         return None
     return {
@@ -175,9 +168,6 @@ def validate_clausewitz_text(
             col = 0
             in_comment = False
             if in_quote:
-                # the game quoted strings can contain escaped newlines as text, but
-                # a literal newline before a closing quote is a broken file for
-                # these static definition inputs.
                 raise ValueError(f"{rel}: unterminated quote starting at {quote_line}:{quote_col}")
             continue
         col += 1

@@ -1,11 +1,3 @@
-//! Exact O05 generic map-building semantic carrier.
-//!
-//! The entity renderer already carries the mesh, material, texture, shader,
-//! transform, draw state, and selected-Present order. This carrier adds the
-//! missing engine-owned map-building identity and selector state, then joins
-//! each submitted building to those existing entity outputs. It never creates
-//! a draw and it never treats `map/buildings.txt` placement as runtime state.
-
 use super::{check_sha256, decimal_u64, RenderOutputRef, UsedContentKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -52,10 +44,6 @@ pub struct O05BuildingFrame {
     pub executable_sha256: String,
     pub runtime_producer_manifest_sha256: String,
     pub runtime_consumer_manifest_sha256: String,
-    /// Exact effective-VFS `map/buildings.txt` bytes used as the placement
-    /// substrate from which the engine constructed this runtime population.
-    /// No record claims a source-line identity, and this is never a level,
-    /// visibility, variant, LOD, or draw-order authority.
     pub map_buildings_source: UsedContentKey,
     #[serde(with = "decimal_u64")]
     pub update_index: u64,
@@ -63,13 +51,8 @@ pub struct O05BuildingFrame {
     pub first_sequence: u64,
     #[serde(with = "decimal_u64")]
     pub last_sequence: u64,
-    /// True only when the producer observed the complete ordered runtime
-    /// building scope evaluated for the selected Present. Partial hooks must
-    /// omit this carrier rather than serialize a prefix.
     pub complete_selected_present_scope: bool,
     pub records: Vec<O05BuildingSemantic>,
-    /// Exact display-submit order of every entity output referenced by the
-    /// submitted records. Explicitly hidden/absent records contribute none.
     pub ordered_outputs: Vec<RenderOutputRef>,
 }
 
@@ -85,22 +68,13 @@ pub enum O05BuildingObjectKind {
 pub struct O05BuildingSemantic {
     #[serde(with = "decimal_u64")]
     pub event_sequence: u64,
-    /// Hook-owned monotonic identity assigned to the live 0x48-byte runtime
-    /// record. It is not an address and may not be derived from a D3D resource.
     #[serde(with = "decimal_u64")]
     pub runtime_object_id: u64,
     pub update_ordinal: u32,
     pub object_kind: O05BuildingObjectKind,
-    /// Exact a729 runtime object tag copied into record bytes `+0x04..+0x08`.
-    /// The generic building constructor requires `0x165`.
     pub object_tag_u32: u32,
     pub building_type_id: u32,
-    /// Constructor `param_2`, retained without assigning a stronger semantic
-    /// meaning than the proven zero/nonzero province/special branch.
     pub building_kind_index_i32: i32,
-    /// Exact record fields. These are handles/selector bytes, not replay-side
-    /// state or province IDs unless a future authenticated join proves that
-    /// stronger interpretation.
     pub state_handle_u16: u16,
     pub province_handle_primary_i32: i32,
     pub province_handle_secondary_i32: i32,
@@ -112,26 +86,16 @@ pub struct O05BuildingSemantic {
     pub render_disposition: O05BuildingRenderDisposition,
     pub position_xyz_f32_bits: [u32; 3],
     pub yaw_f32_bits: u32,
-    /// Exact current grow-in scale at record `+0x40`, after the selected
-    /// update. This is not the FILE-owned entity/pdxmesh scale.
     pub presentation_scale_f32_bits: u32,
-    /// Hook-owned stable entity ID. It is retained even when the selected
-    /// entity was culled and emitted no output in this selected submit.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "optional_decimal_u64"
     )]
     pub selected_entity_instance_id: Option<u64>,
-    /// Present exactly when this record submitted entity outputs. A selected
-    /// but culled entity deliberately has no portable content claim here.
     pub entity_asset: Option<UsedContentKey>,
     pub mesh: Option<UsedContentKey>,
-    /// Exact matrix written by the building transform setter. It is present
-    /// whenever an entity instance was selected, including a culled instance.
     pub world_transform_4x4_f32_bits: Option<[u32; 16]>,
-    /// Complete output set for this one engine entity instance, in display
-    /// order. Empty is an authenticated explicit non-submit result.
     pub referenced_outputs: Vec<RenderOutputRef>,
 }
 
@@ -156,10 +120,8 @@ impl O05BuildingFrame {
             check_sha256(value, None)?;
         }
         if self.executable_sha256 != O05_A729_EXECUTABLE_SHA256
-            || self.runtime_producer_manifest_sha256
-                != O05_RUNTIME_PRODUCER_MANIFEST_SHA256
-            || self.runtime_consumer_manifest_sha256
-                != O05_RUNTIME_CONSUMER_MANIFEST_SHA256
+            || self.runtime_producer_manifest_sha256 != O05_RUNTIME_PRODUCER_MANIFEST_SHA256
+            || self.runtime_consumer_manifest_sha256 != O05_RUNTIME_CONSUMER_MANIFEST_SHA256
         {
             return Err("O05 building carrier static authority mismatch".into());
         }
@@ -198,16 +160,12 @@ impl O05BuildingFrame {
             if row
                 .position_xyz_f32_bits
                 .iter()
-                .chain([
-                    &row.yaw_f32_bits,
-                    &row.presentation_scale_f32_bits,
-                ])
+                .chain([&row.yaw_f32_bits, &row.presentation_scale_f32_bits])
                 .any(|bits| !f32::from_bits(*bits).is_finite())
                 || f32::from_bits(row.presentation_scale_f32_bits) < 0.0
             {
                 return Err(
-                    "O05 building position/yaw/presentation scale is non-finite or negative"
-                        .into(),
+                    "O05 building position/yaw/presentation scale is non-finite or negative".into(),
                 );
             }
 
@@ -248,7 +206,10 @@ impl O05BuildingFrame {
                 }
                 continue;
             }
-            row.entity_asset.as_ref().expect("checked present").validate()?;
+            row.entity_asset
+                .as_ref()
+                .expect("checked present")
+                .validate()?;
             row.mesh.as_ref().expect("checked present").validate()?;
 
             let expected_entity_id = row
@@ -263,8 +224,7 @@ impl O05BuildingFrame {
                         return Err("O05 building references a particle output".into())
                     }
                 };
-                if id != expected_entity_id || !unique_outputs.insert(output.clone())
-                {
+                if id != expected_entity_id || !unique_outputs.insert(output.clone()) {
                     return Err("O05 building output is duplicated or crosses entities".into());
                 }
                 flattened.push(output.clone());
@@ -275,7 +235,11 @@ impl O05BuildingFrame {
         }
         if flattened.len() != self.ordered_outputs.len()
             || flattened.into_iter().collect::<BTreeSet<_>>()
-                != self.ordered_outputs.iter().cloned().collect::<BTreeSet<_>>()
+                != self
+                    .ordered_outputs
+                    .iter()
+                    .cloned()
+                    .collect::<BTreeSet<_>>()
         {
             return Err("O05 ordered outputs differ from the per-record exact cover".into());
         }

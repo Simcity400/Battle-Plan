@@ -3,10 +3,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Single-pass extraction of one sampler block: strip comments and walk the
-/// PixelShader -> Samplers -> sampler nesting exactly once. Every sampler
-/// parse (contract, Index, Type) reads from the block this returns instead of
-/// re-parsing the full shader source.
 fn locate_sampler_block(
     shader_source: &str,
     shader_label: &str,
@@ -130,10 +126,6 @@ pub(crate) fn validate_shader_sampler_expectation_against_source(
     shader_label: &str,
     expectation: ShaderSamplerExpectation,
 ) -> Result<()> {
-    // One locate per sampler: the contract, Index, and Type reads below all
-    // parse the same block, in the same order (contract fields, then the mode
-    // check derived from them, then Index, then Type) as the previous
-    // triple-parse implementation, so blocker messages are unchanged.
     let sampler_block = locate_sampler_block(shader_source, shader_label, expectation.name)?;
     let sampler = sampler_contract_from_block(&sampler_block, expectation.name)?;
     let mode = shader_sampler_mode_from_contract(shader_label, expectation.name, &sampler)?;
@@ -168,11 +160,6 @@ pub(crate) fn validate_shader_sampler_expectation_against_source(
     Ok(())
 }
 
-/// The golden (field name, byte offset) contract for TerrainSceneCB0 — the
-/// single fail-closed source of truth shared by `terrain_scene_cb0_layout`
-/// (which asserts every offset against the parsed shader source) and
-/// `terrain_scene_cb0_required_offsets` (which re-reads them from a validated
-/// layout).
 const TERRAIN_SCENE_CB0_FIELDS: &[(&str, usize)] = &[
     ("vGBCamDistOverride_GBOutlineCutoff", 128),
     ("vVirtualSunPos", 144),
@@ -780,46 +767,13 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_camera_layout(
     terrain_scene_cb0_bytes_with_app_scene_layout(layout, bytes, camera, None, None, None)
 }
 
-/// COL3: the POLITICAL-mapmode scene CB0 state (session_POLCOLOR_1 +
-/// BORDERZOOM sweeps, 3768 CB0 samples at heights 50..3000). Two field
-/// groups:
-///
-/// * `vGBCamDistOverride_GBOutlineCutoff = (1.0, 0.0, cutoff_strategic,
-///   cutoff_country)` — HEIGHT-INVARIANT in every political-mapmode sample.
-///   `.x = 1` forces the strategic-region (sea) gradient layer to the "near"
-///   camera response, `.y = 0` leaves the country layer on the natural
-///   `cam_distance` ramp, and `.zw` are the shipped defines
-///   `GRADIENT_BORDERS_OUTLINE_CUTOFF_STRATEGIC_REGIONS` / `_COUNTRY`
-///   (`common/defines/00_graphics.lua:880-885`, vanilla 0.98 / 0.973).
-/// * `ShadowFadeFactor = clamp((DRAW_SHADOWS_CUTOFF - camera_height) /
-///   DRAW_SHADOWS_FADE_LENGTH, 0, 1)` (`00_graphics.lua:860-861`, vanilla
-///   400 / 50) — max error 0.000000 against all 1433 BORDERZOOM_1 sweep
-///   samples.
-///
-/// The values are resolver-read by the caller (mod-aware); this struct only
-/// carries them into the CB0 write. `None` at the compose call keeps the
-/// captured bytes verbatim (all byte-exact reference/validation paths).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PoliticalSceneCb0 {
     pub outline_cutoff_strategic: f32,
     pub outline_cutoff_country: f32,
     pub draw_shadows_cutoff: f32,
     pub draw_shadows_fade_length: f32,
-    /// SEASON1 (validation-only for now): when `Some`, overwrite the scene
-    /// `SnowMudFade` (`vFoWOpacity_FoWTime_SnowMudFade_MaxGameSpeed.z`) —
-    /// the snow_fade0->snow_fade1 crossfade the engine drives with its
-    /// weather clock. `None` keeps the captured byte (the July capture's 0).
     pub snow_mud_fade: Option<f32>,
-    /// Whether a REAL shadow map is bound for this render (Codex-review
-    /// provenance gate). The product capture (live_PAN2, taken at h=800
-    /// where shadows are faded out) recorded a NULL ShadowMap SRV; sampling
-    /// null returns 0, so writing the engine's nonzero fade factor would turn
-    /// `shadow.fxh:50` (`vShadowValue += 1.0 - ShadowFadeFactor`) into a
-    /// UNIFORM darkening of every pixel instead of the engine's mostly-lit
-    /// response. Until a shadow pass is replayed/synthesized, `false`
-    /// collapses the written factor to 0 ("shadows off"), which is exact for
-    /// every unshadowed pixel and only misses the sparse true shadow casters
-    /// below `DRAW_SHADOWS_CUTOFF`.
     pub shadow_map_bound: bool,
 }
 
@@ -853,8 +807,6 @@ impl PoliticalSceneCb0 {
         Ok(())
     }
 
-    /// The engine's shadow fade at `camera_height` (see struct docs) — gated
-    /// to 0 while no real shadow map is bound (`shadow_map_bound` docs).
     pub fn shadow_fade_factor(&self, camera_height: f32) -> f32 {
         if !self.shadow_map_bound {
             return 0.0;
@@ -863,8 +815,6 @@ impl PoliticalSceneCb0 {
     }
 }
 
-/// Write the political-mapmode `vGBCamDistOverride_GBOutlineCutoff` float4
-/// and the height-law `ShadowFadeFactor` (see [`PoliticalSceneCb0`]).
 pub(crate) fn write_political_scene_fields(
     bytes: &mut [u8],
     layout: &ShaderConstantBufferLayout,
@@ -908,14 +858,6 @@ pub(crate) fn write_political_scene_fields(
     Ok(())
 }
 
-/// `day_night_hour = None` leaves the captured virtual light rig untouched
-/// (all reference / byte-exact captured-frame paths keep the captured CB0
-/// bytes verbatim). `Some(hour_fraction)` drives the four rig `.x` longitudes
-/// from the PROVEN day-cycle law (`light_law::virtual_rig_longitudes_x`)
-/// evaluated at `hour24 = hour_fraction * 24` — the SAME hour that feeds
-/// `DayNight_Hour_SunDir.x`, so the rig and the terminator share one clock.
-/// The rig no longer follows the pan camera (that FIT is removed; see
-/// `write_virtual_light_rig_fields`).
 pub(crate) fn terrain_scene_cb0_bytes_with_app_scene_layout(
     layout: &ShaderConstantBufferLayout,
     mut bytes: Vec<u8>,
@@ -936,12 +878,6 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_scene_layout(
         "ViewProjectionMatrix",
         camera.view_projection_matrix,
     )?;
-    // InvViewProjMatrix: the captured bytes hold the game's own inversion,
-    // which differs from ours in the low mantissa bits. The captured terrain
-    // pixel shader consumes it (world-position reconstruction feeding the
-    // land-only snow/mud sampling), so replaying an unchanged camera must
-    // keep the captured inverse bit-exact; only an actually moved camera
-    // needs a recomputed inverse.
     if bytes[vp_field.offset..vp_field.offset + 64] != vp_captured[..] {
         write_float4x4_field(
             &mut bytes,
@@ -952,26 +888,14 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_scene_layout(
     }
     write_vec3_field(&mut bytes, layout, "vCamPos", camera.position)?;
     if let Some(hour) = day_night_hour {
-        // One clock: the rig longitudes and the day/night terminator both
-        // read this same `hour` fraction. The rig `.x` law consumes hour24.
         write_virtual_light_rig_fields(&mut bytes, layout, hour * 24.0)?;
         write_day_night_hour_field(&mut bytes, layout, hour)?;
-        // NIGHT1: the sun-direction `.yzw` is HOUR-INVARIANT (mined from the
-        // hour-swept sweep; see `light_law::render_sun_dir_yzw`). We do NOT
-        // rotate it with the hour — we echo the captured `.yzw` (the correct
-        // sun direction for the recording's date). This is a no-op on the bytes
-        // (echo of the captured vector) so it CANNOT disturb `--hour 0.5`
-        // byte-identity; it exists to make the "leave `.yzw` alone" law explicit
-        // and to fail loudly if the CB0 layout ever changes shape.
         write_sun_dir_yzw_hour_invariant_field(&mut bytes, layout, hour * 24.0)?;
         write_day_night_factor_gate_field(&mut bytes, layout, 1.0)?;
     }
     if let Some(seconds) = map_clock_time {
         write_global_time_field(&mut bytes, layout, seconds)?;
     }
-    // COL3: political-mapmode GB override/cutoffs + the shadow fade height
-    // law. `None` (every byte-exact reference/validation path) keeps the
-    // captured bytes verbatim.
     if let Some(political) = political {
         write_political_scene_fields(&mut bytes, layout, political, camera.position[1])?;
     }
@@ -979,27 +903,6 @@ pub(crate) fn terrain_scene_cb0_bytes_with_app_scene_layout(
     Ok(bytes)
 }
 
-/// Drive the four virtual sun/moon `.x` longitudes from the PROVEN day-cycle
-/// law (`light_law::virtual_rig_longitudes_x`) at the render `hour24`. This
-/// REPLACES the old camera-follow FIT (the sun no longer tracks the pan
-/// camera). Grounding:
-/// - `common/defines/00_graphics.lua:1043-1050` fixes the rig's latitudes and
-///   heights (SUN_LATITUDE 848, SECOND_*_LATITUDE 100 "to put a fake sun/moon
-///   on the other side of the globe to hide the seam", SUN_HEIGHT 600,
-///   SUN_HEIGHT_WATER 5000); no `.x` is defined in any file.
-/// - The `.x` longitude is engine-runtime and implemented by `light_law`
-///   from session_FINAL_1's unpaused CB0 samples (residual < 0.01 map units):
-///   `sun.x = MAP_SIZE_X * (1 - hour24/24)` (mod MAP_SIZE_X), `moon.x` is
-///   antipodal, and the two seam-hiding "second" bodies are the SWAPPED pair.
-///   The old renderer translated all four `.x` by `camera.x - reference_x`,
-///   which its own comment admitted the engine did NOT do (every captured
-///   frame carried rig `.x = 2816` regardless of camera). The mined corpus's
-///   fixed `2816` is exactly this law at the noon hour those paused saves sat
-///   on: `virtual_sun_longitude(12, 5632) = 2816` (byte-exact in f32).
-/// - Only `.x` is written; the `.y/.z/.w` height/latitude lanes stay at the
-///   captured/file-derived constants. This function is ONLY called when a
-///   render hour is set (`day_night_hour = Some`); reference, byte-exact and
-///   validation paths (`day_night_hour = None`) keep the captured rig verbatim.
 pub(crate) fn write_virtual_light_rig_fields(
     bytes: &mut [u8],
     layout: &ShaderConstantBufferLayout,
@@ -1029,18 +932,6 @@ pub(crate) fn write_virtual_light_rig_fields(
     Ok(())
 }
 
-/// NIGHT1: write the render sun-direction `DayNight_Hour_SunDir.yzw`, which is
-/// **hour-invariant** — it is echoed from the captured `.yzw` verbatim (see
-/// `light_law::render_sun_dir_yzw` for the mined law and its evidence). The
-/// hour rotation lives entirely in `.x` (the terminator longitude phase written
-/// by `write_day_night_hour_field`), so the sun direction for the recording's
-/// date must NOT be rotated with the render hour.
-///
-/// This is deliberately a byte no-op (it reads the captured `.yzw` and writes
-/// the same bits back through the law function), so it can never perturb the
-/// `--hour 0.5` byte-identity gate. It is here so the "leave `.yzw` alone"
-/// decision is an explicit, validated step of the write path and so the CB0
-/// layout is re-checked (a float4 of the right name) whenever a hour is set.
 pub(crate) fn write_sun_dir_yzw_hour_invariant_field(
     bytes: &mut [u8],
     layout: &ShaderConstantBufferLayout,
@@ -1061,7 +952,6 @@ pub(crate) fn write_sun_dir_yzw_hour_invariant_field(
         )
         .into());
     }
-    // .yzw are the 2nd/3rd/4th f32 of the float4 (offsets +4/+8/+12).
     let captured = [
         read_f32_at(bytes, field.offset + 4)?,
         read_f32_at(bytes, field.offset + 8)?,
@@ -1445,9 +1335,6 @@ mod tests {
         assert_close(decoded.v_cam_pos.z, 66.0);
         assert_close(decoded.hdr_range, 7.0);
         assert_close(decoded.v_global_time, 42.0);
-        // Without a light-rig reference (the reference/byte-exact paths),
-        // everything outside the camera fields stays captured verbatim,
-        // including the virtual light rig at bytes 144..208.
         assert_eq!(&patched[128..208], &original[128..208]);
         assert_eq!(&patched[220..], &original[220..]);
         let _ = fs::remove_dir_all(&root);
@@ -1455,14 +1342,11 @@ mod tests {
 
     #[test]
     fn light_rig_x_follows_the_day_cycle_law_not_the_camera() {
-        // The four rig .x lanes are written from the day-cycle law at the
-        // render hour and DO NOT depend on the camera x (camera-follow removed).
         let layout = terrain_scene_cb0_layout(&minimal_standard_functions_source())
             .expect("TerrainSceneCB0 layout");
         let read = |bytes: &[u8], offset: usize| {
             f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
         };
-        // Two very different camera x values; identical hour -> identical rig.
         let camera_matrix = [
             [2.0, 0.0, 0.0, 4.0],
             [0.0, 4.0, 0.0, 8.0],
@@ -1472,46 +1356,39 @@ mod tests {
         let make = |camera_x: f32, hour: Option<f32>| {
             let mut base = valid_scene_cb0_bytes();
             write_identity_float4x4(&mut base, 64);
-            // Captured rig fields to be overwritten on the .x lane only.
-            write_f32_le(&mut base, 144, 2816.0); // vVirtualSunPos.x
-            write_f32_le(&mut base, 148, 600.0); //  .y SUN_HEIGHT
-            write_f32_le(&mut base, 152, 848.0); //  .z SUN_LATITUDE
-            write_f32_le(&mut base, 156, 5000.0); // .w SUN_HEIGHT_WATER
-            write_f32_le(&mut base, 160, 0.0); //   vVirtualMoonPos.x
-            write_f32_le(&mut base, 176, 0.0); //   vSecondVirtualSunPos.x
-            write_f32_le(&mut base, 192, 2816.0); // vSecondVirtualMoonPos.x
+            write_f32_le(&mut base, 144, 2816.0);
+            write_f32_le(&mut base, 148, 600.0);
+            write_f32_le(&mut base, 152, 848.0);
+            write_f32_le(&mut base, 156, 5000.0);
+            write_f32_le(&mut base, 160, 0.0);
+            write_f32_le(&mut base, 176, 0.0);
+            write_f32_le(&mut base, 192, 2816.0);
             let camera = ProductionMapCamera::new(camera_matrix, [camera_x, 620.22, 66.0])
                 .expect("finite production camera");
             terrain_scene_cb0_bytes_with_app_scene_layout(&layout, base, camera, hour, None, None)
                 .expect("patch scene")
         };
 
-        // Noon (fraction 0.5 -> hour24 12): law reproduces the captured rig
-        // BYTE-IDENTICALLY, at any camera.
         for cam_x in [1400.0f32, 4200.0] {
             let patched = make(cam_x, Some(0.5));
             assert_eq!(read(&patched, 144).to_bits(), 2816.0f32.to_bits());
             assert_eq!(read(&patched, 160).to_bits(), 0.0f32.to_bits());
             assert_eq!(read(&patched, 176).to_bits(), 0.0f32.to_bits());
             assert_eq!(read(&patched, 192).to_bits(), 2816.0f32.to_bits());
-            // .y/.z/.w untouched.
             assert_close(read(&patched, 148), 600.0);
             assert_close(read(&patched, 152), 848.0);
             assert_close(read(&patched, 156), 5000.0);
         }
 
-        // Two cameras, one non-noon hour -> identical rig (no camera-follow).
         let a = make(1400.0, Some(0.25));
         let b = make(4200.0, Some(0.25));
         assert_eq!(a[144..160], b[144..160]);
         assert_eq!(a[176..208], b[176..208]);
-        // 06:00 sun.x = 4224, moon.x = 1408 per the law.
         assert_close(read(&a, 144), 4224.0);
         assert_close(read(&a, 160), 1408.0);
-        assert_close(read(&a, 176), 1408.0); // second sun rides moon longitude
-        assert_close(read(&a, 192), 4224.0); // second moon rides sun longitude
+        assert_close(read(&a, 176), 1408.0);
+        assert_close(read(&a, 192), 4224.0);
 
-        // hour = None keeps the captured rig verbatim (byte-exact path).
         let untouched = make(4200.0, None);
         assert_eq!(read(&untouched, 144).to_bits(), 2816.0f32.to_bits());
         assert_eq!(read(&untouched, 160).to_bits(), 0.0f32.to_bits());
@@ -1521,27 +1398,23 @@ mod tests {
 
     #[test]
     fn light_rig_writer_decodes_to_law_values_across_hours() {
-        // The new unit test the spec asks for: for several hours the CB0 bytes
-        // written by the rig writer decode to exactly the law values for all
-        // four x fields, and y/z/w lanes are untouched.
         let layout = terrain_scene_cb0_layout(&minimal_standard_functions_source())
             .expect("TerrainSceneCB0 layout");
         let read = |bytes: &[u8], offset: usize| {
             f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
         };
         const MAPX: f32 = crate::light_law::defines::MAP_SIZE_X;
-        // (offset, captured .y, .z, .w) for the four rig float4s.
         let rig = [
-            (144usize, 600.0f32, 848.0f32, 5000.0f32), // vVirtualSunPos
-            (160, 600.0, 1448.0, 550.0),               // vVirtualMoonPos
-            (176, 600.0, 100.0, 5000.0),               // vSecondVirtualSunPos
-            (192, 600.0, 100.0, 550.0),                // vSecondVirtualMoonPos
+            (144usize, 600.0f32, 848.0f32, 5000.0f32),
+            (160, 600.0, 1448.0, 550.0),
+            (176, 600.0, 100.0, 5000.0),
+            (192, 600.0, 100.0, 550.0),
         ];
         for hour_fraction in [6.0f32 / 24.0, 12.0 / 24.0, 18.0 / 24.0, 23.5 / 24.0] {
             let mut base = valid_scene_cb0_bytes();
             write_identity_float4x4(&mut base, 64);
             for (off, y, z, w) in rig {
-                write_f32_le(&mut base, off, 12345.0); // sentinel .x to be overwritten
+                write_f32_le(&mut base, off, 12345.0);
                 write_f32_le(&mut base, off + 4, y);
                 write_f32_le(&mut base, off + 8, z);
                 write_f32_le(&mut base, off + 12, w);
@@ -1574,7 +1447,6 @@ mod tests {
                     expected[i].to_bits(),
                     "rig .x at offset {off}, hour24 {hour24}"
                 );
-                // y/z/w lanes are byte-identical to the captured values.
                 assert_eq!(read(&patched, off + 4).to_bits(), y.to_bits());
                 assert_eq!(read(&patched, off + 8).to_bits(), z.to_bits());
                 assert_eq!(read(&patched, off + 12).to_bits(), w.to_bits());
@@ -1919,18 +1791,11 @@ mod tests {
 
     #[test]
     fn day_night_hour_patch_leaves_sun_dir_yzw_bit_identical_at_every_hour() {
-        // NIGHT1: the sun-direction `.yzw` is hour-invariant. Patching the
-        // render hour through the FULL scene-patch path must leave the captured
-        // `.yzw` bytes bit-for-bit unchanged at EVERY hour (the terminator moves
-        // via `.x` only). This is the same-bundle A/B that guards `--hour 0.5`
-        // byte-identity for the `.yzw` lanes.
         let layout = terrain_scene_cb0_layout(&minimal_standard_functions_source())
             .expect("parse TerrainSceneCB0 layout");
-        // Captured `.yzw` from a real swept sample (session_CAPFIX2_FULL_2):
-        // .y = 0, .z = 0.0773575..., .w = 0.9970026...
         let cap_y = 0.0f32;
-        let cap_z = f32::from_bits(0x3d9e_6d9c); // 0.077357...
-        let cap_w = f32::from_bits(0x3f7f_3b9f); // 0.997003...
+        let cap_z = f32::from_bits(0x3d9e_6d9c);
+        let cap_w = f32::from_bits(0x3f7f_3b9f);
         let camera = ProductionMapCamera::new(
             [
                 [1.0, 0.0, 0.0, 0.0],
@@ -1944,7 +1809,6 @@ mod tests {
         for hour in [0.0f32, 0.25, 0.5, 0.75, 23.5 / 24.0] {
             let mut base = valid_scene_cb0_bytes();
             write_identity_float4x4(&mut base, 64);
-            // Seed the captured `.yzw` (offsets 260/264/268) and an arbitrary `.x`.
             write_f32_le(&mut base, 256, 0.6666667);
             write_f32_le(&mut base, 260, cap_y);
             write_f32_le(&mut base, 264, cap_z);
@@ -1958,13 +1822,11 @@ mod tests {
                 None,
             )
             .expect("patch replay hour");
-            // `.x` moved to the render hour...
             assert_eq!(
                 read_f32_at(&patched, 256).unwrap().to_bits(),
                 hour.to_bits(),
                 "hour {hour}: .x must be the render hour"
             );
-            // ...but `.yzw` is bit-identical to the captured vector.
             assert_eq!(
                 read_f32_at(&patched, 260).unwrap().to_bits(),
                 cap_y.to_bits(),
@@ -1985,24 +1847,15 @@ mod tests {
 
     #[test]
     fn sun_dir_yzw_writer_is_a_full_buffer_byte_noop_at_hour_0_5() {
-        // The load-bearing byte-identity A/B: the NIGHT1 `.yzw` writer must be a
-        // strict no-op on the produced CB0 at the --hour 0.5 default. We build
-        // the same scene CB0 the render produces (rig .x + hour .x + FoW gate),
-        // then run `write_sun_dir_yzw_hour_invariant_field` and assert the ENTIRE
-        // 416-byte buffer is byte-identical before/after. This is what keeps the
-        // locked v3 baseline byte-exact when my `.yzw` step is added to the path.
         let layout = terrain_scene_cb0_layout(&minimal_standard_functions_source())
             .expect("parse TerrainSceneCB0 layout");
         let mut base = valid_scene_cb0_bytes();
         write_identity_float4x4(&mut base, 64);
-        // Seed a realistic captured `.yzw` (noon baseline live_PAN2 values).
-        write_f32_le(&mut base, 256, 0.5); // .x hour fraction (12:00)
-        write_f32_le(&mut base, 260, 0.0); // .y (dir.x)
-        write_f32_le(&mut base, 264, -0.078_338_5); // .z (dir.y)
-        write_f32_le(&mut base, 268, 0.996_926_84); // .w (dir.z)
+        write_f32_le(&mut base, 256, 0.5);
+        write_f32_le(&mut base, 260, 0.0);
+        write_f32_le(&mut base, 264, -0.078_338_5);
+        write_f32_le(&mut base, 268, 0.996_926_84);
 
-        // A = the buffer BEFORE the .yzw writer (what the old path produced at
-        // this point). B = after running it. hour24 = 0.5 * 24 = 12.0.
         let before = base.clone();
         write_sun_dir_yzw_hour_invariant_field(&mut base, &layout, 0.5 * 24.0)
             .expect("write hour-invariant .yzw");

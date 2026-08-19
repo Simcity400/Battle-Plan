@@ -92,7 +92,6 @@ def _parse_raid_instance_list(tz, status_index, owner_tag):
                 _parse_raid_instance(tz, status_index, len(rows), owner_tag)
             )
             continue
-        # Be tolerant of a named entry while preserving synchronization.
         key = atom_value(token)
         if key is None or tz.peek() is not EQUALS:
             continue
@@ -112,9 +111,6 @@ def _parse_status(tz, status_index):
         "dummy_id_type": None,
         "raids": [],
     }
-    # Raid rows need the tag, but the save writes tag before raid_instance on
-    # current builds.  If a future build reverses that order the final owner
-    # fix-up below still keeps the result correct.
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             if key == "dummy":
@@ -248,9 +244,6 @@ def build(text, source, was_melted):
         "raid ids        : "
         f"{len(raid_id_counts)} unique, {len(duplicate_raid_ids)} duplicated"
     )
-    # `parse_strategic.py` owns the replay-consumed `raids.json` contract.
-    # Keep the B7 parent/child acceptance oracle in a distinct artifact so the
-    # aggregate save-oracle runner can never overwrite either schema.
     return {"raid_instances.json": out}, "\n".join(lines)
 
 

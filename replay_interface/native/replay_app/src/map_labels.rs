@@ -1,12 +1,3 @@
-//! World-space country-label vertex-buffer path for the captured the game
-//! `mapname` pass.
-//!
-//! Normal product playback does not expose labels as an optional CLI layer: it
-//! executes the authenticated `mapname` draw in the immutable D80 static
-//! program. This module retains the controller-keyed semantic projection and
-//! the exact glyph-VB render surface for evidence/admission work; both consume
-//! captured shader semantics (`ViewProjectionMatrix`, `Transp_OffsetX.y` wrap
-//! offset, `Transp_OffsetX.x` alpha multiplier) without free-form substitutes.
 #![allow(dead_code)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -55,8 +46,6 @@ use crate::render::{compile_shader, create_immutable_texture};
 use crate::text::TextRenderer;
 use crate::Result;
 
-/// `interface/core.gfx:1679-1680` declares the map-name atlas as bitmapfont
-/// `tahoma_60` backed by `gfx/fonts/hoi_mapfont4`.
 pub const MAP_LABEL_FONT_NAME: &str = "tahoma_60";
 pub const MAP_LABEL_SHADER_SOURCE: &str = "gfx/FX/mapname.shader";
 pub const XMAP21_RESOURCE_TEXT_DRAW_SCHEMA: &str =
@@ -101,10 +90,6 @@ impl Xmap21ResourceTextDrawReceipt {
     }
 }
 
-/// XMAP17-owned target-bound executor for XMAP21's already-resolved resource
-/// text operations. It never re-localises, reorders, wraps, or substitutes
-/// glyphs; the effective `hoi_16mbs` metrics are used solely to turn the
-/// packet's exact text and rectangle into atlas quads.
 pub struct Xmap21ResourceTextRenderer {
     text: TextRenderer,
 }
@@ -269,8 +254,6 @@ impl Xmap21VpCapitalTextDrawReceipt {
     }
 }
 
-/// Target-bound executor for the exact authored `hoi_20bs` instant textboxes
-/// owned by the VP and capital map-icon GUI roots.
 pub struct Xmap21VpCapitalTextRenderer {
     text: TextRenderer,
 }
@@ -402,17 +385,8 @@ impl Xmap21VpCapitalTextRenderer {
     }
 }
 
-/// Exact producer contract for the a729 `mapname.shader` slot-1 constant
-/// buffer. The production-render extractor must emit this token only after the
-/// draw has passed the reflected mapname VS+PS discriminator; a slot number or
-/// a coincidental 32-byte payload is not sufficient evidence.
 pub const MAP_LABEL_TRANSP_OFFSET_SEMANTIC: &str = replay_core::MAPNAME_TRANSP_OFFSET_SEMANTIC;
 
-/// Hash-authenticated draw-time bytes consumed by the existing glyph-VB path.
-///
-/// N04 proves that `.x` is the selected persistent country/far alpha and `.y`
-/// is the wrap translation. Keeping the complete 32 bytes prevents the replay
-/// path from inventing padding or silently accepting a different CB layout.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedMapLabelRuntimeConstants {
     pub transp_offset_x_f32_bits: [u32; 4],
@@ -420,8 +394,6 @@ pub struct AuthenticatedMapLabelRuntimeConstants {
     pub raw_sha256: String,
 }
 
-/// Static map/file inputs needed to project one exact replay hour's measured
-/// province controllers through the B10 placement law.
 pub struct ReplayControllerLabelInputs<'a> {
     pub province_ids: &'a [u32],
     pub width: usize,
@@ -432,9 +404,6 @@ pub struct ReplayControllerLabelInputs<'a> {
     pub province_type: &'a BTreeMap<u32, ProvinceKind>,
 }
 
-/// Materialize only measured controller rows from the exact replay frame.
-/// Missing province ids remain genuinely uncontrolled; an explicitly present
-/// absent/null/malformed controller row blocks the complete label projection.
 pub fn measured_control_by_province(frame: &WorldFrame) -> Result<BTreeMap<u32, String>> {
     measured_controller_rows(
         frame.control_by_province_status(),
@@ -478,9 +447,6 @@ fn measured_controller_rows(
     Ok(measured)
 }
 
-/// Exact replay-state-to-placement join. This is the only product-authorized
-/// placement entrypoint in replay_app; legal state owners are never accepted as
-/// a fallback for missing controller state.
 pub fn controller_label_placements_from_replay(
     frame: &WorldFrame,
     inputs: &ReplayControllerLabelInputs<'_>,
@@ -504,9 +470,6 @@ pub fn controller_label_placements_from_replay(
 }
 
 impl AuthenticatedMapLabelRuntimeConstants {
-    /// Join the portable production static draw to the glyph renderer. The
-    /// extractor-stamped semantic is the discriminator; the engine effect token
-    /// is rechecked here so a corrupted cross-program binding fails closed.
     pub fn from_static_map_draw(draw: &StaticMapDraw) -> Result<Option<Self>> {
         match draw.mapname_d80_state()? {
             MapnameD80State::Missing => Ok(None),
@@ -520,12 +483,6 @@ impl AuthenticatedMapLabelRuntimeConstants {
         }
     }
 
-    /// Admit only an exact, stage-complete mapname CB1 observation.
-    ///
-    /// A producer may merge VS+PS into one stage mask or retain two identical
-    /// stage-local bindings. Conflicting stage-local bytes fail closed. The
-    /// semantic token is mandatory because slot 1 and byte width alone collide
-    /// with unrelated effects.
     pub fn from_constant_buffers(bindings: &[ConstantBufferBinding]) -> Result<Self> {
         const MAPNAME_STAGES: u8 = 0b0000_0011;
         const CB_BYTES: usize = 32;
@@ -686,9 +643,6 @@ pub fn build_label_vertex_batches(
         .into());
     }
 
-    // Recover the engine's direct spline parameter over the complete laid-out
-    // glyph sequence before atlas-page batching. Page filtering must not alter
-    // Euclidean station spacing (including spaces and cross-page glyphs).
     let mut all_glyphs: Vec<MapLabelGlyphLayoutQuad> = layout
         .quads
         .iter()
@@ -1022,14 +976,6 @@ impl MapLabelRenderer {
         Ok(())
     }
 
-    /// Execute the exact admitted XMAP17 mapname program on the app-owned
-    /// main-scene target. XMAP10 supplies the actual scene CB0 and target
-    /// identity; this function submits every prepared label row, near vector
-    /// first and far-country vector second, for every frozen map copy.
-    ///
-    /// # Safety
-    /// `scene_cb0` and `main_scene` must be the live, mutually-bound XMAP10
-    /// providers on `gfx.context`.
     pub unsafe fn draw_prepared_product(
         &self,
         gfx: &Gfx,
@@ -1679,8 +1625,6 @@ kernings count=0
 
     #[test]
     fn replay_label_vb_matches_map_viewer_law_for_oracle63_rows() {
-        // The oracle is an in-repo fixture, so its absence is a broken
-        // checkout, not an environment the test may skip on.
         let oracle_path = replay_test_gates::require_existing_file(
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("../map_viewer/tests/fixtures/mapname/engine_label_oracle.json"),

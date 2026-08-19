@@ -1,17 +1,10 @@
-//! A38/XUI22 generic engine-materialisation carrier boundary.
-//!
-//! D51 variables and flags remain the first replay evaluator inputs.  These
-//! rows carry only residual results that the generic evaluator cannot resolve.
-//! No scripted-GUI id, panel, trigger, or property is hard-coded here.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const EXACT_A729_EXECUTABLE_SHA256: [u8; 32] = [
     0x87, 0x0e, 0xbf, 0x1f, 0x61, 0x52, 0x62, 0xfa, 0xcc, 0xa4, 0x8a, 0x3b, 0x94, 0x77, 0x75, 0xc4,
     0x1f, 0x0a, 0x53, 0x38, 0xf3, 0x06, 0x8c, 0x40, 0x95, 0x82, 0x09, 0xf5, 0xc4, 0x1c, 0x65, 0xad,
 ];
-pub const EXACT20_A38_JOB_ID: &str =
-    "20260720T020812Z-w3-a38-controller-owner-41ee5208";
+pub const EXACT20_A38_JOB_ID: &str = "20260720T020812Z-w3-a38-controller-owner-41ee5208";
 pub const EXACT20_A38_STATIC_AUTHORITY_RECEIPT_SHA256: [u8; 32] = [
     0x7d, 0x0a, 0x36, 0xb1, 0x82, 0x2f, 0xaf, 0x85, 0xa9, 0x49, 0xd6, 0x28, 0xa7, 0x9b, 0xc4, 0xa0,
     0x9f, 0x95, 0xdc, 0x9c, 0x9a, 0xa3, 0xed, 0x4a, 0xec, 0xb7, 0x15, 0xb7, 0x2b, 0x0a, 0x90, 0x82,
@@ -22,44 +15,32 @@ pub const MAX_RESULTS_PER_MAP: usize = 131_072;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EngineResult<T> {
     Value(T),
-    /// Authenticated, explicit absence.  It is never coerced to false/empty.
     Unavailable(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptedGuiDefinitionIdentity {
-    /// Canonical game-relative path from the authenticated effective-VFS
-    /// winner index. Absolute install/mod paths are never portable identity.
     pub logical_path: String,
     pub winning_layer_ordinal: u32,
-    /// `base`, `integrated_dlc`, `dlc`, or `mod`.
     pub layer_kind: String,
     pub layer_id: String,
-    /// Container hash for archive-backed content, payload hash otherwise.
     pub source_sha256: [u8; 32],
     pub payload_sha256: [u8; 32],
     pub payload_bytes: u64,
-    /// Static registry identity joined from the winning scripted-GUI
-    /// definition. These are not inferred from live widget strings.
     pub context_type: String,
     pub window_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptedGuiRuntimeRow {
-    /// Position in `CScriptedWindowManager::updaters`. The row vector must
-    /// retain this exact engine order; sorting by country or GUI id is invalid.
     pub manager_order_index: u32,
     pub country_tag: String,
     pub gui_id: String,
     pub definition: ScriptedGuiDefinitionIdentity,
     pub visible: EngineResult<bool>,
     pub enabled: EngineResult<bool>,
-    /// Authenticated unsupported-name inventory from the effective definition.
     pub expected_trigger_names: BTreeSet<String>,
     pub triggers: BTreeMap<String, EngineResult<bool>>,
-    /// Key is `(authored element, authored property)`; value is the exact
-    /// engine-materialised string, including sprite tokens and frame values.
     pub expected_property_keys: BTreeSet<(String, String)>,
     pub properties: BTreeMap<(String, String), EngineResult<String>>,
     pub expected_effect_names: BTreeSet<String>,
@@ -72,14 +53,10 @@ pub struct ScriptedGuiRuntimeFrame {
     pub producer_record_identity: String,
     pub executable_sha256: [u8; 32],
     pub ui14_engine_vfs_sha256: [u8; 32],
-    /// Fresh pinned-shard A38 Ghidra receipt. Legacy discovery manifests are
-    /// not admitted here.
     pub static_authority_receipt_sha256: [u8; 32],
     pub producer_manifest_sha256: [u8; 32],
-    /// Complete effective `(country_tag, gui_id)` set for this sampled context.
     pub expected_gui_keys: BTreeSet<(String, String)>,
     pub rows: Vec<ScriptedGuiRuntimeRow>,
-    /// Tombstones for keys present in the previous frame but absent now.
     pub tombstones: BTreeSet<(String, String)>,
 }
 
@@ -97,9 +74,6 @@ pub trait ExactScriptedGuiRuntimeSource {
     fn static_authority_receipt_sha256(&self) -> [u8; 32];
     fn producer_manifest_sha256(&self) -> [u8; 32];
     fn collect_runtime_frame(&self, hour_index: u64) -> Result<ScriptedGuiRuntimeFrame, String>;
-    /// Authenticates every definition against the ephemeral effective-winner
-    /// index and the exact registry used by this producer. This is where the
-    /// source rejects self-declared paths, hashes, keys, or coverage.
     fn authenticate_runtime_frame(&self, frame: &ScriptedGuiRuntimeFrame) -> Result<(), String>;
 }
 
@@ -246,7 +220,9 @@ fn validate_game_relative_path(value: &str) -> Result<(), CarrierError> {
     if value.contains('\\')
         || value.starts_with('/')
         || value.contains(':')
-        || value.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || value
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return invalid("definition path is not canonical game-relative identity");
     }
@@ -335,11 +311,15 @@ fn leaks_host_detail(value: &str) -> bool {
     {
         return true;
     }
-    value.to_ascii_lowercase().as_bytes().windows(8).any(|part| {
-        part[0] == b'0'
-            && part[1] == b'x'
-            && part[2..].iter().all(|byte| byte.is_ascii_hexdigit())
-    })
+    value
+        .to_ascii_lowercase()
+        .as_bytes()
+        .windows(8)
+        .any(|part| {
+            part[0] == b'0'
+                && part[1] == b'x'
+                && part[2..].iter().all(|byte| byte.is_ascii_hexdigit())
+        })
 }
 
 pub(crate) fn portable_unavailable_diagnostic(value: &str) -> String {
@@ -445,7 +425,10 @@ mod tests {
         ] {
             let mut value = frame();
             value.rows[0].definition.logical_path = bad_path.into();
-            assert!(validate_scripted_gui_runtime_frame(&value).is_err(), "{bad_path}");
+            assert!(
+                validate_scripted_gui_runtime_frame(&value).is_err(),
+                "{bad_path}"
+            );
         }
         let mut value = frame();
         value.rows[0].definition.layer_kind = "local_folder".into();
@@ -458,8 +441,9 @@ mod tests {
         assert!(validate_scripted_gui_runtime_frame(&value).is_err());
 
         let mut value = frame();
-        value.rows[0].enabled =
-            EngineResult::Unavailable("failed at C:\\Users\\Example\\capture.bin 0x141234567".into());
+        value.rows[0].enabled = EngineResult::Unavailable(
+            "failed at C:\\Users\\Example\\capture.bin 0x141234567".into(),
+        );
         assert!(validate_scripted_gui_runtime_frame(&value).is_err());
         sanitize_runtime_diagnostics(&mut value);
         assert_eq!(
@@ -500,11 +484,11 @@ mod tests {
             &self,
             frame: &ScriptedGuiRuntimeFrame,
         ) -> Result<(), String> {
-            if frame
-                .rows
-                .iter()
-                .all(|row| row.definition.logical_path.starts_with("common/scripted_guis/"))
-            {
+            if frame.rows.iter().all(|row| {
+                row.definition
+                    .logical_path
+                    .starts_with("common/scripted_guis/")
+            }) {
                 Ok(())
             } else {
                 Err("definition absent from authenticated winner index".into())

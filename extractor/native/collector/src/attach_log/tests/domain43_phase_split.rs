@@ -1,32 +1,5 @@
-//! `domain43_phase_split`: D43's per-family wall split must ride a CLEAN record
-//! (lane DS, 2026-08-07).
-//!
-//! WHY THE SPLIT EXISTS. t32's `read_time_us` for d43 has a median of 19.5 ms,
-//! and its PERF trailer carried only failure-context and scope words, so nothing
-//! in the tree could attribute that wall to one of the nine families the read
-//! walks. `Domain43PhaseTimes` splits it per family, in the producer, which is
-//! the prerequisite for deciding whether any family is worth cutting.
-//!
-//! WHY THIS TESTS THE BUILDER AND NOT A DRIVEN FRAME — the same reasoning as
-//! `domain41_phase_split`, and for the same structural reason. D43's rooted
-//! purchase-contract family has no offline source, so every fixture frame lands
-//! on `SOURCE_UNAVAILABLE | PARTIAL_DATA` (0x300) and the conditional block runs
-//! on all of them. Any assertion over the emitted list is therefore satisfied by
-//! a conditional build as well as an unconditional one. An earlier version of
-//! this test asserted the phase units were the emitted list's PREFIX and treated
-//! that as a proxy; Codex review 019fd9aa-4180-7ac1-888e-2d3ed3d6cac7 (finding 3)
-//! showed the proxy is unsound in both directions. Calling
-//! `compact_market_trade_diagnostic_units` with a clean `status_flags` tests the
-//! property itself.
-//!
-//! ORDER IS ALSO ASSERTED: the channel's budget allocator fills each domain's
-//! guaranteed floor (`MAX_FLOOR_UNITS_PER_OFFENDER` = 8) in emission order for
-//! role-less units, so eleven phase timers ahead of the failure words would
-//! evict the reason a frame failed from a truncated record.
-
 use super::*;
 
-/// The eleven units, in the order the builder appends them.
 const D43_PHASE_UNITS: [&str; 11] = [
     "d43_phase_census_us",
     "d43_phase_contract_ptrs_us",
@@ -41,8 +14,6 @@ const D43_PHASE_UNITS: [&str; 11] = [
     "d43_phase_total_us",
 ];
 
-/// Distinct value per field, so a unit wired to the wrong `Domain43PhaseTimes`
-/// member is caught by value and not only by name.
 const D43_PHASE_VALUES: [u64; 11] = [11, 22, 33, 44, 55, 66, 77, 88, 99, 110, 121];
 
 fn read_with_phase(status_flags: u32) -> CompactMarketTradeRead {
@@ -92,14 +63,6 @@ fn read_with_phase(status_flags: u32) -> CompactMarketTradeRead {
     }
 }
 
-/// THE property: on a CLEAN status the eleven phase units are still emitted, and
-/// they are the whole list.
-///
-/// MUTATION: move the `units.extend([..phase..])` call in
-/// `compact_market_trade_diagnostic_units` inside the
-/// `if compact_status_is_failure(..)` block and this fails on an empty list.
-///
-/// MUTATION RUN: recorded in the lane report.
 #[test]
 fn d43_phase_units_are_emitted_on_a_clean_status() {
     let units = compact_market_trade_diagnostic_units(&read_with_phase(0));
@@ -114,12 +77,6 @@ fn d43_phase_units_are_emitted_on_a_clean_status() {
     assert_eq!(values, D43_PHASE_VALUES.to_vec(), "phase unit wiring");
 }
 
-/// The failure-context words must come FIRST, so eleven phase timers cannot
-/// evict them from the per-offender floor on a truncated record.
-///
-/// MUTATION: swap the two `extend` calls in
-/// `compact_market_trade_diagnostic_units` and this fails naming a
-/// `d43_phase_*_us` unit as first.
 #[test]
 fn d43_failure_context_precedes_the_phase_split() {
     let units = compact_market_trade_diagnostic_units(&read_with_phase(

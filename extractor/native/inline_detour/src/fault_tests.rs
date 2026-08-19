@@ -1,70 +1,11 @@
-//! THE FAILURE PATHS, DRIVEN.
-//!
-//! # Why this module exists
-//!
-//! Three lanes closed defects in this crate and its MinHook fork, and every one
-//! of them is on a path the OS or the library takes only when something has
-//! gone wrong:
-//!
-//! * KQ: `SuspendThread` refuses a live thread, or `GetThreadContext` cannot
-//!   answer. Upstream MinHook returned silently from both and patched the bytes
-//!   anyway, resuming a thread into a half-rewritten instruction stream.
-//! * KZ / LI: a teardown frees a trampoline while a thread is still inside the
-//!   caller's own detour body -- which the freeze cannot see, because that body
-//!   is neither the target nor the trampoline.
-//! * LI: "the enable reported failure, so nothing was patched" is FALSE in this
-//!   product. `EnableHookLL` writes the JMP, sets `isEnabled`, and only then
-//!   reports that the protection restore or the instruction-cache flush did not
-//!   complete. Six markers in this workspace once rested on the opposite
-//!   reading.
-//!
-//! LI's own closing note named the gap this module fills: a clean attach walks
-//! past all of it, so "45/45 installed and torn down" says nothing about any of
-//! these. What proves them is a FAULT-INJECTED one -- refuse an enable after
-//! the bytes are written, hold a callback in flight across a teardown, refuse a
-//! suspension and a context read -- and read the receipts.
-//!
-//! # What the seams are, and why they cannot ship
-//!
-//! Three, and no more:
-//!
-//! * [`crate::freeze::faults`], `cfg(test)` -- refuse one thread's suspension,
-//!   or one thread's context read. `cfg(test)` is set only while THIS crate's
-//!   test harness is compiled, so a collector that depends on `inline_detour`
-//!   compiles constant-`false` arms.
-//! * `minhook_h4`'s `test_support` feature -- make one target's enable report
-//!   the completion failure with its bytes already written. It is a feature
-//!   rather than `cfg(test)` because the C is compiled as a DEPENDENCY of this
-//!   crate, and a second compilation of it would be a second `g_hooks` table
-//!   that production never calls. Its absence from shipped builds is PROVED
-//!   rather than argued, by the two checks in [`inertness`].
-//!
-//! # The hazard these tests carry, and what is done about it
-//!
-//! Allocating inside a held freeze can hang this process for ever -- that is
-//! the defect KZ's audit exists to find, and a test that performs it
-//! deliberately performs it deliberately. The one test that must
-//! ([`the_probe_sees_an_allocation_inside_a_held_window`]) runs in a CHILD
-//! PROCESS with one test thread and a parent-side timeout, so a hang fails a
-//! test instead of wedging the battery for everyone.
-
 use super::*;
 use crate::freeze::faults;
 use core::ffi::c_void;
 use minhook::{MinHook, MH_STATUS};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-/// Serialises this module against itself. Taken FIRST, then the ledger, then
-/// the suspend-state guard -- the order `tests` and `batch_tests` use, so no
-/// two of the three modules can take the pair in opposite orders.
 static FAULT_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// The three process-global guards every test here holds, in the one order.
-///
-/// The suspend-state guard is what actually excludes `tests` and `batch_tests`:
-/// this module arms process-global faults and takes process-global freezes, and
-/// either one landing inside another module's delta window would corrupt that
-/// module's measurement rather than this one's.
 macro_rules! serialised {
     () => {
         let _fault = FAULT_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -75,13 +16,6 @@ macro_rules! serialised {
     };
 }
 
-/// Spin until `ready` answers true, or FAIL rather than spin for ever.
-///
-/// Every wait in this module is on a condition a REGRESSION can make
-/// unreachable -- "the callback entered the detour" stops happening the moment
-/// physical patching regresses while `enable` still reports success. A bare
-/// loop turns that regression into a hung test binary, which wedges the battery
-/// for every lane; a deadline turns it into a named failure.
 fn wait_until(what: &str, ready: impl Fn() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !ready() {
@@ -93,13 +27,6 @@ fn wait_until(what: &str, ready: impl Fn() -> bool) {
     }
 }
 
-/// Physically restores a set of targets when it drops, WHATEVER happened.
-///
-/// Every hook here is a patch into this test binary's own code and a live
-/// entry in the process-global MinHook table, so a test that panicked between
-/// its enable and its cleanup would hand the next test a detoured function, a
-/// dirty queue or a retained trampoline. The trailing cleanup call the first
-/// spelling used does not run during an unwind; this does.
 struct HookCustody(Vec<*mut c_void>);
 
 impl HookCustody {
@@ -114,9 +41,6 @@ impl HookCustody {
 
 impl Drop for HookCustody {
     fn drop(&mut self) {
-        // THE FAULT FIRST. An arming still live would be consumed by one of
-        // these disables, and the next test would find its own fault already
-        // spent -- a vacuous pass, which is worse than a failure.
         minhook::EnableIncoherentFault::disarm();
         for &target in &self.0 {
             let _ = unsafe { disable(target) };
@@ -125,17 +49,8 @@ impl Drop for HookCustody {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Victims. Distinct bodies, distinct constants: `#[inline(never)]` alone does
-// not stop the linker folding two identical functions into one address, and
-// two hooks on one address is a batch of one wearing a disguise.
-// ---------------------------------------------------------------------------
-
 type Victim = extern "system" fn(u64) -> u64;
 
-/// An address no hook was ever created for, so `MH_QueueEnableHook` answers
-/// `MH_ERROR_NOT_CREATED` for it. Distinct from `batch_tests`'s own constant so
-/// the two modules cannot come to depend on one another's fixtures.
 const ABSENT_FAULT_TARGET: *mut c_void = 0x5100 as *mut c_void;
 
 static DETOURED: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
@@ -177,15 +92,10 @@ fn trio() -> [(&'static str, Victim, Victim); 3] {
     ]
 }
 
-/// The value each victim answers when it is NOT detoured. Computed by calling
-/// it, not by copying the arithmetic: a copy would go on agreeing with itself
-/// after the body changed.
 fn undetoured_answer(index: usize) -> u64 {
-    // Called before anything is created, so this is the original.
     trio()[index].1(1)
 }
 
-/// Create all three hooks, disabled, removing any prior instance first.
 fn create_trio() -> Vec<(&'static str, *mut c_void)> {
     let mut targets = Vec::new();
     for (name, victim, detour) in trio() {
@@ -199,13 +109,6 @@ fn create_trio() -> Vec<(&'static str, *mut c_void)> {
     targets
 }
 
-/// The first bytes an enable of `target` rewrites, read through MinHook's own
-/// answer about the footprint rather than a guess.
-///
-/// A hard-coded "first five bytes" is wrong for a hot-patch target, whose patch
-/// starts five bytes ABOVE the function and is seven bytes long. Asking is also
-/// what makes the comparison mean "the bytes an enable would have written",
-/// which is the claim.
 fn patch_bytes(target: *mut c_void) -> Vec<u8> {
     let lock = minhook::MinHookLock::acquire().expect("the lock is free");
     let footprint =
@@ -213,75 +116,9 @@ fn patch_bytes(target: *mut c_void) -> Vec<u8> {
     drop(lock);
     let (start, end) = footprint.patch;
     // SAFETY: MinHook answered with the exact range an enable rewrites, which
-    // is mapped, readable code in this process.
     unsafe { std::slice::from_raw_parts(start as *const u8, end - start) }.to_vec()
 }
 
-// ---------------------------------------------------------------------------
-// (a) An enable refused AFTER the bytes were written.
-// ---------------------------------------------------------------------------
-
-/// THE FIX, DRIVEN: a batch whose apply was refused ROLLS ITSELF BACK, names
-/// the refusal on every target, and leaves nothing live.
-///
-/// The fault makes one target's `EnableHookLL` complete its write, set
-/// `isEnabled`, and then report `MH_ERROR_MEMORY_PROTECT` as a failed
-/// instruction-cache flush would. That is the fork's documented behaviour and
-/// until this seam existed nothing could reach it.
-///
-/// WHAT THIS TEST USED TO ASSERT, and why it changed. Lane LN wrote it to pin a
-/// live defect: `apply_refusal()` carried the refusal and was the ONLY carrier,
-/// `first_failure()` was `None` and `failures()` empty -- because the completion
-/// pass re-enables each queued target and MinHook answers `MH_ERROR_ENABLED` for
-/// the one already patched, which maps to `Ok` -- `rolled_back()` was false, and
-/// all three victims answered with their DETOUR, the refused one incoherent.
-/// Every production `enable_batch` caller gates on the named failure, so every
-/// one of them accepted that roster (`runs/ln_fault_inject/FINDINGS.txt`).
-/// Lane LT closed it, and this is the same fault asked the same questions.
-///
-/// Four things are asserted and each is a separate half of the fix:
-///
-/// 1. THE REFUSAL IS NAMED. `refusal()` is `Some` and `failures()` covers every
-///    target, so the gate every caller uses sees it. `all_succeeded()` is
-///    defined as `refusal().is_none()`, so there is no longer any state in
-///    which a batch reports no failure while not having succeeded.
-/// 2. NOTHING IS LIVE. Checked by CALLING the victims, not by reading the
-///    report that is itself under test, and by the enabled-detour census not
-///    moving.
-/// 3. THE INCOHERENT LATCH IS CLEARED. `MH_RemoveHook` refuses an incoherent
-///    entry by name for ever; the rollback's disable rewrites the bytes and
-///    re-derives the latch, so the removal that used to be impossible succeeds.
-///    Asked of MinHook directly, because `remove`'s own wrapper refuses every
-///    ENABLED target before it reaches MinHook and would answer nothing about
-///    the latch.
-/// 4. IT REACHES THE WIRE WITH A NAME. The lanes render exactly
-///    `format!("... enable failed for {name}: {status}")`, so the assertion is
-///    on that string: it must say the BATCH's apply refused and that this
-///    target is not live, rather than charging a bare `MH_ERROR_MEMORY_PROTECT`
-///    to one hook -- which reads as that hook's own enable refusing, a
-///    different event with a different recovery.
-///
-/// kills: reverting the rollback selection to `statuses.iter().any(is_err)`
-/// (assertion 2 fails -- all three stay live -- and 3 fails, the latch is never
-/// cleared); deleting the batch-level charge in `BatchEnableReport::sealed`
-/// (assertion 1's `failures().len() == 3` fails); collapsing
-/// `BatchApplyRefused` back into `MinHook` (assertion 4 fails); and a
-/// `minhook_h4` that reported `MH_OK` when the restore or the flush failed --
-/// which is what upstream does -- would leave nothing for the batch to refuse,
-/// so assertion 1 fails on `refusal()` being `None`. Note it would NOT fail
-/// the witness assertions: the injected branch still runs, still disarms and
-/// still writes the witness, which is exactly why those two are a
-/// NON-VACUITY check on the fixture and not a check on the product.
-///
-/// WHAT IT DOES NOT KILL, stated because a `kills:` list that overreaches is
-/// worse than a short one: the `still_live()` assertion below does NOT
-/// discriminate how liveness is derived. This batch's rollback SUCCEEDS, so
-/// every target is down and every candidate derivation -- from `live_now`,
-/// from the outcomes, from `rolled_back()` -- answers false. The derivation
-/// only matters when an undo is REFUSED, and no seam can refuse one: the
-/// completion fault is one-shot and `MH_ApplyQueued` consumes it. Failed
-/// rollback liveness is UNTESTED in this suite and is named as such in
-/// `runs/lt_apply_refusal_rollback/FINDINGS.txt`, section 7.
 #[test]
 fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
     serialised!();
@@ -294,11 +131,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
     let armed = minhook::EnableIncoherentFault::arm(faulted);
     let report = unsafe { enable_batch(&targets) };
 
-    // THE FAULT WAS CONSUMED, and the BRANCH ITSELF RAN. Without both the whole
-    // test is vacuous: an arming that never fired would leave a perfectly
-    // ordinary batch and every assertion below would be about nothing. The
-    // witness is written from inside the injected branch in `EnableHookLL`, so
-    // a cleared arming that somehow did not run cannot satisfy it.
     assert!(
         minhook::EnableIncoherentFault::armed().is_none(),
         "the injected completion failure was never reached"
@@ -310,7 +142,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
     );
     drop(armed);
 
-    // 1. THE REFUSAL IS NAMED, on the gate every production caller uses.
     let (name, status) = report
         .refusal()
         .expect("a batch whose apply refused must name a refusal");
@@ -344,7 +175,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
         report.rolled_back(),
         "a refused apply undoes the batch: {report:?}"
     );
-    // The batch-level carrier agrees with the per-target ones.
     assert_eq!(
         report.apply_refusal(),
         Some(InlineDetourEnableError::BatchApplyRefused {
@@ -354,9 +184,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
         })
     );
 
-    // 2. NOTHING IS LIVE, and this is what makes the paragraph above a fact
-    // about memory rather than about a struct: every victim, including the
-    // refused one, answers with its own body again.
     for (index, (victim_name, _)) in targets.iter().enumerate() {
         assert_eq!(
             trio()[index].1(1),
@@ -369,19 +196,12 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
         enabled_before,
         "a batch that rolled itself back left no detour to count"
     );
-    // And the report says the same thing to a caller that keeps its own custody
-    // mask -- which is what `sunk_ship_history_live`'s `ENABLED_HOOKS` is, and
-    // reading the OUTCOMES for it is what claimed custody of detours the
-    // rollback had removed.
     assert_eq!(
         report.still_live(),
         [false, false, false],
         "no target of a rolled-back batch is live: {report:?}"
     );
 
-    // AND NO QUEUE RESIDUE. MinHook's queue is process-global, so a target left
-    // queued is a patch some later, unrelated `MH_ApplyQueued` performs inside a
-    // freeze nobody accounted for. Driving one here must change nothing.
     let _ = unsafe { apply_queued() };
     for (index, (victim_name, _)) in targets.iter().enumerate() {
         assert_eq!(
@@ -392,11 +212,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
         );
     }
 
-    // 3. THE INCOHERENT LATCH WAS CLEARED BY THE ROLLBACK. `MH_RemoveHook`
-    // refuses an incoherent entry by name rather than freeing a trampoline
-    // whose last write could not be completed, so this removal is exactly the
-    // one that was impossible before the rollback existed. Asked inside a
-    // freeze, which is what the call requires.
     let frozen = crate::freeze_process().expect("the process freezes");
     let asked = unsafe { MinHook::remove_hook(frozen.minhook_lock(), faulted) };
     drop(frozen);
@@ -407,13 +222,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
          incoherent latch; without it MH_RemoveHook refuses this target for ever"
     );
 
-    // 4. THE REFUSAL RENDERS WITH A CAUSE. Scoped exactly: this asserts the
-    // DISPLAY, which is the half this lane changed and the half a caller
-    // cannot repair. It does NOT assert that any lane still interpolates it --
-    // the string below is built here, so a lane that stopped rendering
-    // `{status}` would leave this green. What stands behind that half is that
-    // all fifteen sites pass the report's own `(name, status)` straight into
-    // their message, which is a property of those files and is reviewed there.
     let rendered = format!("{status}");
     assert!(
         rendered.contains("batch refused"),
@@ -424,9 +232,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
         rendered.contains("rolled back") && rendered.contains("not live"),
         "the cause must say the game is not left patched: {rendered}"
     );
-    // And the verdict names a hook FROM THIS ROSTER, which is what makes the
-    // lanes' `format!("... for {name}: {status}")` say something an operator
-    // can act on rather than a bare batch verdict.
     assert!(
         targets.iter().any(|(target_name, _)| *target_name == name),
         "the refusal must name one of the batch's own targets, not a \
@@ -439,53 +244,6 @@ fn an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back() {
     }
 }
 
-/// THE INVARIANT ITSELF, over every batch shape this crate can reach: a report
-/// that names no refusal is a report that all succeeded.
-///
-/// The defect lane LN found was not "the rollback was not selected"; it was that
-/// the report could SAY two contradictory things and the callers all read the
-/// half that was wrong. Selecting the rollback correctly fixes today's instance.
-/// This is the property that stops the next one, and it is checked against the
-/// reachable shapes rather than argued: nothing to enable, a roster listing one
-/// target twice, a clean batch, and a faulted batch.
-///
-/// BE EXACT ABOUT WHICH ASSERTION DOES THE WORK, because most of them are
-/// nearly free and saying otherwise would overstate this test.
-///
-///   * `all_succeeded() == refusal().is_none()` is a TAUTOLOGY today, because
-///     that is `all_succeeded()`'s definition. It is here to stop being one:
-///     it fails the day somebody gives the verdict a second, parallel
-///     definition, which is the shape the defect had.
-///   * `all_succeeded() == failures().is_empty()` IS THE DISCRIMINATING ONE.
-///     Delete the charge in `BatchEnableReport::sealed` and the faulted shape
-///     keeps `apply_refusal` set, so `refusal()` -- which reads that field
-///     directly -- still answers `Some` and the verdict is still false, while
-///     the outcome vector is entirely `Ok` and `failures()` is EMPTY. This is
-///     the assertion that catches it.
-///   * `apply_refusal().is_some() -> !all_succeeded()` is NOT discriminating
-///     any more and is kept as a guard. It was, before `refusal()` began
-///     reading `apply_refusal` directly; now a charge-less report satisfies it.
-///   * `still_live().len() == outcomes().len()` is what a caller indexing one
-///     by the other depends on.
-///   * `rolled_back() -> nothing live` and `all_succeeded() -> everything
-///     live` are the two directions liveness may not lie in. Neither
-///     discriminates how liveness is DERIVED across these four shapes: every
-///     rollback here SUCCEEDS, so `live_now`, the outcomes and `rolled_back()`
-///     all answer the same. See the note below.
-///
-/// kills: removing the batch-level charge from `BatchEnableReport::sealed`,
-/// caught by the failure-list assertion as set out above.
-///
-/// WHAT IT DOES NOT KILL, and neither does any test in this file:
-///   * restoring the old `apply_refusal.is_none() && outcomes.all(is_ok)`
-///     formula for `all_succeeded()` while the charge stays -- with the charge
-///     in place the two formulas agree on every shape;
-///   * deriving `still_live()` from the OUTCOMES rather than from `live_now`.
-///     The two disagree only over a target whose undo was ATTEMPTED and
-///     REFUSED, and no seam can refuse an undo: the completion fault is
-///     one-shot and `MH_ApplyQueued` consumes it. Failed-rollback liveness is
-///     UNTESTED in this suite and is named as such in
-///     `runs/lt_apply_refusal_rollback/FINDINGS.txt`, section 7.
 #[test]
 fn a_batch_that_names_no_refusal_is_a_batch_that_all_succeeded() {
     serialised!();
@@ -505,26 +263,15 @@ fn a_batch_that_names_no_refusal_is_a_batch_that_all_succeeded() {
             report.apply_refusal().is_none() || !report.all_succeeded(),
             "{what}: a batch-level refusal that reports success: {report:?}"
         );
-        // AND THE LIVENESS VECTOR IS USABLE BESIDE THE OUTCOMES. A caller that
-        // keeps a per-site custody mask indexes one by the other, so a shape
-        // whose lengths disagree is an out-of-bounds panic or a silently
-        // mis-attributed hook at a lane's install site.
         assert_eq!(
             report.still_live().len(),
             report.outcomes().len(),
             "{what}: still_live() must answer for every target: {report:?}"
         );
-        // `rolled_back()` is the CLAIM that nothing is live, so it may not be
-        // set over a target that is.
         assert!(
             !report.rolled_back() || !report.still_live().contains(&true),
             "{what}: rolled_back() over a live target: {report:?}"
         );
-        // And the other direction: a batch that all succeeded installed every
-        // target it was given, so every one of them is live. This pins
-        // successful-batch liveness; it does NOT discriminate how liveness is
-        // derived, because over these four shapes every rollback succeeds and
-        // every candidate derivation agrees. See this test's doc comment.
         assert!(
             !report.all_succeeded() || report.still_live().iter().all(|live| *live),
             "{what}: a successful batch with a target that is not live: {report:?}"
@@ -560,40 +307,6 @@ fn a_batch_that_names_no_refusal_is_a_batch_that_all_succeeded() {
     drop(custody);
 }
 
-
-/// A ROSTER THAT REFUSES TWICE: one target of its own, and the batch as a
-/// whole. The whole-batch cause is what the verdict names.
-///
-/// The batch is `[absent, victim.0, victim.1]` with the completion fault armed
-/// on `victim.1`. The absent target's queue call answers
-/// `MH_ERROR_NOT_CREATED` -- its own, specific refusal -- while the two real
-/// targets are queued, applied, and the apply then refuses. So the report
-/// carries BOTH kinds of cause at once, which is the state `refusal()` has to
-/// arbitrate.
-///
-/// WHY THE BATCH CAUSE WINS, and why taking the first refusal in slice order
-/// was wrong: the lanes render `format!("... enable failed for {name}: {status}")`
-/// and nothing else. Slice order puts `absent.hook: MH_ERROR_NOT_CREATED` on
-/// the wire for a refusal that undid a whole roster -- which reads as "that one
-/// hook is missing", a different event with a different recovery, and it hides
-/// that the apply itself did not complete. Both causes are still in
-/// `failures()` and `outcomes()`, in slice order, so the specific one is not
-/// lost -- it is just not the headline.
-///
-/// kills: reverting `refusal()` to "the first `Err` in slice order" (the
-/// verdict names `absent.hook` and its bare MinHook status); deleting the
-/// batch-level charge in `BatchEnableReport::sealed` (`failures()` drops to
-/// one and the two real targets read `Ok` while the batch was refused).
-///
-/// WHAT IT DOES NOT KILL, and both omissions matter. Reverting the rollback
-/// SELECTION to `statuses.iter().any(is_err)`: this roster refuses twice, so
-/// the absent target leaves `statuses[0] = MH_ERROR_NOT_CREATED` and the old
-/// selection rolls it back too, leaving every physical check green. That one
-/// is killed by
-/// `an_apply_refused_after_the_bytes_were_written_rolls_the_whole_batch_back`,
-/// whose roster refuses ONLY through the apply. And deriving `still_live()`
-/// from the outcomes: this rollback succeeds, so every derivation answers
-/// false. Failed-rollback liveness is untested in this suite.
 #[test]
 fn a_batch_refusal_outranks_one_target_s_own_refusal_in_the_verdict() {
     serialised!();
@@ -617,7 +330,8 @@ fn a_batch_refusal_outranks_one_target_s_own_refusal_in_the_verdict() {
         .refusal()
         .expect("a batch that refused twice still names a refusal");
     assert_ne!(
-        name, "absent.hook",
+        name,
+        "absent.hook",
         "the whole-batch cause outranks one target's own: {:?}",
         report.outcomes()
     );
@@ -632,8 +346,6 @@ fn a_batch_refusal_outranks_one_target_s_own_refusal_in_the_verdict() {
         report.outcomes()
     );
 
-    // AND THE SPECIFIC ONE IS STILL THERE. Promoting the batch cause may not
-    // erase the target that MinHook actually named.
     assert_eq!(report.failures().len(), 3, "{:?}", report.outcomes());
     assert_eq!(
         report.outcomes()[0].1,
@@ -666,14 +378,8 @@ fn a_batch_refusal_outranks_one_target_s_own_refusal_in_the_verdict() {
     drop(custody);
 }
 
-// ---------------------------------------------------------------------------
-// (b) A callback in flight across a teardown.
-// ---------------------------------------------------------------------------
-
 static GATE_OPEN: AtomicBool = AtomicBool::new(false);
 static IN_DETOUR: AtomicBool = AtomicBool::new(false);
-/// Set only after the body has RETURNED FROM THE TRAMPOLINE, so it is the one
-/// signal that says freeing the trampoline is now safe.
 static LEFT_DETOUR: AtomicBool = AtomicBool::new(false);
 static GATED_ORIGINAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -682,48 +388,28 @@ extern "system" fn gated_victim(x: u64) -> u64 {
     x.wrapping_mul(23).wrapping_add(0xE000)
 }
 
-/// A detour body that PARKS, which is the whole point: while it is parked, this
-/// thread is inside neither the target nor the trampoline, so the freeze's
-/// instruction-pointer check cannot see it. That is not a gap in the check --
-/// the body is the caller's own function at an address this crate is never
-/// told -- and it is exactly why `remove`'s contract is the caller's.
 #[inline(never)]
 extern "system" fn gated_detour(x: u64) -> u64 {
     IN_DETOUR.store(true, Ordering::Release);
     while !GATE_OPEN.load(Ordering::Acquire) {
-        // A bare spin, deliberately: this thread is about to be SUSPENDED by a
-        // freeze, and being suspended inside a syscall is a wider claim than
-        // this test needs to make.
         std::hint::spin_loop();
     }
     let original = GATED_ORIGINAL.load(Ordering::Acquire);
-    assert_ne!(original, 0, "the trampoline address must be published first");
+    assert_ne!(
+        original, 0,
+        "the trampoline address must be published first"
+    );
     // SAFETY: the trampoline MinHook returned for this target. If a teardown
-    // had freed it, this call is what would fault -- which is the property.
     let original: Victim = unsafe { std::mem::transmute(original) };
     let answered = original(x).wrapping_add(1);
-    // AFTER the trampoline has returned. Nothing below this line touches the
-    // trampoline, so this is the instant at which a removal stops being a
     // use-after-free -- and it is what the custody guard waits for.
     LEFT_DETOUR.store(true, Ordering::Release);
     answered
 }
 
 /// Releases the parked callback, WAITS FOR IT TO LEAVE, and only then restores
-/// the target -- in that order, including during an unwind.
-///
-/// The order is the whole point, and the first spelling had it wrong. Two
-/// separate guards (one opening the gate, one removing the hook) drop in
-/// declaration-reverse order, so the gate opened and the removal followed
 /// IMMEDIATELY -- with the released thread somewhere between the gate and its
-/// call through the trampoline. The freeze cannot see it there, so the removal
-/// would have been allowed and would have freed the trampoline it was about to
 /// call: the exact use-after-free this test exists to talk about, performed by
-/// the test's own cleanup.
-///
-/// So there is one guard, and it drains before it frees. If the drain times
-/// out it frees NOTHING and says so, because a leaked hook is recoverable and a
-/// freed trampoline under a live thread is not.
 struct ParkedCallbackCustody(*mut c_void);
 
 impl Drop for ParkedCallbackCustody {
@@ -733,17 +419,8 @@ impl Drop for ParkedCallbackCustody {
         while !LEFT_DETOUR.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
             std::thread::yield_now();
         }
-        // DISABLE EITHER WAY, and free only when it has left. Restoring the
-        // target's bytes frees nothing and strands nobody -- a thread inside
-        // the body returns through the trampoline, which a disable leaves
-        // alone -- so it is safe even on the timeout path, and it is exactly
-        // what the production drain does before it decides whether to free.
         let _ = unsafe { disable(self.0) };
         if !LEFT_DETOUR.load(Ordering::Acquire) {
-            // NOTHING IS FREED. Reported rather than panicked: a panic here
-            // during an unwind aborts the process and destroys the report of
-            // whatever failed first. The process is this test's own child, so
-            // what it leaks dies with it.
             eprintln!(
                 "fault_tests: the parked callback never left the detour body; the \
                  hook on {:p} is deliberately RETAINED rather than freed under it",
@@ -755,31 +432,7 @@ impl Drop for ParkedCallbackCustody {
     }
 }
 
-/// A THREAD INSIDE THE DETOUR BODY IS INVISIBLE TO THE FREEZE, and `remove`'s
-/// `StillEnabled` refusal is what stands between that and a freed trampoline.
-///
-/// The parked thread is held inside `gated_detour` -- not in the target, not in
-/// the trampoline -- so the freeze holds it, reads its instruction pointer,
-/// finds it in neither range, and has no objection. The refusal that matters is
-/// the other one.
-///
-/// Three things are asserted, and the third is what stops the test being
-/// satisfied by a `remove` that refuses everything:
-///
-/// 1. `remove` on the enabled target answers `StillEnabled`, counts a retained
-///    detour and records the attempt in the ledger;
 /// 2. the parked thread, released, returns THROUGH the trampoline and produces
-///    the ORIGINAL function's answer -- so nothing was freed under it;
-/// 3. after a `disable` and with nothing in flight, the same target removes
-///    cleanly. A `remove` hard-wired to refuse would pass 1 and 2 and fail here.
-///
-/// kills: KZ's `StillEnabled` refusal being deleted or softened to a
-/// `debug_assert!` (which checks nothing in the build that runs inside a
-/// player's game); and any belief that the freeze's instruction-pointer check
-/// covers a caller's detour body.
-/// CONTAINED. See [`run_in_child`]: this test's own failure mode leaves a
-/// thread parked or suspended and a detour live, so it runs in a process of its
-/// own and the claims live on the child below.
 #[test]
 fn a_callback_parked_in_a_detour_body_is_not_freed_underneath() {
     run_in_child("fault_tests::child_a_callback_parked_in_a_detour_body_is_not_freed_underneath");
@@ -811,7 +464,6 @@ fn child_a_callback_parked_in_a_detour_body_is_not_freed_underneath() {
         IN_DETOUR.load(Ordering::Acquire)
     });
 
-    // 1. The refusal, with a thread demonstrably inside the body.
     let retained_before = retained_detour_count();
     let refused = unsafe { remove(target) }.expect_err("an enabled target refuses removal");
     assert!(
@@ -840,12 +492,7 @@ fn child_a_callback_parked_in_a_detour_body_is_not_freed_underneath() {
     );
 
     // 2. Released, the parked thread returns through a trampoline that is still
-    // there, and produces the original's answer.
     GATE_OPEN.store(true, Ordering::Release);
-    // BOUNDED BEFORE THE JOIN. A trampoline regression that loops instead of
-    // returning would make a bare `join` hang the whole test binary; waiting on
-    // the observable flag first turns that into a named failure, and the join
-    // that follows it is then immediate.
     wait_until("the callback to return through the trampoline", || {
         LEFT_DETOUR.load(Ordering::Acquire)
     });
@@ -856,9 +503,6 @@ fn child_a_callback_parked_in_a_detour_body_is_not_freed_underneath() {
         "the body must have reached the ORIGINAL through the trampoline"
     );
 
-    // 3. The control. With the detour off and nothing in flight, the same
-    // target removes -- so the refusal above was about this target's state and
-    // not a blanket one.
     unsafe { disable(target) }.expect("the detour comes off");
     unsafe { remove(target) }.expect("a disabled, quiet target is removable");
     assert_eq!(
@@ -869,18 +513,9 @@ fn child_a_callback_parked_in_a_detour_body_is_not_freed_underneath() {
     drop(custody);
 }
 
-// ---------------------------------------------------------------------------
-// (c) A refused suspension and a refused context read.
-// ---------------------------------------------------------------------------
-
-/// A worker that spins until told to stop, so there is a thread for the fault
-/// to name that is certainly alive and certainly not the test's own.
 struct Worker {
     stop: std::sync::Arc<AtomicBool>,
     id: u32,
-    /// Advanced on every loop iteration, so a test can ask whether this thread
-    /// is RUNNING rather than only whether it exists -- which is the whole
-    /// question after a resume.
     progress: std::sync::Arc<AtomicU64>,
     finished: std::sync::Arc<AtomicBool>,
 }
@@ -919,9 +554,6 @@ impl Worker {
         }
     }
 
-    /// Wait for this thread to advance, or FAIL. A thread left suspended never
-    /// advances, so this is what turns a resume regression into a failure
-    /// rather than a hang.
     fn wait_for_progress(&self) {
         let from = self.progress.load(Ordering::Acquire);
         wait_until("the worker thread to advance", || {
@@ -933,11 +565,6 @@ impl Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        // BOUNDED, and deliberately NOT a `join`. A thread this freeze failed
-        // to resume never reaches its exit, and joining it would block this
-        // test for ever -- turning the exact regression the module exists to
-        // report into a wedged battery. The handle is dropped rather than
-        // joined, so the wait is on an observable fact instead.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while !self.finished.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
             std::thread::yield_now();
@@ -945,37 +572,12 @@ impl Drop for Worker {
         if !self.finished.load(Ordering::Acquire) {
             let said = "a worker thread never finished: it was left suspended, \
                         which is the failure this module exists to name";
-            // NEVER A SECOND PANIC. `wait_for_progress` has already failed the
-            // test by the time this can be reached on that path, and a panic
-            // during an unwind ABORTS the process -- taking the report of the
-            // original failure with it and killing every other test in the
-            // binary. Panicking is right only when nothing else has.
-            assert!(
-                std::thread::panicking(),
-                "{said}"
-            );
+            assert!(std::thread::panicking(), "{said}");
             eprintln!("fault_tests: {said}");
         }
     }
 }
 
-/// A SUSPENSION THAT CANNOT BE TAKEN REFUSES THE PATCH, having patched nothing.
-///
-/// The seam refuses one named thread's `SuspendThread` for the whole attempt --
-/// persistently, because the freeze re-derives an unsettled thread on the next
-/// pass and a one-shot fault would simply succeed the second time and prove
-/// nothing.
-///
-/// The proof that nothing was patched is the TARGET'S BYTES, read through
-/// MinHook's own patch footprint before and after, not the absence of an error.
-///
-/// kills: MinHook's deleted `Freeze`, which skipped a thread whose suspension
-/// failed and patched anyway. Restoring that shape -- treating a refused
-/// suspension as a thread that need not be accounted for -- makes this freeze
-/// succeed and the byte comparison fail.
-/// CONTAINED. See [`run_in_child`]: this test's own failure mode leaves a
-/// thread parked or suspended and a detour live, so it runs in a process of its
-/// own and the claims live on the child below.
 #[test]
 fn a_suspension_that_is_refused_patches_nothing() {
     run_in_child("fault_tests::child_a_suspension_that_is_refused_patches_nothing");
@@ -1022,7 +624,11 @@ fn child_a_suspension_that_is_refused_patches_nothing() {
         "NOTHING WAS PATCHED: the bytes an enable would have rewritten are \
          exactly as they were"
     );
-    assert_eq!(fault_victim_0(1), original_answer, "the victim is untouched");
+    assert_eq!(
+        fault_victim_0(1),
+        original_answer,
+        "the victim is untouched"
+    );
     assert_eq!(
         enabled_detour_count(),
         enabled_before,
@@ -1030,26 +636,14 @@ fn child_a_suspension_that_is_refused_patches_nothing() {
     );
 
     drop(custody);
-    assert_eq!(fault_victim_0(1), original_answer, "cleanup left a detour live");
+    assert_eq!(
+        fault_victim_0(1),
+        original_answer,
+        "cleanup left a detour live"
+    );
     drop(worker);
 }
 
-/// A CONTEXT THAT CANNOT BE READ REFUSES THE PATCH, having patched nothing.
-///
-/// Armed for the PRE-PATCH question specifically (mode 2), so the read that
-/// fails is the one production takes to decide whether a held thread is inside
-/// the bytes it is about to rewrite -- not the freeze's own settle. That is
-/// deliberate: a fault that landed during acquisition would also refuse, and a
-/// build that had DELETED the pre-patch check would still pass. This way,
-/// deleting it makes the enable succeed and the byte comparison fail.
-///
-/// kills: `ProcessThreadIPs`, which read every thread's context to relocate a
-/// parked instruction pointer and RETURNED SILENTLY when the read failed --
-/// then patched. The fork deletes the relocation; this is the refusal that
-/// replaced it, driven by the same failure that used to be ignored.
-/// CONTAINED. See [`run_in_child`]: this test's own failure mode leaves a
-/// thread parked or suspended and a detour live, so it runs in a process of its
-/// own and the claims live on the child below.
 #[test]
 fn a_context_read_that_is_refused_patches_nothing() {
     run_in_child("fault_tests::child_a_context_read_that_is_refused_patches_nothing");
@@ -1099,39 +693,21 @@ fn child_a_context_read_that_is_refused_patches_nothing() {
         "NOTHING WAS PATCHED: the bytes an enable would have rewritten are \
          exactly as they were"
     );
-    assert_eq!(fault_victim_2(1), original_answer, "the victim is untouched");
+    assert_eq!(
+        fault_victim_2(1),
+        original_answer,
+        "the victim is untouched"
+    );
 
     drop(custody);
-    assert_eq!(fault_victim_2(1), original_answer, "cleanup left a detour live");
+    assert_eq!(
+        fault_victim_2(1),
+        original_answer,
+        "cleanup left a detour live"
+    );
     drop(worker);
 }
 
-/// A RESUME REFUSED ONCE IS RETRIED, and the thread runs again.
-///
-/// `resume_or_count` retries [`RESUME_ATTEMPTS`] times, probes a thread it
-/// still cannot resume for termination, and counts a real failure. Until this
-/// seam existed none of that could be driven: the module's own source pin says
-/// so in as many words, because `ResumeThread` does not fail on a live thread
-/// this process holds a `THREAD_SUSPEND_RESUME` handle to.
-///
-/// The seam refuses the ATTEMPT rather than undoing a real resume, so it can
-/// never itself leave a thread suspended -- the syscall it stands in for is not
-/// made.
-///
-/// Three assertions, and the third is the one that would catch the defect:
-///
-/// 1. the seam fired exactly once, so the test is about something;
-/// 2. `resume_failures()` did NOT move -- the retry succeeded, and a first
-///    failure followed by recovery is not a failure;
-/// 3. the worker thread ADVANCES after the freeze drops, which is the only
-///    statement that means "the game runs again".
-///
-/// kills: deleting the retry loop, which makes assertion 3 hang until the
-/// bounded wait fails it and makes assertion 2 fail; and counting a recovered
-/// resume as a failure, which makes assertion 2 fail on its own.
-/// CONTAINED. See [`run_in_child`]: this test's own failure mode leaves a
-/// thread parked or suspended and a detour live, so it runs in a process of its
-/// own and the claims live on the child below.
 #[test]
 fn a_resume_refused_once_is_retried_and_the_thread_runs_again() {
     run_in_child("fault_tests::child_a_resume_refused_once_is_retried_and_the_thread_runs_again");
@@ -1151,7 +727,10 @@ fn child_a_resume_refused_once_is_retried_and_the_thread_runs_again() {
     {
         let _armed = faults::refuse_one_resume_attempt();
         let frozen = crate::freeze_process().expect("the process freezes");
-        assert!(frozen.frozen_thread_count() >= 1, "there is a thread to resume");
+        assert!(
+            frozen.frozen_thread_count() >= 1,
+            "there is a thread to resume"
+        );
         drop(frozen);
     }
 
@@ -1169,37 +748,8 @@ fn child_a_resume_refused_once_is_retried_and_the_thread_runs_again() {
     drop(worker);
 }
 
-// ---------------------------------------------------------------------------
-// (d) The allocation probe, inside a held window, in a child process.
-// ---------------------------------------------------------------------------
-
-/// The env var that marks a child process, so the parent half of each pair
-/// returns instead of recursing.
 const CHILD_MARKER: &str = "INLINE_DETOUR_FAULT_CHILD";
 
-/// Run one `#[ignore]`d test of THIS binary in a FRESH PROCESS, and fail if it
-/// does not pass.
-///
-/// # Why several tests here are paired this way
-///
-/// Every fault in this module is a fault the product must survive, so each test
-/// has a failure mode that is the regression itself -- a thread that never
-/// resumes, a callback that never leaves a detour body, an allocation that
-/// blocks on the process heap with every other thread stopped. In one process
-/// those outcomes do not merely fail their own test: they leave a LOOPING or
-/// SUSPENDED thread and an enabled detour behind, and every test that runs
-/// afterwards in that binary is then running in a process the failure has
-/// already damaged. A timed retain keeps the first report honest; it does not
-/// make the rest of the run trustworthy.
-///
-/// A fresh process makes the blast radius the child. The parent asserts on its
-/// exit status under a hard deadline and KILLS it otherwise, so a hang is a
-/// failed test rather than a wedged battery -- and whatever the child leaked
-/// dies with it.
-///
-/// The child also gets a process to itself in the other direction: one test
-/// thread, an empty freeze census and untouched counters, so ordinals and
-/// deltas are predictable rather than merely present.
 fn run_in_child(test_name: &str) {
     assert!(
         std::env::var(CHILD_MARKER).is_err(),
@@ -1220,8 +770,6 @@ fn run_in_child(test_name: &str) {
         .spawn()
         .expect("the child test process starts");
 
-    // A HARD BOUND. Every operation these children perform is one that can
-    // hang when it regresses, so the parent must never wait without one.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
     let status = loop {
         match child.try_wait().expect("the child is waitable") {
@@ -1237,52 +785,30 @@ fn run_in_child(test_name: &str) {
             None => std::thread::sleep(std::time::Duration::from_millis(50)),
         }
     };
-    let output = child.wait_with_output().unwrap_or_else(|_| std::process::Output {
-        status,
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-    });
+    let output = child
+        .wait_with_output()
+        .unwrap_or_else(|_| std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        });
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
         status.success(),
         "{test_name} failed in its child process:\n{stdout}\n{stderr}"
     );
-    // AND IT RAN. `libtest` exits 0 when a filter matches NOTHING, so a renamed
-    // child would leave every one of these proofs green while proving nothing
-    // at all -- the vacuity every test in this module is written to avoid.
     assert!(
         stdout.contains("1 passed") && stdout.contains("0 failed"),
         "{test_name} was filtered away rather than run:\n{stdout}"
     );
 }
 
-/// THE INSTRUMENT THAT FOUND D75, PROVEN TO SEE, and proven against the census
-/// row for the very window the allocation happened in.
-///
-/// It runs in a child process because it deliberately performs the operation
-/// KZ's audit exists to forbid: an allocation with every other thread of the
-/// process suspended can block for ever on the process heap lock, and a hung
-/// test binary wedges the battery for every lane. One test thread in a fresh
-/// process also means the census is empty, so the window's ordinal is
-/// predictable rather than merely present.
-///
-/// The claim is exactly this and no more: the probe observed an allocation
-/// while a particular `ProcessFreeze` guard was held, and the production census
-/// carries THAT window's ordinal. The census records stopped windows, not
-/// allocations, and nothing here adds a counter to it.
-///
-/// kills: a probe that has stopped counting -- an `#[global_allocator]` that
-/// was dropped, an `observed` that no longer arms the thread. Any of those
-/// makes `the_probe_is_installed()` false or the count zero, and the audit's
-/// every `assert_eq!(allocations, 0)` elsewhere becomes vacuous the same day.
 #[test]
 fn the_probe_sees_an_allocation_inside_a_held_window() {
     run_in_child("fault_tests::child_allocates_inside_a_held_freeze");
 }
 
-/// The child half. `#[ignore]`d so the ordinary battery never runs it in a
-/// process with other test threads, which is where the allocation could hang.
 #[test]
 #[ignore = "driven by the_probe_sees_an_allocation_inside_a_held_window in a child process"]
 fn child_allocates_inside_a_held_freeze() {
@@ -1298,10 +824,6 @@ fn child_allocates_inside_a_held_freeze() {
     let attempts_before = crate::freeze_attempts();
 
     let frozen = crate::freeze_process().expect("a fresh process freezes");
-    // ONLY the deliberate allocation is observed. Wrapping the freeze itself
-    // would count the buffers the acquisition legitimately reserves BEFORE it
-    // suspends anything, and "the allocation happened inside the held window"
-    // would no longer be what the number said.
     let (length, allocations) = freeze_window_audit::observed(|| {
         let mut grown: Vec<u8> = Vec::new();
         grown.push(1);
@@ -1330,35 +852,8 @@ fn child_allocates_inside_a_held_freeze() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Inertness: the seams are ABSENT from what ships, and it is proved.
-// ---------------------------------------------------------------------------
-
 mod inertness {
-    /// EVERY MANIFEST IN THE WORKSPACE, read with its TABLE CONTEXT, and the
-    /// test-support feature is reachable from exactly one place: this crate's
-    /// DEV-dependency table.
-    ///
     /// A dev-dependency is not in the graph of `cargo build --release -p
-    /// collector` at all, so the shipped artifact cannot carry the feature.
-    /// `runs/ln_fault_inject/inertness_graph.txt` records cargo's own resolved
-    /// answer for that command; this is the standing check that stops a future
-    /// edit reopening the route.
-    ///
-    /// TABLE CONTEXT IS THE POINT. The first spelling of this test asked only
-    /// whether the offending LINE mentioned `dev-dependencies`, which it never
-    /// does -- the table header is a different line -- so moving the dependency
-    /// verbatim into `[dependencies]` would have passed. Every `test_support`
-    /// mention is now attributed to the `[table]` it is under, and three
-    /// distinct routes are refused by name:
-    ///
-    /// * a NORMAL dependency activating it, anywhere;
-    /// * a `[features]` entry in any crate forwarding `minhook_h4/test_support`
-    ///   into some feature of its own, which would put it in the graph of every
-    ///   dependent that enables that feature;
-    /// * the feature being declared anywhere but `minhook_h4`.
-    ///
-    /// What production change would make this fail? Any of those three.
     #[test]
     fn the_test_support_feature_is_reachable_only_through_a_dev_dependency() {
         let native = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1381,11 +876,6 @@ mod inertness {
             let file = manifest.to_string_lossy().replace('\\', "/");
             let mut table = String::new();
             for (number, raw) in text.lines().enumerate() {
-                // THE COMMENT IS CUT FIRST. Half this file's manifests explain
-                // the feature in prose beside it, and a scan that read those as
-                // activations would fail on a correct tree -- a check that
-                // cries wolf gets deleted, and then it is not there on the day
-                // it matters.
                 let line = raw.split('#').next().unwrap_or("").trim();
                 if line.is_empty() {
                     continue;
@@ -1397,18 +887,7 @@ mod inertness {
                 if !names_the_feature(line) {
                     continue;
                 }
-                // TABLE NAMES ARE DOTTED PATHS. `[dev-dependencies]`,
-                // `[target.'cfg(windows)'.dev-dependencies]` and
-                // `[dev-dependencies.minhook_h4]` are all the same table for
-                // this purpose, and the first spelling of this check accepted
-                // only the second of the three.
                 let segments: Vec<&str> = split_table_path(&table);
-                // METADATA IS NOT A DEPENDENCY EDGE. `[package.metadata.*]` and
-                // `[workspace.metadata.*]` are the two free-form tables cargo
-                // hands to other tools -- docs.rs's `features` list is the
-                // common one -- and neither activates anything. Failing on them
-                // would fail a correct tree, and a check that cries wolf gets
-                // deleted before the day it matters.
                 if matches!(segments.first(), Some(&"package") | Some(&"workspace"))
                     && segments.get(1) == Some(&"metadata")
                 {
@@ -1416,7 +895,6 @@ mod inertness {
                 }
                 let at = format!("{file}:{} in [{table}]", number + 1);
                 let kind = dependency_table_kind(&segments);
-                // The declaration itself, which must be the feature's own crate.
                 if kind == Some("features") {
                     assert!(
                         file.ends_with("minhook_h4/Cargo.toml"),
@@ -1427,8 +905,6 @@ mod inertness {
                     declarations += 1;
                     continue;
                 }
-                // Anything else is a dependency edge, and only a DEV one may
-                // carry it. The table name is what decides, not the line.
                 assert!(
                     kind == Some("dev-dependencies"),
                     "{at} activates the test-support feature from a table that \
@@ -1453,20 +929,12 @@ mod inertness {
         );
     }
 
-    /// Does this line name the feature ITSELF, rather than merely contain the
-    /// letters?
-    ///
-    /// `my_test_support = []` is somebody else's feature and must not fail this
-    /// check. The name has to be bounded on both sides by something that is not
-    /// part of a cargo identifier.
     fn names_the_feature(line: &str) -> bool {
         let mut rest = line;
         while let Some(at) = rest.find("test_support") {
             let before = rest[..at].chars().next_back();
             let after = rest[at + "test_support".len()..].chars().next();
-            let bounded = |c: Option<char>| {
-                !matches!(c, Some(c) if c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            };
+            let bounded = |c: Option<char>| !matches!(c, Some(c) if c.is_ascii_alphanumeric() || c == '_' || c == '-');
             if bounded(before) && bounded(after) {
                 return true;
             }
@@ -1475,41 +943,18 @@ mod inertness {
         false
     }
 
-    /// WHICH KIND OF TABLE this header names, by POSITION rather than by
-    /// mentioning a word.
-    ///
-    /// The position is what cargo goes by, and a check that went by mention
-    /// could be walked straight past: `[dependencies."dev-dependencies"]` is a
-    /// perfectly ordinary SHIPPING dependency whose alias happens to be spelled
-    /// `dev-dependencies`, and a scan asking whether any segment equals that
-    /// string would wave it through into the collector's graph. So the kind is
-    /// read from the one slot cargo reads it from -- the first segment, or the
-    /// third when the table is `target.<selector>.<kind>` -- and anything after
-    /// it is a dependency NAME and carries no authority at all.
-    ///
-    /// `None` for a shape this check does not understand -- and the caller
-    /// treats `None` as a REFUSAL, deliberately: an unrecognised table that
-    /// names the feature is exactly the case where guessing is wrong, and
-    /// failing closed is what the product does everywhere else. The one shape
-    /// that is genuinely not an edge, `[package.metadata.*]`, is skipped by the
-    /// caller before it gets here.
     fn dependency_table_kind<'a>(segments: &[&'a str]) -> Option<&'a str> {
         let (kind, rest) = if segments.first() == Some(&"target") {
-            // `target.<selector>.<kind>[.<name>]`
             (segments.get(2)?, &segments[3..])
         } else {
             (segments.first()?, &segments[1..])
         };
-        // At most a dependency name may follow the kind. Anything deeper is not
-        // a shape this check understands, and it must not be read as one.
         if rest.len() > 1 {
             return None;
         }
         Some(kind)
     }
 
-    /// A TOML table header split into its dotted segments, with quoted segments
-    /// -- `target.'cfg(windows)'.dev-dependencies` -- kept whole.
     fn split_table_path(table: &str) -> Vec<&str> {
         let mut segments = Vec::new();
         let mut quote: Option<char> = None;
@@ -1667,8 +1112,9 @@ fn a_release_whose_apply_refused_clears_the_unpublished_restore_it_left() {
     //    so an uncleared latch strands the trampoline for the life of the
     //    process. A cleared one removes.
     for &(name, target) in &targets {
-        unsafe { remove(target) }
-            .unwrap_or_else(|status| panic!("{name} must be removable after a healed release: {status}"));
+        unsafe { remove(target) }.unwrap_or_else(|status| {
+            panic!("{name} must be removable after a healed release: {status}")
+        });
     }
     // The originals answer again: nothing is detoured.
     for (index, &(name, _)) in targets.iter().enumerate() {

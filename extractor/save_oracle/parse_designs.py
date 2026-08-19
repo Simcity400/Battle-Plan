@@ -49,9 +49,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Generic small readers (built only on shared primitives)
-# ---------------------------------------------------------------------------
 
 def _read_flat_scalar_map(tz):
     """Read a flat ``{ k=v k=v ... }`` block -> dict (LBRACE consumed).
@@ -109,11 +106,9 @@ def _read_upgrades_nested(tz):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             if key == "upgrades":
-                # inner anonymous list of {name level} pairs
                 _read_upgrade_pair_list(tz, out)
             else:
                 _skip_block_body(tz)
-        # scalars/None ignored
     return out
 
 
@@ -130,15 +125,13 @@ def _read_upgrade_pair_list(tz, out):
         if tok is None or tok is RBRACE:
             return
         if tok is LBRACE:
-            # one pair: atom(name) atom(level); guard against malformed nesting
-            # by counting brace depth rather than trusting the first RBRACE.
             name = None
             level = None
             depth = 1
             while depth > 0:
                 t2 = tz.next()
                 if t2 is None:
-                    return  # truncated; stop gracefully
+                    return
                 if t2 is LBRACE:
                     depth += 1
                     continue
@@ -146,7 +139,7 @@ def _read_upgrade_pair_list(tz, out):
                     depth -= 1
                     continue
                 if depth != 1:
-                    continue  # ignore atoms inside an unexpected nested block
+                    continue
                 v = atom_value(t2)
                 if v is None:
                     continue
@@ -156,7 +149,6 @@ def _read_upgrade_pair_list(tz, out):
                     level = to_int(v)
             if name is not None:
                 out[name] = level
-        # bare atoms / '=' between pairs ignored
 
 
 def _read_grid_blocks(tz):
@@ -186,9 +178,6 @@ def _read_grid_blocks(tz):
     return out
 
 
-# ---------------------------------------------------------------------------
-# 1) Division templates
-# ---------------------------------------------------------------------------
 
 def _parse_division_templates(tz, templates):
     """division_templates={ division_template={ ... } ... } -> fill list."""
@@ -248,15 +237,10 @@ def _parse_division_templates(tz, templates):
                 rec["is_army_hq"] = (v == "yes")
             elif k == "override_model":
                 rec["override_model"] = v
-        # Display name: prefer name=, else loc key (army-HQ templates carry no
-        # name= but a localization_key).
         rec["display_name"] = rec["name"] or rec["localization_key"]
         templates.append(rec)
 
 
-# ---------------------------------------------------------------------------
-# 2a) Top-level equipment variant CATALOG (equipments={})
-# ---------------------------------------------------------------------------
 
 def _parse_equipments_catalog(tz, catalog):
     """equipments={ <name>={ id={id type=70} ... modules upgrades ... } } -> dict.
@@ -319,9 +303,6 @@ def _parse_equipments_catalog(tz, catalog):
             catalog[(eid, etype)] = rec
 
 
-# ---------------------------------------------------------------------------
-# 2b/3) Per-country production: MIOs + scheduled variants + policies
-# ---------------------------------------------------------------------------
 
 def _parse_mio(tz):
     """Read one MIO definition block (LBRACE eaten) -> dict.
@@ -342,7 +323,7 @@ def _parse_mio(tz):
         "research_bonus": None, "task_capacity": None,
         "funds": None, "size": None, "points": None,
         "allowed_policies": [], "unlocked_traits": [],
-        "assigned_equipment": None,  # (id,type) from history.equipment
+        "assigned_equipment": None,
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -351,7 +332,6 @@ def _parse_mio(tz):
             elif k == "allowed_policies":
                 rec["allowed_policies"] = dc.read_scalar_list(tz)
             elif k == "unlocked":
-                # unlocked={ trait="..." } — one taken trait; block repeats.
                 t = _read_scalar_field(tz, "trait")
                 if t is not None:
                     rec["unlocked_traits"].append(t)
@@ -485,7 +465,6 @@ def _parse_production_block(tz, rec):
                 _parse_policies(tz, rec["policies"])
             else:
                 _skip_block_body(tz)
-        # scalars ignored
 
 
 def _parse_countries(tz, by_tag):
@@ -499,19 +478,15 @@ def _parse_countries(tz, by_tag):
                     _parse_production_block(tz, rec)
                 else:
                     _skip_block_body(tz)
-            # scalar country fields ignored
         if rec["mios"] or rec["presets"] or rec["policies"]:
             by_tag[tag] = rec
 
 
-# ---------------------------------------------------------------------------
-# Top-level streaming pass
-# ---------------------------------------------------------------------------
 
 def parse_designs_text(text):
-    templates = []          # list of division-template dicts
-    catalog = {}            # (id,type) -> equipment-variant dict
-    by_tag = {}             # TAG -> {mios, presets, policies}
+    templates = []
+    catalog = {}
+    by_tag = {}
     meta = dc.top_level_pass(
         text,
         {
@@ -527,9 +502,6 @@ def parse_designs_text(text):
     return templates, catalog, by_tag, meta
 
 
-# ---------------------------------------------------------------------------
-# Output build + join + validation
-# ---------------------------------------------------------------------------
 
 def _classify_archetype(arch):
     """Rough land/ship/plane class from an archetype name (designer family).
@@ -547,8 +519,6 @@ def _classify_archetype(arch):
         return "ship"
     if "airframe" in a or "_plane_" in a:
         return "plane"
-    # Vehicles are modular tank/SPG chassis. Plain "*_equipment_*" entries (incl.
-    # anti_tank_equipment / anti_air_equipment) are legacy guns -> land_other.
     if "chassis" in a:
         return "land_vehicle"
     return "land_other"
@@ -557,9 +527,6 @@ def _classify_archetype(arch):
 def build(text, source, was_melted):
     templates, catalog, by_tag, meta = parse_designs_text(text)
 
-    # --- Global MIO index (id,type=79) -> {tag, key, name, size}. MIO ids are
-    #     globally unique, so a design's design_team / industrial_organisation
-    #     handle resolves here regardless of which country owns it. -----------
     mio_index = {}
     for tag, rec in by_tag.items():
         for m in rec["mios"]:
@@ -569,8 +536,6 @@ def build(text, source, was_melted):
                     "size": m["size"],
                 }
 
-    # --- Equipment variant CATALOG output (keyed "id:type"), with derived
-    #     family class + resolved design-team MIO. --------------------------
     variants_out = {}
     n_custom = 0
     n_with_modules = 0
@@ -607,7 +572,6 @@ def build(text, source, was_melted):
             "design_team_bonus": v["design_team_bonus"],
         }
 
-    # --- Per-country block: MIOs + scheduled presets + policies ------------
     countries_out = {}
     n_mios = n_presets = n_policies = 0
     n_preset_with_mio = n_preset_mio_resolved = 0
@@ -620,14 +584,14 @@ def build(text, source, was_melted):
             mios.append({
                 "key": m["key"], "id": m["id"], "type": m["type"],
                 "name": m["name"], "icon": m["icon"],
-                "level": m["size"],            # `size` = org level
-                "funds": m["funds"],           # development currency (progress)
-                "points": m["points"],         # secondary counter (uninterpreted)
+                "level": m["size"],
+                "funds": m["funds"],
+                "points": m["points"],
                 "research_bonus": m["research_bonus"],
                 "task_capacity": m["task_capacity"],
-                "unlocked_traits": m["unlocked_traits"],  # traits TAKEN
-                "allowed_policies": m["allowed_policies"],  # eligibility only
-                "assigned_equipment": ae,                   # (id,type) or None
+                "unlocked_traits": m["unlocked_traits"],
+                "allowed_policies": m["allowed_policies"],
+                "assigned_equipment": ae,
                 "assigned_equipment_archetype":
                     ae_info["archetype"] if ae_info else None,
             })
@@ -664,7 +628,6 @@ def build(text, source, was_melted):
             if m["level"] and m["level"] > 0:
                 n_mio_developed += 1
 
-    # --- Division templates output -----------------------------------------
     templates_out = []
     tmpl_by_country = {}
     for t in templates:
@@ -692,7 +655,6 @@ def build(text, source, was_melted):
         c = t["country"] or "??"
         tmpl_by_country[c] = tmpl_by_country.get(c, 0) + 1
 
-    # Catalog variant counts per creator (designer activity per country).
     variants_by_creator = {}
     for v in variants_out.values():
         c = v["creator"] or "??"
@@ -801,10 +763,8 @@ def _report(out, tmpl_by_country, variants_by_creator):
              f"{st['scheduled_variants_mio_resolved']} resolved)")
     L.append(f"POLICIES      : {st['policies_total']} MIO-policy entries")
 
-    # --- One sample of each system -----------------------------------------
     L.append("")
     L.append("sample division template:")
-    # Prefer a named combat template with regiments.
     samp_t = next((t for t in out["division_templates"]
                    if t["name"] and t["n_regiments"] >= 2
                    and not t["is_army_hq"]), None) \
@@ -876,15 +836,6 @@ def _report(out, tmpl_by_country, variants_by_creator):
     return "\n".join(L)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
-# A self-contained CLI (mirrors deep_common.run_cli) is used instead of the
-# shared one for ONE reason: run_cli writes with ensure_ascii=False, but this
-# tool must emit pure-ASCII JSON (non-ASCII designer names like "Panzerjager
-# Elefant" / "Konigsberg" are \u-escaped). All other behaviour — save
-# discovery, rakaly melt, path redaction — is delegated to the shared helpers
-# in parse_save / deep_common (no duplication of the tokenizer or melt logic).
 
 def main(argv=None):
     import argparse
@@ -935,7 +886,6 @@ def main(argv=None):
     outputs, report = build(text, save_path, was_melted)
 
     for fname, obj in outputs.items():
-        # ensure_ascii=True -> pure-ASCII JSON (non-ASCII names \u-escaped).
         (out_dir / fname).write_text(
             json.dumps(obj, indent=1, ensure_ascii=True), encoding="utf-8")
 

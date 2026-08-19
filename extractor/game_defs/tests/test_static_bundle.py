@@ -10,7 +10,7 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import static_bundle as SB  # noqa: E402
+import static_bundle as SB
 
 
 _REAL_CREATE_BUNDLE = SB.create_bundle
@@ -67,9 +67,6 @@ def _binding_document(
             "dlc": rows,
             "effective_content_sha256": SB._content_digest(rows),
         }
-    # load_order.v2: the vanilla row carries the effective-VFS BASE NAMESPACE
-    # digest, so it reconstructs from the inventory rows.  _fixture rewrites
-    # this document once that digest is known.
     rows = [
         {
             "id": "vanilla",
@@ -383,9 +380,6 @@ def _fixture(tmp_path: Path):
     }
     source_inventory = {**core, "inventory_sha256": SB.sha256_bytes(SB.canonical_json(core))}
     _write_json(tmp_path / "source_inventory.json", source_inventory)
-    # The base row is only knowable once the inventory is built; rewrite the
-    # load-order binding so it carries the base namespace digest the resolver
-    # would have recorded.
     _write_json(
         tmp_path / "load.json",
         _binding_document("load_order", base_content_sha256=namespaces[0]["content_sha256"]),

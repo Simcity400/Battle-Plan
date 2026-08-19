@@ -51,7 +51,7 @@ import sys
 
 import zstandard
 
-LEVEL = 3  # DEFAULT_ZSTD_COMPRESSION_LEVEL, portable_replay/native/snapshot/src/pack.rs
+LEVEL = 3
 
 
 def load_offsets(path: str) -> list[int]:
@@ -97,9 +97,6 @@ def clock_span_bounds(hours: list[int], hours_per_span: int) -> list[tuple[int, 
     last_block: int | None = None
     start = 0
     for i, hour in enumerate(hours):
-        # Python's // is already floor division, i.e. Rust's div_euclid for a
-        # positive divisor — which matches the bins for hours before the first
-        # measured one as well as after.
         block = (hour - first) // hours_per_span
         if last_block is not None and block != last_block:
             bounds.append((start, i))

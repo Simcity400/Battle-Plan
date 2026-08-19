@@ -15,35 +15,13 @@ use std::io::Read;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 
-/// The RECORDER MANIFEST's own schema identifier — the value the recorder
-/// writes into `native_session_manifest.json.schema`. This names the SESSION
-/// format. Taken from the recorder's own crate so writer and reader cannot
-/// drift apart.
 const RECORDER_MANIFEST_SCHEMA: &str = recorder_host::SESSION_MANIFEST_SCHEMA;
 
-/// The REPLAY CONTAINER's own schema version — the value the recorder writes
-/// into `PackIdentity.schema_version`, which lands in the container's
-/// `manifest.json.schema_version`. This names the snapshot/index contract, NOT
-/// the session format.
-///
-/// These are two different vocabularies for two different artifacts, and they
-/// have been since `f32125c1` ("Finish recorder to replay production
-/// bindings") stopped the recorder writing the session identifier into the
-/// container field. This gate kept expecting the session identifier in the
-/// container field for another two weeks, which refused EVERY recorder-sealed
-/// container with `schema_version Some("1") != expected
-/// "native_collector_session_v1"`. Each constant below is checked against the
-/// artifact that actually carries it.
-///
-/// Taken from the container format's own crate, which is also where the
-/// recorder's writer takes it from, so the two cannot drift apart again.
 const REPLAY_CONTAINER_SCHEMA_VERSION: &str = snapshot::CONTAINER_SCHEMA_VERSION;
 
 const RECORD_VERSION: u16 = 1;
 const RECORD_HEADER_LEN: usize = 32;
 const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
-/// Reserved instrumentation-probe domain: the recorder excludes its records
-/// from ALL stream accounting; this independent scan must mirror that.
 const RC_PROBE_DOMAIN_ID: u16 = 250;
 const RECORD_TYPE_FRAME_END: u16 = 2;
 const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
@@ -51,9 +29,6 @@ const RECORD_TYPE_DOMAIN_GAP: u16 = compact_contract::COMPACT_RECORD_TYPE_DOMAIN
 #[cfg(test)]
 const DOMAIN_FRAME: u16 = 1000;
 
-/// This legacy opt-in is deliberately narrow: its name permits only partial
-/// data and source-unavailable evidence. Every other canonical failure remains
-/// fatal, including worker panic, bridge failure, invalid control, and no clock.
 #[cfg(test)]
 const ALLOW_PARTIAL_OR_SOURCE_FAILURE_MASK: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA
     | compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
@@ -91,8 +66,6 @@ pub struct GateOptions {
     pub allow_bridge_roots: bool,
     pub allow_partial_or_source_failure: bool,
     pub strict_semantic_units: bool,
-    /// Typed acquisition gaps are valid production truth.  A zero-loss claim
-    /// is a separate, explicitly selected promotion profile.
     pub gap_acceptance: GapAcceptanceProfile,
     pub write_report: Option<PathBuf>,
 }
@@ -151,10 +124,6 @@ impl GateReport {
     }
 }
 
-/// Refuse a report destination that resolves to any artifact used as gate
-/// authority. The comparison canonicalizes existing paths and parent
-/// directories, so aliases through `.`/`..` or directory symlinks cannot
-/// overwrite a just-verified input after the verdict was computed.
 pub fn validate_report_output_path(options: &GateOptions) -> Result<(), String> {
     let Some(report_path) = options.write_report.as_deref() else {
         return Ok(());
@@ -236,20 +205,7 @@ struct DomainContract {
     name: &'static str,
     requires_data: bool,
     required_units: &'static [&'static str],
-    /// Data-unit counters that MUST be absent-or-zero for the gate to pass.
-    /// A nonzero value means a fail-closed sub-slice health flag fired (e.g.
-    /// the domain-46 ace roster was source-unavailable / partial / had its
-    /// wing-assignment scan blocked on at least one frame). Present but zero
-    /// is fine; nonzero fails unless a tolerated profile is in effect.
     zero_units: &'static [&'static str],
-    /// Diagnostic "work performed" counters that make a zero-emission frame a
-    /// HARD failure — if ANY of these is > 0 while the domain emitted no rows
-    /// (`row_count_total == 0`), the reader did substantial work and then threw
-    /// every row away, which is silent data loss masquerading as a tolerated
-    /// PARTIAL. This fires EVEN under `allow_partial_or_source_failure` (a
-    /// partial-tolerant profile still may not tolerate 39.5M rows in / 0 out).
-    /// A d47 characters adapter processing rows but emitting none behind a
-    /// rowless-PARTIAL frame is a gate failure.
     work_implies_rows_units: &'static [&'static str],
     shared_recorder_known: bool,
 }
@@ -578,18 +534,6 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
         work_implies_rows_units: &[],
         shared_recorder_known: true,
     },
-    // Domain 47 (`characters_leaders_cabinet_live`) folds as a full
-    // replacement of every family its payload declares it OBSERVED — which is
-    // all eight unless the header carries a family-presence mask saying
-    // otherwise. A rowless frame under a complete declaration therefore still
-    // deletes the world's characters, which is what this contract guards. On
-    // 2026-07-10 a single dead cached character root failed every frame for a
-    // whole session while the adapter kept processing ~11k characters/frame —
-    // 39.5M rows in, 0 out — behind a tolerated rowless PARTIAL. The
-    // work_implies_rows_units below make that un-representable: if the adapter
-    // reports ANY built rows but the domain emitted none, the gate fails even
-    // under a partial-tolerant profile. requires_data holds (it emits a record
-    // per hour); the invariant is about ROWS, not records.
     DomainContract {
         id: 47,
         name: "characters_leaders_cabinet_live",
@@ -601,21 +545,11 @@ const DOMAIN_CONTRACTS: &[DomainContract] = &[
             "domain47_adapter_advisor_roster_rows",
             "domain47_adapter_country_leader_role_rows",
             "domain47_adapter_unit_leader_rows",
-            // Previously missing output families — an
-            // active-ruler-only or trait-only session must not bypass the
-            // invariant.
             "domain47_adapter_active_ruler_rows",
             "domain47_adapter_unit_leader_trait_rows",
         ],
         shared_recorder_known: true,
     },
-    // Domain 46 (`air_variant_archetypes`) carries the wave-4 `ACE1`
-    // ace-roster trailer. Its required units prove the ace slice actually
-    // populated; its zero_units are the fail-closed per-frame health flags —
-    // a nonzero count means the ace roster was source-unavailable, incomplete
-    // (partial), or had its wing-assignment scan blocked on at least one
-    // frame, which must fail the gate (Codex DEFECT: gate could stay green
-    // while the ace slice silently died).
     DomainContract {
         id: 46,
         name: "air_variant_archetypes",
@@ -1119,9 +1053,6 @@ fn validate_compact_manifest(
     };
     for contract in expected_contracts {
         let Some(domain) = per_domain.get(contract.name) else {
-            // A gap-only domain has no PERF/DATA aggregate row in the recorder
-            // manifest. Exact presence is proved later from scanned terminal
-            // outcomes, not inferred from the mutable aggregate.
             continue;
         };
         validate_domain_manifest(domain, *contract, frame_count, options, errors);
@@ -1201,11 +1132,6 @@ fn validate_domain_manifest(
             }
         }
     }
-    // Fail-closed sub-slice health flags: these counters must be absent-or-
-    // zero. A nonzero value means a fail-closed condition fired on at least
-    // one frame (e.g. the domain-46 ace roster was source-unavailable,
-    // partial, or had its wing-assignment scan blocked). Checked unless the
-    // profile explicitly tolerates partial/source failures.
     for key in contract.zero_units {
         let value = units.get(*key).and_then(Value::as_u64).unwrap_or(0);
         let named_tolerance = key.contains("source_unavailable") || key.contains("partial");
@@ -1216,19 +1142,7 @@ fn validate_domain_manifest(
             ));
         }
     }
-    // Work-implies-rows: a domain that reports substantial adapter work but
-    // emits zero rows for the whole run threw every row away — silent data loss
-    // hiding behind a tolerated rowless PARTIAL. This is fatal even under
-    // `allow_partial_or_source_failure`: a partial-tolerant profile may accept
-    // some rowless frames, but not a session where megarows went in and nothing
-    // came out. (row_count_total is the emitted-row total; requires_data only
-    // checks records exist, not rows.)
     if !contract.work_implies_rows_units.is_empty() {
-        // The aggregate rule alone let ONE early
-        // emitted row mask total loss on every later frame. The collector now
-        // counts per-frame work-without-emission (adapter built output-family
-        // rows, frame emitted zero data rows); any nonzero total is the same
-        // silent-loss class and fails regardless of the aggregate.
         let work_without_emission_frames = units
             .get("domain47_work_without_emission_frames")
             .and_then(Value::as_u64)
@@ -1380,10 +1294,6 @@ fn validate_stream_file_against_manifest(
             compact.get("total_bytes")
         ));
     }
-    // The byte-identical embedded recorder manifest is replay authority at this
-    // point.  Select the protocol before accepting any stream bytes: a Known
-    // identity requires sequence-zero CID1, while every non-Known/legacy
-    // manifest remains the sequence-one Legacy protocol.  Never sniff CID1.
     let identity_mode = stream_identity_mode_from_manifest(manifest);
     let summary = scan_compact_stream_with_identity_mode(raw, identity_mode);
     validate_scanned_hours(&summary, manifest, min_game_hours, errors);
@@ -1749,9 +1659,6 @@ fn validate_scanned_domain_authority(
                 }
             }
             69 => {
-                // Shared authority intentionally omits zero-valued unit keys.
-                // A successfully decoded empty TSG2 frame therefore carries an
-                // empty unit map whose authoritative counts are all zero.
                 let groups = data
                     .data_units
                     .get("tech_sharing_groups_groups")
@@ -2055,8 +1962,6 @@ fn validate_campaign_identity_stream_authority(
             }
         }
         StreamIdentityMode::Legacy => {
-            // d68 is compatibility/witness authority only.  It may bind a
-            // non-Known Legacy manifest, but can never mint Known identity.
             let scanned = recorder_host::campaign_identity::to_manifest_json(
                 &recorder_host::campaign_identity::resolve(&summary.session_header_identity),
             );
@@ -2146,52 +2051,26 @@ fn validate_scanned_hours(
 struct VerifiedReplayAuthority {
     manifest: Value,
     stream_certification: StreamCertification,
-    /// WHICH GAME HOURS THIS RECORDING VOUCHES FOR. Read from the
-    /// container-authenticated recorder manifest and then narrowed by
-    /// per-entry container damage, so it is one statement per hour rather than
-    /// a coverage claim a consumer has to join against an integrity report.
     hour_coverage: recorder_host::hour_coverage::HourCoverageMap,
     details: Value,
 }
 
-/// Which proof bound this run's raw collector stream to the sealed container.
-///
-/// The two are NOT of equal strength and are never reported as one thing: a
-/// consumer reading a gate report can always tell whether the stream's own
-/// bytes were compared or whether its identity rests on a container-signed
-/// claim.
 #[derive(Debug)]
 enum StreamCertification {
-    /// The container carries the raw stream. The gate reads those bytes back
-    /// out of the verified container and byte-compares them against the
-    /// run-dir stream, so the proof is over the source bytes themselves.
     ByteComparedAgainstPackagedStream {
         container_stream: Vec<u8>,
         container_stream_sha256: String,
     },
-    /// The container ships the delta cache alone (owner ruling 2026-08-06: the
-    /// certified cache is the replay source, the raw stream is optional).
-    ///
-    /// No source bytes travel inside such a container, so nothing in it can
-    /// re-hash them: its H4CR identity is MANIFEST-ATTESTED, not independently
-    /// demonstrated. What IS demonstrated here is that the run directory's
-    /// stream hashes to the identity the container-authenticated recorder
-    /// manifest claims, and that H4IX and H4CP were both built over that same
-    /// identity. This value carries that agreed identity.
     ManifestAttestedThroughDeltaCache {
         attested_source_sha256: String,
         attested_source_bytes: u64,
     },
 }
 
-/// Wire spelling of the byte-comparison certification path.
 const STREAM_CERTIFICATION_BYTE_COMPARED: &str = "byte_compared_against_packaged_stream";
-/// Wire spelling of the cache-only certification path.
 const STREAM_CERTIFICATION_MANIFEST_ATTESTED: &str = "manifest_attested_through_delta_cache";
 
 impl StreamCertification {
-    /// The self-describing name a report carries, in CN's composition style:
-    /// downstream never infers the path from which fields happen to be set.
     fn path_name(&self) -> &'static str {
         match self {
             Self::ByteComparedAgainstPackagedStream { .. } => STREAM_CERTIFICATION_BYTE_COMPARED,
@@ -2202,33 +2081,14 @@ impl StreamCertification {
     }
 }
 
-/// The links of the cache-only attestation chain, in the order they are proved.
-/// A refusal names exactly one of these, so an operator reads which binding
-/// broke instead of a bare mismatch.
 const CACHE_ONLY_LINK_COMPOSITION: &str = "container_composition";
 const CACHE_ONLY_LINK_NO_PACKAGED_STREAM: &str = "no_packaged_stream_entry";
 const CACHE_ONLY_LINK_SOURCE_READABLE: &str = "run_dir_source_readable";
 const CACHE_ONLY_LINK_STREAM_STORAGE: &str = "stream_storage_identity";
 const CACHE_ONLY_LINK_HOUR_INDEX: &str = "h4ix_source_identity";
 const CACHE_ONLY_LINK_CHECKPOINT_CACHE: &str = "h4cp_source_digest";
-/// The packaged artifacts are the ones the SEAL was taken over.
-///
-/// Every other link binds an artifact to the SOURCE. This one binds it to the
-/// FINALIZE that certified it, and it is what carries the artifacts' internal
-/// structure — which hours are served, which are named holes, and what byte
-/// range each one owns — into the replay authority.
-///
-/// Without it the authority could only join the artifacts' hour NAMES against
-/// the sealed coverage map, never their byte account, because the coverage map
-/// is not a byte-range authority. A repacked or regression-built index could then move a hole
-/// off the injured hour's records, or omit it and let a served hour's range
-/// stretch over them — hour misattribution reaching replay. The digest closes
-/// that transitively: `build_certified_replay_artifacts` compares the packaged
-/// H4IX against the certified fold index row for row — hours, holes, reasons,
-/// start AND end offsets — and only then hashes the bytes this link checks.
 const CACHE_ONLY_LINK_SEALED_ARTIFACTS: &str = "sealed_artifact_receipt";
 
-/// The refusal wording every broken cache-only link shares.
 fn cache_only_link_refusal(link: &str, detail: impl AsRef<str>) -> String {
     format!(
         "cache-only replay certification failed at attestation link {link:?}: {}",
@@ -2236,16 +2096,6 @@ fn cache_only_link_refusal(link: &str, detail: impl AsRef<str>) -> String {
     )
 }
 
-/// The DISTINCT outcome for a consumer holding the sealed container but not the
-/// capture's run directory.
-///
-/// This is deliberately neither a pass nor one of the broken-link refusals.
-/// Nothing disagreed — there were simply no local source bytes to hash, so the
-/// chain was never run. This gate certifies a capture RUN: every other input it
-/// reads (the container, the manifest, the stream) is resolved inside the run
-/// directory, and passing here would report a certification that measured
-/// nothing. The remedy is also different: supply the run directory, rather than
-/// treat the recording as corrupt.
 const CACHE_ONLY_SOURCE_ABSENT_OUTCOME: &str = "run_dir_source_stream_absent";
 
 fn cache_only_source_absent(path: &Path) -> String {
@@ -2373,17 +2223,8 @@ struct RetainedFileEvidence {
     sha256: String,
 }
 
-/// The two copies of a session's `static_bundle`, and the label-addressed
-/// lookup that keeps a check reading the SAME entry in both.
-///
-/// `label` is the JSON path under `static_bundle` — `"manifest"`, `"verifier"`,
-/// `"bindings.executable"` — which is also exactly what a refusal names.
 struct StaticBundleCopies<'a> {
-    /// The container-authenticated copy. Says WHAT the evidence must be
-    /// (`bytes`, `sha256`) and carries a basename where a path appears.
     sealed: &'a serde_json::Map<String, Value>,
-    /// The run directory's mutable copy. Says WHERE the evidence is — the only
-    /// copy allowed to carry the absolute path.
     run_dir: &'a serde_json::Map<String, Value>,
 }
 
@@ -2406,40 +2247,6 @@ impl<'a> StaticBundleCopies<'a> {
     }
 }
 
-/// Prove the retained static-bundle evidence a session admitted is still on
-/// disk, unchanged, and is the file the sealed container attests to.
-///
-/// WHERE vs WHAT. Retained evidence names files that live outside the run
-/// directory on the RECORDING machine — the static bundle manifest, the game
-/// executable, the mod/dlc/load-order documents, the source inventory, the
-/// verifier script. Those are absolute paths, and a shareable container must
-/// carry none; the recorder's seal-time
-/// `reject_absolute_paths_in_json` refuses to write one, and
-/// `bind_run_dir_manifest_to_sealed_authority` now asserts the same thing on
-/// the copy read back out. So requiring the SEALED entry to hold an absolute
-/// path — which is what this check used to do — was unsatisfiable by
-/// construction, and the two requirements could never both be met.
-///
-/// The split that resolves it, and preserves the check's meaning:
-///
-///  * WHERE comes from the RUN-DIR copy, which keeps absolute paths on purpose
-///    for recovery and audit on the machine that recorded.
-///  * That path is bound to the sealed entry by the same directional rule the
-///    whole-document binding uses — the run-dir path's final component must be
-///    exactly what the sealed entry carries — computed with the sealer's own
-///    `redact_absolute_path_string`, so one implementation decides it.
-///  * WHAT — `bytes` and `sha256` — still comes from the SEALED copy. That is
-///    what keeps this an attestation and not a self-consistency exercise: the
-///    mutable file on disk may say where to look, but the
-///    container-authenticated copy says what must be found there.
-///
-/// So a rewritten run-dir manifest CAN relocate the evidence — to any path
-/// with the same final component — and cannot change one byte of what must be
-/// found at it. That is not a gap this check could close: the absolute prefix
-/// was deliberately never carried into the container, so no verifier holding
-/// only that container may claim to have bound the directory. The projection
-/// is many-to-one on purpose (see `portable_manifest_projection`), and what a
-/// container can attest about retained evidence is its NAME and its BYTES.
 fn verify_retained_file_evidence(
     bundles: &StaticBundleCopies<'_>,
     label: &str,
@@ -2471,12 +2278,6 @@ fn verify_retained_file_evidence(
         .ok_or_else(|| {
             format!("run-dir native_session_manifest.json static_bundle {label}.path is missing or empty")
         })?;
-    // "Absolute" is decided by the SEALER's detector, not a second opinion:
-    // `redact_absolute_path_string` is the function the recorder's portable
-    // projection runs, so the basename the sealed copy must carry is derived
-    // once, here and there. `Path::is_absolute` is required as well because
-    // `fs::canonicalize` below must resolve without a working directory, which
-    // a Unix-rooted string does not do on Windows.
     let redacted = recorder_host::portable_manifest::redact_absolute_path_string(raw_path);
     if redacted == raw_path || !Path::new(raw_path).is_absolute() {
         return Err(format!(
@@ -2484,13 +2285,6 @@ fn verify_retained_file_evidence(
              canonical absolute path, got {raw_path:?}"
         ));
     }
-    // The directional binding, restated locally on this one entry. The
-    // whole-document binding has already run and covers it, but a check that
-    // resolves a filesystem path must not depend on caller ordering for the
-    // reason it is allowed to trust that path. Equality is not an arm here:
-    // the run-dir side was just required to be absolute and the sealed side is
-    // required to carry no absolute path at all, so the two can only meet at
-    // the basename.
     if redacted != sealed_path {
         return Err(format!(
             "run-dir native_session_manifest.json static_bundle {label}.path {raw_path:?} does not \
@@ -2873,12 +2667,6 @@ fn required_static_manifest_hashes(manifest: &Value) -> Result<BTreeMap<String, 
     Ok(hashes)
 }
 
-/// `manifest` is the SEALED, container-authenticated recorder manifest — the
-/// authority for every hash and roster below. `run_dir_manifest` is the run
-/// directory's copy, already bound to it by
-/// `bind_run_dir_manifest_to_sealed_authority`, and is read for exactly one
-/// thing: the absolute paths of the retained evidence files, which the sealed
-/// copy is forbidden to carry. See `verify_retained_file_evidence`.
 fn verify_static_manifest_authority(
     manifest: &Value,
     run_dir_manifest: &Value,
@@ -3401,15 +3189,6 @@ fn validate_required_static_artifacts(
     }))
 }
 
-/// Bind the packaged static artifacts to the container, for whichever role set
-/// the recording's content proof declares.
-///
-/// `roles` is the EXACT set the container must carry — the canonical eight
-/// under the launch-time epoch, the declared subset under the attach-time
-/// proof — and the index, the manifest and the container entries must all agree
-/// on precisely that set. `retained` is the launch-time route's retained bundle
-/// evidence; the attach-time route has no bundle and passes `None`, which is
-/// why the digest chain is stated per binding rather than assumed.
 fn admit_packaged_static_artifacts(
     container: &Container,
     game_id: &str,
@@ -3440,14 +3219,6 @@ fn admit_packaged_static_artifacts(
         .ok_or_else(|| {
             "authoritative replay index.static_artifacts is missing or not an array".to_string()
         })?;
-    // THE INDEX ROSTERS EVERY CANONICAL ROLE, present or absent, and the
-    // recorder writes it that way on purpose ("the index records EVERY known
-    // artifact as present or absent, so a reader always learns exactly which
-    // enrichment bundles this recording carries -- the absent ones are badged,
-    // never fabricated"). So the roster check is over the CANONICAL set, and
-    // `roles` decides which of those rows must be PRESENT. A short packaged
-    // roster is therefore still fully accounted for: every role it does not
-    // carry appears here badged absent with a reason.
     let canonical = compact_contract::REQUIRED_STATIC_ARTIFACTS
         .iter()
         .map(|role| (*role).to_string())
@@ -3474,9 +3245,6 @@ fn admit_packaged_static_artifacts(
         }
         let present = row.get("present").and_then(Value::as_bool);
         if !required.contains(name) {
-            // A role this recording does not carry. It must be badged absent
-            // WITH A REASON -- a bare `present: false` would let a container
-            // drop a role silently.
             if present != Some(false) {
                 return Err(format!(
                     "authoritative replay index static role {name:?} is not packaged by \n                     this recording but is not badged present=false"
@@ -3621,10 +3389,6 @@ fn admit_packaged_static_artifacts(
                 binding.bytes, binding.sha256
             ));
         }
-        // The retained-bundle leg exists only on the launch-time route. The
-        // attach-time route has no bundle to compare against, and says so by
-        // passing `None` rather than by quietly skipping a check a reader would
-        // assume ran.
         let bundle_binding = retained
             .map(|bundle| {
                 bundle.get(name).ok_or_else(|| {
@@ -3677,17 +3441,8 @@ fn admit_packaged_static_artifacts(
     Ok(details)
 }
 
-/// WHICH content proof this recording states it took.
-///
-/// Read positively, from a field every recording writes, and never inferred
-/// from which other fields happen to be present — the same discipline the
-/// `raw_stream_packaging` route holds itself to a few hundred lines below.
 enum ContentProofKind {
-    /// A content manifest observed before `ResumeThread`, with the eight-role
-    /// static bundle behind it.
     LaunchTimeStaticBundleV1,
-    /// The attach-time effective-VFS join. See
-    /// `recorder_host::attach_content_proof`.
     AttachTimeEffectiveVfsJoinV1,
 }
 
@@ -3709,9 +3464,6 @@ fn read_content_proof_kind(embedded_manifest: &Value) -> Result<ContentProofKind
     {
         Ok(ContentProofKind::AttachTimeEffectiveVfsJoinV1)
     } else {
-        // `none` lands here too, and that is the point: a recording that took
-        // no content proof is not certifiable as content-bound, and it says so
-        // itself rather than being caught by a downstream absence.
         Err(format!(
             "recording declares {field} {declared:?}, which certifies no content: this loader \
              admits {:?} and {:?}",
@@ -3721,18 +3473,6 @@ fn read_content_proof_kind(embedded_manifest: &Value) -> Result<ContentProofKind
     }
 }
 
-/// KIND C: admit a recording whose content identity was proved at ATTACH, by
-/// joining every packaged artifact's content claims against the engine's own
-/// effective VFS.
-///
-/// The launch-time epoch this replaces is unreachable by the shipped product
-/// binary — the early-launch actuator is compile-excluded — so without this
-/// route no production recording could ever be certified as content-bound.
-/// What it admits is nonetheless narrower than the launch-time route, and the
-/// report says so: there is no static bundle, no product-modset key and no
-/// portable content manifest behind it, and the claim it does make is exactly
-/// "every content byte these artifacts declare is what the engine exposed
-/// during the stated attach window".
 fn certify_attach_time_content_proof(
     container: &Container,
     embedded_manifest: &Value,
@@ -3760,18 +3500,6 @@ fn certify_attach_time_content_proof(
             "{field}.kind disagrees with the declared proof kind"
         ));
     }
-    // THE ROUTE MUST MATCH THE EVIDENCE, and the verifier decides that for itself.
-    //
-    // The recorder refuses to write a recording that carries both, but a
-    // consumer that trusted the declaration would let a recording holding the
-    // PRE-RESUME evidence declare the attach kind and so skip the launch-time
-    // route's static bundle, retained evidence, eight-role roster and
-    // portable-manifest epoch. The declaration routes; the evidence decides
-    // whether the declaration is admissible.
-    //
-    // `portable_content_manifest` is deliberately NOT in this list: the
-    // recorder builds one from a `portable_content_use_trace` on an ordinary
-    // late attach, so its presence is not pre-resume evidence. These two are.
     for pre_resume in [
         "early_render_launch_manifest",
         "early_render_capture_receipt",
@@ -3787,10 +3515,6 @@ fn certify_attach_time_content_proof(
             ));
         }
     }
-    // An unsettled window is a walk over a corpus that was moving, so nothing
-    // observed inside it describes one install. The recorder still seals such a
-    // recording — the game hours are real — and this is where it stops being
-    // read as a content proof.
     if proof.get("window_settled").and_then(Value::as_bool) != Some(true) {
         return Err(format!(
             "{field} reports an unsettled attach window after {} attempt(s): the install changed \
@@ -3813,13 +3537,6 @@ fn certify_attach_time_content_proof(
     if completed_at < observed_at {
         return Err(format!("{field} window closes before it opens"));
     }
-    // The interval the proof does NOT cover is verified rather than carried.
-    // Capture is attach-and-play, so the
-    // engine has usually been running for a while when the window opens, and
-    // content it read at ITS launch that changed before the window is outside
-    // every observation this proof makes. Requiring the stamp, and requiring it
-    // to precede the window, is what makes the gap a measured quantity in the
-    // verified result instead of a caveat in a design document.
     let game_process_start_unix = proof
         .get("game_process_start_unix")
         .and_then(Value::as_i64)
@@ -3844,17 +3561,10 @@ fn certify_attach_time_content_proof(
         proof.get("dlc_load_sha256"),
         &format!("{field}.dlc_load_sha256"),
     )?;
-    // The proof states the WORLD it was taken in. A consumer that wants to know
-    // whether a mod could have added content no artifact claims reads the layer
-    // stack; it is bound here so that statement cannot be edited after the
-    // fact.
     let layer_rows = proof
         .get("layer_stack")
         .and_then(Value::as_array)
         .ok_or_else(|| format!("{field}.layer_stack is missing or not an array"))?;
-    // A vacuous stack must not certify. An empty list has a perfectly valid
-    // digest, so without this the whole "the proof states the world it was
-    // taken in" claim could be satisfied by stating no world at all.
     if layer_rows.is_empty() {
         return Err(format!(
             "{field}.layer_stack is empty: a proof that states no content layers states no world"
@@ -3906,9 +3616,6 @@ fn certify_attach_time_content_proof(
             source_container_sha256: optional_sha256("source_container_sha256")?,
         });
     }
-    // RE-DERIVED from the rows above, through the producer's own function, so
-    // the digest is recomputed from the block's field VALUES rather than
-    // trusted or re-serialized from whatever key order the document had.
     let recomputed_stack_sha256 = recorder_host::attach_content_proof::layer_stack_sha256(&layers)?;
     let declared_stack_sha256 = canonical_sha256(
         proof.get("layer_stack_sha256"),
@@ -3921,8 +3628,6 @@ fn certify_attach_time_content_proof(
         ));
     }
 
-    // The ROSTER, reconciled against the manifest's own two lists so a role
-    // cannot be hidden by being left out of both.
     let canonical = compact_contract::REQUIRED_STATIC_ARTIFACTS
         .iter()
         .map(|role| (*role).to_string())
@@ -3999,9 +3704,6 @@ fn certify_attach_time_content_proof(
         ));
     }
 
-    // Zero packaged roles would admit zero artifacts and join zero paths while
-    // still reporting `static_artifacts_joined: true`. The producer refuses to
-    // start a fingerprint with no artifacts; the consumer must not depend on that.
     if declared.is_empty() {
         return Err(format!(
             "{field}: the recording packages no static artifacts at all, so its attach-time proof \
@@ -4011,11 +3713,6 @@ fn certify_attach_time_content_proof(
     let admitted =
         admit_packaged_static_artifacts(container, game_id, &declared, &artifact_hashes, None)?;
 
-    // Every packaged role must carry a PASSING join receipt bound to the exact
-    // bytes admitted above. This is the line between KIND C and a weaker
-    // "layer identity" admission: a catalog the recorder could not join is
-    // reported as unbound to the captured content, and a certification that
-    // shrugged at that would be claiming what it did not prove.
     let refused_rows = proof
         .get("refused_artifacts")
         .and_then(Value::as_array)
@@ -4108,12 +3805,6 @@ fn certify_attach_time_content_proof(
         }));
     }
 
-    // Content the scheduled roster consumes DIRECTLY rather than through a
-    // packaged catalog. D81's province catalog is the one the production roster
-    // needs; a recording that could not resolve it names the gap here.
-    // The EXPECTED roster is derived here from the recording's own sealed
-    // scheduled domains rather than read out of the proof, so a recording
-    // cannot certify by shipping two empty arrays.
     let scheduled = embedded_manifest
         .get("scheduled_domains")
         .and_then(Value::as_array)
@@ -4202,9 +3893,6 @@ fn certify_attach_time_content_proof(
         "content_proof_kind":
             recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1,
         "static_artifacts_joined": true,
-        // Named, not inferred: the packaged roster is deliberately allowed to be
-        // short of the canonical eight here, and a reader must be able to see
-        // WHICH roles this recording does not carry rather than count rows.
         "required_count": compact_contract::REQUIRED_STATIC_ARTIFACTS.len(),
         "exact_required_roles": declared.len() == canonical.len(),
         "packaged_roles": declared.iter().collect::<Vec<_>>(),
@@ -4212,8 +3900,6 @@ fn certify_attach_time_content_proof(
         "attach_window_observed_at_unix": observed_at,
         "attach_window_completed_at_unix": completed_at,
         "attach_window_seconds": completed_at.saturating_sub(observed_at),
-        // Reported so a consumer reads the uncovered interval rather than
-        // assuming there is none.
         "game_process_start_unix": game_process_start_unix,
         "seconds_running_before_the_window_opened": observed_at
             .saturating_sub(game_process_start_unix),
@@ -4224,8 +3910,6 @@ fn certify_attach_time_content_proof(
         "layer_count": layers.len(),
         "required_content": proof.get("required_content"),
         "artifacts": joined_details,
-        // The launch-time epoch is ABSENT here, and its absence is stated
-        // rather than left for a reader to notice.
         "portable_content_manifest":
             "absent: certified by attach_time_effective_vfs_join_v1 instead of a pre-resume epoch",
         "static_bundle":
@@ -4233,82 +3917,27 @@ fn certify_attach_time_content_proof(
     }))
 }
 
-/// Fields the RUN-DIR copy may carry and the sealed copy must NOT.
-///
-/// Every one is measured after the container was written, so the sealed copy —
-/// built before the container exists — provably cannot know it. `verify` is the
-/// report of verifying the finished container; embedding it would change the
-/// container it describes.
-///
-/// This is a standing wire contract, not an implementation detail of one
-/// verifier. Adding a name removes that field from what a container can attest.
 const RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS: &[&str] = &[
     "finalize_seconds",
     "peak_private_bytes",
     "peak_working_set_bytes",
-    // The named-component breakdown behind the two peaks. Same reason as the
-    // peaks: it is read after the container is written, so the pre-pack copy
-    // cannot know it. Like them, it describes the recorder process, never the
-    // recording, so removing it from what a container attests costs the
-    // container nothing.
     "memory_account",
     "verify",
 ];
 
-/// Fields the SEALED copy may carry and the run-dir copy must NOT.
-///
-/// The first three are the sealed copy's own self-description as the pre-pack
-/// copy. `excluded_domain_data` is the fold's exclusion ledger, attached at pack
-/// time. (It is also carried under `host_finalize.fold.excluded_domain_data` in
-/// BOTH copies, where it stays fully bound; only the top-level duplicate is
-/// unbound here.)
 const SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS: &[&str] = &[
     "embedded_copy_phase",
     "standalone_manifest_is_authoritative",
     "post_pack_fields_in_standalone_manifest_only",
     "excluded_domain_data",
-    // The per-hour coverage map is minted at seal time and written into the
-    // sealed copy only, exactly like `excluded_domain_data` beside it: the
-    // run-dir manifest is written before the seal walk has a verdict.
     recorder_host::hour_coverage::HOUR_COVERAGE_FIELD,
 ];
 
-/// TOP-LEVEL manifest fields the RUN-DIR copy may carry and the sealed copy
-/// must NOT.
-///
-/// Same rule as `RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS` above, at the
-/// other nesting level, because the recorder writes one post-pack field at the
-/// manifest root rather than inside `host_finalize`.
-///
 /// `spool_trim` is the storage-release outcome of
 /// `recorder_host::release_sealed_spool_storage`, recorded by
-/// `record_spool_trim_telemetry`, which runs LATER than every other post-pack
-/// write: after the container is packed AND after the finalize-progress
-/// receipt has published `complete`. The sealed copy is built before the
-/// container exists, so it provably cannot carry it — under
-/// `--keep-spool-after-seal` the run-dir copy carries
 /// `{"released": false, "reason": "--keep-spool-after-seal"}` against a sealed
-/// copy that has no such key at all, and the binding refused it at
-/// `$.spool_trim` on every keep-spool capture (measured on t49 and t50,
-/// `runs/hd_hb_defects/`).
-///
-/// Unbinding it costs the container nothing, and specifically costs it no
-/// spool integrity: whether the spool was trimmed is decided by
-/// `recorder_host::spool_trim::require_whole_spool`, which reads the trim
-/// JOURNAL beside the stream, never this telemetry field. A rewritten
-/// `spool_trim` cannot make a trimmed spool look whole to any consumer.
 const RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS: &[&str] = &["spool_trim"];
 
-/// The divergence is DIRECTIONAL, and so is the allowlist. A field is removed
-/// only from the side that is allowed to have it, and refused outright on the
-/// other side — otherwise the mutable run-dir file could invent
-/// `standalone_manifest_is_authoritative` (or any other sealed-only marker) and
-/// the binding would shrug. The census over all 19 sealed containers measured
-/// each of these fields on exactly one side, never both.
-///
-/// Everything else in the manifest — every domain roster, every identity, every
-/// hash, `host_finalize.fold.*`, `host_finalize.stream_sha256` — stays bound to
-/// the container.
 fn post_seal_mutable_host_finalize_fields() -> Vec<&'static str> {
     RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS
         .iter()
@@ -4317,107 +3946,16 @@ fn post_seal_mutable_host_finalize_fields() -> Vec<&'static str> {
         .collect()
 }
 
-/// What the binding actually proved, reported so no reader has to infer it.
 struct SealedManifestBinding {
-    /// At least one value bound through the sanctioned absolute-path redaction
-    /// rather than by equality. Purely descriptive: the absolute prefix was
-    /// never inside the container, so it was never bound and this verifier does
-    /// not claim it was.
     path_redaction_applied: bool,
-    /// The sealed manifest carries a `portability_exclusions` ledger: at least
-    /// one value could not be made portable and was REMOVED before packing.
-    ///
-    /// Carried out of the binding so no caller can hand this container onward
-    /// as a complete recorder manifest without having been told. A reader that
-    /// finds `PORTABILITY_EXCLUDED_VALUE` where it expected a claim has read a
-    /// hole, and `is_portability_excluded_value` is how it says so.
     portability_degraded: bool,
 }
 
-/// Bind the run directory's mutable `native_session_manifest.json` to the
-/// container's sealed `recorder_manifest`.
-///
-/// A raw byte comparison of the two files is STRUCTURALLY UNSATISFIABLE for a
-/// live capture, and no amount of care in the recorder can make it satisfiable.
-/// The recorder builds two deliberately different copies:
-///
-///  1. The sealed copy goes through the portable projection — every absolute
-///     path is reduced to its basename, because a shareable container must not
-///     carry personal paths. The run-dir copy keeps the
-///     absolute paths on purpose, for recovery and audit on the recording
-///     machine.
-///  2. The sealed copy is built BEFORE the container is packed, so it cannot
-///     carry finalize timing, peak memory, the container's own verification
 ///     report, or the spool storage-release outcome. Those are written back
-///     into the run-dir copy afterwards — the first three inside
-///     `host_finalize`, `spool_trim` at the manifest root.
-///
-/// Measured on capture t31 (`extractor/native/runs/live_unlock/t31/`): the
-/// run-dir copy is 17,957,105 bytes, the sealed copy 17,957,028 — 77 bytes
-/// apart, in 11 places, every one of them an instance of (1) or (2). The same
-/// census over all 19 sealed containers under `extractor/native/runs/` leaves
-/// ZERO residual difference once (1) and (2) are accounted for.
-///
-/// That census had a blind spot, closed here: it enumerated instances of (2)
-/// only inside `host_finalize`, and the recorder writes one of them —
-/// `spool_trim` — at the manifest root. So every `--keep-spool-after-seal`
-/// capture refused at `$.spool_trim` while the two copies were in fact
-/// agreeing (t49 and t50, `runs/hd_hb_defects/`). (2) is a statement about
-/// WHEN a field is written, not about where it sits, so the allowlist is
-/// applied at both levels.
-///
-/// So the binding is: the sealed document, EXACTLY AS SEALED, against the
-/// run-dir document, allowing at each value and each object key only the two
-/// measured divergences — and both of them only in the direction the recorder
-/// actually produces.
-///
-/// The sealed copy is NEVER normalized before the comparison. That matters: if
-/// the sealed side were projected too, a sealed value of `C:\evil\collector.dll`
-/// and a run-dir value of `D:\other\collector.dll` would both reduce to
-/// `collector.dll` and bind — and the UNPROJECTED sealed document is what this
-/// function's caller then hands downstream as authority. `verify_all()` proves
-/// the container is internally consistent, not that the recorder's
-/// `reject_absolute_paths_in_json` seal-time gate ever ran. So redaction is
-/// sanctioned in one direction only: the run-dir value may be an absolute path
-/// whose FINAL COMPONENT is exactly what the sealed copy carries. A sealed
-/// absolute path binds only to the identical absolute path — and since this
-/// function now asserts the sealed copy carries NO absolute path at all
-/// (below), that arm is unreachable through this loader. It is kept because
-/// `first_binding_violation` is the rule, not the gate: the rule must still be
-/// right if the portability assertion is ever moved.
-///
-/// TAMPER-EVIDENCE. The asymmetry that matters is that the sealed copy is
-/// hash-bound by the container (`verify_all` ran above) while the run-dir copy
-/// is a file anyone can rewrite. So the sealed copy decides:
-///
-///  * A field the sealed copy carries and the run-dir copy contradicts is
-///    refused, naming the field. That is what stops a rewrite talking past the
-///    container — it is why the composition routing read at the top of
-///    `load_verified_replay_authority` is safe to take from the run-dir file.
-///  * `host_finalize` must be an object in BOTH. The one recorder pack path
-///    that seals a manifest without it (`write_native_replay_container`) is
-///    reached only from `StreamFormat::Json`, which production refuses and which
-///    this gate refuses again via `stream_format == "compact"`. A compact
-///    container that reached here without a sealed `host_finalize` is malformed,
-///    and admitting it would unbind `stream_sha256` and all of `fold.*`.
 fn bind_run_dir_manifest_to_sealed_authority(
     external_manifest: &Value,
     embedded_manifest: &Value,
 ) -> Result<SealedManifestBinding, String> {
-    // PORTABILITY, asserted before anything else is read out of the sealed
-    // copy. A `.battleplan` is meant to be handed to someone else, and the
-    // The portable-container contract forbids personal filesystem
-    // paths in what it carries. The recorder enforces that at seal time by
-    // running `reject_absolute_paths_in_json` over the projected manifest and
-    // refusing to pack if anything absolute survived — but `verify_all()`
-    // above proves only that the container is internally consistent, never
-    // that the seal-time gate ran. So the gate re-asserts it, with the SAME
-    // function, on the copy it actually read back.
-    //
-    // First, because it is a property of the sealed copy alone: it needs no
-    // run-dir document, and asserting it here makes the "a sealed absolute
-    // path binds only to the identical absolute path" arm of the binding below
-    // unreachable through this loader rather than merely correct.
     recorder_host::portable_manifest::reject_absolute_paths_in_json(embedded_manifest, "$")
         .map_err(|error| {
             format!(
@@ -4429,22 +3967,6 @@ fn bind_run_dir_manifest_to_sealed_authority(
         })?;
 
     let mut sealed = embedded_manifest.clone();
-    // THE EXCLUSION PASS, applied to the run-dir copy only.
-    //
-    // A degraded sealed manifest carries the reserved stand-in where a value
-    // could not be made portable, plus a top-level `portability_exclusions`
-    // ledger. The run-dir copy keeps the original text — it is the local
-    // recovery copy and is allowed to. Binding them therefore needs the run-dir
-    // side put through the same removal, and it must be the SEALER'S OWN
-    // function: a second implementation here would agree until the first time
-    // either end learned a new shape, and would then refuse exactly the
-    // containers the recorder writes.
-    //
-    // Only the exclusion pass is applied, never the whole projection. The
-    // absolute-path redaction stays where it is — inside the binding below —
-    // because the run-dir copy's absolute paths are what
-    // `verify_retained_file_evidence` resolves, and the directional
-    // "run-dir absolute, sealed basename" rule is the thing being checked.
     let mut run_dir = external_manifest.clone();
 
     let sealed_host_finalize_is_object = sealed.get("host_finalize").is_some_and(Value::is_object);
@@ -4465,10 +3987,6 @@ fn bind_run_dir_manifest_to_sealed_authority(
         );
     }
 
-    // Directional allowlist: each field is refused on the side that must not
-    // carry it, and removed only from the side that may. The same rule runs at
-    // both nesting levels the recorder writes post-pack telemetry at — inside
-    // `host_finalize`, and at the manifest root.
     take_directional_fields(
         &mut run_dir,
         &sealed,
@@ -4494,47 +4012,16 @@ fn bind_run_dir_manifest_to_sealed_authority(
         "sealed",
     )?;
 
-    // THE EXCLUSION PASS, applied to the run-dir copy only, AND ONLY ONCE THE
-    // POST-SEAL FIELDS ARE GONE.
-    //
-    // A degraded sealed manifest carries the reserved stand-in where a value
-    // could not be made portable, plus a top-level `portability_exclusions`
-    // ledger. The run-dir copy keeps the original text -- it is the local
-    // recovery copy and is allowed to -- so binding the two needs the run-dir
-    // side put through the same removal, using the SEALER'S OWN function: a
-    // second implementation here would agree until the first time either end
-    // learned a new shape, and would then refuse exactly the containers the
-    // recorder writes.
-    //
-    // ORDER IS LOAD-BEARING. The run-dir copy also carries fields written AFTER
-    // the seal -- `spool_trim.reason` and `host_finalize.verify` among them --
-    // and a post-seal failure reason routinely quotes an absolute path. Running
-    // the pass before those were removed produced an exclusion the sealed
-    // ledger could not possibly contain, and refused a perfectly good container
-    // for a string the container never saw.
-    //
-    // Only the exclusion pass is applied, never the whole projection: the
-    // run-dir copy's absolute paths are what `verify_retained_file_evidence`
-    // resolves, and the directional "run-dir absolute, sealed basename" rule is
-    // the thing the binding below is checking.
     let (excluded_run_dir, _) =
         recorder_host::portable_manifest::apply_portability_exclusions(&run_dir);
     run_dir = excluded_run_dir;
     let sealed_ledger = sealed
         .get(recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_FIELD)
         .cloned();
-    // The ledger is a CLAIM, so it binds like any other: the run-dir copy must
-    // produce the same one. A container whose ledger does not follow from its
-    // own run-dir document is either describing a different recording or was
-    // written by something other than the sealer.
     let expected_ledger = run_dir
         .get(recorder_host::portable_manifest::PORTABILITY_EXCLUSIONS_FIELD)
         .cloned();
     if sealed_ledger != expected_ledger {
-        // Name what the two sides disagree about. "The ledgers differ" is
-        // unactionable in a 4.7 MB manifest, and the commonest cause is a
-        // run-dir copy edited since the seal: an added absolute key, or an
-        // added diagnostic, produces an exclusion the container never made.
         let describe = |ledger: Option<&Value>| {
             ledger
                 .and_then(|ledger| ledger.get("excluded"))
@@ -4575,17 +4062,6 @@ fn bind_run_dir_manifest_to_sealed_authority(
     })
 }
 
-/// Remove `fields` from `owner`'s `block` object — or from `owner`'s own top
-/// level when `block` is `None` — having first refused any of them appearing in
-/// the same place in `forbidden`. The unbinding is one-directional: a name only
-/// the sealed copy may carry must not appear in the mutable file, and vice
-/// versa.
-///
-/// `block` exists because the recorder writes post-pack telemetry at two
-/// nesting levels: `host_finalize.{finalize_seconds,verify,…}` inside the
-/// block, and `spool_trim` at the manifest root. A rule that only knew the
-/// nested level refused every `--keep-spool-after-seal` capture at
-/// `$.spool_trim`.
 fn take_directional_fields(
     owner: &mut Value,
     forbidden: &Value,
@@ -4623,17 +4099,6 @@ fn take_directional_fields(
     Ok(())
 }
 
-/// The first place the run-dir document fails to bind to the sealed one, as a
-/// readable path plus the two values. A refusal that only said "they differ"
-/// would send an operator into a 17 MB diff by hand.
-///
-/// A value binds if it is EQUAL, or if the run-dir value is an absolute path
-/// string and the sealed value is exactly its final component. Object keys bind
-/// by the same rule, equality first — so an absolute key present verbatim on
-/// both sides binds to itself instead of being reduced, and the rule reads the
-/// same for keys and values. `redactions` counts the sanctioned reductions
-/// actually used, so the report can state whether any happened instead of
-/// guessing.
 fn first_binding_violation(
     sealed: &Value,
     run_dir: &Value,
@@ -4644,10 +4109,6 @@ fn first_binding_violation(
 
     match (sealed, run_dir) {
         (Value::Object(left), Value::Object(right)) => {
-            // Keys bind by the SAME rule as values: identical, or the run-dir
-            // key is an absolute path whose final component is the sealed key.
-            // A collision means two run-dir keys claim one sealed key, which the
-            // recorder's own projection refuses to seal; refuse it here too.
             let mut bound = BTreeMap::<String, (&String, &Value)>::new();
             for (key, value) in right {
                 let name = redact_absolute_path_string(key);
@@ -4661,8 +4122,6 @@ fn first_binding_violation(
             let mut consumed = BTreeSet::<&str>::new();
             for (key, sealed_value) in left {
                 let child = format!("{path}.{key}");
-                // Equality first, so an absolute key present verbatim on both
-                // sides binds to itself rather than being reduced.
                 let matched = right
                     .get_key_value(key)
                     .or_else(|| bound.get(key).map(|(k, v)| (*k, *v)));
@@ -4706,14 +4165,11 @@ fn first_binding_violation(
                 .zip(right)
                 .enumerate()
                 .find_map(|(index, (l, r))| {
-                first_binding_violation(l, r, &format!("{path}[{index}]"), redactions)
-            })
+                    first_binding_violation(l, r, &format!("{path}[{index}]"), redactions)
+                })
         }
         (left, right) if left == right => None,
         (Value::String(sealed_text), Value::String(run_dir_text)) => {
-            // The one sanctioned value divergence, in one direction only: the
-            // run-dir copy kept an absolute path the sealed copy reduced to its
-            // final component.
             let reduced = redact_absolute_path_string(run_dir_text);
             if &reduced != run_dir_text && &reduced == sealed_text {
                 *redactions += 1;
@@ -4742,27 +4198,6 @@ fn truncate_for_refusal(value: &Value) -> String {
     format!("{head}…")
 }
 
-/// TEST-ONLY: hold a read handle on everything under `run_dir` for as long as
-/// the caller keeps the returned value.
-///
-/// On Windows a real-time antimalware scanner opens a file the moment it is
-/// written, with a share mode that refuses other openers; anything that reads
-/// it in the next few milliseconds gets `os error 32`. This crate's unit tests
-/// write a whole run directory and hand it straight to
-/// `load_verified_replay_authority`, and that is how they flaked.
-///
-/// The guards are RETAINED rather than probed and dropped: while a handle is
-/// open the scanner cannot take the file back, which an open-and-drop probe
-/// cannot promise. They are taken over the WHOLE directory rather than at each
-/// reader because the loader reaches many — the container, the stored stream,
-/// the compression probe that opens it first, and every retained
-/// static-evidence artifact — and one guard set at the entry cannot be got
-/// wrong the way a per-reader list can.
-///
-/// Every failure is ignored on purpose. A missing file, a refused permission,
-/// or a violation that never clears all fall straight through to the real
-/// reader, so every existing error and every assertion on it is unchanged.
-/// These guards can only DELAY the loader, never redirect it.
 #[cfg(test)]
 fn scanner_guards(run_dir: &Path) -> Vec<std::fs::File> {
     fn walk(directory: &Path, guards: &mut Vec<std::fs::File>) {
@@ -4793,39 +4228,8 @@ fn load_verified_replay_authority(
     run_dir: &Path,
     max_stream_bytes: u64,
 ) -> Result<VerifiedReplayAuthority, String> {
-    // Held for the whole call; see `scanner_guards`.
     #[cfg(test)]
     let _scanner_guards = scanner_guards(run_dir);
-    // The recording's declared composition decides WHICH proof this gate can
-    // run. It is never inferred from a missing entry.
-    //
-    //  * `packaged` — the container carries the raw stream, so the gate reads
-    //    those bytes back out and byte-compares them against the run-dir copy.
-    //    That path is unchanged.
-    //  * `omitted` — the container ships the delta cache alone. Nothing inside
-    //    it can re-hash source bytes it does not carry, so the gate hashes the
-    //    RUN-DIR stream and binds that identity through the
-    //    container-authenticated recorder manifest (`stream_storage`) to the
-    //    H4IX and H4CP source identities.
-    //
-    // The declaration is read HERE from the run-dir manifest only to route.
-    // Both routes then require that manifest to be bound to the container's
-    // embedded recorder manifest (see
-    // `bind_run_dir_manifest_to_sealed_authority`), and the cache-only route
-    // additionally re-reads the composition from the container's own recorder
-    // manifest and requires the container to carry no stream entry at all. A
-    // packaged container therefore cannot be talked onto the weaker
-    // manifest-attested route by rewriting the file on disk.
-    //
-    // The routing read is taken from the PORTABLE PROJECTION of the run-dir
-    // manifest, which is the exact document the binding below compares against
-    // the sealed copy. Reading the raw document here instead would let the two
-    // reads disagree: `raw_stream_packaging` is the one field with a permissive
-    // absent-value default, so writing it under an absolute-path KEY
-    // (`"/x/raw_stream_packaging"`) would hide it from an unprojected lookup —
-    // taking the default — while the projection renamed it back to its
-    // basename in time to satisfy the binding. Routing and binding must read
-    // one document.
     let projected_external_manifest =
         recorder_host::portable_manifest::portable_manifest_projection(external_manifest).map_err(
             |err| format!("run-dir native_session_manifest.json has no portable projection: {err}"),
@@ -4836,14 +4240,7 @@ fn load_verified_replay_authority(
     let declared_packaging =
         snapshot::read_raw_stream_packaging_with_legacy_default(declared_object)
             .map_err(|error| format!("external native_session_manifest.json: {error}"))?;
-    // `replay_file` is deliberately resolved from the RAW document: it names a
-    // file this loader opens, and `required_run_file` refuses an absolute path.
-    // Projecting it first would reduce an absolute path to a basename and admit
-    // it. The projection is for comparison, never for resolving a path.
     let replay_path = required_run_file(run_dir, external_manifest, "replay_file")?;
-    // The container is pinned against the CONTAINER's own vocabulary. The
-    // recorder manifest's `schema` is a different field on a different
-    // artifact and is checked below, against the container-authenticated copy.
     let expected = ExpectedIdentity {
         schema_version: Some(REPLAY_CONTAINER_SCHEMA_VERSION.to_string()),
         ..ExpectedIdentity::default()
@@ -4854,44 +4251,12 @@ fn load_verified_replay_authority(
             replay_path.display()
         )
     })?;
-    // EVERY entry is verified, and every result is kept.
-    //
-    // This used to be `container.verify_all()`, which returns on the FIRST
-    // corrupt entry. That made per-entry confinement unreachable no matter what
-    // the coverage map said: a flipped byte in one hour's snapshot entry
-    // aborted the authority here, before anything could associate that entry
-    // with its hour. The report is computed
-    // once, at the same point in the chain the old call occupied, and the
-    // per-hour downgrade below reads it.
     let entry_report = container.verify_all_streaming_report().map_err(|err| {
         format!(
             "replay container per-entry verification failed for {}: {err}",
             replay_path.display()
         )
     })?;
-    // NO ARTIFACT MAY ALSO BE SOME HOUR'S SNAPSHOT.
-    //
-    // `EntryVerification::hour_index` is resolved by matching an entry's path
-    // against the container INDEX's snapshot file names, which says nothing
-    // about the entry's ROLE. So an index that lists the canonical H4CP (or
-    // H4IX) path as, say, hour 5's snapshot makes that artifact's row carry
-    // hour 5 — and the per-hour damage fold below would then exclude hour 5
-    // because the CACHE was damaged, on top of the checkpoint window the damage
-    // actually reaches. A healthy hour would be dropped for an injury that
-    // never touched it, which is precisely the exactness the confinement law
-    // exists to keep.
-    //
-    // The guard is a refusal rather than a repair: one file cannot be both a
-    // replay artifact and an hour's snapshot, and a container that says
-    // otherwise is contradictory whether or not anything is damaged.
-    //
-    // It is a LIVE guard, and only the FIRST indexed snapshot is out of its
-    // reach: `Container::open` decodes that one as the representative it checks
-    // mod and build identity against — and an H4CP, which begins with the four
-    // bytes `H4CP`, cannot be a JSON document — while every later snapshot row
-    // stays lazy. So an alias behind a valid snapshot opens fine and arrives
-    // here. `a_replay_artifact_indexed_as_an_hours_snapshot_refuses_the_container`
-    // covers both positions.
     {
         let aliased: Vec<String> = entry_report
             .iter()
@@ -4923,29 +4288,6 @@ fn load_verified_replay_authority(
         }
     }
 
-    // A damaged entry that serves NO single game hour is refused here, before
-    // anything is read out of the container: the recorder manifest and the
-    // index are what every other claim rests on, so damage to them cannot be
-    // confined to an hour. Naming the entry and its role is what the
-    // first-failure abort could not do.
-    //
-    // THE ONE EXEMPTION is the certified CACHE, and only on the cache-only
-    // route (owner ruling 2026-08-12, task #191). The H4CP serves no single
-    // hour, but it is the one entry whose damage is attributable to hours from
-    // inside the recording's own sealed authority: every record carries a
-    // digest in the sealed H4IX, so `certify_cache_only_recording`'s link 6
-    // streams it, names the records that moved, and confines the checkpoint
-    // windows they belong to — refusing the whole recording itself whenever the
-    // damage is NOT attributable (a changed length, a damaged header, or the
-    // container's account and the seal's disagreeing about the same bytes).
-    //
-    // The exemption cannot be talked into existence by a file on disk. It is
-    // conditioned on the same `declared_packaging` that routes the
-    // certification, and the cache-only route's link 1 re-reads the composition
-    // from the CONTAINER-AUTHENTICATED recorder manifest and refuses if the two
-    // disagree — so a packaged recording that rewrote its run-dir manifest to
-    // claim `omitted` loses the whole container a few lines further down, with
-    // its H4CP damage still unjudged.
     {
         let defer_to_per_record_attribution = |entry: &snapshot::container::EntryVerification| {
             matches!(declared_packaging, snapshot::RawStreamPackaging::Omitted)
@@ -4988,10 +4330,6 @@ fn load_verified_replay_authority(
     }
     let layout = replay_layout(external_manifest, declared_packaging)?;
 
-    // The recorder manifest is proved first on BOTH routes, because it is what
-    // makes `stream_storage` a container-authenticated claim rather than a
-    // mutable file on disk. The cache-only chain reads its source identity out
-    // of this exact copy.
     let manifest_entries = container.entries_by_role("recorder_manifest");
     if manifest_entries.len() != 1 {
         return Err(format!(
@@ -5020,17 +4358,8 @@ fn load_verified_replay_authority(
     let embedded_sha256 = Sha256::hex(&embedded_manifest_bytes);
     let embedded_manifest = snapshot::parse_json_strict(&embedded_manifest_bytes)
         .map_err(|err| format!("embedded recorder_manifest is not strict JSON: {err}"))?;
-    // The sealed copy is the authority. The run-dir copy is a mutable
-    // convenience view of the same session that the recorder deliberately keeps
-    // diverging from it, so binding the two by raw bytes is unsatisfiable for
-    // every live capture; see `bind_run_dir_manifest_to_sealed_authority` for
-    // exactly which divergence is sanctioned and why.
     let manifest_binding =
         bind_run_dir_manifest_to_sealed_authority(external_manifest, &embedded_manifest)?;
-    // The recorder manifest states its OWN format in its OWN field, `schema`.
-    // Checked here, on the container-authenticated copy, so the authority
-    // loader cannot admit a recording of some other session format. This is
-    // NOT the container's `schema_version`, which is pinned above.
     let embedded_schema = embedded_manifest.get("schema").and_then(Value::as_str);
     if embedded_schema != Some(RECORDER_MANIFEST_SCHEMA) {
         return Err(format!(
@@ -5046,9 +4375,6 @@ fn load_verified_replay_authority(
     let stream_entries = container.entries_by_role("collector_compact_stream");
     let (stream_certification, mut stream_details) = match declared_packaging {
         snapshot::RawStreamPackaging::Packaged => {
-            // UNCHANGED byte-comparison proof: the packaged stream is read back
-            // out of the verified container, independently re-hashed, and later
-            // byte-compared against the run-dir stream by the caller.
             if stream_entries.len() != 1 {
                 return Err(format!(
                     "replay container has {} collector_compact_stream entries, expected 1",
@@ -5070,13 +4396,13 @@ fn load_verified_replay_authority(
             }
             let container_stream =
                 container
-                .read_entry_bytes(&stream_entry.path)
-                .map_err(|err| {
-                    format!(
-                        "cannot read collector_compact_stream {} from replay container: {err}",
-                        stream_entry.path
-                    )
-                })?;
+                    .read_entry_bytes(&stream_entry.path)
+                    .map_err(|err| {
+                        format!(
+                            "cannot read collector_compact_stream {} from replay container: {err}",
+                            stream_entry.path
+                        )
+                    })?;
             let independently_observed_stream_sha256 = Sha256::hex(&container_stream);
             if independently_observed_stream_sha256 != stream_entry.sha256 {
                 return Err(format!(
@@ -5109,24 +4435,9 @@ fn load_verified_replay_authority(
         )?,
     };
 
-    // WHICH CONTENT PROOF THIS RECORDING TOOK decides what can be proved about
-    // its catalogs, and it is read positively from the container-authenticated
-    // copy rather than inferred from which fields are present.
-    //
-    //  * `launch_time_static_bundle_v1` — the pre-resume epoch, the eight-role
-    //    static bundle and the container's own portable content manifest. That
-    //    path is unchanged, byte for byte.
-    //  * `attach_time_effective_vfs_join_v1` — the artifacts were joined
-    //    against the engine's effective VFS during a bounded attach window.
-    //    There is no bundle and no launch-time epoch behind it; the container's
-    //    content manifest may legitimately be absent, and its absence is named.
     let content_proof_kind = read_content_proof_kind(&embedded_manifest)?;
     let static_artifacts = match content_proof_kind {
         ContentProofKind::LaunchTimeStaticBundleV1 => {
-            // The other direction of the exclusivity. A recording that took the attach-time proof and then
-            // declared the launch-time kind would be certified against evidence
-            // it does not have; refusing here means the declaration can never
-            // outrank the evidence in either direction.
             let attach_field = recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD;
             if embedded_manifest
                 .get(attach_field)
@@ -5138,10 +4449,6 @@ fn load_verified_replay_authority(
                      recording certifies under exactly one"
                 ));
             }
-            // The SEALED manifest is the authority. The run-dir copy — already
-            // bound to it above — is passed only so the retained static-bundle
-            // evidence can be located at the absolute paths the sealed copy is
-            // forbidden to carry.
             let static_artifacts = validate_required_static_artifacts(
                 &container,
                 &embedded_manifest,
@@ -5166,9 +4473,6 @@ fn load_verified_replay_authority(
             static_artifacts
         }
         ContentProofKind::AttachTimeEffectiveVfsJoinV1 => {
-            // A container that carries a content manifest anyway must still
-            // agree with the recorder authority: the attach-time route relaxes
-            // the REQUIREMENT for one, never the binding of one that exists.
             if let Some(container_content) = container.content_manifest() {
                 let container_content_value =
                     serde_json::to_value(container_content).map_err(|error| {
@@ -5187,33 +4491,7 @@ fn load_verified_replay_authority(
             certify_attach_time_content_proof(&container, &embedded_manifest, container.game_id())?
         }
     };
-    // -----------------------------------------------------------------------
-    // PER-HOUR VERIFIED COVERAGE — what this container actually asserts.
-    // Owner ruling 2026-08-11 (task #188).
-    //
-    // Before the ruling a sealed container carried one whole-stream
-    // certification and this loader had nothing per-hour to read: an injured
-    // capture simply never reached a container at all. Now the recording states
-    // exactly which hours it vouches for, and this is where a replay consumer
-    // learns it — from the CONTAINER-AUTHENTICATED recorder manifest, never
-    // from the mutable run-dir copy, so a coverage claim is not something a
-    // file on disk can rewrite.
-    // -----------------------------------------------------------------------
     let mut hour_coverage = read_sealed_hour_coverage(&embedded_manifest)?;
-    // THE LEAK GUARD IS ASKED OF THE SEALED MAP, BEFORE CONTAINER DAMAGE IS
-    // FOLDED IN, because the two are different questions with different
-    // answers.
-    //
-    //  * An hour the container publishes that its own SEALED map excludes is a
-    //    contradiction the recorder should never have produced. There is no
-    //    honest reading of such a container, so it is refused.
-    //  * An hour excluded because its ENTRY rotted AFTER sealing is not a
-    //    contradiction — it is exactly the per-hour loss this model exists to
-    //    confine. Refusing the recording for it would convert a one-hour injury
-    //    back into a whole-recording refusal, which is the thing being retired.
-    //
-    // So the guard runs here, against what the recording claimed at seal time;
-    // the damaged hours are then excluded below and simply not served.
     let mut served_hours = container.published_hour_indexes();
     served_hours.extend(
         stream_details
@@ -5225,27 +4503,8 @@ fn load_verified_replay_authority(
     served_hours.sort_unstable();
     served_hours.dedup();
     refuse_hours_the_coverage_map_does_not_vouch_for(&served_hours, &hour_coverage, &replay_path)?;
-    // THE OTHER HALF OF THE LEAK GUARD, since the certified index gained hole
-    // rows (owner ruling 2026-08-12, task #189): every hour the packaged index
-    // NAMES AND REFUSES must be an hour the sealed coverage map refuses, for
-    // the same stated reason.
-    //
-    // Without it the artifact's holes would be a SECOND, unjoined naming of the
-    // recording's injuries. A container could then serve eight hours while its index
-    // blamed the ninth on something the seal never said, and nothing would
-    // notice; or a hole could quietly appear over an hour the seal verified,
-    // dropping a good hour with an invented excuse.
     bind_index_holes_to_sealed_coverage(&stream_details, &hour_coverage, &replay_path)?;
 
-    // POST-SEAL CACHE DAMAGE, confined to the checkpoint windows it reached and
-    // folded into the same map (owner ruling 2026-08-12, task #191).
-    //
-    // These hours are NOT joined against the sealed coverage map the way the
-    // index's holes are, and the difference is the whole point of the ruling:
-    // the seal verified these hours, so the map vouches for them and a join
-    // would only ever confirm that. What changed is later than the seal — the
-    // packaged record rotted — which is exactly the "excluded because its entry
-    // rotted AFTER sealing" case the leak guard above deliberately runs before.
     let confined_by_cache_damage: Vec<Value> = stream_details
         .get(CACHE_DAMAGE_CONFINED_HOURS_FIELD)
         .and_then(Value::as_array)
@@ -5274,9 +4533,6 @@ fn load_verified_replay_authority(
             .get("h4cr_end_offset")
             .and_then(Value::as_u64)
             .unwrap_or(first_byte);
-        // The byte attribution comes from the SEALED H4IX's own served row for
-        // this hour, which is exact by construction: the tiling law makes the
-        // served rows and the named holes account for every source byte once.
         hour_coverage.record_excluded(
             game_hour_raw,
             first_byte,
@@ -5285,11 +4541,6 @@ fn load_verified_replay_authority(
         );
     }
 
-    // Container damage is judged at ENTRY granularity and folded into the SAME
-    // map, so a consumer reads one statement per hour rather than having to
-    // join a coverage map against a separate integrity report. The entries that
-    // serve no single hour were already refused above, at the point the old
-    // all-entry abort occupied; what is left here is damage a single hour owns.
     for entry in &entry_report {
         let Some(error) = entry.error.as_deref() else {
             continue;
@@ -5320,9 +4571,6 @@ fn load_verified_replay_authority(
     let mut details = json!({
         "file": replay_path.display().to_string(),
         "game_id": container.game_id(),
-        // The recording's own per-hour verdict, reported so a replay consumer
-        // composes its NAMED GAPS with the partial-data law instead of
-        // inferring coverage from which hours happen to be present.
         recorder_host::hour_coverage::HOUR_COVERAGE_FIELD: json!({
             "verified_hours": hour_coverage.verified_count(),
             "excluded_hours": excluded_hours,
@@ -5331,21 +4579,11 @@ fn load_verified_replay_authority(
         "recorder_manifest": manifest_entry.path,
         "recorder_manifest_bytes": embedded_manifest_bytes.len(),
         "recorder_manifest_sha256": embedded_sha256,
-        // The run-dir copy's OWN identity, named as such. It is NOT the sealed
-        // copy's identity and a reader must never conflate the two: the two
-        // files are deliberately different, and this is the field that lets a
-        // reader check the copy it can see on disk.
         "external_manifest_bytes": external_manifest_bytes.len(),
         "external_manifest_sha256": external_sha256,
-        // Self-describing binding, replacing the old
-        // `external_manifest_exact_match`. That field asserted the two copies
-        // were byte-identical, which no live capture has ever satisfied.
         "external_manifest_bound_to_sealed_authority": true,
         "external_manifest_binding": "portable_projection_with_named_post_seal_allowlist",
         "external_manifest_path_redaction_applied": manifest_binding.path_redaction_applied,
-        // Stated on the authority itself, not only inside the sealed document,
-        // so a consumer reading this gate's verdict cannot miss that the
-        // recorder manifest it just certified is missing values by design.
         "recorder_manifest_portability_degraded": manifest_binding.portability_degraded,
         "run_dir_only_post_seal_host_finalize_fields": RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS,
         "sealed_only_pre_pack_host_finalize_fields": SEALED_ONLY_PRE_PACK_HOST_FINALIZE_FIELDS,
@@ -5353,8 +4591,6 @@ fn load_verified_replay_authority(
         "static_artifacts": static_artifacts,
         "signed": container.signed,
         "unsigned": container.unsigned,
-        // Self-describing, in CN's composition style: a report never infers
-        // which proof ran from which fields happen to be present.
         snapshot::RAW_STREAM_PACKAGING_FIELD: declared_packaging.as_str(),
         "stream_certification_path": stream_certification.path_name(),
     });
@@ -5374,16 +4610,6 @@ fn load_verified_replay_authority(
     })
 }
 
-/// THE LEAK GUARD: an hour the container publishes that its own coverage map
-/// does not vouch for is an excluded hour reaching replay.
-///
-/// This is the direction in which a per-hour seal is MORE dangerous than the
-/// all-or-nothing certification it replaced. The old model could not serve an
-/// injured hour because it refused the whole recording; the new one publishes
-/// the healthy hours, so something has to hold the line at the boundary between
-/// "excluded" and "served". This is that line, and it is fail-closed twice
-/// over: an hour with an EXCLUDED row is refused by name, and so is an hour the
-/// map does not mention at all — absence is not a claim of coverage.
 fn refuse_hours_the_coverage_map_does_not_vouch_for(
     published_hour_indexes: &[i64],
     coverage: &recorder_host::hour_coverage::HourCoverageMap,
@@ -5416,19 +4642,10 @@ fn refuse_hours_the_coverage_map_does_not_vouch_for(
     Ok(())
 }
 
-/// Where a cache-only certification reports the packaged index's hole rows.
 const INDEX_EXCLUDED_HOURS_FIELD: &str = "index_excluded_hours";
 
-/// Where a cache-only certification reports the hours a DAMAGED packaged cache
-/// record confines — the seal vouched for them and the bytes rotted after.
 const CACHE_DAMAGE_CONFINED_HOURS_FIELD: &str = "cache_damage_confined_hours";
 
-/// Read one artifact digest out of the SEALED `host_finalize.fold` receipt.
-///
-/// Required, not optional, and read only from the container-authenticated copy.
-/// A recording that states no digest for an artifact it ships is one whose
-/// artifact-to-seal binding a consumer would have to assume, and assuming is
-/// what this whole chain exists to replace.
 fn sealed_artifact_digest(embedded_manifest: &Value, field: &str) -> Result<String, String> {
     embedded_manifest
         .get("host_finalize")
@@ -5449,20 +4666,6 @@ fn sealed_artifact_digest(embedded_manifest: &Value, field: &str) -> Result<Stri
         })
 }
 
-/// Every hour the packaged certified index refuses must be an hour the SEALED
-/// coverage map refuses, with the same reason.
-///
-/// The direction matters and only one direction is asserted. An hour the
-/// coverage map excludes need not appear in the index at all — an hour whose
-/// records never reached the spool occupies no bytes, so the index has nothing
-/// to say about it and its absence is already a refusal (`entry` returns
-/// `None`, and absence is not a claim of coverage). What must never happen is
-/// the reverse: the index naming a hole the recording did not seal, or blaming
-/// it on something the recording never said.
-///
-/// The reasons are compared verbatim, not merely checked for presence. A
-/// paraphrase is a second author, and the whole point of the join is that the
-/// recording has exactly one.
 fn bind_index_holes_to_sealed_coverage(
     stream_details: &Value,
     coverage: &recorder_host::hour_coverage::HourCoverageMap,
@@ -5472,10 +4675,6 @@ fn bind_index_holes_to_sealed_coverage(
         .get(INDEX_EXCLUDED_HOURS_FIELD)
         .and_then(Value::as_array)
     else {
-        // Only the cache-only route publishes this field; a packaged-stream
-        // recording is certified by byte comparison and has no certified index
-        // of its own here. Absent means "no such claim was made", which is not
-        // the same as "no holes", and is why nothing is inferred from it.
         return Ok(());
     };
     for hole in holes {
@@ -5525,14 +4724,6 @@ fn bind_index_holes_to_sealed_coverage(
     Ok(())
 }
 
-/// Read the recording's per-hour coverage map out of the CONTAINER-AUTHENTICATED
-/// recorder manifest.
-///
-/// Required, not optional. `PROJECT.md` — “Portable boundary” carries no
-/// pre-production compatibility obligation, and a compact recording that states no coverage is one whose
-/// per-hour claims a consumer would have to invent — which is the guessing the
-/// owner ruling forbids. The refusal names the field so a stale artifact is
-/// diagnosable rather than merely rejected.
 fn read_sealed_hour_coverage(
     embedded_manifest: &Value,
 ) -> Result<recorder_host::hour_coverage::HourCoverageMap, String> {
@@ -5552,42 +4743,6 @@ fn read_sealed_hour_coverage(
     })
 }
 
-/// Certify a cache-only recording: the container ships the delta cache alone,
-/// so there are no packaged source bytes to compare against.
-///
-/// The chain proved here, link by link:
-///
-/// 1. `container_composition` — the container's OWN recorder manifest declares
-///    the cache-only composition. Routing read the run-dir copy; this reads the
-///    container-authenticated copy, so the two must agree.
-/// 2. `no_packaged_stream_entry` — the container carries no stream entry at
-///    all. A container that actually packages the stream can never be certified
-///    by this weaker route; it belongs on the byte-comparison path.
-/// 3. `run_dir_source_readable` — the run directory's raw stream exists, its
-///    on-disk storage matches the declared compression, and it decodes.
-/// 4. `stream_storage_identity` — hashing that stream locally reproduces the
-///    `decoded_sha256` and `decoded_bytes` the container-authenticated recorder
-///    manifest states. This is the only place the source bytes are actually
-///    touched.
-/// 5. `h4ix_source_identity` — the packaged H4IX states that same source hash
-///    AND the same source length, and its `cache_sha256` names the same cache
-///    the seal's own receipt does. That is a binding between two SEALED claims,
-///    not between a claim and the packaged bytes: since the confinement ruling
-///    a packaged H4CP is admitted RECORD BY RECORD, so a rotted one is expected
-///    to differ from `cache_sha256` and is not refused for it.
-/// 6. `h4cp_source_digest` — the packaged H4CP is streamed past a `CacheAudit`,
-///    which proves its length, its header identity (the same source digest —
-///    NOTE that H4CP carries the source DIGEST but NOT the length, so the length
-///    link rests on H4IX alone) and, for every record, that its bytes are the
-///    ones the sealed H4IX published for it. Records that are not confine their
-///    checkpoint windows by name; damage that belongs to no hour still refuses
-///    the recording.
-///
-/// What this DOES NOT do, and must never be reported as doing: re-hash the
-/// source bytes from inside the container. A cache-only recording cannot do
-/// that — it does not carry them. Its H4CR identity here is MANIFEST-ATTESTED
-/// (the container-signed recorder manifest claims it, and H4IX/H4CP were built
-/// over it), not independently demonstrated from packaged bytes.
 fn certify_cache_only_recording(
     container: &Container,
     embedded_manifest: &Value,
@@ -5595,15 +4750,6 @@ fn certify_cache_only_recording(
     run_dir: &Path,
     max_stream_bytes: u64,
 ) -> Result<(StreamCertification, Value), String> {
-    // Link 1: the container's own recorder manifest states the composition.
-    //
-    // While the caller's byte-identity binding holds, this cannot disagree with
-    // the routing declaration — both read the same single `recorder_manifest`
-    // entry. It is kept deliberately: this route states its own premise through
-    // CN's shared reader instead of inheriting it from a check made elsewhere,
-    // so a future change that admits a second manifest copy, relaxes the
-    // byte-identity binding, or resolves the composition from `index.json`
-    // cannot silently hand a packaged container to the weaker proof.
     let container_packaging = snapshot::container_raw_stream_packaging(container)
         .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_COMPOSITION, error))?;
     if container_packaging != snapshot::RawStreamPackaging::Omitted {
@@ -5618,7 +4764,6 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // Link 2: nothing that packages a stream may take this route.
     if !stream_entries.is_empty() {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_NO_PACKAGED_STREAM,
@@ -5637,8 +4782,6 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // The source identity the recorder committed to, read out of the copy the
-    // container authenticates.
     let storage = embedded_manifest
         .get("stream_storage")
         .and_then(Value::as_object)
@@ -5664,16 +4807,11 @@ fn certify_cache_only_recording(
         .get("decoded_bytes")
         .and_then(Value::as_u64)
         .ok_or_else(|| {
-        cache_only_link_refusal(
-            CACHE_ONLY_LINK_STREAM_STORAGE,
-            "stream_storage.decoded_bytes is missing or not a u64",
-        )
-    })?;
-    // The attested length is read out of the recording, so it is only as
-    // trustworthy as the recording. It never becomes the decode budget on its
-    // own: the gate's own configured maximum bounds it first, so a container
-    // declaring an absurd length over a highly compressible stored file cannot
-    // buy unbounded decoding before the later full read applies the same limit.
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_STREAM_STORAGE,
+                "stream_storage.decoded_bytes is missing or not a u64",
+            )
+        })?;
     if attested_bytes > max_stream_bytes {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_STREAM_STORAGE,
@@ -5684,10 +4822,6 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // Link 3: the run directory's copy of the source. Only its NONEXISTENCE is
-    // the distinct outcome — see `cache_only_source_absent`. A directory, a
-    // special file, or an unreadable object at that path is a broken link,
-    // because in each of those cases something IS there and it is wrong.
     let relative = validate_relative_path(
         required_nonempty_str(embedded_manifest, "raw_stream").map_err(|error| {
             cache_only_link_refusal(
@@ -5725,9 +4859,6 @@ fn certify_cache_only_recording(
     }
     let stream_path = required_run_file(run_dir, embedded_manifest, "raw_stream")
         .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error))?;
-    // The stored form must be the one the recording declares. Compression is
-    // part of READING the source, so it is this link rather than the identity
-    // link that follows.
     let compression_name = storage
         .get("compression")
         .and_then(Value::as_str)
@@ -5767,9 +4898,6 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // Link 4: hash the run-dir source locally. This is the whole reason the
-    // route is admissible at all — the identity is not merely copied between
-    // container documents, it is recomputed here from bytes on disk.
     let (observed_sha256, observed_bytes) =
         hash_decoded_source_stream(&stream_path, compression, attested_bytes)
             .map_err(|error| cache_only_link_refusal(CACHE_ONLY_LINK_SOURCE_READABLE, error))?;
@@ -5795,7 +4923,6 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // Link 5: H4IX. It is the ONLY artifact that carries the source LENGTH.
     let index_entry = single_cache_entry(
         container,
         snapshot::HOUR_INDEX_ROLE,
@@ -5805,14 +4932,14 @@ fn certify_cache_only_recording(
     let index_bytes = container
         .read_entry_bytes(&index_entry.path)
         .map_err(|error| {
-        cache_only_link_refusal(
-            CACHE_ONLY_LINK_HOUR_INDEX,
+            cache_only_link_refusal(
+                CACHE_ONLY_LINK_HOUR_INDEX,
                 format!(
                     "cannot read {} from the container: {error}",
                     index_entry.path
                 ),
-        )
-    })?;
+            )
+        })?;
     let hour_index = snapshot::ReplayHourIndex::from_bytes(&index_bytes).map_err(|error| {
         cache_only_link_refusal(
             CACHE_ONLY_LINK_HOUR_INDEX,
@@ -5850,12 +4977,6 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // Link 5b: the packaged H4IX is the index the SEAL certified.
-    //
-    // The links around it bind the artifacts to the SOURCE; this one binds them
-    // to the finalize that produced them, and it is the only thing that carries
-    // the index's internal account — served hours, named holes, and the byte
-    // range each owns — into this loader. See CACHE_ONLY_LINK_SEALED_ARTIFACTS.
     let sealed_index_sha256 = sealed_artifact_digest(embedded_manifest, "hour_index_sha256")?;
     let observed_index_sha256 = Sha256::hex(&index_bytes);
     if observed_index_sha256 != sealed_index_sha256 {
@@ -5872,40 +4993,18 @@ fn certify_cache_only_recording(
         ));
     }
 
-    // Link 6: H4CP. Its header carries the source digest (and not the length),
-    // and the index's own cache binding must hold over these exact bytes —
-    // RECORD BY RECORD (owner ruling 2026-08-12, task #191).
     let cache_entry = single_cache_entry(
         container,
         snapshot::CHECKPOINT_CACHE_ROLE,
         snapshot::CHECKPOINT_CACHE_FILE,
         CACHE_ONLY_LINK_CHECKPOINT_CACHE,
     )?;
-    // The entry streams past a `CacheAudit`, which retains the 40-byte header,
-    // two SHA-256 states and one index position per damaged record — never the
-    // body. The H4CP is the
-    // one container entry whose length tracks campaign length (t32: 2.21 GB for
-    // 656 hours), so materializing it here was a peak-memory term that grew
-    // with the recording it was meant to check.
-    //
-    // The audit is THE SAME sink `snapshot`'s reader admission feeds. That is
-    // deliberate: this gate and the reader must agree, hour for hour, about
-    // which records survived, and a second implementation of "which records are
-    // damaged" is a second answer waiting to happen.
     let mut audit = snapshot::CacheAudit::new(&hour_index);
     let copy_outcome = container.copy_entry_to_unpublished_writer_bounded(
         &cache_entry.path,
         &mut audit,
         snapshot::zip::STREAMING_MAX_CONTAINER_ENTRY_BYTES,
     );
-    // The audit's verdict is read even when the copy REFUSED, and only in one
-    // direction: to attribute damage, never to admit anything. Its authority is
-    // the sealed H4IX (link 5b bound the index to the finalize receipt), which
-    // is strictly stronger than the container manifest digest the copy checks —
-    // a record whose bytes hash to the digest the SEAL published is that
-    // record, whatever the container's own entry account says. Bytes are never
-    // published from here: what leaves this block is a list of damaged record
-    // positions.
     let verdict = audit.finish().map_err(|error| {
         cache_only_link_refusal(
             CACHE_ONLY_LINK_CHECKPOINT_CACHE,
@@ -5919,11 +5018,6 @@ fn certify_cache_only_recording(
             ),
         )
     })?;
-    // Everything the shared reader checks except the H4CP header identity has
-    // now been proved with its own name, so a failure here IS the header. The
-    // header check is the shared one, not a second spelling of it. It runs
-    // BEFORE any confinement, because the header is the artifact's identity —
-    // damage there belongs to no single hour and confining it would be a guess.
     snapshot::validate_checkpoint_cache_header(verdict.header(), &attested_sha256).map_err(
         |error| {
             cache_only_link_refusal(
@@ -5935,16 +5029,8 @@ fn certify_cache_only_recording(
         },
     )?;
     let confined_hours = hour_index.confine_damaged_records(&verdict);
-    // THE FOUR OUTCOMES of streaming one packaged cache past the sealed index,
-    // each named. Two are agreements and are handled below; two are
-    // disagreements between the container's own entry account and the seal's,
-    // and neither can be attributed to an hour, so both refuse the recording.
     match (&copy_outcome, verdict.is_intact()) {
-        // The container verified the entry and every record is the sealed one.
         (Ok(_), true) => {}
-        // The container refused the entry and the sealed index says exactly
-        // which records moved. This is GY-2's case, and the confinement below
-        // is the whole point of the lane.
         (Err(_), false) => {}
         (Ok(receipt), false) => {
             return Err(cache_only_link_refusal(
@@ -5959,14 +5045,6 @@ fn certify_cache_only_recording(
                 ),
             ))
         }
-        // THE ONE ARM NO FIXTURE HERE CAN REACH, and it is documented rather
-        // than claimed to be pinned: the packer derives an entry's manifest
-        // digest FROM the bytes it packs, so a container whose account refuses
-        // an entry whose every record still matches the seal cannot be built by
-        // this repository. It is kept because the disagreement is real in the
-        // field — a rotted or rewritten container manifest — and because an
-        // account of an entry that contradicts the seal's account of the same
-        // bytes is attributable to no hour.
         (Err(copy_error), true) => {
             return Err(cache_only_link_refusal(
                 CACHE_ONLY_LINK_CHECKPOINT_CACHE,
@@ -5981,24 +5059,7 @@ fn certify_cache_only_recording(
         }
     }
 
-    // Link 6b: the packaged H4CP is the cache the SEAL certified. Symmetric
-    // with link 5b, and stated separately because the two artifacts are sealed
-    // as two separate receipts and can rot independently.
-    //
-    // It is now a WHOLE-ARTIFACT FAST PATH rather than the binding itself: the
-    // sealed H4IX carries a digest per record, and link 5b binds the H4IX to
-    // the same finalize receipt, so every record already has a per-record
-    // binding to the seal. What this adds is the statement "and nothing at all
-    // moved", which is worth making when it is true and must not be a
-    // whole-recording refusal when it is false.
     let sealed_cache_sha256 = sealed_artifact_digest(embedded_manifest, "checkpoint_cache_sha256")?;
-    // The two SEALED claims about the cache must name the same artifact before
-    // either is used to judge the packaged bytes. This is what the deleted
-    // `H4IX cache_sha256 vs the streamed digest` comparison becomes under
-    // confinement: comparing a sealed claim against damaged bytes could only
-    // ever refuse the whole recording, while comparing the two sealed claims
-    // against each other catches the same substitution — an index bound to some
-    // other cache — without costing an hour.
     if hour_index.cache_sha256() != sealed_cache_sha256 {
         return Err(cache_only_link_refusal(
             CACHE_ONLY_LINK_SEALED_ARTIFACTS,
@@ -6035,8 +5096,6 @@ fn certify_cache_only_recording(
             CACHE_ONLY_LINK_CHECKPOINT_CACHE,
             CACHE_ONLY_LINK_SEALED_ARTIFACTS,
         ],
-        // The container carries no source bytes, so none were compared. Stated
-        // explicitly so a report can never read this as the stronger proof.
         "h4cr_stream_digest_bound": false,
         "h4cr_stream_bytes_compared": false,
         "h4cr_identity_is_manifest_attested": true,
@@ -6048,29 +5107,14 @@ fn certify_cache_only_recording(
         "hour_index_sha256": index_entry.sha256,
         "checkpoint_cache_entry": cache_entry.path,
         "checkpoint_cache_sha256": cache_entry.sha256,
-        // Self-describing, because "the packaged cache is byte-identical to the
-        // sealed one" and "every record a served hour needs is the sealed one"
-        // are now different claims and a report must never let the weaker read
-        // as the stronger.
         "checkpoint_cache_matches_seal_whole": cache_matches_seal,
         "checkpoint_cache_damaged_records": verdict.damaged_positions().len(),
         "indexed_hours": hour_index.hours().len(),
-        // EVERY hour this container will actually SERVE. A cache-only recording
-        // publishes no per-hour snapshot entries at all, so the container's
-        // snapshot index is empty and enumerating hours from it sees nothing —
-        // which is how an excluded hour could still have been served out of the
-        // certified cache. These are the rows
-        // the per-hour coverage check is applied to.
         "indexed_hour_indexes": hour_index
             .hours()
             .iter()
             .map(|entry| entry.hour_index())
             .collect::<Vec<i64>>(),
-        // The hours the packaged index NAMES AND REFUSES, carried through so a
-        // replay consumer reads the named gaps out of the same report as the
-        // served ones — and so `bind_index_holes_to_sealed_coverage` can join
-        // each one against the sealed coverage map before the authority
-        // returns.
         INDEX_EXCLUDED_HOURS_FIELD: hour_index
             .excluded_hours()
             .iter()
@@ -6081,15 +5125,6 @@ fn certify_cache_only_recording(
                 "h4cr_end_offset": hole.h4cr_end_offset(),
             }))
             .collect::<Vec<Value>>(),
-        // The hours this container SERVED AT SEAL TIME and cannot serve now,
-        // because the packaged cache record they replay through rotted
-        // afterwards. Same vocabulary as the sealed holes above — an hour, its
-        // H4CR byte range, one reason — because a replay consumer's question is
-        // the same either way; a DIFFERENT field because the claims are not:
-        // a hole says the recorder never vouched for the hour, and this says it
-        // did and the bytes moved. `load_verified_replay_authority` folds these
-        // into the per-hour coverage map, and they must never be joined against
-        // the sealed map the way holes are.
         CACHE_DAMAGE_CONFINED_HOURS_FIELD: confined_hours
             .iter()
             .map(|confined| json!({
@@ -6111,16 +5146,6 @@ fn certify_cache_only_recording(
     ))
 }
 
-/// Bind the gate's own full read of the run-dir stream back to whichever proof
-/// certified the recording.
-///
-/// The two routes bind to different things and say so:
-///
-///  * byte-compared — the run bytes must equal the container's packaged copy,
-///    which is the strongest statement available and is UNCHANGED here;
-///  * manifest-attested — there are no packaged bytes, so what is bound is that
-///    this read landed on the same source identity the attestation chain hashed
-///    at load time. A stream swapped between the two reads cannot pass.
 fn bind_run_stream_to_certification(
     certification: &StreamCertification,
     artifact: &StreamArtifact,
@@ -6165,7 +5190,6 @@ fn bind_run_stream_to_certification(
     }
 }
 
-/// Resolve exactly one delta-cache entry, at its canonical payload path.
 fn single_cache_entry(
     container: &Container,
     role: &str,
@@ -6199,20 +5223,6 @@ fn single_cache_entry(
     Ok(entry)
 }
 
-/// Hash the DECODED bytes of a stored collector stream without holding the
-/// whole stream in memory.
-///
-/// `stream_storage`, H4IX and H4CP all speak in the decoded H4CR identity,
-/// while the file on disk may be zstd-stored, so this decodes through the same
-/// reader the gate's later full read uses and hashes as bytes arrive.
-///
-/// Decoding stops one byte past `attested_bytes`, which the caller has already
-/// bounded by the gate's own configured maximum. The attested length is the
-/// only thing this read can ever agree with, so a stored file that expands
-/// beyond it is already a refusal; the cap keeps a mis-sized or maliciously
-/// compressible file from being decompressed without bound. The returned length
-/// is therefore `attested_bytes + 1` when the cap was hit, which the caller
-/// reports as an over-length source rather than as a digest mismatch.
 fn hash_decoded_source_stream(
     path: &Path,
     compression: compact_stream::StreamCompression,
@@ -6243,9 +5253,6 @@ fn hash_decoded_source_stream(
 
 #[derive(Debug)]
 struct ReplayLayout<'a> {
-    /// The packaged stream's game-relative path. `None` only under the
-    /// cache-only composition, where `replay_entries` deliberately names no
-    /// stream because the container carries none.
     stream: Option<&'a str>,
     session_manifest: &'a str,
 }
@@ -6265,8 +5272,6 @@ fn replay_layout(
             .filter(|value| !value.is_empty())
             .ok_or_else(|| format!("manifest replay_entries.{key} is missing or empty"))
     };
-    // `stream_role` names the recording FLAVOR and is stated whatever the
-    // composition, so it stays required on both routes.
     if string("stream_role")? != "collector_compact_stream" {
         return Err("manifest replay_entries.stream_role must be collector_compact_stream".into());
     }
@@ -6275,10 +5280,6 @@ fn replay_layout(
             "manifest replay_entries.session_manifest_role must be recorder_manifest".into(),
         );
     }
-    // `replay_entries.stream` names an ENTRY the container carries. It is
-    // required exactly when the declared composition packages one, and refused
-    // when it does not — the layout never points at bytes that are not there,
-    // and a cache-only recording never quietly drops a stream it did package.
     let stream = match packaging {
         snapshot::RawStreamPackaging::Packaged => {
             let stream = string("stream")?;
@@ -6397,18 +5398,9 @@ fn read_stream_artifact(
         "zstd" => compact_stream::StreamCompression::Zstd,
         other => return Err(format!("unsupported manifest stream compression {other:?}")),
     };
-    // TEST-ONLY, and held for the WHOLE function rather than at either reader:
-    // this is reached both from `load_verified_replay_authority` (which already
-    // guards the run directory) and DIRECTLY from unit tests that wrote this
-    // file moments ago. It reads the file twice — the compression probe and the
-    // full read below — so a guard around either one alone would leave the
-    // other exposed. Failures are ignored; see `scanner_guards`.
     #[cfg(test)]
     let _scanner_guard = portable_test_fs_retry::open(path).ok();
-    // This gate re-derives the stream identity from byte zero. A spool whose
     // storage prefix was released after the checkpoint cache took ownership of
-    // it can no longer answer that, and its zeroed prefix must not be scanned
-    // as content.
     recorder_host::spool_trim::require_whole_spool(path, "compact replay verification gate")?;
     let detected = compact_stream::detect(path).map_err(|err| {
         format!(
@@ -6534,14 +5526,9 @@ struct HeaderScanSummary {
     total_payload_bytes: u64,
     max_payload_len: u64,
     max_record_len: u64,
-    /// Framing-level maxima include reserved instrumentation probes even though
-    /// recorder accounting intentionally excludes those records.
     framed_max_payload_len: u64,
     framed_max_record_len: u64,
-    /// Global-status OR after applying each domain's lane-local mask.
     global_status_flags_or: u32,
-    /// Raw status OR retained per domain so lane-local aliases never lose their
-    /// identity before global interpretation.
     per_domain_status_flags_or: BTreeMap<u16, u32>,
     per_domain_perf_authority: BTreeMap<u16, PerfAuthority>,
     per_domain_data_authority: BTreeMap<u16, DataAuthority>,
@@ -6551,10 +5538,7 @@ struct HeaderScanSummary {
     per_hour_gap_authority: BTreeMap<(i32, u16), Vec<compact_contract::DomainGapRecordV1>>,
     domain57_frames: Vec<recorder_host::domain_data_authority::Domain57FrameEvidence>,
     session_header_identity: recorder_host::campaign_identity::SessionHeaderIdentityObservation,
-    /// Opaque placement authority retained only when the shared stateful
-    /// validator admits the exact sequence-zero CID1 record.
     validated_cid1: Option<ValidatedCid1>,
-    /// FRAME_END carries frame-scoped global status, not per-domain raw status.
     frame_status_flags_or_raw: u32,
     per_hour_frame_authority: BTreeMap<i32, FrameEndAuthority>,
     domains_seen: BTreeSet<u16>,
@@ -6713,10 +5697,6 @@ fn freeze_census_manifest_from_scan(summary: &HeaderScanSummary, decoded_sha256:
             "{install_records} install-phase freeze census records are present; expected one"
         ));
     }
-    // The per-phase half of the section. Reconstructed here from the sealed
-    // bytes INDEPENDENTLY of the recorder's own builder; the equality check in
-    // `validate_freeze_census_stream_authority` is what makes any drift between
-    // the two a hard gate failure rather than a silent disagreement.
     let phase_section = |phase: FreezeCensusPhase, problems: &mut Vec<String>| {
         let mut record_count = 0u64;
         let mut phase_rows = 0u64;
@@ -6742,11 +5722,6 @@ fn freeze_census_manifest_from_scan(summary: &HeaderScanSummary, decoded_sha256:
             phase_acquire = phase_acquire.saturating_add(record.present_acquire_us_sum());
             phase_minhook = phase_minhook.saturating_add(record.present_minhook_us_sum());
             phase_refused = phase_refused.saturating_add(record.present_refused_row_count());
-            // Every quality bit that means this phase's own numbers do not
-            // add up. `counter_reconciliation_issue` belongs here for the same
-            // reason the other three do: the record is telling you it cannot
-            // reconcile its counters, which is not a complete measurement even
-            // when every attempt it did carry has a row.
             lossy |= quality.census_dropped_during_phase()
                 || quality.encoder_bound_truncated()
                 || quality.census_overflowed_before_phase()
@@ -6931,8 +5906,6 @@ fn scan_compact_stream_with_identity_mode(
         match stateful_result {
             Some(Ok(AcceptedRecordKind::CampaignIdentity)) => {
                 summary.validated_cid1 = stream_validator.identity().cloned();
-                // CID1 participates in byte/framing caps but is not an ordinary
-                // compact record and must never enter domain/hour accounting.
                 offset = offset.saturating_add(record_len);
                 continue;
             }
@@ -6949,10 +5922,6 @@ fn scan_compact_stream_with_identity_mode(
                 summary.parse_errors.push(format!(
                     "offset {offset}: stateful stream validation failed before dispatch: {error}"
                 ));
-                // Keep scanning for independent local diagnostics. The shared
-                // validator is now terminal and is not consulted again, but
-                // this first placement/sequence error is retained rather than
-                // silently discarded.
             }
         }
         let envelope_ok = match compact_contract::validate_compact_record_semantics(
@@ -6999,13 +5968,6 @@ fn scan_compact_stream_with_identity_mode(
             offset = offset.saturating_add(record_len);
             continue;
         }
-        // Reserved probe domain (250): pure instrumentation records (lane-wall
-        // lw_*, read A/B, bt_* bound trips, so_* status origins). The recorder
-        // routes these BEFORE all record/domain accounting, so this
-        // independent scan must mirror that rule exactly — counting them here
-        // made every probe-carrying stream disagree with its manifest
-        // (record_count / domain_perf_record_count / domains_seen) and the
-        // exact-count comparison could never pass. Sequence ordering was already checked above.
         if record_type == RECORD_TYPE_DOMAIN_PERF && domain_id == RC_PROBE_DOMAIN_ID {
             offset = offset.saturating_add(record_len);
             continue;
@@ -7507,7 +6469,6 @@ fn collect_perf_units(
     if record_flags & compact_contract::COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER == 0 {
         return;
     }
-    // validate_compact_record_semantics already proved the complete PDU1 shape.
     let unit_count = u16::from_le_bytes([payload[46], payload[47]]) as usize;
     let mut cursor = 48usize;
     for _ in 0..unit_count {
@@ -7703,11 +6664,6 @@ fn compact_domain_coverage_errors(
         }
     }
 
-    // A forward FRAME_END jump is format-valid only when the next frame is a
-    // gap-only frame for the exact scheduled roster and each H4DG range
-    // precisely covers the absent half-open hour interval plus its target
-    // outcome.  This prevents a later aggregate count from laundering missing
-    // frames or a mixed accepted snapshot from silently bridging a hole.
     for pair in summary.unique_hours.windows(2) {
         let previous = pair[0];
         let next = pair[1];
@@ -7741,8 +6697,6 @@ fn compact_domain_coverage_errors(
         }
     }
 
-    // A typed range may cover absent hours, but it may never overwrite an
-    // independently closed terminal outcome for the same domain.
     for ((target_hour, domain), gaps) in &summary.per_hour_gap_authority {
         for gap in gaps {
             for closed_hour in summary.unique_hours.iter().copied().filter(|hour| {
@@ -7892,12 +6846,6 @@ fn read_u32_le(bytes: &[u8], offset: usize) -> u32 {
     ])
 }
 
-/// Unassigned-bit view of a record's status word. The domain's registered
-/// lane-local badges (`compact_contract::lane_local_status_mask` — d49, d51,
-/// d53, d60) are that domain's own vocabulary and are stripped BEFORE the
-/// v1 unassigned-bit check; checking the raw word rejected every production
-/// d53 record carrying its badge bits 16..=22 (batch-3a: 379 of 514 hours at
-/// status `0x530200`).
 fn domain_status_unknown_bits(domain_id: u16, status_flags: u32) -> u32 {
     compact_contract::compact_status_unknown_flags_v1(
         compact_contract::compact_status_for_global_interpretation(domain_id, status_flags),
@@ -7935,10 +6883,16 @@ mod tests {
         );
     }
 
-    /// A minimal legal stream: PERF, DATA, FRAME_END for one hour.
     fn one_closed_hour() -> Vec<u8> {
         let mut raw = Vec::new();
-        append_record(&mut raw, 1, 100, 10, RECORD_TYPE_DOMAIN_PERF, &perf_payload(0));
+        append_record(
+            &mut raw,
+            1,
+            100,
+            10,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
         append_record(
             &mut raw,
             2,
@@ -7958,12 +6912,7 @@ mod tests {
         raw
     }
 
-    /// POSITIVE FIXTURE for the independent verification gate: exactly one
     /// release census behind the final FRAME_END, and EOF.
-    ///
-    /// kills: reverting the gate to "the last physical record must be a
-    /// boundary", which refuses every recording the shipped recorder now
-    /// produces.
     #[test]
     fn the_gate_accepts_one_release_census_after_the_final_boundary() {
         let mut raw = one_closed_hour();
@@ -7977,15 +6926,8 @@ mod tests {
         assert_eq!(summary.freeze_census_records.len(), 1);
     }
 
-    /// NEGATIVE FIXTURES for the independent verification gate. Each one is a
-    /// distinct way the "exactly one bounded record after a closed hour, then
-    /// EOF" rule can be broken.
-    ///
-    /// kills: dropping the duplicate guard, the boundary-predecessor rule, the
-    /// EOF rule, the record-type rule, or the fixed size ceiling from the gate.
     #[test]
     fn the_gate_refuses_every_other_shape_after_the_final_boundary() {
-        // Two records after the end: a second census.
         let mut two_censuses = one_closed_hour();
         append_release_census(&mut two_censuses, 4);
         append_release_census(&mut two_censuses, 5);
@@ -7994,7 +6936,6 @@ mod tests {
             "a second release census was accepted"
         );
 
-        // Two records after the end: census then an ordinary record.
         let mut census_then_data = one_closed_hour();
         append_release_census(&mut census_then_data, 4);
         append_record(
@@ -8006,12 +6947,12 @@ mod tests {
             &fuel_empty_payload(),
         );
         assert!(
-            !scan_compact_stream(&census_then_data).parse_errors.is_empty(),
+            !scan_compact_stream(&census_then_data)
+                .parse_errors
+                .is_empty(),
             "a record after the epilogue was accepted"
         );
 
-        // A record after the end that is NOT the census type: unchanged, still
-        // malformed, and it must be malformed for the pre-existing reason.
         let mut data_after_end = one_closed_hour();
         append_record(
             &mut data_after_end,
@@ -8026,7 +6967,6 @@ mod tests {
             "an ordinary record was allowed to close the stream"
         );
 
-        // The census without a proper FRAME_END before it.
         let mut no_boundary = Vec::new();
         append_record(
             &mut no_boundary,
@@ -8042,7 +6982,6 @@ mod tests {
             "a release census without a preceding closed hour was accepted"
         );
 
-        // Oversize: past the fixed H4FC payload ceiling.
         let mut oversize = one_closed_hour();
         let mut payload = release_census_payload();
         payload.resize(
@@ -8062,7 +7001,6 @@ mod tests {
             "an oversize release census was accepted"
         );
 
-        // Opens an hour: the envelope must keep the zero no-coverage sentinel.
         let mut hour_bearing = one_closed_hour();
         append_record(
             &mut hour_bearing,
@@ -8078,13 +7016,11 @@ mod tests {
         );
     }
 
-    /// kills: trusting the mutable manifest instead of independently deriving
-    /// the section from sealed bytes lets the contradictory declaration pass.
     #[test]
     fn freeze_census_manifest_join_uses_independent_stream_authority() {
         use compact_contract::campaign_identity::{
-            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
-            COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+            encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
         };
         use compact_contract::freeze_census_record::{
             FreezeCensusCounterSnapshot, FreezeCensusPhase, FreezeCensusRecordV1,
@@ -8118,8 +7054,22 @@ mod tests {
         )
         .unwrap();
         let mut raw = Vec::new();
-        append_record(&mut raw, 0, hour, COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER, &cid1);
-        append_record(&mut raw, 1, 0, compact_contract::COMPACT_DOMAIN_FRAME, compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS, &census);
+        append_record(
+            &mut raw,
+            0,
+            hour,
+            COMPACT_DOMAIN_STREAM_HEADER,
+            COMPACT_RECORD_TYPE_STREAM_HEADER,
+            &cid1,
+        );
+        append_record(
+            &mut raw,
+            1,
+            0,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS,
+            &census,
+        );
         let summary = scan_compact_stream_with_identity_mode(&raw, StreamIdentityMode::IdentityV1);
         assert_eq!(summary.freeze_census_records.len(), 1);
         let mut hasher = Sha256::new();
@@ -8138,27 +7088,18 @@ mod tests {
         assert!(errors[0].contains("independently decoded sealed H4CR"));
     }
 
-    /// Regression: the d53 production status word (`PARTIAL_DATA` plus badge
-    /// bits 16/17/20/22 — 379 of 514 batch-3a hours) must not be reported as
-    /// carrying unassigned v1 bits, while the same word on a domain with no
-    /// registered lane-local vocabulary still is.
     #[test]
     fn lane_local_badges_are_not_unknown_bits_for_their_own_domain() {
         let d53_word = 0x0053_0200;
         assert_eq!(super::domain_status_unknown_bits(53, d53_word), 0);
         let d60_word = (1 << 16) | (1 << 17);
         assert_eq!(super::domain_status_unknown_bits(60, d60_word), 0);
-        // Domain-scoped, never a global amnesty.
         assert_eq!(super::domain_status_unknown_bits(52, d53_word), 0x0053_0000);
         assert_eq!(super::domain_status_unknown_bits(61, d60_word), d60_word);
-        // A genuinely unassigned bit still surfaces for d53/d60.
         assert_eq!(super::domain_status_unknown_bits(53, 1 << 30), 1 << 30);
         assert_eq!(super::domain_status_unknown_bits(60, 1 << 23), 1 << 23);
     }
 
-    /// The gate's own configured decode ceiling, as tests supply it. It must be
-    /// the production default so a test can never certify a stream the shipped
-    /// gate would refuse as oversized.
     const TEST_MAX_STREAM_BYTES: u64 = 128 * 1024 * 1024;
 
     struct TmpDir(PathBuf);
@@ -8199,8 +7140,6 @@ mod tests {
                     speed_rows: vec![
                         recorder_host::domain_data_authority::Domain57ScalarEvidence {
                             event_hour_raw: 100,
-                            // Raw engine speed index, 0..=4 for the five UI
-                            // speeds; 4 is the top valid value.
                             value_i32: 4,
                         },
                     ],
@@ -8684,13 +7623,6 @@ mod tests {
 
     #[test]
     fn probe_domain_records_are_excluded_from_all_stream_accounting() {
-        // The recorder manifest excludes
-        // reserved probe-domain (250) records from record/domain accounting,
-        // but this independent scan counted them — every probe-carrying
-        // stream (lane-wall lw_*, bt_*, so_* units ride domain 250) then
-        // disagreed with its manifest and the exact-count comparison could
-        // never pass. The probe record must be invisible to every counter
-        // while sequence ordering still covers it.
         let mut raw = Vec::new();
         append_record(
             &mut raw,
@@ -8708,8 +7640,6 @@ mod tests {
             RECORD_TYPE_DOMAIN_DATA,
             &fuel_empty_payload(),
         );
-        // The lane-wall probe record (carries bt_*/so_* diagnostic units in
-        // production; the trailer content is irrelevant to accounting).
         append_record(
             &mut raw,
             3,
@@ -8748,7 +7678,6 @@ mod tests {
         );
         assert!(compact_domain_coverage_errors(&summary, &[10]).is_empty());
 
-        // A probe record with a broken sequence still trips ordering errors.
         let mut bad = Vec::new();
         append_record(
             &mut bad,
@@ -8789,7 +7718,6 @@ mod tests {
             "air_variant_archetype_rows": 203,
             "air_ace_roster_rows": 258,
             "air_ace_roster_observed_ace_rows": 258,
-            // A partial frame fired: must fail the gate.
             "air_ace_roster_partial_frames": 1,
         }));
         let mut errors = Vec::new();
@@ -8822,7 +7750,6 @@ mod tests {
             "record_count": 1,
             "data_record_count": 1,
             "row_count_total": row_count_total,
-            // SOURCE|PARTIAL — the tolerated status the defect hid behind.
             "status_flags_or": (1u64 << 8) | (1u64 << 9),
             "read_time_us": {"count": 1},
             "data_units_total": units,
@@ -8833,7 +7760,6 @@ mod tests {
     fn d47_adapter_work_with_zero_emission_is_fatal_even_when_partial_tolerated() {
         let contract = contract_by_id(47).expect("domain 47 contract exists");
         assert!(!contract.work_implies_rows_units.is_empty());
-        // Reproduce the live defect: millions of adapter rows, zero emitted.
         let domain = d47_domain_manifest(
             0,
             json!({
@@ -8842,7 +7768,6 @@ mod tests {
                 "domain47_frame_parse_errors": 1560,
             }),
         );
-        // Even a partial-TOLERANT profile must reject this.
         let options = GateOptions {
             allow_partial_or_source_failure: true,
             ..GateOptions::default()
@@ -8861,7 +7786,6 @@ mod tests {
     #[test]
     fn d47_healthy_emission_passes() {
         let contract = contract_by_id(47).expect("domain 47 contract exists");
-        // Rows emitted -> the work-implies-rows invariant is satisfied.
         let domain = d47_domain_manifest(
             2_360_421,
             json!({
@@ -8869,8 +7793,6 @@ mod tests {
             }),
         );
         let options = GateOptions {
-            // Even with partial tolerance OFF, only the status check would fire;
-            // isolate the work-implies-rows invariant by tolerating partial.
             allow_partial_or_source_failure: true,
             ..GateOptions::default()
         };
@@ -8886,8 +7808,6 @@ mod tests {
 
     #[test]
     fn d47_no_work_and_no_rows_does_not_trip_work_implies_rows() {
-        // A legitimately empty frame (no adapter work, no rows) must NOT trip
-        // the work-implies-rows invariant — only work-without-emission does.
         let contract = contract_by_id(47).expect("domain 47 contract exists");
         let domain = d47_domain_manifest(0, json!({}));
         let options = GateOptions {
@@ -8909,7 +7829,6 @@ mod tests {
         let contract = contract_by_id(46).expect("domain 46 contract exists");
         let domain = d46_domain_manifest(json!({
             "air_variant_archetype_rows": 203,
-            // air_ace_roster_rows missing.
         }));
         let mut errors = Vec::new();
         validate_domain_manifest(&domain, contract, 1, &GateOptions::default(), &mut errors);
@@ -8943,13 +7862,6 @@ mod tests {
 
         let summary = scan_compact_stream(&raw);
         let errors = compact_domain_coverage_errors(&summary, &[10]);
-        // The exact message the current terminal-outcome model emits. The old
-        // probe looked for `fuel_live data_record_count 0 != 1`, wording that
-        // belonged to the pre-terminal-outcome coverage counter and that
-        // production emits nowhere -- a `.contains` check for a string no code
-        // path produces is not coverage, it is a permanently red assertion.
-        // Pinning the whole message also pins WHY the hour is rejected: an
-        // accepted PERF outcome obliges exactly one subordinate DATA record.
         assert_eq!(
             errors,
             vec![
@@ -9259,10 +8171,6 @@ mod tests {
             &frame_payload(0),
         );
         let summary = scan_compact_stream(&raw);
-        // The DATA payload is rejected by canonical validation (the single
-        // decoder funnel) before the scan's own DOMAIN_DATA header check can
-        // fire, so the rejection carries the funnel's unassigned-flag wording
-        // rather than the header scan's "unknown v1 bits".
         assert!(
             summary.parse_errors.iter().any(|error| {
                 error.contains("domain 10 DATA payload")
@@ -10000,19 +8908,6 @@ mod tests {
         })
     }
 
-    /// The certifier admits a measured-empty domain without an override.
-    ///
-    /// This gate is the third party to the status contract (collector publishes,
-    /// fold applies, this accepts), and the project has repeatedly shipped
-    /// status words that meant one thing to the producer and another here. Bit
-    /// 14 is new vocabulary, so BOTH halves are pinned: it must not read as an
-    /// unassigned bit (which this gate rejects outright), and it must not read
-    /// as a failure bit (which would need `allow_partial_or_source_failure` to
-    /// certify a capture that has nothing wrong with it).
-    ///
-    /// Production changes that make this fail: dropping SOURCE_EMPTY from
-    /// `COMPACT_STATUS_V1_KNOWN_MASK`, or adding it to
-    /// `COMPACT_STATUS_FAILURE_MASK`.
     #[test]
     fn a_measured_empty_domain_certifies_without_a_failure_override() {
         let empty = compact_contract::COMPACT_STATUS_SOURCE_EMPTY;
@@ -10228,12 +9123,8 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        fs::write(
-            run_dir.join("collector_stream.bin"), b"stream"
-        ).unwrap();
-        fs::write(
-            run_dir.join("native_session.battleplan"), b"replay"
-        ).unwrap();
+        fs::write(run_dir.join("collector_stream.bin"), b"stream").unwrap();
+        fs::write(run_dir.join("native_session.battleplan"), b"replay").unwrap();
         let alias = outer.0.join("run_alias");
         if std::os::windows::fs::symlink_dir(&run_dir, &alias).is_err() {
             return;
@@ -10283,9 +9174,6 @@ mod tests {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         let sealed_bytes = write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
         let sealed: Value = serde_json::from_slice(&sealed_bytes).unwrap();
-        // The container carries the PROJECTION of the run-dir document, never
-        // the document itself: the run-dir copy names the retained static
-        // bundle evidence by absolute path and a shareable container must not.
         assert_ne!(
             sealed, manifest,
             "the sealed copy is the portable projection"
@@ -10326,7 +9214,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("mutable disk rewrite must fail");
+        .expect_err("mutable disk rewrite must fail");
         assert!(
             error.contains("contradicts the authoritative sealed recorder_manifest"),
             "{error}"
@@ -10334,31 +9222,16 @@ mod tests {
         assert!(error.contains("$.duration_ms"), "{error}");
     }
 
-    /// Build the pair of manifests a LIVE capture actually produces, in the
-    /// exact shape measured on capture t31
-    /// (`extractor/native/runs/live_unlock/t31/`, 17,957,105 run-dir bytes vs
-    /// 17,957,028 sealed): the sealed copy carries the portable projection of
-    /// every absolute path (`dll`, `modset.game.exe_path`,
-    /// `modset.pdx_user_dir`) plus the recorder's pre-pack `host_finalize`; the
-    /// run-dir copy keeps the absolute paths and gets the post-pack telemetry
-    /// written back into it after the container was sealed.
     fn live_shaped_manifest_pair(dir: &Path, game_id: &str) -> (Value, Value) {
         live_shaped_manifest_pair_with(dir, game_id, |_| {})
     }
 
-    /// The same pair, with the run-dir BASE adjusted before the sealed copy is
-    /// derived from it. The sealed side is always the recorder's own
-    /// projection of the base, never hand-listed, so a fixture cannot claim a
-    /// sealed shape the recorder would not write.
     fn live_shaped_manifest_pair_with(
         dir: &Path,
         game_id: &str,
         adjust_base: impl FnOnce(&mut Value),
     ) -> (Value, Value) {
         let mut base = replay_test_manifest(game_id, dir);
-        // t31's three redacted fields, run-dir form: the absolute originals.
-        // They are set on the BASE so the sealed copy below can be derived from
-        // it by the recorder's own projection rather than hand-listed.
         base["dll"] = json!(r"\\?\.cargo-target\release\collector.dll");
         base["modset"] = json!({
             "game": {
@@ -10369,10 +9242,6 @@ mod tests {
         adjust_base(&mut base);
         let shared_host_finalize = base["host_finalize"].clone();
 
-        // The sealed copy is the PROJECTION of the run-dir copy — every
-        // absolute path reduced to its final component, including the
-        // `static_bundle` evidence paths — because that is what the recorder
-        // seals and what the authority loader now requires.
         let mut sealed = recorder_host::portable_manifest::portable_manifest_projection(&base)
             .expect("the fixture run-dir manifest has a portable projection");
         let mut sealed_host_finalize = shared_host_finalize.clone();
@@ -10392,9 +9261,6 @@ mod tests {
             "excluded_domain_data".into(),
             json!({"complete": true, "per_domain": {}, "records": [], "total_records": 0}),
         );
-        // The per-hour coverage map, minted from the seal walk and written into
-        // the sealed copy alone — the same sealed-only pre-pack shape as
-        // `excluded_domain_data` above (owner ruling 2026-08-11, task #188).
         object.insert(
             recorder_host::hour_coverage::HOUR_COVERAGE_FIELD.into(),
             fixture_hour_coverage(&[0, 1, 2], &[]).to_json(),
@@ -10421,17 +9287,6 @@ mod tests {
         (run_dir, sealed)
     }
 
-    /// THE LIVE SHAPE. Every capture in `extractor/native/runs/` seals a
-    /// manifest that is deliberately not the file left in the run directory:
-    /// absolute paths are redacted out of the sealed copy, and the sealed copy
-    /// predates the finalize timing, peak memory and container verify report
-    /// that are written back afterwards. Measured on t31 that is a 77-byte,
-    /// 11-field difference. The authority loader must admit exactly that.
-    ///
-    /// Production change that would make this fail: restoring the raw byte
-    /// comparison between the run-dir manifest and the sealed
-    /// `recorder_manifest`, or dropping the portable projection from either
-    /// side of the binding.
     #[test]
     fn a_live_shaped_sealed_and_rewritten_manifest_pair_loads() {
         let dir = TmpDir::new("live_shaped_manifest");
@@ -10478,14 +9333,6 @@ mod tests {
         );
     }
 
-    /// The allowlist is a hole of a stated size. A field NOT on it, rewritten
-    /// in the run directory, must still refuse — and name itself, because the
-    /// manifest is 17 MB and "they differ" is not an actionable refusal.
-    ///
-    /// Production change that would make this fail: widening
-    /// `POST_SEAL_MUTABLE_HOST_FINALIZE_FIELDS` to the whole `host_finalize`
-    /// block, or comparing only the allowlisted fields instead of everything
-    /// but them.
     #[test]
     fn a_non_allowlisted_rewrite_inside_host_finalize_still_refuses_by_name() {
         let dir = TmpDir::new("host_finalize_tamper");
@@ -10497,7 +9344,6 @@ mod tests {
             true,
         );
 
-        // Neighbours of the allowlisted fields, inside the very same block.
         for (pointer, value, named) in [
             (
                 "/host_finalize/stream_sha256",
@@ -10518,8 +9364,6 @@ mod tests {
         ] {
             let mut tampered = run_dir_manifest.clone();
             if pointer == "/replay_game_id" {
-                // Same game id, different everything else: prove a field
-                // OUTSIDE host_finalize is bound too.
                 tampered["production_profile"]["enabled"] = json!(false);
             } else {
                 *tampered.pointer_mut(pointer).expect(pointer) = value;
@@ -10544,12 +9388,6 @@ mod tests {
         }
     }
 
-    /// Every run-dir-only field, one at a time, on the side that is allowed to
-    /// carry it — proving the allowlist is real in the permitting direction and
-    /// not just dead weight next to a byte comparison.
-    ///
-    /// Production change that would make this fail: removing any name from
-    /// `RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS`.
     #[test]
     fn every_run_dir_only_post_seal_field_may_diverge() {
         let dir = TmpDir::new("allowlist_permits");
@@ -10562,8 +9400,6 @@ mod tests {
         );
 
         for field in RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS {
-            // A value the sealed copy definitely does not have, under this name
-            // in the run-dir copy, is still admitted.
             let mut rewritten = run_dir_manifest.clone();
             rewritten["host_finalize"][*field] = json!("post-seal-only");
             let bytes = serde_json::to_vec_pretty(&rewritten).unwrap();
@@ -10572,7 +9408,6 @@ mod tests {
                     panic!("run-dir-only field {field:?} must be permitted to diverge: {error}")
                 });
 
-            // And absent from the run-dir copy is equally fine.
             let mut removed = run_dir_manifest.clone();
             removed["host_finalize"]
                 .as_object_mut()
@@ -10586,14 +9421,6 @@ mod tests {
         }
     }
 
-    /// The allowlist is DIRECTIONAL. The census measured each of the eight
-    /// fields on exactly one side, never both, so the mutable run-dir file must
-    /// not be able to invent a sealed-only marker — `standalone_manifest_is_
-    /// authoritative` above all — and have the binding shrug because the name
-    /// happens to be unbound.
-    ///
-    /// Production change that would make this fail: merging the two sets and
-    /// removing every name from both copies.
     #[test]
     fn a_sealed_only_field_appearing_in_the_run_dir_copy_refuses() {
         let dir = TmpDir::new("allowlist_direction");
@@ -10619,8 +9446,6 @@ mod tests {
             assert!(error.contains("directional"), "{error}");
         }
 
-        // And the mirror: a run-dir-only field forged into the SEALED copy is
-        // equally refused, so the rule is not one-sided bookkeeping.
         for field in RUN_DIR_ONLY_POST_SEAL_HOST_FINALIZE_FIELDS {
             let dir = TmpDir::new("allowlist_direction_sealed");
             let (run_dir_manifest, mut forged_seal) = live_shaped_manifest_pair(&dir.0, "g");
@@ -10646,38 +9471,12 @@ mod tests {
         }
     }
 
-    /// The `--keep-spool-after-seal` shape, which the binding refused outright
-    /// until HD: the recorder writes `spool_trim` at the manifest ROOT, after
-    /// the container is packed and after the finalize-progress receipt has
-    /// published `complete`, so the sealed copy provably cannot carry it. t49
-    /// and t50 both sealed clean recordings and both were refused at
-    /// `$.spool_trim` (`runs/hd_hb_defects/`).
-    ///
-    /// The cell is deliberately four-armed, because the failure mode of a fix
-    /// like this is not "it does not admit", it is "it admits everything at the
-    /// manifest root". Arms 2–4 are what make arm 1 a binding rather than a
-    /// hole: an unlisted extra root key still refuses, the field forged into
-    /// the SEALED copy still refuses by direction, and a genuinely contradicted
-    /// bound field still refuses by name even while the keep-spool divergence
-    /// is present.
-    ///
-    /// kills: deleting `RUN_DIR_ONLY_POST_SEAL_TOP_LEVEL_FIELDS` from the
-    /// binding (arm 1 fails); replacing it with a blanket "ignore run-dir-only
-    /// root keys" or dropping the trailing unconsumed-key check in
-    /// `first_binding_violation` (arm 2 fails); passing `forbidden` as an empty
-    /// value in the top-level `take_directional_fields` call so the allowlist
-    /// stops being directional (arm 3 fails); short-circuiting the binding to
-    /// `Ok` once a sanctioned root divergence is seen (arm 4 fails).
     #[test]
     fn a_keep_spool_after_seal_manifest_pair_binds_without_unbinding_the_root() {
         const SPOOL_TRIM: &str = "spool_trim";
         // Byte-for-byte the summary `release_sealed_spool_storage` records for
-        // a `--keep-spool-after-seal` capture.
         let keep_spool = || json!({ "released": false, "reason": "--keep-spool-after-seal" });
 
-        // Arm 1: the run-dir copy carries it, the sealed copy does not, and the
-        // recording is admitted — because the two copies AGREE about every
-        // field the container can attest, not because the check went soft.
         let dir = TmpDir::new("keep_spool_binds");
         let (mut run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         run_dir_manifest[SPOOL_TRIM] = keep_spool();
@@ -10698,7 +9497,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect("a --keep-spool-after-seal capture must be admissible");
+        .expect("a --keep-spool-after-seal capture must be admissible");
         assert_eq!(
             authority.manifest, sealed_manifest,
             "the SEALED copy is still the authority handed downstream"
@@ -10713,22 +9512,17 @@ mod tests {
             "the report names what it unbound instead of leaving a reader to infer it"
         );
 
-        // Arm 2: an UNLISTED extra root key is still a contradiction. This is
-        // the arm that proves arm 1 unbound one named field rather than the
-        // manifest root.
         let mut unlisted = run_dir_manifest.clone();
         unlisted["spool_trim_extra"] = keep_spool();
         let bytes = serde_json::to_vec_pretty(&unlisted).unwrap();
         let error =
             load_verified_replay_authority(&unlisted, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-            .expect_err("an unlisted root key must still contradict the sealed copy");
+                .expect_err("an unlisted root key must still contradict the sealed copy");
         assert!(
             error.contains("$.spool_trim_extra"),
             "the refusal must name the unlisted key: {error}"
         );
 
-        // Arm 3: the direction holds. The sealed copy claiming a post-pack
-        // field it cannot have measured is refused, not shrugged at.
         let dir = TmpDir::new("keep_spool_direction");
         let (run_dir_manifest, mut forged_seal) = live_shaped_manifest_pair(&dir.0, "g");
         forged_seal[SPOOL_TRIM] = keep_spool();
@@ -10752,9 +9546,6 @@ mod tests {
         );
         assert!(error.contains("directional"), "{error}");
 
-        // Arm 4: a genuinely divergent pair still refuses BY NAME, with the
-        // sanctioned keep-spool divergence present at the same time — so the
-        // one admitted root divergence cannot mask a contradicted bound field.
         let dir = TmpDir::new("keep_spool_still_refuses");
         let (mut run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         write_replay_fixture(
@@ -10772,34 +9563,15 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("a contradicted bound field must refuse even on a keep-spool capture");
+        .expect_err("a contradicted bound field must refuse even on a keep-spool capture");
         assert!(
             error.contains("$.host_finalize.stream_sha256"),
             "the refusal must name the contradicted field: {error}"
         );
     }
 
-    /// A `.battleplan` is meant to be handed to someone else, so the sealed
-    /// recorder manifest must carry NO absolute path — in a value or in an
-    /// object key. The recorder enforces that at seal time; `verify_all()`
-    /// proves only that the container is internally consistent, never that the
-    /// seal-time gate ran, so the loader re-asserts it with the SAME function
-    /// on the copy it read back.
-    ///
-    /// This is the assertion the directional-binding lane could not add: the
-    /// old retained-file evidence check REQUIRED the sealed copy to hold an
-    /// absolute `static_bundle.<label>.path`, which is precisely what the
-    /// sealer refuses to write. That requirement now lives on the run-dir copy
-    /// (`verify_retained_file_evidence`), so this one is satisfiable.
-    ///
-    /// Production change that would make this fail: dropping the
-    /// `reject_absolute_paths_in_json` call from
-    /// `bind_run_dir_manifest_to_sealed_authority`.
     #[test]
     fn a_sealed_manifest_carrying_an_absolute_path_refuses() {
-        // A VALUE. The sealed copy is written verbatim, because the recorder's
-        // own projection would have reduced it — that is the point: a container
-        // that reached a reader carrying this was not sealed by that gate.
         let dir = TmpDir::new("sealed_absolute_value");
         let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         sealed_manifest["dll"] = json!(r"\\?\C:\somewhere\else\collector.dll");
@@ -10816,14 +9588,13 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("an absolute path in the sealed copy must refuse");
+        .expect_err("an absolute path in the sealed copy must refuse");
         assert!(error.contains("is not portable"), "{error}");
         assert!(
             error.contains("still contains an absolute path at $.dll"),
             "the refusal must name the path: {error}"
         );
 
-        // An object KEY, which the value walk alone would step straight past.
         let dir = TmpDir::new("sealed_absolute_key");
         let (run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         let absolute_key = r"\\?\C:\somewhere\else\dll";
@@ -10843,7 +9614,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("an absolute key in the sealed copy must refuse");
+        .expect_err("an absolute key in the sealed copy must refuse");
         assert!(error.contains("is not portable"), "{error}");
         assert!(
             error.contains(&format!("absolute path key {absolute_key:?}")),
@@ -10851,25 +9622,9 @@ mod tests {
         );
     }
 
-    /// A DEGRADED container must verify, and must say it is degraded.
-    ///
-    /// Capture t55 (2026-08-15) recorded 91 game hours and never sealed: one
-    /// modset diagnostic had spelled out the absolute path of `settings.txt`,
-    /// and the seal-time rejector refused the whole container over it. The
-    /// exclusion pass costs that field instead, which means this gate must bind
-    /// a sealed copy carrying the reserved stand-in against a run-dir copy that
-    /// still carries the original text, and must reach the caller with the
-    /// degradation stated rather than buried.
-    ///
-    /// Production change that would make this fail: dropping the exclusion pass
-    /// from the run-dir side of `bind_run_dir_manifest_to_sealed_authority`
-    /// (the two copies then contradict each other at exactly the excluded
-    /// field), or dropping `portability_degraded` from the authority details.
     #[test]
     fn a_degraded_sealed_manifest_binds_and_reports_its_exclusions() {
         let dir = TmpDir::new("degraded_portability");
-        // The exact shape t55 could not seal: an absolute path EMBEDDED in
-        // prose, which the whole-string redaction cannot reduce.
         let poisoned = concat!(
             r"settings.txt launch settings unresolved: ",
             r"\\?\C:\Users\Example\Documents\Paradox Interactive\Hearts of Iron IV\settings.txt",
@@ -10900,22 +9655,19 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let authority =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-                .expect("a degraded container must still verify");
+        let authority = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect("a degraded container must still verify");
         assert_eq!(
             authority.details["recorder_manifest_portability_degraded"],
             json!(true)
         );
     }
 
-    /// The ledger is a claim like any other, so it binds like any other: a
-    /// container whose accounting does not follow from its own run-directory
-    /// document is not that recording's accounting, and a reader must not be
-    /// able to add exclusions a recording never had.
-    ///
-    /// Production change that would make this fail: removing the ledger
-    /// comparison from `bind_run_dir_manifest_to_sealed_authority`.
     #[test]
     fn a_ledger_the_recording_does_not_produce_refuses() {
         let dir = TmpDir::new("forged_portability_ledger");
@@ -10936,24 +9688,19 @@ mod tests {
             true,
         );
         let bytes = serde_json::to_vec_pretty(&run_dir_manifest).unwrap();
-        let error =
-            load_verified_replay_authority(&run_dir_manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-                .expect_err("a ledger the recording does not produce must refuse");
+        let error = load_verified_replay_authority(
+            &run_dir_manifest,
+            &bytes,
+            &dir.0,
+            TEST_MAX_STREAM_BYTES,
+        )
+        .expect_err("a ledger the recording does not produce must refuse");
         assert!(
             error.contains("portability exclusion"),
             "the refusal must name the ledger: {error}"
         );
     }
 
-    /// The BINDING rule itself — a sealed absolute path is never reduced away —
-    /// exercised where it lives, because the portability assertion above now
-    /// refuses that container before the binding is reached. The rule must stay
-    /// right regardless: `first_binding_violation` is what a caller would reach
-    /// for if the assertion ever moved, and under a project-both-sides binding
-    /// two paths sharing only a final component would silently bind.
-    ///
-    /// Production change that would make this fail: applying
-    /// `portable_manifest_projection` to the sealed side of the binding.
     #[test]
     fn a_sealed_absolute_path_is_not_reduced_away() {
         let mut redactions = 0;
@@ -10970,7 +9717,6 @@ mod tests {
             "nothing was reduced, so nothing may be counted"
         );
 
-        // The same for an object KEY.
         let violation = first_binding_violation(
             &json!({r"\\?\C:\somewhere\else\dll": "collector.dll"}),
             &json!({r"\\?\release\dll": "collector.dll"}),
@@ -10981,20 +9727,8 @@ mod tests {
         assert!(violation.contains("dll"), "{violation}");
     }
 
-    /// Keys and values obey ONE rule, equality first. An absolute object key
-    /// present verbatim on both sides binds to itself; it is not reduced and
-    /// then reported missing. Two run-dir keys claiming one sealed key are
-    /// ambiguous and refuse.
-    ///
-    /// Production change that would make this fail: matching sealed keys only
-    /// against redacted run-dir key names, or dropping the collision refusal.
     #[test]
     fn object_keys_bind_by_equality_first_and_collisions_refuse() {
-        // Equality first, exercised on the rule directly. It cannot be reached
-        // through a container any more — an absolute key on the SEALED side is
-        // refused outright by the portability assertion — but the rule must
-        // still be right, and a key matched only against redacted run-dir names
-        // would report an identical absolute key as missing.
         let mut redactions = 0;
         let absolute_key = r"\\?\release\dll";
         assert!(
@@ -11009,7 +9743,6 @@ mod tests {
         );
         assert_eq!(redactions, 0, "binding to itself is not a redaction");
 
-        // Two run-dir keys claiming the one sealed key is ambiguous.
         let dir = TmpDir::new("absolute_key_collision");
         let (mut run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         run_dir_manifest
@@ -11029,17 +9762,13 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("colliding run-dir keys must refuse");
-        // The collision now costs the offending MEMBER rather than refusing
-        // the projection outright (the sealer must never lose a recording to
-        // one), so what catches this run-dir copy is the ledger: dropping the
-        // added key produces an accounting the sealed container never made,
-        // and the refusal names the row.
+        .expect_err("colliding run-dir keys must refuse");
         assert!(error.contains("key_collision"), "{error}");
-        assert!(error.contains("does not follow from the recording"), "{error}");
+        assert!(
+            error.contains("does not follow from the recording"),
+            "{error}"
+        );
 
-        // The binding's own collision refusal, exercised directly, so it is not
-        // dead weight behind the routing projection.
         let mut redactions = 0;
         let violation = first_binding_violation(
             &json!({"dll": "collector.dll"}),
@@ -11054,18 +9783,8 @@ mod tests {
         );
     }
 
-    /// Redaction binds in ONE direction: the run-dir copy may hold the absolute
-    /// path the sealed copy reduced. The reverse — a bare basename on disk
-    /// standing in for an absolute path in the container — is not something the
-    /// recorder produces, and must not bind.
-    ///
-    /// Production change that would make this fail: comparing
-    /// `redact(sealed)` against `redact(run_dir)` instead of `sealed` against
-    /// `run_dir` with a directional rule.
     #[test]
     fn redaction_does_not_bind_in_the_reverse_direction() {
-        // At the rule, because a sealed absolute path no longer survives the
-        // portability assertion to reach the binding.
         let mut redactions = 0;
         let violation = first_binding_violation(
             &json!({"dll": r"\\?\release\collector.dll"}),
@@ -11077,8 +9796,6 @@ mod tests {
         assert!(violation.contains("$.dll"), "{violation}");
         assert_eq!(redactions, 0);
 
-        // And end to end, where the same recording is now refused one step
-        // earlier and for the more fundamental reason.
         let dir = TmpDir::new("reverse_redaction");
         let (mut run_dir_manifest, mut sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
         sealed_manifest["dll"] = json!(r"\\?\release\collector.dll");
@@ -11096,17 +9813,10 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("a sealed absolute path must refuse");
+        .expect_err("a sealed absolute path must refuse");
         assert!(error.contains("$.dll"), "{error}");
     }
 
-    /// Deleting the whole `host_finalize` block from the run-dir copy must not
-    /// be cheaper than matching it. The sealed copy decides: it carries one, so
-    /// the run-dir copy owes one.
-    ///
-    /// Production change that would make this fail: treating a missing run-dir
-    /// `host_finalize` as a sanctioned divergence (which would unbind
-    /// `fold.*` and `stream_sha256` on demand).
     #[test]
     fn deleting_the_run_dir_host_finalize_block_refuses() {
         let dir = TmpDir::new("host_finalize_deleted");
@@ -11122,7 +9832,7 @@ mod tests {
         let bytes = serde_json::to_vec_pretty(&stripped).unwrap();
         let error =
             load_verified_replay_authority(&stripped, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-            .expect_err("a deleted host_finalize block must refuse");
+                .expect_err("a deleted host_finalize block must refuse");
         assert!(error.contains("host_finalize"), "{error}");
         assert!(
             error.contains("not a sanctioned post-seal divergence"),
@@ -11130,21 +9840,6 @@ mod tests {
         );
     }
 
-    /// A compact container whose sealed copy carries no `host_finalize` is
-    /// malformed, and admitting it would unbind `stream_sha256` and all of
-    /// `fold.*` on demand.
-    ///
-    /// The one recorder pack path that seals without that block,
-    /// `write_native_replay_container`, is reached only from the
-    /// `StreamFormat::Json` arm (main.rs). Production refuses anything but the
-    /// compact stream, and this gate refuses it again through
-    /// `stream_format == "compact"`. So there is no legitimate capture this
-    /// gate can certify whose sealed copy lacks the block — treating its
-    /// absence as a compatibility allowance was reasoning from a code path, not
-    /// from a reachable capture.
-    ///
-    /// Production change that would make this fail: unbinding the block when
-    /// the sealed copy does not carry it.
     #[test]
     fn a_sealed_copy_without_host_finalize_refuses() {
         for sealed_block in [None, Some(json!(null)), Some(json!("pre_pack"))] {
@@ -11180,22 +9875,6 @@ mod tests {
         }
     }
 
-    /// Routing and binding must read ONE document.
-    ///
-    /// `raw_stream_packaging` is the only field of the run-dir manifest whose
-    /// absence has a permissive default rather than a refusal, and the loader
-    /// reads it before the binding runs, to choose which proof to execute. If
-    /// that read took the RAW document while the binding compared the PROJECTED
-    /// one, writing the field under an absolute-path KEY would hide it from the
-    /// routing lookup — falling back to the default — while the projection
-    /// renamed the key back to its basename in time to satisfy the binding.
-    ///
-    /// The composition here is `omitted` and the container is genuinely
-    /// cache-only, so a routing read that missed the field would default to
-    /// `packaged` and refuse for the wrong reason.
-    ///
-    /// Production change that would make this fail: routing the composition off
-    /// `external_manifest` instead of `projected_external_manifest`.
     #[test]
     fn an_absolute_path_key_cannot_hide_the_composition_from_routing() {
         let dir = TmpDir::new("composition_key_rename");
@@ -11230,14 +9909,6 @@ mod tests {
         );
     }
 
-    /// The projection is for COMPARISON, never for resolving a path this loader
-    /// opens. `replay_file` names a file on disk, so it is read from the raw
-    /// document, where `required_run_file` refuses anything absolute. Reading
-    /// it from the projection would reduce an absolute path to a basename and
-    /// quietly admit it.
-    ///
-    /// Production change that would make this fail: resolving `replay_file`
-    /// from `projected_external_manifest`.
     #[test]
     fn an_absolute_replay_file_is_refused_not_reduced_to_a_basename() {
         let dir = TmpDir::new("absolute_replay_file");
@@ -11268,17 +9939,10 @@ mod tests {
         );
     }
 
-    /// Without the container's copy there is no authority at all, and the
-    /// mutable run-dir file must never stand in for it.
-    ///
-    /// Production change that would make this fail: falling back to the run-dir
-    /// manifest when the container has no `recorder_manifest` entry.
     #[test]
     fn an_absent_sealed_recorder_manifest_refuses() {
         let dir = TmpDir::new("sealed_manifest_absent");
         let (run_dir_manifest, sealed_manifest) = live_shaped_manifest_pair(&dir.0, "g");
-        // include_manifest_role = false: the entry is packed but carries no
-        // `recorder_manifest` role, so the container names no authority.
         write_replay_fixture(
             &dir.0,
             "g",
@@ -11292,21 +9956,10 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("a container with no sealed recorder_manifest must refuse");
+        .expect_err("a container with no sealed recorder_manifest must refuse");
         assert!(error.contains("recorder_manifest entries"), "{error}");
     }
 
-    /// A container sealed the way the RECORDER seals one — carrying the
-    /// container's own `schema_version` in the container's own vocabulary —
-    /// loads. This is the shape of every live capture in
-    /// `extractor/native/runs/`; the gate previously refused all of them with
-    /// `schema_version Some("1") != expected "native_collector_session_v1"`,
-    /// because it checked the container's field against the recorder
-    /// manifest's vocabulary.
-    ///
-    /// Production change that would make this fail: putting the recorder
-    /// manifest's session identifier (or any other value) back into the
-    /// `ExpectedIdentity` the loader pins the container with.
     #[test]
     fn a_recorder_sealed_container_shape_loads() {
         let dir = TmpDir::new("recorder_sealed_shape");
@@ -11314,8 +9967,6 @@ mod tests {
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
         write_replay_fixture(&dir.0, "g", &manifest_bytes, true);
 
-        // The fixture really is sealed the production way: the two fields hold
-        // the two different vocabularies, exactly as a live capture does.
         let sealed = portable_test_fs_retry::read(dir.0.join("native_session.battleplan")).unwrap();
         let sealed_manifest: Value = serde_json::from_slice(
             &Container::from_bytes(sealed, &ExpectedIdentity::default())
@@ -11338,14 +9989,6 @@ mod tests {
             .expect("a container sealed the way the recorder seals one must load");
     }
 
-    /// The CONTAINER's own `schema_version` still refuses when it is actually
-    /// wrong — including when it holds the recorder manifest's session
-    /// identifier, which is the value the old cross-vocabulary comparison
-    /// demanded. The refusal names the field and both values.
-    ///
-    /// Production change that would make this fail: dropping the
-    /// `ExpectedIdentity.schema_version` pin (leaving it `None`), which would
-    /// admit a container declaring any snapshot/index contract at all.
     #[test]
     fn a_container_schema_version_from_the_wrong_vocabulary_still_refuses() {
         for wrong in [RECORDER_MANIFEST_SCHEMA, "2", ""] {
@@ -11365,15 +10008,6 @@ mod tests {
         }
     }
 
-    /// The RECORDER MANIFEST's own `schema` still refuses when it is actually
-    /// wrong — including when it holds the container's schema version, the
-    /// mirror image of the defect. It is read from the container-authenticated
-    /// copy, so a run-dir rewrite cannot talk past it either. The refusal names
-    /// the field and both values.
-    ///
-    /// Production change that would make this fail: removing the embedded
-    /// `schema` check from the loader, which would let the authority loader
-    /// admit a recording of some other session format.
     #[test]
     fn a_recorder_manifest_schema_from_the_wrong_vocabulary_still_refuses() {
         for wrong in [
@@ -11396,8 +10030,6 @@ mod tests {
             );
         }
 
-        // Absent is not "unchecked": a manifest with no `schema` at all refuses
-        // by the same named field.
         let dir = TmpDir::new("manifest_schema_absent");
         let mut manifest = replay_test_manifest("g", &dir.0);
         manifest.as_object_mut().unwrap().remove("schema");
@@ -11409,21 +10041,13 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect_err("a recorder manifest with no schema must refuse");
+        .expect_err("a recorder manifest with no schema must refuse");
         assert!(
             error.contains("schema") && error.contains("None"),
             "{error}"
         );
     }
 
-    /// The DEFAULT recording composition certifies. The container ships no raw
-    /// stream, so the proof is the attestation chain: the run-dir stream is
-    /// hashed locally, bound to the container-authenticated
-    /// `stream_storage`, and that identity is cross-checked against H4IX
-    /// (source hash AND length) and H4CP (source digest).
-    ///
-    /// Production change that would make this fail: refusing the `omitted`
-    /// composition outright, which is exactly the state this lane started from.
     #[test]
     fn cache_only_capture_certifies_through_the_manifest_attested_chain() {
         let dir = TmpDir::new("cache_only_authority");
@@ -11434,7 +10058,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-                .expect("a default cache-only recording must certify");
+        .expect("a default cache-only recording must certify");
         assert!(matches!(
             authority.stream_certification,
             StreamCertification::ManifestAttestedThroughDeltaCache { .. }
@@ -11447,7 +10071,6 @@ mod tests {
             authority.details[snapshot::RAW_STREAM_PACKAGING_FIELD],
             json!(snapshot::RawStreamPackaging::Omitted.as_str())
         );
-        // The certification must never claim the byte comparison happened.
         assert_eq!(
             authority.details["h4cr_stream_bytes_compared"],
             json!(false)
@@ -11468,12 +10091,6 @@ mod tests {
         );
     }
 
-    /// The packaged composition is untouched: it still reads the container's
-    /// own stream bytes back out and reports the STRONGER path by name.
-    ///
-    /// Production change that would make this fail: routing a packaged
-    /// container onto the manifest-attested chain, or dropping the path
-    /// indicator so the two proofs read alike downstream.
     #[test]
     fn packaged_capture_still_certifies_by_byte_comparison_and_says_so() {
         let dir = TmpDir::new("packaged_authority_path");
@@ -11510,19 +10127,6 @@ mod tests {
         );
     }
 
-    /// A tampered packaged stream still refuses. The manifest-attested route
-    /// must not have opened a door for the packaged one.
-    ///
-    /// Production change that would make this fail: dropping the container
-    /// entry re-hash, or falling back to the manifest-attested chain when the
-    /// packaged comparison fails.
-    ///
-    /// The accepted refusal wording gained a fourth form when per-entry
-    /// verification replaced the all-entry abort (owner ruling 2026-08-11, task
-    /// #188): the packaged stream entry serves no single game hour, so damage
-    /// to it is still a WHOLE-container refusal — now naming the entry and its
-    /// role, which the first-failure abort could not. What must not change is
-    /// that it refuses at all, and never on the weaker manifest-attested route.
     #[test]
     fn a_tampered_packaged_stream_still_refuses() {
         let dir = TmpDir::new("packaged_tampered");
@@ -11531,9 +10135,6 @@ mod tests {
         write_replay_fixture_with_static_mutation(&dir.0, "g", &manifest_bytes, true, |_, _| {});
         let replay_path = dir.0.join("native_session.battleplan");
         let mut packed = portable_test_fs_retry::read(&replay_path).unwrap();
-        // Flip the packaged stream's PAYLOAD in place — the literal b"stream",
-        // not the two copies of "collector_stream.bin" in the zip headers — so
-        // the container entry digest no longer covers these bytes.
         let position = packed
             .windows(6)
             .enumerate()
@@ -11552,7 +10153,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("a tampered packaged stream must refuse");
+        .expect_err("a tampered packaged stream must refuse");
         assert!(
             error.contains("verify_all failed")
                 || error.contains("independently hash")
@@ -11567,11 +10168,6 @@ mod tests {
         );
     }
 
-    /// A container that declares the cache-only composition but PACKAGES a
-    /// stream anyway must not be certified by the weaker route.
-    ///
-    /// Production change that would make this fail: admitting any number of
-    /// stream entries on the cache-only route instead of exactly zero.
     #[test]
     fn a_packaged_stream_can_never_take_the_manifest_attested_route() {
         let error = cache_only_authority_error(
@@ -11591,16 +10187,8 @@ mod tests {
         );
     }
 
-    /// Each link of the attestation chain refuses BY NAME when it is the one
-    /// that breaks.
-    ///
-    /// Production change that would make this fail: collapsing the chain into
-    /// one `ReplayCacheReader::open` call, which reports a single generic
-    /// "not bound to the selected canonical H4CR source" for every link.
     #[test]
     fn every_broken_attestation_link_refuses_by_its_own_name() {
-        // stream_storage: the run-dir stream is not what the container-
-        // authenticated manifest says it is.
         let error = cache_only_authority_error(
             "cache_only_storage_hash",
             CacheOnlyBreak {
@@ -11616,10 +10204,6 @@ mod tests {
         assert!(error.contains(CACHE_ONLY_LINK_STREAM_STORAGE), "{error}");
         assert!(error.contains("independently hashes to"), "{error}");
 
-        // stream_storage, over-length: decoding stops one byte past the
-        // attested length, so an over-long source is refused as over-long
-        // rather than decompressed without bound and reported as a digest
-        // mismatch.
         let mut longer = b"H4CRcache-only-run-directory-source".repeat(4);
         longer.extend_from_slice(b"and then some more");
         let error = cache_only_authority_error(
@@ -11632,8 +10216,6 @@ mod tests {
         assert!(error.contains(CACHE_ONLY_LINK_STREAM_STORAGE), "{error}");
         assert!(error.contains("decodes to more than"), "{error}");
 
-        // h4ix source hash: the cache was folded from OTHER bytes of the same
-        // length, so only the hash link can catch it.
         let mut other = b"H4CRcache-only-run-directory-source".repeat(4);
         other[0] ^= 0xff;
         let error = cache_only_authority_error(
@@ -11646,8 +10228,6 @@ mod tests {
         assert!(error.contains(CACHE_ONLY_LINK_HOUR_INDEX), "{error}");
         assert!(error.contains("was folded over source"), "{error}");
 
-        // h4ix source length: the hash agrees and only the length does not.
-        // H4CP cannot see this at all, which is exactly why H4IX carries it.
         let error = cache_only_authority_error(
             "cache_only_index_length",
             CacheOnlyBreak {
@@ -11662,12 +10242,6 @@ mod tests {
             "the length refusal must say why H4IX alone carries it: {error}"
         );
 
-        // h4cp: the packaged cache bytes are not the ones H4IX is bound to, and
-        // the CONTAINER's own account agrees with those bytes — the shape of a
-        // substituted cache rather than a rotted one. The two accounts of the
-        // same entry disagree, which is attributable to nothing, so the whole
-        // recording is refused (post-seal rot, which IS attributable, is
-        // `post_seal_cache_record_damage_costs_its_checkpoint_window`).
         let error = cache_only_authority_error(
             "cache_only_cache_bytes",
             CacheOnlyBreak {
@@ -11685,8 +10259,6 @@ mod tests {
             "{error}"
         );
 
-        // h4cp header digest: index and cache agree on everything EXCEPT the
-        // source the cache header was built over.
         let error = cache_only_authority_error(
             "cache_only_cache_header",
             CacheOnlyBreak {
@@ -11698,14 +10270,6 @@ mod tests {
         assert!(error.contains("header is not bound to source"), "{error}");
     }
 
-    /// The recording never gets to choose the decode budget. An attested length
-    /// above the gate's configured maximum is refused BEFORE any decoding, so a
-    /// container declaring an absurd length over a highly compressible stored
-    /// file cannot buy unbounded decompression.
-    ///
-    /// Production change that would make this fail: capping the decode with the
-    /// attested length alone instead of bounding that length by
-    /// `GateOptions.max_stream_bytes` first.
     #[test]
     fn the_attested_length_is_bounded_by_the_gates_own_maximum() {
         let dir = TmpDir::new("cache_only_absurd_length");
@@ -11714,7 +10278,6 @@ mod tests {
             &recording.manifest,
             &recording.manifest_bytes,
             &dir.0,
-            // A ceiling below the honest recording's own length.
             recording.stream_bytes - 1,
         )
         .expect_err("an attested length above the configured maximum must refuse");
@@ -11722,13 +10285,6 @@ mod tests {
         assert!(error.contains("exceeds the configured maximum"), "{error}");
     }
 
-    /// Only NONEXISTENCE is the distinct absent outcome. A directory sitting
-    /// where the source stream should be is something that IS there and is
-    /// wrong, so it breaks the readable link instead.
-    ///
-    /// Production change that would make this fail: testing the path with
-    /// `Path::is_file()`, which reports a directory and a stat failure
-    /// identically to a missing file.
     #[test]
     fn a_non_file_at_the_source_path_breaks_the_link_it_is_not_absence() {
         let dir = TmpDir::new("cache_only_source_is_a_dir");
@@ -11751,12 +10307,6 @@ mod tests {
         );
     }
 
-    /// Reading the source is the readable link, so the declared compression
-    /// belongs to it and not to the identity link that follows.
-    ///
-    /// Production change that would make this fail: attributing a missing or
-    /// unsupported `stream_storage.compression` to `stream_storage_identity`,
-    /// which claims a digest comparison that never ran.
     #[test]
     fn declared_compression_belongs_to_the_readable_link() {
         for (label, compression) in [
@@ -11786,12 +10336,6 @@ mod tests {
         }
     }
 
-    /// A run directory with the sealed container but no source stream is a
-    /// DISTINCT outcome: not a pass, and not one of the broken-link refusals.
-    ///
-    /// Production change that would make this fail: certifying on the strength
-    /// of the container's internal agreement alone, or reporting the absence as
-    /// a broken binding.
     #[test]
     fn a_missing_run_dir_source_is_its_own_named_outcome() {
         let error = cache_only_authority_error(
@@ -11816,19 +10360,8 @@ mod tests {
         }
     }
 
-    /// The composition is routed from the run-dir manifest, so a rewritten
-    /// file on disk must not be able to choose which proof runs. In BOTH
-    /// directions the rewrite is refused, and neither refusal reports the
-    /// weaker path as having certified anything.
-    ///
-    /// Production change that would make this fail: routing on the disk
-    /// declaration without still requiring the run-dir manifest to be
-    /// byte-identical to the container's embedded recorder manifest — that
-    /// would let an operator downgrade a packaged capture to the
-    /// manifest-attested chain with one edit.
     #[test]
     fn a_rewritten_disk_composition_cannot_choose_the_proof() {
-        // Cache-only container, disk manifest claiming it packages a stream.
         let dir = TmpDir::new("cache_only_composition_rewrite");
         let recording = write_cache_only_replay_fixture(&dir.0, "g", CacheOnlyBreak::default());
         let mut rewritten = recording.manifest.clone();
@@ -11841,15 +10374,12 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("a rewritten composition must not certify");
+        .expect_err("a rewritten composition must not certify");
         assert!(
             error.contains("replay_entries.stream is missing"),
             "{error}"
         );
 
-        // Packaged container, disk manifest rewritten to claim cache-only.
-        // The manifest-authenticity binding catches it before the weaker chain
-        // can run at all.
         let dir = TmpDir::new("packaged_composition_rewrite");
         let manifest = replay_test_manifest("g", &dir.0);
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
@@ -11868,7 +10398,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("a packaged container must never take the weaker route");
+        .expect_err("a packaged container must never take the weaker route");
         assert!(
             error.contains("contradicts the authoritative sealed recorder_manifest"),
             "{error}"
@@ -11884,13 +10414,6 @@ mod tests {
         );
     }
 
-    /// The gate's own full read of the run-dir stream is bound back to
-    /// whichever proof certified the recording — and to the RIGHT thing on each
-    /// route.
-    ///
-    /// Production change that would make this fail: dropping either arm, or
-    /// reusing the packaged wording (and so the packaged claim) on the
-    /// manifest-attested route.
     #[test]
     fn the_run_stream_is_bound_back_to_the_proof_that_certified_it() {
         let decoded = b"H4CRthe run directory stream".to_vec();
@@ -11903,7 +10426,6 @@ mod tests {
             decoded: decoded.clone(),
         };
 
-        // Byte-compared, agreeing: silent.
         let mut errors = Vec::new();
         bind_run_stream_to_certification(
             &StreamCertification::ByteComparedAgainstPackagedStream {
@@ -11915,8 +10437,6 @@ mod tests {
         );
         assert!(errors.is_empty(), "{errors:?}");
 
-        // Byte-compared, container copy differs: BOTH the digest binding and
-        // the byte comparison fire, exactly as before this lane.
         let mut errors = Vec::new();
         let mut other = decoded.clone();
         other[4] ^= 0xff;
@@ -11938,7 +10458,6 @@ mod tests {
             "{errors:?}"
         );
 
-        // Manifest-attested, agreeing: silent.
         let mut errors = Vec::new();
         bind_run_stream_to_certification(
             &StreamCertification::ManifestAttestedThroughDeltaCache {
@@ -11950,7 +10469,6 @@ mod tests {
         );
         assert!(errors.is_empty(), "{errors:?}");
 
-        // Manifest-attested, a different stream was read the second time.
         let mut errors = Vec::new();
         bind_run_stream_to_certification(
             &StreamCertification::ManifestAttestedThroughDeltaCache {
@@ -11969,20 +10487,12 @@ mod tests {
             errors[1].contains("manifest-attested source length"),
             "{errors:?}"
         );
-        // It must never claim the container copy was compared.
         assert!(
             errors.iter().all(|error| !error.contains("container")),
             "{errors:?}"
         );
     }
 
-    /// A malformed composition value is a hard error rather than a silent fall
-    /// through to the packaged route, matching the fail-closed-at-the-decoder
-    /// law the composition vocabulary is built on.
-    ///
-    /// Production change that would make this fail: restoring the
-    /// `matches!(..., Ok(Omitted))` routing, which treats every parse failure
-    /// as "not cache-only" and carries on.
     #[test]
     fn an_unassigned_composition_spelling_refuses_at_the_gate() {
         let dir = TmpDir::new("gate_unassigned_composition");
@@ -11996,7 +10506,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("an unassigned composition must refuse");
+        .expect_err("an unassigned composition must refuse");
         assert!(error.contains("unassigned"), "{error}");
     }
 
@@ -12303,15 +10813,6 @@ mod tests {
         assert!(error.contains("verifier.sha256"), "{error}");
     }
 
-    /// The retained static-bundle evidence is LOCATED by the run-dir copy and
-    /// ATTESTED by the sealed one. A recording where the file is where the
-    /// run-dir manifest says it is, and the sealed entry carries that path's
-    /// final component, must load — and the sealed entry must really be a bare
-    /// basename, not an absolute path that happens to survive.
-    ///
-    /// Production change that would make this fail: reading the evidence path
-    /// back out of the sealed copy (which no longer carries one), or dropping
-    /// the basename binding so the two entries stop being about one file.
     #[test]
     fn retained_static_bundle_evidence_is_located_by_the_run_dir_copy() {
         let dir = TmpDir::new("retained_evidence_located");
@@ -12320,7 +10821,6 @@ mod tests {
             recorder_host::portable_manifest::portable_manifest_projection(&run_dir_manifest)
                 .expect("the fixture manifest has a portable projection");
 
-        // The fixture really is the split this check now depends on.
         for label in [
             "manifest",
             "verifier",
@@ -12357,16 +10857,6 @@ mod tests {
             .expect("evidence present at the run-dir path, bound to the sealed basename, loads");
     }
 
-    /// The three ways the relocated check refuses, each reached directly,
-    /// because the whole-document binding would refuse two of them first and a
-    /// check that is only ever shadowed is not a check.
-    ///
-    /// Production change that would make this fail, in order: dropping the
-    /// absolute-path requirement on the run-dir entry (so a relative path would
-    /// resolve against this process's working directory); dropping the basename
-    /// binding (so the run-dir file could be swapped for an unrelated one);
-    /// dropping the filesystem resolution (so evidence could be claimed for a
-    /// file that is not there).
     #[test]
     fn the_relocated_retained_evidence_check_refuses_by_name() {
         let dir = TmpDir::new("retained_evidence_refusals");
@@ -12375,9 +10865,6 @@ mod tests {
             recorder_host::portable_manifest::portable_manifest_projection(&base_run_dir)
                 .expect("the fixture manifest has a portable projection");
 
-        // A RELATIVE run-dir path — which is exactly what the sealed copy
-        // carries, so this is also the shape the old check demanded of the
-        // sealed side.
         let mut relative = base_run_dir.clone();
         relative["static_bundle"]["verifier"]["path"] = json!("static_bundle.py");
         let error = verify_static_manifest_authority(&sealed_manifest, &relative)
@@ -12393,12 +10880,8 @@ mod tests {
             "{error}"
         );
 
-        // A DIFFERENT file, absolute and real, whose basename does not bind to
-        // the sealed entry.
         let decoy = dir.0.join("decoy_verifier.py");
-        fs::write(
-            &decoy, b"# fixture static bundle verifier\n"
-        ).unwrap();
+        fs::write(&decoy, b"# fixture static bundle verifier\n").unwrap();
         let mut unbound = base_run_dir.clone();
         unbound["static_bundle"]["verifier"]["path"] =
             json!(fs::canonicalize(&decoy).unwrap().display().to_string());
@@ -12414,8 +10897,6 @@ mod tests {
             "and the sealed entry: {error}"
         );
 
-        // The file the run-dir copy names is GONE. Same bytes claimed, nothing
-        // to claim them about.
         let verifier_path = PathBuf::from(
             base_run_dir["static_bundle"]["verifier"]["path"]
                 .as_str()
@@ -12434,19 +10915,6 @@ mod tests {
         );
     }
 
-    /// The run-dir copy says WHERE, the sealed copy says WHAT. Splitting the
-    /// check across the two copies is only safe if the CLAIMS stay with the
-    /// container-authenticated one — otherwise a rewritten run-dir manifest
-    /// could name a file it also gets to describe, and the "evidence" would be
-    /// nothing but the mutable file agreeing with itself.
-    ///
-    /// Both directions, because either alone is satisfiable by reading the
-    /// wrong copy: a lie in the run-dir claim must be ignored, and a lie in the
-    /// sealed claim must refuse.
-    ///
-    /// Production change that would make this fail: reading `sha256` or `bytes`
-    /// from the run-dir entry (`located`) instead of the sealed entry
-    /// (`evidence`) in `verify_retained_file_evidence`.
     #[test]
     fn the_retained_evidence_claims_come_from_the_sealed_copy_only() {
         let dir = TmpDir::new("retained_evidence_claim_authority");
@@ -12455,9 +10923,6 @@ mod tests {
             recorder_host::portable_manifest::portable_manifest_projection(&base_run_dir)
                 .expect("the fixture manifest has a portable projection");
 
-        // The run-dir copy lies about both the hash and the length of evidence
-        // it correctly locates. Neither claim is this check's authority, so the
-        // session still loads.
         let mut lying_run_dir = base_run_dir.clone();
         lying_run_dir["static_bundle"]["verifier"]["sha256"] = json!("c".repeat(64));
         lying_run_dir["static_bundle"]["bindings"]["mod_state"]["sha256"] = json!("d".repeat(64));
@@ -12465,14 +10930,12 @@ mod tests {
         verify_static_manifest_authority(&sealed_manifest, &lying_run_dir)
             .expect("the run-dir copy's claims about the evidence are not the authority");
 
-        // The SEALED claim is. A wrong hash there refuses, naming the entry.
         let mut lying_seal = sealed_manifest.clone();
         lying_seal["static_bundle"]["verifier"]["sha256"] = json!("c".repeat(64));
         let error = verify_static_manifest_authority(&lying_seal, &base_run_dir)
             .expect_err("a wrong sealed hash must refuse");
         assert!(error.contains("static_bundle verifier.sha256"), "{error}");
 
-        // And a wrong sealed byte count, on an entry that carries one.
         let mut lying_seal = sealed_manifest;
         lying_seal["static_bundle"]["bindings"]["mod_state"]["bytes"] = json!(1);
         let error = verify_static_manifest_authority(&lying_seal, &base_run_dir)
@@ -12483,36 +10946,20 @@ mod tests {
         );
     }
 
-    /// The requirement this lane removed, exercised as a container: a sealed
-    /// recorder manifest holding the ABSOLUTE retained-evidence paths — which
-    /// is what every pre-ruling fixture sealed, and what the old
-    /// `verify_retained_file_evidence` demanded — is now refused, and refused
-    /// for being unshareable rather than admitted as evidence.
-    ///
-    /// The two requirements were mutually unsatisfiable: the sealer's
-    /// `reject_absolute_paths_in_json` has never been able to write this
-    /// container. Nothing may quietly start accepting one.
-    ///
-    /// Production change that would make this fail: restoring the sealed-side
-    /// absolute-path requirement to `verify_retained_file_evidence`, or
-    /// dropping the portability assertion that replaced it.
     #[test]
     fn an_old_style_container_sealing_absolute_evidence_paths_refuses_on_portability() {
         let dir = TmpDir::new("old_style_absolute_evidence");
         let manifest = replay_test_manifest("g", &dir.0);
         let bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-        // The old shape exactly: the run-dir document sealed verbatim, absolute
-        // evidence paths and all.
         write_replay_fixture_sealed_verbatim(&dir.0, "g", &bytes, true);
         let error =
             load_verified_replay_authority(&manifest, &bytes, &dir.0, TEST_MAX_STREAM_BYTES)
-            .expect_err("an old-style sealed copy must refuse");
+                .expect_err("an old-style sealed copy must refuse");
         assert!(error.contains("is not portable"), "{error}");
         assert!(
             error.contains("still contains an absolute path at $.static_bundle."),
             "the refusal must name the offending path: {error}"
         );
-        // Not an evidence refusal, and not a silent pass.
         assert!(
             !error.contains("must be the retained canonical absolute path"),
             "the old sealed-side requirement must be gone: {error}"
@@ -12544,7 +10991,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("internally shaped non-canonical bundle identity must fail");
+        .expect_err("internally shaped non-canonical bundle identity must fail");
         assert!(
             error.contains("canonical retained manifest identity"),
             "{error}"
@@ -12560,10 +11007,6 @@ mod tests {
                 rows.pop();
             },
         );
-        // The refusal now names WHICH role the index stopped rostering, rather
-        // than only that the row count was wrong: the index rosters every
-        // canonical role present-or-absent, so a short index is a role no
-        // reader can learn about at all.
         assert!(error.contains("not the canonical static"), "{error}");
 
         let error = static_authority_error(
@@ -12593,9 +11036,6 @@ mod tests {
                 }));
             },
         );
-        // Named, not counted: a forged extra row is refused by its own role
-        // name rather than by the index being one row too long, which is what
-        // a short-but-legal packaged roster made necessary.
         assert!(
             error.contains("unexpected static role \"forged_extra\""),
             "{error}"
@@ -12694,9 +11134,6 @@ mod tests {
             .as_object_mut()
             .unwrap()
             .remove("stream_role");
-        // `stream_role` names the recording flavor, so it is required whatever
-        // the composition — including the cache-only one, which packages no
-        // stream entry at all.
         for packaging in [
             snapshot::RawStreamPackaging::Packaged,
             snapshot::RawStreamPackaging::Omitted,
@@ -12763,15 +11200,6 @@ mod tests {
             &mut summary,
         );
         assert_eq!(summary.per_domain_combined_units[&47]["adapter_rows"], 7);
-        // An arbitrary bit pattern, chosen only to prove the shared authority
-        // hands back THIS domain's own status word untouched rather than one
-        // it synthesized. Bit 9 (`STATUS_PARTIAL_DATA`) is deliberately clear:
-        // since d47 gained per-family partial admission, an UNDECLARED payload
-        // whose only failure-class bit is `PARTIAL_DATA` is refused by the
-        // canonical decoder, because d47's expected-partial tolerance is
-        // written for a DECLARED family gap and must never absorb an
-        // undeclared one. The declared shape is covered below; this call is
-        // the legacy full-snapshot shape, which must still decode.
         let d47_legacy_status =
             0x1234u32 & !characters_leaders_cabinet_live_lane::STATUS_PARTIAL_DATA;
         let d47 =
@@ -12792,10 +11220,6 @@ mod tests {
         .unwrap();
         assert_eq!(d47.status_flags, Some(d47_legacy_status));
 
-        // The other d47 shape: a payload that declares which row families it
-        // observed. It must decode independently too — the declaration is a
-        // header word this crate's authority path has to carry through, not a
-        // reason for the shared decode to refuse the domain.
         let d47_declared = characters_leaders_cabinet_live_lane::encode_payload_with_families(
             0,
             0,
@@ -12811,8 +11235,6 @@ mod tests {
             recorder_host::domain_data_authority::DomainDataContext::default(),
         )
         .unwrap();
-        // The encoder derives the status from the mask, so a declared payload
-        // always spells the partial it is admitting.
         assert_eq!(
             d47_declared.status_flags,
             Some(characters_leaders_cabinet_live_lane::STATUS_PARTIAL_DATA)
@@ -13391,9 +11813,6 @@ mod tests {
             },
             "static_bundle": static_bundle,
             "portable_content_manifest": portable_content_manifest,
-            // Positively declared, as every recording now declares it. The
-            // launch-time fixtures take the launch-time route; the attach-time
-            // tests rewrite this field, which is exactly the routing contract.
             recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD:
                 recorder_host::attach_content_proof::KIND_LAUNCH_TIME_STATIC_BUNDLE_V1,
             recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD: Value::Null,
@@ -13403,11 +11822,6 @@ mod tests {
                 "session_manifest": "recorder/native_session_manifest.json",
                 "session_manifest_role": "recorder_manifest"
             },
-            // Every compact capture seals a `host_finalize` block, and the
-            // authority loader now requires one, so the base fixture carries
-            // the fields that are identical in both copies. Tests that need the
-            // divergent live shape add the directional fields on top; see
-            // `live_shaped_manifest_pair`.
             "host_finalize": {
                 "streaming": true,
                 "stream_bytes": 4096,
@@ -13459,9 +11873,7 @@ mod tests {
                 let artifact = replay_test_static_artifact_value(role);
                 let artifact_bytes = serde_json::to_vec(&artifact).unwrap();
                 let artifact_file = required_static_bundle_file(role).unwrap();
-                fs::write(
-                    bundle_dir.join(artifact_file), &artifact_bytes
-                ).unwrap();
+                fs::write(bundle_dir.join(artifact_file), &artifact_bytes).unwrap();
                 let artifact_sha256 = artifact["artifact_sha256"].as_str().unwrap();
                 let report = json!({
                     "schema": format!("fixture.{role}.static_gate_report.v1"),
@@ -13470,9 +11882,7 @@ mod tests {
                 });
                 let report_bytes = serde_json::to_vec_pretty(&report).unwrap();
                 let report_file = required_static_gate_report_file(role).unwrap();
-                fs::write(
-                    bundle_dir.join(&report_file), &report_bytes
-                ).unwrap();
+                fs::write(bundle_dir.join(&report_file), &report_bytes).unwrap();
                 json!({
                     "role": role,
                     "file": artifact_file,
@@ -13544,9 +11954,7 @@ mod tests {
         });
         let source_inventory_bytes = serde_json::to_vec_pretty(&source_inventory).unwrap();
         let source_inventory_path = external_dir.join("source_inventory.json");
-        fs::write(
-            &source_inventory_path, &source_inventory_bytes
-        ).unwrap();
+        fs::write(&source_inventory_path, &source_inventory_bytes).unwrap();
         fs::write(
             embedded_bindings_dir.join("source_inventory.json"),
             &source_inventory_bytes,
@@ -13593,9 +12001,7 @@ mod tests {
             "provenance": {"fixture": true},
         }))
         .unwrap();
-        fs::write(
-            bundle_dir.join("token_join_report.json"), &token_join
-        ).unwrap();
+        fs::write(bundle_dir.join("token_join_report.json"), &token_join).unwrap();
 
         let mut retained_bindings = serde_json::Map::new();
         retained_bindings.insert(
@@ -13656,9 +12062,7 @@ mod tests {
         retained_manifest["bundle_id"] = json!(bundle_id);
         let retained_manifest_bytes = serde_json::to_vec_pretty(&retained_manifest).unwrap();
         let retained_manifest_path = bundle_dir.join("static_bundle_manifest.json");
-        fs::write(
-            &retained_manifest_path, &retained_manifest_bytes
-        ).unwrap();
+        fs::write(&retained_manifest_path, &retained_manifest_bytes).unwrap();
 
         let verifier_bytes = b"# fixture static bundle verifier\n".to_vec();
         let verifier_path = external_dir.join("static_bundle.py");
@@ -13696,23 +12100,9 @@ mod tests {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // KIND C — attach-time effective-VFS join
-    // -----------------------------------------------------------------------
-
-    /// A recording of the shape the SHIPPED recorder produces: a late attach,
-    /// so no static bundle, no pre-resume content epoch, and a container with
-    /// no top-level portable content manifest. What it does carry is the
-    /// attach-time proof block.
-    ///
-    /// `packaged` is the role subset this recording ships; the rest are named
-    /// in `production_profile.missing_required_static_artifacts`, which is how
-    /// a short roster stays accounted for instead of merely being short.
     fn attach_time_manifest(game_id: &str, evidence_root: &Path, packaged: &[&str]) -> Value {
         let mut manifest = replay_test_manifest(game_id, evidence_root);
         let object = manifest.as_object_mut().unwrap();
-        // Everything the launch-time route owns comes back out: this recording
-        // never had a suspended process to observe.
         object.insert("static_bundle".to_string(), Value::Null);
         object.insert("portable_content_manifest".to_string(), Value::Null);
         object.insert(
@@ -13720,9 +12110,6 @@ mod tests {
             json!(recorder_host::attach_content_proof::KIND_ATTACH_TIME_EFFECTIVE_VFS_JOIN_V1),
         );
         object["production_profile"]["enabled"] = json!(false);
-        // D81 is scheduled deliberately: it is the domain that consumes a
-        // content file DIRECTLY rather than through a packaged catalog, so the
-        // positive case proves that requirement is met rather than absent.
         object.insert(
             "scheduled_domains".to_string(),
             json!([compact_contract::rail_replay::DOMAIN_NAME, "fuel_live"]),
@@ -13795,8 +12182,6 @@ mod tests {
         manifest
     }
 
-    /// Seal an attach-time recording: the packaged role subset, and NO
-    /// container content manifest.
     fn write_attach_time_replay_fixture(
         dir: &Path,
         game_id: &str,
@@ -13838,10 +12223,6 @@ mod tests {
                 hour_index: None,
             },
         ];
-        // The recorder rosters EVERY canonical role in the index, badging the
-        // ones it does not carry, so the fixture does too — a short packaged
-        // roster that simply omitted its absent roles would be a container the
-        // recorder cannot produce.
         for role in compact_contract::REQUIRED_STATIC_ARTIFACTS {
             if !packaged.contains(role) {
                 descriptors.push(json!({
@@ -13890,25 +12271,16 @@ mod tests {
             &entries,
             &snapshot::PackIdentity {
                 schema_version: Some(REPLAY_CONTAINER_SCHEMA_VERSION.to_string()),
-                // The launch-time epoch a late attach can never have.
                 content_manifest: None,
                 ..snapshot::PackIdentity::default()
             },
             false,
         )
         .unwrap();
-        fs::write(
-            dir.join("native_session.battleplan"), packed
-        ).unwrap();
+        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
         sealed_bytes
     }
 
-    /// The whole KIND C route, end to end and then broken one way at a time.
-    ///
-    /// The positive case is the shape the shipped recorder produces: six of the
-    /// eight roles packaged, the other two named as missing, no static bundle,
-    /// no container content manifest — a recording the launch-time route
-    /// refuses four separate ways.
     #[test]
     fn an_attach_time_recording_certifies_and_every_break_refuses_by_name() {
         let packaged = [
@@ -13954,9 +12326,6 @@ mod tests {
 
         let breaks: Vec<(&str, Box<dyn Fn(&mut Value)>, &str)> = vec![
             (
-                // The route itself. A recording that states no content proof is
-                // not certifiable, and it says so rather than being caught by a
-                // downstream absence.
                 "attach_kind_none",
                 Box::new(|manifest: &mut Value| {
                     manifest[recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD] =
@@ -13974,8 +12343,6 @@ mod tests {
                 "unsettled attach window",
             ),
             (
-                // The digest must be re-derivable from the rows it travels
-                // with, or the layer stack is a claim nobody checked.
                 "attach_forged_stack_digest",
                 Box::new(|manifest: &mut Value| {
                     manifest
@@ -13985,9 +12352,6 @@ mod tests {
                 "is not the digest of the layer rows",
             ),
             (
-                // THE LINE BETWEEN KIND C AND A WEAKER ADMISSION: a packaged
-                // catalog with no join receipt is a catalog that was never
-                // bound to the captured content.
                 "attach_unjoined_role",
                 Box::new(|manifest: &mut Value| {
                     let joins = manifest
@@ -14000,8 +12364,6 @@ mod tests {
                 "is packaged but has no attach-time join receipt",
             ),
             (
-                // A receipt for a DIFFERENT build of the artifact proves
-                // nothing about the bytes this container ships.
                 "attach_receipt_for_other_build",
                 Box::new(|manifest: &mut Value| {
                     manifest
@@ -14025,9 +12387,6 @@ mod tests {
                 "both joins and refuses static role",
             ),
             (
-                // A role in neither list is a role the recording never
-                // accounts for, which is exactly how a short roster would hide
-                // a catalog rather than name it.
                 "attach_role_in_neither_list",
                 Box::new(|manifest: &mut Value| {
                     manifest["production_profile"]["missing_required_static_artifacts"] = json!([]);
@@ -14045,8 +12404,6 @@ mod tests {
                 "declared both packaged and missing",
             ),
             (
-                // The one content file the roster reads directly rather than
-                // through a packaged catalog.
                 "attach_required_content_refused",
                 Box::new(|manifest: &mut Value| {
                     manifest
@@ -14078,9 +12435,6 @@ mod tests {
                 "declares the attach-time proof but carries no",
             ),
             (
-                // A VACUOUS PROOF: an empty layer stack has a perfectly valid
-                // digest, so the "the proof states the world it was taken in"
-                // claim would otherwise be satisfied by stating no world.
                 "attach_empty_layer_stack",
                 Box::new(|manifest: &mut Value| {
                     let layers: Vec<recorder_host::attach_content_proof::ProofLayer> = Vec::new();
@@ -14094,9 +12448,6 @@ mod tests {
                 "states no content layers",
             ),
             (
-                // The other vacuous shape: package nothing, declare everything
-                // missing, and report `static_artifacts_joined: true` over an
-                // empty set.
                 "attach_packages_nothing",
                 Box::new(|manifest: &mut Value| {
                     manifest["replay_packaging"]["static_artifacts"] = json!([]);
@@ -14108,10 +12459,6 @@ mod tests {
                 "packages no static artifacts at all",
             ),
             (
-                // TWO EMPTY ARRAYS MUST NOT CERTIFY. The expected roster is
-                // derived from the recording's own scheduled domains, so a
-                // recording that scheduled D81 and joined nothing is refused
-                // even though it also refused nothing.
                 "attach_required_content_silently_absent",
                 Box::new(|manifest: &mut Value| {
                     manifest
@@ -14130,10 +12477,6 @@ mod tests {
                 "is not in the layer stack the proof states",
             ),
             (
-                // THE ROUTE MUST MATCH THE EVIDENCE. A recording holding the
-                // pre-resume evidence that declares the attach-time kind would
-                // otherwise skip the launch-time route's static bundle,
-                // retained evidence and eight-role roster entirely.
                 "attach_kind_over_pre_resume_evidence",
                 Box::new(|manifest: &mut Value| {
                     manifest["early_render_launch_manifest"] =
@@ -14142,8 +12485,6 @@ mod tests {
                 "carries pre-resume evidence",
             ),
             (
-                // The interval this proof does NOT cover has to be a measured
-                // quantity in the verified result, not a caveat in a document.
                 "attach_no_process_start",
                 Box::new(|manifest: &mut Value| {
                     manifest
@@ -14174,13 +12515,6 @@ mod tests {
         }
     }
 
-    /// A role this recording does not package must be BADGED absent, with a
-    /// reason.
-    ///
-    /// The short packaged roster is what makes the attach-time route usable at
-    /// all, and it is also what could let a container drop a catalog quietly.
-    /// The index rosters every canonical role either way; these are the two
-    /// ways that badging could be hollowed out.
     #[test]
     fn an_unpackaged_role_must_be_badged_absent_with_a_reason() {
         let packaged = [
@@ -14248,9 +12582,6 @@ mod tests {
         }
     }
 
-    /// The launch-time route must not be reachable by a recording that merely
-    /// omits the new field, and the attach-time route must not be reachable by
-    /// declaring it over a launch-time recording's body.
     #[test]
     fn the_content_proof_route_is_read_positively_and_never_inferred() {
         let dir = TmpDir::new("content_proof_route");
@@ -14273,10 +12604,6 @@ mod tests {
             "an absent declaration must refuse, never default to the launch-time route: {error}"
         );
 
-        // The other direction: a launch-time body that CLAIMS the attach-time
-        // kind has no proof block, so it refuses on the block rather than
-        // silently taking the weaker route's checks over the stronger route's
-        // evidence.
         let dir = TmpDir::new("content_proof_route_swap");
         let mut manifest = replay_test_manifest("g", &dir.0);
         manifest[recorder_host::attach_content_proof::CONTENT_PROOF_KIND_FIELD] =
@@ -14295,9 +12622,6 @@ mod tests {
             "{error}"
         );
 
-        // And the third direction: a launch-time recording that ALSO carries an
-        // attach-time proof. Without this the two proofs could coexist and the
-        // declaration alone would pick which set of checks ran.
         let dir = TmpDir::new("content_proof_route_both");
         let mut manifest = replay_test_manifest("g", &dir.0);
         manifest[recorder_host::attach_content_proof::ATTACH_TIME_CONTENT_PROOF_FIELD] = json!({
@@ -14344,24 +12668,12 @@ mod tests {
         (descriptors, entries)
     }
 
-    /// How a fixture derives the SEALED `recorder_manifest` from the run-dir
-    /// document it is handed.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum SealedCopy {
-        /// What the recorder does: seal the portable projection, so the sealed
-        /// copy carries no absolute path. Every honest fixture wants this — the
-        /// authority loader now refuses a sealed manifest that carries one.
         Portable,
-        /// Seal these exact bytes. Only for tests that deliberately forge the
-        /// sealed copy into a shape the recorder would refuse to write.
         Verbatim,
     }
 
-    /// The bytes the recorder would seal for this run-dir manifest, produced by
-    /// the recorder's OWN seal-time function, so a fixture cannot model a
-    /// projection the production sealer does not perform.
-    /// A fixture coverage map: `hours` verified hour indexes, each with a
-    /// digest-backed basis, plus any excluded rows the caller names.
     fn fixture_hour_coverage(
         verified: &[i64],
         excluded: &[(i64, &str)],
@@ -14380,12 +12692,6 @@ mod tests {
 
     fn sealed_manifest_bytes(manifest_bytes: &[u8]) -> Vec<u8> {
         let mut manifest: Value = serde_json::from_slice(manifest_bytes).unwrap();
-        // The per-hour coverage map is a SEALED-ONLY pre-pack field: the
-        // recorder mints it from the seal walk's verdict and writes it into the
-        // container copy alone (`session_manifest_bytes_with_pre_pack_host_finalize`).
-        // Modelling that here rather than putting it in the run-dir document is
-        // what keeps this fixture corpus a recording the recorder could
-        // actually have produced.
         if let Some(finalize) = manifest
             .get_mut("host_finalize")
             .and_then(Value::as_object_mut)
@@ -14402,18 +12708,6 @@ mod tests {
             .expect("a fixture run-dir manifest must have a portable projection")
     }
 
-    /// AN EXCLUDED HOUR MUST NOT REACH REPLAY.
-    ///
-    /// The per-hour seal publishes a recording that has injured hours, which the
-    /// all-or-nothing certification it replaced could never do. That makes this
-    /// boundary load-bearing in a way it was not before: an hour the map refuses
-    /// is an hour a replay consumer must never be served.
-    ///
-    /// kills: dropping the `is_hour_verified` check from
-    /// `refuse_hours_the_coverage_map_does_not_vouch_for` (or weakening it to
-    /// "not explicitly excluded"). The first case then serves an hour the
-    /// recording refused; the second serves an hour the recording never
-    /// mentioned, which is coverage inferred from absence.
     #[test]
     fn a_container_may_not_publish_an_hour_its_coverage_map_refuses() {
         let path = Path::new("fixture.battleplan");
@@ -14421,16 +12715,14 @@ mod tests {
         refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &clean, path)
             .expect("every published hour is verified");
 
-        // An hour the map EXCLUDES, published anyway.
         let injured = fixture_hour_coverage(&[0, 2], &[(1, "framing damage at byte 421")]);
         let error = refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &injured, path)
-                .unwrap_err();
+            .unwrap_err();
         assert!(
             error.contains("does not vouch for") && error.contains("framing damage at byte 421"),
             "the refusal must name the hour AND why it was excluded: {error}"
         );
 
-        // An hour the map does not mention at all. Absence is not a claim.
         let silent = fixture_hour_coverage(&[0, 2], &[]);
         let error = refuse_hours_the_coverage_map_does_not_vouch_for(&[0, 1, 2], &silent, path)
             .unwrap_err();
@@ -14440,19 +12732,6 @@ mod tests {
         );
     }
 
-    /// A CACHE-ONLY CONTAINER BUILDS OVER AN INTERIOR HOLE, SERVES EVERY
-    /// VERIFIED HOUR, AND REFUSES THE EXCLUDED ONE BY NAME.
-    ///
-    /// This is the replay end of the owner's interior-hole ruling (2026-08-12,
-    /// task #189). Before it the recording could not be built at all; the
-    /// question here is the one that only appears afterwards — whether the
-    /// authority still admits it, and whether it can tell the difference
-    /// between a hole the recording sealed and a hole the artifact invented.
-    ///
-    /// kills: dropping `bind_index_holes_to_sealed_coverage` from
-    /// `load_verified_replay_authority`. The artifact's holes are then a
-    /// SECOND, unjoined naming of the recording's injuries, so a container could drop
-    /// a good hour on an excuse the seal never made and nothing would notice.
     #[test]
     fn a_cache_only_container_serves_around_a_named_interior_hole() {
         const SEALED_REASON: &str = "sequence discontinuity at byte 421: 3 -> 7";
@@ -14492,7 +12771,6 @@ mod tests {
             &authority.details[recorder_host::hour_coverage::HOUR_COVERAGE_FIELD]["excluded_hours"];
         assert_eq!(excluded[0]["reason"], json!(SEALED_REASON));
 
-        // A hole the recording did NOT seal in those words.
         let paraphrased = cache_only_authority_error(
             "gz_hole_paraphrased",
             CacheOnlyBreak {
@@ -14506,8 +12784,6 @@ mod tests {
             "a paraphrase is a second author: {paraphrased}"
         );
 
-        // A hole over an hour the recording VERIFIES: a good hour dropped on an
-        // excuse the seal never made.
         let invented = cache_only_authority_error(
             "gz_hole_invented",
             CacheOnlyBreak {
@@ -14521,7 +12797,6 @@ mod tests {
             "an invented hole must be refused: {invented}"
         );
 
-        // A hole over an hour the map does not mention at all.
         let unmentioned = cache_only_authority_error(
             "gz_hole_unmentioned",
             CacheOnlyBreak {
@@ -14536,35 +12811,6 @@ mod tests {
         );
     }
 
-    /// A DAMAGED CACHE RECORD COSTS ITS CHECKPOINT WINDOW, NOT THE CONTAINER.
-    ///
-    /// Owner ruling 2026-08-12 (task #191), closing GY-2. The container's own
-    /// entry account still describes the cache the recorder sealed; the bytes
-    /// on disk no longer are it. Before this the loader refused the whole
-    /// recording twice over — once because a damaged entry serving no single
-    /// game hour is unisolatable, and once because H4IX bound the H4CP with a
-    /// single whole-cache digest — so one flipped byte cost every hour.
-    ///
-    /// The fixture builds four hours at checkpoint interval 2, so hours 0-1 and
-    /// 2-3 are two whole windows, and rots the record of hour 2, which is the
-    /// second window's CHECKPOINT.
-    ///
-    /// kills, and each at the point it actually fails:
-    ///
-    ///  * dropping the `CHECKPOINT_CACHE_ROLE` exemption from the unisolatable
-    ///    refusal — the `expect` below fails, because the whole container is
-    ///    refused before any attribution runs;
-    ///  * dropping the per-record confinement from link 6 — the `expect` below
-    ///    fails too, but one link later: with no confined hour to explain the
-    ///    moved whole-cache digest, link 6b's empty-confinement guard refuses
-    ///    the container. The coverage assertions are never reached in either
-    ///    case, and that is the point — this test's `expect` is the assertion
-    ///    that a damaged record is not a whole-container refusal;
-    ///  * widening the confinement past the window — hour 0 or 1 stops serving
-    ///    and `verified_hours` is no longer 2;
-    ///  * narrowing it — hour 3 is served out of a chain that reads a record
-    ///    whose bytes no longer hash to the sealed digest, and the confined
-    ///    hours assertion fails.
     #[test]
     fn post_seal_cache_record_damage_costs_its_checkpoint_window() {
         let dir = TmpDir::new("ha_post_seal_record_rot");
@@ -14587,8 +12833,6 @@ mod tests {
         )
         .expect("one damaged record must not cost the container");
 
-        // The SEALED index still serves every hour — the seal vouched for all
-        // four, and that claim is not retracted by later rot.
         assert_eq!(
             authority.details["indexed_hour_indexes"],
             json!([0, 1, 2, 3])
@@ -14603,7 +12847,6 @@ mod tests {
             json!(1)
         );
 
-        // Exactly the damaged record's window is confined, by name.
         let confined = authority.details[CACHE_DAMAGE_CONFINED_HOURS_FIELD]
             .as_array()
             .expect("confined hours are reported")
@@ -14625,8 +12868,6 @@ mod tests {
             );
         }
 
-        // And the per-hour coverage map a replay consumer reads says the same
-        // thing, in the same words, for those hours and no others.
         let coverage = &authority.details[recorder_host::hour_coverage::HOUR_COVERAGE_FIELD];
         assert_eq!(coverage["verified_hours"], json!(2));
         let excluded: Vec<i64> = coverage["excluded_hours"]
@@ -14648,47 +12889,6 @@ mod tests {
         );
     }
 
-    /// DAMAGE THE PER-RECORD ACCOUNT CANNOT ATTRIBUTE IS STILL A WHOLE-CONTAINER
-    /// REFUSAL.
-    ///
-    /// The confinement above is not a licence to serve whatever survives. FIVE
-    /// shapes of H4CP damage belong to no single hour. The first is the
-    /// artifact growing LONGER than the index published, or shorter than its
-    /// own header, refused by `CacheAudit::finish` and pinned on the snapshot
-    /// side by `an_audit_confines_a_short_cache_and_refuses_a_long_one`, narrowed
-    /// to those two length shapes because an ordinary TRUNCATION is confined to the hours past the
-    /// verified prefix). Of the remaining four, two are pinned here:
-    ///
-    ///  * the file HEADER — the artifact's own identity and the framing every
-    ///    record offset is measured from;
-    ///  * the packaged index and the sealed receipt naming different caches.
-    ///
-    /// A fourth — "the container verified the entry against its own manifest
-    /// digest, yet a record disagrees with the seal" — is pinned by
-    /// `every_broken_attestation_link_refuses_by_its_own_name`'s
-    /// `corrupt_cache_bytes` cell, which damages the cache BEFORE packing so
-    /// the container's account covers the damaged bytes.
-    ///
-    /// The fifth — "the container refused the entry, yet every record matches
-    /// the seal" — is documented at its code site rather than pinned: it needs
-    /// a container whose own manifest digest contradicts bytes it was derived
-    /// from, which this packer cannot build.
-    ///
-    /// kills: this test pins the DIAGNOSIS each unattributable shape gets, not
-    /// the refusal itself — the refusals are layered on purpose and each shape
-    /// has a fallback. Delete the header
-    /// validation and the rotted header is still refused, by the "the container
-    /// refused the entry yet every record matches the seal" arm; delete the
-    /// index-versus-seal comparison and the substituted index is still refused,
-    /// by link 6b's empty-confinement guard. What either deletion costs is the
-    /// sentence: a reader learns "something about this container is wrong"
-    /// instead of which artifact moved. Both assertions below are on the
-    /// message for exactly that reason.
-    ///
-    /// What it DOES pin as an admission: neither shape may be CONFINED. A
-    /// change that let the confinement run on the strength of the record
-    /// account alone would serve hours out of a cache bound to a different
-    /// source, and the `expect_err` here is what refuses that.
     #[test]
     fn unattributable_cache_damage_still_refuses_the_whole_container() {
         let header = cache_only_authority_error(
@@ -14710,12 +12910,6 @@ mod tests {
             "the header refusal names the identity it broke: {header}"
         );
 
-        // The index's cache binding and the seal's receipt naming different
-        // caches. This is what the deleted "H4IX cache_sha256 vs the streamed
-        // bytes" comparison becomes under confinement: comparing two SEALED
-        // claims catches the substitution without an hour paying for it, and
-        // it must still be a whole-recording refusal, because an index that is
-        // not the seal's index cannot attribute anything.
         let substituted = cache_only_authority_error(
             "ha_index_and_seal_disagree",
             CacheOnlyBreak {
@@ -14736,41 +12930,8 @@ mod tests {
         );
     }
 
-    /// A REPLAY ARTIFACT INDEXED AS AN HOUR'S SNAPSHOT REFUSES THE CONTAINER.
-    ///
-    /// The concern is real and worth pinning:
-    /// `EntryVerification::hour_index` is resolved by matching an entry's path
-    /// against the container index's snapshot file names and says nothing about
-    /// the entry's ROLE, so an index that listed the canonical H4CP as hour 9's
-    /// snapshot would make the cache's damage row carry hour 9 — and the
-    /// per-hour damage fold would exclude hour 9 on top of the checkpoint window
-    /// the damage actually reaches. A healthy hour dropped for an injury that
-    /// never touched it is exactly the exactness the confinement law exists to
-    /// keep.
-    ///
-    /// WHERE the alias is refused depends on its POSITION in the index, and
-    /// both positions are covered here:
-    ///
-    ///  * FIRST — `Container::open` decodes the first indexed snapshot as the
-    ///    representative it checks mod and build identity against, so an H4CP
-    ///    in that position never opens: it begins with the four bytes `H4CP`,
-    ///    which no JSON document can, and a damaged one fails its CRC first.
-    ///  * BEHIND a valid snapshot — open leaves later snapshots lazy, so the
-    ///    container opens and the alias reaches `load_verified_replay_authority`.
-    ///    That is the case the guard exists for, and it is a LIVE guard, not a
-    ///    documented-dead one.
-    ///
-    /// kills: deleting the alias guard. The damaged later-alias case then loads
-    /// with hour 1 excluded beside the confined window {2,3} — a healthy hour
-    /// dropped for an injury that never touched it — and the clean later-alias
-    /// case loads a container that claims one file is both the certified cache
-    /// and an hour's world state.
     #[test]
     fn a_replay_artifact_indexed_as_an_hours_snapshot_refuses_the_container() {
-        // BEHIND a valid snapshot: the container opens, and the authority's own
-        // guard is what refuses. Hour 1 is deliberately OUTSIDE the damaged
-        // record's window {2,3}, so without the guard it would be excluded by
-        // the entry-damage fold on top of the confinement.
         let damaged_alias = cache_only_authority_error(
             "ha_aliased_cache_behind_damaged",
             CacheOnlyBreak {
@@ -14788,8 +12949,6 @@ mod tests {
         );
         assert!(damaged_alias.contains("hour_index 1"), "{damaged_alias}");
 
-        // The same alias with nothing damaged: the contradiction IS the alias,
-        // so the refusal does not wait for an injury.
         let clean_alias = cache_only_authority_error(
             "ha_aliased_cache_behind_clean",
             CacheOnlyBreak {
@@ -14805,8 +12964,6 @@ mod tests {
             "{clean_alias}"
         );
 
-        // FIRST position: refused by the container reader, before the authority
-        // sees anything.
         let first = cache_only_authority_error(
             "ha_aliased_cache_first",
             CacheOnlyBreak {
@@ -14823,31 +12980,8 @@ mod tests {
         );
     }
 
-    /// THE PACKAGED ARTIFACTS MUST BE THE ONES THE SEAL CERTIFIED.
-    ///
-    /// The name join above binds an H4IX hole's HOUR and REASON to the sealed
-    /// coverage map. It cannot bind the hole's BYTE RANGE, because the coverage
-    /// map is not a byte-range authority: a torn tail's row reports `[0, 36)`
-    /// for an hour at the end of the stream. So a container
-    /// could otherwise carry an index that names the right hours for the right
-    /// reasons while placing a hole over the wrong records, or omitting one and
-    /// letting a served hour's range stretch across the injured hour — hour
-    /// misattribution reaching replay.
-    ///
-    /// This closes it transitively. `build_certified_replay_artifacts` compares
-    /// the packaged H4IX against the certified fold index row for row — hours,
-    /// holes, reasons, start AND end offsets — and only afterwards hashes the
-    /// bytes; the seal carries that digest. Requiring the packaged bytes to
-    /// match it makes the build-time comparison binding at replay time.
-    ///
-    /// kills: dropping link 5b (the H4IX receipt), dropping link 6b (the H4CP
-    /// receipt), or making `sealed_artifact_digest` tolerate a missing field.
-    /// Each is perturbed separately below, because each is a separate receipt
-    /// that can rot on its own; a test that only bent the index digest would
-    /// leave the cache link free to be deleted with the suite still green.
     #[test]
     fn a_packaged_artifact_must_be_the_one_the_seal_certified() {
-        // Link 5b: the packaged H4IX is not the index the seal certified.
         let swapped_index = cache_only_authority_error(
             "gz_index_not_sealed",
             CacheOnlyBreak {
@@ -14863,8 +12997,6 @@ mod tests {
              naming the index receipt: {swapped_index}"
         );
 
-        // Link 6b: the packaged H4CP is not the cache the seal certified. A
-        // SEPARATE receipt, so a separate mutation.
         let swapped_cache = cache_only_authority_error(
             "gz_cache_not_sealed",
             CacheOnlyBreak {
@@ -14879,10 +13011,6 @@ mod tests {
              naming the cache receipt: {swapped_cache}"
         );
 
-        // No receipts at all, in BOTH copies — a recording that ships artifacts
-        // it never committed to. Removing them from the run-dir copy alone
-        // would refuse on the run-dir/sealed manifest binding instead, which is
-        // a different link and would not pin this one.
         let absent = cache_only_authority_error(
             "gz_no_artifact_receipt",
             CacheOnlyBreak {
@@ -14897,13 +13025,6 @@ mod tests {
         );
     }
 
-    /// A SEALED RECORDING MUST STATE ITS COVERAGE, AND STATE IT ADMISSIBLY.
-    ///
-    /// kills: making `read_sealed_hour_coverage` tolerate a missing
-    /// `host_finalize.hour_coverage` (returning an empty map). Every hour of
-    /// every recording would then be "not vouched for" or, worse, silently
-    /// admitted by a laxer leak guard — a consumer would be inventing the
-    /// per-hour claims the owner ruling requires the recording to make.
     #[test]
     fn a_sealed_recorder_manifest_without_a_coverage_map_is_refused() {
         let error = read_sealed_hour_coverage(&json!({ "host_finalize": {} })).unwrap_err();
@@ -14912,7 +13033,6 @@ mod tests {
             "{error}"
         );
 
-        // Present but inadmissible: a verified hour with no digest to back it.
         let mut forged = fixture_hour_coverage(&[0], &[]).to_json();
         forged["hours"][0]
             .as_object_mut()
@@ -14935,8 +13055,6 @@ mod tests {
         assert_eq!(read.excluded_hours().len(), 1);
     }
 
-    /// Returns the bytes actually sealed into the container, which for an
-    /// honest fixture are NOT the run-dir bytes handed in.
     fn write_replay_fixture(
         dir: &Path,
         game_id: &str,
@@ -14952,8 +13070,6 @@ mod tests {
         )
     }
 
-    /// Seal the given bytes verbatim, for the tests whose whole point is a
-    /// sealed copy the recorder would have refused to produce.
     fn write_replay_fixture_sealed_verbatim(
         dir: &Path,
         game_id: &str,
@@ -14992,10 +13108,6 @@ mod tests {
         )
     }
 
-    /// The packaged-composition fixture, with the container's OWN
-    /// `schema_version` under test control. Production writes
-    /// `REPLAY_CONTAINER_SCHEMA_VERSION` here; a test that passes anything else
-    /// is building a genuinely mismatched container.
     fn write_replay_fixture_full<F>(
         dir: &Path,
         game_id: &str,
@@ -15008,10 +13120,6 @@ mod tests {
     where
         F: FnOnce(&mut Vec<Value>, &mut Vec<snapshot::PackEntry>),
     {
-        // The run directory keeps the absolute paths; the container gets the
-        // portable projection. Modelling that here rather than sealing the
-        // run-dir bytes is what makes the fixture corpus a recording the
-        // recorder could actually have produced.
         let sealed_bytes = match sealed_copy {
             SealedCopy::Portable => sealed_manifest_bytes(manifest_bytes),
             SealedCopy::Verbatim => manifest_bytes.to_vec(),
@@ -15066,19 +13174,10 @@ mod tests {
             false,
         )
         .unwrap();
-        fs::write(
-            dir.join("native_session.battleplan"), packed
-        ).unwrap();
+        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
         sealed_bytes
     }
 
-    /// One default-composition (cache-only) recording, in the two places the
-    /// gate reads it from: the run directory and the sealed container.
-    ///
-    /// This is what the recorder itself produces without `--package-raw-stream`
-    /// — the run dir keeps the raw collector stream it captured, and the
-    /// container ships the delta cache folded from that stream with no
-    /// raw-stream entry at all.
     struct CacheOnlyRecording {
         manifest: Value,
         manifest_bytes: Vec<u8>,
@@ -15086,95 +13185,31 @@ mod tests {
         stream_bytes: u64,
     }
 
-    /// How a test bends exactly ONE link of the cache-only attestation chain.
-    /// Every field defaults to the honest recording.
     #[derive(Default)]
     struct CacheOnlyBreak {
-        /// Fold the delta cache from these bytes instead of the run-dir stream.
         cache_folded_from: Option<Vec<u8>>,
-        /// State this source length in H4IX instead of the folded length.
         index_source_len: Option<u64>,
-        /// Leave the H4CP header bound to the digest of these bytes while H4IX
-        /// still states the real source. H4CP carries the source DIGEST only,
-        /// so this is the one link that catches it.
         cache_header_digest_of: Option<Vec<u8>>,
-        /// Rewrite the container-authenticated `stream_storage` block.
         stream_storage: Option<Value>,
-        /// Package a raw-stream entry anyway, contradicting the declaration.
         package_stream_entry: bool,
-        /// Leave the raw stream out of the run directory (the portable
-        /// consumer that holds only the sealed container).
         omit_run_dir_stream: bool,
-        /// Corrupt the packaged H4CP bytes after the index was built over them.
         corrupt_cache_bytes: bool,
-        /// Write these bytes into the run directory instead of the stream every
-        /// other artifact was built over.
         run_dir_stream_override: Option<Vec<u8>>,
-        /// Seal the container with this `manifest.json.schema_version` instead
-        /// of the one the recorder writes. The CONTAINER's own vocabulary.
         container_schema_version: Option<String>,
-        /// Write this into the recorder manifest's own `schema` field instead
-        /// of the session-format identifier the recorder writes. The RECORDER
-        /// MANIFEST's vocabulary — a different field on a different artifact.
         manifest_schema: Option<String>,
-        /// Build a THREE-hour cache whose middle hour is a named H4IX hole,
-        /// carrying this reason — the shape a recording with one injured hour
-        /// has since the interior-hole ruling (2026-08-12, task #189).
         index_hole_reason: Option<String>,
-        /// Seal this coverage map into the container manifest instead of the
-        /// fixture default, as `(verified hours, (excluded hour, reason))`.
         sealed_coverage: Option<(Vec<i64>, Vec<(i64, String)>)>,
-        /// Seal this `host_finalize.fold.hour_index_sha256` instead of the
-        /// digest of the H4IX the container actually ships — the shape of a
-        /// container whose index is not the one finalize certified.
         sealed_index_digest: Option<String>,
-        /// The same, for `host_finalize.fold.checkpoint_cache_sha256`.
         sealed_cache_digest: Option<String>,
-        /// Seal NO artifact receipts at all, in BOTH manifest copies — the
-        /// shape of a recording that ships artifacts it never committed to.
-        /// Removing them from the run-dir copy alone would refuse on the
-        /// run-dir/sealed binding instead, which is a different link.
         omit_artifact_receipts: bool,
-        /// Build this many served hours, tiling the source, at
-        /// [`Self::checkpoint_interval`]. `None` builds the single-hour cache
-        /// every other test here wants.
         cache_hours: Option<usize>,
-        /// Build the cache at this checkpoint interval instead of the
-        /// production 168, so a fixture small enough to read has more than one
-        /// checkpoint WINDOW in it.
         checkpoint_interval: Option<u32>,
-        /// POST-SEAL ROT: flip one byte inside the cache record at this index
-        /// position AFTER the container is packed.
-        ///
-        /// This is the injury GY-2 names, and it is not the same fixture as
-        /// [`Self::corrupt_cache_bytes`]: that one damages the cache BEFORE
-        /// packing, so the container's own entry digest covers the damaged
-        /// bytes and the recording is a substitution the recorder could never
-        /// have produced. This one leaves the container's account describing
-        /// the bytes the recorder sealed, and the bytes on disk no longer being
-        /// them — a rotted file, which is what actually happens.
         rot_cache_record: Option<usize>,
-        /// The same rot, in the H4CP FILE HEADER: damage to the artifact's own
-        /// identity, which serves no single game hour.
         rot_cache_header: bool,
-        /// Index the canonical H4CP path as THIS hour's snapshot, BEHIND a
-        /// real first snapshot, so the container claims one file is both a
-        /// replay artifact and an hour's world state.
-        ///
-        /// The position matters: `Container::open` decodes only the FIRST
-        /// indexed snapshot, as the representative it checks mod and build
-        /// identity against, and leaves the rest lazy. An alias in first
-        /// position therefore never opens (the H4CP is not JSON); an alias
-        /// behind a valid snapshot opens fine and reaches the authority.
         alias_cache_as_snapshot_hour: Option<i64>,
-        /// The same alias in FIRST position, with no real snapshot in front of
-        /// it — the shape the container reader itself refuses.
         alias_cache_as_first_snapshot_hour: Option<i64>,
     }
 
-    /// Replace the single occurrence of one raw 32-byte digest inside an H4IX
-    /// image with another. Used only to build the contrived artifact where the
-    /// index and the cache header disagree about the source.
     fn replace_unique_digest(bytes: &mut [u8], from_hex: &str, to_hex: &str) {
         let from = hex32(from_hex);
         let to = hex32(to_hex);
@@ -15192,12 +13227,6 @@ mod tests {
         bytes[positions[0]..positions[0] + 32].copy_from_slice(&to);
     }
 
-    /// Flip one byte of a STORED cache entry inside an already-packed
-    /// container, at `offset` within the cache artifact.
-    ///
-    /// The entry is located by its own bytes rather than by parsing the ZIP, and
-    /// the occurrence is required to be unique so a test can never damage some
-    /// other entry that happened to contain the same run.
     fn rot_sealed_cache_byte(packed: &mut [u8], sealed_cache: &[u8], offset: usize) {
         let positions: Vec<usize> = packed
             .windows(sealed_cache.len())
@@ -15249,8 +13278,6 @@ mod tests {
                     })
                 }),
             );
-            // `replay_entries.stream` names a PACKAGED entry; a cache-only
-            // recording has none, exactly as the recorder writes it.
             let entries = object
                 .get_mut("replay_entries")
                 .unwrap()
@@ -15283,8 +13310,6 @@ mod tests {
         .unwrap();
         match &breakage.index_hole_reason {
             None => {
-                // N hours tiling the source, N = 1 unless a test asks for the
-                // windows to be observable.
                 let hours = breakage.cache_hours.unwrap_or(1) as u64;
                 let span = source_len / hours;
                 for hour in 0..hours {
@@ -15312,9 +13337,6 @@ mod tests {
                 }
             }
             Some(reason) => {
-                // Three hours over the same source, the middle one skipped by
-                // name. The three spans still tile the source exactly, which is
-                // what the format requires of a holed index.
                 let third = source_len / 3;
                 for hour in 0..3i64 {
                     let start = third * hour as u64;
@@ -15362,17 +13384,11 @@ mod tests {
             .unwrap();
         let mut index_bytes = replay_index.to_bytes().unwrap();
         if breakage.cache_header_digest_of.is_some() {
-            // The index now states the real source while only the H4CP header
-            // still carries the other digest. The index's own `cache_sha256`
-            // stays correct, so the H4CP link is the ONLY one this breaks.
             replace_unique_digest(&mut index_bytes, &header_sha256, &folded_sha256);
         }
         if breakage.corrupt_cache_bytes {
             *cache_bytes.last_mut().unwrap() ^= 0xff;
         }
-        // Kept for the post-seal rot below, which has to find these exact bytes
-        // inside the packed container and can only do so because this fixture
-        // packs STORED (`deflate: false`), so an entry appears verbatim.
         let sealed_cache_bytes = cache_bytes.clone();
         let record_windows: Vec<(u64, u64)> = replay_index
             .hours()
@@ -15380,15 +13396,6 @@ mod tests {
             .map(|row| (row.cache_record_offset(), row.cache_record_len()))
             .collect();
 
-        // THE ARTIFACT RECEIPTS GO IN BOTH COPIES, and are written here rather
-        // than with the rest of the manifest because they are digests OF the
-        // artifacts: the recorder seals a receipt for exactly the H4IX and H4CP
-        // it packaged, and that receipt is what binds the artifacts' internal
-        // account — which hours are served, which are named holes, and what
-        // byte range each owns — to the finalize that certified them. They are
-        // ordinary `host_finalize.fold` fields, not sealed-only ones, so a
-        // fixture that put them in the container copy alone would fail the
-        // run-dir/sealed binding.
         if !breakage.omit_artifact_receipts {
             let fold = manifest
                 .get_mut("host_finalize")
@@ -15411,9 +13418,6 @@ mod tests {
             );
         }
         let manifest_bytes = serde_json::to_vec_pretty(&manifest).unwrap();
-        // The run directory keeps its absolute paths; the container carries the
-        // portable projection, exactly as the recorder seals it. The coverage
-        // map is the one sealed-only field here.
         let sealed_manifest_bytes = match &breakage.sealed_coverage {
             None => sealed_manifest_bytes(&manifest_bytes),
             Some((verified, excluded)) => {
@@ -15432,10 +13436,6 @@ mod tests {
         };
 
         let (static_artifacts, mut static_entries) = replay_test_static_artifacts(game_id);
-        // The container index is the FILENAME authority for snapshots, and it
-        // names files relative to `payload/<game>/`. Pointing one of its rows at
-        // the certified cache is how a container claims that artifact is also
-        // an hour's world state.
         const FIXTURE_SNAPSHOT_FILE: &str = "snapshots/000000000000.snapshot.json";
         let mut snapshots: Vec<Value> = Vec::new();
         if let Some(hour) = breakage.alias_cache_as_first_snapshot_hour {
@@ -15445,8 +13445,6 @@ mod tests {
             }));
         }
         if let Some(hour) = breakage.alias_cache_as_snapshot_hour {
-            // A real snapshot first — the one `Container::open` decodes as its
-            // representative — and the artifact behind it.
             snapshots.push(json!({ "hour_index": 0, "file": FIXTURE_SNAPSHOT_FILE }));
             snapshots.push(json!({
                 "hour_index": hour,
@@ -15489,10 +13487,6 @@ mod tests {
             },
         ];
         if breakage.alias_cache_as_snapshot_hour.is_some() {
-            // The representative snapshot the index names first. Its content is
-            // deliberately minimal: `Container::open` reads it to compare mod
-            // and build identity, and absence on either side is a measured
-            // absence that passes.
             entries.push(snapshot::PackEntry {
                 path: format!("payload/{game_id}/{FIXTURE_SNAPSHOT_FILE}"),
                 bytes: b"{}".to_vec(),
@@ -15529,12 +13523,6 @@ mod tests {
             false,
         )
         .unwrap();
-        // POST-SEAL ROT, applied to the SEALED CONTAINER rather than to the
-        // bytes handed to the packer. Everything the container says about this
-        // entry — its length, its digest, its CRC — still describes what the
-        // recorder sealed; only the bytes on disk have moved. Corrupting before
-        // the pack could not model this: the packer would have derived its
-        // account from the damaged bytes.
         let mut packed = packed;
         if let Some(position) = breakage.rot_cache_record {
             let (offset, len) = record_windows[position];
@@ -15545,23 +13533,14 @@ mod tests {
             );
         }
         if breakage.rot_cache_header {
-            // Byte 8 is the first byte of the 32-byte H4CR source digest the
-            // header carries — neither the magic nor the version, so what it
-            // provokes is the identity check.
             rot_sealed_cache_byte(&mut packed, &sealed_cache_bytes, 8);
         }
-        fs::write(
-            dir.join("native_session.battleplan"), packed
-        ).unwrap();
+        fs::write(dir.join("native_session.battleplan"), packed).unwrap();
         if !breakage.omit_run_dir_stream {
             let on_disk = breakage.run_dir_stream_override.as_ref().unwrap_or(&stream);
-            fs::write(
-                dir.join("collector_stream.bin"), on_disk
-            ).unwrap();
+            fs::write(dir.join("collector_stream.bin"), on_disk).unwrap();
         }
-        fs::write(
-            dir.join("native_session_manifest.json"), &manifest_bytes
-        ).unwrap();
+        fs::write(dir.join("native_session_manifest.json"), &manifest_bytes).unwrap();
         CacheOnlyRecording {
             manifest,
             manifest_bytes,
@@ -15579,7 +13558,7 @@ mod tests {
             &dir.0,
             TEST_MAX_STREAM_BYTES,
         )
-            .expect_err("a broken attestation link must refuse")
+        .expect_err("a broken attestation link must refuse")
     }
 
     fn static_authority_error<M, F>(label: &str, mutate_manifest: M, mutate: F) -> String

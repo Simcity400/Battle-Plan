@@ -169,9 +169,6 @@ def verify(run_dir: Path) -> dict:
         if sha256_file(transported_marker_path) != sha256_file(marker_path) or transported_marker != marker:
             raise VerifyError("transported and external resolved-attempt markers differ")
     else:
-        # Archived runs remain mechanically regradable after transport. The local
-        # byte-for-byte marker copy contains the receipt hash and embedded receipt;
-        # the replay-derived proof, not marker location, remains the authority.
         marker = transported_marker
     marker_exact = {
         "schema": MARKER_SCHEMA,

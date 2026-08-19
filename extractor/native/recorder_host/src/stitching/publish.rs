@@ -1,33 +1,3 @@
-//! Atomic publication of a stitched container.
-//!
-//! This is the finalize-routing seam: given a sealed [`StitchedPlan`](super::StitchedPlan)
-//! and a source of the retained snapshot / raw-stream payloads, it assembles the v2
-//! container payload set, packs a STORE-only `.battleplan`
-//! `{level:none}`), and publishes it **build-beside-then-atomic-rename**:
-//!
-//! 1. derive every container entry from ONE immutable plan (never file enumeration);
-//! 2. bind each snapshot/raw payload to a retained source handle and exact
-//!    length/SHA-256 receipt;
-//! 3. stream the container (v2 + `timeline_segments_v1`, STORE) directly into an
-//!    unpublished sibling temp, rechecking each source during that write;
-//! 4. re-open the exact temp handle and run bounded all-entry verification plus
-//!    stitched-index/graph checks BEFORE anything touches the destination;
-//! 5. atomically rename the exact verified temp handle over the destination;
-//!    no pathname reopen or payload-sized post-commit readback is required.
-//!
-//! Any pre-commit failure leaves the prior published replay and all standalone /
-//! session inputs untouched, and removes the temp artifact. The plan/payload
-//! model is a pure input,
-//! so this is fully exercisable offline with synthetic segment fixtures. The
-//! legacy in-memory publisher remains only as a small-fixture reference path;
-//! product callsites use the retained-source publisher.
-//!
-//! What this does NOT do (explicit later-lane interfaces): it does not itself run
-//! the per-segment folds, form segments from the live byte stream
-//! ([`super::formation`]), or emit the new compact-stream wire major. The live
-//! `main.rs` finalize path calls this once the sealed [`SegmentInput`](super::SegmentInput)
-//! set and its spilled payloads exist.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -35,8 +5,8 @@ use std::path::{Path, PathBuf};
 use snapshot::container::{Container, ExpectedIdentity};
 use snapshot::sha256::Sha256;
 use snapshot::{
-    pack_ordered_streaming_to_writer_with_options, BorrowedPackEntry,
-    OrderedStreamingPackEntry, PackIdentity, PackOptions, VerifiedPackEntry,
+    pack_ordered_streaming_to_writer_with_options, BorrowedPackEntry, OrderedStreamingPackEntry,
+    PackIdentity, PackOptions, VerifiedPackEntry,
 };
 #[cfg(test)]
 use snapshot::{pack_with, PackEntry};
@@ -44,9 +14,7 @@ use snapshot::{pack_with, PackEntry};
 use super::{CoverageDisposition, PlannedSegment, RawSourceStorage, StitchedPlan};
 
 pub struct StitchedRebuiltWireSource {
-    /// Exact normalized `RawSourceDescriptor::source_path`.
     pub source_path: String,
-    /// Diagnostic-only path for the already retained raw/zstd handle.
     file_path: PathBuf,
     file: File,
     pub identity_mode: compact_contract::stream_validator::StreamIdentityMode,
@@ -79,10 +47,6 @@ struct StitchedRebuiltWireRoute {
     segment_id: u32,
 }
 
-/// Complete typed authority for one stitched rebuilt-wire publication. Callers
-/// cannot supply an arbitrary bundle or verifier: construction derives branch
-/// and segment selections from the final plan and builds from the retained
-/// H4CR sources; retained-temp reopen independently refolds those sources.
 pub struct StitchedRebuiltWireProduct {
     stitch_input_digest: String,
     bundle: wire_product::PreparedBundle,
@@ -105,15 +69,9 @@ struct OwnedStitchedWireSession {
     selection: wire_product::H4crSelection,
 }
 
-/// Supplies the exact retained payload bytes a stitched plan references. During live
-/// finalize the snapshots are the per-segment fold's spilled files and the raw
-/// sources are the retained compact streams; tests supply in-memory maps.
 #[cfg(test)]
 pub trait StitchedPayloadSource {
-    /// Snapshot body bytes for one segment's hour. Must hash to the `sha256` the
-    /// plan recorded for that hour (enforced by [`build_stitched_entries`]).
     fn snapshot_bytes(&self, segment_id: u32, hour_index: i64) -> Result<Vec<u8>, String>;
-    /// The exact byte-for-byte retained raw-source bytes for one source path.
     fn raw_source_bytes(&self, source_path: &str) -> Result<Vec<u8>, String>;
 }
 
@@ -123,9 +81,6 @@ pub struct VerifiedPayloadReceipt {
     pub sha256: String,
 }
 
-/// Production payload seam. Implementations retain the authenticated source
-/// file/container handles and copy one requested payload at a time into an
-/// unpublished sink. No method returns the payload as a `Vec<u8>`.
 pub trait RetainedStitchedPayloadSource {
     fn snapshot_receipt(
         &self,
@@ -146,22 +101,15 @@ pub trait RetainedStitchedPayloadSource {
     ) -> Result<VerifiedPayloadReceipt, String>;
 }
 
-/// Outcome of a successful publication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishReport {
     pub published_path: PathBuf,
     pub container_bytes: usize,
-    /// SHA-256 bound to the exact retained temp handle before atomic promotion.
     pub container_sha256: String,
-    /// Count of visible main-timeline snapshot hours in the published index.
     pub visible_snapshot_hours: usize,
-    /// Count of segments (visible + rollback + empty recovery) in the graph.
     pub segments: usize,
 }
 
-/// The v2 STORE publication options a stitched container declares. STORE-only
-/// because v2 open can only independently re-verify the `{level:none}`
-/// profile; the plan's `compression_method` must agree.
 fn stitched_pack_options() -> PackOptions {
     PackOptions {
         container_version: Some(super::STITCH_CONTAINER_VERSION),
@@ -170,9 +118,6 @@ fn stitched_pack_options() -> PackOptions {
     }
 }
 
-/// The pack identity a stitched publication records. `created_utc` and the schema /
-/// mod bindings come from the plan's immutable required-inputs, never sampled at
-/// pack time; `created_utc` is an input.
 fn pack_identity(
     plan: &StitchedPlan,
     content_manifest: Option<portable_content_manifest::ContentManifest>,
@@ -195,16 +140,6 @@ fn pack_identity(
     }
 }
 
-/// Derive the planner-side rebuilt-wire branch candidates for a sealed stitch.
-///
-/// Data-bearing segments receive dense branch ids in planned order. Empty
-/// recovery segments remain in `segments.json` but cannot create holes or
-/// displace the wire root. Every later branch uses the exact planner-selected
-/// data-bearing parent. Transition coverage moves the branch origin to its
-/// first explicit transition hour; otherwise the origin is the cutover. The
-/// production builder then joins this candidate with the retained H4CR
-/// inspection so an initial coalesced H4DG can move the final origin earlier.
-/// The decoded H4CR digest comes from the validated raw-source ledger.
 pub fn derive_rebuilt_wire_branches(
     plan: &StitchedPlan,
 ) -> Result<Vec<wire_product::BranchSpec>, String> {
@@ -213,13 +148,7 @@ pub fn derive_rebuilt_wire_branches(
 
 fn derive_rebuilt_wire_plan(
     plan: &StitchedPlan,
-) -> Result<
-    (
-        Vec<wire_product::BranchSpec>,
-        Vec<StitchedRebuiltWireRoute>,
-    ),
-    String,
-> {
+) -> Result<(Vec<wire_product::BranchSpec>, Vec<StitchedRebuiltWireRoute>), String> {
     let data_segments = plan
         .segments
         .iter()
@@ -252,11 +181,8 @@ fn derive_rebuilt_wire_plan(
             .next()
             .copied()
             .unwrap_or(cutover);
-        let first_tick = u64::try_from(first_hour).map_err(|_| {
-            format!(
-                "wire branch {branch} has negative origin hour {first_hour}"
-            )
-        })?;
+        let first_tick = u64::try_from(first_hour)
+            .map_err(|_| format!("wire branch {branch} has negative origin hour {first_hour}"))?;
         let source = segment.input.raw_source.as_ref().ok_or_else(|| {
             format!(
                 "wire branch {} has no authenticated raw source",
@@ -292,16 +218,22 @@ fn derive_rebuilt_wire_plan(
             }
             None
         } else {
-            let parent_segment = segment.parent_segment.ok_or_else(|| {
-                format!(
-                    "wire branch {branch} has no planner-selected parent"
-                )
-            })?;
-            let parent_branch = branch_by_segment.get(&parent_segment).copied().ok_or_else(|| {
-                format!("wire branch {branch} parent segment {parent_segment} is not data-bearing")
-            })?;
+            let parent_segment = segment
+                .parent_segment
+                .ok_or_else(|| format!("wire branch {branch} has no planner-selected parent"))?;
+            let parent_branch =
+                branch_by_segment
+                    .get(&parent_segment)
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
+                        "wire branch {branch} parent segment {parent_segment} is not data-bearing"
+                    )
+                    })?;
             if parent_branch >= branch {
-                return Err(format!("wire branch {branch} has non-prior parent {parent_branch}"));
+                return Err(format!(
+                    "wire branch {branch} has non-prior parent {parent_branch}"
+                ));
             }
             let through_tick = first_tick.checked_sub(1).ok_or_else(|| {
                 format!(
@@ -333,8 +265,8 @@ fn decode_sha256_hex(value: &str) -> Result<[u8; 32], String> {
     }
     let mut out = [0u8; 32];
     for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
-        let text = std::str::from_utf8(chunk)
-            .map_err(|_| "SHA-256 digest is not ASCII".to_string())?;
+        let text =
+            std::str::from_utf8(chunk).map_err(|_| "SHA-256 digest is not ASCII".to_string())?;
         out[index] = u8::from_str_radix(text, 16)
             .map_err(|_| "SHA-256 digest contains invalid hexadecimal".to_string())?;
     }
@@ -368,10 +300,6 @@ fn hash_retained_file_sha256(file: &File, path: &Path) -> Result<(u64, [u8; 32])
     Ok((bytes, sha256.finalize().into()))
 }
 
-/// Bind every retained H4CR handle to the exact stored-byte authority in
-/// the stitched plan. The wire scan separately proves the decoded SHA-256, so
-/// these two checks make compressed and uncompressed sources transitively
-/// identical to the raw payload admitted by retained publication.
 fn verify_rebuilt_wire_source_receipts(
     sessions: &[OwnedStitchedWireSession],
 ) -> Result<(), String> {
@@ -445,9 +373,6 @@ fn derive_rebuilt_wire_plan_from_sessions(
                 branch.branch
             )
         })?;
-        // The branch must begin at the earliest authenticated coverage from
-        // either the stitch transition ledger or the selected H4CR. At speed 5
-        // an initial coalesced H4DG can begin hours before the first FRAME_END.
         branch.first_tick = branch.first_tick.min(source_first_tick);
         if let Some(parent) = branch.parent.as_mut() {
             parent.through_tick = branch.first_tick.checked_sub(1).ok_or_else(|| {
@@ -476,18 +401,21 @@ fn derive_rebuilt_wire_leading_gaps(
         let mut open: Option<(u64, u64, wire_product::D81LeadingGapKind)> = None;
         for (hour, disposition) in &segment.input.transition_coverage {
             let tick = u64::try_from(*hour).map_err(|_| {
-                format!("wire transition gap for segment {} is negative", route.segment_id)
+                format!(
+                    "wire transition gap for segment {} is negative",
+                    route.segment_id
+                )
             })?;
             let source_first_tick =
-                source_first_ticks.get(&route.branch).copied().ok_or_else(|| {
-                    format!(
+                source_first_ticks
+                    .get(&route.branch)
+                    .copied()
+                    .ok_or_else(|| {
+                        format!(
                         "wire transition gap branch {} has no retained H4CR coverage inspection",
                         route.branch
                     )
-                })?;
-            // Never duplicate or override authenticated source coverage. H4DG
-            // records at and after this tick are emitted directly by the H4CR
-            // scan; transition gaps only fill the prefix before that source.
+                    })?;
             if tick >= source_first_tick {
                 continue;
             }
@@ -495,12 +423,8 @@ fn derive_rebuilt_wire_leading_gaps(
                 CoverageDisposition::CaptureFailed { .. } => {
                     wire_product::D81LeadingGapKind::CaptureFailed
                 }
-                CoverageDisposition::Coalesced { .. } => {
-                    wire_product::D81LeadingGapKind::Coalesced
-                }
-                CoverageDisposition::Gap { .. } => {
-                    wire_product::D81LeadingGapKind::ExplicitGap
-                }
+                CoverageDisposition::Coalesced { .. } => wire_product::D81LeadingGapKind::Coalesced,
+                CoverageDisposition::Gap { .. } => wire_product::D81LeadingGapKind::ExplicitGap,
                 CoverageDisposition::Snapshot { .. } => {
                     return Err(format!(
                         "wire transition coverage for segment {} contains a snapshot",
@@ -514,13 +438,10 @@ fn derive_rebuilt_wire_leading_gaps(
                 }
                 Some((start, end, prior_kind)) => {
                     gaps.push(
-                        wire_product::D81LeadingGap::new(
-                            route.branch,
-                            start,
-                            end,
-                            prior_kind,
-                        )
-                        .map_err(|error| format!("build wire transition gap failed: {error}"))?,
+                        wire_product::D81LeadingGap::new(route.branch, start, end, prior_kind)
+                            .map_err(|error| {
+                                format!("build wire transition gap failed: {error}")
+                            })?,
                     );
                     open = Some((tick, tick + 1, kind));
                 }
@@ -593,9 +514,10 @@ impl StitchedRebuiltWireProduct {
                 .iter()
                 .find(|segment| segment.segment_id == route.segment_id)
                 .ok_or_else(|| format!("wire route lost segment {}", route.segment_id))?;
-            let raw = segment.input.raw_source.as_ref().ok_or_else(|| {
-                format!("wire segment {} has no raw source", route.segment_id)
-            })?;
+            let raw =
+                segment.input.raw_source.as_ref().ok_or_else(|| {
+                    format!("wire segment {} has no raw source", route.segment_id)
+                })?;
             let source = source_by_path.get(&raw.source_path).ok_or_else(|| {
                 format!(
                     "wire segment {} has no retained source for {}",
@@ -603,11 +525,8 @@ impl StitchedRebuiltWireProduct {
                 )
             })?;
             used_paths.insert(raw.source_path.as_str());
-            let (first_sequence, last_sequence) = segment
-                .input
-                .provenance
-                .record_seq_bounds
-                .ok_or_else(|| {
+            let (first_sequence, last_sequence) =
+                segment.input.provenance.record_seq_bounds.ok_or_else(|| {
                     format!("wire segment {} has no record bounds", route.segment_id)
                 })?;
             let (start_byte, end_byte) =
@@ -651,8 +570,7 @@ impl StitchedRebuiltWireProduct {
                 "retained H4CR inspection changed the rebuilt-wire route table".to_string(),
             );
         }
-        let leading_gaps =
-            derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
+        let leading_gaps = derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
         let borrowed = borrowed_wire_sessions(&sessions);
         let bundle = wire_product::build_d81_bundle_with_leading_gaps(
             config,
@@ -692,15 +610,6 @@ fn borrowed_wire_sessions(
         .collect()
 }
 
-/// Assemble the full, deterministic container payload set for a plan, pulling bytes
-/// from `source` and reference-validating each snapshot against its recorded hash.
-///
-/// Fails closed on: a segment with no raw-source ledger; a snapshot payload whose
-/// bytes do not hash to the plan's recorded `sha256`; or an embedded raw source whose
-/// stored bytes do not match the recorded stored digest. Only embeddable
-/// (`EmbeddedCampaign`) raw sources are packed; standalone sources are referenced by
-/// the segments graph but never embedded. Entries are sorted by path so the packed
-/// container is byte-deterministic.
 #[cfg(test)]
 pub fn build_stitched_entries<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
@@ -709,7 +618,6 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
     let game = plan.game_id.as_str();
     let mut entries: Vec<PackEntry> = Vec::new();
 
-    // Stitched index / segments / per-segment index files (canonical bytes).
     for f in plan.to_container_files() {
         entries.push(PackEntry {
             path: format!("payload/{game}/{}", f.rel_path),
@@ -724,8 +632,6 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
         });
     }
 
-    // Each exact raw source is stored ONCE, byte-for-byte, independent of how many
-    // segments reference its participation bounds. Deduplicate by source path.
     let mut raw_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for segment in &plan.segments {
         let raw = segment.input.raw_source.as_ref().ok_or_else(|| {
@@ -737,8 +643,6 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
         raw_paths.insert(raw.source_path.clone());
     }
     for path in raw_paths {
-        // The descriptor for this source path (identical across every segment that
-        // references it — the plan already proved that agreement).
         let descriptor = plan
             .segments
             .iter()
@@ -751,17 +655,7 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
             })
             .ok_or_else(|| format!("no raw-source descriptor for {path}; cannot publish"))?;
         match &descriptor.storage {
-            // A standalone source (e.g. a multi-campaign A->B->A stream) is REFERENCED
-            // by the segments graph, never embedded: `Container::from_bytes`
-            // (validate_raw_sources) rejects a standalone raw source that appears in the
-            // container manifest. Do not pack its bytes.
             RawSourceStorage::Standalone => continue,
-            // An embeddable source is stored ONCE, byte-for-byte. Reference-validate the
-            // STORED (as-embedded) bytes against the recorded STORED digest — that is
-            // exactly what the packed manifest entry hashes to and what container
-            // re-open checks (`entry.expected_sha256 == stored_digest`), so build-time
-            // and re-open validation agree even when the source is compressed
-            // (.h4cr.zst, stored digest != decoded digest).
             RawSourceStorage::EmbeddedCampaign { .. } => {
                 let bytes = source.raw_source_bytes(&path)?;
                 let actual = Sha256::hex(&bytes);
@@ -781,9 +675,6 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
         }
     }
 
-    // Every snapshot hour of every segment (visible + rollback), named by the
-    // segment's assigned global ordinal. Each payload must hash to the recorded
-    // coverage sha256 — the build-time half of reference validation.
     for segment in &plan.segments {
         for (hour, disposition) in segment.input.coverage.iter() {
             if let CoverageDisposition::Snapshot { sha256, .. } = disposition {
@@ -812,9 +703,6 @@ pub fn build_stitched_entries<S: StitchedPayloadSource>(
     Ok(entries)
 }
 
-/// Pack a plan into stitched container bytes and independently re-open + validate
-/// them (no destination is touched). This is the packing+validation core shared by
-/// the atomic publisher and its tests.
 #[cfg(test)]
 pub fn pack_and_validate<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
@@ -825,15 +713,11 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
         &plan.game_id,
         &entries,
         &pack_identity(plan, None),
-        false, // STORE, not deflate
+        false,
         &stitched_pack_options(),
     )
     .map_err(|error| format!("pack stitched container failed: {error}"))?;
 
-    // Full manifest / hash / reference validation from the CONTAINER BYTES before
-    // publish: open (which cross-checks the stitched index, segments graph,
-    // ticket order, digests, ZIP order, created_utc, and STORE profile), verify
-    // every retained payload hash, and confirm the stitched shape.
     let container = Container::from_bytes(bytes.clone(), &ExpectedIdentity::default())
         .map_err(|error| format!("stitched container failed to re-open for validation: {error}"))?;
     container
@@ -847,7 +731,6 @@ pub fn pack_and_validate<S: StitchedPayloadSource>(
         .map_err(|error| format!("stitched container graph failed to parse: {error}"))?
         .ok_or_else(|| "packed v2 container has no segments graph".to_string())?;
 
-    // Every visible snapshot the plan expects must resolve in the published index.
     let visible = plan.visible_snapshot_files();
     for (hour, file) in &visible {
         let resolved = container
@@ -912,9 +795,7 @@ enum PreparedRetainedEntry {
 impl PreparedRetainedEntry {
     fn path(&self) -> &str {
         match self {
-            Self::Memory { path, .. }
-            | Self::Source { path, .. }
-            | Self::File { path, .. } => path,
+            Self::Memory { path, .. } | Self::Source { path, .. } | Self::File { path, .. } => path,
         }
     }
 }
@@ -930,7 +811,9 @@ fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
         let index = container_files
             .iter_mut()
             .find(|file| file.rel_path == "index.json")
-            .ok_or_else(|| "stitched plan has no index.json for rebuilt-wire discovery".to_string())?;
+            .ok_or_else(|| {
+                "stitched plan has no index.json for rebuilt-wire discovery".to_string()
+            })?;
         index.bytes = rebuilt_wire_index_bytes(plan, product)?;
     }
     let mut entries = container_files
@@ -1026,8 +909,7 @@ fn prepare_retained_entries<S: RetainedStitchedPayloadSource>(
                     artifact.file_path.display()
                 )
             })?;
-            let (bytes, sha256) =
-                hash_retained_file_sha256(&file, &artifact.file_path)?;
+            let (bytes, sha256) = hash_retained_file_sha256(&file, &artifact.file_path)?;
             if bytes != artifact.len {
                 return Err(format!(
                     "prepared rebuilt-wire artifact {} length changed after verification",
@@ -1143,8 +1025,7 @@ fn verify_reopened_rebuilt_wire_bundle(
     let expected_index = rebuilt_wire_index_bytes(plan, product)?;
     if reopened_index != expected_index {
         return Err(
-            "stitched rebuilt-wire discovery index differs from the final plan/product"
-                .to_string(),
+            "stitched rebuilt-wire discovery index differs from the final plan/product".to_string(),
         );
     }
     let opened_manifest = container
@@ -1182,17 +1063,17 @@ fn verify_reopened_rebuilt_wire_bundle(
         }
         let role = role
             .ok_or_else(|| {
-            format!(
-                "rebuilt-wire container entry {} has no manifest role",
-                entry.path
-            )
-        })
+                format!(
+                    "rebuilt-wire container entry {} has no manifest role",
+                    entry.path
+                )
+            })
             .and_then(|role| {
                 wire_product::ArtifactRole::from_str(role).map_err(|error| {
-            format!(
-                "rebuilt-wire container entry {} has invalid role: {error}",
-                entry.path
-            )
+                    format!(
+                        "rebuilt-wire container entry {} has invalid role: {error}",
+                        entry.path
+                    )
                 })
             })?;
         let relative = entry
@@ -1231,9 +1112,9 @@ fn verify_reopened_rebuilt_wire_bundle(
         &descriptors,
         |path| {
             let packed_path = format!("payload/{}/{path}", plan.game_id);
-            container.read_entry_bytes(&packed_path).map_err(|error| {
-                format!("read stitched rebuilt-wire entry {packed_path}: {error}")
-            })
+            container
+                .read_entry_bytes(&packed_path)
+                .map_err(|error| format!("read stitched rebuilt-wire entry {packed_path}: {error}"))
         },
         product.config,
         &product.branches,
@@ -1245,10 +1126,6 @@ fn verify_reopened_rebuilt_wire_bundle(
     Ok(())
 }
 
-/// Bounded-memory production publication. Payloads are copied from retained
-/// sources directly into the unpublished sibling temp. The exact temp object is
-/// retained file-backed for semantic and all-entry streaming verification
-/// before that same handle is atomically promoted.
 #[cfg(test)]
 pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
     plan: &StitchedPlan,
@@ -1258,14 +1135,7 @@ pub fn publish_stitched_container_retained<S: RetainedStitchedPayloadSource>(
     publish_stitched_container_retained_impl(plan, source, None, dest)
 }
 
-/// Publish a stitched container with one file-global rebuilt-wire bundle.
-///
-/// The product was constructed from this exact final plan and retained H4CR
-/// authority. Publication cannot reach atomic rename until it independently
-/// refolds those sources and obtains exact artifact equality.
-pub fn publish_stitched_container_retained_with_rebuilt_wire<
-    S: RetainedStitchedPayloadSource,
->(
+pub fn publish_stitched_container_retained_with_rebuilt_wire<S: RetainedStitchedPayloadSource>(
     plan: &StitchedPlan,
     source: &S,
     rebuilt_wire: StitchedRebuiltWireProduct,
@@ -1282,24 +1152,19 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
 ) -> Result<PublishReport, String> {
     if let Some(product) = rebuilt_wire {
         if product.stitch_input_digest != plan.stitch_input_digest {
-            return Err(
-                "rebuilt-wire product belongs to a different stitched plan".to_string(),
-            );
+            return Err("rebuilt-wire product belongs to a different stitched plan".to_string());
         }
         let (branches, routes, source_first_ticks) =
             derive_rebuilt_wire_plan_from_sessions(plan, &product.sessions)?;
         if branches != product.branches || routes != product.routes {
             return Err(
-                "rebuilt-wire product branch join differs from the final stitched plan"
-                    .to_string(),
+                "rebuilt-wire product branch join differs from the final stitched plan".to_string(),
             );
         }
-        let leading_gaps =
-            derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
+        let leading_gaps = derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
         if leading_gaps != product.leading_gaps {
             return Err(
-                "rebuilt-wire product leading gaps differ from the final stitched plan"
-                    .to_string(),
+                "rebuilt-wire product leading gaps differ from the final stitched plan".to_string(),
             );
         }
         verify_rebuilt_wire_source_receipts(&product.sessions)?;
@@ -1345,10 +1210,8 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
                         hour_index,
                     } => {
                         let source_id = source_keys.len();
-                        source_keys.push((
-                            PackRetainedSource::Payload(source.clone()),
-                            receipt.clone(),
-                        ));
+                        source_keys
+                            .push((PackRetainedSource::Payload(source.clone()), receipt.clone()));
                         OrderedStreamingPackEntry::Verified(VerifiedPackEntry {
                             path: path.clone(),
                             source_id,
@@ -1417,13 +1280,11 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
                         .map_err(|error| {
                             std::io::Error::new(std::io::ErrorKind::InvalidData, error)
                         }),
-                    PackRetainedSource::Payload(RetainedSourceKey::Raw { source_path }) => {
-                        source
-                            .copy_raw_source_to_unpublished(source_path, writer)
-                            .map_err(|error| {
-                                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-                            })
-                    }
+                    PackRetainedSource::Payload(RetainedSourceKey::Raw { source_path }) => source
+                        .copy_raw_source_to_unpublished(source_path, writer)
+                        .map_err(|error| {
+                            std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                        }),
                     PackRetainedSource::File { file_path, file } => {
                         let mut read = file.try_clone().map_err(|error| {
                             std::io::Error::new(
@@ -1493,12 +1354,9 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
         if let Some(product) = rebuilt_wire {
             verify_reopened_rebuilt_wire_bundle(plan, product, &container)?;
         }
-        if container
-            .retained_file_receipt()
-            .map_err(|error| {
-                format!("receipt stitched temp after semantic verification failed: {error}")
-            })?
-            != (container_bytes, container_sha256.clone())
+        if container.retained_file_receipt().map_err(|error| {
+            format!("receipt stitched temp after semantic verification failed: {error}")
+        })? != (container_bytes, container_sha256.clone())
         {
             return Err(
                 "stitched temp changed during rebuilt-wire semantic verification".to_string(),
@@ -1525,9 +1383,7 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
             ));
         }
     };
-    if let Err(error) =
-        atomic_replace_retained(&file, &temp, &anchored_dest, &destination_guard)
-    {
+    if let Err(error) = atomic_replace_retained(&file, &temp, &anchored_dest, &destination_guard) {
         drop(file);
         let cleanup = fs::remove_file(&temp);
         return Err(with_cleanup_note(
@@ -1611,13 +1467,6 @@ impl RetainedPublishDirectory {
     }
 }
 
-/// Publish a stitched plan to `dest` build-beside-then-atomic-rename.
-///
-/// The container is packed and fully re-validated in memory first; only then are the
-/// bytes written to a sibling temp file, fsynced, and atomically renamed over `dest`.
-/// Every pre-commit failure leaves the prior file untouched and removes the temp.
-/// After the atomic commit, the destination is re-opened and re-verified before a
-/// success report is returned.
 #[cfg(test)]
 pub fn publish_stitched_container<S: StitchedPayloadSource>(
     plan: &StitchedPlan,
@@ -1640,8 +1489,6 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
     reject_reparse_destination(&anchored_dest)?;
     let (temp, mut file) = create_unique_sibling_temp(&anchored_dest)?;
 
-    // Build beside through an exclusively-created retained handle. Re-read the
-    // exact handle and independently validate its bytes before publication.
     let write_result = (|| -> Result<(), String> {
         file.write_all(&bytes).map_err(|error| error.to_string())?;
         file.flush().map_err(|error| error.to_string())?;
@@ -1654,14 +1501,11 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
         if persisted != bytes {
             return Err("stitched temp readback differs from packed bytes".to_string());
         }
-        let persisted_container = Container::from_bytes(
-            persisted,
-            &ExpectedIdentity::default(),
-        )
-        .map_err(|error| format!("persisted stitched temp failed to re-open: {error}"))?;
-        persisted_container
-            .verify_all()
-            .map_err(|error| format!("persisted stitched temp payload verification failed: {error}"))?;
+        let persisted_container = Container::from_bytes(persisted, &ExpectedIdentity::default())
+            .map_err(|error| format!("persisted stitched temp failed to re-open: {error}"))?;
+        persisted_container.verify_all().map_err(|error| {
+            format!("persisted stitched temp payload verification failed: {error}")
+        })?;
         Ok(())
     })();
     if let Err(error) = write_result {
@@ -1675,10 +1519,6 @@ pub fn publish_stitched_container<S: StitchedPayloadSource>(
     }
     drop(file);
 
-    // Same-volume atomic replacement. Rust's Windows `fs::rename` does NOT
-    // replace an existing destination, so use MoveFileExW with the explicit
-    // REPLACE_EXISTING + WRITE_THROUGH contract there. A failure still leaves
-    // the prior destination intact.
     if let Err(error) = atomic_replace(&temp, &anchored_dest) {
         let cleanup = fs::remove_file(&temp);
         return Err(with_cleanup_note(
@@ -1727,7 +1567,9 @@ fn reject_reparse_destination(dest: &Path) -> Result<(), String> {
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("inspect stitched publication destination failed: {error}")),
+        Err(error) => Err(format!(
+            "inspect stitched publication destination failed: {error}"
+        )),
     }
 }
 
@@ -1783,9 +1625,6 @@ fn sync_published_parent(dest: &Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 fn sync_published_parent(_dest: &Path) -> std::io::Result<()> {
-    // The retained path flushes the renamed file handle immediately after its
-    // handle-based commit; the fixture-only legacy path uses MoveFileExW with
-    // WRITE_THROUGH.
     Ok(())
 }
 
@@ -1837,13 +1676,6 @@ fn atomic_replace_retained(
     }
 
     const FILE_RENAME_INFO_CLASS: i32 = 3;
-    // Use the canonical absolute destination that was anchored before the temp
-    // was created. The complete canonical directory chain remains open without
-    // delete sharing for this entire call, so the path cannot be rebound under
-    // the handle-based promotion. A null RootDirectory plus the full path is
-    // also the SetFileInformationByHandle contract used by the recorder's
-    // established verified-replay finalizer; the retained directory handles are
-    // identity guards, not rename-authority handles.
     let wide = dest.as_os_str().encode_wide().collect::<Vec<_>>();
     if wide.is_empty() || wide.contains(&0) {
         return Err(std::io::Error::new(
@@ -1876,26 +1708,19 @@ fn atomic_replace_retained(
         )
     })?;
     let word_bytes = std::mem::size_of::<usize>();
-    let word_count = info_bytes
-        .checked_add(word_bytes - 1)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "atomic publish rename allocation overflow",
-            )
-        })?
-        / word_bytes;
+    let word_count = info_bytes.checked_add(word_bytes - 1).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "atomic publish rename allocation overflow",
+        )
+    })? / word_bytes;
     let mut storage = vec![0usize; word_count];
     let info = storage.as_mut_ptr().cast::<FileRenameInfo>();
     let ok = unsafe {
         (*info).replace_if_exists = 1;
         (*info).root_directory = std::ptr::null_mut();
         (*info).file_name_length = name_bytes;
-        std::ptr::copy_nonoverlapping(
-            wide.as_ptr(),
-            (*info).file_name.as_mut_ptr(),
-            wide.len(),
-        );
+        std::ptr::copy_nonoverlapping(wide.as_ptr(), (*info).file_name.as_mut_ptr(), wide.len());
         SetFileInformationByHandle(
             verified_file.as_raw_handle(),
             FILE_RENAME_INFO_CLASS,
@@ -1950,8 +1775,6 @@ fn atomic_replace(temp: &Path, dest: &Path) -> std::io::Result<()> {
     }
 }
 
-/// A sibling temp path in the destination's own directory (so the rename is a
-/// same-volume atomic replace). Uniqued by pid + nanos to avoid concurrent collision.
 fn sibling_temp_path(dest: &Path, attempt: u32) -> PathBuf {
     let nonce = format!(
         "{}.{}",
@@ -1972,13 +1795,6 @@ fn sibling_temp_path(dest: &Path, attempt: u32) -> PathBuf {
     }
 }
 
-/// Compose a publish-failure message, surfacing a temp-file cleanup failure when one
-/// occurred. The atomic-publish contract is that a failed publish
-/// leaves NO partial `.stitch-tmp-*` artifact behind; if the OS denies the delete
-/// (Windows file lock / ACL) that guarantee is broken, so the caller must be told a
-/// partial temp remains rather than have the error silently swallowed. `primary` (the
-/// original failure) is kept as the reported cause. A `NotFound` cleanup result means
-/// the temp is already gone — the contract holds, so nothing is appended.
 fn with_cleanup_note(primary: String, temp: &Path, cleanup: std::io::Result<()>) -> String {
     match cleanup {
         Ok(()) => primary,
@@ -2061,8 +1877,7 @@ mod tests {
             required_content: Vec::new(),
             manifest_digest_sha256: None,
         };
-        manifest.source_profile.selection_sha256 =
-            manifest.computed_selection_sha256().unwrap();
+        manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256().unwrap();
         manifest.required_content.push(RequiredContent {
             content_key: "map/definition.csv".into(),
             kind: RequiredContentKind::Definition,
@@ -2155,36 +1970,28 @@ mod tests {
                 &perf,
             ));
             *sequence += 1;
-            // One complete single-country D18 roster. `wire_product::build`
-            // decodes this stream, but the bytes are also kept canonical for the
-            // recorder's own seal-time authority in `domain_data_authority`:
-            // an available CIM1 major status obliges exactly one major row per
-            // roster country, so an all-zero 32-byte tail (major_count = 0
-            // against a one-country roster) would be refused there as an
-            // incomplete major roster even though the laxer product-side
-            // extension check accepts it.
             let mut countries = Vec::new();
-            countries.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
-            countries.extend_from_slice(&1u32.to_le_bytes()); // row_count
-            countries.extend_from_slice(&1u32.to_le_bytes()); // changed_rows
-            countries.extend_from_slice(&0u32.to_le_bytes()); // status: success
-            countries.extend_from_slice(&1u32.to_le_bytes()); // country source id
+            countries.extend_from_slice(&0u64.to_le_bytes());
+            countries.extend_from_slice(&1u32.to_le_bytes());
+            countries.extend_from_slice(&1u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&1u32.to_le_bytes());
             countries.extend_from_slice(&3u16.to_le_bytes());
             countries.extend_from_slice(b"TST");
-            countries.push(1); // cosmetic marker: no cosmetic override
+            countries.push(1);
             countries.extend_from_slice(b"CIM1");
-            countries.extend_from_slice(&1u16.to_le_bytes()); // CIM1 version
-            countries.extend_from_slice(&40u16.to_le_bytes()); // CIM1 header len
-            countries.extend_from_slice(&0u32.to_le_bytes()); // claims status
-            countries.extend_from_slice(&0u32.to_le_bytes()); // cores status
-            countries.extend_from_slice(&0u32.to_le_bytes()); // major status
-            countries.extend_from_slice(&0u32.to_le_bytes()); // membership states
-            countries.extend_from_slice(&0u32.to_le_bytes()); // expected claims
-            countries.extend_from_slice(&0u32.to_le_bytes()); // expected cores
-            countries.extend_from_slice(&1u32.to_le_bytes()); // major rows
-            countries.extend_from_slice(&0u32.to_le_bytes()); // reserved
-            countries.extend_from_slice(&1u32.to_le_bytes()); // major row: country
-            countries.push(0); // major row: not a major power
+            countries.extend_from_slice(&1u16.to_le_bytes());
+            countries.extend_from_slice(&40u16.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&1u32.to_le_bytes());
+            countries.extend_from_slice(&0u32.to_le_bytes());
+            countries.extend_from_slice(&1u32.to_le_bytes());
+            countries.push(0);
             countries.extend_from_slice(&[0, 0, 0]);
             push_stitched_wire_record(
                 out,
@@ -2395,8 +2202,6 @@ mod tests {
         }
     }
 
-    /// Multi-segment synthetic session with an in-stream rollback:
-    /// S0=0..3 then S1=2..2 supersedes hour 2; hour 3 is abandoned-future rollback.
     fn rollback_plan() -> StitchedPlan {
         match plan_stitch(
             GAME,
@@ -2452,8 +2257,7 @@ mod tests {
         assert_eq!(routes[0].segment_id, 1);
 
         let mut drifted = rollback_plan();
-        drifted.segments[1].input.provenance.source_decoded_digest =
-            Some("00".repeat(32));
+        drifted.segments[1].input.provenance.source_decoded_digest = Some("00".repeat(32));
         let error = derive_rebuilt_wire_branches(&drifted)
             .err()
             .expect("source digest disagreement must fail");
@@ -2486,7 +2290,6 @@ mod tests {
         );
     }
 
-    /// In-memory payload source keyed exactly as the plan references payloads.
     struct MemorySource {
         snapshots: BTreeMap<(u32, i64), Vec<u8>>,
         raw: BTreeMap<String, Vec<u8>>,
@@ -2556,10 +2359,7 @@ mod tests {
             self.snapshot_receipt(segment_id, hour_index)
         }
 
-        fn raw_source_receipt(
-            &self,
-            source_path: &str,
-        ) -> Result<VerifiedPayloadReceipt, String> {
+        fn raw_source_receipt(&self, source_path: &str) -> Result<VerifiedPayloadReceipt, String> {
             let bytes = self
                 .raw
                 .get(source_path)
@@ -2584,9 +2384,6 @@ mod tests {
         }
     }
 
-    /// Supplies correct pre-pack receipts but changes snapshot bytes while the
-    /// unpublished container is being written. The verified writer must detect
-    /// the drift without ever replacing an existing destination.
     struct DriftingRetainedSource(MemorySource);
 
     impl RetainedStitchedPayloadSource for DriftingRetainedSource {
@@ -2610,10 +2407,7 @@ mod tests {
             self.0.snapshot_receipt(segment_id, hour_index)
         }
 
-        fn raw_source_receipt(
-            &self,
-            source_path: &str,
-        ) -> Result<VerifiedPayloadReceipt, String> {
+        fn raw_source_receipt(&self, source_path: &str) -> Result<VerifiedPayloadReceipt, String> {
             self.0.raw_source_receipt(source_path)
         }
 
@@ -2657,8 +2451,7 @@ mod tests {
         let session = OwnedStitchedWireSession {
             branch: 0,
             source_path: "raw/session.h4cr".to_string(),
-            identity_mode:
-                compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            identity_mode: compact_contract::stream_validator::StreamIdentityMode::Legacy,
             file_path: path.clone(),
             file: portable_test_fs_retry::open(&path).unwrap(),
             stored_sha256: decode_sha256_hex(&Sha256::hex(original)).unwrap(),
@@ -2677,8 +2470,6 @@ mod tests {
             .contains("stored SHA-256 differs"));
     }
 
-    // Falsifiability: changing rebuilt-wire origin derivation to ignore initial
-    // authenticated D81 H4DG coverage makes the first-tick assertions fail.
     #[test]
     fn stitched_branch_origin_uses_initial_authenticated_h4dg_coverage() {
         let h0 = stitched_valid_hour(0);
@@ -2779,8 +2570,6 @@ mod tests {
         );
     }
 
-    // Falsifiability: changing retained H4CR refolding to derive D81 observations or
-    // gaps outside the exact selected records makes the exact counts or receipt check fail.
     #[test]
     fn stitched_retained_selection_directly_refolds_exact_descriptors_and_gaps() {
         let h9 = stitched_valid_hour(9);
@@ -2840,8 +2629,7 @@ mod tests {
         let session = OwnedStitchedWireSession {
             branch: 0,
             source_path: "raw/selected.h4cr".into(),
-            identity_mode:
-                compact_contract::stream_validator::StreamIdentityMode::Legacy,
+            identity_mode: compact_contract::stream_validator::StreamIdentityMode::Legacy,
             file_path: source_path.clone(),
             file: portable_test_fs_retry::open(&source_path).unwrap(),
             stored_sha256: decode_sha256_hex(&Sha256::hex(&stream)).unwrap(),
@@ -2900,10 +2688,7 @@ mod tests {
         .unwrap();
         assert_eq!(verified.branches[0].state_observations, 1);
         assert_eq!(verified.branches[0].gap_hours, 3);
-        assert_eq!(
-            verified.branches[0].last_tick,
-            u64::try_from(h12).unwrap()
-        );
+        assert_eq!(verified.branches[0].last_tick, u64::try_from(h12).unwrap());
 
         let bad_session = OwnedStitchedWireSession {
             selection: wire_product::H4crSelection {
@@ -2921,7 +2706,8 @@ mod tests {
         let error = wire_product::verify_entry_source_against_h4cr(
             &descriptors,
             |path| {
-                portable_test_fs_retry::read(artifacts.get(path).unwrap()).map_err(|error| error.to_string())
+                portable_test_fs_retry::read(artifacts.get(path).unwrap())
+                    .map_err(|error| error.to_string())
             },
             wire_product::BundleBuildConfig::default(),
             &branches,
@@ -2936,9 +2722,6 @@ mod tests {
         );
     }
 
-    /// The plan -> pack -> read round-trip on a multi-segment synthetic session:
-    /// publish, then re-open the published file and confirm the main timeline,
-    /// rollback retention, and integrity.
     #[cfg(windows)]
     #[test]
     fn publishes_multi_segment_session_and_reopens() {
@@ -2950,10 +2733,8 @@ mod tests {
         let report = publish_stitched_container_retained(&plan, &source, &dest).unwrap();
         assert_eq!(report.published_path, dest);
         assert!(dest.exists());
-        // main hours 0,1 from S0; hour 2 from the later branch S1; hour 3 abandoned.
         assert_eq!(report.visible_snapshot_hours, 3);
         assert_eq!(report.segments, 2);
-        // No temp artifact survives a success.
         let leftovers: Vec<_> = fs::read_dir(&dir.0)
             .unwrap()
             .filter_map(|e| e.ok())
@@ -2971,7 +2752,6 @@ mod tests {
             .find(|s| s.hour_index == Some(2))
             .unwrap();
         assert_eq!(h2.file, "s00000001.000000000002.snapshot.json");
-        // hour 2 resolves to the later branch (po=1).
         assert_eq!(
             container
                 .load(2)
@@ -2981,7 +2761,6 @@ mod tests {
                 .and_then(|v| v.as_u64()),
             Some(1)
         );
-        // superseded + abandoned-future snapshots retained rollback-only.
         assert!(container
             .load_file("s00000000.000000000002.snapshot.json")
             .is_ok());
@@ -3004,11 +2783,9 @@ mod tests {
         let second = publish_stitched_container_retained(&plan, &source, &second_path).unwrap();
         assert_eq!(first.container_sha256, second.container_sha256);
         assert_eq!(first.container_bytes, second.container_bytes);
-        let (container, _, _) = Container::open_strict_with_file_receipt(
-            &first_path,
-            &ExpectedIdentity::default(),
-        )
-        .unwrap();
+        let (container, _, _) =
+            Container::open_strict_with_file_receipt(&first_path, &ExpectedIdentity::default())
+                .unwrap();
         container.verify_all_streaming().unwrap();
         assert!(container.index().is_stitched());
         let leftovers = fs::read_dir(&dir.0)
@@ -3016,7 +2793,10 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().contains("stitch-tmp"))
             .collect::<Vec<_>>();
-        assert!(leftovers.is_empty(), "retained publication leaked temp files");
+        assert!(
+            leftovers.is_empty(),
+            "retained publication leaked temp files"
+        );
     }
 
     #[cfg(windows)]
@@ -3035,7 +2815,11 @@ mod tests {
             error.contains("length") || error.contains("sha256") || error.contains("hash"),
             "unexpected drift failure: {error}"
         );
-        assert_eq!(portable_test_fs_retry::read(&dest).unwrap(), prior, "prior replay was replaced");
+        assert_eq!(
+            portable_test_fs_retry::read(&dest).unwrap(),
+            prior,
+            "prior replay was replaced"
+        );
         let leftovers = fs::read_dir(&dir.0)
             .unwrap()
             .filter_map(Result::ok)
@@ -3055,13 +2839,19 @@ mod tests {
 
         let error = publish_stitched_container_retained(&plan, &source, &dest).unwrap_err();
         assert!(error.contains("retained-handle replacement"), "{error}");
-        assert_eq!(portable_test_fs_retry::read(&dest).unwrap(), b"prior-replay-sentinel");
+        assert_eq!(
+            portable_test_fs_retry::read(&dest).unwrap(),
+            b"prior-replay-sentinel"
+        );
         let leftovers = fs::read_dir(&dir.0)
             .unwrap()
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().contains("stitch-tmp"))
             .collect::<Vec<_>>();
-        assert!(leftovers.is_empty(), "unsupported publication leaked temp files");
+        assert!(
+            leftovers.is_empty(),
+            "unsupported publication leaked temp files"
+        );
     }
 
     #[cfg(windows)]
@@ -3091,11 +2881,8 @@ mod tests {
 
     #[test]
     fn tampered_snapshot_payload_aborts_before_publish() {
-        // Reference validation: a payload that does not hash to its recorded
-        // coverage sha256 must abort at build, before any pack/publish.
         let plan = rollback_plan();
         let mut source = MemorySource::for_plan(&plan);
-        // Corrupt the byte content of one snapshot without updating the plan hash.
         let key = *source.snapshots.keys().next().unwrap();
         source.snapshots.insert(key, b"tampered".to_vec());
         let error = build_stitched_entries(&plan, &source)
@@ -3118,26 +2905,20 @@ mod tests {
         assert!(error.contains("stored digest"), "{error}");
     }
 
-    /// Crash injection: a failure during the publish (here a payload the
-    /// source cannot supply, standing in for a mid-finalize crash) must leave the
-    /// PRIOR published replay at the destination untouched and leave no temp behind.
     #[test]
     fn failed_publish_preserves_prior_replay_and_leaves_no_temp() {
         let dir = TempDir::new("crash");
         let dest = dir.0.join("replay.battleplan");
-        // A valid prior replay is already published.
         let good = rollback_plan();
         publish_stitched_container(&good, &MemorySource::for_plan(&good), &dest).unwrap();
         let prior_bytes = portable_test_fs_retry::read(&dest).unwrap();
 
-        // A new publish whose payload source is missing a snapshot fails.
         let plan = rollback_plan();
         let mut broken = MemorySource::for_plan(&plan);
-        broken.snapshots.clear(); // cannot supply any snapshot payload
+        broken.snapshots.clear();
         let error = publish_stitched_container(&plan, &broken, &dest).unwrap_err();
         assert!(error.contains("no snapshot"), "{error}");
 
-        // The prior replay is byte-for-byte intact and no temp artifact leaked.
         assert_eq!(
             portable_test_fs_retry::read(&dest).unwrap(),
             prior_bytes,
@@ -3151,9 +2932,6 @@ mod tests {
         assert!(leftovers.is_empty(), "temp artifact leaked on failure");
     }
 
-    /// Model a compressed `.h4cr.zst` source: the STORED (compressed) bytes hash to
-    /// `stored_digest`, while `decoded_digest` is the hash of the different decoded
-    /// bytes. The `MemorySource` supplies the stored bytes.
     fn compressed_source_plan() -> StitchedPlan {
         let mut seg = snap_seg(0, 0..=2);
         let decoded = Sha256::hex(b"decoded-plaintext-distinct-from-the-stored-bytes");
@@ -3167,20 +2945,12 @@ mod tests {
 
     #[test]
     fn compressed_source_validates_stored_digest_and_reopens() {
-        // Finding 1: a compressed source has stored_digest != decoded_digest. The
-        // embedded (stored) bytes must be reference-validated against the STORED digest
-        // — exactly what container re-open checks (entry.expected_sha256 ==
-        // stored_digest) — so build-time and re-open agree. Before the fix the stored
-        // bytes were checked against decoded_digest, so this aborted at build.
         let plan = compressed_source_plan();
         let source = MemorySource::for_plan(&plan);
-        // build + pack + independent re-open all pass.
         let (_bytes, report) = pack_and_validate(&plan, &source).unwrap();
         assert_eq!(report.visible_snapshot_hours, 3);
     }
 
-    /// A single-segment plan whose lone raw source is marked standalone (the shape a
-    /// multi-campaign A->B->A stream takes — it cannot be embedded under one campaign).
     fn standalone_source_plan() -> StitchedPlan {
         let mut seg = snap_seg(0, 0..=2);
         seg.raw_source.as_mut().unwrap().storage = RawSourceStorage::Standalone;
@@ -3193,9 +2963,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn standalone_source_is_referenced_not_embedded() {
-        // Finding 2: a standalone source must NOT be embedded — Container::from_bytes
-        // (validate_raw_sources) rejects a standalone raw source present in the
-        // manifest. Before the fix every raw source was embedded, so re-open failed.
         let plan = standalone_source_plan();
         let source = MemorySource::for_plan(&plan);
         let dir = TempDir::new("standalone");
@@ -3205,7 +2972,6 @@ mod tests {
         assert_eq!(report.segments, 1);
         assert_eq!(report.visible_snapshot_hours, 3);
 
-        // Re-open and confirm the standalone source payload is not embedded.
         let bytes = portable_test_fs_retry::read(&dest).unwrap();
         let container = Container::from_bytes(bytes, &ExpectedIdentity::default()).unwrap();
         assert!(
@@ -3228,10 +2994,6 @@ mod tests {
 
     #[test]
     fn temp_cleanup_failure_is_surfaced_not_swallowed() {
-        // Finding 5: when the post-write cleanup of the partial temp fails (Windows
-        // file lock / ACL), the caller must be told a temp remains rather than have the
-        // error silently discarded. A NotFound (already-gone) or Ok cleanup leaves the
-        // primary error untouched.
         let temp = PathBuf::from(r"C:\replay\.replay.battleplan.stitch-tmp-123");
         let primary = "atomic publish (rename) failed: disk full".to_string();
 

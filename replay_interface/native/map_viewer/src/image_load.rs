@@ -4,26 +4,8 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-/// Maximum number of individual `definition.csv` defects named in the refusal
-/// message. The count is always exact; only the enumeration is bounded so a
-/// wholly-corrupt file cannot produce a multi-megabyte error string.
 pub(crate) const MAX_REPORTED_DEFINITION_GAPS: usize = 20;
 
-/// FW7-F5: `map/definition.csv` is parsed strictly and fails closed.
-///
-/// The previous loop handled malformed input four incompatible ways in one
-/// pass — a short row was skipped, a non-numeric id was skipped, a non-numeric
-/// channel propagated a bare `ParseIntError` with no line context, and a
-/// non-numeric continent silently became `0`. Duplicate ids and duplicate RGB
-/// keys were both accepted, and because `color_to_id` is keyed by color while
-/// `definitions` is keyed by id, either duplicate class left the two returned
-/// maps mutually inconsistent (several colors resolving to one id, or an id in
-/// `definitions` that no color can reach).
-///
-/// Every one of those is now a typed gap carried to the caller in a single
-/// refusal that names the 1-based line number and the exact defect. The only
-/// tolerated inputs are wholly blank lines and a UTF-8 BOM on the first line —
-/// neither carries province data, and neither can hide a dropped province.
 pub(crate) fn load_definition_csv(
     path: &Path,
 ) -> Result<(BTreeMap<u32, ProvinceDefinition>, HashMap<u32, u32>)> {
@@ -49,8 +31,6 @@ pub(crate) fn decode_definition_csv(
     };
     for (index, raw) in text.lines().enumerate() {
         let line_no = index + 1;
-        // A UTF-8 BOM survives the latin1 decode as three printable chars and
-        // would otherwise turn row 1 into a silently dropped province.
         let raw = if index == 0 {
             raw.trim_start_matches('\u{feff}')
                 .trim_start_matches("\u{ef}\u{bb}\u{bf}")
@@ -159,9 +139,6 @@ pub(crate) fn decode_definition_csv(
         )
         .into());
     }
-    // Invariant the two duplicate classes used to break: every definition is
-    // reachable through exactly one color, and every color maps to a defined
-    // province.
     if definitions.len() != color_to_id.len() {
         return Err(format!(
             "{} produced {} province definitions but {} color keys",
@@ -178,9 +155,6 @@ pub(crate) fn color_key(r: u8, g: u8, b: u8) -> u32 {
     u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16)
 }
 
-/// Upper bound on image dimensions accepted from untrusted file headers. Anything
-/// larger (or zero) is refused with a typed error instead of risking arithmetic
-/// overflow or a multi-GB allocation abort.
 pub(crate) const MAX_IMAGE_DIMENSION: usize = 32_768;
 
 pub(crate) fn check_image_dimensions(path: &Path, width: usize, height: usize) -> Result<()> {
@@ -198,28 +172,11 @@ pub(crate) struct BmpIds {
     pub(crate) width: usize,
     pub(crate) height: usize,
     pub(crate) ids: Vec<u32>,
-    /// Always `0` on a successful load — [`load_provinces_bmp`] refuses any
-    /// raster containing a color absent from `definition.csv` (FW7-F4). The
-    /// field is retained so the manifest can keep publishing the count and so
-    /// the pre-existing caller gates stay honest belt-and-braces.
     pub(crate) unknown_pixels: usize,
 }
 
-/// Upper bound on distinct unknown colors enumerated in the refusal message.
 pub(crate) const MAX_REPORTED_UNKNOWN_COLORS: usize = 8;
 
-/// FW7-F4: `provinces.bmp` pixels whose color has no `definition.csv` row are a
-/// hard refusal, not a silent `0`.
-///
-/// The raster is allocated as `vec![0u32; ..]` and the `None` arm never wrote a
-/// value, so an undefined color became province id `0` — which is the *documented
-/// "no province" sentinel* the rest of the crate keys on (`rail_files`,
-/// `map_furniture`, and `map_label_law` all skip on `0`). Only two of
-/// the nine call sites inspected `unknown_pixels`; the other seven — including the
-/// shipped-bundle generator — consumed the substituted sentinel and returned `Ok`.
-///
-/// Gating here rather than at each call site closes all nine at once and cannot be
-/// forgotten by a tenth. Every existing caller already propagates with `?`.
 pub(crate) fn load_provinces_bmp(path: &Path, color_to_id: &HashMap<u32, u32>) -> Result<BmpIds> {
     let data = fs::read(path)?;
     decode_provinces_bmp(&data, path, color_to_id)
@@ -602,12 +559,7 @@ pub(crate) fn dds_info(path: &Path) -> Result<DdsInfo> {
     })
 }
 
-/// Total for every possible header-supplied mask, including a full 32-bit
-/// channel mask. DDS channel masks arrive unvalidated from mod assets; the
-/// former u32 arithmetic overflowed on `1u32 << 32` (a 32-bit mask) and on
 /// `value * 255` (wide masks), which is a release panic under this crate's
-/// `overflow-checks = true` instead of a decode. Mirrors the identical fix in
-/// `game_ui::dds::mask_channel` (R18-3).
 pub(crate) fn mask_channel(raw: u32, mask: u32) -> u8 {
     if mask == 0 {
         return 0;
@@ -873,8 +825,6 @@ mod tests {
 
     #[test]
     fn mask_channel_is_total_for_every_mask_shape() {
-        // R18-3 (map_viewer twin of game_ui::dds): a 32-bit mask overflowed
-        // `1u32 << 32` and wide masks overflowed `value * 255`; both are
         // release panics under overflow-checks instead of a decode.
         assert_eq!(mask_channel(u32::MAX, u32::MAX), 255);
         assert_eq!(mask_channel(0, u32::MAX), 0);
@@ -886,16 +836,13 @@ mod tests {
 
     #[test]
     fn full_channel_mask_dds_decodes_instead_of_panicking() {
-        // R18-3 reachability: an unvalidated mod-asset DDS header carrying
-        // rmask = 0xffff_ffff reaches mask_channel with 32 set bits through
-        // decode_dds_rgba_mip. Before the u64 widening this panicked.
         let path = fake_path();
         let mut data = vec![0u8; 132];
-        data[92..96].copy_from_slice(&0xffff_ffffu32.to_le_bytes()); // rmask
-        data[96..100].copy_from_slice(&0u32.to_le_bytes()); // gmask
-        data[100..104].copy_from_slice(&0u32.to_le_bytes()); // bmask
-        data[104..108].copy_from_slice(&0u32.to_le_bytes()); // amask
-        data[128..132].copy_from_slice(&0xffff_ffffu32.to_le_bytes()); // pixel
+        data[92..96].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
+        data[96..100].copy_from_slice(&0u32.to_le_bytes());
+        data[100..104].copy_from_slice(&0u32.to_le_bytes());
+        data[104..108].copy_from_slice(&0u32.to_le_bytes());
+        data[128..132].copy_from_slice(&0xffff_ffffu32.to_le_bytes());
         let image = decode_dds_rgba_mip(&path, &data, 1, 1, 128, 0x40, b"NONE", 32)
             .expect("a full 32-bit channel mask is decodable, not a panic");
         assert_eq!(image.pixels, vec![255, 0, 0, 255]);
@@ -937,7 +884,6 @@ mod tests {
         assert_eq!(dds_mip_byte_len(1, 1, b"DXT1", 0).unwrap(), 8);
     }
 
-    // ---- FW7-F5: definition.csv is parsed strictly -------------------------
 
     fn definition_csv(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
         std::fs::create_dir_all(dir).expect("create temp dir");
@@ -971,10 +917,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A UTF-8 BOM survives `read_latin1` as three printable chars glued to the
-    /// first field, so under the old parser row 1 — province `0`, the "no
-    /// province" definition itself — was silently dropped. Stripping it is the
-    /// one tolerance the strict parser keeps beyond blank lines.
     #[test]
     fn definition_csv_tolerates_a_utf8_bom_on_the_first_row() {
         let dir = crate::test_support::temp_test_dir("definition_csv_bom");
@@ -990,8 +932,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Regression: a row with fewer than eight fields used to be skipped with a
-    /// bare `continue`, silently deleting that province.
     #[test]
     fn definition_csv_refuses_short_row() {
         let dir = crate::test_support::temp_test_dir("definition_csv_short");
@@ -1003,9 +943,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Regression: a non-numeric id was skipped; a non-numeric channel produced
-    /// a bare `ParseIntError` with no line context; a non-numeric continent
-    /// silently became `0`. All three now name the line and the province.
     #[test]
     fn definition_csv_refuses_unparseable_fields_with_line_context() {
         let dir = crate::test_support::temp_test_dir("definition_csv_fields");
@@ -1026,10 +963,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Regression: a duplicate province id kept the last row in `definitions`
-    /// while BOTH colors stayed in `color_to_id`, and a duplicate RGB kept the
-    /// last id in `color_to_id` while BOTH ids stayed in `definitions` — the two
-    /// returned maps ended up mutually inconsistent, silently.
     #[test]
     fn definition_csv_refuses_duplicate_ids_and_duplicate_colors() {
         let dir = crate::test_support::temp_test_dir("definition_csv_dupes");
@@ -1077,9 +1010,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ---- FW7-F4: unknown provinces.bmp colors fail closed ------------------
 
-    /// 24bpp bottom-up BMP over `pixels` given top-down, row-major.
     fn write_provinces_bmp(path: &std::path::Path, width: usize, pixels: &[[u8; 3]]) {
         let height = pixels.len() / width;
         let stride = (width * 3 + 3) & !3;
@@ -1123,10 +1054,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Regression: an undefined color left the pre-zeroed raster untouched, so
-    /// the pixel silently became province id `0` — the crate-wide "no province"
-    /// sentinel — and seven of the nine call sites admitted it, including the
-    /// shipped-bundle generator.
     #[test]
     fn provinces_bmp_refuses_unknown_color_instead_of_substituting_zero() {
         let dir = crate::test_support::temp_test_dir("provinces_bmp_unknown");
@@ -1178,8 +1105,8 @@ mod tests {
         let path = dir.join("oversized.dds");
         let mut header = vec![0u8; 128];
         header[0..4].copy_from_slice(b"DDS ");
-        header[12..16].copy_from_slice(&u32::MAX.to_le_bytes()); // height
-        header[16..20].copy_from_slice(&u32::MAX.to_le_bytes()); // width
+        header[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        header[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
         std::fs::write(&path, &header).unwrap();
         let single = load_dds_rgba(&path);
         assert!(single

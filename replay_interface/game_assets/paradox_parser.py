@@ -15,9 +15,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-# A token is either a delimiter ('{', '}', '='), a quoted string, or a bare run
-# of non-whitespace/non-delimiter characters. Comments (# .. EOL) are dropped by
-# the lexer, but only when the '#' is OUTSIDE a quoted string.
 _DELIMS = set("{}=")
 
 
@@ -33,23 +30,19 @@ def tokenize(text: str) -> list[tuple[str, str]]:
     n = len(text)
     while i < n:
         c = text[i]
-        # Whitespace
         if c in " \t\r\n":
             i += 1
             continue
-        # Comment to end of line (outside quotes; we are between tokens here)
         if c == "#":
             j = text.find("\n", i)
             i = n if j == -1 else j + 1
             continue
-        # Quoted string
         if c == '"':
             j = i + 1
             buf = []
             while j < n:
                 cj = text[j]
                 if cj == "\\" and j + 1 < n:
-                    # keep escaped char literally (rare in the game, defensive)
                     buf.append(text[j + 1])
                     j += 2
                     continue
@@ -61,7 +54,6 @@ def tokenize(text: str) -> list[tuple[str, str]]:
             tokens.append(("str", "".join(buf)))
             i = j
             continue
-        # Delimiters
         if c == "{":
             tokens.append(("lbrace", "{"))
             i += 1
@@ -74,7 +66,6 @@ def tokenize(text: str) -> list[tuple[str, str]]:
             tokens.append(("eq", "="))
             i += 1
             continue
-        # Bare token: read until whitespace / delimiter / comment / quote
         j = i
         while j < n and text[j] not in " \t\r\n" and text[j] not in _DELIMS \
                 and text[j] != "#" and text[j] != '"':
@@ -93,7 +84,6 @@ class Node:
     """
     entries: list[tuple[str, Any]] = field(default_factory=list)
 
-    # convenience accessors -------------------------------------------------
     def get(self, key: str, default=None):
         """First value for `key` (case-insensitive), scalar or Node."""
         kl = key.lower()
@@ -122,15 +112,12 @@ def _parse_block(tokens: list[tuple[str, str]], pos: int) -> tuple[Node, int]:
         if kind == "rbrace":
             return node, pos + 1
         if kind == "lbrace":
-            # anonymous nested block (rare); attach under "")
             child, pos = _parse_block(tokens, pos + 1)
             node.entries.append(("", child))
             continue
         if kind in ("str", "bare"):
             key = val
-            # lookahead for '='
             if pos + 1 < n and tokens[pos + 1][0] == "eq":
-                # key = value
                 if pos + 2 < n and tokens[pos + 2][0] == "lbrace":
                     child, pos = _parse_block(tokens, pos + 3)
                     node.entries.append((key, child))
@@ -139,15 +126,12 @@ def _parse_block(tokens: list[tuple[str, str]], pos: int) -> tuple[Node, int]:
                     node.entries.append((key, tokens[pos + 2][1]))
                     pos += 3
                     continue
-                # '=' with nothing usable after; record bare key
                 node.entries.append((key, ""))
                 pos += 2
                 continue
-            # bare scalar in a list (e.g. inside { 1 2 3 } or { tagA tagB })
             node.entries.append(("", key))
             pos += 1
             continue
-        # stray '=' or unexpected: skip defensively
         pos += 1
     return node, pos
 
@@ -159,7 +143,6 @@ def parse(text: str) -> Node:
     return root
 
 
-# --- value coercion helpers (used by the gui parser) -----------------------
 
 _NUM_RE = re.compile(r"^-?\d+(\.\d+)?$")
 

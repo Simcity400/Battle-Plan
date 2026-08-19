@@ -1,14 +1,6 @@
-//! Neutral handoff for canonical world states that have already been folded.
-//!
-//! This module deliberately knows nothing about the extractor's H4CR decoder or
-//! the replay application's bind layer.  A producer must finish and certify its
-//! own decode/fold before constructing this object; a consumer receives only a
-//! closed hour index plus immutable, strictly parsed snapshot entries.
-
 use crate::{decode_json_strict, Snapshot};
 use serde_json::Value;
 
-/// The immutable, canonical hour index accompanying [`PrefoldedReplay`].
 #[derive(Debug, Clone)]
 pub struct PrefoldedHourIndex {
     game_id: String,
@@ -25,14 +17,11 @@ impl PrefoldedHourIndex {
         &self.schema_version
     }
 
-    /// Strictly increasing canonical hour keys.  Their order byte-matches
-    /// [`PrefoldedReplay::entries`].
     pub fn hours(&self) -> &[i64] {
         &self.hours
     }
 }
 
-/// One already-folded canonical snapshot, keyed by its authoritative hour.
 #[derive(Debug, Clone)]
 pub struct PrefoldedHourEntry {
     hour_index: i64,
@@ -40,8 +29,6 @@ pub struct PrefoldedHourEntry {
 }
 
 impl PrefoldedHourEntry {
-    /// Strictly parse one folded snapshot and bind it to `hour_index`.
-    /// Duplicate JSON members and a missing/mismatched body hour are rejected.
     pub fn from_json(hour_index: i64, bytes: &[u8]) -> Result<Self, PrefoldedReplayError> {
         let snapshot: Snapshot = decode_json_strict(bytes).map_err(|error| {
             PrefoldedReplayError::InvalidEntry(format!(
@@ -76,11 +63,6 @@ impl PrefoldedHourEntry {
     }
 }
 
-/// A complete, in-memory handoff of already-folded replay hours.
-///
-/// Construction is fail-closed: the set must be non-empty and strictly
-/// increasing, and every snapshot must carry the same game/schema identity as
-/// the index.  Raw compact records are not a variant of this type.
 #[derive(Debug, Clone)]
 pub struct PrefoldedReplay {
     index: PrefoldedHourIndex,

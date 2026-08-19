@@ -510,10 +510,6 @@ fn validate_owned_frame_authority(
 }
 
 fn errors_with_fatal_status(mut errors: Vec<String>, status_flags: u32) -> Vec<String> {
-    // Domain 44 has no lane-local status aliases in the canonical contract, so
-    // global interpretation is the raw value. Keep the normalization explicit
-    // here so any future alias addition cannot be mistaken for a blanket
-    // "nonzero status is fatal" policy.
     let failure_flags = status_flags & COMPACT_STATUS_FAILURE_MASK;
     if failure_flags != 0 {
         errors.push(format!(

@@ -1,5 +1,3 @@
-//! Complete effective-VFS content closure for replay-owned authored windows.
-
 use crate::authored_ui::{
     classify_authored_ui_path, engine_path_spelling_consumer, engine_recursive_path_cmp,
     safe_language_directory, AuthoredUiNamespace, AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH,
@@ -27,15 +25,9 @@ pub struct AuthoredUiContentObservation {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthoredUiContentClosure {
     pub observations: Vec<AuthoredUiContentObservation>,
-    /// Complete namespaces that lawfully have no effective file winners.
-    /// The recorder authenticates each semantic marker on a retained content
-    /// row; replay independently proves the corresponding resolver set empty.
     pub empty_namespace_consumers: Vec<String>,
 }
 
-/// Emit the unconditional pointer-free closure required to discover and later
-/// open any admitted authored window. No selected-Present or panel-visibility
-/// input participates.
 pub fn emit_effective_vfs_authored_ui_closure(
     vfs: &EffectiveVfs,
     authority_manifest_sha256: &str,
@@ -102,14 +94,7 @@ pub fn emit_effective_vfs_authored_ui_closure(
     {
         refuse_destructive_text_decode(file, "authored GUI")?;
         let document = parse_bytes(&file.bytes);
-        // XUI01 intentionally admits the measured a729 recovery corpus. The
-        // exact bytes are still retained here; its catalog owns whether a
-        // recovered root is semantically admissible.
         for root in parse_gui_document(&document) {
-            // Exact-a729 GUI_TYPE lookup is case-insensitive and the last
-            // root registered in component-wise parse order wins. Namespace
-            // bytes retain every effective file, but losing root trees must
-            // not manufacture dependencies in the semantic closure.
             effective_gui_roots.insert(
                 root.name.to_ascii_lowercase(),
                 (file.logical_path.clone(), root),
@@ -145,20 +130,10 @@ pub fn emit_effective_vfs_authored_ui_closure(
         }
         sprites.add_document(&file.logical_path, &document);
     }
-    // Namespace listings can retain up to the aggregate 2 GiB ceiling. The
-    // parsed GUI roots and sprite registry above own the only information
     // needed from this point onward, so release all listing payloads before
-    // resolving any transitive asset. This keeps dependency materialization
-    // from becoming additive with the namespace payload ceiling.
     drop(namespace_files);
 
-    // Cache only authenticated identities, never payload bytes. Repeated
-    // sprite slots/font aliases therefore neither re-read nor retain the same
-    // potentially large dependency while the closure is assembled.
     let mut dependency_cache = BTreeMap::<String, Option<UsedContentKey>>::new();
-    // Inline localisation tokens can name any effective sprite at runtime.
-    // Authenticate every last-registered sprite winner and its transitive
-    // texture/effect closure rather than guessing a packet-time subset.
     for sprite in sprites.effective_sprites() {
         for slot in &sprite.texture_files {
             let Some(content) = resolve_texture_cached(
@@ -168,8 +143,6 @@ pub fn emit_effective_vfs_authored_ui_closure(
                 &mut dependency_cache,
             )?
             else {
-                // As above, absence remains a typed per-surface replay
-                // admission failure; it is never replaced with guessed bytes.
                 continue;
             };
             insert_observation(&mut observations, DEPENDENCY_CLOSURE_CONSUMER, &content)?;
@@ -241,8 +214,6 @@ pub fn emit_effective_vfs_authored_ui_closure(
     )?;
     for font in fonts {
         let Some(Ok(paths)) = font_registry.get(&font) else {
-            // Exact font-resolution failure is re-derived by the role index
-            // and blocks only the affected panel from strict admission.
             continue;
         };
         for path in paths.registration_sources.iter().cloned().chain(
@@ -284,8 +255,6 @@ fn list_authored_namespace_candidates(
     localisation_language: &str,
     budget: &mut ClosureListingBudget,
 ) -> Result<Vec<EffectiveVfsResolvedFile>, String> {
-    // Do not materialize the entire game VFS. Each listing owns all returned
-    // payload bytes, and map/audio/video content is irrelevant to XUI24.
     let mut files = BTreeMap::new();
     let selected_localisation = format!(
         "localisation/{}",
@@ -474,9 +443,6 @@ fn collect_element_dependencies(
             )
         })?;
         if texture.trim().is_empty() {
-            // Exact shipped UI uses `textureFile = ""` to disable the optional
-            // text-box backdrop (for example topbar/DateText). The raw tree
-            // retains that authored field; it is not an asset dependency.
             continue;
         }
         direct_textures.insert(texture.to_string());

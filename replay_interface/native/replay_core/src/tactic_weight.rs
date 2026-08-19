@@ -1,4 +1,3 @@
-//! Typed admission for the domain-96 preferred-tactic weight sidecar.
 
 use serde_json::{Map, Value};
 

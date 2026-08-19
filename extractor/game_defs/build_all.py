@@ -67,9 +67,6 @@ def main():
         vanilla=args.vanilla,
         mods=mods,
         userdata=args.userdata,
-        # The implicit active modset is just as authoritative as an explicit
-        # --mods list.  Never emit a mixed catalog after warning away an
-        # unresolved active-manifest entry.
         strict_mods=True,
     )
     loc = R.load_loc(layers)

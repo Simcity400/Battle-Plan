@@ -1,5 +1,4 @@
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=02163462bdcc964b65868afa16ad733c3d8c61631d4c779755037464a3f4a798
-// @d43-payload-reader-region begin
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=90163b1113daafaecdc9cc42ae06237f3488d7f85c71ccf20eff120f40f2cccd
 use super::*;
 
 pub(super) const LANE_DECODE_CONTEXT: d43_grammar::decode::DecodeContext =
@@ -792,7 +791,9 @@ fn format_finding(
         Rule::D43FindingsSuppressed => format!(
             "omitted {} additional findings for {:?}",
             finding.operand_a,
-            finding.suppressed_rule.unwrap_or(Rule::D43FindingsSuppressed)
+            finding
+                .suppressed_rule
+                .unwrap_or(Rule::D43FindingsSuppressed)
         ),
         Rule::D43DocumentCapacity => format!(
             "cannot allocate {} decoded core row(s) of {} byte(s) each",
@@ -1466,7 +1467,6 @@ fn format_structural(finding: &d43_grammar::decode::Finding) -> String {
         }
     }
 }
-// @d43-payload-reader-region end
 
 fn preview_shape(finding: &d43_grammar::decode::Finding) -> Option<String> {
     use d43_grammar::HeaderPreview;

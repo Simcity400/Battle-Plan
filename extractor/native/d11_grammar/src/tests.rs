@@ -1,49 +1,29 @@
-//! Handwritten byte goldens, coverage drift-killers and structural refusals.
-//! No fixture in this file is produced by `crate::encode`.
-
 use alloc::{vec, vec::Vec};
 
 use crate::encode;
 use crate::*;
 
 fn base_golden() -> Vec<u8> {
-    // 40-byte header, one stockpile, one military line, no naval line, one
-    // construction row. The byte fixture below spells the exact grammar.
     vec![
-        1, 0, 0, 0, 0, 0, 0, 0, // elapsed_wall_ms
-        1, 0, 0, 0, // country_count
-        2, 0, 0, 0, // changed_rows
-        3, 0, 0, 0, // status_flags
-        160, 134, 1, 0, // scale_raw = 100000
-        1, 0, 0, 0, // stockpile_count
-        1, 0, 0, 0, // military_count
-        0, 0, 0, 0, // naval_count
-        1, 0, 0, 0, // construction_count
-        11, 0, 0, 0, 22, 0, 0, 0, 33, 0, 0, 0, 0, 0, 0, 0, // stockpile
-        11, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, // line +0..15
-        4, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, // line +16..31
-        11, 0, 0, 0, 9, 0, 0, 0, 10, 0, 0, 0, 3, 0, 0, 0, // construction +0..15
-        4, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0, // construction +16..31
+        1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 160, 134, 1, 0, 1, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 11, 0, 0, 0, 22, 0, 0, 0, 33, 0, 0, 0, 0, 0, 0, 0, 11, 0,
+        0, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0, 0, 0,
+        11, 0, 0, 0, 9, 0, 0, 0, 10, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 6, 0, 0, 0, 7, 0,
+        0, 0,
     ]
 }
 
 fn plic_v1_golden() -> Vec<u8> {
     vec![
-        b'P', b'L', b'I', b'C', 1, 0, 20, 0, // prefix
-        1, 0, 0, 0, // country_rows
-        1, 0, 0, 0, // id_rows
-        0, 0, 0, 0, // reserved
-        1, 0, 0, 0, 1, 0, 0, 0, // country: tag, count
-        9, 0, 0, 0, // v1 item
+        b'P', b'L', b'I', b'C', 1, 0, 20, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
+        0, 0, 9, 0, 0, 0,
     ]
 }
 
 fn plic_v2_golden() -> Vec<u8> {
     vec![
-        b'P', b'L', b'I', b'C', 2, 0, 20, 0, // prefix
-        1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, // counts, reserved
-        1, 0, 0, 0, 1, 0, 0, 0, // country
-        9, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0, // v2 item
+        b'P', b'L', b'I', b'C', 2, 0, 20, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0,
+        0, 0, 9, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0,
     ]
 }
 
@@ -77,11 +57,8 @@ fn pls_golden() -> Vec<u8> {
 
 fn pef_golden() -> Vec<u8> {
     vec![
-        b'P', b'E', b'F', b'1', 1, 0, 20, 0, 56, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, // header
-        1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, // key
-        4, 0, 0, 0, 0, 0, 0, 0, // efficiency_raw at +12
-        5, 0, 0, 0, 0, 0, 0, 0, // cap at +20
-        6, 0, 0, 0, 0, 0, 0, 0, // growth at +28
+        b'P', b'E', b'F', b'1', 1, 0, 20, 0, 56, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2, 0,
+        0, 0, 3, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0,
     ]
 }
 
@@ -101,15 +78,10 @@ fn pcp_golden() -> Vec<u8> {
 
 fn pcv_golden() -> Vec<u8> {
     vec![
-        b'P', b'C', b'V', b'1', 1, 0, 28, 0, 92, 0, 0, 0, // prefix + segment
-        1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, // counts + reserved
-        1, 0, 0, 0, 31, 0, 0, 0, // tag, flags
-        1, 0, 0, 0, 0, 0, 0, 0, // owned_raw
-        2, 0, 0, 0, 3, 0, 0, 0, // assigned, available
-        0, 0, 0, 0, 1, 0, 0, 0, // variant start/len
-        0, 0, 0, 0, 1, 0, 0, 0, // reservation start/len
-        7, 0, 0, 0, 70, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, // variant
-        1, 0, 0, 0, 2, 0, 0, 0, // reservation
+        b'P', b'C', b'V', b'1', 1, 0, 28, 0, 92, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0,
+        0, 0, 1, 0, 0, 0, 31, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0,
+        1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 70, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+        0, 0, 2, 0, 0, 0,
     ]
 }
 
@@ -474,8 +446,6 @@ fn each_family_refuses_an_overdeclared_segment_with_the_declared_operands() {
     for trailer in Trailer::ALL {
         let mut bytes = golden(trailer);
         if trailer == Trailer::Plic {
-            // Keep the derived extent present, but over-declare id_rows against
-            // sum(country.count), which is PLIC's equivalent declaration.
             bytes[12..16].copy_from_slice(&2u32.to_le_bytes());
             bytes.extend_from_slice(&10u32.to_le_bytes());
             let err = TrailerCursor::new(0)
@@ -548,7 +518,7 @@ fn each_family_refuses_a_non_advancing_declaration() {
 #[test]
 fn pcv_range_defects_are_recoverable_steps_and_the_walk_can_resume() {
     let mut bytes = pcv_golden();
-    bytes[52..56].copy_from_slice(&2u32.to_le_bytes()); // variant_start, expected 0
+    bytes[52..56].copy_from_slice(&2u32.to_le_bytes());
     let mut parent = TrailerCursor::new(0);
     parent.next(&bytes).expect("magic");
     let TrailerBody::Pcv1(cursor) = parent.read_body(&bytes).expect("outer body") else {
@@ -593,7 +563,7 @@ fn pcv_range_defects_are_recoverable_steps_and_the_walk_can_resume() {
 #[test]
 fn pcv_out_of_bounds_is_never_yielded_as_canonical() {
     let mut bytes = pcv_golden();
-    bytes[56..60].copy_from_slice(&2u32.to_le_bytes()); // len 2, only one variant exists
+    bytes[56..60].copy_from_slice(&2u32.to_le_bytes());
     let mut parent = TrailerCursor::new(0);
     parent.next(&bytes).expect("magic");
     let TrailerBody::Pcv1(cursor) = parent.read_body(&bytes).expect("outer body") else {
@@ -651,8 +621,8 @@ fn pcv_running_starts_follow_lengths_not_a_bad_declared_start() {
         },
     ];
     let mut bytes = encode::encode_pcv1(&countries).expect("fixture shape");
-    bytes[52..56].copy_from_slice(&1u32.to_le_bytes()); // first expected 0
-    bytes[92..96].copy_from_slice(&2u32.to_le_bytes()); // second expected 1, not first start + len
+    bytes[52..56].copy_from_slice(&1u32.to_le_bytes());
+    bytes[92..96].copy_from_slice(&2u32.to_le_bytes());
     let mut parent = TrailerCursor::new(0);
     parent.next(&bytes).expect("magic");
     let TrailerBody::Pcv1(cursor) = parent.read_body(&bytes).expect("body") else {
@@ -730,11 +700,11 @@ fn every_public_row_reader_refuses_a_short_or_arbitrary_slice() {
 #[test]
 fn pcv_final_coverage_cannot_be_skipped_by_into_end() {
     let mut bytes = pcv_golden();
-    bytes.drain(28..68); // remove the sole country row
-    bytes.truncate(bytes.len() - PCV_RESERVATION_ROW_LEN); // remove reservation block
+    bytes.drain(28..68);
+    bytes.truncate(bytes.len() - PCV_RESERVATION_ROW_LEN);
     bytes[8..12].copy_from_slice(&44u32.to_le_bytes());
-    bytes[12..16].copy_from_slice(&0u32.to_le_bytes()); // no countries
-    bytes[16..20].copy_from_slice(&1u32.to_le_bytes()); // one uncovered variant
+    bytes[12..16].copy_from_slice(&0u32.to_le_bytes());
+    bytes[16..20].copy_from_slice(&1u32.to_le_bytes());
     bytes[20..24].copy_from_slice(&0u32.to_le_bytes());
     let mut parent = TrailerCursor::new(0);
     parent.next(&bytes).expect("magic");

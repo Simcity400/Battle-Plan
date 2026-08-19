@@ -1,27 +1,3 @@
-//! In-process reader for the engine's resolved localisation.
-//!
-//! The parser lives in [`theatre_selector_live_lane::engine_localisation_provenance`];
-//! this supplies its memory. Two things make that non-trivial in the collector.
-//!
-//! # Why not a raw pointer dereference
-//!
-//! The collector is injected into the game. A raw dereference of a pointer read
-//! out of engine memory would fault the *player's game* if any offset were
-//! wrong or any structure were mid-construction — the failure mode this
-//! project's fail-closed rule exists to avoid. `ReadProcessMemory` against our
-//! own process returns an error instead of raising an access violation, so a
-//! bad address becomes a refused identity rather than a crash. That is worth
-//! more than the syscall it costs.
-//!
-//! # Why block caching
-//!
-//! The a729 table observed live holds 129,097 entries whose key and value text
-//! lives in a 13.5 MB arena. Read naively that is a quarter of a million
-//! syscalls. Access is near-sequential — each entry's key and value are adjacent
-//! in the arena, and entries are walked in order — so serving reads out of
-//! 64 KiB blocks collapses it to a few hundred syscalls without needing to know
-//! the structure's shape in advance.
-
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::ffi::c_void;
@@ -44,11 +20,8 @@ extern "system" {
 const BLOCK_BITS: u32 = 16;
 const BLOCK: u64 = 1 << BLOCK_BITS;
 
-/// Upper bound on cached bytes. The observed arena is 13.5 MB and the entry
-/// array 3.1 MB; this leaves room without becoming unbounded on a corrupt read.
 const MAX_CACHED_BLOCKS: usize = 1024;
 
-/// Reads this process's own address space, safely.
 pub struct InProcessEngineImage {
     blocks: RefCell<BTreeMap<u64, Option<Box<[u8]>>>>,
 }
@@ -66,17 +39,10 @@ impl InProcessEngineImage {
         }
     }
 
-    /// Whether a `ReadProcessMemory` outcome may be trusted as a complete read.
-    ///
-    /// Split out from [`Self::raw`] so the short-read clause is reachable from a
-    /// test: this platform's `ReadProcessMemory` fails a straddling read
-    /// outright rather than returning a partial count, so the clause cannot be
-    /// provoked through a real call.
     fn accepts(ok: i32, read: usize, requested: usize) -> bool {
         ok != 0 && read == requested
     }
 
-    /// Read exactly `length` bytes at `address`, or `None`.
     fn raw(address: u64, length: usize) -> Option<Vec<u8>> {
         let mut bytes = vec![0u8; length];
         let mut read = 0usize;
@@ -92,14 +58,6 @@ impl InProcessEngineImage {
         Self::accepts(ok, read, bytes.len()).then_some(bytes)
     }
 
-    /// Read one aligned block, or `None` when it is not fully readable.
-    ///
-    /// A partially readable block is treated as unreadable rather than
-    /// zero-filled: a short read means the range crosses into unmapped memory,
-    /// and silently substituting zeroes would turn that into plausible data.
-    /// Callers fall back to an exact-range read, because a block straddling the
-    /// end of a mapping is unreadable as a block while the bytes actually asked
-    /// for are perfectly readable.
     fn block(&self, index: u64) -> Option<Box<[u8]>> {
         if let Some(cached) = self.blocks.borrow().get(&index) {
             return cached.clone();
@@ -132,9 +90,6 @@ impl TargetImageMemory for InProcessEngineImage {
             let take = ((BLOCK as usize) - offset).min((end - cursor) as usize);
             match self.block(index) {
                 Some(block) => out.extend_from_slice(&block[offset..offset + take]),
-                // The whole block is not readable, but the span actually asked
-                // for may still be. Only a failure of the exact range is a real
-                // refusal.
                 None => {
                     let exact = Self::raw(cursor, take).ok_or_else(|| {
                         format!("engine localisation address 0x{cursor:x} is not readable")
@@ -164,8 +119,6 @@ mod tests {
 
     #[test]
     fn a_range_spanning_a_block_boundary_is_reassembled_in_order() {
-        // 256 KiB guarantees the buffer crosses at least three 64 KiB blocks,
-        // so the reassembly path is exercised rather than a single-block hit.
         let source: Vec<u8> = (0..262_144u32).map(|value| (value % 251) as u8).collect();
         let image = InProcessEngineImage::new();
         let start = source.as_ptr() as u64 + 3;
@@ -185,23 +138,30 @@ mod tests {
 
     #[test]
     fn a_short_read_is_never_accepted_as_complete() {
-        assert!(InProcessEngineImage::accepts(1, 64, 64), "a full read is complete");
+        assert!(
+            InProcessEngineImage::accepts(1, 64, 64),
+            "a full read is complete"
+        );
         assert!(
             !InProcessEngineImage::accepts(1, 63, 64),
             "a successful call that produced fewer bytes than asked for is not a complete read"
         );
-        assert!(!InProcessEngineImage::accepts(0, 64, 64), "a failed call is never complete");
+        assert!(
+            !InProcessEngineImage::accepts(0, 64, 64),
+            "a failed call is never complete"
+        );
     }
 
-    /// Probes whether `ReadProcessMemory` can return a *partial* count, which is
-    /// what the length clause in [`InProcessEngineImage::accepts`] exists to
-    /// reject. One page is committed and two pages are requested.
     #[test]
     fn a_read_straddling_the_end_of_a_mapping_never_returns_a_partial_count() {
         #[link(name = "kernel32")]
         extern "system" {
-            fn VirtualAlloc(address: *mut c_void, size: usize, kind: u32, protect: u32)
-                -> *mut c_void;
+            fn VirtualAlloc(
+                address: *mut c_void,
+                size: usize,
+                kind: u32,
+                protect: u32,
+            ) -> *mut c_void;
             fn VirtualFree(address: *mut c_void, size: usize, kind: u32) -> i32;
         }
         const MEM_COMMIT_RESERVE: u32 = 0x1000 | 0x2000;
@@ -209,7 +169,12 @@ mod tests {
         const PAGE_READWRITE: u32 = 0x04;
 
         let page = unsafe {
-            VirtualAlloc(core::ptr::null_mut(), 4096, MEM_COMMIT_RESERVE, PAGE_READWRITE)
+            VirtualAlloc(
+                core::ptr::null_mut(),
+                4096,
+                MEM_COMMIT_RESERVE,
+                PAGE_READWRITE,
+            )
         };
         assert!(!page.is_null(), "one committed page");
         let mut bytes = vec![0u8; 8192];
@@ -224,9 +189,6 @@ mod tests {
             )
         };
         unsafe { VirtualFree(page, 0, MEM_RELEASE) };
-        // Either outcome keeps the reader correct; the assertion records which
-        // one this platform actually produces, so the length clause is not
-        // mistaken for dead code if the behaviour ever changes.
         assert!(
             ok == 0 || read == bytes.len(),
             "a partial count came back (ok={ok}, read={read}); the length clause is load-bearing"
@@ -239,14 +201,6 @@ mod tests {
         assert!(image.read(0x1000, 0).is_err());
     }
 
-    // -----------------------------------------------------------------------
-    // Cost of one engine mod/DLC roster read
-    // -----------------------------------------------------------------------
-
-    /// Writes engine-shaped structures into a flat buffer.
-    ///
-    /// Addresses are `image_base + offset`, which is how the reader addresses
-    /// everything, so the buffer stands in for the mapped image.
     struct Bump {
         bytes: Vec<u8>,
         at: usize,
@@ -274,8 +228,6 @@ mod tests {
             self.u64(off, value);
         }
 
-        /// An MSVC `std::string`, always heap-allocated so the reader takes the
-        /// two-read path a real long name would.
         fn string(&mut self, off: usize, text: &str) {
             let heap = self.alloc(text.len() + 1);
             self.bytes[heap..heap + text.len()].copy_from_slice(text.as_bytes());
@@ -301,22 +253,9 @@ mod tests {
         }
     }
 
-    /// What one engine mod/DLC roster read costs through the real reader.
-    ///
-    /// A measurement, not a gate, so it is `#[ignore]`d: a wall-clock assertion
-    /// on a shared build machine is a flake generator. Run it with
-    /// `cargo test -p collector -- --ignored --nocapture engine_modset_read_cost`.
-    ///
-    /// What it measures and what it cannot. It drives the production path
-    /// exactly — [`InProcessEngineImage`], the same 64 KiB block cache, the same
-    /// `ReadProcessMemory` syscalls, the same parser — over a roster the size of
-    /// a heavily modded install. What it cannot do is read the game, so the bytes
-    /// live in this process's heap rather than the game's. The syscall count and
-    /// the parse work are real; only the target process differs.
     #[test]
     #[ignore = "measurement harness, not a gate"]
     fn engine_modset_read_cost() {
-        // Base-only is the common capture; the modded shape is the upper bound.
         measure_engine_modset_read(0);
         measure_engine_modset_read(40);
     }
@@ -324,18 +263,12 @@ mod tests {
     fn measure_engine_modset_read(mod_count: u64) {
         use theatre_selector_live_lane::engine_modset_provenance as modset;
 
-        // Buffer offset IS the RVA, so the span has to reach past the higher of
-        // the two fixed slots (0x35caf10, about 54 MiB) with working room after
-        // it. The real image is far larger still; this only has to cover the
-        // range the reader addresses.
         const SPAN: usize = 96 << 20;
         let bytes = vec![0u8; SPAN];
         let origin = bytes.as_ptr() as u64;
         let mut image = Bump {
             bytes,
-            // Everything the parser walks goes past both fixed slot addresses.
             at: modset::VFS_SEARCH_PATH_CACHE_RVA as usize + 0x1000,
-            // Buffer offset is the RVA, so the buffer's start IS the image base.
             base: origin,
         };
         let image_base = image.base;
@@ -375,10 +308,10 @@ mod tests {
                 image.string(value + 0x68, entry.trim_end_matches(".mod"));
                 image.string(value + 0x88, "");
                 image.string(value + 0x118, "");
-                let deps: Vec<String> =
-                    (0..2).map(|k| format!("dependency_{k}_of_{entry}")).collect();
-                let replace: Vec<String> =
-                    (0..3).map(|k| format!("replace/path_{k}")).collect();
+                let deps: Vec<String> = (0..2)
+                    .map(|k| format!("dependency_{k}_of_{entry}"))
+                    .collect();
+                let replace: Vec<String> = (0..3).map(|k| format!("replace/path_{k}")).collect();
                 image.string_vector(value + 0xa8, &deps);
                 image.string_vector(value + 0xc0, &replace);
                 image.u32(value + 0x248, kind);
@@ -422,7 +355,6 @@ mod tests {
         const RUNS: u32 = 25;
         let start = std::time::Instant::now();
         for _ in 0..RUNS {
-            // Production runs two passes with a fresh reader each; measure that.
             let _ = once();
             let _ = once();
         }

@@ -28,12 +28,6 @@ fn main() {
         .file(src_dir.join("trampoline.c"))
         .file(src_dir.join(hde));
 
-    // THE ONE PLACE THE TEST-SUPPORT BLOCK CAN BE COMPILED IN, and it is
-    // reached only when cargo says the `test_support` feature is on. Nothing
-    // else in this file or in `vendor/` defines `MINHOOK_H4_TEST_SUPPORT`, so
-    // an ordinary build of this crate -- which is every build the collector
-    // ships -- compiles the `#ifdef` block out entirely. See the feature's own
-    // comment in `Cargo.toml`.
     if env::var_os("CARGO_FEATURE_TEST_SUPPORT").is_some() {
         build.define("MINHOOK_H4_TEST_SUPPORT", None);
     }

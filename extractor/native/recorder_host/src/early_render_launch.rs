@@ -1,27 +1,3 @@
-//! Start-frozen launch authority. EVIDENCE ONLY -- reverse-engineering tool,
-//! never a route a shipped recording takes.
-//!
-//! Exact D3D creation receipts cannot be recovered after the game has already
-//! created immutable shader/state objects.  This module therefore creates the
-//! selected game process suspended, injects the already-validated collector,
-//! waits for a process-epoch-bound complete hook receipt, and resumes the
-//! primary thread exactly once.  Paths remain recording-local; the hashed
-//! launch manifest contains only portable content identities.
-//!
-//! It is reachable only from `collector_record_evidence`, which is the sole
-//! target the non-default `evidence-client-driving` feature may build (see the
-//! compile assert at the top of `recorder_host/src/main.rs`), and the product
-//! packaging scripts refuse a package built with that feature on.
-//!
-//! WHAT THIS MODULE NO LONGER DOES (owner ruling, 2026-08-18): it does not take
-//! a picture. The G2 rendering observation -- a BGRA map screenshot plus its
-//! identity witness, authored by the collector, sealed here, packaged into the
-//! recording and admitted by the replay -- is DELETED. The map's look is
-//! rebuilt at replay from the certified installed content; d77 and d80 stay reserved
-//! and unbuilt; no recording carries pixels. What survives here is the
-//! create-suspended / inject / resume machinery, which graphics RE needs
-//! because of the first paragraph.
-
 use crate::portable_content_manifest::PortableLaunchBinding;
 use portable_content_manifest::{ContentLayerKind, LayerStorageKind, RecordedContentLayer};
 use serde::{Deserialize, Serialize};
@@ -162,16 +138,10 @@ pub struct EarlyLaunchLayer {
     pub kind: EarlyLaunchLayerKind,
     pub layer_id: String,
     pub descriptor_sha256: Option<String>,
-    /// Exact archive/tree payload digest. Directory layers use a deterministic
-    /// tree digest supplied by finalized VFS admission; descriptor hashes are
-    /// never substituted for payload identity.
     pub content_sha256: String,
     pub storage_kind: LayerStorageKind,
 }
 
-/// Path-redacted launch identity persisted with the recording.  Local paths
-/// are deliberately absent so relocating an identical installation/profile
-/// does not change this identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EarlyRenderLaunchManifest {
@@ -183,15 +153,7 @@ pub struct EarlyRenderLaunchManifest {
     pub requested_profile_selection: RequestedProfileSelectionReceipt,
     pub effective_runtime_dlc_candidate_ids: Vec<String>,
     pub localisation_language: String,
-    /// The display/GUI settings of the machine that is recording, which is what
-    /// the early render host is being told to reproduce. They are NOT settings
-    /// a replay must reproduce -- see
-    /// `portable_content_manifest::is_recorder_local_settings` -- and taking
-    /// them from the portable manifest's `required_settings` (now empty by
-    /// construction) is what made this header read "incomplete".
     pub recorder_local_settings: BTreeMap<String, String>,
-    /// User-provided engine arguments only.  The recording-local absolute
-    /// `-userdir` binding is injected by this module and is never serialized.
     pub semantic_arguments: Vec<String>,
 }
 
@@ -433,10 +395,6 @@ impl EarlyRenderLaunchManifest {
         Ok(())
     }
 
-    /// Rebuild the complete portable launch identity from the independently
-    /// admitted launch/VFS facts and require byte-for-byte equality. This is
-    /// the pre-injection gate used by the normal recorder CLI; a user-supplied
-    /// manifest is never accepted merely because its fields are well formed.
     pub fn validate_against_finalized_vfs(
         &self,
         launch: &PortableLaunchBinding,
@@ -476,11 +434,7 @@ pub struct EarlyRenderLaunchSpec {
     pub collector_path: PathBuf,
     pub manifest: EarlyRenderLaunchManifest,
     pub hook_ready_timeout_ms: u32,
-    /// Preserve the historical minimized capture presentation by default.
-    /// Headless control is PID-bound and does not depend on this choice.
     pub minimize_after_first_d3d: bool,
-    /// Diagnostic-only subset of the authenticated staged hook set. `None`
-    /// preserves the immutable production hook set and child environment.
     pub diagnostic_staged_hook_mask: Option<u64>,
 }
 
@@ -515,9 +469,6 @@ impl EarlyRenderLaunchSpec {
     }
 }
 
-/// Local-only inputs needed to create the game process suspended. The
-/// portable launch manifest is intentionally constructed later, in memory,
-/// from the suspended process's exact modset and admitted effective VFS.
 #[derive(Clone, Debug)]
 pub struct EarlyRenderProcessCreateSpec {
     pub executable_path: PathBuf,
@@ -618,8 +569,6 @@ impl EarlyHookCompleteness {
     }
 }
 
-/// Collector-authored receipt returned while the primary game thread is still
-/// suspended.  The launcher independently binds and seals it before resume.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EarlyHookReadyProof {
@@ -685,9 +634,6 @@ impl EarlyHookReadyProof {
     }
 }
 
-/// First game-owned D3D device creation after resume.  Collector-internal NULL
-/// probe devices are never counted as game devices and cannot satisfy this
-/// proof.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EarlyFirstGameD3dProof {
@@ -709,10 +655,6 @@ pub struct EarlyFirstGameD3dProof {
     pub collector_null_probe_excluded: bool,
 }
 
-/// Fresh collector-side readiness sample requested only after the recorder has
-/// observed the full diagnostic hold. The proof is bound to the authenticated
-/// H4CT session, the exact FIRST identity, and both transcript digests. It is
-/// non-promotable and can never substitute for a production COMMIT receipt.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EarlyDiagnosticLivenessProof {
@@ -937,8 +879,6 @@ pub struct EarlyRenderCaptureReceipt {
     pub staged_hook_generation: u64,
     pub staged_hook_count: u32,
     pub staged_hook_set_sha256: String,
-    /// Present only on diagnostic staged-hook subset probes. Production v1
-    /// receipt bytes remain unchanged because `None` is not serialized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostic_staged_hook_mask: Option<u64>,
     pub game_device_ptr: u64,
@@ -1156,10 +1096,6 @@ impl EarlyRenderCaptureReceipt {
 }
 
 pub trait EarlyHookReadyChannel {
-    /// The listener must already exist before collector injection.  This call
-    /// returns only after the collector has bound its process epoch and installed
-    /// the complete creation/readback hook set while the primary thread remains
-    /// suspended.
     fn await_ready(
         &mut self,
         process_id: u32,
@@ -1167,8 +1103,6 @@ pub trait EarlyHookReadyChannel {
         timeout_ms: u32,
     ) -> Result<EarlyHookReadyProof, String>;
 
-    /// Waits for the first game-owned D3D device creation after resume under
-    /// the same hook epoch.  The collector's validation probe is excluded.
     fn await_first_game_d3d_creation(
         &mut self,
         process_id: u32,
@@ -1177,9 +1111,6 @@ pub trait EarlyHookReadyChannel {
         timeout_ms: u32,
     ) -> Result<EarlyFirstGameD3dProof, String>;
 
-    /// Receives the collector's twice-stable engine-manager DLC roster after
-    /// FIRST. The host must join these raw names to authenticated descriptor
-    /// and VFS identities before it can construct or send COMMIT.
     fn await_runtime_dlc_roster(
         &mut self,
         process_id: u32,
@@ -1190,26 +1121,19 @@ pub trait EarlyHookReadyChannel {
         timeout_ms: u32,
     ) -> Result<EarlyRuntimeDlcRosterProof, String>;
 
-    /// After the recorder's own monotonic clock has held the diagnostic target
-    /// for at least the contract minimum, request a fresh collector-side sample
-    /// of the still-installed staged hook set. This path is diagnostic-only.
     fn request_diagnostic_liveness(
         &mut self,
         receipt: &EarlyRenderCaptureReceipt,
         required_hold_ms: u64,
     ) -> Result<EarlyDiagnosticLivenessProof, String>;
 
-    /// Send the authenticated recorder-cancel terminal bound to the accepted
-    /// response digest. This is not COMMIT and admits no capture stream.
     fn send_diagnostic_end(
         &mut self,
         receipt: &EarlyRenderCaptureReceipt,
         proof: &EarlyDiagnosticLivenessProof,
     ) -> Result<(), String>;
 
-    /// Commits the final host-sealed receipt digest back to the collector.
     /// Buffered d77/d80 rows may be released only after this succeeds, and
-    /// every row must carry this exact digest in its launch epoch.
     fn commit_capture_receipt(
         &mut self,
         process_id: u32,
@@ -1530,8 +1454,6 @@ mod windows {
         1
     }
 
-    /// Allows the game to create its renderer through the normal shown-window path,
-    /// then keeps every recorder-owned game window minimized without activation.
     struct MinimizedPresentationGuard {
         stop: Arc<AtomicBool>,
         worker: Option<std::thread::JoinHandle<()>>,
@@ -1597,10 +1519,6 @@ mod windows {
                 .is_ok();
             }
             unsafe {
-                // Closing this child-only job is the final fail-safe. The job
-                // contains only the exact suspended process created by this
-                // transaction, so wrapper/host abort cannot orphan it or touch
-                // any pre-existing the game identity.
                 CloseHandle(self.kill_on_close_job);
                 WaitForSingleObject(self.process, 10_000);
                 CloseHandle(self.primary_thread);
@@ -1618,8 +1536,6 @@ mod windows {
             }
         }
 
-        /// Terminates only an owned diagnostic no-COMMIT target. Production
-        /// launches cannot call this path accidentally.
         pub fn terminate_diagnostic(&mut self) -> Result<(), String> {
             if !self.diagnostic_no_commit {
                 return Err("refusing to terminate a non-diagnostic early-render process".into());
@@ -1635,11 +1551,6 @@ mod windows {
         }
     }
 
-    /// A game process whose primary thread is still held by the single
-    /// `CREATE_SUSPENDED` count. The PID and creation nonce are available so
-    /// the recorder can bind and expose H4CR/H4CT listeners before collector
-    /// injection. Dropping this value before activation terminates the process;
-    /// a suspended orphan can never escape a failed launch transaction.
     pub struct PendingEarlyRenderProcess {
         process: Option<Handle>,
         primary_thread: Option<Handle>,
@@ -1656,11 +1567,6 @@ mod windows {
 
     unsafe impl Send for PendingEarlyRenderProcess {}
 
-    /// Unforgeable authority for the one job placed in the process creation
-    /// attribute list. Its private fields and borrow from the pending launch
-    /// prevent ordinary attach paths from manufacturing a job-membership
-    /// bypass. The capability is useful only while the exact suspended process
-    /// and its creation job are both retained by `PendingEarlyRenderProcess`.
     pub struct RecorderOwnedCreationJob<'a> {
         process: Handle,
         job: Handle,
@@ -1671,9 +1577,6 @@ mod windows {
         _pending: PhantomData<&'a PendingEarlyRenderProcess>,
     }
 
-    /// A duplicated reference to the exact recorder-owned creation job. This
-    /// is the injection lease for an early launch; dropping the pending launch
-    /// or moving it into `EarlyRenderProcess` cannot create a lease gap.
     #[derive(Debug)]
     pub struct RecorderOwnedCreationJobLease {
         job: Handle,
@@ -1705,10 +1608,6 @@ mod windows {
     }
 
     impl RecorderOwnedCreationJob<'_> {
-        /// Revalidate the private creation authority against the independently
-        /// retained target handle, then duplicate only that exact job handle.
-        /// A foreign/closed job, PID reuse, nonce drift, or a creation list that
-        /// was not exactly one recorder-owned job fails closed.
         pub fn retain_exact_job(
             &self,
             retained_process: *mut c_void,
@@ -1867,10 +1766,6 @@ mod windows {
             })
         }
 
-        /// Resolve the launcher/VFS binding while the process is provably still
-        /// suspended. This path uses the exact executable and `-userdir`
-        /// selected by `create_suspended_early_render_process`; it does not
-        /// pretend a game-held log exists before the first game instruction.
         pub fn resolve_modset(&self) -> crate::modset::ModsetReport {
             crate::modset::resolve_suspended_launch_modset(
                 self.process_id,
@@ -1879,12 +1774,6 @@ mod windows {
             )
         }
 
-        /// Before the suspended primary thread has executed the user-mode loader,
-        /// Toolhelp module enumeration may deterministically return
-        /// ERROR_PARTIAL_COPY. Bind the newly-created process through its retained
-        /// process handle, exact image path, file identity, and double-read SHA
-        /// instead; loaded-module/base validation is mandatory after resume and
-        /// before H4CT COMMIT.
         pub fn validate_suspended_image_authority(
             &self,
             expected_sha256: &str,
@@ -1915,8 +1804,6 @@ mod windows {
             Ok(())
         }
 
-        /// Inject only after the caller has created its PID-bound listener.
-        /// READY is verified while suspended; exactly one suspend count is then
         /// released; FIRST and COMMIT complete the authenticated transaction.
         pub fn activate_with(
             self,
@@ -2051,9 +1938,6 @@ mod windows {
                 .kill_on_close_job
                 .take()
                 .ok_or("pending early process lost kill-on-close job")?;
-            // Production transfers after COMMIT; diagnostic transfers after
-            // FIRST + runtime-roster validation while deliberately withholding
-            // COMMIT. On every earlier failure the pending value remains armed.
             self.process = None;
             self.primary_thread = None;
             Ok(EarlyRenderProcess {
@@ -2120,10 +2004,6 @@ mod windows {
         };
         let mut startup: StartupInfoExW = unsafe { zeroed() };
         startup.startup_info.cb = size_of::<StartupInfoExW>() as u32;
-        // Production capture is recorder-controlled and must not steal the
-        // Use the game's normal shown-window startup so its renderer initializes.
-        // After the authenticated first D3D creation, a PID-bound guard keeps
-        // every game window minimized without activation.
         configure_normal_startup(&mut startup);
         startup.attribute_list = job_attribute_list.as_ptr();
         let mut process: ProcessInformation = unsafe { zeroed() };
@@ -2152,8 +2032,6 @@ mod windows {
             )
         };
         let create_error = (create_result == 0).then(last_error);
-        // Drop deletes the initialized attribute list before releasing either
-        // its aligned storage or the retained job-handle array.
         drop(job_attribute_list);
         if create_result == 0 {
             unsafe { CloseHandle(kill_on_close_job) };
@@ -2251,9 +2129,7 @@ mod windows {
     impl Drop for JobAttributeList {
         fn drop(&mut self) {
             unsafe { DeleteProcThreadAttributeList(self.list) };
-            // Both backing allocations remain fields until after this Drop
             // implementation returns. Read them so their lifetime invariant is
-            // explicit to reviewers and future refactors.
             let _ = (self.storage.len(), self.job_list_storage.len());
         }
     }
@@ -2279,10 +2155,7 @@ mod windows {
                 last_error()
             ));
         }
-        // PROC_THREAD_ATTRIBUTE_JOB_LIST retains this pointer until
-        // CreateProcessW consumes the attribute list; it is not an inline copy.
         // Own the backing array across this function boundary so release
-        // optimization cannot invalidate a pointer to the local parameter.
         let job_list_storage = Box::new([job]);
         let result = JobAttributeList {
             storage,
@@ -2342,8 +2215,6 @@ mod windows {
 
     fn build_diagnostic_environment_block(mask: u64) -> Result<Vec<u16>, String> {
         staged_hook_count_for_group_mask(mask)?;
-        // Same constant the collector reads back to cross-check its control
-        // block; the key is a two-party agreement, not a local literal.
         let diagnostic_key = compact_contract::early_render_control::DIAGNOSTIC_STAGE_MASK_ENV;
         let mut entries = std::env::vars_os()
             .filter(|(key, _)| !key.to_string_lossy().eq_ignore_ascii_case(diagnostic_key))
@@ -2453,11 +2324,6 @@ mod windows {
             let export_rva = (load_library as usize)
                 .checked_sub(local_module_base)
                 .ok_or("LoadLibraryW address precedes its backing module base")?;
-            // System DLL section mappings use one boot-scoped address across
-            // same-architecture processes. The suspended target's loader list
-            // is not yet enumerable; use the exact local address now, then
-            // prove target module base + export RVA equality after resume and
-            // before H4CT COMMIT/frame admission.
             let remote_load_library = load_library as usize;
             let remote_thread = unsafe {
                 CreateRemoteThread(

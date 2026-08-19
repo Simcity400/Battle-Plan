@@ -250,7 +250,11 @@ fn callees(body: &str) -> BTreeSet<String> {
             }
             if index < chars.len() && chars[index] == '(' {
                 let name: String = chars[start..index].iter().collect();
-                if name.chars().next().is_some_and(|c| c.is_lowercase() || c == '_') {
+                if name
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_lowercase() || c == '_')
+                {
                     out.insert(name);
                 }
             }

@@ -1,28 +1,7 @@
-//! A commit site has to have written.
-//!
-//! The predecessor lane made the published cursor a type a staged number
-//! cannot inhabit, and named the residual it could not close from there:
-//! `commit_staged` took the CALLER'S WORD that the frame's bytes had reached
-//! every authoritative sink. A caller that never wrote could still commit, and
-//! the whole terminal-path lane is a list of arms that used to do exactly that
-//! -- an `if let` with no else, a `_ => break`, a wildcard swallowing three
-//! different endings.
-//!
-//! The receipt is what the word is replaced by. It is minted in one place, by
-//! the function that hands the bytes to the sinks, only when every sink took
-//! them, and it carries no number the caller supplied: both of its numbers are
-//! read back out of the accepted buffer.
-//!
-//! Every test here fails if the published cursor can move without a write
-//! behind it, if a receipt can be minted for a write that did not complete, or
-//! if one frame's proof can be spent on another frame.
-
 use std::io::Read;
 
 use super::*;
 
-/// An hour inside the compact calendar. The captured streams' first refused
-/// hour, so the numbers here sit in the same range as the evidence.
 const HOUR: i32 = 60_831_000;
 
 fn temp_stream_path(tag: &str) -> std::path::PathBuf {
@@ -38,9 +17,6 @@ fn temp_stream_path(tag: &str) -> std::path::PathBuf {
     dir.join("collector_stream.bin")
 }
 
-/// A legacy transport whose only authoritative sink is `path`. Legacy sinks
-/// report `CampaignIdentityBoundary::Stable`, so `write_compact_frame` is the
-/// plain sink write and every byte lands in the file.
 fn file_transport(path: &std::path::Path) -> CaptureTransport {
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -55,10 +31,6 @@ fn file_transport(path: &std::path::Path) -> CaptureTransport {
     )
 }
 
-/// A transport whose pipe sink was requested and never opened: delivery is
-/// terminal, so every write reports an INCOMPLETE outcome. This is the shape a
-/// mixed-sink partial write has, and the one a receipt must never be minted
-/// for.
 fn refusing_transport(path: &std::path::Path) -> CaptureTransport {
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -82,8 +54,6 @@ fn read_stream(path: &std::path::Path) -> Vec<u8> {
     bytes
 }
 
-/// `record_count` contiguous ordinary records starting at `first_sequence` --
-/// the shape every compact frame has, numbered the way every builder numbers.
 fn frame(first_sequence: u64, record_count: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
     for index in 0..record_count {
@@ -100,14 +70,8 @@ fn frame(first_sequence: u64, record_count: u64) -> Vec<u8> {
     bytes
 }
 
-/// The production source, read once. The mint and the commit doors are what
-/// this module is about, and "there is exactly ONE mint" is a property of the
-/// file, not of any value a test can hold.
 const COLLECTOR_SOURCE: &str = include_str!("../attach_log.rs");
 
-/// The same text with every `//` line comment removed. The receipt's own doc
-/// comment names `seal_completed_write` several times; a count that read the
-/// prose would be answering the documentation instead of the code.
 fn code_only(source: &str) -> String {
     source
         .lines()
@@ -119,12 +83,6 @@ fn code_only(source: &str) -> String {
         .join("\n")
 }
 
-// ---------------------------------------------------------------------------
-// What mints a receipt, and what cannot.
-// ---------------------------------------------------------------------------
-
-/// The whole point, at the smallest scale it can be stated: bytes that did not
-/// reach every authoritative sink authorize nothing.
 #[test]
 fn a_write_that_did_not_reach_every_sink_mints_no_receipt() {
     let path = temp_stream_path("incomplete");
@@ -147,9 +105,6 @@ fn a_write_that_did_not_reach_every_sink_mints_no_receipt() {
     drop(transport);
 }
 
-/// The receipt's numbers are read off the wire, not taken from the caller. A
-/// frame of 74 records numbered from 1 leaves the published cursor at 75 --
-/// which is the captured stream's own prefix, sequences 1..=74 spent.
 #[test]
 fn a_receipt_numbers_the_frame_from_the_bytes_the_sinks_accepted() {
     let path = temp_stream_path("bounds");
@@ -170,28 +125,20 @@ fn a_receipt_numbers_the_frame_from_the_bytes_the_sinks_accepted() {
     );
 
     let mut cursor = PublishedSequence::start_on(None);
-    cursor.commit_staged(receipt).expect("the frame was written");
+    cursor
+        .commit_staged(receipt)
+        .expect("the frame was written");
     assert_eq!(cursor.get(), 75);
     drop(transport);
 }
 
-/// The two not-written verdicts are UNIT variants, and that is what makes the
-/// arms that meet them uninhabitable rather than merely disciplined: there is
-/// no value in them to take a receipt out of, so a commit cannot be written
-/// there at all.
-///
-/// The runtime half of that is here; the compile half needs no test, because
-/// it is not expressible: writing a commit inside the `RolledOver` arm has no
-/// binding to take a receipt out of, so rustc answers `cannot find value` and
-/// the shape never reaches a test run at all.
 #[test]
 fn a_not_written_verdict_carries_nothing_to_commit_with() {
     let path = temp_stream_path("not_written");
     let mut transport = file_transport(&path);
 
-    transport.inject_campaign_identity_boundaries([
-        CampaignIdentityBoundary::RetryUncertainBoundary,
-    ]);
+    transport
+        .inject_campaign_identity_boundaries([CampaignIdentityBoundary::RetryUncertainBoundary]);
     assert!(
         transport
             .write_compact_frame(&frame(1, 4))
@@ -207,10 +154,6 @@ fn a_not_written_verdict_carries_nothing_to_commit_with() {
     );
 }
 
-/// The legacy JSONL line paths write through the same door and move the cursor
-/// with `advance_one_saturating`, not with a frame commit. A line is not a
-/// numbered compact record, so it mints no receipt -- and must not, because a
-/// receipt for it would carry sequence numbers parsed out of text.
 #[test]
 fn a_complete_write_of_bytes_that_are_not_compact_records_mints_no_receipt() {
     let sealed = seal_completed_write(
@@ -230,17 +173,6 @@ fn a_complete_write_of_bytes_that_are_not_compact_records_mints_no_receipt() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// What a receipt may be spent on.
-// ---------------------------------------------------------------------------
-
-/// A receipt is proof about ONE frame. Offered to a cursor that frame was not
-/// numbered from, it is refused -- and the refusal is not the rewind check
-/// doing the work: this receipt is AHEAD of the cursor, exactly where the
-/// rewind check cannot see it.
-///
-/// This is the cross-frame question stated at the only scale it can be: two
-/// live receipts, from two real writes, spent in the wrong order.
 #[test]
 fn a_receipt_from_a_different_frame_is_refused_by_the_cursor_it_is_offered_to() {
     let path = temp_stream_path("cross_frame");
@@ -263,9 +195,6 @@ fn a_receipt_from_a_different_frame_is_refused_by_the_cursor_it_is_offered_to() 
 
     let mut cursor = PublishedSequence::start_on(None);
 
-    // The SECOND frame's proof, offered to a cursor still standing before the
-    // first. Both frames really were written, so this is not a forgery -- it is
-    // the confusion a `u64` argument could not distinguish from correctness.
     let error = cursor
         .commit_staged(second)
         .expect_err("a receipt for a frame numbered from 75 does not commit a cursor at 1");
@@ -282,11 +211,6 @@ fn a_receipt_from_a_different_frame_is_refused_by_the_cursor_it_is_offered_to() 
     drop(transport);
 }
 
-/// The receipt is the authority for where the cursor lands; the build's staged
-/// number is a cross-check. They disagree only if the builder numbered records
-/// it did not emit or emitted records it did not number -- the same class of
-/// defect as the refusal stamp -- so the commit door refuses rather than
-/// publishing over it.
 #[test]
 fn a_commit_whose_receipt_disagrees_with_the_build_is_refused() {
     let path = temp_stream_path("disagree");
@@ -299,8 +223,6 @@ fn a_commit_whose_receipt_disagrees_with_the_build_is_refused() {
         .written()
         .expect("the bytes reached the sinks");
 
-    // 222: the number the shipped producer's refused build reached. The frame
-    // on the wire ends at 75.
     let error = commit_published_frame(&mut cursor, written, 222)
         .expect_err("a build that staged 222 did not write the frame that ends at 75");
     assert!(
@@ -312,8 +234,6 @@ fn a_commit_whose_receipt_disagrees_with_the_build_is_refused() {
     drop(transport);
 }
 
-/// The one door, given a write that did not complete: it has no receipt, and
-/// the door says so instead of moving the cursor.
 #[test]
 fn the_commit_door_refuses_a_write_that_minted_no_receipt() {
     let path = temp_stream_path("no_receipt");
@@ -336,9 +256,6 @@ fn the_commit_door_refuses_a_write_that_minted_no_receipt() {
     drop(transport);
 }
 
-/// A refused hour spends EXACTLY one sequence -- the property the shipped
-/// 75 -> 222 stamp broke. The single-record door states that arithmetic itself,
-/// so a receipt for a whole frame cannot be spent as if it were one record.
 #[test]
 fn the_single_record_door_refuses_a_receipt_for_a_whole_frame() {
     let path = temp_stream_path("one_record");
@@ -362,9 +279,6 @@ fn the_single_record_door_refuses_a_receipt_for_a_whole_frame() {
     );
     assert_eq!(cursor.get(), 1, "a refused commit spends nothing");
 
-    // A fresh stream for the one-record case: the legacy sink's own chain gate
-    // requires the next batch to continue from 75, and this is about the door,
-    // not about the gate.
     let single_path = temp_stream_path("one_record_single");
     let mut single = file_transport(&single_path);
     let one = single
@@ -382,18 +296,6 @@ fn the_single_record_door_refuses_a_receipt_for_a_whole_frame() {
     drop(transport);
 }
 
-// ---------------------------------------------------------------------------
-// Properties of the FILE: there is one mint, and one way to move the cursor
-// onto a frame.
-// ---------------------------------------------------------------------------
-
-/// The honest limit of the type, pinned so it stays the limit.
-///
-/// `seal_completed_write` is reachable from anywhere in this file, so the
-/// receipt is unforgeable by CONSTRUCTION only as far as "no value you hold
-/// yields one". A deliberate second call could mint for bytes no sink was ever
-/// offered. That is not a wrong argument in a call -- it is a new call, and
-/// this asserts there is exactly one, in the function that performs the write.
 #[test]
 fn exactly_one_production_call_site_mints_a_write_receipt() {
     let code = code_only(COLLECTOR_SOURCE);
@@ -416,8 +318,6 @@ fn exactly_one_production_call_site_mints_a_write_receipt() {
     );
 }
 
-/// One door onto the published cursor for a frame, and the capture loop does
-/// not open it by hand.
 #[test]
 fn every_frame_commit_goes_through_the_receipt_door() {
     let code = code_only(COLLECTOR_SOURCE);
@@ -426,10 +326,6 @@ fn every_frame_commit_goes_through_the_receipt_door() {
         2,
         "the method and its ONE caller, `commit_published_frame`"
     );
-    // Everything ahead of the receipt module: the capture worker with all
-    // seven of its commit sites, and `finalize_scheduler_before_identity_
-    // boundary` with its two. The cursor's own methods and their single caller
-    // are declared after it.
     let before_the_receipt = code
         .split_once("mod frame_write_receipt {")
         .expect("the receipt module")
@@ -449,11 +345,6 @@ fn every_frame_commit_goes_through_the_receipt_door() {
     );
 }
 
-/// The scheduler-OFF write used to commit UNCONDITIONALLY, below the
-/// `if !records.is_empty()` that guarded the write itself. It was harmless only
-/// because an empty build stages nothing, and nothing checked that. A receipt
-/// cannot be minted for a write that never happened, so the invariant is now
-/// stated where it was assumed.
 #[test]
 fn an_empty_compact_frame_commits_nothing_and_says_why() {
     let code = code_only(COLLECTOR_SOURCE);
@@ -465,8 +356,7 @@ fn an_empty_compact_frame_commits_nothing_and_says_why() {
         .expect("empty-frame branch terminator")
         .0;
     assert!(
-        !empty_branch.contains("commit_published_frame")
-            && !empty_branch.contains("commit_staged"),
+        !empty_branch.contains("commit_published_frame") && !empty_branch.contains("commit_staged"),
         "an empty frame was not written and commits nothing"
     );
     assert!(
@@ -477,10 +367,6 @@ fn an_empty_compact_frame_commits_nothing_and_says_why() {
     );
 }
 
-/// The receipt is a proof object, so duplicating it would duplicate the proof.
-/// Asserted on the declaration for the same reason the cursor's missing `Copy`
-/// is: the hole this closes is invisible to every value-level assertion,
-/// because a copy behaves exactly like the original until it is spent twice.
 #[test]
 fn the_receipt_is_move_only() {
     let code = code_only(COLLECTOR_SOURCE);

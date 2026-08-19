@@ -1,14 +1,3 @@
-//! Cross-crate byte-level round trip for the D11 sink-failure contract.
-//!
-//! The collector-side producer encodes these reports through
-//! `compact_contract::sink_failure::encode_sink_failure` (the single-source
-//! payload codec). This integration test proves that bytes produced by that
-//! exact encoder decode through the recorder-host consumer path
-//! (`transport_status::decode_sink_failure`, keyed by the control-transport
-//! `MessageKind`), byte-for-byte, across the crate boundary — the guard that the
-//! producer in the collector crate and the consumer in the recorder-host crate
-//! can never drift into two silently divergent layouts.
-
 use compact_contract::sink_failure::{
     encode_sink_failure, SinkErrorClass, SinkFailureKind, SinkFailureReport, SinkTerminality,
     SinkTopology,
@@ -20,8 +9,6 @@ fn topology(bits: u8) -> SinkTopology {
     SinkTopology::from_bits(bits).unwrap()
 }
 
-/// The setup-failure report a collector produces when the pipe sink fails to
-/// open while the file sink opened.
 fn producer_setup_report() -> SinkFailureReport {
     SinkFailureReport {
         kind: SinkFailureKind::Setup,
@@ -38,8 +25,6 @@ fn producer_setup_report() -> SinkFailureReport {
     }
 }
 
-/// The terminal-failure report a collector produces on a mid-stream transport
-/// failure after both sinks were open.
 fn producer_terminal_report() -> SinkFailureReport {
     SinkFailureReport {
         kind: SinkFailureKind::Terminal,
@@ -58,8 +43,6 @@ fn producer_terminal_report() -> SinkFailureReport {
 
 #[test]
 fn recorder_consumer_rejects_a_setup_payload_delivered_under_the_terminal_kind() {
-    // A setup payload carries no stream progress; decoding it under the terminal
-    // envelope kind must fail closed rather than fabricate a terminal report.
     let payload = encode_sink_failure(&producer_setup_report()).unwrap();
     assert!(decode_sink_failure(MessageKind::SinkTerminalFailure, &payload).is_err());
 }

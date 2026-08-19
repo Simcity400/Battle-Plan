@@ -52,9 +52,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# player_countries.<TAG>.user  (players.json)
-# ---------------------------------------------------------------------------
 
 def _parse_player_countries(tz, players):
     """player_countries={ <TAG>={ user="name" country_leader=yes id=N } ... }."""
@@ -78,9 +75,6 @@ def _parse_player_countries(tz, players):
         players[tag] = rec
 
 
-# ---------------------------------------------------------------------------
-# per-country sub-blocks (country_extra.json)
-# ---------------------------------------------------------------------------
 
 def _wrap_i64(value):
     value &= (1 << 64) - 1
@@ -142,10 +136,6 @@ def _parse_dynamic_modifier(tz):
         if key != "modifier":
             _skip_block_body(tz)
             continue
-        # `days` is the save-persisted remaining-duration leaf for timed
-        # instances. `tag` is the optional source/target tag emitted beside it.
-        # Keep both literal values; absence is distinct from a permanent
-        # modifier whose value vector happens to be empty.
         rec = {"modifier": None, "enabled": None, "value": [],
                "days": None, "tag": None}
         for k, op in iter_block_entries(tz):
@@ -205,7 +195,6 @@ def _coerce_raw_atom(value):
     if value and value.lstrip("-").isdigit():
         return int(value)
     try:
-        # Dates like 1940.9.10.13 must remain strings; float() rejects them.
         return float(value)
     except (TypeError, ValueError):
         return value
@@ -338,7 +327,6 @@ def _count_projects(tz):
         if key != "project":
             _skip_block_body(tz)
             continue
-        # project={ <proj_name>={ ... } ... }
         for pname, op in iter_block_entries(tz):
             if op is not LBRACE:
                 continue
@@ -397,7 +385,6 @@ def _parse_country_block(tz):
             elif key == "dynamic_modifier":
                 rec["dynamic_modifiers"] = _parse_dynamic_modifier(tz)
             elif key == "ace":
-                # a country can carry MANY ace blocks (repeated key)
                 rec["aces"].append(_parse_ace(tz))
             elif key == "reinforcement":
                 for k, op in iter_block_entries(tz):
@@ -436,7 +423,6 @@ def _parse_country_block(tz):
                 pid, ptype = read_id_block(tz)
                 rec["pride_of_the_fleet"] = {"id": pid, "type": ptype}
             elif key == "collaboration":
-                # collaboration={ } when empty; mark present if it has children
                 n = 0
                 for k, op in iter_block_entries(tz):
                     if op is LBRACE:
@@ -467,9 +453,6 @@ def _parse_countries(tz, by_tag):
         by_tag[tag] = _parse_country_block(tz)
 
 
-# ---------------------------------------------------------------------------
-# build
-# ---------------------------------------------------------------------------
 
 def build(text, source, was_melted):
     by_tag = {}
@@ -483,7 +466,6 @@ def build(text, source, was_melted):
         scalar_keys=("date", "version", "player"),
     )
 
-    # Roll up convenient scalars.
     countries = {}
     for tag, rec in sorted(by_tag.items()):
         nukes_total = sum((n["amount"] or 0) for n in rec["nukes"])
@@ -560,7 +542,6 @@ def build(text, source, was_melted):
         "players": players,
     }
 
-    # Validation report.
     ger = countries.get("GER", {})
     lines = ["=== COUNTRY-EXTRA + PLAYERS ORACLE VALIDATION ==="]
     lines.append(f"source        : {source.name} (melted={was_melted})")

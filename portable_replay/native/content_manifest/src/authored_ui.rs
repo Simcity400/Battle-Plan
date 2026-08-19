@@ -1,13 +1,4 @@
-//! Portable XUI24 authored-window namespace and capability contract.
-//!
-//! These identities are shared by the recorder and replay admission. Keeping
-//! them below both products prevents a string-only producer/consumer contract
-//! from drifting while still leaving GUI parsing and composition to the UI
-//! layer.
-
-use crate::{
-    normalize_game_relative_path, UsedContentKey, MAX_REQUIRED_CONTENT_ROWS,
-};
+use crate::{normalize_game_relative_path, UsedContentKey, MAX_REQUIRED_CONTENT_ROWS};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
@@ -24,32 +15,15 @@ pub const LOCALISATION_EMPTY_NAMESPACE_CONSUMER: &str =
     "replay_app.authored_localisation_effective_namespace.empty.v1";
 pub const SCRIPTED_LOCALISATION_NAMESPACE_CONSUMER: &str =
     "replay_app.authored_scripted_localisation_effective_namespace.complete.v1";
-/// Authenticated representation of a valid effective VFS in which
-/// `common/scripted_localisation/**/*.txt` has no winners (for example after
-/// a selected mod's `replace_path`). The marker is carried by the complete GUI
-/// namespace rows; replay verifies that carrier set and independently proves
-/// that the scripted-localisation namespace is empty.
 pub const SCRIPTED_LOCALISATION_EMPTY_NAMESPACE_CONSUMER: &str =
     "replay_app.authored_scripted_localisation_effective_namespace.empty.v1";
 pub const DEPENDENCY_CLOSURE_CONSUMER: &str =
     "replay_app.authored_ui_dependency_closure.complete.v1";
 pub const DEPENDENCY_CLOSURE_EMPTY_CONSUMER: &str =
     "replay_app.authored_ui_dependency_closure.empty.v1";
-/// Per-file authenticated carrier for the case-preserved spelling used by the
-/// engine's recursive definition enumeration. [`UsedContentKey`] intentionally
-/// retains a lowercase portable identity, so this authenticated path digest
-/// plus compact ASCII-case mask is the separate semantic input needed to
-/// reproduce case-sensitive parse order. The digest makes the consumer unique
-/// to one manifest row even when several paths have the same capitalization
-/// mask.
 pub const ENGINE_PATH_SPELLING_CONSUMER_PREFIX: &str =
     "replay_app.authored_ui_engine_path_spelling.v1/";
-/// Exact-a729 bitmap-text effect selected by the text compositor. The path is
-/// an engine resource identity; its bytes and winning layer are always derived
-/// from the effective VFS and authenticated as ordinary content.
 pub const AUTHORED_BITMAP_FONT_TEXT_EFFECT_PATH: &str = "gfx/FX/text.shader";
-/// Exact graphics defines source consumed by the authenticated tooltip shell.
-/// Its winning bytes remain ordinary effective-VFS content.
 pub const AUTHORED_GRAPHICS_DEFINES_PATH: &str = "common/defines/00_graphics.lua";
 
 #[derive(Serialize)]
@@ -59,12 +33,6 @@ struct LocalisationContentIdentityRow<'a> {
     payload_bytes: u64,
 }
 
-/// Hash the complete winning selected-language localisation namespace.
-///
-/// The caller must independently prove namespace completeness (by walking the
-/// producer VFS or presenting XUI24's complete/empty capability). This helper
-/// rejects rows outside that namespace, duplicate paths, and mixed effective
-/// VFS authorities before hashing only the path-delimited content identity.
 pub fn localisation_content_identity_sha256(
     localisation_language: &str,
     rows: &[UsedContentKey],
@@ -101,9 +69,7 @@ pub fn localisation_content_identity_sha256(
             None => authority = Some(row.effective_vfs_manifest_sha256.as_str()),
             Some(expected) if expected == row.effective_vfs_manifest_sha256 => {}
             Some(_) => {
-                return Err(
-                    "localisation content identity mixes effective-VFS authorities".into(),
-                )
+                return Err("localisation content identity mixes effective-VFS authorities".into())
             }
         }
     }
@@ -152,13 +118,6 @@ impl AuthoredUiNamespace {
     }
 }
 
-/// Classify a retained effective source path into the authored-window
-/// definition namespaces used by the exact a729 engine.
-///
-/// Selected mod/DLC content appears at the same root logical namespace as base
-/// content. The winning [`crate::UsedContentKey`] retains which layer supplied
-/// those bytes. Raw install paths below `dlc/` or `integrated_dlc/` are not
-/// product VFS identities and must not enter this classifier.
 pub fn classify_authored_ui_path(
     path: &str,
     localisation_language: &str,
@@ -218,20 +177,10 @@ pub fn safe_language_directory(language: &str) -> Result<String, String> {
     Ok(directory.to_string())
 }
 
-/// Canonical Clausewitz localisation identity shared by recorder and replay.
-///
-/// Playback metadata may carry either `english` or `l_english` and may differ
-/// in ASCII case/outer whitespace. Directory selection and the required YML
-/// header must be derived from one canonical identity so those representations
-/// cannot select the same directory but disagree on which files are valid.
 pub fn canonical_localisation_language(language: &str) -> Result<String, String> {
     Ok(format!("l_{}", safe_language_directory(language)?))
 }
 
-/// Exact-a729 recursive PHYSFS enumeration order for authored definition
-/// files. Each path component is compared case-sensitively; a directory is
-/// visited before a same-prefix sibling file. Registry identities themselves
-/// remain case-insensitive and the last parsed definition wins.
 pub fn engine_recursive_path_cmp(left: &str, right: &str) -> Ordering {
     let left = left.replace('\\', "/");
     let right = right.replace('\\', "/");
@@ -255,13 +204,6 @@ pub fn engine_recursive_path_cmp(left: &str, right: &str) -> Ordering {
 pub fn engine_path_spelling_consumer(path: &str) -> Result<String, String> {
     let preserved = path.trim().replace('\\', "/");
     let normalized = normalize_game_relative_path(&preserved)?;
-    // The byte-positional zip below is only meaningful if normalization changed
-    // nothing but CASE. That used to be guaranteed indirectly, because
-    // `normalize_game_relative_path` refused every input it would otherwise have
-    // shortened; it now COLLAPSES empty components (the engine's `//` rule), so
-    // the guarantee has to be stated here instead of assumed. Without this the
-    // shift shows up as a misleading "not an ASCII-case variant" complaint about
-    // whichever bytes happen to land opposite each other.
     if preserved.len() != normalized.len() {
         return Err(format!(
             "authored engine path spelling is not a case-only variant of its canonical form \
@@ -477,19 +419,11 @@ mod tests {
 
     #[test]
     fn d98_localisation_identity_is_order_independent_and_content_sensitive() {
-        let alpha = localisation_row(
-            "localisation/english/alpha_l_english.yml",
-            '1',
-        );
-        let bravo = localisation_row(
-            "localisation/english/bravo_l_english.yml",
-            '2',
-        );
-        let forward = localisation_content_identity_sha256(
-            "l_english",
-            &[alpha.clone(), bravo.clone()],
-        )
-        .unwrap();
+        let alpha = localisation_row("localisation/english/alpha_l_english.yml", '1');
+        let bravo = localisation_row("localisation/english/bravo_l_english.yml", '2');
+        let forward =
+            localisation_content_identity_sha256("l_english", &[alpha.clone(), bravo.clone()])
+                .unwrap();
         let reverse =
             localisation_content_identity_sha256("english", &[bravo.clone(), alpha.clone()])
                 .unwrap();
@@ -510,27 +444,22 @@ mod tests {
 
     #[test]
     fn d98_localisation_identity_rejects_wrong_namespace_duplicate_and_mixed_vfs() {
-        let alpha = localisation_row(
-            "localisation/english/alpha_l_english.yml",
-            '1',
-        );
+        let alpha = localisation_row("localisation/english/alpha_l_english.yml", '1');
         assert!(localisation_content_identity_sha256(
             "l_english",
-            &[localisation_row("localisation/french/alpha_l_french.yml", '1')]
+            &[localisation_row(
+                "localisation/french/alpha_l_french.yml",
+                '1'
+            )]
         )
         .is_err());
         assert!(
             localisation_content_identity_sha256("l_english", &[alpha.clone(), alpha.clone()])
                 .is_err()
         );
-        let mut mixed = localisation_row(
-            "localisation/english/bravo_l_english.yml",
-            '2',
-        );
+        let mut mixed = localisation_row("localisation/english/bravo_l_english.yml", '2');
         mixed.effective_vfs_manifest_sha256 = "b".repeat(64);
-        assert!(
-            localisation_content_identity_sha256("l_english", &[alpha, mixed]).is_err()
-        );
+        assert!(localisation_content_identity_sha256("l_english", &[alpha, mixed]).is_err());
     }
 
     #[test]

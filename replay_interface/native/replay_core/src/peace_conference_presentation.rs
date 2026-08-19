@@ -1,10 +1,3 @@
-//! Strict passive XUI08 peace-conference presentation carrier.
-//!
-//! Ordinary d97 preserves the small registered-object/lifecycle witness, but
-//! it cannot carry the controller-resolved participant, allocation, terminal
-//! result, final-text, and ordering graph.  This optional replay-file carrier
-//! is the exact producer/consumer seam for that graph.  It is sampled without
-//! opening the game window and is independent of recorder POV.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -14,19 +7,8 @@ pub const XUI08_AUTHORITY: &str = "exact_a729_passive_global_peace_conference";
 pub const XUI08_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
-// Hashes of committed Replay-side contract/evidence manifests.  Recordings
-// cannot authorize themselves by supplying arbitrary syntax-shaped hashes.
 pub const XUI08_PRODUCER_CONTRACT_MANIFEST_SHA256: &str =
     "2d54f7ee3610af7f8aff97268c0c56e71674e408329daaaa6f6132e523a1f08c";
-// THE LF DIGEST, and the distinction is the whole of a defect this pin already
-// had once. `include_bytes!` reads the file as it sits in the working tree, and
-// `.gitattributes` marks this manifest `text eol=lf`, so what the compiler
-// embeds is LF on every platform and every checkout. The value here was briefly
-// the CRLF digest of the same bytes
-// (36e3797eb90b6adb48e5206c5577e60201cfee6ff1778c28291dc8d869cbd06d), which no
-// checkout of this repository can produce -- it made
-// `committed_manifests_are_compile_time_bound_to_admission_constants` red on
-// every tree, and no committed version of the manifest has ever hashed to it.
 pub const XUI08_EVIDENCE_MANIFEST_SHA256: &str =
     "c531145bd016c548bf1641f68cc542300fbaa333c2bdec174ccfd380078f7253";
 
@@ -123,7 +105,6 @@ pub struct PeaceParticipantPresentationExact {
     pub country_reference: PeaceObjectReferenceExact,
     pub country_tag: String,
     pub country_tag_db_id: u32,
-    /// Exact effective-content texture selected for the small country flag.
     pub flag_texture_path: String,
     pub role: PeaceParticipantRoleExact,
     pub country_display: PeaceFinalTextExact,
@@ -131,7 +112,6 @@ pub struct PeaceParticipantPresentationExact {
     pub score_ratio: PeaceFinalTextExact,
     pub expected_allocation_count: u32,
     pub expected_result_count: u32,
-    /// Exact producer-owned history membership and row order.
     pub allocation_ids: Vec<String>,
     pub result_ids: Vec<String>,
     pub bid_count_display: PeaceFinalTextExact,
@@ -143,7 +123,6 @@ pub struct PeaceParticipantPresentationExact {
 #[serde(deny_unknown_fields)]
 pub struct PeaceAllocationPresentationExact {
     pub source_ordinal: u32,
-    /// Refresh-scoped producer identity, never a process pointer.
     pub stable_allocation_id: String,
     pub turn: u32,
     pub action_kind: PeaceActionKindExact,
@@ -173,8 +152,6 @@ pub struct PeaceAllocationGroupPresentationExact {
     pub source_ordinal: u32,
     pub stable_group_id: String,
     pub expected_allocation_count: u32,
-    /// Exact producer-owned membership and row order. Replay never regroups by
-    /// country, text identity, action kind, state set, or any other heuristic.
     pub allocation_ids: Vec<String>,
     pub flag_texture_path: Option<String>,
     pub target_display: PeaceFinalTextExact,
@@ -207,7 +184,6 @@ pub struct PeaceContestedPopupPresentationExact {
 pub struct PeaceResultPresentationExact {
     pub source_ordinal: u32,
     pub stable_result_id: String,
-    /// Present only when the producer observed the exact engine join.
     pub allocation_id: Option<String>,
     pub action_kind: PeaceActionKindExact,
     pub actor_country_tag: String,
@@ -229,20 +205,6 @@ pub struct PeaceResultPresentationExact {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PeaceConferencePresentationObservationExact {
-    /// The game state holds no peace conference, so there is no panel to
-    /// present. The mirror of
-    /// [`crate::world::PeaceConferenceObservationExact::NoConferenceInProgress`],
-    /// and it pairs only with it.
-    ///
-    /// This carrier's admission requires a same-frame d97 lifecycle witness. On
-    /// the ordinary hour that witness IS the measured-empty kind, so without
-    /// this variant an XUI08 record could never be admitted on nearly any hour
-    /// of any capture, whatever it said — the pairing match would fall through
-    /// to its refusing arm. Gap map GP-F15.
-    ///
-    /// Empty struct form for the same reason as its d97 mirror: it keeps
-    /// `deny_unknown_fields`, which a unit variant in an internally tagged enum
-    /// would not.
     NoConferenceInProgress {},
     Inactive {
         refresh_sequence: u64,
@@ -277,7 +239,6 @@ pub enum PeaceConferencePresentationObservationExact {
     },
 }
 
-/// Complete passive global transaction for one canonical replay hour.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeaceConferencePresentationExact {

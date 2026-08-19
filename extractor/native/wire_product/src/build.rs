@@ -30,8 +30,6 @@ use wire_format::gap::{encode_record as encode_gap, GapPart, GapReason, GapRecor
 struct ScannedBranch {
     branch: u32,
     decoded_sha256: [u8; 32],
-    /// Earliest authenticated state-coverage tick. This may precede the first
-    /// FRAME_END when that frame carries an initial coalesced H4DG range.
     first_coverage_tick: u64,
     last_closed_tick: u64,
     data_records: u64,
@@ -46,13 +44,6 @@ struct D18CountryCarrier {
     rows: Option<Vec<(u32, String)>>,
 }
 
-/// Items derived inside the authenticated H4CR scanner.
-///
-/// Keeping gaps on this private seam prevents callers from attaching a cause
-/// to missing internal coverage without source bytes that prove it. Typed
-/// H4DG carriers enter only after their closed payload semantics, exact
-/// per-domain/part outcome sequence, enclosing H4CR sequence, and
-/// retained-source identity have been checked.
 enum ScannedD81Item {
     Gap(GapRecord),
     Closed { tick: u64, payload: Vec<u8> },
@@ -405,10 +396,6 @@ pub(crate) fn build_d81_into(
         ));
     }
 
-    // Authenticate every selected H4CR source first and collect the D18
-    // country-identity feed before any wire artifact is emitted. D81 v3 keys
-    // and owner values can then resolve countries from one file-global symbol
-    // vocabulary during the production pass.
     let mut country_bindings = BTreeMap::<u32, String>::new();
     for session in sessions {
         let (reader, selection): (Box<dyn Read + '_>, Option<H4crSelection>) = match session.source
@@ -1147,9 +1134,6 @@ where
                 ))
             })?;
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF {
-                // Canonical 40-byte DOMAIN_PERF base:
-                // elapsed/read u64 + u64, row/changed/unit/changed-unit u32,
-                // status u32 at [32..36], reserved u32 at [36..40].
                 let status_flags = u32::from_le_bytes(
                     payload
                         .get(32..36)
@@ -1182,10 +1166,6 @@ where
                     "branch {branch} d81 payload at tick {tick} rejected: {error}"
                 ))
             })?;
-            // D81 RRL1 is self-describing. Its canonical H4CR DATA envelope
-            // keeps record_flags == 0 for every payload version; the shared
-            // record semantics correctly reserves PAYLOAD_SCHEMA_V2 for d45
-            // and d67 only.
             let status_flags = payload_header.status_flags;
             let payload_version = payload_header.payload_version;
             let hub_simulation_complete = payload_header.hub_simulation_complete;
@@ -1243,9 +1223,6 @@ where
     })
 }
 
-/// Decode the complete D18 country roster prefix used as the D81 country
-/// symbol feed. Known failure carriers contribute no bindings; malformed
-/// success carriers fail closed.
 fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier, String> {
     if payload.len() < 20 {
         return Err("payload is shorter than the D18 header".into());
@@ -1477,9 +1454,6 @@ fn map_d81_domain_gap(
                     .to_vec(),
             },
         ),
-        // The wire reason the `ClockUnreadable` arm above was standing in for.
-        // That arm already produced `SourceUnavailable` here, which is why the
-        // product read correctly while the wire label did not.
         DomainGapReason::SourceUnavailable => (
             GapReason::SourceUnavailable,
             GapWitness::StatusBits {
@@ -1489,8 +1463,6 @@ fn map_d81_domain_gap(
                     .to_vec(),
             },
         ),
-        // No outcome was recorded, so the only witness that does not overclaim
-        // is the coverage one: zero observed across the hours expected.
         DomainGapReason::ReaderSilent => (
             GapReason::CoverageShortfall,
             GapWitness::Coverage {
@@ -1498,20 +1470,6 @@ fn map_d81_domain_gap(
                 expected: width,
             },
         ),
-        // The product's reason vocabulary has no "read the wrong hour" term,
-        // and the two candidates that look close would both LIE:
-        // `TornSweep` asserts the sweep tore, which is precisely what this
-        // outcome proves did not happen, and its witness grammar demands
-        // `tick_start != tick_end` -- so an H4DG whose defining property is
-        // that the ticks are EQUAL cannot even encode as one. `SkippedHour`
-        // asserts a discontinuity between neighbouring hours, which this
-        // outcome says nothing about.
-        //
-        // So the projection makes the narrower claim that is fully provable
-        // from the observation: for this domain-hour a DATA record was
-        // expected and none arrived. The typed reason and both hour witnesses
-        // survive intact on the H4DG record itself; only the derived ledger
-        // is coarser, and it is coarser in the direction of claiming less.
         DomainGapReason::HourLabelMismatch => (
             GapReason::CoverageShortfall,
             GapWitness::Coverage {

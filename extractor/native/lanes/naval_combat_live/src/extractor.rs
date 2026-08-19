@@ -13,31 +13,6 @@ pub const CURRENT_870EBF_PROVENANCE: &str =
      (D04 1944-02-11 paused fixture, same-tick save oracle: 4/4 combat ids, 4/4 \
      front+0xA4 locations, 8/8 sides' ship ids, member state/slot multisets)";
 
-/// Member chain (CRACKED 2026-07-03, replaces the REJECTED side+0x2A0 inline
-/// group-vector walk which resolved a 308-element non-CFEXMember allocation):
-///
-/// - Members live in CFEXGroup objects (vtable rva `naval_combat_group_vtable_rva`,
-///   RTTI `.?AVCFEXGroup@@`; scanners must re-verify the RTTI name at attach and
-///   fail closed on mismatch).
-/// - AUTHORITATIVE walk: heap-scan CFEXGroup vtable hits, bucket each group by its
-///   owning-side back-ref at `group + group_owning_side_off` (+0x38). A group
-///   belongs to the CNavalCombatant its +0x38 equals; groups whose back-ref is not
-///   a validated naval side belong to other combat types and are ignored.
-/// - ADVISORY cross-check: `side + side_forward_child_off` (+0x20) sometimes leads
-///   to a child object holding CFEXGroup pointers; the `group + group_next_off`
-///   (+0x20) chain is CIRCULAR and spans BOTH sides. When reachable, every group
-///   found forward MUST already be in the back-ref buckets (forward-only groups
-///   mean the back-ref scan missed live data => fail closed). The child is absent
-///   or unreadable for some live battles, so forward reachability itself is NOT
-///   required.
-/// - Group layout: `+0x08` member pointer array begin (contiguous CFEXMember*,
-///   8-byte stride), `+0x10` u32 capacity, `+0x14` u32 member count
-///   (count <= capacity), `+0x20` next group, `+0x38` owning side. Empty groups
-///   (count == 0, begin == null) are valid.
-/// - Array slots: null pointers are skipped (never counted as members); a non-null
-///   slot whose vtable is not CFEXMember is a hard error. A CFEXMember whose packed
-///   handle (`+0x08`) is 0 is a CONVOY member (matches save `convoy={...}` rows);
-///   otherwise low u32 == 51 and high u32 == CShip instance id.
 pub const CURRENT_870EBF_OFFSETS: ExtractorOffsets = ExtractorOffsets {
     naval_combat_body_vtable_rva: 0x29C6F18,
     naval_combat_side_vtable_rva: 0x29CD298,
@@ -87,38 +62,27 @@ pub struct ExtractorOffsets {
     pub naval_combat_side_vtable_rva: u64,
     pub naval_combat_registry_vtable_rva: u64,
     pub naval_combat_member_vtable_rva: u64,
-    /// CFEXGroup vtable (RTTI `.?AVCFEXGroup@@`); the member-group container.
     pub naval_combat_group_vtable_rva: u64,
-    /// body+`body_front_off` -> CProvince (RTTI `.?AVCProvince@@`); scanners
-    /// must vtable-check it before reading the location province at
-    /// `front_location_off` (RTTI-confirmed on all 4 D04 battles).
     pub front_province_vtable_rva: u64,
     pub body_handle_off: u64,
     pub body_attacker_side_off: u64,
     pub body_defender_side_off: u64,
     pub body_front_off: u64,
     pub side_parent_body_off: u64,
-    /// Advisory forward route: side child object that may hold CFEXGroup ptrs.
     pub side_forward_child_off: u64,
     pub side_positioning_off: u64,
-    /// Exact signed fixed-point x100000 side anti-air producer output.
     pub side_anti_air_off: u64,
-    /// front + this = u32 battle location province (VALIDATED 4/4 vs save).
     pub front_location_off: u64,
     pub group_members_data_off: u64,
     pub group_members_cap_off: u64,
     pub group_members_size_off: u64,
-    /// Next CFEXGroup in the (circular, side-spanning) battle group list.
     pub group_next_off: u64,
-    /// AUTHORITATIVE owning CNavalCombatant side back-ref.
     pub group_owning_side_off: u64,
     pub member_handle_off: u64,
     pub member_owner_tag_off: u64,
     pub member_max_strength_raw_off: u64,
-    /// VALIDATED vs save member `state` (multiset match on all 8 D04 sides).
     pub member_state_off: u64,
     pub member_weight_off: u64,
-    /// VALIDATED vs save member `unique_id` (multiset match on all 8 D04 sides).
     pub member_slot_off: u64,
 }
 
@@ -489,9 +453,6 @@ fn validate_pending_member_cship_joins(
             ));
             continue;
         }
-        // Stale-group guard: a ship cannot be a live member of one combat
-        // generation twice. A duplicate ship_instance_id means the member walk
-        // picked up a stale/duplicated CFEXGroup -> fail closed.
         if !pending.deleted {
             if let Some(ship_id) = member.ship_instance_id {
                 if !seen_ships.insert((member.combat_id, member.generation, ship_id)) {
@@ -514,8 +475,8 @@ fn validate_pending_member_cship_joins(
             }
         } else {
             non_convoy_count = non_convoy_count.saturating_add(1);
-            let terminal_sunk = member.state_bitmask
-                == Some(crate::domain49_50_naval_combat_live::FEX_STATE_SUNK);
+            let terminal_sunk =
+                member.state_bitmask == Some(crate::domain49_50_naval_combat_live::FEX_STATE_SUNK);
             if member.unit_type_tag != CURRENT_870EBF_CSHIP_ROUTE.type_tag {
                 errors.push(format!(
                     "non-convoy member combat={} side={} has unit_type_tag {}, expected {}",
@@ -556,9 +517,6 @@ fn validate_pending_member_cship_joins(
                     cship.ref100_sentinel_raw
                 )),
                 None if terminal_sunk => {
-                    // after both live CShip and convoy resolution fail.
-                    // Preserve the terminal member without inventing any
-                    // CShip/OOB telemetry.
                 }
                 None => errors.push(format!(
                     "ship_instance_id {ship_id} missing from current CShip route snapshot"
@@ -626,11 +584,6 @@ fn validate_pending_member_cship_joins(
     }
 }
 
-/// `front+0xA4` is PROMOTED (validated 4/4 vs the D04 save oracle): rows are
-/// expected to carry `location_id` (memory-read province) and `region_id`
-/// (static province->strategic-region join). The unvalidated-candidate status
-/// flag now only fires as the fail-closed signal when a row is missing either
-/// promoted field; a fully promoted frame carries plain `STATUS_DELTA_DATA`.
 fn lifecycle_status_flags(rows: &[LifecycleRow]) -> u32 {
     let has_unvalidated_location_candidate = rows
         .iter()
@@ -662,10 +615,7 @@ fn index_cships(
     index
 }
 
-fn validate_side_scalar_completeness(
-    snapshot: &ValidatedCombatSnapshot,
-    errors: &mut Vec<String>,
-) {
+fn validate_side_scalar_completeness(snapshot: &ValidatedCombatSnapshot, errors: &mut Vec<String>) {
     let row = &snapshot.lifecycle;
     if row.attacker_positioning_raw.is_none()
         || row.defender_positioning_raw.is_none()
@@ -918,10 +868,6 @@ mod tests {
         let mut duplicate = snapshot.members[0].clone();
         duplicate.group_index = 1;
         duplicate.member_index = 0;
-        // Keep the member identity distinct so this reaches the independent
-        // per-combat-generation ship uniqueness guard. Reusing slot zero
-        // would correctly fail earlier as a duplicate member identity and
-        // would not exercise the stale-group contract named by this test.
         duplicate.battle_slot_index_raw = 2;
         snapshot.members.push(duplicate);
         snapshot.lifecycle.attacker_member_count = 2;

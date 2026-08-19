@@ -15,9 +15,6 @@ fn test_scheduler_runtime(
     }
 }
 
-/// Mutation proof: changing the production H4AT envelope to reuse the current
-/// game hour, H4DG/H4FR type, or a scheduled domain makes this fail. Those
-/// mutations would turn a process abort into a false coverage statement.
 #[test]
 fn termination_envelope_is_frame_independent_and_claims_no_hour() {
     let reasons = compact_contract::capture_termination::CaptureTerminationReasons::from_bits(
@@ -41,9 +38,6 @@ fn termination_envelope_is_frame_independent_and_claims_no_hour() {
     assert_eq!(decoded.detail, "H4FR encoder failed");
 }
 
-/// Mutation proof: restoring `let _ = handle.join()` makes both typed outcomes
-/// disappear and fails these assertions. Ignoring the early-exit witness makes
-/// the first assertion fail; ignoring JoinHandle::Err makes the second fail.
 #[test]
 fn observer_join_surfaces_early_exit_and_panic() {
     let early = thread::spawn(|| {});
@@ -63,9 +57,6 @@ fn observer_join_surfaces_early_exit_and_panic() {
     );
 }
 
-/// Mutation proof: removing the production `catch_unwind` boundary no longer
-/// type-checks at its call to this helper; treating either propagated errors or
-/// panics as normal makes the corresponding assertion fail and suppresses H4AT.
 #[test]
 fn capture_loop_result_and_panic_are_both_retained_as_abnormal() {
     let mut result_error = None;
@@ -75,14 +66,10 @@ fn capture_loop_result_and_panic_are_both_retained_as_abnormal() {
     ));
     assert_eq!(result_error.as_deref(), Some("H4FR encoder failed"));
 
-    let panic_outcome = std::panic::catch_unwind(|| -> Result<(), String> {
-        panic!("capture fixture panic")
-    });
+    let panic_outcome =
+        std::panic::catch_unwind(|| -> Result<(), String> { panic!("capture fixture panic") });
     let mut panic_error = None;
-    assert!(retain_capture_loop_outcome(
-        panic_outcome,
-        &mut panic_error,
-    ));
+    assert!(retain_capture_loop_outcome(panic_outcome, &mut panic_error,));
     assert_eq!(
         panic_error.as_deref(),
         Some("capture loop panicked: capture fixture panic")
@@ -93,13 +80,6 @@ fn capture_loop_result_and_panic_are_both_retained_as_abnormal() {
     assert!(clean_error.is_none());
 }
 
-/// kills: deleting the content-identity census publication from the BODY of
-/// `publish_capture_termination_record`. That path opens a successor logical
-/// stream of its own, and a reader may open that member without ever seeing its
-/// predecessor - so a preamble carrying only the install freeze census would
-/// give that stream a session with no content identity. Counting caller
-/// arguments cannot see this deletion; publishing through the production
-/// function and reading the bytes back can.
 #[test]
 fn a_terminated_successor_stream_carries_both_preamble_records_before_the_notice() {
     let path = std::env::temp_dir().join(format!(
@@ -116,15 +96,14 @@ fn a_terminated_successor_stream_carries_both_preamble_records_before_the_notice
     let mut sequence = PublishedSequence::start_on(Some(0));
     transport.inject_current_logical_stream_id(Some(1));
 
-    // The freeze census's own payload grammar is pinned by its own tests; what
-    // this case is about is WHICH records the successor preamble contains and
-    // in what order, which the H4CR headers alone answer.
     let freeze = vec![0u8; 8];
     let census = compact_contract::content_identity_census::ContentIdentityCensusV1 {
-        buildings: vec![compact_contract::content_identity_census::ContentIdentityRow {
-            token_id: 0x4E22,
-            token: "arms_factory".to_string(),
-        }],
+        buildings: vec![
+            compact_contract::content_identity_census::ContentIdentityRow {
+                token_id: 0x4E22,
+                token: "arms_factory".to_string(),
+            },
+        ],
         resources: Vec::new(),
         buildings_declared: 1,
         resources_declared: 0,
@@ -167,7 +146,11 @@ fn a_terminated_successor_stream_carries_both_preamble_records_before_the_notice
                 compact_contract::COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS,
                 0
             ),
-            (3, compact_contract::COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, 0),
+            (
+                3,
+                compact_contract::COMPACT_RECORD_TYPE_CAPTURE_TERMINATED,
+                0
+            ),
         ],
         "the successor stream carries both preamble records, in order, before the notice"
     );

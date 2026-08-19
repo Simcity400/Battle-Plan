@@ -1,4 +1,3 @@
-//! Conversion from authenticated static focus definitions to XUI10 inputs.
 
 use crate::national_focus::{
     FocusCatalog, FocusDefinitionKind, FocusNodeDefinition, FocusStateBackgroundSprites,
@@ -29,8 +28,6 @@ impl std::fmt::Display for StaticFocusConversionError {
 
 impl std::error::Error for StaticFocusConversionError {}
 
-/// One manifest-sealed static XUI10 content identity. The catalog is derived
-/// from the same authenticated definitions and can never be caller-substituted.
 #[derive(Clone, Debug)]
 pub struct AdmittedStaticFocusUiContent {
     #[cfg(not(test))]
@@ -131,13 +128,6 @@ impl AdmittedStaticFocusUiContent {
     }
 }
 
-/// Build exact XUI10 static inputs for one D89-selected tree and visible order.
-///
-/// Local nodes must belong to the selected tree. Shared nodes must belong to
-/// the statically imported shared component rooted by that tree. A runtime
-/// visible node outside those sets is accepted only when the packaged
-/// definition explicitly classifies it as `joint_focus`; the runtime carrier,
-/// not a static all-joint guess, owns which joint nodes are present.
 pub fn focus_inputs_for_runtime_visible(
     definitions: &AdmittedStaticFocusDefinitions,
     tree_id: &str,
@@ -147,7 +137,6 @@ pub fn focus_inputs_for_runtime_visible(
     Ok((topology, focus_catalog_from_static(definitions)))
 }
 
-/// Build the immutable focus catalog once per packaged artifact/content epoch.
 pub fn focus_catalog_from_static(definitions: &AdmittedStaticFocusDefinitions) -> FocusCatalog {
     let mut nodes = BTreeMap::new();
     for (id, definition) in definitions.definitions() {
@@ -177,7 +166,6 @@ pub fn focus_catalog_from_static(definitions: &AdmittedStaticFocusDefinitions) -
     FocusCatalog { nodes }
 }
 
-/// Validate the runtime-selected D89 visible set without rebuilding the catalog.
 pub fn focus_topology_for_runtime_visible(
     definitions: &AdmittedStaticFocusDefinitions,
     tree_id: &str,
@@ -219,10 +207,6 @@ pub fn focus_topology_for_runtime_visible(
     })
 }
 
-/// Exact ordered title-localisation keys for joining the runtime text witness.
-///
-/// This returns keys only. It never resolves text from playback-machine files;
-/// XUI06/UI09 must still supply the authenticated runtime glyph/text carrier.
 pub fn focus_title_loc_keys_for_runtime_visible(
     definitions: &AdmittedStaticFocusDefinitions,
     tree_id: &str,

@@ -1,9 +1,3 @@
-//! XUI18/A37 typed replay-product seam.
-//!
-//! Raw `_r2_power_balance_presentation_live` JSON is admitted only by
-//! replay_core. This module resolves its authenticated A25 context identities
-//! and constructs the existing game_ui runtime supplement without deriving
-//! controller selection, source records, order, or presentation leaves.
 
 use game_ui::decision_chrome::{DecisionAvailability, DecisionSet};
 use game_ui::power_balance::{

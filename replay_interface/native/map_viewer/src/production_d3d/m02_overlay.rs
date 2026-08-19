@@ -39,9 +39,6 @@ struct PreparedM02OverlayDraw {
     draw: M02CombatDraw,
 }
 
-/// Fully preflighted M02 packet set. Product UI-pass playback advances this
-/// plan only when the authenticated operation stream reaches an M02 ordinal;
-/// non-M02 product-surface operations remain owned by the product compositor.
 pub struct PreparedM02OverlayPlan {
     update_index: u64,
     target_rtv: *mut ID3D11RenderTargetView,
@@ -62,8 +59,6 @@ impl PreparedM02OverlayPlan {
     }
 }
 
-/// Persistent exact executor for the separate M02 swapchain UI-overlay stage.
-/// It is intentionally not part of static-map or particle/entity ordering.
 pub struct NativeM02OverlayExecutor {
     gfx: Gfx,
     stream_output: StreamOutputBuffers,
@@ -80,9 +75,6 @@ impl NativeM02OverlayExecutor {
         })
     }
 
-    /// Execute only the exact M02 draws, in their recorded complete UI-pass
-    /// ordinal order, against the app-owned swapchain target immediately
-    /// before Present. The caller owns placement relative to other UI draws.
     pub unsafe fn execute(
         &mut self,
         resolver: &GameFileResolver,
@@ -96,8 +88,6 @@ impl NativeM02OverlayExecutor {
         Self::finish(plan)
     }
 
-    /// Validate the complete carrier, content admission, exact ordering, and
-    /// swapchain output descriptors before the first M02 pixel can be written.
     pub unsafe fn prepare(
         &self,
         resolver: &GameFileResolver,
@@ -160,9 +150,6 @@ impl NativeM02OverlayExecutor {
         })
     }
 
-    /// Execute exactly the next M02 packet in the preflighted M02-only order.
-    /// The containing selected-Present UI-pass stream owns when this method is
-    /// called relative to authenticated product-surface segments.
     pub unsafe fn execute_next(
         &mut self,
         resolver: &GameFileResolver,

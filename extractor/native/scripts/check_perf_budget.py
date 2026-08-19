@@ -84,7 +84,6 @@ def main():
             breaches.append((name, measured, limit))
         rows.append((name, measured, limit, verdict + (f" {note}" if note else "")))
 
-    # per-domain per-invocation p50 / p95
     tighten = json.loads(json.dumps(budget))
     sum_p50 = 0.0
     for name, spec in sorted(budget.get("domains", {}).items(), key=lambda kv: kv[1]["domain_id"]):
@@ -95,8 +94,6 @@ def main():
             indeterminate.append(f"{name}: {count} invocations")
             rows.append((f"d{spec['domain_id']:<3} {name} p50", None, spec["read_time_p50_ms_max"], f"n/a ({count} invocations)"))
             continue
-        # A missing percentile is INDETERMINATE, never substituted (Codex
-        # review 01a0096c, MAJOR 5: an absent p95 must not pass every budget).
         if rt.get("p50") is None or rt.get("p95") is None:
             indeterminate.append(f"{name}: read_time_us lacks p50/p95")
             rows.append((f"d{spec['domain_id']:<3} {name} p50", None, spec["read_time_p50_ms_max"], "n/a (no percentiles)"))
@@ -107,9 +104,6 @@ def main():
         check(f"d{spec['domain_id']:<3} {name} p50", round(p50, 3), max(spec["read_time_p50_ms_max"], P50_FLOOR_MS))
         check(f"d{spec['domain_id']:<3} {name} p95", round(p95, 3), max(spec["read_time_p95_ms_max"], P95_FLOOR_MS))
         t = tighten["domains"][name]
-        # Floors: P50_FLOOR_MS / P95_FLOOR_MS. Below that a domain's percentile is
-        # scheduler noise on a shared box (t71: 1.61 vs 1.38 ms p95 breaches),
-        # not a cost signal.
         t["read_time_p50_ms_max"] = round(min(t["read_time_p50_ms_max"], max(p50 * headroom, P50_FLOOR_MS)), 2)
         t["read_time_p95_ms_max"] = round(min(t["read_time_p95_ms_max"], max(p95 * headroom, P95_FLOOR_MS)), 2)
     g = budget.get("global", {})
@@ -126,7 +120,6 @@ def main():
     if crit_p95:
         tg["crit_wall_p95_ms_max"] = round(min(tg["crit_wall_p95_ms_max"], crit_p95 / 1000.0 * headroom), 1)
 
-    # per-record phase units
     for name, units in (budget.get("phase_units_per_record") or {}).items():
         info = per_domain.get(name) or {}
         recs = int(info.get("data_record_count", 0) or 0)
@@ -141,7 +134,6 @@ def main():
             tighten["phase_units_per_record"][name][unit]["ms_max"] = round(
                 min(spec["ms_max"], per_record_ms * headroom), 2)
 
-    # torn / backpressure accounting from the gap ledger, reported (not budgeted here)
     gap = stream.get("gap_ledger") or {}
     accounting = {"gap_ledger_keys": sorted(gap.keys())[:20] if isinstance(gap, dict) else None,
                   "frame_refused_record_count": stream.get("frame_refused_record_count"),
@@ -214,7 +206,6 @@ def self_test():
     assert run({"count": 5, "p50": 5000, "avg": 5000}, {"p50": 40000, "p95": 70000}) == (3, False), "missing p95 must be INDETERMINATE"
     assert run({"count": 5, "p50": 15000, "p95": 9000, "avg": 15000}, {"p50": 40000, "p95": 70000}) == (2, False), "breach must FAIL and not ratchet"
     assert run({"count": 5, "p95": 9000, "avg": 5000}, {"p50": 40000, "p95": 70000}) == (3, False), "missing p50 must be INDETERMINATE"
-    # The floors: a domain budgeted below them is judged at the floor.
     budget["domains"]["alpha"]["read_time_p50_ms_max"] = 0.5
     budget["domains"]["alpha"]["read_time_p95_ms_max"] = 1.0
     assert run({"count": 5, "p50": 1500, "p95": 3500, "avg": 1500}, {"p50": 40000, "p95": 70000})[0] == 0, "values under the floors pass"

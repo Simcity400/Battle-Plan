@@ -1,9 +1,3 @@
-//! XMAP09 production lighting and shadow preparation.
-//!
-//! The input is semantic/runtime state, not a selected-Present texture dump.
-//! Replay deterministically materializes the two point-light textures and all
-//! viewer-camera-dependent shadow matrices/targets.  Caster semantics remain
-//! typed downstream inputs owned by XMAP11, XMAP12, and XMAP13.
 
 use crate::{
     build_shadow_frame, plan_s1_shadow_screen_chain, project_l03_light_depth,
@@ -87,21 +81,15 @@ pub struct Xmap09LightingInput {
     pub virtual_moon_position_f32_bits: [u32; 4],
     pub second_virtual_sun_position_f32_bits: [u32; 4],
     pub second_virtual_moon_position_f32_bits: [u32; 4],
-    /// Exact engine runtime `DayNight_Hour_SunDir` output for this game date.
     pub day_night_hour_sun_dir_f32_bits: [u32; 4],
     pub sun_diffuse_intensity_f32_bits: [u32; 4],
     pub moon_diffuse_intensity_f32_bits: [u32; 4],
     pub ambient_rig_f32_bits: [[u32; 3]; 6],
     pub sun_specular_intensity_f32_bits: u32,
     pub cubemap_intensity_f32_bits: u32,
-    /// Effective `DRAW_SHADOWS_CUTOFF` and `DRAW_SHADOWS_FADE_LENGTH` values
-    /// consumed from the recording's mod-aware graphics definition state.
     pub draw_shadows_cutoff_f32_bits: u32,
     pub draw_shadows_fade_length_f32_bits: u32,
-    /// Exact `cVar19` input consumed by the a729 shadow-pass orchestrator.
     pub shadow_pass_active: bool,
-    /// Exact semantic/spatial point-light census. Each 64x64 cell contains
-    /// ordered light-row indices followed by `255` sentinels.
     pub point_light_grid_start_inv_cell_size_f32_bits: [u32; 4],
     pub point_lights: Vec<Xmap09PointLight>,
     pub point_light_cell_indices: Vec<[u8; 4]>,
@@ -348,11 +336,6 @@ pub struct Xmap09ReflectedSceneCb0Field {
     pub byte_len: u32,
 }
 
-/// Complete reflected CB0 layout supplied by the effective consumer program.
-///
-/// The layout may contain fields owned by other packets. XMAP09 only writes
-/// its named fields and rejects any reflected XMAP09 field whose offset or
-/// width differs from the proven `standardfuncsgfx.fxh` layout.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap09ReflectedSceneCb0Layout {
@@ -620,12 +603,7 @@ pub struct Xmap09ShadowResourcePlan {
 pub struct PreparedXmap09LightingFrame {
     pub schema: String,
     pub input_payload_sha256: String,
-    /// Canonical XMAP04 replay-hour identity carried verbatim. Camera identity
-    /// remains a separate equality gate.
     pub replay_frame_identity_sha256: String,
-    /// Exact current XMAP03 `ViewerMapCameraState::deterministic_sha256`.
-    /// Every native XMAP09 resource binding carries this same identity so
-    /// consumers cannot mix point lights or shadows from another viewer frame.
     pub camera_frame_sha256: String,
     pub prepare_stage: crate::AssignedStage,
     pub shadow_execute_stage: crate::AssignedStage,
@@ -750,7 +728,6 @@ impl PreparedXmap09LightingFrame {
         Ok(())
     }
 
-    /// Complete XMAP09-owned field patch for a reflected 416-byte SceneCB0.
     /// Consumers retain ownership of the base buffer and all non-XMAP09 bytes.
     pub fn scene_cb0_patch(&self) -> Result<Xmap09SceneCb0Patch> {
         self.validate()?;
@@ -877,7 +854,6 @@ impl PreparedXmap09LightingFrame {
         Ok(result)
     }
 
-    /// Exact 16-byte `GridStart_InvCellSize` payload consumed at CB slot 2.
     pub fn point_lights_cb2_bytes(&self) -> Result<[u8; 16]> {
         self.validate()?;
         let mut bytes = [0u8; 16];
@@ -892,9 +868,6 @@ impl PreparedXmap09LightingFrame {
         Ok(bytes)
     }
 
-    /// Authenticated XMAP09 matrix contribution for consumer-specific buffers.
-    /// A consumer applies it only when its effective reflection retains
-    /// `ShadowMapTextureMatrix`.
     pub fn shadow_map_texture_matrix(&self) -> Result<Xmap09ShadowMatrixBinding> {
         self.validate()?;
         let bits = self
@@ -915,8 +888,6 @@ impl PreparedXmap09LightingFrame {
         })
     }
 
-    /// Join exact XMAP11-XMAP13 semantic producers to XMAP09's selected light
-    /// without sorting, inferring eligibility, or accepting recorder draws.
     pub fn project_exact_casters(
         &self,
         enabled_partition_mask: u8,
@@ -933,8 +904,6 @@ impl PreparedXmap09LightingFrame {
         })
     }
 
-    /// Materialize the exact producer/H-blur/V-blur consumer chain from an
-    /// admitted caster projection. Inactive frames return `None`.
     pub fn plan_shadow_consumer(
         &self,
         projection: &L03LightDepthProjection,

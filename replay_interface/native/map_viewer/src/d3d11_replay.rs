@@ -20,8 +20,6 @@ use winapi::um::d3dcommon::*;
 #[cfg(windows)]
 use winapi::um::unknwnbase::IUnknown;
 
-/// Encode the XN15 tiled-point-light `GridStart_InvCellSize` float4 exactly as
-/// the 16-byte little-endian PS CB2 payload. No float conversion occurs.
 pub fn tiled_light_grid_cb2_bytes(bits: [u32; 4]) -> [u8; 16] {
     let mut bytes = [0u8; 16];
     for (index, value) in bits.into_iter().enumerate() {
@@ -30,19 +28,6 @@ pub fn tiled_light_grid_cb2_bytes(bits: [u32; 4]) -> [u8; 16] {
     bytes
 }
 
-/// WATER3 — the world-synthesis (`--synthesize-terrain-chunks`) production
-/// path's `WaterRefraction` (slot 5) source law, as a pure function so it is
-/// unit-testable without a GPU and stays in lockstep with the captured-terrain
-/// path's non-reference selection (see
-/// `prepare_production_map_with_layers_for_reference`).
-///
-/// * `water_full == false` → the old calibrated approximation snapshot
-///   (`AppOwnedTerrainColorSnapshot`), now blocked for non-reference product
-///   water rendering when a water pass is present.
-/// * `water_full == true` → the mechanism-correct WATER2 seafloor render
-///   (`UnderwaterPass`, `pdxmap.shader` `Effect underwater` over the
-///   synthesized tiles). The underwater pass is therefore selected **only**
-///   under `--water-full`.
 #[cfg(windows)]
 pub(crate) fn world_synthesis_water_refraction_source(
     water_full: bool,
@@ -54,10 +39,6 @@ pub(crate) fn world_synthesis_water_refraction_source(
     }
 }
 
-/// WATER3 — the world-synthesis path's `ReflectionCubeMap` (slot 8) source law
-/// (WATER1), a separate axis from refraction. `water_full` uploads the real
-/// shipped cube (byte-identical to `map/terrain/reflection.dds`); flag-OFF
-/// keeps the mean-color flatten for byte-identity.
 #[cfg(windows)]
 pub(crate) fn world_synthesis_reflection_cube_source(
     water_full: bool,
@@ -127,10 +108,6 @@ pub struct NativeD3d11ReferenceComparison {
     pub actual_fnv1a64: String,
 }
 
-/// WATER2 validation render result: the reconstructed `WaterRefraction` buffer
-/// (the underwater seafloor pass) plus the compiled underwater PS bytecode for
-/// provenance. `bytes` are the read-back `B8G8R8A8_UNORM` texels
-/// (`row_pitch`-padded, D3D11 staging layout).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnderwaterValidationRender {
     pub width: u32,
@@ -179,75 +156,18 @@ pub struct NativeD3d11TerrainRenderer {
     pub(crate) terrain_color_snapshot_pipeline: NativeD3d11TerrainColorSnapshotPipeline,
     #[cfg(not(windows))]
     pub(crate) _unavailable: (),
-    /// `--water-full` mode (WATER1). Default `false` => flag-OFF, byte-identical
-    /// to prior behaviour. When `true`, the world-synthesis water pass uploads
-    /// the REAL reflection cube (byte-identical to the shipped, mod-resolvable
-    /// map/terrain/reflection.dds) instead of the
-    /// 1x1x6 mean-color flatten. WATER1 fixed reflection; WATER2 (below) makes
-    /// refraction mechanism-correct too, so under `--water-full` the water pass
-    /// now binds a real seafloor render as `WaterRefraction` instead of the
-    /// approximation.
     pub(crate) water_full: bool,
-    /// WATER2: resolver used to reconstruct the `Effect underwater` pixel
-    /// shader (from the shipped, mod-resolvable `gfx/FX/pdxmap.shader`) that
-    /// fills `WaterRefraction` with the real seafloor pass. Required when
-    /// `water_full` is set on the world-synthesis path; when absent the
-    /// renderer has no game-file access and the underwater pass fails closed
-    /// rather than silently falling back to the approximation. Ignored when
-    /// `water_full` is off (byte-identical to prior behaviour).
     #[cfg(windows)]
     pub(crate) underwater_resolver: Option<GameFileResolver>,
-    /// BORD2 `--borders-from-files` mode. Default `false` => flag-OFF,
-    /// byte-identical to prior behaviour (no border pass, no shader compile, no
-    /// buffer allocation). When `true`, the world-synthesis production-map path
-    /// renders the synthesized thin-border mesh (all classes) over the terrain
-    /// target with the shipped `gfx/FX/border.shader` compiled byte-exact,
-    /// per-class `BorderDiffuse` textures, and camera-height fade per
-    /// [`crate::border_transparency`].
     pub(crate) borders_from_files: bool,
-    /// BORD2: resolver used to synthesize the border mesh and resolve the border
-    /// shader + `map/terrain/border_*.dds` textures (mod-aware). Required when
-    /// `borders_from_files` is set; when absent the border pass fails closed
-    /// rather than rendering nothing silently. Ignored when
-    /// `borders_from_files` is off (byte-identical to prior behaviour).
     #[cfg(windows)]
     pub(crate) border_resolver: Option<GameFileResolver>,
-    /// CHUNK1 `--chunks-from-files` mode. Default `false` => flag-OFF,
-    /// byte-identical to prior behaviour (chunk VB/IB/CB1 uploaded from the
-    /// captured template files on disk). When `true`, the terrain-chunk
     /// synthesis frame UPLOADS GENERATED mesh buffers (slot0 grid, index
-    /// tessellation, per-LOD slot1 height pool from `map/heightmap.bmp`, CB1)
-    /// injected as synthetic payloads keyed by the recorded file names, so the
-    /// GPU vertex/index/constant buffers are materialized from files+law, not
     /// the captured buffer bytes. The generated bytes are byte-identical to the
-    /// captured law (proven by the corpus gate + the synthetic-payload
-    /// length+hash guard, which fails closed on any drift).
-    ///
-    /// KNOWN RESIDUAL (honest scope): the plan/library-load stage still READS
-    /// the captured chunk buffer files for scene-CB0/camera and the per-LOD
-    /// `cb1_scale`/detail-flag metadata (`terrain_chunk_synthesis_plan`,
-    /// `production_camera_from_capture`), so this mode reduces the mesh-BYTE
-    /// dependency to metadata-reading, it does not yet fully eliminate the
-    /// captured template. Making the plan derive scale/camera from files is the
-    /// documented follow-up. See [`crate::terrain_mesh_law`].
     pub(crate) chunks_from_files: bool,
-    /// CHUNK1: resolver used to load `map/heightmap.bmp` (mod-aware) for the
     /// generated slot1 height pool. Required when `chunks_from_files` is set;
-    /// when absent the synthesis fails closed. Ignored when off (byte-identical
-    /// to prior behaviour).
     #[cfg(windows)]
     pub(crate) chunks_from_files_resolver: Option<GameFileResolver>,
-    /// WATER1/REFLECT: resolver used to decode + repack the mod-aware
-    /// `map/terrain/reflection.dds` into the captured `ReflectionCubeMap`
-    /// (slot 8) mapped-subresource layout at replay time. When present, the
-    /// reflection cube is produced by
-    /// [`crate::reflection_cube_law::decode_reflection_cube_payload`] and
-    /// BYTE-VERIFIED equal to the captured payload (fail closed on mismatch),
-    /// so pixels are provably unchanged for vanilla and mod-correct otherwise.
-    /// When absent, the captured `.d3d11` payload is uploaded verbatim
-    /// (byte-identical to prior behaviour). Provenance-only: the descriptor,
-    /// SRV, and DXGI 91 (`B8G8R8A8_UNORM_SRGB`) view stay bound from the
-    /// capture; only the byte source flips.
     #[cfg(windows)]
     pub(crate) reflection_resolver: Option<GameFileResolver>,
 }
@@ -274,9 +194,6 @@ pub struct NativeD3d11PreparedProductionMap {
     pub(crate) borders: Option<NativeD3d11PreparedMapPass>,
     #[cfg(windows)]
     pub(crate) trees: Option<NativeD3d11PreparedMapPass>,
-    /// BORD2 `--borders-from-files`: the synthesized thin-border pass. `None`
-    /// when the flag is off (byte-identical) or on the reference-replay path.
-    /// Renders after water/rivers, before trees.
     #[cfg(windows)]
     pub(crate) borders_files: Option<NativeD3d11BorderFilesPass>,
 }
@@ -292,7 +209,6 @@ pub struct NativeD3d11PreparedSynthesizedProductionMap {
     pub(crate) borders: Option<NativeD3d11PreparedMapPass>,
     #[cfg(windows)]
     pub(crate) trees: Option<NativeD3d11PreparedMapPass>,
-    /// BORD2 `--borders-from-files` (see the captured-path struct above).
     #[cfg(windows)]
     pub(crate) borders_files: Option<NativeD3d11BorderFilesPass>,
 }
@@ -369,8 +285,6 @@ impl NativeD3d11PreparedProductionMap {
         }
     }
 
-    /// BORD2: stats for the prepared `--borders-from-files` overlay (VRAM +
-    /// class ranges + prepare time), `None` when the flag is off.
     pub fn borders_files_stats(&self) -> Option<&BorderFilesPassStats> {
         #[cfg(windows)]
         {
@@ -422,15 +336,11 @@ impl NativeD3d11PreparedProductionMap {
         self.terrain.native.render_target.texture.as_raw()
     }
 
-    /// Borrow the prepared MainScene color RTV for replay-carried submitted
-    /// draws. The caller must keep this prepared map alive for the complete
-    /// draw sequence and must validate the carrier descriptor before binding.
     #[cfg(windows)]
     pub fn output_render_target_view_raw(&self) -> *mut ID3D11RenderTargetView {
         self.terrain.native.render_target.view.as_raw()
     }
 
-    /// Exact prepared MainScene color resource descriptor.
     #[cfg(windows)]
     pub fn output_color_desc(&self) -> (u32, u32, u32, u32, u32) {
         let desc = &self.terrain.native.render_target.desc;
@@ -443,15 +353,11 @@ impl NativeD3d11PreparedProductionMap {
         )
     }
 
-    /// Borrow the prepared MainScene depth DSV for replay-carried submitted
-    /// draws. See [`output_render_target_view_raw`](Self::output_render_target_view_raw).
     #[cfg(windows)]
     pub fn output_depth_stencil_view_raw(&self) -> *mut ID3D11DepthStencilView {
         self.terrain.native.depth_target.view.as_raw()
     }
 
-    /// Exact prepared MainScene depth resource descriptor, used to reject a
-    /// replay-carried output binding that names a different target.
     #[cfg(windows)]
     pub fn output_depth_desc(&self) -> (u32, u32, u32, u32, u32) {
         let desc = &self.terrain.native.depth_target.desc;
@@ -464,9 +370,6 @@ impl NativeD3d11PreparedProductionMap {
         )
     }
 
-    /// SEASON1 (validation): replace the SnowMudTexture SRV in the terrain
-    /// pass and every dependent pass (water ice, tree snow, border snow all
-    /// sample it). Name-matched so a session without the input fails loudly.
     pub unsafe fn replace_snow_mud_srv(
         &mut self,
         snow_mud: *mut ID3D11ShaderResourceView,
@@ -490,11 +393,6 @@ impl NativeD3d11PreparedProductionMap {
         Ok(count)
     }
 
-    /// Replace a named pixel-shader SRV across the terrain pass and every
-    /// dependent production pass. This is the byte-native replay handoff for
-    /// exact recorded runtime textures (for example ProvinceSecondaryColorMap
-    /// and the three GradientBorder channels); callers must validate the
-    /// descriptor and payload before creating `view`.
     pub unsafe fn replace_named_ps_srv(
         &mut self,
         declared_name: &str,
@@ -607,8 +505,6 @@ impl NativeD3d11PreparedSynthesizedProductionMap {
         }
     }
 
-    /// BORD2: stats for the prepared `--borders-from-files` overlay, `None`
-    /// when the flag is off.
     pub fn borders_files_stats(&self) -> Option<&BorderFilesPassStats> {
         #[cfg(windows)]
         {
@@ -637,8 +533,6 @@ impl NativeD3d11PreparedSynthesizedProductionMap {
         self.terrain.native.render_target.texture.as_raw()
     }
 
-    /// SEASON1 (validation): SnowMudTexture substitution across the
-    /// synthesized terrain template draw + dependent passes.
     pub unsafe fn replace_snow_mud_srv(
         &mut self,
         snow_mud: *mut ID3D11ShaderResourceView,
@@ -713,8 +607,6 @@ impl NativeD3d11PreparedTerrainChunkSynthesis {
         self.native.render_target.texture.as_raw()
     }
 
-    /// SEASON1 (validation): SnowMudTexture (terrain sampler slot 7 per
-    /// `pdxmap.shader:77`; name-verified) substitution on the template draw.
     pub unsafe fn replace_snow_mud_srv(
         &mut self,
         snow_mud: *mut ID3D11ShaderResourceView,
@@ -728,9 +620,6 @@ impl NativeD3d11PreparedTerrainChunkSynthesis {
     }
 }
 
-/// Replace every PS-stage SRV whose captured `declared_name` matches, across
-/// all draws of a dependent pass. Zero replacements is fine (the pass may not
-/// sample that input).
 #[cfg(windows)]
 unsafe fn replace_named_ps_srv_in_pass(
     pass: &mut NativeD3d11PreparedMapPass,
@@ -841,44 +730,22 @@ impl NativeD3d11TerrainRenderer {
         })
     }
 
-    /// Provide the game-file resolver used to reconstruct the underwater
-    /// seafloor shader for the WATER2 refraction pass. Required alongside
-    /// `--water-full` on the world-synthesis path; if `--water-full` is set
-    /// without a resolver, the underwater pass fails closed. Builder-style.
     #[cfg(windows)]
     pub fn with_underwater_resolver(mut self, resolver: GameFileResolver) -> Self {
         self.underwater_resolver = Some(resolver);
         self
     }
 
-    /// Provide the game-file resolver used to decode + repack the mod-aware
-    /// `map/terrain/reflection.dds` into the captured `ReflectionCubeMap`
-    /// (slot 8) mapped-subresource layout (WATER1/REFLECT). When present, the
-    /// reflection cube for that slot is resolver-decoded and BYTE-VERIFIED equal
-    /// to the captured payload (fail closed on mismatch); when absent, the
-    /// captured `.d3d11` payload is uploaded verbatim (byte-identical to prior
-    /// behaviour). Provenance-only — the descriptor/SRV/format 91 are untouched.
-    /// Builder-style.
     #[cfg(windows)]
     pub fn with_reflection_resolver(mut self, resolver: GameFileResolver) -> Self {
         self.reflection_resolver = Some(resolver);
         self
     }
 
-    /// Enable/disable `--water-full` mode (WATER1). Default is `false`.
-    ///
-    /// When enabled, the world-synthesis water pass uploads the real reflection
-    /// cube instead of the mean-color flatten. Callers that leave this OFF keep
-    /// byte-identical output. Intended to be set once, right after construction
-    /// (e.g. from the replay_app CLI `--water-full` flag).
     pub fn set_water_full(&mut self, water_full: bool) {
         self.water_full = water_full;
     }
 
-    /// Replace the exact tiled-point-light `GridStart_InvCellSize` constant
-    /// buffer on every production-map draw that declares the proven PS CB2
-    /// binding. The caller separately replaces `LightIndexMap` and
-    /// `LightDataMap`; all three inputs must come from the same retained submit.
     #[cfg(windows)]
     pub unsafe fn replace_tiled_light_cb2(
         &self,
@@ -904,61 +771,38 @@ impl NativeD3d11TerrainRenderer {
         Ok(replaced)
     }
 
-    /// Builder-style variant of [`set_water_full`](Self::set_water_full).
     pub fn with_water_full(mut self, water_full: bool) -> Self {
         self.water_full = water_full;
         self
     }
 
-    /// Provide the game-file resolver used to synthesize the border mesh and
-    /// resolve the border shader + `map/terrain/border_*.dds` textures (BORD2).
-    /// Required alongside `--borders-from-files`; if the flag is set without a
-    /// resolver, the border pass fails closed. Builder-style.
     #[cfg(windows)]
     pub fn with_border_resolver(mut self, resolver: GameFileResolver) -> Self {
         self.border_resolver = Some(resolver);
         self
     }
 
-    /// Enable/disable `--borders-from-files` mode (BORD2). Default is `false`.
-    ///
-    /// When enabled, the world-synthesis production-map path renders the
-    /// synthesized thin-border mesh over the terrain target. Callers that leave
-    /// this OFF keep byte-identical output. Intended to be set once, right after
-    /// construction (e.g. from the replay_app CLI `--borders-from-files` flag).
     pub fn set_borders_from_files(&mut self, borders_from_files: bool) {
         self.borders_from_files = borders_from_files;
     }
 
-    /// Builder-style variant of
-    /// [`set_borders_from_files`](Self::set_borders_from_files).
     pub fn with_borders_from_files(mut self, borders_from_files: bool) -> Self {
         self.borders_from_files = borders_from_files;
         self
     }
 
-    /// Provide the game-file resolver used to load `map/heightmap.bmp` for the
     /// generated terrain-chunk mesh (CHUNK1 `--chunks-from-files`). Required
-    /// alongside the flag; if the flag is set without a resolver, the synthesis
-    /// fails closed. Builder-style.
     #[cfg(windows)]
     pub fn with_chunks_from_files_resolver(mut self, resolver: GameFileResolver) -> Self {
         self.chunks_from_files_resolver = Some(resolver);
         self
     }
 
-    /// Enable/disable `--chunks-from-files` mode (CHUNK1). Default is `false`.
-    ///
     /// When enabled, the terrain-chunk synthesis frame binds generated mesh
-    /// buffers (no captured chunk template file needed). Callers that leave this
-    /// OFF keep byte-identical output. Intended to be set once, right after
-    /// construction (e.g. from the replay_app CLI `--chunks-from-files` flag).
     pub fn set_chunks_from_files(&mut self, chunks_from_files: bool) {
         self.chunks_from_files = chunks_from_files;
     }
 
-    /// Builder-style variant of
-    /// [`set_chunks_from_files`](Self::set_chunks_from_files).
     pub fn with_chunks_from_files(mut self, chunks_from_files: bool) -> Self {
         self.chunks_from_files = chunks_from_files;
         self
@@ -981,10 +825,6 @@ impl NativeD3d11TerrainRenderer {
         })
     }
 
-    /// RES2: a public entry point that turns a captured bundle into production
-    /// terrain pixels, so it admits before preparing. Without this, a caller
-    /// could build the pass graph itself, prepare here, and emit pixels through
-    /// `render_prepared`, bypassing the admitted map funnels entirely.
     pub fn prepare_production_terrain(
         &self,
         bundle: &NativeD3d11TerrainBundle,
@@ -1019,9 +859,6 @@ impl NativeD3d11TerrainRenderer {
         })
     }
 
-    /// RES2: admits the bundle, then delegates to the funnel that can only be
-    /// called with an admission proof. This is the PRODUCT path — its pixels
-    /// are presented as product output.
     pub fn prepare_production_map(
         &self,
         bundle: &NativeD3d11TerrainBundle,
@@ -1031,34 +868,15 @@ impl NativeD3d11TerrainRenderer {
         self.prepare_production_map_admitted(&admitted, camera)
     }
 
-    /// RES2: the CAPTURE-PARITY preparation. Identical pixels, different
-    /// purpose — this output exists to be diffed against the capture it came
-    /// from (acceptance runs bind `compare_each_draw`), never to be shown as
-    /// product output.
-    ///
-    /// Deliberately UNADMITTED. Gating it would refuse every pre-FW7 capture on
-    /// the one route whose entire job is to reproduce such a capture and
-    /// compare it byte-for-byte — refusing legitimate existing evidence
-    /// artifacts to enforce a product rule that does not apply to them. The
-    /// product rule is enforced where product pixels are produced, which is
-    /// [`Self::prepare_production_map`].
     pub fn prepare_capture_parity_map(
         &self,
         bundle: &NativeD3d11TerrainBundle,
         camera: Option<ProductionMapCamera>,
     ) -> Result<NativeD3d11PreparedProductionMap> {
-        // Constructs the proof WITHOUT the gate: legitimate here, and possible
-        // only inside `frame_bundle`, which is why this shim lives behind a
-        // named, documented parity entry point instead of being reachable by
-        // accident.
         let parity = capture_parity_map_bundle(bundle);
         self.prepare_production_map_admitted(&parity, camera)
     }
 
-    /// The single-bundle production preparation funnel. Taking
-    /// [`AdmittedProductionMapBundle`] is what makes the vanilla-source gate
-    /// compiler-enforced: there is no way to reach this code with a bundle
-    /// whose sources were never certified.
     fn prepare_production_map_admitted(
         &self,
         admitted: &AdmittedProductionMapBundle<'_>,
@@ -1078,9 +896,6 @@ impl NativeD3d11TerrainRenderer {
             rivers: None,
             borders: None,
             trees: None,
-            // Plain/reference prepare: the synthesized border pass rides only
-            // the with_layers production path (reference replays must stay
-            // byte-exact against the capture).
             borders_files: None,
         })
     }
@@ -1155,8 +970,6 @@ impl NativeD3d11TerrainRenderer {
         target_tile_size: u32,
         world_rect: TerrainChunkSynthesisWorldRect,
     ) -> Result<NativeD3d11PreparedTerrainChunkSynthesis> {
-        // Byte-exact record validation must replay each record's own captured
-        // frame state verbatim, so no canonical scene CB0 is substituted here.
         self.prepare_terrain_chunk_synthesis_with_detail_flags(
             library,
             camera,
@@ -1181,12 +994,6 @@ impl NativeD3d11TerrainRenderer {
         } else {
             terrain_chunk_synthesis_plan(library, target_tile_size, world_rect)?
         };
-        // CHUNK1: under --chunks-from-files, regenerate the chunk mesh buffers
-        // (slot0 grid, index tessellation, per-LOD slot1 height pool, CB1) from
-        // the shipped heightmap + vertex law and bind them as synthetic
-        // payloads, so the template draw's VB/IB/CB1 come from files not the
-        // captured chunk buffers. Flag-OFF leaves the map empty => the frame
-        // reads the captured template bytes byte-identically to before.
         let synthetic_payloads = self.terrain_chunk_synthetic_payloads(library, world_rect)?;
         let native = unsafe {
             native_d3d11_prepare_terrain_chunk_synthesis_frame(
@@ -1212,8 +1019,6 @@ impl NativeD3d11TerrainRenderer {
     }
 
     /// CHUNK1: build the generated chunk-mesh synthetic payloads when
-    /// `--chunks-from-files` is active, or an empty map (flag-OFF, byte-
-    /// identical) otherwise. Fails closed if the flag is set without a resolver.
     fn terrain_chunk_synthetic_payloads(
         &self,
         library: &NativeD3d11TerrainChunkLibrary,
@@ -1356,20 +1161,6 @@ impl NativeD3d11TerrainRenderer {
         scene_cb0: Option<&[u8]>,
         patch_tree_season_cb1: bool,
     ) -> Result<NativeD3d11PreparedSynthesizedProductionMap> {
-        // RES2: the synthesized production map composites REAL captured layer
-        // bundles over the synthesized terrain, so each supplied layer must
-        // carry certified vanilla sources exactly as in the captured funnels.
-        // Admitted up front, then handed to a funnel that cannot be called
-        // without the proofs.
-        //
-        // The chunk LIBRARY itself is deliberately not admitted: it is a
-        // different artifact class, assembled by `terrain_chunk_library` from
-        // synthesized chunk records, and it never routes through
-        // `validate_map_frame_vanilla_sources` (its
-        // `vanilla_source_verification` is always `None` by construction).
-        // Admitting it would refuse every chunk-synthesis run rather than
-        // certify anything — a gate demanding a state nothing can produce.
-        // Its provenance is a separate lane's problem, not RES2's.
         let water_admitted = water_bundle
             .map(|bundle| bundle.admit_for_production("production water renderer"))
             .transpose()?;
@@ -1398,9 +1189,6 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
-    /// The synthesized-production-map funnel. Every captured layer that can
-    /// contribute product pixels arrives as an [`AdmittedProductionMapBundle`],
-    /// so the vanilla-source gate is compiler-enforced here too.
     #[allow(clippy::too_many_arguments)]
     fn prepare_terrain_chunk_synthesis_admitted(
         &self,
@@ -1441,21 +1229,7 @@ impl NativeD3d11TerrainRenderer {
             world_rect,
             scene_cb0,
         )?;
-        // WATER3: refraction/reflection source policy for the chunk-synthesis
-        // production path. With --water-full the water and rivers passes bind
-        // the REAL seafloor render (WATER2 underwater pass, rendered below over
-        // the synthesized tiles) as WaterRefraction and the real reflection
-        // cube. Without --water-full, product replay is blocked before water is
-        // rendered when a water bundle is present. The selection is the pure
-        // `world_synthesis_water_refraction_source` /
-        // `world_synthesis_reflection_cube_source` law so it is unit-testable
-        // without a GPU (see the tests) and stays in lockstep with the
-        // captured-terrain path's non-reference selection.
         let water_refraction_source = world_synthesis_water_refraction_source(self.water_full);
-        // Reflection-cube policy (WATER1), a separate axis from refraction:
-        // honour self.water_full for the water/rivers/trees passes. Trees have
-        // no ReflectionCubeMap slot, so this is inert there, but keep it
-        // consistent.
         let reflection_cube_source = world_synthesis_reflection_cube_source(self.water_full);
         let water = self.prepare_optional_production_map_pass_with_inputs(
             water_bundle,
@@ -1515,8 +1289,6 @@ impl NativeD3d11TerrainRenderer {
                 }
             }
         }
-        // BORD2 (--borders-from-files): prepare the synthesized border pass
-        // once, fail-closed without a resolver. Flag OFF: no work, no change.
         let borders_files = match self.border_files_resolver_for_prepare()? {
             Some(resolver) => Some(native_d3d11_prepare_border_files_pass(
                 &self.device,
@@ -1541,19 +1313,12 @@ impl NativeD3d11TerrainRenderer {
         options: &NativeD3d11RenderOptions,
     ) -> Result<NativeD3d11ReplayResult> {
         let dependent_passes = prepared.dependent_passes_in_order();
-        // BORD2 (--borders-from-files): same overlay position as the
-        // captured-terrain path — after water/rivers, before trees (diag23b
-        // pass order).
         let border_insert_index = prepared.borders_files.as_ref().map(|_| {
             dependent_passes
                 .iter()
                 .position(|(kind, _)| *kind == ProductionMapPassKind::Trees)
                 .unwrap_or(dependent_passes.len())
         });
-        // Overlay-after-final-output combinations fail closed (see the
-        // captured-path hook for the rationale). This also covers the
-        // no-dependent-passes case, where the terrain render itself would take
-        // the output before the overlay.
         if border_insert_index == Some(dependent_passes.len())
             && (options.output.is_some() || options.readback || options.compare_final_reference)
         {
@@ -1583,30 +1348,6 @@ impl NativeD3d11TerrainRenderer {
             tree_season_cb: None,
             map_clock_time: options.map_clock_time,
         };
-        // WATER3 (--water-full): render the REAL seafloor pass over the
-        // SYNTHESIZED terrain and bind it as WaterRefraction — the same
-        // mechanism-correct pass the captured-terrain path uses
-        // (render_prepared_production_map), but issued through the tiled
-        // synthesis draw stream. Re-render the synthesis template draw with
-        // PixelShaderUnderwater into an offscreen B8G8R8A8_UNORM target (its
-        // own depth), iterating the WHOLE tile plan. Fail-closed if no resolver
-        // was threaded in (no game-file access to reconstruct pdxmap.shader
-        // Effect underwater). Without --water-full, product replay is blocked
-        // before water rendering when a water bundle is present.
-        //
-        // ORDER (CB1 safety): this runs BEFORE the terrain color synthesis
-        // render below. `native_d3d11_render_underwater_synthesis` rewrites the
-        // shared `template_draw` CB1 (QuadOffset/detail-edge) per tile over the
-        // whole plan; the terrain color render then runs LAST and leaves CB1 at
-        // its own last visible tile, exactly as it does flag-OFF. So the border
-        // overlay (which borrows the template draw's CB1) sees the identical
-        // terminal CB1 state whether or not --water-full is set — no new CB1
-        // corruption is introduced. The underwater pass writes only its own
-        // offscreen target/depth, so running it first does not disturb the
-        // terrain HDR target.
-        // Only render the seafloor when a dependent pass will consume it (the
-        // water/rivers pass); a frame with no dependent passes has no
-        // WaterRefraction slot to bind, so skip the work entirely.
         let underwater_pass = if self.water_full && !dependent_passes.is_empty() {
             let resolver = self.underwater_resolver.as_ref().ok_or(
                 "--water-full underwater pass blocked: no game-file resolver was provided to \
@@ -1627,10 +1368,6 @@ impl NativeD3d11TerrainRenderer {
                 synthesis,
                 &prepared.terrain.plan,
             )?;
-            // DEBUG (env-gated, ocean-defect diagnosis): read back the product
-            // path's WaterRefraction buffer (the underwater seafloor render) so
-            // its pattern amplitude can be measured offline against the
-            // engine's captured refraction buffer.
             if let Some(path) = std::env::var_os("REPLAY_DEBUG_DUMP_UNDERWATER") {
                 let readback = unsafe {
                     crate::d3d11_device::native_d3d11_read_render_target(
@@ -1681,18 +1418,10 @@ impl NativeD3d11TerrainRenderer {
             terrain_color_snapshot: terrain_color_snapshot
                 .as_ref()
                 .map(|snapshot| &snapshot.view),
-            // WATER3: under --water-full the WaterRefraction slot is filled by
-            // the real seafloor render over the synthesized tiles; flag-OFF
-            // keeps the approximation refraction.
             underwater_refraction: underwater_pass
                 .as_ref()
                 .map(|pass| pass.shader_resource_view()),
         };
-        // DEBUG (env-gated, ocean-defect diagnosis): clear the composite target
-        // to magenta right before the dependent passes so the dump shows the
-        // water/rivers contribution in isolation — where the water pass draws,
-        // with what color, and where the (magenta) background leaks through its
-        // blend alpha. Diagnosis-only; never set in gates.
         if std::env::var_os("REPLAY_DEBUG_CLEAR_BEFORE_WATER").is_some() {
             unsafe {
                 (*self.device.context.as_raw()).ClearRenderTargetView(
@@ -1705,7 +1434,6 @@ impl NativeD3d11TerrainRenderer {
         let last_index = dependent_passes.len() - 1;
         for (index, (kind, pass)) in dependent_passes.iter().enumerate() {
             if border_insert_index == Some(index) {
-                // BORD2: overlay draws here — after water/rivers, before trees.
                 self.render_border_files_overlay_synthesized(prepared, options)?;
             }
             let final_pass = index == last_index;
@@ -1730,16 +1458,11 @@ impl NativeD3d11TerrainRenderer {
             )?);
         }
         if border_insert_index == Some(dependent_passes.len()) {
-            // No trees pass: the overlay draws last (output options that would
-            // have missed it were failed closed above).
             self.render_border_files_overlay_synthesized(prepared, options)?;
         }
         result.ok_or_else(|| "production native D3D11 synthesized map graph did not execute".into())
     }
 
-    /// BORD2: render the synthesized border overlay over a terrain-chunk
-    /// synthesis frame. Borrows the synthesis template draw for the live scene
-    /// CB0/CB1 (camera-updated by the synthesis scene updater) and viewport.
     #[cfg(windows)]
     fn render_border_files_overlay_synthesized(
         &self,
@@ -1749,9 +1472,6 @@ impl NativeD3d11TerrainRenderer {
         let Some(border_pass) = prepared.borders_files.as_ref() else {
             return Ok(());
         };
-        // This legacy diagnostic path consumes the draw report only for error
-        // propagation. Production XMAP06 uses the authenticated twelve-bucket
-        // native handoff and does not omit SeaRegion.
         native_d3d11_render_border_files_pass(
             &self.device,
             border_pass,
@@ -1787,13 +1507,6 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
-    /// The virtual light rig `.x` longitudes are driven from the day-cycle law
-    /// at `day_night_hour` (see `shader_meta::write_virtual_light_rig_fields`).
-    /// `day_night_hour = None` keeps the captured rig verbatim (reference /
-    /// byte-exact validation renders). The rig no longer follows the camera.
-    /// `political = Some` writes the political-mapmode GB override/cutoffs and
-    /// the shadow-fade height law (COL3, see `shader_meta::PoliticalSceneCb0`);
-    /// `None` keeps the captured GB/shadow bytes verbatim.
     pub fn update_prepared_terrain_chunk_synthesis_scene_with_light_rig(
         &self,
         prepared: &mut NativeD3d11PreparedTerrainChunkSynthesis,
@@ -2016,9 +1729,6 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
-    /// RES2: admits terrain and EVERY supplied layer, then delegates to the
-    /// funnel that can only be called with admission proofs. A layer that is
-    /// absent needs no proof; a layer that is present cannot skip one.
     fn prepare_production_map_with_layers_for_reference(
         &self,
         terrain_bundle: &NativeD3d11TerrainBundle,
@@ -2056,10 +1766,6 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
-    /// The layered production preparation funnel. Every parameter that
-    /// contributes product pixels is an [`AdmittedProductionMapBundle`], so the
-    /// vanilla-source gate is enforced by the type system: this body is
-    /// unreachable for an uncertified layer.
     #[allow(clippy::too_many_arguments)]
     fn prepare_production_map_with_layers_admitted(
         &self,
@@ -2093,19 +1799,8 @@ impl NativeD3d11TerrainRenderer {
         let terrain = self.prepare_production_terrain_admitted(terrain_admitted, &graph)?;
         let pass_camera = (!reference_replay).then_some(graph.camera);
         let restore_pre_draw_outputs = reference_replay;
-        // Refraction (WaterRefraction slot 5) source policy:
-        // * reference replay binds the captured buffer (byte-exact parity);
-        // * world synthesis + --water-full renders the REAL seafloor pass
-        //   (WATER2 underwater), mechanism-correct;
-        // * world synthesis without --water-full is blocked when a water pass is
-        //   present because the old app-owned approximation is not engine data.
         let (water_refraction_source, reflection_cube_source) =
             product_water_source_policy(reference_replay, self.water_full, water_bundle.is_some())?;
-        // Reflection-cube policy (WATER1, separate axis from refraction). The
-        // reference path already binds the real captured cube. The world-
-        // synthesis path may not use the old mean-color flatten when a water
-        // pass is present; --water-full (self.water_full) uploads the real cube
-        // (byte-identical to the shipped map/terrain/reflection.dds).
         let water = self.prepare_optional_production_map_pass_with_inputs(
             water_bundle,
             pass_camera,
@@ -2138,13 +1833,7 @@ impl NativeD3d11TerrainRenderer {
             reflection_cube_source,
             patch_tree_season_cb1,
         )?;
-        // BORD2 (--borders-from-files): prepare the synthesized border pass
-        // once per prepared map, fail-closed without a resolver. Never on the
-        // reference-replay path (byte-exact captured comparator). Flag OFF:
-        // no shader compile, no allocation — byte-identical.
         let borders_files = if reference_replay {
-            // Reference replays are the byte-exact captured comparator; the
-            // synthesized overlay never rides them.
             None
         } else {
             match self.border_files_resolver_for_prepare()? {
@@ -2192,9 +1881,6 @@ impl NativeD3d11TerrainRenderer {
             .transpose()
     }
 
-    /// RES2: capture-parity replay of a captured bundle (the acceptance /
-    /// byte-comparison route), so it uses the unadmitted parity preparation.
-    /// Its output is evidence to diff against the capture, not product pixels.
     pub fn render(
         &self,
         bundle: &NativeD3d11TerrainBundle,
@@ -2227,23 +1913,12 @@ impl NativeD3d11TerrainRenderer {
         options: &NativeD3d11RenderOptions,
     ) -> Result<NativeD3d11ReplayResult> {
         let dependent_passes = prepared.dependent_passes_in_order();
-        // BORD2 (--borders-from-files): the synthesized border overlay draws
-        // after water/rivers and BEFORE trees, matching the one captured pass
-        // sequence (diag23b: terrain, water, rivers, borders, trees; see
-        // `border_insert_index` is the dependent-pass index the
-        // overlay renders in front of (`len()` = after every captured pass).
         let border_insert_index = prepared.borders_files.as_ref().map(|_| {
             dependent_passes
                 .iter()
                 .position(|(kind, _)| *kind == ProductionMapPassKind::Trees)
                 .unwrap_or(dependent_passes.len())
         });
-        // When the overlay renders after the LAST captured pass, that pass has
-        // already taken the requested output/readback/compare, which would
-        // therefore miss the overlay. Fail closed instead of returning an
-        // image without the borders (no current caller hits this: the replay
-        // surface passes output: None and reads the composited texture after
-        // render() returns).
         if border_insert_index == Some(dependent_passes.len())
             && (options.output.is_some() || options.readback || options.compare_final_reference)
         {
@@ -2294,12 +1969,6 @@ impl NativeD3d11TerrainRenderer {
                 )
             })
             .transpose()?;
-        // WATER2 (--water-full): render the REAL seafloor pass. Re-render the
-        // captured terrain draws with PixelShaderUnderwater into an offscreen
-        // B8G8R8A8_UNORM target and bind it as WaterRefraction. Fail-closed if
-        // no resolver was threaded in (no game-file access to reconstruct the
-        // shader). Without --water-full, product replay is blocked before water
-        // rendering when a water bundle is present.
         let underwater_pass = if self.water_full {
             let resolver = self.underwater_resolver.as_ref().ok_or(
                 "--water-full underwater pass blocked: no game-file resolver was provided to \
@@ -2334,7 +2003,6 @@ impl NativeD3d11TerrainRenderer {
         let last_index = dependent_passes.len() - 1;
         for (index, (kind, pass)) in dependent_passes.iter().enumerate() {
             if border_insert_index == Some(index) {
-                // BORD2: overlay draws here — after water/rivers, before trees.
                 self.render_border_files_overlay_captured(prepared, options)?;
             }
             let final_pass = index == last_index;
@@ -2359,17 +2027,11 @@ impl NativeD3d11TerrainRenderer {
             )?);
         }
         if border_insert_index == Some(dependent_passes.len()) {
-            // No trees pass in this frame: the overlay draws last (the output
-            // options that would have missed it were failed closed above).
             self.render_border_files_overlay_captured(prepared, options)?;
         }
         result.ok_or_else(|| "production native D3D11 map graph did not execute".into())
     }
 
-    /// BORD2: the one fail-closed gate for `--borders-from-files` at prepare
-    /// time. `Ok(None)` = flag off, no work (byte-identical path);
-    /// `Ok(Some(resolver))` = flag on with a resolver; `Err` = flag on without
-    /// a resolver (never a silent no-op).
     #[cfg(windows)]
     pub(crate) fn border_files_resolver_for_prepare(&self) -> Result<Option<&GameFileResolver>> {
         if !self.borders_from_files {
@@ -2384,11 +2046,6 @@ impl NativeD3d11TerrainRenderer {
         }
     }
 
-    /// BORD2: render the synthesized border overlay over the captured-terrain
-    /// production frame. Borrows the frame's first terrain draw for the live
-    /// scene CB0/CB1 (camera-patched, including wrap-copy shifts) and the
-    /// viewport; the fade uses the CURRENT `graph.camera` world-Y eye height
-    /// (kept current by `update_prepared_production_map_scene`).
     #[cfg(windows)]
     fn render_border_files_overlay_captured(
         &self,
@@ -2402,9 +2059,6 @@ impl NativeD3d11TerrainRenderer {
             "--borders-from-files border pass blocked: the terrain pass has no draws to \
              borrow the scene CB0/viewport from",
         )?;
-        // See `render_border_files_overlay_synthesized`: the typed omission
-        // report is validated against the prepare-time declaration inside the
-        // render call.
         native_d3d11_render_border_files_pass(
             &self.device,
             border_pass,
@@ -2417,25 +2071,12 @@ impl NativeD3d11TerrainRenderer {
         .map(|_report| ())
     }
 
-    /// WATER2 validation: render ONLY the underwater seafloor pass for a
-    /// captured terrain frame, at the captured camera (reference mode — the
-    /// draws carry the engine's exact CB0/CB1), and return the resulting
-    /// `B8G8R8A8_UNORM` readback. This is the mechanism-correct `WaterRefraction`
-    /// reconstruction; the caller compares it byte-for-byte to the captured
-    /// buffer. `resolver` reconstructs `pdxmap.shader` `Effect underwater`.
-    ///
-    /// The pass is fully self-contained (clears its own RT to transparent black
-    /// and depth to 1.0, then re-renders the terrain geometry with
-    /// `PixelShaderUnderwater`), so no prior terrain color render is needed.
     #[cfg(windows)]
     pub fn render_underwater_validation(
         &self,
         bundle: &NativeD3d11TerrainBundle,
         resolver: &GameFileResolver,
     ) -> Result<UnderwaterValidationRender> {
-        // Reference mode (app_camera None): the captured draws replay with the
-        // engine's exact captured constant buffers → the pixels match what the
-        // engine wrote to WaterRefraction.
         let prepared = self.prepare(bundle)?;
         let pass = &prepared.native.pass;
         let underwater = native_d3d11_prepare_underwater_pass(
@@ -2463,19 +2104,6 @@ impl NativeD3d11TerrainRenderer {
         })
     }
 
-    /// WATER2 validation via a terrain-chunk-library session. Unlike a raw
-    /// terrain frame (whose seafloor textures are descriptor-only), the chunk
-    /// library carries the resolved terrain textures AND the captured
-    /// ShadowMap, so the underwater pass has ALL of its inputs. Renders the
-    /// underwater seafloor for the library's chunks at the captured camera and
-    /// returns the readback for comparison against that session's captured
-    /// `WaterRefraction`.
-    ///
-    /// NOTE (oracle test): the chunk-library geometry is the SYNTHESIZED
-    /// terrain (culled/LOD-selected chunk draws), which is not guaranteed to be
-    /// the exact geometry the engine rasterized for its underwater pass. This
-    /// is a strong reconstruction/oracle test, not a definitive byte-exact
-    /// engine proof in `water_law.rs`.
     #[cfg(windows)]
     pub fn render_underwater_validation_from_chunk_library(
         &self,
@@ -2484,11 +2112,6 @@ impl NativeD3d11TerrainRenderer {
         scene_cb0: Option<&[u8]>,
         resolver: &GameFileResolver,
     ) -> Result<UnderwaterValidationRender> {
-        // Use the terrain-chunk SYNTHESIS plan (tiled template draw) — the
-        // proven-renderable path for a chunk library — with an optional
-        // canonical scene CB0 (the captured camera/sun for byte-alignment with
-        // the session's WaterRefraction). frame_for_camera's frustum cull is
-        // avoided here; the synthesis plan tiles the whole covered world rect.
         let camera = library.production_camera_from_capture()?;
         let world_rect = library.world_rect();
         let prepared = self.prepare_terrain_chunk_synthesis(
@@ -2613,8 +2236,6 @@ unsafe fn native_d3d11_patch_generated_river_pass(
     pass: &mut NativeD3d11PreparedMapPass,
     _inputs: &MapLayerSynthesisInputs,
 ) -> Result<()> {
-    // Measured capture separation: <= 3.3 units within a river, >= 12.1
-    // units between rivers.
     const RIVER_WORLD_SEGMENT_BREAK_DISTANCE: f32 = 8.0;
 
     let draw = pass
@@ -2931,43 +2552,28 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
-    /// See the Windows implementation. Returns `self` unchanged off Windows
-    /// (no renderer instance can exist); kept because the cfg-agnostic CLI
-    /// wires the resolver before the renderer reports its platform refusal.
     pub fn with_underwater_resolver(self, _resolver: GameFileResolver) -> Self {
         self
     }
 
-    /// See the Windows implementation. Returns `self` unchanged off Windows
-    /// (no renderer instance can exist); kept because the cfg-agnostic CLI
-    /// wires the resolver before the renderer reports its platform refusal.
     pub fn with_reflection_resolver(self, _resolver: GameFileResolver) -> Self {
         self
     }
 
-    /// See the Windows implementation. No-op here (no renderer instance can
-    /// exist off Windows); kept for cross-platform API parity with `--water-full`.
     pub fn set_water_full(&mut self, _water_full: bool) {}
 
-    /// See the Windows implementation. Returns `self` unchanged off Windows.
     pub fn with_water_full(self, _water_full: bool) -> Self {
         self
     }
 
-    /// See the Windows implementation. No-op here; kept for cross-platform API
-    /// parity with `--borders-from-files`.
     pub fn set_borders_from_files(&mut self, _borders_from_files: bool) {}
 
-    /// See the Windows implementation. Returns `self` unchanged off Windows.
     pub fn with_borders_from_files(self, _borders_from_files: bool) -> Self {
         self
     }
 
-    /// See the Windows implementation. No-op here; kept for cross-platform API
-    /// parity with `--chunks-from-files`.
     pub fn set_chunks_from_files(&mut self, _chunks_from_files: bool) {}
 
-    /// See the Windows implementation. Returns `self` unchanged off Windows.
     pub fn with_chunks_from_files(self, _chunks_from_files: bool) -> Self {
         self
     }
@@ -3015,9 +2621,6 @@ impl NativeD3d11TerrainRenderer {
         )
     }
 
-    /// See the Windows implementation. RES2 capture-parity counterpart of
-    /// [`Self::prepare_production_map`]; kept here for cross-platform API
-    /// parity so `accept_terrain_d3d11` still compiles off Windows.
     pub fn prepare_capture_parity_map(
         &self,
         _bundle: &NativeD3d11TerrainBundle,
@@ -3323,24 +2926,9 @@ pub struct NativeD3d11RenderOptions {
     pub compare_each_draw: bool,
     pub compare_final_reference: bool,
     pub parity_report: Option<PathBuf>,
-    /// Clear the render/depth targets before the pass. Defaults to `true`
-    /// for existing single-copy/reference behavior; product wrap rendering
-    /// disables it after the first copy so copies accumulate.
     pub clear_targets: bool,
-    /// Optional world-space ground rect `[min_x, min_z, max_x, max_z]`
-    /// restricting which synthesized terrain tiles are drawn (the camera's
-    /// ground footprint, padded). `None` draws everything - the byte-exact
-    /// validation and QA paths never set this. Tiles are tested with
-    /// east-west wrap.
     pub cull_world_rect: Option<[f32; 4]>,
-    /// Optional tree-pass CB1 override `(vSeasonLerp, raw vSeasonColumn)`.
-    /// `None` preserves captured tree CB1 bytes. `Some` is the opt-in
-    /// date-hypothesis path; the shader, not this option, converts the raw
-    /// 0..7 column to `column / 8 + 1 / 16` season-map UVs.
     pub tree_season_cb: Option<(f32, f32)>,
-    /// Optional interactive wall-clock seconds for live map animation.
-    /// `None` preserves captured time bytes and is the byte-exact
-    /// dump/reference default.
     pub map_clock_time: Option<f32>,
 }
 
@@ -3402,9 +2990,6 @@ pub struct NativeD3d11TerrainBundle {
     pub(crate) map_frame_bundle: PathBuf,
     pub(crate) bundle_dir: PathBuf,
     pub(crate) frame: MapFrameRuntimeBundle,
-    /// RES2: the spec this bundle was validated under. Admission needs it to
-    /// know WHICH vanilla sources are required, so it can check the seal
-    /// against exactly that evidence.
     pub(crate) spec: MapFrameBundleValidationSpec,
 }
 
@@ -3489,20 +3074,6 @@ impl NativeD3d11TerrainBundle {
         })
     }
 
-    /// RES2 strict consumer gate. Admit this bundle for PRODUCTION PLAYBACK —
-    /// output presented to a viewer as product pixels — only when its required
-    /// vanilla sources were certified against the effective VFS the engine
-    /// compiled from (`ResolverVerified` or `ProducerVerified`).
-    ///
-    /// This is deliberately NOT called by [`Self::load`] and friends: loading
-    /// stays permissive so the diagnostic/evidence routes
-    /// (`validate_*_map_frame_bundle`, the `map_viewer` inspection and
-    /// reference-render commands) keep accepting pre-FW7 bundles, which is the
-    /// whole reason FW12 left the producer-side `Unverified` state
-    /// non-refusing. Only a consumer that displays the frame as product output
-    /// calls this.
-    ///
-    /// `consumer_label` names the refusing product boundary in the error.
     pub fn require_production_vanilla_sources(
         &self,
         consumer_label: &str,
@@ -3510,10 +3081,6 @@ impl NativeD3d11TerrainBundle {
         self.admit_for_production(consumer_label).map(|_| ())
     }
 
-    /// Run the gate and return the compile-time proof the production
-    /// preparation funnels require. Callers cannot reach those funnels without
-    /// this value, so the gate cannot be disabled by an attribute, a dead
-    /// branch, or a shadowed helper — only by a compile error.
     pub fn admit_for_production(
         &self,
         consumer_label: &str,
@@ -3521,12 +3088,7 @@ impl NativeD3d11TerrainBundle {
         admit_production_map_bundle(self, consumer_label)
     }
 
-    /// This bundle's own recorded vanilla-source verification outcome. The
-    /// admission constructor reads it through here so a caller can never pair
-    /// one bundle with another bundle's verification state.
     pub(crate) fn vanilla_source_verification(&self) -> Option<&MapFrameVanillaSourceVerification> {
-        // Unseals: a seal copied from another frame fails the binding and reads
-        // as absent here, which the gate refuses.
         unseal_vanilla_source_outcome(&self.frame, self.spec.required_vanilla_sources)
     }
 
@@ -3550,11 +3112,6 @@ impl NativeD3d11TerrainBundle {
         production_map_camera_from_terrain_bundle(self)
     }
 
-    /// The frame's scene constant buffer (slot-0 `dx11_cb0`) bytes. This is the
-    /// canonical per-frame scene state (sun direction, time-of-day, snow/mud
-    /// fade, fog, camera) that every synthesized pass must share; terrain chunk
-    /// templates were captured across different frames of the session and carry
-    /// their own divergent scene state otherwise.
     pub fn scene_cb0_bytes(&self) -> Result<Vec<u8>> {
         let draw = self
             .frame
@@ -3798,11 +3355,6 @@ pub fn render_production_map_d3d11_with_resolver(
 fn render_production_map_d3d11_loaded(
     request: &ProductionMapD3d11ReplayRequest,
     terrain_bundle: &NativeD3d11TerrainBundle,
-    // RES2: the optional layers must take the SAME resolver as the terrain
-    // bundle. They previously loaded resolver-less even in the
-    // `_with_resolver` entry point, leaving their vanilla sources uncertified
-    // for no reason — which the production vanilla-source gate would then
-    // refuse, wrongly, for a capture the local effective VFS can verify.
     resolver: Option<&GameFileResolver>,
 ) -> Result<NativeD3d11ReplayResult> {
     let options = NativeD3d11RenderOptions {
@@ -3939,9 +3491,6 @@ pub fn smoke_terrain_chunk_synthesis(
     scene_frame_bundle: Option<&Path>,
 ) -> Result<TerrainChunkSynthesisSmokeReport> {
     let library = NativeD3d11TerrainChunkLibrary::load(terrain_chunk_library)?;
-    // With a scene frame of record, adopt its camera and scene CB0 wholesale so
-    // the smoke output is directly comparable to that frame's replay. Without
-    // one, fall back to the first record's captured frame state.
     let (camera, scene_cb0) = if let Some(path) = scene_frame_bundle {
         let scene_bundle = NativeD3d11TerrainBundle::load(path)?;
         (
@@ -4147,8 +3696,6 @@ fn accept_terrain_d3d11_impl(
         None => NativeD3d11TerrainBundle::load(&request.map_frame_bundle)?,
     };
     let renderer = NativeD3d11TerrainRenderer::new()?;
-    // RES2: acceptance is capture-parity evidence (`compare_each_draw`), not
-    // product output, so it must keep accepting pre-FW7 bundles.
     let prepared = renderer.prepare_capture_parity_map(&bundle, None)?;
     let mut result = None;
     for iteration in 0..request.repeat {
@@ -4240,14 +3787,6 @@ pub(crate) fn native_d3d11_replay_payload_blockers(
     blockers
 }
 
-/// Replay payload blockers for a route that establishes its terrain reference
-/// from the chunk library instead of the post-pass output-merger capture.
-///
-/// Only the typed `EvidenceAbsent` post-pass notices are dropped. Structural,
-/// bounds and hash-integrity failures — including a subresource extending past
-/// `payload.byte_len` and runtime-file evidence disagreeing with the payload
-/// metadata — are returned like any other blocker. The substring waiver this
-/// replaced could not distinguish them and swallowed all thirteen alike.
 pub(crate) fn native_d3d11_replay_payload_blockers_without_post_pass_reference(
     frame: &MapFrameRuntimeBundle,
     require_pre_draw_outputs: bool,
@@ -4533,14 +4072,6 @@ pub(crate) fn production_map_camera_from_scene_cb0(
     )
 }
 
-/// Why a post-pass output-merger blocker was raised.
-///
-/// Routes that compare against the terrain chunk library instead of the
-/// post-pass reference may waive `EvidenceAbsent` — the bundle simply carries
-/// no such reference. They may never waive `IntegrityFailure`: that means
-/// evidence IS present and is structurally wrong, out of bounds, or disagrees
-/// with its own runtime-file hash. Classifying by an error-string substring
-/// could not tell those apart and swallowed all thirteen alike.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PostPassOutputBlockerKind {
     EvidenceAbsent,
@@ -5073,25 +4604,17 @@ mod tests {
         );
     }
 
-    // WATER3 — the chunk-synthesis low-level selector chooses the
-    // mechanism-correct WATER2 underwater seafloor pass as WaterRefraction only
-    // under --water-full. Product replay adds a separate fail-closed gate when a
-    // water pass is present.
     #[cfg(windows)]
     #[test]
     fn synthesis_underwater_refraction_selected_only_under_water_full() {
-        // Low-level flag OFF: legacy inert source (no seafloor re-render). This
-        // is product-blocked by product_water_source_policy when water exists.
         assert_eq!(
             world_synthesis_water_refraction_source(false),
             NativeD3d11WaterRefractionSource::AppOwnedTerrainColorSnapshot,
         );
-        // Flag ON: the real seafloor render (WATER2 underwater pass).
         assert_eq!(
             world_synthesis_water_refraction_source(true),
             NativeD3d11WaterRefractionSource::UnderwaterPass,
         );
-        // The underwater pass is never the flag-OFF low-level selection.
         assert_ne!(
             world_synthesis_water_refraction_source(false),
             NativeD3d11WaterRefractionSource::UnderwaterPass,
@@ -5111,10 +4634,6 @@ mod tests {
         );
     }
 
-    // WATER3 — the low-level synthesis path's --water-full refraction selection
-    // must match the captured-terrain production path's non-reference,
-    // water-full selection, so both product paths render the same
-    // mechanism-correct WaterRefraction.
     #[cfg(windows)]
     #[test]
     fn synthesis_refraction_matches_captured_path_non_reference_selection() {
@@ -5283,12 +4802,6 @@ mod tests {
             .expect("BC1 mapped subresources are enough for exact native upload");
     }
 
-    /// Build a BGRA8_SRGB reflection-cube-shaped binding (WATER1 `--water-full`
-    /// real-cube path). `size` is the face dimension, `mips` the mip count,
-    /// with tightly-packed subresources (row_pitch = width*4). Faces are ordered
-    /// array_slice 0..6, each carrying its full mip chain. When
-    /// `drop_last_subresource` is true the final subresource is removed so the
-    /// subresource count no longer equals mips*6 (a malformed cube payload).
     fn reflection_cube_binding(
         size: u32,
         mips: u32,
@@ -5354,9 +4867,6 @@ mod tests {
 
     #[test]
     fn native_d3d11_payload_accepts_wellformed_reflection_cube() {
-        // 4x4x6x3-mip BGRA8_SRGB cube — the shape of the shipped/captured
-        // reflection cube (map/terrain/reflection.dds) in miniature. WATER1
-        // `--water-full` uploads exactly this via the generic validated path.
         let resource = reflection_cube_binding(4, 3, false);
         native_d3d11_validate_texture_payload_shape(&resource)
             .expect("well-formed 6-face mip-chained reflection cube must validate");
@@ -5364,9 +4874,6 @@ mod tests {
 
     #[test]
     fn native_d3d11_payload_rejects_reflection_cube_missing_a_face_mip() {
-        // Fail-closed: a cube missing one (mip, face) subresource so the count
-        // no longer equals mip_count * 6. The `--water-full` real-cube path must
-        // refuse this rather than upload a malformed cube.
         let resource = reflection_cube_binding(4, 3, true);
         let err = native_d3d11_validate_texture_payload_shape(&resource)
             .expect_err("malformed reflection cube (missing subresource) must fail closed");
@@ -5379,8 +4886,6 @@ mod tests {
 
     #[test]
     fn native_d3d11_payload_rejects_reflection_cube_truncated_payload() {
-        // Fail-closed: subresources present but byte_len shrunk below what they
-        // cover, so the payload does not fully cover the declared bytes.
         let mut resource = reflection_cube_binding(4, 3, false);
         resource.byte_len -= 4;
         let err = native_d3d11_validate_texture_payload_shape(&resource)
@@ -5395,8 +4900,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn shipped_reflection_cube_contract_accepts_exact_shipped_shape() {
-        // 256x256x6x9-mip BGRA8_SRGB TEXTURECUBE == the shipped
-        // map/terrain/reflection.dds contract. --water-full must accept it.
         let resource = reflection_cube_binding(256, 9, false);
         native_d3d11_validate_shipped_reflection_cube_contract(0, &resource)
             .expect("exact shipped reflection cube shape must pass the --water-full contract");
@@ -5405,10 +4908,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn shipped_reflection_cube_contract_rejects_wrong_size_and_format() {
-        // Wrong face size (128 not 256) and wrong format (UNORM not SRGB): the
-        // --water-full contract must fail closed naming both deviations so a
-        // shape-valid but wrong-provenance cube cannot be uploaded in place of
-        // the shipped reflection.dds.
         let mut resource = reflection_cube_binding(128, 9, false);
         resource.dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
         if let Some(view) = resource.view_desc.as_mut() {
@@ -5425,7 +4924,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn shipped_reflection_cube_contract_rejects_missing_cube_misc_flag() {
-        // A 6-slice array that is not flagged TEXTURECUBE is not a cube.
         let mut resource = reflection_cube_binding(256, 9, false);
         resource.misc_flags = 0;
         let err = native_d3d11_validate_shipped_reflection_cube_contract(0, &resource)

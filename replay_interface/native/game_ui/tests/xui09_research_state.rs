@@ -184,8 +184,6 @@ fn live(slot: i64, name: &str, pct: f64, eta: i64) -> ResearchLiveProgressRow {
         ahead_of_time_penalty_raw: Leaf::Measured(300_000),
         ahead_of_time_reduction_years_raw: Leaf::Measured(50_000),
         ahead_of_time_reduced_penalty_raw: Leaf::Measured(200_000),
-        // This row is the OBSERVED producer's, so it carries no derived
-        // authority: the two are mutually exclusive on the wire.
         ahead_of_time_authority: Leaf::Absent,
         ahead_of_time_derived_producer_game_hour_raw: Leaf::Absent,
         ahead_of_time_derived_penalty_factor_raw: Leaf::Absent,
@@ -550,8 +548,6 @@ fn observed_ahead_receipt_cannot_be_transplanted_to_another_research_slot() {
     let Leaf::Measured(rows) = &mut transplanted.in_progress_live else {
         unreachable!()
     };
-    // Keep the authenticated producer hash unchanged while moving its row.
-    // The v2 admission preimage binds slot 1, so slot 0 must fail closed.
     rows[0].slot_index = Leaf::Measured(0);
     assert_eq!(
         admit(
@@ -646,10 +642,6 @@ fn missing_definition_and_completed_active_overlap_fail_closed() {
     );
 }
 
-/// R12 F3 — a technology whose `level` is unmeasured is state-UNKNOWN
-/// (`Unavailable`), never a definite `Unresearched`; a live in-progress
-/// receipt (measured authority) wins over the unknown classification; and an
-/// unmeasured level no longer skips name validation or deduplication.
 #[test]
 fn unmeasured_level_is_unknown_not_unresearched_and_names_still_validate() {
     let (technology, doctrine_canvas) = canvases();
@@ -682,8 +674,6 @@ fn unmeasured_level_is_unknown_not_unresearched_and_names_still_validate() {
         },
         unmeasured("tech_mystery_absent", Leaf::Absent),
         unmeasured("tech_mystery_unobtained", Leaf::Unobtained),
-        // Actively researched AND unmeasured-level: the live producer's
-        // measured receipt is the stronger authority — renders InProgress.
         unmeasured("tech_b", Leaf::Unobtained),
     ]);
     let admitted = admit(
@@ -711,7 +701,6 @@ fn unmeasured_level_is_unknown_not_unresearched_and_names_still_validate() {
         ]
     );
 
-    // An unmeasured level no longer skips NAME validation…
     let mut nameless = research.clone();
     nameless.technologies = Leaf::Measured(vec![ResearchTechnologyRow {
         name: Leaf::Unobtained,
@@ -731,8 +720,6 @@ fn unmeasured_level_is_unknown_not_unresearched_and_names_still_validate() {
         Err(ResearchStateRejection::InvalidTechnologySubset)
     );
 
-    // …nor deduplication: the same id with measured and unmeasured levels is
-    // one contradictory identity, not two rows.
     let mut duplicated = research.clone();
     duplicated.technologies = Leaf::Measured(vec![
         ResearchTechnologyRow {

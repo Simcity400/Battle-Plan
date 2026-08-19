@@ -24,13 +24,7 @@ if sys.platform != "win32":
     raise RuntimeError("winmem only runs on Windows")
 
 PYTHON_BITS = struct.calcsize("P") * 8
-# 64-bit is enforced at attach time (Process.__init__) rather than import, so
-# `--help` / `procs` still work on a 32-bit interpreter; any real attach fails
-# loudly instead of silently misreading a 64-bit target.
 
-# --------------------------------------------------------------------------
-# Win32 constants
-# --------------------------------------------------------------------------
 PROCESS_VM_READ = 0x0010
 PROCESS_QUERY_INFORMATION = 0x0400
 
@@ -41,19 +35,14 @@ TH32CS_SNAPMODULE32 = 0x00000010
 MAX_PATH = 260
 MEM_COMMIT = 0x1000
 PAGE_GUARD = 0x100
-_SCAN_PAGE = 0x1000   # min forward-progress on a partial/short/final chunk read (anti-stall)
+_SCAN_PAGE = 0x1000
 
-# protections that allow reading (low byte of Protect)
 _READABLE = {0x02, 0x04, 0x08, 0x20, 0x40, 0x80}
-# protections that include execute (used to scope AOB scans to code)
 _EXECUTE = {0x10, 0x20, 0x40, 0x80}
 
 ERROR_BAD_LENGTH = 24
 ERROR_PARTIAL_COPY = 299
 
-# --------------------------------------------------------------------------
-# Structures
-# --------------------------------------------------------------------------
 class PROCESSENTRY32W(ctypes.Structure):
     _fields_ = [
         ("dwSize", wt.DWORD),
@@ -106,9 +95,6 @@ class MODULEINFO(ctypes.Structure):
     ]
 
 
-# --------------------------------------------------------------------------
-# kernel32 prototypes (explicit argtypes/restype -> no 64-bit truncation)
-# --------------------------------------------------------------------------
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 _psapi = ctypes.WinDLL("psapi", use_last_error=True)
 
@@ -152,9 +138,6 @@ _INVALID_HANDLE = wt.HANDLE(-1).value
 _LIST_MODULES_ALL = 0x03
 
 
-# --------------------------------------------------------------------------
-# Process / module enumeration
-# --------------------------------------------------------------------------
 def list_processes():
     """Yield (pid, exe_name) for every running process."""
     snap = _k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
@@ -201,7 +184,7 @@ def _iter_modules(pid):
             raise OSError("Module32FirstW failed for pid %d (err %d)"
                           % (pid, ctypes.get_last_error()))
         while ok:
-            yield MODULEENTRY32W.from_buffer_copy(entry)  # independent snapshot
+            yield MODULEENTRY32W.from_buffer_copy(entry)
             ok = _k32.Module32NextW(snap, ctypes.byref(entry))
     finally:
         _k32.CloseHandle(snap)
@@ -249,9 +232,6 @@ def _iter_modules_psapi(pid):
         _k32.CloseHandle(handle)
 
 
-# --------------------------------------------------------------------------
-# AOB pattern helpers (module-level so they're unit-testable without a process)
-# --------------------------------------------------------------------------
 def parse_pattern(pattern):
     """'48 8B 05 ?? ?? ?? ?? 48' -> (bytes, mask[]) ; mask True = fixed byte."""
     pat = bytearray()
@@ -285,7 +265,7 @@ def _best_anchor(mask):
     return best_start, best_len
 
 
-MIN_ANCHOR = 3  # shortest fixed-byte run we'll anchor on without allow_short
+MIN_ANCHOR = 3
 
 
 def scan_blob(blob, base_addr, pattern, limit=None, allow_short=False):
@@ -320,9 +300,6 @@ def scan_blob(blob, base_addr, pattern, limit=None, allow_short=False):
     return out
 
 
-# --------------------------------------------------------------------------
-# The process handle
-# --------------------------------------------------------------------------
 class Process(object):
     """Read-only handle to a target process + its main module."""
 
@@ -348,8 +325,8 @@ class Process(object):
         try:
             self._load_module(module_name)
         except BaseException:
-            self.close()              # M4: don't leak the OpenProcess handle if
-            raise                     # module enumeration fails before __enter__
+            self.close()
+            raise
 
     def _load_module(self, module_name):
         first = None
@@ -364,7 +341,7 @@ class Process(object):
                 return
         if module_name is not None and first is not None:
             raise OSError("module %r not found in pid %d" % (module_name, self.pid))
-        if first is not None:  # default: main module is the first entry
+        if first is not None:
             self.module_name = first.szModule
             self.module_base = int(first.modBaseAddr or 0)
             self.module_size = int(first.modBaseSize)
@@ -372,7 +349,6 @@ class Process(object):
         if not self.module_base or not self.module_size:
             raise OSError("no usable module found for pid %d (enumeration empty)" % self.pid)
 
-    # -- lifecycle ------------------------------------------------------
     def close(self):
         if self.handle:
             _k32.CloseHandle(self.handle)
@@ -384,7 +360,6 @@ class Process(object):
     def __exit__(self, *exc):
         self.close()
 
-    # -- raw reads ------------------------------------------------------
     def try_read(self, address, size):
         """Read up to `size` bytes; return whatever was read (may be short).
 
@@ -413,7 +388,6 @@ class Process(object):
                           % (address, size, len(data), self._last_read_err))
         return data
 
-    # -- typed reads ----------------------------------------------------
     def _num(self, address, fmt, size):
         return struct.unpack(fmt, self.read(address, size))[0]
 
@@ -443,7 +417,6 @@ class Process(object):
         """Read a HOI4-style country tag (3 ascii chars)."""
         return self.cstr(address, 4).strip()
 
-    # -- pointer chains -------------------------------------------------
     def chain(self, base, offsets, deref_base=True):
         """Resolve a CE-style pointer chain.
 
@@ -463,7 +436,6 @@ class Process(object):
                 addr = self.u64(addr) + off
         return addr
 
-    # -- region walking + AOB ------------------------------------------
     def iter_regions(self, min_addr, max_addr, want_exec=None):
         """Yield (base, size) for committed, readable regions in range.
         want_exec True/False filters to executable / non-executable pages."""
@@ -498,10 +470,10 @@ class Process(object):
         matches are found."""
         pat, _ = parse_pattern(pattern)
         plen = len(pat)
-        chunk = 8 << 20                       # 8 MB windows
-        overlap = plen - 1                    # so a match straddling a window survives
-        if overlap >= chunk:                  # guard (Codex): chunk must exceed overlap
-            chunk = overlap + _SCAN_PAGE       # else the full-mid advance goes backward
+        chunk = 8 << 20
+        overlap = plen - 1
+        if overlap >= chunk:
+            chunk = overlap + _SCAN_PAGE
         out = []
         end = self.module_base + self.module_size
         for rbase, rsize in self.iter_regions(self.module_base, end, want_exec=want_exec):
@@ -515,11 +487,6 @@ class Process(object):
                                          limit=remaining, allow_short=allow_short))
                     if limit and len(out) >= limit:
                         return out[:limit]
-                # Advance with a forward-progress guard. Keep the overlap only for a
-                # FULL mid-region chunk; a final or short/partial read (e.g.
-                # ERROR_PARTIAL_COPY at a region edge) advances by the bytes read,
-                # floored to a page, so `len(blob) - overlap <= 0` can never stall the
-                # loop into re-reading/re-allocating the same window (H3).
                 if blob:
                     blen = len(blob)
                     if pos + blen >= rsize or blen < want:
@@ -537,7 +504,6 @@ class Process(object):
         disp = self.i32(instr_addr + disp_offset)
         return instr_addr + instr_len + disp
 
-    # -- build identity -------------------------------------------------
     def in_module(self, address):
         return self.module_base <= address < self.module_base + self.module_size
 
@@ -560,9 +526,6 @@ class Process(object):
         return info
 
 
-# --------------------------------------------------------------------------
-# helpers
-# --------------------------------------------------------------------------
 def sha256_file(path, chunk=1 << 20):
     h = hashlib.sha256()
     with open(path, "rb") as f:

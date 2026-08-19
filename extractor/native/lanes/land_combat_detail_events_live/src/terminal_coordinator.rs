@@ -1,10 +1,3 @@
-//! Atomic terminal transaction across every production D55 hook carrier.
-//!
-//! The cutoff gate closes capture admission without blocking the game thread:
-//! callbacks that lose the admission race still call the original function,
-//! while callbacks that already own admission finish before the collector is
-//! allowed to take its authoritative final combat snapshot.
-
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -169,9 +162,6 @@ fn next_id(counter: &AtomicU64, label: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("{label} id is zero"))
 }
 
-/// Close one shared D55 capture-admission boundary and wait for every callback
-/// that won the pre-cutoff race. The collector must hold the returned opaque
-/// guard while reading its authoritative final combat snapshot.
 pub fn begin_combined_terminal_cutoff() -> Result<CombinedTerminalCutoffGuard, String> {
     if COMBINED_CUSTODY_ACTIVE
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -470,8 +460,6 @@ pub fn commit_combined_terminal(reservation_id: u64) -> Result<(), String> {
     )?;
 
     // Every fallible check precedes this point. Combined ownership blocks all
-    // individual mutation paths, and these finalizers recover poisoned mutexes
-    // and perform only validated prefix/counter/custody mutations.
     crate::a729_hook::commit_combined_preflighted(terminal.reservation_id);
     crate::x2_carriers::commit_combined_terminal_preflighted(
         width.reservation_id,

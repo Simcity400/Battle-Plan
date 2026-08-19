@@ -11,7 +11,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import parse_country_extra as pce  # noqa: E402
+import parse_country_extra as pce
 
 
 SYN = """

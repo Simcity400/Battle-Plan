@@ -1,10 +1,4 @@
-//! Pointer-free production hook custody receipts.
-//!
-//! Legacy inline-hook callers use this crate to observe already-installed
-//! target bytes and retain teardown custody. New pointer-slot callers use its
 //! core-owned, non-suspending atomic CAS and sealed process-lifetime dispatch
-//! shims. Every path fails closed unless the loaded binary and primitive match
-//! their admitted identities.
 
 mod custody_record;
 pub mod engine_slot;
@@ -85,29 +79,9 @@ pub struct ExpectedRvaHook {
     pub original_prefix: &'static [u8],
 }
 
-/// One lane detour address, tagged with the site it belongs to.
-///
-/// The tag is the point. A lane hands its detour addresses to the receipt layer
-/// as an array, and for as long as that array was bound POSITIONALLY the only
-/// thing holding "site `i`" to "the function that services site `i`" was the
-/// order two independent literals happened to be written in. Two ways that
-/// breaks, and neither has an offline signal:
-///
-///   * a spec table reordered without its detour table, and
-///   * two detour bodies FOLDED to one address by the linker's
-///     identical-code folding, so the array is `[a, b, a, b]` and every entry
-///     still verifies -- the REL5 jump at each of the four targets really does
-///     point at the address the array names.
-///
-/// The second one is not hypothetical. Until 2026-08-05 D95's four detour
-/// bodies folded to two addresses in the optimized build of its own test
-/// binary, and the check that noticed was a unit test the routine gate never
-/// compiled optimized. See [`bind_detours_by_identity`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SiteDetour {
-    /// The `ExpectedRvaHook::logical_name` of the site this detour services.
     pub logical_name: &'static str,
-    /// The runtime address of the lane's detour function.
     pub address: usize,
 }
 
@@ -120,27 +94,6 @@ impl SiteDetour {
     }
 }
 
-/// Bind a lane's detour addresses to its specs BY NAME, and refuse any roster
-/// that cannot describe exactly one distinct detour per site.
-///
-/// Returns the addresses in `specs` order, so callers keep the positional array
-/// they already index -- but they now get it from a binding that was CHECKED
-/// rather than from a literal that was merely written in the same order.
-///
-/// Three refusals, each of which was previously silent:
-///
-///   * a null detour. An address-taken function item is never null, so a zero
-///     here means the caller assembled the array from something else.
-///   * a REPEATED address. "Function pointers are not guaranteed to be unique"
-///     is a documented Rust property, and the MSVC linker's `/OPT:ICF` acts on
-///     it: any two detour bodies that compile to identical bytes with identical
-///     relocations fold to one address. Both sites then attest successfully
-///     against that one address and the receipts silently describe the wrong
-///     engine function. A fold must be a hard install failure -- the lane can
-///     be fixed (give each body a per-site side effect), but a receipt that
-///     names the wrong site cannot be un-shipped.
-///   * a name that is not this roster's, is missing, or appears twice. That is
-///     the reorder case, and it now names the site rather than mis-binding it.
 pub fn bind_detours_by_identity<const N: usize>(
     lane: &str,
     specs: &[ExpectedRvaHook; N],
@@ -168,10 +121,6 @@ pub fn bind_detours_by_identity<const N: usize>(
             }
         }
     }
-    // A bijection, not a lookup. Checking only "every spec found a detour"
-    // leaves duplicate SPEC names binding two sites to one detour while another
-    // detour goes silently unused, which is the same misattribution by a
-    // different route.
     for detour in detours.iter() {
         let claimed = specs
             .iter()
@@ -210,39 +159,16 @@ pub fn bind_detours_by_identity<const N: usize>(
     Ok(bound)
 }
 
-/// Where a pointer slot comes from, and therefore what may be attested about
-/// it.
-///
-/// The lifecycle below -- aligned compare/exchange, sealed counted shim, atomic
 /// disarm, process-lifetime retention -- is identical for both variants. What
-/// differs is how the slot's provenance is proved and what a receipt is allowed
-/// to claim. A PE import slot is proved from the image's own import directory
-/// and attests a DLL and a symbol. An engine-owned slot has no thunk naming
-/// itself, so it is proved from its owning structure and a complete
-/// incoming-edge census, and it must never be attested as an import.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SlotProvenance {
-    /// A PE64 import address table entry the loader itself wrote.
     Pe64Import {
         imported_dll: &'static str,
         imported_symbol: &'static str,
     },
-    /// An engine-owned function-pointer or vtable slot inside the target image.
-    ///
-    /// The payload is deliberately opaque. An enum variant's fields are as
-    /// public as the enum, so leaving them inline made the whole attestation
-    /// forgeable by any caller willing to write four plausible-looking values,
-    /// and a validator can only ever check that such values are non-zero --
-    /// which is not a proof of anything. Wrapping them in a type whose fields
-    /// are private means the only way to obtain this variant is to have gone
-    /// through the roster admission that produced the digests.
     EngineOwnedFunctionPointer(EngineOwnedSlotAttestation),
 }
 
-/// Proof that a slot came from an admitted roster.
-///
-/// Constructible only inside this crate, and inside it only from a
-/// `RosterAdmittedEngineOwnedSlotSite`. Callers read it through the accessors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EngineOwnedSlotAttestation {
     owner: OwningStructureIdentity,
@@ -265,14 +191,10 @@ impl EngineOwnedSlotAttestation {
         self.owner
     }
 
-    /// Digest of the incoming-edge census this slot rests on, produced by
-    /// `engine_slot::slot_enumeration_sha256`.
     pub fn enumeration_sha256(&self) -> [u8; 32] {
         self.enumeration_sha256
     }
 
-    /// Digest of the admitted roster that proved this target's slot coverage
-    /// complete. Every slot of one target carries the same value.
     pub fn roster_sha256(&self) -> [u8; 32] {
         self.roster_sha256
     }
@@ -283,7 +205,6 @@ impl EngineOwnedSlotAttestation {
 }
 
 impl SlotProvenance {
-    /// Primitive id this provenance is entitled to attest.
     pub fn primitive_id(&self) -> &'static str {
         match self {
             Self::Pe64Import { .. } => PE64_IMPORT_ADDRESS_SLOT_ATOMIC_CAS_PRIMITIVE_ID,
@@ -292,7 +213,6 @@ impl SlotProvenance {
     }
 
     /// Process-lifetime retention policy id this provenance is entitled to
-    /// attest.
     pub fn policy_id(&self) -> &'static str {
         match self {
             Self::Pe64Import { .. } => PE64_IMPORT_ADDRESS_SLOT_PROCESS_LIFETIME_POLICY_ID,
@@ -302,39 +222,29 @@ impl SlotProvenance {
         }
     }
 
-    /// True only for a genuine PE64 import address slot. Callers that render or
-    /// serialize an import DLL/symbol must gate on this rather than assuming.
     pub fn is_pe64_import(&self) -> bool {
         matches!(self, Self::Pe64Import { .. })
     }
 }
 
-/// One naturally aligned, pointer-sized dispatch slot admitted for redirection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedPointerSlot {
     pub logical_name: &'static str,
     pub slot_rva: u64,
     pub provenance: SlotProvenance,
-    /// Exact process-local pointer expected in the slot before installation.
-    /// The compare/exchange is against this value; there is no blind store.
     pub expected_original_address: usize,
 }
 
-/// PE64 import-address-slot front. The two genuine import sites keep this shape
-/// so their receipts continue to attest a DLL and a symbol; nothing else in the
-/// crate may construct it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ExpectedPe64ImportAddressSlot {
     pub logical_name: &'static str,
     pub slot_rva: u64,
     pub imported_dll: &'static str,
     pub imported_symbol: &'static str,
-    /// Exact current-process export pointer expected before installation.
     pub expected_original_address: usize,
 }
 
 impl ExpectedPe64ImportAddressSlot {
-    /// Widen to the provenance-parameterised form the lifecycle operates on.
     pub fn generalize(self) -> ExpectedPointerSlot {
         ExpectedPointerSlot {
             logical_name: self.logical_name,
@@ -426,13 +336,8 @@ pub struct InstalledPointerSlotReceipt {
     pub observed_pe_identity_sha256: [u8; 32],
     pub observed_pe_timestamp: u32,
     pub observed_size_of_image: u32,
-    /// How the slot's provenance was proved, and therefore what this receipt
-    /// is entitled to claim. Only `SlotProvenance::Pe64Import` names a DLL and
-    /// a symbol; an engine-owned slot names its owning structure instead and is
-    /// never rendered as an import.
     pub provenance: SlotProvenance,
     pub slot_rva: u64,
-    /// Process-local diagnostic only. Never serialize this field.
     pub slot_address: usize,
     pub slot_width: u16,
     pub slot_alignment: u16,
@@ -444,7 +349,6 @@ pub struct InstalledPointerSlotReceipt {
     pub shim_callback_export_name: &'static str,
     pub shim_callback_binary_identity: ExternalCallbackBinaryIdentity,
     pub shim_callback_manifest_sha256: [u8; 32],
-    /// Process-local diagnostic only. Never serialize this field.
     pub shim_callback_address: usize,
     pub shim_normalized_template_sha256: [u8; 32],
     pub shim_unwind_handler_sha256: [u8; 32],
@@ -472,8 +376,6 @@ pub struct PointerSlotTerminalPermit {
     authenticity_seal: u64,
 }
 
-/// Terminal custody for a restored PE64 import slot whose external dispatch
-/// allocation remains resident because a thread may already have loaded the
 /// old shim pointer. This is deliberately not `ReleasedRvaHookReceipt`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RestoredPointerSlotCustodyReceipt {
@@ -483,13 +385,8 @@ pub struct RestoredPointerSlotCustodyReceipt {
     pub observed_pe_identity_sha256: [u8; 32],
     pub observed_pe_timestamp: u32,
     pub observed_size_of_image: u32,
-    /// How the slot's provenance was proved, and therefore what this receipt
-    /// is entitled to claim. Only `SlotProvenance::Pe64Import` names a DLL and
-    /// a symbol; an engine-owned slot names its owning structure instead and is
-    /// never rendered as an import.
     pub provenance: SlotProvenance,
     pub slot_rva: u64,
-    /// Process-local diagnostic only. Never serialize this field.
     pub slot_address: usize,
     pub slot_width: u16,
     pub slot_alignment: u16,
@@ -513,7 +410,6 @@ pub struct RestoredPointerSlotCustodyReceipt {
     pub shim_callback_export_name: &'static str,
     pub shim_callback_binary_identity: ExternalCallbackBinaryIdentity,
     pub shim_callback_manifest_sha256: [u8; 32],
-    /// Process-local diagnostic only. Never serialize this field.
     pub shim_callback_address: usize,
     pub shim_normalized_template_sha256: [u8; 32],
     pub shim_unwind_handler_sha256: [u8; 32],
@@ -538,16 +434,13 @@ pub struct InstalledRvaHookReceipt {
     pub observed_size_of_image: u32,
     pub requested_rva: u64,
     pub observed_rva: u64,
-    /// Process-local diagnostic only.  Never serialize this field.
     pub observed_runtime_address: usize,
     pub target_patch_len: u16,
     pub primitive_id: &'static str,
     pub hook_spec_sha256: [u8; 32],
     pub original_prefix_len: u16,
     pub original_prefix_sha256: [u8; 32],
-    /// Process-local diagnostic only. Never serialize this field.
     pub observed_relay_address: usize,
-    /// Process-local diagnostic only. Never serialize this field.
     pub observed_detour_address: usize,
     pub placement: HookPatchPlacement,
     pub patch_above: bool,
@@ -563,31 +456,15 @@ pub struct HookTeardownAttestation {
     pub relay_freed: bool,
 }
 
-/// Exact accounting of the lane-retained observations a production install
-/// abort discarded.
-///
-/// An install abort is the only transition allowed to consume producer custody
-/// without a sink publication, and it exists solely because a partially
-/// installed production roster can never produce an H4RD frame to publish
-/// into. Every lane abort entry point returns this so the discard is recorded
-/// and reported rather than silently swallowed: a non-zero `retained_rows`
-/// means real observations were dropped, which is correct for an aborted
-/// install and is never correct for a capture that actually ran.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct InstallAbortDiscard {
-    /// Producer rows/records/events retained by the lane and discarded here.
     pub retained_rows: u64,
-    /// Rows that were already inside an uncommitted reservation.
     pub reserved_rows: u64,
-    /// Non-zero drop/poison diagnostic counters discarded with the rows.
     pub discarded_diagnostics: u64,
-    /// The lane held a sticky producer error or poisoned completeness latch.
     pub poisoned: bool,
 }
 
 impl InstallAbortDiscard {
-    /// Const-constructible zero, so a lane can hold a running discard total in
-    /// a `static Mutex<InstallAbortDiscard>` without a lazy initializer.
     pub const ZERO: Self = Self {
         retained_rows: 0,
         reserved_rows: 0,
@@ -621,60 +498,32 @@ pub struct ReleasedRvaHookReceipt {
     pub observed_pe_timestamp: u32,
     pub observed_size_of_image: u32,
     pub observed_rva: u64,
-    /// Process-local diagnostic only.  Never serialize this field.
     pub observed_runtime_address: usize,
     pub target_patch_len: u16,
     pub primitive_id: &'static str,
     pub hook_spec_sha256: [u8; 32],
     pub original_prefix_len: u16,
     pub original_prefix_sha256: [u8; 32],
-    /// Process-local diagnostic only. Never serialize this field.
     pub observed_relay_address: usize,
-    /// Process-local diagnostic only. Never serialize this field.
     pub observed_detour_address: usize,
     pub teardown_owner_token: u64,
     pub restored_prefix_sha256: [u8; 32],
     pub callbacks_quiesced: bool,
     pub hook_removed: bool,
     pub relay_freed: bool,
-    /// The relay/trampoline allocation was NOT freed: it stays mapped and
-    /// executable for the life of the process. Exactly one of this and
-    /// [`Self::relay_freed`] is ever true, and [`Self::teardown_policy_id`]
-    /// names which route minted the receipt.
-    ///
-    /// This exists because "the callback counter read zero" is necessary but
-    /// not sufficient for absence of residency: a thread can have branched into
-    /// a detour and not yet executed its first instruction. A lane that cannot
-    /// disprove residency must not free the code that thread is about to run,
-    /// and the receipt has to say so rather than attest a free that did not
-    /// happen. The same custody decision is already shipped by the PE64
-    /// import-slot route (`retained_until_process_exit`) and by
-    /// `production_render_submit_live`'s bootstrap shim
-    /// (`external_shim_retained_until_process_exit`).
     pub relay_retained_until_process_exit: bool,
-    /// Which teardown route produced this receipt. See
-    /// [`MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID`] and
-    /// [`MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID`].
     pub teardown_policy_id: &'static str,
     pub released: bool,
     authenticity_seal: u64,
 }
 
-/// Teardown policy: the target prefix is restored, the MinHook entry is
-/// removed, and the relay/trampoline allocation is freed with it. Minted by
 /// [`observe_released`] / [`observe_released_set`].
 pub const MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID: &str =
     "minhook-normal-rel5.remove-hook.relay-freed.v1";
 
-/// Teardown policy: the target prefix is restored by `MH_DisableHook`, which
-/// frees nothing, and the relay/trampoline allocation is deliberately retained,
-/// mapped and executable, for the life of the process. Minted by
 /// [`observe_released_with_retained_relay`] and
 /// [`observe_released_set_with_retained_relay`].
-///
 /// `MH_RemoveHook` must never be called on a site released under this policy --
-/// it `FreeBuffer`s the trampoline, which is exactly the operation the policy
-/// exists to forbid.
 pub const MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID: &str =
     "minhook-normal-rel5.disable-only.relay-process-lifetime.v1";
 
@@ -687,19 +536,10 @@ enum RelayDisposition {
 }
 
 /// Whether an already-minted release receipt describes exactly the route now
-/// being asked for: both disposition booleans and the policy id.
-///
-/// Pure, so the rule can be exercised over every combination without a live
 /// custody registry. Its single caller is the already-`Released` retry arm of
 /// `observe_released_set_with_disposition`.
-///
-/// THE WIRING IS NOT TESTED AND CANNOT BE, offline. Reaching that arm needs a
 /// crate-owned custody entry already in the `Released` state, which needs an
-/// `observe_main_module()` that resolves to the exact-a729 `hoi4.exe` -- no test
-/// process is one. A build that deleted the call site would therefore stay
-/// green: what a test can fail on here is the rule, not its use. Closing that
 /// needs the release path exercised inside a live patched game, or a custody
-/// seam this crate does not currently expose.
 #[cfg(windows)]
 fn released_matches_relay_disposition(
     receipt: &ReleasedRvaHookReceipt,
@@ -724,12 +564,7 @@ impl RelayDisposition {
     }
 }
 
-/// Dev-only installed-receipt constructor, the exact pair of
 /// [`mint_test_released_receipt`]: every field the collector's release
-/// validation compares across the two matches by construction, so a test can
-/// vary ONE field and know that field is what the validation answered to.
-/// Unavailable from every default/shipped build, and it deliberately bypasses
-/// the process registry.
 #[cfg(feature = "test-support")]
 pub fn mint_test_installed_receipt(
     expected: ExpectedRvaHook,
@@ -761,10 +596,6 @@ pub fn mint_test_installed_receipt(
     }
 }
 
-/// Dev-only receipt constructor for dependent lane tests. It is unavailable
-/// from every default/shipped build and deliberately bypasses the process
-/// registry so tests can exercise higher-level opaque custody flows without
-/// patching the running test executable.
 #[cfg(feature = "test-support")]
 pub fn mint_test_released_receipt(
     expected: ExpectedRvaHook,
@@ -845,17 +676,6 @@ struct ProvisionalPointerSlotBinding {
     teardown_owner_token: u64,
     slot_address: usize,
     protection_before: u32,
-    /// The install compare-exchange this crate itself performed, recorded the
-    /// instant the hardware exchange returned and before any fallible cleanup.
-    /// A retry that finds the slot already reading the external shim replays
-    /// these values and, if the record is not yet reconciled, finishes the page
-    /// cleanup first. A retry with no record here has no evidence of a
-    /// transition and must not mint a receipt.
-    ///
-    /// The cell is handed to the ordering helper directly. There is no accessor
-    /// method and no storage trait: the helper writes into this field, and the
-    /// only way to put a record into the field is to have performed the
-    /// exchange that produced it.
     install_cas_custody: InstallCasCustody,
     authenticity_seal: u64,
 }
@@ -874,17 +694,6 @@ struct TerminalizingPointerSlotBinding {
     permit: PointerSlotTerminalPermit,
     observed_terminal: ObservedExternalDispatchTerminal,
     protection_before_restore: u32,
-    /// The restore compare-exchange this crate itself performed, recorded the
-    /// instant the hardware exchange returned and before any fallible cleanup.
-    /// A retry that finds the slot already reading the original replays these
-    /// values and, if the record is not yet reconciled, finishes the page
-    /// cleanup first. A retry with no record here has no evidence of a
-    /// transition and must not mint a receipt.
-    ///
-    /// The cell is handed to the ordering helper directly. There is no accessor
-    /// method and no storage trait: the helper writes into this field, and the
-    /// only way to put a record into the field is to have performed the
-    /// exchange that produced it.
     restore_cas_custody: RestoreCasCustody,
     authenticity_seal: u64,
 }
@@ -1324,20 +1133,7 @@ fn canonical_shim_normalized_digest(
     digest.finalize().into()
 }
 
-/// Install one exact PE64 import-address-slot redirection with a naturally
-/// aligned atomic pointer compare/exchange. This function never changes code
-/// bytes and never suspends a target thread.
 #[cfg(windows)]
-/// Re-read the provisional binding out of the registry and require it to hold
-/// the record the exchange just produced.
-///
-/// `perform_recorded_cas` writes through the `&mut` it was handed, and safe Rust
-/// cannot state that such a borrow points into the registry entry this receipt
-/// will be minted from. A redirected write -- say a leaked throwaway cell --
-/// would leave the registry empty and strand the lease silently on the next
-/// attempt as `UnwitnessedForeignInstall`, blaming a foreign agent for this
-/// crate's own lost evidence. This makes that case say what it is, here, where
-/// it happened.
 #[cfg(windows)]
 fn confirm_provisional_install_custody_retained(
     registry: &BTreeMap<(u64, u64), PointerSlotCustodyState>,
@@ -1368,7 +1164,6 @@ fn confirm_provisional_install_custody_retained(
         .map_err(|error| format!("{} {error}", expected.logical_name))
 }
 
-/// The restore direction of [`confirm_provisional_install_custody_retained`].
 #[cfg(windows)]
 fn confirm_terminalizing_restore_custody_retained(
     registry: &BTreeMap<(u64, u64), PointerSlotCustodyState>,
@@ -1395,11 +1190,6 @@ fn confirm_terminalizing_restore_custody_retained(
         .map_err(|error| format!("{} {error}", expected.logical_name))
 }
 
-/// Install one exact PE64 import-address-slot redirection.
-///
-/// Kept as its own front so the two genuine import sites continue to state a
-/// DLL and a symbol at the call site as well as in the receipt. Everything past
-/// the provenance widening is the shared lifecycle.
 #[cfg(windows)]
 pub fn install_pe64_import_address_slot(
     expected: ExpectedPe64ImportAddressSlot,
@@ -1409,14 +1199,6 @@ pub fn install_pe64_import_address_slot(
     install_pointer_slot(expected.generalize(), sealed_shim, teardown_owner_token)
 }
 
-/// Install one engine-owned slot of a roster.
-///
-/// Deliberately not public. Admitting a roster proves the target's slot
-/// coverage complete, but installing one site of that roster is still a partial
-/// redirection: calls through the sibling slots keep reaching the target
-/// unobserved, and nothing about a single-site receipt says so. Completeness is
-/// therefore enforced where it lives -- across the roster -- by
-/// [`EngineOwnedSlotRosterInstallation`], which is the only public route in.
 #[cfg(windows)]
 fn install_engine_owned_function_pointer_slot(
     site: &RosterAdmittedEngineOwnedSlotSite,
@@ -1431,18 +1213,6 @@ fn install_engine_owned_function_pointer_slot(
     )
 }
 
-/// An engine-owned slot roster part-way through installation.
-///
-/// A target whose census lists two dispatch slots is observed completely only
-/// when both are redirected. This type makes that the unit of success: receipts
-/// are handed out only by [`Self::finish`], and only once every enumerated slot
-/// has been redirected under one teardown owner token.
-///
-/// A run that fails part-way does not silently degrade to a partial observer.
-/// `finish` returns [`IncompleteEngineOwnedSlotRosterInstallation`], which
-/// carries the receipts for the slots that *were* redirected precisely so the
-/// caller can tear them down -- they are live redirections and must not be
-/// leaked -- while making it impossible to mistake them for a working observer.
 #[cfg(windows)]
 #[derive(Debug)]
 pub struct EngineOwnedSlotRosterInstallation {
@@ -1456,14 +1226,6 @@ pub struct EngineOwnedSlotRosterInstallation {
     installed: Vec<InstalledPointerSlotReceipt>,
 }
 
-/// A roster whose every slot is redirected. The only form an engine-owned
-/// observer may treat as live.
-///
-/// The fields are private for the same reason
-/// `EngineOwnedSlotAttestation`'s are: a type whose whole meaning is "this
-/// proof was carried out" is worth nothing if anyone can write one down. The
-/// only constructor is [`EngineOwnedSlotRosterInstallation::finish`], and it
-/// only returns this when every enumerated slot of the roster has a receipt.
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompleteEngineOwnedSlotRosterInstallation {
@@ -1484,8 +1246,6 @@ impl CompleteEngineOwnedSlotRosterInstallation {
         self.target_function_rva
     }
 
-    /// Digest of the admitted roster whose coverage this installation
-    /// completed.
     pub fn roster_sha256(&self) -> [u8; 32] {
         self.roster_sha256
     }
@@ -1494,22 +1254,15 @@ impl CompleteEngineOwnedSlotRosterInstallation {
         self.teardown_owner_token
     }
 
-    /// One receipt per enumerated slot of the roster.
     pub fn receipts(&self) -> &[InstalledPointerSlotReceipt] {
         &self.receipts
     }
 
-    /// Consume the proof and take the receipts, for teardown.
     pub fn into_receipts(self) -> Vec<InstalledPointerSlotReceipt> {
         self.receipts
     }
 }
 
-/// A roster that did not reach full coverage.
-///
-/// `installed` is live redirection that still needs the quiesce/restore path;
-/// `uncovered_slot_rvas` names what was never redirected and therefore what an
-/// observer built on this would have missed.
 #[cfg(windows)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IncompleteEngineOwnedSlotRosterInstallation {
@@ -1518,26 +1271,11 @@ pub struct IncompleteEngineOwnedSlotRosterInstallation {
     pub teardown_owner_token: u64,
     pub installed: Vec<InstalledPointerSlotReceipt>,
     pub uncovered_slot_rvas: Vec<u64>,
-    /// Slots whose install attempt returned an error.
-    ///
-    /// An error is not proof that nothing happened: the exchange is recorded
-    /// before the page-protection cleanup that can fail after it, so one of
-    /// these slots may already be redirected with no receipt yet minted for it.
-    /// The recovery is to retry `install_site` with the same site and shim,
-    /// which replays the recorded exchange and mints the receipt. Until that
-    /// succeeds these slots must be treated as possibly live, and a caller that
-    /// abandons the installation here abandons a redirection it cannot yet tear
-    /// down. Always a subset of `uncovered_slot_rvas`.
     pub unresolved_slot_rvas: Vec<u64>,
 }
 
 #[cfg(windows)]
 impl EngineOwnedSlotRosterInstallation {
-    /// Begin installing every slot of an admitted roster.
-    ///
-    /// `module_base` is the process-local base the slot RVAs resolve against;
-    /// it derives the expected original pointer, which the shared lifecycle
-    /// then re-proves against both the file image and the live slot.
     pub fn begin(
         roster: &AdmittedEngineOwnedSlotRoster,
         module_base: usize,
@@ -1571,22 +1309,14 @@ impl EngineOwnedSlotRosterInstallation {
         })
     }
 
-    /// Slots of this roster that are not yet redirected.
     pub fn uncovered_slot_rvas(&self) -> &[u64] {
         &self.required_slot_rvas
     }
 
-    /// Slots whose install attempt failed and which may already be redirected
-    /// without a receipt. See
-    /// [`IncompleteEngineOwnedSlotRosterInstallation::unresolved_slot_rvas`].
     pub fn unresolved_slot_rvas(&self) -> &[u64] {
         &self.unresolved_slot_rvas
     }
 
-    /// Redirect one slot of this roster.
-    ///
-    /// Refuses a site belonging to a different roster, and refuses a repeat of
-    /// a slot already redirected under this installation.
     pub fn install_site(
         &mut self,
         site: &RosterAdmittedEngineOwnedSlotSite,
@@ -1609,9 +1339,6 @@ impl EngineOwnedSlotRosterInstallation {
                     self.target_logical_name
                 )
             })?;
-        // Record the attempt before making it. An error return does not mean
-        // the slot is untouched, so the attempt has to be visible even if this
-        // call never returns normally.
         if !self.unresolved_slot_rvas.contains(&slot_rva) {
             self.unresolved_slot_rvas.push(slot_rva);
         }
@@ -1622,12 +1349,12 @@ impl EngineOwnedSlotRosterInstallation {
             self.teardown_owner_token,
         )?;
         self.required_slot_rvas.remove(position);
-        self.unresolved_slot_rvas.retain(|pending| *pending != slot_rva);
+        self.unresolved_slot_rvas
+            .retain(|pending| *pending != slot_rva);
         self.installed.push(receipt);
         Ok(())
     }
 
-    /// Complete the installation, or report what was left uncovered.
     pub fn finish(
         self,
     ) -> Result<
@@ -1654,11 +1381,6 @@ impl EngineOwnedSlotRosterInstallation {
     }
 }
 
-/// Widen one roster-admitted engine-owned site into the shared lifecycle's
-/// specification form.
-///
-/// Public because the quiesce and restore paths take the same specification and
-/// a caller must be able to reproduce exactly the one it installed with.
 pub fn engine_owned_expected_pointer_slot(
     site: &RosterAdmittedEngineOwnedSlotSite,
     module_base: usize,
@@ -1695,16 +1417,6 @@ pub fn engine_owned_expected_pointer_slot(
     })
 }
 
-/// The shared install lifecycle.
-///
-/// Deliberately private. Publishing it would re-open single-slot installation
-/// of a multi-slot engine-owned target by the back door: a legitimately
-/// roster-admitted site widens into a perfectly valid `ExpectedPointerSlot`,
-/// and handing that straight to a generic installer produces a receipt for one
-/// slot of a target whose other slots are still dispatching unobserved. The two
-/// public routes in -- `install_pe64_import_address_slot` and
-/// `EngineOwnedSlotRosterInstallation` -- are the two shapes for which a
-/// single-call install is actually complete.
 #[cfg(windows)]
 fn install_pointer_slot(
     expected: ExpectedPointerSlot,
@@ -1746,9 +1458,7 @@ fn install_pointer_slot(
             return false;
         }
         match state {
-            PointerSlotCustodyState::Provisional(binding) => {
-                binding.slot_address == slot_address
-            }
+            PointerSlotCustodyState::Provisional(binding) => binding.slot_address == slot_address,
             PointerSlotCustodyState::Active(binding) => {
                 binding.receipt.observed_module_sha256 == module.sha256
                     && binding.receipt.observed_pe_identity_sha256 == module.pe_identity.sha256
@@ -1892,13 +1602,6 @@ fn install_pointer_slot(
         }
     };
     let current = atomic_load_pointer_slot(slot_address)?;
-    // The arm is chosen by what this crate recorded, not by what the slot
-    // happens to read. A slot already holding the external shim with no
-    // recorded compare-exchange is somebody else's write and is refused
-    // outright -- synthesizing `observed_before` from `expected` there would
-    // attest an installation this crate never performed, and would make the
-    // `observed_before != expected.expected_original_address` check below a
-    // tautology on exactly the path where it is the only remaining evidence.
     let decision = decide_pointer_slot_install_cas(
         current,
         expected.expected_original_address,
@@ -1908,10 +1611,6 @@ fn install_pointer_slot(
     .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let cas = match decision {
         PointerSlotInstallCasDecision::PerformCas => {
-            // Resolve the registry slot to write into *before* the exchange.
-            // After it, recording is a plain field write on a borrow that
-            // already exists, so no early return can stand between the
-            // exchange and its record.
             let binding = match registry.get_mut(&key) {
                 Some(PointerSlotCustodyState::Provisional(binding))
                     if binding.expected == expected
@@ -1928,10 +1627,6 @@ fn install_pointer_slot(
                     ));
                 }
             };
-            // The ordering lives in `custody_record::perform_recorded_cas`: the
-            // record is written between the exchange and the fallible cleanup,
-            // so a cleanup failure leaves a resumable record instead of losing
-            // the evidence that the exchange happened.
             let (performed, protection_after) = perform_recorded_cas(
                 || {
                     let prepared = begin_atomic_compare_exchange_pointer_slot(slot_address)?;
@@ -1951,11 +1646,6 @@ fn install_pointer_slot(
                 &mut binding.install_cas_custody,
                 finish_atomic_compare_exchange_pointer_slot,
             )?;
-            // `performed` is an `UnconfirmedInstallCas`, so simply deleting
-            // this call does not compile -- the receipt below has nothing to
-            // form itself from. That makes the re-read the shortest path, not
-            // the only one; `custody_record`'s module docs name the two ways
-            // around it that still compile.
             let reconciled = confirm_provisional_install_custody_retained(
                 &registry,
                 &key,
@@ -1969,9 +1659,6 @@ fn install_pointer_slot(
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
         PointerSlotInstallCasDecision::ReconcileProtectionThenReplay(recorded) => {
-            // Resolve the registry slot before the reconciliation runs, for the
-            // same reason the `PerformCas` arm does: the write that follows must
-            // not be able to fail to find its home.
             let binding = match registry.get_mut(&key) {
                 Some(PointerSlotCustodyState::Provisional(binding))
                     if binding.expected == expected
@@ -2014,17 +1701,8 @@ fn install_pointer_slot(
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
     };
-    // Both comparisons are against the protection observed when the provisional
-    // binding was created, not against the record's own. KNOWN, DELIBERATE, and
-    // deliberately kept: see `verify_install_cas_matches_lease_protection` for
-    // why a permanently stranded lease is the right outcome here and what each
-    // typed refusal means.
     verify_install_cas_matches_lease_protection(protection_before, cas)
         .map_err(|error| format!("{} {error}", expected.logical_name))?;
-    // Non-tautological now: `observed_before` is only ever a value some real
-    // compare-exchange returned, replayed verbatim from the record if this is a
-    // retry. Before the fix the already-shim arm defined it to equal the value
-    // this line compares it against.
     let observed_before = cas.observed_before;
     if observed_before != expected.expected_original_address {
         return Err(format!(
@@ -2032,18 +1710,6 @@ fn install_pointer_slot(
             expected.logical_name, expected.expected_original_address
         ));
     }
-    // KNOWN, DELIBERATE, and deliberately kept: if an external writer puts the
-    // slot back to the original between the exchange and this load, the call
-    // fails here and the retry is refused as `RecordedInstallCasSlotDiverged`
-    // rather than driving a second exchange. The pre-change code recovered from
-    // this only by synthesizing the observation, which is the defect this file's
-    // custody records remove; a record whose slot no longer holds the shim
-    // genuinely no longer describes the live slot, so re-exchanging under the
-    // same record would attest a transition against evidence from a different
-    // one. Re-exchanging under a *replacement* record would be honest about the
-    // second exchange but silently drop the fact that a third party wrote the
-    // slot in between -- an installation receipt says this invocation held the
-    // slot from original to shim, and after a contested write it did not.
     let observed_after = atomic_load_pointer_slot(slot_address)?;
     if observed_after != external_shim_address {
         return Err(format!(
@@ -2167,10 +1833,6 @@ pub fn verify_installed_pointer_slot(
     )
 }
 
-/// Atomically cut one active import-slot shim over to its original export and
-/// mint a private terminal permit only after the collector callback count is
-/// observed at zero. A timed-out call retains resumable crate custody with the
-/// dispatch already pointing at the original.
 #[cfg(windows)]
 pub fn quiesce_pointer_slot(
     expected: ExpectedPointerSlot,
@@ -2196,11 +1858,6 @@ pub fn quiesce_pointer_slot(
     }
     let key = (installed.teardown_owner_token, installed.slot_rva);
     let registry = POINTER_SLOT_CUSTODY.get_or_init(|| Mutex::new(BTreeMap::new()));
-    // Publish `Quiescing` under the guard, then drop it. The cutover and the
-    // yield loop below run unlocked: they are the caller-bounded part of the
-    // operation and every other import-slot custody call needs this same
-    // process-wide registry. `Quiescing` is exactly the resumable state that
-    // makes releasing the guard safe -- re-entry is handled above and the
     // re-acquire below re-verifies the binding before publishing anything.
     let published_permit = {
         let mut registry = registry
@@ -2289,10 +1946,6 @@ pub fn quiesce_pointer_slot(
         authenticity_seal,
     };
     // Re-acquire and re-verify. A racing caller may have finished the same
-    // quiescence while the guard was down; adopting its permit is the same
-    // outcome the re-entry fast path above gives, so validate and return it
-    // instead of erroring. Anything other than `Quiescing` with this exact
-    // `installed` stays a hard error.
     let (published, adopted_racing_permit) = {
         let mut registry = registry
             .lock()
@@ -2323,10 +1976,7 @@ pub fn quiesce_pointer_slot(
     Ok(published)
 }
 
-/// Restore one installed PE64 import slot with an atomic pointer CAS after the
-/// external shim has switched to the original export and all DLL callbacks are
 /// quiescent. The shim allocation remains process-lifetime custody because a
-/// target thread may already have loaded its old pointer from the import slot.
 #[cfg(windows)]
 pub fn restore_pointer_slot_process_lifetime(
     expected: ExpectedPointerSlot,
@@ -2447,11 +2097,6 @@ pub fn restore_pointer_slot_process_lifetime(
         }
     };
     let current = atomic_load_pointer_slot(slot_address)?;
-    // The arm is chosen by what this crate recorded, not by what the slot
-    // happens to read. A slot already holding the original with no recorded
-    // compare-exchange is somebody else's restore and is refused outright --
-    // synthesizing `observed_before` from `installed` there would attest a
-    // transition this crate never witnessed.
     let decision = decide_pointer_slot_restore_cas(
         current,
         installed.expected_original_address,
@@ -2461,10 +2106,6 @@ pub fn restore_pointer_slot_process_lifetime(
     .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let cas = match decision {
         PointerSlotRestoreCasDecision::PerformCas => {
-            // Resolve the registry slot to write into *before* the exchange.
-            // After it, recording is a plain field write on a borrow that
-            // already exists, so no early return can stand between the
-            // exchange and its record.
             let binding = match registry.get_mut(&key) {
                 Some(PointerSlotCustodyState::Terminalizing(binding))
                     if binding.installed == *installed && &binding.permit == permit =>
@@ -2478,10 +2119,6 @@ pub fn restore_pointer_slot_process_lifetime(
                     ));
                 }
             };
-            // The ordering lives in `custody_record::perform_recorded_cas`: the
-            // record below is written between the exchange and the fallible
-            // cleanup, so a cleanup failure leaves a resumable record instead of
-            // losing the evidence that the exchange happened.
             let (performed, protection_after) = perform_recorded_cas(
                 || {
                     let prepared = begin_atomic_compare_exchange_pointer_slot(slot_address)?;
@@ -2501,26 +2138,13 @@ pub fn restore_pointer_slot_process_lifetime(
                 &mut binding.restore_cas_custody,
                 finish_atomic_compare_exchange_pointer_slot,
             )?;
-            // `performed` is an `UnconfirmedRestoreCas`, so simply deleting
-            // this call does not compile -- the receipt below has nothing to
-            // form itself from. That makes the re-read the shortest path, not
-            // the only one; `custody_record`'s module docs name the two ways
-            // around it that still compile.
             let reconciled = confirm_terminalizing_restore_custody_retained(
-                &registry,
-                &key,
-                expected,
-                installed,
-                permit,
-                performed,
+                &registry, &key, expected, installed, permit, performed,
             )?;
             complete_recorded_restore_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
         PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(recorded) => {
-            // Resolve the registry slot before the reconciliation runs, for the
-            // same reason the `PerformCas` arm does: the write that follows must
-            // not be able to fail to find its home.
             let binding = match registry.get_mut(&key) {
                 Some(PointerSlotCustodyState::Terminalizing(binding))
                     if binding.installed == *installed && &binding.permit == permit =>
@@ -2542,12 +2166,7 @@ pub fn restore_pointer_slot_process_lifetime(
                 },
             )?;
             let reconciled = confirm_terminalizing_restore_custody_retained(
-                &registry,
-                &key,
-                expected,
-                installed,
-                permit,
-                performed,
+                &registry, &key, expected, installed, permit, performed,
             )?;
             complete_recorded_restore_cas_observation(reconciled, protection_after)
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
@@ -2561,10 +2180,6 @@ pub fn restore_pointer_slot_process_lifetime(
                 .map_err(|error| format!("{} {error}", expected.logical_name))?
         }
     };
-    // Against the protection observed when the terminalizing binding was
-    // created, not against the record's own. KNOWN, DELIBERATE, and deliberately
-    // kept -- identical to the install path; see
-    // `verify_restore_cas_matches_lease_protection`.
     verify_restore_cas_matches_lease_protection(terminalizing.protection_before_restore, cas)
         .map_err(|error| format!("{} {error}", expected.logical_name))?;
     let observed_before = cas.observed_before;
@@ -2574,15 +2189,6 @@ pub fn restore_pointer_slot_process_lifetime(
             expected.logical_name, installed.external_shim_address
         ));
     }
-    // KNOWN, DELIBERATE, and deliberately kept -- the restore direction of the
-    // property the install path states above its own retention check. If an
-    // external writer puts the slot back to the shim between the exchange and
-    // this load, the call fails here and the retry is refused as
-    // `RecordedRestoreCasSlotDiverged` rather than driving a second exchange:
-    // the record on hand describes an exchange whose result a third party has
-    // since overwritten, so replaying it would attest a transition against
-    // evidence from a different one, and re-exchanging under a replacement
-    // record would drop the fact that custody of the slot was contested.
     let observed_after = atomic_load_pointer_slot(slot_address)?;
     if observed_after != installed.expected_original_address {
         return Err(format!(
@@ -2775,9 +2381,6 @@ pub fn restored_pointer_slot_promotion_digest(
     digest.finalize().into()
 }
 
-/// Observe one enabled MinHook 0.9.0 normal five-byte JMP rel32 target.
-///
-/// `patchAbove` starts with `EB F9` at the target and is explicitly rejected.
 #[cfg(windows)]
 pub fn observe_enabled_minhook_rel5(
     expected: ExpectedRvaHook,
@@ -2847,8 +2450,6 @@ pub fn observe_enabled_minhook_rel5(
     )
 }
 
-/// Observe D90's enabled five-byte CALL rel32 callsite patch and bind its
-/// decoded destination to the installed detour.
 #[cfg(windows)]
 pub fn observe_enabled_rel32_callsite(
     expected: ExpectedRvaHook,
@@ -2899,7 +2500,6 @@ pub fn observe_enabled_rel32_callsite(
 }
 
 /// Mint a release receipt only after the exact original target prefix has
-/// returned and the receipt still identifies this exact a729 target.
 #[cfg(windows)]
 pub fn observe_released(
     expected: ExpectedRvaHook,
@@ -2911,24 +2511,7 @@ pub fn observe_released(
 }
 
 /// Mint a release receipt for a site whose relay/trampoline is RETAINED for the
-/// life of the process instead of freed.
-///
 /// Same evidence as [`observe_released`] for everything the target owns: the
-/// exact original prefix must have returned to the target and the receipt must
-/// still identify this exact a729 site. What differs is the disposition of the
-/// code the lane allocated, and the attestation says so exactly:
-///
-/// * `callbacks_quiesced` means admission was closed and the active-callback
-///   counter was observed at zero. That is necessary but NOT sufficient for
-///   absence of residency -- a thread can have branched into the detour and not
-///   yet executed its first instruction -- and that insufficiency is precisely
-///   why the relay is retained rather than freed.
-/// * `hook_removed` means the target's own bytes are the engine's again, which
-///   this function re-reads from process memory rather than taking on trust.
-///   The MinHook entry itself stays created-and-disabled; `MH_RemoveHook` is
-///   the call that frees the trampoline and it must never run on this site.
-/// * `relay_freed` must be FALSE. A caller that claims a free here is refused,
-///   because the receipt would then attest an operation nobody performed.
 #[cfg(windows)]
 pub fn observe_released_with_retained_relay(
     expected: ExpectedRvaHook,
@@ -2941,19 +2524,9 @@ pub fn observe_released_with_retained_relay(
 }
 
 /// The set form of [`observe_released_with_retained_relay`]: atomically release
-/// N sites whose relays/trampolines are ALL retained for the life of the
-/// process rather than freed.
-///
-/// Every rule of the single-site route applies per element, including the
-/// refusal of a claimed relay free. A lane that tears down a roster in one
 /// atomic transition (`observe_released_set`) and retains its trampolines needs
 /// this rather than N single releases, because the set route is what makes the
-/// custody transition all-or-nothing.
-///
-/// The refusal below is deliberately separate from the generic
-/// "attestation is incomplete" check inside
 /// `observe_released_set_with_disposition`: this one names the actual mistake,
-/// and it names the element that made it.
 #[cfg(windows)]
 pub fn observe_released_set_with_retained_relay<const N: usize>(
     expected: [ExpectedRvaHook; N],
@@ -2976,17 +2549,20 @@ pub fn observe_released_set_with_retained_relay<const N: usize>(
     )
 }
 
-/// Atomically transition a set of restored hooks from active custody to
 /// released custody. A retry with the exact same opaque receipts returns the
 /// already-minted receipts; it never mints a second release or reactivates a
-/// consumed lease.
 #[cfg(windows)]
 pub fn observe_released_set<const N: usize>(
     expected: [ExpectedRvaHook; N],
     installed: [InstalledRvaHookReceipt; N],
     attestations: [HookTeardownAttestation; N],
 ) -> Result<[ReleasedRvaHookReceipt; N], String> {
-    observe_released_set_with_disposition(expected, installed, attestations, RelayDisposition::Freed)
+    observe_released_set_with_disposition(
+        expected,
+        installed,
+        attestations,
+        RelayDisposition::Freed,
+    )
 }
 
 #[cfg(windows)]
@@ -3011,10 +2587,6 @@ fn observe_released_set_with_disposition<const N: usize>(
         let expected = expected[index];
         let installed = installed[index];
         let attestation = attestations[index];
-        // The relay disposition the caller attested must be exactly the one
-        // this route mints. `Freed` demands the free actually happened;
-        // `RetainedUntilProcessExit` refuses a claimed free, because a receipt
-        // that attests a free nobody performed is worse than no receipt.
         let relay_attestation_matches_route = match relay {
             RelayDisposition::Freed => attestation.relay_freed,
             RelayDisposition::RetainedUntilProcessExit => !attestation.relay_freed,
@@ -3081,14 +2653,7 @@ fn observe_released_set_with_disposition<const N: usize>(
         }
         let released = match state {
             // A retry with the same receipts returns the already-minted release
-            // rather than minting a second one -- but only if it is asking for
             // the SAME teardown route. Without this check a lane that released
-            // through the freeing route could call the retained route and get
-            // back a receipt saying `relay_freed: true`, or the reverse: the
-            // retry would silently answer a question nobody asked, and the
-            // caller would ship a receipt attesting a disposition it did not
-            // perform. That is precisely the overclaim the retained route
-            // exists to prevent, so a route mismatch is refused.
             HookCustodyState::Released(released) => {
                 if !released_matches_relay_disposition(&released.receipt, relay) {
                     return Err(format!(
@@ -3185,11 +2750,6 @@ fn validate_expected_pointer_slot(expected: ExpectedPointerSlot) -> Result<(), S
             }
         }
         SlotProvenance::EngineOwnedFunctionPointer(attestation) => {
-            // Reaching here at all means the attestation came from a roster
-            // admission: `EngineOwnedSlotAttestation` has no public
-            // constructor. These are the checks that still have content --
-            // that the specification's slot address was not edited away from
-            // the owner the attestation carries after the fact.
             if attestation.enumeration_sha256() == [0; 32]
                 || attestation.roster_sha256() == [0; 32]
                 || attestation.roster_slot_count() == 0
@@ -3234,11 +2794,6 @@ fn digest_slot_provenance(digest: &mut Sha256, provenance: SlotProvenance) {
 
 fn pointer_slot_spec_sha256(expected: ExpectedPointerSlot) -> [u8; 32] {
     let mut digest = Sha256::new();
-    // Domain-separated per provenance, and `digest_slot_provenance` also
-    // prepends a variant tag, so no engine-owned specification can collide with
-    // an import specification however its fields are chosen. Both digests are
-    // process-local receipt content computed by this encoder on every call --
-    // no admitted value is transcribed anywhere against them.
     match expected.provenance {
         SlotProvenance::Pe64Import { .. } => {
             digest.update(b"hoi4.production_hook.pe64_import_slot_spec.v1")
@@ -3700,12 +3255,7 @@ fn hook_spec_sha256(expected: ExpectedRvaHook) -> [u8; 32] {
 }
 
 #[cfg(windows)]
-/// The name of an ALREADY-ACTIVE site in the same loaded module that is using
-/// `candidate`'s detour address for a different engine target.
-///
 /// Only `Active` bindings count. A released site's detour is no longer in the
-/// executable, so reusing its address is not a live collision -- and refusing it
-/// would make a lane that reinstalls after a clean teardown fail forever.
 #[cfg(windows)]
 fn site_already_using_this_detour(
     registry: &BTreeMap<(u64, u64), HookCustodyState>,
@@ -3785,28 +3335,6 @@ fn observe_common(
             expected.logical_name
         ));
     }
-    // A detour address may service exactly ONE engine site.
-    //
-    // Nothing above catches the reverse of the check just made. Each site is
-    // observed on its own, and a site whose relay points at an address another
-    // site is ALREADY using verifies perfectly -- the REL5 jump really does go
-    // there. That is exactly what the linker's identical-code folding produces:
-    // two detour bodies that compile to the same bytes with the same
-    // relocations become one address, both installs succeed, and the two
-    // receipts describe two different engine functions while naming one relay.
-    // From then on every observation attributed to either site is attributed to
-    // whichever body survived the fold.
-    //
-    // This is not hypothetical. D95's four detour bodies folded to two
-    // addresses in the optimized build of its own test binary, and the only
-    // thing that noticed was a lane unit test nothing in the routine gate ever
-    // compiled optimized.
-    //
-    // Process-global on purpose. `Rel5HookRoster` can only see the sites of its
-    // own roster, and the lanes that hand-rolled their custody cannot see even
-    // that; the registry is the one place that sees every live binding. The
-    // comparison is scoped to the same observed module, so two processes'
-    // worth of state cannot collide here.
     if let Some(other) = site_already_using_this_detour(&registry, &candidate) {
         return Err(format!(
             "{} detour address 0x{observed_detour_address:X} is already the \
@@ -3913,51 +3441,14 @@ struct PeIdentity {
 #[derive(Clone, Copy, Debug)]
 struct PeSection {
     virtual_address: usize,
-    /// `VirtualSize`: the section's extent once loaded. Not interchangeable
-    /// with `raw_size`, which is the initialized on-disk size and may be larger
-    /// after file alignment padding or smaller before zero-fill. Containment in
-    /// the loaded image is a question about this field.
     virtual_size: usize,
     raw_size: usize,
     raw_offset: usize,
     characteristics: u32,
 }
 
-/// Force [`MAIN_MODULE_AUTHORITY`] to exist WHILE THE GAME IS STILL RUNNING.
-///
-/// # What this is protecting against
-///
-/// [`initialize_main_module`] opens `hoi4.exe`, `read_to_end`s the WHOLE file
-/// into a heap `Vec`, SHA-256s it and parses its PE layout. It runs exactly
-/// once per process, inside a `OnceLock::get_or_init`, and it runs on whichever
-/// caller reaches [`observe_main_module`] first.
-///
-/// At least one of those callers is inside a HELD `inline_detour::ProcessFreeze`
-/// -- `naval_combat_live::convoy_terminal_hook_windows`'s installer calls
-/// `observe_enabled_rel32_callsite` with `suspended` still alive, and that
-/// bottoms out here. So on a process where D90 installs first, the entire game
-/// is stopped for a file open, a full executable read and a full-file hash, and
-/// the `Vec` those bytes land in is `HeapAlloc` on the PROCESS DEFAULT HEAP --
-/// the heap a suspended game thread may hold the lock of, with nobody left to
 /// release it.
-///
-/// Which caller is first is INSTALL ORDER, so the exposure is intermittent:
-/// warm when some other lane's receipt ran first, and a multi-hundred-
 /// millisecond whole-game stop plus a possible deadlock when it did not.
-/// `freeze_window_audit` cannot see any of it -- it is a substring pass closed
-/// over one crate's own calls and says up front it cannot follow a call into
-/// another crate.
-///
-/// # What it does NOT fix
-///
-/// The rest of `observe_enabled_rel32_callsite` still runs frozen and still
-/// allocates: `observe_mapped_pe_identity`, the `Sha256` in `observe_common`
-/// and every `format!` refusal. Priming removes the file read, the whole-file
-/// hash and the largest allocation; it does not make that window allocation-
-/// free. See `extractor/native/runs/li_d75_teardown/FINDINGS.txt`.
-///
-/// Call it before taking the freeze, on any thread. Idempotent, and its error
-/// is the same one a later `observe_*` would return.
 #[cfg(windows)]
 pub fn prime_main_module_authority() -> Result<(), String> {
     MAIN_MODULE_AUTHORITY
@@ -3967,8 +3458,6 @@ pub fn prime_main_module_authority() -> Result<(), String> {
         .map_err(Clone::clone)
 }
 
-/// True once [`prime_main_module_authority`] (or any `observe_*`) has built the
-/// authority, so a later call cannot be the one that reads the executable.
 #[cfg(windows)]
 pub fn main_module_authority_is_primed() -> bool {
     MAIN_MODULE_AUTHORITY.get().is_some()
@@ -4276,8 +3765,6 @@ fn module_file_bytes_at_rva<'a>(
         .ok_or_else(|| "production hook file-backed prefix is truncated".into())
 }
 
-/// Resolve one admitted slot to a process-local address, proving its
-/// provenance against the loaded image first.
 #[cfg(windows)]
 fn validate_pointer_slot(
     module: &ObservedMainModule,
@@ -4294,21 +3781,6 @@ fn validate_pointer_slot(
     }
 }
 
-/// Prove an engine-owned function-pointer or vtable slot from the image alone.
-///
-/// There is no thunk to name the target, so every fact a receipt will carry is
-/// re-derived here from the pinned file image and the live mapping:
-///
-/// * the slot is naturally aligned and inside an initialized, file-backed
-///   section of this module;
-/// * the slot is **not** inside the PE import directory or any import address
-///   table, so an engine-owned receipt can never be minted over a real import
-///   (and, symmetrically, an import can never be laundered as engine-owned);
-/// * the file image's own static initializer at the slot already holds the
-///   declared target, which is what makes the owning-structure claim checkable
-///   rather than asserted;
-/// * the target RVA lies inside an executable section;
-/// * the live mapped slot still holds exactly `expected_original_address`.
 #[cfg(windows)]
 fn validate_engine_owned_pointer_slot(
     module: &ObservedMainModule,
@@ -4348,9 +3820,6 @@ fn validate_engine_owned_pointer_slot(
             expected.logical_name
         ));
     }
-    // The owning structure has to be a real, wholly in-image structure too: a
-    // base plus an entry count that runs off the end of the section is not an
-    // identity anything can be reviewed against.
     let owner_span = u64::from(owner.entry_count)
         .checked_mul(ENGINE_OWNED_SLOT_WIDTH_BYTES)
         .ok_or("engine-owned slot owning structure span overflow")?;
@@ -4364,21 +3833,9 @@ fn validate_engine_owned_pointer_slot(
             expected.logical_name
         ));
     }
-    // No live-slot comparison here, deliberately. `perform_recorded_cas`
-    // records the exchange before its fallible page-protection cleanup, so an
-    // install can legitimately fail *after* the slot already holds the shim;
-    // recovery is a retry that replays the recorded exchange. A pre-check
-    // demanding the slot still read the original would reject exactly those
-    // retries before `decide_pointer_slot_install_cas` ever sees them, turning
-    // a recoverable partial install into a redirection with no obtainable
-    // receipt and therefore no teardown path. Whether the live slot is
-    // acceptable is the custody state machine's question, and it distinguishes
-    // a replayable record from an unwitnessed foreign write -- which this
-    // check could not. The PE64 import path likewise leaves it alone.
     Ok(slot_address)
 }
 
-/// True when `rva` lands inside a section carrying `IMAGE_SCN_MEM_EXECUTE`.
 #[cfg(windows)]
 fn module_rva_is_executable(module: &ObservedMainModule, rva: u64) -> bool {
     rva_is_in_executable_section(&module.sections, rva)
@@ -4387,14 +3844,6 @@ fn module_rva_is_executable(module: &ObservedMainModule, rva: u64) -> bool {
 #[cfg(windows)]
 const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 
-/// Containment against the section's *loaded* extent.
-///
-/// `VirtualSize` and `SizeOfRawData` are different quantities and neither
-/// bounds the other: file alignment pads the raw size upwards, `.bss`-style
-/// zero-fill makes the virtual size the larger one. Only `VirtualSize`
-/// describes what is mapped, so only it answers "is this RVA inside the
-/// section". In a729's `.text` the raw size is 0x1D8 bytes longer than the
-/// virtual size, so using it would accept RVAs past the end of the section.
 #[cfg(windows)]
 fn rva_is_in_executable_section(sections: &[PeSection], rva: u64) -> bool {
     let rva = match usize::try_from(rva) {
@@ -4408,11 +3857,6 @@ fn rva_is_in_executable_section(sections: &[PeSection], rva: u64) -> bool {
     })
 }
 
-/// The image base the file's own optional header prefers.
-///
-/// The static initializer stored in an engine-owned slot is an absolute address
-/// relative to *this* base, not to wherever the loader mapped the module, so a
-/// file-image check has to rebase against it.
 #[cfg(windows)]
 fn file_preferred_image_base(module: &ObservedMainModule) -> Result<u64, String> {
     let pe_offset = read_u32(&module.file_bytes, 0x3c, "file PE header offset")? as usize;
@@ -4429,21 +3873,14 @@ fn file_preferred_image_base(module: &ObservedMainModule) -> Result<u64, String>
     Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
 }
 
-/// Refuse an engine-owned admission whose slot lands in the import directory or
-/// in any import address table.
-///
-/// This is the guard that keeps the two attestations from being confused. An
 /// import slot has a loader-owned lifetime and a DLL/symbol identity that an
-/// engine-owned receipt does not carry; redirecting one through the
-/// engine-owned front would attest an owning structure that does not exist and
-/// would omit the import identity that does.
 #[cfg(windows)]
 fn reject_pe64_import_table_overlap(
     module: &ObservedMainModule,
     expected: ExpectedPointerSlot,
 ) -> Result<(), String> {
-    let slot_rva =
-        usize::try_from(expected.slot_rva).map_err(|_| "engine-owned slot RVA does not fit usize")?;
+    let slot_rva = usize::try_from(expected.slot_rva)
+        .map_err(|_| "engine-owned slot RVA does not fit usize")?;
     let slot_end = slot_rva
         .checked_add(size_of::<u64>())
         .ok_or("engine-owned slot RVA range overflow")?;
@@ -4489,8 +3926,6 @@ fn reject_pe64_import_table_overlap(
     if import_directory_rva == 0 || import_directory_size < 20 {
         return Ok(());
     }
-    // The IAT data directory is advisory: walk the descriptors and refuse an
-    // overlap with any real first-thunk array as well.
     let descriptor_count = (import_directory_size / 20).min(4096);
     for descriptor_index in 0..descriptor_count {
         let descriptor_rva = import_directory_rva
@@ -4707,11 +4142,6 @@ fn file_c_string_at_rva(
     Err("PE64 import string is unterminated".into())
 }
 
-/// One atomic pointer-slot compare-exchange, as observed when it ran.
-///
-/// Recorded verbatim into the terminalizing binding so a retry can replay the
-/// values this crate actually saw rather than reconstruct them from what the
-/// caller expected to see.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AtomicPointerCasObservation {
     pub observed_before: usize,
@@ -4720,64 +4150,30 @@ pub struct AtomicPointerCasObservation {
     pub protection_after: u32,
 }
 
-// ---------------------------------------------------------------------------
-// PE64 import-slot custody decisions.
-//
-// These are deliberately pure: they take values the `#[cfg(windows)]` paths
-// have already observed and return a decision or a typed refusal. The entry
-// points that call them are gated behind `observe_main_module()` and cannot be
-// driven from a test process; the decisions themselves are the part that has
-// to be right, so they live here where they are directly exercisable.
-// ---------------------------------------------------------------------------
-
-/// Why a PE64 import-slot restore refused to attest a shim -> original
-/// transition. Typed rather than stringly so a caller -- or a test -- can pin
-/// *which* refusal fired instead of only that one did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerSlotRestoreCustodyError {
-    /// The slot already reads the original export, but this crate never
-    /// recorded a compare-exchange for it. Some agent outside this crate
-    /// performed the transition (a competing hook engine unhooking, a shim
-    /// that never installed, a rewritten slot). Custody is unresolvable: the
-    /// crate cannot attest a transition it did not perform and must not adopt
-    /// someone else's restore.
-    UnwitnessedForeignRestore { observed_slot_value: usize },
-    /// A prior attempt of this crate recorded a completed compare-exchange,
-    /// but the slot no longer reads the original export that attempt left in
-    /// it. The recorded observation no longer describes the live slot.
+    UnwitnessedForeignRestore {
+        observed_slot_value: usize,
+    },
     RecordedRestoreCasSlotDiverged {
         observed_slot_value: usize,
         expected_original_address: usize,
     },
-    /// The external shim and the original export share one address, so "the
-    /// slot reads the shim" and "the slot reads the original" are the same
-    /// observation and no transition is attestable in either direction.
-    IndistinguishableShimAndOriginalAddress { address: usize },
-    /// A recorded compare-exchange was completed, but the page protection it
-    /// left behind has still not been observed back at the value the exchange
-    /// started from. The transition happened; the custody of the page has not
-    /// been resolved, so no receipt may form yet.
+    IndistinguishableShimAndOriginalAddress {
+        address: usize,
+    },
     RecordedRestoreProtectionUnreconciled {
         protection_before: u32,
         protection_after: u32,
     },
-    /// The exchange ran but the record this crate holds for the slot is not the
-    /// one it just performed. The write went somewhere other than the custody
-    /// the receipt is minted against, so the evidence a retry needs is not
-    /// where it has to be.
     RecordedRestoreCasNotRetained {
         retained: Option<RecordedRestoreCas>,
         performed: RecordedRestoreCas,
     },
-    /// The page protection the exchange observed before it ran is not the
-    /// protection observed when the lease over the slot was taken -- something
-    /// outside this crate re-protected the page in between.
     RestoreCasProtectionBeforeDivergedFromLease {
         lease_protection: u32,
         cas_protection_before: u32,
     },
-    /// The page protection observed after the exchange is not the protection
-    /// observed when the lease was taken.
     RestoreCasProtectionAfterDivergedFromLease {
         lease_protection: u32,
         cas_protection_after: u32,
@@ -4836,50 +4232,20 @@ impl std::fmt::Display for PointerSlotRestoreCustodyError {
     }
 }
 
-/// What this crate recorded about a restore compare-exchange it performed.
-///
-/// Written the instant the hardware `compare_exchange` returns and *before* any
-/// fallible page-protection cleanup, so a failure during that cleanup leaves
-/// evidence of the transition behind instead of losing it.
-/// `protection_reconciled` distinguishes "exchange done, page protection still
-/// owed" from "exchange done and the page is back where it started"; only the
-/// latter can form a receipt.
-///
-/// Constructible only inside [`crate::custody_record`], and there only by
-/// performing an exchange. A synthesized `observed_before` -- the defect this
-/// whole mechanism exists to prevent -- is a compile error outside that module
-/// rather than something a test has to catch.
 pub type RecordedRestoreCas = custody_record::RecordedCas<custody_record::Restore>;
 
-/// The durable slot a restore record lives in, owned by the terminalizing
-/// binding the custody registry holds.
 pub type RestoreCasCustody = custody_record::CasCustody<custody_record::Restore>;
 
-/// A restore record whose landing in the terminalizing binding has not been
 /// checked yet. [`release_restore_cas_if_custody_matches`] turns one into a
-/// [`RecordedRestoreCas`].
 pub type UnconfirmedRestoreCas = custody_record::UnconfirmedCas<custody_record::Restore>;
 
-/// Which arm the restore path takes for one import slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerSlotRestoreCasDecision {
-    /// Drive a real compare-exchange and record what it returns.
     PerformCas,
-    /// Replay the recorded exchange. Its page protection was already
-    /// reconciled, so only the live protection has to be re-observed.
     ReplayRecordedCas(RecordedRestoreCas),
-    /// Replay the recorded exchange, but finish the page-protection
-    /// reconciliation the earlier attempt failed to complete before returning.
-    /// This is the resumable state an exchange followed by a failed protection
-    /// restore leaves behind.
     ReconcileProtectionThenReplay(RecordedRestoreCas),
 }
 
-/// Choose the restore arm from recorded custody, never from the slot alone.
-///
-/// `recorded_prior_cas` is `Some` only when this crate's own exchange returned
-/// for this `(teardown_owner_token, slot_rva)`, so neither replay arm is
-/// reachable without that evidence.
 pub fn decide_pointer_slot_restore_cas(
     current_slot_value: usize,
     expected_original_address: usize,
@@ -4911,11 +4277,9 @@ pub fn decide_pointer_slot_restore_cas(
         }
         None => {
             if current_slot_value == expected_original_address {
-                return Err(
-                    PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
-                        observed_slot_value: current_slot_value,
-                    },
-                );
+                return Err(PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
+                    observed_slot_value: current_slot_value,
+                });
             }
             Ok(PointerSlotRestoreCasDecision::PerformCas)
         }
@@ -4923,49 +4287,21 @@ pub fn decide_pointer_slot_restore_cas(
 }
 
 /// Release the record an exchange just produced, if the custody the caller
-/// observed holds it.
-///
-/// `custody_record::perform_recorded_cas` writes through the `&mut` it is handed
-/// and cannot tell whether that borrow points into the registry entry this
-/// receipt will be minted from -- safe Rust has no way to state the provenance
-/// of a `&mut`. So the call site re-reads the entry afterwards and passes what it
-/// found here. What this establishes is only that the record matches the
-/// `observed_custody` it was given; the value of that depends entirely on the
-/// caller having re-read its real storage, which is why
-/// [`confirm_terminalizing_restore_custody_retained`] does the re-read itself
-/// rather than trusting a caller to.
-///
-/// A record that did not land is fail-closed either way -- the next attempt
-/// finds no evidence and refuses the transition as unwitnessed -- so this turns
-/// a silent liveness loss into a named refusal at the point it happens.
 pub fn release_restore_cas_if_custody_matches(
     observed_custody: Option<RecordedRestoreCas>,
     performed: UnconfirmedRestoreCas,
 ) -> Result<RecordedRestoreCas, PointerSlotRestoreCustodyError> {
     performed
         .release_if_custody_matches(observed_custody)
-        .map_err(|mismatch| {
-            PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
+        .map_err(
+            |mismatch| PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
                 retained: mismatch.retained,
                 performed: mismatch.performed,
-            }
-        })
+            },
+        )
 }
 
-/// Refuse unless the page protection the exchange saw, and left, is the
-/// protection observed when the lease over this slot was taken.
-///
-/// Both comparisons are against the lease's observation, not the record's own.
-/// KNOWN, DELIBERATE, and re-affirmed rather than changed: if an external agent
-/// re-protects the page between the lease observation and the exchange, a
-/// successful exchange records the newer value, this refuses, and no retry can
-/// satisfy both this and [`complete_recorded_restore_cas_observation`] at once
 /// -- the lease stays terminalizing for the process lifetime. That is a
-/// liveness cost, never a forged receipt, and the alternative is worse: an
-/// external re-protection of a page this crate holds custody of is exactly the
-/// kind of event a custody receipt must not silently absorb. The typed variants
-/// exist so an operator reading the log can tell that case from a cleanup that
-/// failed to put the page back.
 pub fn verify_restore_cas_matches_lease_protection(
     lease_protection: u32,
     cas: AtomicPointerCasObservation,
@@ -4989,13 +4325,6 @@ pub fn verify_restore_cas_matches_lease_protection(
     Ok(())
 }
 
-/// Render the message a timed-out quiescence reports.
-///
-/// This is the production renderer, not a test-side reconstruction of it: the
-/// call site passes the outcome straight through, so every number in the text
-/// is one the loop counted rather than one recomputed from `max_yields`. Kept
-/// pure and separate precisely so a test can assert the *rendered* string and
-/// therefore catch a call site that starts quoting the wrong field.
 pub fn render_pointer_slot_quiesce_timeout(
     logical_name: &str,
     outcome: &Pe64ImportSlotQuiesceOutcome,
@@ -5006,12 +4335,6 @@ pub fn render_pointer_slot_quiesce_timeout(
     )
 }
 
-/// Turn a recorded exchange plus the live page protection into the complete
-/// observation a receipt is minted from.
-///
-/// Refuses unless the page is back at the protection the exchange started from,
-/// so an unreconciled record can never reach a receipt no matter which arm
-/// produced it.
 pub fn complete_recorded_restore_cas_observation(
     recorded: RecordedRestoreCas,
     protection_after: u32,
@@ -5032,65 +4355,31 @@ pub fn complete_recorded_restore_cas_observation(
     })
 }
 
-// ---------------------------------------------------------------------------
-// PE64 import-slot install custody decisions.
-//
-// The install direction of the custody problem the restore helpers above solve,
-// deliberately kept as its own record type, decision, storage trait and error
-// rather than sharing theirs. The two directions swap the roles of
-// `expected_original_address` and `external_shim_address`, so a record of one
-// direction is not evidence for the other; keeping the types disjoint means the
-// type system, not a convention, prevents one being replayed as the other.
-// ---------------------------------------------------------------------------
-
-/// Why a PE64 import-slot install refused to attest an original -> shim
-/// transition. Typed rather than stringly so a caller -- or a test -- can pin
-/// *which* refusal fired instead of only that one did.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerSlotInstallCustodyError {
-    /// The slot already reads the external shim, but this crate never recorded
-    /// a compare-exchange for it. Whatever put that value there did so outside
-    /// this crate's custody (a competing hook engine, a previous process
     /// lifetime's leftovers, a rewritten slot). Custody is unresolvable: the
-    /// crate cannot attest an installation it did not perform, and an
-    /// installation receipt is exactly that attestation.
-    UnwitnessedForeignInstall { observed_slot_value: usize },
-    /// A prior attempt of this crate recorded a completed compare-exchange, but
-    /// the slot no longer reads the external shim that attempt left in it. The
-    /// recorded observation no longer describes the live slot.
+    UnwitnessedForeignInstall {
+        observed_slot_value: usize,
+    },
     RecordedInstallCasSlotDiverged {
         observed_slot_value: usize,
         external_shim_address: usize,
     },
-    /// The external shim and the original export share one address, so "the
-    /// slot reads the original" and "the slot reads the shim" are the same
-    /// observation and no transition is attestable in either direction.
-    IndistinguishableShimAndOriginalAddress { address: usize },
-    /// A recorded compare-exchange was completed, but the page protection it
-    /// left behind has still not been observed back at the value the exchange
-    /// started from. The transition happened; the custody of the page has not
-    /// been resolved, so no receipt may form yet.
+    IndistinguishableShimAndOriginalAddress {
+        address: usize,
+    },
     RecordedInstallProtectionUnreconciled {
         protection_before: u32,
         protection_after: u32,
     },
-    /// The exchange ran but the record this crate holds for the slot is not the
-    /// one it just performed. The write went somewhere other than the custody
-    /// the receipt is minted against, so the evidence a retry needs is not
-    /// where it has to be.
     RecordedInstallCasNotRetained {
         retained: Option<RecordedInstallCas>,
         performed: RecordedInstallCas,
     },
-    /// The page protection the exchange observed before it ran is not the
-    /// protection observed when the lease over the slot was taken -- something
-    /// outside this crate re-protected the page in between.
     InstallCasProtectionBeforeDivergedFromLease {
         lease_protection: u32,
         cas_protection_before: u32,
     },
-    /// The page protection observed after the exchange is not the protection
-    /// observed when the lease was taken.
     InstallCasProtectionAfterDivergedFromLease {
         lease_protection: u32,
         cas_protection_after: u32,
@@ -5149,54 +4438,20 @@ impl std::fmt::Display for PointerSlotInstallCustodyError {
     }
 }
 
-/// What this crate recorded about an install compare-exchange it performed.
-///
-/// Written the instant the hardware `compare_exchange` returns and *before* any
-/// fallible page-protection cleanup, so a failure during that cleanup leaves
-/// evidence of the transition behind instead of losing it.
-/// `protection_reconciled` distinguishes "exchange done, page protection still
-/// owed" from "exchange done and the page is back where it started"; only the
-/// latter can form a receipt.
-///
-/// A distinct type from [`RecordedRestoreCas`], not an alias of it: the two
-/// directions swap the roles of the original and the shim address, so a record
-/// of one is not evidence for the other and the compiler refuses to substitute
-/// them. Constructible only inside [`crate::custody_record`], and there only by
-/// performing an exchange.
 pub type RecordedInstallCas = custody_record::RecordedCas<custody_record::Install>;
 
-/// The durable slot an install record lives in, owned by the provisional
-/// binding the custody registry holds.
 pub type InstallCasCustody = custody_record::CasCustody<custody_record::Install>;
 
-/// An install record whose landing in the provisional binding has not been
 /// checked yet. [`release_install_cas_if_custody_matches`] turns one into a
-/// [`RecordedInstallCas`].
 pub type UnconfirmedInstallCas = custody_record::UnconfirmedCas<custody_record::Install>;
 
-/// Which arm the install path takes for one import slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PointerSlotInstallCasDecision {
-    /// Drive a real compare-exchange and record what it returns.
     PerformCas,
-    /// Replay the recorded exchange. Its page protection was already
-    /// reconciled, so only the live protection has to be re-observed.
     ReplayRecordedCas(RecordedInstallCas),
-    /// Replay the recorded exchange, but finish the page-protection
-    /// reconciliation the earlier attempt failed to complete before returning.
-    /// This is the resumable state an exchange followed by a failed protection
-    /// restore leaves behind.
     ReconcileProtectionThenReplay(RecordedInstallCas),
 }
 
-/// Choose the install arm from recorded custody, never from the slot alone.
-///
-/// `recorded_prior_cas` is `Some` only when this crate's own exchange returned
-/// for this `(teardown_owner_token, slot_rva)`, so neither replay arm is
-/// reachable without that evidence. A first attempt that finds the slot already
-/// reading the shim is refused outright rather than adopted: an installation
-/// receipt attests that *this* invocation performed the original -> shim
-/// transition, and there is nothing here to support that claim.
 pub fn decide_pointer_slot_install_cas(
     current_slot_value: usize,
     expected_original_address: usize,
@@ -5228,11 +4483,9 @@ pub fn decide_pointer_slot_install_cas(
         }
         None => {
             if current_slot_value == external_shim_address {
-                return Err(
-                    PointerSlotInstallCustodyError::UnwitnessedForeignInstall {
-                        observed_slot_value: current_slot_value,
-                    },
-                );
+                return Err(PointerSlotInstallCustodyError::UnwitnessedForeignInstall {
+                    observed_slot_value: current_slot_value,
+                });
             }
             Ok(PointerSlotInstallCasDecision::PerformCas)
         }
@@ -5240,29 +4493,21 @@ pub fn decide_pointer_slot_install_cas(
 }
 
 /// Release the record an exchange just produced, if the custody the caller
-/// observed holds it. The install direction of
 /// [`release_restore_cas_if_custody_matches`]; see it for what this does and
-/// does not establish.
 pub fn release_install_cas_if_custody_matches(
     observed_custody: Option<RecordedInstallCas>,
     performed: UnconfirmedInstallCas,
 ) -> Result<RecordedInstallCas, PointerSlotInstallCustodyError> {
     performed
         .release_if_custody_matches(observed_custody)
-        .map_err(|mismatch| {
-            PointerSlotInstallCustodyError::RecordedInstallCasNotRetained {
+        .map_err(
+            |mismatch| PointerSlotInstallCustodyError::RecordedInstallCasNotRetained {
                 retained: mismatch.retained,
                 performed: mismatch.performed,
-            }
-        })
+            },
+        )
 }
 
-/// Refuse unless the page protection the exchange saw, and left, is the
-/// protection observed when the lease over this slot was taken.
-///
-/// The install direction of [`verify_restore_cas_matches_lease_protection`],
-/// with the identical deliberate liveness cost. The two are kept in step by
-/// being the same shape over the same fields.
 pub fn verify_install_cas_matches_lease_protection(
     lease_protection: u32,
     cas: AtomicPointerCasObservation,
@@ -5286,12 +4531,6 @@ pub fn verify_install_cas_matches_lease_protection(
     Ok(())
 }
 
-/// Turn a recorded install exchange plus the live page protection into the
-/// complete observation a receipt is minted from.
-///
-/// Refuses unless the page is back at the protection the exchange started from,
-/// so an unreconciled record can never reach a receipt no matter which arm
-/// produced it.
 pub fn complete_recorded_install_cas_observation(
     recorded: RecordedInstallCas,
     protection_after: u32,
@@ -5312,49 +4551,16 @@ pub fn complete_recorded_install_cas_observation(
     })
 }
 
-/// Wall-clock budget for the quiescence loop. **This is an operational policy
-/// limit, not a derivation** -- nothing about the loop bounds how long a
-/// collector callback takes to leave the shim.
-///
-/// What the loop waits for is callbacks already inside the sealed shim to
-/// return. It cannot make that happen: `std::thread::yield_now` is
-/// `SwitchToThread`, which offers a scheduling opportunity to a ready thread on
-/// the current processor, guarantees no fairness, and does not imply any
-/// callback completes; a callback that is blocked stays active across any
-/// number of yields. So iterations bound only a proxy, and this budget bounds
-/// the quantity that actually matters.
-///
-/// The policy the 2 seconds encodes: teardown runs on a caller thread and holds
-/// the sealed-shim lease for this slot, so a stalled quiescence blocks any
-/// later install for the same slot. Long enough that a callback merely
-/// descheduled several times still finishes; short enough that a teardown never
-/// reads as hung. Expiry is not data loss -- the function returns its resumable
-/// timeout error with the dispatch already cut over to the original, so the
-/// caller may re-drive it.
 const POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS: u64 = 2_000_000_000;
 
-/// See [`POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS`].
 pub const POINTER_SLOT_QUIESCE_TIME_BUDGET: Duration =
     Duration::from_nanos(POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS);
 
-/// Cost this policy assumes one loop iteration cannot go below: a `VirtualQuery`
-/// plus a `SwitchToThread`. It is used only to size the iteration backstop below
-/// so that the backstop sits above what the time budget can admit -- it is not a
-/// claim about how long an iteration takes in practice.
 const POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS: u64 = 1_000;
 
-/// Ceiling on the caller-supplied yield budget of
-/// [`quiesce_pointer_slot`].
-///
-/// A **backstop**, not the operative bound. [`POINTER_SLOT_QUIESCE_TIME_BUDGET`]
-/// is what stops a contended loop; this catches a caller asking for an absurd
-/// iteration count and a clock that has stalled or gone backwards. It is derived
-/// from the two policy numbers above -- the iterations the time budget could
-/// admit if every one of them cost only the assumed minimum -- so it sits above
-/// the clock rather than pre-empting it, and it moves when the budget moves.
 pub const MAX_POINTER_SLOT_QUIESCE_YIELDS: u32 = {
-    let iterations = POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS
-        / POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS;
+    let iterations =
+        POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS / POINTER_SLOT_QUIESCE_ASSUMED_MIN_ITERATION_NANOS;
     if iterations > u32::MAX as u64 {
         u32::MAX
     } else {
@@ -5362,7 +4568,6 @@ pub const MAX_POINTER_SLOT_QUIESCE_YIELDS: u32 = {
     }
 };
 
-/// Why a quiescence yield budget was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Pe64ImportSlotQuiesceBoundError {
     YieldBudgetAboveCeiling { requested: u32, ceiling: u32 },
@@ -5379,7 +4584,6 @@ impl std::fmt::Display for Pe64ImportSlotQuiesceBoundError {
     }
 }
 
-/// Validate a caller-supplied quiescence yield budget against the ceiling.
 pub fn validate_pointer_slot_quiesce_yields(
     max_yields: u32,
 ) -> Result<u32, Pe64ImportSlotQuiesceBoundError> {
@@ -5392,14 +4596,10 @@ pub fn validate_pointer_slot_quiesce_yields(
     Ok(max_yields)
 }
 
-/// Why the quiescence loop stopped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Pe64ImportSlotQuiesceStop {
-    /// An observation returned an active callback count of zero.
     Quiesced,
-    /// The caller-supplied yield budget ran out.
     YieldBudgetExhausted,
-    /// [`POINTER_SLOT_QUIESCE_TIME_BUDGET`] ran out.
     TimeBudgetExhausted,
 }
 
@@ -5413,10 +4613,6 @@ impl std::fmt::Display for Pe64ImportSlotQuiesceStop {
     }
 }
 
-/// What the quiescence loop actually did, counted by the loop itself.
-///
-/// The timeout message quotes these fields rather than recomputing them from
-/// `max_yields`, so the message cannot drift from the loop's behaviour.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Pe64ImportSlotQuiesceOutcome {
     pub stopped_on: Pe64ImportSlotQuiesceStop,
@@ -5431,19 +4627,6 @@ impl Pe64ImportSlotQuiesceOutcome {
     }
 }
 
-/// The quiescence loop itself.
-///
-/// This is the loop `quiesce_pointer_slot` runs -- the observation,
-/// the yield, and both bounds are here, not duplicated at the call site -- so a
-/// test that drives it with its own closures exercises the real control flow.
-/// The `#[cfg(windows)]` caller supplies `observe_active_callback_count`,
-/// `yield_now` and `elapsed`; nothing else about the loop is platform-specific.
-///
-/// One observation precedes any yield and one follows each yield, so a run that
-/// stops on the yield budget has performed `max_yields` yields and
-/// `max_yields + 1` observations. The time budget is checked after an
-/// observation shows callbacks still active and before the yield that would
-/// follow it, so an already-quiesced slot is never failed for lateness.
 pub fn drive_pointer_slot_quiesce_loop<E>(
     max_yields: u32,
     time_budget: Duration,
@@ -5527,12 +4710,6 @@ fn atomic_cutover_external_dispatch_to_original(
     Ok(())
 }
 
-/// A pointer-slot compare-exchange that has been prepared but not yet performed.
-///
-/// Splitting the operation into prepare / exchange / finish is what lets the
-/// restore path persist the exchange's result with no fallible call standing
-/// between the two: everything that can fail is either before the exchange
-/// (`begin_`) or after the record has been written (`finish_`).
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PreparedPointerSlotCas {
@@ -5542,8 +4719,6 @@ struct PreparedPointerSlotCas {
     was_writable: bool,
 }
 
-/// Everything fallible that must happen *before* the exchange: validate the
-/// slot memory, observe the page protection, and make the page writable.
 #[cfg(windows)]
 fn begin_atomic_compare_exchange_pointer_slot(
     address: usize,
@@ -5589,8 +4764,6 @@ fn begin_atomic_compare_exchange_pointer_slot(
     })
 }
 
-/// The exchange itself. Infallible by construction: the caller must be able to
-/// persist what it returns without a `?` in between.
 #[cfg(windows)]
 fn exchange_pointer_slot(
     prepared: &PreparedPointerSlotCas,
@@ -5606,8 +4779,6 @@ fn exchange_pointer_slot(
     observed_before
 }
 
-/// Everything fallible that must happen *after* the exchange: put the page
-/// protection back and confirm it landed. Returns the observed protection.
 #[cfg(windows)]
 fn finish_atomic_compare_exchange_pointer_slot(
     prepared: PreparedPointerSlotCas,
@@ -5635,12 +4806,6 @@ fn finish_atomic_compare_exchange_pointer_slot(
     }
     Ok(protection_after)
 }
-
-// The "prepare, exchange and finish in one call" wrapper that used to live here
-// was deleted with the install path's last non-recording caller. Both remaining
-// compare-exchange call sites have to persist the exchange result before the
-// fallible cleanup runs, which is precisely what the wrapper could not do; a
-// second sequencing of the same three steps is a drift hazard with no user.
 
 #[cfg(windows)]
 fn validate_atomic_pointer_slot_memory(address: usize) -> Result<(), String> {
@@ -5692,15 +4857,8 @@ fn pointer_slot_protection(address: usize) -> Result<u32, String> {
     Ok(info.Protect)
 }
 
-/// Put a slot's page protection back at `expected` if it has drifted, then
-/// report what it actually reads. Used by the replay arms of both the install
-/// and the restore path -- the operation is the same in either direction -- so
-/// a retry finishes the cleanup a failed attempt left owed.
 #[cfg(windows)]
-fn reconcile_pointer_slot_protection(
-    address: usize,
-    expected: u32,
-) -> Result<u32, String> {
+fn reconcile_pointer_slot_protection(address: usize, expected: u32) -> Result<u32, String> {
     let observed = pointer_slot_protection(address)?;
     if observed != expected {
         restore_pointer_slot_protection(address, observed, expected)?;
@@ -6308,29 +5466,15 @@ mod pe64_import_slot_custody_decision_tests {
     use super::*;
     use std::time::Duration;
 
-    /// Stand-in addresses. They only have to be distinct and non-zero: the
-    /// decision helper compares them, it never dereferences them.
     const ORIGINAL: usize = 0x7FFA_1111_0000;
     const SHIM: usize = 0x0000_2222_3000;
     const FOREIGN: usize = 0x0000_3333_4000;
 
-    /// `observed_before` here is deliberately *not* `SHIM`. The pre-fix code
-    /// synthesized `observed_before` as `installed.external_shim_address`, so
-    /// any test whose recorded value equals `SHIM` cannot tell a replay from a
-    /// reconstruction. This sentinel can.
     const RECORDED_SENTINEL_BEFORE: usize = 0x0000_5555_6000;
 
-    /// Page protections. Distinct so a test can tell which field was replayed.
     const PROTECTION_BEFORE: u32 = 0x11;
     const PROTECTION_TEMPORARY: u32 = 0x22;
 
-    /// A recorded exchange whose page cleanup completed.
-    ///
-    /// Built by actually driving `custody_record::perform_recorded_cas`, because
-    /// there is no other way: `RecordedRestoreCas` has private fields and no
-    /// constructor outside `custody_record`, so a test cannot hand-assemble one
-    /// any more than production can. That is what this lane changed -- the
-    /// forged record these helpers used to be written as is now a compile error.
     fn recorded_cas() -> RecordedRestoreCas {
         let mut custody = RestoreCasCustody::unrecorded();
         let (performed, _) = perform_recorded_cas(
@@ -6345,9 +5489,6 @@ mod pe64_import_slot_custody_decision_tests {
             .expect("the helper writes into the cell it was handed")
     }
 
-    /// A recorded exchange that completed but whose page cleanup then failed --
-    /// the state Finding 1 is about. Read back out of the custody cell, because
-    /// that path returns `Err` rather than a record.
     fn recorded_cas_pending_protection() -> RecordedRestoreCas {
         let mut custody = RestoreCasCustody::unrecorded();
         let outcome = perform_recorded_cas(
@@ -6362,67 +5503,31 @@ mod pe64_import_slot_custody_decision_tests {
             .expect("the exchange is recorded before the cleanup runs")
     }
 
-    // ---- Defect A: restore arm selection --------------------------------
-
-    // FALSIFIABILITY: delete the `current_slot_value == expected_original_address`
-    // refusal in the `None` branch of `decide_pointer_slot_restore_cas` --
-    // i.e. restore the pre-fix behaviour where an already-original slot silently
-    // took the synthesized-observation arm -- and this test fails: the call
-    // returns `Ok(PerformCas)` instead of `Err(UnwitnessedForeignRestore)`.
-    //
-    // This is the forged-attestation case. On a first attempt the crate has
-    // recorded no CAS; if the slot already reads the original then some agent
-    // outside this crate performed the transition and no receipt may be minted.
     #[test]
     fn first_attempt_with_slot_already_original_and_no_record_is_refused() {
         let outcome = decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, None);
         assert_eq!(
             outcome,
-            Err(
-                PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
-                    observed_slot_value: ORIGINAL
-                }
-            )
+            Err(PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
+                observed_slot_value: ORIGINAL
+            })
         );
     }
 
-    // FALSIFIABILITY: make the `None` branch refuse unconditionally, or invert
-    // its comparison to `current_slot_value != expected_original_address`, and
-    // this test fails: the genuine first attempt no longer reaches `PerformCas`.
-    // This is the negative arm of the test above -- without it the refusal could
-    // be a blanket rejection and still look correct.
     #[test]
     fn first_attempt_with_slot_holding_the_shim_performs_a_real_cas() {
         let outcome = decide_pointer_slot_restore_cas(SHIM, ORIGINAL, SHIM, None);
         assert_eq!(outcome, Ok(PointerSlotRestoreCasDecision::PerformCas));
     }
 
-    // FALSIFIABILITY: change the `Some(recorded)` branch to rebuild the
-    // observation from the caller-supplied addresses -- e.g. return
-    // `ReplayRecordedCas(AtomicPointerCasObservation { observed_before:
-    // external_shim_address, .. })`, which is exactly what the pre-fix code did
-    // -- and this test fails on `observed_before`, because the replayed value
-    // would become `SHIM` instead of the recorded sentinel.
-    //
-    // This is property A2: the retry arm reports what the earlier CAS actually
-    // returned, never a value reconstructed from `installed`.
     #[test]
     fn retry_replays_the_recorded_observation_verbatim() {
-        // The sentinel is load-bearing test data, so pin it here. Set it equal
-        // to `SHIM` and the assertion below passes against the pre-fix
-        // reconstruction as well -- the test would go vacuous with nothing
-        // going red anywhere.
         assert_ne!(RECORDED_SENTINEL_BEFORE, SHIM);
         assert_ne!(RECORDED_SENTINEL_BEFORE, ORIGINAL);
         assert_ne!(SHIM, ORIGINAL);
 
         let recorded = recorded_cas();
         let outcome = decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
-        // Field by field rather than against `recorded_cas()`: comparing the
-        // decision to the same helper that produced its input would pass for any
-        // implementation that echoes its argument, including one that rebuilt the
-        // record from the addresses. These four values are the ones a receipt
-        // copies.
         let Ok(PointerSlotRestoreCasDecision::ReplayRecordedCas(replayed)) = outcome else {
             panic!("a reconciled record must select the plain replay arm: {outcome:?}");
         };
@@ -6430,7 +5535,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(replayed.protection_before(), PROTECTION_BEFORE);
         assert_eq!(replayed.protection_temporary(), PROTECTION_TEMPORARY);
         assert!(replayed.protection_reconciled());
-        // ...and the value that reaches the receipt is that same recorded one.
         assert_eq!(
             complete_recorded_restore_cas_observation(recorded, PROTECTION_BEFORE),
             Ok(AtomicPointerCasObservation {
@@ -6442,14 +5546,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // ---- Finding 1: a completed exchange must survive a failed cleanup ----
-
-    // FALSIFIABILITY: make the `Some(recorded)` branch return `ReplayRecordedCas`
-    // regardless of `protection_reconciled` -- i.e. collapse the two replay
-    // variants back into one -- and this test fails. It is the sequencing
-    // decision for the state a successful exchange followed by a failed page
-    // cleanup leaves behind: the exchange happened and must be replayed, but the
-    // page cleanup is still owed and has to run before a receipt can form.
     #[test]
     fn retry_after_a_cleanup_failure_resumes_the_protection_reconciliation() {
         let outcome = decide_pointer_slot_restore_cas(
@@ -6468,19 +5564,10 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: delete the record-back between `exchange_pointer_slot` and
-    // `finish_atomic_compare_exchange_pointer_slot` in the `PerformCas` arm --
-    // i.e. go back to recording only after the fallible cleanup returned -- and
-    // the state this test describes becomes `None` instead, which
-    // `first_attempt_with_slot_already_original_and_no_record_is_refused` shows
-    // is refused as `UnwitnessedForeignRestore`. This test names the outcome
-    // that refusal would wrongly produce for a caller who genuinely did perform
-    // the transition.
     #[test]
     fn a_recorded_exchange_is_never_mistaken_for_a_foreign_restore() {
         for recorded in [recorded_cas(), recorded_cas_pending_protection()] {
-            let outcome =
-                decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
+            let outcome = decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded));
             assert!(
                 !matches!(
                     outcome,
@@ -6491,14 +5578,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: move the `custody.record = Some(recorded)` write in
-    // `custody_record::perform_recorded_cas` to after `finish(prepared)?` --
-    // exactly the ordering Finding 1 identified, where the record is written
-    // only once the fallible page cleanup has returned -- and this test fails:
-    // the custody cell comes back empty. That empty state is what leaves a
-    // caller who genuinely did perform the transition refused as
-    // `UnwitnessedForeignRestore`, and the last assertion here is the retry it
-    // must get instead.
     #[test]
     fn a_cleanup_failure_after_the_exchange_still_leaves_the_exchange_recorded() {
         let mut custody = RestoreCasCustody::unrecorded();
@@ -6509,9 +5588,6 @@ mod pe64_import_slot_custody_decision_tests {
             |_: ()| Err("page protection restoration failed"),
         );
         assert_eq!(outcome, Err("page protection restoration failed"));
-        // This is the same cell type production hands in -- the field of the
-        // registry binding -- so this pins the write production actually
-        // performs rather than one the test supplied.
         let stored = custody
             .recorded()
             .expect("the exchange must be recorded before the cleanup runs");
@@ -6521,25 +5597,10 @@ mod pe64_import_slot_custody_decision_tests {
         assert!(!stored.protection_reconciled());
         assert_eq!(
             decide_pointer_slot_restore_cas(ORIGINAL, ORIGINAL, SHIM, custody.recorded()),
-            Ok(
-                PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(stored)
-            )
+            Ok(PointerSlotRestoreCasDecision::ReconcileProtectionThenReplay(stored))
         );
     }
 
-    // FALSIFIABILITY: drop the second `custody.record = Some(reconciled)` write
-    // in `custody_record::perform_recorded_cas` and this test fails -- the cell
-    // would still hold the unreconciled record, so a fully completed restore
-    // would stay marked as owing page cleanup forever and
-    // `complete_recorded_restore_cas_observation` would refuse it. The
-    // companion property -- that the *first* write lands before the fallible
-    // cleanup -- is pinned by
-    // `a_cleanup_failure_after_the_exchange_still_leaves_the_exchange_recorded`,
-    // which is the only path on which that intermediate write is observable.
-    //
-    // The exchange and the cleanup here are injected closures, so what this pins
-    // is the ordering contract -- not that a hardware compare-exchange swapped
-    // anything.
     #[test]
     fn a_restore_exchange_whose_injected_cleanup_succeeds_is_recorded_as_reconciled() {
         let mut custody = RestoreCasCustody::unrecorded();
@@ -6552,8 +5613,7 @@ mod pe64_import_slot_custody_decision_tests {
         let (performed, protection_after) =
             outcome.expect("a cleanup returning the starting protection cannot fail");
         assert_eq!(protection_after, PROTECTION_BEFORE);
-        let reconciled =
-        performed
+        let reconciled = performed
             .release_if_custody_matches(custody.recorded())
             .expect("the helper writes into the cell it was handed");
         assert_eq!(reconciled.observed_before(), RECORDED_SENTINEL_BEFORE);
@@ -6563,13 +5623,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(custody.recorded(), Some(reconciled));
     }
 
-    // FALSIFIABILITY: change `protection_reconciled: protection_after ==
-    // protection_before` in `custody_record::perform_recorded_cas` back to a
-    // bare `true` -- the shape both paths shipped with -- and this test fails:
-    // the record would claim the page was observed back at its starting
-    // protection when the cleanup returned something else. The negative arm is
-    // the sibling test above, where a cleanup that does return the starting
-    // protection must still reconcile.
     #[test]
     fn a_cleanup_returning_the_wrong_protection_is_not_recorded_as_reconciled() {
         assert_ne!(PROTECTION_BEFORE, PROTECTION_TEMPORARY);
@@ -6578,13 +5631,11 @@ mod pe64_import_slot_custody_decision_tests {
             || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
             |_: &()| RECORDED_SENTINEL_BEFORE,
             &mut custody,
-            // Returns `Ok`, but not at the protection the exchange started from.
             |_: ()| Ok(PROTECTION_TEMPORARY),
         )
         .expect("an Ok cleanup must not turn into an error");
         assert_eq!(protection_after, PROTECTION_TEMPORARY);
-        let recorded =
-        performed
+        let recorded = performed
             .release_if_custody_matches(custody.recorded())
             .expect("the helper writes into the cell it was handed");
         assert!(!recorded.protection_reconciled());
@@ -6600,12 +5651,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: drop the `?` on `prepare()` in
-    // `custody_record::perform_recorded_cas` and this test panics in the
-    // `exchange` closure -- the slot would be exchanged after the page could not
-    // be made writable. The panicking closures are the negative arm: they assert
-    // the failed prepare short-circuits rather than merely that an error came
-    // back.
     #[test]
     fn a_failure_before_the_exchange_records_nothing() {
         let mut custody = RestoreCasCustody::unrecorded();
@@ -6619,56 +5664,37 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(custody.recorded(), None);
     }
 
-    // FALSIFIABILITY: drop the `custody.record = Some(reconciled)` write in
-    // `custody_record::reconcile_recorded_cas` and the last assertion fails: the
-    // cell would still hold the unreconciled record, so the resumed attempt
-    // would owe the page cleanup forever. Make `reconcile_recorded_cas` set
-    // `protection_reconciled: true` unconditionally and
-    // `a_reconciliation_that_lands_elsewhere_stays_unreconciled` fails instead.
     #[test]
     fn a_resumed_reconciliation_marks_the_recorded_exchange_reconciled() {
         let mut custody = RestoreCasCustody::unrecorded();
         let owed = recorded_cas_pending_protection();
         let (performed, protection_after) =
             reconcile_recorded_cas(owed, &mut custody, |protection_before| {
-                // The helper must hand the reconciliation the protection the
-                // exchange started from, not some value of the caller's.
                 assert_eq!(protection_before, PROTECTION_BEFORE);
                 Ok::<_, &str>(PROTECTION_BEFORE)
             })
             .expect("an injected reconciliation returning Ok cannot fail");
         assert_eq!(protection_after, PROTECTION_BEFORE);
-        let reconciled =
-        performed
+        let reconciled = performed
             .release_if_custody_matches(custody.recorded())
             .expect("the helper writes into the cell it was handed");
-        // `observed_before` is carried through: reconciling the page must not be
-        // able to change what transition the record attests.
         assert_eq!(reconciled.observed_before(), RECORDED_SENTINEL_BEFORE);
         assert_eq!(reconciled.protection_temporary(), PROTECTION_TEMPORARY);
         assert!(reconciled.protection_reconciled());
         assert_eq!(custody.recorded(), Some(reconciled));
     }
 
-    // FALSIFIABILITY: set `protection_reconciled: true` unconditionally in
-    // `custody_record::reconcile_recorded_cas` -- the shape the production
-    // `ReconcileProtectionThenReplay` arms shipped with -- and this test fails:
-    // a page that came back at some other protection would be recorded as
-    // reconciled, and a later retry would take the plain replay arm believing
-    // the cleanup was done.
     #[test]
     fn a_reconciliation_that_lands_elsewhere_stays_unreconciled() {
         assert_ne!(PROTECTION_BEFORE, PROTECTION_TEMPORARY);
         let mut custody = RestoreCasCustody::unrecorded();
-        let (performed, protection_after) = reconcile_recorded_cas(
-            recorded_cas_pending_protection(),
-            &mut custody,
-            |_| Ok::<_, &str>(PROTECTION_TEMPORARY),
-        )
-        .expect("an Ok reconciliation must not turn into an error");
+        let (performed, protection_after) =
+            reconcile_recorded_cas(recorded_cas_pending_protection(), &mut custody, |_| {
+                Ok::<_, &str>(PROTECTION_TEMPORARY)
+            })
+            .expect("an Ok reconciliation must not turn into an error");
         assert_eq!(protection_after, PROTECTION_TEMPORARY);
-        let still_owed =
-        performed
+        let still_owed = performed
             .release_if_custody_matches(custody.recorded())
             .expect("the helper writes into the cell it was handed");
         assert!(!still_owed.protection_reconciled());
@@ -6684,17 +5710,8 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: make `custody_record::reconcile_recorded_cas` absorb the
-    // failure instead of propagating it -- `let protection_after =
-    // reconcile(recorded.protection_before()).unwrap_or(recorded.protection_before)`,
-    // the "recover by assuming what we wanted to see" shape that produced both
-    // of the forged-attestation defects on this file -- and this test fails
-    // twice over: the call returns `Ok` and custody comes back holding a record
-    // marked reconciled.
     #[test]
     fn a_failed_reconciliation_leaves_the_recorded_exchange_still_owing_the_page() {
-        // Custody in the state production is in when this arm runs: the exchange
-        // recorded, the page cleanup still owed.
         let mut custody = RestoreCasCustody::unrecorded();
         let _ = perform_recorded_cas(
             || Ok::<_, &str>(((), PROTECTION_BEFORE, PROTECTION_TEMPORARY)),
@@ -6713,11 +5730,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert!(!owed.protection_reconciled());
     }
 
-    // FALSIFIABILITY: drop the `!recorded.protection_reconciled` clause from
-    // `complete_recorded_restore_cas_observation` and the first assertion fails:
-    // an exchange whose page cleanup never completed would mint a receipt.
-    // Drop the `protection_after != recorded.protection_before` clause and the
-    // second fails.
     #[test]
     fn an_unreconciled_record_cannot_form_a_receipt_observation() {
         assert_eq!(
@@ -6743,14 +5755,9 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: delete the `current_slot_value != expected_original_address`
-    // check in the `Some(recorded)` branch and this test fails: a slot rewritten
-    // back to the shim since the recorded CAS would replay the stale observation
-    // and return `Ok`.
     #[test]
     fn retry_with_record_but_slot_no_longer_original_is_refused() {
-        let outcome =
-            decide_pointer_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas()));
+        let outcome = decide_pointer_slot_restore_cas(SHIM, ORIGINAL, SHIM, Some(recorded_cas()));
         assert_eq!(
             outcome,
             Err(
@@ -6762,11 +5769,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: remove the `external_shim_address == expected_original_address`
-    // guard at the top of `decide_pointer_slot_restore_cas` and this test
-    // fails: with the two addresses equal the `None` case falls through to
-    // `UnwitnessedForeignRestore` and the `Some` case to a replay, neither of
-    // which is an attestable transition.
     #[test]
     fn shim_sharing_the_original_address_is_refused_with_and_without_a_record() {
         let expected = Err(
@@ -6784,29 +5786,16 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: broaden the `None` branch to refuse anything other than
-    // the shim -- e.g. `if current_slot_value != external_shim_address { Err(..) }`
-    // -- and this test fails. The refusal must be specific to the already-original
-    // case; a third-party value is still a case the real CAS resolves, and it
-    // fails there with the existing "restore CAS expected shim" message.
     #[test]
     fn first_attempt_with_a_third_party_slot_value_still_performs_the_cas() {
         let outcome = decide_pointer_slot_restore_cas(FOREIGN, ORIGINAL, SHIM, None);
         assert_eq!(outcome, Ok(PointerSlotRestoreCasDecision::PerformCas));
     }
 
-    // FALSIFIABILITY: any edit that lets the no-record path yield a replay --
-    // for instance defaulting `recorded_prior_cas` to a synthesized observation
-    // when it is `None` -- makes this test fail. This is property A1 stated
-    // directly: the replay arm is reachable only from recorded evidence.
     #[test]
     fn replay_arm_is_unreachable_without_a_recorded_cas() {
         for current in [SHIM, ORIGINAL, FOREIGN, 0usize, usize::MAX] {
             let outcome = decide_pointer_slot_restore_cas(current, ORIGINAL, SHIM, None);
-            // BOTH replay variants, not just the plain one. Rejecting only
-            // `ReplayRecordedCas` left `ReconcileProtectionThenReplay` free to
-            // be fabricated from `None`, which reaches a receipt through the
-            // same completion path and is the identical defect.
             assert!(
                 !matches!(
                     outcome,
@@ -6818,33 +5807,8 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // ---- Install path: the same defect in the original -> shim direction --
-    //
-    // `install_pointer_slot` used to synthesize its CAS observation
-    // whenever the slot already read the external shim:
-    //
-    //     let cas = if current == external_shim_address {
-    //         AtomicPointerCasObservation { observed_before: expected.expected_original_address, .. }
-    //     } else { atomic_compare_exchange_pointer_slot(..) };
-    //
-    // and then checked `cas.observed_before != expected.expected_original_address`
-    // -- a tautology on that arm, because the value had just been *defined* to
-    // be the value it was checked against. An installation receipt could
-    // therefore be minted with no evidence that this crate ever performed the
-    // installing exchange.
-
-    /// `observed_before` here is deliberately *not* `ORIGINAL`. The pre-fix
-    /// install code synthesized `observed_before` as
-    /// `expected.expected_original_address`, so any test whose recorded value
-    /// equals `ORIGINAL` cannot tell a replay from a reconstruction. This
-    /// sentinel can. Held separate from the restore side's sentinel so editing
-    /// one cannot silently change what the other proves.
     const INSTALL_RECORDED_SENTINEL_BEFORE: usize = 0x0000_7777_8000;
 
-    /// An install exchange this crate performed whose page cleanup completed.
-    ///
-    /// As on the restore side, built by driving the real ordering helper: an
-    /// install record cannot be written down by hand any more.
     fn recorded_install_cas() -> RecordedInstallCas {
         let mut custody = InstallCasCustody::unrecorded();
         let (performed, _) = perform_recorded_cas(
@@ -6859,7 +5823,6 @@ mod pe64_import_slot_custody_decision_tests {
             .expect("the helper writes into the cell it was handed")
     }
 
-    /// An install exchange that completed but whose page cleanup then failed.
     fn recorded_install_cas_pending_protection() -> RecordedInstallCas {
         let mut custody = InstallCasCustody::unrecorded();
         let outcome = perform_recorded_cas(
@@ -6874,66 +5837,31 @@ mod pe64_import_slot_custody_decision_tests {
             .expect("the exchange is recorded before the cleanup runs")
     }
 
-    // FALSIFIABILITY: delete the `current_slot_value == external_shim_address`
-    // refusal in the `None` branch of `decide_pointer_slot_install_cas` --
-    // i.e. restore the pre-fix behaviour where an already-shim slot silently
-    // took the synthesized-observation arm -- and this test fails: the call
-    // returns `Ok(PerformCas)` instead of `Err(UnwitnessedForeignInstall)`.
-    //
-    // This is the forged-attestation case. On a first attempt the crate has
-    // recorded no CAS; if the slot already reads the shim then something
-    // outside this crate put it there, and no installation receipt may be
-    // minted for a transition this crate did not perform.
     #[test]
     fn install_first_attempt_with_slot_already_shim_and_no_record_is_refused() {
         let outcome = decide_pointer_slot_install_cas(SHIM, ORIGINAL, SHIM, None);
         assert_eq!(
             outcome,
-            Err(
-                PointerSlotInstallCustodyError::UnwitnessedForeignInstall {
-                    observed_slot_value: SHIM
-                }
-            )
+            Err(PointerSlotInstallCustodyError::UnwitnessedForeignInstall {
+                observed_slot_value: SHIM
+            })
         );
     }
 
-    // FALSIFIABILITY: make the `None` branch refuse unconditionally, or invert
-    // its comparison to `current_slot_value != external_shim_address`, and this
-    // test fails: the genuine first attempt no longer reaches `PerformCas`.
-    // This is the negative arm of the test above -- without it the refusal could
-    // be a blanket rejection and still look correct.
     #[test]
     fn install_first_attempt_with_slot_holding_the_original_selects_a_real_cas() {
         let outcome = decide_pointer_slot_install_cas(ORIGINAL, ORIGINAL, SHIM, None);
         assert_eq!(outcome, Ok(PointerSlotInstallCasDecision::PerformCas));
     }
 
-    // FALSIFIABILITY: change the `Some(recorded)` branch to rebuild the
-    // observation from the caller-supplied addresses -- e.g. return an
-    // observation with `observed_before: expected_original_address`, which is
-    // exactly what the pre-fix install code did -- and this test fails on
-    // `observed_before`, because the replayed value would become `ORIGINAL`
-    // instead of the recorded sentinel.
-    //
-    // This is the property the whole lane exists for: the retry arm reports what
-    // the earlier CAS actually returned, never a value reconstructed from
-    // `expected`.
     #[test]
     fn install_retry_replays_the_recorded_observation_verbatim() {
-        // The sentinel is load-bearing test data, so pin it here. Set it equal
-        // to `ORIGINAL` and the assertions below pass against the pre-fix
-        // reconstruction as well -- the test would go vacuous with nothing
-        // going red anywhere.
         assert_ne!(INSTALL_RECORDED_SENTINEL_BEFORE, ORIGINAL);
         assert_ne!(INSTALL_RECORDED_SENTINEL_BEFORE, SHIM);
         assert_ne!(SHIM, ORIGINAL);
 
         let recorded = recorded_install_cas();
         let outcome = decide_pointer_slot_install_cas(SHIM, ORIGINAL, SHIM, Some(recorded));
-        // Field by field rather than against `recorded_install_cas()`: comparing
-        // the decision to the same helper that produced its input would pass for
-        // any implementation that echoes its argument, including one that
-        // rebuilt the record from the addresses.
         let Ok(PointerSlotInstallCasDecision::ReplayRecordedCas(replayed)) = outcome else {
             panic!("a reconciled record must select the plain replay arm: {outcome:?}");
         };
@@ -6941,7 +5869,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(replayed.protection_before(), PROTECTION_BEFORE);
         assert_eq!(replayed.protection_temporary(), PROTECTION_TEMPORARY);
         assert!(replayed.protection_reconciled());
-        // ...and the value that reaches the receipt is that same recorded one.
         assert_eq!(
             complete_recorded_install_cas_observation(recorded, PROTECTION_BEFORE),
             Ok(AtomicPointerCasObservation {
@@ -6953,12 +5880,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: make the `Some(recorded)` branch return `ReplayRecordedCas`
-    // regardless of `protection_reconciled` -- i.e. collapse the two replay
-    // variants into one -- and this test fails. It is the sequencing decision
-    // for the state a successful exchange followed by a failed page cleanup
-    // leaves behind: the exchange happened and must be replayed, but the page
-    // cleanup is still owed and has to run before a receipt can form.
     #[test]
     fn install_retry_after_a_cleanup_failure_resumes_the_protection_reconciliation() {
         let outcome = decide_pointer_slot_install_cas(
@@ -6977,14 +5898,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: delete the record-back between `exchange_pointer_slot` and
-    // `finish_atomic_compare_exchange_pointer_slot` in the install `PerformCas`
-    // arm -- i.e. record only after the fallible cleanup returned -- and the
-    // state this test describes becomes `None` instead, which
-    // `install_first_attempt_with_slot_already_shim_and_no_record_is_refused`
-    // shows is refused as `UnwitnessedForeignInstall`. This test names the
-    // outcome that refusal would wrongly produce for a caller who genuinely did
-    // perform the transition, i.e. requirement 3: idempotent retry survives.
     #[test]
     fn a_recorded_install_exchange_is_never_mistaken_for_a_foreign_install() {
         for recorded in [
@@ -7002,16 +5915,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: move the first `custody.record = Some(recorded)` write in
-    // `custody_record::perform_recorded_cas` to after `finish(prepared)?` and
-    // this test fails: the custody cell comes back `None`. That empty state is
-    // what would leave a caller who genuinely did perform the installing
-    // exchange refused as `UnwitnessedForeignInstall` on the retry, and the last
-    // assertion here is the retry it must get instead.
-    //
-    // The install and restore directions share one implementation, so this and
-    // its restore twin fail together; they are kept separate because each pins
-    // its own direction's decision function on the last assertion.
     #[test]
     fn a_cleanup_failure_after_the_install_exchange_still_leaves_the_exchange_recorded() {
         let mut custody = InstallCasCustody::unrecorded();
@@ -7022,9 +5925,6 @@ mod pe64_import_slot_custody_decision_tests {
             |_: ()| Err("page protection restoration failed"),
         );
         assert_eq!(outcome, Err("page protection restoration failed"));
-        // This is the same cell type production hands in -- the field of the
-        // provisional binding held in the custody registry -- so this pins the
-        // write production actually performs.
         let stored = custody
             .recorded()
             .expect("the exchange must be recorded before the cleanup runs");
@@ -7038,19 +5938,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: drop the second `custody.record = Some(reconciled)` write
-    // in `custody_record::perform_recorded_cas` and this test fails -- the cell
-    // would still hold the unreconciled record, so a fully completed install
-    // would stay marked as owing page cleanup forever and
-    // `complete_recorded_install_cas_observation` would refuse it. The companion
-    // property -- that the *first* write lands before the fallible cleanup -- is
-    // pinned by
-    // `a_cleanup_failure_after_the_install_exchange_still_leaves_the_exchange_recorded`,
-    // the only path on which that intermediate write is observable.
-    //
-    // The exchange and the cleanup here are injected closures, so what this
-    // pins is the ordering contract -- not that a hardware compare-exchange
-    // swapped anything. The name says so.
     #[test]
     fn an_install_exchange_whose_injected_cleanup_succeeds_is_recorded_as_reconciled() {
         let mut custody = InstallCasCustody::unrecorded();
@@ -7062,23 +5949,19 @@ mod pe64_import_slot_custody_decision_tests {
         )
         .expect("a cleanup returning the starting protection cannot fail");
         assert_eq!(protection_after, PROTECTION_BEFORE);
-        let reconciled =
-        performed
+        let reconciled = performed
             .release_if_custody_matches(custody.recorded())
             .expect("the helper writes into the cell it was handed");
-        assert_eq!(reconciled.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
+        assert_eq!(
+            reconciled.observed_before(),
+            INSTALL_RECORDED_SENTINEL_BEFORE
+        );
         assert_eq!(reconciled.protection_before(), PROTECTION_BEFORE);
         assert_eq!(reconciled.protection_temporary(), PROTECTION_TEMPORARY);
         assert!(reconciled.protection_reconciled());
         assert_eq!(custody.recorded(), Some(reconciled));
     }
 
-    // FALSIFIABILITY: drop the `?` on `prepare()` in
-    // `custody_record::perform_recorded_cas` and this test panics in the
-    // `exchange` closure -- the slot would be exchanged after the page could not
-    // be made writable. The panicking closures are the negative arm: they assert
-    // the failed prepare short-circuits rather than merely that an error came
-    // back.
     #[test]
     fn a_failure_before_the_install_exchange_records_nothing() {
         let mut custody = InstallCasCustody::unrecorded();
@@ -7092,10 +5975,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(custody.recorded(), None);
     }
 
-    // FALSIFIABILITY: delete the `custody.record = Some(reconciled)` write in
-    // `custody_record::reconcile_recorded_cas` and this test fails -- an install
-    // whose resumed page reconciliation succeeded would keep a record saying the
-    // page is still owed, and every later retry would redo the reconciliation.
     #[test]
     fn a_resumed_install_reconciliation_marks_the_recorded_exchange_reconciled() {
         let mut custody = InstallCasCustody::unrecorded();
@@ -7109,28 +5988,17 @@ mod pe64_import_slot_custody_decision_tests {
         )
         .expect("an injected reconciliation returning Ok cannot fail");
         assert_eq!(protection_after, PROTECTION_BEFORE);
-        let reconciled =
-        performed
+        let reconciled = performed
             .release_if_custody_matches(custody.recorded())
             .expect("the helper writes into the cell it was handed");
-        assert_eq!(reconciled.observed_before(), INSTALL_RECORDED_SENTINEL_BEFORE);
+        assert_eq!(
+            reconciled.observed_before(),
+            INSTALL_RECORDED_SENTINEL_BEFORE
+        );
         assert!(reconciled.protection_reconciled());
         assert_eq!(custody.recorded(), Some(reconciled));
     }
 
-    // ---- The redirected-write backstop -----------------------------------
-    //
-    // `perform_recorded_cas` writes through the `&mut CasCustody` it is handed.
-    // Safe Rust cannot express "this borrow points into the registry entry the
-    // receipt will be minted from", so a call site that handed over a leaked
-    // throwaway cell would compile and silently lose the evidence. The call
-    // sites therefore re-read the registry afterwards and pass what they found
-    // here.
-
-    /// One exchange, returning both the unconfirmed record and the cell it was
-    /// written into. A fresh pair each call, because confirming consumes the
-    /// unconfirmed record -- which is the property that makes the confirmation
-    /// impossible to skip.
     fn performed_install_cas() -> (UnconfirmedInstallCas, InstallCasCustody) {
         let mut custody = InstallCasCustody::unrecorded();
         let (performed, _) = perform_recorded_cas(
@@ -7143,7 +6011,6 @@ mod pe64_import_slot_custody_decision_tests {
         (performed, custody)
     }
 
-    /// The restore twin of `performed_install_cas`.
     fn performed_restore_cas() -> (UnconfirmedRestoreCas, RestoreCasCustody) {
         let mut custody = RestoreCasCustody::unrecorded();
         let (performed, _) = perform_recorded_cas(
@@ -7156,19 +6023,11 @@ mod pe64_import_slot_custody_decision_tests {
         (performed, custody)
     }
 
-    // FALSIFIABILITY: delete the `observed_custody != Some(self.0)` refusal in
     // `custody_record::UnconfirmedCas::release_if_custody_matches` and the first two
-    // assertions return `Ok`. The `None` case is the one a leaked custody cell
-    // produces: the exchange happened, the cell the receipt is minted against
-    // holds nothing, and without this the next attempt would refuse as
-    // `UnwitnessedForeignInstall` -- blaming a foreign agent for this crate's
-    // own lost write.
     #[test]
     fn install_custody_that_did_not_retain_the_performed_record_is_refused() {
         let record = recorded_install_cas();
 
-        // What a redirected write leaves behind: the cell the receipt is minted
-        // against never received anything.
         let (performed, _) = performed_install_cas();
         assert_eq!(
             release_install_cas_if_custody_matches(None, performed),
@@ -7180,7 +6039,6 @@ mod pe64_import_slot_custody_decision_tests {
             )
         );
 
-        // A cell holding some other record is refused just as hard.
         let stale = recorded_install_cas_pending_protection();
         assert_ne!(stale, record);
         let (performed, _) = performed_install_cas();
@@ -7194,9 +6052,6 @@ mod pe64_import_slot_custody_decision_tests {
             )
         );
 
-        // Negative arm: the honest case must pass and must hand back the record
-        // itself, or the check would be a blanket refusal no production path
-        // could satisfy.
         let (performed, custody) = performed_install_cas();
         assert_eq!(
             release_install_cas_if_custody_matches(custody.recorded(), performed),
@@ -7204,7 +6059,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: the restore twin of the test above; the two directions
     // share `release_if_custody_matches`, so both go red together.
     #[test]
     fn restore_custody_that_did_not_retain_the_performed_record_is_refused() {
@@ -7241,14 +6095,13 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // ---- Lease protection, and the states that stay stranded -------------
-
     const LEASE_PROTECTION: u32 = PROTECTION_BEFORE;
     const EXTERNALLY_REPROTECTED: u32 = 0x33;
 
-    /// The observation a completed exchange produces, parameterised so a test
-    /// can state the page protections it wants without hand-building a record.
-    fn cas_observation(protection_before: u32, protection_after: u32) -> AtomicPointerCasObservation {
+    fn cas_observation(
+        protection_before: u32,
+        protection_after: u32,
+    ) -> AtomicPointerCasObservation {
         AtomicPointerCasObservation {
             observed_before: INSTALL_RECORDED_SENTINEL_BEFORE,
             protection_before,
@@ -7257,13 +6110,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: relax either comparison in
-    // `verify_install_cas_matches_lease_protection` to compare the CAS against
-    // its own `protection_before` instead of against the lease's -- the change
-    // that would make the externally-re-protected page retryable -- and the
-    // first assertion returns `Ok`. That is the change this lane examined and
-    // declined: it would let a receipt form over a page some other agent
-    // re-protected while this crate held the lease.
     #[test]
     fn an_install_cas_over_an_externally_reprotected_page_is_refused() {
         assert_ne!(LEASE_PROTECTION, EXTERNALLY_REPROTECTED);
@@ -7279,12 +6125,6 @@ mod pe64_import_slot_custody_decision_tests {
                 }
             )
         );
-        // The after-clause carries its own variant so a log reader can tell a
-        // page that was re-protected before the exchange from one the cleanup
-        // failed to put back. Defence in depth: with the current
-        // `complete_recorded_*_cas_observation` a CAS observation reaching here
-        // always has `protection_after == protection_before`, so only a change
-        // there could make production produce this one.
         assert_eq!(
             verify_install_cas_matches_lease_protection(
                 LEASE_PROTECTION,
@@ -7297,8 +6137,6 @@ mod pe64_import_slot_custody_decision_tests {
                 }
             )
         );
-        // Negative arm: the ordinary case must pass, or every install would be
-        // refused and the two assertions above would prove nothing.
         assert_eq!(
             verify_install_cas_matches_lease_protection(
                 LEASE_PROTECTION,
@@ -7308,10 +6146,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: the restore twin of the test above; relax either
-    // comparison in `verify_restore_cas_matches_lease_protection`. Held
-    // separately because the two directions must refuse the same states -- a
-    // change to one alone shows up as one of these two tests going red.
     #[test]
     fn a_restore_cas_over_an_externally_reprotected_page_is_refused() {
         assert_ne!(LEASE_PROTECTION, EXTERNALLY_REPROTECTED);
@@ -7348,21 +6182,10 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: change the `Some(recorded)` branch of either decision
-    // function to fall through to `PerformCas` when the slot has diverged --
-    // "retry by exchanging again" -- and this test fails. The two directions
-    // must stay in step: the state is unretryable on both, deliberately, because
-    // the record on hand describes an exchange whose result a third party has
-    // since overwritten.
     #[test]
     fn a_diverged_slot_is_refused_rather_than_re_exchanged_in_both_directions() {
         assert_eq!(
-            decide_pointer_slot_install_cas(
-                ORIGINAL,
-                ORIGINAL,
-                SHIM,
-                Some(recorded_install_cas())
-            ),
+            decide_pointer_slot_install_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded_install_cas())),
             Err(
                 PointerSlotInstallCustodyError::RecordedInstallCasSlotDiverged {
                     observed_slot_value: ORIGINAL,
@@ -7381,15 +6204,8 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: drop the `!recorded.protection_reconciled` clause from
-    // `complete_recorded_install_cas_observation` and the first assertion fails:
-    // an exchange whose page cleanup never completed would mint a receipt. Drop
-    // the `protection_after != recorded.protection_before` clause and the second
-    // fails.
     #[test]
     fn an_unreconciled_install_record_cannot_form_a_receipt_observation() {
-        // The second assertion is only a test of the protection comparison if
-        // the two constants differ; equal, it would duplicate the first.
         assert_ne!(PROTECTION_BEFORE, PROTECTION_TEMPORARY);
         assert_eq!(
             complete_recorded_install_cas_observation(
@@ -7404,10 +6220,7 @@ mod pe64_import_slot_custody_decision_tests {
             )
         );
         assert_eq!(
-            complete_recorded_install_cas_observation(
-                recorded_install_cas(),
-                PROTECTION_TEMPORARY
-            ),
+            complete_recorded_install_cas_observation(recorded_install_cas(), PROTECTION_TEMPORARY),
             Err(
                 PointerSlotInstallCustodyError::RecordedInstallProtectionUnreconciled {
                     protection_before: PROTECTION_BEFORE,
@@ -7417,18 +6230,10 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: delete the `current_slot_value != external_shim_address`
-    // check in the `Some(recorded)` branch and this test fails: a slot rewritten
-    // back to the original since the recorded CAS would replay the stale
-    // observation and return `Ok`.
     #[test]
     fn install_retry_with_record_but_slot_no_longer_shim_is_refused() {
-        let outcome = decide_pointer_slot_install_cas(
-            ORIGINAL,
-            ORIGINAL,
-            SHIM,
-            Some(recorded_install_cas()),
-        );
+        let outcome =
+            decide_pointer_slot_install_cas(ORIGINAL, ORIGINAL, SHIM, Some(recorded_install_cas()));
         assert_eq!(
             outcome,
             Err(
@@ -7440,11 +6245,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: remove the `external_shim_address == expected_original_address`
-    // guard at the top of `decide_pointer_slot_install_cas` and this test
-    // fails: with the two addresses equal the `None` case falls through to
-    // `UnwitnessedForeignInstall` and the `Some` case to a replay, neither of
-    // which is an attestable transition.
     #[test]
     fn install_shim_sharing_the_original_address_is_refused_with_and_without_a_record() {
         let expected = Err(
@@ -7467,32 +6267,16 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: broaden the `None` branch to refuse anything other than
-    // the original -- e.g. `if current_slot_value != expected_original_address
-    // { Err(..) }` -- and this test fails. The refusal must be specific to the
-    // already-shim case; a third-party value is still a case the real CAS
-    // resolves, and it fails there with the existing "import slot CAS expected"
-    // message.
     #[test]
     fn install_first_attempt_with_a_third_party_slot_value_still_selects_a_real_cas() {
         let outcome = decide_pointer_slot_install_cas(FOREIGN, ORIGINAL, SHIM, None);
         assert_eq!(outcome, Ok(PointerSlotInstallCasDecision::PerformCas));
     }
 
-    // FALSIFIABILITY: any edit that lets the no-record path yield a replay --
-    // for instance defaulting `recorded_prior_cas` to a synthesized observation
-    // when it is `None` -- makes this test fail. This states the lane's core
-    // property directly: an installation receipt's `observed_before` can only
-    // come from a real exchange, and the only arm that does not run one is
-    // unreachable without recorded evidence.
     #[test]
     fn install_replay_arm_is_unreachable_without_a_recorded_cas() {
         for current in [SHIM, ORIGINAL, FOREIGN, 0usize, usize::MAX] {
             let outcome = decide_pointer_slot_install_cas(current, ORIGINAL, SHIM, None);
-            // BOTH replay variants: rejecting only `ReplayRecordedCas` would
-            // leave `ReconcileProtectionThenReplay` free to be fabricated from
-            // `None`, which reaches a receipt through the same completion path
-            // and is the identical defect.
             assert!(
                 !matches!(
                     outcome,
@@ -7504,14 +6288,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // ---- the timeout message production actually emits -------------------
-
-    // FALSIFIABILITY: change the call site to quote `max_yields` instead of
-    // `outcome.yields_performed`, and this test fails -- a time-budget timeout
-    // after 10 yields would otherwise report the full budget. The earlier loop
-    // test proves the counters are *accurate*; only this one proves the message
-    // quotes THOSE counters. Drop the stop reason from the format string and
-    // the first assertion fails; drop the elapsed time and the last fails.
     #[test]
     fn the_timeout_message_quotes_the_outcome_counters_not_the_budget() {
         let outcome = Pe64ImportSlotQuiesceOutcome {
@@ -7540,14 +6316,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: make the renderer quote anything other than the outcome's
-    // own counters -- a constant, or `max_yields` -- and this fails.
-    //
-    // The two fixtures are identical in stop reason, elapsed time and logical
-    // name, and differ ONLY in `observations` and `yields_performed`. That
-    // isolation is the point: an earlier version of this test also varied the
-    // stop reason and the elapsed time, so a renderer that ignored the counters
-    // entirely and rendered only the stop reason still passed it.
     #[test]
     fn outcomes_differing_only_in_their_counters_render_differently() {
         let base = Pe64ImportSlotQuiesceOutcome {
@@ -7569,11 +6337,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // ---- Defect B1: the yield-budget ceiling ----------------------------
-
-    // FALSIFIABILITY: change the comparison in
-    // `validate_pointer_slot_quiesce_yields` from `>` to `>=` and this test
-    // fails -- a budget exactly at the ceiling would be refused.
     #[test]
     fn yield_budget_at_the_ceiling_is_accepted_unchanged() {
         assert_eq!(
@@ -7582,10 +6345,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: delete the ceiling check in
-    // `validate_pointer_slot_quiesce_yields` -- the pre-fix state, where
-    // `max_yields` was never validated at all -- and this test fails: the call
-    // returns `Ok` instead of `Err(YieldBudgetAboveCeiling)`.
     #[test]
     fn yield_budget_one_above_the_ceiling_is_refused() {
         assert_eq!(
@@ -7597,9 +6356,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: raise `MAX_POINTER_SLOT_QUIESCE_YIELDS` to `u32::MAX`
-    // -- the unbounded state this lane exists to close -- and this test fails.
-    // It pins the ceiling from above independently of the constant's own value.
     #[test]
     fn a_full_u32_yield_budget_is_refused() {
         assert_eq!(
@@ -7611,12 +6367,6 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: lower `MAX_POINTER_SLOT_QUIESCE_YIELDS` below the
-    // iterations a tenth of the time budget can admit and this test fails. The
-    // number is not free-standing: it is a tenth of the time budget divided by
-    // the same assumed per-iteration cost the ceiling itself is derived from, so
-    // a caller asking to wait a fraction of the budget must not be pre-empted by
-    // the backstop.
     #[test]
     fn a_budget_covering_a_fraction_of_the_time_budget_is_accepted() {
         let tenth_of_the_budget = (POINTER_SLOT_QUIESCE_TIME_BUDGET_NANOS
@@ -7633,12 +6383,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: replace `MAX_POINTER_SLOT_QUIESCE_YIELDS` with a
-    // hand-picked literal, or change either policy constant without the ceiling
-    // following, and this test fails. The ceiling is a backstop sized from the
-    // time budget, not a number chosen on its own, and this pins that
-    // relationship rather than the value -- asserting the constant equals itself
-    // would prove nothing.
     #[test]
     fn the_yield_ceiling_is_derived_from_the_time_budget() {
         assert_eq!(
@@ -7652,28 +6396,12 @@ mod pe64_import_slot_custody_decision_tests {
         );
     }
 
-    // FALSIFIABILITY: move `POINTER_SLOT_QUIESCE_TIME_BUDGET` outside the
-    // band and this test fails. The budget is a policy choice, so what is pinned
-    // is the property the policy has to satisfy, not the literal: below 250 ms a
-    // callback that was merely descheduled a few times gets failed as a timeout,
-    // above 10 s a teardown reads as hung to whoever is waiting on it.
     #[test]
     fn the_quiesce_time_budget_stays_inside_its_policy_band() {
         assert!(POINTER_SLOT_QUIESCE_TIME_BUDGET >= Duration::from_millis(250));
         assert!(POINTER_SLOT_QUIESCE_TIME_BUDGET <= Duration::from_secs(10));
     }
 
-    // ---- Defect B2/B3: the real loop, driven directly --------------------
-
-    /// Drive the production loop -- `drive_pointer_slot_quiesce_loop`, the
-    /// same function `quiesce_pointer_slot` calls -- with scripted
-    /// active-callback counts, a counted yield, and a clock this harness
-    /// advances. Nothing here re-implements the loop; the control flow under
-    /// test is the production control flow.
-    ///
-    /// Returns the outcome plus independently counted invocations of the two
-    /// closures, so the loop's self-reported numbers can be checked against what
-    /// it actually did rather than against a recomputation.
     fn run_real_quiesce_loop(
         max_yields: u32,
         time_budget: Duration,
@@ -7706,22 +6434,11 @@ mod pe64_import_slot_custody_decision_tests {
         (outcome, observe_calls.get(), yield_calls.get())
     }
 
-    // FALSIFIABILITY: change the loop's `yields_performed >= max_yields` stop to
-    // `>` and `yields_performed` becomes `max_yields + 1`, failing the second
-    // assertion; move the `observations += 1` so it no longer counts every
-    // observation and the fourth fails, because it compares the number the
-    // timeout message quotes against the closure invocations this harness
-    // counted independently. The old version of this test re-implemented the
-    // loop and could not see either edit.
     #[test]
     fn the_real_loop_reports_the_counts_the_timeout_message_quotes() {
         for max_yields in [0u32, 1, 2, 7, 1_000] {
-            let (outcome, observe_calls, yield_calls) = run_real_quiesce_loop(
-                max_yields,
-                Duration::from_secs(3_600),
-                &[1],
-                Duration::ZERO,
-            );
+            let (outcome, observe_calls, yield_calls) =
+                run_real_quiesce_loop(max_yields, Duration::from_secs(3_600), &[1], Duration::ZERO);
             assert_eq!(
                 outcome.stopped_on,
                 Pe64ImportSlotQuiesceStop::YieldBudgetExhausted,
@@ -7748,11 +6465,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: move the time-budget check above the `active_count == 0`
-    // check in `drive_pointer_slot_quiesce_loop` and this test fails. The
-    // budget here is already exhausted at entry, so a slot that is quiescent on
-    // its first observation must still be reported as quiesced -- the deadline
-    // may not fail an operation that has already succeeded.
     #[test]
     fn the_real_loop_reports_quiescence_even_with_the_time_budget_already_spent() {
         let (outcome, observe_calls, yield_calls) =
@@ -7765,11 +6477,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(yield_calls, 0);
     }
 
-    // FALSIFIABILITY: delete the time-budget check from
-    // `drive_pointer_slot_quiesce_loop` and this test fails -- the loop runs
-    // to the million-yield budget instead of stopping at 10 yields. This is the
-    // Finding-3 property: iterations are a proxy, wall clock is the bound that
-    // actually holds, and the yield ceiling must not be able to override it.
     #[test]
     fn the_real_loop_stops_on_the_time_budget_long_before_the_yield_budget() {
         let (outcome, observe_calls, yield_calls) = run_real_quiesce_loop(
@@ -7789,9 +6496,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(yield_calls, 10);
     }
 
-    // FALSIFIABILITY: remove the `break`-equivalent early return on a zero
-    // active-callback count and this test fails -- the loop would keep yielding
-    // past the observation that already showed quiescence.
     #[test]
     fn the_real_loop_stops_at_the_observation_that_sees_zero() {
         let (outcome, observe_calls, yield_calls) = run_real_quiesce_loop(
@@ -7807,10 +6511,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(yield_calls, 3);
     }
 
-    // FALSIFIABILITY: swallow the observation error in
-    // `drive_pointer_slot_quiesce_loop` -- treat a failed dispatch
-    // observation as a non-zero count and keep looping -- and this test fails.
-    // A dispatch observation that cannot be taken is not evidence of activity.
     #[test]
     fn the_real_loop_propagates_a_failed_dispatch_observation() {
         let outcome = drive_pointer_slot_quiesce_loop(
@@ -7823,13 +6523,6 @@ mod pe64_import_slot_custody_decision_tests {
         assert_eq!(outcome, Err("dispatch observation failed"));
     }
 
-    // ---- Refusal messages ------------------------------------------------
-
-    // FALSIFIABILITY: fold any of these refusals into an existing message
-    // string, or give two of them the same text, and this test fails. Property
-    // A3 requires the unwitnessed-restore case to carry its own message rather
-    // than reusing the generic "restore CAS expected shim" one, which is what a
-    // reader of the receipt log has to distinguish them by.
     #[test]
     fn each_custody_refusal_renders_a_distinct_message() {
         let unwitnessed = PointerSlotRestoreCustodyError::UnwitnessedForeignRestore {
@@ -7846,12 +6539,11 @@ mod pe64_import_slot_custody_decision_tests {
                 address: ORIGINAL,
             }
             .to_string();
-        let unreconciled =
-            PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
-                protection_before: PROTECTION_BEFORE,
-                protection_after: PROTECTION_TEMPORARY,
-            }
-            .to_string();
+        let unreconciled = PointerSlotRestoreCustodyError::RecordedRestoreProtectionUnreconciled {
+            protection_before: PROTECTION_BEFORE,
+            protection_after: PROTECTION_TEMPORARY,
+        }
+        .to_string();
         let not_retained = PointerSlotRestoreCustodyError::RecordedRestoreCasNotRetained {
             retained: None,
             performed: recorded_cas(),
@@ -7911,8 +6603,7 @@ mod pe64_import_slot_custody_decision_tests {
             "unreconciled message lost its distinguishing text: {unreconciled}"
         );
         assert!(
-            bound.contains('9')
-                && bound.contains(&MAX_POINTER_SLOT_QUIESCE_YIELDS.to_string()),
+            bound.contains('9') && bound.contains(&MAX_POINTER_SLOT_QUIESCE_YIELDS.to_string()),
             "bound message must report both the request and the ceiling: {bound}"
         );
 
@@ -7933,11 +6624,6 @@ mod pe64_import_slot_custody_decision_tests {
         }
     }
 
-    // FALSIFIABILITY: give two `Pe64ImportSlotQuiesceStop` variants the same
-    // rendering, or drop the reason from the timeout message's format string,
-    // and this test fails. The timeout message says which bound fired, and a
-    // yield-budget timeout and a time-budget timeout call for different
-    // responses from the caller.
     #[test]
     fn each_quiesce_stop_reason_renders_distinctly() {
         let rendered = [
@@ -7949,7 +6635,10 @@ mod pe64_import_slot_custody_decision_tests {
         assert!(rendered[2].contains("time"), "{}", rendered[2]);
         for i in 0..rendered.len() {
             for j in (i + 1)..rendered.len() {
-                assert_ne!(rendered[i], rendered[j], "two stop reasons render identically");
+                assert_ne!(
+                    rendered[i], rendered[j],
+                    "two stop reasons render identically"
+                );
             }
         }
     }
@@ -8013,11 +6702,6 @@ mod pointer_slot_provenance_tests {
         expected_original_address: 0x7FFA_1111_0000,
     };
 
-    // FALSIFIABILITY: make `SlotProvenance::primitive_id` return the PE64
-    // constant for both variants and this fails. It is the "do not attest an
-    // engine-owned slot as a PE import" rule expressed as a test: the two
-    // provenances must not be able to claim each other's primitive or policy
-    // id, and only the import variant may report `is_pe64_import`.
     #[test]
     fn an_engine_owned_slot_never_attests_a_pe_import_identity() {
         let engine_owned = engine_owned_expected();
@@ -8051,22 +6735,6 @@ mod pointer_slot_provenance_tests {
         );
     }
 
-    // The forged-attestation case is closed by construction rather than by a
-    // check: `EngineOwnedSlotAttestation`'s fields are private and its only
-    // constructor is `from_roster_admitted_site`, so no code outside this crate
-    // can build `SlotProvenance::EngineOwnedFunctionPointer` at all. This test
-    // therefore cannot be written from outside; it stands in for the remaining
-    // in-crate hazard, which is a specification edited *after* admission.
-    //
-    // FALSIFIABILITY: delete the `owner().derived_slot_rva()` and
-    // `entry_index >= entry_count` arms of `validate_expected_pointer_slot`'s
-    // `EngineOwnedFunctionPointer` match and this fails -- a specification
-    // whose slot address no longer matches the owner its attestation names
-    // FALSIFIABILITY: make `EngineOwnedSlotRosterInstallation::finish` return
-    // `Ok` regardless of `required_slot_rvas` -- i.e. hand out receipts for a
-    // partially redirected roster -- and this fails. A two-slot target with one
-    // slot redirected is an observer that misses every call through the other
-    // slot, so no usable receipt may exist until coverage is complete.
     #[cfg(windows)]
     #[test]
     fn a_partially_installed_roster_yields_no_receipts() {
@@ -8113,17 +6781,9 @@ mod pointer_slot_provenance_tests {
         assert_eq!(incomplete.uncovered_slot_rvas, vec![SLOT_RVA, SECOND_SLOT]);
         assert_eq!(incomplete.roster_sha256, roster.roster_sha256());
 
-        // A zero teardown token can never own a redirection.
         assert!(EngineOwnedSlotRosterInstallation::begin(&roster, MODULE_BASE, 0).is_err());
     }
 
-    // FALSIFIABILITY: delete the `unresolved_slot_rvas.push(slot_rva)` that
-    // `install_site` performs *before* attempting the install, and this fails.
-    // The exchange is recorded before the page-protection cleanup that can fail
-    // after it, so an `Err` from `install_site` does not prove the slot is
-    // untouched. Reporting such a slot as merely "uncovered" would tell a
-    // caller nothing happened when a live redirection may exist with no receipt
-    // and therefore no teardown path.
     #[cfg(windows)]
     #[test]
     fn a_failed_install_attempt_is_reported_as_unresolved_not_merely_uncovered() {
@@ -8137,8 +6797,6 @@ mod pointer_slot_provenance_tests {
             .expect("the roster begins");
         assert!(installation.unresolved_slot_rvas().is_empty());
 
-        // A shim that fails its own seal check, so nothing is exchanged -- but
-        // the bookkeeping cannot know that, and must not assume it.
         installation
             .install_site(&roster.sites()[0], &foreign_shim())
             .expect_err("an unsealed shim cannot install");
@@ -8149,17 +6807,12 @@ mod pointer_slot_provenance_tests {
         assert_eq!(incomplete.unresolved_slot_rvas, vec![SLOT_RVA]);
         assert_eq!(incomplete.uncovered_slot_rvas, vec![SLOT_RVA]);
         assert!(incomplete.installed.is_empty());
-        // Every unresolved slot is by construction still uncovered.
         assert!(incomplete
             .unresolved_slot_rvas
             .iter()
             .all(|slot| incomplete.uncovered_slot_rvas.contains(slot)));
     }
 
-    // FALSIFIABILITY: delete the `site.roster_sha256() != self.roster_sha256`
-    // refusal in `install_site` and a site admitted under one target's coverage
-    // proof counts towards a different target's, which would let a roster
-    // "complete" without its own slots ever being redirected.
     #[cfg(windows)]
     #[test]
     fn a_site_from_another_roster_cannot_satisfy_this_one() {
@@ -8179,7 +6832,6 @@ mod pointer_slot_provenance_tests {
 
         let mut installation = EngineOwnedSlotRosterInstallation::begin(&roster, MODULE_BASE, 9)
             .expect("the roster begins");
-        // Refused on roster identity, before any process memory is touched.
         let error = installation
             .install_site(&other.sites()[0], &foreign_shim())
             .expect_err("a foreign site cannot count towards this roster");
@@ -8187,9 +6839,6 @@ mod pointer_slot_provenance_tests {
         assert_eq!(installation.uncovered_slot_rvas(), &[SLOT_RVA]);
     }
 
-    /// A shim value the roster-identity check must reject before ever reading
-    /// it. Never dereferenced: `install_site` returns on the roster mismatch
-    /// above it.
     #[cfg(windows)]
     fn foreign_shim() -> SealedExternalDispatchShim {
         SealedExternalDispatchShim {
@@ -8225,16 +6874,9 @@ mod pointer_slot_provenance_tests {
         }
     }
 
-
-    // FALSIFIABILITY: change `rva_is_in_executable_section` back to bounding
-    // with `raw_size` and this fails. The two sizes are independent: a729's
-    // `.text` pads its raw size 0x1D8 bytes past its virtual size (so raw_size
-    // over-accepts), while a zero-filled section runs the other way (so
-    // raw_size under-accepts and would reject a real code RVA).
     #[cfg(windows)]
     #[test]
     fn executable_containment_uses_the_loaded_extent_not_the_disk_extent() {
-        // a729 `.text`: VirtualSize 0x026EFC28, SizeOfRawData 0x026EFE00.
         let padded = PeSection {
             virtual_address: 0x1000,
             virtual_size: 0x026E_FC28,
@@ -8247,7 +6889,6 @@ mod pointer_slot_provenance_tests {
             &sections,
             0x1000 + 0x026E_FC27
         ));
-        // Inside the raw extent, past the loaded extent: not in the section.
         assert!(!rva_is_in_executable_section(
             &sections,
             0x1000 + 0x026E_FC28
@@ -8257,7 +6898,6 @@ mod pointer_slot_provenance_tests {
             0x1000 + 0x026E_FDFF
         ));
 
-        // Zero-filled section: the loaded extent is the larger one.
         let zero_filled = PeSection {
             virtual_address: 0x2000,
             virtual_size: 0x4000,
@@ -8268,7 +6908,6 @@ mod pointer_slot_provenance_tests {
         let sections = [zero_filled];
         assert!(rva_is_in_executable_section(&sections, 0x2000 + 0x3FFF));
 
-        // A non-executable section never satisfies the predicate.
         let data = PeSection {
             characteristics: 0,
             ..padded
@@ -8276,18 +6915,15 @@ mod pointer_slot_provenance_tests {
         assert!(!rva_is_in_executable_section(&[data], 0x1000));
     }
 
-    // would reach the compare-exchange, redirecting a slot nothing admitted.
     #[test]
     fn an_engine_owned_specification_edited_after_admission_is_refused() {
         let admitted = engine_owned_expected();
         assert!(validate_expected_pointer_slot(admitted).is_ok());
 
-        // Same attestation, slot address moved one entry along.
         let mut moved = admitted;
         moved.slot_rva += ENGINE_OWNED_SLOT_WIDTH_BYTES;
         assert!(validate_expected_pointer_slot(moved).is_err());
 
-        // An attestation whose own owner index is outside its structure.
         let mut out_of_range = admitted;
         out_of_range.provenance =
             SlotProvenance::EngineOwnedFunctionPointer(EngineOwnedSlotAttestation {
@@ -8301,8 +6937,6 @@ mod pointer_slot_provenance_tests {
             });
         assert!(validate_expected_pointer_slot(out_of_range).is_err());
 
-        // Zeroed digests and an empty roster never come out of a roster
-        // admission; each is refused on its own.
         for forged in [
             EngineOwnedSlotAttestation {
                 owner: SITES[0].owner,
@@ -8329,10 +6963,6 @@ mod pointer_slot_provenance_tests {
         }
     }
 
-    // FALSIFIABILITY: drop the per-provenance domain string and the variant tag
-    // from `pointer_slot_spec_sha256`/`digest_slot_provenance` and these two
-    // specifications -- same name, same slot, same original address -- digest
-    // identically, so one receipt could stand in for the other.
     #[test]
     fn the_slot_spec_digest_separates_the_two_provenances() {
         let engine_owned = engine_owned_expected();
@@ -8346,10 +6976,6 @@ mod pointer_slot_provenance_tests {
         );
     }
 
-    // FALSIFIABILITY: delete the `expected.module_sha256 != A729_EXE_SHA256`
-    // refusal in `engine_owned_expected_pointer_slot` and a site pinned to a
-    // different build widens into an installable specification against the
-    // build this crate is compiled for.
     #[test]
     fn widening_refuses_a_site_pinned_to_another_build() {
         static OTHER_BUILD: [ExpectedEngineOwnedFunctionPointerSlot; 1] =
@@ -8367,10 +6993,6 @@ mod pointer_slot_provenance_tests {
         assert!(engine_owned_expected_pointer_slot(&roster.sites()[0], 0).is_err());
     }
 
-    // FALSIFIABILITY: drop the `slot_rva % ENGINE_OWNED_SLOT_WIDTH_BYTES`
-    // refusal from `validate_expected_pointer_slot` and an unaligned slot
-    // reaches the compare/exchange, where a straddling word is not atomic at
-    // all.
     #[test]
     fn an_unaligned_slot_specification_is_refused() {
         let mut unaligned = IMPORT_EXPECTED.generalize();
@@ -8389,10 +7011,6 @@ mod retained_relay_release_tests {
         MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID,
     };
 
-    /// A syntactically well-formed installed receipt that owns no crate custody
-    /// whatsoever. It exists only to give the call a second argument: every
-    /// assertion below is about a refusal that happens strictly before this is
-    /// read.
     fn a_receipt_that_owns_nothing() -> InstalledRvaHookReceipt {
         InstalledRvaHookReceipt {
             logical_name: SOME_HOOK.logical_name,
@@ -8427,15 +7045,6 @@ mod retained_relay_release_tests {
         original_prefix: &[0x40, 0x53, 0x56, 0x57, 0x41],
     };
 
-    /// Falsifiable: fails if the retained-relay route stops refusing a claimed
-    /// free.
-    ///
-    /// The whole reason this route exists is that the lane using it did NOT
-    /// free its relay. A receipt minted here with `relay_freed: true` would
-    /// attest an operation nobody performed, which is the one thing a custody
-    /// receipt may never do -- so the refusal has to come BEFORE any module
-    /// observation, and it does: this test process is not `hoi4.exe` and would
-    /// otherwise fail with a module-identity message instead.
     #[test]
     fn a_retained_relay_release_refuses_a_claimed_free() {
         let error = observe_released_with_retained_relay(
@@ -8455,16 +7064,7 @@ mod retained_relay_release_tests {
         assert!(error.contains(SOME_HOOK.logical_name), "{error}");
     }
 
-    /// Falsifiable: fails if the retained-relay SET route stops refusing a
-    /// claimed free, or stops checking every element.
-    ///
-    /// The element that lies here is the LAST one, and the first two are
-    /// honest. A per-set check that only inspected element zero -- or that
     /// leaned on `observe_released_set_with_disposition`'s generic
-    /// "attestation is incomplete" message -- would not produce this error, and
-    /// a route that skipped the check entirely would reach `observe_main_module`
-    /// and fail with a module-identity message instead, since this test process
-    /// is not `hoi4.exe`.
     #[test]
     fn a_retained_relay_release_set_refuses_a_claimed_free_in_any_element() {
         const OTHER_HOOK: ExpectedRvaHook = ExpectedRvaHook {
@@ -8502,8 +7102,6 @@ mod retained_relay_release_tests {
             "the refusal must name the element that lied, got {error}"
         );
 
-        // An empty set is not a vacuous success: the delegated route refuses it
-        // before observing any module, so a caller cannot mint "nothing was
         // released" as a release.
         let empty = observe_released_set_with_retained_relay([], [], [])
             .expect_err("an empty release set is not a release");
@@ -8511,7 +7109,6 @@ mod retained_relay_release_tests {
     }
 
     /// A release receipt shaped exactly as the freeing route mints one. It owns
-    /// no custody; only its disposition fields are read below.
     fn a_freed_release_receipt() -> ReleasedRvaHookReceipt {
         let installed = a_receipt_that_owns_nothing();
         ReleasedRvaHookReceipt {
@@ -8543,15 +7140,8 @@ mod retained_relay_release_tests {
     }
 
     /// Falsifiable: fails if the already-released retry stops checking that the
-    /// route being asked for is the route the receipt was minted under.
-    ///
     /// `observe_released_set_with_disposition` answers a retry from custody
     /// instead of minting twice. Without this predicate a lane that released
-    /// through the freeing route could call the retained route and be handed
-    /// back a `relay_freed: true` receipt -- and would then ship it as evidence
-    /// of a retention it never performed, or the reverse. The registry check
-    /// itself needs a live exact-a729 custody entry, so the rule it consults is
-    /// exercised here directly over every combination.
     #[test]
     fn an_already_released_receipt_only_answers_its_own_route() {
         let freed = a_freed_release_receipt();
@@ -8578,8 +7168,6 @@ mod retained_relay_release_tests {
             "the retained receipt must not answer a freed-route retry"
         );
 
-        // The policy id is checked too, not only the booleans: a receipt whose
-        // label disagrees with its own flags answers neither route.
         let mut mislabelled = retained;
         mislabelled.teardown_policy_id = MINHOOK_REL5_RELAY_FREED_TEARDOWN_POLICY_ID;
         assert!(!released_matches_relay_disposition(
@@ -8591,11 +7179,6 @@ mod retained_relay_release_tests {
             RelayDisposition::Freed
         ));
 
-        // Both booleans are checked independently, not one inferred from the
-        // other. On a well-formed receipt they are always opposites, which
-        // makes either check alone look sufficient; a SELF-CONTRADICTORY
-        // receipt is what tells them apart, and one must answer no route at all
-        // rather than whichever route its first field happens to agree with.
         let mut claims_both = freed;
         claims_both.relay_retained_until_process_exit = true;
         assert!(
@@ -8618,12 +7201,6 @@ mod retained_relay_release_tests {
             RelayDisposition::RetainedUntilProcessExit
         ));
 
-        // The policy id is checked on BOTH routes, not only the retained one.
-        // Testing the mislabelled retained receipt alone left a live mutation:
-        // a predicate that compared the id only for `RetainedUntilProcessExit`
-        // and admitted the freed route on its booleans passed every assertion
-        // above, and would then let a freed receipt wearing any label answer a
-        // freed-route retry.
         let mut freed_wearing_retained_label = freed;
         freed_wearing_retained_label.teardown_policy_id =
             MINHOOK_REL5_RELAY_RETAINED_TEARDOWN_POLICY_ID;
@@ -8643,10 +7220,6 @@ mod retained_relay_release_tests {
         );
     }
 
-    /// Falsifiable: fails if the two teardown policies ever become the same
-    /// string. They are what an auditor reads to tell "the allocation is gone"
-    /// from "the allocation is still mapped and executable", and a receipt that
-    /// cannot distinguish those two is not evidence of either.
     #[test]
     fn the_two_teardown_policies_are_distinguishable() {
         assert_ne!(
@@ -8704,19 +7277,6 @@ mod detour_identity_tests {
         entries.into_iter().collect()
     }
 
-    /// Law: one detour address services one engine site.
-    ///
-    /// This is the registry-level half of the identical-code-folding defence,
-    /// and it is the only half the lanes that hand-rolled their receipt custody
-    /// get. `observe_enabled_minhook_rel5` verifies each site on its own and a
-    /// folded pair passes -- the REL5 jump at both targets really does point at
-    /// the one surviving body -- so only a check across live bindings can see
-    /// it.
-    ///
-    /// MUTATION PROOF: delete the
-    /// `observed_runtime_address != candidate.observed_runtime_address` clause
-    /// and `reobserving_the_same_site_is_not_a_collision` fails; delete the
-    /// `observed_detour_address ==` clause and this one does.
     #[test]
     fn a_second_site_may_not_reuse_a_live_detour_address() {
         let registry = registry_with(vec![(
@@ -8731,9 +7291,6 @@ mod detour_identity_tests {
         );
     }
 
-    /// Re-observing the SAME site is the retry path every lane uses, and it
-    /// presents the same detour for the same target. It must not be read as a
-    /// collision.
     #[test]
     fn reobserving_the_same_site_is_not_a_collision() {
         let registry = registry_with(vec![(
@@ -8744,7 +7301,6 @@ mod detour_identity_tests {
         assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
     }
 
-    /// Two sites with DIFFERENT detours are the normal case.
     #[test]
     fn distinct_detours_do_not_collide() {
         let registry = registry_with(vec![(
@@ -8756,11 +7312,7 @@ mod detour_identity_tests {
     }
 
     /// A RELEASED site's detour is no longer in the executable. Refusing to
-    /// reuse its address would make a lane that reinstalls after a clean
-    /// teardown fail forever.
-    ///
     /// MUTATION PROOF: make the scan consider `Released` bindings too and this
-    /// fails.
     #[cfg(feature = "test-support")]
     #[test]
     fn a_released_sites_detour_address_is_free_again() {
@@ -8776,7 +7328,6 @@ mod detour_identity_tests {
         assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
     }
 
-    /// A binding observed in a DIFFERENT module is not evidence about this one.
     #[test]
     fn a_different_module_is_not_a_collision() {
         let mut foreign = binding(FIRST.logical_name, 0x1000, 0xDEAD_0000);
@@ -8789,16 +7340,6 @@ mod detour_identity_tests {
         assert_eq!(site_already_using_this_detour(&registry, &candidate), None);
     }
 
-    /// Law: the two rosters name the same sites exactly once each.
-    ///
-    /// The first version of `bind_detours_by_identity` only asked "did every
-    /// spec find a detour". A spec roster with a DUPLICATED name satisfies that
-    /// while binding two sites to one detour and leaving another detour unused
-    /// -- the same misattribution the whole change exists to stop, reached from
-    /// the other side.
-    ///
-    /// MUTATION PROOF: delete the `claimed != 1` loop and this passes with
-    /// `[0xAA00, 0xAA00]`, i.e. two sites silently sharing one detour.
     #[test]
     fn a_duplicated_spec_name_is_refused_rather_than_bound_twice() {
         let duplicated = [FIRST, FIRST];
@@ -8817,8 +7358,6 @@ mod detour_identity_tests {
         );
     }
 
-    /// The name-bound roster binding refuses the same fold one layer earlier,
-    /// before any image is read.
     #[test]
     fn the_name_binding_refuses_a_folded_pair_offline() {
         let specs = [FIRST, SECOND];

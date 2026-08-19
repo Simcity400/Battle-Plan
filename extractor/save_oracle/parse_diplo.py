@@ -64,9 +64,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Top-level factions
-# ---------------------------------------------------------------------------
 
 def _parse_faction(tz, factions):
     rec = {"id": None, "ideology": None, "icon": None, "template": None,
@@ -102,17 +99,11 @@ def _parse_faction(tz, factions):
     factions.append(rec)
 
 
-# ---------------------------------------------------------------------------
-# Per-country relations / wargoals / operatives
-# ---------------------------------------------------------------------------
 
 def _parse_war_relation(tz):
     rec = {"start_date": None, "first": None, "second": None,
            "first_casualties": None, "second_casualties": None,
            "score_first_vs_second": None, "score_second_vs_first": None,
-           # B5 residuals.  Keep the source spelling as well as the exact
-           # fixed-5 integer so a live-memory probe never has to compare an
-           # IEEE-754 approximation with the save oracle.
            "threat": None, "threat_text": None,
            "threat_fixed5_raw": None,
            "first_was_instigator": None,
@@ -127,7 +118,6 @@ def _parse_war_relation(tz):
                         _skip_block_body(tz)
                         continue
                     vv = atom_value(oo)
-                    # province_capture is the dominant war-score component
                     if kk == "province_capture":
                         total = to_float(vv)
                 key = ("score_first_vs_second"
@@ -229,9 +219,6 @@ def _parse_relation(tz, wars, subjects, owner_tag, other_tag):
             elif key == "war_relation":
                 rel["at_war"] = True
                 w = _parse_war_relation(tz)
-                # Preserve the traversal identity.  `wars` is later collapsed
-                # for the legacy product view, while `war_relation_rows` keeps
-                # every ordered save row for B5 all-row acceptance.
                 w["owner"] = owner_tag
                 w["relation_other"] = other_tag
                 wars.append(w)
@@ -293,7 +280,6 @@ def _parse_diplomacy(tz, rec, wars, subjects, owner_tag):
             else:
                 _skip_block_body(tz)
             continue
-        # scalars (faction_join_date, naval_blockade) ignored
 
 
 def _parse_intelligence_agency(tz, rec):
@@ -338,7 +324,6 @@ def _parse_intel(tz, rec):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             if key == "intel":
-                # count the positional rows
                 rows = 0
                 for k, op in iter_block_entries(tz):
                     if op is LBRACE:
@@ -370,7 +355,6 @@ def _parse_countries(tz, by_tag, wars, subjects):
                     _parse_intel(tz, rec)
                 else:
                     _skip_block_body(tz)
-            # scalars ignored
         by_tag[tag] = rec
 
 
@@ -414,7 +398,6 @@ def _dedup_wars(wars):
 def build(text, source, was_melted):
     by_tag, factions, wars, subjects, meta = parse_diplo_text(text)
 
-    # faction back-reference per country.
     tag_to_faction = {}
     for f in factions:
         for m in f["members"]:
@@ -441,7 +424,6 @@ def build(text, source, was_melted):
             row.get("second") or "",
         ),
     )
-    # dedup subjects by (overlord, subject)
     subj_seen = {}
     for p in subjects:
         ov, su = p.get("first"), p.get("second")
@@ -499,7 +481,6 @@ def build(text, source, was_melted):
                  f"agency={ger.get('agency_name')!r} "
                  f"operatives={len(ger.get('operatives', []))}")
     lines.append(f"GER wargoals  : {len(ger.get('wargoals', []))}")
-    # show a known war involving GER
     ger_wars = [w for w in deduped_wars if "GER" in (w["a"], w["b"])]
     lines.append(f"GER wars      : {len(ger_wars)}")
     for w in ger_wars[:4]:

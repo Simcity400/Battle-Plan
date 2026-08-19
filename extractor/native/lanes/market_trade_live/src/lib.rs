@@ -45,15 +45,10 @@ pub const MARKET_TRADE_LEND_LEASE_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_LEND_LEASE_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_LEND_LEASE_ROW_LEN: usize = 48;
 pub const MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC: &[u8; 4] = b"MTRF";
-/// v1 exported-only slice and v2 six-kind matrix both pin the per-row value
-/// vector to seven `i64`s and the header field at `+24` to the seven-bit mask
-/// `0x7F`, which is why an eighth strategic resource could not be stated. v3 is
-/// the same six-kind matrix with a count-prefixed, variable-width vector.
 pub const MARKET_TRADE_RESOURCE_FLOW_LEGACY_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_RESOURCE_FLOW_FIXED7_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_TRADE_RESOURCE_FLOW_SCHEMA_VERSION: u16 = 3;
 pub const MARKET_TRADE_RESOURCE_FLOW_HEADER_LEN: usize = 32;
-/// v1/v2 only: 16 bytes of row header plus seven `i64`s.
 pub const MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN: usize = 72;
 pub const MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN: usize = 16;
 pub const MARKET_TRADE_RESOURCE_FLOW_KIND_PRODUCED: u32 = 1;
@@ -69,36 +64,22 @@ pub const MARKET_TRADE_FACTORY_HEADER_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_FACTORY_HEADER_HEADER_LEN: usize = 24;
 pub const MARKET_TRADE_FACTORY_HEADER_ROW_LEN: usize = 16;
 pub const MARKET_TRADE_RESOURCE_ROW_TRAILER_MAGIC: &[u8; 4] = b"MTRR";
-/// v1 pinned the header's `resource_count` to seven; v2 admits the count the
-/// live resource database reported, under the shared admission ceiling; v3 adds
-/// the identity block that states WHICH resources those are.
 pub const MARKET_TRADE_RESOURCE_ROW_LEGACY_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_RESOURCE_ROW_COUNT_ONLY_SCHEMA_VERSION: u16 = 2;
 pub const MARKET_TRADE_RESOURCE_ROW_SCHEMA_VERSION: u16 = 3;
-/// v4 is v3 plus one extra admitted ROW shape: an oil row whose needed-trio the
-/// producer could not derive states that, instead of being dropped and leaving
-/// the trailer's dense `country_count * resource_count` cross product short --
-/// which is what made every D43 record of live capture t17 unreadable.
 pub const MARKET_TRADE_RESOURCE_ROW_NEEDED_UNAVAILABLE_SCHEMA_VERSION: u16 = 4;
 pub const MARKET_TRADE_RESOURCE_ROW_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_RESOURCE_ROW_LEN: usize = 64;
-/// One `MTRR` v3 identity entry: `u16 token_len` then the token bytes,
-/// zero-padded to the bound.
 pub const STRATEGIC_RESOURCE_IDENTITY_STRIDE: usize =
     compact_contract::build_profile::COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE as usize;
 pub const MAX_STRATEGIC_RESOURCE_TOKEN_LEN: usize =
     compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_TOKEN_LEN;
-/// The width v1 `MTRR` and v1/v2 `MTRF` are pinned to.
 pub const MARKET_TRADE_FIXED7_RESOURCE_COUNT: u32 = 7;
-/// The one shared admission ceiling for a count-prefixed resource vector: the
-/// same contract constant the collector and the fold bound their counts with.
 pub const MAX_STRATEGIC_RESOURCE_COUNT: u32 =
     compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT;
 pub const MARKET_TRADE_RESOURCE_NEEDED_SURPLUS: u32 = 1;
 pub const MARKET_TRADE_RESOURCE_NEEDED_DEFICIT: u32 = 2;
 pub const MARKET_TRADE_RESOURCE_NEEDED_CURRENT_MAX: u32 = 3;
-/// The oil row's needed-trio was not observed. `v4` only; the trio is zeroed on
-/// the wire and every reader must treat it as absent rather than as `0`.
 pub const MARKET_TRADE_RESOURCE_NEEDED_UNAVAILABLE: u32 = 4;
 pub const MARKET_TRADE_RESOURCE_FLAG_CURRENT: u32 = 1;
 pub const MARKET_TRADE_RESOURCE_FLAG_MAX: u32 = 1 << 1;
@@ -108,23 +89,7 @@ pub const MARKET_TRADE_RESOURCE_FLAGS_KNOWN: u32 =
 pub const MARKET_TRADE_CLASSIC_DEAL_TRAILER_MAGIC: &[u8; 4] = b"MTRD";
 pub const MARKET_TRADE_CLASSIC_DEAL_LEGACY_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_CLASSIC_DEAL_SCHEMA_VERSION: u16 = 2;
-/// v3: the header's last word is the INCOMPLETE-OWNER COUNT and that many
-/// census keys sit between the witness block and the rows, ascending and a
-/// subset of the witnesses. An owner named there published rows that are true
-/// but not exhaustive; every other witness's list is exact. v1/v2 hold the word
-/// at zero and state no per-owner claim -- their producers withheld the whole
-/// trailer instead of publishing a short list.
 pub const MARKET_TRADE_CLASSIC_DEAL_PER_OWNER_SCHEMA_VERSION: u16 = 3;
-/// v4: the DEAL IDENTITY is carried at full width — `deal_exporter_tag_db_id`
-/// `u32` at `+0x20`, `deal_importer_tag_db_id` `u32` at `+0x24`, and a one-based
-/// `deal_ordinal` `u32` in the word v1-v3 hold at zero (`+0x5C`) — in place of
-/// v1-v3's single packed `u64` at `+0x20`.
-///
-/// v1-v3 gave each country id SIXTEEN BITS and the ordinal EIGHT, so the
-/// producer dropped any deal whose exporter or importer id exceeded `u16::MAX`,
-/// and any deal past the 254th in one export bucket. A country cap and a deal
-/// cap, both expressed as field widths rather than as constants. The header,
-/// witness block and incomplete block are v3's unchanged.
 pub const MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION: u16 = 4;
 pub const MARKET_TRADE_CLASSIC_DEAL_HEADER_LEN: usize = 32;
 pub const MARKET_TRADE_CLASSIC_DEAL_ROW_LEN: usize = 96;
@@ -148,8 +113,6 @@ pub const MARKET_TRADE_ACTIVATION_FLAGS_KNOWN: u32 =
     MARKET_TRADE_ACTIVATION_FLAG_ACTIVE | MARKET_TRADE_ACTIVATION_FLAG_ROOT_EXACT;
 pub const MARKET_TRADE_ACTIVATION_ROOT_COUNTRYTRADEVIEW: u32 = 1;
 pub const MARKET_TRADE_ACTIVATION_OPEN_RVA: u32 = 0x015e_c520;
-/// B1 exact per-country equipment-market stockpile snapshot. `MTS1` carries
-/// every country-owner witness, including measured-empty nested iterators.
 pub const MARKET_TRADE_STOCKPILE_TRAILER_MAGIC: &[u8; 4] = b"MTS1";
 pub const MARKET_TRADE_STOCKPILE_SCHEMA_VERSION: u16 = 1;
 pub const MARKET_TRADE_STOCKPILE_HEADER_LEN: usize = 40;
@@ -315,9 +278,7 @@ pub struct LendLeaseMappingRow {
 pub struct ResourceFlowRow {
     pub tag_db_id: u32,
     pub flow_kind: u32,
-    /// v1/v2 echo the seven-bit mask here; v3 echoes the resource count.
     pub resource_mask_or_count: u32,
-    /// As wide as the resource count the trailer stated.
     pub values_raw: Vec<i64>,
 }
 
@@ -348,16 +309,11 @@ pub struct ResourceViewRow {
     pub descriptor_db_index: u32,
 }
 
-/// One classic deal's identity, at the country id space's full structural
-/// width. Ordered so a `BTreeMap` keyed on it walks deals in a stable,
-/// content-derived order.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Ord, PartialOrd)]
 pub struct ClassicDealIdentity {
     pub exporter_tag_db_id: u32,
     pub importer_tag_db_id: u32,
     pub resource_index: u32,
-    /// One-based on every version: v4 reads it directly, v1-v3's packed low
-    /// byte was already one-based.
     pub ordinal: u32,
 }
 
@@ -370,14 +326,7 @@ pub struct ClassicDealRow {
     pub direction: u32,
     pub route_kind: u32,
     pub flags: u32,
-    /// Exact route `+0xE8/+0xE9` state in MTRD v2. Legacy v1 rows retain
-    /// `None` so downstream code cannot mistake an absent observation for
-    /// two measured false values.
     pub route_status_flags: Option<u32>,
-    /// The deal's identity, normalised across wire versions: v4 reads three
-    /// full-width words, v1-v3 unpack it from their `u64`. Both halves of one
-    /// deal carry the same value, which is what makes it the join key —
-    /// `owner`/`counterpart` swap with `direction` and it does not.
     pub identity: ClassicDealIdentity,
     pub requested_raw: i64,
     pub delivered_raw: i64,
@@ -493,9 +442,7 @@ pub struct MarketTradePayloadSummary {
     pub resource_flow_country_rows: u32,
     pub resource_flow_exported_rows: u32,
     pub resource_flow_scale_raw: u32,
-    /// Raw `+24` header field: the seven-bit mask in v1/v2, the count in v3.
     pub resource_flow_resource_mask: u32,
-    /// Resource-set width the trailer states, whichever version declared it.
     pub resource_flow_resource_count: u32,
     pub resource_flow_kind_mask: u32,
     pub factory_header_trailer_present: bool,
@@ -504,14 +451,10 @@ pub struct MarketTradePayloadSummary {
     pub resource_rows: u32,
     pub resource_row_country_count: u32,
     pub resource_row_resource_count: u32,
-    /// The resource set's own tokens, in slot order, from an `MTRR` v3 identity
-    /// block. Empty for v1/v2: those streams state a width and no identity.
     pub resource_tokens: Vec<String>,
     pub classic_deal_trailer_present: bool,
     pub classic_deal_rows: u32,
     pub classic_deal_country_count: u32,
-    /// How many of those witnesses the payload marked NOT exhaustive. Zero for
-    /// every v1/v2 trailer.
     pub classic_deal_incomplete_owner_count: u32,
     pub activation_trailer_present: bool,
     pub stockpile_trailer_present: bool,
@@ -526,7 +469,6 @@ pub struct MarketTradePayloadSummary {
     pub factory_headers: Vec<FactoryHeaderRow>,
     pub resource_view_rows: Vec<ResourceViewRow>,
     pub classic_deal_country_witnesses: Vec<u32>,
-    /// The witnesses the payload marked NOT exhaustive, in wire order.
     pub classic_deal_incomplete_owners: Vec<u32>,
     pub classic_deals: Vec<ClassicDealRow>,
     pub activation: Option<MarketTradeActivation>,
@@ -1010,8 +952,6 @@ pub fn residual_badge_rows(
                 | "purchase_contract_speed_completed" => MARKET_TRADE_DETAIL_ROW_LEN as u32,
                 "market_stockpile_sellable_equipment" => MARKET_TRADE_STOCKPILE_ITEM_ROW_LEN as u32,
                 "lend_lease_market_contract_mapping" => MARKET_TRADE_LEND_LEASE_ROW_LEN as u32,
-                // The badge quotes the shipped seven-resource row width; a
-                // v3 row is `16 + 8 * resource_count` and has no one number.
                 "country_resource_import_export_flows" => {
                     MARKET_TRADE_RESOURCE_FLOW_FIXED7_ROW_LEN as u32
                 }
@@ -1193,22 +1133,11 @@ pub fn encode_lend_lease_trailer(rows: &[LendLeaseMappingRow]) -> Vec<u8> {
     payload
 }
 
-/// Row width of an `MTRF` v3 row for a given resource count. The encoder and
-/// the shared `d43_grammar` decoder derive this width from the resource count,
-/// so a producer cannot write a row length the decoder would not compute.
 pub fn resource_flow_row_len(resource_count: u32) -> usize {
     MARKET_TRADE_RESOURCE_FLOW_ROW_HEADER_LEN
         .saturating_add((resource_count as usize).saturating_mul(8))
 }
 
-/// Encodes `MTRF` v3, or `None` when the input could only produce a trailer a
-/// decoder must refuse.
-///
-/// The encoder applies the SAME admission predicate the decoders apply, for two
-/// reasons: an encoder that can emit an out-of-bound count is a second opinion
-/// about what is legal, and `Vec::with_capacity` here is sized from
-/// `8 * resource_count`, so an unbounded count sizes an allocation before
-/// anything has refused it.
 pub fn encode_resource_flow_trailer(
     rows: &[ResourceFlowRow],
     resource_count: u32,
@@ -1216,10 +1145,6 @@ pub fn encode_resource_flow_trailer(
     if !(1..=MAX_STRATEGIC_RESOURCE_COUNT).contains(&resource_count) {
         return None;
     }
-    // Every field the decoder validates per row, the encoder validates before
-    // writing it. Checking only `values_raw.len()` left two ways to emit a
-    // stream every decoder refuses: a row echoing a different count at `+8`,
-    // and a row carrying a flow kind outside the six-kind matrix.
     if rows.iter().any(|row| {
         row.values_raw.len() != resource_count as usize
             || row.resource_mask_or_count != resource_count
@@ -1356,13 +1281,11 @@ pub fn encode_market_stockpile_trailer(
     payload
 }
 
-// @d43-payload-reader-region begin
-// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=02163462bdcc964b65868afa16ad733c3d8c61631d4c779755037464a3f4a798
+// @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=90163b1113daafaecdc9cc42ae06237f3488d7f85c71ccf20eff120f40f2cccd
 pub fn decode_payload(offset: usize, payload: &[u8]) -> MarketTradePayloadSummary {
     let report = d43_grammar::decode::decode_record(payload, leaf_decode::LANE_DECODE_CONTEXT);
     leaf_decode::project_decoded_payload(offset, &report)
 }
-// @d43-payload-reader-region end
 
 pub fn append_compact_record(
     out: &mut Vec<u8>,
@@ -1409,8 +1332,6 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
     let mut per_hour_data = BTreeMap::<i32, u32>::new();
 
     while offset < raw.len() {
-        // Any byte after a clean closure means the physical EOF is no longer at
-        // that FRAME_END, even when the trailing bytes cannot form a header.
         let previous_record_closed_world = final_record_is_clean_frame_end;
         final_record_is_clean_frame_end = false;
         let header = match parse_compact_record_header(&raw[offset..]) {
@@ -1679,8 +1600,8 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                             summary.activation_last_sequence =
                                 Some(activation.observation_sequence);
                             if activation.active {
-                            summary.activation_active_records =
-                                summary.activation_active_records.saturating_add(1);
+                                summary.activation_active_records =
+                                    summary.activation_active_records.saturating_add(1);
                             } else {
                                 summary.activation_closed_records =
                                     summary.activation_closed_records.saturating_add(1);
@@ -1758,9 +1679,12 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                 }
             }
             compact_contract::KnownRecordType::FreezeCensus => {
-                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                if let Ok(census) =
+                    compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                {
                     final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
-                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    release_epilogue_seen |= census.phase()
+                        == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
             compact_contract::KnownRecordType::ContentIdentityCensus
@@ -1932,10 +1856,6 @@ pub fn gate_compact_stream(raw: &[u8], min_game_hours: usize) -> MarketTradeGate
     if !summary.skipped_game_hours.is_empty() {
         problems.push("skipped_game_hours");
     }
-    // Domain 43 has no lane-local aliases and no registered expected-partial
-    // tolerance. Applying the shared normalizer here covers owned DATA/PERF
-    // status and the FRAME_END aggregate status accumulated above without
-    // inventing a lane-local exemption.
     let rejected_status =
         compact_contract::compact_status_failure_flags_after_expected_partial_tolerance(
             DOMAIN_ID,
@@ -2113,9 +2033,6 @@ mod tests {
         );
     }
 
-    /// `resource_count` is a parameter because the wire is count-prefixed: a
-    /// test that could only build seven-resource payloads could not exercise
-    /// the case the fixed width made impossible.
     fn append_test_mtrr_with_count(
         payload: &mut Vec<u8>,
         countries: &[u32],
@@ -2128,9 +2045,6 @@ mod tests {
         append_test_mtrr_with_identity(payload, countries, resource_count, &tokens, version);
     }
 
-    /// Build an `MTRR` trailer stating an explicit resource set. `tokens` goes
-    /// into the v3 identity block verbatim, including bodies the decoder must
-    /// refuse. v1/v2 ignore it -- they have nowhere to put it.
     fn append_test_mtrr_with_identity(
         payload: &mut Vec<u8>,
         countries: &[u32],
@@ -2141,11 +2055,6 @@ mod tests {
         append_test_mtrr_with_oil_slot(payload, countries, resource_count, tokens, version, 0);
     }
 
-    /// The same trailer with the OIL SLOT as a parameter. Vanilla puts oil
-    /// first, so every other fixture here passes 0; a mod that reorders or
-    /// prepends a resource in `common/resources` does not, and that is the case
-    /// the decoder must resolve from the row's own stamped model rather than
-    /// from its position.
     fn append_test_mtrr_with_oil_slot(
         payload: &mut Vec<u8>,
         countries: &[u32],
@@ -2234,13 +2143,6 @@ mod tests {
         );
     }
 
-    /// The same two-half deal under an explicit version word and an explicit
-    /// identity pair.
-    ///
-    /// Both are parameters rather than derived, so a fixture can drive the v4
-    /// identity words INDEPENDENTLY of the row's own owner/counterpart — which
-    /// is the only way to exercise the intra-row agreement rule that is this
-    /// row's tear detector.
     fn append_test_mtrd_versioned(
         payload: &mut Vec<u8>,
         mismatch_second_half: bool,
@@ -2261,9 +2163,6 @@ mod tests {
         for witness in witnesses {
             payload.extend_from_slice(&witness.to_le_bytes());
         }
-        // v4 spells the identity as two full-width words at `+0x20`/`+0x24`
-        // plus a one-based ordinal in v1-v3's reserved word at `+0x5C`; v1-v3
-        // pack all four into one `u64` at `+0x20`, sixteen bits per country id.
         let wide_identity = version == MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION;
         let (identity_bytes, ordinal_word): ([u8; 8], u32) = if wide_identity {
             let mut bytes = [0u8; 8];
@@ -2647,8 +2546,8 @@ mod tests {
         assert!(badges
             .iter()
             .any(|badge| badge.name == "market_access_diplomatic_context"
-            && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
-            && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
+                && badge.status == RESIDUAL_STATUS_VALIDATED_SLICE
+                && badge.current_support == RESIDUAL_SUPPORT_VALIDATED_SLICE));
         assert!(badges
             .iter()
             .all(|badge| badge.evidence_mask != 0 && badge.proposed_record_kind != 0));
@@ -2839,9 +2738,6 @@ mod tests {
         assert_eq!(summary.resource_flow_exported_rows_total, 1);
     }
 
-    /// One country's complete six-kind flow matrix, as wide as `exported`.
-    /// The width is a parameter, not seven: that is the whole point of the
-    /// count-prefixed vector.
     fn six_kind_flow_rows(tag_db_id: u32, exported: &[i64]) -> Vec<ResourceFlowRow> {
         let resource_count = exported.len() as u32;
         (1..=6)
@@ -3514,21 +3410,6 @@ mod tests {
         assert_eq!(gate.summary.partial_field_rows_total, 0);
     }
 
-    /// The lane decoder reads BOTH `MTRD` identity spellings, and the v4 one is
-    /// what the collector actually emits.
-    ///
-    /// v1-v3 pack the deal identity into a `u64` with sixteen bits per country
-    /// id; v4 carries two full `u32`s plus a one-based ordinal in the word
-    /// v1-v3 hold at zero. This decoder is a SECOND consumer of that trailer,
-    /// independent of the fold's, and before this fixture its v4 branch was
-    /// never executed by any test — the whole suite drove version 2.
-    ///
-    /// kills: deleting the v4 arm of the identity read (the v4 payload's rows
-    /// then unpack the two `u32`s as one packed `u64` and fail the intra-row
-    /// agreement, so the deal count drops); deleting the `identity_shape_ok`
-    /// agreement check itself (the mismatched-identity payload below then
-    /// parses clean); and reading the ordinal from the wrong word on v4 (a zero
-    /// ordinal is refused, and `+0x5C` is the only word carrying it).
     #[test]
     fn x15_mtrd_reads_the_wide_identity_and_still_reads_the_packed_one() {
         let deals = |version: u16, identity: (u32, u32)| {
@@ -3566,9 +3447,6 @@ mod tests {
             );
         }
 
-        // The intra-row agreement, on v4, where the identity words are separate
-        // from the row's own owner/counterpart and so CAN disagree. 99 is a
-        // witness, so witness membership does not refuse this on its own.
         let torn = deals(
             MARKET_TRADE_CLASSIC_DEAL_WIDE_IDENTITY_SCHEMA_VERSION,
             (47, 99),
@@ -3598,7 +3476,6 @@ mod tests {
         assert!(decoded.resource_row_trailer_present);
         assert_eq!(decoded.resource_row_country_count, 3);
         assert_eq!(decoded.resource_view_rows.len(), 21);
-        // The lane decoder reads the set's identity, not just its width.
         assert_eq!(
             decoded.resource_tokens,
             (0..7).map(|slot| format!("res_{slot}")).collect::<Vec<_>>()
@@ -3679,7 +3556,6 @@ mod tests {
         let mut payload = complete_market_payload(1);
         let trailer = payload.len();
         append_test_mtrr(&mut payload, &[47]);
-        // Rows start after the v3 identity block, not at `header_len`.
         let final_row_visible_order = trailer
             + MARKET_TRADE_RESOURCE_ROW_HEADER_LEN
             + 7 * STRATEGIC_RESOURCE_IDENTITY_STRIDE
@@ -3771,7 +3647,6 @@ mod tests {
 
         let mut noncontiguous = complete_market_payload(1);
         let mut trailer = encode_market_stockpile_trailer(2, &countries, &items);
-        // Second country item_first (country row 1 +4) must equal 1.
         let second_first =
             MARKET_TRADE_STOCKPILE_HEADER_LEN + MARKET_TRADE_STOCKPILE_COUNTRY_ROW_LEN + 4;
         trailer[second_first..second_first + 4].copy_from_slice(&0u32.to_le_bytes());
@@ -3782,21 +3657,6 @@ mod tests {
         }));
     }
 
-    // ---------------------------------------------------------------------
-    // Count-prefixed resource vector: MTRF v3 / MTRR v2.
-    //
-    // Each of these is the visible half of a mutation. `runs/resource_wire/`
-    // records which production edit turns which of them red.
-    // ---------------------------------------------------------------------
-
-    /// (a) The case the fixed seven-wide vector made unrepresentable: a mod's
-    /// eighth strategic resource, encoded by the producer and read back by the
-    /// decoder with every slot intact.
-    ///
-    /// Reverting the decoder's width handling to the fixed 72-byte row while
-    /// leaving the producer widened -- the producer-wider-than-consumer drift
-    /// class -- turns this red, because the eighth slot lands past the row the
-    /// consumer would read.
     #[test]
     fn d43_mtrf_v3_round_trips_an_eight_resource_vector() {
         let exported = [
@@ -3824,8 +3684,6 @@ mod tests {
         assert_eq!(exported_row.resource_mask_or_count, 8);
     }
 
-    /// (b) The vanilla width still round-trips, byte for byte, through the same
-    /// count-prefixed path.
     #[test]
     fn d43_mtrf_v3_round_trips_the_seven_resource_vector() {
         let exported = [800_000i64, 0, 0, 1_900_000, 15_499_941, 800_000, 12_000_000];
@@ -3847,9 +3705,6 @@ mod tests {
         );
     }
 
-    /// (c) A stream written before the widening still reads. v2 pins the vector
-    /// to seven and puts the seven-bit mask at `+24`; nothing about that
-    /// changed, and the new decoder applies exactly the v2 rules to it.
     #[test]
     fn d43_mtrf_v2_fixed_seven_stream_is_still_read() {
         let mut payload = encode_payload(0, 0, 0, 0, &[]);
@@ -3872,7 +3727,6 @@ mod tests {
         }
     }
 
-    /// (c) The same, for `MTRR` v1.
     #[test]
     fn d43_mtrr_v1_fixed_seven_stream_is_still_read() {
         let mut payload = complete_market_payload(1);
@@ -3890,18 +3744,6 @@ mod tests {
         assert_eq!(decoded.resource_view_rows.len(), 7);
     }
 
-    /// (c2) A REORDERED resource table decodes, with oil resolved at its real
-    /// slot rather than at slot 0.
-    ///
-    /// `common/resources` is an ordinary game file and a mod may prepend to it,
-    /// which moves oil off the first slot. The producer already identifies oil
-    /// from the database's own cached oil descriptor and stamps the oil
-    /// needed-model on that row; this asserts the decoder reads the stamp.
-    ///
-    /// Reverting `let oil = ...` to `row.resource_index == 0` makes this red:
-    /// the real oil row is then judged under the non-oil rule and the slot-0 row
-    /// under the oil rule, so BOTH raise parse errors and the record is refused
-    /// outright -- a modded game would publish nothing for D43.
     #[test]
     fn d43_mtrr_resolves_oil_at_its_real_slot_when_a_mod_reorders_the_table() {
         let tokens: Vec<String> = [
@@ -3925,7 +3767,6 @@ mod tests {
         assert!(decoded.ok(), "{:?}", decoded.parse_errors);
         assert_eq!(decoded.resource_tokens, tokens);
         assert_eq!(decoded.resource_view_rows.len(), 14);
-        // Exactly the slot-3 rows wear the oil model, one per country.
         let oil_rows: Vec<&ResourceViewRow> = decoded
             .resource_view_rows
             .iter()
@@ -3938,8 +3779,6 @@ mod tests {
             assert_eq!(row.needed_current, -12);
             assert_eq!(row.needed_max, -8);
         }
-        // And slot 0, which a positional decoder would have called oil, is an
-        // ordinary non-oil row with no needed pair.
         for row in decoded
             .resource_view_rows
             .iter()
@@ -3951,11 +3790,6 @@ mod tests {
         }
     }
 
-    /// (c3) Two slots wearing the oil model is refused.
-    ///
-    /// Reading the oil slot off the rows is only sound because the rows are made
-    /// to agree on it, so the disagreement is checked rather than resolved to
-    /// whichever slot the decoder saw first.
     #[test]
     fn d43_mtrr_refuses_a_trailer_that_states_two_oil_slots() {
         let tokens: Vec<String> = (0..7).map(|slot| format!("res_{slot}")).collect();
@@ -3998,15 +3832,6 @@ mod tests {
         );
     }
 
-    /// (d) The decisive one for version safety. A stream one version PAST what
-    /// this decoder knows is refused with its version named -- it is never
-    /// reinterpreted under the grammar the decoder does know.
-    ///
-    /// This is the code path an older decoder takes when it meets a v3 stream:
-    /// the accepted-version set is the discriminator, so stamping a version
-    /// outside the set exercises exactly that branch. It matters because `+24`
-    /// is a mask in v1/v2 and a count in v3 -- reading a v3 header under the v2
-    /// rules would compare a small count against `0x7F` and mis-size every row.
     #[test]
     fn d43_mtrf_refuses_a_version_it_does_not_know_and_never_reinterprets_it() {
         let rows = six_kind_flow_rows(67, &[0; 7]);
@@ -4033,7 +3858,6 @@ mod tests {
         );
     }
 
-    /// (d) The same for `MTRR`.
     #[test]
     fn d43_mtrr_refuses_a_version_it_does_not_know() {
         let mut payload = complete_market_payload(1);
@@ -4058,9 +3882,6 @@ mod tests {
         assert!(decoded.resource_view_rows.is_empty());
     }
 
-    /// (e) A count past the shared admission ceiling is refused before anything
-    /// is sized from it. Without the bound, `row_count * resource_count * 8` is
-    /// two stream-supplied `u32`s driving an allocation.
     #[test]
     fn d43_mtrf_v3_refuses_a_resource_count_above_the_admission_bound() {
         let rows = six_kind_flow_rows(67, &[0; 7]);
@@ -4084,13 +3905,6 @@ mod tests {
         assert!(decoded.resource_flow_rows_decoded.is_empty());
     }
 
-    /// (e) The same for `MTRR` v2, and for a zero count -- an empty resource set
-    /// is not a resource set.
-    ///
-    /// The over-bound trailer is otherwise COMPLETE: it emits all 65 rows per
-    /// country, so nothing but the ceiling stands between it and admission. A
-    /// fixture that declared 65 and emitted no rows would stay refusable as
-    /// truncated even with the ceiling gone, and would prove nothing.
     #[test]
     fn d43_mtrr_v2_refuses_a_resource_count_outside_the_admission_bound() {
         for count in [0, MAX_STRATEGIC_RESOURCE_COUNT + 1] {
@@ -4117,10 +3931,6 @@ mod tests {
         }
     }
 
-    /// The encoder applies the decoders' predicate. An encoder that can emit a
-    /// count no decoder admits is a second opinion about what is legal -- and
-    /// its `Vec::with_capacity` is sized from `8 * resource_count`, so an
-    /// unbounded count sizes an allocation before anything refuses it.
     #[test]
     fn d43_resource_flow_encoder_refuses_a_count_outside_the_admission_bound() {
         for count in [0, MAX_STRATEGIC_RESOURCE_COUNT + 1] {
@@ -4132,8 +3942,6 @@ mod tests {
         }
     }
 
-    /// A row narrower or wider than the stated count cannot be encoded either:
-    /// the header would describe rows the payload does not contain.
     #[test]
     fn d43_resource_flow_encoder_refuses_rows_that_disagree_with_the_count() {
         let mut rows = six_kind_flow_rows(67, &[0; 7]);
@@ -4142,10 +3950,6 @@ mod tests {
         assert!(encode_resource_flow_trailer(&rows, 8).is_none());
     }
 
-    /// The encoder applies EVERY per-row predicate the decoder applies. A row
-    /// echoing a different count, or carrying a flow kind outside the six-kind
-    /// matrix, is a stream every decoder refuses -- so the encoder must not be
-    /// able to write it.
     #[test]
     fn d43_resource_flow_encoder_refuses_rows_the_decoder_would_refuse() {
         let mut echo_disagrees = six_kind_flow_rows(67, &[0; 7]);
@@ -4165,13 +3969,6 @@ mod tests {
         }
     }
 
-    /// A row that states a different width from its header is refused. Without
-    /// this, header and rows could drift and the decoder would read whichever
-    /// the header happened to say.
-    ///
-    /// The mismatch is patched into the BYTES, not built with the encoder: the
-    /// encoder applies the decoder's predicate, so it cannot emit this stream,
-    /// and a decoder test that needed it to would be testing the wrong thing.
     #[test]
     fn d43_mtrf_v3_refuses_a_row_whose_count_disagrees_with_the_header() {
         let rows = six_kind_flow_rows(67, &[0; 7]);
@@ -4194,8 +3991,6 @@ mod tests {
         );
     }
 
-    /// A `MTRF` v1/v2 trailer, hand-built: seven fixed `i64` slots and the
-    /// seven-bit mask at `+24` and in every row.
     fn encode_fixed7_resource_flow_trailer(tag_db_id: u32, version: u16) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(MARKET_TRADE_RESOURCE_FLOW_TRAILER_MAGIC);

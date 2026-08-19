@@ -32,8 +32,6 @@ pub const RECORD_TYPE_DOMAIN_PERF: u16 = 1;
 pub const RECORD_TYPE_FRAME_END: u16 = 2;
 pub const RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 pub const DOMAIN_FRAME: u16 = 1000;
-/// Reserved instrumentation PERF domain. It is physically framed but never a
-/// scheduled/emitted coverage domain and never contributes FRAME_END status.
 pub const PROBE_DOMAIN_ID: u16 = 250;
 
 pub const PAYLOAD_HEADER_LEN: usize = 32;
@@ -89,9 +87,6 @@ pub const ROW_FLAG_SUPPLY_GAIN: u32 = 1 << 10;
 pub const ROW_FLAG_FUEL: u32 = 1 << 11;
 pub const ROW_FLAG_DELETED: u32 = 1 << 12;
 pub const ROW_FLAG_TEMPLATE: u32 = 1 << 13;
-/// Wave-3 primary-order linkage flags (mutually exclusive). ORDER_ARMY
-/// carries the COrderInstance+0x244 instance id in the row tail u32 at +84
-/// (previously reserved-zero); ARMY_GROUP/UNRESOLVED badge without an id.
 pub const ROW_FLAG_ORDER_ARMY: u32 = 1 << 14;
 pub const ROW_FLAG_ORDER_ARMY_GROUP: u32 = 1 << 15;
 pub const ROW_FLAG_ORDER_UNRESOLVED: u32 = 1 << 16;
@@ -142,20 +137,12 @@ pub const KNOWN_ROW_FLAGS: u32 = ROW_FLAG_MOVING
     | ROW_FLAG_DIG_IN_UI_CAPPED
     | ROW_FLAG_INVALID_ORDERS_OBSERVED
     | ROW_FLAG_INVALID_ORDERS_VISIBLE;
-/// Shared ceiling for the primary-order instance id (collector, recorder
-/// summary decoder, world_fold, and this standalone gate all enforce it).
 pub const MAX_ORDER_INSTANCE_ID: u32 = 100_000_000;
 
-/// The province id space's STRUCTURAL width (lane IA). Was a guess --
-/// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
-/// four different ceilings for one id space. Proven from the engine's signed-int
-/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`).
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_COMBAT_REF_COUNT: u32 = 1_000;
 pub const MAX_ORGANISATION_RAW: u32 = 100_000_000;
 pub const MAX_STRENGTH_RAW: u32 = 1_000_000_000;
-// Path-imported from the dependency-free production build profile so the
-// documented direct-rustc gate cannot drift from collector/recorder authority.
 pub const MAX_OWNER_TAG_DB_ID: u32 = compact_build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_ARMY_ID: u32 = i32::MAX as u32;
 pub const MAX_TEMPLATE_ID: u32 = i32::MAX as u32;
@@ -175,8 +162,6 @@ pub struct DivisionStateHeader {
     pub root_rows: u32,
 }
 
-/// Wave-3 primary-order linkage (CDivision+0xC8). Only the primary order is
-/// represented; ArmyGroup/Unresolved badge distinctly without an id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DivisionOrderLink {
     #[default]
@@ -216,9 +201,7 @@ pub struct DivisionStateRow {
     pub raw_dig_in: Option<u32>,
     pub raw_dig_in_cap: Option<u32>,
     pub counter_training_visible: Option<bool>,
-    /// 0 hidden, 1 visible/not-all-capped, 2 visible/all-positive capped.
     pub counter_dig_in_frame: Option<u8>,
-    /// Exact post-update `invalid_orders` GUI control visibility.
     pub counter_invalid_orders_visible: Option<bool>,
     pub strategic_redeployment: Option<bool>,
     pub current_manpower: Option<u32>,
@@ -1341,9 +1324,6 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
     summary
 }
 
-/// Certify a production domain-20 proof for an explicitly requested number of
-/// game-hour advancements. Because both endpoints are closed frames, `N`
-/// advancements require at least `N + 1` consecutive closed frames.
 pub fn gate_production_stream(
     raw: &[u8],
     minimum_game_hour_advancements: i64,
@@ -1451,7 +1431,6 @@ fn certify_production_frames(raw: &[u8], summary: &mut Domain20GateSummary) {
                     if header.domain_id != PROBE_DOMAIN_ID {
                         perf_record_count = perf_record_count.saturating_add(1);
                         perf_domains.insert(header.domain_id);
-                        // Canonical PERF semantics guarantee the 40-byte base.
                         perf_status_or |= status_for_global_interpretation(
                             header.domain_id,
                             read_u32_le(payload, 32),
@@ -1944,9 +1923,6 @@ mod tests {
 
     #[test]
     fn row_len_literal_is_stable() {
-        // Guard against stale-constant drift (a prior review found a sibling
-        // domain-42 test asserting a stale 68): pin the LITERAL, not a derived
-        // value, so a wrong ROW_LEN fails here.
         assert_eq!(ROW_LEN, 120);
     }
 
@@ -2902,7 +2878,6 @@ mod tests {
             .any(|error| error.contains("DATA status Some(0) does not match PERF status")));
 
         let mut unknown = valid_production_stream(&[100, 101]);
-        // First DATA payload status word.
         unknown[STREAM_HEADER_LEN + 16..STREAM_HEADER_LEN + 20]
             .copy_from_slice(&(1u32 << 31).to_le_bytes());
         let gate = gate_production_stream(&unknown, 1);

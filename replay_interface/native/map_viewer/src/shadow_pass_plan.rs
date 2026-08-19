@@ -1,10 +1,3 @@
-//! Pointer-free S1 screen-shadow pass wiring.
-//!
-//! L02 owns the selected-light matrices and resource order; L03 owns the
-//! ordered light-depth submissions. This module joins that admitted projection
-//! to the exact W23 ping-pong screen-target chain and the recovered per-frame
-//! blur constant-buffer producer. It plans resources and dependencies only;
-//! it does not invent caster rows, terrain geometry, or texture contents.
 
 use crate::light_depth_projection::{
     L03LightDepthProjection, L03LightDepthTarget, L03_LIGHT_DEPTH_DXGI_FORMAT,
@@ -14,10 +7,8 @@ use crate::shadow_law::{shadow_blur_constant_buffers_from_factor, ShadowBlurCons
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
-/// W23 screen-shadow targets are `DXGI_FORMAT_B8G8R8A8_UNORM`.
 pub const SHADOW_SCREEN_DXGI_FORMAT: u32 = 87;
 pub const SHADOW_SCREEN_MIP_LEVELS: u32 = 1;
-/// `D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET`.
 pub const SHADOW_SCREEN_BIND_FLAGS: u32 = 0x28;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -43,7 +34,6 @@ pub struct ShadowScreenPassPlan {
     pub kind: ShadowScreenPassKind,
     pub source_resource_id: String,
     pub target_resource_id: String,
-    /// Present only for the two fullscreen blur passes.
     pub cb0_f32_bits: Option<[u32; 8]>,
 }
 
@@ -82,13 +72,6 @@ fn validate_screen_target(target: &ShadowScreenTarget, label: &str) -> Result<()
     Ok(())
 }
 
-/// Join an admitted L03 projection to the exact screen-shadow ping-pong chain.
-///
-/// An inactive L03 result emits no S1 chain, matching all 68 retained W23
-/// skips. An active result requires two distinct, descriptor-identical screen
-/// targets. The terrain-unlit producer writes the first target, horizontal blur
-/// writes the second, and vertical blur writes back to the first; that first
-/// target is therefore the resource consumed by main terrain and later passes.
 pub fn plan_s1_shadow_screen_chain(
     projection: &L03LightDepthProjection,
     blur_camera_factor_f32_bits: Option<u32>,

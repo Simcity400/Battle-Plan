@@ -47,7 +47,6 @@ def _parse_pending_events(tz, out):
     """pending_events={ ... } — shape varies; capture event ids if present."""
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
-            # an event-instance block; pull an id/name if present
             rec = {}
             for k, op in iter_block_entries(tz):
                 if op is LBRACE:
@@ -142,7 +141,6 @@ def build(text, source, was_melted):
         scalar_keys=("date", "version", "player"),
     )
 
-    # Aggregate convoy losses by killer and by owner (victim).
     by_killer = {}
     by_owner = {}
     total_convoys = 0

@@ -1,21 +1,3 @@
-//! `stream_fold` — offline bounded-memory streaming fold of a compact record
-//! stream into per-game-hour snapshot files.
-//!
-//! This is the same streaming fold the recorder host runs during finalization
-//! ([`recorder_host::stream_fold::fold_compact_stream_file`]), exposed as a CLI so
-//! it can (a) PROVE bounded memory over a real multi-hundred-MB stream (it reports
-//! its own peak private/working-set bytes at exit), (b) PROVE G1 fold-equivalence
-//! — its per-hour `snapshot_hash`es match `fold_check hash` on the same stream
-//! when run with the same `--game-id` (default `fold_check`), because both drive
-//! the one production fold — and (c) re-fold an old recording's raw stream.
-//!
-//! Usage:
-//!   stream_fold <collector_stream.bin> <out_snapshot_dir> [--game-id ID] [--json report.json] [--discard-snapshots] [--workers N] [--identity-mode legacy|identity-v1]
-
-/// mimalloc as the global allocator: the post-capture fold is allocation-bound
-/// (multi-GB serde_json `Value` trees built and dropped per game-hour), and the
-/// Windows system heap serializes badly under that load across fold workers.
-/// Allocator choice cannot change any produced byte (G1-neutral).
 #[global_allocator]
 static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
@@ -145,16 +127,19 @@ fn run() -> Result<(), String> {
         StreamIdentityMode::Legacy => "legacy",
         StreamIdentityMode::IdentityV1 => "identity-v1",
     };
-    let campaign_identity = outcome.campaign_identity.as_ref().map_or(Value::Null, |identity| {
-        json!({
-            "campaign_id": identity.campaign_id.as_str(),
-            "game_unique_id": identity.game_unique_id.as_str(),
-            "game_unique_seed": identity.game_unique_seed,
-            "source_build_profile": identity.source_build_profile.as_str(),
-            "observed_game_hour_raw": identity.observed_game_hour_raw,
-            "cid1_payload_sha256": identity.cid1_payload_sha256.as_str(),
-        })
-    });
+    let campaign_identity = outcome
+        .campaign_identity
+        .as_ref()
+        .map_or(Value::Null, |identity| {
+            json!({
+                "campaign_id": identity.campaign_id.as_str(),
+                "game_unique_id": identity.game_unique_id.as_str(),
+                "game_unique_seed": identity.game_unique_seed,
+                "source_build_profile": identity.source_build_profile.as_str(),
+                "observed_game_hour_raw": identity.observed_game_hour_raw,
+                "cid1_payload_sha256": identity.cid1_payload_sha256.as_str(),
+            })
+        });
     let report = json!({
         "tool": "stream_fold",
         "input": stream_path.display().to_string(),

@@ -1,50 +1,9 @@
-//! WATER2 — the underwater seafloor pass that produces `WaterRefraction`.
-//!
-//! The game's `WaterRefraction` buffer (pdxwater.shader slot 5, 1920x1080
-//! `B8G8R8A8_UNORM` non-sRGB) is NOT a transform of the final scene. It is a
-//! SEPARATE terrain render: `pdxmap.shader` `Effect underwater` re-renders the
-//! terrain geometry with `PixelShaderUnderwater` (a clipped, depth-fogged,
-//! lit seafloor) into an offscreen LDR target. See `water_law.rs`
-//! and [`crate::water_law::underwater_defines`].
-//!
-//! This module reconstructs that pass, files-first:
-//!
-//! 1. Compile `Effect underwater`'s pixel shader from the shipped
-//!    `gfx/FX/pdxmap.shader` via the byte-exact [`crate::shader_compile`]
-//!    machinery (resolver-routed, so mods are honoured). `Effect underwater`
-//!    carries NO `Defines` — in particular NOT terrain's
-//!    `PDX_IMPROVED_BLINN_PHONG` — so the reconstructed program matches the
-//!    engine's underwater PS, not the terrain PS.
-//! 2. Allocate an offscreen `B8G8R8A8_UNORM` render target (matching the
-//!    captured `WaterRefraction` format) plus a depth target cloned from the
-//!    terrain frame's depth descriptor.
-//! 3. Re-issue the captured terrain draws (same geometry, VS, VS/PS constant
-//!    buffers, terrain SRVs and sampler states, viewport, depth/raster/blend
-//!    state) with ONLY the pixel shader swapped to the underwater PS, clearing
-//!    the target to transparent black `(0,0,0,0)` first (the engine's clear;
-//!    validated against the captured payload whose most-common pixel is
-//!    exactly `(0,0,0,0)` — the no-draw background: land clip-discarded above
-//!    12.5 plus frustum/coverage no-draw areas; deep seafloor is KEPT).
-//! 4. Expose the target's SRV so the water pass binds it as `WaterRefraction`
-//!    instead of the calibrated approximation snapshot.
-//!
-//! Activation is gated on the inner renderer's `water_full` flag. With the
-//! flag off, the water pass keeps the approximation byte-identically.
-//!
-//! # Fail-closed
-//!
-//! Any missing shader source, a define/compile failure, a terrain draw that
-//! does not bind one of [`crate::water_law::UNDERWATER_PS_REQUIRED_SRV_SLOTS`],
-//! or an incompatible target descriptor is a hard error under `water_full`.
-//! There is NO silent fallback to the approximation.
 
 #[cfg(windows)]
 use crate::water_law::UNDERWATER_PS_REQUIRED_SRV_SLOTS;
 use crate::Result;
 
-/// Resolver-relative shipped shader + effect name for the underwater pass.
 pub const UNDERWATER_SHADER_SOURCE: &str = "gfx/FX/pdxmap.shader";
-/// Effect name in `pdxmap.shader` for the seafloor/underwater pass.
 pub const UNDERWATER_EFFECT_NAME: &str = "underwater";
 
 #[cfg(windows)]
@@ -72,27 +31,14 @@ mod windows_impl {
     };
     use winapi::um::d3dcommon::D3D11_SRV_DIMENSION_TEXTURE2D;
 
-    /// A fully-prepared underwater pass: the offscreen seafloor render target,
-    /// its depth target, the compiled underwater pixel shader, and the SRV that
-    /// the water pass binds as `WaterRefraction`.
     pub(crate) struct NativeD3d11UnderwaterPass {
         pub(crate) render_target: NativeD3d11RenderTarget,
         pub(crate) depth_target: NativeD3d11DepthStencil,
         pub(crate) pixel_shader: D3dPtr<ID3D11PixelShader>,
         pub(crate) srv: D3dPtr<ID3D11ShaderResourceView>,
-        /// The compiled underwater PS bytecode (for provenance / validation).
         pub(crate) ps_bytecode: Vec<u8>,
         pub(crate) width: u32,
         pub(crate) height: u32,
-        /// The dedicated seabed diffuse (`map/terrain/underwater_terrain_0.dds`,
-        /// mod-resolved, uploaded as its raw BC1 mip chain). The ENGINE swaps
-        /// `TerrainDiffuse` (PS slot 0) to exactly this texture for the
-        /// underwater pass — proven by session_CAPFIX2_GAPS_4's captured
-        /// underwater draw SRVs (512x512 BC1_SRGB, 10 mips, matching the
-        /// shipped DDS) versus the terrain pass's 2048x2048 land atlas.
-        /// Re-issuing the terrain draws WITHOUT this swap painted the seabed
-        /// with the land detail atlas (the 32-world-px "checkerboard").
-        /// Keep-alive for the seabed texture backing `seabed_diffuse_srv`.
         #[allow(dead_code)]
         pub(crate) seabed_diffuse_texture: D3dPtr<winapi::um::d3d11::ID3D11Texture2D>,
         pub(crate) seabed_diffuse_srv: D3dPtr<ID3D11ShaderResourceView>,
@@ -113,13 +59,6 @@ mod windows_impl {
         }
     }
 
-    /// Load the shipped seabed diffuse `map/terrain/underwater_terrain_0.dds`
-    /// (mod-resolved) and upload its raw BC1 mip chain verbatim as a
-    /// `BC1_UNORM_SRGB` Texture2D + SRV. This is the texture the ENGINE binds
-    /// as `TerrainDiffuse` (PS slot 0) for the underwater pass — proven by the
-    /// session_CAPFIX2_GAPS_4 captured underwater draw (512x512, BC1_SRGB,
-    /// 10 mips == the shipped DDS layout exactly). Fail-closed on a missing /
-    /// malformed file (wrong magic, non-DXT1 fourcc, zero mips).
     pub(crate) fn native_d3d11_load_seabed_diffuse(
         device: &NativeD3d11Device,
         resolver: &GameFileResolver,
@@ -157,8 +96,6 @@ mod windows_impl {
             )
             .into());
         }
-        // Tight BC1 layout: 8 bytes per 4x4 block, per-mip rows of
-        // max(1, ceil(w/4)) blocks.
         let mut offset = 128usize;
         let mut initial: Vec<D3D11_SUBRESOURCE_DATA> = Vec::with_capacity(mip_count as usize);
         let mut w = width;
@@ -218,10 +155,6 @@ mod windows_impl {
         Ok((texture, srv))
     }
 
-    /// Compile the underwater pixel shader from the shipped `pdxmap.shader`
-    /// `Effect underwater` (no defines) via the byte-exact resolver-routed
-    /// machinery. Fail-closed: a missing shader / define / compile error is a
-    /// hard error, never a silent fallback.
     pub(crate) fn native_d3d11_compile_underwater_pixel_shader(
         device: &NativeD3d11Device,
         resolver: &GameFileResolver,
@@ -238,8 +171,6 @@ mod windows_impl {
                  {UNDERWATER_SHADER_SOURCE}:{UNDERWATER_EFFECT_NAME} PixelShaderUnderwater HLSL: {err}"
             )
         })?;
-        // FXC default optimization (flags 0) — the same level the OFF-3
-        // byte-exact comparator found reproduces the shipped map PS blobs.
         let bytecode = d3d_compile_stage(&hlsl, ShaderStage::Pixel, 0).map_err(|err| {
             format!(
                 "--water-full underwater pass blocked: D3DCompile of \
@@ -263,9 +194,6 @@ mod windows_impl {
         Ok((ps, bytecode))
     }
 
-    /// Assert every SRV slot `PixelShaderUnderwater` samples is bound by the
-    /// terrain draw we are about to re-render. Fail-closed if any is missing —
-    /// the underwater pass cannot be reproduced without the seafloor inputs.
     pub(crate) fn native_d3d11_validate_underwater_terrain_inputs(
         draws: &[NativeD3d11PreparedDraw],
     ) -> Result<()> {
@@ -297,11 +225,6 @@ mod windows_impl {
         Ok(())
     }
 
-    /// Pass-owned scene-CB0 clones for the underwater re-render.
-    ///
-    /// WATER5 proved the engine binds the same unabsorbed scene CB0 to the
-    /// underwater pass. These clones are byte-identical snapshots only; no
-    /// empirical light-absorption correction is applied.
     pub(crate) struct NativeD3d11UnderwaterCb0Overrides {
         entries: Vec<(*mut ID3D11Buffer, D3dPtr<ID3D11Buffer>)>,
     }
@@ -315,14 +238,6 @@ mod windows_impl {
         }
     }
 
-    /// Snapshot the live slot-0 scene CB0(s) of `draws` (CopyResource to a
-    /// staging buffer, CPU map) and create pass-owned constant buffers with the
-    /// exact same bytes.
-    ///
-    /// Runs once per underwater render, AFTER the frame's scene update wrote
-    /// the camera/light state into the live CB0, so the clone carries the
-    /// current camera/light state verbatim. Fail-closed on a missing slot-0 CB
-    /// or any D3D11 failure.
     unsafe fn native_d3d11_build_underwater_cb0_overrides<'a>(
         device: &NativeD3d11Device,
         draws: impl Iterator<Item = &'a NativeD3d11PreparedDraw>,
@@ -339,8 +254,6 @@ mod windows_impl {
                 if entries.iter().any(|(source, _)| *source == live) {
                     continue;
                 }
-                // Read the live buffer's size, snapshot its bytes via a
-                // staging copy, and clone without mutation.
                 let mut desc: D3D11_BUFFER_DESC = std::mem::zeroed();
                 (*live).GetDesc(&mut desc);
                 let byte_width = desc.ByteWidth as usize;
@@ -413,11 +326,6 @@ mod windows_impl {
         Ok(NativeD3d11UnderwaterCb0Overrides { entries })
     }
 
-    /// Build a `B8G8R8A8_UNORM` render-target descriptor at the terrain
-    /// target's resolution. The captured `WaterRefraction` is `B8G8R8A8_UNORM`
-    /// (DXGI 87) at backbuffer resolution; the underwater PS writes
-    /// `float4(vOut, 1.0)`, an LDR color, so the target is UNORM (linear
-    /// sampled), NOT the HDR `R16G16B16A16_FLOAT` terrain target.
     fn underwater_render_target_desc(
         terrain_target: &MapFrameOutputMergerTexture,
     ) -> MapFrameOutputMergerTexture {
@@ -431,22 +339,15 @@ mod windows_impl {
         target.desc.bind_flags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
         target.desc.cpu_access_flags = 0;
         target.desc.misc_flags = 0;
-        // Force the OM RTV to the UNORM format too.
         if let Some(view) = target.view_desc.as_mut() {
             view.format = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
-        // No captured clear for the synthesized target — the render clears to
-        // transparent black explicitly (validated: the captured payload's
-        // no-draw background pixels are exactly (0,0,0,0): land clipped above
-        // 12.5 + frustum/coverage no-draw; the deep seafloor itself is KEPT).
         target.last_render_target_clear = None;
         target.pre_draw_payload = None;
         target.post_pass_payload = None;
         target
     }
 
-    /// A `WaterRefraction` SRV descriptor over the underwater target (Texture2D,
-    /// full mip 0, `B8G8R8A8_UNORM`).
     fn underwater_srv_binding(width: u32, height: u32) -> MapFrameTextureBinding {
         MapFrameTextureBinding {
             stage: "PS".to_string(),
@@ -481,9 +382,6 @@ mod windows_impl {
         }
     }
 
-    /// Prepare the underwater pass: compile the PS, allocate the offscreen
-    /// target + depth + SRV. The pass is RENDERED later with
-    /// [`native_d3d11_render_underwater_pass`], reusing the terrain draws.
     pub(crate) fn native_d3d11_prepare_underwater_pass(
         device: &NativeD3d11Device,
         resolver: &GameFileResolver,
@@ -492,10 +390,6 @@ mod windows_impl {
         terrain_draws: &[NativeD3d11PreparedDraw],
     ) -> Result<NativeD3d11UnderwaterPass> {
         native_d3d11_validate_underwater_terrain_inputs(terrain_draws)?;
-        // DEBUG (env-gated, ocean-defect diagnosis): print the ACTUAL bound
-        // TerrainDiffuse/TerrainColorTint SRV + texture mip state and the
-        // slot-0 sampler filter for draw 0, so a mip-less upload or a
-        // mip-disabled sampler is directly visible in one run.
         if std::env::var_os("REPLAY_DEBUG_UNDERWATER_INPUTS").is_some() {
             if let Some(draw) = terrain_draws.first() {
                 unsafe {
@@ -561,7 +455,6 @@ mod windows_impl {
         let render_target = unsafe { native_d3d11_create_render_target(device, &target_desc)? };
         let depth_target = unsafe { native_d3d11_create_depth_stencil(device, terrain_depth)? };
 
-        // SRV over the underwater target for the water pass's WaterRefraction.
         let srv_binding = underwater_srv_binding(width, height);
         let srv_desc = native_d3d11_shader_resource_view_desc(&srv_binding)?
             .ok_or("--water-full underwater pass blocked: underwater SRV descriptor missing")?;
@@ -592,18 +485,12 @@ mod windows_impl {
         })
     }
 
-    /// Render the underwater seafloor into the pass's offscreen target by
-    /// re-issuing the terrain draws with the pixel shader swapped to the
-    /// underwater PS. Clears to transparent black `(0,0,0,0)` (the engine's
-    /// WaterRefraction clear) and depth 1.0 first.
     pub(crate) fn native_d3d11_render_underwater_pass(
         device: &NativeD3d11Device,
         pass: &NativeD3d11UnderwaterPass,
         terrain_draws: &[NativeD3d11PreparedDraw],
     ) -> Result<()> {
         unsafe {
-            // WATER5: clone the live scene CB0(s) byte-identically. The engine
-            // underwater pass binds the unabsorbed light rig.
             let cb0_overrides =
                 native_d3d11_build_underwater_cb0_overrides(device, terrain_draws.iter())?;
             let context = &device.context;
@@ -633,18 +520,6 @@ mod windows_impl {
         Ok(())
     }
 
-    /// Render the underwater seafloor over a terrain-chunk-synthesis frame:
-    /// iterate the tile plan (per-tile CB1 quad-offset/scale + detail-edge
-    /// flags, per-tile slot-1 vertex offset), issuing the synthesis
-    /// `template_draw` with the underwater PS into the offscreen target. Mirrors
-    /// `native_d3d11_render_prepared_terrain_chunk_synthesis` exactly but with
-    /// the pixel shader swapped and a dedicated B8G8R8A8 target/depth.
-    ///
-    /// This is the ORACLE render path used by WATER2 validation against a
-    /// terrain-chunk-library session (which is the only capture shape that
-    /// carries the resolved seafloor textures + real ShadowMap). The geometry
-    /// is the SYNTHESIZED tiled terrain, not the engine's exact underwater
-    /// rasterization.
     pub(crate) fn native_d3d11_render_underwater_synthesis(
         device: &NativeD3d11Device,
         pass: &NativeD3d11UnderwaterPass,
@@ -652,9 +527,6 @@ mod windows_impl {
         plan: &crate::TerrainChunkSynthesisPlan,
     ) -> Result<()> {
         unsafe {
-            // WATER5: clone the live scene CB0 byte-identically. Snapshot once
-            // because the scene CB0 is static across the tile loop (only CB1 is
-            // updated per tile).
             let cb0_overrides = native_d3d11_build_underwater_cb0_overrides(
                 device,
                 std::iter::once(&synthesis.template_draw),
@@ -671,11 +543,6 @@ mod windows_impl {
                 1.0,
                 0,
             );
-            // DEBUG (env-gated, ocean-defect diagnosis): emulate the shipped
-            // `water_no_refractions` Effect (pdxwater.shader: refractiveColor =
-            // float3(0, 0.1, 0.2)) by filling WaterRefraction with that
-            // constant and skipping the seafloor draws — the look-test for the
-            // engine's suspected map-zoom effect swap. Diagnosis-only.
             if std::env::var_os("REPLAY_DEBUG_CONSTANT_REFRACTION").is_some() {
                 (*context.as_raw())
                     .ClearRenderTargetView(pass.render_target.view.as_raw(), &[0.0, 0.1, 0.2, 1.0]);
@@ -703,13 +570,6 @@ mod windows_impl {
         Ok(())
     }
 
-    /// Replay one terrain draw with an overridden pixel shader into the given
-    /// target/depth. This mirrors `native_d3d11_replay_prepared_draw`'s bind
-    /// sequence exactly (VS, IA, VS/PS CBs, PS SRVs, PS samplers, RS/OM state,
-    /// viewport/scissor) but forces the pixel shader. The terrain draws bind a
-    /// superset of what the underwater PS reads, so extra SRVs/samplers are
-    /// inert; nothing app-owned is needed (terrain draws have no WaterRefraction
-    /// slot).
     unsafe fn native_d3d11_replay_terrain_draw_with_pixel_shader(
         context: &D3dPtr<ID3D11DeviceContext>,
         draw: &NativeD3d11PreparedDraw,
@@ -731,8 +591,6 @@ mod windows_impl {
         )
     }
 
-    /// As above, but with per-slot vertex-buffer offset overrides (used by the
-    /// tiled synthesis path where each tile re-binds slot 1 at its own offset).
     unsafe fn native_d3d11_replay_terrain_draw_with_pixel_shader_and_vertex_offsets(
         context: &D3dPtr<ID3D11DeviceContext>,
         draw: &NativeD3d11PreparedDraw,
@@ -773,9 +631,6 @@ mod windows_impl {
         }
         for constant_buffer in &draw.constant_buffers {
             let mut raw = constant_buffer.buffer.as_raw();
-            // WATER5: slot 0 may bind a pass-owned byte-identical scene-CB0
-            // snapshot; no light-absorption correction is applied. Other slots
-            // (CB1 QuadOffset, CB2 pointlights) bind the live buffers verbatim.
             if constant_buffer.slot == 0 {
                 if let Some(patched) = cb0_overrides.patched_for(raw) {
                     raw = patched;
@@ -795,19 +650,11 @@ mod windows_impl {
             }
         }
         for resource in &draw.shader_resources {
-            // Terrain draws only carry captured-bundle textures (no app-owned
-            // WaterRefraction slot exists in the terrain pass), so bind the
-            // captured view directly; a null view unbinds the slot.
             let mut raw = resource
                 .view
                 .as_ref()
                 .map(|view| view.as_raw())
                 .unwrap_or(ptr::null_mut());
-            // ENGINE LAW (session_CAPFIX2_GAPS_4 underwater draw SRVs): the
-            // underwater pass swaps PS slot 0 (`TerrainDiffuse`) from the land
-            // detail atlas to the dedicated seabed diffuse
-            // `map/terrain/underwater_terrain_0.dds`; every other slot binds
-            // the terrain pass's textures verbatim.
             if resource.stage == "PS" && resource.slot == 0 && !seabed_diffuse_srv.is_null() {
                 raw = seabed_diffuse_srv;
             }
@@ -923,7 +770,6 @@ pub(crate) use windows_impl::{
     native_d3d11_render_underwater_synthesis,
 };
 
-// Compile-time reference so the constants are used on all platforms.
 #[allow(dead_code)]
 const _: fn() -> Result<()> = || {
     let _ = (UNDERWATER_SHADER_SOURCE, UNDERWATER_EFFECT_NAME);
@@ -932,14 +778,6 @@ const _: fn() -> Result<()> = || {
 
 #[cfg(test)]
 mod tests {
-    /// EVIDENCE LOCK for the seabed-diffuse law: the ENGINE's underwater pass
-    /// binds `map/terrain/underwater_terrain_0.dds` (not the land detail
-    /// atlas) as `TerrainDiffuse`. Proof: the captured underwater draw's
-    /// slot-0 payload (session_CAPFIX2_GAPS_4, 512x512 BC1_SRGB, 10 mips,
-    /// row-pitch-padded staging readback) must byte-match the shipped DDS's
-    /// tight BC1 mip chain after unpadding. Env-gated on the vanilla install
-    /// + capture session being present (real-file evidence test, same
-    /// pattern as the other capture-gated tests).
     #[test]
     #[cfg_attr(
         not(gate_underwater_evidence_with_hoi4),
@@ -964,9 +802,6 @@ mod tests {
         let height = u32::from_le_bytes([dds[12], dds[13], dds[14], dds[15]]);
         let mips = u32::from_le_bytes([dds[28], dds[29], dds[30], dds[31]]);
         assert_eq!((width, height, mips), (512, 512, 10));
-        // Captured payload mips are staging readbacks with row_pitch padded to
-        // >= 128 bytes; the DDS is tight (blocks_w * 8). Compare content
-        // row-by-row per mip.
         let mut dds_off = 128usize;
         let mut pay_off = 0usize;
         let (mut w, mut h) = (width, height);
@@ -974,7 +809,7 @@ mod tests {
             let blocks_w = w.div_ceil(4).max(1) as usize;
             let blocks_h = h.div_ceil(4).max(1) as usize;
             let tight = blocks_w * 8;
-            let padded = tight.max(128); // observed capture pitch floor
+            let padded = tight.max(128);
             for row in 0..blocks_h {
                 let a = &dds[dds_off + row * tight..dds_off + row * tight + tight];
                 let b = &payload[pay_off + row * padded..pay_off + row * padded + tight];

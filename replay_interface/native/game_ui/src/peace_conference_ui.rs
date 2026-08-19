@@ -1,12 +1,3 @@
-//! Replay-owned XUI08 authored-layout and viewer-state boundary.
-//!
-//! The installed content own panel geometry and dynamic-row templates. The viewer
-//! owns whether the panel is open, selection, expansion and scroll. None of
-//! those values may be copied from selected-Present recorder UI state.
-//!
-//! The PCS3 passive carrier supplies the complete active semantic graph.  The
-//! compositor below materializes only the effective-VFS root and templates;
-//! it never copies recorder UI state or embeds vanilla geometry.
 
 use crate::assets::AssetResolver;
 use crate::compose::{resolve_element_rect, ComposeOptions, ComposeOutput, Compositor, Rect};
@@ -63,11 +54,6 @@ pub struct PeaceConferenceAuthoredTemplate {
     pub element: GuiElement,
 }
 
-/// Strict effective-VFS authored input for XUI08.
-///
-/// Every element is cloned from the resolver's winning file. No vanilla path,
-/// coordinate, slot size, clip rectangle or scrollbar factor is embedded in
-/// this type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PeaceConferenceAuthoredLayout {
     pub source_file: String,
@@ -82,9 +68,6 @@ pub struct PeaceConferenceAuthoredLayout {
     pub contested_popup_scrollbar: String,
     pub contested_popup_wheel_factor: i32,
     pub contested_popup_smooth_scrolling: bool,
-    /// Numeric easing law from each referenced effective-VFS
-    /// `extendedScrollbarType`. All three references must resolve to the same
-    /// authenticated value when they name the same family.
     pub available_actions_smooth_factor_fixed: i64,
     pub history_smooth_factor_fixed: i64,
     pub contested_popup_smooth_factor_fixed: i64,
@@ -200,12 +183,6 @@ fn referenced_scrollbar_smooth_factor(resolver: &AssetResolver, style_name: &str
         .ok_or_else(|| fail("referenced scrollbar smooth factor rounds to zero"))
 }
 
-/// Parse and authenticate the winning XUI08 GUI definition.
-///
-/// Parse recovery or destructive text decode loss is a product refusal. A mod
-/// may replace the file, but it must preserve the controller-facing root,
-/// insertion containers, dynamic templates and action widgets used by the
-/// exact-a729 controller.
 pub fn load_peace_conference_authored_layout(
     resolver: &AssetResolver,
 ) -> Result<PeaceConferenceAuthoredLayout> {
@@ -333,12 +310,6 @@ pub struct PeaceConferenceScrollbarDrag {
     pub grab_offset_y: i32,
 }
 
-/// Canonical replay-viewer state for XUI08.
-///
-/// Selection uses producer identities. A conference identity change clears
-/// every content-scoped value. A same-conference refresh retains a participant
-/// only when it still exists and retains an allocation only when its
-/// refresh-scoped id still exists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeaceConferenceViewerState {
     pub open: bool,
@@ -880,9 +851,6 @@ impl PeaceConferenceInputRegion {
                 )));
             }
             if inside_contested_popup {
-                // A popup is a modal input surface. Points inside it that do
-                // not hit its own scrollbar must never fall through to either
-                // scrollbar on the underlying conference window.
                 return Ok(None);
             }
         }
@@ -901,8 +869,6 @@ pub struct PeaceConferenceComposeOutput {
     pub materialized_result_ids: Vec<String>,
 }
 
-/// Compose one complete active PCS3 observation. Inactive observations have no
-/// panel pixels and are handled by the product route as measured inactive.
 pub fn render_peace_conference(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
@@ -1471,10 +1437,6 @@ pub fn render_peace_conference(
         .contested_popup_scroll_px
         .clamp(0, contested_max_scroll_px);
 
-    // A same-conference refresh can shrink any list. Reposition the already
-    // materialized producer rows with the newly authenticated range before
-    // composition; stale retained offsets must never blank the panel or make
-    // the scrollbar reject the candidate.
     {
         let owner = descendant_mut_exact(&mut root, "available_actions_list")?;
         let mut y = 0_i32;
@@ -2233,9 +2195,6 @@ fn intersect_arrays(left: [i32; 4], right: [i32; 4]) -> Option<[i32; 4]> {
     (x1 > x0 && y1 > y0).then_some([x0, y0, x1 - x0, y1 - y0])
 }
 
-/// Remove an occluding rectangle from an authenticated hit rectangle without
-/// inventing replacement geometry. The non-overlapping pieces retain the
-/// source rectangle's exact outer bounds.
 fn subtract_rect(rect: [i32; 4], occluder: [i32; 4]) -> Vec<[i32; 4]> {
     let Some(overlap) = intersect_arrays(rect, occluder) else {
         return vec![rect];

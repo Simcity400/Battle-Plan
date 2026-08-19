@@ -139,11 +139,6 @@ pub fn verify_prepared_bundle(bundle: &PreparedBundle) -> Result<VerifiedBundle,
     })
 }
 
-/// Bounded retained-source parity gate used by production container reopen.
-///
-/// The actual source is semantically verified one body at a time. The
-/// independent H4CR refold is file-backed, and comparison retains only one
-/// actual body plus one expected body at any point.
 pub fn verify_entry_source_against_h4cr<F>(
     descriptors: &[BundleEntryDescriptor],
     mut read: F,
@@ -163,12 +158,6 @@ where
     Ok(verified)
 }
 
-/// Reopen the exact bytes read back from the final pack candidate.
-///
-/// This recomputes every entry digest/length, authenticates the exact artifact
-/// set against `bundle.bin`, then parses and semantically replays every schema,
-/// block, gap, branch, and symbol reference. Success is stronger than generic
-/// container hash verification.
 pub fn verify_entries(entries: &[BundleEntry]) -> Result<VerifiedBundle, ProductError> {
     for entry in entries {
         entry.validate_declared_integrity()?;
@@ -190,9 +179,6 @@ pub fn verify_entries(entries: &[BundleEntry]) -> Result<VerifiedBundle, Product
     })
 }
 
-/// Verify an exact artifact set while materializing at most one artifact body
-/// at a time. Descriptors are metadata-only and the reader must reopen the
-/// retained object named by `path`.
 pub fn verify_entry_source<F>(
     entries: &[BundleEntryDescriptor],
     mut read: F,

@@ -1,50 +1,7 @@
-//! Workspace guard: a `#[test]` may not return early.
-//!
-//! # The defect this exists to prevent
-//!
-//! A `#[test] fn` that returns `()` and does this
-//!
-//! ```ignore
-//! let Some(root) = std::env::var_os("BATTLE_PLAN_GAME_ROOT").or_else(|| std::env::var_os("HOI4_GAME_ROOT")).map(PathBuf::from) else {
-//!     return;
-//! };
-//! ```
-//!
-//! is reported by libtest as `ok`. The result line says `N passed; 0 failed`
-//! while the test asserted nothing. A census found 122 tests in this workspace
-//! doing exactly that, and one such false green concealed a real font defect
-//! that was refusing 65 of 343 shipped font page rows.
-//!
-//! The replacement is the build-time gate mechanism in `replay_test_gates`:
-//! an unmet precondition makes the test `#[ignore]`d — which the result line
-//! *does* report — and a met precondition makes the body panic rather than
-//! skip. This test keeps the old shape from coming back.
-//!
-//! # The rule
-//!
-//! Inside a `#[test]` function body, **no `return` at all**, and the function
-//! must return `()`. A `return` that carries a value is just as capable of
-//! ending a test early with a success verdict (`return Ok(())` in a
-//! `Result`-returning test), so the rule covers every form. Code that needs a
-//! branch uses `if`/`else`; code that needs a precondition uses a gate.
-//!
-//! `return`s inside closures and nested `fn`s *within* a test body are not the
-//! test's own control flow and are not counted.
-//!
-//! # Known limits of this scanner
-//!
-//! It is lexical, like the sibling env-read scan in `blockers.rs`. It strips
-//! line comments, block comments, and string/char literals (including raw
-//! strings) before matching, and it removes closure and nested-`fn` bodies
-//! before looking for `return`. It does not parse Rust, so a sufficiently
-//! exotic construct could be misread — but every misreading is a *failure*
-//! here, never a silent acceptance, so the scan cannot quietly rot.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-/// Blank out comments and string/char literals, preserving byte offsets so
-/// reported line numbers stay true.
 fn strip_noise(src: &str) -> String {
     let bytes: Vec<char> = src.chars().collect();
     let mut out = bytes.clone();
@@ -613,7 +570,7 @@ fn scanner_rules_are_sound() {
         "}\n",
         "#[test]\n",
         "fn commented_and_quoted_returns_are_not_code() {\n",
-        "    // return;\n",
+        "
         "    let s = \"return;\";\n",
         "    assert_eq!(s.len(), 7);\n",
         "}\n",
@@ -656,12 +613,8 @@ fn scanner_rules_are_sound() {
     }
 }
 
-/// The known evasions earlier versions of this scanner missed. Each is a
-/// FALSE NEGATIVE — the scanner said "clean" about a test that could end
-/// early — which is the one direction this file must never take.
 #[test]
 fn scanner_is_not_fooled_by_the_known_evasions() {
-    // (1) A macro body can carry the `return` out of the test's own text.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -680,8 +633,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a macro expanding to `return` must be reported: {found:?}"
     );
 
-    // (2) A bitwise-or before a block is not a closure; blanking it hid the
-    // return inside.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -699,8 +650,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a block after a bitwise `|` must stay in the scanned body: {found:?}"
     );
 
-    // (3) Non-ASCII in the source used to skew every later offset, because
-    // `str` byte offsets were indexed into a `Vec<char>`.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -719,8 +668,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a multi-byte test name must not shift the scan off the return: {found:?}"
     );
 
-    // (4) A CHAIN of bitwise ORs: the second `|` finds the first and used to
-    // conclude "closure parameter list".
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -740,7 +687,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a chain of bitwise ORs is not a closure parameter list: {found:?}"
     );
 
-    // (5) `macro_rules!` may be delimited by `()` or `[]`, not only `{}`.
     for definition in [
         "macro_rules! skip ( () => (return) );\n",
         "macro_rules! skip [ () => (return) ];\n",
@@ -759,7 +705,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         );
     }
 
-    // (6) The attribute may carry whitespace.
     for attr in ["#[test ]", "#[ test]", "#[ test ]"] {
         let mut found = Vec::new();
         scan_source(
@@ -773,8 +718,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         );
     }
 
-    // (7) A block-valued left operand is still a bitwise operand. Its closing
-    // `}` must not make the next `|` look like a closure opener.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -792,7 +735,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a block-valued bitwise operand is not a closure: {found:?}"
     );
 
-    // (8) Adjacent bars may be logical OR, not a zero-argument closure.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -810,7 +752,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "logical OR before a block is not a zero-argument closure: {found:?}"
     );
 
-    // (9) Rust permits arbitrary whitespace after `fn`, including a newline.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -822,7 +763,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a newline after `fn` must not hide the test: {found:?}"
     );
 
-    // (10) Rust permits whitespace between `macro_rules` and `!`.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -841,9 +781,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "whitespace before the macro_rules bang must not hide a return: {found:?}"
     );
 
-    // (11) A macro may supply the test name and body as metavariables, putting
-    // `#[test]` in one file and the eventual `return` in another. A test
-    // attribute without a literal function body must fail closed.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -864,9 +801,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "macro-generated test bodies must be rejected as structurally unscannable: {found:?}"
     );
 
-    // (12) Even a literal test shell is unsafe when the macro injects only the
-    // body. The eventual `return` can still live exclusively at the expansion
-    // site in another file.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -887,8 +821,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
         "a macro that emits a test shell must fail closed: {found:?}"
     );
 
-    // Genuine closures are still excluded, so the hardening above did not make
-    // the scanner reject ordinary code.
     let mut found = Vec::new();
     scan_source(
         Path::new("synthetic.rs"),
@@ -910,7 +842,6 @@ fn scanner_is_not_fooled_by_the_known_evasions() {
     );
 }
 
-/// No `#[test]` anywhere in the replay workspace returns early.
 #[test]
 fn no_test_in_the_workspace_returns_early() {
     let native = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

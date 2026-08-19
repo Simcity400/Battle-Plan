@@ -12,7 +12,7 @@ import sys
 
 import zstandard
 
-LEVEL = 3  # DEFAULT_ZSTD_COMPRESSION_LEVEL, portable_replay/native/snapshot/src/pack.rs
+LEVEL = 3
 
 
 def load_offsets(path: str) -> list[int]:

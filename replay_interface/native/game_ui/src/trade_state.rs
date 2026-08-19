@@ -1,9 +1,3 @@
-//! XUI15 country-resource trade admission and rendering.
-//!
-//! This module consumes only `replay_core::TradeView`. It never reconstructs
-//! controller values from aggregate pools and never substitutes equipment-
-//! market contracts for classic resource routes. Equipment purchases and
-//! production licences are admitted as separate exact relation families.
 
 use crate::assets::AssetResolver;
 use crate::compose::{ComposeOptions, ComposeOutput, Compositor};
@@ -31,13 +25,6 @@ pub const TRADE_RESOURCE_ORDER: [&str; 7] = [
     "coal",
 ];
 
-/// The frame's resource set, in visible order, taken from `TradeView`.
-///
-/// This replaced a compiled-in list of vanilla's seven resource names.
-/// `common/resources` is moddable content: the panel renders whatever set the
-/// recording states, in the order the recording states, and `replay_core` has
-/// already authenticated that statement's shape (dense `visible_order`,
-/// distinct measured names, bounded count).
 fn trade_resource_order(view: &TradeView) -> Option<Vec<String>> {
     let Leaf::Measured(rows) = &view.resource_rows else {
         return None;
@@ -144,12 +131,6 @@ pub struct ProductionLicenseVariantCard {
     pub source_tag_db_id: u32,
 }
 
-/// An agreement's end-date lifecycle, trichotomy-preserving. `Absent` (the
-/// stream carries no end date — an open-ended agreement / pre-carrier stream)
-/// and `Unavailable` (explicitly unobtained this hour) are DIFFERENT display
-/// states: composition renders `Absent` as the authentic empty form and
-/// `Unavailable` as the `"--"` unavailable marker used by the sibling
-/// factory/count fields. A mixed raw/formatted authority pair rejects the row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AgreementEndDate {
     Measured { raw: i64, date: String },
@@ -158,8 +139,6 @@ pub enum AgreementEndDate {
 }
 
 impl AgreementEndDate {
-    /// The composed textbox value: measured date, authentic-empty for a
-    /// measured absence of an end date, `"--"` for unavailable data.
     pub fn display_text(&self) -> String {
         match self {
             AgreementEndDate::Measured { date, .. } => date.clone(),
@@ -286,9 +265,6 @@ fn admit_resource_pools(view: &TradeView) -> TradeData<Vec<TradeResourcePoolCard
     if let Some(issue) = completeness_issue(&view.resource_pools_complete) {
         return TradeData::Unavailable(issue);
     }
-    // The pools are keyed by resource name and carry no order of their own.
-    // Without the rows there is no stated order, and inventing one would put
-    // the panel's cards in an order the game never had.
     let Some(order) = trade_resource_order(view) else {
         return TradeData::Unavailable(TradeDataIssue::InvalidExactOrder);
     };
@@ -359,8 +335,6 @@ fn measured_resource_card(
 ) -> Option<TradeResourceCard> {
     let resource = measured(&row.resource)?.clone();
     let visible_order = *measured(&row.visible_order)?;
-    // The order is authenticated; the NAME is not compared against anything,
-    // because the recording is the only authority on what the resources are.
     if visible_order != expected_order as i64 {
         return None;
     }
@@ -388,16 +362,6 @@ fn measured_resource_card(
     let needed_current = row.needed_current.measured().copied();
     let needed_max = row.needed_max.measured().copied();
     let needed_type = measured(&row.needed_type)?.clone();
-    // The current/max needed form belongs to the resource the ENGINE caches as
-    // oil, and `needed_type` is how the recording says which one that is.
-    //
-    // This used to also require `expected_order == 0`. That was true of vanilla
-    // -- oil is the first resource `common/resources` defines -- and false of
-    // any mod that reorders or prepends to that file, and it is not a slot the
-    // panel gets to choose: the producer identifies oil from the database's own
-    // cached oil descriptor, and the fold refuses any record in which more than
-    // one slot wears the current/max model. So the slot test added nothing on a
-    // well-formed record and silently dropped the oil card on a modded one.
     let needed_semantics = if needed_type == "current_max" {
         needed_current.is_some_and(exact_trade_i32_value)
             && needed_max.is_some_and(exact_trade_i32_value)
@@ -736,11 +700,6 @@ fn measured_production_license_agreement(
     })
 }
 
-/// Convert an agreement's raw/formatted end-date leaf pair, trichotomy-
-/// preserving. Both leaves must agree on authority: measured pairs must be a
-/// valid lifecycle (`raw >= start`, non-empty date), uniformly-absent pairs
-/// are the measured absence of an end date, uniformly-unobtained pairs are
-/// unavailable data, and any mixed pair is inconsistent — the row rejects.
 fn agreement_end_date(
     raw_leaf: &Leaf<i64>,
     date_leaf: &Leaf<String>,
@@ -900,8 +859,6 @@ pub fn build_trade_compose_scene(
     viewport_width: usize,
     viewport_height: usize,
 ) -> Result<TradeComposeScene> {
-    // The identical countrytradeview.gui document backs the root, every
-    // resource card, and every deal row: parse it once per scene.
     let mut layout_cache: BTreeMap<String, LayoutSet> = BTreeMap::new();
     let mut country_trade = load_named_element(
         &mut layout_cache,
@@ -912,10 +869,6 @@ pub fn build_trade_compose_scene(
     promote_show_position(&mut country_trade);
     let mut children = vec![country_trade];
     let localisation = Localisation::load_english(resolver)?;
-    // `load_english` records byte-level damage instead of failing, so this
-    // consumer must read it: composing a screen from mojibake would render
-    // strings the content never contained. Line-level `parse_failures` stay
-    // tolerated, exactly as before.
     if !localisation.decode_lossy_files.is_empty() {
         return Err(crate::GameUiError::parse(format!(
             "XUI15 trade localisation decode destroyed bytes in {:?}",
@@ -981,11 +934,6 @@ pub fn build_trade_compose_scene(
                 1
             };
 
-            // Production licences are a distinct X3 relation family, not
-            // classic resource deals. Reuse the authored country-trade row
-            // geometry and typography so the already-bound semantic values
-            // reach concrete compositor children instead of remaining orphan
-            // ComposeOptions entries.
             let license_summary_y = checked_license_row_y(540, deal_row_count.max(1))?;
             let mut summary = load_named_element(
                 &mut layout_cache,
@@ -1186,7 +1134,6 @@ pub fn apply_trade_to_compose_options(
 }
 
     pub(crate) fn format_needed(row: &TradeResourceCard) -> String {
-        // Keyed on the row's own semantics, not on a resource name.
         if row.needed_type == "current_max" {
         match (row.needed_current, row.needed_max) {
             (Some(current), Some(maximum)) => {

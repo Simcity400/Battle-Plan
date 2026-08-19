@@ -1,11 +1,3 @@
-//! Production auto-attach integration for the paired H4CR/H4CT transport.
-//!
-//! This module composes the listener-before-injection type state, admitted
-//! deadline channel, recurring heartbeat, and [`WorkerHandle`] lifecycle. The
-//! live spawner selects the combined product branch only when the local CID1
-//! reader is enabled. Cross-machine rehost remains a separate capability and
-//! cannot globally disable local recording.
-
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -39,16 +31,10 @@ use super::proof::{
 };
 use super::sources::{WorkerHandle, WorkerSpec, WorkerStatus};
 
-/// Product activation for the fail-closed paired transport.
 pub const AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED: bool = true;
 
-/// CRP1/CRA1 is implemented by the same exact-build local identity reader,
-/// durable filesystem store, and two-CFA1 router. Each attempted transition
-/// remains fail-closed at those runtime boundaries.
 pub const AUTO_ATTACH_ROLLOVER_LIVE_LIFECYCLE_EVIDENCE_BOUND: bool = true;
 
-/// Opaque product selector. The constructor still fails if any compile-time
-/// local identity prerequisite is withdrawn.
 pub struct AutoAttachDuplexProductPermit {
     _private: (),
 }
@@ -62,10 +48,6 @@ pub fn auto_attach_duplex_product_permit(
     }
 }
 
-/// One fail-closed identity-mode selector shared by recorder-main consumers.
-/// A duplex-only flag flip cannot silently reinterpret Legacy bytes as CID1;
-/// the explicit nonce-bound lifecycle-evidence permit remains a separate test
-/// and evidence route.
 pub fn auto_attach_identity_v1_enabled() -> bool {
     (AUTO_ATTACH_DUPLEX_ACTIVATION_ENABLED
         && compact_contract::build_profile::DOMAIN_CAMPAIGN_ID_LIVE_READER_ENABLED)
@@ -78,9 +60,6 @@ pub fn auto_attach_rollover_enabled() -> bool {
 }
 
 pub fn required_auto_attach_duplex_capabilities() -> ControlCapabilities {
-    // Single source of truth in the shared codec: the collector client's hello
-    // advertises `ControlCapabilities::auto_attach_duplex_v1()` and admission
-    // here requires exactly the same closed word, so they cannot drift.
     if auto_attach_rollover_enabled() {
         ControlCapabilities::auto_attach_duplex_rollover_v1()
     } else {
@@ -176,10 +155,6 @@ impl fmt::Display for DuplexWorkerError {
     }
 }
 
-/// Move-only authority for the `WaitingForWorld -> Recording` transition.
-/// Construction consumes both the durable-and-sent CFA1 result and the later
-/// first-world proof, so neither independently callable seam can enter
-/// `Recording`.  The placement-authoritative CID1 remains retained for the
 /// lifetime of the worker session in IdentityV1 mode.
 pub struct DuplexRecordingAdmission {
     logical_stream_id: u64,
@@ -190,19 +165,11 @@ pub struct DuplexRecordingAdmission {
     confirmed_hour: i64,
 }
 
-/// One recurring heartbeat result plus every asynchronous CIF1 that was
-/// durably journalled and acknowledged before the matching proof arrived.
-/// Keeping those outcomes together prevents a central runner from silently
-/// dropping an identity failure while it waits for liveness proof.
 pub struct RoutedHeartbeatCycle {
     proof: HeartbeatProof,
     acknowledged_identity_failures: Vec<AcknowledgedIdentityFailure>,
 }
 
-/// One heartbeat cycle routed together with an optional authenticated rollover
-/// boundary. A collector announces a pending CRP1 by returning
-/// `PausedForControl`; the router then consumes exactly one following CRP1
-/// under the same deadline before another heartbeat can be sent.
 pub struct RoutedRolloverHeartbeatCycle {
     proof: HeartbeatProof,
     acknowledged_identity_failures: Vec<AcknowledgedIdentityFailure>,
@@ -229,7 +196,11 @@ impl RoutedRolloverHeartbeatCycle {
         Vec<AcknowledgedIdentityFailure>,
         Option<compact_contract::campaign_rollover::RolloverProposeV1>,
     ) {
-        (self.proof, self.acknowledged_identity_failures, self.rollover)
+        (
+            self.proof,
+            self.acknowledged_identity_failures,
+            self.rollover,
+        )
     }
 }
 
@@ -359,9 +330,6 @@ impl From<HeartbeatError> for DuplexWorkerError {
     }
 }
 
-/// Single derivation of all H4CT authority facts already minted by discovery
-/// and staging. Future live wiring must not mint a second token, normalize an
-/// alternate pipe name, or rebuild the collector proof expectation piecemeal.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DuplexAttemptAuthority {
     attempt_id: String,
@@ -463,10 +431,6 @@ fn authority_error(error: impl Into<String>) -> DuplexWorkerError {
     DuplexWorkerError::AttemptAuthority(error.into())
 }
 
-/// H4CR listener seam used by the real overlapped inbound-pipe adapter; tests
-/// use a deterministic in-memory fake.
-/// All three operations consume the same absolute startup deadline and shared
-/// cancellation token as H4CT.
 pub trait DataPipeListenerBackend {
     type Listener;
     type Io;
@@ -494,9 +458,6 @@ pub trait DataPipeListenerBackend {
     ) -> Result<ControlPeerIdentity, String>;
 }
 
-/// Read-only target-liveness seam retained inside combined listener type
-/// state.  It observes only the already-authorized PID/creation-FILETIME pair;
-/// it cannot discover or substitute another process.
 pub trait ExpectedTargetMonitor {
     fn expected_target_alive(&mut self, expected: ProcessKey) -> Result<bool, String>;
 }
@@ -542,8 +503,6 @@ fn observe_target_live<T: ExpectedTargetMonitor>(
     }
 }
 
-/// Opaque proof that both per-attempt listeners were created from one retained
-/// authority before the sole injection closure was invoked.
 pub struct CombinedListenersReadyProof {
     _private: (),
     startup_deadline: ControlDeadline,
@@ -560,9 +519,6 @@ impl CombinedListenersReadyProof {
     }
 }
 
-/// Move-only combined H4CR+H4CT listener authority. Data and control
-/// names, expected peer, session id, startup deadline, cancellation, and target
-/// monitor cannot be split into caller-owned tuples.
 pub struct PreparedAutoAttachCombined<D, B, T>
 where
     D: DataPipeListenerBackend,
@@ -720,9 +676,6 @@ where
     cancellation: ControlCancellation,
 }
 
-/// Accepted data/control endpoints remain bound to one immutable attempt.
-/// There is deliberately no `into_parts`: later composition borrows H4CR I/O
-/// through this owner while control state retains the same cancellation token.
 pub struct CombinedWorkerSession<D, C, T>
 where
     C: DeadlineControlIo,
@@ -761,9 +714,6 @@ where
         &self.cancellation
     }
 
-    /// Poll the exact retained PID/creation-time authority.  Exit or probe
-    /// uncertainty cancels the one token shared by H4CR and H4CT and leaves the
-    /// attempt terminal; it never selects another process or reinjects.
     pub fn check_expected_target_live(&mut self) -> Result<(), DuplexWorkerError> {
         observe_target_live(
             &mut self.target_monitor,
@@ -881,11 +831,6 @@ impl GracefulStopToken {
     }
 
     pub fn request(&self) {
-        // Cooperative stop is deliberately distinct from transport failure.
-        // Cancelling here left the H4CT handle open but unusable, so the
-        // collector could not observe the protocol's clean peer-close receipt.
-        // The owning finalizer transitions state, closes/drops H4CT, drains
-        // H4CR, then uses transport cancellation only for timeout/failure.
         self.requested.store(true, Ordering::Release);
     }
 
@@ -894,8 +839,6 @@ impl GracefulStopToken {
     }
 }
 
-/// H4CT listener exists and is secured. Future injection code must require the
-/// ready proof before invoking the one existing one-shot injector.
 pub struct PreparedAutoAttachDuplex<B: ControlPipeBackend> {
     authority: DuplexAttemptAuthority,
     prepared: PreparedControlListener<B>,
@@ -903,11 +846,6 @@ pub struct PreparedAutoAttachDuplex<B: ControlPipeBackend> {
     cancellation: ControlCancellation,
 }
 
-/// Discovery/staging-aware preparation seam for future activation. The
-/// WorkerSpec-derived authority, unchanged absolute startup deadline, and one
-/// shared cancellation token stay inside the move-only type state; callers
-/// cannot cross-wire replacement session, peer, timeout, or cancellation facts
-/// after listener creation.
 pub fn prepare_auto_attach_duplex_for_worker_spec_offline<B: ControlPipeBackend>(
     backend: B,
     spec: &WorkerSpec,
@@ -945,9 +883,6 @@ impl<B: ControlPipeBackend> PreparedAutoAttachDuplex<B> {
         self.prepared.listener_ready_proof()
     }
 
-    /// Consume the prepared listener at the actual one-shot injection seam.
-    /// Only a successful injector return can construct [`InjectionCommitted`],
-    /// and the move prevents a second commit using this listener authority.
     pub fn commit_single_injection<F>(
         self,
         inject_once: F,
@@ -973,9 +908,6 @@ impl<B: ControlPipeBackend> PreparedAutoAttachDuplex<B> {
     }
 }
 
-/// Opaque type-state proof that the one-shot injector returned success after
-/// the secured H4CT listener was ready. There is intentionally no public
-/// constructor and no route back to an uncommitted prepared listener.
 pub struct InjectionCommitted<B: ControlPipeBackend> {
     authority: DuplexAttemptAuthority,
     prepared: PreparedControlListener<B>,
@@ -984,10 +916,6 @@ pub struct InjectionCommitted<B: ControlPipeBackend> {
 }
 
 impl<B: ControlPipeBackend> InjectionCommitted<B> {
-    /// Dormant fail-closed admission seam.  Peer PID/creation time is checked
-    /// while accepting, but the channel starts with no consumer capabilities.
-    /// The first collector-originated hello must decode and admit the exact
-    /// capability word before any heartbeat/status/identity dispatch is legal.
     pub(crate) fn accept_after_single_injection_offline(
         self,
     ) -> Result<DuplexWorkerSession<B::Io>, DuplexWorkerError> {
@@ -1032,9 +960,6 @@ fn ensure_startup_live(
     Ok(())
 }
 
-/// Auto-attach worker control state. H4CT work is synchronous but bounded; a
-/// future process worker runs heartbeat cycles on its existing control thread
-/// and exposes this object through the nonblocking [`WorkerHandle`] poll seam.
 pub struct DuplexWorkerSession<I: DeadlineControlIo> {
     channel: DeadlineControlChannel<I>,
     collector_hello_expectation: ProofExpectation,
@@ -1197,9 +1122,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         self.heartbeat_cycle_at(challenge, deadline, Instant::now())
     }
 
-    /// Route the exact first H4CR record through the durable identity
-    /// dispatcher using this session's private H4CT channel. This is the only
-    /// public CFA1-send seam; callers cannot extract or cross-wire the channel.
     pub fn acknowledge_first_compact_record<S: IdentityDurableCandidateSink>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<S>,
@@ -1225,10 +1147,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
     }
 
-    /// Non-consuming readiness probe for the sole startup H4CT router. It is
-    /// valid only after authenticated hello and before FirstWorld; the caller
-    /// uses it to arbitrate a collector CIF1 against the first complete CID1 on
-    /// H4CR without starting two competing or cancellable partial reads.
     pub fn startup_control_input_bytes_available(
         &mut self,
         deadline: ControlDeadline,
@@ -1240,10 +1158,10 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
             DuplexWorkerState::WaitingForWorld,
             "probe startup control input",
         )?;
-        match self.channel.input_bytes_available_until(
-            deadline,
-            &self.transport_cancellation,
-        ) {
+        match self
+            .channel
+            .input_bytes_available_until(deadline, &self.transport_cancellation)
+        {
             Ok(available) => Ok(available),
             Err(error) => {
                 let error = DuplexWorkerError::Transport(error.to_string());
@@ -1253,10 +1171,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
     }
 
-    /// Consume exactly one pre-CID1 CIF1 through the durable dispatcher and
-    /// emit CIA1 before terminating the session. Success means the evidence and
-    /// gap ledger are durable and the matching acknowledgement was written;
-    /// capture must not continue or admit a later CID1 under this session.
     pub fn acknowledge_startup_identity_failure<S: IdentityDurableCandidateSink>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<S>,
@@ -1287,9 +1201,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
     }
 
-    /// Rollover-specific second barrier.  It reuses the one durable CFA1
-    /// dispatcher and then binds that exact acknowledgement to the accepted
-    /// CRP1 before returning it to the recording-admission constructor.
     pub fn acknowledge_rollover_first_compact_record<S: IdentityDurableCandidateSink>(
         &mut self,
         rollover: &mut RecorderRolloverCoordinator,
@@ -1318,11 +1229,7 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
     }
 
     /// Product composition seam joining the second CFA1 to filesystem release.
-    /// The new data writer remains blocked until the move-only acknowledgement
-    /// has rebound identity and the durable store commits those exact fields.
-    pub fn acknowledge_filesystem_rollover_first_compact_record<
-        S: IdentityDurableCandidateSink,
-    >(
+    pub fn acknowledge_filesystem_rollover_first_compact_record<S: IdentityDurableCandidateSink>(
         &mut self,
         rollover: &mut RecorderRolloverCoordinator,
         identity: &mut RecorderIdentityControlDispatcher<S>,
@@ -1412,10 +1319,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
     }
 
-    /// Production-facing recurring liveness cycle with one central H4CT
-    /// receive router. Asynchronous CIF1 frames are consumed through the same
-    /// channel by the durable identity dispatcher; the loop then continues
-    /// under the unchanged heartbeat deadline until the matching proof.
     pub fn heartbeat_cycle_with_identity<S: IdentityDurableCandidateSink>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<S>,
@@ -1504,10 +1407,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         }
     }
 
-    /// Rollover-aware single receive router. Heartbeat proof is always
-    /// completed first. Only a `PausedForControl` proof authorizes the next
-    /// ordered frame to be CRP1; that frame is then drained/sealed/opened and
-    /// acknowledged before this method returns in `WaitingForWorld`.
     pub fn heartbeat_cycle_with_identity_and_rollover<IS, RS>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<IS>,
@@ -1629,10 +1528,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         self.recording_admission.as_ref()
     }
 
-    /// Dedicated CRP1 receive/drain/seal/open/CRA1 transaction.  Success resets
-    /// recording admission and enters the existing first-record barrier for the
-    /// new sequence-zero CID1.  The next call must durably acknowledge that CID1
-    /// before [`Self::first_frame_valid`] can restore Recording.
     pub fn receive_rollover_and_prepare_new_header<S: RecorderRolloverStore>(
         &mut self,
         coordinator: &mut RecorderRolloverCoordinator,
@@ -1770,8 +1665,6 @@ impl<I: DeadlineControlIo> DuplexWorkerSession<I> {
         self.transport_cancellation.cancel();
     }
 
-    /// Receive an independently framed terminal sink report outside a heartbeat
-    /// exchange. The report is never read from or appended to H4CR.
     pub(crate) fn receive_terminal_sink_status(
         &mut self,
         deadline: ControlDeadline,
@@ -2225,14 +2118,6 @@ mod tests {
         }
     }
 
-    /// A session id no other test in this process has already claimed.
-    ///
-    /// `SessionCapability::claim` retains every claimed id for the life of the
-    /// process, so a literal shared by two tests in the same lib-test binary
-    /// makes one of them lose the race and fail with `SessionAlreadyClaimed` --
-    /// the correct production refusal, aimed at the wrong thing. Production
-    /// endpoints live in separate processes and each claims its per-attach id
-    /// exactly once, so only the fixture needs this.
     fn unique_test_session_bytes() -> [u8; 16] {
         use std::sync::atomic::{AtomicU32, Ordering};
         static NEXT: AtomicU32 = AtomicU32::new(1);
@@ -2715,13 +2600,6 @@ mod tests {
 
     #[test]
     fn sink_failure_as_first_handshake_frame_is_terminal_but_structured_and_surfaced() {
-        // Regression: the production control channel is admitted with an empty
-        // capability set, and `SinkSetupFailure`/`SinkTerminalFailure` require
-        // `TRANSPORT_STATUS`. Before this fix the ordinary capability gate poisoned
-        // the channel on a pre-hello sink failure, so the branch that decodes the
-        // structured report was unreachable, `sink_failure()` stayed `None`, and the
-        // report's topology/error class was lost. The handshake must still FAIL, but
-        // the failure must now be structured and reach `self.sink_failure`.
         for (session_bytes, report) in [
             ([0x36; 16], setup_sink_failure()),
             ([0x3E; 16], terminal_sink_failure()),
@@ -2747,10 +2625,6 @@ mod tests {
 
     #[test]
     fn non_sink_capability_gated_kind_before_hello_still_poisons_the_handshake() {
-        // The pre-hello allowance is closed: it admits ONLY the two sink-failure
-        // kinds. A different capability-gated kind (here `HeartbeatProof`, requiring
-        // `HEARTBEAT`) arriving before the hello must still be denied and poison the
-        // channel, so the allowance does not weaken the capability gate in general.
         let session_bytes = [0x3F; 16];
         let session_id = SessionId::from_bytes(session_bytes).unwrap();
         let payload = encode_heartbeat_proof(HeartbeatProof {
@@ -2814,10 +2688,6 @@ mod tests {
         assert_eq!(session.state(), DuplexWorkerState::Failed);
     }
 
-    // --- cross-crate loopback: REAL collector client vs REAL worker admission ---
-
-    /// In-memory transport for the real collector client that captures the
-    /// exact bytes it puts on the wire.
     struct ClientCaptureIo {
         outbound: Rc<RefCell<Vec<u8>>>,
     }
@@ -2837,7 +2707,6 @@ mod tests {
             _bytes: &mut [u8],
             _deadline: collector::duplex_client::MonotonicDeadline,
         ) -> Result<(), collector::duplex_client::DuplexIoError> {
-            // The loopback only drives the collector-first hello send.
             Err(collector::duplex_client::DuplexIoError::PeerClosed)
         }
     }
@@ -2850,8 +2719,6 @@ mod tests {
         }
     }
 
-    /// Drive the REAL collector client's `perform_handshake` over an in-memory
-    /// transport and return the exact wire bytes it produced.
     fn real_collector_client_hello_bytes(client_session: [u8; 16]) -> Vec<u8> {
         let outbound = Rc::new(RefCell::new(Vec::new()));
         let session =
@@ -2887,22 +2754,11 @@ mod tests {
         bytes
     }
 
-    /// Compatibility loopback: the REAL collector client's collector-first hello
-    /// is accepted by the REAL recorder worker-session admission.
-    ///
-    /// In production the two endpoints live in separate processes and each
-    /// claims the per-attach session id once; a single test process cannot claim
-    /// one id twice, so after the client's own framing is validated wire-exactly
-    /// (same codec both sides: session id, sequence 0, kind), the byte-identical
-    /// hello payload is re-framed under the worker's session id. The payload —
-    /// the 72-byte capabilities form, the identity binding, and the capability
-    /// word, i.e. everything admission judges — passes through untouched.
     #[test]
     fn real_collector_client_hello_is_admitted_by_the_worker_session() {
         let client_session = unique_test_session_bytes();
         let bytes = real_collector_client_hello_bytes(client_session);
 
-        // The client framed exactly one CollectorHello at ITS sequence 0.
         let client_sid = SessionId::from_bytes(client_session).unwrap();
         let frame = crate::control_transport::decode_frame(&bytes, client_sid, 0).unwrap();
         assert_eq!(frame.kind, MessageKind::CollectorHello);
@@ -2911,9 +2767,6 @@ mod tests {
             crate::control_transport::CONTROL_HEADER_LEN + 72
         );
 
-        // The payload decodes through the recorder's REAL admission decoder,
-        // binds to the retained attempt facts, and claims exactly the required
-        // capability word.
         let observed = super::super::proof::decode_collector_hello_capabilities(
             &frame.payload,
             &expectation(),
@@ -2921,7 +2774,6 @@ mod tests {
         .unwrap();
         assert_eq!(observed, required_auto_attach_duplex_capabilities());
 
-        // Full REAL worker-session admission over the identical payload.
         let worker_session = unique_test_session_bytes();
         let worker_sid = SessionId::from_bytes(worker_session).unwrap();
         let inbound =
@@ -2931,9 +2783,6 @@ mod tests {
         assert_eq!(session.state(), DuplexWorkerState::WaitingForWorld);
     }
 
-    /// Negative loopback: the historical 68-byte hello — even byte-built by the
-    /// shared codec with the exact expected identity — is rejected by product
-    /// admission, which accepts only the 72-byte capabilities form.
     #[test]
     fn base_68_byte_collector_hello_is_rejected_by_worker_admission() {
         let expected = expectation();
@@ -2961,10 +2810,6 @@ mod tests {
         assert_eq!(session.state(), DuplexWorkerState::Failed);
     }
 
-    // --- active advertised capabilities, end-to-end against real host code ---
-
-    /// In-memory duplex transport for the real client with BOTH a captured
-    /// outbound stream and a scripted inbound stream (recorder->collector).
     struct ClientPairIo {
         outbound: Rc<RefCell<Vec<u8>>>,
         inbound: Rc<RefCell<std::collections::VecDeque<u8>>>,
@@ -3014,14 +2859,10 @@ mod tests {
         )
     }
 
-    /// TRANSPORT_STATUS loopback: the REAL client's `report_sink_failure`
-    /// produces a frame the REAL worker-session admission routes and surfaces
-    /// as an authoritative terminal sink failure.
     #[test]
     fn real_client_sink_failure_is_routed_and_surfaced_by_the_worker() {
         let report = terminal_sink_failure();
 
-        // Drive the real client: handshake, then report the sink failure.
         let outbound = Rc::new(RefCell::new(Vec::new()));
         let mut client = collector::duplex_client::CollectorControlClient::new(
             &collector::duplex_client::test_duplex_client_permit(),
@@ -3043,10 +2884,6 @@ mod tests {
             .unwrap();
         client.report_sink_failure(&report, deadline).unwrap();
 
-        // The client's second frame (after the hello) is the sink failure. Decode
-        // its framing with the shared codec, then re-frame the identical payload
-        // at the worker's admission sequence 0 (a single test process cannot
-        // claim one per-attach id twice).
         let bytes = outbound.borrow().clone();
         let hello_wire = crate::control_transport::CONTROL_HEADER_LEN + 72;
         let sink_frame = crate::control_transport::decode_frame(
@@ -3057,8 +2894,6 @@ mod tests {
         .unwrap();
         assert_eq!(sink_frame.kind, MessageKind::SinkTerminalFailure);
 
-        // The REAL worker session, waiting for the collector hello, routes a
-        // sink-failure frame to its authoritative consumer and surfaces it.
         let worker_session = [0xE2; 16];
         let worker_sid = SessionId::from_bytes(worker_session).unwrap();
         let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
@@ -3071,15 +2906,10 @@ mod tests {
         assert_eq!(session.sink_failure(), Some(&report));
     }
 
-    /// TRANSPORT_STATUS pre-hello loopback: the REAL client's PRE-HELLO sink
-    /// SETUP failure (its very first frame, no hello) is accepted by the REAL
-    /// worker session's first-frame window and surfaced as a structured failure
-    /// rather than a bare timeout.
     #[test]
     fn real_client_pre_hello_sink_setup_failure_is_admitted_by_the_worker() {
         let report = setup_sink_failure();
 
-        // Drive the real client: report the sink SETUP failure BEFORE any hello.
         let outbound = Rc::new(RefCell::new(Vec::new()));
         let mut client = collector::duplex_client::CollectorControlClient::new(
             &collector::duplex_client::test_duplex_client_permit(),
@@ -3095,7 +2925,6 @@ mod tests {
         let deadline = far_client_deadline();
         client.report_sink_failure(&report, deadline).unwrap();
 
-        // The client's FIRST and only frame is the sink setup failure at seq 0.
         let bytes = outbound.borrow().clone();
         let sink_frame = crate::control_transport::decode_frame(
             &bytes,
@@ -3105,8 +2934,6 @@ mod tests {
         .unwrap();
         assert_eq!(sink_frame.kind, MessageKind::SinkSetupFailure);
 
-        // The REAL worker session admits it through recv_handshake_until's
-        // pre-hello window and surfaces the structured report.
         let worker_session = [0xE5; 16];
         let worker_sid = SessionId::from_bytes(worker_session).unwrap();
         let inbound = encode_frame(worker_sid, 0, sink_frame.kind, &sink_frame.payload).unwrap();
@@ -3119,10 +2946,6 @@ mod tests {
         assert_eq!(session.sink_failure(), Some(&report));
     }
 
-    /// TRANSPORT_STATUS loopback (Terminal variant): a sink TERMINAL failure is
-    /// ALSO a valid pre-hello first frame (both sinks opened, then the first
-    /// sequence-0 write failed before the hello). The REAL client emits it at
-    /// seq 0 and the REAL worker admits it through the same pre-hello window.
     #[test]
     fn real_client_pre_hello_sink_terminal_failure_is_admitted_by_the_worker() {
         let report = terminal_sink_failure();
@@ -3163,9 +2986,6 @@ mod tests {
         assert_eq!(session.sink_failure(), Some(&report));
     }
 
-    /// CAMPAIGN_IDENTITY loopback: the REAL client's `report_identity_failure`
-    /// produces a CIF1 the REAL host decoder accepts, and the client surfaces
-    /// the REAL host's CIA1 ack (both sides now share the one identity codec).
     #[test]
     fn real_client_identity_failure_is_decoded_and_acked_end_to_end() {
         use crate::duplex_session::identity_control::{
@@ -3188,9 +3008,6 @@ mod tests {
             current_cid1_hash: Some([9; 32]),
         };
 
-        // The REAL host durable-recorded ack it would return (as
-        // dispatch_identity_failure_frame builds), scripted as the recorder's
-        // sequence-0 inbound frame for the client to receive.
         let client_sid = SessionId::from_bytes([0xE3; 16]).unwrap();
         let ack = IdentityFailureAckV1 {
             attempt_id: failure.attempt_id,
@@ -3228,7 +3045,6 @@ mod tests {
             .unwrap();
         client.report_identity_failure(&failure, deadline).unwrap();
 
-        // The client's CIF1 decodes through the REAL host codec, unchanged.
         let bytes = outbound.borrow().clone();
         let hello_wire = crate::control_transport::CONTROL_HEADER_LEN + 72;
         let cif1 =
@@ -3236,7 +3052,6 @@ mod tests {
         assert_eq!(cif1.kind, MessageKind::IdentityFailure);
         assert_eq!(decode_identity_failure(&cif1.payload).unwrap(), failure);
 
-        // The client surfaces the REAL host's CIA1 ack.
         let event = client.serve_next(deadline).unwrap();
         assert_eq!(
             event,

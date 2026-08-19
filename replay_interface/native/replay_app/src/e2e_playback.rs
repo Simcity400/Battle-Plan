@@ -1,28 +1,3 @@
-//! G2 end-to-end playback gate.
-//!
-//! A scripted, headless run over the committed synthetic recordings that drives
-//! the PUBLIC product/consumer path: open through the shared `replay_core`
-//! validator (`crate::validate::open_and_validate`), step the timeline with the
-//! same seek/play_to hooks the scrub UI uses (`crate::timeline::RecordingTimeline`),
-//! enter a country POV through the e-shell observer state
-//! (`crate::observer::PovState`), and assert every keyed surface updates. It is
-//! compiled only under `#[cfg(test)]` (see `main.rs`), so it never enters the
-//! product binary.
-//!
-//! No pixels are hashed because the run is headless. The gate is on the
-//! DATA-level typed views the product keys off:
-//! owner/controller maps, per-POV province
-//! visibility set, spotted-unit set, and topbar bindings, PLUS the fail-closed
-//! render admission marker. Each checkpoint is folded
-//! into a deterministic FNV-1a state hash; the gate is (a) the hash sequence
-//! matches the pinned golden values (`GOLDEN_CHECKPOINTS` /
-//! `GOLDEN_TOPBAR_SEQ`, harvested from the committed fixtures), (b) the
-//! sequence is stable across two intra-process passes (a secondary check for
-//! intra-process nondeterminism), and (c) the POV-vs-world diff is exactly the
-//! fixture's fogged set.
-//!
-//! POV expectations are derived from the fixture generator SOURCE
-//! (`replay_fixture_gen::fx_pov_visibility`), never from the code under test.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -35,21 +10,14 @@ use crate::observer::{
 use crate::timeline::{OwnerProvider, RecordingTimeline};
 use crate::validate::{open_and_validate, OpenOutcome};
 
-// ---------------------------------------------------------------------------
-// Fixture location + deterministic hash primitive.
-// ---------------------------------------------------------------------------
 
 fn fixture_path(rel: &str) -> PathBuf {
-    // CARGO_MANIFEST_DIR = .../native/replay_app → .../replay_interface/fixtures
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("fixtures")
         .join(rel)
 }
 
-/// Deterministic 64-bit FNV-1a. std's `DefaultHasher` is deterministic too, but
-/// a hand-rolled FNV removes any doubt about cross-version stability and lets
-/// the exact hash points be reproduced from this source alone.
 fn fnv1a(bytes: &[u8]) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for &b in bytes {
@@ -59,10 +27,6 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Open a fixture twice: one `WorldTimeline` for typed-view frame access and a
-/// second, independent `RecordingTimeline` (the product scrub provider) for the
-/// seek/play_to hooks. Both back onto the same committed file, so they resolve
-/// identically — this mirrors the product, which validates/opens then plays.
 fn open_recording_timeline(rel: &str) -> (WorldTimeline, RecordingTimeline) {
     let path = fixture_path(rel);
     let source = open_recording(&path).expect("open recording source");
@@ -73,12 +37,7 @@ fn open_recording_timeline(rel: &str) -> (WorldTimeline, RecordingTimeline) {
     (timeline, provider)
 }
 
-// ---------------------------------------------------------------------------
-// Typed-view encoders → the deterministic state hash the renderer keys off.
-// ---------------------------------------------------------------------------
 
-/// Measured owner/controller entries only (the renderer's keyed color table;
-/// `Absent`/`Unobtained` states never enter it).
 fn owner_map_encoding(map: &BTreeMap<u32, Leaf<String>>) -> String {
     let mut out = String::new();
     for (state, leaf) in map {
@@ -89,8 +48,6 @@ fn owner_map_encoding(map: &BTreeMap<u32, Leaf<String>>) -> String {
     out
 }
 
-/// The full province universe carried by the visibility domain — what the
-/// default *omniscient* view shows (no fog).
 fn world_visible_universe(frame: &WorldFrame) -> BTreeSet<u32> {
     let mut set = BTreeSet::new();
     let povs: Vec<String> = frame.visibility_povs().map(str::to_string).collect();
@@ -102,7 +59,6 @@ fn world_visible_universe(frame: &WorldFrame) -> BTreeSet<u32> {
     set
 }
 
-/// The provinces the given POV can actually see (`level == "visible"`).
 fn pov_visible_set(frame: &WorldFrame, tag: &str) -> BTreeSet<u32> {
     let mut set = BTreeSet::new();
     for (&pid, leaf) in frame.visibility_for(tag).provinces.iter() {
@@ -115,8 +71,6 @@ fn pov_visible_set(frame: &WorldFrame, tag: &str) -> BTreeSet<u32> {
     set
 }
 
-/// What the map renders as *visible* under the current observer mode: omniscient
-/// = the whole universe (no fog); a POV = that country's visible set.
 fn effective_visible_set(frame: &WorldFrame, pov: &PovState) -> BTreeSet<u32> {
     match pov.active_pov() {
         None => world_visible_universe(frame),
@@ -136,8 +90,6 @@ fn leaf_list_encoding(leaf: &Leaf<Vec<String>>) -> String {
     }
 }
 
-/// The foreign units the current mode reveals: omniscient shows everything
-/// (`ALL`); a POV shows only its spotted set (unit-hiding surface).
 fn effective_spotted_encoding(frame: &WorldFrame, pov: &PovState) -> String {
     match pov.active_pov() {
         None => "ALL".to_string(),
@@ -153,9 +105,6 @@ fn effective_spotted_encoding(frame: &WorldFrame, pov: &PovState) -> String {
     }
 }
 
-/// Encode unavailable legacy input distinctly from exact recorded admission.
-/// This marker participates in the synthetic-fixture POV hash, so semantic
-/// wording changes intentionally require rebaselining `GOLDEN_CHECKPOINTS`.
 fn render_marker(frame: &WorldFrame, pov: &PovState) -> String {
     match pov.render_status(Some(frame)) {
         PovRenderStatus::Omniscient => "render=OMNISCIENT".to_string(),
@@ -172,8 +121,6 @@ fn render_marker(frame: &WorldFrame, pov: &PovState) -> String {
     }
 }
 
-/// Per-POV topbar bindings (the derived scalar surface). `Debug` of the typed
-/// view is deterministic (BTreeMap ordering + explicit `Leaf` variants).
 fn topbar_encoding(frame: &WorldFrame, tags: &[&str]) -> String {
     let mut out = String::new();
     for tag in tags {
@@ -185,11 +132,6 @@ fn topbar_encoding(frame: &WorldFrame, tags: &[&str]) -> String {
     out
 }
 
-/// The full deterministic state hash for one frame under one observer mode. It
-/// folds every surface the renderer keys off into a single canonical string,
-/// then FNV-1a's it. The observer mode + render marker are part of the input,
-/// so world and POV hashes differ by construction; the *sets* are asserted
-/// separately for the expected direction.
 fn state_hash(frame: &WorldFrame, pov: &PovState, topbar_tags: &[&str]) -> u64 {
     let mode = match pov.mode() {
         ObserverMode::Omniscient => "OMNISCIENT".to_string(),
@@ -213,16 +155,6 @@ fn state_hash(frame: &WorldFrame, pov: &PovState, topbar_tags: &[&str]) -> u64 {
     fnv1a(canonical.as_bytes())
 }
 
-// ---------------------------------------------------------------------------
-// POV expectations — derived from the fixture generator SOURCE, not the SUT.
-//
-// replay_fixture_gen `fx_pov_visibility` (main.rs): the province universe is
-// {1000,1001,2000,3000}; per snapshot tick:
-//   GER: 1000 visible when tick<5 else fogged; 1001 always visible;
-//        2000 & 3000 always fogged.
-//        spotted foreign units: {div:[201:1], fleets:[501]} when tick<5, else empty.
-//   ENG: 3000 always visible; 2000 visible when tick>=7; 1000 & 1001 fogged.
-// ---------------------------------------------------------------------------
 
 const POV_UNIVERSE: [u32; 4] = [1000, 1001, 2000, 3000];
 
@@ -253,24 +185,8 @@ fn expected_eng_visible(tick: usize) -> BTreeSet<u32> {
     set
 }
 
-// ---------------------------------------------------------------------------
-// Pinned golden hashes.
-//
-// Both tables were harvested by running these tests over the committed
-// fixtures (two independent `cargo test -p replay_app e2e_` processes agreed
-// bit-for-bit) and are stable by construction: the canonical string feeding
-// `fnv1a` is built exclusively from BTreeMap/BTreeSet iteration and explicit
-// `Leaf` variants. They change ONLY with a deliberate typed-view or encoding
-// change (owner/controller encoding, visibility levels, spotted-unit
-// encoding, topbar `Debug` format, `hour_index`, the render marker) or a
 // regenerated fixture. A failure against these constants means an encoded
-// surface drifted — update them only alongside the intentional change that
-// moved the surface, never to silence a regression.
-// ---------------------------------------------------------------------------
 
-/// Golden `(hour, world_hash, pov_hash)` triples for the four scrub
-/// checkpoints (ticks 0, 5, 7, 11) of `fx_pov_visibility.battleplan` in
-/// `e2e_pov_visibility_open_play_scrub_pov_toggle`.
 const GOLDEN_CHECKPOINTS: [(i64, u64, u64); 4] = [
     (16959365, 12970066525203477097, 15686549579718863552),
     (16959370, 12570333928860468155, 6550089962123306605),
@@ -278,9 +194,6 @@ const GOLDEN_CHECKPOINTS: [(i64, u64, u64); 4] = [
     (16959376, 5910307060992128889, 9401900488825342487),
 ];
 
-/// Golden per-hour world-view binding hashes for all 12 hours of
-/// `fx_topbar_scalars_sweep.battleplan` in
-/// `e2e_topbar_bindings_scrub_determinism`.
 const GOLDEN_TOPBAR_SEQ: [u64; 12] = [
     8849946347385598713,
     9818959127643207644,
@@ -296,15 +209,11 @@ const GOLDEN_TOPBAR_SEQ: [u64; 12] = [
     1731959386161646928,
 ];
 
-// ---------------------------------------------------------------------------
-// The scripted G2 end-to-end run.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     let rel = "positive/fx_pov_visibility.battleplan";
 
-    // 1. OPEN through the shared product validator.
     let report = match open_and_validate(&fixture_path(rel)) {
         OpenOutcome::Opened(r) => r,
         other => panic!("fx_pov_visibility must open through the validator: {other:?}"),
@@ -317,15 +226,10 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         report.warnings
     );
 
-    // Build the timeline + the product scrub provider.
     let (timeline, provider) = open_recording_timeline(rel);
     let hours: Vec<i64> = timeline.hours().to_vec();
     assert_eq!(hours.len(), 12);
 
-    // 2. Country picker: this legacy fixture predates the complete d18
-    // identity roster. Session-player rows are intentionally not a fallback;
-    // panel selection therefore stays unavailable while the lower-level fog
-    // fixture can still exercise its historical semantic maps.
     match provider.pov_picker().expect("picker frame must authenticate") {
         PovPicker::Unavailable(reason) => {
             assert!(reason.contains("d18"), "typed gap names d18: {reason}");
@@ -336,23 +240,14 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     }
 
     let topbar_tags = ["GER", "ENG", "SOV"];
-    // Representative scrub checkpoints (tick index into the 12-hour series):
-    // tick 0 (GER sees 1000), tick 5 (GER loses 1000 + its spotted units),
-    // tick 7 (ENG gains 2000), tick 11 (end).
     let checkpoints = [0usize, 5, 7, 11];
 
-    // One scripted pass → the ordered (hour, world_hash, pov_hash) record. Each
-    // pass runs the full open→play→scrub→POV script and folds the deterministic
-    // hashes at every checkpoint.
     let run_pass = || -> Vec<(i64, u64, u64)> {
         let mut record = Vec::new();
         for &tick in &checkpoints {
             let hour = hours[tick];
-            // The scrub UI's seek/play_to hooks resolve identically and land the
-            // exact recorded hour (E1 conformance, re-checked end-to-end here).
             assert_eq!(provider.seek_hour(hour), provider.play_to_hour(hour));
             assert_eq!(provider.seek_hour(hour), Ok(hour));
-            // Owners flow through the same primitive the scrub reads.
             let _ = provider.owners_at(hour).expect("provider owners");
 
             let frame = timeline.state_at(hour).expect("frame at checkpoint");
@@ -366,9 +261,6 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         record
     };
 
-    // 3. DETERMINISM: the hash sequence matches the pinned golden values
-    //    (cross-run/cross-build drift gate) AND two intra-process passes agree
-    //    (secondary check for intra-process nondeterminism).
     let pass_a = run_pass();
     assert_eq!(
         pass_a,
@@ -382,12 +274,10 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         "hash sequence must be deterministic across passes"
     );
 
-    // 4. POV-vs-world diff is the expected fogged set + toggle-back idempotence.
     for (i, &tick) in checkpoints.iter().enumerate() {
         let hour = hours[tick];
         let frame = timeline.state_at(hour).expect("frame");
 
-        // World view is omniscient: the whole province universe is visible.
         let world = PovState::new();
         let world_visible = effective_visible_set(&frame, &world);
         let expected_universe: BTreeSet<u32> = POV_UNIVERSE.iter().copied().collect();
@@ -396,12 +286,9 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             "omniscient universe @tick {tick}"
         );
 
-        // Enter GER POV via the e-shell observer state.
         let mut pov = PovState::new();
         pov.enter_pov("GER");
 
-        // The legacy synthetic fixture has semantic visibility maps but not an
-        // exact d94 vector/d95 census, so production POV admission rejects it.
         match pov.render_status(Some(&frame)) {
             PovRenderStatus::Unavailable { pov: t, diagnostic } => {
                 assert_eq!(t, "GER");
@@ -417,8 +304,6 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             "GER visible @tick {tick}"
         );
 
-        // The diff (world visible MINUS pov visible) is exactly the fogged set,
-        // non-empty (POV hides ≥1 province), and pov ⊂ world.
         let diff: BTreeSet<u32> = world_visible.difference(&pov_visible).copied().collect();
         assert_eq!(diff, expected_ger_fogged(tick), "fogged diff @tick {tick}");
         assert!(
@@ -430,7 +315,6 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             "pov ⊂ world @tick {tick}"
         );
 
-        // Hash relations: POV differs from world; world hash matches the record.
         let (rec_hour, rec_world, rec_pov) = pass_a[i];
         assert_eq!(rec_hour, hour);
         assert_ne!(
@@ -443,14 +327,12 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
             "pov hash reproduces @tick {tick}"
         );
 
-        // 5. TOGGLE BACK → the state hash returns to the world-view hash.
         pov.exit_to_world();
         assert_eq!(
             state_hash(&frame, &pov, &topbar_tags),
             rec_world,
             "toggle-back must restore the world hash @tick {tick}"
         );
-        // A paired toggle();toggle(); returns to the POV hash (idempotent pair).
         let paired = {
             let mut p = PovState::new();
             p.enter_pov("GER");
@@ -464,9 +346,6 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         );
     }
 
-    // 6. UNIT HIDING: at tick 0 GER spots the foreign SOV division; from tick 5
-    //    GER spots nothing, yet the omniscient world still carries that division
-    //    — a unit the POV hides but the world view shows.
     let frame0 = timeline.state_at(hours[0]).expect("frame0");
     let ger0 = frame0.spotted_units_for("GER");
     assert_eq!(ger0.divisions, Leaf::Measured(vec!["201:1".to_string()]));
@@ -488,8 +367,6 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         "omniscient world still carries the SOV division the POV no longer sees"
     );
 
-    // 7. POV INDEPENDENCE: ENG's visible set differs from GER's and matches its
-    //    own fixture-derived expectation.
     for &tick in &[0usize, 7] {
         let frame = timeline.state_at(hours[tick]).expect("frame");
         let mut eng = PovState::new();
@@ -502,11 +379,6 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
     }
 }
 
-/// Companion gate for the topbar-binding surface: the topbar-scalar sweep
-/// fixture has no visibility domain, so it isolates the derived topbar bindings.
-/// Open → scrub every hour → the binding hash sequence matches the pinned
-/// `GOLDEN_TOPBAR_SEQ`, is stable across two intra-process passes, AND every
-/// swept hour has a distinct binding (the surface updates).
 #[test]
 fn e2e_topbar_bindings_scrub_determinism() {
     let rel = "positive/fx_topbar_scalars_sweep.battleplan";

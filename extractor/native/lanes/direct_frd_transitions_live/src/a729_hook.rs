@@ -1,28 +1,3 @@
-//! Production a729 MinHook adapter for the authenticated D45/X10 direct-event
-//! roots.
-//!
-//! A named evidence-only environment gate remains available to the owner
-//! fixture. Production scheduling remains disabled until that receipt passes. The
-//! adapter validates all 12 entry sentinels before creating any hook, calls
-//! each trampoline exactly once, and emits legacy focus/research/decision rows
-//! only after the original returns.
-//! X10 on-action and terminal-effect rows are emitted on entry because the
-//! invocation itself is the transient fact that hourly state cannot recover.
-//! Raw addresses exist only as callback-local values and private identity-map
-//! keys.
-//!
-//! Row scalar contract:
-//! - focus `input_bits`: low 32 bits are pre-copied `*R8`; high 32 bits are
-//!   pre-copied `*(i32*)R9` bits;
-//! - research emits only for `pre_progress < required && EDX >= required`;
-//!   its `input_bits` low 32 bits are entry `EDX`;
-//! - decision `input_bits`: zero because no scalar argument is authenticated;
-//! - legacy post-return rows have [`HOOK_VOID_RETURN_OBSERVED_BITS`] in
-//!   `return_bits` and [`HOOK_SUMMARY_RETURN_OBSERVED`] only in the post
-//!   summary;
-//! - X10 invocation rows have zero `return_bits` and
-//!   [`HOOK_ENTRY_OBSERVED_BITS`] only in the entry summary.
-
 use core::ffi::c_void;
 use minhook::MinHook;
 use production_hook_receipt::{
@@ -41,21 +16,17 @@ use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetCurrentThreadId};
 
 use crate::{
-    DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventRow,
-    DirectEventStateSummary, OpaqueInstanceId, UnsequencedDirectEventRow,
-    DEFAULT_MAX_PENDING_ROWS,
-    D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK, ROOT_RVA_FOCUS_COMPLETED_A729,
-    ROOT_RVA_DECISION_CANCEL_EFFECT_A729, ROOT_RVA_DECISION_REMOVE_EFFECT_A729,
-    ROOT_RVA_DECISION_TIMEOUT_EFFECT_A729, ROOT_RVA_ON_ACTION_INVOKED_A729,
+    DirectEventBatch, DirectEventCarrier, DirectEventKind, DirectEventRow, DirectEventStateSummary,
+    OpaqueInstanceId, UnsequencedDirectEventRow, D45_V5_DIRECT_EVENT_REQUIRED_ROOT_MASK,
+    DEFAULT_MAX_PENDING_ROWS, ROOT_RVA_DECISION_CANCEL_EFFECT_A729,
+    ROOT_RVA_DECISION_REMOVE_EFFECT_A729, ROOT_RVA_DECISION_TIMEOUT_EFFECT_A729,
+    ROOT_RVA_FOCUS_COMPLETED_A729, ROOT_RVA_ON_ACTION_INVOKED_A729,
     ROOT_RVA_ORDINARY_DECISION_TAKEN_A729, ROOT_RVA_RESEARCH_COMPLETED_A729,
-    ROOT_RVA_TARGETED_DECISION_CANCEL_EFFECT_A729,
-    ROOT_RVA_TARGETED_DECISION_REMOVE_EFFECT_A729,
-    ROOT_RVA_TARGETED_DECISION_TIMEOUT_EFFECT_A729,
-    ROOT_RVA_TARGETED_DECISION_TAKEN_A729, ROOT_RVA_TIMED_DECISION_ACTIVATED_A729,
+    ROOT_RVA_TARGETED_DECISION_CANCEL_EFFECT_A729, ROOT_RVA_TARGETED_DECISION_REMOVE_EFFECT_A729,
+    ROOT_RVA_TARGETED_DECISION_TAKEN_A729, ROOT_RVA_TARGETED_DECISION_TIMEOUT_EFFECT_A729,
+    ROOT_RVA_TIMED_DECISION_ACTIVATED_A729,
 };
 
-/// Bound to the crate-level exact-build production authority. The separate
-/// environment gate is diagnostics-only.
 pub const PRODUCTION_ACTIVATION: bool = crate::PRODUCTION_ACTIVATION;
 
 const CGAMESTATE_SINGLETON_RVA: usize = 0x0331_6e90;
@@ -68,7 +39,6 @@ const COUNTRY_TAG_DB_ID_OFFSET: usize = 0x08;
 const DECISION_STATUS_COUNTRY_OFFSET: usize = 0x08;
 const FOCUS_TOKEN_OFFSET: usize = 0x18;
 const DECISION_TOKEN_OFFSET: usize = 0x120;
-// The MSVC string beginning at +0x20 is only valid for active entries.
 const ON_ACTION_ACTIVE_OFFSET: usize = 0x18;
 const ON_ACTION_TOKEN_OFFSET: usize = 0x20;
 const MAX_PORTABLE_TOKEN_LEN: usize = 192;
@@ -82,40 +52,31 @@ pub const HOOK_SUMMARY_RESEARCH_REQUIRED_PRESENT: u64 = 1 << 1;
 pub const LEGACY_OWNER_FIXTURE_ROOT_MASK: u64 = (1 << 5) - 1;
 
 pub const FOCUS_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56,
-    0x41,
+    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x53, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
 ];
 pub const RESEARCH_SENTINEL: [u8; 16] = [
-    0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x81, 0x60, 0x01, 0x00, 0x00, 0x48, 0x8b,
-    0xd9,
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0x81, 0x60, 0x01, 0x00, 0x00, 0x48, 0x8b, 0xd9,
 ];
 pub const ORDINARY_DECISION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf2,
-    0x48,
+    0x48, 0x89, 0x54, 0x24, 0x10, 0x53, 0x56, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xf2, 0x48,
 ];
 pub const TARGETED_DECISION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
-    0x57,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
 ];
 pub const TIMED_DECISION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20,
-    0x48,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48,
 ];
 pub const ON_ACTION_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x18,
-    0x55,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7c, 0x24, 0x18, 0x55,
 ];
 pub const DECISION_TERMINAL_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec, 0xf0,
-    0x00,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x57, 0x48, 0x81, 0xec, 0xf0, 0x00,
 ];
 pub const TARGETED_DECISION_TERMINAL_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20,
-    0x55,
+    0x48, 0x89, 0x5c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7c, 0x24, 0x20, 0x55,
 ];
 pub const TARGETED_DECISION_TIMEOUT_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55, 0x41,
-    0x56,
+    0x48, 0x89, 0x5c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x55, 0x57, 0x41, 0x55, 0x41, 0x56,
 ];
 
 type FocusFn = unsafe extern "system" fn(usize, usize, usize, usize);
@@ -274,35 +235,11 @@ struct HookState {
     current_error: Option<String>,
     drain_sequence: u64,
     kind_witness_counts: [u64; 12],
-    /// Rows this producer could not admit because the bounded pending queue was
-    /// already at [`DEFAULT_MAX_PENDING_ROWS`], counted since the last consumed
-    /// drain.
-    ///
-    /// Per-drain, not cumulative. A window that lost rows cannot hand over a
-    /// complete ordered history, so its drain is self-rejected by the reader
-    /// and CONSUMED; consuming it is what clears this back to zero, so the next
-    /// window reports on itself instead of inheriting an earlier window's loss
-    /// for the life of the process.
     overflow_dropped_rows: u64,
 }
 
-/// What [`HookState::capture`] refuses when the bounded queue is already full.
 const D45_PENDING_QUEUE_FULL: &str = "D45 direct hook pending queue is full";
 
-/// Whether a [`HookState::capture`] refusal invalidates the ordered history and
-/// must therefore latch `current_error` for the life of the hook epoch.
-///
-/// True for every refusal except a full queue. A crossed callback thread, a
-/// regressed game hour or a carrier that rejected a malformed row all mean the
-/// sequence space can no longer be trusted, and no later success makes an
-/// untrustworthy history trustworthy again -- absorbing is correct there.
-///
-/// A full queue is a different fault with the same symptom. Nothing about the
-/// rows already held is wrong; the consumer simply has not drained recently
-/// enough. Latching it made a transient consumer stall permanent, and because
-/// `peek_batch` and `uninstall_locked` both refuse while the latch is set, it
-/// also removed the only path that could have drained the queue and the only
-/// path that could have taken the detours back out of the running game.
 fn capture_failure_latches_producer(error: &str) -> bool {
     !error.starts_with(D45_PENDING_QUEUE_FULL)
 }
@@ -356,21 +293,11 @@ impl HookState {
             .map_err(|error| format!("D45 direct hook ephemeral ID allocation failed: {error}"))
     }
 
-    /// Validates and sequences one callback row through the typed carrier, then
-    /// moves it into the runtime-owned bounded queue. The carrier is kept empty
-    /// between callbacks so a reservation can peek without mutating the queue
-    /// and newly captured rows can append behind its immutable prefix.
     fn capture(&mut self, row: UnsequencedDirectEventRow) -> Result<(), String> {
         if self.terminal_sealed {
             return Err("D45 direct hook terminal custody is sealed".into());
         }
         if self.pending_rows.len() >= DEFAULT_MAX_PENDING_ROWS {
-            // Counted here, not latched by the caller. The bound is deliberate
-            // and stays at DEFAULT_MAX_PENDING_ROWS: measured against both
-            // post-merge captures it absorbed roughly 255 game-hours of
-            // arrivals before it filled, so a consumer that drains once an hour
-            // never approaches it. Raising it would only move the moment a
-            // stalled consumer is noticed.
             self.overflow_dropped_rows = self.overflow_dropped_rows.saturating_add(1);
             return Err(format!(
                 "{D45_PENDING_QUEUE_FULL} at {} rows",
@@ -397,10 +324,6 @@ impl HookState {
 struct BatchReservationState {
     reservation_id: u64,
     row_count: usize,
-    /// The overflow drops this reservation reported. Consuming the reservation
-    /// retires exactly this many, never the whole counter: callbacks that
-    /// dropped rows after the peek belong to the NEXT window and must survive
-    /// this commit to be reported there.
     overflow_dropped_rows: u64,
 }
 
@@ -442,23 +365,13 @@ pub struct HookDiagnostics {
     pub overflow_dropped_rows: u64,
 }
 
-/// One immutable peek at the ordered D45 event prefix. Callers must explicitly
-/// commit or roll it back. Only one reservation can exist at a time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectEventBatchReservation {
     pub reservation_id: u64,
     pub batch: DirectEventBatch,
-    /// Rows the bounded queue refused during the window this reservation
-    /// drains. Non-zero means the drain is a PREFIX of what happened, not the
-    /// whole of it, and the D45-v5 trailer has no field that can say so -- so
-    /// the reader must self-reject this batch rather than publish it as a
-    /// complete ordered history.
     pub overflow_dropped_rows: u64,
 }
 
-/// Explicit terminal handoff for a poisoned D45 producer. Rows remain ordered
-/// and pointer-free, and teardown cannot proceed until the caller acknowledges
-/// custody of this exact snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SealedDirectEventCustody {
     pub custody_id: u64,
@@ -488,15 +401,15 @@ impl Drop for CallbackLease {
 }
 
 impl HookDiagnostics {
-    /// True only after the evidence-only activation has observed every one of
-    /// the five legacy focus/research/decision owner roots at least once.
     pub fn legacy_owner_fixture_complete(&self) -> bool {
         self.installed
             && self.evidence_fixture
             && self.hook_epoch != 0
             && self.active_callbacks == 0
             && self.current_error.is_none()
-            && self.kind_witness_counts[..5].iter().all(|count| *count != 0)
+            && self.kind_witness_counts[..5]
+                .iter()
+                .all(|count| *count != 0)
     }
 }
 
@@ -515,12 +428,6 @@ struct PreparedRow {
     before: DirectEventStateSummary,
 }
 
-/// The twelve D45 detours, in target order, named once.
-///
-/// One array rather than a literal per call site: the install, the teardown
-/// and the batched enable each need the same names in the same order, and
-/// three copies of a twelve-element list is three chances for one of them to
-/// drift out of step with `targets()`.
 const HOOK_NAMES: [&str; 12] = [
     "focus",
     "research",
@@ -536,7 +443,6 @@ const HOOK_NAMES: [&str; 12] = [
     "targeted decision timeout effect",
 ];
 
-/// Pair each target with its name for a batched `inline_detour` call.
 fn enable_batch_targets(targets: &[usize; 12]) -> [(&'static str, *mut c_void); 12] {
     core::array::from_fn(|index| (HOOK_NAMES[index], targets[index] as *mut c_void))
 }
@@ -547,9 +453,7 @@ pub fn install() -> Result<InstalledRoots, String> {
         .map_err(|_| "D45 direct hook lifecycle mutex poisoned".to_string())?;
     let evidence_fixture = !PRODUCTION_ACTIVATION && evidence_activation_enabled();
     if !PRODUCTION_ACTIVATION && !evidence_fixture {
-        return Err(
-            "D45 a729 direct hooks are not authorized for this build".into(),
-        );
+        return Err("D45 a729 direct hooks are not authorized for this build".into());
     }
     let base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
     if base == 0 {
@@ -584,15 +488,15 @@ pub fn install() -> Result<InstalledRoots, String> {
         .hook_epoch = hook_epoch;
 
     MODULE_BASE.store(base, Ordering::Release);
-    let focus = match unsafe {
-        MinHook::create_hook(targets[0] as *mut c_void, hook_focus as *mut c_void)
-    } {
-        Ok(focus) => focus,
-        Err(status) => {
-            MODULE_BASE.store(0, Ordering::Release);
-            return Err(format!("D45 focus hook creation failed: {status}"));
-        }
-    };
+    let focus =
+        match unsafe { MinHook::create_hook(targets[0] as *mut c_void, hook_focus as *mut c_void) }
+        {
+            Ok(focus) => focus,
+            Err(status) => {
+                MODULE_BASE.store(0, Ordering::Release);
+                return Err(format!("D45 focus hook creation failed: {status}"));
+            }
+        };
     ORIGINAL_FOCUS.store(focus as usize, Ordering::Release);
     if let Err(error) = create_remaining_hooks(&targets) {
         let cleanup = rollback(&targets)
@@ -607,22 +511,6 @@ pub fn install() -> Result<InstalledRoots, String> {
     ACTIVE_HOOK_EPOCH.store(hook_epoch, Ordering::Release);
     EVIDENCE_FIXTURE.store(evidence_fixture, Ordering::Release);
     QUIESCED.store(false, Ordering::Release);
-    // ONE freeze for all twelve. Each `inline_detour::enable` freezes the
-    // whole process -- two system-wide thread-list walks and a suspend/resume
-    // of every game thread -- so twelve of them cost twelve freezes at a
-    // moment when the roster is installing every pinned gameplay detour it
-    // holds (55 when this was written; the count moves with the schedule).
-    //
-    // Batching is not merely cheaper here, it is STRICTER. The twelve
-    // callbacks now become live inside a single freeze window, so no game
-    // thread can execute between them; the interleaving where a later detour
-    // is patched while an earlier one is already admitting callbacks does not
-    // exist any more.
-    //
-    // The installed-hook receipts are observed AFTER the batch, not between
-    // enables, because observing one reads that target's patched bytes and the
-    // bytes are not there until the batch applies. Their order is unchanged
-    // and each still names its own target.
     let batch = enable_batch_targets(&targets);
     let report = unsafe { inline_detour::enable_batch(&batch) };
     if let Some((name, status)) = report.refusal() {
@@ -673,16 +561,6 @@ pub fn uninstall() -> Result<(), String> {
     uninstall_locked(false)
 }
 
-/// Discards every retained D45 producer observation and removes the hook set,
-/// for the single case where the production hook registry could not finish
-/// installing its canonical roster.
-///
-/// This is the abort half of the terminal transaction whose commit half is
-/// [`commit_terminal_batch_and_uninstall`]. A partial install can never build
-/// the terminal DATA frame that commit publishes into, so the retained prefix
-/// has no destination and is dropped here — explicitly, with an exact count,
-/// and only after callbacks have been disabled and quiesced. Nothing about
-/// physical hook removal is relaxed: byte restoration, prefix verification and
 /// release-receipt observation run exactly as they do on the normal path.
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -692,15 +570,7 @@ pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, Stri
     Ok(take_install_abort_discard())
 }
 
-/// Running total of what install aborts have discarded from this lane.
-///
-/// Producer custody has to be cleared before the physical removal below, or
-/// that removal's own custody guard refuses. That leaves a window: if removal,
 /// prefix verification or release-receipt observation then fails, the rows are
-/// already gone while the abort returns `Err` and the caller records nothing.
-/// The count is therefore accumulated here instead of being returned straight
-/// out, so the retry that finds an already-empty lane still reports the exact
-/// number of observations the first attempt dropped.
 static INSTALL_ABORT_DISCARD: Mutex<InstallAbortDiscard> = Mutex::new(InstallAbortDiscard::ZERO);
 
 fn accumulate_install_abort_discard(observed: InstallAbortDiscard) {
@@ -711,7 +581,6 @@ fn accumulate_install_abort_discard(observed: InstallAbortDiscard) {
 }
 
 /// Takes the running total. Called only after a complete physical release, so
-/// a lane that comes back fresh does not inherit an earlier abort's count.
 fn take_install_abort_discard() -> InstallAbortDiscard {
     mem::replace(
         &mut *INSTALL_ABORT_DISCARD
@@ -721,11 +590,6 @@ fn take_install_abort_discard() -> InstallAbortDiscard {
     )
 }
 
-/// Records and clears every retained producer custody so a following physical
-/// teardown is not refused by the custody guard.
-///
-/// Callers must have disabled the hook set and waited for callback quiescence
-/// first; otherwise a live callback can append behind the clear.
 fn discard_install_abort_custody_locked(state: &mut HookState) -> InstallAbortDiscard {
     let discard = InstallAbortDiscard {
         retained_rows: state.pending_rows.len() as u64,
@@ -733,16 +597,8 @@ fn discard_install_abort_custody_locked(state: &mut HookState) -> InstallAbortDi
             .reservation
             .map_or(0, |reservation| reservation.row_count as u64),
         discarded_diagnostics: u64::from(state.terminal_custody.is_some()),
-        // Unretired overflow drops make this lane one that LOST observations,
-        // exactly as a sticky error does. Saying so here is what stops a
         // zero-observation release claiming this window observed nothing:
         // `admit_hook_release` refuses that claim on a non-empty discard, and a
-        // window that dropped rows observed something it could not keep.
-        //
-        // Deliberately reported here rather than added to the `uninstall_locked`
-        // custody guard. A guard clause would refuse teardown until the count
-        // reached zero, and only a consumed drain retires it -- which is the
-        // wedge this whole change removes, rebuilt one level down.
         poisoned: state.current_error.is_some() || state.overflow_dropped_rows != 0,
     };
     state.pending_rows.clear();
@@ -755,27 +611,19 @@ fn discard_install_abort_custody_locked(state: &mut HookState) -> InstallAbortDi
 
 fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
     if failed_install_cleanup_required() {
-        return Err(
-            "D45 failed-install hook custody requires retry_failed_install_cleanup".into(),
-        );
+        return Err("D45 failed-install hook custody requires retry_failed_install_cleanup".into());
     }
     if !INSTALLED.load(Ordering::Acquire) && MODULE_BASE.load(Ordering::Acquire) == 0 {
         return Ok(());
     }
     let base = MODULE_BASE.load(Ordering::Acquire);
     let targets = targets(base)?;
-    // ONE freeze for all twelve restorations, and every one of them still
-    // reported by name: `disable_batch` reads MinHook's already-disabled and
-    // never-created statuses exactly as the per-target match arms here did,
-    // and re-drives the batch target by target if the single apply is refused,
-    // so a refusal still says WHICH hook is still patched.
-    let disable_errors: Vec<String> = unsafe {
-        inline_detour::disable_batch(&enable_batch_targets(&targets))
-    }
-    .failures()
-    .into_iter()
-    .map(|(name, status)| format!("disable {name}: {status}"))
-    .collect();
+    let disable_errors: Vec<String> =
+        unsafe { inline_detour::disable_batch(&enable_batch_targets(&targets)) }
+            .failures()
+            .into_iter()
+            .map(|(name, status)| format!("disable {name}: {status}"))
+            .collect();
     if !disable_errors.is_empty() {
         return Err(disable_errors.join("; "));
     }
@@ -805,16 +653,12 @@ fn uninstall_locked(discard_custody: bool) -> Result<(), String> {
         }
     }
     INSTALLED.store(false, Ordering::Release);
-    // ONE freeze for all twelve removals. `remove_batch` holds the same guard
-    // each single `remove` takes, once instead of twelve times, and reports
-    // each trampoline separately.
-    let remove_errors: Vec<String> = unsafe {
-        inline_detour::remove_batch(&enable_batch_targets(&targets))
-    }
-    .failures()
-    .into_iter()
-    .map(|(name, status)| format!("remove {name}: {status}"))
-    .collect();
+    let remove_errors: Vec<String> =
+        unsafe { inline_detour::remove_batch(&enable_batch_targets(&targets)) }
+            .failures()
+            .into_iter()
+            .map(|(name, status)| format!("remove {name}: {status}"))
+            .collect();
     if remove_errors.is_empty() {
         verify_pre_target_prefixes(&targets)?;
         observe_release_receipts()?;
@@ -854,9 +698,6 @@ fn stored_install_receipts() -> Result<[InstalledRvaHookReceipt; 12], String> {
         .ok_or_else(|| "D45 exact installed-hook receipts are unavailable".into())
 }
 
-/// Takes the complete normal-teardown receipt roster exactly once.
-///
-/// Partial failed-install restoration receipts are deliberately excluded and
 /// remain available only through [`take_partial_released_hook_receipts`].
 pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 12], String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -873,13 +714,10 @@ pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 12], Str
         .ok_or_else(|| "D45 exact released-hook receipts are unavailable or already taken".into())
 }
 
-/// Compatibility spelling. This remains take-once, not a cloning getter.
 pub fn released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 12], String> {
     take_released_hook_receipts()
 }
 
-/// Takes restoration receipts from a failed partial install. Reinstallation is
-/// rejected until this custody has been explicitly consumed.
 pub fn take_partial_released_hook_receipts() -> Result<Vec<ReleasedRvaHookReceipt>, String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -907,10 +745,6 @@ pub fn scheduling_enabled() -> bool {
     activation_enabled() || evidence_activation_enabled()
 }
 
-/// Peeks the complete bounded pending prefix without removing any row.
-///
-/// A second reservation is rejected until the first is explicitly committed
-/// or rolled back. Hook callbacks remain free to append behind this prefix.
 pub fn peek_batch() -> Result<DirectEventBatchReservation, String> {
     if !installed() {
         return Err("D45 a729 direct hooks are not installed".into());
@@ -952,17 +786,18 @@ fn peek_batch_locked(
         .transpose()?
         .unwrap_or_else(|| state.carrier.next_sequence());
     let drain_sequence = state.drain_sequence;
-    let observed_kind_mask = state
-        .kind_witness_counts
-        .iter()
-        .enumerate()
-        .fold(0u64, |mask, (index, count)| {
-            if *count == 0 {
-                mask
-            } else {
-                mask | (1u64 << index)
-            }
-        });
+    let observed_kind_mask =
+        state
+            .kind_witness_counts
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (index, count)| {
+                if *count == 0 {
+                    mask
+                } else {
+                    mask | (1u64 << index)
+                }
+            });
     let reservation_id = state.next_reservation_id;
     state.next_reservation_id = state
         .next_reservation_id
@@ -990,7 +825,6 @@ fn peek_batch_locked(
     })
 }
 
-/// Commits exactly the prefix returned by [`peek_batch`].
 pub fn commit_batch(reservation_id: u64) -> Result<(), String> {
     let mut state = STATE
         .get()
@@ -1019,10 +853,6 @@ fn commit_batch_locked(state: &mut HookState, reservation_id: u64) -> Result<(),
         .ok_or("D45 direct hook drain sequence exhausted")?;
     state.pending_rows.drain(..reservation.row_count);
     state.drain_sequence = next_drain_sequence;
-    // Retire exactly the drops this reservation reported. This is what gives
-    // the counter its per-window meaning: without it a single overflow would
-    // mark every later window incomplete for the life of the process, which is
-    // the absorbing shape the D55 completeness latch had.
     state.overflow_dropped_rows = state
         .overflow_dropped_rows
         .saturating_sub(reservation.overflow_dropped_rows);
@@ -1031,11 +861,6 @@ fn commit_batch_locked(state: &mut HookState, reservation_id: u64) -> Result<(),
 }
 
 /// Releases a reservation without removing or reordering any row.
-///
-/// The drop count is deliberately NOT retired here. Rollback means the sink did
-/// not take the batch, so nothing about this window has been reported yet and
-/// the next peek must state the same loss again. Only a consumed batch --
-/// published, or self-rejected by the reader -- retires it.
 pub fn rollback_batch(reservation_id: u64) -> Result<(), String> {
     let mut state = STATE
         .get()
@@ -1059,9 +884,6 @@ fn rollback_batch_locked(state: &mut HookState, reservation_id: u64) -> Result<(
     Ok(())
 }
 
-/// Disable every D45 producer, wait for callbacks already inside a detour, and
-/// reserve the now-complete normal terminal batch. The immutable prefix stays
-/// in lane custody until the final H4CR sink acknowledges it.
 pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -1072,10 +894,6 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
     if !QUIESCED.load(Ordering::Acquire) {
         let base = MODULE_BASE.load(Ordering::Acquire);
         let hook_targets = targets(base)?;
-        // ONE freeze for the seal, and the per-target verdicts the restore
-        // path needs are still there: `disable_batch` reports each target
-        // separately, so `disabled[index]` is exactly as exact as the
-        // per-target loop that used to build it.
         let batch = enable_batch_targets(&hook_targets);
         let sealed = unsafe { inline_detour::disable_batch(&batch) };
         let mut disabled = [false; 12];
@@ -1086,45 +904,19 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
                 Err(status) => failures.push(format!("disable {name}: {status}")),
             }
         }
-        // AND THE BATCH'S OWN REFUSAL, which no per-target outcome carries.
-        //
-        // `disable_batch` reports MinHook's already-disabled as SUCCESS --
         // nothing is patched, which is the postcondition a release asks for --
-        // and that is right everywhere except here. When the batch's own
-        // `MH_ApplyQueued` refuses, one target's bytes may have been restored
-        // with the protection restore or the instruction-cache flush left
-        // unpublished -- MinHook names neither the target it stopped at nor
-        // whether it got that far -- and the completion loop then sees
-        // `MH_ERROR_DISABLED` for that target and folds it into `Ok`. THIS
-        // path goes on to declare QUIESCENCE, which is the claim that no
-        // callback can enter a detour any more; an unpublished restore is
-        // precisely the state in which a thread still executing the stale
-        // instruction stream can.
-        //
-        // Fail closed and name the cause. `QUIESCED` stays false, so a later
-        // seal drives the whole roster again; the restore below puts back
-        // every target this attempt took down, and for an unpublished one that
-        // is a completed `EnableHookLL` -- which clears the latch, so the
-        // recovery is real and not just a report.
         if let Some(refusal) = sealed.apply_refusal() {
             failures.push(format!("D45 seal batch apply refused: {refusal}"));
         }
         if !failures.is_empty() {
             let base = MODULE_BASE.load(Ordering::Acquire);
             if let Ok(hook_targets) = targets(base) {
-                // The restore is a batch too, over exactly the sites this
-                // attempt took down. Re-enabling one at a time would freeze
-                // once per restored site on the failure path -- the path
-                // already least able to afford it.
                 let restore: Vec<(&'static str, *mut c_void)> = enable_batch_targets(&hook_targets)
                     .into_iter()
                     .enumerate()
                     .filter(|(index, _)| disabled[*index])
                     .map(|(_, entry)| entry)
                     .collect();
-                // GATED ON THE WHOLE-BATCH VERDICT, not on whether any string
-                // came back. A restore batch that refuses rolls itself back,
-                // so no site is re-enabled and every one of them is named.
                 let restored = unsafe { inline_detour::enable_batch(&restore) };
                 if !restored.all_succeeded() {
                     for (name, status) in restored.failures() {
@@ -1146,7 +938,9 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
         return Err(format!("D45 terminal producer is poisoned: {error}"));
     }
     if state.reservation.is_some() {
-        return Err("D45 terminal reservation requires the hourly reservation to be released".into());
+        return Err(
+            "D45 terminal reservation requires the hourly reservation to be released".into(),
+        );
     }
     state.terminal_sealed = true;
     peek_batch_locked(
@@ -1156,7 +950,6 @@ pub fn seal_and_reserve_terminal_batch() -> Result<DirectEventBatchReservation, 
     )
 }
 
-/// Commit the complete terminal prefix, then remove the already-quiesced hook
 /// set and publish its release receipts.
 pub fn commit_terminal_batch_and_uninstall(reservation_id: u64) -> Result<(), String> {
     commit_batch(reservation_id)?;
@@ -1164,14 +957,10 @@ pub fn commit_terminal_batch_and_uninstall(reservation_id: u64) -> Result<(), St
 }
 
 /// Release a failed terminal publication without reopening callbacks. A later
-/// call to [`seal_and_reserve_terminal_batch`] returns the same complete rows.
 pub fn rollback_terminal_batch(reservation_id: u64) -> Result<(), String> {
     rollback_batch(reservation_id)
 }
 
-/// Seals a sticky producer error and exposes every retained row. This is the
-/// only path that permits poisoned custody to be acknowledged before hook
-/// removal.
 pub fn seal_terminal_custody() -> Result<SealedDirectEventCustody, String> {
     let mut state = STATE
         .get()
@@ -1181,9 +970,7 @@ pub fn seal_terminal_custody() -> Result<SealedDirectEventCustody, String> {
     seal_terminal_custody_locked(&mut state)
 }
 
-fn seal_terminal_custody_locked(
-    state: &mut HookState,
-) -> Result<SealedDirectEventCustody, String> {
+fn seal_terminal_custody_locked(state: &mut HookState) -> Result<SealedDirectEventCustody, String> {
     let current_error = state
         .current_error
         .clone()
@@ -1256,8 +1043,6 @@ fn ensure_no_retained_terminal_custody() -> Result<(), String> {
     Ok(())
 }
 
-/// Acknowledges transfer of the exact poisoned snapshot. The producer remains
-/// sealed, so no callback can append between this acknowledgement and removal.
 pub fn acknowledge_terminal_custody(custody_id: u64) -> Result<(), String> {
     let mut state = STATE
         .get()
@@ -1299,17 +1084,12 @@ fn acknowledge_terminal_custody_locked(
     state.reservation = None;
     state.current_error = None;
     state.terminal_custody = None;
-    // terminal_sealed deliberately remains true through uninstall.
     if hooks_already_removed {
-        // A failed install may already have restored every target before its
-        // retained event custody is acknowledged.
         state.terminal_sealed = false;
     }
     Ok(())
 }
 
-/// Compatibility drain. Production publication should use the explicit
-/// peek/commit API so a failed sink write can roll the batch back.
 pub fn drain_batch() -> Result<DirectEventBatch, String> {
     let reservation = peek_batch()?;
     commit_batch(reservation.reservation_id)?;
@@ -1348,8 +1128,12 @@ pub fn diagnostics() -> HookDiagnostics {
         callback_count: state.callback_count,
         active_callbacks: ACTIVE_CALLBACKS.load(Ordering::Acquire),
         pending_rows: state.pending_rows.len(),
-        reserved_rows: state.reservation.map_or(0, |reservation| reservation.row_count),
-        reservation_id: state.reservation.map(|reservation| reservation.reservation_id),
+        reserved_rows: state
+            .reservation
+            .map_or(0, |reservation| reservation.row_count),
+        reservation_id: state
+            .reservation
+            .map(|reservation| reservation.reservation_id),
         terminal_custody_id: state
             .terminal_custody
             .as_ref()
@@ -1374,10 +1158,6 @@ unsafe extern "system" fn hook_focus(
     context40: usize,
 ) {
     let _callback_lease = CallbackLease::enter();
-    // Cross-family recursion is part of the engine's real transition order.
-    // Every callback prepares its own pointer-free row before entering the
-    // original, so nested callbacks can be admitted without retaining raw
-    // pointers or suppressing a real event.
     let prepared = prepare_focus(progress, completed_focus, country_key, context40);
     unsafe { call_original_focus(progress, completed_focus, country_key, context40) };
     publish(prepared.map(Some));
@@ -1558,8 +1338,8 @@ fn prepare_focus(
     country_key_pointer: usize,
     context40_pointer: usize,
 ) -> Result<PreparedRow, String> {
-    let country_key = read_u32(country_key_pointer)
-        .ok_or("D45 focus hook could not pre-copy *R8 country key")?;
+    let country_key =
+        read_u32(country_key_pointer).ok_or("D45 focus hook could not pre-copy *R8 country key")?;
     let context40 = read_i32(context40_pointer)
         .ok_or("D45 focus hook could not pre-copy *(i32*)R9 context40")?;
     let mut prepared = prepare_pointer_row(
@@ -1621,16 +1401,19 @@ fn prepare_research(instance: usize, new_progress: i32) -> Result<Option<Prepare
     if !research_threshold_crossed(current, new_progress, required) {
         return Ok(None);
     }
-    let mut prepared =
-        prepare_pointer_row(DirectEventKind::ResearchCompleted, instance, definition, None)?;
+    let mut prepared = prepare_pointer_row(
+        DirectEventKind::ResearchCompleted,
+        instance,
+        definition,
+        None,
+    )?;
     prepared.subject_key = checked_read_u32(definition, TECHNOLOGY_DEFINITION_INDEX_OFFSET)
         .map(u64::from)
         .filter(|key| *key != 0)
         .ok_or("D45 research hook could not decode CTechnology definition index")?;
     prepared.input_bits = u64::from(new_progress as u32);
     prepared.before = DirectEventStateSummary {
-        state_bits: HOOK_SUMMARY_RESEARCH_PROGRESS_PRESENT
-            | HOOK_SUMMARY_RESEARCH_REQUIRED_PRESENT,
+        state_bits: HOOK_SUMMARY_RESEARCH_PROGRESS_PRESENT | HOOK_SUMMARY_RESEARCH_REQUIRED_PRESENT,
         progress_raw: current,
         remaining_raw: required,
     };
@@ -1662,8 +1445,6 @@ fn prepare_pointer_row(
     }
     let owner_instance_id = state.intern(owner_pointer, "owner")?;
     let subject_instance_id = state.intern(subject_pointer, "subject")?;
-    // Target RDX is assigned an opaque ID but is never entered in the retained
-    // raw-pointer map. It disappears before the original call begins.
     let argument_instance_id = match argument_pointer {
         Some(pointer) => state.ephemeral(pointer, "target argument")?,
         None => OpaqueInstanceId::NONE,
@@ -1873,9 +1654,7 @@ fn targets(base: usize) -> Result<[usize; 12], String> {
     ])
 }
 
-fn target_sentinels(
-    targets: &[usize; 12],
-) -> [(usize, &'static [u8; 16], &'static str); 12] {
+fn target_sentinels(targets: &[usize; 12]) -> [(usize, &'static [u8; 16], &'static str); 12] {
     [
         (targets[0], &FOCUS_SENTINEL, "focus"),
         (targets[1], &RESEARCH_SENTINEL, "research"),
@@ -1883,9 +1662,21 @@ fn target_sentinels(
         (targets[3], &TARGETED_DECISION_SENTINEL, "targeted decision"),
         (targets[4], &TIMED_DECISION_SENTINEL, "timed decision"),
         (targets[5], &ON_ACTION_SENTINEL, "on action"),
-        (targets[6], &DECISION_TERMINAL_SENTINEL, "decision cancel effect"),
-        (targets[7], &DECISION_TERMINAL_SENTINEL, "decision remove effect"),
-        (targets[8], &DECISION_TERMINAL_SENTINEL, "decision timeout effect"),
+        (
+            targets[6],
+            &DECISION_TERMINAL_SENTINEL,
+            "decision cancel effect",
+        ),
+        (
+            targets[7],
+            &DECISION_TERMINAL_SENTINEL,
+            "decision remove effect",
+        ),
+        (
+            targets[8],
+            &DECISION_TERMINAL_SENTINEL,
+            "decision timeout effect",
+        ),
         (
             targets[9],
             &TARGETED_DECISION_TERMINAL_SENTINEL,
@@ -1924,30 +1715,25 @@ fn installed_roots() -> InstalledRoots {
 }
 
 fn create_remaining_hooks(targets: &[usize; 12]) -> Result<(), String> {
-    let research = unsafe {
-        MinHook::create_hook(targets[1] as *mut c_void, hook_research as *mut c_void)
-    }
-    .map_err(|status| format!("D45 research hook creation failed: {status}"))?;
+    let research =
+        unsafe { MinHook::create_hook(targets[1] as *mut c_void, hook_research as *mut c_void) }
+            .map_err(|status| format!("D45 research hook creation failed: {status}"))?;
     ORIGINAL_RESEARCH.store(research as usize, Ordering::Release);
-    let ordinary = unsafe {
-        MinHook::create_hook(targets[2] as *mut c_void, hook_ordinary as *mut c_void)
-    }
-    .map_err(|status| format!("D45 ordinary-decision hook creation failed: {status}"))?;
+    let ordinary =
+        unsafe { MinHook::create_hook(targets[2] as *mut c_void, hook_ordinary as *mut c_void) }
+            .map_err(|status| format!("D45 ordinary-decision hook creation failed: {status}"))?;
     ORIGINAL_ORDINARY.store(ordinary as usize, Ordering::Release);
-    let targeted = unsafe {
-        MinHook::create_hook(targets[3] as *mut c_void, hook_targeted as *mut c_void)
-    }
-    .map_err(|status| format!("D45 targeted-decision hook creation failed: {status}"))?;
+    let targeted =
+        unsafe { MinHook::create_hook(targets[3] as *mut c_void, hook_targeted as *mut c_void) }
+            .map_err(|status| format!("D45 targeted-decision hook creation failed: {status}"))?;
     ORIGINAL_TARGETED.store(targeted as usize, Ordering::Release);
-    let timed = unsafe {
-        MinHook::create_hook(targets[4] as *mut c_void, hook_timed as *mut c_void)
-    }
-    .map_err(|status| format!("D45 timed-decision hook creation failed: {status}"))?;
+    let timed =
+        unsafe { MinHook::create_hook(targets[4] as *mut c_void, hook_timed as *mut c_void) }
+            .map_err(|status| format!("D45 timed-decision hook creation failed: {status}"))?;
     ORIGINAL_TIMED.store(timed as usize, Ordering::Release);
-    let on_action = unsafe {
-        MinHook::create_hook(targets[5] as *mut c_void, hook_on_action as *mut c_void)
-    }
-    .map_err(|status| format!("D45 on-action hook creation failed: {status}"))?;
+    let on_action =
+        unsafe { MinHook::create_hook(targets[5] as *mut c_void, hook_on_action as *mut c_void) }
+            .map_err(|status| format!("D45 on-action hook creation failed: {status}"))?;
     ORIGINAL_ON_ACTION.store(on_action as usize, Ordering::Release);
     let decision_cancel = unsafe {
         MinHook::create_hook(
@@ -2016,8 +1802,7 @@ fn observe_and_record_install_receipt(index: usize, target: usize) -> Result<(),
     }
     let owner_token = next_teardown_owner_token()?;
     let expected_detour = detour_targets()[index];
-    let observed =
-        observe_enabled_minhook_rel5(expected, target, expected_detour, owner_token)?;
+    let observed = observe_enabled_minhook_rel5(expected, target, expected_detour, owner_token)?;
     receipts.partial_installed[index] = Some(observed);
     Ok(())
 }
@@ -2078,14 +1863,10 @@ fn prepare_hook_receipts_for_install() -> Result<(), String> {
         || receipts.installed.is_some()
         || receipts.partial_installed.iter().any(Option::is_some)
     {
-        return Err(
-            "D45 prior hook custody requires explicit cleanup before reinstall".into(),
-        );
+        return Err("D45 prior hook custody requires explicit cleanup before reinstall".into());
     }
     if receipts.released.is_some() || !receipts.partial_released.is_empty() {
-        return Err(
-            "D45 prior release receipts must be taken before reinstall".into(),
-        );
+        return Err("D45 prior release receipts must be taken before reinstall".into());
     }
     receipts.installed = None;
     receipts.released = None;
@@ -2125,12 +1906,8 @@ fn capture_pre_target_prefixes(targets: &[usize; 12]) -> Result<(), String> {
 
 fn completed_teardown_attestation() -> Result<HookTeardownAttestation, String> {
     if !QUIESCED.load(Ordering::Acquire) || ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
-        return Err(
-            "D45 hook release requested before callback quiescence completed".into(),
-        );
+        return Err("D45 hook release requested before callback quiescence completed".into());
     }
-    // Callers invoke this only after every MinHook::remove_hook returned either
-    // success or NOT_CREATED (the retry state proving it was already removed).
     Ok(HookTeardownAttestation {
         callbacks_quiesced: true,
         hook_removed: true,
@@ -2165,9 +1942,9 @@ fn observe_release_receipts() -> Result<(), String> {
         .copied()
         .collect::<Option<Vec<_>>>()
         .ok_or("D45 released-hook receipt roster is incomplete")?;
-    let released: [ReleasedRvaHookReceipt; 12] = released.try_into().map_err(
-        |_| "D45 released-hook receipt cardinality mismatch",
-    )?;
+    let released: [ReleasedRvaHookReceipt; 12] = released
+        .try_into()
+        .map_err(|_| "D45 released-hook receipt cardinality mismatch")?;
     receipts.installed = None;
     receipts.released = Some(released);
     receipts.release_slots = [None; 12];
@@ -2176,21 +1953,17 @@ fn observe_release_receipts() -> Result<(), String> {
 
 fn rollback(targets: &[usize; 12]) -> Result<(), String> {
     set_rollback_retry_required(true)?;
-    let mut errors: Vec<String> = unsafe {
-        inline_detour::disable_batch(&enable_batch_targets(targets))
-    }
-    .failures()
-    .into_iter()
-    .map(|(name, status)| format!("disable {name}: {status}"))
-    .collect();
+    let mut errors: Vec<String> =
+        unsafe { inline_detour::disable_batch(&enable_batch_targets(targets)) }
+            .failures()
+            .into_iter()
+            .map(|(name, status)| format!("disable {name}: {status}"))
+            .collect();
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
     QUIESCED.store(true, Ordering::Release);
     wait_for_callback_quiescence()?;
-    // Reverse order is preserved: every target is disabled by the batch above
-    // before any is removed, so the only thing the order still governs is the
-    // sequence of trampoline frees, and it costs one freeze rather than twelve.
     let mut reversed = enable_batch_targets(targets);
     reversed.reverse();
     errors.extend(
@@ -2251,14 +2024,11 @@ fn mark_failed_install_event_custody() -> Result<(), String> {
     if (!state.pending_rows.is_empty() || state.callback_count != 0)
         && state.current_error.is_none()
     {
-        state.current_error =
-            Some("D45 failed install retained callback observations".into());
+        state.current_error = Some("D45 failed install retained callback observations".into());
     }
     Ok(())
 }
 
-/// Retries a failed-install cleanup without allowing a new install to erase
-/// the retained per-target custody state.
 pub fn retry_failed_install_cleanup() -> Result<(), String> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -2409,8 +2179,6 @@ fn read_token_hash(object: usize, offset: usize) -> Option<u64> {
             return None;
         }
     }
-    // Hash the exact engine-owned token bytes. The MSVC string length/capacity
-    // checks and guarded read authenticate the storage; an ASCII punctuation
     // allow-list is not part of the engine ABI and rejected valid mod tokens.
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -2577,11 +2345,9 @@ mod tests {
         detours.sort_unstable();
         detours.dedup();
         assert_eq!(detours.len(), 12);
-        assert!(EXPECTED_HOOKS
-            .iter()
-            .all(|hook| hook.target_patch_len == 5
-                && hook.primitive_id == MINHOOK_NORMAL_REL5_PRIMITIVE_ID
-                && hook.original_prefix.len() == 16));
+        assert!(EXPECTED_HOOKS.iter().all(|hook| hook.target_patch_len == 5
+            && hook.primitive_id == MINHOOK_NORMAL_REL5_PRIMITIVE_ID
+            && hook.original_prefix.len() == 16));
         assert_eq!(
             EXPECTED_HOOKS
                 .iter()
@@ -2649,7 +2415,10 @@ mod tests {
         rollback_batch_locked(&mut state, retry.reservation_id).unwrap();
         let after_rollback = peek_batch_locked(&mut state, 7, false).unwrap();
         assert_eq!(after_rollback.batch.rows, retry.batch.rows);
-        assert_eq!(after_rollback.batch.drain_sequence, retry.batch.drain_sequence);
+        assert_eq!(
+            after_rollback.batch.drain_sequence,
+            retry.batch.drain_sequence
+        );
     }
 
     #[test]
@@ -2669,8 +2438,6 @@ mod tests {
         assert_eq!(discard.discarded_diagnostics, 1);
         assert!(discard.poisoned);
         assert!(!discard.is_empty());
-        // Every clause of the `uninstall_locked` custody guard must now be
-        // false; anything left set makes physical teardown refuse forever.
         assert!(state.pending_rows.is_empty());
         assert!(state.reservation.is_none());
         assert!(state.terminal_custody.is_none());
@@ -2679,9 +2446,6 @@ mod tests {
 
     #[test]
     fn a_failed_physical_release_never_loses_an_earlier_install_abort_discard() {
-        // Custody has to be cleared before the hook removal that follows it, so
-        // an abort that clears rows and then fails during removal must not let
-        // the retry -- which finds an already-empty lane -- report zero.
         accumulate_install_abort_discard(InstallAbortDiscard {
             retained_rows: 4,
             reserved_rows: 4,
@@ -2698,7 +2462,6 @@ mod tests {
         assert_eq!(total.discarded_diagnostics, 1);
         assert!(total.poisoned);
         // Taking it is what a completed release does, so a lane that comes back
-        // fresh cannot inherit an earlier abort's count.
         assert!(take_install_abort_discard().is_empty());
     }
 
@@ -2723,12 +2486,9 @@ mod tests {
         assert_eq!(custody.hook_epoch, 17);
         assert_eq!(custody.rows.len(), 1);
         assert!(state.terminal_sealed);
-        assert!(acknowledge_terminal_custody_locked(
-            &mut state,
-            custody.custody_id + 1,
-            false
-        )
-        .is_err());
+        assert!(
+            acknowledge_terminal_custody_locked(&mut state, custody.custody_id + 1, false).is_err()
+        );
         acknowledge_terminal_custody_locked(&mut state, custody.custody_id, false).unwrap();
         assert!(state.pending_rows.is_empty());
         assert!(state.current_error.is_none());
@@ -2737,17 +2497,10 @@ mod tests {
         let mut failed_install = HookState::fresh();
         failed_install.current_error = Some("failed install poison".into());
         let custody = seal_terminal_custody_locked(&mut failed_install).unwrap();
-        acknowledge_terminal_custody_locked(&mut failed_install, custody.custody_id, true)
-            .unwrap();
+        acknowledge_terminal_custody_locked(&mut failed_install, custody.custody_id, true).unwrap();
         assert!(!failed_install.terminal_sealed);
     }
 
-    /// Fills the bounded queue exactly to its bound, then over it, and returns
-    /// the refusal the overflowing callback actually got.
-    ///
-    /// The text is taken from the production path rather than written out here
-    /// on purpose: a test that asserts against its own literal proves nothing
-    /// about what `capture` returns.
     fn overflow_the_pending_queue(state: &mut HookState) -> String {
         for _ in 0..DEFAULT_MAX_PENDING_ROWS {
             let row = test_focus_row(state, 10);
@@ -2759,16 +2512,6 @@ mod tests {
             .expect_err("the bound must refuse the row that exceeds it")
     }
 
-    /// LAW: a full pending queue counts a drop; it does not poison the producer.
-    ///
-    /// This is the measured defect. Both post-merge captures ended with
-    /// "D45 terminal producer is poisoned: ... pending queue is full at 4096
-    /// rows", and the latch is what made that fatal: `peek_batch` refuses while
-    /// it is set, so the queue could never be drained, and `uninstall_locked`
-    /// refuses too, so the twelve detours could never be taken back out.
-    ///
-    /// Goes red if the queue-full refusal starts latching again, or if the
-    /// classifier stops distinguishing it from the refusals that must latch.
     #[test]
     fn a_full_pending_queue_counts_a_drop_and_leaves_the_producer_usable() {
         let mut state = HookState::fresh();
@@ -2783,8 +2526,6 @@ mod tests {
             !capture_failure_latches_producer(&refusal),
             "a full queue must not latch the producer"
         );
-        // Every other refusal `capture` can produce still latches. This one is
-        // taken from the production text rather than paraphrased.
         let mut sealed = HookState::fresh();
         sealed.terminal_sealed = true;
         let row = test_focus_row(&mut sealed, 10);
@@ -2800,17 +2541,6 @@ mod tests {
         ));
     }
 
-    /// LAW: consuming a drain retires exactly the loss that drain reported, so
-    /// one overflow does not mark every later window incomplete forever.
-    ///
-    /// This is the absorbing shape the D55 completeness latch had: a counter
-    /// only a commit could clear, on a batch that was always rolled back. Here
-    /// the reader self-rejects a lossy window and CONSUMES it, which is what
-    /// lets the next window report on itself.
-    ///
-    /// Goes red if `commit_batch_locked` stops retiring the reservation's
-    /// drops, or retires the whole counter and swallows drops that arrived
-    /// after the peek.
     #[test]
     fn a_consumed_drain_retires_its_own_loss_and_only_its_own() {
         let mut state = HookState::fresh();
@@ -2823,8 +2553,6 @@ mod tests {
         assert_eq!(reservation.overflow_dropped_rows, 2);
         assert_eq!(reservation.batch.rows.len(), DEFAULT_MAX_PENDING_ROWS);
 
-        // A drop that lands after the peek belongs to the NEXT window and must
-        // survive this commit.
         let row = test_focus_row(&mut state, 10);
         assert!(state.capture(row).is_err());
         assert_eq!(state.overflow_dropped_rows, 3);
@@ -2837,20 +2565,12 @@ mod tests {
             state.current_error.is_none(),
             "an overflow must leave no sticky error behind"
         );
-        // The producer is usable again: this is the recovery the latch denied.
         let row = test_focus_row(&mut state, 10);
         state
             .capture(row)
             .expect("a drained queue must admit rows again");
     }
 
-    /// LAW: a rolled-back drain keeps its loss, because nothing was reported.
-    ///
-    /// Rollback means the sink refused the batch. Retiring the count there
-    /// would erase a loss no consumer ever saw.
-    ///
-    /// Goes red if `rollback_batch_locked` starts clearing the counter or
-    /// draining the prefix.
     #[test]
     fn a_rolled_back_drain_still_owes_its_loss() {
         let mut state = HookState::fresh();
@@ -2869,16 +2589,7 @@ mod tests {
         assert_eq!(state.overflow_dropped_rows, 1);
     }
 
-    /// LAW: an abort that throws away unreported drops says the lane lost
-    /// observations.
-    ///
     /// `admit_hook_release` refuses a zero-observation release whose discard is
-    /// non-empty, and a window that dropped rows plainly did not observe
-    /// nothing. Without this, an abort could clear the counter silently and the
-    /// run would claim an empty window it did not have.
-    ///
-    /// Goes red if the discard stops accounting for unretired drops, or stops
-    /// clearing them.
     #[test]
     fn an_abort_that_discards_unreported_drops_reports_a_lost_observation() {
         let mut state = HookState::fresh();
@@ -2892,30 +2603,22 @@ mod tests {
             "an unreported drop is a lost observation, not an empty window"
         );
         assert!(!discard.is_empty());
-        assert_eq!(state.overflow_dropped_rows, 0, "the abort consumed the count");
+        assert_eq!(
+            state.overflow_dropped_rows, 0,
+            "the abort consumed the count"
+        );
     }
 
-    /// LAW: physical teardown is not blocked by a window that lost rows.
-    ///
-    /// The uninstall custody guard refuses on a sticky error. An overflow no
-    /// longer sets one, so the only thing between an overflowed lane and hook
-    /// removal is draining its queue -- which it can now do.
-    ///
-    /// Goes red if an overflow starts setting `current_error` again.
     #[test]
     fn an_overflowed_lane_can_still_satisfy_the_teardown_custody_guard() {
         let mut state = HookState::fresh();
         let refusal = overflow_the_pending_queue(&mut state);
-        // Exactly what both production publish paths do with a capture refusal.
-        // Asserting `current_error.is_none()` without this is vacuous: nothing
-        // else on this path can ever set it.
         if capture_failure_latches_producer(&refusal) {
             state.current_error = Some(refusal);
         }
         let reservation = peek_batch_locked(&mut state, 7, false).unwrap();
         commit_batch_locked(&mut state, reservation.reservation_id).unwrap();
 
-        // Exactly the clauses `uninstall_locked` refuses on.
         assert!(state.pending_rows.is_empty());
         assert!(state.reservation.is_none());
         assert!(state.terminal_custody.is_none());
@@ -2944,8 +2647,7 @@ mod tests {
         let mut object = [0u8; 64];
         object[ON_ACTION_ACTIVE_OFFSET] = 1;
         let token = b"on_mod/path+\xC2\xA7";
-        object[ON_ACTION_TOKEN_OFFSET..ON_ACTION_TOKEN_OFFSET + token.len()]
-            .copy_from_slice(token);
+        object[ON_ACTION_TOKEN_OFFSET..ON_ACTION_TOKEN_OFFSET + token.len()].copy_from_slice(token);
         object[ON_ACTION_TOKEN_OFFSET + 16..ON_ACTION_TOKEN_OFFSET + 24]
             .copy_from_slice(&(token.len() as u64).to_le_bytes());
         object[ON_ACTION_TOKEN_OFFSET + 24..ON_ACTION_TOKEN_OFFSET + 32]

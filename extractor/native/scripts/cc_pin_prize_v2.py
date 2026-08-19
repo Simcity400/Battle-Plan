@@ -103,7 +103,6 @@ def analyse(domain, records):
     steady_mean = sum(n for _k, n, _d in steady) / len(steady)
     q = steady_mean / whole if whole else 0.0
 
-    # MEASURED arm: post-gap records that already carry a patch today.
     measured_delta = [n for k, n, d in postgap if d]
     steady_delta = [n for k, n, d in steady if d]
 
@@ -115,7 +114,6 @@ def analyse(domain, records):
     measured_records = 0
     for k, n, d in postgap:
         if d and steady_delta:
-            # already a patch across its own gap: measured, unchanged.
             modelled_sub += n
             measured_records += 1
         else:

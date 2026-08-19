@@ -259,9 +259,6 @@ pub fn build_domain51_h4cr_stream(frames: &[(i32, collector::Domain51CollectedFr
             .checked_add(1)
             .expect("domain51 stream sequence overflow");
 
-        // FRAME_END status is frame-global authority. Preserve canonical
-        // global statuses such as DELTA_DATA while stripping only D51's
-        // lane-local opaque-root/name badges.
         let frame_end = frame_end_payload(status_for_global_interpretation(
             collector::compact::DOMAIN_ID,
             frame.status_flags,
@@ -456,11 +453,6 @@ struct OwnedHourAuthority {
     global_perf_status_or: u32,
 }
 
-/// Verify domain 51 inside a complete collector stream.
-///
-/// `minimum_game_hour_advancements` is explicit certification authority: `N`
-/// advancements require `N + 1` consecutive, healthy closed hours. The gate
-/// never derives that requirement from a mutable manifest or from the stream.
 pub fn verify_domain51_h4cr_stream(
     raw: &[u8],
     minimum_game_hour_advancements: i64,
@@ -492,8 +484,6 @@ pub fn verify_domain51_h4cr_stream(
     let mut domains_seen = BTreeSet::new();
 
     while offset < raw.len() {
-        // Any bytes after a previously authoritative FRAME_END make that
-        // record non-terminal, even if the trailing bytes do not frame.
         let previous_record_closed_world = terminal_frame_end_authoritative;
         terminal_frame_end_authoritative = false;
         let remaining = raw.len().saturating_sub(offset);
@@ -1066,9 +1056,6 @@ fn validate_owned_authority(
     if let (1, 1, Some(perf), Some(data)) =
         (owned.perf_count, owned.data_count, owned.perf, owned.data)
     {
-        // `observed_rows` is scope-read work and can legitimately exceed the
-        // emitted DATA rows. The other three counters are DATA authority and
-        // must retain their delta semantics exactly.
         let matches = perf.changed_rows == data.changed_rows
             && perf.units == data.rows
             && perf.changed_units == data.changed_rows

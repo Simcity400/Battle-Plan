@@ -6,18 +6,9 @@ use crate::paradox_text::{
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-/// Byte-level decode damage observed for one file.
-///
-/// `events` and `entries.len()` are DIFFERENT numbers and the distinction is
-/// load-bearing: per-site detail is capped at
-/// `paradox_text::MAX_TEXT_DECODE_DIAGNOSTICS`, past which the remainder
-/// collapses into a single counted entry. Any figure reported as a damage count
-/// must come from `events`, which never understates.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecodeLossReport {
-    /// Total destructive decode events.
     pub events: usize,
-    /// Per-site detail, bounded.
     pub entries: Vec<String>,
 }
 
@@ -26,21 +17,6 @@ pub struct LayoutDocument {
     pub source_file: String,
     pub roots: Vec<GuiElement>,
     pub recoveries: Vec<String>,
-    /// Byte-level decode damage, on a channel of its own — NOT folded into
-    /// `recoveries`, which means only "the Clausewitz parse recovered" and is
-    /// independent of decode damage in both directions (a U+FFFD parses
-    /// perfectly; a missing brace decodes perfectly).
-    ///
-    /// `None` means decode was NOT OBSERVED for this document, which is the
-    /// honest answer for every [`LayoutSet::add_document`] caller: it is handed
-    /// an already-decoded [`Document`] and the bytes are gone, so it cannot
-    /// distinguish clean from damaged. `Some(vec![])` means decode WAS observed
-    /// and was clean. Reporting `None` as "clean" would manufacture exactly the
-    /// silent approximation this channel exists to prevent.
-    ///
-    /// Only destructive loss is listed (see
-    /// `paradox_text::TextDecodeLoss::discards_input`); lossless Latin-1
-    /// attribution is not damage.
     pub decode_losses: Option<DecodeLossReport>,
 }
 
@@ -81,10 +57,6 @@ pub struct GuiParseStats {
     pub recovery_count: usize,
     pub unknown_element_histogram: BTreeMap<String, usize>,
     pub files_with_recoveries: Vec<String>,
-    /// Files whose bytes were DESTROYED at decode, among those actually
-    /// observed at the byte level (i.e. parsed through
-    /// [`LayoutSet::parse_file`]). Separate from `files_with_recoveries`: the
-    /// two describe different damage at different layers.
     pub files_with_decode_loss: Vec<String>,
     pub decode_loss_count: usize,
     pub failures: Vec<String>,
@@ -97,8 +69,6 @@ pub struct LayoutSet {
 }
 
 impl LayoutSet {
-    /// Parse one `.gui` file from disk. This is the byte-owning entry point, so
-    /// it is the only one that CAN observe decode damage, and it does.
     pub fn parse_file(&mut self, path: &Path, rel: &str) -> Result<()> {
         let bytes = std::fs::read(path)?;
         let all = diagnose_text_decode(&bytes);
@@ -114,9 +84,6 @@ impl LayoutSet {
         Ok(())
     }
 
-    /// Add an already-decoded document whose bytes are no longer available.
-    /// Decode damage is recorded as NOT OBSERVED — see
-    /// [`LayoutDocument::decode_losses`].
     pub fn add_document(&mut self, source_file: &str, doc: &Document) {
         self.add_document_diagnosed(source_file, doc, None);
     }
@@ -253,10 +220,6 @@ fn parse_element_with_variables(
         .and_then(parse_measure_pair);
     let size = value.first_value_ci("size").and_then(parse_measure_pair);
     let orientation = value.first_scalar_ci("Orientation").map(str::to_string);
-    // a729 GUI buttons use `buttonFont`; text boxes use `font`. File-scoped
-    // `@name = value` substitutions are resolved before the role index derives
-    // the immutable font dependency. The raw tree remains untouched for
-    // consumers that need to inspect authored syntax.
     let font = ["font", "buttonFont"]
         .iter()
         .find_map(|key| value.first_value_ci(key))

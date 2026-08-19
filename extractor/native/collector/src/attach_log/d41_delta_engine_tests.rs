@@ -1,53 +1,8 @@
-//! `d41_delta_engine_tests`: the shared diff engine's output is a wire
-//! contract, and this is what holds it still while the data structure under it
-//! changes.
-//!
-//! WHY THE ENGINE WAS REWRITTEN. `compact_projects_delta_rows` is not d41's
-//! alone — it is the generic keyed-diff every candidate delta path in the
-//! producer is priced against. It used to hold both the pinned baseline and the
-//! frame's rows in `BTreeMap`s, paying a node allocation and a rebalance for
-//! every row of every frame. On this machine that cost 173-260 ns/row, and that
-//! is not a rounding error against the alternative: a domain that re-sends a
-//! whole payload spends nothing on a diff at all, so a slow diff is exactly the
-//! term that decides whether a domain's delta path is a net win. d53's 389,527
-//! rows alone spend 46-68 ms per frame in it, which is the whole of that
-//! domain's measured delta regression.
-//!
-//! WHAT MAY NOT CHANGE. The emitted `Vec<R>` is decoded positionally by the
-//! fold, so the engine's output is a wire contract in two halves:
-//!   * the observed rows, in WALK order, filtered to those that differ from the
-//!     pinned baseline (all of them on a keyframe);
-//!   * one tombstone per baseline key the frame did not observe, in ASCENDING
-//!     KEY order.
-//! and the baseline it leaves behind must hold, for every key, the row a
-//! repeated `BTreeMap::insert` over the frame's rows would have left there —
-//! the LAST occurrence, because a section may legitimately emit a key twice in
-//! one walk and the next frame's verdict must not depend on which copy was
-//! kept.
-//!
-//! HOW THAT IS ENFORCED. `reference_delta_rows` below is a frozen, character-
-//! for-character transcription of the `BTreeMap` engine as it stood at
-//! 594bb829. The differential tests run it and the production engine side by
-//! side over the same randomized frame sequences, each keeping its own
-//! baseline, and compare the emitted rows element for element, the
-//! `changed_rows` counter, and the two baselines' contents after every frame.
-//! A rewrite that reorders, dedupes or drops anything fails here rather than in
-//! a capture.
-//!
-//! `d41_delta_engine_bench` is an instrument, not a gate: it is `#[ignore]`d
-//! and runs both engines over the same row-count ladder so the before/after
-//! curve comes out of one process. Run it with
 //! `cargo test -p collector --release -- --ignored --nocapture d41_delta_engine_bench`.
 
 use super::*;
 use std::collections::BTreeMap;
 
-/// FROZEN. The `BTreeMap` engine exactly as `compact_projects_delta_rows` stood
-/// before the sorted-vector rewrite (594bb829,
-/// `collector/src/attach_log.rs:79558`). This is the differential tests' oracle
-/// and it must not be "improved", refactored or shared with production code —
-/// the moment it stops being an independent second implementation, the
-/// comparison below stops proving anything.
 fn reference_delta_rows<K, R, FKey, FDelete>(
     rows: &[R],
     previous: &BTreeMap<K, R>,
@@ -86,13 +41,10 @@ where
     emitted
 }
 
-/// xorshift64*, so a failing seed is reproducible from the test name alone and
-/// the generator never becomes a dependency.
 struct Rng(u64);
 
 impl Rng {
     fn new(seed: u64) -> Rng {
-        // 0 is the fixed point of xorshift; no seed may reach it.
         Rng(seed | 1)
     }
 
@@ -116,15 +68,6 @@ impl Rng {
         self.below(one_in.max(1)) == 0
     }
 }
-
-// --- row shapes ---------------------------------------------------------
-//
-// Two real production row types, one per key shape the engine is instantiated
-// with in `compact_projects_apply_emit_mode`:
-//   * `ProjectRewardHistoryRow` — a `(u32, u32, u32)` key and a wide all-scalar
-//     payload; this is the section that carries most of d41's bytes.
-//   * `ProjectFacilityRow` — a `u32` key and a payload holding an owned
-//     `Option<String>`, so a row whose clone is not a memcpy is covered too.
 
 fn history_row(key: (u32, u32, u32), payload: u32) -> ProjectRewardHistoryRow {
     ProjectRewardHistoryRow {
@@ -173,10 +116,11 @@ fn history_key(row: &ProjectRewardHistoryRow) -> (u32, u32, u32) {
     (row.tag_db_id, row.local_id, row.history_index)
 }
 
-/// The two rows a caller compares must be equal field for field.
-/// `ProjectFacilityRow` carries no `Debug`, so a mismatch is reported by
-/// position and key rather than by value.
-fn assert_facility_rows_equal(left: &[ProjectFacilityRow], right: &[ProjectFacilityRow], at: usize) {
+fn assert_facility_rows_equal(
+    left: &[ProjectFacilityRow],
+    right: &[ProjectFacilityRow],
+    at: usize,
+) {
     assert_eq!(
         left.len(),
         right.len(),
@@ -197,11 +141,6 @@ fn assert_facility_rows_equal(left: &[ProjectFacilityRow], right: &[ProjectFacil
     }
 }
 
-// --- differential drivers -----------------------------------------------
-
-/// Drive both engines over the same frame sequence and compare everything
-/// observable after every frame: the emitted rows, the `changed_rows` counter,
-/// and the baseline each engine leaves behind.
 fn run_history_differential(seed: u64, frames: usize, key_pool: usize, description: &str) {
     let mut rng = Rng::new(seed);
     let keys: Vec<(u32, u32, u32)> = (0..key_pool)
@@ -219,8 +158,6 @@ fn run_history_differential(seed: u64, frames: usize, key_pool: usize, descripti
     let mut scratch: Vec<((u32, u32, u32), usize)> = Vec::new();
 
     for frame in 0..frames {
-        // Frame 0 is the keyframe, exactly as `compact_projects_apply_emit_mode`
-        // seeds it; every later frame is a patch.
         let baseline = frame == 0;
         let mut rows: Vec<ProjectRewardHistoryRow> = Vec::new();
         for key in &keys {
@@ -228,13 +165,10 @@ fn run_history_differential(seed: u64, frames: usize, key_pool: usize, descripti
                 continue;
             }
             rows.push(history_row(*key, rng.below(6)));
-            // A section may emit the same key twice in one walk; the engines
-            // must agree on which copy the baseline keeps.
             if rng.chance(9) {
                 rows.push(history_row(*key, rng.below(6)));
             }
         }
-        // Walk order is not key order in the reader, so it must not be here.
         for index in (1..rows.len()).rev() {
             let swap = rng.below(index as u32 + 1) as usize;
             rows.swap(index, swap);
@@ -254,7 +188,8 @@ fn run_history_differential(seed: u64, frames: usize, key_pool: usize, descripti
         );
 
         let mut reference_changed = 0u32;
-        let mut reference_next: BTreeMap<(u32, u32, u32), ProjectRewardHistoryRow> = BTreeMap::new();
+        let mut reference_next: BTreeMap<(u32, u32, u32), ProjectRewardHistoryRow> =
+            BTreeMap::new();
         let expected = reference_delta_rows(
             &rows,
             &reference,
@@ -295,9 +230,6 @@ fn run_history_differential(seed: u64, frames: usize, key_pool: usize, descripti
 
 #[test]
 fn d41_delta_engine_differential_matches_the_frozen_btreemap_engine() {
-    // Several independent seeds, because one sequence is one sample of the
-    // insert/skip/duplicate interleavings and the defect classes here
-    // (ordering, dedup side, tombstone order) do not all show up in every one.
     for seed in [1u64, 0x9E37_79B9, 0xDEAD_BEEF, 12_345, 0xFFFF_FFFF_FFFF] {
         run_history_differential(seed, 40, 21, "randomized frames");
     }
@@ -305,17 +237,11 @@ fn d41_delta_engine_differential_matches_the_frozen_btreemap_engine() {
 
 #[test]
 fn d41_delta_engine_differential_survives_a_key_pool_larger_than_one_frame() {
-    // A wide pool with a high skip rate is where tombstoning dominates: most
-    // baseline keys are absent from most frames, so the ascending-key tombstone
-    // sweep carries the output.
     run_history_differential(0x5EED, 30, 200, "wide key pool");
 }
 
 #[test]
 fn d41_delta_engine_differential_covers_an_owned_payload_row() {
-    // `ProjectFacilityRow` owns an `Option<String>`, so its clone is not a
-    // memcpy and its `PartialEq` is not a bitwise compare. The engine must not
-    // depend on either.
     let mut rng = Rng::new(0xC0FFEE);
     let mut production = SortedRowMap::<u32, ProjectFacilityRow>::default();
     let mut reference: BTreeMap<u32, ProjectFacilityRow> = BTreeMap::new();
@@ -383,9 +309,6 @@ fn d41_delta_engine_differential_covers_an_owned_payload_row() {
 
 #[test]
 fn d41_delta_engine_emits_observed_rows_in_walk_order_and_tombstones_in_key_order() {
-    // The differential tests prove agreement with the old engine; this one
-    // states the contract in its own right, so a change that breaks BOTH
-    // engines the same way still fails something.
     let mut baseline_map = SortedRowMap::<(u32, u32, u32), ProjectRewardHistoryRow>::default();
     let mut scratch = Vec::new();
     let mut changed = 0u32;
@@ -413,8 +336,6 @@ fn d41_delta_engine_emits_observed_rows_in_walk_order_and_tombstones_in_key_orde
         "a keyframe must leave an ascending baseline whatever the walk order"
     );
 
-    // Frame 2 changes 9 and 2 (in that walk order), leaves 5 untouched and
-    // drops 7 entirely.
     let rows = vec![
         history_row((9, 1, 0), 4),
         history_row((5, 1, 0), 1),
@@ -446,8 +367,6 @@ fn d41_delta_engine_emits_observed_rows_in_walk_order_and_tombstones_in_key_orde
 
 #[test]
 fn d41_delta_engine_baseline_keeps_the_last_row_of_a_repeated_key() {
-    // The map this replaced was filled with `insert`, so a repeated key left
-    // the LAST row pinned. Both copies are still emitted on a keyframe.
     let empty = SortedRowMap::<(u32, u32, u32), ProjectRewardHistoryRow>::default();
     let mut next = SortedRowMap::default();
     let mut scratch = Vec::new();
@@ -478,24 +397,11 @@ fn d41_delta_engine_baseline_keeps_the_last_row_of_a_repeated_key() {
 
 #[test]
 fn d41_delta_engine_cursor_lookup_agrees_with_binary_search() {
-    // `get_with_cursor` carries state ACROSS lookups, so unlike `get` it can be
-    // wrong as a function of the order it is asked in rather than of any single
-    // key. This drives it against `get` — the plain binary search — over the
-    // orders that would break a hint that is trusted without proof: strictly
-    // ascending, strictly descending, random, all-absent, and an alternating
-    // walk that steps far forward and then far back.
-    //
-    // MUTATION: drop the `keys[*cursor - 1] < *key` guard and use the hint
-    // unconditionally. The descending and alternating orders then return `None`
-    // for keys the baseline holds, because the cursor is already past them.
     let mut baseline = SortedRowMap::<(u32, u32, u32), ProjectRewardHistoryRow>::default();
     let mut scratch = Vec::new();
     let mut changed = 0u32;
-    // Deliberately gappy, so roughly half of every probe set is absent and the
-    // "not found" cursor updates are exercised as hard as the "found" ones.
     let held: Vec<(u32, u32, u32)> = (0..300u32).map(|i| (i / 10, (i % 10) * 2, 0)).collect();
-    let rows: Vec<ProjectRewardHistoryRow> =
-        held.iter().map(|key| history_row(*key, 1)).collect();
+    let rows: Vec<ProjectRewardHistoryRow> = held.iter().map(|key| history_row(*key, 1)).collect();
     let mut seeded = SortedRowMap::default();
     let _ = compact_projects_delta_rows(
         &rows,
@@ -553,10 +459,6 @@ fn d41_delta_engine_cursor_lookup_agrees_with_binary_search() {
 
 #[test]
 fn d41_delta_engine_scratch_reuse_does_not_leak_between_sections() {
-    // Production hands ONE scratch buffer to every section that shares a key
-    // shape. A rebuild that read stale scratch entries would corrupt the second
-    // section's baseline, so drive two sections through one buffer and check
-    // the second against a pristine buffer.
     let empty = SortedRowMap::<(u32, u32, u32), ProjectRewardHistoryRow>::default();
     let mut shared_scratch = Vec::new();
     let mut changed = 0u32;
@@ -606,15 +508,8 @@ fn d41_delta_engine_scratch_reuse_does_not_leak_between_sections() {
     assert_eq!(second_shared.rows, second_pristine.rows);
 }
 
-// --- instrument ---------------------------------------------------------
-
-/// The row-count ladder the `BTreeMap` engine was measured on, plus d53's own
-/// per-frame row count, which is the number that decided that domain's delta
-/// verdict.
 const DELTA_ENGINE_LADDER: [usize; 5] = [42_728, 85_456, 170_912, 341_824, 389_527];
 
-/// Best-of-5, because this is a shared machine and the interesting quantity is
-/// the floor, not the mean of whatever else was running.
 const DELTA_ENGINE_TRIALS: usize = 5;
 
 #[test]
@@ -622,8 +517,6 @@ const DELTA_ENGINE_TRIALS: usize = 5;
 fn d41_delta_engine_bench() {
     println!("rows,btreemap_ms,btreemap_ns_per_row,sorted_ms,sorted_ns_per_row,speedup");
     for row_count in DELTA_ENGINE_LADDER {
-        // Steady state, which is the production shape: the baseline is already
-        // pinned and the frame changes a small minority of rows.
         let seed_rows: Vec<ProjectRewardHistoryRow> = (0..row_count as u32)
             .map(|index| history_row((index / 64, index % 64, index % 5), index))
             .collect();
@@ -685,7 +578,6 @@ fn d41_delta_engine_bench() {
                 &mut changed,
             );
             let elapsed = started.elapsed();
-            // Consume the output so the optimizer cannot delete the work.
             assert!(!emitted.is_empty());
             btreemap_best = btreemap_best.min(elapsed);
 

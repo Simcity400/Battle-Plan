@@ -1,43 +1,7 @@
-//! Domain 60 wire format: self-delimiting payload, strict exact-end decode.
-//!
-//! Layout (all little-endian):
-//!   header (32 bytes):
-//!     0x00 u64 elapsed_wall_ms
-//!     0x08 u32 status_flags
-//!     0x0C u32 schema_version (== 2; decoder also accepts legacy v1)
-//!     0x10 u32 country_row_count
-//!     0x14 u32 war_row_count
-//!     0x18 u32 fixed_scale_raw (== 100_000, legitimacy scale)
-//!     0x1C u32 reserved (== 0)
-//!   country rows (28 bytes each):
-//!     u32 tag_db_id | u32 flags | i32 capitulated_date_raw |
-//!     i32 last_surrender_date_raw | i32 faction_join_date_raw |
-//!     i32 legitimacy_raw | i32 exile_army_leaders
-//!   war rows v2 (56 bytes each):
-//!     u32 first_tag_db_id | u32 second_tag_db_id | i32 start_date_raw |
-//!     u32 reserved (== 0) | i64 first_casualties | i64 second_casualties |
-//!     i64 threat_fixed5_raw | u32 hostility_reason_instigator_raw |
-//!     u32 hostility_reason_defender_raw | u32 residual_flags | u32 reserved
-//!   residual_flags:
-//!     bit 0: complete H-B5 residual block present
-//!     bit 1: first_was_instigator (valid only with bit 0)
-//!
-//! Legacy v1 war rows end after the two casualty fields (32 bytes) and decode
-//! with `residuals=None`. A v2 frame is all-or-none: every war row carries the
-//! residual block and the frame status badge, or no row does.
-//!
-//! Date raws share the engine hour-counter encoding used by `game_hour_raw`
-//! (`compact_contract::calendar`). The capitulation date fields use the
-//! engine's own null sentinel `CGAMEDATE_NULL_RAW` (validated live: 422/437
-//! countries carry it for `capitulated_date`); a war `start_date_raw` must be
-//! a real in-window date (958/958 validated). Absent country rows mean "no
-//! diplomacy sub-object resolved" — never zero-filled (absent != 0).
-
 pub const DOMAIN_ID: u16 = 60;
 pub const DOMAIN_NAME: &str = "capitulation_war_state_live";
 pub const SCHEMA_VERSION_V1: u32 = 1;
 pub const SCHEMA_VERSION: u32 = 2;
-/// Legitimacy fixed-point scale (i32 raw x 1e5, validated 8/8 exact).
 pub const FIXED_SCALE_RAW: u32 = 100_000;
 
 pub const HEADER_LEN: usize = 32;
@@ -45,23 +9,11 @@ pub const ROW_COUNTRY_LEN: usize = 28;
 pub const ROW_WAR_LEN_V1: usize = 32;
 pub const ROW_WAR_LEN: usize = 56;
 
-// Global status mirrors (record-header vocabulary, kept in-payload like the
-// other lane snapshots so the fold can gate on the payload alone).
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = compact_contract::COMPACT_STATUS_SOURCE_UNAVAILABLE;
 pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DATA;
 pub const STATUS_WORKER_PANIC: u32 = compact_contract::COMPACT_STATUS_WORKER_PANIC;
-/// Lane badge (in-payload only): live war casualty fields are RUNNING
-/// accumulators — byte-exact vs the save snapshot for frozen wars, but they
-/// legitimately exceed the serialized per-country snapshot on active wars
-/// (T1 Codex verdict). MANDATORY whenever war rows are present; the decoder
-/// fails closed on unbadged war rows so the semantic can never silently
-/// launder into "save-exact casualties".
-/// Declared by `compact_contract` (registered in `lane_local_status_mask(60)`)
-/// and aliased here so lane and contract cannot drift.
 pub const STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR: u32 =
     compact_contract::DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR;
-/// Every war row in this v2 frame carries the complete exact H-B5 residual
-/// block. The decoder rejects mixed present/absent rows and badge mismatch.
 pub const STATUS_WAR_RESIDUALS_EXACT: u32 = compact_contract::DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
 
 pub const KNOWN_STATUS_FLAGS: u32 = compact_contract::COMPACT_STATUS_STATE_UNAVAILABLE
@@ -82,83 +34,29 @@ const WAR_RESIDUAL_FLAG_FIRST_WAS_INSTIGATOR: u32 = 1 << 1;
 const KNOWN_WAR_RESIDUAL_FLAGS: u32 =
     WAR_RESIDUAL_FLAG_PRESENT | WAR_RESIDUAL_FLAG_FIRST_WAS_INSTIGATOR;
 
-/// Country row flag: the validated `capitulated` u8 read 1.
 pub const COUNTRY_FLAG_CAPITULATED: u32 = 1;
 pub const KNOWN_COUNTRY_FLAGS: u32 = COUNTRY_FLAG_CAPITULATED;
 
-/// Engine CGameDate null sentinel (raw hours for 1.1.1.0). Validated live:
-/// 422/437 `capitulated_date`, 427/437 `last_surrender_date`, 365/437
-/// `faction_join_date` carry exactly this value on D04.
 pub const CGAMEDATE_NULL_RAW: i32 = 43_808_760;
 
 pub const MAX_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
-/// The casualty tallies are engine `i32` fields (`read_i32_at` at
-/// `DOMAIN53_WAR_FIRST_CASUALTIES`/`_SECOND_CASUALTIES`, widened to `i64` here
-/// and carried as `i64` on the wire), so the field's own representation is the
-/// honest ceiling. On the read path that leaves only a negative tally refused —
-/// a count that cannot be one. On the decode path it additionally refuses a wire
-/// value outside the range the producer can possibly have written, which is a
-/// malformed record rather than a big war.
-///
-/// It used to be `50_000_000`, copied from the domain 53 reader. That number is
-/// a plausibility guess about how many casualties a war "could" have, i.e. a cap
-/// on game content. `PROJECT.md` — “Content and mod contract” forbids such a
-/// compiled content limit. A long or modded game that crossed it lost the
-/// WHOLE D60 read (`capwar_war_casualties_invalid` rejects the row, and a
-/// rejected row fails the discovery), so the guess could destroy a capture's war
-/// state rather than bound it. The same guessed constant is still live in three
-/// sibling producers outside this row's scope — see the lane report.
 pub const MAX_CASUALTIES: i64 = i32::MAX as i64;
-/// Legitimacy is a 0..=100.0 percentage x 1e5 on the observed save; guard with
-/// headroom for modded values without admitting garbage.
 pub const MAX_LEGITIMACY_RAW: i32 = 1_000_000_000;
 pub const MAX_EXILE_ARMY_LEADERS: i32 = 100_000;
-/// Fail-closed ceiling on the number of country rows a capitulation/war payload
-/// carries.
-///
-/// This was `8_192` while the producer's own country-table budget was `4_096`,
-/// so the consumer was comfortably the wider of the two. Raising that budget to
-/// the priced `65_536` (`build_profile::DOMAIN53_MAX_COUNTRY_TABLE_SLOTS`)
-/// inverted it: the producer walks up to 65_536 country roots and could emit
-/// more rows than this would admit, which is the producer-widened /
-/// consumer-still-narrow split the whole tag-cap wave exists to remove — and it
-/// would have been introduced by the fix rather than found by it.
-///
-/// A country count is content, so there is no honest constant for it; it is the
-/// structural row width. Nothing is unbounded by that: `decode_payload` requires
-/// `HEADER_LEN + country_rows * ROW_COUNTRY_LEN + war_rows * war_row_len` to
-/// equal the payload length EXACTLY before it allocates, so the payload is the
-/// real bound on both counts.
 pub const MAX_COUNTRY_ROWS: u32 = i32::MAX as u32;
-/// The war count is content for exactly the same reason the country count is:
-/// how many wars exist at once is a function of the roster and the scenario, not
-/// of any engine structure this tree has proved. The `8_192` this used to be was
-/// the country-row cap's twin and outlived it.
-///
-/// This is a STRUCTURAL bound, not a guess and not the field's representation
-/// range: a framed record's payload cannot exceed `COMPACT_MAX_PAYLOAD_LEN`, and
-/// every war row costs at least `ROW_WAR_LEN_V1` bytes, so no admissible payload
-/// can carry more rows than that quotient. The exact payload-length equality
-/// below then does the real work — it is checked before any allocation, so this
-/// constant only keeps a header count from being multiplied out before it.
-pub const MAX_WAR_ROWS: u32 =
-    compact_contract::COMPACT_MAX_PAYLOAD_LEN / ROW_WAR_LEN_V1 as u32;
+pub const MAX_WAR_ROWS: u32 = compact_contract::COMPACT_MAX_PAYLOAD_LEN / ROW_WAR_LEN_V1 as u32;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CountryCapitulationRow {
     pub tag_db_id: u32,
     pub capitulated: bool,
-    /// Raw engine hour counter; `CGAMEDATE_NULL_RAW` == engine null.
     pub capitulated_date_raw: i32,
     pub last_surrender_date_raw: i32,
     pub faction_join_date_raw: i32,
-    /// Fixed-point x `FIXED_SCALE_RAW`.
     pub legitimacy_raw: i32,
     pub exile_army_leaders: i32,
 }
 
-/// Exact CWarRelation hostility-reason discriminator used by both serialized
-/// fields. Values and spellings are bound to the pinned a729 token registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum HostilityReason {
@@ -201,7 +99,6 @@ impl HostilityReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WarResiduals {
-    /// Signed engine fixed-five raw (`raw / 100_000`).
     pub threat_fixed5_raw: i64,
     pub first_was_instigator: bool,
     pub hostility_reason_instigator: HostilityReason,
@@ -212,13 +109,9 @@ pub struct WarResiduals {
 pub struct WarRow {
     pub first_tag_db_id: u32,
     pub second_tag_db_id: u32,
-    /// Raw engine hour counter (in-window real date; 958/958 validated).
     pub start_date_raw: i32,
-    /// Live running accumulators (see the mandatory status badge).
     pub first_casualties: i64,
     pub second_casualties: i64,
-    /// `None` for legacy v1 recordings, and for any build where the exact
-    /// source constant is off. Never synthesize zero-valued residuals.
     pub residuals: Option<WarResiduals>,
 }
 
@@ -237,13 +130,10 @@ impl CapitulationWarSnapshot {
     }
 }
 
-/// A capitulation-date-family raw is either the engine null sentinel or a real
-/// in-window date.
 pub fn date_raw_valid_nullable(raw: i32) -> bool {
     raw == CGAMEDATE_NULL_RAW || compact_contract::calendar::hour_index_from_raw(raw).is_some()
 }
 
-/// A war start date must be a real in-window date (no null observed live).
 pub fn war_start_date_raw_valid(raw: i32) -> bool {
     compact_contract::calendar::hour_index_from_raw(raw).is_some()
 }
@@ -331,8 +221,6 @@ fn read_i64(payload: &[u8], offset: usize) -> i64 {
     i64::from_le_bytes(payload[offset..offset + 8].try_into().expect("i64 bytes"))
 }
 
-/// Strict full decode used by the recorder fold and by verification. Every
-/// structural or semantic violation is an error — no partial acceptance.
 pub fn decode_snapshot_payload(
     offset: usize,
     payload: &[u8],
@@ -512,7 +400,8 @@ pub fn decode_snapshot_payload(
                     cursor += war_row_len;
                     continue;
                 };
-                let Some(hostility_reason_defender) = HostilityReason::from_raw(defender_raw) else {
+                let Some(hostility_reason_defender) = HostilityReason::from_raw(defender_raw)
+                else {
                     errors.push(format!(
                         "offset {offset}: war row {index} invalid defender hostility-reason discriminator {defender_raw}"
                     ));
@@ -522,8 +411,7 @@ pub fn decode_snapshot_payload(
                 residual_rows = residual_rows.saturating_add(1);
                 Some(WarResiduals {
                     threat_fixed5_raw,
-                    first_was_instigator: residual_flags
-                        & WAR_RESIDUAL_FLAG_FIRST_WAS_INSTIGATOR
+                    first_was_instigator: residual_flags & WAR_RESIDUAL_FLAG_FIRST_WAS_INSTIGATOR
                         != 0,
                     hostility_reason_instigator,
                     hostility_reason_defender,
@@ -600,7 +488,6 @@ pub fn decode_snapshot_payload(
     })
 }
 
-/// Recorder compact-summary totals (pack_replay verify path).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LaneSummary {
     pub status_flags_or: u32,
@@ -645,7 +532,6 @@ mod tests {
                 CountryCapitulationRow {
                     tag_db_id: 3,
                     capitulated: true,
-                    // France 1940.6.18: month 6 day 18 -> doy 31+28+31+30+31+17.
                     capitulated_date_raw: real_date_raw(1940, 31 + 28 + 31 + 30 + 31 + 17, 2),
                     last_surrender_date_raw: CGAMEDATE_NULL_RAW,
                     faction_join_date_raw: CGAMEDATE_NULL_RAW,
@@ -791,7 +677,6 @@ mod tests {
         let payload = {
             snapshot.countries[0].capitulated = true;
             let mut payload = encode_payload(&snapshot);
-            // Set an unknown flag bit in the first country row.
             let flags_offset = HEADER_LEN + 4;
             payload[flags_offset] |= 0x80;
             payload

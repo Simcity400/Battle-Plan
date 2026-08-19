@@ -1,11 +1,3 @@
-//! Replay-owned observer routes for semantic panels.
-//!
-//! These models deliberately stop before pixels. They bind the viewer's local
-//! country selection to complete replay domains and the effective game-file
-//! registry, while preserving unavailable engine leaves as typed dispositions.
-//! Packet-specific shipping compositors apply the final presentation carriers.
-//! Nothing in this module reads recorder interaction state, a
-//! selected-Present stream, or a recorder-owned country.
 
 use crate::content_interpreter::Interpreted;
 use crate::readonly_design_peace::{
@@ -24,9 +16,6 @@ use replay_core::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Legacy PCS1 semantic helper. Shipping XUI08 uses the strict D97/PCS3
-/// presentation carrier; this helper remains fail-closed for active PCS1 data
-/// and is not product pixel authority.
 pub fn admit_peace_observer_panel(
     frame: &WorldFrame,
 ) -> std::result::Result<AdmittedPeaceConference, Xui08Rejection> {
@@ -34,23 +23,14 @@ pub fn admit_peace_observer_panel(
     admit_peace_conference(&snapshot)
 }
 
-/// Exact semantic work that the replay cannot lawfully synthesize.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ObserverSemanticGap {
-    /// d14: final engine-resolved politics tooltip/text atoms.
     D14PoliticsRuntimeText,
-    /// d15: runtime-only politics widget state and ordered presentation leaves.
     D15PoliticsPresentation,
-    /// d74: all-country power-balance presentation independent of panel-open
-    /// and recorder-country state.
     D74AllCountryPowerBalance,
-    /// d84: the exact post-owner current-manager snapshot or one of its
-    /// required residual results is unavailable.
     D84ScriptedGuiManagerSnapshot,
 }
 
-/// A semantic route may be useful to an observer while exact presentation is
-/// still blocked. Callers must never treat `Blocked` as permission to draw.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExactPresentationState {
     Ready,
@@ -69,11 +49,6 @@ impl ExactPresentationState {
     }
 }
 
-/// XUI11 semantic politics route for the viewer-selected country.
-///
-/// `detail` retains the `Absent` / `Unobtained` / `Measured` trichotomy. The
-/// static labels come from recorder-packaged, content-admitted catalogs rather
-/// than a playback-machine fallback.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PoliticsObserverPanel {
     pub country_tag: String,
@@ -136,7 +111,6 @@ pub fn admit_politics_observer_panel(
     })
 }
 
-/// Viewer-relevant semantic row from the world-scoped power-balance carrier.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverPowerBalanceRow {
     pub source_record_id: String,
@@ -149,7 +123,6 @@ pub struct ObserverPowerBalanceRow {
     pub active_range: String,
 }
 
-/// XUI18 observer route. A measured empty vector is a real hidden state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PowerBalanceObserverPanel {
     pub country_tag: String,
@@ -267,15 +240,6 @@ pub struct ScriptedGuiObserverRow {
     pub presentation: ExactPresentationState,
 }
 
-/// XUI22 route for the viewer-selected country.
-///
-/// Row order is the authenticated engine manager order. Source identity and
-/// definitions come from the effective dynamic VFS. Individual evaluations
-/// remain blocked when any runtime-only field is unavailable. A measured d84
-/// envelope is the exact post-owner current-manager snapshot: its contiguous
-/// manager order covers every row in that snapshot, so absence from the
-/// selected-country slice is authoritative measured-empty rather than an
-/// invented Cartesian country/definition product.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScriptedGuiObserverPanel {
     pub country_tag: String,
@@ -466,9 +430,6 @@ pub fn admit_scripted_gui_observer_panel(
         effective_file_count: registry.files,
         runtime_authority: ScriptedGuiRuntimeAuthorityState::Present,
         rows,
-        // The authority parser already proved that manager_order is contiguous
-        // and exactly covers every folded d84 row from the exact post-owner
-        // current-manager snapshot. No Cartesian product is an engine object.
         presentation,
     })
 }
@@ -478,8 +439,6 @@ fn scripted_gui_manager_presentation(rows: &[ScriptedGuiObserverRow]) -> ExactPr
         .iter()
         .all(|row| row.presentation == ExactPresentationState::Ready)
     {
-        // A measured empty selected-country slice is exact: d84's authority
-        // already proves the full current-manager order for this hour.
         ExactPresentationState::Ready
     } else {
         ExactPresentationState::blocked([ObserverSemanticGap::D84ScriptedGuiManagerSnapshot])

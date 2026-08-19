@@ -1,19 +1,3 @@
-//! C2 placement gates — division / fleet / wing placement proven against the A2
-//! fixtures through the real `replay_core` source.
-//!
-//! The A2 fixtures are the oracle: `replay_core`'s round-trip gates already
-//! certify that the typed unit views equal the generator ground truth at every
-//! hour, so this gate asserts that placement is a faithful function of
-//! (certified view + province→world anchor table): unit IDs preserved, anchor
-//! province == the recorded `location_province`, world point resolved and inside
-//! the map bounds, the moving division's anchor follows the fixture province
-//! path exactly, and `seek(h) == play_to(h)` placement equality (step-hold
-//! interpolation inherited from the timeline).
-//!
-//! Anchor coordinates in the hermetic gates are SYNTHETIC (injected) so the gate
-//! does not depend on the vanilla install; a separate gated test builds the
-//! FILE anchor table from the real `map/unitstacks.txt` and checks the fixture
-//! provinces resolve to in-bounds stack-centre points.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -30,9 +14,6 @@ use replay_core::{
 };
 use serde_json::Value;
 
-// --------------------------------------------------------------------------
-// fixture plumbing (mirrors replay_core/tests/roundtrip_gates.rs)
-// --------------------------------------------------------------------------
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -69,10 +50,6 @@ fn frames(t: &WorldTimeline) -> Vec<Arc<WorldFrame>> {
         .collect()
 }
 
-// --------------------------------------------------------------------------
-// adapters: certified replay_core rows -> placement inputs (the one-liners
-// replay_app hosts in production; here so the gate feeds real timeline views)
-// --------------------------------------------------------------------------
 
 fn leaf_string(l: &Leaf<String>) -> Option<String> {
     l.measured().cloned()
@@ -123,8 +100,6 @@ fn find<'a>(set: &'a [UnitPlacement], uid: &str) -> &'a UnitPlacement {
         .unwrap_or_else(|| panic!("unit {uid} not in placement set"))
 }
 
-// Synthetic anchors for the fixture provinces (real vanilla coordinates so the
-// numbers are realistic, but injected so the gate needs no install).
 fn movement_table() -> ProvinceAnchorTable {
     let mut t = ProvinceAnchorTable::new();
     t.insert_synthetic(1000, 842.0, 9.5, 73.0);
@@ -134,15 +109,11 @@ fn movement_table() -> ProvinceAnchorTable {
 }
 fn naval_air_table() -> ProvinceAnchorTable {
     let mut t = ProvinceAnchorTable::new();
-    t.insert_synthetic(3000, 3612.0, 10.0, 1751.0); // fleet sea province
-    t.insert_synthetic(2500, 1200.0, 9.0, 800.0); // state-30 representative province
+    t.insert_synthetic(3000, 3612.0, 10.0, 1751.0);
+    t.insert_synthetic(2500, 1200.0, 9.0, 800.0);
     t
 }
 
-// --------------------------------------------------------------------------
-// GATE 1 — division movement: unit IDs, anchor province follows the path,
-// world point in bounds.
-// --------------------------------------------------------------------------
 
 #[test]
 fn division_movement_placement_follows_fixture_path() {
@@ -154,7 +125,6 @@ fn division_movement_placement_follows_fixture_path() {
     for f in frames(&t) {
         let set = placement_of(&f, &table, &state_anchor);
 
-        // Unit-ID set is preserved exactly (both divisions, no invention).
         let mut uids: Vec<&str> = set.divisions.iter().map(|p| p.unit_uid.as_str()).collect();
         uids.sort_unstable();
         assert_eq!(
@@ -165,7 +135,6 @@ fn division_movement_placement_follows_fixture_path() {
         );
 
         let mover = find(&set.divisions, "101:1");
-        // Anchor province == the certified location_province (== generator truth).
         let certified = f
             .division_units()
             .iter()
@@ -192,7 +161,6 @@ fn division_movement_placement_follows_fixture_path() {
             world,
             f.hour_index()
         );
-        // world point == the anchor table entry for that province.
         let pid = mover.anchor_province.unwrap();
         assert_eq!(mover.world_anchor, Some(table.anchor(pid).unwrap().anchor));
 
@@ -201,26 +169,20 @@ fn division_movement_placement_follows_fixture_path() {
             path.push(cur);
         }
     }
-    // The moving division visits exactly 1000 -> 1001 -> 2000 in order.
     assert_eq!(path, [1000, 1001, 2000], "fixture province path");
 }
 
-// --------------------------------------------------------------------------
-// GATE 2 — naval + air placement: fleet at its sea province, wing via the
-// air-base state FIT.
-// --------------------------------------------------------------------------
 
 #[test]
 fn naval_air_placement_anchors_fleet_and_wing() {
     let t = open_fixture("fx_naval_air_activity");
     let table = naval_air_table();
     let mut state_anchor = BTreeMap::new();
-    state_anchor.insert(30u32, 2500u32); // wing state 30 -> representative province
+    state_anchor.insert(30u32, 2500u32);
 
     for f in frames(&t) {
         let set = placement_of(&f, &table, &state_anchor);
 
-        // Fleet task force 501 at sea province 3000 (recording location).
         let fleet = find(&set.fleets, "501");
         assert_eq!(
             fleet.status,
@@ -236,7 +198,6 @@ fn naval_air_placement_anchors_fleet_and_wing() {
         assert_eq!(fleet.owner.as_deref(), Some("ENG"));
         assert!(fleet.world_anchor.unwrap().in_map_bounds());
 
-        // Air wing 800 anchored via its air-base state (FIT).
         let wing = find(&set.wings, "800");
         assert_eq!(
             wing.status,
@@ -253,7 +214,6 @@ fn naval_air_placement_anchors_fleet_and_wing() {
     }
 }
 
-// A wing with no state mapping is unplaceable, never invented (fail-closed).
 #[test]
 fn wing_without_state_mapping_is_unavailable() {
     let t = open_fixture("fx_naval_air_activity");
@@ -266,9 +226,6 @@ fn wing_without_state_mapping_is_unavailable() {
     assert_eq!(wing.world_anchor, None);
 }
 
-// --------------------------------------------------------------------------
-// GATE 3 — seek == play placement equality + step-hold interpolation.
-// --------------------------------------------------------------------------
 
 #[test]
 fn seek_equals_play_placement_and_step_holds() {
@@ -284,15 +241,12 @@ fn seek_equals_play_placement_and_step_holds() {
         let _ = &mut state_anchor;
         let hours = t.hours().to_vec();
 
-        // seek(h) == play_to(h) placement, forward and backward.
         for &h in hours.iter().chain(hours.iter().rev()) {
             let s = placement_of(&t.seek(h).unwrap(), &table, &state_anchor);
             let p = placement_of(&t.play_to(h).unwrap(), &table, &state_anchor);
             assert_eq!(s, p, "{name}: seek==play @ {h}");
         }
 
-        // Step-hold: an hour strictly between two anchors resolves to the prior
-        // anchor's placement (no invented smoothing).
         for w in hours.windows(2) {
             let mid = w[0] + (w[1] - w[0]) / 2;
             if mid == w[0] {
@@ -313,10 +267,6 @@ fn seek_equals_play_placement_and_step_holds() {
     }
 }
 
-// --------------------------------------------------------------------------
-// GATE 4 — FILE anchor table from the real map/unitstacks.txt resolves the
-// fixture provinces to in-bounds stack-centre points (gated on the install).
-// --------------------------------------------------------------------------
 
 #[test]
 #[cfg_attr(not(gate_hoi4_install), ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path")]
@@ -326,8 +276,6 @@ fn gated_vanilla_unitstacks_anchor_table_places_fixture_provinces() {
     let table = ProvinceAnchorTable::from_resolver(&resolver).expect("anchor table");
     assert!(table.len() > 13_000, "expected the full stack-centre table");
 
-    // Every fixture province used by the A2 unit fixtures exists in the shipped
-    // file and resolves to an in-bounds stack-centre (FILE) point.
     for pid in [1000u32, 1001, 2000, 3000] {
         let a = table
             .anchor(pid)
@@ -340,8 +288,6 @@ fn gated_vanilla_unitstacks_anchor_table_places_fixture_provinces() {
         assert!(a.anchor.in_map_bounds(), "province {pid} anchor in bounds");
     }
 
-    // Feed the real table through the division fixture: the mover is placed
-    // FILE-derived and in-bounds at every hour.
     let t = open_fixture("fx_division_movement");
     let state_anchor = BTreeMap::new();
     for f in frames(&t) {

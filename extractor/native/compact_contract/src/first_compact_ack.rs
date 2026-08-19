@@ -1,9 +1,3 @@
-//! Dependency-neutral CFA1 control payload contract shared by collector and recorder.
-//!
-//! The protocol mode is selected by the surrounding state machine and is an
-//! explicit codec argument.  The wire is never sniffed to choose IdentityV1 or
-//! Legacy, and neither mode falls back to the other.
-
 use crate::calendar::hour_index_from_raw;
 use crate::campaign_identity::{COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER};
 use crate::stream_validator::StreamIdentityMode;

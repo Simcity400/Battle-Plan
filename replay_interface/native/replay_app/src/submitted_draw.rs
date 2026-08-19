@@ -1,10 +1,3 @@
-//! Exact execution of portable particle/entity draw submissions.
-//!
-//! The replay carrier is already structurally validated by `replay_core`.
-//! This module supplies the remaining production boundary: every referenced
-//! game payload is reopened only through a validated effective-VFS admission,
-//! every D3D descriptor is reconstructed literally, and draw interleave is
-//! taken only from `RenderSubmit::ordered_draws`.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;
@@ -30,10 +23,6 @@ use winapi::um::d3dcommon::*;
 use crate::d3d::{hr_ok, ComPtr, Gfx};
 use crate::Result;
 
-/// Borrowed render-graph target that already contains the exact map-object
-/// predecessors of the submitted particle/entity sequence. Portable attachment
-/// identities are optional only so legacy debug callers can represent their
-/// lack of authority; execution rejects such callers before binding a view.
 pub struct SubmittedMainSceneTarget {
     pub(crate) color_identity: Option<PreparedRenderTarget>,
     pub(crate) depth_identity: Option<PreparedRenderTarget>,
@@ -96,10 +85,6 @@ enum SubmittedOutput<'a> {
     ViewerOwnedMainScene,
 }
 
-/// Resolve the authoritative cross-family sequence without sorting or
-/// inference. `portable_render_stream` validation guarantees every submitted
-/// particle/entity appears exactly once; this lookup repeats the identity
-/// check at the execution boundary so malformed in-memory callers fail closed.
 fn ordered_draws<'a>(submit: &'a RenderSubmit) -> Result<Vec<OrderedDraw<'a>>> {
     let mut out = Vec::with_capacity(submit.ordered_draws.len());
     let mut seen_particles = vec![false; submit.particles.len()];
@@ -160,11 +145,6 @@ fn mark_once(seen: &mut [bool], index: usize) -> bool {
     !std::mem::replace(&mut seen[index], true)
 }
 
-/// Execute the selected submit into an already prepared opaque target.
-///
-/// # Safety
-/// `target` views must belong to `gfx.device`, remain alive for this call, and
-/// refer to the descriptors supplied alongside them.
 pub unsafe fn execute_submitted_draws(
     gfx: &Gfx,
     resolver: &GameFileResolver,
@@ -215,8 +195,6 @@ pub unsafe fn execute_submitted_draws(
                 stats.particle_draws += 1;
             }
             OrderedDraw::Entity(entity) => {
-                // Shader/material/mesh identity is a VFS admission gate even
-                // when the exact IA bytes are carried inline.
                 resolver
                     .read_admitted_used_content(&entity.content_identity.resolved_entity_asset)?;
                 resolver.read_admitted_used_content(&entity.content_identity.mesh)?;
@@ -241,13 +219,6 @@ pub unsafe fn execute_submitted_draws(
     Ok(stats)
 }
 
-/// Execute XMAP20's presentation-independent particle snapshot into the
-/// viewer-owned MainScene target.
-///
-/// Recorder SceneCB0, recorder projection CB1, viewport and attachment
-/// identity are intentionally ignored. The caller supplies the exact current
-/// XMAP03/XMAP09/XMAP10 buffers and target after their provider receipts have
-/// been checked by `xmap20_effects`.
 pub unsafe fn execute_xmap20_particles(
     gfx: &Gfx,
     resolver: &GameFileResolver,
@@ -348,8 +319,6 @@ unsafe fn execute_draw(
     target: &SubmittedMainSceneTarget,
     stream_output: &mut StreamOutputBuffers,
 ) -> Result<()> {
-    // The source key is not decorative provenance: exact VFS admission is
-    // required before captured compiled bytecode may execute.
     resolver.read_admitted_used_content(&shader.source)?;
     match output {
         SubmittedOutput::AuthenticatedPacket(output) => bind_output(gfx, output, target)?,
@@ -475,9 +444,6 @@ unsafe fn execute_draw(
         ),
     }
     (*context).SOSetTargets(0, ptr::null(), ptr::null());
-    // Avoid retaining replay-owned resources into a later pass. All objects
-    // remain alive until after the immediate-context draw call has consumed
-    // the bindings.
     clear_shader_bindings(context);
     Ok(())
 }
@@ -1099,8 +1065,6 @@ unsafe fn create_texture_views(
             resolver.read_admitted_used_content(&binding.content)?;
             let (resource, storage, init) =
                 create_texture_resource(gfx, resolver, &binding.resource, particle_records)?;
-            // Keep upload storage alive through Create*; it can be dropped once
-            // the immutable/default resource has copied the initial data.
             let _storage = storage;
             let _init = init;
             let desc = srv_desc(&binding.view)?;
@@ -1558,9 +1522,6 @@ unsafe fn clear_shader_bindings(context: *mut ID3D11DeviceContext) {
     let null_srvs = [ptr::null_mut(); D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT as usize];
     let null_samplers = [ptr::null_mut(); D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT as usize];
     let null_cbs = [ptr::null_mut(); D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT as usize];
-    // Any programmable stage retained from a preceding static map pass would
-    // alter the draw. Null every stage before binding the exact carried
-    // VS/PS plus each optional authenticated stage (and again after drawing).
     (*context).VSSetShader(ptr::null_mut(), ptr::null(), 0);
     (*context).PSSetShader(ptr::null_mut(), ptr::null(), 0);
     (*context).GSSetShader(ptr::null_mut(), ptr::null(), 0);

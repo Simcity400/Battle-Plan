@@ -1,10 +1,3 @@
-//! Admission-bound interpreters for production the game content.
-//!
-//! This module deliberately contains no vanilla catalog.  A caller must name
-//! an exact [`UsedContentKey`] carried by the portable replay.  The central
-//! launcher-equivalent VFS revalidates that complete identity before bytes are
-//! exposed to an interpreter.  Engine laws live in the existing specialised
-//! parsers; content and winning-layer provenance remain runtime data.
 
 use crate::assets::{AssetResolver, DecodedTexture};
 use crate::dds;
@@ -25,21 +18,16 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Interpreted<T> {
-    /// Every payload consumed to produce `value`, with its portable identity.
     pub provenance: Vec<UsedContentKey>,
     pub value: T,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct GfxDocument {
-    /// Lossless parsed source for font, material and future proven consumers.
     pub document: Document,
-    /// The already-proven effective sprite interpreter.
     pub sprites: SpriteRegistry,
 }
 
-/// Production interpreter facade. It cannot be constructed without both a
-/// resolver restricted to, and the exact admission derived from, a replay.
 pub struct ProductionContentInterpreter<'a> {
     resolver: &'a GameFileResolver,
     admission: &'a ValidatedContentAdmission,
@@ -80,8 +68,6 @@ impl<'a> ProductionContentInterpreter<'a> {
             .map_err(GameUiError::missing)
     }
 
-    /// Read exact admitted bytes. This is also the hand-off for specialised
-    /// proven map/define/entity/particle consumers that own deeper semantics.
     pub fn read(&self, expected: &UsedContentKey) -> Result<Interpreted<Vec<u8>>> {
         self.require_exact_key(expected)?;
         let bytes = self
@@ -94,11 +80,6 @@ impl<'a> ProductionContentInterpreter<'a> {
         })
     }
 
-    /// Strict Clausewitz/Jomini text parsing. Recovery is useful during RE but
-    /// not a production engine-law substitute, so any recovery fails closed —
-    /// and so does byte-level decode damage, which the parse itself cannot see
-    /// (a U+FFFD substituted for a destroyed byte is a perfectly ordinary
-    /// character to the tokenizer).
     pub fn parse_clausewitz(&self, expected: &UsedContentKey) -> Result<Interpreted<Document>> {
         let bytes = self.read(expected)?;
         reject_decode_damage(expected, &bytes.value)?;
@@ -134,8 +115,6 @@ impl<'a> ProductionContentInterpreter<'a> {
         })
     }
 
-    /// Parse one language file using the language recorded by the replay.
-    /// Unsupported/mismatched headers and malformed rows fail closed.
     pub fn parse_localisation(
         &self,
         expected: &UsedContentKey,
@@ -183,8 +162,6 @@ impl<'a> ProductionContentInterpreter<'a> {
                 entries,
                 source_files: vec![expected.normalized_game_relative_path.clone()],
                 parse_failures,
-                // Refused above rather than recorded: this interpreter is the
-                // fail-closed one, so damaged bytes never reach here.
                 decode_lossy_files: Vec::new(),
             },
         })
@@ -196,12 +173,6 @@ impl<'a> ProductionContentInterpreter<'a> {
     ) -> Result<Interpreted<EffectFile>> {
         require_one_extension(expected, &["shader", "fxh"])?;
         let bytes = self.read(expected)?;
-        // The effect grammar accepts arbitrary text in quoted strings and raw
-        // blocks, so a replacement character can reach an include path or the
-        // shader source itself without the parse ever failing. MEASURED before
-        // refusing: the shipped install has 52 `.shader` and 13 `.fxh` files and
-        // zero destructive decode events among them, so this cannot refuse the
-        // base game.
         reject_decode_damage(expected, &bytes.value)?;
         let source = decode_text(&bytes.value);
         let effect = map_viewer::parse_effect_file(&source)
@@ -226,9 +197,6 @@ impl<'a> ProductionContentInterpreter<'a> {
     pub fn decode_texture(&self, expected: &UsedContentKey) -> Result<Interpreted<DecodedTexture>> {
         require_one_extension(expected, &["dds", "tga", "png"])?;
         self.require_exact_key(expected)?;
-        // Read once through the central seam and decode those exact verified
-        // bytes, so an on-disk mutation between admission checking and decode
-        // cannot make the decoded payload diverge from the admitted payload.
         let bytes = self.read(expected)?;
         let rel_path = &expected.normalized_game_relative_path;
         let ext = rel_path
@@ -246,8 +214,6 @@ impl<'a> ProductionContentInterpreter<'a> {
                     .map_err(|error| add_logical_path(error, rel_path))?;
                 (decoded.format, decoded.image)
             }
-            // `png` is admitted above but has no proven decoder, matching the
-            // existing AssetResolver::decode_texture refusal.
             _ => {
                 return Err(GameUiError::unsupported_texture_extension(
                     ext.clone(),
@@ -255,8 +221,6 @@ impl<'a> ProductionContentInterpreter<'a> {
                 ));
             }
         };
-        // Metadata only: the decoded pixels above came from the admitted
-        // bytes, never from this resolved on-disk path.
         let resolved = self.assets.resolve_texture_file(rel_path)?;
         Ok(Interpreted {
             provenance: bytes.provenance,
@@ -269,9 +233,6 @@ impl<'a> ProductionContentInterpreter<'a> {
         })
     }
 
-    /// Load a symbolic BMFont through the admitted VFS. The caller supplies
-    /// the exact descriptors/pages it expects this alias to consume; no font
-    /// catalog or fallback path is embedded here.
     pub fn load_bitmap_font(
         &self,
         symbolic_name: &str,
@@ -305,8 +266,6 @@ impl<'a> ProductionContentInterpreter<'a> {
         })
     }
 
-    /// Compile the effective scripted-GUI directory with the existing proven
-    /// evaluator. Every effective file must already be present in admission.
     pub fn load_scripted_gui_registry(&self) -> Result<Interpreted<ScriptedGuiRegistry>> {
         let registry = load_scripted_gui_registry(&self.assets)?;
         if !registry.production_admitted() {
@@ -349,22 +308,11 @@ impl<'a> ProductionContentInterpreter<'a> {
     }
 }
 
-/// Mirror the dds/tga `add_path` decoration, but with the logical admitted
-/// path: the decoded bytes came from admission, not from an on-disk file.
 fn add_logical_path(mut error: GameUiError, rel_path: &str) -> GameUiError {
     error.message = format!("{rel_path}: {}", error.message);
     error
 }
 
-/// Refuse content whose BYTES were destroyed at decode.
-///
-/// The byte-level counterpart of [`reject_recoveries`], and refused for the same
-/// reason this interpreter refuses recoveries: it is the fail-closed path, and
-/// a U+FFFD substituted for a destroyed byte is a silent approximation of a
-/// string the replay cannot reproduce. Only DESTRUCTIVE loss qualifies —
-/// lossless Latin-1 (which the shipped game uses for `§` colour codes) is not
-/// damage and is not refused. Measured: zero destructive decode events across
-/// the whole shipped install, so this cannot refuse the base game.
 fn reject_decode_damage(expected: &UsedContentKey, bytes: &[u8]) -> Result<()> {
     let losses = diagnose_text_decode(bytes);
     let events = destructive_event_count(&losses);
@@ -457,9 +405,6 @@ fn strict_localisation_body(source: &str, text: &str, expected_language: &str) -
     Ok(body)
 }
 
-/// Grammar/semantic families intentionally not generalized. Their specialised
-/// exact consumers may use [`ProductionContentInterpreter::read`], but product
-/// code must not infer missing laws from vanilla examples.
 pub const PRODUCTION_INTERPRETER_DATA_NEEDS: &[(&str, &str)] = &[
     (
         "generic_lua_execution",

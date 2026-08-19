@@ -1,14 +1,8 @@
-//! Recursive duplicate-key-rejecting JSON decoding.
-
 use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::fmt;
 
-/// Decode one complete JSON value while rejecting repeated members at every depth.
-///
-/// The returned value is built by this pass; callers must not ordinarily decode
-/// the bytes first or decode them a second time for semantic use.
 pub fn from_slice(bytes: &[u8]) -> Result<Value, serde_json::Error> {
     let mut deserializer = serde_json::Deserializer::from_slice(bytes);
     let value = StrictValue::deserialize(&mut deserializer)?.0;

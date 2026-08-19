@@ -12,12 +12,12 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-import parse_localisation  # noqa: E402
-import parse_technology_sharing  # noqa: E402
-import resolver as R  # noqa: E402
-import live_binding_resolver as LR  # noqa: E402
-import source_inventory_layers as SIL  # noqa: E402
-from static_artifact_common import (  # noqa: E402
+import parse_localisation
+import parse_technology_sharing
+import resolver as R
+import live_binding_resolver as LR
+import source_inventory_layers as SIL
+from static_artifact_common import (
     add_layer_args,
     canonical_json,
     layer_summary,
@@ -199,11 +199,6 @@ def _verify_external_localisation_catalog(
             "localisation catalog source inventory does not match current effective files"
         )
 
-    # `files_read` counts files that yielded at least one key, so legitimate
-    # empty files mean it need not equal `files_total`.  Rebuild the effective
-    # semantic projection instead of treating that counter as completeness
-    # authority.  This prevents a self-hashed catalog from carrying the right
-    # source inventory while silently omitting keys from those source bytes.
     rebuilt = parse_localisation.parse_localisation(layers)
     rebuilt_meta = rebuilt["meta"]
     for field in ("files_read", "files_total", "key_count"):
@@ -284,9 +279,6 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
         vanilla=args.vanilla,
         mods=requested_mods,
         userdata=args.userdata,
-        # Gate inputs are authoritative whether --mods is explicit or sourced
-        # from active_modset.json.  Warning-and-skip would certify a truncated
-        # effective catalog, so this gate never permits it.
         strict_mods=True,
     )
     layers, source_namespace_proof = SIL.definition_layers(

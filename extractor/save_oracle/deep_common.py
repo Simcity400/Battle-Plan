@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 import parse_save as ps
-from parse_save import (  # re-export for the domain modules
+from parse_save import (
     Tokenizer,
     LBRACE,
     RBRACE,
@@ -44,9 +44,6 @@ __all__ = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Scalar coercions + small typed readers
-# ---------------------------------------------------------------------------
 
 def to_float(v):
     try:
@@ -88,10 +85,8 @@ def read_scalar_list(tz: Tokenizer):
             _skip_block_body(tz)
             continue
         if opener is None:
-            # bare list element
             out.append(key)
         else:
-            # `key=val` inside what we expected to be a flat list: keep the val
             v = atom_value(opener)
             if v is not None:
                 out.append(v)
@@ -117,9 +112,6 @@ def collect_block(tz: Tokenizer):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Generic top-level streaming pass
-# ---------------------------------------------------------------------------
 
 def top_level_pass(text: str, block_handlers: dict, scalar_keys=None):
     """Stream the implicit top-level block, dispatching depth-0 sections.
@@ -152,7 +144,7 @@ def top_level_pass(text: str, block_handlers: dict, scalar_keys=None):
         nxt = tz.peek()
         if nxt is not EQUALS:
             continue
-        tz.next()  # consume '='
+        tz.next()
         val = tz.next()
         if val is LBRACE:
             handler = block_handlers.get(key)
@@ -169,9 +161,6 @@ def top_level_pass(text: str, block_handlers: dict, scalar_keys=None):
     return meta
 
 
-# ---------------------------------------------------------------------------
-# CLI runner shared by every domain module
-# ---------------------------------------------------------------------------
 
 def run_cli(tag: str, description: str, build_fn, out_files):
     """Standard CLI: resolve save -> melt -> build_fn(text, save_path, melted).

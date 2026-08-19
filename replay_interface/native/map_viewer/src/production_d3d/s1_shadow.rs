@@ -1,11 +1,3 @@
-//! S1 carrier admission into the unified production D3D operation stream.
-//!
-//! Portable-render validation authenticates target descriptors, true-writer
-//! edges, L03 draw arguments, and exact cross-family order against the selected
-//! submit. This layer converts that carrier to the recovered shadow law, checks
-//! exact H/V constant-buffer bytes, and seals the materialized operations that
-//! the native executor will consume. Execution rechecks the seal before any
-//! bridge call, so post-preparation mutation fails without partial GPU work.
 
 use super::PreparedProductionD3dFrame;
 use crate::light_depth_projection::{
@@ -27,7 +19,6 @@ use snapshot::sha256::Sha256;
 pub struct PreparedS1ShadowExecution {
     pub carrier: S1ShadowCarrier,
     pub plan: Option<ShadowScreenChainPlan>,
-    /// Hash of canonical references plus the materialized operation/draw bytes.
     pub materialized_execution_sha256: Option<String>,
 }
 

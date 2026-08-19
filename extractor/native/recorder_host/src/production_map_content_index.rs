@@ -1,10 +1,3 @@
-//! Fail-closed content admission from authenticated static-map programs.
-//!
-//! The selected frame's `ordered_content_keys` are the only content route.
-//! `pass_token` is diagnostic and never selects a semantic role. Each admitted
-//! key is bound to the sealed whole-program identity and reopened through the
-//! selected launch VFS before promotion.
-
 use portable_content_manifest::effective_vfs::EffectiveVfs;
 use portable_content_manifest::{
     normalize_game_relative_path, windows_collision_key, ContentManifest, UsedContentKey,
@@ -27,11 +20,6 @@ pub struct StaticProgramContentObservation {
     pub content: UsedContentKey,
 }
 
-/// Resolve the exact file identities named by the selected-Present O05
-/// carrier. The carrier may classify only entity submissions already present
-/// in the production frame; this function merely adds their exact source,
-/// entity-asset, and mesh winners to the portable content manifest under the
-/// O05 consumer.
 pub fn resolve_authenticated_o05_building_content<'a>(
     vfs: &EffectiveVfs,
     frames: impl IntoIterator<Item = &'a ProductionRenderFrame>,
@@ -49,8 +37,7 @@ pub fn resolve_authenticated_o05_building_content<'a>(
         frame
             .validate()
             .map_err(|error| format!("O05 production frame is invalid: {error}"))?;
-        if frame.authority.effective_vfs_manifest_sha256
-            != manifest.effective_vfs_manifest_sha256
+        if frame.authority.effective_vfs_manifest_sha256 != manifest.effective_vfs_manifest_sha256
             || frame.authority.effective_vfs_manifest_sha256 != vfs.authority_manifest_sha256()
         {
             return Err("O05 frame, manifest, and selected VFS authorities differ".into());
@@ -59,9 +46,9 @@ pub fn resolve_authenticated_o05_building_content<'a>(
             continue;
         };
         let content = std::iter::once(&o05.map_buildings_source).chain(
-            o05.records.iter().flat_map(|record| {
-                record.entity_asset.iter().chain(record.mesh.iter())
-            }),
+            o05.records
+                .iter()
+                .flat_map(|record| record.entity_asset.iter().chain(record.mesh.iter())),
         );
         for expected in content {
             let resolved = vfs.resolve_required(
@@ -86,9 +73,6 @@ pub fn resolve_authenticated_o05_building_content<'a>(
     Ok(observations)
 }
 
-/// Resolve the exact content already sealed into typed selected-Present HUD
-/// commands. This is the recorder-side half of A25 font/icon portability; it
-/// admits no stable-name or path-search fallback.
 pub fn resolve_authenticated_ui_pass_content<'a>(
     vfs: &EffectiveVfs,
     frames: impl IntoIterator<Item = &'a ProductionRenderFrame>,
@@ -106,8 +90,7 @@ pub fn resolve_authenticated_ui_pass_content<'a>(
         frame
             .validate()
             .map_err(|error| format!("UI-pass frame is invalid: {error}"))?;
-        if frame.authority.effective_vfs_manifest_sha256
-            != manifest.effective_vfs_manifest_sha256
+        if frame.authority.effective_vfs_manifest_sha256 != manifest.effective_vfs_manifest_sha256
             || frame.authority.effective_vfs_manifest_sha256 != vfs.authority_manifest_sha256()
         {
             return Err("UI-pass frame, manifest, and selected VFS authorities differ".into());
@@ -140,7 +123,9 @@ pub fn resolve_authenticated_ui_pass_content<'a>(
                 );
                 match winner_by_pair.get(&pair) {
                     Some(existing) if existing != content => {
-                        return Err("selected-Present UI command content changed across frames".into())
+                        return Err(
+                            "selected-Present UI command content changed across frames".into()
+                        )
                     }
                     Some(_) => {}
                     None => {
@@ -158,9 +143,6 @@ pub fn resolve_authenticated_ui_pass_content<'a>(
     Ok(observations)
 }
 
-/// Resolve the exact ordered keys named by every authenticated selected-frame
-/// program. No fixed role vocabulary, diagnostic token, fallback, or omission
-/// row participates in selection.
 pub fn resolve_authenticated_static_program_content<'a>(
     vfs: &EffectiveVfs,
     frames: impl IntoIterator<Item = &'a ProductionRenderFrame>,
@@ -251,10 +233,6 @@ fn resolve_program_closure(
     let mut seen_content = BTreeSet::new();
     for key in &program.ordered_content_keys {
         let normalized = normalize_game_relative_path(key)?;
-        // "Repeats" is a Windows filesystem question, so it is asked on the
-        // collision key. The canonical form is a recorded identity and
-        // under-approximates NTFS, so two spellings of one file used to enter
-        // the closure as two entries.
         if normalized != *key || !seen_paths.insert(windows_collision_key(&normalized)?) {
             return Err(format!(
                 "static program {} repeats or does not canonically name content path {key}",
@@ -930,12 +908,18 @@ mod tests {
                 ordered_entity_submissions_sha256: "5".repeat(64),
                 ordered_direct_visual_producers_sha256: "6".repeat(64),
                 ordered_light_submissions_sha256: "7".repeat(64),
-                weather_state_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_membership_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_lifecycle_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_visibility_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                ordered_weather_packets_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-                weather_composition_sha256: "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+                weather_state_sha256:
+                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+                weather_membership_sha256:
+                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+                weather_lifecycle_sha256:
+                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+                weather_visibility_sha256:
+                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+                ordered_weather_packets_sha256:
+                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+                weather_composition_sha256:
+                    "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
             },
         };
         frame.validate().unwrap();

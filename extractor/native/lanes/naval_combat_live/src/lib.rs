@@ -1,22 +1,14 @@
-/// THE TEST BINARY'S ALLOCATOR IS A COUNTER, so this crate's frozen windows can
-/// be proved allocation-free by measurement and not only by reading their text.
-///
-/// `#[cfg(test)]` and therefore present in no shipped build: the collector
-/// cdylib still declares no `#[global_allocator]` at all, which is exactly why
-/// an allocation inside a stopped window is a hang -- Rust's System allocator
-/// is `HeapAlloc` on the PROCESS DEFAULT HEAP, the same heap the game's own
-/// threads reach through ordinary Win32 calls.
 #[cfg(test)]
 #[global_allocator]
 static FROZEN_WINDOW_ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
     freeze_window_audit::AllocationProbe;
 
-pub mod convoy_terminal_attribution;
-pub mod convoy_terminal_runtime;
 pub mod convoy_route_source;
-pub mod convoy_transport_attack;
+pub mod convoy_terminal_attribution;
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub mod convoy_terminal_hook_windows;
+pub mod convoy_terminal_runtime;
+pub mod convoy_transport_attack;
 pub mod domain49_50_naval_combat_live;
 pub mod extractor;
 pub mod member_epoch_runtime;
@@ -30,39 +22,35 @@ pub use convoy_terminal_attribution::{
     CarrierDecodeError as ConvoyTerminalCarrierDecodeError, CombatEpoch,
     ConvoyTerminalAttributionCarrier, EntityHandle as ConvoyTerminalEntityHandle,
     ExactCombatEpochResolver, ExactLiveRouteResolver, ExactMemory as ConvoyTerminalExactMemory,
-    LiveRouteResolution, PreparedA729Hook as PreparedA729ConvoyTerminalHook, RouteEndpoint,
-    RouteEndpointKind, RouteProducerKind, A729_CALL_BYTES, A729_CONTEXT_BYTES,
-    A729_CONTEXT_RVA, A729_EXE_SHA256, A729_HOOK_RESUME_RVA, A729_HOOK_RVA,
-    A729_TERMINAL_AGGREGATOR_RVA, ACTIVATION_COMPILED, CARRIER_FLAG_LIVE_ROUTE_EXACT,
-    CARRIER_FLAG_LIVE_ROUTE_MANAGER_EXACT,
-    CARRIER_LEN, CARRIER_MAGIC, CARRIER_VERSION, CFEX_MEMBER_BATTLE_SLOT_OFF,
-    CFEX_MEMBER_CLIENT_HANDLE_OFF, CFEX_MEMBER_CONVOY_HANDLE_OFF,
-    CFEX_MEMBER_CONVOY_INDEX_OFF, CFEX_MEMBER_OWNER_TAG_OFF, CFEX_MEMBER_STATE_OFF,
-    CFEX_MEMBER_VTABLE_RVA, D90_STATIC_AUTHORITY_MANIFEST_SHA256, GAME_ENTITY_TYPE_TAG,
-    MAX_COUNTRY_TAG_DB_ID, PrepareError as ConvoyTerminalPrepareError,
-    DISCOVERY_ONLY_CONVOY_CUSTODY_PROMOTABLE, TERMINAL_SUNK_STATE,
+    LiveRouteResolution, PrepareError as ConvoyTerminalPrepareError,
+    PreparedA729Hook as PreparedA729ConvoyTerminalHook, RouteEndpoint, RouteEndpointKind,
+    RouteProducerKind, A729_CALL_BYTES, A729_CONTEXT_BYTES, A729_CONTEXT_RVA, A729_EXE_SHA256,
+    A729_HOOK_RESUME_RVA, A729_HOOK_RVA, A729_TERMINAL_AGGREGATOR_RVA, ACTIVATION_COMPILED,
+    CARRIER_FLAG_LIVE_ROUTE_EXACT, CARRIER_FLAG_LIVE_ROUTE_MANAGER_EXACT, CARRIER_LEN,
+    CARRIER_MAGIC, CARRIER_VERSION, CFEX_MEMBER_BATTLE_SLOT_OFF, CFEX_MEMBER_CLIENT_HANDLE_OFF,
+    CFEX_MEMBER_CONVOY_HANDLE_OFF, CFEX_MEMBER_CONVOY_INDEX_OFF, CFEX_MEMBER_OWNER_TAG_OFF,
+    CFEX_MEMBER_STATE_OFF, CFEX_MEMBER_VTABLE_RVA, D90_STATIC_AUTHORITY_MANIFEST_SHA256,
+    DISCOVERY_ONLY_CONVOY_CUSTODY_PROMOTABLE, GAME_ENTITY_TYPE_TAG, MAX_COUNTRY_TAG_DB_ID,
+    TERMINAL_SUNK_STATE,
 };
 
 pub use convoy_terminal_runtime::{
     authenticate_evidence_a729_route_read, authenticate_exact_a729_route_read,
-    clear_convoy_terminal_resolver_snapshot,
-    current_convoy_terminal_publication_receipt, current_convoy_terminal_resolver_snapshot,
-    publish_convoy_terminal_resolver_bindings,
-    publish_convoy_terminal_resolver_snapshot,
-    publish_evidence_convoy_terminal_resolver_bindings,
+    clear_convoy_terminal_resolver_snapshot, current_convoy_terminal_publication_receipt,
+    current_convoy_terminal_resolver_snapshot, publish_convoy_terminal_resolver_bindings,
+    publish_convoy_terminal_resolver_snapshot, publish_evidence_convoy_terminal_resolver_bindings,
     try_current_convoy_terminal_resolver_snapshot, AuthenticatedLiveRouteBinding,
     ResolverPublicationReceipt, ResolverSnapshot,
 };
 
 pub use convoy_route_source::{
-    read_exact_a729_client_route, ExactA729RouteRead,
-    RouteSourceError as ConvoyRouteSourceError, A729_CLEND_LEASE_EXCHANGE_VTABLE_RVA,
-    A729_CNAVAL_UNIT_TRANSFER_VTABLE_RVA, A729_REFERENCE_REGISTRY_DEFAULT_RVA,
-    A729_REFERENCE_REGISTRY_LARGE_RVA, A729_REFERENCE_REGISTRY_SMALL_TABLE_RVA,
-    A729_REFERENCE_RESOLVER_RVA,
-    CLEND_LEASE_EXCHANGE_DESTINATION_STATE_PTR_OFF,
-    CLEND_LEASE_EXCHANGE_ORIGIN_STATE_PTR_OFF, CNAVAL_UNIT_TRANSFER_SOURCE_PROVINCE_OFF,
-    CNAVAL_UNIT_TRANSFER_TARGET_PROVINCE_OFF, CSTATE_DATABASE_ID_OFF,
+    read_exact_a729_client_route, ExactA729RouteRead, RouteSourceError as ConvoyRouteSourceError,
+    A729_CLEND_LEASE_EXCHANGE_VTABLE_RVA, A729_CNAVAL_UNIT_TRANSFER_VTABLE_RVA,
+    A729_REFERENCE_REGISTRY_DEFAULT_RVA, A729_REFERENCE_REGISTRY_LARGE_RVA,
+    A729_REFERENCE_REGISTRY_SMALL_TABLE_RVA, A729_REFERENCE_RESOLVER_RVA,
+    CLEND_LEASE_EXCHANGE_DESTINATION_STATE_PTR_OFF, CLEND_LEASE_EXCHANGE_ORIGIN_STATE_PTR_OFF,
+    CNAVAL_UNIT_TRANSFER_SOURCE_PROVINCE_OFF, CNAVAL_UNIT_TRANSFER_TARGET_PROVINCE_OFF,
+    CSTATE_DATABASE_ID_OFF,
 };
 
 pub use convoy_transport_attack::{
@@ -74,29 +62,27 @@ pub use convoy_transport_attack::{
     BATCH_HEADER_LEN as CONVOY_TRANSPORT_ATTACK_BATCH_HEADER_LEN,
     BATCH_MAGIC as CONVOY_TRANSPORT_ATTACK_BATCH_MAGIC,
     BATCH_ROW_LEN as CONVOY_TRANSPORT_ATTACK_BATCH_ROW_LEN,
-    BATCH_VERSION as CONVOY_TRANSPORT_ATTACK_BATCH_VERSION,
-    DOMAIN_CONVOY_TRANSPORT_ATTACK, DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME,
-    MAX_BATCH_ROWS as MAX_CONVOY_TRANSPORT_ATTACK_BATCH_ROWS,
+    BATCH_VERSION as CONVOY_TRANSPORT_ATTACK_BATCH_VERSION, DOMAIN_CONVOY_TRANSPORT_ATTACK,
+    DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME, MAX_BATCH_ROWS as MAX_CONVOY_TRANSPORT_ATTACK_BATCH_ROWS,
 };
 
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub use convoy_terminal_hook_windows::{
     abort_partial_install_and_uninstall as abort_partial_convoy_terminal_install,
-    capture_h_convoy_control_raw, convoy_terminal_evidence_activation_enabled,
-    commit_convoy_terminal_events, commit_convoy_transport_attack_payload,
+    capture_h_convoy_control_raw, commit_convoy_terminal_events,
+    commit_convoy_transport_attack_payload, convoy_terminal_evidence_activation_enabled,
     convoy_terminal_hook_heartbeat, convoy_terminal_hook_installed,
     convoy_terminal_hook_lifecycle_pending, install_convoy_terminal_evidence_hook,
     install_convoy_terminal_hook, installed_hook_receipt, peek_convoy_terminal_events,
     peek_convoy_transport_attack_payload, publish_h_convoy_evidence_game_state,
     read_live_a729_client_route, rollback_convoy_terminal_events,
-    rollback_convoy_transport_attack_payload,
-    seal_and_drain_convoy_transport_attack_payload, take_h_convoy_positive_raw,
-    take_released_hook_receipt, uninstall_convoy_terminal_hook, ConvoyTerminalDrain,
-    ConvoyTerminalDrainReservation, ConvoyTerminalHookHeartbeat, ConvoyTerminalHookTelemetry,
-    ConvoyTerminalInstallError, ConvoyTerminalPayloadReservation, ConvoyTerminalSealError,
-    ConvoyTerminalValidatedEvent, D70MutationKind, D70MutationProof, HConvoyControlRawObservation,
-    HConvoyD70Identity, HConvoyD70Row, HConvoyPositiveRawObservation, HConvoyRouteRawObservation,
-    H_CONVOY_EVIDENCE_ACTIVATION_ENV,
+    rollback_convoy_transport_attack_payload, seal_and_drain_convoy_transport_attack_payload,
+    take_h_convoy_positive_raw, take_released_hook_receipt, uninstall_convoy_terminal_hook,
+    ConvoyTerminalDrain, ConvoyTerminalDrainReservation, ConvoyTerminalHookHeartbeat,
+    ConvoyTerminalHookTelemetry, ConvoyTerminalInstallError, ConvoyTerminalPayloadReservation,
+    ConvoyTerminalSealError, ConvoyTerminalValidatedEvent, D70MutationKind, D70MutationProof,
+    HConvoyControlRawObservation, HConvoyD70Identity, HConvoyD70Row, HConvoyPositiveRawObservation,
+    HConvoyRouteRawObservation, H_CONVOY_EVIDENCE_ACTIVATION_ENV,
 };
 
 pub use domain49_50_naval_combat_live::{
@@ -125,37 +111,8 @@ pub use member_epoch_runtime::{
     MemberEpochResolution, MemberEpochSnapshot, MAX_ACTIVE_MEMBER_BINDINGS,
 };
 
-/// EVERY HELD-FREEZE WINDOW IN THIS CRATE, READ.
-///
-/// This crate takes `inline_detour::freeze_process()` directly, which stops
-/// every other thread of the game. Until the guard drops, an allocation or a
-/// lock here is a HANG and not a slow path: the lock may be held by a thread
-/// that can no longer run, and the collector declares no `#[global_allocator]`,
-/// so Rust's allocator is `HeapAlloc` on the PROCESS DEFAULT HEAP -- the same
-/// heap the game's own threads reach through ordinary Win32 calls.
-///
-/// `inline_detour` has enforced this on its own windows for a long time. This
-/// crate did not, and the audit found real defects the first time it ran.
-///
-/// What production change would make this fail? Building an error string,
-/// collecting an iterator, taking a mutex, or growing a vector between the
-/// freeze and its drop -- at any call depth inside this crate, in any file
-/// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    /// How many findings this crate still carries, and WHICH ones.
-    ///
-    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted
-    /// findings, so any change to which ones exist fails here even when there
-    /// are the same number of them. Both may only move when a human decides
-    /// they should, and only DOWNWARD.
-    ///
-    /// IT IS ZERO. The observer-counter reset (two mutexes) moved above the
-    /// freeze, the frozen re-validation asks `a729_call_window_is_exact`
-    /// instead of rebuilding a prepared object whose activation-blocker `Vec`
-    /// the caller discarded, and the rollback hands back `Copy` reasons that
-    /// the caller renders once the game is running again.
     const OPEN_FINDINGS: usize = 0;
     const OPEN_FINDINGS_FINGERPRINT: u64 = 14695981039346656037u64;
 

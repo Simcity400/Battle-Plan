@@ -1,10 +1,4 @@
-//! XMAP12 cities, buildings, and ambient/fixed-object production adapter.
-//!
 //! City population is regenerated from admitted effective installed content.
-//! Building presentation and ambient lifecycle are accepted only through their
-//! authenticated per-frame carriers. Missing carriers produce one explicit
-//! unavailable family row; logical D48 values, recorder draws, and defaults
-//! are never substituted.
 
 use crate::{
     prepare_xmap12_buildings, prepare_xmap12_cities, prepare_xmap12_fixed_objects,
@@ -160,9 +154,6 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
                     payload_schema: XMAP12_RENDER_FRAME_SCHEMA.into(),
                     producer_registration_sha256: registration,
                     payload_sha256: prepared.deterministic_sha256.clone(),
-                    // XMAP12 consumes MainScene and XMAP09's L03 pass. Neither
-                    // owns a new assigned-stage edge, so no operation is
-                    // fabricated here.
                     ordered_operations: Vec::new(),
                     ordered_used_content,
                 },

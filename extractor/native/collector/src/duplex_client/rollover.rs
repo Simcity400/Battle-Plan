@@ -1,11 +1,3 @@
-//! Collector-owned logical-stream rollover state.
-//!
-//! The coordinator has no pipe or hook authority.  It proves the collector
-//! half of the CRP1/CRA1 transaction over a caller-owned sink: pause data
-//! production, drain the old stream, await an exact acknowledgement, create the
-//! new sequence-zero CID1 stream, then await the second CFA1 barrier before
-//! world records resume.
-
 use compact_contract::campaign_identity::ValidatedCid1;
 use compact_contract::campaign_rollover::{
     RolloverAckV1, RolloverDecision, RolloverProposeV1, RolloverReason,
@@ -21,13 +13,8 @@ pub enum CollectorRolloverPhase {
     Failed,
 }
 
-/// Collector data-sink boundary.  The concrete H4CR writer remains the only
-/// owner of sequence allocation and durable bytes.
 pub trait CollectorRolloverSink {
-    /// Stop accepting capture records and durably drain the current stream.
     fn pause_and_drain(&mut self, logical_stream_id: u64) -> Result<u64, String>;
-    /// Create the next logical sink and write the candidate CID1 as sequence 0.
-    /// No ordinary record may be written until `resume_after_header_ack`.
     fn start_new_stream(
         &mut self,
         logical_stream_id: u64,
@@ -95,7 +82,6 @@ impl CollectorRolloverCoordinator {
         self.phase
     }
 
-    /// Pause/drain and construct the exact proposal to send on H4CT.
     pub fn prepare_proposal<S: CollectorRolloverSink>(
         &mut self,
         sink: &mut S,
@@ -140,8 +126,6 @@ impl CollectorRolloverCoordinator {
         Ok(proposal)
     }
 
-    /// Consume the exact CRA1.  Acceptance writes the new CID1 and remains
-    /// paused at the second header acknowledgement barrier.
     pub fn accept_rollover_ack<S: CollectorRolloverSink>(
         &mut self,
         sink: &mut S,

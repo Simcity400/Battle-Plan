@@ -1,9 +1,5 @@
 #![recursion_limit = "512"]
 
-//! Integration tests over synthetic fixtures: a 3-hour snapshot store
-//! (directory and packed `.battleplan`), a compact-stream-only production
-//! container that must fail closed, scrub semantics, and the Absent /
-//! Unobtained / Measured trichotomy.
 
 use replay_core::world::FactionRosterStatus;
 use replay_core::{
@@ -45,10 +41,7 @@ fn unique_temp_dir(tag: &str) -> PathBuf {
     dir
 }
 
-// ---------------------------------------------------------------------------
 // fixture: 3 hours (100, 101, 103) exercising ownership change, division
-// move + disappearance, mirror-vs-walk fallback, and the leaf trichotomy
-// ---------------------------------------------------------------------------
 
 fn snapshot_100() -> Value {
     json!({
@@ -68,7 +61,6 @@ fn snapshot_100() -> Value {
         },
         "countries": {
             "GER": {
-                // measured ZERO stability: must stay Measured(0.0), never Unobtained
                 "politics": { "stability": 0.0, "war_support": 0.55,
                               "political_power": 12.5, "command_power": 44.0,
                               "ruling_party": "fascism", "is_human": true,
@@ -225,7 +217,6 @@ fn snapshot_101() -> Value {
         },
         "countries": {
             "GER": {
-                // same leaf UNOBTAINED here (explicit null) vs measured 0.0 at hour 100
                 "politics": { "stability": null, "war_support": 0.55,
                               "political_power": 13.0, "command_power": null,
                               "ruling_party": "fascism", "faction": { "name": null, "is_leader": null },
@@ -253,8 +244,6 @@ fn snapshot_101() -> Value {
               "strength": 0.9, "organisation": 25.0, "in_combat": true },
             { "div_id": 6, "owner": "GER", "location_province": 1001,
               "strength": 0.8, "organisation": null },
-            // div_type null (unobtained, not absent): bare-id identity with a
-            // coverage warning, never silent
             { "div_id": 7, "div_type": null, "owner": "SOV", "location_province": 2000,
               "strength": 1.0, "equipment": null }
         ],
@@ -272,8 +261,6 @@ fn snapshot_101() -> Value {
         },
         "order_of_battle": null,
         "visibility": null,
-        // mirrors explicitly null -> the typed views must fall back to
-        // walking states.*.owner / provinces.*.controller
         "map": { "owner_by_state": null, "control_by_province": null }
     })
 }
@@ -296,8 +283,6 @@ fn snapshot_103() -> Value {
         },
         "countries": {
             "GER": {
-                // "stability" key ABSENT entirely; war_support present but
-                // wrong-typed (string) -> Unobtained + coverage warning
                 "politics": { "war_support": "high",
                               "political_power": 20.0, "ruling_party": "fascism" },
                 "economy": { "fuel": { "current": 900.0, "max": 5000.0 } },
@@ -309,8 +294,6 @@ fn snapshot_103() -> Value {
                 "economy": { "fuel": { "current": null, "max": null } },
                 "military": { "division_count": 0 }
             },
-            // present-but-null country: leaves are unobtained, tag must not
-            // vanish from the typed view
             "ITA": null
         },
         "states": { "10": { "owner": "SOV" }, "20": { "owner": "GER" }, "30": { "owner": null } },
@@ -320,8 +303,6 @@ fn snapshot_103() -> Value {
             { "div_id": 6, "owner": "GER", "location_province": 1001,
               "strength": 0.8, "organisation": null }
         ],
-        // malformed attacker element: the WHOLE list must fail closed to
-        // Unobtained (a partial list would be a fabricated participant set)
         "combats": [
             { "combat_id": null, "kind": "land", "location_province": 1001,
               "attackers": [6, "bad"], "defenders": [] }
@@ -341,13 +322,11 @@ fn fixture_index() -> Value {
             { "hour_index": 100, "date": "1936.1.5.4", "file": "000000000100.snapshot.json" },
             { "hour_index": 101, "date": "1936.1.5.5", "file": "000000000101.snapshot.json" },
             { "hour_index": 103, "date": "1936.1.5.7", "file": "000000000103.snapshot.json" },
-            // no hour_index: must be skipped with a warning, never guessed
             { "file": "orphan.snapshot.json" }
         ]
     })
 }
 
-/// `(file name, bytes, pack role, pack hour_index)` for every fixture file.
 fn fixture_files() -> Vec<(String, Vec<u8>, &'static str, Option<i64>)> {
     vec![
         (
@@ -403,11 +382,6 @@ fn write_container(path: &Path) {
 }
 
 fn open_timeline(path: &Path) -> WorldTimeline {
-    // The store was written moments ago, so a real-time scanner may still hold
-    // its files; the guards are retained across the open rather than probed and
-    // dropped. THE TREE FORM, because most callers hand this a directory store
-    // and the loader opens files inside it that this function never names — a
-    // single-path guard on the directory would not hold one of them, and on
     // Windows could not even be acquired.
     portable_test_fs_retry::with_tree_read_guard(path, || {
         WorldTimeline::open(open_recording(path).unwrap()).unwrap()
@@ -501,8 +475,6 @@ fn write_faction_roster_status_store(root: &Path) {
             "diplomacy_world": { "domain53_extra": extra }
         });
         if hour == 20 {
-            // A stale legacy value must never override an authenticated modern
-            // unavailable status from the same serialized frame.
             snapshot["diplomacy_live"] =
                 json!({"faction_members": {"axis": ["GER", "ITA"]}});
         }
@@ -561,14 +533,7 @@ fn write_legacy_faction_roster_store(root: &Path) {
     fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// typed views + trichotomy
-// ---------------------------------------------------------------------------
 
-// Extractor-side malformed-domain degradation is covered by recorder_host's
-// stream_fold/world_fold tests. This workspace owns only the portable,
-// serialized boundary below; replay_core tests must never compile or execute an
-// extractor workspace as a nested test dependency.
 #[test]
 fn domain53_faction_roster_status_survives_open_into_typed_view() {
     let root = unique_temp_dir("faction_roster_status");
@@ -688,8 +653,6 @@ fn dir_store_typed_views_and_trichotomy() {
     let f101 = timeline.frame(101).unwrap();
     let f103 = timeline.frame(103).unwrap();
 
-    // map control: mirror preferred, null mirror falls back to domain walk,
-    // and the source used is recorded
     assert_eq!(f100.owner_by_state_source(), MapLayerSource::MapMirror);
     assert_eq!(f101.owner_by_state_source(), MapLayerSource::DomainWalk);
     assert_eq!(f103.owner_by_state_source(), MapLayerSource::MapMirror);
@@ -721,8 +684,6 @@ fn dir_store_typed_views_and_trichotomy() {
         Leaf::Measured("SOV".to_string())
     );
 
-    // division 5:1 moves (1000 -> 1001) then disappears; division 6 has no
-    // div_type so its identity falls back to the bare id
     let div = |frame: &WorldFrame, uid: &str| {
         frame.divisions().iter().find(|d| d.div_uid == uid).cloned()
     };
@@ -735,9 +696,8 @@ fn dir_store_typed_views_and_trichotomy() {
     assert!(div(&f103, "5:1").is_none());
     let d6 = div(&f100, "6").unwrap();
     assert_eq!(d6.owner, Leaf::Measured("GER".to_string()));
-    assert_eq!(d6.organisation, Leaf::Unobtained); // explicit null
-    assert_eq!(d6.in_combat, Leaf::Absent); // key never captured
-                                            // div_type null (not absent): bare-id identity, surfaced as a warning
+    assert_eq!(d6.organisation, Leaf::Unobtained);
+    assert_eq!(d6.in_combat, Leaf::Absent);
     let d7 = div(&f101, "7").unwrap();
     assert_eq!(d7.owner, Leaf::Measured("SOV".to_string()));
     assert!(f101
@@ -745,7 +705,6 @@ fn dir_store_typed_views_and_trichotomy() {
         .iter()
         .any(|w| w.contains("divisions[2].div_type is null")));
 
-    // combats
     assert!(f100.combats().is_empty());
     assert_eq!(f101.combats().len(), 1);
     let combat = &f101.combats()[0];
@@ -754,8 +713,6 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(combat.location_province, Leaf::Measured(1001));
     assert_eq!(combat.attackers, Leaf::Measured(vec![5]));
     assert_eq!(combat.defenders, Leaf::Measured(vec![7]));
-    // a malformed participant element poisons the WHOLE list (fail-closed),
-    // while a measured-empty list stays Measured([])
     assert_eq!(f103.combats().len(), 1);
     let bad_combat = &f103.combats()[0];
     assert_eq!(bad_combat.combat_id, Leaf::Unobtained);
@@ -766,7 +723,6 @@ fn dir_store_typed_views_and_trichotomy() {
         .iter()
         .any(|w| w.contains("combats[0].attackers[1]")));
 
-    // country core trichotomy: measured 0.0 vs explicit null vs absent key
     let ger_100 = f100.country("GER").unwrap();
     let ger_101 = f101.country("GER").unwrap();
     let ger_103 = f103.country("GER").unwrap();
@@ -777,28 +733,23 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_ne!(ger_101.stability, ger_103.stability);
     assert_ne!(ger_100.stability, ger_103.stability);
 
-    // wrong-typed leaf: Unobtained in the view PLUS a coverage warning
     assert_eq!(ger_103.war_support, Leaf::Unobtained);
     assert!(f103
         .coverage_warnings()
         .iter()
         .any(|w| w.contains("countries.GER.politics.war_support")));
-    // present-but-null country entry: all leaves unobtained, tag kept
     let ita_103 = f103.country("ITA").unwrap();
     assert_eq!(ita_103.stability, Leaf::Unobtained);
     assert_eq!(ita_103.division_count, Leaf::Unobtained);
-    assert!(f103.country("USA").is_none()); // absent stays absent
+    assert!(f103.country("USA").is_none());
 
-    // fully well-formed frames carry no coverage warnings
     assert!(
         f100.coverage_warnings().is_empty(),
         "unexpected hour-100 coverage warnings: {:?}",
         f100.coverage_warnings()
     );
-    // hour 101's only finding is the null div_type identity degradation
     assert_eq!(f101.coverage_warnings().len(), 1);
 
-    // remaining core values
     assert_eq!(ger_100.ruling_party, Leaf::Measured("fascism".to_string()));
     assert_eq!(ger_100.fuel_current, Leaf::Measured(1000.0));
     assert_eq!(ger_100.fuel_max, Leaf::Measured(5000.0));
@@ -808,8 +759,6 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(sov_100.fuel_current, Leaf::Unobtained);
     assert_eq!(sov_100.division_count, Leaf::Measured(0));
 
-    // New A3 typed views: unit positions/composition, metadata, weather,
-    // diplomacy, topbar, buildings, and country-POV visibility.
     assert_eq!(f100.division_units_status(), ViewStatus::Present);
     let d5_unit = f100
         .division_units()
@@ -911,13 +860,6 @@ fn dir_store_typed_views_and_trichotomy() {
         ger_identity.ruling_ideology,
         Leaf::Measured("fascism".to_string())
     );
-    // Hour 101's `extra` object is `{cosmetic_tag: null, nukes_total: null,
-    // nukes_ready_total: null}` — three nulls that do NOT mean the same thing.
-    // `cosmetic_tag` is the one nullable leaf: its null is the producer's
-    // MEASURED "this country has no cosmetic override" (D18 marker 1), so it
-    // reads `Measured(None)`. Its two siblings in the same object are ordinary
-    // scalars whose null is a gap, and they still read `Unobtained` — which is
-    // what makes this pair the trichotomy proof for GP-F23.
     assert_eq!(
         f101.country_identity("GER").unwrap().cosmetic_tag,
         Leaf::Measured(None)
@@ -975,8 +917,6 @@ fn dir_store_typed_views_and_trichotomy() {
         state_10_buildings.state_buildings["arms_factory"].damaged,
         Leaf::Measured(true)
     );
-    // `states.<id>.province_buildings` is the state's province-scope buildings
-    // summed BY TYPE, which is the shape the recorder emits.
     assert_eq!(
         state_10_buildings.province_building_totals["naval_base"].healthy_level,
         Leaf::Measured(2.0)
@@ -1010,7 +950,6 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(f100.visibility_for("SOV").status, ViewStatus::DomainAbsent);
     assert_eq!(f101.visibility_status(), ViewStatus::DomainUnavailable);
 
-    // provenance channels + notes
     let prov = f100.provenance();
     let collector = &prov.channels["collector"];
     assert_eq!(collector.captured, Leaf::Measured(true));
@@ -1019,7 +958,6 @@ fn dir_store_typed_views_and_trichotomy() {
     assert_eq!(prov.channels["save"].domains, vec!["economy".to_string()]);
     assert_eq!(prov.notes, vec!["synthetic fixture".to_string()]);
 
-    // raw domains stay reachable, untouched
     assert!(f100.domain("states").is_some());
     assert!(f100.domain("nonexistent_domain").is_none());
 
@@ -1089,8 +1027,6 @@ fn typed_view_status_distinguishes_absent_from_unavailable_domains() {
     assert_eq!(absent.weather_status(), ViewStatus::DomainAbsent);
     assert_eq!(unavailable.weather_status(), ViewStatus::DomainUnavailable);
 
-    // The faction completeness leaf is safety-critical: without a modern status
-    // it makes the aggregate diplomacy view unavailable, never measured-empty.
     assert_eq!(absent.diplomacy().status, ViewStatus::DomainUnavailable);
     assert_eq!(
         unavailable.diplomacy().status,
@@ -1118,9 +1054,6 @@ fn typed_view_status_distinguishes_absent_from_unavailable_domains() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// ---------------------------------------------------------------------------
-// dir store <-> container equivalence
-// ---------------------------------------------------------------------------
 
 fn assert_frames_equal(a: &WorldFrame, b: &WorldFrame) {
     assert_eq!(a.hour_index(), b.hour_index());
@@ -1278,9 +1211,6 @@ fn incompatible_replay_index_schema_version_fails_clearly() {
     portable_test_fs_retry::remove_dir_all(root).unwrap();
 }
 
-// ---------------------------------------------------------------------------
-// compact-stream-only production container must fail closed
-// ---------------------------------------------------------------------------
 
 #[test]
 fn compact_stream_container_fails_closed() {
@@ -1291,7 +1221,6 @@ fn compact_stream_container_fails_closed() {
         "schema_version": "1",
         "snapshots": []
     });
-    // Mirrors extractor/native/recorder_host's production layout.
     let timeline = json!({
         "format": "hoi4_compact_stream_timeline_v1",
         "stream_format": "compact",
@@ -1363,8 +1292,6 @@ fn compact_stream_container_fails_closed() {
         .err()
         .expect("must fail closed");
     match &err {
-        // R18-5: compact-stream evidence selects the typed subclass so the
-        // snapshot-native preflight can waive it without matching text.
         SourceError::UnsupportedCompactStreamOnly(msg) => {
             assert!(msg.contains("collector_compact_stream"), "msg: {msg}");
             assert!(msg.contains("compact"), "msg: {msg}");
@@ -1475,10 +1402,6 @@ fn explicit_portable_prefolder_wires_a_stream_only_container() {
     let path = root.join("compact_prefolded.battleplan");
     fs::write(&path, pack(game, &entries, &identity, true).unwrap()).unwrap();
 
-    // R18-5: the stream-only container carries compact evidence, so ordinary
-    // open refuses with the typed compact-stream-only subclass.
-    // ONE guard across BOTH openers: the second is the first consumer that has
-    // to succeed, so releasing between them would leave it exposed.
     let source = portable_test_fs_retry::with_tree_read_guard(&path, || {
         assert!(matches!(
             open_recording(&path),
@@ -1676,9 +1599,6 @@ fn portable_content_manifest_fixture() -> replay_core::ContentManifest {
             ("borderless".into(), "true".into()),
             ("display_mode".into(), "borderless_fullscreen".into()),
             ("settings_file_sha256".into(), "aa".repeat(32)),
-            // The authority that proved these settings travels beside them, in
-            // its own map: a reader is told how well they were proven and is
-            // never asked to reproduce that statement.
             ("settings_authority".into(), "pre_launch_bracketed".into()),
         ]),
         required_content: Vec::new(),
@@ -1729,11 +1649,6 @@ fn absent_static_artifact_roster() -> Vec<Value> {
     .collect()
 }
 
-/// Returns the container path AND a retained read handle on it.
-///
-/// Every caller opens it on the next statement; on Windows that is exactly when
-/// a real-time scanner still holds the freshly written file. Bind the guard so
-/// it lives for the length of the test.
 #[must_use = "the scanner guard must be held until the container is opened"]
 fn write_portable_metadata_container(
     root: &Path,
@@ -1810,8 +1725,6 @@ fn write_portable_metadata_container(
         .unwrap(),
     )
     .unwrap();
-    // The caller opens this on its next statement; the guard is what keeps a
-    // scanner from getting there first.
     let guard = portable_test_fs_retry::open(&path)
         .expect("hold the container open across the scanner's window");
     (path, guard)
@@ -1944,8 +1857,6 @@ fn write_metadata_container_without_timeline(
     path
 }
 
-/// Canonicalise the way every static-artifact generator does before it stamps
-/// its own `artifact_sha256`.
 fn canonical_json(value: &Value) -> Value {
     match value {
         Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
@@ -1962,8 +1873,6 @@ fn canonical_json(value: &Value) -> Value {
     }
 }
 
-/// Stamp the embedded self-hash the way the generator does, and return the
-/// packable bytes.
 fn stamped_static_artifact_bytes(mut semantic: Value) -> Vec<u8> {
     let mut covered = semantic.clone();
     covered
@@ -1977,14 +1886,7 @@ fn stamped_static_artifact_bytes(mut semantic: Value) -> Vec<u8> {
     serde_json::to_vec(&semantic).expect("artifact serialises")
 }
 
-/// The three research catalogs `admit_static_research_catalogs` joins, in the
-/// exact shapes their generators emit, small enough to read.
 fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 4] {
-    // The authored start years these two technologies really carry in vanilla
-    // (`common/technologies/industry.txt`, `infantry.txt`), which schema v2 of
-    // the packaged artifact emits. `game_ui` authenticates the engine's
-    // ahead-of-time quartet against this number, so it has to survive the
-    // container round trip intact rather than only the generator's own output.
     const START_YEARS: [(&str, i64); 2] = [("construction1", 1936), ("infantry_weapons", 1918)];
     const IDS: [&str; 2] = ["construction1", "infantry_weapons"];
     let mut keys = serde_json::Map::new();
@@ -2060,11 +1962,6 @@ fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 
                 },
             })),
         ),
-        // NOT a research catalog: the A34 decision catalog rides along because
-        // it is admitted by a SECOND, independent loader
-        // (`read_packaged_decision_catalog`) that also has to accept the
-        // attach-time epoch. A fixture carrying only the three research
-        // catalogs cannot see that loader refuse.
         (
             "decisions_static_definitions",
             "static/decisions_static_definitions/decision_definitions_catalog.json",
@@ -2097,8 +1994,6 @@ fn research_catalog_artifact_bytes() -> [(&'static str, &'static str, Vec<u8>); 
     ]
 }
 
-/// A KIND C attach-time content proof over exactly the artifacts named, in the
-/// shape `recorder_host::attach_content_proof` seals.
 fn attach_time_content_proof(joins: Vec<Value>, refusals: Vec<Value>) -> Value {
     let layers = vec![json!({
         "ordinal": 0,
@@ -2140,25 +2035,6 @@ fn attach_time_content_proof(joins: Vec<Value>, refusals: Vec<Value>) -> Value {
     })
 }
 
-/// THE END-TO-END BLOCKER THIS CLOSES. The shipped `collector_record` cannot
-/// finalize a portable content manifest — the pre-`ResumeThread` actuator is
-/// compiled out — so every real recording wrote
-/// `content_manifest_digest_sha256: null` on every static-artifact row, every
-/// packaged catalog was declined, and `admit_static_research_catalogs` refused
-/// with "recording has no authenticated required static artifact
-/// localisation_join" on a recording that physically carried it. The measured
-/// consequence on t54 was that `observer_research_from_frame` executed 0 times.
-///
-/// This drives the whole chain the fix restores, on a real container: recorder
-/// roster + index + container role + KIND C proof -> `open_recording` ->
-/// `static_artifact()` -> `admit_static_research_catalogs`.
-///
-/// kills: dropping the attach-time route (case 1 stops admitting and the
-/// catalogs stop building); admitting an artifact the proof never joined or
-/// joined in a different build (cases 2 and 3 stop being declined); trusting
-/// the epoch a row states instead of re-deriving it from the proof (case 4
-/// stops refusing); and admitting anything at all from an unsettled window
-/// (case 5 stops refusing).
 #[test]
 fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() {
     let root = unique_temp_dir("attach_time_content_epoch");
@@ -2289,8 +2165,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
         let out = root.join(format!("{tag}.battleplan"));
         fs::write(
             &out,
-            // NO `content_manifest`: exactly what a late attach seals. The
-            // epoch comes from the attach-time proof instead.
             pack(
                 &game,
                 &entries,
@@ -2306,7 +2180,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
         out
     };
 
-    // 1. THE FIX, END TO END.
     let admitted = build("admitted", &|_, _| {});
     let source = portable_test_fs_retry::with_tree_read_guard(&admitted, || {
         open_recording(&admitted)
@@ -2316,7 +2189,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
         "a KIND C recording opens — including its A34 decision catalog, whose own loader used to \
          demand a portable content manifest no shipped recorder can produce",
     );
-    // The second admission path, on the same epoch.
     assert!(
         source.decision_catalog().is_some(),
         "the attach-time epoch must admit the packaged A34 decision catalog"
@@ -2338,8 +2210,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     let technology_sharing = source
         .static_artifact("technology_sharing_static")
         .expect("the attach-time epoch binds technology_sharing_static");
-    // Every packaged row carries the SAME epoch, which is the cross-artifact
-    // equality `admit_static_research_catalogs` itself checks.
     let catalogs = replay_core::admit_static_research_catalogs(
         localisation,
         idea_technology,
@@ -2356,10 +2226,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
         catalogs.technology_display_name("construction1"),
         Some("construction1 display name")
     );
-    // The authored start year reaches the consumer through the real container,
-    // not just through the generator: this is the number `game_ui` checks the
-    // engine's derived ahead-of-time quartet against, and it was absent from
-    // every packaged catalog until schema v2.
     assert_eq!(
         catalogs
             .idea_technology()
@@ -2378,8 +2244,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     );
     drop(source);
 
-    // 2. An artifact the proof REFUSED is declined by name, and its neighbours
-    //    are still admitted — the epoch is not a single recording-wide verdict.
     let refused = build("refused", &|proof, joins| {
         joins.retain(|join| join["role"] != json!("technology_sharing_static"));
         proof["refused_artifacts"] = json!([{
@@ -2399,8 +2263,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     );
     drop(source);
 
-    // 3. A DIFFERENT BUILD of an artifact the proof joined is declined: the
-    //    join names the digest it read, and the package carries other bytes.
     let restamped = build("restamped", &|_, joins| {
         for join in joins.iter_mut() {
             if join["role"] == json!("idea_tech_loc_xref_static") {
@@ -2413,9 +2275,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     assert!(source.static_artifact("localisation_join").is_some());
     drop(source);
 
-    // 4. A TAMPERED PROOF whose layer stack does not hash to its declared
-    //    digest yields no epoch, so every row claiming one is a contradiction
-    //    and the RECORDING is refused — not quietly declined.
     let tampered = build("tampered", &|proof, _| {
         proof["layer_stack_sha256"] = json!("22".repeat(32));
     });
@@ -2428,7 +2287,6 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
         "{message}"
     );
 
-    // 5. AN UNSETTLED WINDOW describes no one install, so it binds nothing.
     let unsettled = build("unsettled", &|proof, _| {
         proof["window_settled"] = json!(false);
     });
@@ -2438,28 +2296,10 @@ fn the_attach_time_content_epoch_admits_packaged_research_catalogs_end_to_end() 
     assert!(format!("{error}").contains("never settled"), "{error}");
 }
 
-/// A late-attach recording: no finalized portable content-manifest epoch, so
-/// the static artifacts it DOES carry cannot be bound to the effective content
-/// they were derived from.
-///
-/// kills: restoring the whole-recording refusal when the container finalized no
-/// content manifest (case 1 stops opening); admitting an unbound artifact
-/// anyway (case 1's `static_artifact` stops being `None`, and a semantic
-/// adapter above it would join a catalog to content nothing proves it came
-/// from); losing the named refusal on the way into provenance (case 1's
-/// admission stops naming it); or accepting a recorder row that claims an epoch
-/// the container never finalized (case 2 stops refusing).
-///
-/// Case 2 is the one that makes this a carve-out rather than a loosening: the
-/// epoch check is not relaxed in either direction, it is answered against what
-/// the container actually finalized.
 #[test]
 fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifacts() {
     use replay_core::{ProductionProfileAuthority, ProductionProfileGuarantee};
 
-    /// Sentinel the fixture builder recognises as "omit the field entirely",
-    /// so the absent case travels the same construction path as the malformed
-    /// values it sits beside.
     const REMOVE_EPOCH_FIELD: &str = "<remove the epoch field>";
     const NAME: &str = "ship_definitions_static";
     const RELATIVE: &str = "static/ship_definitions_static/ship_definitions_catalog.json";
@@ -2482,9 +2322,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
             recorder_manifest["production_profile"] = profile;
             recorder_manifest["scheduled_domains"] = json!(["fuel_live"]);
         }
-        // The recorder writes a null epoch on every row it packs when it
-        // finalized no content manifest. `row_epoch` is what this fixture puts
-        // there instead.
         let mut row = json!({
             "name": NAME,
             "path": RELATIVE,
@@ -2504,8 +2341,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         recorder_manifest["replay_packaging"] = json!({ "static_artifacts": rows });
         let roster = absent_static_artifact_roster()
             .into_iter()
-            // A legacy roster predates the focus carrier: the artifact appears
-            // in no index row, no recorder row and no container entry.
             .filter(|row| !legacy || row["name"] != json!("focus_defs_static"))
             .map(|mut row| {
                 if row["name"] == json!(NAME) {
@@ -2577,8 +2412,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         let path = root.join(format!("{tag}.battleplan"));
         fs::write(
             &path,
-            // No `content_manifest`: exactly what a late attach seals, because
-            // the production finalizer never ran to build one.
             pack(
                 &game,
                 &entries,
@@ -2602,9 +2435,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
             build(tag, row_epoch, production_profile, extra, false)
         };
 
-    // The seven required artifacts this fixture's index disposes
-    // `present: false`. A `Disabled` profile must declare exactly these, and
-    // the roster join reconciles the declaration against the package.
     let absent_names = || -> Vec<String> {
         absent_static_artifact_roster()
             .into_iter()
@@ -2612,9 +2442,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
             .filter(|name| name != NAME)
             .collect()
     };
-    // The rosters the declared difference is a difference OF, and the required
-    // set the legacy exemption is judged against, both have to be present and
-    // consistent for any stated profile authority.
     let disabled_profile = || {
         json!({
             "enabled": false,
@@ -2629,14 +2456,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         })
     };
 
-    // 1. THE SHIPPED LATE-ATTACH STATE: an explicit `enabled: false` profile,
-    //    no container epoch, no row epoch. The recording opens and the artifact
-    //    is refused by name.
-    //
-    //    `Disabled` rather than `Unstated` deliberately: a regression treating
-    //    every authority except `Unstated` as claiming production would pass an
-    //    unstated fixture while breaking every real late-attach recording
-    //    (Codex round 2, LOW).
     let consistent = write("consistent", Value::Null, Some(disabled_profile()));
     let source = open_recording(&consistent).expect(
         "a recording whose container finalized no content manifest must still open; the \
@@ -2656,9 +2475,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
     );
     drop(source);
 
-    // 1b. The same package with NO profile authority still opens; the state is
-    //     reported as `Unstated` and nothing is reconciled against a
-    //     declaration that does not exist.
     let unstated = write("unstated", Value::Null, None);
     let source = open_recording(&unstated).expect("an unstated authority is still admissible");
     assert_eq!(
@@ -2670,10 +2486,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
     );
     drop(source);
 
-    // 1c. A DECLARATION THAT DISAGREES WITH THE PACKAGE is refused. Declaring
-    //     nothing missing while the index refuses seven artifacts would
-    //     otherwise report the static-artifact guarantee as held while
-    //     `static_artifact()` answered `None` (Codex round 2, MEDIUM).
     let mut lying = disabled_profile();
     lying["missing_required_static_artifacts"] = json!([]);
     let path = write("declares_nothing_missing", Value::Null, Some(lying));
@@ -2708,11 +2520,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         "{error}"
     );
 
-    // 1d. AN UNRECOGNISED RECORDER ROW is malformed, not decoration. The
-    //     per-name loop selects rows by name, so a row nothing selects used to
-    //     be silently ignored — and the container-role equality check could not
-    //     see it either, because it compares only the paths the loop expected
-    //     (Codex round 3, MEDIUM).
     let path = write_with_extra_row(
         "packages_an_unknown_row",
         Value::Null,
@@ -2752,13 +2559,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
     };
     assert!(error.to_string().contains("more than once"), "{error}");
 
-    // 1e. THE LEGACY SEVEN-ROW ROSTER still opens. Its recorder build's
-    //     required set did not contain `focus_defs_static`, so it truthfully
-    //     declared only the six it knew about; reconciling that against an
-    //     absent set that includes the artifact it had never heard of would
-    //     refuse a recording this join promises stays readable (Codex round 3,
-    //     MEDIUM). The absence is still reported: the guarantee is not held and
-    //     the artifact is unavailable.
     let legacy_declared = absent_names()
         .into_iter()
         .filter(|name| name != "focus_defs_static")
@@ -2770,8 +2570,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         .collect::<Vec<_>>();
     let mut legacy_profile = disabled_profile();
     legacy_profile["missing_required_static_artifacts"] = json!(legacy_declared);
-    // The exemption turns on the WRITER's advertised required set, not on the
-    // roster shape: a legacy build advertises seven.
     legacy_profile["required_static_artifacts"] = json!(legacy_required);
     let legacy = build("legacy_seven_row", Value::Null, Some(legacy_profile), None, true);
     let source = open_recording(&legacy)
@@ -2784,7 +2582,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         .contains(&ProductionProfileGuarantee::RequiredStaticArtifacts));
     drop(source);
 
-    // 2. Contradictory: the row claims an epoch the container never finalized.
     let contradictory = write("contradictory", json!("cc".repeat(32)), None);
     let Err(error) = open_recording(&contradictory) else {
         panic!("a static-artifact row may not name an epoch the container never finalized");
@@ -2794,14 +2591,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         "the refusal must name the artifact: {error}"
     );
 
-    // 3. A ROW EPOCH THAT IS NEITHER A DIGEST NOR NULL is malformed, not the
-    //    null disposition. Before the epoch became an `Option` these values
-    //    failed the digest comparison; reading them through
-    //    `and_then(Value::as_str)` would have turned each into `None` and let
-    //    the no-epoch branch accept it (Codex round 1, MEDIUM).
-    //    The ABSENT field is in the same list on purpose: the recorder writes
-    //    this field on every row it packs, so accepting an absent one as the
-    //    null disposition is the regression this pins (Codex round 2, LOW).
     for (tag, malformed) in [
         ("epoch_number", json!(7)),
         ("epoch_object", json!({})),
@@ -2819,13 +2608,6 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
         );
     }
 
-    // 4. THE CARVE-OUT DOES NOT REACH A CAPTURE THAT CLAIMS THE PROFILE.
-    //    Building the portable content manifest is one of the things
-    //    `--profile production` guarantees, so an enabled profile with no
-    //    finalized epoch is self-contradictory and keeps the original
-    //    whole-recording refusal (Codex round 1, HIGH).
-    // The epoch refusal fires inside the roster join, before the declaration is
-    // reconciled, so this fixture only has to be a well-formed enabled profile.
     let mut claiming_profile = disabled_profile();
     claiming_profile["enabled"] = json!(true);
     claiming_profile["missing_required_static_artifacts"] = json!([]);
@@ -2843,30 +2625,10 @@ fn a_recording_with_no_content_epoch_opens_and_refuses_its_unbound_static_artifa
     let _ = fs::remove_dir_all(&root);
 }
 
-/// A pre-focus-carrier PRODUCTION package: `enabled: true`, a finalized content
-/// epoch, and all seven artifacts its recorder build required — the eighth
-/// simply did not exist for that build.
-///
-/// kills: asking the enabled "package carries everything" rule of the RAW
-/// absent set instead of the set after the legacy exemption. That order refuses
-/// this recording for lacking an artifact its writer had never heard of, which
-/// contradicts the readability the roster join promises (Codex round 6, HIGH).
-/// The no-epoch legacy case in the test above cannot see it: it is disabled, and
-/// an enabled variant of it would stop at the unrelated content-epoch refusal.
-/// Pack a container whose static-artifact roster carries exactly `carried`,
-/// every entry bound to a finalized portable content-manifest epoch.
-///
-/// Shared by the two epoch-bound cases below: the expensive part — a real
-/// container with real payloads, index rows, recorder rows and a digested
-/// content manifest — is identical, and only the roster and the profile
-/// authority differ.
 fn write_epoch_bound_package(
     root: &Path,
     tag: &str,
     carried: &[(String, String)],
-    // Names the index must not mention AT ALL, as a roster written before that
-    // artifact existed would not. A name that is merely uncarried gets an
-    // ordinary `present: false` row instead.
     omitted_from_the_roster: &[&str],
     production_profile: Option<Value>,
 ) -> PathBuf {
@@ -3006,15 +2768,6 @@ fn required_static_artifact_names() -> Vec<(String, String)> {
         .collect()
 }
 
-/// A recording with NO production-profile authority whose package nevertheless
-/// carries every required static artifact, epoch-bound.
-///
-/// kills: deciding `RequiredStaticArtifacts` anywhere but the roster join. The
-/// guarantee used to be preloaded for an unstated authority and never removed,
-/// so this recording reported "admitted without required_static_artifacts" with
-/// nothing named missing — the same contradiction the legacy path had (Codex
-/// round 8, MEDIUM). The two manifest-only guarantees stay unevidenced, because
-/// nothing in the package can answer them.
 #[test]
 fn an_unstated_recording_carrying_every_artifact_holds_the_static_artifact_guarantee() {
     use replay_core::{ProductionProfileAuthority, ProductionProfileGuarantee};
@@ -3044,11 +2797,6 @@ fn an_unstated_recording_carrying_every_artifact_holds_the_static_artifact_guara
     }
     drop(source);
 
-    // THE ADVERTISED REQUIRED SET IS VALIDATED FOR A CURRENT PACKAGE TOO, not
-    // only inside the legacy branch. A complete eight-artifact package used to
-    // open as a full production profile while advertising `7`, `null`, repeats
-    // or unknown names, because the field was read only when an artifact was
-    // missing (Codex round 12, MEDIUM).
     let advertised_names = carried
         .iter()
         .map(|(name, _)| name.clone())
@@ -3099,7 +2847,6 @@ fn a_legacy_production_package_carrying_every_artifact_its_build_required_opens(
     const SKIPPED: &str = "focus_defs_static";
     let root = unique_temp_dir("legacy_production_roster");
 
-    // Every required artifact except the one this build predates.
     let carried = required_static_artifact_names()
         .into_iter()
         .filter(|(name, _)| name != SKIPPED)
@@ -3114,12 +2861,10 @@ fn a_legacy_production_package_carrying_every_artifact_its_build_required_opens(
         &root,
         "legacy_production",
         &carried,
-        // A pre-focus roster never mentions the artifact its build predates.
         &[SKIPPED],
         Some(json!({
             "enabled": true,
             "profile_domains": ["fuel_live"],
-            // The advertised set this build required: exactly the seven.
             "required_static_artifacts": required,
             "mandatory_domains_not_production_complete": [],
             "profile_domains_not_scheduled": [],
@@ -3129,8 +2874,6 @@ fn a_legacy_production_package_carrying_every_artifact_its_build_required_opens(
 
     let source = open_recording(&path)
         .expect("a pre-focus production package carrying all seven of its artifacts must open");
-    // The seven it carried are admitted and epoch-bound; the eighth is absent,
-    // so the guarantee is still reported as not held rather than quietly held.
     for (name, _) in &carried {
         assert!(
             source.static_artifact(name).is_some(),
@@ -3144,9 +2887,6 @@ fn a_legacy_production_package_carrying_every_artifact_its_build_required_opens(
     assert!(admission
         .guarantees_not_held
         .contains(&ProductionProfileGuarantee::RequiredStaticArtifacts));
-    // AND IT IS NAMED. Naming the guarantee while leaving the list as the
-    // declaration's `[]` would print "admitted without required_static_artifacts
-    // / required static artifacts missing: none" (Codex round 7, MEDIUM).
     assert_eq!(
         admission.missing_required_static_artifacts,
         vec![SKIPPED.to_string()]
@@ -3749,8 +3489,6 @@ fn windows_dehydrated_replay_snapshot_candidates(
     const RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
     const DEHYDRATED: u32 = OFFLINE | RECALL_ON_OPEN | RECALL_ON_DATA_ACCESS;
 
-    // Metadata-only traversal: no file is opened for data access, so the
-    // preflight itself cannot hydrate a candidate fixture.
     let mut pending = vec![root.to_path_buf()];
     let mut scanned_files = 0usize;
     let mut candidates = Vec::new();
@@ -3933,10 +3671,6 @@ fn windows_require_expected_identity(
     );
 }
 
-/// Must run on the primary OneDrive dev rig before ship. The environment
-/// variable must name a genuinely dehydrated recorder-metadata directory
-/// store; opening its first frame proves hydration returned logical bytes and
-/// that the recorder binding reached the public session-metadata view.
 #[cfg(windows)]
 #[test]
 #[ignore = "requires a real dehydrated OneDrive recorder-metadata store on the dev rig"]
@@ -4010,9 +3744,6 @@ fn windows_onedrive_dehydrated_recorder_store_binds_end_to_end_before_ship() {
         .expect("selected replay snapshot must carry an index hour");
     drop(store);
     let timeline = WorldTimeline::open(open_recording_game(&path, game).unwrap()).unwrap();
-    // Both arms assert; neither is a skip. (This used to `return` out of the
-    // "disabled" arm, which reads like an early exit and would be caught by
-    // the workspace `no_test_in_the_workspace_returns_early` guard.)
     if provider_state == "disabled" {
         let error = match timeline.frame(selected_hour) {
             Ok(_) => panic!("disabled provider unexpectedly supplied replay-frame bytes"),
@@ -4067,9 +3798,6 @@ fn directory_timeline_filename_lookalike_is_not_legacy() {
     let _ = fs::remove_dir_all(root);
 }
 
-// ---------------------------------------------------------------------------
-// scrub semantics
-// ---------------------------------------------------------------------------
 
 #[test]
 fn scrub_state_at_semantics() {
@@ -4077,7 +3805,6 @@ fn scrub_state_at_semantics() {
     write_dir_store(&root);
     let timeline = open_timeline(&root);
 
-    // exact hits and the at-or-before rule for the 102 gap
     assert_eq!(timeline.state_at(100).unwrap().hour_index(), 100);
     assert_eq!(timeline.state_at(101).unwrap().hour_index(), 101);
     assert_eq!(timeline.state_at(102).unwrap().hour_index(), 101);
@@ -4093,7 +3820,6 @@ fn scrub_state_at_semantics() {
         &timeline.play_to(102).unwrap(),
     );
 
-    // before the first frame is an error, not a clamp
     match timeline.state_at(99) {
         Err(WorldError::BeforeFirst {
             hour: 99,
@@ -4105,7 +3831,6 @@ fn scrub_state_at_semantics() {
         ),
     }
 
-    // frame() is exact-hour only
     match timeline.frame(102) {
         Err(WorldError::NoSuchHour(102)) => {}
         other => panic!(
@@ -4114,7 +3839,6 @@ fn scrub_state_at_semantics() {
         ),
     }
 
-    // A -> B -> A scrubbing returns consistent values (no stale cache)
     let a1 = timeline.state_at(100).unwrap();
     assert_eq!(a1.owner_by_state()[&10], Leaf::Measured("GER".to_string()));
     let b = timeline.state_at(103).unwrap();
@@ -4122,15 +3846,11 @@ fn scrub_state_at_semantics() {
     let a2 = timeline.state_at(100).unwrap();
     assert_eq!(a2.owner_by_state()[&10], Leaf::Measured("GER".to_string()));
     assert_eq!(a1.owner_by_state(), a2.owner_by_state());
-    // and the cache actually reuses the frame rather than rebuilding it
     assert!(Arc::ptr_eq(&a1, &a2));
 
     let _ = fs::remove_dir_all(&root);
 }
 
-// ---------------------------------------------------------------------------
-// multi-game stores require explicit selection
-// ---------------------------------------------------------------------------
 
 fn write_minimal_game(root: &Path, game: &str) {
     let dir = root.join(game);
@@ -4193,11 +3913,6 @@ fn multi_game_store_requires_selection() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// ---------------------------------------------------------------------------
-// F2: the frame-cache budget (TimelineConfig) trades speed only, never
-// content — every budget down to 0 (caching disabled) resolves identical
-// frames, and the default stays 16.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn frame_cache_budget_is_content_neutral() {
@@ -4223,8 +3938,6 @@ fn frame_cache_budget_is_content_neutral() {
         )
         .unwrap();
         assert_eq!(timeline.frame_cache_entries(), cap);
-        // Thrash across the whole span twice (guaranteed evictions at every
-        // shrunken budget, including the cache-disabled cap of 0).
         for _ in 0..2 {
             for &hour in reference.hours() {
                 let got = timeline.seek(hour).unwrap();
@@ -4236,7 +3949,6 @@ fn frame_cache_budget_is_content_neutral() {
                     want.owner_by_state(),
                     "cap {cap} owner view @ {hour}"
                 );
-                // A4 invariant holds at every budget.
                 let played = timeline.play_to(hour).unwrap();
                 assert_eq!(played.raw(), got.raw(), "cap {cap} seek==play_to @ {hour}");
             }
@@ -4246,9 +3958,6 @@ fn frame_cache_budget_is_content_neutral() {
     let _ = fs::remove_dir_all(&root);
 }
 
-// ---------------------------------------------------------------------------
-// wrong-typed top-level `map` must warn and fall back, never pass silently
-// ---------------------------------------------------------------------------
 
 #[test]
 fn wrong_typed_map_mirror_falls_back_with_warning() {
@@ -4266,7 +3975,6 @@ fn wrong_typed_map_mirror_falls_back_with_warning() {
         "provinces": { "1000": { "controller": "GER" } },
         "divisions": [],
         "combats": [],
-        // top-level map wrong-typed: must warn and fall back to the walk
         "map": 42
     });
     fs::write(
@@ -4301,4 +4009,4 @@ fn wrong_typed_map_mirror_falls_back_with_warning() {
 
     let _ = fs::remove_dir_all(&root);
 }
-
+

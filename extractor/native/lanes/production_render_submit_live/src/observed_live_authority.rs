@@ -1,9 +1,3 @@
-//! Adapter from neutral live-authority receipts into the strict d80 sink.
-//!
-//! Hook code emits only capture-contract observations. This module performs
-//! the explicit final conversion; no role, path, slot, or hash-only inference
-//! is introduced here.
-
 use crate::{
     ExactLiveRenderCatalogSemantics, ObservedStaticDrawAuthority, ProductionStaticCaptureAuthority,
     RawD3dDrawState, RawParticleSubmit, RawRenderSubmitCapture,
@@ -55,8 +49,6 @@ struct MaterializedLiveDrawAuthority {
     draw_semantics: RawDrawSemantics,
 }
 
-/// Finalized, immutable adapter consumed by
-/// `materialize_live_render_catalog_semantics`.
 #[derive(Clone, Debug)]
 pub struct ProductionExactLiveRenderCatalogSemantics {
     submit_index: u64,
@@ -121,8 +113,6 @@ struct LiveRegistryState {
     last_finalized_submit_index: Option<u64>,
 }
 
-/// Thread-safe observation registry. Limits are supplied by the lifecycle
-/// owner; they are operational queue bounds, not engine or content constants.
 #[derive(Debug)]
 pub struct ProductionExactLiveRenderCatalogSemanticsRegistry {
     limits: ProductionAuthorityRegistryLimits,
@@ -728,8 +718,6 @@ pub fn bind_live_effective_vfs_winners(
         .bind_effective_vfs_winners(binding)
 }
 
-/// Atomically binds the same admitted H4CT winner index to both d77 and d80
-/// registries. Both registries must already be installed and empty.
 pub fn bind_effective_vfs_winners(
     binding: RawEffectiveVfsWinnerIndexBinding,
 ) -> Result<(), String> {
@@ -906,12 +894,6 @@ pub fn drain_complete_static_authorities() -> Result<Vec<FinalizedProductionStat
         .drain_complete_static_authorities()
 }
 
-/// Atomically validates and removes exact unselected pending authority groups
-/// after the Present selector has chosen the one production display frame.
-/// Completed groups are rejected: selection must precede finalization. Empty
-/// draw groups still prove that no pending registry row exists. The sole
-/// hook-only shortcut is that both registries may be absent when every group
-/// names no live or static observations.
 pub fn discard_unselected_authority_groups(
     groups: &[UnselectedAuthorityGroup],
 ) -> Result<(), String> {

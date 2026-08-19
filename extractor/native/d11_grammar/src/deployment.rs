@@ -1,18 +1,3 @@
-//! The structural grammar and encoder for the inner `PDQ1` deployment frame.
-//!
-//! This module owns schema-v1/v2 byte layout, count-delimited nesting, string
-//! spans, and the one version-dependent boundary rule: v1 always carries an
-//! archetype string, while v2 carries it only when its flag is set. UTF-8,
-//! identity/value rules, uniqueness, optional-value semantics, the v1 flag
-//! restrictions, the 16 KiB producer budget, and declared-total policy remain
-//! site concerns because none of them selects a byte boundary.
-//!
-//! The walk is lazy. A child consumes its parent and the parent comes back only
-//! after the child's declared rows have been consumed. Because this format has
-//! variable-length strings and no per-block byte extents, skipping unread rows
-//! necessarily walks their structural prefixes; eager indexing would change
-//! diagnostic order and add work to every caller.
-
 use alloc::vec::Vec;
 use core::convert::TryFrom;
 
@@ -31,12 +16,7 @@ pub const TEMPLATE_ID_TYPE: u32 = 52;
 pub const EQUIPMENT_ID_TYPE: u32 = 70;
 
 // The field and flag tables are written out rather than generated.
-// A leaf may not DEFINE a macro: `verify_leaf_is_sealed` refuses one,
-// because the rules it enforces read source text and an expansion puts the
-// code that runs somewhere no scan over these files can see. Every offset,
 // width and mask below is still generated FROM the table by an exhaustive
-// `match` with no wildcard arm, and every table still proves it tiles its
-// row in a `const` assertion.
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum HeaderField {
@@ -383,9 +363,7 @@ pub enum CountryFlag {
 }
 
 impl CountryFlag {
-    pub const ALL: [CountryFlag; 1] = [
-        CountryFlag::QueueComplete,
-    ];
+    pub const ALL: [CountryFlag; 1] = [CountryFlag::QueueComplete];
 
     pub const fn bit(self) -> u32 {
         match self {
@@ -410,9 +388,7 @@ pub enum ConveyorFlag {
 }
 
 impl ConveyorFlag {
-    pub const ALL: [ConveyorFlag; 1] = [
-        ConveyorFlag::Closed,
-    ];
+    pub const ALL: [ConveyorFlag; 1] = [ConveyorFlag::Closed];
 
     pub const fn bit(self) -> u32 {
         match self {
@@ -479,9 +455,7 @@ pub enum EquipmentFlag {
 }
 
 impl EquipmentFlag {
-    pub const ALL: [EquipmentFlag; 1] = [
-        EquipmentFlag::Archetype,
-    ];
+    pub const ALL: [EquipmentFlag; 1] = [EquipmentFlag::Archetype];
 
     pub const fn bit(self) -> u32 {
         match self {
@@ -499,7 +473,6 @@ pub const EQUIPMENT_KNOWN_FLAGS: u32 = {
     }
     mask
 };
-
 
 const _: () = {
     if COUNTRY_KNOWN_FLAGS != 1
@@ -1179,7 +1152,6 @@ impl CountryCursor {
         })
     }
 
-    /// Refuses to recover the frame while declared countries remain.
     pub fn into_end(mut self, payload: &[u8]) -> Result<DeploymentEnd, Violation> {
         self.precheck(payload)?;
         if self.rows.remaining() != 0 {
@@ -1244,28 +1216,6 @@ impl ConveyorCursor {
         self.rows.at
     }
 
-    /// Opens one conveyor and consumes the country-level child cursor.
-    ///
-    /// The country cursor cannot be recovered while this conveyor's line block
-    /// exists:
-    ///
-    /// ```compile_fail
-    /// use d11_grammar::deployment::*;
-    /// fn skip_lines(conveyors: ConveyorCursor, payload: &[u8]) {
-    ///     let fixed = conveyors.next(payload).unwrap();
-    ///     let _country = conveyors.into_end();
-    ///     let _name = fixed.name;
-    /// }
-    /// ```
-    ///
-    /// Nor can a line cursor be cloned to retain a spare route to its parent:
-    ///
-    /// ```compile_fail
-    /// use d11_grammar::deployment::*;
-    /// fn clone_lines(lines: LineCursor) {
-    ///     let _spare = lines.clone();
-    /// }
-    /// ```
     pub fn next(mut self, payload: &[u8]) -> Result<ConveyorFixedItem, Violation> {
         if self.rows.remaining() == 0 {
             return Err(caller(self.rows.at, Block::Conveyors, 0));
@@ -1598,24 +1548,12 @@ impl EquipmentCursor {
     }
 }
 
-// =============================================================================
-// Encoder
-// =============================================================================
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DqEncodeError {
     CountOverflow { count: usize },
     LengthOverflow { left: usize, right: usize },
     LengthDoesNotFitU32 { len: usize },
     Allocation { requested: usize },
-    /// The size the preflight declared and the bytes the write produced
-    /// disagree. `CountryEncoding` and its siblings are PUBLIC traits, so an
-    /// implementation is free to return a different slice from `conveyors()`
-    /// on a second call -- interior mutability makes that possible in safe
-    /// Rust. The encoder reads each accessor exactly once per node to make
-    /// that hard, and checks this invariant to make it IMPOSSIBLE to emit a
-    /// frame whose header counts do not describe its body. Raised by
-    /// lane KX's review round 13, finding 1.
     PreflightMismatch { declared: usize, written: usize },
 }
 
@@ -1967,15 +1905,6 @@ fn push_u64(out: &mut Vec<u8>, value: u64) {
 fn push_i64(out: &mut Vec<u8>, value: i64) {
     out.extend_from_slice(&value.to_le_bytes());
 }
-/// Writes a length-prefixed string, REFUSING one whose length does not fit the
-/// prefix rather than truncating it.
-///
-/// The preflight already rejects those through `enc_string_len`, but it is the
-/// preflight's copy of the value that it measured: the public encoding traits
-/// may hand the write a different one. `as u32` would then write a wrapped
-/// length -- zero, for a 4 GiB name -- in front of bytes that are all still
-/// emitted, and every reader after it would be parsing at the wrong offset.
-/// Codex round-15 finding 1.
 fn push_string(out: &mut Vec<u8>, value: &[u8]) -> Result<(), DqEncodeError> {
     let len = u32::try_from(value.len())
         .map_err(|_| DqEncodeError::LengthDoesNotFitU32 { len: value.len() })?;
@@ -1989,15 +1918,6 @@ fn encode<C: CountryEncoding>(
     words: HeaderWords,
     countries: &[C],
 ) -> Result<Vec<u8>, DqEncodeError> {
-    // The preflight sizes the buffer and refuses the overflow cases. It does
-    // NOT get to decide the header counts: `CountryEncoding` and its siblings
-    // are public traits, so an implementation with interior mutability can
-    // answer differently on the two passes, and a header written from pass one
-    // would then describe a body written by pass two. A length check alone does
-    // not close that -- two divergences can cancel to the same total length
-    // (Codex round-14 finding 1). So the counts are ACCUMULATED BY THE WRITE
-    // and patched into the header afterwards: the bytes that describe the body
-    // are derived from the same traversal that produced the body.
     let p = preflight(countries)?;
     let mut out = Vec::new();
     out.try_reserve_exact(p.len)
@@ -2058,8 +1978,7 @@ fn encode<C: CountryEncoding>(
                 push_i64(&mut out, line.manpower_need());
                 push_i64(&mut out, line.max_manpower());
                 let equipment_rows = line.equipment();
-                written.equipment =
-                    enc_count(written.equipment as usize + equipment_rows.len())?;
+                written.equipment = enc_count(written.equipment as usize + equipment_rows.len())?;
                 push_u32(&mut out, equipment_rows.len() as u32);
                 push_u32(&mut out, line.reserved());
                 for equipment in equipment_rows {
@@ -2087,20 +2006,12 @@ fn encode<C: CountryEncoding>(
             }
         }
     }
-    // Patch the four counts the body actually produced into the header. This is
-    // what makes the frame self-consistent no matter what the traits did: the
-    // counts and the rows come from ONE traversal.
     out[country_count_at..country_count_at + 4].copy_from_slice(&written.countries.to_le_bytes());
-    out[conveyor_count_at..conveyor_count_at + 4]
-        .copy_from_slice(&written.conveyors.to_le_bytes());
+    out[conveyor_count_at..conveyor_count_at + 4].copy_from_slice(&written.conveyors.to_le_bytes());
     out[line_count_at..line_count_at + 4].copy_from_slice(&written.lines.to_le_bytes());
     out[equipment_count_at..equipment_count_at + 4]
         .copy_from_slice(&written.equipment.to_le_bytes());
 
-    // And FAIL CLOSED, not `debug_assert`, if the preflight and the write saw
-    // different data at all. The frame above is now well-formed either way, but
-    // a caller whose row source moved under it is a defect worth surfacing
-    // rather than silently encoding whichever version won.
     if out.len() != p.len
         || written.countries != p.countries
         || written.conveyors != p.conveyors

@@ -1,18 +1,3 @@
-//! Product-owned pre-fold and append-order transactions.
-//!
-//! This module closes two formerly caller-by-convention seams without selecting
-//! the dormant auto-attach path:
-//!
-//! * [`DurableAppendLedger`] allocates one campaign-local [`AppendTicket`] under
-//!   an exclusive cross-process lock and atomically commits it before returning;
-//! * [`SegmentRuntime`] stages one complete logical frame, calls
-//!   [`SegmentCutter::route_checked`], seals the old fold before constructing a
-//!   fresh fold, and is the production call site for
-//!   [`publish_product_stitch_retained_with_rebuilt_wire`].
-//!
-//! A failure poisons the runtime.  There is no retry on partly-mutated fold
-//! state, no guessed ticket, and no publication while a fold remains open.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -22,25 +7,14 @@ use sha2::{Digest, Sha256};
 use super::formation::{
     FormationInputError, FrameFacts, FrameRouting, SealedSegment, SegmentCutter,
 };
-use super::product::{
-    publish_product_stitch_retained_with_rebuilt_wire, ProductStitchOutcome,
-};
-use super::publish::{
-    RetainedStitchedPayloadSource, StitchedRebuiltWireProduct,
-};
+use super::product::{publish_product_stitch_retained_with_rebuilt_wire, ProductStitchOutcome};
+use super::publish::{RetainedStitchedPayloadSource, StitchedRebuiltWireProduct};
 use super::{AppendTicket, SegmentInput, StitchRequiredInputs, StitchedPlan};
 
 const LEDGER_MAGIC: &[u8; 8] = b"AOLT1\0\0\0";
 const MAX_TICKET_FIELD_BYTES: usize = 4096;
 const MIN_RECORD_BYTES: usize = 8 + 4 + 4 + 4 + 32 + 32;
 
-/// Campaign-local durable ticket allocator.
-///
-/// The caller supplies a store root, not a ledger path.  The actual filenames
-/// are derived from SHA-256(campaign_key), so opaque identity bytes never become
-/// path components.  A stale `.lock` after process death is intentionally a
-/// loud fail-closed condition; deleting it requires an operator to first prove
-/// that no allocator still owns the campaign.
 #[derive(Debug, Clone)]
 pub struct DurableAppendLedger {
     store_root: PathBuf,
@@ -397,24 +371,18 @@ fn lower_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// One complete staged frame.  `payload` is opaque to the router and is moved
-/// exactly once into either a fold or failed-evidence retention.
 #[derive(Debug)]
 pub struct StagedFrame<P> {
     pub facts: FrameFacts,
     pub payload: P,
 }
 
-/// Fresh per-segment fold.  Consuming `self` at seal makes accidental reuse
-/// across a cut impossible at this boundary.
 pub trait SegmentFold<P> {
     fn apply_complete(&mut self, frame: StagedFrame<P>) -> Result<(), String>;
     fn retain_failed(&mut self, frame: StagedFrame<P>, reason: &str) -> Result<(), String>;
     fn seal(self, extent: SealedSegment) -> Result<SegmentInput, String>;
 }
 
-/// Owns fresh fold construction and raw failed-frame retention when no segment
-/// is open (for example during reload uncertainty).
 pub trait SegmentFoldFactory<P> {
     type Fold: SegmentFold<P>;
     fn open_fresh(
@@ -459,8 +427,6 @@ impl std::fmt::Display for SegmentRuntimeError {
 
 impl std::error::Error for SegmentRuntimeError {}
 
-/// Ordered pre-fold runtime.  It is intentionally independent of the live pipe
-/// reader so offline and future activated drivers use the same cut transaction.
 pub struct SegmentRuntime<P, F: SegmentFoldFactory<P>> {
     ticket: AppendTicket,
     cutter: SegmentCutter,
@@ -581,8 +547,6 @@ impl<P, F: SegmentFoldFactory<P>> SegmentRuntime<P, F> {
         Ok(())
     }
 
-    /// Seal the tail and return immutable stitch inputs.  The runtime is
-    /// consumed, so no frame can race publication after this point.
     pub fn finish(mut self) -> Result<Vec<SegmentInput>, SegmentRuntimeError> {
         if self.poisoned {
             return Err(SegmentRuntimeError::Poisoned);
@@ -595,8 +559,6 @@ impl<P, F: SegmentFoldFactory<P>> SegmentRuntime<P, F> {
         Ok(self.sealed)
     }
 
-    /// The sole live-driver composition call from staged folds to the atomic
-    /// stitched publisher.
     pub fn finish_and_publish<S: RetainedStitchedPayloadSource, Prepare>(
         self,
         game_id: &str,

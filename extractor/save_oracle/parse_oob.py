@@ -58,7 +58,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-# Shared, read-only scaffolding (tokenizer + melt/discovery + typed readers).
 import deep_common as dc
 from deep_common import (
     ps,
@@ -75,9 +74,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Small helpers
-# ---------------------------------------------------------------------------
 
 def _ascii(obj):
     """Recursively make every string ASCII-only (latin1 names -> \\xNN escapes).
@@ -112,9 +108,6 @@ def _read_leader(tz: Tokenizer):
     return read_id_block(tz)
 
 
-# ---------------------------------------------------------------------------
-# ARMY: theatres -> orders_group (army) + field_marshal_group (army group)
-# ---------------------------------------------------------------------------
 
 def _parse_order_instance(tz: Tokenizer):
     """Parse one ``order_instance={...}`` (a battle-plan order). Polymorphic.
@@ -124,16 +117,16 @@ def _parse_order_instance(tz: Tokenizer):
     pretending all subtypes share one schema.
     """
     o = {
-        "type": None,            # numeric subtype (front/offensive/defense/...)
+        "type": None,
         "instance_id": None,
         "creation_date": None,
         "starting_date": None,
-        "operation": None,       # named operation, e.g. "o_orkan"
-        "path": [],              # province route
-        "states": [],            # assigned states (defensive lines etc.)
-        "scheduled_members": [], # unit (id,type) refs scheduled to this order
-        "root_front": None,      # (id,type) of the front this order hangs off
-        "extra_keys": [],        # other scalar keys present (subtype-specific)
+        "operation": None,
+        "path": [],
+        "states": [],
+        "scheduled_members": [],
+        "root_front": None,
+        "extra_keys": [],
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -148,7 +141,6 @@ def _parse_order_instance(tz: Tokenizer):
             elif k == "root_front":
                 o["root_front"] = _idkey(read_id_block(tz))
             else:
-                # area_defense_state_assignment, sorted_pairs, etc. -> skip body
                 _skip_block_body(tz)
             continue
         val = atom_value(op)
@@ -165,7 +157,6 @@ def _parse_order_instance(tz: Tokenizer):
         elif k == "operation":
             o["operation"] = val
         elif k not in ("prefix",):
-            # Preserve the presence of subtype-specific scalar keys.
             if k not in o["extra_keys"]:
                 o["extra_keys"].append(k)
     return o
@@ -174,13 +165,13 @@ def _parse_order_instance(tz: Tokenizer):
 def _parse_orders_group(tz: Tokenizer):
     """Parse one ``orders_group={...}`` = an ARMY (full object, with members)."""
     army = {
-        "id": None,                 # (id,type) of this army order group
+        "id": None,
         "name": None,
-        "leader": None,             # commanding general (id,type) -> characters
-        "members": [],              # division (id,type) refs assigned to army
-        "orders": [],               # battle-plan order_instance list
+        "leader": None,
+        "members": [],
+        "orders": [],
         "field_marshal_group": False,
-        "cached": {},               # plan_value/our_power/enemy_power (RUNTIME)
+        "cached": {},
         "icon": None,
     }
     for k, op in iter_block_entries(tz):
@@ -190,7 +181,6 @@ def _parse_orders_group(tz: Tokenizer):
             elif k == "leader":
                 army["leader"] = _idkey(_read_leader(tz))
             elif k == "member":
-                # member={ unit={ id type } } -> the assigned division ref.
                 u = None
                 for kk, oo in iter_block_entries(tz):
                     if oo is LBRACE:
@@ -203,7 +193,6 @@ def _parse_orders_group(tz: Tokenizer):
             elif k == "order_instance":
                 army["orders"].append(_parse_order_instance(tz))
             else:
-                # color, etc.
                 _skip_block_body(tz)
             continue
         val = atom_value(op)
@@ -225,8 +214,8 @@ def _parse_field_marshal_group(tz: Tokenizer):
     ag = {
         "id": None,
         "name": None,
-        "leader": None,            # field marshal (id,type) -> characters
-        "army_refs": [],           # orders_group (id,type) refs = member armies
+        "leader": None,
+        "army_refs": [],
         "cached": {},
         "icon": None,
     }
@@ -237,8 +226,6 @@ def _parse_field_marshal_group(tz: Tokenizer):
             elif k == "leader":
                 ag["leader"] = _idkey(_read_leader(tz))
             elif k == "orders_group":
-                # Inside a field_marshal_group these are id-only REFERENCES to
-                # the real armies (no name/members here).
                 ag["army_refs"].append(_idkey(read_id_block(tz)))
             else:
                 _skip_block_body(tz)
@@ -285,7 +272,6 @@ def _parse_theatre(tz: Tokenizer, tag: str, armies: list, army_groups: list,
                 theatre["n_army_groups"] += 1
             else:
                 _skip_block_body(tz)
-        # scalars at theatre level ignored
     theatres_meta.append(theatre)
 
 
@@ -324,19 +310,16 @@ def _parse_navy_theater(tz: Tokenizer, tag: str, navy_theaters: list):
         navy_theaters.append(grp)
 
 
-# ---------------------------------------------------------------------------
-# NAVY: units.fleet -> task_force -> ship
-# ---------------------------------------------------------------------------
 
 def _parse_ship(tz: Tokenizer):
     ship = {
         "id": None,
-        "definition": None,    # hull/class, e.g. light_cruiser
+        "definition": None,
         "organisation": None,
         "strength": None,
         "experience": None,
-        "name": None,          # override name if persisted
-        "equipment": [],       # [(id,type,amount)] -> variant index later
+        "name": None,
+        "equipment": [],
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -345,7 +328,6 @@ def _parse_ship(tz: Tokenizer):
             elif k == "equipment":
                 ship["equipment"] = _parse_equipment_list(tz)
             elif k == "ship_name":
-                # ship_name carries an override string sometimes.
                 for kk, oo in iter_block_entries(tz):
                     if oo is LBRACE:
                         _skip_block_body(tz)
@@ -446,11 +428,11 @@ def _parse_task_force(tz: Tokenizer):
         "id": None,
         "name": None,
         "location_province": None,
-        "owner": None,            # logical_country
+        "owner": None,
         "ships": [],
-        "mission": None,          # numeric enum from nested mission.mission
-        "mission_details": None,  # exact persisted task-force mission block
-        "path": [],               # current movement path (province ids)
+        "mission": None,
+        "mission_details": None,
+        "path": [],
         "movement_progress": None,
         "repair_mode": None,
         "repair_split": None,
@@ -461,7 +443,7 @@ def _parse_task_force(tz: Tokenizer):
         "detached_activity": None,
         "hours_to_wait_for_repair_check": None,
         "hours_waited_for_repairs": None,
-        "retreat": None,          # save boolean; not a live retreat-state enum
+        "retreat": None,
         "sortie_efficiency": None,
         "underway_replenishment": None,
         "extra_keys": [],
@@ -481,7 +463,6 @@ def _parse_task_force(tz: Tokenizer):
             elif k in ("repair_parent", "repair_child"):
                 tf[k] = _idkey(read_id_block(tz))
             else:
-                # officer, AI composition, refit variant, HQ and cosmetic data.
                 _skip_block_body(tz)
             continue
         val = atom_value(op)
@@ -494,9 +475,6 @@ def _parse_task_force(tz: Tokenizer):
         elif k == "logical_country":
             tf["owner"] = val
         elif k == "mission":
-            # Legacy saves may persist a scalar.  Current a729 saves use the
-            # block handled above; retain scalar compatibility without
-            # inventing mission_details.
             tf["mission"] = to_int(val)
         elif k in ("repair_mode", "repair_target", "repair_last_mission",
                    "hours_to_wait_for_repair_check",
@@ -519,7 +497,7 @@ def _parse_fleet(tz: Tokenizer, tag: str, fleets: list):
         "owner": tag,
         "id": None,
         "name": None,
-        "leader": None,           # commanding ADMIRAL (id,type) -> characters
+        "leader": None,
         "icon": None,
         "task_forces": [],
     }
@@ -585,7 +563,6 @@ def _parse_units_block(tz: Tokenizer, tag: str, fleets: list,
             if k == "fleet":
                 _parse_fleet(tz, tag, fleets)
             elif k == "division":
-                # We only need the division's (id,type) key for the join.
                 _id = _type = None
                 for kk, oo in iter_block_entries(tz):
                     if oo is LBRACE:
@@ -599,9 +576,6 @@ def _parse_units_block(tz: Tokenizer, tag: str, fleets: list,
                 _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# Countries pass: theatres + navy_theater + units(fleet/division-ids)
-# ---------------------------------------------------------------------------
 
 def _parse_countries(tz: Tokenizer, store: dict) -> None:
     """Walk ``countries={ <TAG>={ ... } ... }`` collecting OOB sub-sections."""
@@ -620,12 +594,8 @@ def _parse_countries(tz: Tokenizer, store: dict) -> None:
                                        store["division_ids"])
                 else:
                     _skip_block_body(tz)
-            # scalar country fields ignored
 
 
-# ---------------------------------------------------------------------------
-# AIR: strategic_air -> air_base map + <TAG>.air_wing_pool.air_wings
-# ---------------------------------------------------------------------------
 
 def _parse_air_base(tz: Tokenizer, airbase_to_state: dict):
     """Parse ``air_base={ id={id type=65} state=<n> ... }`` -> base->state map."""
@@ -650,17 +620,17 @@ def _parse_air_wing(tz: Tokenizer):
     wing = {
         "id": None,
         "name": None,
-        "owner": None,           # tag= inside the wing
-        "count": None,           # number of planes
+        "owner": None,
+        "count": None,
         "experience": None,
         "manpower": None,
         "priority": None,
         "reinforcement_setting": None,
-        "mission": None,         # executing_mission name (cached/runtime)
+        "mission": None,
         "mission_type": None,
         "strategic_region": None,
-        "effective_planes": None,  # RUNTIME cached
-        "equipment": [],         # [(id,type,amount)] -> plane variant index
+        "effective_planes": None,
+        "equipment": [],
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
@@ -723,7 +693,7 @@ def _parse_air_wing_pool(tz: Tokenizer, tag: str, wings: list):
             elif k == "air_wings":
                 pool_wings.append(_parse_air_wing(tz))
             elif k == "id":
-                _skip_block_body(tz)  # pool id (type 4713 handle); not needed
+                _skip_block_body(tz)
             else:
                 _skip_block_body(tz)
             continue
@@ -748,7 +718,6 @@ def _parse_strategic_air(tz: Tokenizer, wings: list, airbase_to_state: dict):
         elif k in ("air_theatre_index", "air_group_index"):
             _skip_block_body(tz)
         elif len(k) <= 4 and k.isupper():
-            # A country tag block -> its air_wing_pool list.
             for kk, oo in iter_block_entries(tz):
                 if oo is LBRACE:
                     if kk == "air_wing_pool":
@@ -759,9 +728,6 @@ def _parse_strategic_air(tz: Tokenizer, wings: list, airbase_to_state: dict):
             _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# Driver: one streaming top-level pass, then join
-# ---------------------------------------------------------------------------
 
 def parse_oob_text(text: str) -> dict:
     store = {
@@ -794,9 +760,6 @@ def parse_oob_text(text: str) -> dict:
     return store
 
 
-# ---------------------------------------------------------------------------
-# Output assembly + validation
-# ---------------------------------------------------------------------------
 
 def _load_province_to_state(script_dir: Path):
     p = (script_dir.parent / "map_pipeline" / "assets"
@@ -822,7 +785,6 @@ def build_oob_outputs(store: dict, prov_to_state: dict,
     division_ids = store["division_ids"]
     airbase_to_state = store["airbase_to_state"]
 
-    # --- Army membership join: member.unit -> a real division id -------------
     members_total = 0
     members_resolved = 0
     for army in armies:
@@ -835,7 +797,6 @@ def build_oob_outputs(store: dict, prov_to_state: dict,
         army["members_resolved"] = resolved
         army["member_count"] = len(army["members"])
 
-    # --- Army group -> army ref join -----------------------------------------
     army_id_set = {a["id"] for a in armies if a["id"]}
     ag_refs_total = 0
     ag_refs_resolved = 0
@@ -848,7 +809,6 @@ def build_oob_outputs(store: dict, prov_to_state: dict,
                 ag_refs_resolved += 1
         ag["army_refs_resolved"] = r
 
-    # --- Navy theatre fleet-ref join -----------------------------------------
     fleet_id_set = {f["id"] for f in fleets if f["id"]}
     navy_refs_total = 0
     navy_refs_resolved = 0
@@ -858,9 +818,8 @@ def build_oob_outputs(store: dict, prov_to_state: dict,
             if ref in fleet_id_set:
                 navy_refs_resolved += 1
 
-    # --- Air wing -> air_base -> state join ----------------------------------
     wings_with_base = 0
-    wings_base_resolved = 0   # base id present in the air_base->state map
+    wings_base_resolved = 0
     wings_with_state = 0
     for w in wings:
         base = w.get("air_base")
@@ -875,15 +834,13 @@ def build_oob_outputs(store: dict, prov_to_state: dict,
             else:
                 w["state_id"] = None
         else:
-            w["state_id"] = None  # carrier/mobile-based: expected variant
+            w["state_id"] = None
 
-    # --- Counts --------------------------------------------------------------
     n_ships = sum(len(tf["ships"])
                   for f in fleets for tf in f["task_forces"])
     n_task_forces = sum(len(f["task_forces"]) for f in fleets)
     n_orders = sum(len(a["orders"]) for a in armies)
 
-    # Per-country rollup.
     by_country: dict = {}
 
     def _ctry(tag):
@@ -908,10 +865,6 @@ def build_oob_outputs(store: dict, prov_to_state: dict,
         c["air_wings"] += 1
         c["planes"] += w.get("count") or 0
 
-    # Equipment-variant join coverage is reported as raw presence of an
-    # (id,type) key; the variant *names* come from the equipments index, which
-    # the equipment/production parsers own. We surface the keys so a downstream
-    # join is trivial, and count how many ship/wing equipment refs carry a key.
     ship_eq_refs = sum(len(s["equipment"])
                        for f in fleets for tf in f["task_forces"]
                        for s in tf["ships"])
@@ -1008,7 +961,6 @@ def validation_report(out: dict) -> str:
              f"(rest = carrier/mobile, expected)")
     L.append(f"distinct owners (any branch): {st['distinct_owners']}")
 
-    # Top owners by army count.
     bc = sorted(out["by_country"].items(),
                 key=lambda kv: (kv[1]["armies"], kv[1]["ships"]), reverse=True)
     L.append("top owners (armies / divs-in-armies / fleets / ships / wings):")
@@ -1017,7 +969,6 @@ def validation_report(out: dict) -> str:
                  f"{c['fleets']}f {c['ships']}sh {c['air_wings']}w "
                  f"({c['planes']} planes)")
 
-    # Sample army.
     L.append("sample army:")
     for a in out["armies"][:1]:
         L.append(f"   {a['owner']} {a['name']!r} id={a['id']} "
@@ -1029,7 +980,6 @@ def validation_report(out: dict) -> str:
                      f"op={o['operation']} states={len(o['states'])} "
                      f"path={len(o['path'])} sched={len(o['scheduled_members'])}"
                      f" extra={o['extra_keys'][:5]}")
-    # Sample fleet.
     L.append("sample fleet:")
     for f in out["fleets"][:1]:
         tf0 = f["task_forces"][0] if f["task_forces"] else None
@@ -1040,7 +990,6 @@ def validation_report(out: dict) -> str:
             L.append(f"      tf {tf0['name']!r} loc={tf0['location_province']} "
                      f"ship0 def={sh0['definition']} str={sh0['strength']} "
                      f"eq={len(sh0['equipment'])}")
-    # Sample wing.
     L.append("sample air wing:")
     for w in out["air_wings"][:2]:
         L.append(f"   {w.get('owner')} {w['name']!r} id={w['id']} "
@@ -1051,9 +1000,6 @@ def validation_report(out: dict) -> str:
     return "\n".join(L)
 
 
-# ---------------------------------------------------------------------------
-# build_fn for the shared CLI runner
-# ---------------------------------------------------------------------------
 
 def _build_fn(text: str, save_path: Path, was_melted: bool):
     store = parse_oob_text(text)
@@ -1064,7 +1010,6 @@ def _build_fn(text: str, save_path: Path, was_melted: bool):
               "(theatre area / order states stay province/state ids as-is).")
     out = build_oob_outputs(store, prov_to_state, save_path, was_melted)
     report = validation_report(out)
-    # Honour the ASCII-output requirement (names may carry latin1 accents).
     out = _ascii(out)
     return {"oob.json": out}, report
 

@@ -84,16 +84,12 @@ def _read_id(tz):
     return _id, _type
 
 
-# ---------------------------------------------------------------------------
-# Operative (shared by agency.operative and recruitment.recruitable_operatives)
-# ---------------------------------------------------------------------------
 
 def _parse_mission(tz):
     """mission={ <mission_type>={ target/target_country state/target_state } }."""
     rec = {"mission": None, "target": None, "state": None}
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
-            # the mission TYPE is the key; descend for target/state
             rec["mission"] = k
             for kk, oo in iter_block_entries(tz):
                 if oo is LBRACE:
@@ -110,7 +106,6 @@ def _parse_mission(tz):
         v = atom_value(op)
         if v is None:
             continue
-        # flat form: mission=<type>
         if k == "mission":
             rec["mission"] = v
         elif k in ("target", "target_country"):
@@ -127,8 +122,8 @@ def _parse_operative(tz):
         "skill": None, "experience": None,
         "traits": [], "nationalities": [],
         "state": None,
-        "operation_id": None,   # if assigned to a running operation
-        "mission": None,        # in-the-field mission (build network etc.)
+        "operation_id": None,
+        "mission": None,
         "captured": False, "captured_by": None,
         "legacy_id": None, "script_id": None,
     }
@@ -174,9 +169,6 @@ def _parse_operative(tz):
     return rec
 
 
-# ---------------------------------------------------------------------------
-# intelligence_agency
-# ---------------------------------------------------------------------------
 
 def _parse_cryptology(tz):
     """cryptology={ targets={ { target decryption amount } ... } intel_source }."""
@@ -184,7 +176,6 @@ def _parse_cryptology(tz):
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
             if k == "targets":
-                # a list of anonymous { target ... } blocks -> hand-roll descend
                 while True:
                     tok = tz.next()
                     if tok is None or tok is RBRACE:
@@ -219,7 +210,6 @@ def _parse_recruitment(tz):
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
             if k == "recruitable_operatives":
-                # anonymous operative blocks
                 while True:
                     tok = tz.next()
                     if tok is None or tok is RBRACE:
@@ -237,7 +227,6 @@ def _parse_intelligence_agency(tz, rec):
             if k == "operative":
                 rec["operatives"].append(_parse_operative(tz))
             elif k == "upgrades":
-                # flat { upgrade_x=N ... } -> dict of branch levels
                 ups = collect_block(tz)
                 rec["upgrades"] = {kk: to_int(vv) for kk, vv in ups.items()}
             elif k == "cryptology":
@@ -268,9 +257,6 @@ def _parse_intelligence_agency(tz, rec):
             rec["usable_operative_slots"] = to_int(v)
 
 
-# ---------------------------------------------------------------------------
-# operations  (running + finished)
-# ---------------------------------------------------------------------------
 
 def _parse_running_operation(tz, op_type):
     rec = {
@@ -284,7 +270,6 @@ def _parse_running_operation(tz, op_type):
             elif k == "phases":
                 rec["phases"] = read_scalar_list(tz)
             elif k == "operative_slots":
-                # anonymous { operative={id type} mission={...} } blocks
                 while True:
                     tok = tz.next()
                     if tok is None or tok is RBRACE:
@@ -324,9 +309,7 @@ def _parse_operations(tz, rec):
                     if oop is LBRACE:
                         rec["operations_running"].append(
                             _parse_running_operation(tz, otype))
-                    # bare entries unexpected
             elif k == "finished":
-                # finished={ <op_type>={ "TAG" "count" } ... } -> summarize
                 for otype, oop in iter_block_entries(tz):
                     if oop is LBRACE:
                         vals = read_scalar_list(tz)
@@ -369,9 +352,6 @@ def _parse_operation_tokens(tz, rec):
             _skip_block_body(tz)
 
 
-# ---------------------------------------------------------------------------
-# per-country walk
-# ---------------------------------------------------------------------------
 
 def _new_country_rec():
     return {
@@ -403,8 +383,6 @@ def _parse_one_country(tz, tag, by_tag):
                 has_intel = True
             else:
                 _skip_block_body(tz)
-        # scalars ignored
-    # keep only countries that actually have an agency or operations of substance
     if (has_intel and (rec["agency_name"] or rec["operatives"]
                        or rec["operations_running"]
                        or rec["cryptology"]["targets"]
@@ -433,9 +411,6 @@ def _parse_peace_conference(tz, pc):
             pc[k] = v
 
 
-# ---------------------------------------------------------------------------
-# Driver + build
-# ---------------------------------------------------------------------------
 
 def parse_intel_text(text: str):
     by_tag: dict = {}
@@ -454,7 +429,6 @@ def parse_intel_text(text: str):
 def build(text, source, was_melted):
     by_tag, peace, meta = parse_intel_text(text)
 
-    # validation accumulators
     total_ops = total_running = total_finished = 0
     total_crypto_targets = total_decrypting = 0
     total_captured = 0
@@ -494,7 +468,6 @@ def build(text, source, was_melted):
                     ("pool", "1"), ("id", "1"), ("discriminant", "0"))):
                 operation_token_source_shape_rejected_count += 1
 
-        # cross-ref: do running-operation operative ids resolve to an operative?
         own_op_ids = {o["op_id"] for o in rec["operatives"] if o["op_id"]}
         for runop in rec["operations_running"]:
             for slot in runop["operatives"]:
@@ -590,7 +563,6 @@ def build(text, source, was_melted):
         "countries": countries,
     }
 
-    # ---- validation report -------------------------------------------------
     st = out["meta"]["stats"]
     ger = countries.get("GER", {})
     lines = ["=== INTELLIGENCE ORACLE VALIDATION ==="]

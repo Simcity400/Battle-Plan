@@ -1,19 +1,8 @@
-//! Exact effective-VFS weather catalog for the frozen XN14/XN15 producer law.
-//!
-//! The catalog is built from the bytes selected by the effective VFS. Runtime
-//! definition pointers never enter the portable document. A live observation
-//! resolves only when the named-factory registration token recorded on every
-//! primary/fading entity uniquely matches one authored row. Direct-definition
-//! entities with no authenticated token remain unresolved and fail closed.
-
 use super::{
     ExactWeatherCatalogResolver, RawEffectiveVfsWinnerIndexBinding, RawVfsContentIdentity,
-    RawWeatherEntityPair, RawWeatherEntityRef, RawWeatherObservation,
-    ResolvedWeatherCatalogRow,
+    RawWeatherEntityPair, RawWeatherEntityRef, RawWeatherObservation, ResolvedWeatherCatalogRow,
 };
-use portable_content_manifest::{
-    normalize_game_relative_path, ContentLayerKind, UsedContentKey,
-};
+use portable_content_manifest::{normalize_game_relative_path, ContentLayerKind, UsedContentKey};
 use portable_render_stream::{
     RenderOutputRef, WeatherEntityContentJoin, WeatherInstance, WeatherPosition,
     WeatherPositionClass, WeatherResolution, WeatherVariantContentJoin,
@@ -31,8 +20,6 @@ const PARTICLE_REGISTRATIONS_SOURCE: &str = "gfx/entities/particles.gfx";
 const PARTICLE_SHADER_SOURCE: &str = "gfx/fx/particle.shader";
 const WEATHER_POSITIONS_SOURCE: &str = "map/weatherpositions.txt";
 
-/// One exact effective-VFS payload supplied to the catalog builder. The bytes
-/// are re-hashed before parsing; a matching path or metadata row is not enough.
 #[derive(Clone, Debug)]
 pub struct WeatherCatalogSourcePayload {
     pub content: UsedContentKey,
@@ -47,9 +34,6 @@ pub struct WeatherCatalogPayloadRequest {
     pub range_sha256: String,
 }
 
-/// Minimal adapter implemented by the selected-Present admission owner. A
-/// payload is useful only together with its finalized `UsedContentKey`; the
-/// resolver never opens an install path or accepts an inventory row as bytes.
 pub trait AdmittedWeatherCatalogPayloads {
     fn payload(&self, content: &UsedContentKey) -> Option<&[u8]>;
 }
@@ -71,10 +55,6 @@ pub struct WeatherCodeResourceEntry {
     pub ordered_variants: Vec<WeatherVariantContentJoin>,
 }
 
-/// Canonical static-bundle artifact. `catalog_sha256` covers the schema,
-/// effective-VFS authority, complete code table, position source, all authored
-/// variants and all ordered positions. It never contains a machine path or a
-/// process/capture-local pointer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeatherResourceCatalogProvenance {
@@ -90,17 +70,10 @@ pub struct WeatherResourceCatalogProvenance {
 pub struct AuthenticatedWeatherCatalog {
     provenance: WeatherResourceCatalogProvenance,
     codes: BTreeMap<u8, WeatherCodeResourceEntry>,
-    /// Authored positions per region, each paired with its ONE-BASED place in
-    /// the whole authored file. The pairing is made once, where the whole file
-    /// is still visible.
     positions_by_region: BTreeMap<u32, Vec<(u32, WeatherCatalogPosition)>>,
 }
 
 impl AuthenticatedWeatherCatalog {
-    /// First-phase full-payload requests. The fixed XN14 roots are requested
-    /// together with particle-definition assets and shader include candidates
-    /// solely to discover the exact referenced closure. Unreferenced discovery
-    /// files never enter the catalog provenance or portable replay.
     pub fn discovery_payload_requests(
         winner_index: &RawEffectiveVfsWinnerIndexBinding,
     ) -> Result<Vec<WeatherCatalogPayloadRequest>, String> {
@@ -129,10 +102,6 @@ impl AuthenticatedWeatherCatalog {
         payload_requests_for_paths(winner_index, paths)
     }
 
-    /// Second-phase exact closure requests. Call only after every discovery
-    /// request is admitted. The result removes unrelated discovery assets and
-    /// adds only referenced particle definitions, textures, the particle
-    /// shader, and its authored include closure.
     pub fn exact_payload_requests(
         winner_index: &RawEffectiveVfsWinnerIndexBinding,
         admitted: &impl AdmittedWeatherCatalogPayloads,
@@ -143,24 +112,15 @@ impl AuthenticatedWeatherCatalog {
         payload_requests_for_paths(winner_index, paths)
     }
 
-    /// Construct from the exact second-phase request set. Missing or partial
-    /// admitted payloads reject; no install-root or winner-path fallback is
-    /// available at this boundary.
     pub fn from_admitted_payloads(
         winner_index: &RawEffectiveVfsWinnerIndexBinding,
         admitted: &impl AdmittedWeatherCatalogPayloads,
     ) -> Result<Self, String> {
         let requests = Self::exact_payload_requests(winner_index, admitted)?;
         let sources = sources_from_requests(&requests, admitted)?;
-        Self::from_effective_vfs_payloads(
-            winner_index.authority_manifest_sha256.clone(),
-            sources,
-        )
+        Self::from_effective_vfs_payloads(winner_index.authority_manifest_sha256.clone(), sources)
     }
 
-    /// Build the exact catalog from effective-VFS winners and their consumed
-    /// payloads. Callers may provide a larger inventory; only the closed
-    /// weather dependency graph enters the portable provenance document.
     pub fn from_effective_vfs_payloads(
         authority_manifest_sha256: String,
         sources: impl IntoIterator<Item = WeatherCatalogSourcePayload>,
@@ -172,9 +132,8 @@ impl AuthenticatedWeatherCatalog {
             if source.content.effective_vfs_manifest_sha256 != authority_manifest_sha256 {
                 return Err("weather source belongs to a different effective VFS".into());
             }
-            let normalized = normalize_game_relative_path(
-                &source.content.normalized_game_relative_path,
-            )?;
+            let normalized =
+                normalize_game_relative_path(&source.content.normalized_game_relative_path)?;
             if normalized != source.content.normalized_game_relative_path {
                 return Err("weather source path is not canonical".into());
             }
@@ -187,7 +146,9 @@ impl AuthenticatedWeatherCatalog {
             }
             source.content.normalized_game_relative_path = normalized.clone();
             if payloads.insert(normalized.clone(), source).is_some() {
-                return Err(format!("weather source repeats effective path {normalized}"));
+                return Err(format!(
+                    "weather source repeats effective path {normalized}"
+                ));
             }
         }
 
@@ -280,17 +241,12 @@ impl AuthenticatedWeatherCatalog {
         })
     }
 
-    /// Decode a static-bundle catalog. Every content key and the complete
-    /// catalog digest is revalidated before the resolver becomes usable.
     pub fn decode_authenticated(
         bytes: &[u8],
         expected_artifact_sha256: &str,
         expected_authority_manifest_sha256: &str,
     ) -> Result<Self, String> {
-        require_sha256(
-            expected_artifact_sha256,
-            "weather static-bundle artifact",
-        )?;
+        require_sha256(expected_artifact_sha256, "weather static-bundle artifact")?;
         require_sha256(
             expected_authority_manifest_sha256,
             "weather expected authority manifest",
@@ -301,7 +257,9 @@ impl AuthenticatedWeatherCatalog {
         let provenance: WeatherResourceCatalogProvenance = serde_json::from_slice(bytes)
             .map_err(|error| format!("parse weather resource catalog: {error}"))?;
         if provenance.authority_manifest_sha256 != expected_authority_manifest_sha256 {
-            return Err("weather catalog authority differs from the pinned launch authority".into());
+            return Err(
+                "weather catalog authority differs from the pinned launch authority".into(),
+            );
         }
         let canonical = serde_json::to_vec(&provenance)
             .map_err(|error| format!("re-encode weather resource catalog: {error}"))?;
@@ -320,9 +278,7 @@ impl AuthenticatedWeatherCatalog {
             .map_err(|error| format!("encode weather resource catalog: {error}"))
     }
 
-    fn from_provenance(
-        provenance: WeatherResourceCatalogProvenance,
-    ) -> Result<Self, String> {
+    fn from_provenance(provenance: WeatherResourceCatalogProvenance) -> Result<Self, String> {
         validate_provenance(&provenance)?;
         let codes = provenance
             .weather_codes
@@ -330,11 +286,6 @@ impl AuthenticatedWeatherCatalog {
             .cloned()
             .map(|row| (row.airborne_runtime_code, row))
             .collect();
-        // The file ordinal is taken HERE, while the whole authored file is still
-        // in one list, and travels with the row. Recovering it later from the
-        // per-region split is not equivalent: a position whose region has no
-        // engine record never reaches a membership row, yet it still occupies
-        // its place in the file that the consumer counts.
         let mut positions_by_region = BTreeMap::<u32, Vec<(u32, WeatherCatalogPosition)>>::new();
         for (index, position) in provenance.ordered_positions.iter().enumerate() {
             let Ok(file_source_ordinal) = u32::try_from(index + 1) else {
@@ -370,14 +321,11 @@ impl AuthenticatedWeatherCatalog {
         let mut selection_seed = raw.selection_seed_words;
         let mut resolved_positions = Vec::with_capacity(positions.len());
         let mut instances = Vec::new();
-        let mut successful_factory = raw
-            .ordered_factory_attempts
-            .iter()
-            .filter_map(|attempt| {
-                attempt.returned_entity_instance_id.map(|id| {
-                    (attempt.definition_ptr, id)
-                })
-            });
+        let mut successful_factory = raw.ordered_factory_attempts.iter().filter_map(|attempt| {
+            attempt
+                .returned_entity_instance_id
+                .map(|id| (attempt.definition_ptr, id))
+        });
 
         for (ordinal, (file_source_ordinal, position)) in positions.iter().enumerate() {
             let selected_class = portable_render_stream::weather_selected_variant_class(
@@ -441,10 +389,7 @@ impl AuthenticatedWeatherCatalog {
                     .fading
                     .as_ref()
                     .map(|entity| entity.entity_instance_id.to_string()),
-                ordered_effect_instance_ids: effect_ids
-                    .iter()
-                    .map(u64::to_string)
-                    .collect(),
+                ordered_effect_instance_ids: effect_ids.iter().map(u64::to_string).collect(),
                 resolved_variant_token: Some(selected.resolved_variant_token.clone()),
             });
         }
@@ -486,12 +431,7 @@ fn payload_requests_for_paths(
             let normalized = normalize_game_relative_path(&path)?;
             let row = winner_index
                 .ordered_rows
-                .binary_search_by(|row| {
-                    row.content
-                        .logical_path
-                        .as_str()
-                        .cmp(normalized.as_str())
-                })
+                .binary_search_by(|row| row.content.logical_path.as_str().cmp(normalized.as_str()))
                 .ok()
                 .map(|index| &winner_index.ordered_rows[index])
                 .ok_or_else(|| {
@@ -560,7 +500,8 @@ fn sources_from_requests(
                     )
                 })?
                 .to_vec();
-            if payload.len() as u64 != request.byte_count || sha256(&payload) != request.range_sha256
+            if payload.len() as u64 != request.byte_count
+                || sha256(&payload) != request.range_sha256
             {
                 return Err(format!(
                     "weather catalog admitted payload changed: {}",
@@ -581,17 +522,11 @@ fn discover_exact_dependency_paths(
     let payloads = discovery_sources
         .iter()
         .cloned()
-        .map(|source| {
-            (
-                source.content.normalized_game_relative_path.clone(),
-                source,
-            )
-        })
+        .map(|source| (source.content.normalized_game_relative_path.clone(), source))
         .collect::<BTreeMap<_, _>>();
     let weather_text = required_clausewitz_text(&payloads, WEATHER_SOURCE)?;
     let entities_text = required_clausewitz_text(&payloads, WEATHER_ENTITIES_SOURCE)?;
-    let registrations_text =
-        required_clausewitz_text(&payloads, PARTICLE_REGISTRATIONS_SOURCE)?;
+    let registrations_text = required_clausewitz_text(&payloads, PARTICLE_REGISTRATIONS_SOURCE)?;
     let authored = parse_weather_effects(&weather_text)?;
     let definitions = index_particle_definitions(&payloads)?;
     let mut paths = [
@@ -654,7 +589,9 @@ fn discover_entity_paths(
     }
     let particle_tokens = event_particle_tokens(&entity_blocks[0])?;
     if particle_tokens.is_empty() {
-        return Err(format!("weather entity {entity_token:?} has no particle event"));
+        return Err(format!(
+            "weather entity {entity_token:?} has no particle event"
+        ));
     }
     for particle_token in particle_tokens {
         let registrations = named_blocks(registrations_text, "pdxparticle", &particle_token);
@@ -664,9 +601,10 @@ fn discover_entity_paths(
                 registrations.len()
             ));
         }
-        let definition_token = unique_scalar_field(&registrations[0], "type")?.ok_or_else(|| {
-            format!("weather particle registration {particle_token:?} has no type")
-        })?;
+        let definition_token =
+            unique_scalar_field(&registrations[0], "type")?.ok_or_else(|| {
+                format!("weather particle registration {particle_token:?} has no type")
+            })?;
         let matched = definitions
             .get(&definition_token)
             .map(Vec::as_slice)
@@ -759,10 +697,7 @@ fn validate_provenance(value: &WeatherResourceCatalogProvenance) -> Result<(), S
             {
                 return Err("weather authored variant identity is duplicated or invalid".into());
             }
-            validate_entity_content(
-                &variant.primary,
-                &value.authority_manifest_sha256,
-            )?;
+            validate_entity_content(&variant.primary, &value.authority_manifest_sha256)?;
             if let Some(fading) = &variant.fading {
                 validate_entity_content(fading, &value.authority_manifest_sha256)?;
             }
@@ -864,10 +799,6 @@ fn variant_token(weather: &str, index: u16, class: WeatherPositionClass) -> Stri
         WeatherPositionClass::Big => "big",
         WeatherPositionClass::Small => "small",
     };
-    // XN14V freezes the portable identity as weather:class:authored-index.
-    // This is an identity join, not presentation text; changing delimiter or
-    // component order would make production catalogs disagree with retained
-    // membership/checkpoint fixtures despite selecting the same authored row.
     format!("{weather}:{class}:{index}")
 }
 
@@ -950,7 +881,9 @@ fn resolve_entity_content(
     }
     let particle_tokens = event_particle_tokens(&entity_blocks[0])?;
     if particle_tokens.is_empty() {
-        return Err(format!("weather entity {entity_token:?} has no particle event"));
+        return Err(format!(
+            "weather entity {entity_token:?} has no particle event"
+        ));
     }
 
     let mut ordered_paths = Vec::<String>::new();
@@ -966,10 +899,14 @@ fn resolve_entity_content(
                 registrations.len()
             ));
         }
-        let definition_token = unique_scalar_field(&registrations[0], "type")?.ok_or_else(|| {
-            format!("weather particle registration {particle_token:?} has no type")
-        })?;
-        let matched = definitions.get(&definition_token).map(Vec::as_slice).unwrap_or(&[]);
+        let definition_token =
+            unique_scalar_field(&registrations[0], "type")?.ok_or_else(|| {
+                format!("weather particle registration {particle_token:?} has no type")
+            })?;
+        let matched = definitions
+            .get(&definition_token)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         if matched.len() != 1 {
             return Err(format!(
                 "weather particle definition {definition_token:?} resolved {} times",
@@ -1099,16 +1036,13 @@ fn parse_weather_effects(
     let mut out = BTreeMap::new();
     let mut rest = block.as_str();
     while let Some((token, body, after)) = next_braced_entry(rest) {
-        if ["rain_light", "rain_heavy", "snow", "blizzard", "sandstorm"]
-            .contains(&token.as_str())
-        {
+        if ["rain_light", "rain_heavy", "snow", "blizzard", "sandstorm"].contains(&token.as_str()) {
             let mut rows = Vec::new();
             for (index, effect) in repeated_braced_values(&body, "weather_effect").enumerate() {
                 let authored_effect_index = u16::try_from(index)
                     .map_err(|_| format!("weather effect vector {token} exceeds u16"))?;
-                let primary_entity = unique_scalar_field(&effect, "entity")?.ok_or_else(|| {
-                    format!("weather effect {token}#{index} has no entity")
-                })?;
+                let primary_entity = unique_scalar_field(&effect, "entity")?
+                    .ok_or_else(|| format!("weather effect {token}#{index} has no entity"))?;
                 let small = unique_scalar_field(&effect, "small")?
                     .map(|value| match value.as_str() {
                         "yes" => Ok(true),
@@ -1165,13 +1099,7 @@ fn index_particle_definitions(
 
 fn named_blocks(source: &str, kind: &str, name: &str) -> Vec<String> {
     repeated_braced_values(source, kind)
-        .filter(|body| {
-            unique_scalar_field(body, "name")
-                .ok()
-                .flatten()
-                .as_deref()
-                == Some(name)
-        })
+        .filter(|body| unique_scalar_field(body, "name").ok().flatten().as_deref() == Some(name))
         .collect()
 }
 
@@ -1188,10 +1116,10 @@ fn event_particle_tokens(entity_body: &str) -> Result<Vec<String>, String> {
 fn particle_textures(body: &str) -> Result<Vec<(String, String)>, String> {
     repeated_braced_values(body, "texture")
         .map(|texture| {
-            let file = unique_scalar_field(&texture, "file")?
-                .ok_or("particle texture has no file")?;
-            let shader = unique_scalar_field(&texture, "shader")?
-                .ok_or("particle texture has no shader")?;
+            let file =
+                unique_scalar_field(&texture, "file")?.ok_or("particle texture has no file")?;
+            let shader =
+                unique_scalar_field(&texture, "shader")?.ok_or("particle texture has no shader")?;
             Ok((file, shader))
         })
         .collect()
@@ -1230,7 +1158,10 @@ fn particle_shader_closure(
         let Some(includes) = includes.first() else {
             continue;
         };
-        let parent = path.rsplit_once('/').map(|(parent, _)| parent).unwrap_or("");
+        let parent = path
+            .rsplit_once('/')
+            .map(|(parent, _)| parent)
+            .unwrap_or("");
         let mut resolved = Vec::new();
         for include in quoted_strings(includes)? {
             let candidate = if include.contains('/') {
@@ -1244,7 +1175,6 @@ fn particle_shader_closure(
             required_source(payloads, &normalized)?;
             resolved.push(normalized);
         }
-        // LIFO traversal with reverse push preserves the authored include order.
         pending.extend(resolved.into_iter().rev());
     }
     Ok(ordered)
@@ -1339,10 +1269,6 @@ fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-/// Remove Clausewitz `#` comments without changing line count or touching a
-/// hash embedded in a quoted resource token. Keeping newlines intact is
-/// important because `map/weatherpositions.txt` source-line identity is part
-/// of the portable contract.
 fn strip_clausewitz_comments(source: &str, path: &str) -> Result<String, String> {
     let mut out = String::with_capacity(source.len());
     let mut quoted = false;
@@ -1382,7 +1308,9 @@ fn strip_clausewitz_comments(source: &str, path: &str) -> Result<String, String>
         }
     }
     if quoted {
-        return Err(format!("weather source {path} has an unterminated quoted string"));
+        return Err(format!(
+            "weather source {path} has an unterminated quoted string"
+        ));
     }
     Ok(out)
 }
@@ -1400,9 +1328,6 @@ fn required_shader_text(
     strip_c_comments(&source, path)
 }
 
-/// Shader sources use C-style comments and `#` preprocessor directives. The
-/// latter must remain source rather than being mistaken for Clausewitz text
-/// comments while discovering includes and named `Effect` blocks.
 fn strip_c_comments(source: &str, path: &str) -> Result<String, String> {
     let bytes = source.as_bytes();
     let mut out = String::with_capacity(source.len());
@@ -1482,10 +1407,7 @@ fn braced_value(source: &str, key: &str) -> Option<String> {
     balanced_body(source, brace)
 }
 
-fn repeated_braced_values<'a>(
-    source: &'a str,
-    key: &'a str,
-) -> impl Iterator<Item = String> + 'a {
+fn repeated_braced_values<'a>(source: &'a str, key: &'a str) -> impl Iterator<Item = String> + 'a {
     let mut from = 0usize;
     std::iter::from_fn(move || {
         while from < source.len() {

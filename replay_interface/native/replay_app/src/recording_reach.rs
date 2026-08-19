@@ -1,35 +1,3 @@
-//! `--report-recording-reach`: what one REAL recording reaches in this viewer.
-//!
-//! Lane MH exists because nothing in this repository had ever opened a
-//! recorder-produced `.battleplan` in the viewer — every replay fixture is
-//! synthetic — so "which map inputs would light up on a real capture" was an
-//! opinion. This command turns it into a file.
-//!
-//! It opens the recording through the SAME path the shipped windowed and
-//! `--dump-frame` routes use — `recording_open::open_product_recording` plus
-//! `WorldTimeline::open` — and materializes only the hours it reports.
-//!
-//! Deliberately NOT `validate::open_timeline_segment`: that is the
-//! certification open, and it additionally runs `validate_all_frame_payloads`,
-//! which materializes EVERY hour. On a real 186-hour capture (t79) that did not
-//! finish in 68 minutes and peaked at 9.2 GB, because a frame carrying
-//! `_r2_direct_frd_transitions` schema 4 re-folds the whole history from hour
-//! one (`replay_core::world::accumulate_frd_history`). A report that cannot run
-//! on a real recording answers nothing, and "what a player's viewer shows" is a
-//! question about the product open anyway.
-//!
-//! For each reported hour it writes:
-//!
-//!   * the frame's own `coverage_warnings` — the recorded reason a domain did
-//!     not survive admission (a malformed carrier names itself here), and
-//!   * the complete XMAP00 map-authority projection for that hour: every
-//!     required map input with its disposition and, when refused, its blocker.
-//!
-//! It renders NOTHING. It needs no D3D11 device, no game install and no
-//! content binding, which is exactly why it can answer "what is dark and why"
-//! on a machine and in a CI run where a real render cannot happen. What the
-//! frame composition then does with a refused input is a separate question,
-//! answered by `--dump-frame`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -37,13 +5,9 @@ use std::time::Instant;
 
 
 
-/// Which hours to materialize. A recording is hundreds of hours long and every
-/// hour costs a decode, so the default samples the three the eye checks first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HourSelection {
-    /// First, middle and last recorded hour.
     Sample,
-    /// Every recorded hour.
     All,
 }
 
@@ -51,7 +15,6 @@ pub(crate) enum HourSelection {
 struct HourReport {
     hour_index: i64,
     coverage_warnings: Vec<String>,
-    /// `None` when the projection itself could not be built for this hour.
     map_authority_error: Option<String>,
     admitted_inputs: Vec<String>,
     gap_inputs: Vec<GapRow>,
@@ -77,17 +40,11 @@ struct ReachReport {
     open_warnings: Vec<String>,
     required_input_count: usize,
     hours: Vec<HourReport>,
-    /// input_id -> how many of the reported hours refused it.
     gap_input_hour_counts: BTreeMap<String, usize>,
 }
 
 const REACH_REPORT_SCHEMA: &str = "hoi4.replay.recording_reach.v1";
 
-/// The hours this report materializes, in recorded order and without repeats.
-///
-/// `Sample` is first, middle and last — the three an eye checks — and it must
-/// stay exactly those: on a two-hour recording it is first and last with no
-/// middle, and on a one-hour recording it is that hour once.
 fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
     match selection {
         HourSelection::All => all_hours.to_vec(),
@@ -109,17 +66,6 @@ fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
     }
 }
 
-/// Write the report without ever truncating a file this process did not write.
-///
-/// `--report-out` is an operator-supplied path and the input it describes is a
-/// recording — under the single-file law the recording is the only
-/// extractor-to-replay connection and this command must never write into it or
-/// into a sibling of a rollover package set. A plain `fs::write` truncates
-/// whatever is there, so an out path that named the package-set descriptor (or
-/// an unselected member) would destroy it. Creating the file exclusively means
-/// the only file this can ever write is one that did not exist; re-running onto
-/// its own byte-identical output is still allowed so a repeated report is not a
-/// failure.
 fn write_report_create_new_or_equal(out: &Path, bytes: &[u8]) -> crate::Result<()> {
     use std::io::Write;
     match std::fs::OpenOptions::new()
@@ -262,30 +208,18 @@ pub(crate) fn run(
 mod tests {
     use super::*;
 
-    /// `run` calls this exact function, so changing which hour the sample picks
-    /// changes this result.
-    ///
-    /// kills: returning every hour for `Sample`; dropping the last hour (the
-    /// one an off-by-one loses first); emitting a repeated hour on a 1- or
-    /// 2-hour recording, which would decode and report the same hour twice;
-    /// and indexing `all_hours[len / 2]` on an empty slice, which panics.
     #[test]
     fn sample_selection_is_first_middle_last_and_never_repeats() {
         assert_eq!(select_hours(&[], HourSelection::Sample), Vec::<i64>::new());
         assert_eq!(select_hours(&[7], HourSelection::Sample), vec![7]);
         assert_eq!(select_hours(&[7, 8], HourSelection::Sample), vec![7, 8]);
-        // Odd length: the middle is the true centre.
         assert_eq!(select_hours(&[1, 2, 3], HourSelection::Sample), vec![1, 2, 3]);
-        // Even length: len/2 is the upper of the two central hours.
         let even: Vec<i64> = (100..112).collect();
         assert_eq!(select_hours(&even, HourSelection::Sample), vec![100, 106, 111]);
         let odd: Vec<i64> = (100..111).collect();
         assert_eq!(select_hours(&odd, HourSelection::Sample), vec![100, 105, 110]);
     }
 
-    /// kills: replacing the exclusive create with `fs::write`, which would
-    /// truncate an existing file — the defect this guards is `--report-out`
-    /// naming a recording or a rollover package-set descriptor.
     #[test]
     fn the_report_never_truncates_a_file_it_did_not_write() {
         let dir = std::env::temp_dir().join(format!(
@@ -313,7 +247,6 @@ mod tests {
             "the occupant's bytes are untouched"
         );
 
-        // A fresh path is written, and re-writing the same bytes is not a failure.
         let fresh = dir.join("report.json");
         write_report_create_new_or_equal(&fresh, b"{}\n").expect("a fresh path is written");
         write_report_create_new_or_equal(&fresh, b"{}\n").expect("an identical rerun is allowed");

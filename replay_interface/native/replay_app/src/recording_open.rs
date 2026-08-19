@@ -1,10 +1,3 @@
-//! Single shipped recording-open policy.
-//!
-//! Every product surface enters through the explicit bounded decoder
-//! capability. Snapshot-native recordings pass through without invoking it;
-//! compact-only containers are authenticated into the product-owned spool and
-//! folded by the extractor's one production `WorldFold`. There is deliberately
-//! no ordinary-open or raw-stream fallback in this module.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom};
@@ -249,10 +242,6 @@ fn prefold_identity_mode_label(mode: PrefoldStreamIdentityMode) -> &'static str 
     }
 }
 
-/// Process boundary for the extractor-owned production WorldFold. The worker
-/// is the exact recorder sibling already present in the offline two-executable
-/// package; this preserves fault isolation without linking extractor crates or
-/// adding a third shipped executable.
 struct ProductionPrefoldWorker;
 
 impl CertifiedPrefoldSpoolDecoder for ProductionPrefoldWorker {
@@ -287,10 +276,6 @@ impl CertifiedPrefoldSpoolDecoder for ProductionPrefoldWorker {
             .arg(prefold_identity_mode_label(identity_mode))
             .arg("--worker-executable-sha256")
             .arg(worker.sha256())
-            // Stdin is a duplicate of the already authenticated retained file
-            // object. The child never reopens `--source`; the path remains in
-            // the portable request solely for diagnostics and contract
-            // compatibility.
             .stdin(source.child_stdio()?)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -371,13 +356,6 @@ impl CertifiedPrefoldSpoolDecoder for ProductionPrefoldWorker {
     }
 }
 
-/// Retained compact-source capability used across the self-child boundary.
-///
-/// On Windows the open denies both write and delete sharing and requests the
-/// final component itself rather than following a reparse point. Length and
-/// SHA-256 are checked through this same handle before it is duplicated into
-/// child stdin. Holding `file` until the child exits keeps the authenticated
-/// object immutable for the complete fold.
 struct AuthenticatedPrefoldSource {
     file: File,
 }
@@ -474,19 +452,10 @@ struct AuthenticatedSelfExecutable {
     path: PathBuf,
     sha256: String,
     identity: ExecutableFileIdentity,
-    // Holding this file with no write/delete sharing prevents replacement of
-    // the image between validation and CreateProcess on shipped Windows.
     _image: File,
-    // Retain every directory from the volume root through the image parent
-    // without delete sharing.  Protecting only the immediate parent leaves a
-    // higher ancestor available for rename/junction rebinding before
-    // CreateProcess resolves the path again.
     _ancestors: Vec<File>,
 }
 
-/// Child-side retained self-image capability. Keeping this value alive holds
-/// the authenticated executable and all of its pathname ancestors through the
-/// complete fold instead of returning a hash after dropping those guards.
 pub(crate) struct AuthenticatedCurrentExecutable(AuthenticatedSelfExecutable);
 
 impl AuthenticatedCurrentExecutable {
@@ -600,8 +569,6 @@ fn open_validated_handle_with(
     expected: OpenedObjectKind,
     opener: impl FnOnce(&Path) -> Result<File, PrefoldDecodeError>,
 ) -> Result<File, PrefoldDecodeError> {
-    // This pathname check gives a useful early diagnostic, but is deliberately
-    // not the security decision: the path can change before the open.
     reject_alias(path, label)?;
     let file = opener(path)?;
     validate_opened_handle(&file, path, label, expected)?;
@@ -614,8 +581,6 @@ fn validate_opened_handle(
     label: &str,
     expected: OpenedObjectKind,
 ) -> Result<(), PrefoldDecodeError> {
-    // File::metadata queries the opened object (fstat/GetFileInformationByHandle)
-    // rather than resolving the pathname a second time.
     let metadata = file.metadata().map_err(|error| {
         PrefoldDecodeError::new(format!(
             "inspect opened {label} handle {}: {error}",
@@ -716,9 +681,6 @@ fn open_locked_prefold_source(path: &Path) -> Result<File, PrefoldDecodeError> {
     let mut options = OpenOptions::new();
     options
         .read(true)
-        // No FILE_SHARE_WRITE and no FILE_SHARE_DELETE: after admission the
-        // exact object cannot be modified or path-substituted until the fold
-        // child and its receipt are complete.
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     options.open(path).map_err(|error| {
@@ -873,12 +835,6 @@ fn executable_identity(
         )));
     }
     let info = unsafe { info.assume_init() };
-    // A second hard-link name does not weaken the retained image capability:
-    // Windows applies this handle's denied write/delete sharing to the file
-    // object, not merely to the pathname used to open it. Cargo legitimately
-    // hard-links integration-test binaries, so link count is not identity.
-    // The volume/file index and whole-file hash below remain the admission and
-    // post-execution identity join.
     Ok(ExecutableFileIdentity {
         volume: u64::from(info.volume_serial_number),
         file: (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low),
@@ -897,8 +853,6 @@ fn executable_identity(
             path.display()
         ))
     })?;
-    // Hard-link count is not file identity. Keep the opened descriptor alive
-    // and join the device/inode plus whole-file hash before and after execution.
     Ok(ExecutableFileIdentity {
         volume: metadata.dev(),
         file: metadata.ino(),
@@ -922,13 +876,10 @@ fn executable_identity(
     })
 }
 
-/// Open one recording under the shipped activation policy.
 pub(crate) fn open_product_recording(path: &Path) -> Result<Box<dyn ReplaySource>, SourceError> {
     open_product_recording_segment(path, None)
 }
 
-/// Open either one ordinary portable recording or one explicitly selected
-/// member of an ordered CID1 rollover package set.
 pub(crate) fn open_product_recording_segment(
     path: &Path,
     logical_stream_id: Option<u64>,
@@ -938,8 +889,6 @@ pub(crate) fn open_product_recording_segment(
 
 pub(crate) struct ProductRecordingOpen {
     pub source: Box<dyn ReplaySource>,
-    /// Whole-file SHA-256 from the exact container handle moved into `source`.
-    /// Directory stores have no single-file authority and return `None`.
     pub authority_sha256: Option<String>,
 }
 
@@ -956,12 +905,8 @@ fn open_product_recording_segment_impl(
     require_whole_file_receipt: bool,
 ) -> Result<ProductRecordingOpen, SourceError> {
     // Acquire before any is_file/is_dir probe. Windows rejects UNC lexically,
-    // opens every component no-follow, and denies delete sharing for the
     // complete source lifetime.
     let recording_guard = ProductRecordingPathGuard::acquire(path)?;
-    // Resolve the stable machine-local root before authenticating a package-set
-    // member, so the normal container open follows the retained-handle join
-    // immediately with no intervening filesystem setup.
     let root = product_spool_root()?;
     let is_rollover = path.file_name().and_then(|value| value.to_str())
         == Some(replay_core::ROLLOVER_PACKAGE_SET_FILE)
@@ -1025,14 +970,6 @@ fn open_product_recording_segment_impl(
     })
 }
 
-/// Preserve the typed rejection class of a rollover-member authentication
-/// failure at the product boundary. A tampered or substituted member is an
-/// INTEGRITY failure ("recording failed payload integrity validation"), a
-/// malformed set is container/schema, and only a genuine capability refusal
-/// (missing `--logical-stream`, recovery-only set, direct recording, or a
-/// package-set schema this build does not know) reports as "not playable by
-/// this build" — symmetric with the single-file branch's
-/// `map_retained_container_error`.
 fn map_rollover_authentication_error(
     error: replay_core::RolloverAuthenticationError,
 ) -> SourceError {
@@ -1051,10 +988,6 @@ fn map_rollover_authentication_error(
 
 fn map_retained_container_error(error: snapshot::ContainerError) -> SourceError {
     let message = format!("open retained replay container: {error}");
-    // The retained-handle product path opens the snapshot container directly,
-    // bypassing replay_core's Store adapter. Preserve BOTH typed signals the
-    // adapter preserves — modset mismatch and payload integrity — so this route
-    // classifies identically to the ordinary one.
     match error {
         snapshot::ContainerError::ModsetMismatch { .. } => SourceError::ModsetMismatch(message),
         snapshot::ContainerError::PayloadIntegrity(_) => SourceError::Integrity(message),
@@ -1067,11 +1000,6 @@ fn map_retained_container_error(error: snapshot::ContainerError) -> SourceError 
     }
 }
 
-/// Test-only seam: identical to the product open except the spool root and
-/// certified decoder are supplied by the test fixture. `#[cfg(test)]` keeps it
-/// out of the product binary — the module doc's "no ordinary-open or
-/// raw-stream fallback" claim stays enforced by the compiler, not by
-/// convention.
 #[cfg(test)]
 fn open_product_recording_at(
     path: &Path,
@@ -1181,11 +1109,6 @@ impl ProductRecordingPathGuard {
                 cursor.push(component.as_os_str());
                 let file = OpenOptions::new()
                     .read(true)
-                    // Ancestor directories remain rename/rebind-proof because
-                    // delete sharing is omitted, while write sharing permits
-                    // unrelated child creation (including a LocalAppData
-                    // spool beneath a shared ancestor). The final recording
-                    // object remains immutable with read sharing only.
                     .share_mode(if index + 1 == normals.len() {
                         FILE_SHARE_READ
                     } else {
@@ -1238,8 +1161,6 @@ impl ProductRecordingPathGuard {
     }
 }
 
-/// Resolve the machine-local parent for transient replay data. Nothing inside
-/// a portable recording selects or influences this path.
 fn product_spool_root() -> Result<ProductSpoolRoot, SourceError> {
     #[cfg(test)]
     let base = std::env::temp_dir();
@@ -1320,10 +1241,6 @@ fn ensure_owned_child(base: &Path, name: &str) -> Result<PathBuf, SourceError> {
     Ok(canonical_child)
 }
 
-/// The stable product-owned parent. Per-recording children and their recursive
-/// cleanup remain owned by replay_core's identity-marked spool guard. The
-/// parent deliberately persists: deleting a shared empty parent can race a
-/// concurrent source between its root check and private-child creation.
 struct ProductSpoolRoot {
     canonical: PathBuf,
     #[cfg(all(windows, not(test)))]
@@ -1365,8 +1282,6 @@ impl ProductSpoolRoot {
     }
 }
 
-/// Retains the canonical product-root identity alongside the replay source.
-/// The inner replay_core owner deletes only its own authenticated child.
 struct ProductReplaySource {
     inner: Box<dyn ReplaySource>,
     _spool_root: ProductSpoolRoot,
@@ -1377,12 +1292,6 @@ impl ReplaySource for ProductReplaySource {
     fn game_id(&self) -> &str {
         self.inner.game_id()
     }
-    /// The stop switch has to reach the admitted source or it reaches nothing:
-    /// this wrapper IS the product route, so a scrub that has moved on would be
-    /// unable to abandon the walk it started on exactly the path players use.
-    /// (`the_product_source_wrapper_forwards_every_replay_source_accessor`
-    /// caught this the moment the trait grew the method, which is what that
-    /// test is for.)
     fn set_scrub_interrupt(
         &self,
         interrupt: Option<std::sync::Arc<dyn Fn() -> bool + Send + Sync>>,
@@ -1396,9 +1305,6 @@ impl ReplaySource for ProductReplaySource {
         self.inner.warnings()
     }
     fn declared_coverage(&self) -> Option<&replay_core::DeclaredCoverage> {
-        // The shipped product path wraps the admitted source; every accessor
-        // here must forward, or evidence admitted at ingest silently becomes
-        // the trait default on exactly the route players use.
         self.inner.declared_coverage()
     }
     fn content_manifest(&self) -> Option<&ContentManifest> {
@@ -1438,10 +1344,6 @@ mod tests {
     };
     use snapshot::{pack, PackEntry, PackIdentity};
 
-    /// R7 F1 regression: each typed rollover authentication class keeps its
-    /// honest `SourceError` class at the product boundary. Only a genuine
-    /// selection/usage refusal may reach the "recording not playable by this
-    /// build" headline; a tampered member is an integrity failure.
     #[test]
     fn rollover_authentication_classes_map_to_their_source_error_classes() {
         use replay_core::RolloverAuthenticationError as E;
@@ -1476,24 +1378,8 @@ mod tests {
         path
     }
 
-    /// The shipped product source is a WRAPPER: every `ReplaySource` accessor
-    /// with a default body silently becomes that default if the wrapper forgets
-    /// to forward it, and the default answers "there is nothing here". A
-    /// forgotten forward is therefore evidence loss on exactly the route
-    /// players use, with no compile error and no failing behaviour test.
-    ///
-    /// THE ACCESSOR LIST IS DERIVED FROM THE TRAIT, not written here. It used
-    /// to be a hand-maintained array, which is the same defect one level up:
-    /// adding `product_admission` to the trait left the wrapper dropping it AND
-    /// this test passing, because nobody edited the array (Codex round 4,
-    /// HIGH). Reading `replay_core`'s trait means a new accessor fails this
-    /// test the moment it exists.
-    ///
-    /// kills: adding any accessor to `ReplaySource` without forwarding it here.
     #[test]
     fn the_product_source_wrapper_forwards_every_replay_source_accessor() {
-        // Normalize line endings first: include_str! sees each file exactly as
-        // checked out, and a CRLF checkout would otherwise never match "\n}\n".
         let extract = |text: &str, header: &str| -> String {
             let start = text.find(header).unwrap_or_else(|| {
                 panic!("{header:?} must exist");
@@ -1617,9 +1503,6 @@ mod tests {
             "fixture executable",
             OpenedObjectKind::Image,
             |path| {
-                // The production helper has already completed its pathname
-                // precheck when this hook runs. Replace the checked file with
-                // a directory before the handle is opened.
                 fs::rename(path, &displaced).map_err(|error| {
                     PrefoldDecodeError::new(format!("displace fixture image: {error}"))
                 })?;
@@ -1791,15 +1674,6 @@ mod tests {
         }
     }
 
-    /// BEHAVIOURAL sentinel for the late-attach admission on the product route.
-    ///
-    /// The forwarding test above is lexical, so a body that calls
-    /// `self.inner.product_admission()` and then returns `None` would satisfy
-    /// both of its substring searches while dropping the evidence (Codex round
-    /// 5, LOW). This one asks the wrapper for the value and compares it.
-    ///
-    /// kills: `ProductReplaySource::product_admission` returning the trait
-    /// default, or delegating and discarding.
     #[test]
     fn product_source_preserves_the_late_attach_admission() {
         let parent = temp_root("product_admission_forwarding");
@@ -1907,8 +1781,6 @@ mod tests {
             pack(game, &entries, &identity, true).unwrap(),
         )
         .unwrap();
-        // R18-5: ordinary open refuses the compact-stream-only container with
-        // the typed subclass (compact evidence present in the manifest role).
         assert!(matches!(
             portable_test_fs_retry::with_tree_read_guard(&container_path, || {
                 replay_core::open_recording(&container_path)

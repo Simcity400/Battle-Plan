@@ -1,16 +1,5 @@
-//! Dormant, evidence-only automation for the A25 owner-scoped render probe.
-//!
-//! Exact detours call this state machine while raw pointers are live.  It
-//! buffers by the concrete render candidate and publishes nothing until the
-//! production selected-Present boundary chooses that candidate.  The module
-//! has a lane-owned evidence activation switch which is mechanically separate
-//! from production promotion: the owner-render, bitmap-font,
-//! glyph-preparation, and inline-icon detours remain disabled until the
-//! retained H-A25 live fixture has been accepted.
-
 use crate::a729_hook::{
-    install_admitted_owner_capture, observed_owner_for_render_layout,
-    ObservedOwnerRenderJoin,
+    install_admitted_owner_capture, observed_owner_for_render_layout, ObservedOwnerRenderJoin,
 };
 use crate::owner_glyph_capture::{
     AdmittedOwnerGlyphCapture, CaptureHealth, FontAssetReceipt, GlyphDescriptorIdentity,
@@ -22,7 +11,6 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use std::thread::{self, ThreadId};
 
-/// Lane-owned authorization for the raw harness probe.
 pub const OWNER_GLYPH_CAPTURE_ACTIVATION: bool = false;
 pub const A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED: bool = OWNER_GLYPH_CAPTURE_ACTIVATION;
 pub const MAX_COMPLETED_OWNER_GLYPH_CANDIDATES: usize = 16_384;
@@ -44,7 +32,6 @@ pub struct OwnerGlyphPresentCandidate {
     pub hook_epoch_nonce: u64,
     pub submit_index: u64,
     pub frame_sequence: u64,
-    /// Canonical compact hour index belonging to the candidate Present.
     pub frame_hour: u64,
 }
 
@@ -72,10 +59,6 @@ pub struct OwnerGlyphProbeTelemetry {
     pub queue_overflow_count: u64,
 }
 
-/// Pointer-free payload produced at exact-a729 `0x14228C585`, after the six
-/// ordinary-glyph vertices have been written but before owner identity is lost
-/// to grouping. The native hook must copy descriptor/vertex bytes while the
-/// invocation is live; no raw address may cross this API.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostEmitOrdinaryGlyphObservation {
     pub font_identity: String,
@@ -84,18 +67,10 @@ pub struct PostEmitOrdinaryGlyphObservation {
     pub descriptor_sha256: String,
     pub source_ordinal: u32,
     pub emitted_vertex_end_count: u32,
-    /// RVA of the first copied byte. The native seam computes this from the
-    /// live scratch base and post-write count before copying the 168 bytes.
     pub scratch_group_start_rva: u32,
     pub generated_vertices: Vec<u8>,
 }
 
-/// Process-local identity of one occupied exact-a729 bitmap-font cache entry.
-///
-/// `font_instance_token` is the exact `CBitmapFont*` bit pattern and
-/// `buffer_identity` is the exact GPU-buffer handle stored at entry `+0x18`.
-/// They are deliberately confined to this live sidecar and are never emitted
-/// into a replay artifact.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GlyphBufferCacheIdentity {
     pub font_instance_token: u64,
@@ -164,10 +139,6 @@ impl FontGlyphBufferCacheSidecar {
     }
 }
 
-/// Exact process-local mirror of each observed font object's 40 engine slots.
-/// A font is retained only until its destructor callback or automation
-/// teardown. Each font cache is therefore structurally bounded to the engine's
-/// exact 40 entries; no glyph payload is inferred for an unobserved slot.
 #[derive(Default)]
 struct GlyphBufferCacheSidecars {
     fonts: BTreeMap<u64, FontGlyphBufferCacheSidecar>,
@@ -222,9 +193,7 @@ impl GlyphBufferCacheSidecars {
             .entry(identity.font_instance_token)
             .or_insert_with(|| FontGlyphBufferCacheSidecar::new(identity.font_identity.clone()));
         if font.font_identity != identity.font_identity {
-            return Err(
-                "A25 glyph-cache font-instance token was reused without teardown".into(),
-            );
+            return Err("A25 glyph-cache font-instance token was reused without teardown".into());
         }
         let slot = usize::from(identity.slot_index);
         if font.slots[slot].is_some() {
@@ -234,9 +203,6 @@ impl GlyphBufferCacheSidecars {
             );
         }
 
-        // Stale selection zeroes entry +0 before overwrite. The zero callback
-        // must remove the old sidecar first; population can never silently
-        // replace either the same tuple or a different one.
         font.slots[slot] = Some(SealedGlyphBufferCacheEntry {
             identity,
             selected_final_text_sha256,
@@ -246,10 +212,6 @@ impl GlyphBufferCacheSidecars {
         Ok(())
     }
 
-    /// Mirror one observed engine hit before deciding whether its sidecar can
-    /// be admitted to the current owner. Exact-a729 swaps every hit with slot
-    /// zero even when capture cannot replay it, so ordering is state evidence,
-    /// not a consequence of replay admission.
     fn observe_hit_reorder(
         &mut self,
         identity: &GlyphBufferCacheIdentity,
@@ -267,8 +229,6 @@ impl GlyphBufferCacheSidecars {
             .as_ref()
             .is_some_and(|sealed| &sealed.identity != identity);
         if mismatch {
-            // A tracked but different tuple means an eviction/reorder callback
-            // was missed. The entire font mirror is no longer trustworthy.
             self.fonts.remove(&identity.font_instance_token);
             return Err("A25 glyph-cache hit slot/key/buffer identity mismatch".into());
         }
@@ -285,10 +245,6 @@ impl GlyphBufferCacheSidecars {
                     })
             });
         if same_tuple_elsewhere {
-            // The exact tuple was already mirrored into another slot by a
-            // prior hit. Seeing it again at the stale pre-hit slot proves the
-            // callback chronology no longer matches the engine cache. Do not
-            // swap the trusted entry back into the stale slot.
             self.fonts.remove(&identity.font_instance_token);
             return Err("A25 glyph-cache hit repeated a stale pre-hit slot".into());
         }
@@ -299,9 +255,6 @@ impl GlyphBufferCacheSidecars {
             .ok_or("A25 glyph-cache hit font sidecar disappeared during reorder")?;
         let payload = font.slots[hit_slot].clone();
         if hit_slot != 0 {
-            // `None` represents an engine entry that predates observation. It
-            // must still displace any tracked slot-zero sidecar to the hit
-            // slot, leaving the new unseen slot zero unavailable.
             font.slots.swap(0, hit_slot);
             if let Some(moved_hit) = font.slots[0].as_mut() {
                 moved_hit.identity.slot_index = 0;
@@ -316,8 +269,6 @@ impl GlyphBufferCacheSidecars {
     fn evict_exact(&mut self, identity: &GlyphBufferCacheIdentity) -> Result<(), String> {
         identity.validate()?;
         let Some(font) = self.fonts.get_mut(&identity.font_instance_token) else {
-            // Zeroing an entry that predates attachment has no sidecar to
-            // invalidate and cannot make a later hit admissible.
             return Ok(());
         };
         if font.font_identity != identity.font_identity {
@@ -334,11 +285,7 @@ impl GlyphBufferCacheSidecars {
         Ok(())
     }
 
-    fn clear_font(
-        &mut self,
-        font_instance_token: u64,
-        font_identity: &str,
-    ) -> Result<(), String> {
+    fn clear_font(&mut self, font_instance_token: u64, font_identity: &str) -> Result<(), String> {
         if font_instance_token == 0 || font_identity.trim().is_empty() {
             return Err("A25 glyph-cache font teardown identity is incomplete".into());
         }
@@ -400,7 +347,9 @@ fn rebase_cached_glyphs(
         }
         let exact_i32 = |value: f32, label: &str| -> Result<i32, String> {
             if value < i32::MIN as f32 || value > i32::MAX as f32 || value.fract() != 0.0 {
-                return Err(format!("A25 cached glyph absolute {label} is not an exact integer"));
+                return Err(format!(
+                    "A25 cached glyph absolute {label} is not an exact integer"
+                ));
             }
             Ok(value as i32)
         };
@@ -466,8 +415,6 @@ struct OwnerGlyphSelectionReservation {
     active: bool,
 }
 
-/// One hook-thread state machine.  The owner-render detour owns this value;
-/// glyph/font/icon callbacks on any other thread cannot accidentally join it.
 pub struct OwnerGlyphEvidenceAutomation {
     mode: AutomationMode,
     process_identity: String,
@@ -516,10 +463,7 @@ impl OwnerGlyphEvidenceAutomation {
         process_start_nonce: u64,
         hook_epoch_nonce: u64,
     ) -> Result<Self, String> {
-        if process_identity.trim().is_empty()
-            || process_start_nonce == 0
-            || hook_epoch_nonce == 0
-        {
+        if process_identity.trim().is_empty() || process_start_nonce == 0 || hook_epoch_nonce == 0 {
             return Err("A25 owner-glyph evidence epoch is incomplete".into());
         }
         Ok(Self {
@@ -624,19 +568,14 @@ impl OwnerGlyphEvidenceAutomation {
             .iter()
             .find(|existing| existing.identity == receipt.identity)
         {
-            return (existing == &receipt)
-                .then_some(())
-                .ok_or_else(|| "A25 inline-icon identity was rebound within one owner render".into());
+            return (existing == &receipt).then_some(()).ok_or_else(|| {
+                "A25 inline-icon identity was rebound within one owner render".into()
+            });
         }
         active.icon_assets.push(receipt);
         Ok(())
     }
 
-    /// Seal the current owner invocation's ordinary glyph runs to the exact
-    /// cache entry populated by the engine. The native callback must run only
-    /// after upload and after entry `+0`, `+0x10`, `+0x14`, and `+0x18` contain
-    /// their final values. A previously occupied slot must first be removed by
-    /// `invalidate_glyph_buffer_cache_slot` at the observed key-zero seam.
     pub fn seal_glyph_buffer_cache_population(
         &mut self,
         identity: GlyphBufferCacheIdentity,
@@ -647,7 +586,9 @@ impl OwnerGlyphEvidenceAutomation {
                 return Err("A25 glyph-cache population is duplicate or follows a hit".into());
             }
             if !active.inline_icons.is_empty() {
-                return Err("A25 glyph-cache population contains non-cacheable inline icons".into());
+                return Err(
+                    "A25 glyph-cache population contains non-cacheable inline icons".into(),
+                );
             }
             (
                 active.owner_join.selected_final_text_sha256.clone(),
@@ -665,16 +606,10 @@ impl OwnerGlyphEvidenceAutomation {
         Ok(())
     }
 
-    /// Replay a previously sealed cache population into the current owner
-    /// invocation and mirror exact-a729's unconditional full-entry swap with
-    /// slot zero. `identity_before_hit` must describe the entry in its pre-swap
-    /// slot at the hit branch; passing its post-swap slot is rejected.
     pub fn record_glyph_buffer_cache_hit(
         &mut self,
         identity_before_hit: GlyphBufferCacheIdentity,
     ) -> Result<(), String> {
-        // Mirror the engine reorder first. It occurs on every hit regardless
-        // of whether this capture can replay the corresponding sidecar.
         let sealed = self
             .glyph_buffer_cache_sidecars
             .observe_hit_reorder(&identity_before_hit)?;
@@ -722,9 +657,6 @@ impl OwnerGlyphEvidenceAutomation {
         Ok(())
     }
 
-    /// Remove one exact sidecar when the engine zeroes entry `+0` while
-    /// selecting a stale slot. A key/buffer/count/page mismatch cannot evict a
-    /// different sidecar.
     pub fn invalidate_glyph_buffer_cache_slot(
         &mut self,
         identity_before_zero: &GlyphBufferCacheIdentity,
@@ -734,8 +666,6 @@ impl OwnerGlyphEvidenceAutomation {
             .evict_exact(identity_before_zero)
     }
 
-    /// Font-destructor seam. This prevents allocator-address reuse from
-    /// inheriting any sidecar belonging to the destroyed font object.
     pub fn teardown_glyph_buffer_cache_font(
         &mut self,
         font_instance_token: u64,
@@ -776,9 +706,6 @@ impl OwnerGlyphEvidenceAutomation {
         Ok(())
     }
 
-    /// Admit one exact post-emit callback. Position and color are decoded from
-    /// the authenticated 28-byte GUI vertices, so a hook caller cannot stamp
-    /// conflicting semantic values beside the raw receipt.
     pub fn record_post_emit_ordinary_glyph(
         &mut self,
         observation: PostEmitOrdinaryGlyphObservation,
@@ -825,14 +752,15 @@ impl OwnerGlyphEvidenceAutomation {
             .map(u32::from)
             .ok_or("A25 post-emit glyph source ordinal exceeds selected final text")?;
         if selected_codepoint != observation.requested_codepoint {
-            return Err("A25 post-emit glyph codepoint disagrees with selected source ordinal".into());
+            return Err(
+                "A25 post-emit glyph codepoint disagrees with selected source ordinal".into(),
+            );
         }
         if let Some(previous) = active.last_emitted_vertex_end_count {
             let contiguous = previous
                 .checked_add(6)
                 .is_some_and(|next| observation.emitted_vertex_end_count == next);
-            let exact_flush_reset =
-                previous == 3072 && observation.emitted_vertex_end_count == 6;
+            let exact_flush_reset = previous == 3072 && observation.emitted_vertex_end_count == 6;
             if !contiguous && !exact_flush_reset {
                 return Err("A25 post-emit glyph vertex count skipped or replayed a group".into());
             }
@@ -851,7 +779,9 @@ impl OwnerGlyphEvidenceAutomation {
             )
             .ok_or("A25 post-emit glyph scratch RVA overflow")?;
         if observation.scratch_group_start_rva != expected_group_start {
-            return Err("A25 post-emit glyph bytes are not bound to the exact scratch group".into());
+            return Err(
+                "A25 post-emit glyph bytes are not bound to the exact scratch group".into(),
+            );
         }
         let mut min_x = None::<f32>;
         let mut min_y = None::<f32>;
@@ -860,9 +790,8 @@ impl OwnerGlyphEvidenceAutomation {
             .generated_vertices
             .chunks_exact(crate::owner_glyph_capture::GLYPH_VERTEX_STRIDE)
         {
-            let word = |offset: usize| {
-                u32::from_le_bytes(vertex[offset..offset + 4].try_into().unwrap())
-            };
+            let word =
+                |offset: usize| u32::from_le_bytes(vertex[offset..offset + 4].try_into().unwrap());
             let x = f32::from_bits(word(0));
             let y = f32::from_bits(word(4));
             if !x.is_finite() || !y.is_finite() {
@@ -871,13 +800,18 @@ impl OwnerGlyphEvidenceAutomation {
             min_x = Some(min_x.map_or(x, |value| value.min(x)));
             min_y = Some(min_y.map_or(y, |value| value.min(y)));
             let color = word(20);
-            if packed_color.replace(color).is_some_and(|prior| prior != color) {
+            if packed_color
+                .replace(color)
+                .is_some_and(|prior| prior != color)
+            {
                 return Err("A25 post-emit glyph vertices disagree on color".into());
             }
         }
         let exact_i32 = |value: f32, label: &str| -> Result<i32, String> {
             if value < i32::MIN as f32 || value > i32::MAX as f32 || value.fract() != 0.0 {
-                return Err(format!("A25 post-emit glyph {label} is not an exact integer"));
+                return Err(format!(
+                    "A25 post-emit glyph {label} is not an exact integer"
+                ));
             }
             Ok(value as i32)
         };
@@ -889,7 +823,9 @@ impl OwnerGlyphEvidenceAutomation {
         let owner_relative_y = absolute_y
             .checked_sub(active.destination_rect[1])
             .ok_or("A25 post-emit glyph owner-relative y overflow")?;
-        let bgra = packed_color.ok_or("A25 post-emit glyph has no color")?.to_le_bytes();
+        let bgra = packed_color
+            .ok_or("A25 post-emit glyph has no color")?
+            .to_le_bytes();
         let rgba = [bgra[2], bgra[1], bgra[0], bgra[3]];
         let descriptor = if observation.requested_codepoint == observation.resolved_codepoint {
             GlyphDescriptorIdentity::UnicodeScalar(observation.resolved_codepoint)
@@ -945,10 +881,6 @@ impl OwnerGlyphEvidenceAutomation {
         Ok(())
     }
 
-    /// Record the exact absolute coordinates accepted by
-    /// `CGameBitmapFont::DrawInlineIcon`.  The owner destination is the sole
-    /// coordinate-space authority; live absolute coordinates never escape
-    /// into the portable replay payload.
     #[allow(clippy::too_many_arguments)]
     pub fn record_inline_icon_absolute(
         &mut self,
@@ -986,15 +918,11 @@ impl OwnerGlyphEvidenceAutomation {
     }
 
     pub fn note_gap(&mut self) {
-        self.note_active_failure(|health| {
-            health.gap_count = health.gap_count.saturating_add(1)
-        });
+        self.note_active_failure(|health| health.gap_count = health.gap_count.saturating_add(1));
     }
 
     pub fn note_drop(&mut self) {
-        self.note_active_failure(|health| {
-            health.drop_count = health.drop_count.saturating_add(1)
-        });
+        self.note_active_failure(|health| health.drop_count = health.drop_count.saturating_add(1));
     }
 
     pub fn note_hook_failure(&mut self) {
@@ -1072,9 +1000,6 @@ impl OwnerGlyphEvidenceAutomation {
         Ok(())
     }
 
-    /// Select and admit only observations from the exact chosen Present.
-    /// Earlier same-hour candidates are destroyed here; timing proximity is
-    /// never used to move them to the selected frame.
     pub fn admit_selected_present(
         &mut self,
         selected: OwnerGlyphPresentCandidate,
@@ -1135,8 +1060,7 @@ impl OwnerGlyphEvidenceAutomation {
                 completed.candidate.frame_hour,
             )?;
             if !selected_capture {
-                discarded_non_selected_count =
-                    discarded_non_selected_count.saturating_add(1);
+                discarded_non_selected_count = discarded_non_selected_count.saturating_add(1);
                 continue;
             }
             installs.push(SelectedOwnerInstall {
@@ -1289,11 +1213,6 @@ fn automation_slot() -> &'static Mutex<Option<OwnerGlyphEvidenceAutomation>> {
     OWNER_GLYPH_AUTOMATION.get_or_init(|| Mutex::new(None))
 }
 
-/// Install the passive production owner/glyph state machine for one exact
-/// render-hook epoch. Unlike the historical evidence switch, this API is
-/// authorized by the authenticated production-render bootstrap and requires
-/// the same nonzero process/hook identities later carried by the selected
-/// Present. It installs no client driver and performs no active interaction.
 pub fn install_production_automation(
     process_identity: String,
     process_start_nonce: u64,
@@ -1314,8 +1233,6 @@ pub fn install_production_automation(
     Ok(())
 }
 
-/// Explicit harness-only activation. Production scheduling does not call this
-/// while `A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED` is false.
 pub fn install_dormant_evidence_automation(
     process_identity: String,
     process_start_nonce: u64,
@@ -1350,12 +1267,8 @@ mod activation_tests {
     fn dormant_evidence_install_cannot_bypass_false_lane_latch() {
         assert!(!A25_OWNER_GLYPH_EVIDENCE_MODE_ENABLED);
         assert!(!OWNER_GLYPH_CAPTURE_ACTIVATION);
-        let error = install_dormant_evidence_automation(
-            "exact-a729-fixture".into(),
-            1,
-            1,
-        )
-        .expect_err("false evidence latch must reject before installing state");
+        let error = install_dormant_evidence_automation("exact-a729-fixture".into(), 1, 1)
+            .expect_err("false evidence latch must reject before installing state");
         assert!(error.contains("lane-owned evidence latch"));
     }
 
@@ -1374,7 +1287,9 @@ mod activation_tests {
             admit_selected_present_if_production_active(selected).unwrap(),
             Some(Vec::new())
         );
-        assert!(with_dormant_evidence_automation(|_| Ok(())).unwrap().is_none());
+        assert!(with_dormant_evidence_automation(|_| Ok(()))
+            .unwrap()
+            .is_none());
         let telemetry = uninstall_production_automation().unwrap();
         assert_eq!(telemetry, OwnerGlyphProbeTelemetry::default());
         assert!(!production_automation_is_active());
@@ -1385,8 +1300,7 @@ mod activation_tests {
 mod post_emit_tests {
     use super::*;
     use crate::owner_glyph_capture::{
-        GlyphDescriptorIdentity, GLYPH_VERTEX_BYTES, GLYPH_VERTEX_SCRATCH_RVA,
-        GLYPH_VERTEX_STRIDE,
+        GlyphDescriptorIdentity, GLYPH_VERTEX_BYTES, GLYPH_VERTEX_SCRATCH_RVA, GLYPH_VERTEX_STRIDE,
     };
     use sha2::{Digest, Sha256};
 
@@ -1617,19 +1531,18 @@ mod post_emit_tests {
         assert_eq!(active.glyphs.len(), 1);
         assert_eq!(active.fonts.len(), 1);
         assert_eq!(
-            (active.glyphs[0].owner_relative_x, active.glyphs[0].owner_relative_y),
+            (
+                active.glyphs[0].owner_relative_x,
+                active.glyphs[0].owner_relative_y
+            ),
             (3, 5)
         );
 
-        // The engine moved the hit entry to slot zero. Its genuine post-swap
-        // slot is admissible exactly once before any contradictory callback.
         automation.active = automation_with_active_text("A").active;
         automation
             .record_glyph_buffer_cache_hit(identity.at_slot(0))
             .unwrap();
 
-        // Supplying the stale pre-hit slot now proves chronology corruption,
-        // clears the font sidecar, and cannot move the tuple back to slot 7.
         automation.active = automation_with_active_text("A").active;
         assert!(automation
             .record_glyph_buffer_cache_hit(identity.clone())
@@ -1842,9 +1755,7 @@ pub fn production_automation_is_active() -> bool {
         == Some(AutomationMode::Production)
 }
 
-fn uninstall_automation(
-    expected_mode: AutomationMode,
-) -> Result<OwnerGlyphProbeTelemetry, String> {
+fn uninstall_automation(expected_mode: AutomationMode) -> Result<OwnerGlyphProbeTelemetry, String> {
     let mut slot = automation_slot()
         .lock()
         .map_err(|_| "A25 owner-glyph evidence automation state poisoned".to_string())?;
@@ -1940,9 +1851,7 @@ pub fn finish_production_owner_render() -> Result<bool, String> {
         .map(|value| value.is_some())
 }
 
-pub fn record_production_font_asset(
-    receipt: FontAssetReceipt,
-) -> Result<bool, String> {
+pub fn record_production_font_asset(receipt: FontAssetReceipt) -> Result<bool, String> {
     with_production_automation(|automation| automation.record_font_asset(receipt))
         .map(|value| value.is_some())
 }
@@ -2004,33 +1913,20 @@ pub fn record_production_inline_icon_absolute(
     .map(|value| value.is_some())
 }
 
-/// Passive native-hook insertion API for exact-a729 `0x14228C585`. Returns
-/// `false` when A25 capture is not installed; this never fabricates an empty
-/// observation. Cache-hit paths must replay only a previously sealed sidecar
-/// for the exact 40-entry cache slot/key/buffer tuple, otherwise remain
-/// fail-closed until the engine repopulates that slot.
 pub fn observe_post_emit_ordinary_glyph_if_active(
     observation: PostEmitOrdinaryGlyphObservation,
 ) -> Result<bool, String> {
-    with_active_automation(|automation| {
-        automation.record_post_emit_ordinary_glyph(observation)
-    })
-    .map(|recorded| recorded.is_some())
+    with_active_automation(|automation| automation.record_post_emit_ordinary_glyph(observation))
+        .map(|recorded| recorded.is_some())
 }
 
-/// Hook-facing population seam. Call only after the exact-a729 upload path has
-/// finalized this slot's key, texture/page id, vertex count, and GPU buffer.
 pub fn observe_glyph_buffer_cache_population_if_active(
     identity: GlyphBufferCacheIdentity,
 ) -> Result<bool, String> {
-    with_active_automation(|automation| {
-        automation.seal_glyph_buffer_cache_population(identity)
-    })
-    .map(|recorded| recorded.is_some())
+    with_active_automation(|automation| automation.seal_glyph_buffer_cache_population(identity))
+        .map(|recorded| recorded.is_some())
 }
 
-/// Hook-facing hit seam. `identity_before_hit` is the exact tuple at the slot
-/// found by the key scan before the function swaps that entry with slot zero.
 pub fn observe_glyph_buffer_cache_hit_if_active(
     identity_before_hit: GlyphBufferCacheIdentity,
 ) -> Result<bool, String> {
@@ -2040,8 +1936,6 @@ pub fn observe_glyph_buffer_cache_hit_if_active(
     .map(|recorded| recorded.is_some())
 }
 
-/// Hook-facing stale-entry seam. Call with the complete old tuple immediately
-/// before or after the engine writes zero to entry `+0` and before overwrite.
 pub fn observe_glyph_buffer_cache_zero_invalidation_if_active(
     identity_before_zero: GlyphBufferCacheIdentity,
 ) -> Result<bool, String> {
@@ -2051,8 +1945,6 @@ pub fn observe_glyph_buffer_cache_zero_invalidation_if_active(
     .map(|recorded| recorded.is_some())
 }
 
-/// Hook-facing font destructor seam. Exact token plus physical font identity
-/// prevents a reused allocator address from inheriting stale glyph runs.
 pub fn observe_glyph_buffer_cache_font_teardown_if_active(
     font_instance_token: u64,
     font_identity: String,

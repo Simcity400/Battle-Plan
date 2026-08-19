@@ -1,8 +1,3 @@
-//! Promoted production feature adapters.
-//!
-//! Promoted packet adapters are registered by the product foundation. Packets
-//! whose exact per-frame inputs are unavailable remain explicitly unavailable;
-//! they are never replaced with recorder presentation or guessed values.
 
 pub(crate) mod xmap03;
 pub(crate) mod xmap04;

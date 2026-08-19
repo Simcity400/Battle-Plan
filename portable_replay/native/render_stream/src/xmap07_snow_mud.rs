@@ -17,10 +17,6 @@ pub const XMAP07_SNOW_MUD_SCENE_COPY_INSTRUCTIONS_SHA256: &str =
     "a995d76eef9a6a295002bd1cad06b4902b86d5a3dd60fb6d10c63bc904f3084f";
 pub const XMAP07_SNOW_MUD_FORMAT: &str = "DXGI_FORMAT_B8G8R8A8_UNORM";
 
-/// Exact passive, presentation-independent global SnowMud state for one replay hour.
-///
-/// The recorder obtains the dense resource from the CPdxMap owner and the fade from
-/// the global map-render state. It must not reflect or select a Present submission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Xmap07PassiveSnowMudCarrier {
@@ -59,7 +55,6 @@ pub struct Xmap07PassiveSnowMudCarrier {
     #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
     pub payload_sha256: String,
-    /// SHA-256 of the canonical base64 blob stored in the replay archive.
     pub payload_blob_sha256: String,
     pub fade_f32_bits: u32,
     pub authority_sha256: String,

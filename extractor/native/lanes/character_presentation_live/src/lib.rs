@@ -1,11 +1,3 @@
-//! XUI17 exact a729 trait-tree state/order and ace portrait observations.
-//!
-//! This pointer-free carrier records only values produced by authenticated
-//! engine routes. Trait progress follows the exact selected-leader sparse
-//! trait-XP vector: kinds 2/3 carry the observed numerator (or exact zero when
-//! absent from that vector), while other definition kinds carry `None` because
-//! progress is not applicable.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(windows)]
@@ -13,11 +5,6 @@ pub mod a729_hook;
 
 pub const DOMAIN_ID: u16 = 82;
 pub const DOMAIN_NAME: &str = "character_presentation_live";
-/// Bumped to 4 when each trait node gained its exact `definition_kind`. The
-/// producer already read that value at `trait_definition+0x920` to decide
-/// whether a progress numerator applies and then discarded it, so this closes a
-/// retention gap rather than opening a new engine read. Encoder and decoder move
-/// together in this file; an older payload is rejected outright.
 pub const SCHEMA_VERSION: u32 = 4;
 pub const AUTHORITY_EXACT_A729_CHARACTER_PRESENTATION: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"CPR1");
@@ -47,15 +34,6 @@ pub const ACE_MODIFIER_FORMATTER_MANIFEST_SHA256: [u8; 32] =
 pub const ACE_SELECTED_CONTEXT_MANIFEST_SHA256: [u8; 32] =
     hex32(b"b593bfc287648ac2bdced54567db5241f2acfe4032f8aed2a77632e29b468c5c");
 
-/// Replay-facing XUI17 G8/G11 carrier contract for `_r2_character_presentation_live`.
-///
-/// These identities name the *admission contract the world-frame projection speaks*. They are
-/// deliberately separate from the CPR1 manifests above, which identify this producer's own
-/// engine read laws: the two answer different questions, and the projection can speak the
-/// contract while a component of it is explicitly unavailable.
-///
-/// `SCHEMA_VERSION` above versions the CPR1 wire payload and is not this number. Replay reads
-/// only the projection.
 pub const XUI17_CARRIER_SCHEMA_VERSION: u32 = 4;
 pub const XUI17_CARRIER_AUTHORITY: &str = "exact_a729_g8_g11_post_hour";
 pub const XUI17_PRODUCER_CONTRACT_MANIFEST_SHA256: [u8; 32] =
@@ -71,22 +49,13 @@ pub const XUI17_G11_ACE_SEMANTICS_MANIFEST_SHA256: [u8; 32] =
 pub const XUI17_G8_SUPERSEDING_BOUNDARY_CLAIM_ARTIFACT_SHA256: [u8; 32] =
     hex32(b"77f02b5552b83323565d341df62a9156a5c73e107c463fa902d8a5b809afa625");
 
-/// Component status flag: this producer captures no source for the component at all.
-///
-/// The contract's failure law is `reject_only_the_invalid_component;
-/// absent_is_not_measured_empty`, so a component with no source is transported as an explicit
-/// unavailable disposition with a machine reason -- never as an empty batch, which would assert
-/// that the engine was measured and found to hold nothing.
 pub const XUI17_COMPONENT_STATUS_SOURCE_NOT_CAPTURED: u32 = 1 << 0;
 
-/// Why the G8 trait component is unavailable from this producer. Named here rather than at the
-/// projection site so a fixture can pin the exact disposition replay will render.
 pub const XUI17_G8_TRAIT_UNAVAILABLE_REASON: &str = "XUI17 G8 requires an all-country passive \
      trait-tree census over the complete D18/D47 join, with a trait-definition census, a \
      per-node definition kind, a fixed-point progress scale and blocked-reason text; domain 82 \
      captures only the selected leader's two trait trees and carries none of those leaves";
 
-/// Why the G11 ace component is unavailable from this producer.
 pub const XUI17_G11_ACE_UNAVAILABLE_REASON: &str = "XUI17 G11 requires an all-country ace \
      presentation joined to the complete D46 country ace order, carrying graphical culture, \
      gender, portrait pool index and the assigned wing's display name and equipment sprite; \
@@ -161,21 +130,10 @@ impl TraitNodeState {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraitNodeObservation {
-    /// Stable game-definition token resolved while the exact definition
-    /// pointer retained at CUnitLeaderTraitTreeItem+0x20 is still live.
     pub trait_token: String,
     pub state: TraitNodeState,
-    /// Exact selected-leader trait-XP numerator for definition kinds 2/3.
-    /// Sparse-vector absence is `Some(0)`; `None` means not applicable.
     pub progress_raw: Option<i64>,
-    /// Exact trait-definition kind, read at `trait_definition+0x920` in the
-    /// same observation that decided [`Self::progress_raw`]'s applicability.
-    /// The two are validated against each other rather than merely carried
-    /// side by side, because the whole value of retaining the kind is that it
-    /// explains the progress field.
     pub definition_kind: u32,
-    /// Optional pointer-free identity for the currently materialized hover
-    /// reason observation. Host-local text is not emitted.
     pub reason_context_id: Option<String>,
 }
 
@@ -184,7 +142,6 @@ pub struct TraitTreeObservation {
     pub owner_tag_db_id: u32,
     pub unit_leader_id: u64,
     pub root: TraitTreeRoot,
-    /// Exact CUnitLeaderTraitTree+0x28/+0x34 vector order.
     pub nodes: Vec<TraitNodeObservation>,
 }
 
@@ -192,26 +149,15 @@ pub struct TraitTreeObservation {
 pub struct AcePortraitObservation {
     pub owner_tag_db_id: u32,
     pub ace_id: u64,
-    /// Exact post-sort CAcesView row order for this owner.
     pub visible_ordinal: u32,
-    /// Final sprite selected by the owner-qualified literal/fallback route.
     pub portrait_gfx: String,
-    /// Exact final newline-capable string supplied to the always-visible ace
-    /// modifier textbox. Empty is a measured-empty engine result.
     pub modifier_text: String,
 }
 
-/// Exact input used by `0x14201D470` before it orders ace rows. A selected
-/// wing and a plane-type mask are mutually exclusive producer routes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AceListContext {
-    SelectedWing {
-        owner_tag_db_id: u32,
-        wing_id: u32,
-    },
-    PlaneTypeMask {
-        mask_raw: u32,
-    },
+    SelectedWing { owner_tag_db_id: u32, wing_id: u32 },
+    PlaneTypeMask { mask_raw: u32 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,8 +174,6 @@ pub struct CharacterPresentationFrame {
     pub status_flags: u32,
     pub frame_hour: u64,
     pub completeness_record_identity: String,
-    /// `None` is source-unavailable, never measured-empty, and therefore
-    /// requires a nonzero failure status.
     pub snapshot: Option<CharacterPresentationSnapshot>,
 }
 
@@ -327,11 +271,6 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
             if !tokens.insert(node.trait_token.as_str()) {
                 return invalid("duplicate trait token within tree");
             }
-            // The producer's own applicability law: a numerator exists exactly
-            // for kinds 2 and 3 (`a729_hook::trait_definition_kind_and_progress`).
-            // Enforcing it here is what stops the retained kind from becoming a
-            // second, unrelated field that could disagree with the progress it
-            // is supposed to explain.
             if matches!(node.definition_kind, 2 | 3) != node.progress_raw.is_some() {
                 return invalid("trait definition kind contradicts its progress applicability");
             }
@@ -358,7 +297,9 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
         }
         total_modifier_text_bytes = total_modifier_text_bytes
             .checked_add(ace.modifier_text.len())
-            .ok_or_else(|| CarrierError::Invalid("ace modifier text byte total overflowed".into()))?;
+            .ok_or_else(|| {
+                CarrierError::Invalid("ace modifier text byte total overflowed".into())
+            })?;
         if total_modifier_text_bytes > MAX_TOTAL_MODIFIER_TEXT_BYTES {
             return invalid("ace modifier text total exceeds frame byte bound");
         }
@@ -378,7 +319,10 @@ pub fn validate_snapshot(snapshot: &CharacterPresentationSnapshot) -> Result<(),
     if ace_owners.len() > 1 {
         return invalid("ace presentation rows span multiple active owners");
     }
-    if let AceListContext::SelectedWing { owner_tag_db_id, .. } = &snapshot.ace_context {
+    if let AceListContext::SelectedWing {
+        owner_tag_db_id, ..
+    } = &snapshot.ace_context
+    {
         if ace_owners.iter().any(|owner| owner != owner_tag_db_id) {
             return invalid("selected-wing context owner contradicts ace rows");
         }
@@ -751,32 +695,35 @@ mod tests {
             snapshot: Some(CharacterPresentationSnapshot {
                 source_sequence: 9,
                 ace_context: AceListContext::PlaneTypeMask { mask_raw: 0x400 },
-                trait_trees: vec![TraitTreeObservation {
-                    owner_tag_db_id: 1,
-                    unit_leader_id: 7,
-                    root: TraitTreeRoot::ControllerOffset120,
-                    nodes: vec![
-                        TraitNodeObservation {
-                            trait_token: "panzer_leader".into(),
-                            state: TraitNodeState::Picked,
-                            progress_raw: None,
-                            definition_kind: 4,
-                            reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
-                        },
-                        TraitNodeObservation {
-                            trait_token: "armor_officer".into(),
-                            state: TraitNodeState::Pickable,
-                            progress_raw: Some(42),
-                            definition_kind: 2,
-                            reason_context_id: None,
-                        },
-                    ],
-                }, TraitTreeObservation {
-                    owner_tag_db_id: 1,
-                    unit_leader_id: 7,
-                    root: TraitTreeRoot::ControllerOffset130,
-                    nodes: Vec::new(),
-                }],
+                trait_trees: vec![
+                    TraitTreeObservation {
+                        owner_tag_db_id: 1,
+                        unit_leader_id: 7,
+                        root: TraitTreeRoot::ControllerOffset120,
+                        nodes: vec![
+                            TraitNodeObservation {
+                                trait_token: "panzer_leader".into(),
+                                state: TraitNodeState::Picked,
+                                progress_raw: None,
+                                definition_kind: 4,
+                                reason_context_id: Some("leader_traits::trait_tooltip::0".into()),
+                            },
+                            TraitNodeObservation {
+                                trait_token: "armor_officer".into(),
+                                state: TraitNodeState::Pickable,
+                                progress_raw: Some(42),
+                                definition_kind: 2,
+                                reason_context_id: None,
+                            },
+                        ],
+                    },
+                    TraitTreeObservation {
+                        owner_tag_db_id: 1,
+                        unit_leader_id: 7,
+                        root: TraitTreeRoot::ControllerOffset130,
+                        nodes: Vec::new(),
+                    },
+                ],
                 ace_portraits: vec![AcePortraitObservation {
                     owner_tag_db_id: 1,
                     ace_id: 11,
@@ -794,17 +741,32 @@ mod tests {
         let encoded = encode_payload(&expected).unwrap();
         assert_eq!(decode_payload(&encoded).unwrap(), expected);
         assert_eq!(
-            decode_payload(&encoded).unwrap().snapshot.unwrap().trait_trees[0].nodes[0]
+            decode_payload(&encoded)
+                .unwrap()
+                .snapshot
+                .unwrap()
+                .trait_trees[0]
+                .nodes[0]
                 .progress_raw,
             None
         );
         assert_eq!(
-            decode_payload(&encoded).unwrap().snapshot.unwrap().trait_trees[0].nodes[1]
+            decode_payload(&encoded)
+                .unwrap()
+                .snapshot
+                .unwrap()
+                .trait_trees[0]
+                .nodes[1]
                 .progress_raw,
             Some(42)
         );
         assert_eq!(
-            decode_payload(&encoded).unwrap().snapshot.unwrap().trait_trees[0].nodes[0]
+            decode_payload(&encoded)
+                .unwrap()
+                .snapshot
+                .unwrap()
+                .trait_trees[0]
+                .nodes[0]
                 .reason_context_id
                 .as_deref(),
             Some("leader_traits::trait_tooltip::0")
@@ -859,7 +821,9 @@ mod tests {
     fn one_a25_reason_context_cannot_bind_multiple_trait_nodes() {
         let mut duplicate = frame();
         let repeated = duplicate.snapshot.as_ref().unwrap().trait_trees[0].nodes[0].clone();
-        duplicate.snapshot.as_mut().unwrap().trait_trees[1].nodes.push(repeated);
+        duplicate.snapshot.as_mut().unwrap().trait_trees[1]
+            .nodes
+            .push(repeated);
         assert!(encode_payload(&duplicate).is_err());
     }
 

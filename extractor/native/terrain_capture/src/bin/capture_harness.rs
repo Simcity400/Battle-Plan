@@ -331,11 +331,6 @@ mod windows_app {
         }
         println!("capture_harness phase complete: water-pass");
 
-        // Persistent-CB0-sampler verification: the terrain and water moments are
-        // now COMPLETE. Keep issuing tracked terrain draws (terrain PS + scene
-        // CB0 bound) on the render thread so the DLL's --cb0-sample-ms sampler
-        // provably keeps appending past moment completion — the exact survival
-        // the two prior day/night sessions lacked. No-op unless --cb0-verify-ms.
         if config.cb0_verify_ms > 0 {
             unsafe {
                 cb0_sampler_verify_phase(
@@ -392,11 +387,6 @@ mod windows_app {
         }
         println!("capture_harness phase complete: ui-pass");
 
-        // MOMFIX1 round driver: with the whole continuous control sequence
-        // (including the round-EXCLUDED restore_pass/mapname_pass moments) now
-        // captured, drive a manual round. HOLD guarantees the round could not
-        // have started earlier and starved those excluded moments; here the round
-        // must start promptly and land a completed round dir alongside them.
         if let Some(label) = config.round_after_moments.as_deref() {
             unsafe {
                 drive_map_frame_round_after_moments(
@@ -425,9 +415,6 @@ mod windows_app {
         Ok(())
     }
 
-    /// MOMFIX1: write a manual capture_map_frames_round command to the control
-    /// file, then re-render the map passes so the DLL can capture the round's
-    /// filtered sequence, and wait for map_frame_capture_round_finished.
     #[allow(clippy::too_many_arguments)]
     unsafe fn drive_map_frame_round_after_moments(
         d3d: &D3dApp,
@@ -456,9 +443,6 @@ mod windows_app {
         })?;
         println!("capture_harness wrote round command label={label}");
 
-        // Re-render the map passes so the round's filtered sequence (terrain,
-        // water, ...) has live draws to capture. Bounded frame budget; the wait
-        // below stops early once the round reports finished.
         let needle = format!("\"type\":\"map_frame_capture_round_finished\",\"label\":\"{label}\"");
         let events_path = capture_output_dir.map(|dir| dir.join("terrain_capture_events.jsonl"));
         let started = Instant::now();
@@ -523,19 +507,7 @@ mod windows_app {
         ui_draws_per_frame: u32,
         chunk_sweep_draws: u32,
         census_load_screen_frames: u32,
-        // Persistent-CB0-sampler verification: after the terrain + water moments
-        // complete, keep issuing tracked terrain draws (terrain PS + scene CB0
-        // bound) on the render thread for this many ms so the DLL's --cb0-sample-ms
-        // sampler provably keeps appending PAST moment completion. 0 => skip.
         cb0_verify_ms: u64,
-        // MOMFIX1 round driver: after the CONTINUOUS control sequence (including
-        // the round-excluded restore_pass/mapname_pass/ui_pass moments) has
-        // completed, write a manual capture_map_frames_round command to the
-        // control file, then re-render the map passes so the round captures its
-        // filtered sequence, and wait for map_frame_capture_round_finished. This
-        // exercises the HOLD gate: the round can only start AFTER the excluded
-        // moments land, and BOTH the excluded bundle and a completed round must
-        // exist on disk. Empty => no round driven.
         round_after_moments: Option<String>,
     }
 
@@ -726,15 +698,6 @@ mod windows_app {
             .map(|pair| pair[1].clone())
     }
 
-    /// Where `--bundle` points when the operator does not pass it.
-    ///
-    /// This is a filesystem path to a local, gitignored capture output tree, not
-    /// a build dependency — the harness reads bundle FILES, it does not link
-    /// `map_viewer`. It is spelled from the repository root on purpose: this
-    /// crate used to live at `replay_interface/native/terrain_capture`, where
-    /// `../map_viewer/out` reached the same directory, and moving the crate to
-    /// `extractor/native` must not silently re-point an operator's default
-    /// bundle at a path that has never existed.
     fn default_bundle_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../replay_interface/native/map_viewer/out/captures/session_20260702d")
@@ -1135,20 +1098,6 @@ mod windows_app {
         rasterizer_state: ComPtr<ID3D11RasterizerState>,
     }
 
-    /// Emulates draws whose pipeline state the capture DLL must refuse to
-    /// read: the draw binds a NULL pixel shader (a legal depth-only style
-    /// pipeline), so the DLL classifies it as an unknown/foreign-shader draw
-    /// and skips all state reads for it.
-    ///
-    /// Historical note: this emulation previously created the VS/PS on a
-    /// second D3D11 device and bound those objects on the main device's
-    /// immediate context. Cross-device binding of context state objects is
-    /// undefined behavior in D3D11 and was proven (lane bisect, 2026-07-04)
-    /// to plant latent driver corruption that intermittently killed the
-    /// harness with 0xC0000005 once census-mode capture interleaved
-    /// additional context calls. The dedicated vertex shader below is
-    /// created on the MAIN device (legal) but is used exclusively by this
-    /// always-skipped draw, so it must never appear in captured bundles.
     struct ForeignUiResources {
         vertex_shader: ComPtr<ID3D11VertexShader>,
         vertex_buffer: ComPtr<ID3D11Buffer>,
@@ -1338,11 +1287,6 @@ mod windows_app {
         }
     }
 
-    // Synthetic stand-in for the mapname (country-label) pass. The VS input is
-    // the discriminating signature: float3 POSITION + float2 TEXCOORD0 with a
-    // slot-1 Transp_OffsetX CB. The glyph VB (float3 world positions + float2
-    // uv) is the payload the moment must capture. A separate browser-overlay
-    // hazard VS (float2 POSITION) must be REJECTED by the discriminator.
     struct MapnameResources {
         vertex_shader: ComPtr<ID3D11VertexShader>,
         pixel_shader: ComPtr<ID3D11PixelShader>,
@@ -1367,7 +1311,6 @@ mod windows_app {
                 InputElementRecord {
                     semantic_name: "POSITION".to_string(),
                     semantic_index: 0,
-                    // R32G32B32_FLOAT == 6: the float3 world-position input.
                     format: DXGI_FORMAT_R32G32B32_FLOAT as u32,
                     input_slot: 0,
                     aligned_byte_offset: 0,
@@ -1431,9 +1374,6 @@ mod windows_app {
     struct D3dApp {
         hwnd: HWND,
         render_target: ComPtr<ID3D11RenderTargetView>,
-        // Offscreen target for the map phases: the real game renders 3D to
-        // intermediate targets and ONLY UI to the backbuffer, so the harness
-        // must too or map draws pollute the ui_pass open condition.
         map_target: ComPtr<ID3D11RenderTargetView>,
         _map_target_tex: ComPtr<ID3D11Texture2D>,
         depth_stencil: ComPtr<ID3D11DepthStencilView>,
@@ -1610,13 +1550,7 @@ mod windows_app {
                     }
                 }
             }
-            // A batch of NON-family filler shaders per frame exercises the
-            // create hooks. Before the 2026-07-02 load-freeze fix each created
-            // pixel shader took the global capture lock and ran D3D reflection
-            // 5x; the lock-free byte-scan pre-filter now rejects them before
-            // any lock (a real session's create_pixel_shader_lock_stats event
             // reports the skip/lock split). ComPtr drops release each shader at
-            // end of iteration — no retention, no resource exhaustion.
             for _ in 0..filler_shaders_per_frame {
                 drop(unsafe { create_vertex_shader(d3d.device.as_ptr(), filler_vs)? });
                 drop(unsafe { create_pixel_shader(d3d.device.as_ptr(), filler_ps)? });
@@ -1650,12 +1584,6 @@ mod windows_app {
         Ok(files)
     }
 
-    /// Post-moment CB0-sampler survival driver. Runs AFTER the terrain + water
-    /// moments have completed, on the render thread, re-binding the tracked
-    /// terrain pass (terrain PS + scene CB0 at slot 0) every iteration for
-    /// `duration_ms` with a short sleep so the DLL's wall-clock sampler crosses
-    /// several of its sample windows entirely in post-moment time. Present each
-    /// iteration so the window stays responsive.
     unsafe fn cb0_sampler_verify_phase(
         d3d: &D3dApp,
         terrain_pass: &PreparedPass,
@@ -1791,9 +1719,6 @@ mod windows_app {
             (*context).IASetIndexBuffer(ptr::null_mut(), DXGI_FORMAT_R16_UINT, 0);
             bind_default_samplers(d3d);
 
-            // Hazard draw FIRST: a browser-overlay-shaped float2-position VS
-            // that the mapname discriminator MUST reject. It shares the frame
-            // but must never land in the bundle.
             let hazard_vb = mapname.hazard_vertex_buffer.as_ptr();
             let hazard_stride = 16u32;
             (*context).IASetInputLayout(ptr::null_mut());
@@ -1802,7 +1727,6 @@ mod windows_app {
             (*context).PSSetShader(mapname.hazard_pixel_shader.as_ptr(), ptr::null(), 0);
             (*context).Draw(3, 0);
 
-            // The mapname glyph draw: float3-position VS + font atlas + CB1.
             let vb = mapname.vertex_buffer.as_ptr();
             let stride = mapname.vertex_stride;
             (*context).IASetInputLayout(mapname.input_layout.as_ptr());
@@ -1816,7 +1740,6 @@ mod windows_app {
             (*context).PSSetConstantBuffers(1, 1, &transp_cb);
             let atlas = mapname.font_atlas.as_ptr();
             (*context).PSSetShaderResources(0, 1, &atlas);
-            // 6 glyph-quad vertices (two triangles) — full float3 VB payload.
             (*context).Draw(6, 0);
             clear_and_present(d3d, non_terrain_ps)?;
         }
@@ -1844,14 +1767,6 @@ mod windows_app {
         }
     }
 
-    /// Simulated load screen for the census trust gate: draws issued with
-    /// NON-capture-family (filler) shaders and no TerrainSceneCB0, BEFORE any
-    /// map-family shader has ever been bound. With --census armed the DLL must
-    /// record these signatures with uncaptured_reason=untrusted_context_class
-    /// and issue zero immediate-context queries (the 2026-07-05 live crash was
-    /// census payload capture running PSGetConstantBuffers against exactly
-    /// this phase of the real game). Disabled by default (frames == 0) so
-    /// non-census gates are unchanged.
     unsafe fn census_load_screen_phase(
         d3d: &D3dApp,
         vertex_shader: *mut ID3D11VertexShader,
@@ -1874,8 +1789,6 @@ mod windows_app {
         for frame in 0..frames {
             d3d.pump_messages();
             unsafe {
-                // Two draw shapes per frame so the census sees more than one
-                // pre-trust signature candidate.
                 (*d3d.context.as_ptr()).DrawIndexed(3, 0, 0);
                 (*d3d.context.as_ptr()).Draw(3, 0);
                 clear_and_present(d3d, pixel_shader)?;
@@ -2644,11 +2557,6 @@ mod windows_app {
             (*context).IASetIndexBuffer(ui.index_buffer.as_ptr(), DXGI_FORMAT_R16_UINT, 0);
             (*context).IASetVertexBuffers(0, 1, &vertex_buffer, &stride, &offset);
             (*context).VSSetShader(foreign_ui.vertex_shader.as_ptr(), ptr::null(), 0);
-            // NULL pixel shader: a legal (depth-only style) pipeline whose
-            // shader state the capture DLL cannot resolve, so the draw is
-            // classified foreign/unknown and skipped. Never bind objects
-            // created on another device here - that is D3D11 UB and it
-            // corrupts the driver (see ForeignUiResources doc comment).
             (*context).PSSetShader(ptr::null_mut(), ptr::null(), 0);
             (*context).VSSetConstantBuffers(0, 1, &vs_cb);
             (*context).PSSetConstantBuffers(0, 1, &ps_cb);
@@ -2792,8 +2700,6 @@ mod windows_app {
         let mut vertex_matches = Vec::new();
         let mut foreign_payload_absent = true;
         let mut evidence = UiEvidenceStats::default();
-        // The foreign draw binds a NULL pixel shader and a dedicated vertex
-        // shader; neither may ever appear in a captured bundle draw.
         let foreign_ps = "0x0".to_string();
         let foreign_vs = format!("0x{:X}", foreign_ui.vertex_shader.as_ptr() as usize);
         for (index, bundle) in bundles.iter().enumerate() {
@@ -3660,9 +3566,6 @@ mod windows_app {
         bytes
     }
 
-    // Six vertices (two triangles) of a single label glyph quad. Layout matches
-    // the input layout: float3 world position + float2 uv, stride 20. These
-    // float3 positions are the ground-truth payload the moment captures.
     fn mapname_glyph_vertices() -> Vec<u8> {
         let quad = [
             ([-2500.0f32, 12.0, 1800.0], [0.0f32, 0.0]),
@@ -3684,10 +3587,8 @@ mod windows_app {
         bytes
     }
 
-    // Scene CB (slot 0): a ViewProjection-like matrix + camera look-at dir.
     fn mapname_scene_cb_bytes() -> Vec<u8> {
         let mut bytes = vec![0u8; 80];
-        // 4x4 matrix (identity-ish, non-trivial diagonal) + a look-at vec4.
         for i in 0..4 {
             write_f32_le(&mut bytes, i * 20, 1.0);
         }
@@ -3698,8 +3599,6 @@ mod windows_app {
         bytes
     }
 
-    // Slot-1 Transp_OffsetX CB (32 bytes: float4 + padding). x = transparency,
-    // y = wrap offset.
     fn mapname_transp_offset_cb_bytes() -> Vec<u8> {
         let mut bytes = vec![0u8; 32];
         write_f32_le(&mut bytes, 0, 0.85);
@@ -3722,8 +3621,6 @@ mod windows_app {
         bytes
     }
 
-    // Browser-overlay hazard: float2 position + float2 uv, stride 16. The
-    // discriminator must reject this (float2 POSITION, not float3).
     fn mapname_hazard_vertices() -> Vec<u8> {
         let tri = [
             ([-0.5f32, -0.5], [0.0f32, 0.0]),
@@ -4121,9 +4018,6 @@ mod windows_app {
         }
     "#;
 
-    // Mirrors gfx/FX/mapname.shader: float3 POSITION + float2 TEXCOORD0 VS with
-    // a scene CB at b0 (ViewProjection + camera look-at) and Transp_OffsetX at
-    // b1. This is the exact reflected signature the discriminator keys on.
     const MAPNAME_VS: &str = r#"
         cbuffer SceneConstants : register(b0) {
             float4x4 ViewProjectionMatrix;
@@ -4155,8 +4049,6 @@ mod windows_app {
         }
     "#;
 
-    // Mirrors the mapname PS: a single DiffuseTexture (font atlas) at t0/s0 and
-    // Transp_OffsetX.x transparency from b1.
     const MAPNAME_PS: &str = r#"
         Texture2D<float4> DiffuseTexture : register(t0);
         SamplerState DiffuseSampler : register(s0);
@@ -4171,9 +4063,6 @@ mod windows_app {
         }
     "#;
 
-    // Browser-overlay hazard: float2 POSITION VS + a two-texture PS. The
-    // mapname discriminator must reject both the float2 VS signature and the
-    // multi-texture PS.
     const MAPNAME_HAZARD_VS: &str = r#"
         struct VSIn {
             float2 position : POSITION;
@@ -4224,9 +4113,6 @@ mod windows_app {
         }
     "#;
 
-    // Distinct bytecode from UI_VS so the foreign draw's vertex shader is a
-    // separate D3D object from the tracked ui vertex shader (the draw itself
-    // is classified foreign because it binds a NULL pixel shader).
     const FOREIGN_UI_VS: &str = r#"
         cbuffer UiVsConstants : register(b0) {
             float2 UiScale;

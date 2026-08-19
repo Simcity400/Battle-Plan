@@ -34,8 +34,6 @@ fn fixture() -> Payload {
     }
 }
 
-// kills: changing any field order, width, or length prefix on only one side of
-// the leaf codec makes the independently asserted fixture values diverge.
 #[test]
 fn pbs1_fixture_round_trip_preserves_every_runtime_leaf() {
     let source = fixture();
@@ -52,8 +50,6 @@ fn pbs1_fixture_round_trip_preserves_every_runtime_leaf() {
     );
 }
 
-// kills: accepting a partial payload, a different magic, or a future version
-// under the v1 walk makes one of these named structural refusals disappear.
 #[test]
 fn pbs1_refuses_truncation_bad_magic_and_wrong_version_by_name() {
     let bytes = encode(&fixture()).unwrap();
@@ -66,9 +62,6 @@ fn pbs1_refuses_truncation_bad_magic_and_wrong_version_by_name() {
     assert_eq!(decode(&wrong_version), Err(Error::WrongVersion));
 }
 
-// kills: allocating a country vector directly from an attacker count, or
-// trusting a string length before proving its bytes exist, changes these errors
-// (and can attempt a huge allocation before returning).
 #[test]
 fn pbs1_refuses_unbacked_counts_and_string_lengths_before_allocation() {
     let mut count = encode(&fixture()).unwrap();
@@ -100,8 +93,6 @@ fn pbs1_refuses_unbacked_counts_and_string_lengths_before_allocation() {
     assert_eq!(decode(&string_len), Err(Error::Truncated));
 }
 
-// kills: dropping the canonical member-order rule admits the same set under
-// multiple receipts and lets duplicate country/balance pairs reach Replay.
 #[test]
 fn pbs1_refuses_unsorted_and_duplicate_member_ids() {
     let mut unsorted = fixture();
@@ -126,9 +117,6 @@ fn pbs1_refuses_unsorted_and_duplicate_member_ids() {
     assert_eq!(encode(&unsorted), Err(Error::DuplicateMemberId));
 }
 
-// removes a country from a record's member array and never decrements the
-// manager's record count, so a balance every country has left keeps its record
-// with zero members. Live capture t79 lost EVERY hour of d74 to this rule.
 #[test]
 fn pbs1_admits_a_record_with_no_member_countries() {
     let mut empty = fixture();
@@ -139,13 +127,6 @@ fn pbs1_admits_a_record_with_no_member_countries() {
     assert_eq!(decoded, empty);
 }
 
-// kills: reinstating a rule that the trending side must be the left or the
-// right side, or that left and right must differ. The engine resolves all
-// three identities by name out of the balance definition's own side array, and
-// the load path writes ANY valid side of that definition straight to the
-// trending pointer and returns without recomputing it, so a third side is
-// engine state this recorder must carry, not a malformed payload. The tokens
-// are still checked for shape.
 #[test]
 fn pbs1_admits_a_trending_side_that_is_neither_left_nor_right() {
     let mut third = fixture();
@@ -164,8 +145,6 @@ fn pbs1_admits_a_trending_side_that_is_neither_left_nor_right() {
     assert_eq!(encode(&empty), Err(Error::EmptyToken));
 }
 
-// kills: retaining later duplicate side overrides changes the engine's
-// first-match semantics and produces JSON the frozen consumer rejects.
 #[test]
 fn pbs1_refuses_duplicate_side_override_ids() {
     let mut duplicate = fixture();

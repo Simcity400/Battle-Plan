@@ -1,10 +1,3 @@
-//! Neutral, transient current-process capture contract for d77.
-//!
-//! These are raw observations, not portable replay types. They intentionally
-//! do not implement serialization. Object addresses are correlation keys only;
-//! the higher catalog builder discards them after independently converting the
-//! raw descriptors and validating every byte source.
-
 mod static_program;
 pub use static_program::*;
 mod live_authority;
@@ -59,13 +52,10 @@ pub enum RawDrawIdentity {
     },
 }
 
-/// Effective-VFS winner observed by the extractor before authority is granted
-/// by the finalized portable content manifest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawVfsContentIdentity {
     pub logical_path: String,
     pub winning_layer_ordinal: u32,
-    /// `base`, `integrated_dlc`, `dlc`, or `mod`.
     pub layer_kind: String,
     pub layer_id: String,
     pub source_sha256: String,
@@ -73,8 +63,6 @@ pub struct RawVfsContentIdentity {
     pub payload_bytes: u64,
 }
 
-/// Transient bytes plus their exact production disposition. VFS-backed bytes
-/// are used only to authenticate the declared range and are then discarded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawPayloadSnapshot {
     pub captured_bytes: Vec<u8>,
@@ -91,10 +79,8 @@ pub enum RawPayloadSource {
         range_sha256: String,
     },
     RuntimeGenerated {
-        /// Nonempty engine-side reason, for example `dynamic_constant_buffer`.
         reason: String,
     },
-    /// Exact alias of the packet's already-carried GPU instance records.
     ParticleInstanceRecords,
 }
 
@@ -102,13 +88,9 @@ pub enum RawPayloadSource {
 pub struct RawShaderDefine {
     pub name: String,
     pub value: String,
-    /// `engine_global`, `effect`, or `entry_point`.
     pub scope: String,
 }
 
-/// Exact source-side D3DCompile invocation correlated to one created shader.
-/// `None` is retained for precompiled bytecode; callers must then obtain source
-/// identity from an independently authenticated engine program/VFS receipt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawShaderCompilerInvocation {
     pub source_name: String,
@@ -122,9 +104,6 @@ pub struct RawShaderCompilerInvocation {
 pub struct RawProgramIdentity {
     pub observation_sequence: u64,
     pub shader_program_ptr: usize,
-    /// RVA of the authenticated engine registration producer which enclosed
-    /// the successful shader/effect lookup. This survives only as stable
-    /// provenance; the process-local program pointer is discarded later.
     pub registration_root_rva: u32,
     pub source: RawVfsContentIdentity,
     pub effect_token: String,
@@ -182,7 +161,6 @@ pub struct RawBlendStateCreation {
     pub blend_state_ptr: usize,
     pub alpha_to_coverage_enable_u32: u32,
     pub independent_blend_enable_u32: u32,
-    /// Exact D3D11 target array, normally eight entries.
     pub ordered_targets: Vec<RawRenderTargetBlendDesc>,
 }
 
@@ -267,7 +245,6 @@ pub struct RawTextureSubresourceSnapshot {
 pub struct RawTextureResourceSnapshot {
     pub snapshot_sequence: u64,
     pub resource_ptr: usize,
-    /// D3D11_RESOURCE_DIMENSION numeric value.
     pub dimension_u32: u32,
     pub width: u32,
     pub height: u32,
@@ -281,20 +258,14 @@ pub struct RawTextureResourceSnapshot {
     pub bind_flags_u32: u32,
     pub cpu_access_flags_u32: u32,
     pub misc_flags_u32: u32,
-    /// Effective-VFS identity for immutable file-backed textures. Runtime
-    /// render targets and dynamic uploads are authenticated by their static
-    /// source semantic and therefore carry `None` here.
     pub content: Option<RawVfsContentIdentity>,
     pub ordered_subresources: Vec<RawTextureSubresourceSnapshot>,
 }
 
-/// Raw D3D11 view union represented as four ordered u32 words. The builder
-/// interprets only the dimension-specific words and rejects nonzero padding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawResourceViewDesc {
     pub dxgi_format_u32: u32,
     pub view_dimension_u32: u32,
-    /// DSV flags. Must be zero for SRV/RTV observations.
     pub flags_u32: u32,
     pub union_words_u32: [u32; 4],
 }
@@ -483,8 +454,6 @@ pub enum RawDrawContentIdentity {
     },
 }
 
-/// Engine/VFS semantic observations for one exact final draw. They are kept
-/// raw and independently joined to immutable D3D snapshots by pointer/key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawDrawSemantics {
     pub observation_sequence: u64,
@@ -523,7 +492,6 @@ pub enum RawOutputViewKind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawRenderCatalogCapture {
     pub process: RawProcessEpoch,
-    /// Exact early-launch hook receipt shared by every d77/d80 row.
     pub launch_epoch: RawCaptureLaunchEpoch,
     pub submit_index: u64,
     pub frame_sequence: u64,
@@ -543,8 +511,6 @@ pub struct RawRenderCatalogCapture {
 }
 
 impl RawRenderCatalogCapture {
-    /// Fail closed unless every registry row can be attributed to the same
-    /// pre-device hook installation and authenticated hook-set receipt.
     pub fn validate_launch_binding(&self) -> Result<(), String> {
         let receipt = &self.launch_epoch.hook_set_receipt_sha256;
         let capture_receipt = &self.launch_epoch.capture_receipt_sha256;

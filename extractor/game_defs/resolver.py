@@ -40,21 +40,18 @@ import re
 import sys
 from pathlib import Path
 
-# --- wire in the audited resolver from replay_interface/game_assets/ --------
-_HERE = Path(__file__).resolve().parent           # .../battle-plan/extractor/game_defs
-_EXTRACTOR_ROOT = _HERE.parent                    # .../battle-plan/extractor
-_REPO_ROOT = _EXTRACTOR_ROOT.parent               # .../battle-plan
+_HERE = Path(__file__).resolve().parent
+_EXTRACTOR_ROOT = _HERE.parent
+_REPO_ROOT = _EXTRACTOR_ROOT.parent
 _GAME_ASSETS = _REPO_ROOT / "replay_interface" / "game_assets"
 for _p in (str(_GAME_ASSETS), str(_HERE)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from paradox_parser import parse, Node  # noqa: E402  (shared tolerant parser)
-import extract as _ex                   # noqa: E402  (the resolver)
+from paradox_parser import parse, Node
+import extract as _ex
 
 
-# The the game user-data dir = grandparent of this repo's parent
-# (.../the game/mod/battle-plan -> .../the game).
 DEFAULT_USERDATA = _REPO_ROOT.parent.parent.resolve()
 _DEFAULT_MODSET = _GAME_ASSETS / "active_modset.json"
 
@@ -118,7 +115,6 @@ def build_layers(vanilla: str | None = None,
         mj = Path(modset_json) if modset_json else _DEFAULT_MODSET
         if mj.is_file():
             mod_files = _modfiles_from_manifest(mj, ud)
-        # else: vanilla-only (valid)
 
     layers, warnings = _ex.build_modset_layers(v, mod_files, ud)
     if strict_mods and (warnings or len(layers) != 1 + len(mod_files)):
@@ -186,22 +182,14 @@ def ordered_files(layers, subdir, exts=(".txt",)):
     return sorted(fm.items(), key=lambda kv: (prio(kv[1]), kv[0]))
 
 
-# ==========================================================================
-# Localisation: KEY-level merge across ALL effective .yml (mod key wins)
-# ==========================================================================
-# the game loc line:  KEY:VERSION "value"   (VERSION optional; value may embed
-# escaped quotes, §color codes, $VAR$, [scope.Func] brackets, \n). The file
-# starts with a BOM + `l_<lang>:` header line. We parse tolerantly: find the
-# first ':' after the key, skip an optional integer version, then take the
-# substring between the first and LAST double-quote on the line as the value.
 _LOC_LINE = re.compile(
     r'^\s*'
-    r'([^\s:#"]+)'          # 1: key (no whitespace/colon/quote/comment)
+    r'([^\s:#"]+)'
     r':\s*'
-    r'(\d+)?'               # 2: optional version number
+    r'(\d+)?'
     r'\s*'
-    r'"(.*)"'               # 3: quoted value (greedy -> last quote on line)
-    r'\s*(?:#.*)?$'         # optional trailing comment
+    r'"(.*)"'
+    r'\s*(?:#.*)?$'
 )
 
 
@@ -232,8 +220,7 @@ class LocDB:
             return default
         return self.by_key.get(key, default)
 
-    # §-code + bracket stripping for a clean preview (NOT used for storage)
-    _COLOR = re.compile(r"§.|\x15.")   # §L / §! / §R ... and the rare \x15 code
+    _COLOR = re.compile(r"§.|\x15.")
 
     def resolve(self, key: str, default=None):
         v = self.by_key.get(key)
@@ -246,7 +233,6 @@ class LocDB:
         if not m:
             return False
         key, _ver, val = m.group(1), m.group(2), m.group(3)
-        # later-loaded files win (load order already applied by the caller)
         self.by_key[key] = val
         return True
 
@@ -263,8 +249,6 @@ def load_loc(layers: list, language: str = "english") -> LocDB:
     files are processed before mod files, guaranteeing the mod key wins on a tie.
     """
     file_map = _ex.resolve_loc(layers, language)
-    # Order: vanilla layer root first, then mod layers (load order), using the
-    # path-boundary-safe layer priority (not startswith — Codex #6).
     prio = _layer_prio_fn(layers)
 
     db = LocDB()
@@ -284,11 +268,9 @@ def load_loc(layers: list, language: str = "english") -> LocDB:
 
 
 if __name__ == "__main__":
-    # Smoke: print the resolved layer set + loc count.
     layers = build_layers()
     print("layers:", [ly.label for ly in layers])
     loc = load_loc(layers)
     print(f"loc keys: {len(loc)} from {loc.source_count} files")
-    # a couple of known keys
     for k in ("LOADING_TIP_0",):
         print(f"  {k} = {loc.resolve(k)!r}")

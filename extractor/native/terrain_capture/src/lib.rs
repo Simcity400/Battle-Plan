@@ -31,10 +31,6 @@ pub const PDXWATER_REQUIRED_RESOURCE_SYMBOLS: [&str; 5] = [
     WATER_REFRACTION_RESOURCE_SYMBOL,
 ];
 pub const RIVER_DATA_RESOURCE_SYMBOL: &str = "RiverData";
-/// `gfx/FX/river.shader:85` declares `SnowMudTexture`, NOT pdxmap's
-/// `SnowMudData` — the 2026-07-02 session proved rivers rendered for minutes
-/// without ever matching the old `SnowMudData`-based signature (shader-cache
-/// entry `ps_5_0/0008000014C21000EB884362.bin` confirms the declared set).
 pub const RIVER_SNOW_MUD_TEXTURE_SYMBOL: &str = "SnowMudTexture";
 pub const RIVER_REQUIRED_RESOURCE_SYMBOLS: [&str; 6] = [
     RIVER_DATA_RESOURCE_SYMBOL,
@@ -45,26 +41,7 @@ pub const RIVER_REQUIRED_RESOURCE_SYMBOLS: [&str; 6] = [
     "GradientBorderChannel2",
 ];
 pub const BORDER_DIFFUSE_RESOURCE_SYMBOL: &str = "BorderDiffuse";
-/// BORD5 (2026-07-07): `BorderDiffuse` ALONE. The old 4-symbol requirement
-/// (`+ SnowMudData + IntelMap + ShadowMap`) was read off a border.shader
-/// define variant the engine never compiles: the REAL compiled
-/// `gfx/FX/border.shader:border` PS (5248 bytes, byte-compiled via OFF-3)
-/// declares only `BorderDiffuse_*` and `ShadowMap_*`, so the detector could
-/// NEVER match — which is how the engine's border vertex shaders (two 3284-
-/// byte variants observed in session_BORDERZOOM_1/2, full RDEF/ISGN string
-/// match to our compile) went misfiled under the generic map family and
-/// BORD4 wrongly concluded "border.shader is never used". `BorderDiffuse` is
-/// SOUND alone: no other shipped gfx/FX effect declares that texture symbol.
 pub const BORDER_REQUIRED_RESOURCE_SYMBOLS: [&str; 1] = [BORDER_DIFFUSE_RESOURCE_SYMBOL];
-/// `pdxmap.shader` `Effect underwater` → `PixelShaderUnderwater` (lines 407-454).
-/// The underwater seafloor-refraction PS samples exactly these six textures (the
-/// same slots the OFF-3/WATER2 byte-exact recompile of `PixelShaderUnderwater`
-/// reflects — `map_viewer/src/water_law.rs::UNDERWATER_PS_REQUIRED_SRV_SLOTS`:
-/// `TerrainDiffuse`(0), `HeightNormal`(1), `TerrainColorTint`(2),
-/// `LightIndexMap`(10), `LightDataMap`(11), `ShadowMap`(12)). A genuine
-/// underwater PS declares ALL six in its DXBC string table (`tex2D`/`GetShadow`/
-/// `CalculatePointLights` reference every one), so requiring their presence never
-/// false-rejects the real shader.
 pub const UNDERWATER_REQUIRED_RESOURCE_SYMBOLS: [&str; 6] = [
     "TerrainDiffuse",
     "HeightNormal",
@@ -73,14 +50,6 @@ pub const UNDERWATER_REQUIRED_RESOURCE_SYMBOLS: [&str; 6] = [
     "LightDataMap",
     "ShadowMap",
 ];
-/// The DISCRIMINATOR marker that separates `PixelShaderUnderwater` from the main
-/// terrain `PixelShaderTerrain`. The main terrain PS samples `TerrainIDMap`
-/// (pdxmap.shader:239 `calculate_map_tex_index( tex2D( TerrainIDMap, … ) )`);
-/// `PixelShaderUnderwater` does NOT (it reads `TerrainDiffuse` directly at a fixed
-/// 32-world-px repeat, never via the ID indirection). So an underwater PS is a PS
-/// that binds all of [`UNDERWATER_REQUIRED_RESOURCE_SYMBOLS`] AND does not bind
-/// `TerrainIDMap`. This also rejects `PixelShaderTerrainUnlit` (which omits the
-/// `LightIndexMap`/`LightDataMap` point-light slots this set requires).
 pub const UNDERWATER_EXCLUDED_RESOURCE_SYMBOL: &str = TERRAIN_ID_RESOURCE_SYMBOL;
 
 pub const TREE_MASK_RESOURCE_SYMBOL: &str = "TreeMaskTexture";
@@ -107,62 +76,23 @@ pub const RESTORE_POSTEFFECT_BASE_CB_SOURCE: &str =
     "gfx/FX/posteffect_base.fxh:ConstantBuffer(1,32)";
 pub const RESTORE_POSTEFFECT_BASE_CB_BIND_POINT: u32 = 1;
 
-/// Distinctive family marker for the mapname (country-label) pass. Both the
-/// mapname VS and PS read `Transp_OffsetX` from the slot-1 CB, so the symbol is
-/// present in both shaders' DXBC string tables. It is far more distinctive than
-/// the PS's single generic `DiffuseTexture`, so it is the marker that lets the
-/// mapname PS survive the lock-free create-shader prefilter without weakening
-/// the load-freeze protection (only the few `Transp_OffsetX`-bearing shaders —
-/// mapname/particle/arrow-family — pay the reflection cost).
 pub const MAPNAME_TRANSP_OFFSET_MARKER: &str = "Transp_OffsetX";
 
-/// `gfx/FX/mapname.shader` (Effect `mapname`) draws the curved country-label
-/// glyph quads. Its distinctive fingerprint is the VERTEX shader input
-/// signature — `float3 vPosition : POSITION` + `float2 vTexCoord : TEXCOORD0`
-/// — paired with `ConstantBuffer(1,32){ float4 Transp_OffsetX; }` at bind
-/// point 1. That float3-world-position input is the whole point of the pass:
-/// it is the engine's byte ground truth for the label placement law. The PS
-/// samples a single font-atlas `DiffuseTexture` at slot 0 and reads
-/// `Transp_OffsetX.x` (transparency) from the same CB1; the VS reads
-/// `Transp_OffsetX.y` (wrap offset) and `ViewProjectionMatrix`/`vCamLookAtDir`
-/// from the scene CB at slot 0.
 pub const MAPNAME_DIFFUSE_TEXTURE_RESOURCE_SYMBOL: &str = "DiffuseTexture";
 pub const MAPNAME_TRANSP_OFFSET_CB_SOURCE: &str = "gfx/FX/mapname.shader:ConstantBuffer(1,32)";
 pub const MAPNAME_TRANSP_OFFSET_CB_BIND_POINT: u32 = 1;
 pub const MAPNAME_SCENE_CB_BIND_POINT: u32 = 0;
-/// Corroborating hash from live session evidence. NOT a gate — reflection is
-/// the primary discriminator; this only annotates events so an operator can
-/// confirm the reflected match is the same VS seen in prior censuses.
 pub const MAPNAME_KNOWN_VERTEX_SHADER_FNV1A64: &str = "4e1b73f39c128df0";
 
-/// One distinctive, always-required resource-name marker per capture family.
-/// Each marker is a member of its family's `*_REQUIRED_RESOURCE_SYMBOLS`, so a
-/// genuine family pixel shader ALWAYS declares it. If a shader's bytecode
-/// contains none of these markers it cannot satisfy any family's required set
-/// and matches no family — a SOUND (never-false-reject) result.
-///
-/// This exists to keep the game's map-load shader-creation storm off the global
-/// capture lock: [`pixel_shader_bytecode_could_be_capture_family`] rejects the
-/// ~all non-map shaders created during load with a cheap byte scan, before any
-/// expensive D3D reflection or lock acquisition (2026-07-02 load-freeze fix).
 pub const PIXEL_SHADER_CAPTURE_FAMILY_MARKERS: [&str; 8] = [
-    TERRAIN_ID_RESOURCE_SYMBOL,         // pdxmap terrain
-    WATER_REFRACTION_RESOURCE_SYMBOL,   // pdxwater
-    RIVER_DATA_RESOURCE_SYMBOL,         // river
-    BORDER_DIFFUSE_RESOURCE_SYMBOL,     // border
-    TREE_MASK_RESOURCE_SYMBOL,          // tree
-    RESTORE_COLOR_CUBE_RESOURCE_SYMBOL, // restorescene postfx restore
-    MAPNAME_TRANSP_OFFSET_MARKER,       // mapname country-label glyph pass
-    // `PixelShaderUnderwater` binds none of the above markers (notably NOT
-    // `TerrainIDMap`, which is exactly what separates it from the main terrain
-    // PS). It always declares `HeightNormal` (`tex2D( HeightNormal, … )`,
-    // pdxmap.shader:413), a required member of its resource set, so this marker
-    // lets the underwater PS survive the lock-free prefilter. `HeightNormal` is
-    // a map-family texture (pdxmap terrain / underwater / terrainunlit), so
-    // admitting it costs reflection on only those few shaders; the exact
-    // classifier (`underwater_resource_slots_from_shader_bytecode`) still gates
-    // the family, so this stays a SOUND over-approximation.
-    "HeightNormal", // underwater seafloor-refraction pass
+    TERRAIN_ID_RESOURCE_SYMBOL,
+    WATER_REFRACTION_RESOURCE_SYMBOL,
+    RIVER_DATA_RESOURCE_SYMBOL,
+    BORDER_DIFFUSE_RESOURCE_SYMBOL,
+    TREE_MASK_RESOURCE_SYMBOL,
+    RESTORE_COLOR_CUBE_RESOURCE_SYMBOL,
+    MAPNAME_TRANSP_OFFSET_MARKER,
+    "HeightNormal",
 ];
 
 pub const DXGI_FORMAT_R32G32B32A32_FLOAT: u32 = 2;
@@ -664,13 +594,6 @@ impl TerrainCaptureState {
         else {
             return false;
         };
-        // The texture-slot shape alone is weak (a generic font-atlas PS). The
-        // classification invariant (2026-07-06 adversarial review) is: a
-        // mapname PS must ALSO carry the `Transp_OffsetX` symbol in its DXBC
-        // (the PS reads `Transp_OffsetX.x` as transparency, so a genuine
-        // mapname PS always contains it). A shader that reached this observe
-        // via another family's prefilter marker and merely reflects as a
-        // DiffuseTexture-at-t0 PS is rejected here.
         if !shader_bytecode_has_mapname_transp_offset_marker(bytecode) {
             return false;
         }
@@ -678,10 +601,6 @@ impl TerrainCaptureState {
             return false;
         }
         let mut constant_buffers = shader_constant_buffer_slots_from_shader_bytecode(bytecode);
-        // When reflection surfaced constant buffers at all, the Transp_OffsetX
-        // CB must be bound at slot 1 (the shipped ConstantBuffer(1,32)). An
-        // empty reflection map (non-DXBC unit fixtures / reflection
-        // unavailable) falls back to the byte-marker evidence above.
         if !constant_buffers.is_empty()
             && !constant_buffers
                 .values()
@@ -1577,15 +1496,6 @@ pub fn tree_resource_slots_from_shader_bytecode(bytecode: &[u8]) -> Option<BTree
     required_resource_slots_from_shader_bytecode(bytecode, &TREE_REQUIRED_RESOURCE_SYMBOLS)
 }
 
-/// Classify a PS as `pdxmap.shader:PixelShaderUnderwater` from its DXBC texture
-/// bindings. SOUND (never-false-reject) discriminator: the PS must declare EVERY
-/// member of [`UNDERWATER_REQUIRED_RESOURCE_SYMBOLS`] and must NOT declare
-/// [`UNDERWATER_EXCLUDED_RESOURCE_SYMBOL`] (`TerrainIDMap`). The `TerrainIDMap`
-/// exclusion is what separates the underwater PS from the main terrain PS, which
-/// shares the same VS and several of the same texture slots but reaches the
-/// terrain diffuse through the ID-map indirection. `PixelShaderTerrainUnlit` is
-/// rejected because it omits the point-light `LightIndexMap`/`LightDataMap` slots
-/// this set requires. Returns the reflected texture slot map on a match.
 pub fn underwater_resource_slots_from_shader_bytecode(
     bytecode: &[u8],
 ) -> Option<BTreeMap<String, u32>> {
@@ -1622,31 +1532,6 @@ pub fn restore_resource_slots_match(resource_slots: &BTreeMap<String, u32>) -> b
             == Some(3)
 }
 
-/// Reflected-signature discriminator for the `mapname` vertex shader — the
-/// PRIMARY identifier for the label pass (the spec's mandate). A mapname VS
-/// has EXACTLY two vertex inputs:
-///   - `POSITION[0]` as `float3` (component type FLOAT32, xyz components read)
-///   - `TEXCOORD[0]` as `float2` (component type FLOAT32, xy components read)
-/// and binds a constant buffer at slot 1 (the `Transp_OffsetX` CB).
-///
-/// This rejects every other map/UI vertex shader in the game:
-///   - terrain VS: POSITION is `int4`/`int2` SINT32 (not FLOAT32);
-///   - UI VS: POSITION is `float2` (mask 0x03, not the xyz 0x07 of a float3);
-///   - restorescene/fullscreen VS: no POSITION input (uses SV_VertexID);
-///   - `traderoute.shader`: a THIRD input (`TANGENT`) — excluded by the
-///     exactly-two-inputs constraint (also by the paired PS having 2 SRVs);
-///   - `maskedflag`/`static_button`/`buttonstate_*`: 2-input float3+float2 VS
-///     but NO slot-1 CB — excluded by the CB1 constraint (also by the paired
-///     PS not being a single `DiffuseTexture`);
-///   - `particle.shader`/`arrow.shader` have a slot-1 32-byte CB but their VS
-///     inputs differ (instancing / extra inputs) — excluded by the input set.
-/// Masks use exact equality (`== 0x07` for `float3`, `== 0x03` for `float2`):
-/// D3D reflection reports the declared component set, so a `float4` position
-/// would report `0x0F` and must NOT match. This is stricter than the terrain
-/// predicate (which uses `& 0x0f`), because here float-width IS the
-/// discriminating signal against float4-position mesh shaders. The shipped
-/// mapname VS reads `v.vPosition.xyz` and `v.vTexCoord.xy`, giving exactly
-/// `0x07`/`0x03`.
 pub fn terrain_vertex_shader_metadata_matches_mapname(
     metadata: &TerrainVertexShaderMetadata,
 ) -> bool {
@@ -1672,40 +1557,10 @@ pub fn terrain_vertex_shader_metadata_matches_mapname(
     has_position && has_texcoord && has_cb1
 }
 
-/// Byte-level corroboration that a candidate mapname vertex shader's slot-1 CB
-/// is specifically `Transp_OffsetX` and not some other 32-byte b1 CB. Live
-/// evidence (session_20260702d) proved the reflected float3-position + b1-CB
-/// signature ALONE collides with other 2-input float3+float2 map shaders whose
-/// slot-1 CB is a different struct (`Offset`/`NextOffset`); only the true
-/// mapname VS carries the `Transp_OffsetX` symbol in its DXBC string table.
-/// D3D reflection surfaces a name only if it is in the bytecode, so this marker
-/// is a sound (never-false-reject) tightener: a genuine mapname VS always
-/// contains it, and the colliders never do.
 pub fn shader_bytecode_has_mapname_transp_offset_marker(bytecode: &[u8]) -> bool {
     byte_slice_contains(bytecode, b"Transp_OffsetX")
 }
 
-/// The exact vertex-input signature the REAL `border.shader` VS produces, derived
-/// from the shipped source `VS_INPUT_BORDER { float3 position : POSITION; int2 uv
-/// : TEXCOORD0; }` (`gfx/FX/border.shader:57`-`:60`) by compiling that struct
-/// through `fxc /T vs_5_0` and reading the ISGN out of the DXBC:
-///
-/// ```text
-/// // Name        Index  Mask  Register  SysValue  Format  Used
-/// // POSITION        0   xyz         0      NONE   float   xyz   (component_type FLOAT32=3, mask 0x07)
-/// // TEXCOORD        0   xy          1      NONE     int   xy    (component_type SINT32=2,  mask 0x03)
-/// ```
-///
-/// This is the load-bearing discriminator that the diag23b contamination violated:
-/// the mis-captured terrain patch draw ran the TERRAIN vertex shader, whose
-/// POSITION is `int4` (component_type SINT32=2, mask 0x0f) — the opposite of the
-/// border VS's `float3` (FLOAT32=3, mask 0x07) position. Masks use exact equality:
-/// D3D reflection reports the declared component set, so a `float4` position would
-/// report `0x0f` and must NOT match. replay_interface/re_evidence/rendering_laws/XMAP00/xmap_exact_evidence_index.tsv's earlier prose "float3 + int2"
-/// was a source-level guess; THIS is the fxc-compiled bytecode truth.
-///
-/// A genuine engine border draw always runs this VS (the shipped `Effect border`
-/// binds `VS_INPUT_BORDER`), so the gate never false-rejects a real border draw.
 pub fn terrain_vertex_shader_metadata_matches_border(
     metadata: &TerrainVertexShaderMetadata,
 ) -> bool {
@@ -1727,55 +1582,17 @@ pub fn terrain_vertex_shader_metadata_matches_border(
     has_position && has_uv
 }
 
-/// The structural facts a candidate `borders_pass` draw must present, distilled to
-/// exactly what [`validate_border_candidate`] gates on. All fields are cheap to
-/// gather on the render thread from state the DLL already tracks (VS reflection,
-/// the BorderDiffuse SRV readback, the pre/post render-target snapshots), so the
-/// validation is a pure function that is unit-testable off-line against the
-/// diag23b contamination evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BorderCandidateFacts<'a> {
-    /// Reflected input signature of the vertex shader bound on the draw.
     pub vertex_shader: &'a TerrainVertexShaderMetadata,
-    /// `true` iff the texture bound at the BorderDiffuse slot (t0) read back as
-    /// entirely zero bytes (the diag23b contamination signature).
     pub border_diffuse_srv_all_zero: bool,
-    /// `true` iff the BorderDiffuse-slot SRV was actually observed/read back. When
-    /// `false` the all-zero flag is meaningless and the candidate is rejected
-    /// (we cannot prove the load-bearing texture carries ink → fail closed).
     pub border_diffuse_srv_observed: bool,
-    /// `true` iff the pre-draw render target and post-pass render target differ
-    /// (the draw actually wrote pixels). `false` == a no-op draw (diag23b).
     pub render_target_changed: bool,
-    /// `true` iff both the pre-draw and post-pass render-target snapshots were
-    /// captured, so `render_target_changed` is meaningful. When `false` the
-    /// candidate is rejected (cannot prove the draw was not a no-op → fail closed).
     pub render_target_snapshots_observed: bool,
 }
 
-/// Common prefix on every [`validate_border_candidate`] rejection reason. The
-/// runtime keys off it to distinguish a CAPFIX1 structural border rejection from
-/// an ordinary observation-miss, so it can discard the no-op draw and keep the
-/// borders moment listening.
 pub const BORDER_REJECT_MESSAGE_PREFIX: &str = "border candidate rejected:";
 
-/// FAIL-CLOSED border-draw validation. Returns `Ok(())` only when the candidate
-/// passes EVERY structural check mined from the shipped `border.shader`; on any
-/// failure returns `Err(reason)` so the caller REJECTS the candidate, writes a
-/// truthful blocked event, and keeps the borders moment listening (MOMFIX1
-/// convention — never finalize a contaminated bundle).
-///
-/// The three checks correspond one-to-one to the diag23b contamination proof:
-/// 1. **VS input signature** must match the real border VS ISGN
-///    ([`terrain_vertex_shader_metadata_matches_border`]) — rejects the terrain
-///    patch draw, whose `int4` POSITION is not the border VS's `float3`.
-/// 2. **BorderDiffuse SRV non-all-zero** — the load-bearing border texture the PS
-///    samples (`tex2D( BorderDiffuse, … )`, border.shader:127) must carry ink;
-///    diag23b recorded an all-zero t0.
-/// 3. **Render target changed** — the draw must have written pixels; diag23b's
-///    pre==post render targets prove a no-op.
-///
-/// Never panics; pure over its inputs.
 pub fn validate_border_candidate(facts: &BorderCandidateFacts) -> Result<(), String> {
     if !terrain_vertex_shader_metadata_matches_border(facts.vertex_shader) {
         return Err(format!(
@@ -1819,8 +1636,6 @@ pub fn validate_border_candidate(facts: &BorderCandidateFacts) -> Result<(), Str
     Ok(())
 }
 
-/// Human-readable one-line summary of a VS's input signature for truthful reject
-/// logs (semantic[index]:componentType:mask per input).
 fn describe_vs_input_signature(metadata: &TerrainVertexShaderMetadata) -> String {
     if metadata.input_parameters.is_empty() {
         return "<no inputs>".to_string();
@@ -1848,19 +1663,6 @@ fn describe_vs_input_signature(metadata: &TerrainVertexShaderMetadata) -> String
         .join(" + ")
 }
 
-/// Corroborating PS anchor for the mapname pass. This slot-shape predicate is
-/// deliberately NOT a standalone family discriminator — it never gates trust,
-/// and classification additionally requires the `Transp_OffsetX` byte marker
-/// (see [`TerrainCaptureState::observe_mapname_pixel_shader_created`]) plus a
-/// confirmed mapname VS on the draw itself. Returns the resource slots iff the
-/// PS declares `DiffuseTexture` at slot 0 (the font atlas). Extra SRVs are
-/// TOLERATED — a modded mapname.shader may add e.g. an outline/FoW texture and
-/// must not silently break the label capture (mod-support mandate); any extra
-/// bindings are recorded in the bundle as evidence. The vanilla uniqueness
-/// burden is carried by the `Transp_OffsetX` marker, which in the shipped
-/// gfx/FX tree appears ONLY in mapname.shader (verified 2026-07-06; notably
-/// NOT in traderoute/arrow/particle, whose DiffuseTexture-bearing pixel
-/// shaders this predicate alone would otherwise admit).
 pub fn mapname_pixel_resource_slots_from_shader_bytecode(
     bytecode: &[u8],
 ) -> Option<BTreeMap<String, u32>> {
@@ -1875,23 +1677,12 @@ pub fn mapname_pixel_resource_slots_match(resource_slots: &BTreeMap<String, u32>
         == Some(0)
 }
 
-/// SOUND over-approximation: `true` if `bytecode` might declare a
-/// capture-family pixel shader, `false` only when it definitely matches no
-/// family. Cheap by design — a raw byte-substring scan for the distinctive
-/// family markers, with NO UTF-8 allocation and NO D3D reflection — so it can
-/// gate the create-shader hook before any lock or reflection during the game's
-/// load-time shader storm. Reflection can only surface resources whose names
-/// appear in the bytecode string table, so a marker's absence as raw bytes
-/// proves that resource is unbound; a real family shader always contains its
-/// required marker and is therefore never rejected.
 pub fn pixel_shader_bytecode_could_be_capture_family(bytecode: &[u8]) -> bool {
     PIXEL_SHADER_CAPTURE_FAMILY_MARKERS
         .iter()
         .any(|marker| byte_slice_contains(bytecode, marker.as_bytes()))
 }
 
-/// Naive substring search over raw bytes (no UTF-8 decoding). An empty needle
-/// matches; a needle longer than the haystack cannot match.
 fn byte_slice_contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
@@ -2733,30 +2524,6 @@ mod tests {
         assert_eq!(D3D11_IA_VERTEX_INPUT_STRUCTURE_ELEMENT_COUNT, 32);
     }
 
-    /// The PRODUCER half of the map-frame constant-buffer naming contract.
-    ///
-    /// # Why this is a pinned literal and not a call into the consumer
-    ///
-    /// `extractor/native` and `replay_interface/native` are separate cargo
-    /// workspaces that deliberately take no dependency on each other
-    /// (`replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`
-    /// fails the suite if the replay side path-depends on anything under
-    /// `extractor/`). This crate used to live in the replay workspace and
-    /// dev-depend on `map_viewer` so one test could run the real consumer over
-    /// a repaired bundle. It cannot: it is an injected DLL that patches live
-    /// game code through `inline_detour`, so it belongs on the acquisition
-    /// side, and the dev-dependency was the boundary violation.
-    ///
-    /// So the mechanism is the one
-    /// `extractor/native/wire_format/tests/producer_consumer_admission_agreement.rs`
-    /// already uses for admission values: the name is written twice, once per
-    /// workspace, and each copy is pinned to the same literal by a test that
-    /// names its sibling. The consumer half is
-    /// `map_frame_constant_buffer_naming_contract` in
-    /// `replay_interface/native/map_viewer/src/constants.rs`. Both halves must
-    /// exist; a name enforced on one side and not its sibling is not enforced
-    /// at all, because the failure mode is silent: the capture writes a name
-    /// the renderer does not recognise and the bundle is rejected wholesale.
     #[test]
     fn map_frame_constant_buffer_naming_contract() {
         assert_eq!(
@@ -2774,38 +2541,6 @@ mod tests {
         assert_eq!(TERRAIN_DRAW_CB1_BIND_POINT, 1);
     }
 
-    /// Asserts the repair emits the spelling the consumer will accept.
-    ///
-    /// The rule this mirrors is
-    /// `map_viewer/src/frame_bundle.rs::map_frame_reflected_constant_buffer_binding_blockers`:
-    /// a bundle is
-    /// blocked when a captured constant-buffer binding at some stage/slot does
-    /// not carry the same declared name the active shader's reflection uses for
-    /// that slot. Because the repair canonicalises the reflection too, that
-    /// rule bites on the canonical names — PS slot 0 as `TerrainSceneCB0`, VS
-    /// slot 1 as the `pdxmap.fxh` layout citation — and those two are asserted
-    /// by name below.
-    ///
-    /// DELIBERATELY STRICTER THAN THE CONSUMER, and not a restatement of it.
-    /// `validate_map_frame_app_camera_constant_buffer_coverage` is looser than
-    /// what is checked here: it accepts a VS or a PS binding, and accepts a
-    /// reflected `dx11_cb0` alias when the bundle carries `standardfuncsgfx.fxh`
-    /// layout evidence, because it decides on the buffer's decoded LAYOUT
-    /// rather than its name. Asserting the canonical name is a sufficient
-    /// condition for that check, not an equivalent one. The point of pinning
-    /// the strict form is that it is what the repair is FOR: a producer that
-    /// stops emitting the canonical spelling has regressed even if some looser
-    /// consumer path would still have accepted the bundle.
-    ///
-    /// That the consumer really does enforce its half is pinned on the consumer
-    /// side, where the real validator can be run:
-    /// `water_map_frame_validation_rejects_reflected_constant_buffer_name_mismatch`
-    /// (frame_bundle.rs:6094) and
-    /// `map_frame_bundle_validation_rejects_vertex_shader_with_wrong_cb1_source`
-    /// (frame_bundle.rs:6444).
-    ///
-    /// The stale input is checked first on purpose: without it the repair could
-    /// be a no-op and this test would still pass.
     #[test]
     fn constant_buffer_repair_establishes_the_names_the_renderer_requires() {
         let root = temp_test_dir("cb_name_contract");
@@ -2840,10 +2575,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    /// Mirror of the consumer's reflected-name rule plus the two canonical
-    /// names it bites on. Kept in test code on purpose: it must be able to
-    /// disagree with the production canonicaliser, which is the whole point of
-    /// the check.
     fn constant_buffer_naming_blockers(bundle: &Value) -> Vec<String> {
         let mut blockers = Vec::new();
         let mut draws = bundle
@@ -2852,9 +2583,6 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert!(!draws.is_empty(), "fixture must carry at least one draw");
-        // `active_draw` is a separate copy in the bundle, repaired separately.
-        // The renderer validates it separately too, so a repair that fixed
-        // `draws` and missed `active_draw` must not read as clean here.
         if let Some(active) = bundle.get("active_draw") {
             assert!(
                 !active.is_null(),
@@ -3035,7 +2763,6 @@ mod tests {
 
     #[test]
     fn map_layer_resource_slots_require_distinct_shader_signatures() {
-        // Rivers declare SnowMudTexture (river.shader:85), not SnowMudData.
         let river_slots = river_resource_slots_from_shader_bytecode(
             b"RiverData_Texture : register(t3); LeanTexture1_Texture : register(t4); \
               LeanTexture2_Texture : register(t5); SnowMudTexture_Texture : register(t8); \
@@ -3229,9 +2956,6 @@ mod tests {
 
     #[test]
     fn capture_family_prefilter_never_rejects_a_real_family_shader() {
-        // Every genuine family fixture must survive the lock-free pre-filter
-        // (its distinctive required marker is present), or the load-freeze fix
-        // would silently drop that layer's capture.
         let pdxmap = b"TerrainIDMap_Texture : register(t5); SnowMudData_Texture : register(t7); TerrainDiffuse TerrainColorTint";
         let pdxwater = b"HeightTexture : register(t0); LeanTexture1 : register(t1); LeanTexture2 : register(t2); SpecularMap : register(t3); WaterRefraction : register(t5);";
         let river = b"RiverData_Texture : register(t3); LeanTexture1_Texture : register(t4); LeanTexture2_Texture : register(t5); SnowMudTexture_Texture : register(t8);";
@@ -3257,8 +2981,6 @@ mod tests {
 
     #[test]
     fn capture_family_prefilter_rejects_non_family_shaders() {
-        // The overwhelming majority of the game load shaders declare none of the
-        // distinctive family markers and must be rejected without a lock.
         let generic_ui = b"DiffuseMap : register(t0); ColorMask : register(t1); vBlendFactor";
         let empty: &[u8] = b"";
         let unrelated = b"CloudTexture NoiseMap FontAtlas register(t0) register(t1)";
@@ -3269,22 +2991,12 @@ mod tests {
 
     #[test]
     fn capture_family_prefilter_matches_suffixed_resource_names() {
-        // Reflection keys on the base name (TerrainIDMap) while bytecode may
-        // spell it TerrainIDMap_Texture; the raw substring scan must still see
-        // the marker inside the suffixed declaration.
         let suffixed = b"...garbage... TerrainIDMap_Texture : register(t5) ...more...";
         assert!(pixel_shader_bytecode_could_be_capture_family(suffixed));
     }
 
     #[test]
     fn capfix2_prefilter_admits_synthetic_pdxmap_pixel_shader_blob() {
-        // CAPFIX2 INVESTIGATION 3: the pdxmap terrain PS declares TerrainIDMap +
-        // SnowMudData. The lock-free create-shader prefilter MUST always admit a
-        // blob carrying those markers (its distinctive TerrainIDMap marker is a
-        // member of PIXEL_SHADER_CAPTURE_FAMILY_MARKERS), or the terrain PS is
-        // never observed -> no active pdxmap PS -> every map frame rejected
-        // (exactly the "no active pdxmap pixel shader for map-frame capture"
-        // rejection seen in all four LAW sessions tonight).
         let pdxmap_like =
             b"DXBC....TerrainIDMap....SnowMudData....TerrainDiffuse....TerrainColorTint";
         assert!(
@@ -3299,9 +3011,6 @@ mod tests {
 
     #[test]
     fn capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader() {
-        // CAPFIX2 INVESTIGATION 3: prove the prefilter admits the REAL captured
-        // pdxmap terrain PS bytecode when an external capture corpus is supplied.
-        // The repo does not carry harness run artifacts as permanent fixtures.
         let Some(path) = first_capture_fixture("pdxmap_pixel_shader_ce5e5185d46e214b.bin") else {
             eprintln!(
                 "capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader skipped: set {TERRAIN_CAPTURE_FIXTURE_DIRS_ENV} to a capture run containing pdxmap_pixel_shader_ce5e5185d46e214b.bin"
@@ -3419,7 +3128,6 @@ mod tests {
 
     #[test]
     fn mapname_vertex_discriminator_rejects_terrain_sint_position() {
-        // Terrain VS: int4 POSITION + int2 TEXCOORD (SINT32) — not the label VS.
         let metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_SINT32, 0x0f),
@@ -3429,10 +3137,6 @@ mod tests {
         );
         assert!(!terrain_vertex_shader_metadata_matches_mapname(&metadata));
     }
-
-    // ===================================================================
-    // CAPFIX1 — fail-closed borders_pass validation regression tests.
-    // ===================================================================
 
     fn vs_input(semantic_name: &str, component_type: u32, mask: u8) -> ShaderInputParameter {
         ShaderInputParameter {
@@ -3454,8 +3158,6 @@ mod tests {
         }
     }
 
-    /// The REAL border VS ISGN, exactly as fxc compiles `VS_INPUT_BORDER`
-    /// (float3 POSITION mask 0x07, int2 TEXCOORD mask 0x03).
     fn real_border_vs() -> TerrainVertexShaderMetadata {
         vs_metadata(vec![
             vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x07),
@@ -3463,9 +3165,6 @@ mod tests {
         ])
     }
 
-    /// The diag23b contamination VS: the TERRAIN VS (int4 POSITION mask 0x0f,
-    /// int2 TEXCOORD mask 0x03), as recorded in
-    /// `map_frame_borders_pass_bundle.json`.
     fn diag23b_terrain_vs() -> TerrainVertexShaderMetadata {
         vs_metadata(vec![
             vs_input("POSITION", D3D_REGISTER_COMPONENT_SINT32, 0x0f),
@@ -3478,12 +3177,9 @@ mod tests {
         assert!(terrain_vertex_shader_metadata_matches_border(
             &real_border_vs()
         ));
-        // The diag23b terrain VS (int4 POSITION) must NOT match.
         assert!(!terrain_vertex_shader_metadata_matches_border(
             &diag23b_terrain_vs()
         ));
-        // A float4 POSITION (mask 0x0f) must NOT match either — the border VS is
-        // float3 (mask 0x07), so exact-mask equality is required.
         assert!(!terrain_vertex_shader_metadata_matches_border(
             &vs_metadata(vec![
                 vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x0f),
@@ -3494,8 +3190,6 @@ mod tests {
 
     #[test]
     fn border_candidate_rejects_diag23b_contamination() {
-        // The diag23b capture: terrain VS + all-zero BorderDiffuse + no-op RT.
-        // Every one of the three criteria is violated; validation must REJECT.
         let facts = BorderCandidateFacts {
             vertex_shader: &diag23b_terrain_vs(),
             border_diffuse_srv_all_zero: true,
@@ -3505,13 +3199,11 @@ mod tests {
         };
         let err = validate_border_candidate(&facts).expect_err("diag23b must be rejected");
         assert!(err.starts_with(BORDER_REJECT_MESSAGE_PREFIX), "{err}");
-        // The FIRST gate that trips is the VS signature (the decisive one).
         assert!(err.contains("input signature"), "{err}");
     }
 
     #[test]
     fn border_candidate_accepts_valid_border_draw() {
-        // A genuine border draw: real border VS, inked BorderDiffuse, RT changed.
         let facts = BorderCandidateFacts {
             vertex_shader: &real_border_vs(),
             border_diffuse_srv_all_zero: false,
@@ -3524,7 +3216,6 @@ mod tests {
 
     #[test]
     fn border_candidate_rejects_each_failure_mode_independently() {
-        // (1) All-zero BorderDiffuse even with a real border VS + RT change.
         let all_zero = BorderCandidateFacts {
             vertex_shader: &real_border_vs(),
             border_diffuse_srv_all_zero: true,
@@ -3535,7 +3226,6 @@ mod tests {
         let err = validate_border_candidate(&all_zero).expect_err("all-zero must reject");
         assert!(err.contains("BorderDiffuse"), "{err}");
 
-        // (2) BorderDiffuse never observed → cannot prove ink → fail closed.
         let unobserved = BorderCandidateFacts {
             vertex_shader: &real_border_vs(),
             border_diffuse_srv_all_zero: false,
@@ -3545,7 +3235,6 @@ mod tests {
         };
         assert!(validate_border_candidate(&unobserved).is_err());
 
-        // (3) No-op RT even with real VS + inked BorderDiffuse.
         let noop_rt = BorderCandidateFacts {
             vertex_shader: &real_border_vs(),
             border_diffuse_srv_all_zero: false,
@@ -3559,7 +3248,6 @@ mod tests {
             "{err}"
         );
 
-        // (4) RT snapshots not both captured → cannot prove change → fail closed.
         let no_rt_snapshots = BorderCandidateFacts {
             vertex_shader: &real_border_vs(),
             border_diffuse_srv_all_zero: false,
@@ -3572,7 +3260,6 @@ mod tests {
 
     #[test]
     fn underwater_classifier_matches_underwater_ps_rejects_terrain_and_terrainunlit() {
-        // PixelShaderUnderwater: samples the six required textures, NOT TerrainIDMap.
         let underwater =
             b"TerrainDiffuse_Texture : register(t0); HeightNormal_Texture : register(t1); \
             TerrainColorTint_Texture : register(t2); LightIndexMap_Texture : register(t10); \
@@ -3583,7 +3270,6 @@ mod tests {
         assert_eq!(slots.get("HeightNormal"), Some(&1));
         assert_eq!(slots.get("ShadowMap"), Some(&12));
 
-        // Main terrain PS: binds TerrainIDMap(5) → excluded discriminator → reject.
         let terrain =
             b"TerrainDiffuse_Texture : register(t0); HeightNormal_Texture : register(t1); \
             TerrainColorTint_Texture : register(t2); TerrainIDMap_Texture : register(t5); \
@@ -3591,7 +3277,6 @@ mod tests {
             ShadowMap_Texture : register(t12);";
         assert!(underwater_resource_slots_from_shader_bytecode(terrain).is_none());
 
-        // PixelShaderTerrainUnlit: no point-light slots → missing required set → reject.
         let terrainunlit =
             b"TerrainDiffuse_Texture : register(t0); HeightNormal_Texture : register(t1); \
             TerrainColorTint_Texture : register(t2); ShadowMap_Texture : register(t12);";
@@ -3600,9 +3285,6 @@ mod tests {
 
     #[test]
     fn underwater_ps_survives_the_lockfree_prefilter() {
-        // The underwater PS carries none of the historical markers, so without a
-        // dedicated marker the load-freeze prefilter would drop it. HeightNormal
-        // admits it.
         let underwater =
             b"TerrainDiffuse HeightNormal TerrainColorTint LightIndexMap LightDataMap ShadowMap";
         assert!(pixel_shader_bytecode_could_be_capture_family(underwater));
@@ -3622,7 +3304,6 @@ mod tests {
             state.underwater_pixel_shader(),
             Some(MapPixelShaderBinding { pixel_shader: 0xB0 })
         );
-        // A terrain PS (binds TerrainIDMap) must NOT be classified as underwater.
         let terrain =
             b"TerrainDiffuse_Texture : register(t0); HeightNormal_Texture : register(t1); \
             TerrainColorTint_Texture : register(t2); TerrainIDMap_Texture : register(t5); \
@@ -3633,7 +3314,6 @@ mod tests {
 
     #[test]
     fn mapname_vertex_discriminator_rejects_ui_float2_position() {
-        // A plain UI shader: float2 POSITION (mask 0x03) must be rejected.
         let metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x03),
@@ -3646,8 +3326,6 @@ mod tests {
 
     #[test]
     fn mapname_vertex_discriminator_rejects_float4_position_mesh() {
-        // A float4-position mesh VS reports mask 0x0F, not 0x07 — exact-mask
-        // equality is what excludes it.
         let metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x0f),
@@ -3660,8 +3338,6 @@ mod tests {
 
     #[test]
     fn mapname_vertex_discriminator_rejects_three_input_traderoute() {
-        // traderoute.shader adds a third TANGENT input — excluded by the
-        // exactly-two-inputs rule.
         let metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x07),
@@ -3675,8 +3351,6 @@ mod tests {
 
     #[test]
     fn mapname_vertex_discriminator_rejects_missing_cb1() {
-        // maskedflag/static_button/buttonstate: float3+float2 VS but no slot-1
-        // CB — excluded by the CB1 requirement.
         let metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x07),
@@ -3685,7 +3359,6 @@ mod tests {
             None,
         );
         assert!(!terrain_vertex_shader_metadata_matches_mapname(&metadata));
-        // Same inputs but a slot-0-only CB is also rejected.
         let metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x07),
@@ -3705,10 +3378,6 @@ mod tests {
             slots.get(MAPNAME_DIFFUSE_TEXTURE_RESOURCE_SYMBOL).copied(),
             Some(0)
         );
-        // Mod tolerance: extra SRVs alongside DiffuseTexture@t0 still match the
-        // slot shape (a modded mapname.shader must not silently break the label
-        // capture). Vanilla uniqueness is enforced by the Transp_OffsetX byte
-        // marker at observe time, not by an exactly-one-SRV constraint.
         let modded = b"
             Texture2D DiffuseTexture_Texture : register(t0);
             Texture2D OutlineTexture_Texture : register(t1);
@@ -3728,15 +3397,12 @@ mod tests {
 
     #[test]
     fn mapname_pixel_discriminator_rejects_multi_texture_map_shader() {
-        // A pdxmap-family PS declares no DiffuseTexture at slot 0 — never a
-        // mapname font-atlas PS.
         let pdxmap = b"
             Texture2D TerrainIDMap_Texture : register(t5);
             Texture2D TerrainDiffuse_Texture : register(t6);
             Texture2D TerrainColorTint_Texture : register(t7);
         ";
         assert!(mapname_pixel_resource_slots_from_shader_bytecode(pdxmap).is_none());
-        // A DiffuseTexture at a NON-zero slot is also rejected.
         let wrong_slot = b"Texture2D DiffuseTexture_Texture : register(t3);";
         assert!(mapname_pixel_resource_slots_from_shader_bytecode(wrong_slot).is_none());
     }
@@ -3744,12 +3410,6 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn mapname_discriminator_matches_live_captured_vertex_shader() {
-        // Ground truth: the census captured the real mapname VS as a generic
-        // map_vertex_shader with fnv 4e1b73f39c128df0. Reflect that exact DXBC
-        // and confirm the mapname discriminator classifies it — proving the
-        // reflected float3-position signature targets the live shader, not just
-        // synthetic HLSL. Fixture-gated so CI without an external capture still
-        // passes.
         let Some(fixture) = first_capture_fixture("map_vertex_shader_4e1b73f39c128df0.bin") else {
             eprintln!(
                 "mapname_discriminator_matches_live_captured_vertex_shader skipped: set {TERRAIN_CAPTURE_FIXTURE_DIRS_ENV} to a capture run containing map_vertex_shader_4e1b73f39c128df0.bin"
@@ -3770,20 +3430,15 @@ mod tests {
             metadata.input_parameters,
             metadata.constant_buffers,
         );
-        // And it must NOT match the terrain discriminator (float3 != int4).
         assert!(!terrain_vertex_shader_metadata_matches_pdxmap(&metadata));
     }
 
     #[test]
     fn capture_state_tracks_active_mapname_shaders_and_cbs() {
         let mut state = TerrainCaptureState::default();
-        // A DiffuseTexture-at-t0 PS WITHOUT the Transp_OffsetX marker (the
-        // traderoute/generic-font-overlay shape) must be rejected: the slot
-        // shape alone never classifies a mapname PS.
         let markerless_ps = b"Texture2D DiffuseTexture_Texture : register(t0);";
         assert!(!state.observe_mapname_pixel_shader_created(0xBF, markerless_ps));
         assert_eq!(state.mapname_pixel_shader_count(), 0);
-        // PS: DiffuseTexture at t0 + the Transp_OffsetX CB read.
         let mapname_ps = b"Texture2D DiffuseTexture_Texture : register(t0); Transp_OffsetX";
         assert!(state.observe_mapname_pixel_shader_created(0xC0, mapname_ps));
         assert_eq!(state.mapname_pixel_shader_count(), 1);
@@ -3796,7 +3451,6 @@ mod tests {
             state.current_pixel_shader_constant_buffer_name(MAPNAME_TRANSP_OFFSET_CB_BIND_POINT),
             Some(MAPNAME_TRANSP_OFFSET_CB_SOURCE.to_string())
         );
-        // VS: float3 POSITION + float2 TEXCOORD + CB1.
         let vs_metadata = mapname_vs_metadata(
             vec![
                 mapname_vs_input("POSITION", D3D_REGISTER_COMPONENT_FLOAT32, 0x07),
@@ -3804,8 +3458,6 @@ mod tests {
             ],
             Some(1),
         );
-        // Bytecode must carry the Transp_OffsetX marker (the tie-breaker that
-        // rejects same-shape colliders whose slot-1 CB is a different struct).
         state.observe_vertex_shader_created(
             0xC1,
             b"DXBC mapname vs Transp_OffsetX bytes",
@@ -3813,8 +3465,6 @@ mod tests {
         );
         assert_eq!(state.mapname_vertex_shader_count(), 1);
         assert!(state.mapname_vertex_shader_known(0xC1));
-        // Same reflected signature but NO Transp_OffsetX marker (a collider like
-        // maskedflag/static_button) must NOT be tracked as a mapname VS.
         state.observe_vertex_shader_created(
             0xC2,
             b"DXBC collider vs Offset NextOffset bytes",
@@ -3833,10 +3483,6 @@ mod tests {
 
     #[test]
     fn captured_pixel_shader_prefilter_covers_full_family_classifiers() {
-        // Local, gitignored capture output; the test skips when it is absent.
-        // Spelled from the repository root because this crate moved from
-        // `replay_interface/native/terrain_capture` to `extractor/native` and
-        // the fixture did not move with it.
         let capture_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../replay_interface/native/map_viewer/out/captures/session_20260702d");
         if !capture_dir.is_dir() {
@@ -3924,12 +3570,7 @@ mod tests {
     #[test]
     fn capture_state_tracks_active_non_terrain_map_layer_shaders() {
         let mut state = TerrainCaptureState::default();
-        // River shaders declare SnowMudTexture (river.shader:85), unlike
-        // pdxmap/border/tree which declare SnowMudData.
         let river_shader = b"RiverData_Texture : register(t3); LeanTexture1_Texture : register(t4); LeanTexture2_Texture : register(t5); SnowMudTexture_Texture : register(t8); GradientBorderChannel1_Texture : register(t12); GradientBorderChannel2_Texture : register(t13);";
-        // The REAL shipped border.shader:border PS variant declares ONLY
-        // BorderDiffuse + ShadowMap (BORD5: the old 4-symbol signature also
-        // demanded SnowMudData/IntelMap and could never match it).
         let border_shader =
             b"BorderDiffuse_Texture : register(t0); ShadowMap_Texture : register(t3);";
         let tree_shader = b"DiffuseMap_Texture : register(t0); NormalMap_Texture : register(t1); TintMap_Texture : register(t2); SeasonMap_Texture : register(t3); TreeMaskTexture_Texture : register(t14); GradientBorderChannel1_Texture : register(t12); GradientBorderChannel2_Texture : register(t13);";

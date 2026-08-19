@@ -1,10 +1,3 @@
-//! Exact engine Active-DLC display-name to authenticated VFS-layer join.
-//!
-//! `dlc_load.json` is deliberately absent from this API. The caller supplies
-//! the descriptor roster authenticated by the launch/VFS binding and the two
-//! byte-identical post-device engine-manager observations. Unknown, duplicate,
-//! missing, or colliding names fail before H4CT COMMIT.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
@@ -15,27 +8,19 @@ use crate::portable_content_manifest::{normalize_stable_layer_id, PortableLaunch
 pub const EFFECTIVE_RUNTIME_DLC_SCHEMA: &str = "hoi4.effective_runtime_dlc.v1";
 pub const REQUESTED_PROFILE_SELECTION_SCHEMA: &str = "hoi4.requested_profile_selection.v1";
 
-/// Launcher-requested DLC evidence. This is intentionally separate from the
-/// effective engine roster: `dlc_load.json` is not runtime activation truth.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct RequestedProfileSelection {
     pub schema: &'static str,
     pub dlc_load_sha256: String,
-    /// Normalized descriptor IDs, sorted by raw UTF-8 byte order.
     pub disabled_dlc_descriptor_ids: Vec<String>,
-    /// Stable descriptor-folder IDs requested by the launcher profile.
     pub requested_enabled_dlc_ids: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedDlcDescriptor {
-    /// Exact case-sensitive descriptor `name` parsed as a Latin-1 byte string.
     pub display_name: String,
-    /// Stable product/layer ID: the descriptor folder basename.
     pub layer_id: String,
-    /// Portable descriptor path: `dlc/<layer_id>/<file>.dlc`.
     pub descriptor_id: String,
-    /// Raw descriptor-file SHA-256 authenticated by the VFS roster gate.
     pub descriptor_file_sha256: String,
 }
 
@@ -53,9 +38,6 @@ pub struct EffectiveRuntimeDlc {
     pub display_name_to_layer_id: BTreeMap<String, String>,
 }
 
-/// Derive requested-profile evidence from the already-resolved report. No file
-/// or process access occurs here; the hash comes from the existing identical
-/// pair of `dlc_load.json` reads.
 pub fn requested_profile_selection_from_modset(
     report: &ModsetReport,
 ) -> Result<RequestedProfileSelection, String> {
@@ -102,9 +84,6 @@ pub fn requested_profile_selection_from_modset(
     })
 }
 
-/// Materialize the installed descriptor roster from the exact launch-bound
-/// bytes already retained by `ModsetReport`. This function performs no file or
-/// process access and is safe to call before the report is dropped.
 pub fn authenticated_dlc_descriptors_from_modset(
     report: &ModsetReport,
 ) -> Result<Vec<AuthenticatedDlcDescriptor>, String> {
@@ -166,11 +145,6 @@ pub fn authenticated_dlc_descriptors_from_modset(
     Ok(rows)
 }
 
-/// Join an engine-manager Active-DLC snapshot to the authenticated DLC VFS set.
-///
-/// The observed order is retained, while set equality is enforced against the
-/// launch binding. The caller owns the double-stable memory-read gate; this
-/// function accepts only one of the already-compared name sequences.
 pub fn validate_effective_runtime_dlc_roster(
     roster: AuthenticatedDlcVfsRoster<'_>,
     observed_engine_order_names: &[String],

@@ -4,7 +4,7 @@
 //! Derived from `world_fold.rs:16910`-`:17551`
 //! (`fold_production`), its `parse_production_trailers` chain parser and the ten
 // @world-fold-authority domain=11 functions=fold_production lines=16910-17551 sha256=196584a7f9b89e2a3bcfd56c98f5b92acfcce5ddbeb34995021888e6db1e14bb closure=8fa73d587855398c94f9fcdf95380af56067014dbfeba016356dc4698c879742
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=ef66c76c707c5c840c3b39a0e4aea9cea473157d7392e50126aa6406a7738829
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=cd0e1eed4d8767af23c3d745c2ff369f1fa78e514c9a77ab4f6ef9acdfc54631
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).
 //! Native offsets and scale proofs are retained as

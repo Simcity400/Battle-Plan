@@ -1,19 +1,3 @@
-//! D3 outliner-population gates.
-//!
-//! These drive the packed snapshot-flavor fixtures through the real
-//! `replay_core` `ReplaySource`/`WorldTimeline` and assert that
-//! `game_ui::binding::outliner_unit_lists_from_frame` populates the
-//! army/navy/air lists with the exact fixture ground-truth row counts and row
-//! key strings, across multiple POV countries and at multiple probed hours.
-//!
-//! Expected values are derived from the fixture GENERATOR SOURCE
-//! (`replay_fixture_gen/src/main.rs`), never by running the code under test:
-//!   * `fx_division_movement` — divisions `101:1` (owner GER) and `201:1`
-//!     (owner SOV) present at every tick (the base snapshot's two divisions;
-//!     div 101 is repositioned but its identity/owner never change).
-//!   * `fx_naval_air_activity` — one fleet task force `501` (owner ENG) and
-//!     one air wing `800` (owner ENG); the base snapshot's divisions
-//!     `101:1`/`201:1` are still present.
 
 use game_ui::binding::{
     outliner_binding_from_frame, outliner_unit_lists_from_frame, OUTLINER_AIR_ICON,
@@ -35,8 +19,6 @@ fn uids(rows: &[game_ui::binding::OutlinerUnitRow]) -> Vec<&str> {
     rows.iter().map(|r| r.uid.as_str()).collect()
 }
 
-/// GATE 1a — army rows are owner-filtered per POV across every hour.
-/// `fx_division_movement`: div `101:1` belongs to GER, `201:1` to SOV.
 #[test]
 fn army_rows_owner_filtered_per_pov() {
     let tl = fixture("fx_division_movement");
@@ -49,7 +31,6 @@ fn army_rows_owner_filtered_per_pov() {
         let ger = outliner_unit_lists_from_frame(&frame, "GER");
         assert_eq!(ger.army_status, ViewStatus::Present);
         assert_eq!(uids(&ger.army), vec!["101:1"], "GER army @h{hour}");
-        // GER has no fleets/wings in this fixture (empty arrays => Present).
         assert!(ger.navy.is_empty(), "GER navy @h{hour}");
         assert!(ger.air.is_empty(), "GER air @h{hour}");
 
@@ -58,20 +39,15 @@ fn army_rows_owner_filtered_per_pov() {
         assert!(sov.navy.is_empty(), "SOV navy @h{hour}");
         assert!(sov.air.is_empty(), "SOV air @h{hour}");
 
-        // A POV with no units gets empty lists (never fabricated rows).
         let eng = outliner_unit_lists_from_frame(&frame, "ENG");
         assert!(eng.army.is_empty(), "ENG army @h{hour}");
     }
 
-    // Each army icon is the FILE-cited theatre army shield.
     let frame = tl.frame(hours[0]).unwrap();
     let ger = outliner_unit_lists_from_frame(&frame, "GER");
     assert_eq!(ger.army[0].icon_sprite, OUTLINER_ARMY_ICON);
 }
 
-/// GATE 1b — navy/air rows are owner-filtered per POV; the divisions from the
-/// base snapshot still populate the army branch. Two distinct POVs (ENG has the
-/// naval/air units; GER has only an army division).
 #[test]
 fn navy_air_rows_owner_filtered_per_pov() {
     let tl = fixture("fx_naval_air_activity");
@@ -86,7 +62,6 @@ fn navy_air_rows_owner_filtered_per_pov() {
         assert_eq!(eng.air_status, ViewStatus::Present);
         assert_eq!(uids(&eng.navy), vec!["501"], "ENG navy @h{hour}");
         assert_eq!(uids(&eng.air), vec!["800"], "ENG air @h{hour}");
-        // ENG owns no division in the base snapshot.
         assert!(eng.army.is_empty(), "ENG army @h{hour}");
 
         let ger = outliner_unit_lists_from_frame(&frame, "GER");
@@ -101,9 +76,6 @@ fn navy_air_rows_owner_filtered_per_pov() {
     assert_eq!(eng.air[0].icon_sprite, OUTLINER_AIR_ICON);
 }
 
-/// GATE 1c — the flat `OutlinerBinding` fed to the layout compositor is the
-/// army→navy→air concatenation with row text == UID and fail-closed `None`
-/// progress. Uses `fx_naval_air_activity` @ ENG (army empty, navy+air one each).
 #[test]
 fn flat_binding_orders_army_navy_air_with_uid_text() {
     let tl = fixture("fx_naval_air_activity");
@@ -115,7 +87,6 @@ fn flat_binding_orders_army_navy_air_with_uid_text() {
         .iter()
         .map(|r| (r.icon_sprite.as_str(), r.text.as_str(), r.progress))
         .collect();
-    // army (none) then navy `501` then air `800`.
     assert_eq!(
         rows,
         vec![
@@ -125,7 +96,6 @@ fn flat_binding_orders_army_navy_air_with_uid_text() {
     );
     assert!(!binding.collapsed);
 
-    // GER POV: army only.
     let ger = outliner_binding_from_frame(&frame, "GER");
     let ger_rows: Vec<(&str, &str)> = ger
         .rows

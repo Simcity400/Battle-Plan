@@ -219,8 +219,6 @@ fn opacity_changes_source_alpha_before_fixed_function_blend() {
     let out = blend_src_alpha_inv_src_alpha(px([0.0, 0.0, 1.0, 1.0]), source);
     close(out.0[0], 0.4);
     close(out.0[2], 0.6);
-    // Exact-a729 leaves the omitted separate-alpha blend factors at
-    // source=one/destination=zero, so alpha is the post-opacity source alpha.
     close(out.0[3], 0.4);
 }
 

@@ -1,21 +1,6 @@
-//! In-memory unit tests for the fold-equivalence gate. They build a small
-//! synthetic H4CR stream (via the same wire layout the collector emits), fold it
-//! through the production `WorldFold`, and assert stable hashing, PERF-record
-//! ignoring, mutation detection, and fail-closed certification.
-
 use super::*;
 
-/// The diagnosis every H4FD fixture in this file carries.
-///
-/// These tests are about the fold's RECONCILIATION of a notice against the
-/// per-domain status words, not about who diagnosed the domain, so the
-/// diagnosis is held constant and minimal: the reserved undeclared pair, which
-/// is what an entry for a domain whose deciding site recorded no outcome
-/// carries in production. `frame_degraded`'s own tests are where the predicate
-/// and authority fields are exercised.
-fn fixture_diagnosis(
-    reason: &str,
-) -> compact_contract::frame_degraded::FrameDegradedDiagnosis {
+fn fixture_diagnosis(reason: &str) -> compact_contract::frame_degraded::FrameDegradedDiagnosis {
     compact_contract::frame_degraded::FrameDegradedDiagnosis::undeclared(
         compact_contract::diagnostic_channel::Authority::SelfDomain,
         reason,
@@ -23,8 +8,8 @@ fn fixture_diagnosis(
 }
 use compact_contract::calendar::DATE_EPOCH_CONST;
 use compact_contract::campaign_identity::{
-    encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses,
-    COMPACT_DOMAIN_STREAM_HEADER, COMPACT_RECORD_TYPE_STREAM_HEADER,
+    encode_cid1, Cid1Fields, Cid1Observation, Cid1Witnesses, COMPACT_DOMAIN_STREAM_HEADER,
+    COMPACT_RECORD_TYPE_STREAM_HEADER,
 };
 use compact_contract::{
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC,
@@ -57,8 +42,6 @@ impl Drop for TmpDir {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
-
-// --- synthetic stream builders -------------------------------------------
 
 fn raw_for(hour_index: i64) -> i32 {
     DATE_EPOCH_CONST + hour_index as i32
@@ -104,8 +87,6 @@ fn push_record_with_flags(
     out.extend_from_slice(payload);
 }
 
-/// country_identity (domain 18): u64 wall, u32 row_count, u32 changed, u32
-/// status, then per row: u32 tag_db_id, u16-len TAG, u8 cosmetic marker (1=null).
 fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes());
@@ -116,12 +97,11 @@ fn country_identity_payload(rows: &[(u32, &str)]) -> Vec<u8> {
         p.extend_from_slice(&tag_db_id.to_le_bytes());
         p.extend_from_slice(&(tag.len() as u16).to_le_bytes());
         p.extend_from_slice(tag.as_bytes());
-        p.push(1); // cosmetic null
+        p.push(1);
     }
     p
 }
 
-/// An exact base DOMAIN_PERF payload that the fold must ignore entirely.
 fn perf_payload() -> Vec<u8> {
     perf_payload_with_status(0)
 }
@@ -154,16 +134,11 @@ const HOUR_A: i64 = 16_959_360;
 const HOUR_B: i64 = 16_959_361;
 const HOUR_C: i64 = 16_959_362;
 
-/// Three complete game-hours. Hour B carries a PERF record (must be ignored) and
-/// hour C a second country. Returns the stream and the byte offset of the first
-/// `tag_db_id` in hour A's domain-18 payload (a real payload byte, for mutation).
 fn synthetic_stream() -> (Vec<u8>, usize) {
     let mut s = Vec::new();
     let mut seq = 1u64;
 
-    // Hour A: one country, its owned PERF record, then frame_end.
     let a_payload = country_identity_payload(&[(47, "GER")]);
-    // header (32) + payload prefix: u64 wall(8)+u32 row(4)+u32 changed(4)+u32 status(4) = 20
     let mutation_offset = s.len() + COMPACT_RECORD_HEADER_LEN + 20;
     push_record(
         &mut s,
@@ -193,7 +168,6 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
     );
     seq += 1;
 
-    // Hour B: same country, plus a PERF record that must not affect the fold.
     push_record(
         &mut s,
         seq,
@@ -222,7 +196,6 @@ fn synthetic_stream() -> (Vec<u8>, usize) {
     );
     seq += 1;
 
-    // Hour C: two countries and the same owned PERF coverage.
     push_record(
         &mut s,
         seq,
@@ -284,8 +257,6 @@ fn fold_bytes(stream: &[u8]) -> FoldRun {
     collect_run(Cursor::new(stream.to_vec()), stream.len() as u64).expect("fold synthetic stream")
 }
 
-/// A `DOMAIN_GAP` (`H4DG`) payload whose witnesses prove the closed
-/// `ClockUnreadable` reason for exactly `hour_index`.
 fn clock_unreadable_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8> {
     compact_contract::domain_gap::DomainGapRecordV1 {
         part: compact_contract::domain_gap::DomainGapPart::State,
@@ -304,7 +275,6 @@ fn clock_unreadable_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8
     .expect("closed ClockUnreadable gap witnesses")
 }
 
-/// The same absence for a different closed reason: the domain's worker panicked.
 fn worker_panic_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8> {
     compact_contract::domain_gap::DomainGapRecordV1 {
         part: compact_contract::domain_gap::DomainGapPart::State,
@@ -323,8 +293,6 @@ fn worker_panic_gap_payload(hour_index: i64, outcome_ordinal: u64) -> Vec<u8> {
     .expect("closed WorkerPanic gap witnesses")
 }
 
-/// A `FRAME_REFUSED` (`H4FR`) payload naming one offending domain, carrying
-/// the typed diagnosis the record exists to deliver.
 fn refusal_payload(hour_index: i64, domain_id: u16) -> Vec<u8> {
     use compact_contract::diagnostic_channel::{
         Authority, DiagUnit, LocatorLevel, Predicate, TruncationAccount,
@@ -338,9 +306,6 @@ fn refusal_payload(hour_index: i64, domain_id: u16) -> Vec<u8> {
             predicate: Predicate::new(0x0002_0001, "synthetic_source_slot_is_bound").unwrap(),
             authority: Authority::OtherDomain(91),
             locator: vec![LocatorLevel::new("region", 41, Some(96))],
-            // Renders as `synthetic_offender=1`, which is exactly the reason
-            // string below -- the contract requires a reason that claims to
-            // name a unit to actually contain it.
             units: vec![DiagUnit::deciding("synthetic_offender", 1)],
             truncation: TruncationAccount::complete(1),
             off_frame: None,
@@ -353,8 +318,6 @@ fn refusal_payload(hour_index: i64, domain_id: u16) -> Vec<u8> {
     .expect("a version 2 refusal names an offender")
 }
 
-/// A version 2 refusal that names NO offending domain and substantiates itself
-/// entirely from a frame-level finding. Version 1 could not express this shape.
 fn frame_only_refusal_payload(hour_index: i64) -> Vec<u8> {
     use compact_contract::diagnostic_channel::{Authority, Predicate};
     compact_contract::frame_refusal::FrameRefusalRecordV2 {
@@ -371,22 +334,15 @@ fn frame_only_refusal_payload(hour_index: i64) -> Vec<u8> {
     .expect("a frame-level-only refusal is a complete record")
 }
 
-/// A structurally valid version 2 refusal restamped with a version this build
-/// was never taught. This is the byte pattern a stream from a FUTURE producer
-/// presents, and the only honest way to make one today.
 fn refusal_payload_at_version(hour_index: i64, domain_id: u16, version: u16) -> Vec<u8> {
     let mut wire = refusal_payload(hour_index, domain_id);
     wire[4..6].copy_from_slice(&version.to_le_bytes());
     wire
 }
 
-/// The externally authoritative roster used by the record-shape tests: a single
-/// domain that must produce one PERF and one DATA record per hour.
 fn one_domain_roster() -> ExpectedRoster {
     ExpectedRoster::test(&[(18, true)])
 }
-
-// --- tests ----------------------------------------------------------------
 
 #[test]
 fn folds_all_hours() {
@@ -415,9 +371,18 @@ fn identity_v1_header_is_consumed_before_completeness_and_fold() {
     let legacy_run = fold_bytes(&ordinary);
 
     assert_eq!(identity_run.hours.len(), legacy_run.hours.len());
-    assert_eq!(chain_hash(&identity_run.hours), chain_hash(&legacy_run.hours));
-    assert_eq!(identity_run.totals.data_records, legacy_run.totals.data_records);
-    assert_eq!(identity_run.totals.perf_records, legacy_run.totals.perf_records);
+    assert_eq!(
+        chain_hash(&identity_run.hours),
+        chain_hash(&legacy_run.hours)
+    );
+    assert_eq!(
+        identity_run.totals.data_records,
+        legacy_run.totals.data_records
+    );
+    assert_eq!(
+        identity_run.totals.perf_records,
+        legacy_run.totals.perf_records
+    );
     assert_eq!(
         identity_run.totals.frame_end_records,
         legacy_run.totals.frame_end_records
@@ -433,7 +398,10 @@ fn identity_v1_mode_refuses_an_ordinary_record_before_cid1() {
         Ok(_) => panic!("identity-v1 must not fall back to a legacy stream"),
         Err(error) => error,
     };
-    assert!(error.contains("identity-v1 stream validation at byte 0"), "{error}");
+    assert!(
+        error.contains("identity-v1 stream validation at byte 0"),
+        "{error}"
+    );
     assert!(error.contains("invalid CID1 stream header"), "{error}");
 }
 
@@ -444,18 +412,13 @@ fn identity_mode_cli_is_explicit_and_defaults_to_legacy() {
         StreamIdentityMode::Legacy
     );
     assert_eq!(
-        parse_stream_identity_mode(&[
-            "--identity-mode".to_string(),
-            "identity-v1".to_string(),
-        ])
-        .unwrap(),
+        parse_stream_identity_mode(&["--identity-mode".to_string(), "identity-v1".to_string(),])
+            .unwrap(),
         StreamIdentityMode::IdentityV1
     );
-    assert!(parse_stream_identity_mode(&[
-        "--identity-mode".to_string(),
-        "auto".to_string(),
-    ])
-    .is_err());
+    assert!(
+        parse_stream_identity_mode(&["--identity-mode".to_string(), "auto".to_string(),]).is_err()
+    );
 }
 
 #[test]
@@ -476,14 +439,10 @@ fn hashing_is_stable_across_runs() {
 
 #[test]
 fn perf_payload_is_ignored_by_the_fold_but_presence_is_completeness() {
-    // A stream identical to the synthetic one but WITHOUT hour B's PERF record
-    // must fold to the identical per-hour hashes: the PERF record carries no
-    // folded state.
     let (with_perf, _) = synthetic_stream();
     let run_with = fold_bytes(&with_perf);
     assert_eq!(run_with.totals.perf_records, 3, "PERF records were seen");
 
-    // Rebuild without the perf record.
     let mut s = Vec::new();
     let mut seq = 1u64;
     push_record(
@@ -648,8 +607,6 @@ fn forged_two_of_two_frame_counts_do_not_certify_one_observed_domain() {
         &frame_end_payload_with(2, 2, 0),
     );
 
-    // Both FRAME_END counts agree with each other and with the external roster
-    // size, but domain 26 is absent from the actual per-hour DATA/PERF records.
     let expected = ExpectedRoster::test(&[(18, true), (26, true)]);
     let err = collect_certified_run(Cursor::new(stream.clone()), stream.len() as u64, &expected)
         .err()
@@ -672,20 +629,12 @@ fn expected_profile_is_mandatory_and_only_production_is_authoritative() {
         parse_expected_profile(&["--expected-profile".to_string(), "production".to_string()])
             .expect("production roster");
     assert_eq!(production.profile, "production");
-    // The expectation is what a passive capture actually SCHEDULES: the
-    // passive-admissible production roster (the shipped collector refuses
-    // `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS` at attach, so demanding the
-    // unfiltered profile refuses every real capture) plus the scheduled-only
-    // members. Both have to be here or the FRAME_END counts cannot match.
     assert_eq!(
         production.domains.len(),
         compact_contract::passive_capture_roster().len()
     );
     assert!(production.domains.contains_key(&18));
 
-    // ... but only the mandatory members may fail a capture by being absent.
-    // kills: marking the scheduled-only members mandatory makes a named d57
-    // DOMAIN_GAP refuse the whole recording, which its contract forbids.
     for id in compact_contract::PASSIVE_CAPTURE_ONLY_DOMAIN_IDS {
         assert!(
             !production.domains[id].mandatory,
@@ -822,13 +771,10 @@ fn compare_catches_a_single_mutated_payload_byte() {
     let (stream, offset) = synthetic_stream();
     let baseline = fold_bytes(&stream);
 
-    // Flip one bit of a real DATA payload byte (hour A's first tag_db_id).
     let mut mutated = stream.clone();
     mutated[offset] ^= 0x01;
     let after = fold_bytes(&mutated);
 
-    // Same hour range, but hour A now folds to a different hash while B and C
-    // (untouched) stay identical — exactly what `compare` keys off.
     assert_eq!(baseline.hours.len(), after.hours.len());
     assert_ne!(
         chain_hash(&baseline.hours),
@@ -848,7 +794,6 @@ fn compare_catches_a_single_mutated_payload_byte() {
 #[test]
 fn truncated_tail_is_rejected_even_when_complete_prefix_hours_exist() {
     let (stream, _) = synthetic_stream();
-    // Chop the last 5 bytes → the final frame_end record is incomplete.
     let truncated = &stream[..stream.len() - 5];
     let err = match collect_run(Cursor::new(truncated.to_vec()), truncated.len() as u64) {
         Ok(_) => panic!("fold_check must reject a truncated stream"),
@@ -995,15 +940,6 @@ fn fold_check_rejects_noncanonical_sequence_and_final_boundary() {
         Ok(_) => panic!("fold_check must reject a stream not ending on FRAME_END"),
         Err(err) => err,
     };
-    // The terminal-boundary rule is asserted in the SHARED authority's own
-    // words. `fold_check` used to restate it ("final record must be canonical
-    // FRAME_END") inside its completeness pass; that was the third independent
-    // copy of a rule whose second copy had already cost a real bug, and it was
-    // NARROWER than the shared rule — it named FRAME_END alone, while
-    // `BoundaryTracker::eof_check` also admits an honestly-refused stream that
-    // ends on FRAME_REFUSED. Pinning the shared wording is what stops the
-    // duplicate coming back: this assertion can only pass if the verdict
-    // arrived through `strict_stream_certification_verdict`.
     assert!(
         err.contains("stream is not certifiable"),
         "the terminal-boundary verdict must come from the shared certification authority: {err}"
@@ -1060,14 +996,6 @@ fn legacy_pre222_container_decodes_for_diagnostics_but_does_not_certify() {
     );
 }
 
-// --- DOMAIN_GAP and FRAME_REFUSED --------------------------------------------
-//
-// Both record types reach this tool on EVERY real capture on disk: each of the
-// three collector streams captured on 2026-07-31 carries exactly 73 DOMAIN_GAP
-// records and between 254 and 449 FRAME_REFUSED records. The completeness audit
-// used to reach `unreachable!()` on both, so `fold_check` panicked rather than
-// reaching any verdict at all.
-
 #[test]
 fn domain_gap_is_the_domains_terminal_outcome_not_a_missing_perf_record() {
     let mut stream = Vec::new();
@@ -1095,10 +1023,6 @@ fn domain_gap_is_the_domains_terminal_outcome_not_a_missing_perf_record() {
     )
     .err()
     .expect("an accounted absence is still an absence and cannot certify the hour");
-    // The verdict has to say what actually happened. "PERF record count 1,
-    // observed 0" would send a reader hunting for a record that was never
-    // supposed to exist: the gap IS the terminal outcome, and it carries the
-    // reason the collector recorded.
     assert!(
         err.contains("terminal outcome is 1 DOMAIN_GAP record(s)"),
         "{err}"
@@ -1113,24 +1037,6 @@ fn domain_gap_is_the_domains_terminal_outcome_not_a_missing_perf_record() {
 
 #[test]
 fn why_a_domain_was_absent_is_part_of_the_hours_certified_identity() {
-    // Two hours carrying the same WORLD: the same DOMAIN_DATA for domain 18,
-    // the same seal, and domain 26 absent in both. They differ only in the
-    // REASON domain 26 was absent -- an unreadable clock in one, a panicked
-    // worker in the other. Those are different facts about the hour, and a
-    // certification that cannot tell them apart is not certifying the absence
-    // at all.
-    //
-    // Since lane GQ, the fold does not merely let the reason reach the CHAIN:
-    // `record_domain_gap` writes the reason into the hour's own `provenance`,
-    // so the two hours are no longer identical in every published byte and
-    // `snapshot_hash` itself separates them. Both statements are asserted
-    // below -- the world is the same, the published hour is not.
-    //
-    // What production change makes this fail: dropping the
-    // `COMPACT_RECORD_TYPE_DOMAIN_GAP` arm from `WorldFold::ingest_record`, or
-    // dropping the reason from the note `record_domain_gap` writes, collapses
-    // the two hours onto one `snapshot_hash` and one chain hash. Making a gap
-    // fabricate world state instead breaks the world equality.
     fn stream(gap_payload: &[u8]) -> Vec<u8> {
         let mut out = Vec::new();
         push_record(
@@ -1233,8 +1139,6 @@ fn a_refused_frame_closes_its_hour_without_publishing_a_snapshot() {
         &frame_end_payload_with(1, 1, 0),
     );
     sequence += 1;
-    // Hour B is attempted -- it produces a terminal outcome for domain 18 --
-    // and then refused. Nothing about hour B is published.
     push_record(
         &mut stream,
         sequence,
@@ -1288,16 +1192,7 @@ fn a_refused_frame_closes_its_hour_without_publishing_a_snapshot() {
         "this fixture attributes its whole cause to a domain, so the report must \
          not invent a frame-level finding beside it"
     );
-    // The version the record DECLARED reaches the report, rather than being
-    // assumed by the reader.
-    //
-    // PRODUCTION CHANGE THAT MAKES THIS FAIL: dropping `wire_version` so a
-    // reader cannot tell which version the report was built from.
     assert_eq!(refusal.wire_version, 2);
-    // The RAW status word the producer read, carried through unchanged. It is
-    // asserted here because it is the only offender field the surviving
-    // refusal tests would otherwise leave free -- zeroing the mapping in
-    // `main.rs` would keep every other assertion green.
     assert_eq!(
         refusal.offenders[0].status_flags,
         COMPACT_STATUS_SOURCE_UNAVAILABLE
@@ -1305,8 +1200,6 @@ fn a_refused_frame_closes_its_hour_without_publishing_a_snapshot() {
     assert_eq!(refusal.offenders[0].reason, "synthetic_offender=1");
 }
 
-/// One published hour and one refused hour, closed by the given `refusal`
-/// payload.
 fn stream_publishing_a_then_refusing_b(refusal: &[u8]) -> Vec<u8> {
     let mut stream = Vec::new();
     let mut sequence = 1u64;
@@ -1347,16 +1240,6 @@ fn stream_publishing_a_then_refusing_b(refusal: &[u8]) -> Vec<u8> {
     stream
 }
 
-/// The typed diagnosis the record exists to carry -- which check refused, and
-/// on whose authority -- reaches the report rather than being decoded and
-/// dropped. The defect behind it: a certifier pinned to a superseded `H4FR`
-/// version abandoned the fold on the first refusal in every capture taken since
-/// the producer moved, which is how t32 died at byte 182,933,589 and certified
-/// nothing after it.
-///
-/// PRODUCTION CHANGE THAT MAKES THIS FAIL: pinning the decode site in `main.rs`
-/// to a version the producer no longer writes (the whole stream then fails to
-/// certify), or dropping `detail` from `RefusalOffender`.
 #[test]
 fn a_refusals_typed_diagnosis_is_decoded_and_reaches_the_report() {
     let stream = stream_publishing_a_then_refusing_b(&refusal_payload(HOUR_B, 18));
@@ -1385,12 +1268,6 @@ fn a_refusals_typed_diagnosis_is_decoded_and_reaches_the_report() {
         refusal.offenders[0].non_tolerated_flags,
         COMPACT_STATUS_SOURCE_UNAVAILABLE
     );
-    // And the facts version 2 exists to carry -- which of the domain's checks
-    // refused, and that the AUTHORITY was another domain, not this one -- reach
-    // the report rather than being decoded and dropped.
-    //
-    // PRODUCTION CHANGE THAT MAKES THIS FAIL: dropping `detail` from
-    // `RefusalOffender`, or filling it from `reason` instead of `render()`.
     assert_eq!(refusal.wire_version, 2);
     let detail = refusal.offenders[0]
         .detail
@@ -1414,14 +1291,6 @@ fn a_refusals_typed_diagnosis_is_decoded_and_reaches_the_report() {
     );
 }
 
-/// The refusal reaches the JSON boundary intact, which is what a caller
-/// actually reads. Asserting only the in-memory `HourRefusal` would leave
-/// `wire_version` and `detail` free to be dropped from serialization with
-/// every test still green.
-///
-/// PRODUCTION CHANGE THAT MAKES THIS FAIL: removing "wire_version" or
-/// "detail" from `refusals_json`, or filling `detail` from the offender's
-/// bare `reason` instead of its `render()`.
 #[test]
 fn the_refusals_typed_diagnosis_survives_the_json_boundary() {
     let stream = stream_publishing_a_then_refusing_b(&refusal_payload(HOUR_B, 18));
@@ -1444,15 +1313,6 @@ fn the_refusals_typed_diagnosis_survives_the_json_boundary() {
     );
 }
 
-/// A version 2 refusal may legally name NO offending domain and carry its whole
-/// cause as a frame-level finding -- the frame's own clock, its identity, a
-/// framing fault. A certifier that read only `offenders` would record such an
-/// hour as refused and be unable to say why, which is the unaccounted-cause
-/// failure the record exists to prevent.
-///
-/// PRODUCTION CHANGE THAT MAKES THIS FAIL: dropping `frame_findings` from
-/// `HourRefusal`, or leaving `verify_published_coverage` reporting only the
-/// offending-domain union.
 #[test]
 fn a_version_2_refusal_that_names_no_domain_still_says_why() {
     let mut stream = Vec::new();
@@ -1488,15 +1348,6 @@ fn a_version_2_refusal_that_names_no_domain_still_says_why() {
     );
 }
 
-/// A refusal version this build was never taught is REFUSED, loudly and by
-/// name. It is never skipped, never lifted to a default, and never counted as
-/// a decoded refusal -- an unassigned shape rejects at the decoder.
-///
-/// PRODUCTION CHANGE THAT MAKES THIS FAIL: making
-/// `validate_frame_refusal_payload` report an unrecognised version as plain
-/// corruption ("version 3 is not 2"), returning `Ok` for one, or teaching the
-/// record-semantics dispatch to skip a FRAME_REFUSED payload it cannot
-/// validate.
 #[test]
 fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
     let stream = stream_publishing_a_then_refusing_b(&refusal_payload_at_version(HOUR_B, 18, 3));
@@ -1507,12 +1358,6 @@ fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
         Ok(_) => panic!("a refusal version this build cannot decode must not certify silently"),
         Err(err) => err,
     };
-    // Measured, not assumed: the record is stopped by the record-semantics
-    // validator, which runs before the completeness audit reaches its
-    // FRAME_REFUSED arm, so it is the shared dispatcher that refuses. Both go
-    // through `validate_frame_refusal_payload` / `FrameRefusalRecordV2::decode`,
-    // and this asserts the refusal a stream ACTUALLY gets -- the outer layer
-    // refuses first, and it refuses by name.
     assert!(
         err.contains("stream validation at byte"),
         "the refusal is the record-semantics validator's, and must say where: {err}"
@@ -1525,9 +1370,6 @@ fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
         err.contains("not a version this build decodes"),
         "the refusal must say the reader is behind the producer, not that the record is corrupt: {err}"
     );
-    // The exact known-version list in its parenthesised form, not just the
-    // digit: an offset or a byte count elsewhere in the message could supply a
-    // stray '2'.
     assert!(
         err.contains("(2)"),
         "the refusal must name the version this build does decode: {err}"
@@ -1536,10 +1378,6 @@ fn a_refusal_version_this_build_does_not_decode_is_refused_by_name() {
 
 #[test]
 fn a_stream_that_publishes_no_hour_certifies_nothing() {
-    // Every real capture on disk has this shape at the tail: hour after hour
-    // attempted and refused, nothing published. Reporting `hours: []` with the
-    // SHA-256 of the empty chain and exit 0 would be a certifier that accepts a
-    // stream containing no extracted data at all.
     let mut stream = Vec::new();
     let mut sequence = 1u64;
     for hour in [HOUR_A, HOUR_B, HOUR_C] {
@@ -1624,8 +1462,6 @@ fn two_streams_that_refuse_different_hours_are_not_identical() {
         );
     }
 
-    // The published hours are byte-identical between the two streams, so a
-    // fold-equivalence check over snapshots alone would call them the same.
     assert_eq!(runs[0].hours.len(), 1);
     assert_eq!(runs[1].hours.len(), 1);
     assert_eq!(
@@ -1638,8 +1474,6 @@ fn two_streams_that_refuse_different_hours_are_not_identical() {
         "the two streams refused different hours"
     );
 
-    // `compare` therefore has to report a divergence, or it certifies two
-    // different capture outcomes as the same run.
     let divergence = refusal_divergence(&runs[0].refusals, &runs[1].refusals)
         .expect("differing refusals are a compare divergence");
     assert_eq!(divergence["kind"], "refused_hour_mismatch");
@@ -1653,17 +1487,6 @@ fn two_streams_that_refuse_different_hours_are_not_identical() {
 
 #[test]
 fn the_audit_accounts_every_record_type_the_contract_admits() {
-    // The defect was a PREMISE, not a typo: the audit's fallback arm was
-    // `unreachable!("record semantics rejected unknown type")`, asserting that
-    // `validate_compact_record_semantics` admits only DATA, PERF and FRAME_END.
-    // It also admits DOMAIN_GAP and FRAME_REFUSED, so the arm was reachable --
-    // and reached on the very first record of every real capture.
-    //
-    // Re-testing the two types that were missed would only re-test today's
-    // omission. This asserts the invariant the premise got wrong: whatever the
-    // contract admits, the audit accounts. Sweeping the whole u16 space the
-    // contract could ever open keeps the two authorities from drifting apart
-    // again.
     let mut admitted = Vec::new();
     for record_type in 0u16..=u16::MAX {
         for (domain_id, payload) in [
@@ -1709,10 +1532,6 @@ fn the_audit_accounts_every_record_type_the_contract_admits() {
 
 #[test]
 fn an_hour_is_published_or_refused_but_never_both() {
-    // Checked in both directions on purpose. The audit keeps published hours
-    // and refused hours in separate maps, so a one-sided guard would let the
-    // same hour sit in both and hand the published account to the caller as if
-    // the refusal had not happened.
     for refuse_first in [true, false] {
         let mut audit = CompletenessAudit::default();
         let steps: [(u16, u16, Vec<u8>); 2] = [
@@ -1733,10 +1552,22 @@ fn an_hour_is_published_or_refused_but_never_both() {
             vec![&steps[1], &steps[0]]
         };
         audit
-            .observe(raw_for(HOUR_A), ordered[0].0, ordered[0].1, 0, &ordered[0].2)
+            .observe(
+                raw_for(HOUR_A),
+                ordered[0].0,
+                ordered[0].1,
+                0,
+                &ordered[0].2,
+            )
             .expect("the first close of the hour is legitimate");
         let err = audit
-            .observe(raw_for(HOUR_A), ordered[1].0, ordered[1].1, 0, &ordered[1].2)
+            .observe(
+                raw_for(HOUR_A),
+                ordered[1].0,
+                ordered[1].1,
+                0,
+                &ordered[1].2,
+            )
             .expect_err("the same hour cannot be closed twice with contradictory outcomes");
         assert!(
             err.contains("is both"),
@@ -1747,10 +1578,6 @@ fn an_hour_is_published_or_refused_but_never_both() {
 
 #[test]
 fn compare_reports_a_divergence_when_only_the_refusals_differ() {
-    // The helper being right is not the same as `compare` asking it. This
-    // drives the whole decision `compare` reports `identical` from, so
-    // dropping the refusal check out of that decision -- not just breaking the
-    // helper -- turns this red.
     fn stream(refused_hour: i64) -> Vec<u8> {
         let mut out = Vec::new();
         let mut sequence = 1u64;
@@ -1797,8 +1624,12 @@ fn compare_reports_a_divergence_when_only_the_refusals_differ() {
     let path_c = dir.0.join("refuses_c.bin");
     std::fs::write(&path_b, stream(HOUR_B)).unwrap();
     std::fs::write(&path_c, stream(HOUR_C)).unwrap();
-    let run_b = run_input(&path_b, &roster).expect("published hour A certifies").0;
-    let run_c = run_input(&path_c, &roster).expect("published hour A certifies").0;
+    let run_b = run_input(&path_b, &roster)
+        .expect("published hour A certifies")
+        .0;
+    let run_c = run_input(&path_c, &roster)
+        .expect("published hour A certifies")
+        .0;
 
     let divergence = first_divergence(
         &run_b,
@@ -1831,15 +1662,8 @@ fn compare_reports_a_divergence_when_only_the_refusals_differ() {
 
 #[test]
 fn a_refused_hours_records_do_not_reach_the_next_published_hour() {
-    // The decoder feeds every DOMAIN_DATA straight into the production fold and
-    // only drains on FRAME_END, so a FRAME_REFUSED does not discard what the
-    // refused hour had already ingested. The refused hour's record therefore
-    // reaches the NEXT published hour's fold. `fold_check` must not certify
-    // that, because the published hour would carry rows the collector
-    // deliberately withheld.
     let mut stream = Vec::new();
     let mut sequence = 1u64;
-    // Hour A is attempted with one DOMAIN_DATA, then refused.
     push_record(
         &mut stream,
         sequence,
@@ -1858,7 +1682,6 @@ fn a_refused_hours_records_do_not_reach_the_next_published_hour() {
         &refusal_payload(HOUR_A, 18),
     );
     sequence += 1;
-    // Hour B publishes one DOMAIN_DATA of its own.
     for (record_type, payload) in [
         (
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -1892,14 +1715,6 @@ fn a_refused_hours_records_do_not_reach_the_next_published_hour() {
     )
     .expect("neither the fold nor the audit may carry hour A's withheld record into hour B");
 
-    // This test was written when only the AUDIT had stopped bleeding a refused
-    // hour into the next one, so it asserted the disagreement that exposed the
-    // fold still doing it: `domain 18 production fold 2 vs completeness audit 1`.
-    // `decoder_carryover` then fixed the fold side too, which voids that
-    // premise -- both sides now agree, and a test demanding they disagree would
-    // fail for the RIGHT reason while reading as a regression. What the name
-    // always claimed is asserted directly instead: hour B publishes exactly the
-    // one record that belongs to it.
     assert_eq!(
         run.hours
             .iter()
@@ -1908,9 +1723,6 @@ fn a_refused_hours_records_do_not_reach_the_next_published_hour() {
         vec![HOUR_B],
         "hour A was refused, so hour B is the only published hour"
     );
-    // Per HOUR, not stream-wide: the stream really does carry two domain-18
-    // DATA records, one in each hour. Carry-over is a question of which hour
-    // each is ATTRIBUTED to, so the stream total cannot answer it.
     assert_eq!(
         run.hours[0].domain_data_counts.get(&18).copied(),
         Some(1),
@@ -1924,12 +1736,6 @@ fn a_refused_hours_records_do_not_reach_the_next_published_hour() {
 
 #[test]
 fn a_bounded_refusal_report_still_states_the_exact_totals() {
-    // One capture on disk refuses 449 consecutive hours, each naming up to two
-    // dozen offenders with a typed reason string. Rendering every one turns the
-    // report into megabytes of near-identical text; rendering a prefix without
-    // saying so would understate how much of the capture was refused. The
-    // per-hour DETAIL is bounded; the count, the span and the offending domains
-    // are exact.
     let mut refusals: BTreeMap<i64, HourRefusal> = BTreeMap::new();
     let total = REFUSAL_DETAIL_LIMIT + 17;
     for step in 0..total {
@@ -1948,10 +1754,6 @@ fn a_bounded_refusal_report_still_states_the_exact_totals() {
                             .to_string(),
                     ),
                 }],
-                // Every hour invents a DISTINCT predicate name. The wire allows
-                // this -- it bounds a name at 64 bytes and a record at 256
-                // findings, but nothing pins a producer to a vocabulary -- so
-                // this is the shape that makes an unbounded union unbounded.
                 frame_findings: vec![FrameFinding {
                     predicate: format!("synthetic_frame_finding_{step}"),
                     detail: format!(
@@ -1972,14 +1774,6 @@ fn a_bounded_refusal_report_still_states_the_exact_totals() {
         json!([HOUR_A, HOUR_A + total as i64 - 1])
     );
     assert_eq!(rendered["offending_domains"], json!([18, 19, 20]));
-    // The frame-finding predicate COUNT is exact; the LIST is bounded, because
-    // the wire lets a stream invent a new predicate name every refused hour and
-    // an exact list would then grow with the capture.
-    //
-    // PRODUCTION CHANGE THAT MAKES THIS FAIL: emitting the whole union instead
-    // of `FRAME_FINDING_PREDICATE_LIMIT` of it (the list then holds 81 names),
-    // or reporting the bounded list's length as the count (the count then
-    // understates the capture).
     assert_eq!(rendered["frame_finding_predicate_count"], total);
     assert_eq!(
         rendered["frame_finding_predicates"]
@@ -1997,25 +1791,18 @@ fn a_bounded_refusal_report_still_states_the_exact_totals() {
         total > FRAME_FINDING_PREDICATE_LIMIT,
         "this fixture is only meaningful while it exceeds the bound"
     );
-    // The one-line verdict a caller actually sees is bounded the same way, and
-    // it SAYS how much it elided rather than quietly stopping.
-    //
-    // PRODUCTION CHANGE THAT MAKES THIS FAIL: dropping the "and N more" clause,
-    // miscomputing it from the bounded list's length, or emitting the whole
-    // union into a one-line error.
-    let verdict = verify_published_coverage(
-        Path::new("synthetic"),
-        0,
-        &refusals,
-        &one_domain_roster(),
-    )
-    .expect_err("a stream that publishes no game hour must not certify");
+    let verdict =
+        verify_published_coverage(Path::new("synthetic"), 0, &refusals, &one_domain_roster())
+            .expect_err("a stream that publishes no game hour must not certify");
     assert!(
         verdict.contains(&format!("{total} frame-level finding predicate(s)")),
         "the verdict states the exact predicate count: {verdict}"
     );
     assert!(
-        verdict.contains(&format!("and {} more", total - FRAME_FINDING_PREDICATE_LIMIT)),
+        verdict.contains(&format!(
+            "and {} more",
+            total - FRAME_FINDING_PREDICATE_LIMIT
+        )),
         "the verdict says how many predicates it elided: {verdict}"
     );
     assert!(
@@ -2035,22 +1822,6 @@ fn a_bounded_refusal_report_still_states_the_exact_totals() {
 #[test]
 fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
     // The shape that made publishing worse than the deadlock it replaced.
-    // `WorldFold` decides whether to apply a domain's rows from the status
-    // EMBEDDED IN THE DATA PAYLOAD -- `fold_country_identity` reads it at
-    // payload offset 16 and returns without folding a single row when it is a
-    // failure. Certification read only the matching DOMAIN_PERF record. A
-    // payload saying "the read did not complete" underneath a PERF saying
-    // "clean" therefore certified as a complete hour whose domain had in fact
-    // contributed nothing, and the report said `data_records: 1` with a clean
-    // status.
-    //
-    // The VERDICT now comes from the FRAME_END reconciliation rather than from
-    // the DOMAIN_DATA arm itself: the payload's residual joins the PERF's in the
-    // observed-degraded set, and an hour whose notice does not account for it
-    // refuses there. The refusal is unchanged; only its owner is, and there is
-    // now exactly one. What that buys is the case this test cannot see and t26
-    // is made of -- a payload failure the frame DOES declare, which the local
-    // refusal rejected while the identical word in a PERF certified.
     fn stream(payload_status: u32) -> Vec<u8> {
         let mut data = country_identity_payload(&[(47, "GER")]);
         data[16..20].copy_from_slice(&payload_status.to_le_bytes());
@@ -2069,8 +1840,6 @@ fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
             raw_for(HOUR_A),
             18,
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
-            // The PERF record is CLEAN. It is the only status the certifier
-            // used to read.
             &perf_payload(),
         );
         push_record(
@@ -2084,8 +1853,6 @@ fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
         out
     }
 
-    // The clean control certifies, so the refusal below is about the status and
-    // nothing else about the stream shape.
     let clean = stream(0);
     collect_certified_run(
         Cursor::new(clean.clone()),
@@ -2110,10 +1877,7 @@ fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
         err.contains("DOMAIN_DATA"),
         "the verdict must name the payload's own status, not the PERF's: {err}"
     );
-    assert!(
-        err.contains("non-tolerated failure flags"),
-        "{err}"
-    );
+    assert!(err.contains("non-tolerated failure flags"), "{err}");
     assert!(
         err.contains("declares no H4FD degraded notice"),
         "the payload failure must refuse for being UNDECLARED, which is the fact \
@@ -2123,9 +1887,6 @@ fn a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf() {
 
 #[test]
 fn the_data_payload_status_is_part_of_the_hours_certified_identity() {
-    // A tolerated payload status must still be visible. Two hours whose only
-    // difference is a status the fold tolerates produce the same rows, so the
-    // snapshots match; the certified identity must not.
     fn stream(payload_status: u32) -> Vec<u8> {
         let mut data = country_identity_payload(&[(47, "GER")]);
         data[16..20].copy_from_slice(&payload_status.to_le_bytes());
@@ -2188,11 +1949,6 @@ fn the_data_payload_status_is_part_of_the_hours_certified_identity() {
         "the DATA payload's status must change the hour's certified identity"
     );
 
-    // WHICH record carried the status is itself a fact about the hour. These
-    // two streams OR to the same per-domain status -- one carries the flag on
-    // the PERF record only, the other on both -- so a certification that folds
-    // the payload status into the PERF status and keeps nothing else cannot
-    // tell them apart. That is the disagreement this field exists to expose.
     fn stream_with_perf_status(perf_status: u32, payload_status: u32) -> Vec<u8> {
         let mut data = country_identity_payload(&[(47, "GER")]);
         data[16..20].copy_from_slice(&payload_status.to_le_bytes());
@@ -2254,18 +2010,6 @@ fn the_data_payload_status_is_part_of_the_hours_certified_identity() {
     );
 }
 
-// --- degraded-frame certification ------------------------------------------
-//
-// Until this record existed, frame completeness was all-or-nothing: one domain
-// with a non-tolerated failure refused the whole frame, so across three walked
-// live captures the stream never carried a single DOMAIN_DATA record and no
-// domain fix could be verified end to end. These tests pin the other outcome --
-// the frame publishes and the failing domains are named unknown -- and, more
-// importantly, they pin the boundary that keeps that honest: a degradation the
-// stream does not DECLARE is still not certifiable.
-
-/// Build one hour: a clean DATA record, one PERF record per `(domain, status)`
-/// pair, optionally an `H4FD` notice declaring `declared`, then `FRAME_END`.
 fn degraded_hour_stream(
     perf_domains: &[(u16, u32)],
     declared: Option<&[(u16, u32, &str)]>,
@@ -2313,8 +2057,6 @@ fn degraded_hour_stream(
                 })
                 .collect(),
         };
-        // Encoded through the real codec on purpose: a notice the contract
-        // would refuse must not be constructible for a test either.
         let payload = notice.encode().expect("test notice must be encodable");
         push_record(
             &mut stream,
@@ -2326,11 +2068,6 @@ fn degraded_hour_stream(
         );
         sequence += 1;
     }
-    // The FRAME_END counts must equal the number of terminal domain outcomes.
-    // Note what is NOT counted here: the H4FD notice. A degraded notice is not
-    // a terminal outcome for any domain -- the domain still emitted its own
-    // PERF record -- and the boundary tracker agrees, which is why this count
-    // is the PERF count and not the PERF count plus one.
     let terminal_outcomes = perf_domains.len() as u32;
     push_record(
         &mut stream,
@@ -2343,9 +2080,6 @@ fn degraded_hour_stream(
     stream
 }
 
-/// A notice may not name a domain its status does not support. Otherwise the
-/// two halves of the wire disagree, and a consumer trusting one reads a
-/// different frame from a consumer trusting the other.
 #[test]
 fn a_declared_degradation_the_status_does_not_support_fails_certification() {
     let mut stream = Vec::new();
@@ -2370,7 +2104,6 @@ fn a_declared_degradation_the_status_does_not_support_fails_certification() {
         );
         sequence += 1;
     }
-    // Self-consistent as a record, but domain 30's PERF above is clean.
     let notice = compact_contract::frame_degraded::FrameDegradedRecordV2 {
         degraded_hour: raw_for(HOUR_A),
         domains: vec![compact_contract::frame_degraded::FrameDegradedDomain {
@@ -2409,12 +2142,6 @@ fn a_declared_degradation_the_status_does_not_support_fails_certification() {
     );
 }
 
-/// THE deliverable. An hour with failing domains PUBLISHES and certifies, and
-/// the certified hour records exactly those domains as unknown.
-///
-/// Domains 29 and 30 have no `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry, so
-/// their failure bits are genuine untolerated defects -- the exact shape that
-/// refused every frame in every live capture before this change.
 #[test]
 fn a_frame_declaring_its_degraded_domains_certifies_and_the_hour_records_them_unknown() {
     let stream = degraded_hour_stream(
@@ -2445,19 +2172,19 @@ fn a_frame_declaring_its_degraded_domains_certifies_and_the_hour_records_them_un
         .find(|hour| hour.hour_index == HOUR_A)
         .expect("the degraded hour must be published, not skipped");
 
-    // Published: the domain that read fine really is in the certified hour.
-    // Before this change the whole frame was withheld for the other two.
     assert_eq!(
         hour.domain_data_counts.get(&18),
         Some(&1),
         "the domains that read fine must publish; that is the entire point"
     );
 
-    // And the ones that failed are certified UNKNOWN, with their exact bits.
     assert_eq!(
         hour.completeness.declared_degraded_domains,
         [
-            (29u16, (COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_PARTIAL_DATA)),
+            (
+                29u16,
+                (COMPACT_STATUS_PARTIAL_DATA, COMPACT_STATUS_PARTIAL_DATA)
+            ),
             (
                 30u16,
                 (
@@ -2472,13 +2199,14 @@ fn a_frame_declaring_its_degraded_domains_certifies_and_the_hour_records_them_un
          RAW status word must be the one the PERF record published"
     );
     assert!(
-        !hour.completeness.declared_degraded_domains.contains_key(&18),
+        !hour
+            .completeness
+            .declared_degraded_domains
+            .contains_key(&18),
         "a clean domain must never appear in the degraded declaration"
     );
 }
 
-/// The notice must belong to the hour it rides in, or a consumer would mark one
-/// hour unknown while a different hour carried the data.
 #[test]
 fn a_notice_framed_for_another_hour_fails_certification() {
     let mut stream = degraded_hour_stream(
@@ -2489,8 +2217,6 @@ fn a_notice_framed_for_another_hour_fails_certification() {
             "d29_invalid_air_wing_rows=3",
         )]),
     );
-    // Rewrite only the payload's `degraded_hour`. The envelope hour is left
-    // alone, so nothing but the self-agreement check can catch this.
     let magic = compact_contract::frame_degraded::FRAME_DEGRADED_MAGIC;
     let at = stream
         .windows(4)
@@ -2500,22 +2226,14 @@ fn a_notice_framed_for_another_hour_fails_certification() {
     let err = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
         .err()
         .expect("a notice framed for another hour must not certify");
-    // Asserted against the boundary tracker's wording specifically ("at byte"),
-    // because that is the single owner of this rule. If the verdict ever starts
-    // coming from somewhere else, a second copy has appeared and this assertion
-    // is how it gets noticed.
     assert!(
         err.contains("FRAME_DEGRADED") && err.contains("at byte"),
         "the boundary tracker must be the layer that catches this: {err}"
     );
 }
 
-/// An expected-partial is NOT a degradation and must not be declared as one.
-/// This is the constraint the record exists to protect, checked at the
-/// certifier and not only in the codec.
 #[test]
 fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
-    // Domain 26's tolerance covers exactly PARTIAL_DATA.
     let stream = degraded_hour_stream(&[(18, 0), (26, COMPACT_STATUS_PARTIAL_DATA)], None);
     let run = collect_run(Cursor::new(stream.clone()), stream.len() as u64)
         .expect("a tolerated partial certifies without any H4FD notice");
@@ -2529,11 +2247,6 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         "an expected partial must never be labelled a degradation"
     );
 
-    // Nor may it be laundered in the other direction. `complete` and
-    // `expected-partial` are distinct states in the shared vocabulary
-    // (`compact_contract::frame_degraded`): a tolerated partial's rows are a
-    // reviewed SPARSE patch, so a report that renders it as complete is telling
-    // a consumer the hour holds rows it never carried.
     let report = completeness_json(&hour.completeness);
     assert_eq!(
         report["domains"]["26"]["state"],
@@ -2545,8 +2258,6 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         serde_json::json!(false),
         "an expected partial is not complete: {report:#}"
     );
-    // The control: the untouched domain in the same hour IS complete, so the
-    // assertion above is not simply reporting that nothing is ever complete.
     assert_eq!(
         report["domains"]["18"]["state"],
         serde_json::json!("complete"),
@@ -2558,19 +2269,6 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         "{report:#}"
     );
 
-    // The same rule reached through the OTHER record. A domain whose PERF is
-    // clean while its own DOMAIN_DATA payload carries a tolerated partial gets
-    // no H4FD notice (the notice is minted from the PERF) and clears the
-    // FRAME_END payload-coverage loop (its residual is zero), so the status
-    // classification is the only thing standing between it and a false
-    // "complete". Asserted directly on the classifier because building a real
-    // domain-26 DATA payload means reproducing that domain's grammar; the rule
-    // under test is the classification, not the wire shape.
-    // The field shape is exactly what `CompletenessAudit::observe` builds for a
-    // clean PERF plus a DATA payload carrying PARTIAL_DATA: the payload's word
-    // in `data_payload_status_flags_or`, the same bit unioned into
-    // `normalized_status_flags_or`, and BOTH residuals zero because domain 26
-    // tolerates that bit.
     let payload_side_partial = DomainCompleteness {
         data_records: 1,
         perf_records: 1,
@@ -2578,12 +2276,6 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         normalized_status_flags_or: COMPACT_STATUS_PARTIAL_DATA,
         ..DomainCompleteness::default()
     };
-    // The PREMISE, asked of the contract rather than restated from the struct
-    // literal above: domain 26 tolerates this bit completely, so BOTH residuals
-    // really are zero for this shape and no residual can be what makes the
-    // domain incomplete. If that tolerance entry were ever removed, this fires
-    // here rather than silently turning the assertions below into a test of the
-    // degraded path.
     assert_eq!(
         compact_status_failure_flags_after_expected_partial_tolerance(
             26,
@@ -2600,9 +2292,6 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
          expected partial, and an expected partial is not complete"
     );
     assert!(!payload_side_partial.is_complete(26));
-    // Domain 18 has no tolerance entry, so the identical bit there is a
-    // non-tolerated failure and a different state. This proves the assertion
-    // above reads the tolerance table rather than merely reacting to the bit.
     assert_eq!(
         DomainCompleteness {
             data_records: 1,
@@ -2620,8 +2309,6 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
         "degraded_unknown"
     );
 
-    // And declaring it degraded is refused by the codec, so a stream cannot
-    // even be BUILT that way.
     assert!(
         compact_contract::frame_degraded::FrameDegradedDomain::from_status(
             26,
@@ -2633,46 +2320,8 @@ fn a_tolerated_partial_certifies_and_is_never_declared_degraded() {
     );
 }
 
-/// Which state a D86 producer-declared partial maps to, decided once and
-/// pinned here.
-///
-/// Owner ruling 2026-08-06: replay ADMITS a d86 history whose producer declared
-/// `producer_complete = false`, carrying the rows it has with the loss named.
-/// The hour that delivery belongs to is then `expected_partial` and nothing
-/// else in the shared vocabulary:
-///
-///  * not `complete` — a sinking IS missing, and the SHP1 loss block says how
-///    many and why;
-///  * not `degraded_unknown` — that state means the rows must NOT be applied
-///    and the accumulator must be retained, which is the wholesale refusal the
-///    ruling removed;
-///  * not `absent` — the domain published a `DOMAIN_DATA` record, not a
-///    `DOMAIN_GAP`;
-///  * not `excluded` — the decoder's payload authority admits the record.
-///
-/// `expected_partial` is the state the vocabulary already defines for exactly
-/// this: a reviewed partial whose rows are a sparse patch and whose omissions
-/// are known and not fabricated as deletions. The written integrity argument
-/// lives in the domain-86 `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry, as that
-/// state requires; no new spelling was invented.
-///
-/// SCOPE. This test pins the CLASSIFICATION only: given the status word a
-/// producer-declared partial carries, `state()` answers `expected_partial`. It
-/// builds `DomainCompleteness` by hand -- the same way the domain-26 fixture
-/// above does, and for the same reason -- so it does NOT cover the carrier
-/// actually emitting that word. That half is pinned in the lane, by
-/// `a_partial_receipt_declares_partial_data_and_a_complete_one_declares_nothing`
-/// and `a_receipt_status_word_that_contradicts_its_loss_block_is_refused`, and
-/// end to end by `a_cd_style_partial_batch_certifies_without_a_degraded_notice`
-/// below, which certifies a real stream built from a real partial payload.
-///
-/// What production change would make this fail: removing the domain-86
-/// tolerance entry, which makes this word `degraded_unknown`; or changing
-/// `DomainCompleteness::state` so a tolerated partial reports `complete`.
 #[test]
 fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
-    // The premise, asked of the contract: domain 86 tolerates PARTIAL_DATA
-    // outright, so neither residual can be what decides the state below.
     assert_eq!(
         compact_status_failure_flags_after_expected_partial_tolerance(
             86,
@@ -2681,9 +2330,6 @@ fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
         0,
         "domain 86 must tolerate PARTIAL_DATA outright"
     );
-    // The shape `CompletenessAudit::observe` builds for d86: the PERF word is
-    // clean (the collector schedules the domain normally), and the partiality
-    // arrives only in the DOMAIN_DATA payload's own SHP1 status word.
     let partial_hour = DomainCompleteness {
         data_records: 1,
         perf_records: 1,
@@ -2697,8 +2343,6 @@ fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
         "a partial delivery is not a complete one"
     );
 
-    // The control: the same domain with a clean payload is complete, so the
-    // assertion above is reading the declaration and not the domain id.
     assert_eq!(
         DomainCompleteness {
             data_records: 1,
@@ -2709,7 +2353,6 @@ fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
         "complete"
     );
 
-    // And the partial can never be written down as a degradation.
     assert!(
         compact_contract::frame_degraded::FrameDegradedDomain::from_status(
             86,
@@ -2721,12 +2364,6 @@ fn a_d86_producer_declared_partial_hour_certifies_as_expected_partial() {
     );
 }
 
-/// The non-weakening proof, and the mutation target for the whole deferral.
-///
-/// The certifier used to reject a non-tolerated PERF failure the instant it saw
-/// one. That verdict is unchanged for an UNDECLARED failure -- deferring the
-/// check to FRAME_END buys the ability to tell a declared defect from a hidden
-/// one, and buys nothing else.
 #[test]
 fn an_undeclared_non_tolerated_failure_still_fails_certification() {
     let stream = degraded_hour_stream(&[(18, 0), (29, COMPACT_STATUS_PARTIAL_DATA)], None);
@@ -2741,29 +2378,6 @@ fn an_undeclared_non_tolerated_failure_still_fails_certification() {
     );
 }
 
-// --- d86: a payload's own status is reconciled, not separately refused ------
-//
-// The production profile refused run t26 at byte 7673 on domain 86's
-// DOMAIN_DATA payload status `0x00000100` -- `source_unavailable`, an assigned
-// v1 failure bit meaning the read did not get through. That bit is genuinely
-// failure-class and must NOT be added to `COMPACT_EXPECTED_PARTIAL_TOLERANCES`:
-// a tolerance entry asserts a reviewed partial with a written integrity
-// argument, and "the source could not be read" is the opposite of that.
-//
-// What t26 actually carries is the ACCOUNTED shape: the same word in d86's
-// PERF, and an `H4FD` notice naming domain 86 with exactly that bit and the
-// reader's typed reason. The fold withholds d86's rows and retains its
-// accumulator -- precisely what the notice declares -- so the hour certifies
-// with the domain recorded unknown, which is what the partial-data law asks
-// for. The defect was that the DOMAIN_DATA arm answered that question a second
-// time, and more strictly, than the FRAME_END reconciliation that owns it: on
-// those very hours d18, d47, d53, d60, d85 and d90 certified as
-// declared-degraded carrying the same or wider failure words.
-
-/// One SHP1 payload built through the lane's own encoder.
-///
-/// `producer_loss` present means a CD-style PARTIAL BATCH: rows that survived,
-/// travelling beside a named loss, with `producer_complete` false.
 fn sunk_ship_payload(
     status_flags: u32,
     producer_loss: Option<sunk_ship_history_live_lane::SunkShipProducerLoss>,
@@ -2778,15 +2392,9 @@ fn sunk_ship_payload_for(
 ) -> Vec<u8> {
     use sunk_ship_history_live_lane as d86;
     if status_flags != 0 {
-        // The lane refuses an unavailable frame that carries a snapshot and a
-        // snapshot-bearing frame that carries a status, so an unavailable
-        // payload is the only shape a failing d86 read can publish.
         return d86::encode_unavailable(hour_index as u64, 7, status_flags)
             .expect("an unavailable d86 payload encodes");
     }
-    // A receipt frame's status word is DERIVED from its loss block, exactly as
-    // `collect_and_encode` derives it: a producer-declared partial says so in
-    // the shared status vocabulary too, or the certifier cannot see it.
     let snapshot_status = if producer_loss.is_some() {
         COMPACT_STATUS_PARTIAL_DATA
     } else {
@@ -2829,12 +2437,6 @@ fn sunk_ship_payload_for(
     .expect("a d86 snapshot payload encodes")
 }
 
-/// One hour holding exactly d86: its DATA payload, its PERF, an optional `H4FD`
-/// notice, then a closing frame record.
-///
-/// `close` is what terminates the hour, so the same body can be published or
-/// refused -- which is the only way to build the "declaration outlives its
-/// hour" case at all.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum D86HourClose {
     Published,
@@ -2934,27 +2536,7 @@ fn d86_roster() -> ExpectedRoster {
     ExpectedRoster::test(&[(86, true)])
 }
 
-/// THE t26 SHAPE. A `DOMAIN_DATA` payload whose own status carries a
-/// non-tolerated failure certifies when -- and only when -- the frame's `H4FD`
-/// notice accounts for exactly those bits.
-///
-/// The reason string is t26's verbatim d86 prefix, so the fixture is the
-/// production shape and not a convenient invention.
-///
 /// MUTATION RUN (verbatim, `cargo test -p fold_check --release`):
-///   Reverting the DOMAIN_DATA arm to its immediate refusal
-///   (`if residual != 0 { return Err(...) }` before the deferral) fails this
-///   test with:
-///     called `Result::unwrap` on an `Err` value: "completeness record at byte
-///     0: domain 86 DOMAIN_DATA payload status 0x00000100 has non-tolerated
-///     failure flags 0x00000100; the fold withholds this domain's rows on that
-///     status, so the hour cannot certify as complete"
-///
-/// Production change that makes this fail: refusing a DOMAIN_DATA payload
-/// status locally instead of reconciling it against the frame's declaration --
-/// which is the state that refused t26 while `stream_fold` folded the same
-/// corpus, and which would refuse every t27 hour whose d86 read did not get
-/// through.
 #[test]
 fn a_declared_d86_payload_failure_certifies_as_an_accounted_unknown() {
     let stream = d86_hour_stream(
@@ -2985,7 +2567,6 @@ fn a_declared_d86_payload_failure_certifies_as_an_accounted_unknown() {
         )),
         "the certified hour must record d86 as unknown with its exact bits"
     );
-    // The word is still on the identity, so "accounted" never means "erased".
     assert_eq!(
         hour.completeness
             .domains
@@ -2995,14 +2576,6 @@ fn a_declared_d86_payload_failure_certifies_as_an_accounted_unknown() {
         "the payload's own status must remain in the certified evidence"
     );
 
-    // And the accounting is VISIBLE in the emitted report, not merely held in
-    // memory. A certified degraded hour that reads identically to a certified
-    // clean hour would make "accounted" an unverifiable claim.
-    //
-    // Production change that makes this fail: dropping
-    // `declared_degraded_domains` from `completeness_json`, which is the state
-    // this report shipped in before the deferral made degraded hours reachable
-    // through the DOMAIN_DATA path at all.
     let rendered = completeness_json(&hour.completeness);
     assert_eq!(
         rendered["declared_degraded_domains"]["86"]["non_tolerated_flags"],
@@ -3016,34 +2589,11 @@ fn a_declared_d86_payload_failure_certifies_as_an_accounted_unknown() {
     );
 }
 
-/// The non-weakening proof for the DOMAIN_DATA side, and the reason no
-/// tolerance was widened: an UNNAMED payload failure still refuses.
-///
-/// This is the original finding restated by its owner. `WorldFold` decides
-/// whether to apply a domain's rows from the status embedded in the payload, so
-/// a payload declaring failure under a clean PERF makes the fold withhold every
-/// row of an hour that would otherwise certify as complete.
-///
 /// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): deleting the
-/// DOMAIN_DATA arm's `domain.non_tolerated_status_flags |= residual;`
-/// accumulation -- i.e. deferring the payload status to a reconciliation it
-/// never reaches -- fails this test, and two more, with:
-///     thread 'tests::an_undeclared_d86_payload_failure_still_refuses' panicked
-///     at fold_check\src\tests.rs:2385:6:
-///     an unnamed d86 payload failure must never certify
-/// (`a_d86_declaration_with_the_wrong_bits_refuses` and
-/// `a_data_payload_that_declares_failure_cannot_certify_behind_a_clean_perf`
-/// fail on the same mutation; 49 passed, 3 failed.)
-///
-/// Production change that makes this fail: dropping the payload's residual out
-/// of the observed-degraded set, which would restore exactly the hole the
-/// payload-status check was added to close.
 #[test]
 fn an_undeclared_d86_payload_failure_still_refuses() {
     let stream = d86_hour_stream(
         &sunk_ship_payload(COMPACT_STATUS_SOURCE_UNAVAILABLE, None),
-        // The PERF is CLEAN, so nothing but the payload says anything is wrong
-        // and the collector would mint no notice.
         0,
         None,
     );
@@ -3062,12 +2612,6 @@ fn an_undeclared_d86_payload_failure_still_refuses() {
     );
 }
 
-/// A declaration that does not MATCH the payload's bits is a disagreement, not
-/// an accounting, and must refuse. Otherwise "declared degraded" would be a
-/// blanket amnesty for whatever the payload happened to carry.
-///
-/// Production change that makes this fail: reconciling on domain identity
-/// instead of on the exact bits.
 #[test]
 fn a_d86_declaration_with_the_wrong_bits_refuses() {
     let stream = d86_hour_stream(
@@ -3076,7 +2620,10 @@ fn a_d86_declaration_with_the_wrong_bits_refuses() {
             None,
         ),
         COMPACT_STATUS_SOURCE_UNAVAILABLE,
-        Some((COMPACT_STATUS_SOURCE_UNAVAILABLE, "domain 86: read_completion=2")),
+        Some((
+            COMPACT_STATUS_SOURCE_UNAVAILABLE,
+            "domain 86: read_completion=2",
+        )),
     );
     let err = collect_certified_run(
         Cursor::new(stream.clone()),
@@ -3085,39 +2632,19 @@ fn a_d86_declaration_with_the_wrong_bits_refuses() {
     )
     .err()
     .expect("a declaration that understates the payload's bits must not certify");
-    assert!(err.contains("domain 86 DOMAIN_DATA payload status"), "{err}");
+    assert!(
+        err.contains("domain 86 DOMAIN_DATA payload status"),
+        "{err}"
+    );
     assert!(
         err.contains("does not declare") && err.contains("0x00000300"),
         "the verdict must show both words: {err}"
     );
 }
 
-/// The union of a domain's two residuals is not its degradation, and a notice
-/// may not be satisfied by a word neither record carries.
-///
-/// This is the shape ORing the PERF and payload residuals admitted: `0x200` in
-/// the PERF, `0x100` in the payload, a notice declaring `0x300`, and an hour
-/// that certifies against a status no record of it ever published. The two
-/// rules are therefore stated separately -- the notice EQUALS the PERF residual
-/// and COVERS the payload residual -- and a union can satisfy neither.
-///
 /// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): restoring the
-/// union (`domain.non_tolerated_status_flags |= residual` in the DOMAIN_DATA
-/// arm, and neutering the payload coverage loop) fails this test with:
-///     thread 'tests::a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses'
-///     panicked at fold_check\src\tests.rs:2507:6:
-///     a notice declaring the union of two disagreeing words must not certify
-/// -- i.e. the mutated build CERTIFIES the hour, which is Codex round-1
-/// BLOCKER 2 reproduced.
-///
-/// Production change that makes this fail: merging the payload residual into
-/// the PERF-derived `non_tolerated_status_flags` instead of keeping its own.
 #[test]
 fn a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses() {
-    // Both words are non-tolerated for d86. PARTIAL_DATA no longer is -- it is
-    // the domain's expected-partial declaration since the producer-declared
-    // partial became an admitted delivery -- so using it here would make the
-    // PERF residual zero and the test would pass for the wrong reason.
     let stream = d86_hour_stream(
         &sunk_ship_payload(COMPACT_STATUS_WORKER_PANIC, None),
         COMPACT_STATUS_SOURCE_UNAVAILABLE,
@@ -3140,30 +2667,11 @@ fn a_notice_may_not_be_satisfied_by_the_union_of_two_disagreeing_statuses() {
     );
 }
 
-/// A refused frame's `H4FD` declaration must not survive into the next hour.
-///
-/// `H4FD` annotates a published hour; `H4FR` closes an hour that published
-/// nothing. Holding the declaration across the refusal let the NEXT hour
-/// inherit it, so a domain that failed there with no notice of its own
-/// certified against the refused hour's notice -- certification of an unnamed
-/// failure, reached through the record that closes hours.
-///
 /// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): deleting the
-/// `std::mem::take(&mut self.current_declared_degraded)` guard from the
-/// FRAME_REFUSED arm fails this test with:
-///     thread 'tests::a_refused_frames_declaration_does_not_certify_the_next_hours_failure'
-///     panicked at fold_check\src\tests.rs:2566:6:
-///     hour A's declaration must not certify hour B's undeclared failure
-/// -- i.e. the mutated build CERTIFIES hour B, which is Codex round-1
-/// BLOCKER 1 reproduced.
-///
-/// Production change that makes this fail: closing an hour without clearing the
-/// declaration it accumulated.
 #[test]
 fn a_refused_frames_declaration_does_not_certify_the_next_hours_failure() {
     let mut stream = Vec::new();
     let mut sequence = 1u64;
-    // Hour A: a d86 failure, DECLARED, then refused rather than published.
     append_d86_hour(
         &mut stream,
         &mut sequence,
@@ -3176,8 +2684,6 @@ fn a_refused_frames_declaration_does_not_certify_the_next_hours_failure() {
         )),
         D86HourClose::Refused,
     );
-    // Hour B: the SAME failure and NO notice of its own. Its only possible
-    // accounting is hour A's, which died with hour A.
     append_d86_hour(
         &mut stream,
         &mut sequence,
@@ -3201,40 +2707,7 @@ fn a_refused_frames_declaration_does_not_certify_the_next_hours_failure() {
     );
 }
 
-/// TOMORROW'S SHAPE (t27). Lane CD's partial batch -- rows that survived,
-/// `producer_complete = false`, and a 48-byte loss block naming the cause --
-/// certifies as an ORDINARY COMPLETE hour, with no `H4FD` notice and no
-/// tolerance entry.
-///
-/// That is the correct outcome and not an oversight. A partial batch is a
-/// successful read whose rows are all present and whose shortfall is stated in
-/// the payload's own grammar; it publishes under
-/// `AuthorityState::StaticExact20Receipt` with a clean status word, because
-/// nothing about the READ failed. Only the three authority-denying refusal
-/// codes (`EvidenceInstall`, `BaselineIncomplete`, `BaselineNotRevalidated`)
-/// deny a batch, and those take the unavailable arm above -- which certifies
-/// only when the frame declares it.
-///
-/// SCOPE, stated because it is narrower than the tests above and a reader
-/// should not mistake it for one of them: this pins the CONTRACT BOUNDARY
-/// between the d86 lane and the certifier, not the deferral rule. Its DATA and
-/// PERF statuses are both clean, so reverting the deferral leaves it green --
-/// deliberately. What it forbids is the other half of the alignment CD's change
-/// requires: that a named partial batch must not become uncertifiable.
-///
 /// MUTATION RUN (verbatim, `cargo test -p fold_check --release`): setting
-/// `producer_complete: true` while keeping the loss block fails this test in the
-/// lane's own validator, before certification is reached:
-///     thread 'tests::a_cd_style_partial_batch_certifies_without_a_degraded_notice'
-///     panicked at fold_check\src\tests.rs:2208:6:
-///     a d86 snapshot payload encodes: Invalid("SHP1 completeness claim and
-///     producer loss disagree")
-/// -- which is the check that stops a partial batch from presenting itself as
-/// whole, and is why a clean status word here is honest.
-///
-/// Production change that makes this fail: deriving a failure status bit from
-/// `producer_complete == false` without also emitting the matching `H4FD`
-/// notice, which would refuse every t27 hour that lost a callback.
 #[test]
 fn a_cd_style_partial_batch_certifies_without_a_degraded_notice() {
     let loss = sunk_ship_history_live_lane::SunkShipProducerLoss {
@@ -3243,8 +2716,8 @@ fn a_cd_style_partial_batch_certifies_without_a_degraded_notice() {
     };
     assert!(loss.names_a_cause(), "the fixture must name a real cause");
     let payload = sunk_ship_payload(0, Some(loss));
-    let decoded = sunk_ship_history_live_lane::decode_payload(&payload)
-        .expect("the partial batch decodes");
+    let decoded =
+        sunk_ship_history_live_lane::decode_payload(&payload).expect("the partial batch decodes");
     let snapshot = decoded.snapshot.expect("the batch carries its rows");
     assert!(
         !snapshot.producer_complete && snapshot.producer_loss == Some(loss),
@@ -3279,37 +2752,6 @@ fn a_cd_style_partial_batch_certifies_without_a_degraded_notice() {
     );
 }
 
-/// d86's FAILED READS certify through the `H4FD` declaration, and the tolerance
-/// entry must never become an amnesty for them.
-///
-/// This test was written when d86 had no tolerance entry at all, on the reading
-/// that "an entry would assert that a failed read is a reviewed partial with a
-/// written integrity argument. It is not: the fold withholds the domain's rows
-/// entirely." That premise was true of every d86 status bit at the time,
-/// because a partial history was refused wholesale downstream.
-///
-/// Owner ruling 2026-08-06 changed exactly one of those bits and nothing else.
-/// A producer-declared partial is now an ADMITTED delivery: the fold applies its
-/// rows and replay carries them, with the SHP1 loss block naming every omission.
-/// That is the definition of an expected partial, so `PARTIAL_DATA` -- and only
-/// `PARTIAL_DATA` -- is tolerated for this domain.
-///
-/// The protection the test was written for is unchanged and is what the rest of
-/// it asserts: a FAILED read (`source_unavailable`, a worker panic, an
-/// unreadable clock) is still non-tolerated, still withholds the rows, and must
-/// still be declared in `H4FD`. The amnesty the original comment feared would be
-/// a tolerance that swallowed those, and none of them is tolerated.
-///
-/// SCOPE. This pins the TOLERANCE BOUNDARY -- which words the domain-86 entry
-/// does and does not cover, and that each uncovered one is still expressible as
-/// an `H4FD` entry. It does not certify a stream, so it is not what proves the
-/// certifier REQUIRES that entry; `an_undeclared_d86_payload_failure_still
-/// _refuses` and `a_declared_d86_payload_failure_certifies_as_an_accounted
-/// _unknown` are, and they are unchanged by this lane.
-///
-/// Production change that makes this fail: widening the domain-86 tolerance
-/// beyond `PARTIAL_DATA`, or removing it (which would put the wholesale refusal
-/// back one layer down, in the fold's failure gate).
 #[test]
 fn d86_failed_reads_certify_through_the_declaration_and_never_through_the_tolerance() {
     let tolerance = compact_contract::expected_partial_tolerance(86)
@@ -3338,9 +2780,6 @@ fn d86_failed_reads_certify_through_the_declaration_and_never_through_the_tolera
             "{label}: the accounting path for a d86 FAILURE is the H4FD declaration"
         );
     }
-    // And a failure carried ALONGSIDE the partial declaration is not laundered
-    // by it: the tolerance applies only when the tolerated bit is the whole
-    // failure word.
     assert_eq!(
         compact_status_failure_flags_after_expected_partial_tolerance(
             86,
@@ -3351,65 +2790,40 @@ fn d86_failed_reads_certify_through_the_declaration_and_never_through_the_tolera
     );
 }
 
-// ---------------------------------------------------------------------
-// A domain's delta baseline must survive another domain's DOMAIN_GAP
-// ---------------------------------------------------------------------
-//
-// This is the fold-side acceptance gate for the collector's DOMAIN-SCOPED
-// rejected-bracket reset. The collector used to drop EVERY domain's delta pin
-// whenever ANY domain's clock bracket was rejected, so after a foreign gap an
-// unrelated domain always re-keyframed. Scoping the reset to the rejected
-// domain means it now emits a DELTA there instead — an interleaving the fold
-// was never previously asked to decode, because the old producer could not
-// produce it.
-//
-// Domain 29 (`ships`) is the subject because its fold takes exactly the path
-// that decides the question: `fold_ships` calls `reject_delta_before_baseline`,
-// so a fold that forgot d29's baseline over d64's gap would refuse hour C's
-// delta and type the domain-hour unknown rather than applying it.
-//
-// The ships payload layout below mirrors `world_fold::fold_ships`. It is not a
-// second source of truth: every byte is handed to the production decoder, and
-// any drift makes the fold return an error that fails these tests loudly.
-
 const SHIPS_DOMAIN: u16 = 29;
 const SHIP_HEADER_LEN: usize = 40;
-/// `world_fold::FIXED_SCALE as u32`, which `ensure_fixed_scale` requires.
 const SHIP_SCALE_RAW: u32 = 100_000;
 const SHIP_ROW_FLAG_DELETED: u32 = 1;
 const SHIP_ROW_FLAG_DEFINITION: u32 = 1 << 2;
 const SHIP_ROW_FLAG_OWNER: u32 = 1 << 3;
 
-/// One ship the fold will hold: `(instance_id, strength_raw)`.
 type Ship = (u32, u32);
 
-/// A `ships` DOMAIN_DATA payload carrying `live` ships and tombstoning
-/// `deleted` ones.
 fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
     let row_count = live.len() + deleted.len();
     let mut payload = Vec::with_capacity(SHIP_HEADER_LEN + row_count * 48);
-    payload.extend_from_slice(&0u64.to_le_bytes()); // elapsed_wall_ms
-    payload.extend_from_slice(&(row_count as u32).to_le_bytes()); // row_count
-    payload.extend_from_slice(&(row_count as u32).to_le_bytes()); // changed_rows
+    payload.extend_from_slice(&0u64.to_le_bytes());
+    payload.extend_from_slice(&(row_count as u32).to_le_bytes());
+    payload.extend_from_slice(&(row_count as u32).to_le_bytes());
     payload.extend_from_slice(&status_flags.to_le_bytes());
-    payload.extend_from_slice(&(live.len() as u32).to_le_bytes()); // observed_ship_rows
-    payload.extend_from_slice(&0u32.to_le_bytes()); // (unread by the fold)
-    payload.extend_from_slice(&(deleted.len() as u32).to_le_bytes()); // deleted_rows
+    payload.extend_from_slice(&(live.len() as u32).to_le_bytes());
+    payload.extend_from_slice(&0u32.to_le_bytes());
+    payload.extend_from_slice(&(deleted.len() as u32).to_le_bytes());
     payload.extend_from_slice(&SHIP_SCALE_RAW.to_le_bytes());
-    payload.extend_from_slice(&0u32.to_le_bytes()); // reserved0
+    payload.extend_from_slice(&0u32.to_le_bytes());
     assert_eq!(payload.len(), SHIP_HEADER_LEN, "ships header is 40 bytes");
 
     let mut push_row = |instance_id: u32, strength_raw: u32, definition: &str, flags: u32| {
         payload.extend_from_slice(&instance_id.to_le_bytes());
         payload.extend_from_slice(&flags.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes()); // task_force_id
-        payload.extend_from_slice(&3u32.to_le_bytes()); // category_enum
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&3u32.to_le_bytes());
         payload.extend_from_slice(&strength_raw.to_le_bytes());
-        payload.extend_from_slice(&50_000u32.to_le_bytes()); // organisation_raw
-        payload.extend_from_slice(&0u32.to_le_bytes()); // experience_raw
-        payload.extend_from_slice(&0u32.to_le_bytes()); // sunk_convoys
-        payload.extend_from_slice(&47u32.to_le_bytes()); // owner_tag_db_id
-        payload.extend_from_slice(&0u32.to_le_bytes()); // reserved
+        payload.extend_from_slice(&50_000u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&47u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
         payload.extend_from_slice(&(definition.len() as u16).to_le_bytes());
         payload.extend_from_slice(definition.as_bytes());
     };
@@ -3422,38 +2836,18 @@ fn ships_payload(live: &[Ship], deleted: &[u32], status_flags: u32) -> Vec<u8> {
         );
     }
     for instance_id in deleted {
-        // A tombstone carries no definition, so it must not set the flag that
-        // promises one.
         push_row(*instance_id, 0, "", SHIP_ROW_FLAG_DELETED);
     }
     payload
 }
 
-/// What hour C carries for domain 29.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum HourCShape {
-    /// The producer RETAINED its pin across hour B's foreign gap, so hour C is
-    /// a DELTA carrying only the ship whose strength changed. This is what the
-    /// domain-scoped reset makes the collector emit.
     RetainedPinDelta,
-    /// The producer's pin was wiped by the old blanket reset, so hour C is the
-    /// whole state as a keyframe. This is what the collector emitted before.
     BlanketResetKeyframe,
-    /// Seeded inequality: a delta carrying a DIFFERENT world, so a comparator
-    /// that always reports equality is caught.
     DivergentDelta,
 }
 
-/// Three game-hours of a domain 29 delta chain, with domain 64's `DOMAIN_GAP`
-/// optionally interrupting the middle hour.
-///
-/// * Hour A — a keyframe seeds d29's baseline with ship 1 at strength 500.
-/// * Hour B — a delta adds ship 2, and (when `foreign_gap`) domain 64's bracket
-///   is rejected and it emits an H4DG gap in the same hour.
-/// * Hour C — ship 1 moves to strength 900, carried per [`HourCShape`].
-///
-/// Both the retained-pin and blanket-reset shapes describe the SAME world after
-/// hour C: `{1 -> 900, 2 -> 700}`.
 fn ships_delta_chain_stream(foreign_gap: bool, shape: HourCShape) -> Vec<u8> {
     let mut stream = Vec::new();
     let mut seq = 1u64;
@@ -3462,7 +2856,6 @@ fn ships_delta_chain_stream(foreign_gap: bool, shape: HourCShape) -> Vec<u8> {
         seq += 1;
     };
 
-    // Hour A — the keyframe that seeds the delta baseline.
     push(
         &mut stream,
         HOUR_A,
@@ -3485,7 +2878,6 @@ fn ships_delta_chain_stream(foreign_gap: bool, shape: HourCShape) -> Vec<u8> {
         &frame_end_payload_with(1, 1, 0),
     );
 
-    // Hour B — d29 emits a delta; with `foreign_gap`, d64 gaps in the same hour.
     push(
         &mut stream,
         HOUR_B,
@@ -3518,7 +2910,6 @@ fn ships_delta_chain_stream(foreign_gap: bool, shape: HourCShape) -> Vec<u8> {
         &frame_end_payload_with(hour_b_outcomes, hour_b_outcomes, 0),
     );
 
-    // Hour C — the two producers part company.
     let (payload, status) = match shape {
         HourCShape::RetainedPinDelta => (
             ships_payload(&[(1, 900)], &[], COMPACT_STATUS_DELTA_DATA),
@@ -3555,25 +2946,12 @@ fn ships_delta_chain_stream(foreign_gap: bool, shape: HourCShape) -> Vec<u8> {
     stream
 }
 
-/// **The fold-equivalence gate for the domain-scoped rejected-bracket reset.**
-///
-/// A domain that survived its own clock bracket keeps its delta pin across
-/// another domain's rejected bracket, so it publishes a DELTA in the hour after
-/// that gap where it used to publish a keyframe. This proves the consumer
-/// cannot tell: the delta-carrying stream folds to a world byte-identical to
-/// the keyframe-carrying one, in every hour, through the production
-/// `WorldFold`.
-///
-/// The comparison is on the canonical per-hour snapshot hash, which is the
-/// whole folded world rather than a projection of it.
-///
-/// What production change makes this fail: any fold behaviour that reacts to a
-/// `DOMAIN_GAP` by dropping another domain's delta baseline. Hour C's delta
-/// would then be refused by `reject_delta_before_baseline`, ship 1 would stay
-/// at strength 500, and the two hashes would part.
 #[test]
 fn a_retained_delta_baseline_across_a_foreign_gap_folds_identically_to_the_keyframe() {
-    let retained = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let retained = fold_bytes(&ships_delta_chain_stream(
+        true,
+        HourCShape::RetainedPinDelta,
+    ));
     let blanket = fold_bytes(&ships_delta_chain_stream(
         true,
         HourCShape::BlanketResetKeyframe,
@@ -3598,8 +2976,6 @@ fn a_retained_delta_baseline_across_a_foreign_gap_folds_identically_to_the_keyfr
     }
 }
 
-/// The same equivalence must hold with no foreign gap at all, which isolates
-/// the gap as the variable rather than the delta encoding.
 #[test]
 fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
     for foreign_gap in [true, false] {
@@ -3612,7 +2988,11 @@ fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
             HourCShape::BlanketResetKeyframe,
         ));
         assert_eq!(
-            delta.hours.last().expect("hour C is published").snapshot_hash,
+            delta
+                .hours
+                .last()
+                .expect("hour C is published")
+                .snapshot_hash,
             keyframe
                 .hours
                 .last()
@@ -3622,14 +3002,10 @@ fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
              {foreign_gap})"
         );
     }
-    // And the foreign gap must not move the world by itself.
-    //
-    // "The world" is now the precise claim, not the whole published hour: since
-    // lane GQ a `DOMAIN_GAP` writes d64's accounted absence and its reason into
-    // hour B's `provenance`, which is the per-hour seal working as ruled. So
-    // the gap MUST change hour B's published bytes, and must change nothing in
-    // the world any hour folds to. Both directions are asserted.
-    let with_gap = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let with_gap = fold_bytes(&ships_delta_chain_stream(
+        true,
+        HourCShape::RetainedPinDelta,
+    ));
     let without_gap = fold_bytes(&ships_delta_chain_stream(
         false,
         HourCShape::RetainedPinDelta,
@@ -3646,17 +3022,6 @@ fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
         "hour B is the hour domain 64 gapped in; the gap is an accounted absence the hour has \
          to state, so the two streams cannot publish the same hour B"
     );
-    // EVERY OTHER HOUR IS BYTE-IDENTICAL, on the FULL snapshot and not on the
-    // world projection. One bad hour costs exactly that hour: hour A precedes
-    // the gap, and hour C must not inherit hour B's account of itself.
-    //
-    // Hour C is the load-bearing one. `WorldFold::reset_hour_state` clears
-    // `domain_problems_this_hour` and `notes_this_hour` when an hour closes
-    // (`world_fold.rs:4852-4853`); dropping either clear would leak hour B's
-    // gap problem and its reason note into hour C's published provenance, and
-    // `world_hash` would not see it because `world_hash` is exactly the hash
-    // that ignores provenance. So this assertion — not the loop above — is what
-    // holds the per-hour boundary (Codex review round 1, blocking finding).
     for hour in [0usize, 2] {
         assert_eq!(
             with_gap.hours[hour].snapshot_hash, without_gap.hours[hour].snapshot_hash,
@@ -3667,15 +3032,12 @@ fn the_delta_and_keyframe_shapes_agree_with_and_without_the_foreign_gap() {
     }
 }
 
-/// The seeded-inequality control.
-///
-/// Without it, a comparator that reported equality unconditionally — or a fold
-/// that ignored hour C's payload — would pass the gate above. This stream
-/// differs from the retained-pin stream only in hour C's rows, and its hour C
-/// must hash differently.
 #[test]
 fn the_ships_fold_equivalence_gate_can_tell_two_worlds_apart() {
-    let world = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let world = fold_bytes(&ships_delta_chain_stream(
+        true,
+        HourCShape::RetainedPinDelta,
+    ));
     let other = fold_bytes(&ships_delta_chain_stream(true, HourCShape::DivergentDelta));
 
     assert_eq!(
@@ -3693,32 +3055,13 @@ fn the_ships_fold_equivalence_gate_can_tell_two_worlds_apart() {
     );
 }
 
-/// Hour C's delta really MERGES onto a retained baseline: ship 2, which hour B
-/// introduced and hour C never mentions, is still in the folded world.
-///
-/// The proof is a tombstone. A keyframe cannot serve here: once a domain has a
-/// delta baseline, `replace_or_sparse_after_first` makes EVERY subsequent d29
-/// record sparse, so even a whole-state record merges and an omitted row is
-/// never dropped. Absence is not deletion on this wire; only a tombstone
-/// removes a key. So the control stream tombstones
-/// ship 2 explicitly, and its hour C must hash differently from the stream that
-/// kept it.
-///
-/// What production change makes this fail: a fold that replaced rather than
-/// merged on hour C's delta would lose ship 2 and land on the tombstoned
-/// world's hash.
 #[test]
 fn the_hour_c_delta_merges_onto_the_retained_baseline() {
-    let retained = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let retained = fold_bytes(&ships_delta_chain_stream(
+        true,
+        HourCShape::RetainedPinDelta,
+    ));
 
-    // The same three hours, except hour C's delta also tombstones ship 2.
-    //
-    // "The same" includes hour B's foreign d64 gap, which the control carries
-    // for the same reason `ships_delta_chain_stream(true, ..)` does. Since lane
-    // GQ an accounted absence is written into its hour's `provenance`, so a
-    // control built WITHOUT the gap would differ from `retained` in hour B as
-    // well as hour C — and the hour-B equality below exists precisely to prove
-    // the two streams part company only at hour C.
     let mut tombstoned = Vec::new();
     let mut seq = 1u64;
     let mut push = |stream: &mut Vec<u8>, hour: i64, domain: u16, rtype: u16, payload: &[u8]| {
@@ -3728,7 +3071,12 @@ fn the_hour_c_delta_merges_onto_the_retained_baseline() {
     for (hour, live, deleted, status) in [
         (HOUR_A, vec![(1u32, 500u32)], vec![], 0u32),
         (HOUR_B, vec![(2, 700)], vec![], COMPACT_STATUS_DELTA_DATA),
-        (HOUR_C, vec![(1, 900)], vec![2u32], COMPACT_STATUS_DELTA_DATA),
+        (
+            HOUR_C,
+            vec![(1, 900)],
+            vec![2u32],
+            COMPACT_STATUS_DELTA_DATA,
+        ),
     ] {
         push(
             &mut tombstoned,
@@ -3778,11 +3126,12 @@ fn the_hour_c_delta_merges_onto_the_retained_baseline() {
     );
 }
 
-/// The foreign gap is genuinely present and genuinely accounted, so the gate is
-/// not quietly comparing two streams with no rejected bracket in either.
 #[test]
 fn the_middle_hour_really_carries_the_foreign_domains_gap() {
-    let with_gap = fold_bytes(&ships_delta_chain_stream(true, HourCShape::RetainedPinDelta));
+    let with_gap = fold_bytes(&ships_delta_chain_stream(
+        true,
+        HourCShape::RetainedPinDelta,
+    ));
     let without_gap = fold_bytes(&ships_delta_chain_stream(
         false,
         HourCShape::RetainedPinDelta,
@@ -3797,57 +3146,23 @@ fn the_middle_hour_really_carries_the_foreign_domains_gap() {
         "the control stream must genuinely lack that gap"
     );
     assert!(
-        with_gap.hours[1].completeness.domains.contains_key(&SHIPS_DOMAIN),
+        with_gap.hours[1]
+            .completeness
+            .domains
+            .contains_key(&SHIPS_DOMAIN),
         "domain 29 must still be accounted in the same hour"
     );
 }
 
-// ---------------------------------------------------------------------
-// Domain 13 `tech_live` — the fold-equivalence gate for its keyed
-// per-country patch
-// ---------------------------------------------------------------------
-//
-// D13 is the one country-bundle domain that re-sent every country every hour:
-// `research_slots_fingerprint` mixes the current game hour into the hash it
-// uses to decide "changed", so that predicate can never say no. Measured over
-// `runs/live_unlock/t26/collector_stream.bin`, all 439 countries were carried
-// in all 285 records while only 2.25% of the per-country wire blocks differed
-// from the block sent before them.
-//
-// `compact_tech_data_payload_delta` now diffs those blocks. These are the gates
-// that a patch stream folds to the same world as the whole-payload stream it
-// replaced — including the case the encoder must NOT treat as a removal: a
-// country the reader could not sample, which drops out of the payload with no
-// failure bit and which the merging fold reads as "keep what you have".
-//
-// The payload builder below mirrors `world_fold::fold_tech`'s layout and the
-// scale words `domain_data_authority` validates. It is not a second source of
-// truth: every byte goes to the production decoder, so drift makes these tests
-// error rather than pass.
-
 const TECH_DOMAIN: u16 = 13;
 const TECH_HEADER_LEN: usize = 32;
-/// These are `domain_data_authority`'s `COMPACT_TECH_PROGRESS_SCALE_RAW` and
-/// `COMPACT_TECH_LIVE_PROGRESS_SCALE_RAW`, and they are NOT interchangeable: a
-/// record whose scale words disagree with them is excluded as malformed before
-/// the fold ever sees it. Swapping the two here is how this fixture first went
-/// green over two worlds that contained no research at all, which is what
-/// `the_d13_fixture_actually_publishes_research_into_the_folded_world` exists
-/// to stop happening again.
 const TECH_PROGRESS_SCALE_RAW: u32 = 1_000;
 const TECH_LIVE_PROGRESS_SCALE_RAW: u32 = 100_000;
 const TECH_COUNTRY_FLAG_COMPLETED: u32 = 1;
 const TECH_COUNTRY_FLAG_SLOTS: u32 = 1 << 1;
 
-/// `(tag_db_id, completed_tech_count, research_slot_count)`.
 type TechCountry = (u32, u32, u32);
 
-/// A `tech_live` DOMAIN_DATA payload carrying `live` countries. No
-/// active-research rows: the country section alone is what the delta keys on.
-///
-/// There is no `deleted` parameter, and that is the point — D13 has no
-/// tombstone grammar, so a control that fabricated one would not be a control
-/// over anything the producer can emit.
 fn tech_payload(live: &[TechCountry], status_flags: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(TECH_HEADER_LEN + live.len() * 16);
     payload.extend_from_slice(&0u64.to_le_bytes());
@@ -3869,36 +3184,14 @@ fn tech_payload(live: &[TechCountry], status_flags: u32) -> Vec<u8> {
     payload
 }
 
-/// What hour C carries for domain 13.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum TechHourCShape {
-    /// The patch the encoder emits: only country 2 changed, and country 3 was
-    /// not measured this hour so nothing is said about it.
     Patch,
-    /// The whole payload the encoder emits after a reset — exactly what
-    /// `compact_tech_data_payload` produces for the same read, which is the
-    /// control the patch must fold identically to. Country 3 is absent for the
-    /// same reason: it was not measured.
     WholePayload,
-    /// The control that proves country 3 SURVIVED, rather than merely that both
-    /// arms treated it the same way: it re-asserts country 3 at the value hour
-    /// A gave it, alongside the other two. A stream that retained country 3
-    /// folds to exactly this world; a stream that dropped it does not.
     PatchReassertingTheUnmeasuredCountry,
-    /// Seeded inequality, so a comparator that always reports equality is
-    /// caught.
     DivergentPatch,
 }
 
-/// Three game-hours of a domain 13 patch chain.
-///
-/// * Hour A — a keyframe seeds the baseline with countries 1, 2 and 3.
-/// * Hour B — a patch moves country 1.
-/// * Hour C — country 2 moves; country 3 is NOT measured, carried per
-///   [`TechHourCShape`].
-///
-/// `Patch` and `WholePayload` describe the SAME world after hour C:
-/// `{1 -> (11, 1), 2 -> (77, 2), 3 -> (30, 3) retained}`.
 fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
     let mut stream = Vec::new();
     let mut seq = 1u64;
@@ -3913,15 +3206,6 @@ fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
         push_record(stream, *seq, raw_for(hour), domain, rtype, payload);
         *seq += 1;
     }
-    // Every hour carries D18's roster, as a real capture does. Without it the
-    // fold has no country identity to publish D13's research under, and the
-    // gates below would compare two worlds that hold no research at all.
-    //
-    // The roster keeps all three countries in every hour on purpose: country 3
-    // is UNMEASURED here, not departed, so
-    // `evict_departed_roster_domain_fields` must not be what removes it — the
-    // question these gates ask is what the ENCODER does about an unmeasured
-    // country.
     fn push_roster(stream: &mut Vec<u8>, seq: &mut u64, hour: i64) {
         push(
             stream,
@@ -3941,7 +3225,6 @@ fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
         );
     }
 
-    // Hour A — the keyframe that seeds the delta baseline.
     push_roster(&mut stream, &mut seq, HOUR_A);
     push(
         &mut stream,
@@ -3968,7 +3251,6 @@ fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
         &frame_end_payload_with(2, 2, 0),
     );
 
-    // Hour B — a patch carrying only the country that changed.
     push_roster(&mut stream, &mut seq, HOUR_B);
     push(
         &mut stream,
@@ -3995,7 +3277,6 @@ fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
         &frame_end_payload_with(2, 2, 0),
     );
 
-    // Hour C — the shapes part company.
     push_roster(&mut stream, &mut seq, HOUR_C);
     let (payload, status) = match shape {
         TechHourCShape::Patch => (
@@ -4043,16 +3324,6 @@ fn tech_delta_chain_stream(shape: TechHourCShape) -> Vec<u8> {
     stream
 }
 
-/// The fixture has to actually put D13's research into the folded world, or
-/// every equivalence assertion below would hold vacuously over two empty
-/// worlds. It did exactly that once: `domain_data_authority` excludes a D13
-/// record whose two scale words disagree with the contract, and with them
-/// transposed all three records were dropped as malformed while the gates went
-/// green.
-///
-/// What production change makes this fail: anything that stops `fold_tech`
-/// publishing under a resolved country key, or a change to either scale
-/// constant that the fixture does not follow.
 #[test]
 fn the_d13_fixture_actually_publishes_research_into_the_folded_world() {
     let with_tech = fold_bytes(&tech_delta_chain_stream(TechHourCShape::WholePayload));
@@ -4102,15 +3373,6 @@ fn the_d13_fixture_actually_publishes_research_into_the_folded_world() {
     );
 }
 
-/// **The fold-equivalence gate for D13's keyed per-country patch.**
-///
-/// The patch stream and the whole-payload stream must fold to a byte-identical
-/// world in every hour, through the production `WorldFold`, compared on the
-/// canonical per-hour snapshot hash rather than on a projection of it.
-///
-/// What production change makes this fail: emitting a country the pin already
-/// holds unchanged, corrupting any field a patch carries, or advancing the pin
-/// to a set the payload did not carry.
 #[test]
 fn the_d13_patch_stream_folds_identically_to_the_whole_payload_stream() {
     let patch = fold_bytes(&tech_delta_chain_stream(TechHourCShape::Patch));
@@ -4135,44 +3397,23 @@ fn the_d13_patch_stream_folds_identically_to_the_whole_payload_stream() {
     }
 }
 
-/// An UNMEASURED country must survive, and this is what says so on the wire
-/// rather than in a comment.
-///
-/// Country 3 is in the roster in every hour and is measured only in hour A. Its
-/// research must still be in the world at hour C under both shapes. If the
-/// encoder ever read "absent from this frame" as "deleted" — the tombstone this
-/// domain deliberately does not have — country 3's research would be gone here
-/// and this fails.
-///
-/// What production change makes this fail: giving
-/// `compact_tech_data_payload_delta` a `deleted_row_fn` that emits a real
-/// tombstone row, or dropping the carry-forward in
-/// `compact_tech_delta_blocks` so the shared engine tombstones every country
-/// the frame did not measure.
 #[test]
 fn an_unmeasured_d13_country_is_retained_by_both_shapes() {
     let patch = fold_bytes(&tech_delta_chain_stream(TechHourCShape::Patch));
     let re_asserted = fold_bytes(&tech_delta_chain_stream(
         TechHourCShape::PatchReassertingTheUnmeasuredCountry,
     ));
-    // The control SPELLS OUT the world country 3 must still be in: it re-sends
-    // country 3 at its hour-A value. Equality therefore says the patch arm,
-    // which never mentioned country 3 after hour A, still holds it — an
-    // assertion that both arms silently dropping country 3 could not satisfy.
     assert_eq!(
         patch.hours[2].snapshot_hash, re_asserted.hours[2].snapshot_hash,
         "hour C's patch dropped the unmeasured country 3: it folds to a different world than \
          the stream that re-asserts country 3 at the value hour A gave it"
     );
-    // And hour C must still differ from hour B, or the comparison above would
-    // be between two worlds in which nothing happened at all.
     assert_ne!(
         patch.hours[1].snapshot_hash, patch.hours[2].snapshot_hash,
         "hour C changed nothing, so this gate compares two identical worlds"
     );
 }
 
-/// The seeded-inequality control for the gate above.
 #[test]
 fn the_d13_fold_equivalence_gate_can_tell_two_worlds_apart() {
     let world = fold_bytes(&tech_delta_chain_stream(TechHourCShape::Patch));
@@ -4188,29 +3429,6 @@ fn the_d13_fold_equivalence_gate_can_tell_two_worlds_apart() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The exclusion ledger joined into per-hour completeness (owner ruling
-// 2026-08-06). A DOMAIN_DATA record the payload authority rejects is dropped
-// from the fold and recorded in the exclusion ledger, so the LOSS is accounted
-// — but the hour that lost it must stop reporting that domain complete.
-// ---------------------------------------------------------------------------
-
-/// Two hours over one roster domain. Hour A's DATA payload is exact; hour B's
-/// carries one trailing byte, so the payload authority rejects it, `WorldFold`
-/// applies none of its rows, and the decoder writes it into the exclusion
-/// ledger. Both hours carry a CLEAN `DOMAIN_PERF`, which is what made the loss
-/// invisible: the collector mints its `H4FD` notice from the PERF status, so a
-/// payload the authority cannot decode has no notice, no status word, and no
-/// gap record — every signal a reader had for "this domain is not complete"
-/// stays clean while the fold holds nothing.
-///
-/// `malformed_hour` selects WHICH of the two hours carries the bad payload,
-/// and that choice is load-bearing rather than cosmetic. The decoder's ledger
-/// is a RUNNING total: when the cursor yields the first hour, a later hour's
-/// exclusion has not been read yet, so a join that ignored the hour key
-/// entirely would still leave the first hour looking clean. Only putting the
-/// exclusion in the EARLIER hour puts an entry in the ledger that a broken
-/// join could leak forward into the later one.
 fn two_hours_with_one_excluded_payload(malformed_hour: i64) -> Vec<u8> {
     let mut stream = Vec::new();
     let mut sequence = 1u64;
@@ -4218,10 +3436,6 @@ fn two_hours_with_one_excluded_payload(malformed_hour: i64) -> Vec<u8> {
         let exact = hour != malformed_hour;
         let mut payload = country_identity_payload(&[(47, "GER")]);
         if !exact {
-            // One trailing byte the domain grammar does not consume. The record
-            // stays well-FRAMED; only its payload is bad, which is exactly the
-            // zero-data-loss case that degrades one domain instead of the
-            // recording.
             payload.push(0xAA);
         }
         push_record(
@@ -4268,7 +3482,6 @@ fn an_excluded_domain_data_payload_makes_its_hour_incomplete_for_that_domain() {
          never destroyed (owner ruling 'partial data still seals')",
     );
 
-    // The ledger recorded the loss, against the hour the record BELONGED to.
     assert_eq!(run.totals.excluded_domain_data_records.len(), 1);
     let excluded = &run.totals.excluded_domain_data_records[0];
     assert_eq!(excluded.domain_id, 18);
@@ -4284,11 +3497,6 @@ fn an_excluded_domain_data_payload_makes_its_hour_incomplete_for_that_domain() {
         "both hours seal; the exclusion degrades one domain, not the capture"
     );
 
-    // THE BLINDNESS, STATED. Every pre-existing per-domain signal is clean for
-    // hour B, so none of them can be the thing that says the domain is
-    // incomplete. These assertions hold both before and after the ledger join —
-    // they are the reason a NEW fact was needed rather than a re-reading of an
-    // old one.
     let hour_b = &run.hours[1].completeness;
     let hour_b_domain = hour_b
         .domains
@@ -4314,8 +3522,6 @@ fn an_excluded_domain_data_payload_makes_its_hour_incomplete_for_that_domain() {
         "the H4FD notice is minted from the PERF status, which is clean, so no notice exists"
     );
 
-    // THE RULING. The hour's completeness report must say the domain is not
-    // complete, and must name the ledger's own reason for it.
     let report_b = completeness_json(hour_b);
     let reported_b = &report_b["domains"]["18"];
     assert_eq!(
@@ -4347,17 +3553,6 @@ fn an_excluded_domain_data_payload_makes_its_hour_incomplete_for_that_domain() {
     );
 }
 
-/// The exclusion is attributed to the hour the record BELONGED to, never to the
-/// hour it happened to be processed in (owner stop condition: hour
-/// misattribution is unacceptable).
-///
-/// The offending record is in the EARLIER hour on purpose. By the time the
-/// cursor yields hour B, hour A's exclusion is already sitting in the decoder's
-/// running ledger, so a join that matched on anything other than the entry's
-/// own `game_hour_raw` — or that simply took every ledger entry it was handed —
-/// would charge hour B for a loss it never suffered. Putting the bad record in
-/// the LATER hour cannot test this: the ledger is still empty when the earlier
-/// hour is reported, so the earlier hour looks clean either way.
 #[test]
 fn an_excluded_payload_is_never_charged_to_a_later_hour() {
     let stream = two_hours_with_one_excluded_payload(HOUR_A);
@@ -4375,7 +3570,6 @@ fn an_excluded_payload_is_never_charged_to_a_later_hour() {
         "the ledger records the hour the RECORD carried in its envelope"
     );
 
-    // Hour A owns the loss.
     let report_a = completeness_json(&run.hours[0].completeness);
     let reported_a = &report_a["domains"]["18"];
     assert_eq!(
@@ -4389,7 +3583,6 @@ fn an_excluded_payload_is_never_charged_to_a_later_hour() {
         "{report_a:#}"
     );
 
-    // Hour B decoded and folded its own payload, and must not inherit hour A's.
     let report_b = completeness_json(&run.hours[1].completeness);
     let reported_b = &report_b["domains"]["18"];
     assert_eq!(
@@ -4409,25 +3602,17 @@ fn an_excluded_payload_is_never_charged_to_a_later_hour() {
         "{report_b:#}"
     );
 
-    // And the two hours are therefore NOT the same hour to `compare`, which
-    // decides equivalence on the completeness record.
     assert_ne!(
         run.hours[0].completeness, run.hours[1].completeness,
         "an hour that lost a payload and an hour that did not must not compare equal"
     );
 }
 
-/// An exclusion inside a REFUSED hour has no completeness record to reach, and
-/// that is not a hole in the accounting: the hour published nothing at all, and
-/// the refusal already says so. The attribution check must accept it rather
-/// than demand it be charged to some published hour — charging it to the next
-/// published hour is precisely the misattribution the ruling forbids.
 #[test]
 fn an_exclusion_in_a_refused_hour_is_accounted_by_the_refusal_not_the_next_hour() {
     let mut stream = Vec::new();
     let mut sequence = 1u64;
 
-    // Hour A: a malformed payload, then the hour is refused outright.
     let mut malformed = country_identity_payload(&[(47, "GER")]);
     malformed.push(0xAA);
     push_record(
@@ -4449,7 +3634,6 @@ fn an_exclusion_in_a_refused_hour_is_accounted_by_the_refusal_not_the_next_hour(
     );
     sequence += 1;
 
-    // Hour B publishes normally.
     push_record(
         &mut stream,
         sequence,
@@ -4517,14 +3701,6 @@ fn an_exclusion_in_a_refused_hour_is_accounted_by_the_refusal_not_the_next_hour(
     );
 }
 
-/// The resume-position walk has to do two different things inside ONE call: step
-/// OVER an exclusion belonging to an earlier hour that closed without
-/// publishing, and then attribute an exclusion belonging to the hour being
-/// reported. Both ledger entries are already present when the single published
-/// hour is processed, so this pins the skip and the attribution against each
-/// other — a walk that stopped at the first non-matching entry would attribute
-/// nothing, and one that took every entry it stepped over would charge hour B
-/// with hour A's loss as well.
 #[test]
 fn the_ledger_walk_skips_a_refused_hours_exclusion_and_still_takes_the_current_ones() {
     let mut stream = Vec::new();
@@ -4532,7 +3708,6 @@ fn the_ledger_walk_skips_a_refused_hours_exclusion_and_still_takes_the_current_o
     let mut malformed = country_identity_payload(&[(47, "GER")]);
     malformed.push(0xAA);
 
-    // Hour A: an excluded payload, then refused.
     push_record(
         &mut stream,
         sequence,
@@ -4552,7 +3727,6 @@ fn the_ledger_walk_skips_a_refused_hours_exclusion_and_still_takes_the_current_o
     );
     sequence += 1;
 
-    // Hour B: an excluded payload too, and it PUBLISHES.
     push_record(
         &mut stream,
         sequence,
@@ -4607,18 +3781,13 @@ fn the_ledger_walk_skips_a_refused_hours_exclusion_and_still_takes_the_current_o
         serde_json::json!(1),
         "hour B owns exactly its OWN loss — not zero, and not both: {report:#}"
     );
-    assert_eq!(reported["state"], serde_json::json!("excluded"), "{report:#}");
+    assert_eq!(
+        reported["state"],
+        serde_json::json!("excluded"),
+        "{report:#}"
+    );
 }
 
-
-/// The passive product's collector refuses `PASSIVE_PRODUCTION_REFUSED_DOMAIN_IDS`
-/// at attach, and `domain_roster` never schedules them, so a passive capture
-/// structurally cannot carry them. An expected roster that still demands them
-/// refuses every live capture on the FRAME_END roster count alone — which is
-/// exactly what happened to t26 and t27.
-///
-/// What production change would make this fail: dropping the
-/// `passive_production_admits` filter from `ExpectedRoster::production()`.
 #[test]
 fn the_production_expected_roster_never_demands_a_passive_refused_domain() {
     let roster = ExpectedRoster::production();

@@ -1,33 +1,3 @@
-//! Joint certification, producer half.
-//!
-//! The replay consumer authenticates the XMAP17 faction carrier by re-hashing
-//! `serde_json::to_vec` of its OWN struct definitions. That makes the contract
-//! byte-level: an added, renamed, reordered or differently-typed field on
-//! either side changes the digest and the hour becomes unavailable, silently,
-//! at replay time.
-//!
-//! This test pins the exact bytes the producer emits into a committed fixture;
-//! `replay_interface/native/replay_core/src/xmap17_player_labels.rs`'s
-//! `lane_hy_joint_certification_fixture_is_admitted` reads the SAME file and
-//! drives it through `admit_xmap17_faction_labels`. Either side drifting fails
-//! a gate here instead of producing an unreadable recording.
-//!
-//! # What keeps this from being vacuous
-//!
-//! A producer that computes its own hashes and feeds its own output into the
-//! consumer proves schema agreement and nothing else. So the fixture engine
-//! layout below is built to exercise the parts a self-consistent round trip
-//! and a census whose map order differs from its numeric order. The consumer
-//! half additionally mutates one byte of the recorder's payload and requires
-//! the CONSUMER's own authentication to reject it, so neither side can pass by
-//! agreeing with itself.
-//!
-//! Regenerate deliberately, never casually:
-//!
-//! ```text
-//! HY_WRITE_XMAP17_FIXTURE=1 cargo test -p map_passive_carriers_live_lane --test joint_certification
-//! ```
-
 use map_passive_carriers_live_lane::xmap17::{
     build_faction_labels_carrier, FactionCensusEntry, FrameIdentity,
 };
@@ -36,8 +6,6 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 mod engine {
-    //! A synthetic engine layout, constructed independently of the crate's own
-    //! unit-test fixture so the two cannot drift together.
 
     use map_passive_carriers_live_lane::anchor::GAMESTATE_SINGLETON_RVA;
     use map_passive_carriers_live_lane::memory::SliceMemory;
@@ -79,8 +47,6 @@ mod engine {
         memory.map_object(AXIS_HOLDER, 0x200);
         memory.map_object(COMINTERN_HEAP, 0x200);
 
-        // The engine's packed identity word: id in the HI32, type in the LO32.
-        // The producer re-reads it to authenticate the census it is handed.
         for (object, id) in [
             (FACTION_ALLIES, 2u64),
             (FACTION_COMINTERN, 7),
@@ -92,13 +58,18 @@ mod engine {
             );
         }
 
-        // Arm 1: an own name, inline.
-        put_inline(&mut memory, FACTION_ALLIES + FACTION_OWN_TEXT_OFFSET, "Allies");
-        // Arm 2: an empty own name and a fallback holder, inline.
+        put_inline(
+            &mut memory,
+            FACTION_ALLIES + FACTION_OWN_TEXT_OFFSET,
+            "Allies",
+        );
         put_inline(&mut memory, FACTION_AXIS + FACTION_OWN_TEXT_OFFSET, "");
         memory.put_u64(FACTION_AXIS + FACTION_FALLBACK_HOLDER_OFFSET, AXIS_HOLDER);
-        put_inline(&mut memory, AXIS_HOLDER + FALLBACK_HOLDER_TEXT_OFFSET, "Axis");
-        // Arm 1 again, but long enough to be a heap string.
+        put_inline(
+            &mut memory,
+            AXIS_HOLDER + FALLBACK_HOLDER_TEXT_OFFSET,
+            "Axis",
+        );
         put_heap(
             &mut memory,
             FACTION_COMINTERN + FACTION_OWN_TEXT_OFFSET,
@@ -115,7 +86,6 @@ fn fixture_path() -> PathBuf {
         .join("xmap17_faction_joint_certification.json")
 }
 
-/// Deliberately not in numeric order, so the producer's sort is exercised.
 fn census() -> Vec<FactionCensusEntry> {
     vec![
         FactionCensusEntry {
@@ -133,9 +103,6 @@ fn census() -> Vec<FactionCensusEntry> {
     ]
 }
 
-/// `BTreeMap` orders these lexically as 11, 2, 7 — a different order from the
-/// numeric 2, 7, 11 the consumer sorts by. A producer that emitted map order
-/// would pass a self-consistent round trip and fail the consumer.
 fn roster() -> BTreeMap<String, Vec<String>> {
     BTreeMap::from([
         ("2".to_string(), vec!["ENG".to_string(), "USA".to_string()]),
@@ -172,11 +139,6 @@ fn produced_bundle() -> Value {
     })
 }
 
-/// kills: pinning the carrier to an evidence identity with no evidence behind
-/// it. Adversarial review round 3, finding 5, observed that the new manifest
-/// hash appeared only in constants and prose — nothing in the worktree carried
-/// the artifact it claims to name. This recomputes the hash from the committed
-/// manifest, so the constant is a statement about a file that exists.
 #[test]
 fn the_faction_evidence_manifest_hash_is_the_committed_manifests_own_hash() {
     use sha2::{Digest, Sha256};
@@ -206,10 +168,6 @@ fn the_faction_evidence_manifest_hash_is_the_committed_manifests_own_hash() {
     );
 }
 
-/// kills: any change to the mirrored carrier structs — a field added, renamed,
-/// reordered or retyped — and any change to the record-hash inputs. Both sides
-/// hash their own struct definitions, so such a change is invisible to every
-/// other test and lethal at replay time.
 #[test]
 fn the_producer_emits_the_committed_joint_certification_bytes() {
     let rendered = serde_json::to_string_pretty(&produced_bundle()).expect("bundle renders") + "\n";
@@ -225,10 +183,6 @@ fn the_producer_emits_the_committed_joint_certification_bytes() {
             path.display()
         )
     });
-    // Compared with CR stripped: this repository checks out on Windows with
-    // `core.autocrlf` active, so a byte-for-byte comparison would fail on the
-    // line endings rather than on the contract, and a gate that fails for the
-    // wrong reason gets disabled.
     assert_eq!(
         committed.replace('\r', ""),
         rendered.replace('\r', ""),
@@ -238,9 +192,6 @@ fn the_producer_emits_the_committed_joint_certification_bytes() {
     );
 }
 
-/// kills: emitting rows in the roster's `BTreeMap` order instead of the
-/// consumer's numeric order. This is the case a self-consistent round trip
-/// cannot catch, because the producer would hash whatever it emitted.
 #[test]
 fn rows_follow_numeric_identity_order_not_map_order() {
     let carrier = build_faction_labels_carrier(

@@ -9,7 +9,7 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import static_bundle as SB  # noqa: E402
+import static_bundle as SB
 
 
 @pytest.mark.parametrize(

@@ -1,21 +1,13 @@
-//! Extractor-side production adapter for the portable used-content manifest.
-//!
-//! The engine/VFS observer supplies path-independent resolution facts.  This
-//! adapter de-duplicates repeated reads, rejects winner/hash drift, verifies the
-//! trace against the launch binding captured by `modset`, and emits the neutral
-//! manifest consumed by the independently distributed replayer.
-
 use hud_role_observer_live_lane::{
     EffectiveVfsHudRoleResolver, HudContentObservation, HudRoleSnapshot, HudSurface,
     HudSurfaceActivationFrame, OmittedHudSurface,
 };
 use portable_content_manifest::{
     filesystem_case_key, normalize_game_relative_path, ContentLayerKind, ContentManifest,
-    DlcSelection,
-    LayerStorageKind, RecordedContentLayer, RequiredContent, RequiredContentKind,
-    SourceGameIdentity, SourceProfileIdentity, UsedContentKey,
-    AUTHORED_GFX_NAMESPACE_CONSUMER, AUTHORED_GUI_NAMESPACE_CONSUMER,
-    AUTHORED_LOCALISATION_NAMESPACES_CONSUMER, SCHEMA as CONTENT_MANIFEST_SCHEMA,
+    DlcSelection, LayerStorageKind, RecordedContentLayer, RequiredContent, RequiredContentKind,
+    SourceGameIdentity, SourceProfileIdentity, UsedContentKey, AUTHORED_GFX_NAMESPACE_CONSUMER,
+    AUTHORED_GUI_NAMESPACE_CONSUMER, AUTHORED_LOCALISATION_NAMESPACES_CONSUMER,
+    SCHEMA as CONTENT_MANIFEST_SCHEMA,
 };
 use portable_render_stream::ProductionRenderFrame;
 use serde::{Deserialize, Serialize};
@@ -40,8 +32,6 @@ pub const MAX_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_OBSERVATIONS: usize = 2_000_000;
 const M02_CONTENT_CONSUMER: &str = "replay_app.production_ui.m02_combat_indicator";
 const PRODUCTION_RENDER_COMPACT_DOMAIN_ID: u16 = 77;
-/// Retired fixed-role carrier. Production finalization rejects it explicitly;
-/// opaque static-program content is resolved from the sealed program identity.
 const LEGACY_FIXED_ROLE_MAP_SNAPSHOT_DOMAIN_ID: u16 = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,14 +41,11 @@ pub struct RecorderContentTrace {
     pub source_game: SourceGameIdentity,
     pub source_profile: SourceProfileIdentity,
     pub effective_vfs_manifest_sha256: String,
-    /// Lowest-priority to highest-priority effective launcher/VFS layers.
     pub ordered_layers: Vec<RecordedContentLayer>,
-    /// Every selected DLC is recorded, including unused selections.
     pub dlc_selection: Vec<DlcSelection>,
     pub localisation_language: String,
     pub required_settings: BTreeMap<String, String>,
     pub recorder_local_settings: BTreeMap<String, String>,
-    /// One row per observed use. Repeated reads are intentionally allowed.
     pub observations: Vec<ContentUseObservation>,
 }
 
@@ -72,9 +59,6 @@ pub struct ContentUseObservation {
 }
 
 impl RecorderContentTrace {
-    /// Preserve every authoritative resolver observation. Repeated uses are
-    /// intentionally retained here and are counted/de-duplicated only while
-    /// building the final portable manifest.
     pub fn record_observation(&mut self, observation: ContentUseObservation) -> Result<(), String> {
         if self.observations.len() >= MAX_OBSERVATIONS {
             return Err(format!(
@@ -86,9 +70,6 @@ impl RecorderContentTrace {
         Ok(())
     }
 
-    /// Deterministically write a complete trace next to the run outputs. The
-    /// same-directory create-new temporary plus rename prevents finalization
-    /// from observing a partially written JSON document.
     pub fn write_atomic(&self, path: &Path) -> Result<(), String> {
         if self.schema != TRACE_SCHEMA {
             return Err(format!(
@@ -193,28 +174,18 @@ fn validate_observation_header(
     Ok(())
 }
 
-/// Path-redacted launch evidence independently captured before recording.
-/// Local install/profile paths never enter this shape.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortableLaunchBinding {
     pub executable_sha256: String,
-    /// Launcher-selected mod membership. The launcher array is not engine
-    /// precedence: the finalized source inventory supplies the authenticated
-    /// engine descriptor/mount order.
     pub ordered_mods: Vec<BoundMod>,
     pub enabled_dlc_ids: BTreeSet<String>,
     pub enabled_dlc_layers: BTreeMap<String, BoundDlcLayer>,
     pub integrated_dlc_layers: BTreeMap<String, BoundDlcLayer>,
     pub localisation_language: String,
     pub required_settings: BTreeMap<String, String>,
-    /// How well the settings above were proven. Kept beside them, never mixed
-    /// into them — see `portable_content_manifest::is_recorder_local_settings`.
     pub recorder_local_settings: BTreeMap<String, String>,
 }
 
-/// Recording-local content roots obtained from the same corroborated
-/// `ModsetReport` as the path-redacted portable launch binding. These paths are
-/// used only to run the effective-VFS interpreter during finalization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeContentRoots {
     pub install_root: PathBuf,
@@ -223,10 +194,6 @@ pub struct RuntimeContentRoots {
 
 impl RuntimeContentRoots {
     pub fn from_modset(report: &ModsetReport) -> Result<Self, String> {
-        // CONTENT resolution only. The roots are the install directory and the
-        // Paradox user directory; the localisation language and display
-        // settings say nothing about either, and requiring them here is what
-        // made a settings failure refuse the content proof outright.
         if !report.content_resolved {
             return Err("runtime content roots require a resolved modset".into());
         }
@@ -280,11 +247,6 @@ impl PortableLaunchBinding {
             .exe_sha256
             .clone()
             .ok_or("resolved launch binding omitted executable SHA-256")?;
-        // The settings must be READABLE, and how well they are proven travels
-        // WITH them, in its own map. A binding that published the numbers and
-        // dropped the provenance would let a consumer read a post-launch disk
-        // observation as a launch proof, which is exactly the silent-vanilla
-        // shape this module exists to prevent.
         let settings_authority = report
             .settings
             .authority
@@ -297,19 +259,7 @@ impl PortableLaunchBinding {
         let display = report
             .display_variant()
             .ok_or("resolved launch binding omitted display settings")?;
-        // WHAT THE REPLAY MUST REPRODUCE. Today: nothing. Every setting this
-        // recorder can read describes the machine that recorded — see the map
-        // below — so the honest value is an empty map, not a list of demands
-        // the viewer would refuse itself over. The field stays because the
-        // moment a setting is found that changes what content the game loads,
-        // it belongs here and nowhere else.
         let required_settings = BTreeMap::new();
-        // WHAT THE RECORDER'S OWN MACHINE WAS SET TO, and how well that was
-        // proven. Recorded because a reader is entitled to both; never demanded
-        // of the machine playing back, which draws in its own window at its own
-        // scale and cannot reproduce a statement the recorder made about its
-        // own observation. See
-        // `portable_content_manifest::is_recorder_local_settings`.
         let recorder_local_settings = BTreeMap::from([
             ("physical_width".into(), display.physical_width.to_string()),
             (
@@ -421,10 +371,6 @@ impl PortableLaunchBinding {
         })
     }
 
-    /// Build the pre-COMMIT DLC/VFS candidate from every installed,
-    /// launch-bound descriptor. The engine manager roster must subsequently
-    /// equal this set exactly; this method never treats launcher-disabled
-    /// membership as effective runtime authority.
     pub fn from_effective_runtime_candidate(report: &ModsetReport) -> Result<Self, String> {
         let mut candidate = Self::from_modset(report)?;
         let install_root = report
@@ -600,8 +546,6 @@ fn bound_integrated_dlc_layer(
     Ok(BoundDlcLayer {
         layer_id,
         descriptor_sha256: semantic_descriptor_sha256(&text),
-        // Engine law: integrated descriptors mount their physical containing
-        // directory. Authored archive/path fields do not redirect the mount.
         storage_kind: LayerStorageKind::Directory,
         source_container_sha256: None,
     })
@@ -638,11 +582,6 @@ fn semantic_mod_descriptor_sha256(source: &crate::modset::ResolvedMod) -> Result
     if Sha256::hex(&first) != raw_expected {
         return Err("descriptor bytes differ from launch binding".into());
     }
-    // Clausewitz descriptors are byte-oriented Windows/Latin-1 text. Playback
-    // deliberately maps every byte to the same Unicode code point before
-    // parsing; extraction must use the identical lossless mapping or a valid
-    // descriptor containing (for example) an accented display name would be
-    // rejected before its portable semantic identity could be sealed.
     let text = latin1_bytes_to_string(&first);
     Ok(semantic_descriptor_sha256(&text))
 }
@@ -651,8 +590,6 @@ pub(crate) fn latin1_bytes_to_string(bytes: &[u8]) -> String {
     bytes.iter().map(|&byte| char::from(byte)).collect()
 }
 
-/// Must remain byte-for-byte aligned with
-/// `map_viewer::semantic_descriptor_sha256`.
 pub fn semantic_descriptor_sha256(text: &str) -> String {
     let mut name = None;
     let mut version = None;
@@ -834,11 +771,7 @@ pub fn load_and_build_bound(
     Ok((manifest, bytes))
 }
 
-/// Build the portable manifest directly from the finalized static bundle's
-/// authenticated catalog/source join. This is the production path: the join is
 /// generated from the extractor's effective VFS and records only source files
-/// actually consumed by admitted interpreters. No user-provided trace sidecar
-/// participates.
 pub fn build_from_finalized_static_bundle(
     source_inventory_path: &Path,
     catalog_source_join_path: &Path,
@@ -859,10 +792,6 @@ pub fn build_from_finalized_static_bundle(
     )
 }
 
-/// Exact directory payload identities from the same stable source inventory
-/// used to build `manifest`. Archive layers already carry their source
-/// container digest; directory layers need the inventory's deterministic tree
-/// digest for early-launch identity.
 pub fn finalized_directory_layer_content_sha256(
     source_inventory_path: &Path,
     manifest: &ContentManifest,
@@ -913,10 +842,6 @@ pub fn finalized_directory_layer_content_sha256(
     Ok(output)
 }
 
-/// Production handoff for authenticated runtime HUD semantic roles. Only
-/// observations already resolved to exact VFS-winning `UsedContentKey`s enter
-/// the portable manifest. Surfaces listed as omitted in the snapshot remain
-/// absent; this function never invents bindings from vanilla defaults.
 pub fn build_from_finalized_static_bundle_with_hud_snapshot(
     source_inventory_path: &Path,
     catalog_source_join_path: &Path,
@@ -938,14 +863,6 @@ pub fn build_from_finalized_static_bundle_with_hud_snapshot(
     )
 }
 
-/// Normal production finalizer. Runtime snapshots are discovered only from
-/// the authenticated compact stream produced by this capture; there is no CLI
-/// sidecar or workstation path. d79 activations without an authenticated HUD
-/// dependency index are preserved as whole-surface omissions. Exact static-map
-/// content is admitted only from each selected program's exact ordered keys,
-/// resolved through the selected launch VFS and bound to its sealed opaque
-/// program identity. Diagnostic pass tokens and fixed semantic role lists do
-/// not participate.
 pub fn build_from_finalized_static_bundle_with_runtime_stream(
     source_inventory_path: &Path,
     catalog_source_join_path: &Path,
@@ -969,9 +886,6 @@ pub fn build_from_finalized_static_bundle_with_runtime_stream(
     )
 }
 
-/// Exact production render finalizer. Every production-render carrier must be
-/// bound to the host-sealed suspended-launch receipt; late attach and foreign
-/// hook epochs fail closed before any opaque content key is admitted.
 pub fn build_from_finalized_static_bundle_with_early_render_receipt(
     source_inventory_path: &Path,
     catalog_source_join_path: &Path,
@@ -1045,13 +959,12 @@ fn build_from_finalized_static_bundle_with_runtime_stream_admission(
             .collect::<BTreeMap<_, _>>();
         let mut closures = BTreeMap::new();
         for frame in &runtime.hud_activations {
-            let index =
-                portable_content_manifest::hud_emitter::emit_effective_vfs_hud_role_index(
-                    vfs,
-                    frame,
-                    &base.effective_vfs_manifest_sha256,
-                    &base.localisation_language,
-                )?;
+            let index = portable_content_manifest::hud_emitter::emit_effective_vfs_hud_role_index(
+                vfs,
+                frame,
+                &base.effective_vfs_manifest_sha256,
+                &base.localisation_language,
+            )?;
             for content in index.winning_content {
                 match winning_content.get(&content.normalized_game_relative_path) {
                     Some(existing) if existing != &content => {
@@ -1595,13 +1508,8 @@ fn build_from_finalized_static_bundle_inner(
                     .ok_or("source namespace replace_path is not a string")?,
             )?;
             if !seen_replace_paths.insert(normalized.clone()) {
-                return Err(
-                    "source namespace repeats a replace_path after normalization".into(),
-                );
+                return Err("source namespace repeats a replace_path after normalization".into());
             }
-            // Preserve descriptor declaration order in the portable contract.
-            // Resolution treats the entries as a set, but reordering them here
-            // would make the recorded descriptor binding lossy.
             replace_paths.push(normalized);
         }
         let layer_ordinal = ordered_layers.len() as u32;
@@ -1749,10 +1657,7 @@ fn build_from_finalized_static_bundle_inner(
             &inventory_winners,
         )?;
     }
-    append_complete_authored_namespace_observations(
-        &mut observations,
-        &inventory_winners,
-    )?;
+    append_complete_authored_namespace_observations(&mut observations, &inventory_winners)?;
     append_static_program_content_observations(
         &mut observations,
         static_program_content,
@@ -1872,9 +1777,6 @@ fn append_hud_snapshot_observations(
         }
         observations.push(ContentUseObservation {
             content_key: row.content_key.clone(),
-            // RequiredContentKind is file-level metadata. The semantic role is
-            // preserved in `consumer`, while the shared path classifier lets
-            // a runtime role merge with an existing static observation.
             kind: required_kind_for_path(&normalized),
             content: row.content.clone(),
             consumer: row.consumer.clone(),
@@ -1910,8 +1812,6 @@ fn source_inventory_winners(
             .copied()
             .flatten()
         else {
-            // Evidence-only namespaces are retained in the source inventory
-            // but never enter the production playback VFS or winner set.
             continue;
         };
         if ordered_layers
@@ -2013,9 +1913,9 @@ fn append_complete_authored_namespace_observations(
         || !matching
             .iter()
             .any(|(_, _, consumer)| *consumer == AUTHORED_GFX_NAMESPACE_CONSUMER)
-        || !matching.iter().any(|(_, _, consumer)| {
-            *consumer == AUTHORED_LOCALISATION_NAMESPACES_CONSUMER
-        })
+        || !matching
+            .iter()
+            .any(|(_, _, consumer)| *consumer == AUTHORED_LOCALISATION_NAMESPACES_CONSUMER)
     {
         return Err(format!(
             "production source inventory does not contain complete authored GUI/GFX/localisation namespaces"
@@ -2125,11 +2025,7 @@ fn append_runtime_ui_content_observations(
     effective_vfs_manifest_sha256: &str,
     ordered_layers: &[RecordedContentLayer],
 ) -> Result<(), String> {
-    if observations
-        .len()
-        .saturating_add(runtime_ui_content.len())
-        > MAX_OBSERVATIONS
-    {
+    if observations.len().saturating_add(runtime_ui_content.len()) > MAX_OBSERVATIONS {
         return Err(format!(
             "portable content trace would exceed the {MAX_OBSERVATIONS} observation bound"
         ));
@@ -2318,10 +2214,6 @@ fn verify_live_resolution_report(
     {
         return Err("live binding report executable hash differs from launch binding".into());
     }
-    // The report must name the product-modset key domain it resolved under. On
-    // a clean install the inventory-row refusal has nothing to catch, so this
-    // is the only thing that stops a pre-ruling resolution from being finalized
-    // into a portable manifest whose base digest measured something else.
     crate::production_vfs_winner_binding::require_engine_runtime_artifact_declaration(&report)?;
     let runtime_version = report
         .pointer("/runtime/version")
@@ -2361,9 +2253,6 @@ fn verify_live_resolution_report(
     Ok(())
 }
 
-/// What one attach-time corpus census covered, so a recording can state the
-/// size and cost of its own content admission instead of leaving a reader to
-/// infer it from the row count.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachCorpusCensusStats {
     pub files: u64,
@@ -2371,34 +2260,8 @@ pub struct AttachCorpusCensusStats {
     pub elapsed_ms: u64,
 }
 
-/// The most content rows one recording may admit.
-///
-/// A stock the game with its DLC measures 58,224 files / 10.01 GB on this box, and
-/// a mod set can only add to that. The ceiling is deliberately well above the
-/// measured corpus and is a bound on a hostile or broken walk, not a budget:
-/// crossing it refuses the census by name rather than writing a manifest no
-/// reader can hold.
 const MAX_ATTACH_CORPUS_ROWS: usize = 400_000;
 
-/// Hash every file the effective VFS serves and turn the winners into the
-/// recording's `required_content`.
-///
-/// WHY THE WHOLE CORPUS. Replay's admission is a per-file whitelist — the
-/// resolver refuses any lookup whose path is not in `required_content`
-/// ("replay content admission rejects unrecorded/default lookup"). The
-/// early-launch path filled that list from `RecorderContentTrace`, the engine's
-/// own reads observed before `ResumeThread`. A late attach — the shipped
-/// capture mode — cannot observe those reads: the engine loaded its content
-/// before the recorder existed. Recording one file (the D81 province catalog)
-/// and its catalog joins, which is what the attach-time proof pins, admits a
-/// recording that then refuses the first terrain or shader lookup the renderer
-/// makes. So the recorder censuses what the VFS CAN serve, and replay verifies
-/// each file it opens against that census (owner ruling, option A).
-///
-/// `consumers` says `attach_time_effective_vfs_census` and nothing else: this
-/// is a statement about what the recording's content WAS, not a claim that the
-/// engine read the file. A reader must not mistake the two, and no consumer
-/// name here is a use observation.
 pub fn census_effective_vfs_corpus(
     vfs: &portable_content_manifest::effective_vfs::EffectiveVfs,
 ) -> Result<(Vec<RequiredContent>, AttachCorpusCensusStats), String> {
@@ -2449,15 +2312,8 @@ pub fn census_effective_vfs_corpus(
     ))
 }
 
-/// The one consumer name an attach-time census row may carry.
 pub const ATTACH_CENSUS_CONSUMER: &str = "attach_time_effective_vfs_census";
 
-/// Classify a censused path by its extension alone.
-///
-/// Deliberately mechanical: the census did not watch anything read the file, so
-/// it cannot say what consumed it. The kind is derived from the path the same
-/// way a reader would derive it, and everything unrecognized is `Other` rather
-/// than guessed.
 fn attach_census_content_kind(normalized_path: &str) -> RequiredContentKind {
     let extension = normalized_path
         .rsplit_once('.')
@@ -2478,14 +2334,6 @@ fn attach_census_content_kind(normalized_path: &str) -> RequiredContentKind {
     }
 }
 
-/// Assemble the portable content manifest a LATE ATTACH can produce.
-///
-/// The early-launch builders above need a `RecorderContentTrace` or the static
-/// bundle's v3 source inventory, and a late attach has neither. Everything else
-/// they use is already available: the launch binding carries the executable,
-/// the ordered mods, the DLC selection, the language and the required settings,
-/// and the census carries the content. The result is the same
-/// [`ContentManifest`] shape replay already admits, so no reader changes.
 pub fn build_from_attach_time_corpus(
     ordered_layers: Vec<RecordedContentLayer>,
     required_content: Vec<RequiredContent>,
@@ -2496,10 +2344,7 @@ pub fn build_from_attach_time_corpus(
     profile_id: &str,
     playset_id: &str,
 ) -> Result<ContentManifest, String> {
-    portable_content_manifest::hud_role::validate_sha256(
-        product_modset_sha256,
-        "product modset",
-    )?;
+    portable_content_manifest::hud_role::validate_sha256(product_modset_sha256, "product modset")?;
     if source_game.executable_sha256 != launch.executable_sha256 {
         return Err(
             "attach-time content manifest executable differs from the attached process".into(),
@@ -2512,9 +2357,6 @@ pub fn build_from_attach_time_corpus(
         return Err("attach-time content manifest has no content layers".into());
     }
 
-    // A layer is required when the census actually resolved a winner from it.
-    // Anything else is a recorded-but-unused selection, exactly as the
-    // early-launch path marks it, and replay mounts only the required ones.
     let required_ordinals: BTreeSet<u32> = required_content
         .iter()
         .map(|row| row.content.winning_layer_ordinal)
@@ -2592,10 +2434,7 @@ pub fn build(
     launch: &PortableLaunchBinding,
     product_modset_sha256: &str,
 ) -> Result<ContentManifest, String> {
-    portable_content_manifest::hud_role::validate_sha256(
-        product_modset_sha256,
-        "product modset",
-    )?;
+    portable_content_manifest::hud_role::validate_sha256(product_modset_sha256, "product modset")?;
     if trace.schema != TRACE_SCHEMA {
         return Err(format!(
             "unsupported portable content trace schema {}",
@@ -2728,9 +2567,6 @@ pub fn build(
         required_content,
         manifest_digest_sha256: None,
     };
-    // Profile/playset labels are provenance only. The compatibility binding is
-    // the shared, reproducible selection digest derived from the exact required
-    // VFS layers/DLC and relevant language/settings.
     manifest.source_profile.selection_sha256 = manifest.computed_selection_sha256()?;
     manifest.with_computed_digest()
 }
@@ -2776,12 +2612,14 @@ fn validate_launch_binding(
         if !seen_trace_mods.insert(trace_mod.layer_id.as_str()) {
             return Err("portable content trace repeats a mod layer ID".into());
         }
-        let launch_mod = launch_mods.get(trace_mod.layer_id.as_str()).ok_or_else(|| {
-            format!(
+        let launch_mod = launch_mods
+            .get(trace_mod.layer_id.as_str())
+            .ok_or_else(|| {
+                format!(
                 "portable content trace engine-ordered mod {} is absent from launcher membership",
                 trace_mod.layer_id
             )
-        })?;
+            })?;
         if trace_mod.layer_id != launch_mod.layer_id
             || trace_mod.descriptor_sha256.as_deref() != Some(launch_mod.descriptor_sha256.as_str())
             || trace_mod.storage_kind != launch_mod.storage_kind
@@ -2882,11 +2720,6 @@ mod tests {
         byte.to_string().repeat(64)
     }
 
-    /// The excluded install-root class declaration a current resolver emits.
-    ///
-    /// Built from the embedded authority rather than transcribed, so a fixture
-    /// can never assert a domain the production check would reject -- which is
-    /// the failure mode these fixtures existed in before the check was added.
     fn engine_runtime_artifact_declaration() -> serde_json::Value {
         serde_json::json!({
             "schema": "extractor.engine_runtime_artifacts.v1",
@@ -2976,8 +2809,8 @@ mod tests {
         ]
         .into_iter()
         .collect::<BTreeMap<_, _>>();
-        let error = append_complete_authored_namespace_observations(&mut Vec::new(), &winners)
-            .unwrap_err();
+        let error =
+            append_complete_authored_namespace_observations(&mut Vec::new(), &winners).unwrap_err();
         assert!(error.contains("GUI/GFX/localisation"));
     }
 
@@ -3024,8 +2857,7 @@ mod tests {
             },
         ];
         let winners =
-            source_inventory_winners(&inventory, &layers, &[Some(0), Some(1)], &sha('a'))
-                .unwrap();
+            source_inventory_winners(&inventory, &layers, &[Some(0), Some(1)], &sha('a')).unwrap();
         assert_eq!(winners.len(), 1);
         let winner = winners.values().next().unwrap();
         assert_eq!(winner.normalized_game_relative_path, "interface/ä.gui");
@@ -3282,8 +3114,6 @@ mod tests {
             layer.ordinal = ordinal as u32;
         }
         trace.observations[1].content.winning_layer_ordinal = 4;
-        // Launcher membership deliberately lists the archive mod first. The
-        // source inventory's engine ordinals, not this array, own precedence.
         launch.ordered_mods.push(BoundMod {
             layer_id: "mod/a-first.mod".into(),
             descriptor_sha256: sha('7'),
@@ -3646,12 +3476,7 @@ mod tests {
             rows.push((1, "interface/topbar.gui".into(), mod_text.into_bytes()));
             (game, user, rows)
         }
-        fn push_d79(
-            out: &mut Vec<u8>,
-            sequence: u64,
-            game_hour_raw: i32,
-            payload: &[u8],
-        ) {
+        fn push_d79(out: &mut Vec<u8>, sequence: u64, game_hour_raw: i32, payload: &[u8]) {
             out.extend_from_slice(compact_contract::COMPACT_RECORD_MAGIC);
             out.extend_from_slice(&compact_contract::COMPACT_RECORD_VERSION.to_le_bytes());
             out.extend_from_slice(
@@ -3740,8 +3565,6 @@ mod tests {
         let report = serde_json::json!({
             "schema":"extractor.live_binding_resolution.v1",
             "passed":true,
-            // Fixtures resolve under the CURRENT excluded install-root class;
-            // verify_live_resolution_report now requires the report to say so.
             "engine_runtime_artifacts": engine_runtime_artifact_declaration(),
             "process":{"exe_sha256":sha('9')},
             "runtime":{"version":"1.19.2.0.a729"},
@@ -3802,8 +3625,6 @@ mod tests {
             11,
             &hud_role_observer_live_lane::encode_activation_payload(&frame).unwrap(),
         );
-        // Closing the designer before recording stops must not erase the
-        // authenticated dependencies of either earlier designer family.
         frame.frame_hour = 12;
         frame.observation_sequence = 3;
         frame.active_surfaces.pop();
@@ -3881,9 +3702,6 @@ mod tests {
                 .any(|consumer| consumer.starts_with(&format!("hud_role/v1/{surface}/")))));
         }
 
-        // The normal finalizer must omit an activated surface whose exact
-        // runtime root cannot be authenticated; it must not manufacture an
-        // authored fallback or retain a stale sidecar result.
         let incompatible_frame = hud_role_observer_live_lane::HudSurfaceActivationFrame {
             frame_hour: 11,
             status_flags: 0,
@@ -3993,8 +3811,6 @@ mod tests {
         let report = serde_json::json!({
             "schema": "extractor.live_binding_resolution.v1",
             "passed": true,
-            // Fixtures resolve under the CURRENT excluded install-root class;
-            // verify_live_resolution_report now requires the report to say so.
             "engine_runtime_artifacts": engine_runtime_artifact_declaration(),
             "process": {"exe_sha256": sha('9')},
             "runtime": {"version": "1.19.2.0.a729"},
@@ -4010,15 +3826,14 @@ mod tests {
         fs::write(&join_path, serde_json::to_vec(&join).unwrap()).unwrap();
         fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
         assert!(!dir.join(DEFAULT_TRACE_FILE).exists());
-        let manifest =
-            build_from_finalized_static_bundle(
-                &inventory_path,
-                &join_path,
-                &report_path,
-                &launch,
-                &sha('9'),
-            )
-            .unwrap();
+        let manifest = build_from_finalized_static_bundle(
+            &inventory_path,
+            &join_path,
+            &report_path,
+            &launch,
+            &sha('9'),
+        )
+        .unwrap();
         assert_eq!(manifest.required_content.len(), 5);
         assert!(
             manifest
@@ -4246,16 +4061,6 @@ mod tests {
             ]),
         };
         let portable = PortableLaunchBinding::from_modset(&report).unwrap();
-        // THE PRODUCER SIDE OF THE SETTINGS PARTITION. The shared crate's
-        // `settings_provenance_and_material_settings_are_a_partition` proves
-        // that a MIXED manifest is refused, but it builds its manifest by hand
-        // and so does not cover this constructor: moving a display or
-        // provenance row back into `required_settings` here would not have
-        // failed anything (Codex review round 1). It fails this now.
-        //
-        // kills: emitting any `recorder_local_settings` row into
-        // `required_settings` in `from_modset`, or dropping the display /
-        // provenance rows from `recorder_local_settings` altogether.
         assert!(
             portable.required_settings.is_empty(),
             "the recorder demands no setting of the replaying install: {:?}",
@@ -4423,11 +4228,6 @@ mod tests {
         mod_layer.source_container_sha256 = None;
         launch.ordered_mods[0].content_sha256 = sha('6');
         launch.ordered_mods[0].storage_kind = LayerStorageKind::Directory;
-        // A directory winner has no container, so the recorder records the
-        // payload digest as the source digest (the admission at
-        // append_*_content_observations refuses anything else, and manifest
-        // validation now binds it the same way). Keep the fixture in the only
-        // shape the producer can emit.
         let definition = trace
             .observations
             .iter_mut()
@@ -4467,8 +4267,6 @@ mod tests {
         let report = serde_json::json!({
             "schema": "extractor.live_binding_resolution.v1",
             "passed": true,
-            // Fixtures resolve under the CURRENT excluded install-root class;
-            // verify_live_resolution_report now requires the report to say so.
             "engine_runtime_artifacts": engine_runtime_artifact_declaration(),
             "process": { "exe_sha256": launch.executable_sha256 },
             "runtime": { "version": "Stella Polaris v1.19.2.0.a729" },
@@ -4481,13 +4279,6 @@ mod tests {
         let result = verify_live_resolution_report(&path, &manifest, &launch);
         result.unwrap();
 
-        // kills: deleting the require_engine_runtime_artifact_declaration call
-        // from verify_live_resolution_report. Testing that function directly
-        // proves it works; only this proves it is WIRED IN. Without the call, an
-        // otherwise perfect report from a resolver that predates the
-        // 2026-08-15 key-domain ruling is finalized into a portable manifest
-        // whose base digest measured a different product -- and on a clean
-        // install nothing else on this side would notice.
         let mut undeclared = report.clone();
         undeclared
             .as_object_mut()

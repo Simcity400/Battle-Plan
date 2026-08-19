@@ -1,23 +1,3 @@
-//! U1 alerts-strip binding + layout gates.
-//!
-//! Binding gates drive the packed snapshot-flavor fixture through the real
-//! `replay_core` `ReplaySource`/`WorldTimeline` and assert that
-//! `game_ui::alerts::alerts_strip_from_frame` produces the exact generator
-//! alert counts (present/absent per the FIT zero-suppression convention) at
-//! every probed hour and POV, and that an unavailable view / absent POV renders
-//! the fail-closed absent form (never a default `0`).
-//!
-//! Expected values are transcribed from the fixture GENERATOR SOURCE
-//! (`replay_fixture_gen/src/main.rs` `fx_topbar_scalars_sweep`), NOT by running
-//! the code under test:
-//!   initiative = tick % 3, decisions_available = tick % 4,
-//!   intel = tick % 2, market_contracts = tick % 5   (identical for every tag).
-//!
-//! The layout gate parses `interface/topbar.gui` + `interface/alerts.gui`
-//! through the shared `game_ui` parser and asserts every count-badge element in
-//! [`AlertKind::ALL`] plus the feed window/sprite resolves (skipped when the
-//! the game root is absent, matching
-//! `topbar::topbar_rects_follow_engine_layout_law`).
 
 use game_ui::alerts::{
     alert_feed_binding, alerts_strip_from_frame, AlertKind, ALERTS_GUI, ALERT_BADGE_BG_SPRITE,
@@ -35,7 +15,6 @@ fn fixture(name: &str) -> WorldTimeline {
     WorldTimeline::open(source).unwrap_or_else(|err| panic!("timeline {name}: {err}"))
 }
 
-// --- generator formulas (transcribed from fx_topbar_scalars_sweep) ---
 fn expected_count(kind: AlertKind, tick: i64) -> Option<i64> {
     match kind {
         AlertKind::Initiative => Some(tick % 3),
@@ -49,9 +28,6 @@ fn expected_count(kind: AlertKind, tick: i64) -> Option<i64> {
     }
 }
 
-/// GATE 1 — every alert badge renders == the generator count at every probed
-/// hour for multiple POVs, and the FIT badge_shown / count_text follow the
-/// documented convention (shown, with raw text, exactly when count > 0).
 #[test]
 fn alert_counts_render_generator_values_per_pov() {
     let tl = fixture("fx_topbar_scalars_sweep");
@@ -98,9 +74,6 @@ fn alert_counts_render_generator_values_per_pov() {
     }
 }
 
-/// GATE 2 — the probed sweep endpoint is exact. Generator writes
-/// `market_contracts = tick % 5`; at t=11 that is 1 (matches the fixture probe
-/// `countries.GER.scalars.alerts.market_contracts == 1`).
 #[test]
 fn market_contracts_probe_endpoint_is_exact() {
     let tl = fixture("fx_topbar_scalars_sweep");
@@ -112,9 +85,6 @@ fn market_contracts_probe_endpoint_is_exact() {
     assert!(badge.badge_shown);
     assert_eq!(badge.count_text.as_deref(), Some("1"));
 
-    // t=0: every measured fixture category is zero and omitted fixture leaves
-    // remain absent, so every canonical badge is suppressed while the view is
-    // still available.
     let f0 = tl.frame(hours[0]).unwrap();
     let s0 = alerts_strip_from_frame(&f0, "GER");
     assert!(s0.available);
@@ -126,14 +96,11 @@ fn market_contracts_probe_endpoint_is_exact() {
     );
 }
 
-/// GATE 3 — a POV absent from an otherwise-present frame renders an all-absent
-/// strip (`count: None`, never defaulted to `0`), while the view still reports
-/// available for the frame.
 #[test]
 fn absent_pov_renders_fail_closed_strip() {
     let tl = fixture("fx_topbar_scalars_sweep");
     let frame = tl.frame(tl.first_hour()).unwrap();
-    let strip = alerts_strip_from_frame(&frame, "USA"); // not in the fixture
+    let strip = alerts_strip_from_frame(&frame, "USA");
     assert_eq!(strip.pov_tag, "USA");
     assert_eq!(strip.badges.len(), AlertKind::ALL.len());
     for badge in &strip.badges {
@@ -143,8 +110,6 @@ fn absent_pov_renders_fail_closed_strip() {
     }
 }
 
-/// GATE 4 — the fixture omits the D79 current-active alert snapshot, so the
-/// scrolling feed is fail-closed absent.
 #[test]
 fn alert_feed_is_fail_closed_absent() {
     let feed = alert_feed_binding();
@@ -152,9 +117,6 @@ fn alert_feed_is_fail_closed_absent() {
     assert!(feed.icons.is_empty());
 }
 
-// ===========================================================================
-// FW1 status consumer — availability is owned by `topbar_alerts_status`
-// ===========================================================================
 
 struct MemorySource {
     hours: Vec<i64>,
@@ -191,23 +153,17 @@ impl replay_core::ReplaySource for MemorySource {
     }
 }
 
-/// The general alert view never borrows availability from the broader
-/// countries domain. Independent d87 and D65 availability is covered by the
-/// source-specific tests in `alerts.rs` and below.
 #[test]
 fn general_alert_availability_is_not_borrowed_from_countries_domain() {
     let source = MemorySource {
         hours: vec![0, 1],
         frames: [
-            // Countries present, ratio data present, but no alerts anywhere:
-            // topbar_extras_status is Present while topbar_alerts_status is not.
             (
                 0,
                 serde_json::json!({
                     "countries": { "GER": { "scalars": { "industrial_ratio": 0.5 } } }
                 }),
             ),
-            // A measured alert datum: the alerts surface is genuinely present.
             (
                 1,
                 serde_json::json!({
@@ -319,9 +275,6 @@ fn prototype_reward_badge_requires_complete_owner_joined_d65_rows() {
     assert_eq!(badge.count_text.as_deref(), Some("5"));
 }
 
-// ===========================================================================
-// Layout gate — shared game_ui parser resolves the alert elements + feed window
-// ===========================================================================
 
 mod layout_gate {
     use super::*;
@@ -332,9 +285,6 @@ mod layout_gate {
     use game_ui::paradox_text::parse_file;
     use game_ui::topbar::{resolve_topbar_rects_pure, TopbarLayout, TOPBAR_WINDOW_NAME};
 
-    /// The vanilla install root. Panics rather than returning `None`: every
-    /// caller is gated on `gate_hoi4_install`, so an absent install here is a
-    /// failure, never a silent skip that libtest would report as a pass.
     fn hoi4_root() -> PathBuf {
         replay_test_gates::require_vanilla_game_root()
     }
@@ -349,9 +299,6 @@ mod layout_gate {
         set
     }
 
-    /// GATE L1 — every [`AlertKind::ALL`] count-badge element resolves to a
-    /// rect through the shared parser + engine layout law, and the shared badge
-    /// background sprite is cited by `topbar.gui`.
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),
@@ -386,20 +333,15 @@ mod layout_gate {
                 .iter()
                 .find(|r| r.name == name)
                 .unwrap_or_else(|| panic!("alert element `{name}` ({kind:?}) not resolved"));
-            // A resolved instantTextBoxType has a zero natural size but a valid
-            // anchored origin — the layout law composed it (non-degenerate path).
             println!("{kind:?} -> {name} @ ({},{})", rect.x, rect.y);
         }
 
-        // The shared alert-badge background sprite is cited by topbar.gui.
         assert!(
             set.sprite_refs().contains(ALERT_BADGE_BG_SPRITE),
             "topbar.gui must cite {ALERT_BADGE_BG_SPRITE}"
         );
     }
 
-    /// GATE L2 — the alerts feed window (`global_alerticon_window`) parses,
-    /// cites its feed icon sprite, and resolves to its declared 43x38 rect.
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),
@@ -415,13 +357,11 @@ mod layout_gate {
             .first()
             .unwrap_or_else(|| panic!("{ALERT_FEED_WINDOW} not found in {ALERTS_GUI}"));
 
-        // The feed icon sprite is cited by the feed window's button.
         assert!(
             set.sprite_refs().contains(ALERT_FEED_ICON_SPRITE),
             "{ALERTS_GUI} must cite {ALERT_FEED_ICON_SPRITE}"
         );
 
-        // Resolve the window rect through the shared law: size = 43x38 (FILE).
         let options = ComposeOptions::new(1920, 1080).with_root_size(1920, 1080);
         let parent = Rect::new(0, 0, 1920, 1080);
         let rect = resolve_element_rect(window, parent, (0, 0), &options);

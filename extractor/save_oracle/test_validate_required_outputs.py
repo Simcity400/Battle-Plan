@@ -46,7 +46,6 @@ def test_every_declared_parser_output_is_required():
     assert len(REQUIRED_OUTPUTS) == sum(map(len, OUTPUTS_BY_PRODUCER.values()))
     assert all(len(producers) == 1 for producers in PRODUCERS_BY_OUTPUT.values())
     assert validate.ALL_FILES == REQUIRED_OUTPUTS
-    # These were the material omissions in the old validator inventory.
     for name in (
         "projects.json", "intel.json", "weather.json", "designs.json",
         "campaign_identity_oracle.json", "abilities.json",

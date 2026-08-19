@@ -69,9 +69,8 @@ def reconstruct_control(result: dict, prov_to_state: dict):
     Returns (state_control, province_control, stats).
     """
     states = result["states"]
-    prov_overrides = result["provinces"]  # {pid_str: TAG} explicit only
+    prov_overrides = result["provinces"]
 
-    # --- state control: controller override else owner --------------------
     state_control: dict = {}
     raw_state_ctrl_overrides = 0
     for sid, info in states.items():
@@ -82,7 +81,6 @@ def reconstruct_control(result: dict, prov_to_state: dict):
         controller = raw_ctrl or owner
         state_control[sid] = {"owner": owner, "controller": controller}
 
-    # state controller lookup keyed by int state id for the province join.
     state_ctrl_by_int: dict = {}
     for sid, sc in state_control.items():
         try:
@@ -90,7 +88,6 @@ def reconstruct_control(result: dict, prov_to_state: dict):
         except (TypeError, ValueError):
             continue
 
-    # province override lookup keyed by int.
     prov_override_by_int: dict = {}
     for pid, tag in prov_overrides.items():
         try:
@@ -98,13 +95,12 @@ def reconstruct_control(result: dict, prov_to_state: dict):
         except (TypeError, ValueError):
             continue
 
-    # --- province control: override else state's controller --------------
     province_control: dict = {}
     resolved = 0
     via_override = 0
     via_state = 0
-    unresolved = []  # (prov, state) pairs with no resolvable controller
-    no_state_map = 0  # provinces present in map but with state not in save
+    unresolved = []
+    no_state_map = 0
 
     for pid, sid in prov_to_state.items():
         tag = prov_override_by_int.get(pid)
@@ -117,13 +113,10 @@ def reconstruct_control(result: dict, prov_to_state: dict):
             else:
                 no_state_map += 1
                 unresolved.append((pid, sid))
-        # Emit null for unresolved (sea/lake/wasteland/no-owner) so downstream
-        # has an entry for every mapped province; the count distinguishes them.
         province_control[str(pid)] = tag
         if tag:
             resolved += 1
 
-    # Province overrides that fall OUTSIDE the province->state map (rare; e.g.
     # the engine wrote a controller for a province not in our generated map).
     extra_overrides = 0
     for pid, tag in prov_override_by_int.items():
@@ -175,7 +168,6 @@ def validation_report(state_control, province_control, stats, unresolved,
         lines.append(f"overrides outside map: "
                      f"{stats['province_overrides_outside_map']}")
 
-    # Spot-check: occupied territory (controller != owner) at state level.
     contested = [(sid, sc) for sid, sc in state_control.items()
                  if sc["owner"] and sc["controller"]
                  and sc["controller"] != sc["owner"]]
@@ -184,7 +176,6 @@ def validation_report(state_control, province_control, stats, unresolved,
     for sid, sc in contested[:6]:
         lines.append(f"   state {sid:>5}: {sc['owner']} -> {sc['controller']}")
 
-    # A couple unresolved samples (should be sea/wasteland).
     if unresolved:
         lines.append("sample unresolved provinces (prov -> state):")
         for pid, sid in unresolved[:5]:

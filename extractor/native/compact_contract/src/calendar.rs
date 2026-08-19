@@ -1,24 +1,13 @@
-//! Clausewitz calendar math shared by the collector and the recorder fold.
-//!
-//! the game stores an absolute hour counter (`raw_date`). The replay schema's
-//! canonical sort key `hour_index` is `raw_date - DATE_EPOCH_CONST`, i.e.
-//! `((year*365 + day_of_year)*24 + hour)` on a 365-day, no-leap calendar.
-//! See `PROJECT.md` under `Time, identity, sessions, and files`.
-
-/// Offset between the engine's stored hour counter and the schema `hour_index`.
 pub const DATE_EPOCH_CONST: i32 = 43_799_999;
 
 const MONTH_LENGTHS: [i32; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-/// Sanity window for a stored engine hour counter (years 1850..2200).
 fn raw_date_in_range(stored: i32) -> bool {
     let min = (1850 * 365 * 24) + DATE_EPOCH_CONST;
     let max = (2200 * 365 * 24) + DATE_EPOCH_CONST;
     stored >= min && stored <= max
 }
 
-/// Schema `hour_index` from the engine's stored hour counter, or `None` if the
-/// raw value is outside the plausible calendar window (fail closed).
 pub fn hour_index_from_raw(stored: i32) -> Option<i64> {
     if !raw_date_in_range(stored) {
         return None;
@@ -26,8 +15,6 @@ pub fn hour_index_from_raw(stored: i32) -> Option<i64> {
     Some((stored - DATE_EPOCH_CONST) as i64)
 }
 
-/// Clausewitz `"year.month.day.hour"` string from the engine's stored hour
-/// counter, or `None` if out of range (fail closed).
 pub fn date_from_raw(stored: i32) -> Option<String> {
     if !raw_date_in_range(stored) {
         return None;
@@ -54,8 +41,6 @@ mod tests {
 
     #[test]
     fn hour_index_matches_schema_definition() {
-        // 1940.9.2 hour 21 -> 17000277 under the canonical hour-index formula.
-        // day_of_year_index for Sep 2 = (31+28+31+30+31+30+31+31) + 1 = 244.
         let doy_index = 31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 1;
         let hour_index = (1940i64 * 365 + doy_index) * 24 + 21;
         assert_eq!(hour_index, 17_000_277);

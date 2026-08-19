@@ -1,43 +1,3 @@
-//! Interior-hole fault-injection harness for the H4IX/H4CP composition.
-//!
-//! # The question
-//!
-//! A cache-only composition must BUILD over an INTERIOR excluded hour by
-//! skipping it BY NAME, instead of refusing the whole build. The naming
-//! authority is `recorder_host::hour_coverage`.
-//!
-//! For each cell the instrument injects
-//! one structural fault into an otherwise clean H4CR stream, runs the REAL
-//! production artifact build (`build_certified_replay_artifacts`), and reports:
-//!
-//!  * whether the build produced artifacts at all;
-//!  * which game hours the packaged H4IX SERVES;
-//!  * which game hours the packaged H4IX names as HOLES, and with what reason;
-//!  * whether every served hour reconstructs out of the packaged H4CP
-//!    (`CertifiedReplayCache::verify_every_hour`, the seal path's own proof);
-//!  * whether an excluded hour is refused BY NAME when a consumer asks the
-//!    packaged index for it.
-//!
-//! # What is real here and what is not
-//!
-//! * **Real**: every decision path under test. The fold is the production
-//!   `HourCursor` driven by `build_certified_replay_artifacts` — the same
-//!   function `recorder_host`'s finalize calls — and the artifacts are the real
-//!   H4IX/H4CP files it writes to disk, read back through
-//!   `snapshot::CertifiedReplayCache`. The per-hour coverage map is the one the
-//!   build publishes and the seal seals.
-//! * **Not real**: the base stream BYTES. No captured H4CR spool survives on
-//!   this machine. The stream is
-//!   synthesized with the record framing the collector writes, over two real
-//!   production domains (18 `country_identity`, 13 `tech_live`), and the clean
-//!   control cell proves the base stream builds before anything is injected.
-//! * **Not covered here**: the sealed CONTAINER. This harness stops at the
-//!   packaged artifact pair; the container-authenticated join between an H4IX
-//!   hole row and the sealed coverage map is proved by unit tests in
-//!   `compact_replay_verification_gates`.
-//!
-//! Usage: `gz_interior_holes <scratch-dir>`; the matrix goes to stdout.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -59,12 +19,8 @@ const D18_COUNTRY_IDENTITY: u16 = 18;
 const D13_TECH_LIVE: u16 = 13;
 const CAMPAIGN_UUID: &str = "a4b17fed-ed12-4361-9064-fb6576638110";
 const BASE_HOUR: i64 = 16_959_360;
-/// Nine hours, so a hole can sit at the front, in the middle, twice, or at the
-/// end with clean hours on both sides of every interior case.
 const HOURS: usize = 9;
 const GAME_ID: &str = "gz_interior_holes";
-/// One checkpoint then deltas — the shape a real capture has, and the shape in
-/// which skipping an hour has to keep the delta chain intact.
 const CHECKPOINT_INTERVAL: u32 = 168;
 
 fn raw_for(hour_index: i64) -> i32 {
@@ -75,15 +31,9 @@ fn hour_of(ordinal: usize) -> i64 {
     BASE_HOUR + ordinal as i64
 }
 
-// ---------------------------------------------------------------------------
-// Stream construction — the H4CR record envelope the collector writes.
-// ---------------------------------------------------------------------------
-
 struct StreamWriter {
     bytes: Vec<u8>,
     seq: u64,
-    /// Byte offset of the first record of each game-hour ordinal that emitted
-    /// one, so an injection can target one hour precisely.
     hour_starts: BTreeMap<usize, usize>,
 }
 
@@ -130,7 +80,6 @@ fn write_record(
     out.extend_from_slice(payload);
 }
 
-/// Domain 18 `country_identity`, shared by the fault-injection harnesses.
 fn d18_payload(rows: &[(u32, &str)], status_flags: u32) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes());
@@ -146,7 +95,6 @@ fn d18_payload(rows: &[(u32, &str)], status_flags: u32) -> Vec<u8> {
     p
 }
 
-/// Domain 13 `tech_live`, shared by the fault-injection harnesses.
 fn d13_payload(countries: &[(u32, u32, u32)], status_flags: u32) -> Vec<u8> {
     let mut p = Vec::new();
     p.extend_from_slice(&0u64.to_le_bytes());
@@ -189,19 +137,11 @@ fn cid1_record_payload() -> Vec<u8> {
     encode_cid1(&fields).expect("encode CID1")
 }
 
-/// A synthesized stream and the byte offset each game hour's records start at.
 struct Synth {
     bytes: Vec<u8>,
     hour_starts: BTreeMap<usize, usize>,
 }
 
-/// Build the stream, DROPPING every record of the hours in `absent`.
-///
-/// The sequence is assigned as though every record were present, so a dropped
-/// hour leaves a SEQUENCE HOLE — the production shape of "an hour's records
-/// never reached the spool", and what makes the loss detectable at all. This is
-/// deliberately does not renumber around
-/// the hole and therefore models a different (undetectable) failure.
 fn synthesize(absent: &BTreeSet<usize>) -> Synth {
     let mut w = StreamWriter::new();
     w.push_with_seq(
@@ -215,9 +155,6 @@ fn synthesize(absent: &BTreeSet<usize>) -> Synth {
     w.seq = 1;
     for hour in 0..HOURS {
         let raw = raw_for(hour_of(hour));
-        // Three sequence numbers are consumed per hour whether or not the
-        // records are written, so the SURVIVING records carry exactly the
-        // sequence they would have carried.
         let seq_base = w.seq;
         w.seq = seq_base + 3;
         if absent.contains(&hour) {
@@ -267,48 +204,26 @@ impl Synth {
             .unwrap_or_else(|| panic!("hour {hour} emitted no records"))
     }
 
-    /// Flip the record magic of the FIRST record of `hour`, so the framing
-    /// layer loses the boundary and has to resynchronise.
     fn with_framing_damage_at(mut self, hour: usize) -> Vec<u8> {
         let offset = self.start_of(hour);
         self.bytes[offset] ^= 0xff;
         self.bytes
     }
 
-    /// Cut the file inside `hour`'s first record, leaving a torn tail: the hour
-    /// is never delivered and holds no index row.
     fn truncated_inside(&self, hour: usize) -> Vec<u8> {
         let offset = self.start_of(hour);
         self.bytes[..offset + COMPACT_RECORD_HEADER_LEN + 4].to_vec()
     }
 }
 
-// ---------------------------------------------------------------------------
-// Running the real production artifact build
-// ---------------------------------------------------------------------------
-
-/// What the packaged artifacts say, or why they were not produced.
 struct Built {
-    /// Hours the packaged H4IX serves, in index order.
     served: Vec<i64>,
-    /// Hours the packaged H4IX names as HOLES, with the reason each carries.
     holes: Vec<(i64, String)>,
-    /// The build's own per-hour coverage map, as the seal publishes it.
     coverage_verified: Vec<i32>,
     coverage_excluded: Vec<(i32, String)>,
-    /// Did every served hour reconstruct out of the packaged H4CP?
     reconstruct: Result<u32, String>,
-    /// Asking the packaged index for each hour the recording does not vouch
-    /// for: the named refusal it produced.
     refusals: BTreeMap<i64, String>,
-    /// Excluded hours the packaged index served anyway. Always a FAIL.
     leaked: Vec<i64>,
-    /// For every hour the coverage map excludes: what the MAP says its bytes
-    /// were, and what the packaged H4IX hole (if any) says they were.
-    ///
-    /// This is what decides whether a replay consumer holding only the two
-    /// container-authenticated documents can bind a hole to the injured hour's
-    /// bytes, or only to its name.
     range_join: Vec<RangeJoin>,
 }
 
@@ -364,10 +279,6 @@ fn build(scratch: &Path, tag: &str, bytes: &[u8]) -> Result<Built, String> {
         .map(|(hour, reason)| (hour, reason.to_string()))
         .collect();
 
-    // Ask the packaged index for every hour the recording does NOT vouch for.
-    // A refusal must be BY NAME: the index either names the hour as a hole
-    // carrying its reason, or does not carry the hour at all — and in the
-    // latter case the coverage map that travels with the recording names it.
     let mut refusals = BTreeMap::new();
     let mut leaked = Vec::new();
     for (raw, reason) in &coverage_excluded {
@@ -415,13 +326,6 @@ fn build(scratch: &Path, tag: &str, bytes: &[u8]) -> Result<Built, String> {
     })
 }
 
-/// The holes the packaged H4IX itself carries: one row per game hour the
-/// recording does not vouch for, carrying the exact reason its coverage map
-/// gave.
-///
-/// An older H4IX shape returned nothing here because it had no way to say "this hour is a
-/// hole": every entry it carried was an hour it served, and a gap between two
-/// entries was a structural violation rather than a statement.
 fn read_h4ix_holes(index: &snapshot::ReplayHourIndex) -> Vec<(i64, String)> {
     index
         .excluded_hours()
@@ -429,10 +333,6 @@ fn read_h4ix_holes(index: &snapshot::ReplayHourIndex) -> Vec<(i64, String)> {
         .map(|row| (row.hour_index(), row.reason().to_string()))
         .collect()
 }
-
-// ---------------------------------------------------------------------------
-// Judging
-// ---------------------------------------------------------------------------
 
 struct Row {
     cell: String,
@@ -445,18 +345,6 @@ struct Row {
     range_join: Vec<RangeJoin>,
 }
 
-/// A cell PASSES when the recording still publishes everything it vouches for
-/// and nothing it does not:
-///
-///  1. the artifact build produced a packaged H4IX/H4CP pair at all;
-///  2. the hours the H4IX serves are EXACTLY the hours the coverage map
-///     verifies — no verified hour lost, no excluded hour served;
-///  3. every served hour reconstructs out of the packaged H4CP, proved by the
-///     seal path's own `verify_every_hour`;
-///  4. every hour the recording does not vouch for is refused BY NAME.
-///
-/// A build refusal is FAIL and its refusal text is reported: the named
-/// whole-build refusal is the shipping interim this lane replaces.
 fn judge(cell: &str, shape: &str, injured: &[usize], outcome: &Result<Built, String>) -> Row {
     let injured_hours: Vec<i64> = injured.iter().map(|o| hour_of(*o)).collect();
     let built = match outcome {
@@ -489,7 +377,9 @@ fn judge(cell: &str, shape: &str, injured: &[usize], outcome: &Result<Built, Str
         failures.push(format!("verified hour(s) {lost:?} are not served"));
     }
     if !extra.is_empty() {
-        failures.push(format!("hour(s) {extra:?} served without verified coverage"));
+        failures.push(format!(
+            "hour(s) {extra:?} served without verified coverage"
+        ));
     }
     if !built.leaked.is_empty() {
         failures.push(format!(
@@ -549,12 +439,16 @@ fn judge(cell: &str, shape: &str, injured: &[usize], outcome: &Result<Built, Str
                 .join(",")
         },
         detail,
-        range_join: built.range_join.iter().map(|join| RangeJoin {
-            hour_index: join.hour_index,
-            coverage_first_byte: join.coverage_first_byte,
-            coverage_byte_len: join.coverage_byte_len,
-            hole: join.hole,
-        }).collect(),
+        range_join: built
+            .range_join
+            .iter()
+            .map(|join| RangeJoin {
+                hour_index: join.hour_index,
+                coverage_first_byte: join.coverage_first_byte,
+                coverage_byte_len: join.coverage_byte_len,
+                hole: join.hole,
+            })
+            .collect(),
     }
 }
 
@@ -580,8 +474,6 @@ fn main() {
 
     let mut rows = Vec::new();
 
-    // (g0) the clean control. If this does not build, nothing below measures
-    // anything.
     let clean = synthesize(&BTreeSet::new());
     rows.push(judge(
         "(g0) clean control",
@@ -590,9 +482,6 @@ fn main() {
         &build(&scratch, "g0_clean", &clean.bytes),
     ));
 
-    // (h1) ONE interior hour's records never reached the spool. The sequence
-    // hole excludes the missing hour and the hour the stream resumed in, so the
-    // hole sits strictly inside a verified prefix and a verified suffix.
     for (label, hour) in [("early", 1usize), ("middle", 4), ("late", 6)] {
         let synth = synthesize(&BTreeSet::from([hour]));
         rows.push(judge(
@@ -603,7 +492,6 @@ fn main() {
         ));
     }
 
-    // (h2) TWO separate interior holes: the format has to carry more than one.
     let synth = synthesize(&BTreeSet::from([2usize, 6]));
     rows.push(judge(
         "(h2) multi-hole",
@@ -612,8 +500,6 @@ fn main() {
         &build(&scratch, "h2_multi", &synth.bytes),
     ));
 
-    // (h3) the hole is the VERY FIRST hour, so the first SERVED hour no longer
-    // sits at decoded offset zero.
     let synth = synthesize(&BTreeSet::from([0usize]));
     rows.push(judge(
         "(h3) leading hole",
@@ -622,10 +508,6 @@ fn main() {
         &build(&scratch, "h3_leading", &synth.bytes),
     ));
 
-    // (h4) TRAILING exclusion, DELIVERED: framing damage in the last hour. The
-    // hour is delivered and holds an index row, but the recording does not
-    // vouch for it, so the verified prefix's last row no longer reaches the end
-    // of the source.
     let bytes = synthesize(&BTreeSet::new()).with_framing_damage_at(HOURS - 1);
     rows.push(judge(
         "(h4) trailing hole, delivered",
@@ -634,9 +516,6 @@ fn main() {
         &build(&scratch, "h4_trailing_delivered", &bytes),
     ));
 
-    // (h5) TRAILING exclusion, TORN TAIL: the crashed-recorder shape
-    // residual says already builds over the verified prefix. Here as the
-    // control that it still does.
     let torn = synthesize(&BTreeSet::new()).truncated_inside(HOURS - 1);
     rows.push(judge(
         "(h5) trailing hole, torn tail",
@@ -645,10 +524,6 @@ fn main() {
         &build(&scratch, "h5_torn", &torn),
     ));
 
-    // (h6) framing damage in the MIDDLE. Lane GY latches framing damage, so
-    // every hour after it is excluded too: this is a long TRAILING run rather
-    // than an interior hole, and it is here to show that the two are different
-    // shapes with different answers.
     let bytes = synthesize(&BTreeSet::new()).with_framing_damage_at(4);
     rows.push(judge(
         "(h6) framing damage, middle",

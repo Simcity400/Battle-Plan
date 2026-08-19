@@ -7,12 +7,8 @@ use crate::paradox_text::{
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// Exact-a729 default installed when a sprite definition has no authored
-/// `effectFile`. The renderer subsequently replaces `.lua` with `.shader`.
 pub const A729_DEFAULT_SPRITE_EFFECT: &str = "gfx/FX/buttonstate.lua";
 
-/// Resolve an authored effect token to the effective-VFS shader source opened
-/// by exact-a729.
 pub fn a729_effect_shader_path(effect_file: Option<&str>) -> std::result::Result<String, String> {
     let token = match effect_file {
         Some(value) if value.trim().is_empty() => {
@@ -36,8 +32,6 @@ pub fn a729_effect_shader_path(effect_file: Option<&str>) -> std::result::Result
     }
 }
 
-/// Exact include closure for the built-in shader families implemented by the
-/// replay compositor. Unknown shaders remain a typed admission refusal.
 pub fn xui07_builtin_shader_includes(shader_path: &str) -> Option<&'static [&'static str]> {
     if shader_path.eq_ignore_ascii_case("gfx/FX/buttonstate.shader") {
         Some(&["gfx/FX/buttonstate.fxh", "gfx/FX/sprite_animation.fxh"])
@@ -63,9 +57,6 @@ pub fn xui07_builtin_shader_includes(shader_path: &str) -> Option<&'static [&'st
     }
 }
 
-/// Parse the sprite `color` token into portable RGBA f32 bits. Absence uses
-/// exact-a729's observed white default; callers must separately retain whether
-/// that value was authored.
 pub fn a729_sprite_color_rgba_f32_bits(raw: &Value) -> std::result::Result<[u32; 4], String> {
     let mut values = raw.values_ci("color");
     let Some(value) = values.next() else {
@@ -149,11 +140,6 @@ pub struct SpriteRegistry {
     sprites: Vec<SpriteDefinition>,
     by_name: BTreeMap<String, usize>,
     kinds: BTreeMap<String, usize>,
-    /// Files loaded through [`SpriteRegistry::parse_file`] whose bytes were
-    /// destroyed at decode: `(rel_path, destructive event count)`. Only that
-    /// entry point owns the bytes, so only it can observe this;
-    /// [`SpriteRegistry::add_document`] receives an already-decoded document and
-    /// contributes nothing here.
     decode_lossy_files: Vec<(String, usize)>,
 }
 
@@ -165,13 +151,7 @@ pub struct GfxParseStats {
     pub recovery_count: usize,
     pub kind_histogram: BTreeMap<String, usize>,
     pub files_with_recoveries: Vec<String>,
-    /// `.gfx` files whose BYTES were destroyed at decode, among those observed
-    /// at the byte level (i.e. loaded through [`SpriteRegistry::parse_file`]).
-    /// A different axis from `files_with_recoveries` — see
-    /// `gui::LayoutDocument::decode_losses`.
     pub files_with_decode_loss: Vec<String>,
-    /// Destructive decode EVENTS, never entry counts (the per-site detail is
-    /// capped, so entry counts would understate).
     pub decode_loss_count: usize,
     pub failures: Vec<String>,
 }
@@ -181,8 +161,6 @@ impl SpriteRegistry {
         Self::default()
     }
 
-    /// Parse one `.gfx` file from disk. The byte-owning entry point, so it is
-    /// the only one that can observe decode damage, and it does.
     pub fn parse_file(&mut self, path: &Path, rel: &str) -> Result<usize> {
         let bytes = std::fs::read(path)?;
         let events = destructive_event_count(&diagnose_text_decode(&bytes));
@@ -193,8 +171,6 @@ impl SpriteRegistry {
         Ok(self.add_document(rel, &doc))
     }
 
-    /// Files whose bytes were destroyed at decode, with EVENT counts, in load
-    /// order. Reported, never gating. Empty for the shipped game (measured).
     pub fn decode_lossy_files(&self) -> Vec<String> {
         self.decode_lossy_files
             .iter()
@@ -202,7 +178,6 @@ impl SpriteRegistry {
             .collect()
     }
 
-    /// Total destructive decode events across files loaded from disk.
     pub fn decode_loss_events(&self) -> usize {
         self.decode_lossy_files
             .iter()
@@ -212,11 +187,6 @@ impl SpriteRegistry {
 
     pub fn add_document(&mut self, source_file: &str, doc: &Document) -> usize {
         let mut added = 0usize;
-        // The pinned a729 `interface/core.gfx` is heterogeneous: after the
-        // `bitmapfonts` declarations it also contains sprite definitions such
-        // as `SandboxFloaterBackground`. Clausewitz accepts those entries in
-        // that container, so the replay registry must not silently discard
-        // them merely because they are outside `spriteTypes`.
         for container_name in ["spriteTypes", "bitmapfonts"] {
             for container in doc.root.values_ci(container_name) {
                 for entry in container.fields() {
@@ -258,9 +228,6 @@ impl SpriteRegistry {
         &self.sprites
     }
 
-    /// Effective last-registered sprite winners in deterministic folded-name
-    /// order. This is the semantic registry, unlike `sprites()`, which also
-    /// retains shadowed declarations for diagnostics.
     pub fn effective_sprites(&self) -> impl Iterator<Item = &SpriteDefinition> {
         self.by_name
             .values()

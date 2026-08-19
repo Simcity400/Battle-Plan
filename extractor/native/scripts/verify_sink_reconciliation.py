@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import gap_ledger  # noqa: E402  (path is set immediately above)
+import gap_ledger
 
 
 HEX64 = set("0123456789abcdef")
@@ -37,20 +37,6 @@ FORBIDDEN_RECORDER_ARGUMENTS = {
     "--hour-latch",
 }
 ALLOWED_GAP_PARTS = {"state", "event", "both"}
-# The COMPLETE H4DG reason vocabulary, and it must stay complete.
-#
-# It stopped at `worker_panic` for as long as those were the only five reasons,
-# and then three were assigned without it: a manifest carrying
-# `source_unavailable`, `reader_silent` or `hour_label_mismatch` was reported
-# `domain_gap_N_reason_invalid` -- a capture failed for naming a loss the
-# producer is entitled to name. `hour_label_mismatch` is the one that made it
-# reachable in bulk, since d81's split now publishes it directly.
-#
-# Kept honest from the other side: compact_contract's
-# `verify_sink_reconciliation_admits_exactly_the_contract_gap_reasons` rebuilds
-# this set from `DomainGapReason::ALL` and requires an exact match, so a reason
-# added to the wire without being added here fails that test rather than a
-# capture.
 ALLOWED_GAP_REASONS = {
     "torn",
     "overrun",
@@ -183,22 +169,6 @@ def capture_ready_payload_sha256(ready: dict[str, Any], pipe_token: str) -> str 
                 "<IIIQIIIHHHHiQ",
                 ready["readiness_flags"],
                 ready["pid"],
-                # Offsets 20 and 50 were both reserved-must-be-zero once and both
-                # became real fields (the collector's compile-time feature word,
-                # then its install-freeze count). This re-derivation kept the
-                # constants, so it disagreed with every receipt written after
-                # either change.
-                #
-                # Offset 20 keeps a zero default because a pre-declaration
-                # receipt legitimately carries no such property and really did
-                # authenticate a zero there -- the PowerShell mirror's
-                # Get-PassiveCaptureReadyFeatureBits says the same. Offset 50 has
-                # NO default: `ready["install_freeze_count"]` raises KeyError,
-                # this function returns None, and the caller reports
-                # `capture_ready_authenticated_payload_or_ack_digest_invalid`
-                # instead of quietly rebuilding the wrong bytes. That silent zero
-                # is what refused six captures with nothing but two hashes to
-                # look at.
                 ready.get("collector_feature_bits", 0),
                 ready["process_creation_filetime_utc"],
                 ready["requested_duration_ms"],
@@ -299,16 +269,6 @@ def canonical_hook_authority(problems: list[str]) -> tuple[int, int, str | None]
             source,
         )
     }
-    # The import-slot patch width, parsed rather than assumed. This encoder is a
-    # deliberately INDEPENDENT re-derivation of the Rust roster digest, which is
-    # why it is allowed to disagree -- but independence is only worth something
-    # while it tracks the contract, and it did not. When the two bootstrap
-    # entries were corrected from the retired inline primitive
-    # (minhook-0.9.0.normal-jmp-rel5, 5 bytes) to the one the provider actually
-    # installs (pe64.import-address-slot.atomic-cas.v1, 8 bytes), this file and
-    # its PowerShell twin were left on the old encoding and went on silently
-    # producing the pre-correction digest
-    # 1eed3cf79a86d69cb79f3d55ca95e5d8817cb3846100e96fcb103e0c21d2a3a6.
     import_width_match = re.search(
         r"pub const PE64_IMPORT_ADDRESS_SLOT_ATOMIC_WIDTH:\s*u16\s*=\s*(\d+)\s*;",
         source,
@@ -531,11 +491,6 @@ def canonical_production_domain_roster(problems: list[str]) -> list[tuple[int, s
         if not isinstance(row, dict):
             problems.append(f"canonical_domain_registry_row_{index}_invalid")
             continue
-        # `capture_scheduled: false` marks a domain the owner ruled out of
-        # capture scope; the key is absent for every domain that is still
-        # scheduled. The recorder never schedules these, so reconciling a sink
-        # against them would report a permanent shortfall. Owned by
-        # compact_contract::DESCHEDULED_CAPTURE_DOMAIN_IDS.
         if (
             row.get("schedulable") is True
             and row.get("capture_scheduled") is not False
@@ -601,14 +556,6 @@ def grade_passive_lifecycle(
         "ready_payload_sha256", "host_binding_sha256", "host_validated",
         "public_receipt_core_sha256", "ready_ack_sha256",
     }
-    # `install_freeze_count` is REQUIRED above, in step with the PowerShell
-    # mirror's roster; only the build declaration is an optional axis, kept in
-    # step with Get-PassiveCaptureReadyDeclaredProperties in
-    # PassiveCapture.Lifecycle.ps1. This set was left on the pre-declaration
-    # roster, so it rejected every receipt the recorder actually writes as
-    # `capture_ready_property_set_invalid` before it ever reached the digest
-    # check below -- the same failure lane AS is recorded as having caused on
-    # the teardown set.
     declaration_pair = {"collector_feature_bits", "collector_build"}
     declaration_present = declaration_pair & set(ready)
     require(
@@ -617,12 +564,6 @@ def grade_passive_lifecycle(
         problems,
     )
     ready_keys |= declaration_present
-    # NAMED SEPARATELY, ahead of the generic set and digest checks below, for the
-    # same reason the PowerShell mirror reads it before comparing property sets:
-    # `capture_ready_property_set_invalid` and
-    # `capture_ready_authenticated_payload_or_ack_digest_invalid` are both true
-    # when this field is missing and neither says which field, which is exactly
-    # how a producer skew read as an unexplained hash mismatch for a week.
     require(
         "install_freeze_count" in ready,
         "capture_ready_install_freeze_count_missing",
@@ -644,15 +585,7 @@ def grade_passive_lifecycle(
         "semantic_game_state_mutated", "pinned_hook_sites_restored",
         "pinned_hook_site_count", "pinned_hook_site_baseline_sha256",
         "pinned_hook_site_restored_sha256",
-        # Lane AS added this to the recorder's teardown record and to the
-        # PowerShell verifier's exact-property pin; this independent
-        # re-derivation was left on the 28-key set, so it rejected every
-        # receipt the recorder actually writes as
-        # `capture_teardown_property_set_invalid`.
         "pinned_hook_import_slot_count",
-        # Lane LU 2026-08-16: the collector's own terminal verdicts, or null
-        # when it published none. The host's byte evidence above cannot see
-        # that the collector's teardown sequence did not run.
         "collector_terminal_report",
     }
     require(set(ready) == ready_keys, "capture_ready_property_set_invalid", problems)
@@ -661,8 +594,6 @@ def grade_passive_lifecycle(
         "capture_teardown_property_set_invalid",
         problems,
     )
-    # ADMITTING A PROPERTY IS NOT CHECKING IT. Null means the collector
-    # published no terminal verdict; anything else must be a non-empty string.
     _terminal_report = teardown.get("collector_terminal_report")
     require(
         _terminal_report is None
@@ -727,11 +658,6 @@ def grade_passive_lifecycle(
         and ready.get("requested_duration_ms") == expected_duration
         and is_int(ready.get("readiness_flags"))
         and 0 <= ready.get("readiness_flags") <= 0xFFFFFFFF
-        # 255 = the complete mandatory REQUIRED_PASSIVE_CAPTURE set. Bit 8 (256)
-        # is the OPTIONAL IDENTITY_V1_STREAM declaration, set only when the
-        # collector's stream already carries a CID1 campaign identity. Requiring
-        # exactly 255 refused every identity-bearing capture; require the
-        # mandatory bits and forbid anything outside the known mask instead.
         and (ready.get("readiness_flags") & 255) == 255
         and (ready.get("readiness_flags") & 511) == ready.get("readiness_flags")
         and is_int(ready.get("validated_domain_count"))
@@ -990,9 +916,6 @@ def grade_passive_lifecycle(
         and teardown.get("semantic_game_state_mutated") is False
         and teardown.get("pinned_hook_sites_restored") is True
         and teardown.get("pinned_hook_site_count") == expected_hook_count
-        # A zero expectation means the roster re-derivation failed above (it
-        # already recorded its own problem); never let that degrade into
-        # accepting a receipt that claims zero verified import slots.
         and expected_import_slot_count > 0
         and teardown.get("pinned_hook_import_slot_count")
             == expected_import_slot_count
@@ -1034,13 +957,6 @@ def grade_passive_domain_outcomes(
     if not is_int(frame_count) or frame_count <= 0:
         return
 
-    # The sealed manifest carries a RUN-ENCODED gap ledger, expanded here into
-    # exactly the rows the flat `domain_gap_outcomes` array used to hold, so the
-    # per-row grading below is unchanged. A manifest sealed with the flat array
-    # expands through the same call, which is why archived captures still grade.
-    #
-    # A ledger this build cannot read is a MISSING ledger, not an empty one: the
-    # rows below would otherwise all pass vacuously on a manifest nobody read.
     try:
         gaps = gap_ledger.expand_domain_gap_outcomes(compact)
         readable = True
@@ -1270,7 +1186,6 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
     require(speed.get("exe_sha256") == EXACT_A729_SHA256,
             "speed5_executable_not_exact_a729", problems)
 
-    # The passive product must never publish the retired client-owning path.
     for name in (
         "early_launch_authorization_plan.json",
         "early_launch_resolved_attempt.json",
@@ -1667,12 +1582,6 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     else None
                 )
                 replay_file_value = replay_verify.get("file")
-                # The gate states WHICH proof certified the recording. A
-                # packaged container is byte-compared against its own stream
-                # entry; a cache-only container carries none, so its source
-                # identity is the one the recorder manifest, H4IX and H4CP all
-                # agree on. Absence means "written before the gate stated its
-                # path", and every such report was byte-compared.
                 certification_path = replay_verify.get(
                     "stream_certification_path",
                     "byte_compared_against_packaged_stream",
@@ -1691,8 +1600,6 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     )
                 elif certification_path == "manifest_attested_through_delta_cache":
                     source_binding = (
-                        # A cache-only recording names no packaged stream, in
-                        # the manifest or in the gate report.
                         expected_container_stream is None
                         and replay_verify.get("collector_compact_stream") is None
                         and replay_verify.get("h4cr_stream_bytes_compared") is False
@@ -1704,7 +1611,6 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                         == manifest_storage.get("decoded_sha256")
                     )
                 else:
-                    # Fail closed on a spelling this reader cannot describe.
                     source_binding = False
                 require(
                     isinstance(replay_file_value, str)
@@ -1716,17 +1622,6 @@ def grade_success(run_dir: Path, problems: list[str]) -> dict[str, Any]:
                     == "recorder_manifest"
                     and replay_verify.get("recorder_manifest")
                     == expected_container_manifest
-                    # `recorder_manifest_bytes`/`_sha256` are the identity of
-                    # the SEALED copy inside the container. They are NOT the
-                    # identity of the run-dir file: the recorder redacts
-                    # absolute paths out of the sealed copy and writes finalize
-                    # telemetry back into the run-dir copy after the container
-                    # exists, so the two files are deliberately different (t31:
-                    # 77 bytes apart). Comparing the sealed identity against
-                    # the local file was only ever satisfiable because the gate
-                    # demanded byte-identity, which no live capture met. The
-                    # run-dir file is checked against the field that actually
-                    # describes it.
                     and replay_verify.get("external_manifest_bytes")
                     == manifest_path.stat().st_size
                     and replay_verify.get("external_manifest_sha256")

@@ -141,8 +141,6 @@ fn viewer_scroll_is_nonnegative_and_clamped() {
         .set_scroll(PeaceConferenceScrollRegion::AvailableActions, -1, 40)
         .is_err());
 
-    // Same-conference content can shrink after a collapse or refresh. Both
-    // the displayed and target fixed-point values must contract with it.
     state
         .set_scroll(PeaceConferenceScrollRegion::CurrentAndHistory, 90, 100)
         .unwrap();

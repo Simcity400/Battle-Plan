@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod deployment_queue;
 pub use deployment_queue::{
     decode_deployment_queue_frame, decode_deployment_queue_frame_from_cursor,
-    decode_deployment_queue_payload,
-    encode_deployment_queue_payload, DeploymentConveyorRow, DeploymentCountryRow,
-    DeploymentEquipmentRow, DeploymentLineRow, DeploymentQueueFrame, DeploymentQueueSummary,
+    decode_deployment_queue_payload, encode_deployment_queue_payload, DeploymentConveyorRow,
+    DeploymentCountryRow, DeploymentEquipmentRow, DeploymentLineRow, DeploymentQueueFrame,
+    DeploymentQueueSummary,
 };
 
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
@@ -44,8 +44,6 @@ pub const PRODUCTION_EFFICIENCY_ROW_LEN: usize =
     d11_grammar::fixed_row_len(d11_grammar::Trailer::Pef1);
 pub const PRODUCTION_MIO_JOIN_ROW_LEN: usize =
     d11_grammar::fixed_row_len(d11_grammar::Trailer::Pmi1);
-/// Native production-efficiency helpers return fixed-point percentage values:
-/// 100_000 raw units are one percentage point, so 10_000_000 is 100%.
 pub const PRODUCTION_EFFICIENCY_RAW_PER_PERCENT: i64 = 100_000;
 pub const PRODUCTION_EFFICIENCY_FULL_SCALE_RAW: i64 = 10_000_000;
 pub const PRODUCTION_CONSTRUCTION_ROW_LEN: usize = d11_grammar::CONSTRUCTION_ROW_LEN;
@@ -112,9 +110,6 @@ pub struct ProductionLineRow {
     pub amount: i32,
 }
 
-/// Exact X4-P4 outputs from the three a729 line producers. These are producer
-/// results, not values reconstructed from line speed, factory counts, or
-/// global defines.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProductionEfficiencyRow {
     pub tag_db_id: u32,
@@ -125,9 +120,6 @@ pub struct ProductionEfficiencyRow {
     pub efficiency_growth_raw: i64,
 }
 
-/// Exact X4-P5 line-owned industrial-organisation identity. `mio_id == 0`
-/// represents the serializer-proven absent `industrial_manufacturer` field;
-/// positive values represent `{ id, type = 79 }` after the live type gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProductionMioJoinRow {
     pub tag_db_id: u32,
@@ -298,7 +290,7 @@ pub fn encode_fuel_payload(elapsed_wall_ms: u64, status_flags: u32, rows: &[Fuel
     payload
 }
 
-// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=ef66c76c707c5c840c3b39a0e4aea9cea473157d7392e50126aa6406a7738829
+// @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=cd0e1eed4d8767af23c3d745c2ff369f1fa78e514c9a77ab4f6ef9acdfc54631
 pub fn encode_production_payload(
     elapsed_wall_ms: u64,
     status_flags: u32,
@@ -366,9 +358,6 @@ fn production_line_for_grammar(row: &ProductionLineRow) -> d11_grammar::LineRow 
     }
 }
 
-/// Append the strict X4-P4 `PEF1` producer-output segment. The caller must
-/// supply one exact helper-result row for every emitted base line; otherwise
-/// the segment is rejected instead of publishing partial/default efficiency.
 pub fn append_production_efficiency_trailer(
     payload: &mut Vec<u8>,
     military_rows: &[ProductionLineRow],
@@ -438,9 +427,6 @@ pub fn append_production_efficiency_trailer(
     Ok(())
 }
 
-/// Append the strict X4-P5 `PMI1` line-owned MIO join. The segment is only
-/// emitted when the caller supplies exactly one assigned-or-proven-null value
-/// for every admitted base production line.
 pub fn append_production_mio_join_trailer(
     payload: &mut Vec<u8>,
     military_rows: &[ProductionLineRow],
@@ -748,8 +734,12 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         ordered: true,
         ..CompactStreamSummary::default()
     };
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
-        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(raw)
+    {
+        summary
+            .parse_errors
+            .push(format!("stateful stream placement: {error}"));
     }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
@@ -842,9 +832,6 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                 false
             }
         };
-        // Domain 250 carries instrumentation-only PERF records. The recorder
-        // excludes it from stream/domain/frame cardinality, while sequence and
-        // envelope semantics still cover it above.
         if record_type == RECORD_TYPE_DOMAIN_PERF && domain_id == RC_PROBE_DOMAIN_ID {
             offset = offset.saturating_add(record_len);
             continue;
@@ -1083,9 +1070,12 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                 }
             }
             compact_contract::KnownRecordType::FreezeCensus => {
-                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                if let Ok(census) =
+                    compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                {
                     final_record_is_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
-                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    release_epilogue_seen |= census.phase()
+                        == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
             compact_contract::KnownRecordType::ContentIdentityCensus
@@ -1374,14 +1364,11 @@ fn format_production_grammar_violation(
                     .ok()
                     .and_then(|header| d11_grammar::derive_base_layout(&header).ok())
                     .map_or(needed, |layout| layout.base_len);
-                format!(
-                    "production payload length {available} < expected {expected}"
-                )
+                format!("production payload length {available} < expected {expected}")
             }
-            Section::TrailerMagic => format!(
-                "production trailer at {} has truncated magic",
-                violation.at
-            ),
+            Section::TrailerMagic => {
+                format!("production trailer at {} has truncated magic", violation.at)
+            }
             Section::TrailerHeader(trailer) => format!(
                 "{} trailer shorter than {} bytes",
                 trailer.label(),
@@ -1389,9 +1376,7 @@ fn format_production_grammar_violation(
             ),
             Section::TrailerBody(trailer) => match trailer {
                 d11_grammar::Trailer::Plic => "PLIC header/length is invalid".to_string(),
-                d11_grammar::Trailer::Pcp1 => {
-                    "PCP1 header/count/length is invalid".to_string()
-                }
+                d11_grammar::Trailer::Pcp1 => "PCP1 header/count/length is invalid".to_string(),
                 d11_grammar::Trailer::Pvj1
                 | d11_grammar::Trailer::Pfr1
                 | d11_grammar::Trailer::Ppr1
@@ -1441,9 +1426,7 @@ fn format_production_grammar_violation(
             Section::TrailerMagic => "production trailer offset overflow".to_string(),
             Section::TrailerHeader(trailer) | Section::TrailerBody(trailer) => match trailer {
                 d11_grammar::Trailer::Plic => "PLIC header/length is invalid".to_string(),
-                d11_grammar::Trailer::Pcp1 => {
-                    "PCP1 header/count/length is invalid".to_string()
-                }
+                d11_grammar::Trailer::Pcp1 => "PCP1 header/count/length is invalid".to_string(),
                 d11_grammar::Trailer::Pvj1
                 | d11_grammar::Trailer::Pfr1
                 | d11_grammar::Trailer::Ppr1
@@ -1483,9 +1466,11 @@ fn production_step<T>(
     match result {
         Ok(value) => Some(value),
         Err(violation) => {
-            summary.parse_errors.push(format_production_grammar_violation(
-                offset, payload, violation, preview,
-            ));
+            summary
+                .parse_errors
+                .push(format_production_grammar_violation(
+                    offset, payload, violation, preview,
+                ));
             None
         }
     }
@@ -1584,16 +1569,11 @@ fn decode_production_payload(offset: usize, payload: &[u8], summary: &mut Compac
             ));
         }
     }
-    let stockpiles_end = match production_step(
-        offset,
-        payload,
-        summary,
-        stockpiles.into_end(),
-        None,
-    ) {
-        Some(end) => end,
-        None => return,
-    };
+    let stockpiles_end =
+        match production_step(offset, payload, summary, stockpiles.into_end(), None) {
+            Some(end) => end,
+            None => return,
+        };
 
     let mut seen_lines = BTreeSet::new();
     let mut lines = stockpiles_end.next.lines();
@@ -1637,13 +1617,7 @@ fn decode_production_payload(offset: usize, payload: &[u8], summary: &mut Compac
             ));
         }
     }
-    let lines_end = match production_step(
-        offset,
-        payload,
-        summary,
-        lines.into_end(),
-        None,
-    ) {
+    let lines_end = match production_step(offset, payload, summary, lines.into_end(), None) {
         Some(end) => end,
         None => return,
     };
@@ -1689,16 +1663,11 @@ fn decode_production_payload(offset: usize, payload: &[u8], summary: &mut Compac
             ));
         }
     }
-    let construction_end = match production_step(
-        offset,
-        payload,
-        summary,
-        construction.into_end(),
-        None,
-    ) {
-        Some(end) => end,
-        None => return,
-    };
+    let construction_end =
+        match production_step(offset, payload, summary, construction.into_end(), None) {
+            Some(end) => end,
+            None => return,
+        };
     decode_production_trailer_chain(
         offset,
         payload,
@@ -1720,13 +1689,7 @@ fn decode_production_trailer_chain(
     summary: &mut CompactStreamSummary,
 ) {
     loop {
-        let step = match production_step(
-            offset,
-            payload,
-            summary,
-            cursor.next(payload),
-            None,
-        ) {
+        let step = match production_step(offset, payload, summary, cursor.next(payload), None) {
             Some(step) => step,
             None => return,
         };
@@ -1904,26 +1867,10 @@ fn decode_production_pcv1_segment(
     summary: &mut CompactStreamSummary,
 ) -> Option<d11_grammar::TrailerResume> {
     let header = *body.header();
-    // This gate has no convoy-bank policy of its own; walk country boundaries
-    // structurally and leave every recoverable range DECISION to consumers.
-    // What it may not do is leave the decision INVISIBLE. A recoverable row is
-    // a country row whose declared variant or reservation range does not fit
-    // the block it points into; the row is still structurally intact, so this
-    // is not a parse error and must not destroy the capture, but a capture that
-    // carries them and one that does not have to be distinguishable downstream.
-    // So they are COUNTED. (Codex round-13 finding 3: they were silently
-    // discarded, which made a defective convoy bank indistinguishable from a
-    // clean one in every artefact this gate produces.)
     let mut recoverable_rows = 0u64;
     let mut countries = body.countries();
     loop {
-        match production_step(
-            offset,
-            payload,
-            summary,
-            countries.next(payload),
-            None,
-        )? {
+        match production_step(offset, payload, summary, countries.next(payload), None)? {
             d11_grammar::PcvCountryStep::Row { .. } => {}
             d11_grammar::PcvCountryStep::RecoverableRow { .. }
             | d11_grammar::PcvCountryStep::RecoverableFinal { .. } => {
@@ -1932,25 +1879,27 @@ fn decode_production_pcv1_segment(
             d11_grammar::PcvCountryStep::End(_) => break,
         }
     }
-    let countries_end = match production_step(
-        offset,
-        payload,
-        summary,
-        countries.into_end(),
-        None,
-    )? {
+    let countries_end = match production_step(offset, payload, summary, countries.into_end(), None)?
+    {
         d11_grammar::PcvCountryEnd::Complete(end) => end,
         d11_grammar::PcvCountryEnd::Recoverable { end, .. } => {
             recoverable_rows += 1;
             end
         }
     };
-    // The lane records counts only; explicitly discard both delimited value blocks.
     let variants_end = countries_end.next.variants().discard_all();
     let reservations_end = variants_end.next.reservations().discard_all();
     let domain = domain_entry(summary, DOMAIN_PRODUCTION);
-    add_unit(domain, "production_convoy_country_rows", header.country_count as u64);
-    add_unit(domain, "production_convoy_variant_rows", header.variant_count as u64);
+    add_unit(
+        domain,
+        "production_convoy_country_rows",
+        header.country_count as u64,
+    );
+    add_unit(
+        domain,
+        "production_convoy_variant_rows",
+        header.variant_count as u64,
+    );
     add_unit(
         domain,
         "production_convoy_reservation_rows",
@@ -2002,7 +1951,6 @@ fn decode_production_pdq1_segment(
         "production_deployment_equipment_rows",
         decoded.equipment_rows as u64,
     );
-    // The deployment decoder consumed the inner leaf; explicitly discharge the outer block.
     Some(body.inner_payload().discard_all().next)
 }
 
@@ -2088,10 +2036,7 @@ fn decode_production_pef1_segment(
                 "offset {offset}: PEF1 row {row_index} has invalid tag/kind"
             ));
         }
-        if row.efficiency_raw < 0
-            || row.efficiency_cap_raw < 0
-            || row.efficiency_growth_raw < 0
-        {
+        if row.efficiency_raw < 0 || row.efficiency_cap_raw < 0 || row.efficiency_growth_raw < 0 {
             summary.parse_errors.push(format!(
                 "offset {offset}: PEF1 row {row_index} has a negative producer result"
             ));
@@ -2440,13 +2385,7 @@ fn decode_production_plic_segment(
         }
         counts.push((row.tag_db_id, row.count as usize));
     }
-    let countries_end = production_step(
-        offset,
-        payload,
-        summary,
-        countries.into_end(),
-        None,
-    )?;
+    let countries_end = production_step(offset, payload, summary, countries.into_end(), None)?;
     if header.summed_item_count != header.item_count {
         summary.parse_errors.push(format!(
             "offset {offset}: PLIC id total {} != id_rows {}",
@@ -2493,9 +2432,7 @@ fn decode_production_plic_segment(
                     "offset {offset}: PLIC tag {tag} has invalid/duplicate variant_id {variant_id}"
                 ));
             }
-            if let (Some(order), Some(creator), Some(origin)) =
-                (visible_order, creator, origin)
-            {
+            if let (Some(order), Some(creator), Some(origin)) = (visible_order, creator, origin) {
                 if order != expected_order as u32
                     || creator == 0
                     || creator > MAX_TAG_DB_ID
@@ -3930,11 +3867,6 @@ mod tests {
             compact_contract::COMPACT_STATUS_DELTA_DATA,
             compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
             compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
-            // A measured zero is an ANSWER: the read reached its source, the
-            // source answered, and the answer was empty. It joins this list
-            // rather than the fatal one because the gate above must not refuse
-            // an hour whose only remark is that a domain positively measured
-            // nothing -- which is the whole reason the bit exists.
             compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
             compact_contract::COMPACT_STATUS_BASELINE_CLEAR,
         ];
@@ -4724,18 +4656,13 @@ mod tests {
 
         let mut summary = CompactStreamSummary::default();
         decode_production_payload(0, &payload, &mut summary);
-        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "{:?}",
+            summary.parse_errors
+        );
     }
 
-    /// kills: deleting the `recoverable_rows += 1;` arms in
-    /// `decode_production_pcv1_segment`, or dropping the
-    /// `production_convoy_recoverable_rows` unit, makes this assert see 0.
-    ///
-    /// A country row whose declared variant range does not fit the variant
-    /// block is structurally intact but semantically broken. The gate keeps
-    /// walking -- that is deliberate, a defective convoy bank must not destroy
-    /// the capture -- but it has to ACCOUNT for what it stepped over, or a
-    /// capture carrying the defect is indistinguishable from a clean one.
     #[test]
     fn production_gate_accounts_for_a_pcv1_row_whose_variant_range_is_out_of_bounds() {
         let mut payload = encode_production_payload(77, 0, 1, &[], &[], &[], &[]);
@@ -4757,9 +4684,6 @@ mod tests {
             .unwrap(),
         );
 
-        // The one country row sits straight after the trailer header; its
-        // `variant_start` word is 24 bytes into that row. Point it past the end
-        // of the single-row variant block.
         let variant_start_at = trailer_at + d11_grammar::PCV_HEADER_LEN + 24;
         payload[variant_start_at..variant_start_at + 4].copy_from_slice(&2u32.to_le_bytes());
 

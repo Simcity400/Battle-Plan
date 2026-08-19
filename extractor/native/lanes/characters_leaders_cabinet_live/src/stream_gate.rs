@@ -51,15 +51,13 @@ struct FrameRecordCounts {
     data: u64,
 }
 
-/// Verify a complete collector stream as authority for domain 47.
-///
-/// A proof stream starts at sequence one, is contiguous without wrapping, has
-/// consecutive game-hour closures, ends at a canonical FRAME_END, and carries
-/// exactly one matching d47 PERF/DATA pair in every closed hour.
 pub fn verify_domain47_stream(bytes: &[u8]) -> Domain47StreamGateSummary {
     let mut out = Domain47StreamGateSummary::default();
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes) {
-        out.parse_errors.push(format!("stateful stream placement: {error}"));
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(bytes)
+    {
+        out.parse_errors
+            .push(format!("stateful stream placement: {error}"));
     }
     let mut cursor = 0usize;
     let mut previous_sequence = None;
@@ -119,8 +117,6 @@ pub fn verify_domain47_stream(bytes: &[u8]) -> Domain47StreamGateSummary {
             }
         };
         // The single release epilogue the owner ruling admits after a closed-hour
-        // boundary. It uses the SHARED policy so this gate cannot drift into a
-        // laxer rule than the stateful validator run above.
         if semantics_ok && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
         {
             if let Ok(census) =
@@ -274,8 +270,6 @@ pub fn verify_domain47_stream(bytes: &[u8]) -> Domain47StreamGateSummary {
     out
 }
 
-/// Build a lane-local, explicitly synthetic one-hour proof stream. This is not
-/// evidence about the source record's original sequence or surrounding hours.
 pub fn encode_domain47_proof_stream(game_hour_raw: i32, payload: &[u8]) -> Result<Vec<u8>, String> {
     let decoded = domain47::decode_payload(0, payload);
     if !decoded.parse_errors.is_empty() {

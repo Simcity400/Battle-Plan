@@ -1,16 +1,3 @@
-//! U1 war-overview panel gates: a LAYOUT gate (parse `waroverview.gui` via the
-//! shared `game_ui` parser and resolve the participant-row template's named
-//! textboxes through `resolve_element_rect`) plus a BINDING gate (drive the real
-//! `replay_core` `fx_war_faction_matrix` packed fixture and assert
-//! `war_overview_from_frame` renders the exact generator war-relation casualties
-//! and belligerent set, appearing at the exact tick).
-//!
-//! Expected values are transcribed from the fixture GENERATOR SOURCE
-//! (`replay_fixture_gen::fx_war_faction_matrix`), never from the code under
-//! test. At tick>=7:
-//!   * `diplomacy_live.war_relations = [{GER,ENG,1200,900},{ITA,ENG,200,300}]`
-//!   * `at_war`: GER->ENG, ENG->{GER,ITA}, ITA->ENG.
-//! Before tick 7 there is no war (no war_relations, no at_war pairs).
 
 use game_ui::compose::{resolve_element_rect, ComposeOptions, Rect};
 use game_ui::gui::{GuiElement, LayoutSet};
@@ -18,9 +5,6 @@ use game_ui::waroverview_binding::{war_overview_from_frame, WarRelationSummary};
 use replay_core::{open_recording, Leaf, WorldTimeline};
 use std::path::{Path, PathBuf};
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
@@ -58,9 +42,6 @@ fn fixture(name: &str) -> WorldTimeline {
     WorldTimeline::open(source).unwrap_or_else(|err| panic!("timeline {name}: {err}"))
 }
 
-/// LAYOUT GATE — `waroverview.gui` parses clean; the main window and the wars
-/// gridbox are present, and the `war_ally_entry` participant-row template's
-/// named textboxes resolve to their file-declared pixel offsets.
 #[test]
 #[cfg_attr(
     not(gate_hoi4_install),
@@ -74,7 +55,6 @@ fn waroverview_layout_resolves_from_files() {
         "waroverview.gui parses clean"
     );
 
-    // Main window: declared width 1167 (height is 85% → runtime, not gated).
     let window = find(&layouts, "waroverview_window", "containerWindowType");
     let width = window
         .size
@@ -84,7 +64,6 @@ fn waroverview_layout_resolves_from_files() {
         .value
         .as_deref();
     assert_eq!(width, Some("1167"), "waroverview_window declared width");
-    // The wars list gridbox and both participant columns exist.
     assert!(window
         .children
         .iter()
@@ -92,8 +71,6 @@ fn waroverview_layout_resolves_from_files() {
     assert!(window.children.iter().any(|c| c.name == "attacker_window"));
     assert!(window.children.iter().any(|c| c.name == "defender_window"));
 
-    // Participant row template: fixed size 530x41; textbox children carry no
-    // size (natural 0x0) and UpperLeft-anchor to their explicit positions.
     let entry = find(&layouts, "war_ally_entry", "containerWindowType");
     let options = ComposeOptions::new(1920, 1080);
     let entry_rect = Rect::new(0, 0, 530, 41);
@@ -125,16 +102,12 @@ fn summary(first: &str, second: &str, fc: i64, sc: i64) -> WarRelationSummary {
     }
 }
 
-/// BINDING GATE 1 — no war before tick 7; at tick 7 the two live belligerent-
-/// pair casualty rows + the belligerent set materialize exactly as the
-/// generator wrote them.
 #[test]
 fn war_overview_flips_at_change_hour() {
     let tl = fixture("fx_war_faction_matrix");
     let hours = tl.hours().to_vec();
     assert_eq!(hours.len(), 12);
 
-    // Before the war flip (tick 6): diplomacy present, but no war rows.
     let before = war_overview_from_frame(&tl.frame(hours[6]).unwrap(), "GER");
     assert!(before.available, "diplomacy present @tick6");
     assert!(
@@ -144,7 +117,6 @@ fn war_overview_flips_at_change_hour() {
     assert!(before.belligerents.is_empty(), "no belligerents @tick6");
     assert!(before.pov_belligerents.is_empty(), "GER no wars @tick6");
 
-    // Change hour (tick 7): the two casualty rows + belligerent set appear.
     let after = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
     assert!(after.available);
     assert_eq!(
@@ -180,9 +152,6 @@ fn war_overview_flips_at_change_hour() {
     assert_eq!(wars[0].residuals, Leaf::Absent);
 }
 
-/// BINDING GATE 2 — the belligerent set is POV-independent (global), while
-/// `pov_belligerents` is per-POV. ENG's POV sees its two enemies; the global
-/// set is identical to GER's.
 #[test]
 fn belligerent_set_is_global_pov_belligerents_are_per_pov() {
     let tl = fixture("fx_war_faction_matrix");
@@ -190,18 +159,14 @@ fn belligerent_set_is_global_pov_belligerents_are_per_pov() {
     let ger = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "GER");
     let eng = war_overview_from_frame(&tl.frame(hours[7]).unwrap(), "ENG");
 
-    // The global belligerent set + casualty rows do not depend on POV.
     assert_eq!(ger.belligerents, eng.belligerents);
     assert_eq!(ger.war_relations, eng.war_relations);
-    // POV belligerents differ: ENG is at war with GER and ITA.
     assert_eq!(
         eng.pov_belligerents,
         vec!["GER".to_string(), "ITA".to_string()]
     );
 }
 
-/// BINDING GATE 3 — a POV absent from the recording still gets the global war
-/// picture (fail-closed panel), with an empty POV-belligerent list.
 #[test]
 fn absent_pov_sees_global_wars_only() {
     let tl = fixture("fx_war_faction_matrix");

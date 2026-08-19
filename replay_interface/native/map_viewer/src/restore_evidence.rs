@@ -146,10 +146,6 @@ pub fn load_restore_scene_bundle(bundle_path: &Path) -> Result<RestoreSceneBundl
         )
         .into());
     }
-    // Codex review 2026-07-06: a blocked/in-progress producer snapshot can
-    // carry blockers (and accumulate extra draws) while every field this
-    // loader reads still parses — grading must never run from incomplete
-    // capture evidence, so any recorded blocker fails the whole bundle.
     if !bundle.blockers.is_empty() {
         return Err(format!(
             "restore-pass bundle {} has {} capture blocker(s), refusing incomplete evidence: {}",
@@ -225,9 +221,6 @@ fn load_retained_restore_scene_bundle(
         .into());
     }
 
-    // Admit the manifest only when all four reflected RestoreScene bindings are
-    // unique, exact-slot, hash-bound payloads. RenderDoc resource/view handles
-    // are deliberately ignored: they are capture-local and non-portable.
     let main_scene = retained_input(inputs, RESTORE_MAIN_SCENE, 0)?;
     validate_retained_texture(
         main_scene,
@@ -268,7 +261,6 @@ fn load_retained_restore_scene_bundle(
         file: color_cube_file.to_string(),
         width: RESTORE_COLOR_CUBE_WIDTH,
         height: RESTORE_COLOR_CUBE_HEIGHT,
-        // The retained exporter records the real alpha-bearing BGRA view.
         dxgi_format: DXGI_FORMAT_B8G8R8A8_UNORM,
         fnv1a64: None,
         rgba8: bgra8_to_rgba8(&color_cube_raw),
@@ -855,11 +847,6 @@ fn load_restore_posteffect_cb(
         .iter()
         .find(|binding| binding.stage == "PS" && binding.slot == 1)
         .ok_or("restore-pass bundle is missing PS slot 1 PostEffectBase constant buffer")?;
-    // Live 2026-07-06 (restore_gate_1): the shipped compiled restorescene PS
-    // reflects its cbuffer as "dx11_cb1"; the harness canonical name is
-    // "PostEffectBase". Slot 1 + 80 bytes + the sampler-signature-identified
-    // shader pin the identity; the reflected NAME is metadata, so both
-    // observed spellings are accepted and anything else fails closed.
     if binding
         .declared_name
         .as_deref()
@@ -968,8 +955,6 @@ fn load_restore_color_cube(
     draw: &MapFrameDraw,
 ) -> Result<RestoreSceneColorCube> {
     let resource = require_restore_resource(draw, RESTORE_COLOR_CUBE, 2)?;
-    // Live 2026-07-06 (restore_gate_1): the engine's composed ColorCube is
-    // DXGI 88 (B8G8R8X8_UNORM); harness stand-ins are 28 (R8G8B8A8_UNORM).
     validate_restore_texture_metadata(
         resource,
         RESTORE_COLOR_CUBE,
@@ -1028,8 +1013,6 @@ fn load_restore_color_cube(
     })
 }
 
-/// B8G8R8X8_UNORM texels to canonical RGBA8: swap B/R, force opaque alpha
-/// (the X channel carries undefined data by contract).
 fn bgrx8_to_rgba8(raw: &[u8]) -> Vec<u8> {
     let mut out = raw.to_vec();
     for texel in out.chunks_exact_mut(4) {
@@ -1039,8 +1022,6 @@ fn bgrx8_to_rgba8(raw: &[u8]) -> Vec<u8> {
     out
 }
 
-/// B8G8R8A8_UNORM texels to canonical RGBA8. Unlike BGRX, retained RenderDoc
-/// exports carry a defined alpha channel, so preserve it while swapping B/R.
 fn bgra8_to_rgba8(raw: &[u8]) -> Vec<u8> {
     let mut out = raw.to_vec();
     for texel in out.chunks_exact_mut(4) {
@@ -1054,8 +1035,6 @@ fn load_restore_average_luminance(
     draw: &MapFrameDraw,
 ) -> Result<RestoreSceneAverageLuminance> {
     let resource = require_restore_resource(draw, RESTORE_AVERAGE_LUMINANCE, 3)?;
-    // Live 2026-07-06 (restore_gate_1): the engine's average-luminance
-    // texture is DXGI 54 (R16_FLOAT); harness stand-ins are 41 (R32_FLOAT).
     validate_restore_texture_metadata(
         resource,
         RESTORE_AVERAGE_LUMINANCE,
@@ -1141,7 +1120,6 @@ fn load_restore_average_luminance(
     }
 }
 
-/// IEEE 754 half-precision bits to f32 (R16_FLOAT texel decode).
 fn f16_bits_to_f32(bits: u16) -> f32 {
     let sign = u32::from(bits >> 15) << 31;
     let exponent = u32::from((bits >> 10) & 0x1F);
@@ -1149,7 +1127,6 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
     let magnitude = match (exponent, mantissa) {
         (0, 0) => 0,
         (0, m) => {
-            // Subnormal half: renormalize into the f32 exponent range.
             let shift = m.leading_zeros() - 21;
             let m = (m << (shift + 1)) & 0x3FF;
             ((113 - shift) << 23) | (m << 13)
@@ -1334,9 +1311,6 @@ mod tests {
 
     #[test]
     fn restore_pass_bundle_loader_decodes_fixture() {
-        // Fixture is the LIVE restore_gate_1 bundle (2026-07-06, vanilla
-        // 1936): zero blockers, ColorCube B8G8R8X8, luminance R16_FLOAT,
-        // the exact evidence class the grading path consumes in production.
         let bundle = load_restore_scene_bundle_session_dir(&fixture_dir())
             .expect("load restore pass fixture")
             .expect("restore pass bundle exists");
@@ -1347,7 +1321,6 @@ mod tests {
         assert_eq!(bundle.color_cube.height, 32);
         assert_eq!(bundle.color_cube.dxgi_format, DXGI_FORMAT_B8G8R8X8_UNORM);
         assert_eq!(bundle.color_cube.rgba8.len(), 131_072);
-        // Swizzle applied: every texel opaque after BGRX -> RGBA.
         assert!(bundle
             .color_cube
             .rgba8
@@ -1498,7 +1471,6 @@ mod tests {
 
     #[test]
     fn bgrx8_texels_swizzle_to_rgba8_with_opaque_alpha() {
-        // One blue-ish BGRX texel (B=10 G=20 R=30 X=undefined 7).
         let raw = [10u8, 20, 30, 7, 200, 100, 50, 0];
         let rgba = bgrx8_to_rgba8(&raw);
         assert_eq!(rgba, vec![30, 20, 10, 0xFF, 50, 100, 200, 0xFF]);
@@ -1511,7 +1483,6 @@ mod tests {
         assert_eq!(f16_bits_to_f32(0xBC00), -1.0);
         assert_eq!(f16_bits_to_f32(0x4000), 2.0);
         assert_eq!(f16_bits_to_f32(0x3800), 0.5);
-        // Smallest positive subnormal half = 2^-24.
         assert_eq!(f16_bits_to_f32(0x0001), 2.0_f32.powi(-24));
         assert!(f16_bits_to_f32(0x7C00).is_infinite());
         assert!(f16_bits_to_f32(0x7C01).is_nan());
@@ -1529,8 +1500,6 @@ mod tests {
             .iter_mut()
             .find(|resource| resource.declared_name.as_deref() == Some(RESTORE_COLOR_CUBE))
             .expect("fixture ColorCube");
-        // B8G8R8A8 (87) is close to the live 88 but NOT accepted — alpha
-        // semantics differ and it has never been observed; must fail closed.
         resource.dxgi_format = DXGI_FORMAT_B8G8R8A8_UNORM;
         let err = validate_restore_texture_metadata(
             resource,

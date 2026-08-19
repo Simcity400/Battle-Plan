@@ -1,51 +1,15 @@
-//! Mid-playback data-anomaly policy: **log + hold-last-good, never invent**.
-//!
-//! Startup fail-closed diagnostics (the `--validate-recording` path in
-//! `main.rs`, the negative-fixture rejection matrix) reject a *malformed*
-//! recording at open. This module covers a recording that opens cleanly but
-//! develops an anomaly
-//! **mid-stream** — a domain that earlier snapshots carried goes missing, a
-//! field flips type, a value falls out of range, an hourly snapshot is missing,
-//! or the recording's identity mutates.
-//!
-//! Policy (Constraint 3, fail-closed honesty):
-//!
-//! * **Log** — every anomaly emits one structured [`Diagnostic`] the first time
-//!   it is observed (it does not re-fire every hour it persists).
-//! * **Hold last good, marked** — the last measured value is retained and
-//!   surfaced as [`Hold`] (carrying the hour it is held *from* and the class),
-//!   so a consumer renders it VISIBLY MARKED as held, never as if it were live.
-//! * **Never invent** — an out-of-range value is flagged, never clamped; an
-//!   hour gap scrubs as [`HourResolution::GapUnavailable`], never interpolated;
-//!   a domain that never had a good value holds nothing.
-//!
-//! This lives entirely at the **consumer seam** (`replay_app`): it reads the
-//! typed `replay_core::WorldFrame` views (`ViewStatus`, `Leaf`,
-//! `coverage_warnings`, `save_version`, raw `provenance`) and never touches
-//! recording bytes or `replay_core` internals. Declared recording gaps remain
-//! [`HourResolution::GapUnavailable`]; hold-last-good never substitutes a stale
-//! frame for a declared gap.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use replay_core::{Leaf, ViewStatus, WorldFrame, WorldTimeline};
 use serde_json::Value;
 
-/// The five mid-playback anomaly classes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AnomalyClass {
-    /// A domain (typed view) that was `Present` in earlier snapshots is now
-    /// `DomainAbsent`/`DomainUnavailable` (Absent-after-Present).
     MissingDomain,
-    /// A field's JSON type flips mid-stream; the typed view goes `Unobtained`
-    /// with a wrong-typed coverage warning.
     TypeFlip,
-    /// A measured value falls outside its valid domain (negative manpower/fuel,
-    /// a ratio outside `[0,1]`, or a province id absent from the map).
     OutOfRange,
-    /// An hourly snapshot is missing from the middle of the series.
     HourGap,
-    /// The recording's invariant identity (modset id / save version) mutates.
     IdentityMutation,
 }
 
@@ -61,20 +25,15 @@ impl AnomalyClass {
     }
 }
 
-/// One structured anomaly diagnostic — emitted once per anomaly episode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Diagnostic {
     pub class: AnomalyClass,
-    /// The hour at which the anomaly was first observed.
     pub hour: i64,
-    /// The monitored view / field / id.
     pub monitor: String,
-    /// Human-readable detail (says what was held / flagged).
     pub detail: String,
 }
 
 impl Diagnostic {
-    /// A single structured log line for stderr (the "log" side of the policy).
     pub fn log_line(&self) -> String {
         format!(
             "replay_app: ANOMALY {} @hour {} [{}]: {}",
@@ -86,30 +45,18 @@ impl Diagnostic {
     }
 }
 
-/// A last-good value being held VISIBLY MARKED because its monitor is currently
-/// anomalous. The consumer renders it as held (never as a live value).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hold {
     pub class: AnomalyClass,
     pub monitor: String,
-    /// The recorded hour the held value is carried from (the last good hour).
     pub since_hour: i64,
-    /// A short marker string for the UI, e.g. "HELD weather from hour 41".
     pub marker: String,
 }
 
-/// Resolution of an arbitrary requested hour against the recorded series, so a
-/// consumer that seeks to a non-recorded hour degrades honestly instead of
-/// interpolating across a gap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HourResolution {
-    /// The requested hour is a recorded snapshot.
     Exact,
-    /// The requested hour is before the first recorded frame.
     BeforeFirst,
-    /// The requested hour lies inside a detected gap; it is unavailable and
-    /// must NOT be interpolated. Carries the surrounding recorded hours and the
-    /// missing hour(s).
     GapUnavailable {
         from: i64,
         to: i64,
@@ -117,7 +64,6 @@ pub enum HourResolution {
     },
 }
 
-/// A detected hole in the hourly series.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gap {
     pub from: i64,
@@ -125,15 +71,6 @@ pub struct Gap {
     pub missing: Vec<i64>,
 }
 
-/// A recorded index entry whose payload cannot be loaded and authenticated.
-/// This is terminal, not a hold-last-good anomaly: holding across an integrity
-/// failure would make an unverified recording appear playable.
-///
-/// Constructed only by [`scan_timeline`], the whole-timeline library mirror of
-/// the product walk. The product path reports the same condition as
-/// [`crate::timeline::TimelineSelectionError::FrameLoad`]; the two are
-/// deliberately separate types because only this one can name the scan that
-/// found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimelineScanError {
     pub hour: i64,
@@ -152,16 +89,10 @@ impl std::fmt::Display for TimelineScanError {
 
 impl std::error::Error for TimelineScanError {}
 
-/// Domains whose `ViewStatus` is watched for the Absent-after-Present
-/// (MissingDomain) transition. Ordered for deterministic diagnostics.
 const MONITORED_DOMAINS: &[&str] = &[
     "countries",
     "weather",
     "snow_mud",
-    // The per-province collection carries its own availability, split from the
-    // snow_mud view status: rows can go unreadable mid-stream while the
-    // carrier itself stays admitted, and that downgrade must surface, not read
-    // as an empty measured census.
     "snow_mud.by_province",
     "visibility",
     "buildings",
@@ -171,15 +102,8 @@ const MONITORED_DOMAINS: &[&str] = &[
     "diplomacy",
 ];
 
-/// Country scalar fields watched for the number->non-number TypeFlip.
 const TYPE_FLIP_FIELDS: &[&str] = &["political_power", "fuel_current"];
 
-/// The raw JSON value backing a monitored domain, used only to remember the
-/// last-good hour for the hold marker. Most monitors are top-level raw keys;
-/// the snow_mud pair reads the domain-24 carrier under `map` (and its province
-/// collection one level deeper), so a plain top-level lookup would never record
-/// a last good value and the hold would claim the FAILING hour as its
-/// `since_hour`.
 fn monitored_domain_value<'a>(frame: &'a WorldFrame, domain: &str) -> Option<&'a Value> {
     match domain {
         "snow_mud" => frame.domain("map")?.get("_r2_weather_live"),
@@ -207,7 +131,6 @@ fn view_status(frame: &WorldFrame, domain: &str) -> ViewStatus {
     }
 }
 
-/// The recording's invariant identity fingerprint at one frame.
 fn identity_fingerprint(frame: &WorldFrame) -> (Option<String>, Option<String>) {
     let save_version = frame.save_version().map(str::to_string);
     let modset = frame
@@ -219,39 +142,21 @@ fn identity_fingerprint(frame: &WorldFrame) -> (Option<String>, Option<String>) 
     (save_version, modset)
 }
 
-/// The mid-playback anomaly policy. Observe recorded frames in order; it emits
-/// a diagnostic once per anomaly episode and tracks the marked last-good holds.
 pub struct AnomalyPolicy {
     hours: Vec<i64>,
     gaps: Vec<Gap>,
-    /// Province ids that exist in the map (from the bundle). When set, a
-    /// controlled province id absent from it is OutOfRange. `None` disables the
-    /// province-id check (e.g. the static baseline with no recording map).
     known_province_ids: Option<BTreeSet<u32>>,
 
-    // rolling state
-    /// Last recorded hour each monitored domain's TYPED view was `Present`.
-    /// Presence of the typed view — not of a raw top-level key — is what the
-    /// viewer holds: derived domains (e.g. `topbar`, which is keyed off
-    /// `countries`) are `Present` with no raw key of their own, and the hold
-    /// provenance must still name the real last-good hour, never the breaking
-    /// hour.
     last_present_hour: BTreeMap<String, i64>,
     last_good_scalar: BTreeMap<String, (i64, f64)>,
     identity_baseline: Option<(i64, (Option<String>, Option<String>))>,
-    /// Monitors currently in an anomalous episode (so we log the transition
-    /// once, not every hour it persists).
     active: BTreeMap<String, Hold>,
 
-    // outputs
     diagnostics: Vec<Diagnostic>,
-    /// Active holds as-of each observed hour, for scrub-time queries.
     hold_timeline: Vec<(i64, Vec<Hold>)>,
 }
 
 impl AnomalyPolicy {
-    /// Build a policy for a recorded hour series. Gaps are precomputed so the
-    /// hour-gap diagnostics are available immediately and are order-independent.
     pub fn with_known_provinces(
         hours: &[i64],
         known_province_ids: Option<BTreeSet<u32>>,
@@ -278,7 +183,6 @@ impl AnomalyPolicy {
             diagnostics: Vec::new(),
             hold_timeline: Vec::new(),
         };
-        // Hour-gap diagnostics are a property of the series, not of any frame.
         for gap in policy.gaps.clone() {
             policy.diagnostics.push(Diagnostic {
                 class: AnomalyClass::HourGap,
@@ -298,13 +202,10 @@ impl AnomalyPolicy {
         &self.gaps
     }
 
-    /// All diagnostics accumulated so far (hour-gap ones up front, then the
-    /// per-frame anomalies in observation order).
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }
 
-    /// Classify an arbitrary requested hour against the recorded series.
     pub fn classify_hour(&self, requested: i64) -> HourResolution {
         if self.hours.binary_search(&requested).is_ok() {
             return HourResolution::Exact;
@@ -323,15 +224,9 @@ impl AnomalyPolicy {
                 };
             }
         }
-        // Past the last recorded hour, or a sub-hour position between two
-        // contiguous hours: hold-last-good is honest there (no gap).
         HourResolution::Exact
     }
 
-    /// The marked holds active as of `hour` (the frame at-or-before it). Empty
-    /// before the first observed frame. `hold_timeline` stores change-points
-    /// in ascending hour order, so the last entry at-or-before `hour` is the
-    /// active snapshot (binary search; one clone of the answer only).
     pub fn active_holds_at(&self, hour: i64) -> Vec<Hold> {
         let idx = self.hold_timeline.partition_point(|(h, _)| *h <= hour);
         if idx == 0 {
@@ -341,8 +236,6 @@ impl AnomalyPolicy {
         }
     }
 
-    /// Observe one recorded frame (call in ascending recorded-hour order).
-    /// Returns the diagnostics newly emitted for this frame.
     pub fn observe(&mut self, frame: &WorldFrame) -> Vec<Diagnostic> {
         let hour = frame.hour_index();
         let before = self.diagnostics.len();
@@ -352,20 +245,11 @@ impl AnomalyPolicy {
         self.check_out_of_range(frame, hour);
         self.check_identity(frame, hour);
 
-        // Record only active-hold change-points for scrub queries. Appending
-        // every observed hour would grow O(recorded-hours) even on a clean
-        // recording; an entry is appended only when the snapshot differs from
-        // the previous change-point (re-observation of the same hour still
-        // overwrites).
-        // `active_holds_at` answers by last-entry-at-or-before, so skipping
-        // an identical snapshot is query-equivalent.
         let holds: Vec<Hold> = self.active.values().cloned().collect();
         match self.hold_timeline.last_mut() {
             Some(last) if last.0 == hour => last.1 = holds,
             Some(last) if last.1 == holds => {}
             Some(_) => self.hold_timeline.push((hour, holds)),
-            // An initial all-clear snapshot is the same as no entry at all
-            // (`active_holds_at` returns empty before the first entry).
             None if holds.is_empty() => {}
             None => self.hold_timeline.push((hour, holds)),
         }
@@ -388,20 +272,10 @@ impl AnomalyPolicy {
             let key = format!("domain:{domain}");
             match status {
                 ViewStatus::Present => {
-                    // The typed view is the presence authority. A raw-key
-                    // probe here (`frame.domain(domain)`) would MISS derived
-                    // domains such as `topbar` (Present from `countries`,
-                    // no raw `topbar` key) and a later loss would then
-                    // fabricate the breaking hour as the hold origin.
                     self.last_present_hour.insert(domain.to_string(), hour);
-                    // A Present view clears its active hold; a later loss then
-                    // emits a new transition.
                     self.active.remove(&key);
                 }
                 ViewStatus::DomainAbsent | ViewStatus::DomainUnavailable => {
-                    // Only an anomaly if this domain was Present earlier; the
-                    // hold provenance is the exact hour it was last Present,
-                    // never invented from the breaking hour.
                     if let Some(&since) = self.last_present_hour.get(domain) {
                         if !self.active.contains_key(&key) {
                             self.fire(
@@ -447,14 +321,6 @@ impl AnomalyPolicy {
                         self.active.remove(&key);
                     }
                     Leaf::Unobtained => {
-                        // A wrong-typed value (not a plain null) is the flip: it
-                        // both goes Unobtained AND appends a coverage warning.
-                        // Coverage warnings are country-qualified JSON paths
-                        // (world.rs emits `countries.{tag}.<walked path>: present
-                        // but wrong-typed ...`), so match this country's exact
-                        // path — matching the bare field name would attribute
-                        // one country's flip to every other country whose leaf
-                        // is plain-null Unobtained in the same frame.
                         let warn_path = match field {
                             "political_power" => {
                                 format!("countries.{tag}.politics.political_power")
@@ -467,7 +333,6 @@ impl AnomalyPolicy {
                         let wrong_typed = warnings
                             .iter()
                             .any(|w| w.starts_with(&warn_path) && w.contains("wrong-typed"));
-                        // Only after we had a good value here.
                         if wrong_typed && self.last_good_scalar.contains_key(&monitor) {
                             let (since, held) = self.last_good_scalar[&monitor];
                             if !self.active.contains_key(&key) {
@@ -502,8 +367,6 @@ impl AnomalyPolicy {
     }
 
     fn check_out_of_range(&mut self, frame: &WorldFrame, hour: i64) {
-        // Scalar ranges: manpower & fuel are non-negative; stability &
-        // war-support are ratios in [0,1].
         for (tag, topbar) in frame.topbar_scalars_by_country() {
             if let Leaf::Measured(n) = topbar.manpower_available {
                 let monitor = format!("countries.{tag}.manpower_available");
@@ -532,8 +395,6 @@ impl AnomalyPolicy {
                 });
             }
         }
-        // Province ids: any controlled province absent from the map universe.
-        // Collect first (immutable borrow of self) before mutating (fire/active).
         let stray: Vec<u32> = match &self.known_province_ids {
             Some(known) => frame
                 .control_by_province()
@@ -581,10 +442,6 @@ impl AnomalyPolicy {
     {
         let key = format!("range:{monitor}");
         if out_of_range {
-            // The marker may claim a HELD value only when one was actually
-            // captured. An out-of-range value with no prior good
-            // capture is FLAGGED, never presented as held from the breaking
-            // hour (that provenance would be invented).
             let last_good = self.last_good_scalar.get(monitor).map(|(h, _)| *h);
             let since = last_good.unwrap_or(hour);
             if !self.active.contains_key(&key) {
@@ -665,21 +522,6 @@ fn status_label(status: ViewStatus) -> &'static str {
     }
 }
 
-/// Library convenience: run the policy over every recorded frame of a timeline
-/// in order, and return the populated policy.
-///
-/// **This is not the product path.** The app never scans a whole timeline at
-/// open; it observes frames incrementally through the requested hour in
-/// [`crate::timeline::RecordingTimeline`] (`scan_anomalies_through`), which is
-/// what every scrub entry point reaches. This function is the whole-timeline
-/// mirror of that walk: same [`AnomalyPolicy`], same ordering, same terminal
-/// treatment of a load failure. It exists so the policy can be exercised
-/// against a fixture without standing up a `RecordingTimeline`, and the
-/// anomaly-policy test battery below is its only caller.
-///
-/// The one behaviour it must keep identical to the product walk: a frame-load
-/// integrity/decode error is terminal. It is returned to the caller and is
-/// never downgraded to a hold-last-good anomaly.
 pub fn scan_timeline(
     timeline: &WorldTimeline,
     known_province_ids: Option<BTreeSet<u32>>,
@@ -691,9 +533,6 @@ pub fn scan_timeline(
                 policy.observe(&frame);
             }
             Err(error) => {
-                // SHA/CRC/decode failure is an authentication boundary, not a
-                // semantic mid-stream anomaly. Never continue with a held
-                // value after bytes failed verification.
                 return Err(TimelineScanError {
                     hour,
                     detail: error.to_string(),
@@ -711,9 +550,6 @@ mod tests {
     use serde_json::Value as JsonValue;
     use std::path::PathBuf;
 
-    /// Minimal in-memory source for tests that need a precise frame shape
-    /// (e.g. two countries diverging within one frame) that no on-disk
-    /// anomaly fixture exercises.
     struct MemorySource {
         hours: Vec<i64>,
         frames: BTreeMap<i64, JsonValue>,
@@ -798,10 +634,6 @@ mod tests {
         );
     }
 
-    /// `topbar` is a DERIVED monitored domain — its typed
-    /// view is `Present` off the `countries` object with no raw `topbar` key.
-    /// When it later breaks, the hold provenance must name the hour it was
-    /// last Present, never fabricate the BREAKING hour as the hold origin.
     #[test]
     fn derived_domain_hold_names_the_last_present_hour_not_the_breaking_hour() {
         let timeline = WorldTimeline::open(Box::new(MemorySource {
@@ -809,14 +641,11 @@ mod tests {
             frames: BTreeMap::from([
                 (0, serde_json::json!({ "countries": { "GER": {} } })),
                 (1, serde_json::json!({ "countries": { "GER": {} } })),
-                // countries (and therefore derived topbar) lost at hour 2.
                 (2, serde_json::json!({})),
             ]),
         }))
         .expect("open synthetic timeline");
 
-        // The typed topbar view is Present while the raw `topbar` key is
-        // absent.
         let first = timeline.frame(0).expect("first frame");
         assert_eq!(first.topbar_status(), replay_core::ViewStatus::Present);
         assert!(
@@ -890,9 +719,6 @@ mod tests {
             .collect()
     }
 
-    /// Every anomaly fixture OPENS (the anomaly/ set degrades, it does not
-    /// reject like the negative/ set) and playback crosses every hour with no
-    /// panic.
     #[test]
     fn all_anomaly_fixtures_open_and_play_without_panic() {
         let names = [
@@ -905,7 +731,6 @@ mod tests {
         for name in names {
             let timeline = open_anomaly(name);
             let policy = scan_timeline(&timeline, Some(known_provinces())).expect("scan fixture");
-            // Crossed every recorded hour; holds queryable at each.
             for &hour in timeline.hours() {
                 let _ = policy.active_holds_at(hour);
             }
@@ -925,12 +750,10 @@ mod tests {
         assert_eq!(hits[0].monitor, "weather");
         assert_eq!(hits[0].hour, crossing, "fires at the crossing hour");
 
-        // Pre-anomaly hours unaffected: no holds active before the crossing.
         assert!(
             policy.active_holds_at(last_good).is_empty(),
             "pre-anomaly hour has no holds"
         );
-        // At and after the crossing, the weather hold is present and MARKED.
         let held = policy.active_holds_at(crossing);
         let weather = held
             .iter()
@@ -965,13 +788,6 @@ mod tests {
         assert!(flip.marker.contains("HELD"));
     }
 
-    /// The wrong-typed coverage warning is country-qualified
-    /// (`countries.{tag}.politics.political_power: present but wrong-typed
-    /// ...`). A genuinely wrong-typed political_power in one country must NOT
-    /// be attributed to another country whose political_power is plain-null
-    /// Unobtained in the same frame (both with prior measured values):
-    /// exactly one TypeFlip diagnostic and one held marker, for the
-    /// wrong-typed country only.
     #[test]
     fn type_flip_is_not_cross_attributed_between_countries() {
         let frame0 = serde_json::json!({
@@ -982,10 +798,7 @@ mod tests {
         });
         let frame1 = serde_json::json!({
             "countries": {
-                // Genuinely wrong-typed: view goes Unobtained AND a
-                // wrong-typed coverage warning is appended.
                 "GER": { "politics": { "political_power": "banana" } },
-                // Plain null: captured-but-unobtained, no warning, no flip.
                 "ITA": { "politics": { "political_power": null } }
             }
         });
@@ -1013,18 +826,6 @@ mod tests {
         assert!(held[0].marker.contains("HELD"));
     }
 
-    /// FW1 status consumer: the per-province snow/mud collection has its own
-    /// availability (`SnowMudView::by_province_status`), split from the view
-    /// status. A mid-stream collection downgrade under a still-`Present`
-    /// snow_mud view must surface as a MissingDomain hold on the collection
-    /// monitor — not read as an empty measured census, and not fire the
-    /// whole-view monitor.
-    ///
-    /// kills: routing the `snow_mud.by_province` monitor to the root view
-    /// status in `view_status`; pointing `monitored_domain_value` at a
-    /// top-level key instead of the domain-24 carrier (the hold then names the
-    /// FAILING hour rather than hour 0); and letting a carrier whose rows went
-    /// unreadable keep reporting a complete census.
     #[test]
     fn snow_mud_texture_downgrade_surfaces_under_present_view() {
         let textured = serde_json::json!({
@@ -1040,9 +841,6 @@ mod tests {
                 }
             } }
         });
-        // The carrier is still admitted (source and scale intact) while one
-        // province row stops being readable, so the view root stays Present
-        // and the collection alone goes unavailable.
         let texture_lost = serde_json::json!({
             "map": { "_r2_weather_live": {
                 "source": "weather_live",
@@ -1061,8 +859,6 @@ mod tests {
         };
         let timeline = WorldTimeline::open(Box::new(source)).expect("timeline");
 
-        // Preconditions: the stale-retained-state shape really is Present at
-        // the view root with a downgraded texture partition.
         let frame1 = timeline.frame(1).expect("frame 1");
         assert_eq!(frame1.snow_mud_status(), ViewStatus::Present);
         assert_eq!(
@@ -1108,7 +904,6 @@ mod tests {
         let policy = scan_timeline(&timeline, Some(known_provinces())).expect("scan fixture");
 
         let hits = diagnostics_of(&policy, AnomalyClass::OutOfRange);
-        // Two distinct out-of-range monitors: negative manpower + stray province.
         let manpower = hits
             .iter()
             .find(|d| d.monitor == "countries.GER.manpower_available")
@@ -1119,7 +914,6 @@ mod tests {
             .find(|d| d.monitor == "map.control_by_province.987654")
             .expect("stray province diagnostic");
         assert_eq!(province.hour, crossing);
-        // Each fires exactly once (does not re-fire every subsequent hour).
         assert_eq!(
             hits.iter()
                 .filter(|d| d.monitor == "countries.GER.manpower_available")
@@ -1133,7 +927,6 @@ mod tests {
             1
         );
 
-        // Pre-anomaly unaffected; manpower held from the last good hour after.
         assert!(policy.active_holds_at(last_good).is_empty());
         let held = policy.active_holds_at(crossing);
         assert!(held
@@ -1143,15 +936,11 @@ mod tests {
                 && h.since_hour == last_good));
     }
 
-    /// An out-of-range scalar with NO prior good capture is
-    /// FLAGGED — the hold marker must not claim "HELD ... from hour X" where
-    /// X is the breaking hour and nothing was ever captured to hold.
     #[test]
     fn out_of_range_without_prior_good_value_is_flagged_not_held() {
         let timeline = WorldTimeline::open(Box::new(MemorySource {
             hours: vec![0, 1],
             frames: BTreeMap::from([
-                // Out of range from the very first observation.
                 (
                     0,
                     serde_json::json!({
@@ -1208,12 +997,9 @@ mod tests {
         assert_eq!(hits.len(), 1, "exactly one HourGap diagnostic");
         assert_eq!(hits[0].hour, after);
 
-        // The gap detector saw exactly the missing hour.
         assert_eq!(policy.gaps().len(), 1);
         assert_eq!(policy.gaps()[0].missing, vec![missing]);
 
-        // Recorded hours resolve exactly; the missing hour is GapUnavailable,
-        // never interpolated to the neighbour frame.
         assert_eq!(policy.classify_hour(before), HourResolution::Exact);
         assert_eq!(policy.classify_hour(after), HourResolution::Exact);
         match policy.classify_hour(missing) {
@@ -1255,8 +1041,6 @@ mod tests {
         assert!(id.marker.contains("HELD"));
     }
 
-    /// A clean positive fixture raises no anomalies (no false positives): the
-    /// pre-anomaly behaviour of the policy is silent on well-formed recordings.
     #[test]
     fn clean_positive_fixture_raises_no_anomalies() {
         let root = fixture_root();

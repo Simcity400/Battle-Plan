@@ -1,21 +1,9 @@
-//! FW4 measurement probe: records the LARGEST single allocation request the
-//! certified-cache decoders make while refusing a hostile artifact. The number
-//! this prints is the whole of R2-1/R2-2: a sub-kilobyte authenticated input
-//! must never drive a multi-gigabyte reserve, because a reserve the allocator
-//! cannot satisfy leaves Rust in `handle_alloc_error` — a process abort, not a
-//! typed refusal.
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static PEAK_REQUEST: AtomicUsize = AtomicUsize::new(0);
 thread_local! {
-    /// When nonzero, any single request LARGER than this is refused by the
-    /// allocator ON THIS THREAD ONLY. Lets a test prove that an allocator
-    /// refusal becomes a typed error instead of `handle_alloc_error` (an
-    /// abort), without the test harness's own threads tripping over it.
-    /// `const` init so reading it inside the allocator cannot itself allocate.
     static REFUSE_ABOVE: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -24,7 +12,6 @@ fn set_refuse_above(ceiling: usize) {
 }
 
 fn refused(size: usize) -> bool {
-    // During TLS teardown the key is inaccessible; refuse nothing then.
     let ceiling = REFUSE_ABOVE.try_with(Cell::get).unwrap_or(0);
     ceiling != 0 && size > ceiling
 }
@@ -62,13 +49,6 @@ use portable_replay_format::sha256::Sha256;
 const INDEX_MAGIC: &[u8; 4] = b"H4IX";
 const CACHE_MAGIC: &[u8; 4] = b"H4CP";
 
-/// The H4CP generation these hand-built hostile inputs must claim, READ OUT OF A
-/// CACHE THE REAL ENCODER JUST WROTE rather than copied here as a literal.
-///
-/// A stale literal is refused by the header check before a single allocation
-/// bound is ever exercised, which is how the revive's 4 -> 5 bump silently
-/// disarmed all four of these tests. It went stale again on the number delta's
-/// 5 -> 6 bump. Deriving it is what stops the next bump doing it a third time.
 fn format_version() -> u16 {
     let mut encoder = ReplayCacheEncoder::new(Vec::new(), &hex32(0xab), 8).expect("encoder");
     encoder
@@ -127,8 +107,6 @@ fn hostile_cache(tag: u8, count: u32) -> (Vec<u8>, Vec<u8>, u64, String) {
     cache_around_payload(&payload)
 }
 
-/// Wrap an arbitrary binary-JSON payload in a self-consistent, authenticated
-/// one-hour cache plus its hour index.
 fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
     let source_sha = hex32(0xcd);
     let source_len = 100u64;
@@ -171,18 +149,11 @@ fn cache_around_payload(payload: &[u8]) -> (Vec<u8>, Vec<u8>, u64, String) {
     index.extend_from_slice(&0u32.to_le_bytes());
     index.extend_from_slice(&0u32.to_le_bytes());
     index.extend_from_slice(&digest_of(&hex32(0x00)));
-    // H4IX v4's per-record digest. It is the REAL digest of the record above:
-    // this artifact is hostile in one declared COUNT and honest in every
-    // binding, so the reader has to reach the decoder to refuse it. A wrong
-    // digest here would confine the hour at admission and prove nothing about
-    // the allocation path.
     index.extend_from_slice(&digest_of(&Sha256::hex(
         &cache[record_offset as usize..(record_offset + record_len) as usize],
     )));
     put_string(&mut index, "1936.1.1.1");
-    // H4IX v4: the excluded-hour section. This artifact serves its one hour and
-    // names no hole, which is what an uninjured recording looks like.
-    index.extend_from_slice(&0u64.to_le_bytes()); // excluded hour count
+    index.extend_from_slice(&0u64.to_le_bytes());
 
     (index, cache, source_len, source_sha)
 }
@@ -206,10 +177,6 @@ fn truncated_hour_index(hour_count: u64) -> Vec<u8> {
     hostile
 }
 
-/// Refusing a hostile artifact must stay proportional to the bytes supplied.
-/// One MiB is far above anything these sub-kilobyte inputs can legitimately
-/// need and far below the pre-fix requests (8,589,934,592 and 192,000,000
-/// bytes), so the assertion fails loudly if the proportional bound regresses.
 const PROPORTIONALITY_CEILING: usize = 1024 * 1024;
 
 #[test]
@@ -249,18 +216,11 @@ fn hostile_counts_never_drive_a_disproportionate_allocation_request() {
     );
 }
 
-/// A count can be proportional to the input and STILL be large: `Value` is 32
-/// bytes, so N bytes of null tags legitimately reserve 32N. The remaining-input
-/// bound cannot help there — only a FALLIBLE reserve can, and an infallible
-/// `Vec::with_capacity` would take the whole process down through
-/// `handle_alloc_error` instead of refusing.
 #[test]
 fn an_allocator_refusal_becomes_a_typed_error_not_an_abort() {
     const ELEMENTS: u32 = 40_000;
     const CEILING: usize = 1024 * 1024;
 
-    // An array of ELEMENTS null tags: the payload really does carry one byte
-    // per declared element, so every proportionality bound is satisfied.
     let mut payload = vec![5u8];
     put_varint(&mut payload, u64::from(ELEMENTS));
     payload.extend(std::iter::repeat(0u8).take(ELEMENTS as usize));

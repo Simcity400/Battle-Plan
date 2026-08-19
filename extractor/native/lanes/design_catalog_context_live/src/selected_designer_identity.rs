@@ -1,10 +1,3 @@
-//! A40/XUI08 selected-designer prerequisite carrier.
-//!
-//! The ordinary collector installs the exact-a729 hooks as passive observers.
-//! Each scheduled observation is either a complete pointer-free SDI1 snapshot
-//! or a typed source-unavailable frame; a six-family fixture is useful
-//! regression coverage, but is not production authority.
-
 use std::collections::BTreeSet;
 
 #[cfg(windows)]
@@ -15,36 +8,27 @@ pub const DOMAIN_NAME: &str = "selected_designer_identity_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"SDI1");
 pub const AUTHORITY_EXACT_A729_SELECTED_DESIGNER: u32 = 1;
-/// Both root-owned static authorities name their final manifests.
 pub const PROMOTION_AUTHORITY_BOUND: bool = true;
 pub const CLASSIFIER_AUTHORITY_BOUND: bool = true;
-/// Optional regression evidence. This never gates passive production capture.
 pub const LIVE_FIXTURE_AUTHORITY_BOUND: bool = false;
-pub const PRODUCTION_ACTIVATION: bool =
-    PROMOTION_AUTHORITY_BOUND && CLASSIFIER_AUTHORITY_BOUND;
+pub const PRODUCTION_ACTIVATION: bool = PROMOTION_AUTHORITY_BOUND && CLASSIFIER_AUTHORITY_BOUND;
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = PRODUCTION_ACTIVATION;
 pub const EXACT_A729_EXECUTABLE_SHA256: [u8; 32] = [
     0x87, 0x0e, 0xbf, 0x1f, 0x61, 0x52, 0x62, 0xfa, 0xcc, 0xa4, 0x8a, 0x3b, 0x94, 0x77, 0x75, 0xc4,
     0x1f, 0x0a, 0x53, 0x38, 0xf3, 0x06, 0x8c, 0x40, 0x95, 0x82, 0x09, 0xf5, 0xc4, 0x1c, 0x65, 0xad,
 ];
-/// Root-owned exact20 receipt
-/// `20260720T020813Z-w3-a40-designers-fc2ae305/shard-04`, 10/10 exact roots.
 pub const PRODUCER_MANIFEST_SHA256: [u8; 32] = [
     0x6d, 0xff, 0x47, 0xe4, 0xfa, 0xe1, 0xf9, 0xd3, 0xae, 0xab, 0xb6, 0x3a, 0xc7, 0xe9, 0xa9, 0xcc,
     0x13, 0xa2, 0x7c, 0x42, 0x9d, 0x5e, 0x21, 0x7d, 0x68, 0x63, 0x11, 0xd5, 0xa3, 0x49, 0xcb, 0x6b,
 ];
-/// Exact 10-root classifier/selection-chain function receipt
-/// `20260720T022731Z-w3-a40-classifier-final-65c68d38/shard-09`.
 pub const CLASSIFIER_MANIFEST_SHA256: [u8; 32] = [
     0x76, 0x68, 0x44, 0x86, 0x67, 0x8f, 0xdb, 0x87, 0xf4, 0xa6, 0x79, 0xc4, 0xfa, 0xa8, 0x55, 0xb6,
     0x1d, 0x45, 0x51, 0xc0, 0xa1, 0x3b, 0xeb, 0xbd, 0x6b, 0xa0, 0xc1, 0x55, 0x3d, 0xbf, 0x6a, 0x41,
 ];
-/// Raw-byte authority for non-function division click thunk `0x141490EA0`.
 pub const DIVISION_CLICK_THUNK_ARTIFACT_SHA256: [u8; 32] = [
     0x85, 0x6f, 0x8f, 0xab, 0xd2, 0x3a, 0xd5, 0x2b, 0x8a, 0xde, 0x50, 0x23, 0x46, 0xb0, 0x59, 0xae,
     0x9f, 0xf7, 0x6f, 0xdc, 0x9a, 0x9d, 0x90, 0x88, 0x14, 0xc9, 0x85, 0x90, 0x4e, 0x10, 0x04, 0x51,
 ];
-/// Raw-byte authority for non-function wrapper `0x1417506D0`.
 pub const DIVISION_WRAPPER_ARTIFACT_SHA256: [u8; 32] = [
     0x7d, 0xbc, 0xad, 0x84, 0x66, 0x16, 0x3a, 0x3f, 0xe1, 0xb0, 0xa3, 0x1c, 0xa3, 0x27, 0x66, 0x62,
     0xe6, 0x8f, 0xd7, 0xea, 0x39, 0x5e, 0x2d, 0x10, 0x2b, 0x9c, 0x44, 0xe0, 0x8d, 0xf5, 0xef, 0x0d,
@@ -68,18 +52,13 @@ impl SelectedDesignerFamily {
     pub const fn stable_object_type(self) -> u32 {
         match self {
             Self::Division => REFERENCED_DIVISION_TEMPLATE_TYPE,
-            Self::Equipment
-            | Self::Tank
-            | Self::Plane
-            | Self::Ship
-            | Self::VariantUpgrade => EQUIPMENT_VARIANT_TYPE,
+            Self::Equipment | Self::Tank | Self::Plane | Self::Ship | Self::VariantUpgrade => {
+                EQUIPMENT_VARIANT_TYPE
+            }
         }
     }
 }
 
-/// Exact live owner which supplied the selection. Equipment and ship share the
-/// mode-0 owner and must be separated by the authenticated variant classifier;
-/// there is no invented fourth `CEquipmentDesignerView` mode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SelectedDesignerOwner {
     CountryDivisionDesigner,
@@ -91,9 +70,7 @@ pub enum SelectedDesignerOwner {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StableDesignIdentity {
-    /// Exact engine referenced-object type discriminator.
     pub object_type: u32,
-    /// Positive stable id from the referenced object body, never an address.
     pub stable_id: u32,
 }
 
@@ -110,16 +87,11 @@ pub struct SelectedDesignerIdentityFrame {
     pub owner: SelectedDesignerOwner,
     pub family: SelectedDesignerFamily,
     pub expected_ordered_design_count: u32,
-    /// Exact controller-published order. No numeric or token sort is allowed.
     pub ordered_designs: Vec<StableDesignIdentity>,
     pub selected_design: StableDesignIdentity,
     pub complete: bool,
 }
 
-/// Compact-domain envelope. A clean frame must contain a validated snapshot;
-/// an unavailable frame must carry a nonzero compact failure status and no
-/// snapshot. This distinction prevents an unavailable observer from being
-/// replayed as an empty designer list.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedDesignerTransportFrame {
     pub elapsed_wall_ms: u64,
@@ -130,20 +102,7 @@ pub struct SelectedDesignerTransportFrame {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SelectedDesignerError {
-    /// The lane itself is compiled out of production: one of the two static
-    /// authority bindings behind [`PRODUCTION_ACTIVATION`] is false.
     ActivationBlocked,
-    /// The lane is activated, but its a729 producer detour is not patched into
-    /// the running game, so no selection can ever be observed.
-    ///
-    /// Split out of `ActivationBlocked` because the two answers name different
-    /// work and the capture could not tell them apart. `PRODUCTION_ACTIVATION`
-    /// is a compile-time `true` on this build, so every `ActivationBlocked`
-    /// d85 has ever published on the wire was in fact THIS -- and the reason
-    /// string said only "ActivationBlocked", which reads as "the lane is
-    /// switched off" and sent readers to the wrong place. See
-    /// `runs/live_unlock/t15`: 396/396 d85 frames carry
-    /// `A40 selected-designer frame did not encode: ActivationBlocked`.
     HookNotInstalled,
     UnauthenticatedSource,
     Source(String),
@@ -163,8 +122,6 @@ pub trait ExactSelectedDesignerIdentitySource {
     ) -> Result<SelectedDesignerIdentityFrame, String>;
 }
 
-/// Fixture-only validation path retained for optional regression evidence.
-/// Production uses the same source authority and stricter scheduled carrier.
 pub fn collect_fixture_and_validate<S: ExactSelectedDesignerIdentitySource>(
     source: &S,
     frame_hour: u64,
@@ -229,8 +186,6 @@ pub fn collect_and_validate<S: ExactSelectedDesignerIdentitySource>(
     Ok(frame)
 }
 
-/// The collector-facing live seam. It remains fail-closed if either static
-/// authority is ever withdrawn for another executable build.
 pub fn collect_and_encode<S: ExactSelectedDesignerIdentitySource>(
     source: &S,
     frame_hour: u64,
@@ -384,9 +339,7 @@ pub fn decode_payload(
     Ok(frame)
 }
 
-pub fn validate_frame(
-    frame: &SelectedDesignerIdentityFrame,
-) -> Result<(), SelectedDesignerError> {
+pub fn validate_frame(frame: &SelectedDesignerIdentityFrame) -> Result<(), SelectedDesignerError> {
     if frame.executable_sha256 != EXACT_A729_EXECUTABLE_SHA256 {
         return invalid("selected-designer frame is not bound to exact a729 executable");
     }
@@ -394,8 +347,7 @@ pub fn validate_frame(
         return invalid("selected-designer frame producer manifest is not the exact20 receipt");
     }
     if frame.classifier_manifest_sha256 != CLASSIFIER_MANIFEST_SHA256
-        || frame.division_click_thunk_artifact_sha256
-            != DIVISION_CLICK_THUNK_ARTIFACT_SHA256
+        || frame.division_click_thunk_artifact_sha256 != DIVISION_CLICK_THUNK_ARTIFACT_SHA256
         || frame.division_wrapper_artifact_sha256 != DIVISION_WRAPPER_ARTIFACT_SHA256
     {
         return invalid("selected-designer classifier/thunk authority receipt mismatch");
@@ -407,9 +359,7 @@ pub fn validate_frame(
         return invalid("selected-designer transition sequence is zero");
     }
     validate_nonempty(&frame.source_record_identity, "source record identity")?;
-    if frame.producer_manifest_sha256 == [0; 32]
-        || frame.classifier_manifest_sha256 == [0; 32]
-    {
+    if frame.producer_manifest_sha256 == [0; 32] || frame.classifier_manifest_sha256 == [0; 32] {
         return invalid("selected-designer authority manifest hash is zero");
     }
     validate_owner_family(frame.owner, frame.family)?;
@@ -633,9 +583,7 @@ mod tests {
     fn frame(family: SelectedDesignerFamily) -> SelectedDesignerIdentityFrame {
         let object_type = family.stable_object_type();
         let owner = match family {
-            SelectedDesignerFamily::Division => {
-                SelectedDesignerOwner::CountryDivisionDesigner
-            }
+            SelectedDesignerFamily::Division => SelectedDesignerOwner::CountryDivisionDesigner,
             SelectedDesignerFamily::Equipment | SelectedDesignerFamily::Ship => {
                 SelectedDesignerOwner::CountryEquipmentDesignerMode0
             }
@@ -802,13 +750,7 @@ mod tests {
             authenticated: true,
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
         };
-        let payload = collect_and_encode(
-            &source,
-            42,
-            17,
-            SelectedDesignerFamily::Tank,
-        )
-        .unwrap();
+        let payload = collect_and_encode(&source, 42, 17, SelectedDesignerFamily::Tank).unwrap();
         assert_eq!(
             decode_payload(&payload).unwrap().snapshot.unwrap().family,
             SelectedDesignerFamily::Tank
@@ -819,12 +761,7 @@ mod tests {
             producer_manifest_sha256: PRODUCER_MANIFEST_SHA256,
         };
         assert_eq!(
-            collect_and_encode(
-                &unauthenticated,
-                42,
-                17,
-                SelectedDesignerFamily::Tank,
-            ),
+            collect_and_encode(&unauthenticated, 42, 17, SelectedDesignerFamily::Tank,),
             Err(SelectedDesignerError::UnauthenticatedSource)
         );
 
@@ -833,22 +770,12 @@ mod tests {
             producer_manifest_sha256: [0; 32],
         };
         assert!(matches!(
-            collect_and_encode(
-                &wrong_authority,
-                42,
-                17,
-                SelectedDesignerFamily::Tank,
-            ),
+            collect_and_encode(&wrong_authority, 42, 17, SelectedDesignerFamily::Tank,),
             Err(SelectedDesignerError::Invalid(_))
         ));
 
-        let fixture = collect_fixture_and_encode(
-            &source,
-            42,
-            17,
-            SelectedDesignerFamily::Tank,
-        )
-        .unwrap();
+        let fixture =
+            collect_fixture_and_encode(&source, 42, 17, SelectedDesignerFamily::Tank).unwrap();
         assert_eq!(
             decode_payload(&fixture).unwrap().snapshot.unwrap().family,
             SelectedDesignerFamily::Tank

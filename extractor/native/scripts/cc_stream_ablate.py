@@ -49,8 +49,6 @@ ZSTD_WINDOW_LOG = 27
 
 
 def _compressor():
-    # Matches `configured_zstd_encoder` in pack.rs: level 3, windowLog 27,
-    # long-distance matching on, content checksum on.
     params = zstd.ZstdCompressionParameters.from_level(
         ZSTD_LEVEL, window_log=ZSTD_WINDOW_LOG, enable_ldm=True, write_checksum=1
     )

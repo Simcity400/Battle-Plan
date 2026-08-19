@@ -1,9 +1,3 @@
-//! The encoder for the base payload and every outer trailer family.
-//!
-//! Every function preflights every count, conversion and exact byte length,
-//! calls `try_reserve_exact` once, and only then starts writing. No encoder can
-//! mutate its output and later discover a fallible conversion.
-
 use alloc::vec::Vec;
 use core::convert::TryFrom;
 
@@ -83,10 +77,6 @@ fn push_line_key(out: &mut Vec<u8>, key: LineKey) {
     push_u32(out, kind);
     push_i32(out, line_id);
 }
-
-// =============================================================================
-// Base
-// =============================================================================
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BaseWords {
@@ -179,10 +169,6 @@ pub fn encode_base(
     Ok(out)
 }
 
-// =============================================================================
-// Seven fixed-row trailers
-// =============================================================================
-
 pub fn encode_pvj1(rows: &[PvjRow]) -> Result<Vec<u8>, EncodeError> {
     let (len, count, declared) = fixed_preflight(rows.len(), 16)?;
     let mut out = exact_vec(len)?;
@@ -261,10 +247,6 @@ pub fn encode_pcp1(rows: &[PcpRow]) -> Result<Vec<u8>, EncodeError> {
     }
     Ok(out)
 }
-
-// =============================================================================
-// PLIC -- grouping is an input shape, so sum(count) == id_rows is unbreakable
-// =============================================================================
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PlicCountryV1<'a> {
@@ -352,10 +334,6 @@ pub fn encode_plic_v2(countries: &[PlicCountryV2<'_>]) -> Result<Vec<u8>, Encode
     Ok(out)
 }
 
-// =============================================================================
-// PCV1 -- nested slices make canonical ranges and exact coverage unbreakable
-// =============================================================================
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PcvCountryInput<'a> {
     pub tag_db_id: u32,
@@ -428,10 +406,6 @@ pub fn encode_pcv1(countries: &[PcvCountryInput<'_>]) -> Result<Vec<u8>, EncodeE
     }
     Ok(out)
 }
-
-// =============================================================================
-// PDQ1 outer carrier; the inner codec bytes are opaque here
-// =============================================================================
 
 pub fn encode_pdq1(inner_codec_payload: &[u8]) -> Result<Vec<u8>, EncodeError> {
     let codec_len = count32(inner_codec_payload.len())?;

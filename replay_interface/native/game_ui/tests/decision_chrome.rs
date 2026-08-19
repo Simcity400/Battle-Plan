@@ -1,18 +1,3 @@
-//! Decisions-panel chrome gates. Generic element geometry follows
-//! `game_ui::compose` and the structured UI-layout evidence fixture; this suite does
-//! not replace XUI19's packet-local production gates.
-//!
-//! Drives the SHIPPED vanilla files through `game_ui::decision_chrome`:
-//!   * the `countrydecisionview.gui` layout parses to the full chrome (root
-//!     window + grid + category header + all four card templates, each with an
-//!     icon + name element);
-//!   * every decision definition (`common/decisions/*.txt`) maps to a card and
-//!     its name-loc-key + icon-sprite resolve against the shipped localisation +
-//!     sprite registry at the pinned rates (the `N resolve / total` gate).
-//!
-//! Counts are pinned against the vanilla install. The central evidence gate
-//! treats a missing install as an unmet prerequisite, not a passing result;
-//! direct libtest discovery marks the individual tests ignored when absent.
 
 use game_ui::assets::AssetResolver;
 use game_ui::decision_chrome::{
@@ -22,9 +7,6 @@ use game_ui::loc::Localisation;
 use game_ui::probe::parse_gfx_files;
 use std::path::PathBuf;
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
@@ -33,9 +15,6 @@ fn resolver() -> AssetResolver {
     AssetResolver::new(vec![game_root()])
 }
 
-/// GATE U2-LAYOUT — the shipped decisions-panel chrome parses complete: root
-/// window, the scrolling grid, the category-tab header, and all four decision
-/// card templates, each carrying at least an icon + a name text element.
 #[test]
 #[cfg_attr(
     not(gate_hoi4_install),
@@ -65,8 +44,6 @@ fn decision_panel_layout_is_complete() {
         );
     }
 
-    // The plain decision card carries the full binding surface (icon, name,
-    // cost/timer, target flag) and its icon defaults to GFX_decision_unknown.
     let decision_item = layout
         .cards
         .iter()
@@ -85,12 +62,6 @@ fn decision_panel_layout_is_complete() {
     );
 }
 
-/// GATE U2-RESOLVE — the full decision inventory parses and its
-/// name-key/icon-sprite/category resolution hits the pinned vanilla rates.
-///
-/// Pinned counts are the vanilla ground truth (asserted exactly, like the
-/// widget-layout rects). If a game update shifts the corpus these move together
-/// and the pinned counts below are re-derived from the new corpus.
 #[test]
 #[cfg_attr(
     not(gate_hoi4_install),
@@ -103,7 +74,6 @@ fn decision_definitions_resolve_at_pinned_rates() {
     let (registry, _) = parse_gfx_files(&resolver).expect("parse gfx");
     let report = resolve_decisions(&set, &loc, &registry);
 
-    // --- structural invariants (version-robust) ---
     assert_eq!(
         set.category_file_count, PIN_CATEGORY_FILES,
         "category files"
@@ -121,16 +91,13 @@ fn decision_definitions_resolve_at_pinned_rates() {
         "every decision-file top-level block is a known category; orphans: {:?}",
         set.orphan_category_blocks
     );
-    // Every decision's category is a known category def (cross-reference clean).
     assert_eq!(
         report.category_known, report.total_decisions,
         "every decision maps to a known category"
     );
-    // Card-template classification covers every decision.
     let template_total: usize = report.template_histogram.values().sum();
     assert_eq!(template_total, report.total_decisions);
 
-    // --- pinned exact counts (the N-resolve/total gate) ---
     assert_eq!(report.total_decisions, PIN_TOTAL_DECISIONS);
     assert_eq!(report.name_key_resolved, PIN_NAME_RESOLVED);
     assert_eq!(report.desc_key_resolved, PIN_DESC_RESOLVED);
@@ -146,13 +113,6 @@ fn decision_definitions_resolve_at_pinned_rates() {
         "card-template classification"
     );
 
-    // The name loc-key and declared-icon resolution rates are high (the naming
-    // laws are exact); the residuals are vanilla corpus anomalies, enumerated
-    // here: 286 decisions without a name loc entry (dev/debug +
-    // dynamic-name decisions), and 77 declared icons whose token does not map to
-    // a shipped sprite (double-`decision_` typos, bare `generic`,
-    // referenced-but-unshipped sprites) — all degrade to the panel's
-    // `GFX_decision_unknown` fail-closed default.
     assert!(
         report.name_key_resolved * 100 >= report.total_decisions * 92,
         "name-key resolution rate >= 92%"
@@ -163,7 +123,6 @@ fn decision_definitions_resolve_at_pinned_rates() {
     );
 }
 
-// --- pinned vanilla ground truth (the game 1.16.x; refreshed if the corpus moves) ---
 const PIN_CATEGORY_FILES: usize = 57;
 const PIN_DECISION_FILES: usize = 88;
 const PIN_TOTAL_DECISIONS: usize = 4125;

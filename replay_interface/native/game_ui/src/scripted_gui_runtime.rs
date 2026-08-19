@@ -1,9 +1,3 @@
-//! Generic, mod-extensible scripted-GUI evaluator.
-//!
-//! Definitions are discovered from the effective UI14/UI15 VFS. The evaluator
-//! consumes replay_core's typed d51 variable/flag view first. Predicates and
-//! effects outside that subset fail closed and may be satisfied only by exact
-//! d84 engine-resolved inputs carried in the recording.
 
 use crate::assets::AssetResolver;
 use crate::paradox_text::{
@@ -192,7 +186,6 @@ pub struct ScriptedGuiDefinition {
     pub enabled: Predicate,
     pub triggers: BTreeMap<String, Predicate>,
     pub effects: BTreeMap<String, EffectProgram>,
-    /// Flattened `<element>.<property>` keys.
     pub properties: BTreeMap<String, PropertyExpr>,
 }
 
@@ -201,10 +194,6 @@ pub struct ScriptedGuiRegistry {
     pub schema: String,
     pub files: usize,
     pub definitions: BTreeMap<String, ScriptedGuiDefinition>,
-    /// The engine-tolerated single outer EOF closure law is retained as
-    /// positive provenance, not erased. A definition from such a file still
-    /// cannot render unless d84 independently proves that the engine
-    /// instantiated the exact effective-file identity.
     pub engine_tolerated_eof_closures: Vec<String>,
     pub source_issues: Vec<String>,
 }
@@ -230,13 +219,6 @@ pub fn load_scripted_gui_registry(resolver: &AssetResolver) -> Result<ScriptedGu
     let mut source_issues = Vec::new();
     for file in &files {
         let bytes = std::fs::read(&file.path)?;
-        // Byte-level decode damage is invisible to the parser: a U+FFFD
-        // substituted for a destroyed byte is an ordinary character to the
-        // tokenizer, so a damaged `name` or effect string parses with ZERO
-        // recoveries and would otherwise become a trusted definition. Recorded
-        // on `source_issues`, which is already the general source-problem
-        // channel here (it carries unsupported constructs too, not only
-        // recoveries), so no existing status changes meaning.
         let decode_events = destructive_event_count(&diagnose_text_decode(&bytes));
         if decode_events != 0 {
             source_issues.push(format!(
@@ -444,9 +426,6 @@ fn compile_property(property_name: &str, raw: &str) -> PropertyExpr {
             call: trimmed.to_string(),
         };
     }
-    // Frame and position values may be authored as bare scripted variables.
-    // Treat only numeric literals as literals for these numeric properties;
-    // a non-numeric identifier must be evaluated against d51/d84 state.
     if matches!(
         property_name.to_ascii_lowercase().as_str(),
         "frame" | "x" | "y"
@@ -1065,11 +1044,6 @@ pub fn evaluate_definition(
         .iter()
         .map(|(name, property)| {
             let value = if captured.is_some() {
-                // d84 is the authenticated post-engine result. Authored
-                // literals and replay-side variable evaluation remain useful
-                // only when this generic evaluator is used without a d84
-                // runtime row; they can never override an explicit measured,
-                // absent, or unobtained engine result.
                 captured_property(captured, name)
             } else {
                 match property {
@@ -1313,8 +1287,6 @@ pub fn captured_inputs_for<'a>(
     }
 }
 
-/// Production entry point: bind one effective definition to one recorded
-/// country context without exposing raw recording bytes to `game_ui`.
 pub fn evaluate_registered_gui(
     registry: &ScriptedGuiRegistry,
     view: &ScriptedGuiView,

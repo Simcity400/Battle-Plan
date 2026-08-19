@@ -51,9 +51,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Top-level equipment archetype/variant index
-# ---------------------------------------------------------------------------
 
 def _parse_equipments_index(tz, index):
     """equipments={ <archetype>={ id={id type} creator obsolete is_frame } }."""
@@ -85,20 +82,15 @@ def _parse_equipments_index(tz, index):
             }
 
 
-# ---------------------------------------------------------------------------
-# Per-country production
-# ---------------------------------------------------------------------------
 
 def _parse_line(tz, kind):
     rec = {
         "kind": kind, "line_id": None,
-        "equipment_variant": None,  # (id,type)
-        "industrial_manufacturer": None,  # assigned MIO (id,type=79), or null
+        "equipment_variant": None,
+        "industrial_manufacturer": None,
         "produced": None, "active_factories": None,
         "requested_factories": None, "priority": None,
         "amount": None, "speed": None, "cost": None,
-        # Ordered, authoritative per-factory save values. This is intentionally
-        # not replaced by a value reconstructed from speed/factory counts.
         "factory_efficiencies": None,
     }
     for k, op in iter_block_entries(tz):
@@ -175,7 +167,6 @@ def _parse_production_block(tz, rec):
                 rec["stockpile_raw"] = _parse_equipment_amounts(tz)
             else:
                 _skip_block_body(tz)
-        # scalars (dirty, max_factories_for_repair, ...) ignored
 
 
 def _parse_convoys_block(tz, rec):
@@ -194,7 +185,7 @@ def _parse_countries(tz, by_tag):
             continue
         rec = {
             "lines": [],
-            "stockpile_raw": [],   # (id,type,amount) joined later
+            "stockpile_raw": [],
             "convoys_raw": [],
         }
         for key, op in iter_block_entries(tz):
@@ -205,7 +196,6 @@ def _parse_countries(tz, by_tag):
                     _parse_convoys_block(tz, rec)
                 else:
                     _skip_block_body(tz)
-            # scalar country fields ignored
         if rec["lines"] or rec["stockpile_raw"] or rec["convoys_raw"]:
             by_tag[tag] = rec
 
@@ -293,7 +283,6 @@ def build(text, source, was_melted):
             },
         }
 
-    # Top-level archetype index keyed "id:type".
     arch_out = {f"{k[0]}:{k[1]}": v for k, v in arch_index.items()}
 
     n_lines = sum(len(c["equipment_lines"]) for c in countries.values())
@@ -350,7 +339,6 @@ def build(text, source, was_melted):
                  f"naval fac={ger_fac.get('naval_factories_assigned')})")
     lines.append(f"GER stockpile : {len(ger.get('stockpile', []))} entries, "
                  f"convoys={len(ger.get('convoys', []))}")
-    # top GER mil lines by active factories
     top = sorted([l for l in ger_lines if l["kind"] == "military_lines"],
                  key=lambda l: l["active_factories"] or 0, reverse=True)[:3]
     for l in top:

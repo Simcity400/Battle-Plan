@@ -1,15 +1,9 @@
-//! A27 exact a729 equipment-designer view context and d78 carrier.
-//!
-//! The carrier contains only stable numeric design/country identities and raw
-//! controller state. Runtime view, row, variant, handler, and country pointers
-//! are consumed inside the signature-gated callback and are never serialized.
-
 use std::collections::BTreeSet;
 
 #[cfg(windows)]
-pub mod a729_hook;
-#[cfg(windows)]
 pub mod a40_peace_evidence;
+#[cfg(windows)]
+pub mod a729_hook;
 pub mod peace_conference_live;
 #[cfg(windows)]
 pub mod peace_conference_presence;
@@ -20,18 +14,9 @@ pub const DOMAIN_NAME: &str = "design_catalog_context_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_DESIGNER_VIEW: u32 = 1;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DCX1");
-/// Fail-closed ceiling on the number of selected-country ids DCX1 carries.
-///
-/// Was `4_096` — a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags), which refused the whole carrier on an overhaul. A country count
-/// is content, so it is now the structural row width; the decode bounds the
-/// count by the payload instead, which is the bound that actually protects the
-/// allocation.
 pub const MAX_SELECTED_COUNTRIES: usize = i32::MAX as usize;
 pub const MAX_ORDERED_DESIGNS: usize = 131_072;
 
-/// Whole-function Ghidra manifests for the transition root and complete grid
-/// producer. Both hashes are embedded in every admitted payload.
 pub const ROOT_MANIFEST_SHA256: [u8; 32] =
     hex32(b"e62da9e71f6de9b3a87d8d6dd2c32a1db0723be678bc1798c7533cdfa4ebab65");
 pub const GRID_MANIFEST_SHA256: [u8; 32] =
@@ -98,10 +83,7 @@ pub struct DesignerViewContext {
     pub foreign_filter_enabled: bool,
     pub obsolete_filter_enabled: bool,
     pub current_country_tag_id: u32,
-    /// Exact `view+0xF418/+0xF424` vector order. Tag equivalence remains an
-    /// engine law; this carrier intentionally does not canonicalize the vector.
     pub selected_country_tag_ids: Vec<u32>,
-    /// Exact accepted row-pool order after `0x1417797A0` returns.
     pub ordered_design_ids: Vec<u32>,
 }
 
@@ -111,9 +93,6 @@ pub struct DesignCatalogContextFrame {
     pub status_flags: u32,
     pub frame_hour: u64,
     pub completeness_record_identity: String,
-    /// `None` is permitted only with a nonzero failure status and represents
-    /// a scheduled producer that has not observed a complete transition. It
-    /// is never decoded as measured-empty or inactive.
     pub context: Option<DesignerViewContext>,
 }
 
@@ -285,9 +264,6 @@ pub fn decode_payload(payload: &[u8]) -> Result<DesignCatalogContextFrame, Carri
     if selected_count > MAX_SELECTED_COUNTRIES || design_count > MAX_ORDERED_DESIGNS {
         return invalid("DCX1 vector count exceeds bound");
     }
-    // Each selected id is a 4-byte word, so the bytes still ahead cap the count.
-    // Without this a stream-supplied word decides the allocation -- which the
-    // old content-scale ceiling was incidentally preventing.
     if selected_count > r.remaining() / 4 {
         return invalid("DCX1 selected-country count exceeds the payload's capacity");
     }
@@ -346,8 +322,6 @@ struct Reader<'a> {
 }
 
 impl<'a> Reader<'a> {
-    /// Bytes left. A count-prefixed section divides this by its minimum entry
-    /// size so a stream-supplied count can never size an allocation.
     fn remaining(&self) -> usize {
         self.payload.len().saturating_sub(self.at)
     }

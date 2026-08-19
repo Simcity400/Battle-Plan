@@ -32,13 +32,8 @@ pub struct FocusNodeDefinition {
     pub id: String,
     pub kind: FocusDefinitionKind,
     pub icon_sprite: Option<String>,
-    /// Exact optional FILE-authored overlay token. `None` is authored-empty.
     pub overlay_sprite: Option<String>,
     pub title_loc_key: String,
-    /// Exact authored background family. Legacy callers may omit it for
-    /// local/shared definitions and receive the frozen vanilla standard
-    /// family; production `focus_defs_static` supplies it for every node so
-    /// mod-authored styles are never collapsed to the vanilla defaults.
     pub joint_state_backgrounds: Option<FocusStateBackgroundSprites>,
 }
 
@@ -50,7 +45,6 @@ pub struct FocusCatalog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FocusTreeTopology {
     pub tree_id: String,
-    /// UI10's exact local plus imported shared/joint component.
     pub effective_node_ids: BTreeSet<String>,
 }
 
@@ -71,8 +65,6 @@ pub struct FocusNodePresentation {
     pub icon_sprite: String,
     pub overlay_sprite: Option<String>,
     pub title_loc_key: String,
-    /// Exact A31 leaves. `None` means the d89 sidecar was not used; `Some(false)`
-    /// is an authenticated hidden result and must not be conflated with absence.
     pub display_progress_percent: Option<u8>,
     pub continuous_glow_visible: Option<bool>,
     pub highlight_glow_visible: Option<bool>,
@@ -89,7 +81,6 @@ pub struct AdmittedNationalFocusPresentation {
     pub available: Vec<String>,
     pub progress_days: Option<f64>,
     pub paused: bool,
-    /// Exact producer-selected visible sequence, ready for the admitted UI09 canvas.
     pub nodes: Vec<FocusNodePresentation>,
 }
 
@@ -212,10 +203,6 @@ pub fn admit_national_focus_presentation(
     admit_national_focus_semantics(focus, topology, catalog, Some(canvas))
 }
 
-/// Product XUI10 route. D12 and effective packaged definitions own semantic
-/// content; the viewer owns viewport/layout. D89 and selected-Present geometry
-/// are intentionally absent, and `progress_days` is never divided by an
-/// inferred denominator such as `cost * 7`.
 pub fn admit_observer_national_focus_presentation(
     focus: &FocusView,
     topology: &FocusTreeTopology,
@@ -432,8 +419,6 @@ fn admit_national_focus_semantics(
     })
 }
 
-/// Compatibility/history-only D89 admission. Product replay uses
-/// [`admit_observer_national_focus_presentation`].
 pub fn admit_exact_national_focus_presentation(
     focus: &FocusView,
     exact: &NationalFocusPresentationExactView,

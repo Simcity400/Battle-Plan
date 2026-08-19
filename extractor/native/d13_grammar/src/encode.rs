@@ -1,35 +1,12 @@
-//! The write side of the same grammar.
-//!
-//! The producer is one of the four sites the owner's ruling names, and it is the
-//! one that cannot be fixed by sharing a decoder: a packer that appends a new
-//! section while every reader stays unaware is exactly the drift that cost a
-//! live capture its whole D13 domain. So the collector emits THROUGH this
-//! module, and the section inventory it writes is the same
-//! [`ActiveTail`](crate::ActiveTail) declaration the walk reads.
-//!
-//! Two invalid producer states are unrepresentable rather than merely rejected:
-//!
-//! * [`Ahead`] makes "a quartet with no authority", "an observed receipt with no
-//!   quartet" and "both authorities at once" impossible to construct;
-//! * a tail added to [`ActiveTail::ALL`](crate::ActiveTail::ALL) fails to
-//!   compile here until it is written, because the encoder's flag word is folded
-//!   out of the same table.
-//!
-//! Nothing here validates. A value the readers refuse is a value this module
-//! will happily write: the producer's own bounds are the collector's business,
-//! and an encoder that silently corrected them would hide a broken read instead
-//! of recording it.
-
 use alloc::vec::Vec;
 
 use crate::{
     ActiveTail, Header, ACTIVE_FLAG_BASE_REQUIRED_POINTS, ACTIVE_FLAG_LIVE_PROGRESS,
-    COUNTRY_COUNT_ABSENT_SENTINEL, COUNTRY_FLAG_ACTIVE_RESEARCH,
-    COUNTRY_FLAG_COMPLETED_TECH_COUNT, COUNTRY_FLAG_RESEARCH_SLOT_COUNT, COUNTRY_ROW_LEN,
-    XUI09_COUNTRY_FLAG_DENSE, XUI09_FLAG_PATCH, XUI09_TAIL_MAGIC,
+    COUNTRY_COUNT_ABSENT_SENTINEL, COUNTRY_FLAG_ACTIVE_RESEARCH, COUNTRY_FLAG_COMPLETED_TECH_COUNT,
+    COUNTRY_FLAG_RESEARCH_SLOT_COUNT, COUNTRY_ROW_LEN, XUI09_COUNTRY_FLAG_DENSE, XUI09_FLAG_PATCH,
+    XUI09_TAIL_MAGIC,
 };
 
-/// Write the 32-byte payload header.
 pub fn encode_header(header: &Header, out: &mut Vec<u8>) {
     out.extend_from_slice(&header.elapsed_wall_ms.to_le_bytes());
     out.extend_from_slice(&header.country_count.to_le_bytes());
@@ -40,12 +17,6 @@ pub fn encode_header(header: &Header, out: &mut Vec<u8>) {
     out.extend_from_slice(&header.active_count.to_le_bytes());
 }
 
-/// The 16-byte country row.
-///
-/// `None` is the collector's "applicable, not captured": the flag bit is clear
-/// and [`COUNTRY_COUNT_ABSENT_SENTINEL`] is packed in the word's place. Both
-/// halves of that convention live here, so a reader cannot be taught one and not
-/// the other.
 pub fn country_row_bytes(
     tag_db_id: u32,
     completed_tech_count: Option<u32>,
@@ -78,7 +49,6 @@ pub fn country_row_bytes(
     row
 }
 
-/// The observed producer's 176-byte receipt, in wire order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct A29Provenance {
     pub authority: u32,
@@ -100,7 +70,6 @@ pub struct A29Provenance {
     pub selected_present_receipt_sha256: [u8; 32],
 }
 
-/// The recorder's own derived-quartet inputs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DerivedAuthority {
     pub authority: u32,
@@ -108,18 +77,12 @@ pub struct DerivedAuthority {
     pub penalty_factor_raw: i64,
 }
 
-/// A quartet and the ONE authority that vouches for it.
-///
-/// There is no third arm, which is the point: the wire's three combination rules
-/// are not checks here, they are shapes that do not exist.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Ahead<'a> {
-    /// The producer observed it and left a receipt.
     Observed {
         quartet: [i64; 4],
         provenance: &'a A29Provenance,
     },
-    /// The recorder derived it and published its inputs.
     Derived {
         quartet: [i64; 4],
         authority: DerivedAuthority,
@@ -134,7 +97,6 @@ impl Ahead<'_> {
     }
 }
 
-/// One active-research row, as the producer holds it.
 #[derive(Clone, Copy, Debug)]
 pub struct ActiveRow<'a> {
     pub tag_db_id: u32,
@@ -144,9 +106,6 @@ pub struct ActiveRow<'a> {
     pub progress_raw: u32,
     pub live_progress_raw: Option<i64>,
     pub base_required_points_raw: Option<i64>,
-    /// An EMPTY name is written as an absent one: the fold refuses a name tail
-    /// whose string is empty, so emitting one would be emitting a record the
-    /// recorder must refuse.
     pub tech_name: Option<&'a str>,
     pub ahead: Option<Ahead<'a>>,
 }
@@ -156,7 +115,6 @@ impl ActiveRow<'_> {
         self.tech_name.filter(|name| !name.is_empty())
     }
 
-    /// The row's flag word, folded out of the same tail table the walk reads.
     pub fn flags(&self) -> u32 {
         let mut flags = 0u32;
         if self.live_progress_raw.is_some() {
@@ -182,8 +140,6 @@ impl ActiveRow<'_> {
     }
 }
 
-/// Write one active-research row: the 40 fixed bytes, then each present tail in
-/// [`ActiveTail::ALL`] order.
 pub fn encode_active_row(row: &ActiveRow<'_>, out: &mut Vec<u8>) {
     let flags = row.flags();
     out.extend_from_slice(&row.tag_db_id.to_le_bytes());
@@ -244,11 +200,6 @@ fn encode_a29_provenance(provenance: &A29Provenance, out: &mut Vec<u8>) {
     out.extend_from_slice(&provenance.selected_present_receipt_sha256);
 }
 
-/// A `u16`-prefixed UTF-8 string, the one string form this payload has.
-///
-/// A string longer than `u16::MAX` is truncated to a length the prefix can
-/// state, and its bytes are truncated with it, so the prefix and the bytes never
-/// disagree. Nothing on this wire is close to that bound.
 fn encode_prefixed_string(value: &str, out: &mut Vec<u8>) {
     let bytes = value.as_bytes();
     let len = if bytes.len() > u16::MAX as usize {
@@ -260,16 +211,6 @@ fn encode_prefixed_string(value: &str, out: &mut Vec<u8>) {
     out.extend_from_slice(&bytes[..len]);
 }
 
-/// One country's XUI09 witness bytes WITHOUT its `tag_db_id`: the flag word, the
-/// two counts and the rows.
-///
-/// The tag is prepended by [`encode_xui09_tail`] because this is the unit the
-/// producer's delta pin diffs — the bytes that decide whether a country's
-/// witness changed — and the tag is the key, not part of the value.
-///
-/// Dense is MEASURED, never assumed: a vector whose definition indices are
-/// exactly `0..len` carries one byte per technology instead of five, and the
-/// moment they are not, the encoder falls back to explicit pairs.
 pub fn xui09_country_vector_body(states: &[(u32, u8)], completed: &[u32]) -> Vec<u8> {
     let dense = states
         .iter()
@@ -279,9 +220,8 @@ pub fn xui09_country_vector_body(states: &[(u32, u8)], completed: &[u32]) -> Vec
     if dense {
         flags |= XUI09_COUNTRY_FLAG_DENSE;
     }
-    let mut bytes = Vec::with_capacity(
-        12 + states.len() * if dense { 1 } else { 5 } + completed.len() * 4,
-    );
+    let mut bytes =
+        Vec::with_capacity(12 + states.len() * if dense { 1 } else { 5 } + completed.len() * 4);
     bytes.extend_from_slice(&flags.to_le_bytes());
     bytes.extend_from_slice(&(states.len() as u32).to_le_bytes());
     bytes.extend_from_slice(&(completed.len() as u32).to_le_bytes());
@@ -297,34 +237,14 @@ pub fn xui09_country_vector_body(states: &[(u32, u8)], completed: &[u32]) -> Vec
     bytes
 }
 
-/// One XUI09 tail, in the order the walk reads it.
-///
-/// Every section is an ITERATOR, not a slice, and that is deliberate: the four
-/// counts go in the header before any entry is written, so the encoder needs the
-/// lengths up front, and `ExactSizeIterator` supplies them without the producer
-/// having to materialise four temporary collections it already holds in another
-/// shape. The producer streams straight out of its own `BTreeSet`/`BTreeMap`
-/// into the output buffer.
 pub struct Xui09Tail<D, M, R, V> {
-    /// The vectors are a patch rather than the whole witness.
     pub patch: bool,
-    /// `(def_index, technology id)`, in the order they go on the wire.
     pub dictionary: D,
-    /// Every country this frame measured.
     pub measured: M,
-    /// `(tag_db_id, reason)` for every country with a named reason for having no
-    /// witness.
     pub refused: R,
-    /// `(tag_db_id, body)` where `body` came from
-    /// [`xui09_country_vector_body`].
     pub vectors: V,
 }
 
-/// Write the XUI09 witness tail.
-///
-/// Whether a tail is written AT ALL is the producer's decision and stays there:
-/// an empty tail and no tail mean the same thing to the fold, and the shorter
-/// one is the payload that says it.
 pub fn encode_xui09_tail<'a, D, M, R, V>(tail: Xui09Tail<D, M, R, V>, out: &mut Vec<u8>)
 where
     D: ExactSizeIterator<Item = (u32, &'a str)>,

@@ -1,24 +1,3 @@
-//! The encoder. It lives in the leaf because a grammar with only readers is
-//! half a grammar: the shapes the readers refuse are exactly the shapes the
-//! writers must not be able to produce.
-//!
-//! # What "unconstructible" means here, precisely
-//!
-//! STRUCTURAL invalidity is unconstructible: no caller supplies a magic, a
-//! version word, a `header_len`, a `row_len`, a reserved structural word, a
-//! row COUNT, or a block length. Every one of those is derived here from the
-//! typed input, so a payload this module produces always delimits.
-//!
-//! SEMANTIC invalidity stays constructible, and that is deliberate rather than
-//! an omission. The lane's public `encode_*` functions are used by tests that
-//! deliberately build a row with a variant id and no variant-valid flag, or two
-//! residual badges with one id, and then require the decoder to REFUSE it. A
-//! leaf that made those unconstructible would either change those functions'
-//! signatures or force the tests to be edited, and playbook step 9 forbids
-//! editing a test to make the conversion pass. (Codex design thread
-//! `01a00772-ce5c-7f53-892d-887c3711ca13`, section F, which reached the same
-//! reading of playbook step 6 independently.)
-
 use alloc::vec::Vec;
 
 use crate::{
@@ -29,32 +8,36 @@ use crate::{
     STOCKPILE_GLOBAL_FLAGS, STOCKPILE_ITEM_ROW_LEN,
 };
 
-/// The reasons this module refuses to encode.
-///
-/// Every one of them is a shape no reader in the tree accepts, so refusing here
-/// is refusing to write a payload that would be a total record loss later.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EncodeError {
-    /// An `MTRF` row carried a value count that is not the trailer's.
     FlowRowWidth {
         row: usize,
         values: usize,
         expected: usize,
     },
-    /// An `MTRF` v3 or `MTRR` resource count outside `1..=`the ceiling, or a
-    /// fixed-seven family given a count that is not seven.
-    ResourceCount { declared: u32, max: u32 },
-    /// An `MTRR` identity token longer than the stride can hold.
-    IdentityTokenLen { slot: usize, len: usize, max: usize },
-    /// An `MTRR` identity block whose entry count is not the resource count.
-    IdentityCount { entries: usize, expected: usize },
-    /// An `MTRD` v1/v2 given incomplete owners, which those versions cannot
-    /// express.
-    IncompleteOwnersUnsupported { version: u16, owners: usize },
-    /// An `MTRD` v1-v3 identity that does not fit the packed key's field widths.
-    PackedIdentityOverflow { row: usize },
-    /// A count that does not fit the `u32` the header spends on it.
-    CountOverflow { count: usize },
+    ResourceCount {
+        declared: u32,
+        max: u32,
+    },
+    IdentityTokenLen {
+        slot: usize,
+        len: usize,
+        max: usize,
+    },
+    IdentityCount {
+        entries: usize,
+        expected: usize,
+    },
+    IncompleteOwnersUnsupported {
+        version: u16,
+        owners: usize,
+    },
+    PackedIdentityOverflow {
+        row: usize,
+    },
+    CountOverflow {
+        count: usize,
+    },
 }
 
 fn u32_count(count: usize) -> Result<u32, EncodeError> {
@@ -77,9 +60,6 @@ fn push_trailer_header(
     out.extend_from_slice(&row_count.to_le_bytes());
 }
 
-// --- the core --------------------------------------------------------------
-
-/// The core header's counted words, named rather than positional.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CoreCounts {
     pub changed_rows: u32,
@@ -92,9 +72,6 @@ pub struct CoreCounts {
     pub partial_field_rows: u32,
 }
 
-/// Encode the core header and rows. `row_count` and `scale_raw` are DERIVED --
-/// the caller cannot state either, which is what makes a payload whose header
-/// disagrees with its own row count unconstructible.
 pub fn encode_core(
     elapsed_wall_ms: u64,
     counts: CoreCounts,
@@ -103,8 +80,6 @@ pub fn encode_core(
     let row_count = u32_count(rows.len())?;
     let mut out = Vec::with_capacity(crate::CORE_HEADER_LEN + rows.len() * crate::CORE_ROW_LEN);
     out.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
-    // In `CoreWord::ALL` order, and typed as an array of that length, so a new
-    // word cannot be appended to the table without this list failing to build.
     let words: [u32; CoreWord::ALL.len()] = [
         row_count,
         counts.changed_rows,
@@ -149,13 +124,6 @@ pub fn encode_core(
     Ok(out)
 }
 
-// --- MTD1 ------------------------------------------------------------------
-
-/// `MTD1`'s four counted summaries.
-///
-/// The caller states them because they are the producer's OWN claim about its
-/// rows, and every reader cross-checks the claim against the rows it decodes --
-/// a claim this encoder derived would make that check vacuous.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DetailCounts {
     pub price_valid_rows: u32,
@@ -216,8 +184,6 @@ pub fn encode_detail(rows: &[DetailRow], counts: DetailCounts) -> Result<Vec<u8>
     Ok(out)
 }
 
-// --- MTRH ------------------------------------------------------------------
-
 pub fn encode_factory_header(rows: &[FactoryRow]) -> Result<Vec<u8>, EncodeError> {
     let trailer = Trailer::FactoryHeader;
     let row_len = fixed_row_len(trailer);
@@ -231,8 +197,6 @@ pub fn encode_factory_header(rows: &[FactoryRow]) -> Result<Vec<u8>, EncodeError
         0,
         row_count,
     );
-    // The country count IS the row count by construction in this family, and
-    // the reserved word is zero. Neither is a caller's to state.
     out.extend_from_slice(&row_count.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     for row in rows {
@@ -250,13 +214,6 @@ pub fn encode_factory_header(rows: &[FactoryRow]) -> Result<Vec<u8>, EncodeError
     Ok(out)
 }
 
-// --- MTRF ------------------------------------------------------------------
-
-/// One `MTRF` row: the row header's country and kind, plus one value per
-/// resource slot.
-///
-/// The value count is checked against the trailer's resource count, which is
-/// what makes a row narrower than its own header unconstructible.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FlowRowInput<'a> {
     pub tag_db_id: u32,
@@ -264,12 +221,6 @@ pub struct FlowRowInput<'a> {
     pub values_raw: &'a [i64],
 }
 
-/// Encode an `MTRF` trailer at `version`.
-///
-/// `row_len`, the mask/count word and the kind mask are all derived from the
-/// version and the resource count; `country_count_or_exported` is the
-/// producer's own claim and stays the caller's, for the same reason
-/// [`DetailCounts`] does.
 pub fn encode_resource_flow(
     version: FlowVersion,
     resource_count: u32,
@@ -334,13 +285,6 @@ pub fn encode_resource_flow(
     Ok(out)
 }
 
-// --- MTRR ------------------------------------------------------------------
-
-/// Encode an `MTRR` trailer at `version`.
-///
-/// `tokens` must be empty for the versions that carry no identity block and
-/// must have one entry per resource for the versions that do; the identity
-/// stride, the `+28` word, `row_len` and the row count are derived.
 pub fn encode_resource_rows(
     version: ResourceRowVersion,
     resource_count: u32,
@@ -397,7 +341,6 @@ pub fn encode_resource_rows(
     push_trailer_header(&mut out, trailer, version.wire(), row_len, 0, row_count);
     out.extend_from_slice(&country_count.to_le_bytes());
     out.extend_from_slice(&resource_count.to_le_bytes());
-    // The display scale is one: this family publishes whole units.
     out.extend_from_slice(&1u32.to_le_bytes());
     out.extend_from_slice(&identity_word.to_le_bytes());
     for token in tokens {
@@ -446,13 +389,6 @@ pub fn encode_resource_rows(
     Ok(out)
 }
 
-// --- MTRD ------------------------------------------------------------------
-
-/// Encode an `MTRD` trailer at `version`.
-///
-/// `incomplete_owners` must be empty for v1/v2, which have no word to put a
-/// count in: that is a STRUCTURAL refusal, not a taste judgement, because a
-/// non-zero word there is how a v3 payload mislabelled v2 is caught.
 pub fn encode_classic_deals(
     version: DealVersion,
     witnesses: &[u32],
@@ -477,7 +413,6 @@ pub fn encode_classic_deals(
             + rows.len() * row_len,
     );
     push_trailer_header(&mut out, trailer, version.wire(), row_len, 0, row_count);
-    // The country count IS the witness count in every version of this family.
     out.extend_from_slice(&witness_count.to_le_bytes());
     out.extend_from_slice(&FIXED_SCALE_RAW.to_le_bytes());
     out.extend_from_slice(&witness_count.to_le_bytes());
@@ -520,10 +455,6 @@ pub fn encode_classic_deals(
         out.extend_from_slice(&route_kind.to_le_bytes());
         out.extend_from_slice(&flags.to_le_bytes());
         out.extend_from_slice(&route_status_or_reserved.to_le_bytes());
-        // The identity is written at the width THIS VERSION spells, from the
-        // same three operands. A caller cannot hand a wide identity to a packed
-        // trailer and have it silently truncate: the packed key's field widths
-        // are checked, and an operand that does not fit is refused.
         match version.identity_shape() {
             DealIdentityShape::Wide => {
                 out.extend_from_slice(&identity_exporter_tag_db_id.to_le_bytes());
@@ -560,8 +491,6 @@ pub fn encode_classic_deals(
     Ok(out)
 }
 
-// --- MTRA ------------------------------------------------------------------
-
 pub fn encode_activation(
     flags: u32,
     country_tag_db_id: u32,
@@ -581,8 +510,6 @@ pub fn encode_activation(
     out.extend_from_slice(&open_rva.to_le_bytes());
     out
 }
-
-// --- MTS1 ------------------------------------------------------------------
 
 pub fn encode_stockpile(
     expected_country_count: u32,
@@ -639,17 +566,6 @@ pub fn encode_stockpile(
     Ok(out)
 }
 
-// --- MTRB and MTLL (lane gate only) ----------------------------------------
-//
-// The lane gate both DECODES and ENCODES these two families. A leaf that could
-// only delimit them would leave the lane's encoder as a second writer of a
-// grammar this crate claims to own -- exactly the shape the programme exists to
-// remove. (Codex review thread `01a00794-8e7e-7a02-b932-0eeb40336eb3`,
-// finding 1.)
-
-/// `MTRB`'s four status counts. The caller states them for the same reason
-/// [`DetailCounts`] is stated: they are the producer's own claim about its rows
-/// and the decoder cross-checks the claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResidualCounts {
     pub source_blocked_rows: u32,
@@ -713,7 +629,6 @@ pub fn encode_residual(
     Ok(out)
 }
 
-/// `MTLL`'s four direction and presence counts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LendLeaseCounts {
     pub outgoing_rows: u32,

@@ -12,8 +12,8 @@ import pytest
 HERE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HERE))
 
-import live_binding_resolver as R  # noqa: E402
-import static_bundle as SB  # noqa: E402
+import live_binding_resolver as R
+import static_bundle as SB
 
 
 def test_runtime_log_requires_exact_counts(tmp_path: Path):

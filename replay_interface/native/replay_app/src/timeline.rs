@@ -1,15 +1,3 @@
-//! Timeline abstraction: who owns and controls each state at each hour.
-//!
-//! Scrubbing consumes an [`OwnerProvider`]; the renderer rewrites only the
-//! compact state -> color table from `controllers_at(hour)` for validation
-//! while visible political recoloring is supplied by the authenticated XMAP05
-//! path. `owners_at(hour)` stays
-//! exposed because occupied-territory striping needs both maps.
-//!
-//! Frames are returned as `Arc` so a recording-backed provider can load
-//! them lazily (a real recording is far too large to materialize every
-//! hour up front) while the static provider stays allocation-free on repeat
-//! calls.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -20,15 +8,12 @@ use crate::anomaly::AnomalyPolicy;
 use crate::bundle::MapBundle;
 use crate::{Result, TimelineMode};
 
-/// A headless recording selection. Canonical hours are absolute `hour_index`
-/// values; ordinals are zero-based positions in the verified recording index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DumpHourRequest {
     Canonical(i64),
     Ordinal(usize),
 }
 
-/// Loud, typed failures for recording-hour selection and frame loading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimelineSelectionError {
     Empty,
@@ -92,10 +77,6 @@ impl std::fmt::Display for TimelineSelectionError {
                 f,
                 "requested hour {requested} is unavailable inside the recording gap {from}->{to} (missing {missing:?}); refusing interpolation"
             ),
-            // `count == 0` never escapes the constructors today
-            // (`canonical_range` returns `Empty` first and `WorldTimeline`
-            // rejects an empty hour series), but a `pub` `Display` must not
-            // hide a latent `usize` underflow panic behind that invariant.
             Self::OrdinalOutOfRange { requested, count: 0, first, last } => write!(
                 f,
                 "requested dump snapshot ordinal {requested} but the recording has no dump snapshots (canonical range {first}..={last})"
@@ -121,9 +102,6 @@ fn canonical_range(hours: &[i64]) -> std::result::Result<(i64, i64), TimelineSel
     Ok((first, last))
 }
 
-/// Resolve either public dump selector to an exact canonical recorded hour.
-/// This is deliberately stricter than timeline scrubbing, which may resolve
-/// an in-between time to the preceding frame.
 pub fn resolve_dump_hour(
     hours: &[i64],
     request: DumpHourRequest,
@@ -169,38 +147,18 @@ pub fn resolve_dump_hour(
     }
 }
 
-/// FW7/FW11 seam closure: before a bundle's province table is allowed to act
-/// as the anomaly/province authority for a recording, the bundle's declared
-/// capture-side modset and the recording's own declared modset must be
-/// reconciled.
-///
-/// A definite class disagreement (one side vanilla, the other modded) is a
-/// typed refusal: the [`replay_core::SourceError::ModsetMismatch`] value is
-/// boxed AS ITSELF, never flattened to a string, so a caller can still
-/// downcast it and classify the rejection (`validate::rejection_kind` maps it
-/// to `RejectionKind::Modset`). Anything the recorded evidence cannot decide
-/// is logged as a typed degradation. There is no silent third path: every
-/// outcome either refuses or prints.
 fn reconcile_bundle_against_recording(
     bundle: Option<&MapBundle>,
     manifest: Option<&replay_core::ContentManifest>,
 ) -> Result<()> {
     let Some(bundle) = bundle else {
-        // No bundle: nothing of the bundle's is used as an authority, so there
-        // is no cross-check to make.
         return Ok(());
     };
-    // `?` on a `SourceError` boxes the typed value (it implements
-    // `std::error::Error`); do NOT stringify it here.
     let agreement = crate::bundle::reconcile_bundle_modset(&bundle.provenance, manifest)?;
-    // Positive agreement is the only quiet-ish outcome, and it still logs what
-    // was established. A non-decidable outcome must never be silence.
     eprintln!("replay_app: {}", agreement.diagnostic());
     Ok(())
 }
 
-/// Build the owner provider + mode label for a timeline mode. Shared by the
-/// interactive window loop and the headless frame-dump path.
 pub fn build_provider(
     bundle: Option<&MapBundle>,
     mode: &TimelineMode,
@@ -214,8 +172,6 @@ pub fn build_provider(
             let source =
                 crate::recording_open::open_product_recording_segment(path, *logical_stream_id)
                     .map_err(|err| format!("open recording {}: {err}", path.display()))?;
-            // F2: the decoded-frame LRU budget rides the mode (default 16;
-            // `--frame-cache` shrinks it for weak-PC profiles).
             let timeline = replay_core::WorldTimeline::open_with_config(source, *config)
                 .map_err(|err| format!("open timeline {}: {err}", path.display()))?;
             if let Some(receipt) = timeline.prefold_receipt() {
@@ -230,13 +186,7 @@ pub fn build_provider(
             for warning in timeline.warnings() {
                 eprintln!("replay_app: recording warning: {warning}");
             }
-            // The bundle's tables may not act as an authority for this
-            // recording until the two declared modsets have been reconciled.
             reconcile_bundle_against_recording(bundle, timeline.content_manifest())?;
-            // F4 anomaly validation is incremental. Opening establishes the
-            // gap policy from index metadata only; frames are authenticated and
-            // observed in order through the requested hour before that frame
-            // can cross the provider boundary.
             let known_provinces = bundle.map(|bundle| {
                 bundle
                     .province_to_state
@@ -249,9 +199,6 @@ pub fn build_provider(
                 eprintln!("{}", diagnostic.log_line());
             }
             let recording = RecordingTimeline::new_with_policy(timeline, Some(policy));
-            // Coverage/ingest warnings must stay visible in a windowed launch
-            // (stderr is invisible on a double-click start): fold a non-zero
-            // count into the mode label, which flows into the window title.
             let label = if warning_count == 0 {
                 format!("recording {}", recording.game_id())
             } else {
@@ -274,9 +221,6 @@ pub fn build_provider(
     }
 }
 
-/// Build a recording provider from an already-admitted source. Headless
-/// rollover playback uses this entry so the retained container is never
-/// translated back into a pathname and reopened.
 pub fn build_recording_provider(
     bundle: Option<&MapBundle>,
     source: Box<dyn ReplaySource>,
@@ -297,8 +241,6 @@ pub fn build_recording_provider(
     for warning in timeline.warnings() {
         eprintln!("replay_app: recording warning: {warning}");
     }
-    // Same seam as `build_provider`: the retained-container rollover/bench
-    // entry must reconcile before the bundle becomes an authority too.
     reconcile_bundle_against_recording(bundle, timeline.content_manifest())?;
     let known_provinces = bundle.map(|bundle| {
         bundle
@@ -328,37 +270,21 @@ pub trait OwnerProvider: Send + Sync {
     fn hours(&self) -> &[i64];
     fn owners_at(&self, hour: i64) -> Result<Arc<BTreeMap<u32, String>>>;
     fn controllers_at(&self, hour: i64) -> Result<Arc<BTreeMap<u32, String>>>;
-    /// C7 render wiring: the typed replay_core frame for this hour. Static
-    /// providers return `None`; consumers never parse recording bytes.
     fn world_frame_at(&self, _hour: i64) -> Result<Option<Arc<WorldFrame>>> {
         Ok(None)
     }
-    /// Human-readable label for the title bar; recording-backed providers
-    /// add the in-game date.
     fn hour_label(&self, hour: i64) -> Result<String> {
         Ok(format!("hour {hour}"))
     }
-    /// The recorded `date` string for an exact recorded hour, when the frame
-    /// carried one. Used to build the transport's date spine (seek-bar ticks +
-    /// jump-to-date). Defaults to `None` (dateless providers degrade honestly).
     fn date_at(&self, _hour: i64) -> Result<Option<String>> {
         Ok(None)
     }
-    /// E6: the observer country picker source, derived from the recording's
-    /// complete d18 roster. Defaults to fail-closed (no typed recording frame).
-    ///
-    /// `Ok(PovPicker::Unavailable)` is reserved for a GENUINELY absent or
-    /// unusable session carrier in an authenticated frame; a selection or
-    /// frame authentication failure is `Err` — an authentication failure must
-    /// never be downgraded to a typed-absent picker.
     fn pov_picker(&self) -> Result<crate::observer::PovPicker> {
         Ok(crate::observer::PovPicker::Unavailable(
             "static baseline has no typed d18 country roster".to_string(),
         ))
     }
 
-    /// F4: the marked held-value note (mid-playback anomaly holds) for `hour`,
-    /// or `None` when nothing is held. Defaults to `None` (no anomaly policy).
     fn anomaly_note(
         &self,
         _hour: i64,
@@ -366,9 +292,6 @@ pub trait OwnerProvider: Send + Sync {
         Ok(None)
     }
 
-    /// Install a stop switch the frame path may consult, so a scrub that has
-    /// moved on can abandon a reconstruction still in flight. Providers that do
-    /// no abandonable work ignore it, which is the default.
     fn set_scrub_interrupt(&self, _interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {}
 
     fn content_manifest(&self) -> Option<&replay_core::ContentManifest> {
@@ -403,8 +326,6 @@ pub trait OwnerProvider: Send + Sync {
     }
 }
 
-/// Single-frame provider: the grounded 1936 start owners from
-/// `state_owner_1936.json`.
 pub struct Static1936 {
     hours: Vec<i64>,
     owners: Arc<BTreeMap<u32, String>>,
@@ -433,27 +354,14 @@ impl OwnerProvider for Static1936 {
     }
 }
 
-/// Recording-backed provider over a `replay_core::WorldTimeline`.
-///
-/// Trichotomy rule: only a `Leaf::Measured` owner becomes a map entry;
-/// `Absent` and `Unobtained` states stay off the table, so the renderer
-/// shows the no-owner sentinel (the grounded underlay) instead of a
-/// fabricated owner color.
 pub struct RecordingTimeline {
     timeline: WorldTimeline,
-    /// One-slot cache: (requested hour, owners, controllers, date label). The
-    /// WorldTimeline keeps its own LRU of decoded frames, so a miss here is
-    /// only a cheap re-conversion, but the probe path calls per mouse-move
-    /// and must not re-walk the leaf map every event.
     cache: Mutex<Option<CachedFrame>>,
-    /// F4 mid-playback anomaly policy (populated at open by `build_provider`).
-    /// Holds the marked last-good state so the UI can surface held domains.
     anomaly: Option<Mutex<IncrementalAnomalyScan>>,
 }
 
 struct IncrementalAnomalyScan {
     policy: AnomalyPolicy,
-    /// First canonical hour not yet authenticated and observed.
     next_index: usize,
 }
 
@@ -519,9 +427,6 @@ impl RecordingTimeline {
         Ok(())
     }
 
-    /// Resolve an exact recorded scrub position. Any in-range hole is a typed
-    /// gap refusal before a frame, cached map, or date can cross the provider
-    /// boundary.
     fn selected_canonical_hour(
         &self,
         hour: i64,
@@ -556,10 +461,6 @@ impl RecordingTimeline {
         }
     }
 
-    /// F4: the marked held-value note for the exact recorded `hour`, e.g.
-    /// "anomaly: HELD weather from hour 41", or `None` when nothing is held
-    /// (pre-anomaly hours, or a clean recording). An hour that lands inside a
-    /// detected gap is reported as unavailable, never interpolated.
     fn anomaly_note_at(
         &self,
         hour: i64,
@@ -577,7 +478,6 @@ impl RecordingTimeline {
         })?;
         let policy = &scan.policy;
         let mut parts: Vec<String> = Vec::new();
-        // Note a gap immediately preceding this frame (the after-gap hour).
         if let Some(gap) = policy.gaps().iter().find(|g| g.to == frame_hour) {
             parts.push(format!("gap before (missing {:?})", gap.missing));
         }
@@ -595,24 +495,6 @@ impl RecordingTimeline {
         self.timeline.game_id()
     }
 
-    /// E1 wiring: random-access seek through the `replay_core` hook. Returns
-    /// the exact recorded hour, or a typed selection/load error. Playback uses
-    /// [`WorldTimeline::seek`] / [`WorldTimeline::play_to`]
-    /// which resolve identically today (see the `seek_equals_play_to`
-    /// conformance gate); the interactive scrub reads owners through the same
-    /// `state_at` primitive.
-    ///
-    /// **Callers today are gates, not the render loop** (the compiler reports
-    /// it unused in the non-test build). The Win32 loop drives
-    /// [`crate::transport`] and reads `current_hour()` back through
-    /// `selected_frame`/`owners_at`. This method and
-    /// [`Self::play_to_hour`] are the pair the `seek_equals_play_to`
-    /// conformance gate and the G2 end-to-end script assert resolve
-    /// identically on every recorded hour, over the same
-    /// `selected_canonical_hour` + `scan_anomalies_through` prologue the render
-    /// loop takes. They stay because that equivalence is the claim, and because
-    /// The `PROJECT.md` heading "Time, identity, sessions, and files" requires
-    /// restoration at an hour rather than a frame index.
     pub fn seek_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
         let canonical_hour = self.selected_canonical_hour(hour)?;
         self.scan_anomalies_through(canonical_hour)?;
@@ -627,9 +509,6 @@ impl RecordingTimeline {
             })
     }
 
-    /// E1 wiring: linear play-to through the `replay_core` hook. The linear
-    /// half of the conformance pair documented on [`Self::seek_hour`]; same
-    /// gate-only caller set today.
     pub fn play_to_hour(&self, hour: i64) -> std::result::Result<i64, TimelineSelectionError> {
         let canonical_hour = self.selected_canonical_hour(hour)?;
         self.scan_anomalies_through(canonical_hour)?;
@@ -666,9 +545,6 @@ impl RecordingTimeline {
         Arc<BTreeMap<u32, String>>,
         Option<String>,
     )> {
-        // Validate before consulting the one-slot cache. A map cached for an
-        // prior exact lookup must never make a later unavailable gap look
-        // playable.
         self.selected_canonical_hour(hour)?;
         if let Ok(guard) = self.cache.lock() {
             if let Some(cached) = guard.as_ref() {
@@ -681,9 +557,6 @@ impl RecordingTimeline {
                 }
             }
         }
-        // Any selection or snapshot-body load failure remains an error all the
-        // way to the renderer; an empty political table is valid data only
-        // when the decoded typed view itself is genuinely empty.
         let frame = self.selected_frame(hour)?;
         let owners = Arc::new(owners_from_leaves(frame.owner_by_state()));
         let controllers = Arc::new(owners_from_leaves(frame.control_by_state()));
@@ -722,11 +595,6 @@ impl OwnerProvider for RecordingTimeline {
     }
 
     fn hour_label(&self, hour: i64) -> Result<String> {
-        // D6 replay-native clock: format the recording date with the FILE
-        // topbar clock law (`interface/topbar.gui` DateText placeholder +
-        // `core_l_english.yml` months) via game_ui; fall back to the raw
-        // Clausewitz string when it does not parse (fail-closed, never a
-        // fabricated date). Closes the former raw-date GAP note in app.rs.
         Ok(match self.frame_maps(hour)?.2 {
             Some(date) => match game_ui::binding::format_topbar_date_english(&date) {
                 Some(formatted) => format!("{formatted} (hour {hour})"),
@@ -737,24 +605,11 @@ impl OwnerProvider for RecordingTimeline {
     }
 
     fn date_at(&self, hour: i64) -> Result<Option<String>> {
-        // Validate the selection before exposing index metadata, then use the
-        // authenticated date index directly. Building the transport date spine
-        // must not decode every frame in a long recording.
         self.selected_canonical_hour(hour)?;
         Ok(self.timeline.date_at(hour)?)
     }
 
     fn pov_picker(&self) -> Result<crate::observer::PovPicker> {
-        // Read the first frame's typed d18 roster. Multiplayer participation
-        // and the recorder's local country do not constrain replay-owned panel
-        // selection, and d94/d95 fog evidence is checked only if fog is
-        // explicitly requested.
-        //
-        // R7 F2: a `selected_frame` failure here is the F4 fail-closed
-        // authentication path (SHA/CRC/decode at the first hour); it
-        // PROPAGATES rather than becoming `PovPicker::Unavailable`, which is
-        // reserved for authenticated frames whose session carriers are
-        // genuinely absent or unusable.
         let frame = self.selected_frame(self.timeline.first_hour())?;
         Ok(crate::observer::povs_from_frame(&frame))
     }
@@ -790,7 +645,6 @@ impl OwnerProvider for RecordingTimeline {
     }
 }
 
-/// Measured owners only; `Absent`/`Unobtained` stay off the map (sentinel).
 pub fn owners_from_leaves(leaves: &BTreeMap<u32, Leaf<String>>) -> BTreeMap<u32, String> {
     leaves
         .iter()
@@ -812,22 +666,15 @@ mod tests {
         owners
     }
 
-    /// RES1 R2 — at the actual seam, a bundle/recording modset disagreement
-    /// must still be classifiable: the boxed error has to downcast back to
-    /// `SourceError::ModsetMismatch` (which `validate::rejection_kind` maps to
-    /// `RejectionKind::Modset`). Flattening it to a string would silently
-    /// demote the rejection class.
     #[test]
     fn seam_refusal_preserves_the_typed_modset_class() {
         use crate::bundle::tests::{recording_manifest, unique_temp_dir, write_fixture_bundle};
 
         let dir = unique_temp_dir("timeline_modset_seam");
         write_fixture_bundle(&dir);
-        // The fixture bundle declares no `modset` block => the vanilla identity.
         let bundle = MapBundle::load(&dir).expect("fixture bundle loads");
         assert_eq!(bundle.provenance.mod_count, 0);
 
-        // Vanilla bundle vs a recording that admitted two mod layers.
         let modded = recording_manifest(2);
         let error = reconcile_bundle_against_recording(Some(&bundle), Some(&modded))
             .expect_err("a class disagreement must refuse at the seam");
@@ -839,7 +686,6 @@ mod tests {
             "expected ModsetMismatch, got {typed:?}"
         );
 
-        // The agreeing case passes through, and no bundle is a no-op.
         let vanilla = recording_manifest(0);
         reconcile_bundle_against_recording(Some(&bundle), Some(&vanilla))
             .expect("matching vanilla identities must not refuse");
@@ -859,7 +705,6 @@ mod tests {
             provider.owners_at(0).expect("owners")
         );
         assert!(provider.world_frame_at(0).expect("world frame").is_none());
-        // Out-of-range hours still resolve to the single frame.
         assert_eq!(
             *provider.owners_at(9999).expect("constant owners"),
             fixture_owners()
@@ -899,9 +744,6 @@ mod tests {
         ));
     }
 
-    /// Synthetic three-hour source whose last frame fails to load: exercises
-    /// the in-process provider seam the interactive scrub uses, so selection
-    /// and load errors can never degrade to an empty (all-underlay) map.
     struct MidstreamLoadFailureSource {
         hours: Vec<i64>,
         warnings: Vec<String>,
@@ -1123,10 +965,6 @@ mod tests {
         ));
     }
 
-    /// R7 F2 regression: a first-hour authentication/load failure must
-    /// PROPAGATE out of `pov_picker` — never degrade into the semantic
-    /// `PovPicker::Unavailable`, which is reserved for authenticated frames
-    /// whose session carriers are genuinely absent.
     #[test]
     fn pov_picker_propagates_a_first_frame_authentication_failure() {
         struct FirstFrameFailureSource;
@@ -1163,9 +1001,6 @@ mod tests {
         );
     }
 
-    /// The companion direction for R7 F2: an AUTHENTICATED frame with no
-    /// session carriers stays a semantic `Ok(Unavailable)` — propagation is
-    /// only for failures.
     #[test]
     fn pov_picker_stays_semantic_unavailable_for_an_authenticated_sessionless_frame() {
         let timeline = WorldTimeline::open(Box::new(CountingSource {
@@ -1184,9 +1019,6 @@ mod tests {
         }
     }
 
-    /// R7 F6 regression: formatting `OrdinalOutOfRange` with `count == 0`
-    /// must not underflow-panic in the `pub` `Display` impl, even though no
-    /// current constructor produces that variant.
     #[test]
     fn ordinal_out_of_range_display_does_not_panic_on_zero_count() {
         let zero = TimelineSelectionError::OrdinalOutOfRange {
@@ -1234,8 +1066,6 @@ mod tests {
         let owners = owners_from_leaves(&leaves);
         assert_eq!(owners.len(), 1);
         assert_eq!(owners.get(&1).map(String::as_str), Some("GER"));
-        // Unobtained/Absent must NOT appear (they render as the underlay
-        // sentinel, never as a fabricated owner).
         assert!(!owners.contains_key(&2));
         assert!(!owners.contains_key(&3));
     }
@@ -1249,8 +1079,6 @@ mod tests {
 
     #[test]
     fn seek_equals_play_to_on_every_recorded_hour() {
-        // E1/A4: the replay_core seek/play_to hooks resolve identically, and
-        // date_at surfaces the recorded date for the transport spine.
         let path = fixture_path("positive/fx_owner_controller_flip.battleplan");
         let source = replay_core::open_recording(&path).expect("open fixture");
         let timeline = replay_core::WorldTimeline::open(source).expect("timeline");
@@ -1262,7 +1090,6 @@ mod tests {
                 "seek != play_to at hour {hour}"
             );
             assert_eq!(recording.seek_hour(hour), Ok(hour), "exact-hour resolves");
-            // Every recorded frame in this fixture carries a Clausewitz date.
             assert!(
                 recording.date_at(hour).expect("date query").is_some(),
                 "date at hour {hour}"
@@ -1278,23 +1105,7 @@ mod tests {
         }
     }
 
-    /// Scrubbing the recorded timeline actually changes recorded state.
-    ///
-    /// This is the surviving half of the retired `replay_qa`
-    /// "recording ingest + scrub" gate. That gate asserted the same property by
-    /// dumping two hours to BMP and byte-diffing them, which is no longer
-    /// reachable: a production recording invocation now refuses `--bundle`,
-    /// `--capture`, `--dump-zoom` and `--dump-center`, and the bundle-less
-    /// production dump path needs carriers the synthetic fixture never had plus a
-    /// machine-local the game install. The property itself is not about pixels, so it
-    /// is asserted here on the typed maps the renderer keys off, through the
-    /// product's own scrub provider -- no bundle, no GPU, no the game install.
-    ///
-    /// Nothing else covered this: `seek_equals_play_to_on_every_recorded_hour`
-    /// above uses the same fixture but asserts seek/play_to equivalence, and the
-    /// `e2e_playback` gate drives `fx_pov_visibility` / `fx_topbar_scalars_sweep`
     /// for POV and topbar bindings. Ownership divergence across the scrub was
-    /// left unasserted in this crate when the harness gate died.
     #[test]
     fn scrubbing_the_recorded_timeline_changes_owner_and_controller_state() {
         let path = fixture_path("positive/fx_owner_controller_flip.battleplan");
@@ -1319,8 +1130,6 @@ mod tests {
             .controllers_at(last)
             .expect("controllers at last hour");
 
-        // Non-empty, or "they differ" could be satisfied by one side being empty
-        // because the frame failed to decode.
         assert!(
             !first_owners.is_empty() && !last_owners.is_empty(),
             "owner map is empty at an endpoint: {} then {}",
@@ -1345,10 +1154,6 @@ mod tests {
              recorded control scrub is a no-op"
         );
 
-        // Divergence must be a CHANGED assignment on a state present in BOTH
-        // hours, not merely states appearing in or disappearing from the map.
-        // Asserted for owners and controllers alike: "non-empty and unequal" on
-        // its own would be satisfied by a map that only gained or lost entries.
         let reassigned = |before: &BTreeMap<u32, String>, after: &BTreeMap<u32, String>| {
             before
                 .iter()
@@ -1366,11 +1171,6 @@ mod tests {
              {first} and hour {last}"
         );
 
-        // Re-reading is stable, so the differences above are recorded state and
-        // not decode nondeterminism. BOTH maps at BOTH endpoints: the two
-        // endpoints are separate cache loads, so checking only the first hour
-        // would still admit an alternating or hour-specific last-frame decode
-        // that satisfied each reassignment assertion on a different read.
         for (hour, expected_owners, expected_controllers) in [
             (first, &first_owners, &first_controllers),
             (last, &last_owners, &last_controllers),

@@ -1,23 +1,9 @@
-//! Executable boundary for production `compact_contract` reuse.
-//!
-//! Measurement binaries under `src/bin` deliberately use the complete shipping
-//! contract and are outside this guard. Production library modules are narrower:
-//! d81 alone may use the rail payload authority and the two root status
-//! predicates required to preserve the shipping fold's decode-before-status
-//! order. Expanding this list is a policy change, not an incidental import.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
 const MANIFEST_ALLOW_LIST: &str =
     "# production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure";
 
-// Both status predicates read `decoded.status_flags`, never `header.status_flags`.
-// That spelling is the decode-before-status order this policy exists to pin:
-// d81 decodes the RRL1 payload first and judges status only from the decode
-// result, so a payload that fails to decode can never be silently reclassified
-// as a status outcome. The allow-list previously named the `header.` spelling,
-// which no production line has ever used.
 const ADMITTED_PRODUCTION_LINES: [(&str, usize); 3] = [
     ("use compact_contract::rail_replay as compact;", 1),
     (
@@ -54,9 +40,6 @@ fn production_compact_contract_dependency_is_exactly_allow_listed() {
             .expect("collected source must remain below manifest directory");
         let source = fs::read_to_string(&path).expect("Rust library source must be readable");
         for (line_index, line) in source.lines().enumerate() {
-            // All current references are ordinary code on one line. Removing
-            // line comments keeps citations and module documentation out of the
-            // policy surface while making every executable occurrence auditable.
             let code = line.split_once("//").map_or(line, |(code, _)| code);
             if !code.contains("compact_contract") {
                 continue;

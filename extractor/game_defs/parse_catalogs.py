@@ -111,7 +111,6 @@ def _atoms(node):
 
 
 def _ordered_files(layers, subdir):
-    # path-boundary-safe load order (vanilla before mod), shared resolver helper.
     return R.ordered_files(layers, subdir, (".txt",))
 
 
@@ -125,7 +124,6 @@ def _walk(layers, subdir, wrapper, per_item, dest, collisions):
             print(f"[catalogs] WARN {rel}: {e}", file=sys.stderr)
             continue
         containers = ([root.get(wrapper)] if wrapper else [root])
-        # a file may declare several wrapper blocks (e.g. several leader_traits={})
         if wrapper:
             containers = [v for k, v in root.entries
                           if k.lower() == wrapper.lower() and isinstance(v, Node)]
@@ -144,7 +142,6 @@ def _walk(layers, subdir, wrapper, per_item, dest, collisions):
                 dest[iid] = rec
 
 
-# --- per-category item builders -------------------------------------------
 def _law(iid, n, rel):
     return {
         "id": iid, "tooltip": _scalar(n.get("tooltip")),
@@ -230,7 +227,7 @@ def _opinion(iid, n, rel):
 
 
 def _module(iid, n, rel):
-    if iid.lower() in ("has_dlc",):     # guard tokens inside the block
+    if iid.lower() in ("has_dlc",):
         return None
     return {
         "id": iid, "category": _scalar(n.get("category")),
@@ -354,11 +351,9 @@ def _parse_ideas(layers, collisions):
             for iid, body in catbody.entries:
                 if not isinstance(body, Node) or not iid:
                     continue
-                # 'designer = yes' / 'law = yes' / 'use_list_view' are category
-                # flags, not ideas; skip scalar-only entries
                 if iid.lower() in ("designer", "law", "use_list_view", "ledger"):
                     continue
-                adv = body.get("allowed_civil_war")  # presence noise guard
+                adv = body.get("allowed_civil_war")
                 rec = {
                     "id": iid, "category": cat,
                     "modifier": _plain(body.get("modifier")) or {},
@@ -371,10 +366,8 @@ def _parse_ideas(layers, collisions):
                     "is_advisor": False,
                     "source_file": rel,
                 }
-                ah = body.get("allowed")  # noqa: keep presence only
+                ah = body.get("allowed")
                 advisor = None
-                # modern advisor block lives in common/characters; in ideas it's
-                # the old-style entry whose presence of 'ledger'/'slot' marks it.
                 if body.get("ledger") is not None or body.get("slot") is not None \
                         or body.get("traits") is not None:
                     rec["is_advisor"] = True
@@ -443,12 +436,9 @@ def parse_catalogs(layers) -> dict:
         _walk(layers, subdir, wrapper, fn, dest, c)
         catalogs[name] = dest
         coll[name] = c
-    # combat_tactics is a SINGLE file (common/combat_tactics.txt), items top-level.
-    # Resolve it directly across layers (mod file wins) without enumerating all
-    # of common/.
     dest, c = {}, []
     tactic_path = None
-    for ly in layers:                       # last (highest) layer wins
+    for ly in layers:
         cand = ly.root / "common" / "combat_tactics.txt"
         if cand.is_file():
             tactic_path = cand
@@ -465,8 +455,6 @@ def parse_catalogs(layers) -> dict:
             print(f"[catalogs] WARN tactics: {e}", file=sys.stderr)
     catalogs["combat_tactics"] = dest
     coll["combat_tactics"] = c
-    # equipment ARCHETYPES: common/units/equipment/*.txt TOP-LEVEL only (the
-    # modules/ and upgrades/ subdirs are handled separately / not here).
     dest, c = {}, []
     for rel, abspath in _ordered_files(layers, "common/units/equipment"):
         if Path(rel).parent.as_posix() != "common/units/equipment":
@@ -476,7 +464,6 @@ def parse_catalogs(layers) -> dict:
         except Exception as e:
             print(f"[catalogs] WARN equipment {rel}: {e}", file=sys.stderr)
             continue
-        # a file may declare MULTIPLE equipments={} blocks (Codex #7) -> get_all
         for blk in root.get_all("equipments"):
             if not isinstance(blk, Node):
                 continue
@@ -491,7 +478,6 @@ def parse_catalogs(layers) -> dict:
     catalogs["equipment_archetypes"] = dest
     coll["equipment_archetypes"] = c
 
-    # upgrades: common/units/equipment/upgrades/*.txt
     dest, c = {}, []
     for rel, abspath in _ordered_files(layers, "common/units/equipment/upgrades"):
         try:
@@ -510,7 +496,6 @@ def parse_catalogs(layers) -> dict:
     catalogs["equipment_upgrades"] = dest
     coll["equipment_upgrades"] = c
 
-    # ideas (special nested category form)
     ci = []
     catalogs["ideas"] = _parse_ideas(layers, ci)
     coll["ideas"] = ci

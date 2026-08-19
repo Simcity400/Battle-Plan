@@ -25,8 +25,8 @@ for _p in (str(_GAME_ASSETS), str(_DEFS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-import parse_localisation as PL  # noqa: E402
-from extract import Layer, build_file_map_layers  # noqa: E402
+import parse_localisation as PL
+from extract import Layer, build_file_map_layers
 
 
 class _FakeExtractModule:
@@ -63,15 +63,7 @@ def _parse(monkeypatch, layers):
     return PL.parse_localisation(layers)
 
 
-# --------------------------------------------------------------------------
-# override order
-# --------------------------------------------------------------------------
 def test_mod_overrides_vanilla_key(tmp_path, monkeypatch):
-    # Real the game mods override a key from a DIFFERENT-named file (the file-level
-    # resolver already collapses same-relpath files to "mod fully replaces this
-    # file", so a genuine KEY-level override — the case this parser's
-    # ``overrides`` counter targets — happens across distinctly-named files,
-    # e.g. the mod's ``localisation/english/replace/...`` convention.
     layers = _make_layers(tmp_path, {
         "vanilla": {"a_l_english.yml": 'l_english:\n KEY_A:0 "Vanilla Value"\n'},
         "mymod": {"replace/a_override_l_english.yml": 'l_english:\n KEY_A:0 "Mod Value"\n'},
@@ -122,9 +114,6 @@ def test_override_across_different_filenames(tmp_path, monkeypatch):
     assert out["keys"]["SHARED_KEY"]["name"] == "Mod"
 
 
-# --------------------------------------------------------------------------
-# color-code stripping / quote handling
-# --------------------------------------------------------------------------
 def test_color_codes_stripped_from_name_but_kept_in_raw(tmp_path, monkeypatch):
     layers = _make_layers(tmp_path, {
         "vanilla": {"a_l_english.yml": 'l_english:\n COLORED:0 "§YHello§! World"\n'},
@@ -144,8 +133,6 @@ def test_embedded_braces_and_hash_preserved_in_quoted_value(tmp_path, monkeypatc
 
 
 def test_version_number_optional(tmp_path, monkeypatch):
-    # the game loc lines always have the `:` (key separator); the VERSION digit
-    # after it is what's optional (`KEY: "text"` is valid, same as `KEY:0 "text"`).
     layers = _make_layers(tmp_path, {
         "vanilla": {"a_l_english.yml": 'l_english:\n NO_VERSION: "No Version Number"\n'},
     })
@@ -153,9 +140,6 @@ def test_version_number_optional(tmp_path, monkeypatch):
     assert out["keys"]["NO_VERSION"]["name"] == "No Version Number"
 
 
-# --------------------------------------------------------------------------
-# interpolation tokens left untouched, only flagged
-# --------------------------------------------------------------------------
 def test_var_and_scope_tokens_untouched_but_flagged(tmp_path, monkeypatch):
     layers = _make_layers(tmp_path, {
         "vanilla": {"a_l_english.yml": 'l_english:\n INTERP:0 "Hello $PLAYER$, see [GetName]"\n'},
@@ -174,9 +158,6 @@ def test_plain_text_not_flagged_as_interpolation(tmp_path, monkeypatch):
     assert out["keys"]["PLAIN"]["has_interpolation"] is False
 
 
-# --------------------------------------------------------------------------
-# no-fabrication rule
-# --------------------------------------------------------------------------
 def test_missing_key_is_absent_not_guessed(tmp_path, monkeypatch):
     layers = _make_layers(tmp_path, {
         "vanilla": {"a_l_english.yml": 'l_english:\n KNOWN_KEY:0 "Known"\n'},

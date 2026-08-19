@@ -1,29 +1,20 @@
-//! Exact A31 focus-item to selected-Present common-GUI join.
-//!
 //! Ownership is process-local and mechanical: each GUI draw's runtime widget
-//! must reach either exactly one `CNationalFocusTreeItem` GUI root through the
-//! runtime parent link at +0x108, or the registered focus canvas root alone.
 //! Focus names and rectangle overlap are never ownership inputs.
 
-use production_render_submit_live_lane::a729_hook::SelectedPresentGuiDrawCapture;
+use core::ffi::c_void;
 use focus_research_decisions_depth_live::a729_focus_item_hook::{
     FocusSelectedPresentOperations, NationalFocusCanvasRuntimeGeometry,
     PendingNationalFocusGuiJoin, SelectedPresentCanvasBinding,
 };
-use portable_render_stream::{
-    AuthenticatedUiPass, UiPassClip, UiPassOperation, UiPassRect,
-};
+use portable_render_stream::{AuthenticatedUiPass, UiPassClip, UiPassOperation, UiPassRect};
+use production_render_submit_live_lane::a729_hook::SelectedPresentGuiDrawCapture;
 use std::collections::{BTreeMap, BTreeSet};
-use core::ffi::c_void;
 use windows_sys::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const RUNTIME_WIDGET_PARENT_OFFSET: usize = 0x108;
 const MAX_RUNTIME_PARENT_DEPTH: usize = 512;
 
-/// Exact selected-Present and focus-canvas geometry observed by the A31
-/// runtime owner. No field has a default; callers must supply one same-Present
-/// observation rather than infer a semantic transform from the final viewport.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NationalFocusCanvasSelectedMetadata {
     pub selected_present_candidate_id: u64,
@@ -67,8 +58,6 @@ pub fn national_focus_selected_metadata(
     })
 }
 
-/// Register the completed A31 runtime root before the A25 GUI draw queue is
-/// drained. This preserves the process-local descendant join on every row.
 pub fn register_national_focus_canvas_root(
     join: &PendingNationalFocusGuiJoin,
     selected: &production_render_submit_live_lane::a729_hook::RawSelectedRenderFrameCapture,
@@ -76,11 +65,10 @@ pub fn register_national_focus_canvas_root(
     production_render_submit_live_lane::a729_hook::validate_selected_render_frame_receipt(
         selected,
     )?;
-    let frame_hour = compact_contract::calendar::hour_index_from_raw(
-        selected.receipt.target_game_hour_raw,
-    )
-    .and_then(|value| u64::try_from(value).ok())
-    .ok_or("A31 selected-Present game hour is invalid")?;
+    let frame_hour =
+        compact_contract::calendar::hour_index_from_raw(selected.receipt.target_game_hour_raw)
+            .and_then(|value| u64::try_from(value).ok())
+            .ok_or("A31 selected-Present game hour is invalid")?;
     if join.root.frame_hour != frame_hour
         || selected.receipt.selected_submit_index != selected.selected.frame.submit_index
         || selected.receipt.selected_frame_sequence != selected.selected.frame.frame_sequence
@@ -125,9 +113,13 @@ pub fn bind_national_focus_canvas(
             || item.runtime_gui_root_ptr == 0
             || item.focus_id.is_empty()
             || !item_roots.insert(item.runtime_gui_root_ptr)
-            || focus_operations.insert(item.focus_id.clone(), Vec::new()).is_some()
+            || focus_operations
+                .insert(item.focus_id.clone(), Vec::new())
+                .is_some()
         {
-            return Err("A31 focus GUI item identity/root frontier is invalid or duplicated".into());
+            return Err(
+                "A31 focus GUI item identity/root frontier is invalid or duplicated".into(),
+            );
         }
     }
 
@@ -149,8 +141,7 @@ pub fn bind_national_focus_canvas(
             continue;
         };
         if root.controller_ptr != join.root.focus_view_ptr
-            || root.runtime_graphical_subobject_ptr
-                != join.root.runtime_graphical_root_ptr
+            || root.runtime_graphical_subobject_ptr != join.root.runtime_graphical_root_ptr
             || root.authored_surface_identity != join.root.authored_surface_identity
             || root.runtime_root_identity != join.root.runtime_root_identity
             || root.effective_interface_winner != join.root.effective_interface_winner
@@ -165,10 +156,9 @@ pub fn bind_national_focus_canvas(
             .get(&ordinal)
             .ok_or("A31 GUI draw ordinal is absent from the authenticated UI pass")?;
         let (identity_token, placement) = match operation {
-            UiPassOperation::HudCommand { command } => (
-                command.identity.engine_instance_token,
-                &command.placement,
-            ),
+            UiPassOperation::HudCommand { command } => {
+                (command.identity.engine_instance_token, &command.placement)
+            }
             UiPassOperation::M02 { .. } => {
                 return Err("A31 common-GUI draw resolved to an M02 operation".into())
             }
@@ -182,9 +172,7 @@ pub fn bind_national_focus_canvas(
             .replace(identity_token)
             .is_some_and(|prior| prior != identity_token)
         {
-            return Err(
-                "A31 focus-root operations do not share one engine instance token".into(),
-            );
+            return Err("A31 focus-root operations do not share one engine instance token".into());
         }
         if let UiPassClip::Enabled { rect } = placement.clip_state {
             if exact_clip.replace(rect).is_some_and(|prior| prior != rect) {
@@ -201,10 +189,7 @@ pub fn bind_national_focus_canvas(
 
         let mut matching_focus = None;
         for item in &join.items {
-            if runtime_widget_descends_from(
-                draw.runtime_widget_ptr,
-                item.runtime_gui_root_ptr,
-            )? {
+            if runtime_widget_descends_from(draw.runtime_widget_ptr, item.runtime_gui_root_ptr)? {
                 if matching_focus.replace(item.focus_id.as_str()).is_some() {
                     return Err("A31 GUI draw descends from multiple focus-item roots".into());
                 }
@@ -253,11 +238,9 @@ pub fn bind_national_focus_canvas(
         });
     }
     canvas_operations.sort_unstable();
-    let selected_present_ui_operation_order =
-        owned_operations.iter().copied().collect::<Vec<_>>();
-    let clip_rect = to_focus_rect(
-        exact_clip.ok_or("A31 focus canvas has no exact selected-Present clip")?,
-    )?;
+    let selected_present_ui_operation_order = owned_operations.iter().copied().collect::<Vec<_>>();
+    let clip_rect =
+        to_focus_rect(exact_clip.ok_or("A31 focus canvas has no exact selected-Present clip")?)?;
     let viewport_extent_pixels = [clip_rect.width, clip_rect.height];
     let render_target_extent_pixels = [
         i32::try_from(ui_pass.target.width)
@@ -301,8 +284,8 @@ fn runtime_widget_descends_from(mut widget: usize, root: usize) -> Result<bool, 
         let parent_address = widget
             .checked_add(RUNTIME_WIDGET_PARENT_OFFSET)
             .ok_or("A31 runtime GUI parent address overflowed")?;
-        let parent = read_usize(parent_address)
-            .ok_or("A31 runtime GUI parent link was unreadable")?;
+        let parent =
+            read_usize(parent_address).ok_or("A31 runtime GUI parent link was unreadable")?;
         if parent == 0 {
             return Ok(false);
         }

@@ -16,19 +16,10 @@ import re
 
 from paradox_parser import Node
 
-# Comparison operators the game uses inside trigger blocks.
 _OPS = {">", "<", ">=", "<=", "=", "==", "!="}
-# The shared tokenizer treats ``=`` as a HARD delimiter and does not know
-# multi-char operators, so ``my_var >= 5`` lexes as ``my_var`` ``>`` ``=`` ``5``.
-# The block parser then turns the ``>`` ``=`` ``5`` tail into a *keyed* entry
-# ``('>', '5')`` (a parse artifact, NOT a real key). These glyphs are the single
-# chars that can appear as such an artifact key; we recombine them with the
-# swallowed ``=`` back into the real operator so the LHS variable name is never
-# lost / replaced by a bogus ``>`` / ``<`` / ``!`` token.
 _OP_KEY_TO_FULL = {">": ">=", "<": "<=", "!": "!=", "=": "=="}
 _BARE_OPS = {">", "<", "=", "!", ">=", "<=", "==", "!="}
 
-# Effects that WRITE a variable (the variable named is the LHS / `var=` field).
 WRITE_OPS = {
     "set_variable", "add_to_variable", "subtract_from_variable",
     "multiply_variable", "divide_variable", "modulo_variable",
@@ -37,10 +28,9 @@ WRITE_OPS = {
     "multiply_temp_variable", "divide_temp_variable", "clear_temp_variable",
     "set_variable_to_random", "export_to_variable", "round_temp_variable",
 }
-# Triggers/effects that READ a variable.
 READ_OPS = {
-    "check_variable", "is_variable_equal", "variable_op",  # defensive
-    "has_variable", "is_variable_set",                     # presence reads
+    "check_variable", "is_variable_equal", "variable_op",
+    "has_variable", "is_variable_set",
 }
 
 
@@ -67,18 +57,15 @@ def operator_triples(node: Node):
     while i < n:
         k, v = ents[i]
         if k == "":
-            # shape A: all-anonymous "lhs OP rhs" (single-char op, no '=')
             if i + 2 < n and ents[i + 1][0] == "" and ents[i + 1][1] in _OPS \
                     and ents[i + 2][0] == "":
                 yield (v, ents[i + 1][1], ents[i + 2][1])
                 i += 3
                 continue
-            # shape B: split-op artifact ('','lhs') (OPGLYPH,'rhs') -> lhs OP= rhs
             if i + 1 < n and ents[i + 1][0] in _OP_KEY_TO_FULL:
                 yield (v, _OP_KEY_TO_FULL[ents[i + 1][0]], ents[i + 1][1])
                 i += 2
                 continue
-        # shape C: split-op artifact for '==': ('lhs','') ('','rhs')
         elif k not in _BARE_OPS and v == "" and i + 1 < n \
                 and ents[i + 1][0] == "":
             yield (k, "==", ents[i + 1][1])
@@ -87,9 +74,6 @@ def operator_triples(node: Node):
         i += 1
 
 
-# a var name may be glued to its operator/value when there is no whitespace,
-# e.g. `check_variable = { Root.selected_cheat>0 }` -> one bare token. Strip a
-# trailing comparison operator + numeric tail to recover the clean name.
 _GLUED = re.compile(r"^(.*?)(?:>=|<=|==|!=|>|<|=)\s*-?\d*\.?\d*$")
 
 
@@ -107,26 +91,18 @@ def _var_name_from_block(blk: Node):
     glued operator/value, Codex #5)."""
     if not isinstance(blk, Node):
         return None
-    # explicit form: var = NAME
     v = blk.get("var")
     if isinstance(v, str):
         return _clean_var(v)
-    # inline form: first real key that isn't a reserved field is the var name.
-    # Skip pure comparison-operator keys: those are split-operator artifacts
-    # (``my_var >= 5`` -> entries ``[('','my_var'),('>','5')]``), NOT real keys,
-    # so the operator glyph must never be mistaken for the variable name.
     for k, val in blk.entries:
         if k and k not in _BARE_OPS and k.lower() not in ("value", "var", "tooltip"):
             return _clean_var(k)
-    # operator form: first anonymous token is the var name
     toks = [vv for kk, vv in blk.entries if kk == "" and isinstance(vv, str)]
     if toks:
         return _clean_var(toks[0])
     return None
 
 
-# country/global/state flag READ triggers (nested anywhere, e.g.
-# `ROOT = { has_country_flag = X }`); recorded as reads with a `flag:` prefix.
 FLAG_READ_OPS = {"has_country_flag", "has_global_flag", "has_state_flag",
                  "has_character_flag", "has_dynamic_flag"}
 
@@ -144,7 +120,7 @@ def harvest_variables(node: Node, reads: set, writes: set):
                 if nm:
                     writes.add(nm)
             elif isinstance(val, str):
-                writes.add(_clean_var(val))   # clear_variable = name
+                writes.add(_clean_var(val))
         elif kl in READ_OPS:
             if isinstance(val, Node):
                 nm = _var_name_from_block(val)
@@ -156,7 +132,6 @@ def harvest_variables(node: Node, reads: set, writes: set):
                     reads.add(nm)
         elif kl in FLAG_READ_OPS and isinstance(val, str):
             reads.add("flag:" + val)
-        # recurse into any child block (effects/triggers/if/limit/scope/else...)
         if isinstance(val, Node):
             harvest_variables(val, reads, writes)
     writes.discard(None)

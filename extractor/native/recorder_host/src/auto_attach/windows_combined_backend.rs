@@ -1,15 +1,3 @@
-//! Production Win32 H4CR/H4CT paired-server primitive.
-//!
-//! The positive ready proof in this module is created only after both named
-//! pipes exist and both overlapped `ConnectNamedPipe` operations are armed.
-//! Injection is guarded by [`AutoAttachDuplexProductPermit`], whose product
-//! constructor remains disabled. Nothing in this module discovers a process,
-//! injects a DLL, or selects itself from the live recorder entry point.
-//!
-//! `CreateNamedPipeW`, security construction, connect completion, and peer
-//! validation remain inside bounded owned workers. Late results are dropped on
-//! those workers and retire or quarantine every unpublished handle.
-
 use std::ffi::c_void;
 use std::fmt;
 use std::io;
@@ -35,9 +23,7 @@ use super::sources::WorkerSpec;
 use crate::duplex_session::identity_control::{
     IdentityDurableCandidateSink, RecorderIdentityControlDispatcher,
 };
-use crate::duplex_session::rollover_control::{
-    RecorderRolloverCoordinator, RecorderRolloverStore,
-};
+use crate::duplex_session::rollover_control::{RecorderRolloverCoordinator, RecorderRolloverStore};
 
 type Bool = i32;
 type Dword = u32;
@@ -227,7 +213,6 @@ impl From<ControlError> for WindowsCombinedBackendError {
 struct OwnedHandle(Handle);
 
 // SAFETY: ownership of the raw kernel handle is unique, moving the wrapper
-// between threads does not access the handle concurrently, and Drop closes it
 // exactly once unless terminal quarantine deliberately takes ownership.
 unsafe impl Send for OwnedHandle {}
 
@@ -307,7 +292,6 @@ struct PendingOperation {
 }
 
 // SAFETY: the OVERLAPPED, event, and buffer are heap-stable and move only as
-// one owned box. No reference into them is published across threads.
 unsafe impl Send for PendingOperation {}
 
 impl PendingOperation {
@@ -365,8 +349,6 @@ impl Drop for ArmedPipe {
     }
 }
 
-/// Opaque proof that both one-instance server pipes exist and both overlapped
-/// connect operations were submitted before the injection boundary.
 pub struct WindowsCombinedListenersReadyProof {
     _private: (),
     startup_deadline: ControlDeadline,
@@ -427,8 +409,6 @@ impl BoundTargetProcess {
     }
 }
 
-/// Both connects are armed. The authority, target handle, deadline and shared
-/// cancellation cannot be split or replaced before the one permitted injection.
 pub struct PreparedWindowsServerPair {
     authority: DuplexAttemptAuthority,
     data: ArmedPipe,
@@ -456,8 +436,6 @@ impl Drop for SetupWorkerKeepalive {
     }
 }
 
-/// Create the H4CR inbound and H4CT duplex server handles and arm both accepts.
-/// This function creates no relative timeout; every step consumes `deadline`.
 fn prepare_server_pair(
     spec: &WorkerSpec,
     security: RestrictiveSecurityPolicy,
@@ -508,11 +486,6 @@ fn prepare_server_pair(
     })
 }
 
-/// Bounded production preparation seam. The worker owns the immutable spec,
-/// security allocation, both candidate handles, and both armed connect
-/// operations. If the caller's unchanged startup deadline/cancellation wins,
-/// dropping the receiver leaves the worker as terminal quarantine; its late
-/// result is dropped there, cancelling/reaping or quarantining both connects.
 pub fn prepare_server_pair_bounded(
     spec: &WorkerSpec,
     security: RestrictiveSecurityPolicy,
@@ -529,10 +502,6 @@ pub fn prepare_server_pair_bounded(
         .spawn(move || {
             let result = prepare_server_pair(&spec, security, deadline, worker_cancellation);
             if sender.send(result).is_ok() {
-                // Overlapped ConnectNamedPipe operations are owned by the
-                // initiating thread on Windows. Exiting this thread before the
-                // caller reaps them aborts both operations with
-                // ERROR_OPERATION_ABORTED.
                 let _ = release_receiver.recv();
             }
         })
@@ -580,8 +549,6 @@ impl PreparedWindowsServerPair {
         &self.ready
     }
 
-    /// The permit is unmintable whenever a product prerequisite is false. No
-    /// pipe event or received control message can call this closure.
     pub fn commit_single_injection_for_product<F>(
         self,
         _permit: AutoAttachDuplexProductPermit,
@@ -622,8 +589,6 @@ pub struct WindowsInjectionCommitted {
 }
 
 impl WindowsInjectionCommitted {
-    /// Wait for both already-armed connects, validate both client PID/creation
-    /// pairs, then publish both endpoints atomically.
     fn accept_and_bind(mut self) -> Result<ConnectedWindowsPipePair, WindowsCombinedBackendError> {
         self.target.ensure_live(self.deadline, &self.cancellation)?;
         let data_handle =
@@ -633,8 +598,6 @@ impl WindowsInjectionCommitted {
         let control_handle =
             self.control
                 .finish(self.deadline, &self.cancellation, self.target.handle.raw())?;
-        // Both initiating-thread-owned connect operations are now reaped, so
-        // the setup thread may exit without aborting live pipe I/O.
         drop(self.setup_worker.take());
         self.target.ensure_live(self.deadline, &self.cancellation)?;
 
@@ -672,9 +635,6 @@ impl WindowsInjectionCommitted {
         })
     }
 
-    /// Bound connect completion and peer PID/creation revalidation on one
-    /// owned worker. A late pair can never publish after caller expiry: the
-    /// dropped receiver makes the worker drop and terminally retire it.
     pub fn accept_and_bind_bounded(
         self,
     ) -> Result<ConnectedWindowsPipePair, WindowsCombinedBackendError> {
@@ -715,9 +675,6 @@ impl WindowsInjectionCommitted {
     }
 }
 
-/// Atomically published pair. H4CR and H4CT retain the same cancellation and
-/// exact target identity. The central receive method is the only recommended
-/// control receive seam; it lets one router dispatch CIF1 versus heartbeat.
 pub struct ConnectedWindowsPipePair {
     authority: DuplexAttemptAuthority,
     data: WindowsDataIo,
@@ -742,9 +699,6 @@ impl ConnectedWindowsPipePair {
         }
         match unsafe { WaitForSingleObject(self.target.handle.raw(), 0) } {
             WAIT_TIMEOUT => Ok(()),
-            // Target exit ends control liveness but must not cancel H4CR: the
-            // data half still owns draining every already-written complete
-            // record as the valid crash prefix.
             WAIT_OBJECT_0 => Err(WindowsCombinedBackendError::TargetExited),
             _ => {
                 self.cancellation.cancel();
@@ -753,10 +707,6 @@ impl ConnectedWindowsPipePair {
         }
     }
 
-    /// Consume the atomically published pair into the only public runner form.
-    /// Raw H4CT receive and raw H4CR handle access stay private; the runner
-    /// exposes the central `DuplexWorkerSession` router and cancellation-aware
-    /// exact data reads only.
     pub fn into_runner(self) -> WindowsCombinedRunner {
         let expectation = self.authority.collector_hello_expectation().clone();
         let control = DuplexWorkerSession::new(
@@ -776,9 +726,6 @@ impl ConnectedWindowsPipePair {
     }
 }
 
-/// Paired production runner. All control
-/// receives remain inside `DuplexWorkerSession`; all H4CR reads retain the same
-/// target handle and shared cancellation token.
 pub struct WindowsCombinedRunner {
     authority: DuplexAttemptAuthority,
     data: WindowsDataIo,
@@ -801,15 +748,12 @@ impl WindowsCombinedRunner {
         &self.cancellation
     }
 
-    /// Consume the authenticated pair into independently ownable H4CR and
-    /// H4CT drivers. Both retain the same attempt authority and shared
-    /// cancellation; no raw pipe/process handle is exposed. This is the
-    /// product composition boundary for a blocking data-drain worker plus a
-    /// recurring-heartbeat/cooperative-stop control worker.
     pub fn into_concurrent_parts(
         self,
-    ) -> Result<(WindowsCombinedDataReader, WindowsCombinedControlDriver), WindowsCombinedBackendError>
-    {
+    ) -> Result<
+        (WindowsCombinedDataReader, WindowsCombinedControlDriver),
+        WindowsCombinedBackendError,
+    > {
         let Self {
             authority,
             data,
@@ -866,11 +810,6 @@ impl WindowsCombinedRunner {
             .map_err(WindowsCombinedBackendError::Authority)
     }
 
-    /// Recurring-heartbeat cadence for the paired product runner. The
-    /// owner calls this from its dedicated control worker; a due operation is
-    /// synchronous but bounded by one unchanged five-second deadline. It uses a
-    /// fresh CSPRNG challenge and routes asynchronous CIF1 through the same H4CT
-    /// receive loop before accepting the matching proof.
     pub fn drive_due_heartbeat<S: IdentityDurableCandidateSink>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<S>,
@@ -912,9 +851,6 @@ impl WindowsCombinedRunner {
         Ok(Some(outcome))
     }
 
-    /// Rollover-aware heartbeat cadence. This is the production router for a
-    /// rollover-capable session: a PausedForControl proof is followed by one
-    /// CRP1 durable transaction under the unchanged cycle deadline.
     pub fn drive_due_heartbeat_with_rollover<IS, RS>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<IS>,
@@ -950,11 +886,7 @@ impl WindowsCombinedRunner {
                 })
             })?
             .heartbeat_cycle_with_identity_and_rollover(
-                identity,
-                rollover,
-                store,
-                challenge,
-                deadline,
+                identity, rollover, store, challenge, deadline,
             )
             .map_err(WindowsCombinedBackendError::Authority)?;
         self.ensure_target_live()?;
@@ -969,11 +901,6 @@ impl WindowsCombinedRunner {
     }
 
     /// Transfer explicit-stop ownership from H4CT to the H4CR drain/finalizer.
-    /// Dropping the control session closes the server handle, which is the v1
-    /// collector's authenticated graceful-stop receipt.  It intentionally does
-    /// not cancel the shared data transport: the caller must continue reading
-    /// H4CR to a clean record boundary/EOF, fsync, fold, pack, and verify under
-    /// the outer bounded graceful-stop deadline.
     pub fn close_control_for_graceful_data_drain(
         &mut self,
     ) -> Result<ControlDeadline, WindowsCombinedBackendError> {
@@ -1015,9 +942,6 @@ impl WindowsCombinedRunner {
     }
 }
 
-/// H4CR half of an authenticated combined pair. The underlying overlapped
-/// transport retains its independently opened exact peer-process handle, so a
-/// split does not downgrade PID/creation-FILETIME authority.
 pub struct WindowsCombinedDataReader {
     authority: DuplexAttemptAuthority,
     data: WindowsDataIo,
@@ -1033,9 +957,6 @@ impl WindowsCombinedDataReader {
         &self.cancellation
     }
 
-    /// Copy, but do not consume, the currently queued H4CR prefix and report
-    /// the total queued byte count. This is used only by the pre-CID1 router so
-    /// a partial data record cannot starve a complete CIF1 on H4CT.
     pub fn peek_available_prefix(
         &self,
         prefix: &mut [u8],
@@ -1062,8 +983,6 @@ impl WindowsCombinedDataReader {
     }
 
     /// Process-lifetime H4CR read. It has no synthetic duration deadline;
-    /// cooperative stop closes H4CT and lets the collector close H4CR, while
-    /// the shared cancellation remains the bounded hard-failure escape hatch.
     pub fn read_exact(&mut self, bytes: &mut [u8]) -> Result<(), WindowsCombinedBackendError> {
         if self.cancellation.is_cancelled() {
             return Err(WindowsCombinedBackendError::Cancelled);
@@ -1074,8 +993,6 @@ impl WindowsCombinedDataReader {
     }
 }
 
-/// H4CT half of an authenticated combined pair. It exclusively owns all
-/// control receives, the retained target handle, heartbeat cadence, and the
 /// cooperative close that transfers ownership to H4CR drain/finalization.
 pub struct WindowsCombinedControlDriver {
     authority: DuplexAttemptAuthority,
@@ -1153,7 +1070,6 @@ impl WindowsCombinedControlDriver {
         Ok(Some(outcome))
     }
 
-    /// Rollover-aware variant used by the split production control driver.
     pub fn drive_due_heartbeat_with_rollover<IS, RS>(
         &mut self,
         identity: &mut RecorderIdentityControlDispatcher<IS>,
@@ -1189,11 +1105,7 @@ impl WindowsCombinedControlDriver {
                 })
             })?
             .heartbeat_cycle_with_identity_and_rollover(
-                identity,
-                rollover,
-                store,
-                challenge,
-                deadline,
+                identity, rollover, store, challenge, deadline,
             )
             .map_err(WindowsCombinedBackendError::Authority)?;
         self.ensure_target_live()?;
@@ -1236,8 +1148,6 @@ impl WindowsCombinedControlDriver {
         }
         match unsafe { WaitForSingleObject(self.target.handle.raw(), 0) } {
             WAIT_TIMEOUT => Ok(()),
-            // Do not cancel the data half: it owns valid-prefix drain after a
-            // target exit and will classify EOF only at a record boundary.
             WAIT_OBJECT_0 => Err(WindowsCombinedBackendError::TargetExited),
             _ => {
                 self.cancellation.cancel();
@@ -1270,7 +1180,6 @@ impl WindowsDataIo {
         self.pipe.peek_available_prefix(prefix)
     }
 
-
     pub fn recv_exact_cancellable(&mut self, bytes: &mut [u8]) -> io::Result<()> {
         self.pipe.recv_exact_cancellable(bytes)
     }
@@ -1290,7 +1199,9 @@ impl WindowsControlIo {
 
 impl DeadlineControlInputReadiness for WindowsControlIo {
     fn input_bytes_available(&self) -> io::Result<usize> {
-        self.pipe.peek_available_prefix(&mut []).map(|(_, total)| total)
+        self.pipe
+            .peek_available_prefix(&mut [])
+            .map(|(_, total)| total)
     }
 }
 
@@ -1315,14 +1226,6 @@ impl DeadlineControlIo for WindowsControlIo {
 }
 
 /// Largest length the process-lifetime H4CR read submits to a single
-/// `ReadFile`, and therefore the fixed size of the reusable scratch buffer.
-///
-/// Bounding the request is what lets the landing buffer be a constant instead
-/// of growing to the largest record the stream happens to contain: t15 has
-/// records up to 8.96 MiB, and the reader has no business owning a buffer
-/// that size permanently. One mebibyte keeps the overwhelming majority of
-/// records to a single `ReadFile` (t15's 99th percentile record is 0.91 MiB)
-/// while capping even the largest at nine.
 const H4CR_READ_CHUNK_BYTES: usize = 1024 * 1024;
 
 struct WindowsOverlappedPipe {
@@ -1330,23 +1233,6 @@ struct WindowsOverlappedPipe {
     peer_process: OwnedHandle,
     shared_cancellation: ControlCancellation,
     /// Reusable landing buffer for the process-lifetime H4CR read.
-    ///
-    /// Every `ReadFile` used to be handed a freshly allocated, freshly ZEROED
-    /// `Vec` sized to the whole remaining record. Because the pipe returns at
-    /// most its kernel buffer per call, a record larger than that buffer was
-    /// read in several passes and each pass re-zeroed the entire remaining
-    /// length -- the zeroing was quadratic in record size. On the t15 capture
-    /// (2.81 GiB of payload, 4,865 records over 64 KiB, largest 8.96 MiB)
-    /// that came to 78.86 GiB of memset for 2.81 GiB actually moved. The
-    /// collector blocks inside `WriteFileSync` for exactly as long as this
-    /// side takes to drain, so the amplification was charged straight to the
-    /// capture's per-frame budget.
-    ///
-    /// Reuse is sound: the buffer is only ever taken back from an operation
-    /// that COMPLETED, which means `GetOverlappedResult` has returned and the
-    /// kernel no longer owns the memory. An operation that was cancelled or
-    /// failed is quarantined together with its pipe handle by
-    /// [`retire_or_quarantine`] and its buffer never comes back here.
     read_scratch: Option<Vec<u8>>,
 }
 
@@ -1415,8 +1301,7 @@ impl WindowsOverlappedPipe {
     ) -> io::Result<()> {
         while !bytes.is_empty() {
             let len = bytes.len().min(Dword::MAX as usize);
-            let (transferred, buffer) =
-                self.transfer(None, len, deadline, caller_cancellation)?;
+            let (transferred, buffer) = self.transfer(None, len, deadline, caller_cancellation)?;
             if transferred == 0 {
                 return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "pipe EOF"));
             }
@@ -1465,15 +1350,6 @@ impl WindowsOverlappedPipe {
         Ok(())
     }
 
-    /// Read once into the front of `dest`, returning how many bytes landed.
-    ///
-    /// The submitted length is `min(dest.len(), H4CR_READ_CHUNK_BYTES)` and
-    /// never the scratch buffer's own length. That distinction is load
-    /// bearing: `ReadFile` on a byte-mode pipe hands back as much as it was
-    /// asked for and as much as is buffered, so submitting the full scratch
-    /// length would pull bytes belonging to the NEXT record out of the pipe
-    /// and then drop them on the floor when only `dest.len()` were copied
-    /// out, desynchronising the record stream.
     fn transfer_cancellable(&mut self, dest: &mut [u8]) -> io::Result<usize> {
         if self.shared_cancellation.is_cancelled() {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
@@ -1517,9 +1393,6 @@ impl WindowsOverlappedPipe {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
         }
         // The operation completed, so the kernel has released the buffer and
-        // it can be handed back for the next read. Copy out only the bytes the
-        // pipe actually delivered -- the rest of the scratch is whatever the
-        // previous record left there.
         let transferred = (transferred as usize).min(submit_len);
         dest[..transferred].copy_from_slice(&operation.buffer[..transferred]);
         self.read_scratch = Some(operation.buffer);
@@ -1615,14 +1488,11 @@ fn wait_pending_transfer_cancellable(
             retire_slot(handle, operation);
             return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
         }
-        // Completion wins over a simultaneous process-exit notification so
-        // already-written H4CR bytes remain drainable as a valid prefix.
         if unsafe { WaitForSingleObject(operation.event.raw(), 0) } == WAIT_OBJECT_0 {
             let raw = handle.as_ref().expect("live pipe owns handle").raw();
             let mut transferred = 0;
-            if unsafe {
-                GetOverlappedResult(raw, &mut operation.overlapped, &mut transferred, 0)
-            } == 0
+            if unsafe { GetOverlappedResult(raw, &mut operation.overlapped, &mut transferred, 0) }
+                == 0
             {
                 let error = io::Error::last_os_error();
                 handle.take();
@@ -1630,10 +1500,6 @@ fn wait_pending_transfer_cancellable(
             }
             return Ok((transferred, operation));
         }
-        // Do not terminate a data read merely because the retained peer
-        // process signalled exit. The named pipe remains the authority for
-        // buffered bytes followed by EOF, which is how a valid crash prefix is
-        // drained without accepting a different peer.
         match unsafe { WaitForSingleObject(operation.event.raw(), 20) } {
             WAIT_OBJECT_0 => {}
             WAIT_TIMEOUT => continue,
@@ -1990,10 +1856,6 @@ mod h4cr_read_path_tests {
 
     static NEXT_PIPE: AtomicU32 = AtomicU32::new(0);
 
-    /// A connected H4CR pipe pair built from the real [`create_pipe`], so
-    /// these tests exercise the production server handle -- its flags, its
-    /// byte-mode framing, and its kernel buffer sizing -- rather than a
-    /// stand-in that could be sized differently from what ships.
     struct Pair {
         server: WindowsOverlappedPipe,
         client: OwnedHandle,
@@ -2027,11 +1889,6 @@ mod h4cr_read_path_tests {
             )
         })
         .expect("connect H4CR client");
-        // The client attached before this call, so ConnectNamedPipe is
-        // documented to complete at once with ERROR_PIPE_CONNECTED. Insist on
-        // exactly that: accepting ERROR_IO_PENDING here and then dropping the
-        // operation would free an OVERLAPPED the kernel still owns, so the
-        // sequencing this harness depends on is asserted rather than assumed.
         let mut operation = PendingOperation::new(Vec::new()).expect("connect operation");
         if unsafe { ConnectNamedPipe(server.raw(), &mut operation.overlapped) } == 0 {
             let error = unsafe { GetLastError() };
@@ -2040,9 +1897,8 @@ mod h4cr_read_path_tests {
                 "the client must already be attached before ConnectNamedPipe"
             );
         }
-        let peer =
-            OwnedHandle::new(unsafe { OpenProcess(SYNCHRONIZE, 0, GetCurrentProcessId()) })
-                .expect("open self as peer");
+        let peer = OwnedHandle::new(unsafe { OpenProcess(SYNCHRONIZE, 0, GetCurrentProcessId()) })
+            .expect("open self as peer");
         Pair {
             server: WindowsOverlappedPipe::new(server, peer, ControlCancellation::new()),
             client,
@@ -2073,10 +1929,6 @@ mod h4cr_read_path_tests {
         }
     }
 
-    /// Record sizes chosen to straddle every boundary the read path has: well
-    /// under the chunk, exactly at it, over it (so one exact read needs
-    /// several `ReadFile` passes), and small records immediately after large
-    /// ones (so a stale scratch buffer would be visible).
     fn sizes() -> Vec<usize> {
         vec![
             32,
@@ -2097,15 +1949,6 @@ mod h4cr_read_path_tests {
             .collect()
     }
 
-    /// Every record must come back byte-for-byte, in order, at its exact
-    /// length.
-    ///
-    /// This is the guard on the length actually submitted to `ReadFile`. The
-    /// scratch buffer is `H4CR_READ_CHUNK_BYTES` long and the pipe holds
-    /// several records at once, so submitting the scratch's own length
-    /// instead of `min(dest.len(), chunk)` would pull the FOLLOWING record's
-    /// bytes out of the pipe and drop them when only `dest.len()` were copied
-    /// out -- every later record would come back shifted.
     #[test]
     fn exact_reads_preserve_record_framing_across_a_reused_scratch() {
         let Pair { mut server, client } = connected_pair();
@@ -2134,19 +1977,9 @@ mod h4cr_read_path_tests {
         drop(writer.join().expect("writer thread"));
     }
 
-    /// The fix is the reuse itself: one buffer, allocated and zeroed once,
-    /// handed to every `ReadFile`. Reverting to a per-call
-    /// `vec![0; remaining]` reintroduces the quadratic zeroing this lane
-    /// measured at 28x the bytes actually moved, and it is not observable
-    /// from the delivered bytes, so assert the allocation identity directly.
     #[test]
     fn the_read_scratch_is_allocated_once_and_reused() {
         let Pair { mut server, client } = connected_pair();
-        // Every record here stays well under the chunk, so no read reaches the
-        // tail of the scratch and a sentinel planted there is a valid witness
-        // that the SAME allocation was carried forward. Reuse across the
-        // multi-pass path (records larger than the chunk) is covered by
-        // `exact_reads_preserve_record_framing_across_a_reused_scratch`.
         let records: Vec<Vec<u8>> = [64usize, 4096, 128, 9000]
             .into_iter()
             .enumerate()
@@ -2163,7 +1996,9 @@ mod h4cr_read_path_tests {
             "the scratch must not be allocated before the first read"
         );
         let mut first = vec![0u8; records[0].len()];
-        server.recv_exact_cancellable(&mut first).expect("first read");
+        server
+            .recv_exact_cancellable(&mut first)
+            .expect("first read");
         assert!(first == records[0], "the first record did not match");
         let scratch = server.read_scratch.as_mut().expect("scratch after a read");
         assert_eq!(
@@ -2172,10 +2007,6 @@ mod h4cr_read_path_tests {
             "the scratch is sized to the chunk, not to the record"
         );
         let identity = scratch.as_ptr();
-        // Pointer equality alone is not proof: an allocator may hand back the
-        // address it just freed. Plant a sentinel PAST the region the next
-        // reads can reach -- a reallocation zeroes it, and so does a
-        // free-then-same-address reuse, so only genuine carry-forward keeps it.
         let sentinel_at = H4CR_READ_CHUNK_BYTES - 1;
         scratch[sentinel_at] = 0xA5;
 
@@ -2203,5 +2034,4 @@ mod h4cr_read_path_tests {
         }
         drop(writer.join().expect("writer thread"));
     }
-
 }

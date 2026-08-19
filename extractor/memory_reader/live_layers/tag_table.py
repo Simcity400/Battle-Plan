@@ -31,9 +31,8 @@ import struct
 import sys
 import time
 
-# allow `import winmem` whether run as a module or a script
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import winmem  # noqa: E402
+import winmem
 
 STRIDE = 0x20
 OFF_CHARS = 0x00
@@ -42,33 +41,15 @@ OFF_CAP = 0x18
 SSO_CAP = 15
 SENTINEL = "---"
 
-# Heap range from the archived memory-reader research / owner crack. The table
-# lives in the game-state arena but we scan the whole committed heap to stay
-# build-robust.
 HEAP_LO = 0x10000000000
 HEAP_HI = 0x7FF000000000
 
-# Fixed prefix that the array always starts with at game start (the engine's
-# registration order). Used to build the relocation anchor and to validate.
 FIXED_PREFIX = ["---", "GER", "ENG", "SOV"]
-# A few more for validation (must hold across MP-AMSB; from the save DB order).
 VALIDATE_PREFIX = ["---", "GER", "ENG", "SOV", "SWE", "FRA", "LUX", "BEL",
                    "HOL", "CZE", "POL"]
 
-# Scan budget on one candidate table's length, NOT a statement about how many
-# countries a game may define. It was `1024` -- 2.3x the vanilla count of 439 --
-# and `_read_all` stopped there SILENTLY, so a larger table was accepted as a
-# complete 1024-row prefix and every higher tag resolved to `None`. This module
-# is imported directly by the occupation lane's certifying live probe, so that
-# truncation reached the evidence.
-#
-# 65_536 matches the tree's country-table budget (a record is 0x20 bytes, so the
-# walk is 2 MiB at the ceiling). Hitting it is now an OVERFLOW the caller can
-# see rather than an end-of-table: `_read_all` reports it and `_is_canonical`
-# refuses the candidate, because a table we cannot prove we read to its end is
-# not one to publish.
 MAX_RECORDS = 65536
-SANE_MIN_TAGS = 40          # at least this many real tags or it isn't the table
+SANE_MIN_TAGS = 40
 
 
 def _record_bytes(tag):
@@ -88,11 +69,10 @@ class TagTable(object):
 
     def __init__(self, p, base, count, tags):
         self.p = p
-        self.base = base            # address of index 0 ("---")
-        self.count = count          # number of valid records
-        self._tags = tags           # list[str], index == tag_db_id
+        self.base = base
+        self.count = count
+        self._tags = tags
 
-    # -- record reads ---------------------------------------------------
     @staticmethod
     def _read_record(p, addr):
         """Return the TAG string of an SSO std::string record, or None if the
@@ -128,9 +108,6 @@ class TagTable(object):
                 return tags, False
             tags.append(t)
             i += 1
-        # The budget is spent. If the next record still reads as valid, this
-        # candidate is longer than we are willing to walk and we cannot claim to
-        # have read it.
         return tags, cls._read_record(p, base + i * STRIDE) is not None
 
     @staticmethod
@@ -148,10 +125,9 @@ class TagTable(object):
         if len(body) < SANE_MIN_TAGS:
             return False
         if len(body) != len(set(body)):
-            return False               # duplicate tag -> reject (fail closed)
+            return False
         return True
 
-    # -- location -------------------------------------------------------
     @classmethod
     def locate(cls, p, progress=None):
         """Scan committed heap for the anchor; disambiguate to the canonical
@@ -163,7 +139,7 @@ class TagTable(object):
         alen = len(anchor)
         ov = alen + 8
         chunk = 32 << 20
-        candidates = []           # (base, tags)
+        candidates = []
         scanned = 0
         for base, size in p.iter_regions(HEAP_LO, HEAP_HI, want_exec=False):
             pos = 0
@@ -179,17 +155,14 @@ class TagTable(object):
                         s = i + 1
                         cand_base = base + pos + i
                         tags, overflowed = cls._read_all(p, cand_base)
-                        # A candidate we could not walk to its end is refused,
-                        # not truncated: publishing its prefix would present an
-                        # incomplete tag table as the canonical one.
                         if not overflowed and cls._is_canonical(tags):
                             candidates.append((cand_base, tags))
                     scanned += len(blob)
                     blen = len(blob)
-                    if pos + blen >= size or blen < want:   # final / short read
+                    if pos + blen >= size or blen < want:
                         pos += max(blen, 0x1000)
                     else:
-                        pos += blen - ov                     # full mid-region chunk
+                        pos += blen - ov
                 else:
                     pos += max(want, 0x1000)
             if progress:
@@ -197,26 +170,22 @@ class TagTable(object):
 
         if not candidates:
             return None
-        # dedupe by base; if multiple canonical candidates, require agreement
         uniq = {}
         for b, t in candidates:
             uniq[b] = t
         if len(uniq) == 1:
             b, t = next(iter(uniq.items()))
             return cls(p, b, len(t), t)
-        # multiple canonical tables: accept only if they agree on every shared
-        # index (then pick the shortest = tightest active roster).
         bases = sorted(uniq, key=lambda b: len(uniq[b]))
         ref = uniq[bases[0]]
         for b in bases[1:]:
             other = uniq[b]
             n = min(len(ref), len(other))
             if ref[:n] != other[:n]:
-                return None            # disagree -> fail closed
+                return None
         b = bases[0]
         return cls(p, b, len(uniq[b]), uniq[b])
 
-    # -- resolution -----------------------------------------------------
     def tag(self, tag_db_id):
         """tag_db_id -> 3-letter TAG (live re-read). 0 -> '---'. Out of range
         or invalid -> None."""

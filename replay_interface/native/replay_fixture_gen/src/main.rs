@@ -85,10 +85,6 @@ fn generate(out_dir: &Path, seed: u64) -> Result<()> {
         ));
     }
 
-    // F4 anomaly set: OPENS through the shared validator but degrades
-    // mid-stream. Kept in its own manifest section so it never enters the
-    // strict-negative rejection matrix (an anomaly recording opens; a
-    // malformed recording rejects — that distinction stays crisp).
     let mut anomaly_manifest = Vec::new();
     for scenario in anomaly_scenarios(seed) {
         let file = anomaly_dir.join(format!("{}.battleplan", scenario.name));
@@ -178,8 +174,6 @@ struct Scenario {
     snapshots: Vec<Value>,
     probes: Vec<Probe>,
     events: Vec<Value>,
-    /// F4 mid-playback anomaly descriptor (None for the ordinary positive
-    /// scenarios; Some for the anomaly set — it OPENS but degrades).
     anomaly: Option<Value>,
 }
 
@@ -204,7 +198,6 @@ fn positive_scenarios(seed: u64) -> Vec<Scenario> {
         fx_building_damage(seed),
         fx_pov_visibility(seed),
         fx_dlc_language_variation(seed),
-        // fx-streams lane: the 12 UI-inventory data streams.
         fx_research_focus(seed),
         fx_country_management(seed),
         fx_designs_catalog(seed),
@@ -274,24 +267,11 @@ fn with_anomaly(mut scenario: Scenario, anomaly: Value) -> Scenario {
     scenario
 }
 
-/// Drop one snapshot (by tick index) after the scenario was built. Used only by
-/// the hour-gap anomaly fixture: it leaves the surviving hour series strictly
-/// increasing but with a hole where a mid-recording snapshot should be.
 fn drop_snapshot(mut scenario: Scenario, tick: usize) -> Scenario {
     scenario.snapshots.remove(tick);
     scenario
 }
 
-// ---------------------------------------------------------------------------
-// F4 anomaly scenarios.
-//
-// Each carries ONE mid-playback anomaly in an otherwise-valid, container-opening
-// recording. They are packed snapshot-flavor `.battleplan` files exactly like
-// the positive set (they OPEN through the shared validator) but degrade
-// mid-stream — distinct from the negative set, which REJECTS at open. Each
-// scenario's `anomaly` descriptor names the class, the monitored view, and the
-// hour where the last-good value should be held from.
-// ---------------------------------------------------------------------------
 
 fn anomaly_scenarios(seed: u64) -> Vec<Scenario> {
     vec![
@@ -319,7 +299,6 @@ fn fx_anomaly_missing_domain(seed: u64) -> Scenario {
                 });
                 snap["weather"]["source"] = json!("M");
             } else if let Some(obj) = snap.as_object_mut() {
-                // The domain earlier snapshots carried is now missing outright.
                 obj.remove("weather");
             }
         },
@@ -351,8 +330,6 @@ fn fx_anomaly_type_flip(seed: u64) -> Scenario {
             if tick < 6 {
                 snap["countries"]["GER"]["politics"]["political_power"] = json!(120.0 + tick as f64);
             } else {
-                // Field type flips mid-stream: number -> string. The typed view
-                // goes Unobtained and appends a coverage warning; never coerced.
                 snap["countries"]["GER"]["politics"]["political_power"] = json!("surging");
             }
         },
@@ -387,11 +364,7 @@ fn fx_anomaly_out_of_range(seed: u64) -> Scenario {
         "english",
         |tick, snap| {
             if tick >= 6 {
-                // Out-of-range scalar: manpower can never be negative.
                 snap["countries"]["GER"]["military"]["manpower"]["available"] = json!(-5000);
-                // Province id outside the static map universe (base provinces
-                // are 1000/1001/2000/3000). refresh_map_layers folds it into
-                // map.control_by_province, so the stray id is reachable there.
                 snap["provinces"]["987654"] = province("GER", 10);
             }
         },
@@ -753,10 +726,6 @@ fn fx_weather_sweep(seed: u64) -> Scenario {
 }
 
 fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
-    // The exact domain-24 `weather_live` carrier: raw fixed-point snow
-    // accumulators (denominator 100000, the producer states it) and the
-    // engine's own mud byte, per province. No 0..255 level and no fade block
-    // is invented here, because no producer emits either.
     let s = scenario(
         seed,
         "fx_snow_mud_accumulator",
@@ -766,21 +735,11 @@ fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
         &["No Step Back"],
         "english",
         |tick, snap| {
-            // Rising snow in fixed point, and mud that appears with the thaw
-            // and dries again — the two are independent per province.
             let snow_raw = (tick as i64 * 700_000).min(6_000_000);
             let muddy = (5..9).contains(&tick);
             snap["weather"]["regions"] = json!({
                 "201": {"region_id": 201, "phenom": if tick < 6 { 3 } else { 0 }, "phenom_name": if tick < 6 { "snow" } else { "clear" }, "temp_c": if tick < 6 { -5.0 } else { 4.0 }, "active": true}
             });
-            // The engine's own province array is dense and its size is stated,
-            // so the carrier declares it and every row is measured: this is the
-            // HEALTHY shape. The unmeasured shapes are unit-tested rather than
-            // frozen into a positive fixture.
-            // A real domain-24 record carries the whole strategic-region census
-            // beside the province rows, and replay's region view requires it
-            // complete, so the fixture carries it rather than a province-only
-            // half-carrier that would make every frame emit a coverage warning.
             let mut regions = Map::new();
             for region_id in 0..305u32 {
                 regions.insert(
@@ -812,12 +771,6 @@ fn fx_snow_mud_accumulator(seed: u64) -> Scenario {
                 "active_region_count": 0,
                 "regions": Value::Object(regions),
                 "observed_province_rows": 3,
-                // THE PRODUCER'S SHAPE, which no longer repeats the key as a
-                // `province_id` member or spells `snow` beside `snow_raw` --
-                // both are derived by the reader (`snow_raw / scale_raw`). A
-                // fixture that kept emitting them would have gone on passing
-                // while every real recording lost its snow and mud, which is
-                // exactly what it did until Codex review round 7 caught it.
                 "provinces": {
                     "0": {
                         "snow_raw": snow_raw,
@@ -932,9 +885,6 @@ fn fx_topbar_scalars_sweep(seed: u64) -> Scenario {
     )
 }
 
-/// Bind the one fully admitted XUI25 control to a portable fixture. The input
-/// family remains a replay-side dispatch choice (`MouseKeyboard`); the file
-/// carries the launch-authenticated display and language dimensions.
 fn attach_proven_xui25_display_variant(scenario: &mut Scenario) {
     for snapshot in &mut scenario.snapshots {
         snapshot["session"] = json!({
@@ -1226,12 +1176,6 @@ fn fx_dlc_language_variation(seed: u64) -> Scenario {
                 }
             });
             snap["countries"]["CAN"] = country("CAN", false, "democratic", 40, 14.0);
-            // Legacy snapshots mirror one cosmetic value under BOTH `misc` and
-            // `extra`, and `country()` seeds both spellings null. Write EVERY
-            // spelling, the way `fx_cosmetic_ideology` does: a null mirror
-            // beside a named override is a producer that missed a write, and
-            // `replay_core::world::first_available_nullable_string` refuses it
-            // rather than guessing which spelling measured the country.
             let cosmetic = if tick < 6 {
                 json!("CAN_UK")
             } else {
@@ -1253,11 +1197,6 @@ fn fx_dlc_language_variation(seed: u64) -> Scenario {
     )
 }
 
-// ---------------------------------------------------------------------------
-// fx-streams lane fixtures — the 12 UI-inventory data streams.
-// Each populates one domain family per tick,
-// deterministically from the seed, leaving existing fixtures untouched.
-// ---------------------------------------------------------------------------
 
 fn fx_research_focus(seed: u64) -> Scenario {
     let s = scenario(
@@ -1324,7 +1263,6 @@ fn fx_country_management(seed: u64) -> Scenario {
         |tick, snap| {
             let t = tick as i64;
             let ger = &mut snap["countries"]["GER"];
-            // --- politics detail + command abilities ---
             ger["politics"]["party_popularities"] = json!({
                 "fascism": 0.60 - tick as f64 * 0.01,
                 "democratic": 0.20,
@@ -1345,7 +1283,6 @@ fn fx_country_management(seed: u64) -> Scenario {
                 {"ability": "battle_cry", "active": tick % 2 == 0, "cooldown": t},
                 {"ability": "force_attack", "active": false, "cooldown": 0}
             ]);
-            // --- production queue + stockpile ---
             ger["production"]["stockpile_total"] = json!(1000.0 + tick as f64 * 50.0);
             ger["production"]["stockpile"] = json!({"1:1": 900 + t * 10, "2:3": 120 - t});
             ger["production"]["stockpile_complete"] = json!(true);
@@ -1396,7 +1333,6 @@ fn fx_country_management(seed: u64) -> Scenario {
                 {"archetype": "infantry_equipment", "equip_id": 1, "equip_type": 1, "amount": 900.0 + tick as f64 * 10.0},
                 {"archetype": "artillery_equipment", "equip_id": 2, "equip_type": 3, "amount": 60.0}
             ]);
-            // --- intel / operatives ---
             ger["intel"]["agency"] = json!({
                 "name": "Abwehr",
                 "is_created": true,
@@ -1415,7 +1351,6 @@ fn fx_country_management(seed: u64) -> Scenario {
                 },
                 "finished": []
             });
-            // --- trade ---
             ger["economy"]["resources"] = json!({
                 "complete": true,
                 "produced": {"oil": 5.0, "aluminium": 0.0, "rubber": 0.0, "tungsten": 2.0, "steel": 40.0 + tick as f64, "chromium": 0.0, "coal": 0.0},
@@ -1518,7 +1453,6 @@ fn fx_occupation_sweep(seed: u64) -> Scenario {
         &["La Resistance"],
         "english",
         |tick, snap| {
-            // GER occupies SOV state 20 (owner stays SOV, controller flips GER).
             snap["states"]["20"]["controller"] = json!("GER");
             snap["provinces"]["2000"]["controller"] = json!("GER");
             snap["states"]["20"]["occupation"] = json!({
@@ -1612,8 +1546,6 @@ fn fx_power_balance_combat(seed: u64) -> Scenario {
             snap["air_combats"] = json!([
                 {"air_combat_id": 8500, "strategic_region": 301, "attacker": "ENG", "defender": "GER", "attacker_planes": 100 - t, "defender_planes": 60}
             ]);
-            // B4 history is absent until a fixture carries the exact authority
-            // sidecar; the independently recorded owner aggregate remains valid.
             snap["world_events"]["convoy_losses_by_owner"] = json!({"ENG": 10 + t});
             snap["raids"]["countries"] = json!([{"tag": "ENG", "priority": 2}]);
             snap["raids"]["counters"] =
@@ -1651,8 +1583,6 @@ fn fx_scripted_gui_vars(seed: u64) -> Scenario {
             snap["countries"]["USA"] = country("USA", false, "democratic", 361, 25.0);
             snap["countries"]["USA"]["extra"]["_r2_script_variables"] =
                 json!({"congress_support": 50.0 - t * 2.0, "war_readiness^0": 1.0});
-            // Runtime materialization is a separate exact d84 contract. This
-            // D51 variable/flag fixture deliberately carries no runtime rows.
             snap["world"]["variables"] = json!({"global_tension_mod": t, "campaign_phase^1": 3.0});
             snap["world"]["flags"] = json!({
                 "war_escalation_started": {"value": tick >= 6, "date": "1936.1.1.0"}
@@ -2060,7 +1990,6 @@ fn base_snapshot(
             "fired_events": [],
             "pending_events": [],
             "threat": [],
-            // Exact B4 history is optional and absent from the base fixture.
             "convoy_losses_by_killer": null,
             "convoy_losses_by_owner": null
         },
@@ -2108,8 +2037,6 @@ fn country(tag: &str, human: bool, party: &str, capital: i64, pp: f64) -> Value 
         "economy": {
             "factories": {"civ": 10, "mil": 5, "dockyard": 2, "under_construction": 0},
             "construction_queue": [],
-            // X15 pools are an atomic exact family; scenarios that exercise
-            // them replace this object with all six canonical maps.
             "resources": {},
             "fuel": {"current": 500.0, "max": 2000.0, "gain": 0.0, "cost": 0.0},
             "gross_ic_by_equipment": null,
@@ -2383,19 +2310,7 @@ fn pack_identity(seed: u64, modset_id: &str) -> Result<PackIdentity> {
     })
 }
 
-/// Path-independent content identity for the synthetic fixture runtime.
-///
-/// Both payloads are real fixture bytes: one resolves from the synthetic base
-/// layer, and one from the winning mod layer after its authored `replace_path`.
 /// Generated recordings therefore use the production VFS admission contract.
-///
-/// The mod declares `replace_path` ONLY over the directory it wins
-/// (`gfx/interface/replay_fixture`). Declaring the base winner's directory
-/// (`common/replay_fixture`) too would make the base row unresolvable: every
-/// resolver in the repo (`EffectiveVfs::resolve`, the recorder_host winner
-/// derivation, and map_viewer's mod_resolver) stops at a layer that replaces
-/// the requested path's immediate parent, so a required base winner below such
-/// a declaration is a contradiction that content-manifest validation refuses.
 fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifest> {
     let base_path = "common/replay_fixture/scenario.txt";
     let mod_path = "gfx/interface/replay_fixture/icon.dds";
@@ -2408,8 +2323,6 @@ fn fixture_content_manifest(seed: u64, modset_id: &str) -> Result<ContentManifes
     let base_layer_id = "base:fixture-runtime".to_string();
     let mod_layer_id = format!("mod:{modset_id}");
 
-    // Canonical root-free inventory. Neither the generator output directory
-    // nor a playback installation path participates in this digest.
     let effective_vfs_manifest_sha256 = sha256(&serde_json::to_vec(&json!({
         "schema": "hoi4.fixture-effective-vfs.v1",
         "layers": [
@@ -2578,7 +2491,6 @@ fn hour_at(scenario: &Scenario, tick: usize) -> i64 {
 }
 
 fn date_at_hour(hour: i64) -> String {
-    // The event date is informational in these fixtures; exact frame probes use hour_index.
     format!("hour:{hour}")
 }
 
@@ -2615,10 +2527,6 @@ mod tests {
         );
         let mod_layer = &manifest.ordered_layers[1];
         assert_eq!(mod_layer.layer_kind, ContentLayerKind::Mod);
-        // The mod must NOT declare the base winner's directory
-        // (`common/replay_fixture`): a required base row below such a
-        // declaration is unresolvable by every resolver, and both the
-        // manifest-side and playback-side shadow rules refuse it.
         assert_eq!(mod_layer.replace_paths, ["gfx/interface/replay_fixture"]);
 
         let base = &manifest.required_content[0];
@@ -2715,31 +2623,6 @@ mod tests {
         expected: &BTreeMap<String, Vec<u8>>,
         actual: &BTreeMap<String, Vec<u8>>,
     ) {
-        // These are authenticated external evidence, not output owned by
-        // replay_fixture_gen. Keep them in the committed corpus without making a
-        // deterministic generator claim for their bytes. Exempting a file here
-        // loses nothing only because each one's bytes are pinned somewhere else:
-        // the capture by its own recorded identity, and the XMAP17 joint
-        // certification by the SHA-256 assertion in
-        // `replay_core::xmap17_player_labels::lane_hy_joint_certification_fixture_is_admitted`,
-        // which also panics when the file is absent. Nothing may be added here
-        // without that second pin.
-        //
-        // The XMAP19 visual-lifecycle fixture is the same shape and carries the
-        // same second pin: the recorder mints its bytes
-        // (`extractor/native/lanes/production_render_submit_live/tests/joint_certification_xmap19.rs`)
-        // and the copy committed here is SHA-256 pinned by
-        // `replay_core::world::world_xmap19_tests::lane_in_joint_certification_fixture_is_admitted`,
-        // which panics when it is absent.
-        //
-        // The XUI09 research fixture is the third of that shape. The recorder
-        // mints its bytes by driving the real D13 encoder through the real fold
-        // (`collector/src/attach_log/xui09_joint_certification_tests.rs`, which
-        // fails unless the committed bytes are exactly what the producer
-        // emits), and the copy committed here is SHA-256 pinned by
-        // `game_ui::research_observer`'s
-        // `lane_jo_joint_certification_fixture_is_admitted`, which panics when
-        // it is absent.
         const EXTERNAL_FIXTURES: &[&str] = &[
             "positive/fx_naval_invasion_paradrop_orders.battleplan",
             "xmap17_faction_joint_certification.json",

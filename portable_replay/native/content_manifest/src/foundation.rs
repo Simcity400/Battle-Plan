@@ -1,10 +1,3 @@
-//! Portable identity for the XMAP01/XMAP02 foundation content preflight.
-//!
-//! This is deliberately a content operation, not a render command. It binds
-//! one engine-proven effect/material/texture tuple to the recording's admitted
-//! effective VFS and describes the exact shader/resource state that XMAP01
-//! creates on the normal product startup route.
-
 use crate::{normalize_game_relative_path, UsedContentKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

@@ -1,51 +1,9 @@
-//! Anti-drift sweep: every lane-local status-bit DECLARATION in
-//! `extractor/native/lanes/` must be registered in
-//! `compact_contract::lane_local_status_mask`, or provably never emitted.
-//!
-//! The failure class this pins: the contract's registry is a table maintained
-//! next to (but apart from) the lane declarations, and such tables drift
-//! silently — domain 53 declared badge bits 16..=22 and emitted them on 379 of
-//! 514 hours of the batch-3a capture while the registry knew only domains 49
-//! and 51, which made every such record an unassigned-status-bit stream
-//! rejection under the contract's own validity rule
-//! (`compact_status_unknown_flags_v1` docs). Same drift class as the
-//! `OWNED_EMITTED_DOMAIN_DEPENDENCIES` fix: the cure is a consumer that reads
-//! the declarations, so the two can no longer disagree unobserved.
-//!
-//! What counts as a lane-local declaration: a `const STATUS_*: u32 = <bit>;`
-//! whose literal value is a status-word bit and whose NAME is not the global
-//! v1 name for that bit. Mirrors of the global vocabulary (`STATUS_PARTIAL_DATA
-//! = 1 << 9` and friends) are the lane convention for keeping the shared bits
-//! nameable inside a lane module and are exempt by exact name match.
-//! Declarations that alias `compact_contract::DOMAIN*` constants carry no
-//! literal and are exempt by construction — the compiler pins those.
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use compact_contract::{assigned_descriptor_by_id, lane_local_status_mask, CompactDomainStatus};
 
-/// Global v1 status-bit names, indexed by bit position, DERIVED from
-/// [`compact_contract::COMPACT_STATUS_V1_FLAG_SPECS`] rather than restated.
-///
-/// A lane constant named `STATUS_<name>` declaring exactly `1 << bit` is a
-/// mirror of a global bit, not a lane-local badge, and this table is what
-/// decides which. It used to be sixteen hand-written names, and the file said
-/// so in as many words: "This table IS a local copy of the contract's
-/// vocabulary, which is the drift this file exists to catch elsewhere."
-///
-/// Only its LENGTH was pinned, and length is the one thing a rename or a
-/// swapped pair of bit positions does not change. Either would have left this
-/// sweep reading the wrong name at that position, and both directions of that
-/// mistake are bad: a real lane-local declaration read as a mirror is dropped
-/// silently, and a correct mirror read as a lane-local badge is either reported
-/// as unregistered or, once registered, masked out of the domain's status word
-/// -- erasing a global failure classification for that domain.
-///
-/// The contract carries the bit AND the name in one place, so the table is
-/// built from it. Uppercase because lanes spell the vocabulary
-/// `STATUS_<NAME>`; the contract's wire spelling is lowercase.
 fn global_v1_bit_names() -> Vec<String> {
     let mut by_bit: Vec<(u32, String)> = compact_contract::COMPACT_STATUS_V1_FLAG_SPECS
         .iter()
@@ -73,11 +31,6 @@ fn global_v1_bit_names() -> Vec<String> {
     by_bit.into_iter().map(|(_, name)| name).collect()
 }
 
-/// The derived table must still cover exactly the assigned vocabulary, and the
-/// vocabulary must still be a contiguous run from bit 0 -- indexing by bit
-/// position depends on it. A `STATUS_SOURCE_EMPTY = 1 << 14` mirror in a lane
-/// would be reported as an unregistered lane-local declaration purely because
-/// this table stopped one entry short.
 #[test]
 fn the_global_bit_name_table_covers_the_whole_assigned_vocabulary() {
     let names = global_v1_bit_names();
@@ -94,12 +47,6 @@ fn the_global_bit_name_table_covers_the_whole_assigned_vocabulary() {
     );
 }
 
-/// Lane-local declarations that are deliberately NOT registered because the
-/// production decode path rejects them outright — a stream carrying one is
-/// refused by the lane's own gate, so no consumer ever has to classify it.
-/// Each entry carries the source marker whose presence the sweep re-verifies;
-/// if the retirement is ever lifted, the marker disappears and this sweep
-/// fails, forcing a re-triage instead of silently keeping the amnesty.
 struct NeverEmitted {
     domain_id: u16,
     bits: &'static [u32],
@@ -107,41 +54,15 @@ struct NeverEmitted {
     marker: &'static str,
 }
 
-/// Explicit constant-to-domain bindings for files that declare MORE THAN ONE
-/// assigned domain id (shared modules). Without a binding, "registered for
-/// any candidate" would let a bit declared for one domain ride on a sibling
-/// domain's registration — e.g. a hypothetical d50-local bit 11 passing via
-/// d49's mask in the shared naval module. A lane-local declaration in a
-/// multi-domain file MUST have an entry here; the sweep fails otherwise.
-const MULTI_DOMAIN_BINDINGS: &[(&str, u16)] = &[
-    // The shared 49/50 naval module's badge belongs to domain 49
-    // (naval_combat_lifecycle_live): only lifecycle rows carry the
-    // location/region promotion the badge reports.
-    ("STATUS_LOCATION_CANDIDATE_UNVALIDATED", 49),
-];
+const MULTI_DOMAIN_BINDINGS: &[(&str, u16)] = &[("STATUS_LOCATION_CANDIDATE_UNVALIDATED", 49)];
 
 const NEVER_EMITTED: &[NeverEmitted] = &[
-    // d56's four fixture badges are schema-v1 positions retained for
-    // fixed-width decoding but forbidden in production; the lane rejects
-    // streams carrying them ("retired fixture status bits", see
-    // `compact_stream_gate_rejects_retired_lane_fixture_badges`).
     NeverEmitted {
         domain_id: 56,
         bits: &[16, 17, 18, 19],
         marker_file_suffix: "naval_missions_status_live/src/domain56_compact.rs",
         marker: "pub const RETIRED_SOURCE_STATUS_MASK: u32 = STATUS_MISSION_FIXTURE_REQUIRED",
     },
-    // d61's quartet (bits 0..=3: SOURCE_UNAVAILABLE / BINDING_UNVERIFIED /
-    // PARTIAL / VALUE_VALIDATION_FIXTURE_REQUIRED) is the pre-promotion
-    // packet's self-contained vocabulary, retired when the lane was promoted
-    // onto the shared status word: the production emitter
-    // (`attach_log.rs` `read_compact_air_loss_stats_live`) writes only global
-    // vocabulary into the payload status field, and the production fold
-    // (`world_fold.rs` `fold_air_loss_stats`) classifies that field with the
-    // global `handle_compact_failure`. Registering these would be actively
-    // wrong — at bits 0..=3 they alias STATE_UNAVAILABLE / PROFILE_MISMATCH /
-    // NO_CLOCK / NO_SCALAR_SOURCE, and masking those out of d61 would erase
-    // real failure classification.
     NeverEmitted {
         domain_id: 61,
         bits: &[0, 1, 2, 3],
@@ -163,14 +84,12 @@ fn lanes_root() -> PathBuf {
 }
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()));
+    let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("reading {}: {e}", dir.display()));
     for entry in entries {
         let entry = entry.expect("dir entry");
         let path = entry.path();
         let file_type = entry.file_type().expect("file type");
         if file_type.is_dir() {
-            // Build output only; every source dir is swept.
             if entry.file_name() != "target" {
                 collect_rs_files(&path, out);
             }
@@ -180,10 +99,6 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Parses `[pub] const <NAME>: u32 = <literal>;` where `<literal>` is
-/// `1 << N`, `1u32 << N`, or a hex literal. Returns `(name, value)`.
-/// Identifier-valued and OR-composed declarations return `None` — those are
-/// aliases or masks whose components are checked at their own declaration.
 fn parse_const_u32_literal(line: &str) -> Option<(String, u32)> {
     let trimmed = line.trim_start();
     let after_vis = trimmed
@@ -215,11 +130,6 @@ fn parse_const_u32_literal(line: &str) -> Option<(String, u32)> {
     None
 }
 
-/// Every literal `const DOMAIN*: u16 = N;` in the file — the lane conventions
-/// are `DOMAIN_ID`, `DOMAIN_ID_PROPOSED`, and per-domain names such as
-/// `DOMAIN_NAVAL_COMBAT_LIFECYCLE`. Non-domain `u16` consts (record types,
-/// `DOMAIN_FRAME`) may slip in; they carry an empty mask and never satisfy a
-/// registration check, so they only ever make the sweep stricter to pass.
 fn domain_id_candidates(text: &str) -> BTreeSet<u16> {
     let mut out = BTreeSet::new();
     for line in text.lines() {
@@ -253,9 +163,6 @@ fn domain_id_candidates(text: &str) -> BTreeSet<u16> {
     out
 }
 
-/// The file's OWN domain id: the exact `const DOMAIN_ID: u16 = N;` (or
-/// `DOMAIN_ID_PROPOSED`) declaration, as opposed to the broader candidate
-/// set which also collects cross-referenced `DOMAIN_*` ids.
 fn own_domain_id(text: &str) -> Option<u16> {
     for line in text.lines() {
         let trimmed = line.trim_start();
@@ -316,15 +223,13 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
         files.len()
     );
 
-    // (finding, candidate domain ids, never-scheduled own-domain) for every
-    // literal STATUS_* declaration that is not a global mirror.
     let mut lane_local: Vec<(Finding, BTreeSet<u16>, bool)> = Vec::new();
     let mut violations: Vec<String> = Vec::new();
     let global_bit_names = global_v1_bit_names();
 
     for file in &files {
-        let text = fs::read_to_string(file)
-            .unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
+        let text =
+            fs::read_to_string(file).unwrap_or_else(|e| panic!("reading {}: {e}", file.display()));
         let mut findings = Vec::new();
         for (idx, line) in text.lines().enumerate() {
             let Some((name, value)) = parse_const_u32_literal(line) else {
@@ -346,19 +251,9 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
         if findings.is_empty() {
             continue;
         }
-        // A file whose OWN domain descriptor says "never scheduled in
-        // production" (d58's Reserved badge lane) cannot put its vocabulary
-        // on a production stream at all; its declarations are proof-artifact
-        // vocabulary. The check re-fires if the domain is ever promoted to
-        // schedulable.
         let never_scheduled = own_domain_id(&text)
             .and_then(assigned_descriptor_by_id)
             .is_some_and(|descriptor| !descriptor.schedulable);
-        // Resolve the lane's domain id(s): this file first, then every file
-        // in the same lane directory tree. Ids without a contract descriptor
-        // (record-type constants, `DOMAIN_FRAME = 1000`) are not domains and
-        // are dropped so they cannot inflate a file into the multi-domain
-        // rule or satisfy any check.
         let mut candidates = domain_id_candidates(&text);
         if candidates.is_empty() {
             let lane_dir = file
@@ -396,25 +291,6 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
         }
     }
 
-    // The sweep must SEE the known declarations, or its parsing has rotted
-    // into a vacuous pass. d49's overlap badge and d56's retired badges are
-    // literal declarations today; d53's and d60's are contract aliases (no
-    // literal), pinned by the compiler instead.
-    //
-    // d49's badge comes from the CONTRACT, not from a literal restated here.
-    // It is `DOMAIN49_STATUS_LOCATION_CANDIDATE_UNVALIDATED` in
-    // compact_contract, and the lane declares the same bit; a `1u32 << 11`
-    // written out here would agree with neither once the contract moved the
-    // badge, and this assertion's own message -- "the declaration moved or the
-    // parser broke" -- would then be a false diagnosis of a parser that was
-    // working perfectly.
-    //
-    // d56's four are NOT derivable and are still literals: they live in
-    // `naval_missions_status_live::domain56_compact`, and compact_contract
-    // cannot depend on a lane crate that depends on it. Their marker
-    // (`RETIRED_SOURCE_STATUS_MASK`) is re-verified by the NEVER_EMITTED
-    // amnesty below, which is the coverage available without inverting the
-    // dependency.
     for (expected_name, expected_value) in [
         (
             "STATUS_LOCATION_CANDIDATE_UNVALIDATED",
@@ -438,9 +314,6 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
         if *never_scheduled {
             continue;
         }
-        // A multi-domain (shared) module is ambiguous by construction: the
-        // declaration must be explicitly bound to its owning domain, and all
-        // checks then run against that domain alone.
         let owners: Vec<u16> = if candidates.len() > 1 {
             match MULTI_DOMAIN_BINDINGS
                 .iter()
@@ -478,9 +351,9 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
             let registered = owners
                 .iter()
                 .any(|domain| lane_local_status_mask(*domain) & (1 << bit) != 0);
-            let allowlisted = NEVER_EMITTED.iter().any(|entry| {
-                entry.bits.contains(&bit) && owners.contains(&entry.domain_id)
-            });
+            let allowlisted = NEVER_EMITTED
+                .iter()
+                .any(|entry| entry.bits.contains(&bit) && owners.contains(&entry.domain_id));
             if registered || allowlisted {
                 continue;
             }
@@ -499,7 +372,6 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
         }
     }
 
-    // Re-verify every never-emitted claim against its source marker.
     for entry in NEVER_EMITTED {
         let marker_file = files
             .iter()
@@ -525,8 +397,6 @@ fn every_declared_lane_local_status_bit_is_registered_or_provably_never_emitted(
             entry.bits,
             marker_file.display()
         );
-        // An allowlisted bit must not ALSO be registered — the two treatments
-        // are mutually exclusive by definition.
         for bit in entry.bits {
             assert_eq!(
                 lane_local_status_mask(entry.domain_id) & (1 << bit),

@@ -17,10 +17,10 @@ from typing import Any
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-import resolver as R  # noqa: E402
-import live_binding_resolver as LR  # noqa: E402
-from paradox_parser import Node, parse  # noqa: E402
-from static_artifact_common import (  # noqa: E402
+import resolver as R
+import live_binding_resolver as LR
+from paradox_parser import Node, parse
+from static_artifact_common import (
     CLAUSEWITZ_SYNTAX_QUIRK_ALLOWLIST,
     add_layer_args,
     canonical_json,
@@ -325,8 +325,6 @@ def build_gfx_asset_layers(
                     },
                 )
             elif binding == "asset_only":
-                # Descriptorless/asset-only install folders are not selected
-                # launch products and never become production VFS layers.
                 continue
             elif binding in {"integrated", "active_product"}:
                 layer = _new_layer(
@@ -426,9 +424,6 @@ def _direct_gui_files(layers) -> list[tuple[str, Path]]:
     ]
 
 
-# Semantic widget selectors are stable adapter inputs.  Sprite identities are
-# deliberately absent: those are data authored by the winning GUI layer and
-# must never become a compiled vanilla allowlist.
 _POWER_BALANCE_GUI_ROLES = (
     ("panel_background", "interface/powerbalanceview.gui", ("powerbalanceview", "background"), "background", "authored"),
     ("panel_artwork", "interface/powerbalanceview.gui", ("powerbalanceview", "bop_bg"), "iconType", "authored"),
@@ -511,11 +506,6 @@ def _power_balance_gui_manifest(layers) -> dict[str, Any]:
         matches = [
             row for row in elements
             if len(row[0]) >= len(suffix)
-            # GUI identifiers are authored lexical identities.  In the exact
-            # a729 file, direct siblings `background` and `Background` are two
-            # distinct widgets with different semantic roles.  Folding their
-            # names creates a false ambiguity and is not an engine-authored
-            # override rule.
             and row[0][-len(suffix):] == suffix
             and row[1].casefold() == widget_type.casefold()
         ]
@@ -809,10 +799,6 @@ def build_catalog(args: argparse.Namespace) -> dict[str, Any]:
             raw_texture_redacted = primary.get("raw_texturefile")
             invalid_texture_ref = bool(primary.get("invalid_texturefile"))
             raw_data = node_to_data(block)
-            # An absolute-looking ref is ALWAYS redacted in the persisted raw
-            # block, even when a game-relative path could be recovered from it
-            # (containing "gfx/") — no personal/install path may reach the
-            # packed catalog through any branch.
             raw_is_absolute = _is_absolute_texture_path(raw_texture)
             if isinstance(raw_data, dict):
                 for raw_key in list(raw_data):
@@ -1015,10 +1001,6 @@ def catalog_gate_checks(
         "min_sprites": meta["sprites"] >= min_sprites,
         "interface_gfx_files_parsed": meta["interface_gfx_files_parsed"] == meta["interface_gfx_files"],
         "unresolved_textures": meta["unresolved_textures"] == 0,
-        # DLC/mod selection changes which allowlisted authored references are
-        # active. Exact closure therefore requires every active missing
-        # texture to be accounted for, not every cross-product allowlist row
-        # to appear in this particular profile.
         "allowed_missing_textures": meta["allowed_missing_textures"]
         == meta["missing_textures"],
         "warnings": not meta["warnings"],

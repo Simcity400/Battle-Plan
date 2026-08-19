@@ -25,8 +25,6 @@ fn view() -> ScriptedGuiView {
     let captured = ScriptedGuiRuntimeInputs {
         manager_order_index: Leaf::Absent,
         definition: Leaf::Absent,
-        // Conflicts with the locally decidable visible block below. The exact
-        // captured engine result is authoritative.
         visible: EngineMaterialized {
             value: Leaf::Measured(false),
             unavailable_reason: None,
@@ -175,8 +173,6 @@ scripted_gui = {
     )
     .unwrap();
 
-    // Higher-priority overlay root wins the same relative file, matching the
-    // product AssetResolver path used by UI14/UI15.
     let registry =
         load_scripted_gui_registry(&AssetResolver::new(vec![overlay.clone(), vanilla.clone()]))
             .unwrap();
@@ -233,7 +229,6 @@ scripted_gui = {
     ));
     assert_eq!(state.country_variables.as_ref().unwrap()["score"], 3.0);
 
-    // Exact captured engine values win over conflicting replay-local values.
     assert_eq!(
         evaluated.properties["meter.frame"],
         EvaluatedProperty::String {
@@ -242,7 +237,6 @@ scripted_gui = {
         }
     );
 
-    // Removing local state cannot change an exact captured engine result.
     let mut missing_variable_view = view();
     missing_variable_view
         .by_country
@@ -257,8 +251,6 @@ scripted_gui = {
         }
     );
 
-    // Explicit engine unavailability remains unavailable even though the
-    // replay-local authored predicate and variable expression are decidable.
     let mut unavailable_view = view();
     let Some(Leaf::Measured(guis)) = unavailable_view.runtime_by_country.get_mut("TST") else {
         panic!("captured GUI map missing")
@@ -293,8 +285,6 @@ scripted_gui = {
         Truth::Unavailable
     );
 
-    // Definition-level enabled participates in every effect gate. A captured
-    // false therefore prevents even a locally supported variable preview.
     let mut disabled_view = view();
     let Some(Leaf::Measured(guis)) = disabled_view.runtime_by_country.get_mut("TST") else {
         panic!("captured GUI map missing")

@@ -8,31 +8,11 @@ use std::fs;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Localisation {
     pub entries: BTreeMap<String, String>,
-    /// The sole effective-VFS definition file for each unambiguous key.
-    ///
-    /// `source_files` proves only that a corpus was loaded. It cannot prove
-    /// which file the engine would select when two admitted files define the
-    /// same key. Such keys are excluded from this map and tracked below.
     pub source_by_key: BTreeMap<String, String>,
-    /// Keys for which more than one definition exists and the exact engine
-    /// precedence is unproven. Such keys remain available to research callers
-    /// in `entries`, but production consumers must refuse them.
     pub ambiguous_sources_by_key: BTreeMap<String, Vec<String>>,
-    /// True only when every parsed key is classified as either uniquely
-    /// sourced or explicitly ambiguous. It does not claim a winner for an
-    /// ambiguous key.
     pub provenance_complete: bool,
     pub source_files: Vec<String>,
     pub parse_failures: Vec<String>,
-    /// Files whose BYTES were destroyed at decode, with event counts.
-    ///
-    /// A separate axis from `parse_failures`, and invisible to it: an invalid
-    /// byte inside a quoted value is replaced by U+FFFD and the resulting
-    /// `KEY: "value"` line is still perfectly well formed, so
-    /// `parse_english_yml` reports nothing while the displayed string is not
-    /// the string the file contained. Measured: the shipped corpus produces
-    /// none of these across all 10 languages, so a non-empty list really does
-    /// mean localisation bytes were lost.
     pub decode_lossy_files: Vec<String>,
 }
 
@@ -41,10 +21,6 @@ impl Localisation {
         Self::load_language(resolver, "l_english")
     }
 
-    /// Load exactly the playback viewer's selected language from the admitted
-    /// effective VFS. There is no English fallback: if that language's files
-    /// were not admitted by the portable content capability, the resulting
-    /// catalog is empty and the product caller must fail closed.
     pub fn load_language(resolver: &AssetResolver, language: &str) -> Result<Self> {
         let language = normalise_language(language)?;
         let directory = language
@@ -70,11 +46,6 @@ impl Localisation {
                         ));
                     }
                     let text = decode_text(&bytes);
-                    // R11 C8: `parse_failures` could only ever hold `fs::read`
-                    // errors, because parsing had no failure channel at all —
-                    // a truncated or damaged .yml produced missing/corrupted
-                    // entries and an empty failure list. Line-level damage is
-                    // now recorded per file.
                     let mut file_entries = BTreeMap::new();
                     let (failures, duplicate_keys) =
                         parse_language_yml_with_duplicates(&text, &language, &mut file_entries);
@@ -116,9 +87,6 @@ impl Localisation {
                     .push(format!("{}: {}", file.rel_path, err)),
             }
         }
-        // Preserve the engine parse order. Sorting here used to erase the
-        // authenticated case-sensitive sequence after duplicate-key winners
-        // had already been selected.
         loc.parse_failures.sort();
         loc.decode_lossy_files.sort();
         for sources in loc.ambiguous_sources_by_key.values_mut() {
@@ -132,10 +100,6 @@ impl Localisation {
         Ok(loc)
     }
 
-    /// Product loader for one viewer-selected language. This couples language
-    /// selection to the portable content capability and refuses empty,
-    /// unreadable, malformed, or byte-damaged catalogs in one place so panel
-    /// assemblers cannot accidentally treat them as an English-fallback case.
     pub fn load_admitted_language(resolver: &AssetResolver, language: &str) -> Result<Self> {
         if !resolver.has_portable_content_admission() {
             return Err(crate::GameUiError::missing(
@@ -178,12 +142,6 @@ impl Localisation {
         Ok(localisation)
     }
 
-    /// Return a production-safe value for `key`.
-    ///
-    /// `entries` deliberately retains one provisional value for research and
-    /// diagnostics, but callers using the ordinary lookup API must never
-    /// receive that value when more than one definition exists and the
-    /// engine's effective-VFS precedence has not been proven.
     pub fn get(&self, key: &str) -> Option<&str> {
         if self.ambiguous_sources_by_key.contains_key(key) {
             return None;
@@ -230,24 +188,12 @@ fn normalise_language(language: &str) -> Result<String> {
     Ok(language)
 }
 
-/// Parse one `l_english` localisation file into `out`, returning one
-/// diagnostic per line that could not be interpreted as a `KEY: "value"` pair.
-///
-/// Skipping a damaged line is the right rendering behaviour (the rest of the
-/// file is still good), but skipping it *silently* is what made
-/// `Localisation::parse_failures` structurally incapable of reporting a parse
-/// failure. The diagnostics are the report; the caller decides what to do.
 #[must_use = "line-level localisation damage must be recorded, not dropped"]
 pub fn parse_english_yml(text: &str, out: &mut BTreeMap<String, String>) -> Vec<String> {
     let mut duplicates = BTreeSet::new();
     parse_localisation_rows(text, Some("l_english"), out, &mut duplicates)
 }
 
-/// Parse one Clausewitz localisation file for exactly `language`.
-///
-/// Files whose header names another language, and malformed or missing first
-/// content headers, are reported rather than silently ignored or interpreted
-/// as localisation keys.
 #[must_use = "line-level localisation damage must be recorded, not dropped"]
 pub fn parse_language_yml(
     text: &str,
@@ -484,7 +430,6 @@ mod tests {
             &mut entries,
         );
         assert_eq!(entries.get("GOOD").map(String::as_str), Some("kept"));
-        // The salvageable value is still kept; the damage is still reported.
         assert_eq!(
             entries.get("OPEN").map(String::as_str),
             Some("never closed")

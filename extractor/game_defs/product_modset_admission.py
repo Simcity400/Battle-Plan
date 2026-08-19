@@ -30,14 +30,6 @@ import live_binding_resolver as LR
 import static_bundle as SB
 
 
-# v4: the effective-VFS base namespace no longer collects the engine's own
-# install-root write sinks (owner ruling 2026-08-15).  The base walk used to
-# pick up console_history.txt, so playing one console command moved the base
-# content digest, the load-order base row, the namespace digest and the row
-# digest -- and the same player, same DLC, same mods, got a different product
-# key for having typed into the console.  Every product-modset key changes with
-# that derivation, and a v3 policy or receipt names a domain this module no
-# longer implements.
 POLICY_SCHEMA = "extractor.product_modset_admission_policy.v4"
 ADMISSION_SCHEMA = "extractor.product_modset_policy_admission.v4"
 POLICY_NAME = "live_resolution_provenance"
@@ -46,20 +38,12 @@ CANONICAL_POLICY_SHA256 = (
     "6f2e5724de5b256705caa2186004ff7d99a37a2a9f18774ea02e5f3c3ced1505"
 )
 
-# The exact excluded class, mirrored from the authority the resolver enumerates
-# with.  Both files are digest-pinned, and this tuple is checked against the
-# authority on every admission, so the key domain cannot be widened or narrowed
-# by editing only one of them -- which is the whole reason the class is one
-# authority instead of a filename check at each site that walks a tree.
 IMPLEMENTED_RUNTIME_ARTIFACTS: tuple[str, ...] = (
     "console_history.txt",
     "imgui.ini",
     "imgui_log.txt",
 )
 
-# The exact obligations this module enforces.  A policy that names a different
-# set -- more, fewer, or reordered -- is refused, so admission can never be
-# quietly weakened by editing only one of the two files.
 IMPLEMENTED_PROVENANCE: tuple[str, ...] = (
     "resolution_mechanism_domain",
     "engine_activated_dlc_roster",
@@ -72,9 +56,6 @@ IMPLEMENTED_PROVENANCE: tuple[str, ...] = (
     "product_modset_key_recomputed",
 )
 CLASSIFICATIONS = ("vanilla", "modded")
-# The engine build whose mount planner live_binding_resolver reproduces.  A
-# policy naming a different build is refused: the planner reproduction, and
-# therefore every engine-order obligation below, is only proved for this build.
 IMPLEMENTED_ENGINE_BUILD_ID = "a729"
 WIRE_COLLECTION = {"mod_state": "mods", "dlc_state": "dlc", "load_order": "entries"}
 
@@ -92,8 +73,6 @@ def _write_new_atomic(path: Path, payload: bytes) -> None:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        # Hard-link publication is create-if-absent on every supported host;
-        # it cannot replace a planted or concurrently published receipt.
         os.link(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -173,12 +152,6 @@ def normalize_policy(value: dict[str, Any]) -> dict[str, Any]:
         raise SB.BundleError(
             "policy required_provenance is not the exact implemented obligation list"
         )
-    # The policy names the excluded class's SCHEMA, never its digest: the
-    # authority is already digest-pinned in ``live_binding_resolver`` and
-    # mirrored path-for-path below, so a third copy here would add no guarantee
-    # and would put a digest into the one document that is required to carry
-    # none (a policy holding digests is how a single machine's content becomes
-    # everyone's product definition).
     if mechanism.get("engine_runtime_artifacts_schema") != _runtime_artifact_authority()["schema"]:
         raise SB.BundleError(
             "policy resolution_mechanism.engine_runtime_artifacts_schema does not name the "
@@ -417,9 +390,6 @@ def _engine_activated_dlc(
     conflicts = _string_list(
         report.get("launcher_dlc_conflicts"), "resolution launcher_dlc_conflicts"
     )
-    # The engine's own active tree is authoritative; a launcher profile that
-    # asked for less is retained as a named conflict, never as a reason to drop
-    # an activated product from the recorded modset.
     if set(conflicts) != enabled_ids - set(requested):
         raise SB.BundleError(
             "recorded launcher DLC conflicts are not the engine-active products the "
@@ -477,19 +447,6 @@ def _engine_mount_order(
     entries = load_order["items"]
     if not entries or entries[0]["kind"] != "vanilla" or entries[0]["ordinal"] != 0:
         raise SB.BundleError("load order does not begin with the base vanilla layer")
-    # base_layer_content_digest_joined: the base row's IDENTITY and its CONTENT
-    # digest both join to the effective-VFS base namespace, whose digest
-    # ``LR.validate_source_inventory_document`` has already recomputed from that
-    # namespace's own inventory rows above.  Every digest feeding the
-    # product-modset key is therefore reconstructible from the documents in
-    # front of admission; load_order.v1 recorded a differently-scoped second
-    # tree hash here that no holder of the inventory could check.
-    #
-    # ``admit`` reaches this same join a second time through
-    # ``SB.validate_source_inventory_bindings`` (the effective_vfs_namespace_
-    # coverage obligation).  The repetition is deliberate and it is why removing
-    # either call alone still fails closed: a named obligation must be enforced
-    # by its own code path rather than by another obligation's side effect.
     SB.join_base_layer_to_inventory(entries, source_inventory)
     engine_order = [
         str(source["id"]).replace("\\", "/") for source in ordered_sources
@@ -517,9 +474,6 @@ def admit(
         role: _require_normalized_binding(bindings, role, schema)
         for role, schema in schemas.items()
     }
-    # Re-derive the effective-VFS inventory from its own namespace and row
-    # documents rather than trusting the caller's declared digests: those two
-    # digests are direct inputs to the product-modset key recomputed below.
     if not isinstance(source_inventory, dict):
         raise SB.BundleError("source inventory must be an object")
     inventory = LR.validate_source_inventory_document(source_inventory)
@@ -531,11 +485,6 @@ def admit(
     ordered_sources = _engine_activated_mods(
         documents["mod_state"], resolution_report, runtime
     )
-    # engine_runtime_artifacts_excluded runs BEFORE the base row's content
-    # digest is joined below, because it decides what that digest was allowed to
-    # cover.  Joining a digest first and asking afterwards what it measured is
-    # how the previous domain error survived: the join was sound, the domain was
-    # not.
     runtime_artifacts = _engine_runtime_artifacts_excluded(inventory, resolution_report)
     engine_mount_order = _engine_mount_order(
         documents["load_order"], ordered_sources, inventory
@@ -549,8 +498,6 @@ def admit(
         raise SB.BundleError("resolution report identity does not match the bindings")
 
     SB.validate_source_inventory_bindings(inventory, documents)
-    # Descriptorless asset layers are the only mounted namespaces no product
-    # roster covers, so the resolution must have named every one of them.
     declared_asset_layers = resolution_report.get("descriptorless_asset_layers")
     if not isinstance(declared_asset_layers, list) or not all(
         isinstance(row, dict) and isinstance(row.get("id"), str)
@@ -591,11 +538,6 @@ def admit(
         "classification": "modded" if enabled_mods else "vanilla",
         "product_modset_sha256": product["product_modset_sha256"],
         "binding_identity": identity,
-        # Mod DISPLAY NAMES are arbitrary player-authored text and are proved
-        # against the engine roster above but deliberately never echoed here:
-        # this receipt is embedded in the pointer-free capture handoff, and a
-        # mod named like a path would otherwise refuse an honest player's
-        # preparation.  Descriptor ids are normalized relative VFS paths.
         "enabled_mod_ids": _sorted_ids(row["id"] for row in enabled_mods),
         "engine_runtime_artifacts": runtime_artifacts,
         "engine_mount_order": engine_mount_order,

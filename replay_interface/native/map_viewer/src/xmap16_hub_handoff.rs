@@ -1,11 +1,3 @@
-//! Production preparation and app-device handoff for XMAP16 supply-hub GUI.
-//!
-//! The state-first carrier owns the final world anchor, per-perspective
-//! eligibility, exact camera cutoff, and three sprite selectors. XMAP03 owns
-//! projection. This module joins those two authorities into screen-space GUI
-//! quads and uploads the three admitted texture payloads. The shared GUI
-//! renderer remains external: no engine shader name or compositor ordinal is
-//! invented here.
 
 use crate::rail_files::{
     supply_hub_background_atlas_frame, supply_hub_common_icon_atlas_frame,
@@ -35,15 +27,10 @@ pub struct Xmap16HubViewerSelection {
     pub mode: Xmap16HubPresentationMode,
 }
 
-/// Downstream viewer state must explicitly resolve the selected country and
-/// normal-vs-supply presentation. A recorder POV is never accepted here.
 pub trait Xmap16HubViewerSelectionProvider {
     fn selection(&self, viewer: &ViewerOwnedMapState) -> Result<Option<Xmap16HubViewerSelection>>;
 }
 
-/// The viewer/map-mode authority translates its authenticated state to the
-/// only distinction XMAP16 consumes. This intentionally does not parse the
-/// free-form `map_mode_id` string.
 pub trait Xmap16HubPresentationModeProvider {
     fn presentation_mode(
         &self,
@@ -51,9 +38,6 @@ pub trait Xmap16HubPresentationModeProvider {
     ) -> Result<Option<Xmap16HubPresentationMode>>;
 }
 
-/// Concrete viewer-country join: the selected tag is resolved through the
-/// current WorldFrame's complete D18 roster, while map-mode meaning remains
-/// owned by its authenticated provider.
 pub struct D18Xmap16HubViewerSelectionProvider<'a> {
     pub world_frame: &'a replay_core::WorldFrame,
     pub mode_provider: &'a dyn Xmap16HubPresentationModeProvider,
@@ -131,8 +115,6 @@ pub struct Xmap16HubGuiVertex {
     pub uv: [f32; 2],
 }
 
-/// Packet-canonical vertices in `top-left, top-right, bottom-left,
-/// bottom-right` order. The shared executor owns its native primitive order.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Xmap16HubGuiQuad {
     pub perspective_country_id: u32,
@@ -161,8 +143,6 @@ pub struct PreparedXmap16HubGuiPacket {
     pub hour_index: i64,
     pub rail_supply_frame_sha256: String,
     pub camera_sha256: String,
-    /// Product-owned `graphics.gui_scale`, admitted from local playback
-    /// settings and bound into the packet as exact f32 bits.
     pub gui_scale_f32_bits: u32,
     pub selection: Xmap16HubViewerSelection,
     pub textures: Vec<Xmap16HubTextureDescriptor>,
@@ -284,11 +264,6 @@ impl Xmap16HubGuiQuad {
     }
 }
 
-/// Join XMAP16's state-first hub rows to the selected viewer perspective and
-/// XMAP03's current camera. Missing selection or camera authority is a typed
-/// refusal. XMAP03 points behind the camera are ordinary viewer-derived
-/// clipping and are skipped; finite off-viewport coordinates remain for the
-/// shared GUI rasterizer/scissor.
 pub fn prepare_xmap16_hub_gui_packet(
     frame: &PreparedXmap16Frame,
     viewer: &ViewerOwnedMapState,
@@ -443,11 +418,6 @@ fn validate_hub_row(subtype: u8, row: &RailHubStateFirstVisual) -> Result<()> {
 
 fn hub_visible_at_camera_height(row: &RailHubStateFirstVisual, camera_height: f32) -> Result<bool> {
     use replay_core::RailHubVisibilityCutoffClass;
-    // Exact a729 class predicates, evidence manifest
-    // e8706acb8cd769c6db2a1e52c13b503f9f38f0c41dbe74caf3c00aae26d931ec.
-    // SupplyIcon/End use strict `<`; Unused/Disconnected use inclusive `<=`.
-    // OK/Numbers remain effective define identities, not proved base hub-sprite
-    // lifecycle classes, and therefore cannot authorize a draw.
     Ok(match row.visibility_cutoff_class {
         RailHubVisibilityCutoffClass::SupplyIcon | RailHubVisibilityCutoffClass::End => {
             camera_height < row.visibility_cutoff.value
@@ -768,15 +738,10 @@ impl NativeXmap16HubTextureSet {
     }
 }
 
-/// Narrow seam to the shared GUI textured-quad implementation. The provider
-/// owns the actual program and compositor placement; XMAP16 owns its packet,
-/// textures, and proof that the submitted quads match the prepared payload.
 #[cfg(windows)]
 pub trait NativeXmap16HubGuiExecutor {
     fn executor_identity_sha256(&self) -> &str;
 
-    /// # Safety
-    /// `context` must be a live context for the device that owns `textures`.
     unsafe fn draw_xmap16_hub_quads(
         &mut self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -795,10 +760,6 @@ pub struct NativeXmap16HubHandoff {
 
 #[cfg(windows)]
 impl NativeXmap16HubHandoff {
-    /// Upload the exact three admitted hub textures to the app device.
-    ///
-    /// # Safety
-    /// `device` must be a live `ID3D11Device`.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &GameFileResolver,
@@ -819,11 +780,6 @@ impl NativeXmap16HubHandoff {
         })
     }
 
-    /// Retain texture uploads across camera/selection changes. A mod/content
-    /// change replaces all three resources atomically.
-    ///
-    /// # Safety
-    /// `device` must be the same live device used at construction.
     pub unsafe fn update_packet(
         &mut self,
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -846,12 +802,6 @@ impl NativeXmap16HubHandoff {
         &self.receipt
     }
 
-    /// Submit the prepared packet through the authenticated shared GUI
-    /// executor. This module deliberately does not name or synthesize that
-    /// program.
-    ///
-    /// # Safety
-    /// `context` must be a live context for the handoff's device.
     pub unsafe fn execute_with(
         &self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,

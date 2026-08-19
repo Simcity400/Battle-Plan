@@ -1,10 +1,3 @@
-//! Manifest-bound authored GUI identities for replay-owned observer panels.
-//!
-//! The effective VFS and XUI01 catalog own authored names. Native controller
-//! constants do not. This index therefore uses dynamic string identities and
-//! binds every admitted surface/element to the exact `UsedContentKey` selected
-//! by the replay manifest. Frozen XUI inventories remain evidence fixtures and
-//! are deliberately absent from this product path.
 
 use crate::assets::AssetResolver;
 use crate::definition_admission::{GuiDefinitionCatalog, ResolvedGuiDefinitionFile};
@@ -34,19 +27,12 @@ pub struct AuthoredElementRole {
     pub element_type: String,
     pub authored_name: String,
     pub child_path: Vec<u32>,
-    /// Authored `.gui` frame is one-based; an omitted token selects frame one.
     pub authored_one_based_frame: u32,
     pub sprite_refs: Vec<String>,
     pub sprites: Vec<AuthoredSpriteRole>,
-    /// Direct `textureFile` fields are assets, not symbolic GFX sprite names.
-    /// Declaration order and duplicates are semantically retained.
     pub direct_texture_refs: Vec<AuthoredDirectTextureRef>,
     pub direct_textures: Vec<AuthoredDirectTextureRole>,
     pub font_ref: Option<String>,
-    /// Exact descriptor/page winners selected for this element's symbolic font
-    /// under the recorded localisation language. Product compositors must load
-    /// this binding directly; re-resolving the alias under a default language
-    /// would cross the admission boundary.
     pub font: Option<AuthoredFontRole>,
     pub localisation_or_literal_ref: Option<String>,
     pub localisation_content: Option<UsedContentKey>,
@@ -58,7 +44,6 @@ pub struct AuthoredSpriteRole {
     pub sprite_name: String,
     pub sprite_kind: String,
     pub frame_count: u32,
-    /// Presence is semantic: absence installs the exact-a729 default effect.
     pub authored_effect_file: Option<String>,
     pub effective_shader_file: String,
     pub definition_content: UsedContentKey,
@@ -102,7 +87,6 @@ pub struct AuthoredFontRole {
     pub base_border_color: Option<AuthoredPackedColorRole>,
     pub font_local_textcolors: Option<AuthoredTextColorTableRole>,
     pub global_textcolor_tables: Vec<AuthoredTextColorTableRole>,
-    /// Effective-VFS winner for the exact-a729 bitmap-text effect.
     pub text_effect_content: UsedContentKey,
 }
 
@@ -137,9 +121,6 @@ pub struct AuthoredPackedColorRole {
 }
 
 impl AuthoredPackedColorRole {
-    /// Exact byte-channel view of the authenticated `0xAARRGGBB` value.
-    /// Presence remains on the enclosing `Option`: omission is the
-    /// constructor-zero state and must not be changed into opaque white.
     pub fn rgba8(&self) -> [u8; 4] {
         [
             ((self.argb >> 16) & 0xff) as u8,
@@ -167,21 +148,15 @@ pub struct AuthoredTextColorEntryRole {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthoredSurfaceRole {
-    /// Dynamic, case-preserved root identity from the admitted definition.
     pub surface_id: String,
     pub root_window_id: String,
     pub source_file: String,
     pub source_content: UsedContentKey,
-    /// Digest of the exact parsed root, including raw Clausewitz fields and
-    /// every zero-based child path. Persistent HUD and viewer-opened panels
-    /// share this identity; a name-equal caller-supplied root is insufficient.
     pub authored_tree_identity_sha256: String,
     pub complete_dependency_closure: bool,
     pub missing_dependencies: Vec<String>,
     pub dependency_content: Vec<UsedContentKey>,
     pub elements: Vec<AuthoredElementRole>,
-    /// Present only for the unique structural tooltip-shell candidate derived
-    /// from the winning top-level `interface/core.gui` tree.
     pub tooltip_shell: Option<AuthoredTooltipShellRole>,
 }
 
@@ -200,8 +175,6 @@ pub struct AuthenticatedGuiRoleIndex {
     pub localisation_language: String,
     pub index_identity_sha256: String,
     pub surfaces: Vec<AuthoredSurfaceRole>,
-    /// Every effective last-registered GFX sprite that has a complete exact
-    /// texture/effect closure. Packet-time inline tokens resolve only here.
     pub dynamic_sprites: Vec<AuthoredSpriteRole>,
     pub dynamic_sprite_missing_dependencies: Vec<String>,
     pub dynamic_dependency_content: Vec<UsedContentKey>,
@@ -220,14 +193,8 @@ pub struct StrictAuthoredPanelAdmission {
     authored_root: GuiElement,
 }
 
-// `GuiElement` stores authored numeric tokens as strings, so structural
-// equality is reflexive even though the shared parser type does not derive Eq.
 impl Eq for StrictAuthoredPanelAdmission {}
 
-/// Single sealed input accepted by authenticated authored composition. Its
-/// components are crate-private: product adapters can transport this
-/// capability but cannot extract and recombine a root, resolver, registry,
-/// localisation table, or raw panel token from different replays.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedPanelSurface {
     pub(crate) panel: StrictAuthoredPanelAdmission,
@@ -266,8 +233,6 @@ impl AuthenticatedPanelSurface {
         self.panel.element_roles()
     }
 
-    /// XUI26 content admission sealed into this exact panel surface. This is
-    /// intentionally not an open/frame lease; manager composition supplies
     /// that independent lifetime authority.
     pub fn frontend_composition(&self) -> &DiscoveredFrontendComposition {
         &self.frontend
@@ -318,8 +283,6 @@ impl StrictAuthoredPanelAdmission {
         &self.dependency_content
     }
 
-    /// Manifest-bound child census, including exact selected-language font
-    /// descriptor/page bindings. The child path is the stable attachment key.
     pub fn element_roles(&self) -> &[AuthoredElementRole] {
         &self.element_roles
     }
@@ -330,9 +293,6 @@ impl StrictAuthoredPanelAdmission {
             .find(|element| element.child_path == child_path)
     }
 
-    /// Resolve a child path against the exact retained authored tree. This is
-    /// the geometry/raw-field counterpart of `element_role`; duplicate authored
-    /// names remain legal because no name lookup participates.
     pub fn authored_element(&self, child_path: &[u32]) -> Option<&GuiElement> {
         let mut element = &self.authored_root;
         for &ordinal in child_path {
@@ -360,8 +320,6 @@ impl StrictAuthoredPanelAdmission {
         Ok(binding)
     }
 
-    /// Exact parsed root sealed when the manifest-bound panel token was
-    /// issued. Compositors must use this tree, never a same-name replacement.
     pub fn authored_root(&self) -> &GuiElement {
         &self.authored_root
     }
@@ -376,9 +334,6 @@ impl StrictAuthoredPanelAdmission {
 }
 
 impl AuthenticatedGuiRoleIndex {
-    /// Mint the only authenticated compositor input. Every carried component
-    /// is rebound here to this exact index, admission, resolver, and selected
-    /// language before the opaque capability exists.
     pub fn seal_panel_surface(
         &self,
         resolver: &AssetResolver,
@@ -878,17 +833,12 @@ impl AuthenticatedGuiRoleIndex {
             .find(|surface| surface.surface_id.eq_ignore_ascii_case(surface_id))
     }
 
-    /// Unique structurally identified tooltip shell, independent of its
-    /// authored root name.
     pub fn tooltip_shell_surface(&self) -> Option<&AuthoredSurfaceRole> {
         self.surfaces
             .iter()
             .find(|surface| surface.tooltip_shell.is_some())
     }
 
-    /// Admit an arbitrary inline localisation sprite from the authenticated
-    /// effective registry. Unknown or incomplete sprites never fall back to a
-    /// filesystem/name scan.
     pub fn admit_dynamic_sprite<'a>(
         &'a self,
         admission: &ValidatedContentAdmission,
@@ -905,9 +855,6 @@ impl AuthenticatedGuiRoleIndex {
             })
     }
 
-    /// Re-bind an opaque panel token to its exact originating role index and
-    /// content admission. Consumers must call this instead of independently
-    /// comparing selected token fields.
     pub fn validate_panel_token<'a>(
         &'a self,
         admission: &ValidatedContentAdmission,
@@ -954,8 +901,6 @@ impl AuthenticatedGuiRoleIndex {
         })
     }
 
-    /// Admit one exact root by manifest-bound source identity plus dynamic
-    /// surface identity. This avoids source/name scans in persistent consumers.
     pub fn admit_surface(
         &self,
         catalog: &GuiDefinitionCatalog,
@@ -977,9 +922,6 @@ impl AuthenticatedGuiRoleIndex {
         self.admit_panel(catalog, admission, &surface.root_window_id)
     }
 
-    /// Complete deterministic strict-root census in authenticated index order.
-    /// An effective empty GUI namespace yields an authenticated empty vector;
-    /// callers never supply an external binding map to establish root identity.
     pub fn admit_all_surfaces(
         &self,
         catalog: &GuiDefinitionCatalog,
@@ -992,11 +934,6 @@ impl AuthenticatedGuiRoleIndex {
             .collect()
     }
 
-    /// Issue the only token accepted by strict reconstructed-panel composition.
-    ///
-    /// An incomplete dependency closure never becomes a partial panel. The
-    /// token is also re-bound to the current admission so a stale index cannot
-    /// cross a replay/modset boundary.
     pub fn admit_panel(
         &self,
         catalog: &GuiDefinitionCatalog,
@@ -1704,8 +1641,6 @@ fn collect_elements(
             )
         })?;
         if path.trim().is_empty() {
-            // A blank optional texture disables the direct backdrop. Preserve
-            // it in `raw`/the tree digest, but do not invent an asset binding.
             continue;
         }
         direct_texture_refs.push(AuthoredDirectTextureRef {

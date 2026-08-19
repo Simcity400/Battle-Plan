@@ -631,18 +631,9 @@ fn shipped_gui_scene_and_compositor_accept_exact_trade_cards() {
 }
 
 
-// -------------------------------------------------------------------------
-// The resource set is whatever the recording states, not a list compiled into
-// the panel. `common/resources` is moddable content.
-// -------------------------------------------------------------------------
 
-/// Vanilla's seven, plus a resource vanilla does not have, in an order vanilla
-/// does not use. Every card is built, in the recording's order.
 #[test]
 fn xui15_trade_panel_renders_a_modded_eight_resource_set_in_the_recordings_order() {
-    // The first slot is deliberately NOT named "oil": a mod may rename the
-    // engine's cached first resource, and the current/max needed form belongs
-    // to that SLOT, not to that name.
     let modded = [
         "petroleum", "steel", "rubber", "tungsten", "aluminium", "chromium", "coal", "uranium",
     ];
@@ -681,16 +672,6 @@ fn xui15_trade_panel_renders_a_modded_eight_resource_set_in_the_recordings_order
     }
 }
 
-/// A REORDERED resource table still builds every card, including oil's.
-///
-/// `common/resources` is moddable, so a mod may prepend to it and move oil off
-/// slot 0. The recorder identifies oil from the engine's own cached oil
-/// descriptor and stamps the current/max needed model on whichever slot that
-/// turns out to be; the panel must key on that stamp.
-///
-/// Restoring the `expected_order == 0` conjunct in `measured_resource_card`
-/// makes this red: the oil card fails its needed-semantics check, one card of
-/// eight comes back unbuilt, and the whole panel withholds its resource cards.
 #[test]
 fn xui15_trade_panel_builds_the_oil_card_when_a_mod_moves_oil_off_the_first_slot() {
     const OIL_SLOT: usize = 3;
@@ -721,9 +702,6 @@ fn xui15_trade_panel_builds_the_oil_card_when_a_mod_moves_oil_off_the_first_slot
     for (index, resource) in modded.iter().enumerate() {
         assert_eq!(cards[index].resource, *resource);
         assert_eq!(cards[index].visible_order, index as i64);
-        // The current/max pair is on the slot the recording marked, and on no
-        // other -- in particular not on slot 0, which a positional panel would
-        // have insisted on.
         let is_oil = index == OIL_SLOT;
         assert_eq!(
             cards[index].needed_type,
@@ -738,10 +716,6 @@ fn xui15_trade_panel_builds_the_oil_card_when_a_mod_moves_oil_off_the_first_slot
     }
 }
 
-/// The pools are keyed by name and carry no order of their own. Without rows
-/// there is no stated order, and the panel must say so rather than invent one:
-/// rendering the map's own key order would put cards in a sequence the game
-/// never had.
 #[test]
 fn xui15_trade_panel_withholds_pool_cards_when_no_resource_order_is_stated() {
     let mut view = view();
@@ -763,7 +737,6 @@ fn xui15_trade_panel_withholds_pool_cards_when_no_resource_order_is_stated() {
     );
 }
 
-/// A pool map keyed by a set the rows do not state is not this frame's pools.
 #[test]
 fn xui15_trade_panel_withholds_pool_cards_whose_keys_disagree_with_the_rows() {
     let mut view = view();
@@ -800,17 +773,10 @@ fn pool_map_for(resources: &[&str]) -> Leaf<BTreeMap<String, f64>> {
     )
 }
 
-/// Rows for an arbitrary resource set. The current/max needed form belongs to
-/// slot 0 -- the engine's cached first resource -- and every other slot carries
-/// the surplus/deficit form; nothing here depends on a resource's name.
 fn resource_rows_for(resources: &[&str]) -> Vec<TradeResourceRow> {
     resource_rows_for_with_oil_slot(resources, 0)
 }
 
-/// The same rows with the OIL SLOT as a parameter. Vanilla puts oil first, so
-/// the caller above passes 0; a mod that prepends to `common/resources` does
-/// not, and the panel has to key on the stamped needed-model rather than on the
-/// position.
 fn resource_rows_for_with_oil_slot(resources: &[&str], oil_slot: usize) -> Vec<TradeResourceRow> {
     resources
         .iter()

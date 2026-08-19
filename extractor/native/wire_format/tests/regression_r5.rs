@@ -1,6 +1,3 @@
-//! Regression tests that sweep whole value and record-state spaces rather than
-//! pinning only one representative input.
-
 use wire_format::body::{key, KeyedState};
 use wire_format::columnar::encode_baseline_columnar;
 use wire_format::derived::{from_stored, to_stored};
@@ -14,16 +11,14 @@ fn one(fields: Vec<Field>) -> Schema {
         domain: 1,
         cadence_log2: 0,
         event_part: None,
-        collections: vec![Collection { collection_id: 1, shape: Shape::KeyedSet, fields }],
+        collections: vec![Collection {
+            collection_id: 1,
+            shape: Shape::KeyedSet,
+            fields,
+        }],
     }
 }
 
-/// Gating the live variant with `matches_kind` blesses
-/// `Value::Signed` for `Kind::Monotone` — right for a *stored* monotone value,
-/// wrong for a live one. Capture accepted `Signed(-5)` on a derived monotone
-/// field, encoded it, and replay then refused the crate's own bytes.
-///
-/// This test covers every derived-capable kind.
 #[test]
 fn the_capture_boundary_is_a_bijection_for_every_derived_kind() {
     for (kind, live_ok, live_wrong) in [
@@ -34,30 +29,33 @@ fn the_capture_boundary_is_a_bijection_for_every_derived_kind() {
         let mut f = Field::new(2, kind);
         f.derived = Some(Derived { c: 1, u: 0 });
 
-        // The declared live variant round-trips exactly.
         let stored = to_stored(&f, live_ok, 3).unwrap_or_else(|e| panic!("{kind:?}: {e:?}"));
-        assert!(matches!(stored, Value::Signed(_)), "{kind:?} stores Signed, got {stored:?}");
-        assert_eq!(from_stored(&f, stored, 3), Ok(live_ok), "{kind:?} must invert");
+        assert!(
+            matches!(stored, Value::Signed(_)),
+            "{kind:?} stores Signed, got {stored:?}"
+        );
+        assert_eq!(
+            from_stored(&f, stored, 3),
+            Ok(live_ok),
+            "{kind:?} must invert"
+        );
 
-        // Any other variant is refused before it can reach the wire.
         assert_eq!(
             to_stored(&f, live_wrong, 3),
-            Err(WireError::Corrupt("derived live value does not match the field's kind")),
+            Err(WireError::Corrupt(
+                "derived live value does not match the field's kind"
+            )),
             "{kind:?} must reject {live_wrong:?}"
         );
     }
 }
 
-/// The columnar arm shares per-value rules but must also share record-state validity
-/// and key arity: a `Null` on a
-/// non-nullable field was silently dropped, leaving a column with fewer values
-/// than rows and nothing marking which; a wrong-arity record or key panicked.
 #[test]
 fn the_columnar_arm_enforces_record_and_key_validity() {
     let s = one(vec![
         Field::new(1, Kind::Unsigned).key(0),
         Field::new(2, Kind::Unsigned).key(1),
-        Field::new(3, Kind::Unsigned), // required, not nullable, not unknown-capable
+        Field::new(3, Kind::Unsigned),
     ]);
     let c = &s.collections[0];
     let encode = |k: Vec<u64>, values: Vec<Value>| {
@@ -70,7 +68,6 @@ fn the_columnar_arm_enforces_record_and_key_validity() {
         encode_baseline_columnar(c, &state, &mut out).map(|_| out)
     };
 
-    // The three record-state contract states this schema forbids — silently dropped before.
     assert_eq!(
         encode(vec![1, 1], vec![Value::Null]),
         Err(WireError::Corrupt("null on a non-nullable field"))
@@ -85,12 +82,10 @@ fn the_columnar_arm_enforces_record_and_key_validity() {
         encode(vec![1, 1], vec![Value::Absent]),
         Err(WireError::Corrupt("required field is absent"))
     );
-    // Wrong record arity — panicked before.
     assert_eq!(
         encode(vec![1, 1], vec![Value::Unsigned(1), Value::Unsigned(2)]),
         Err(WireError::Corrupt("record arity does not match schema"))
     );
-    // Wrong key arity — panicked one way, emitted unparseable bytes the other.
     assert_eq!(
         encode(vec![1], vec![Value::Unsigned(1)]),
         Err(WireError::Corrupt("key arity does not match schema"))
@@ -100,12 +95,9 @@ fn the_columnar_arm_enforces_record_and_key_validity() {
         Err(WireError::Corrupt("key arity does not match schema"))
     );
 
-    // A valid row still encodes.
     assert!(encode(vec![1, 1], vec![Value::Unsigned(7)]).is_ok());
 }
 
-/// Both arms must reject exactly the same records, or the measurement compares
-/// two different formats.
 #[test]
 fn both_arms_agree_on_what_is_a_valid_record() {
     let s = one(vec![
@@ -119,10 +111,10 @@ fn both_arms_agree_on_what_is_a_valid_record() {
     let cases = vec![
         vec![Value::Unsigned(1), Value::Enum(0), Value::Absent],
         vec![Value::Null, Value::Enum(2), Value::Unsigned(9)],
-        vec![Value::Unsigned(1), Value::Enum(3), Value::Absent], // enum out of range
-        vec![Value::Unsigned(1), Value::Null, Value::Absent],    // null on non-nullable
-        vec![Value::Unknown, Value::Enum(0), Value::Absent],     // unknown, not capable
-        vec![Value::Unsigned(1), Value::Enum(0)],                // short arity
+        vec![Value::Unsigned(1), Value::Enum(3), Value::Absent],
+        vec![Value::Unsigned(1), Value::Null, Value::Absent],
+        vec![Value::Unknown, Value::Enum(0), Value::Absent],
+        vec![Value::Unsigned(1), Value::Enum(0)],
     ];
     for values in cases {
         let record = Record::new(values.clone());
@@ -142,10 +134,6 @@ fn both_arms_agree_on_what_is_a_valid_record() {
     }
 }
 
-/// An update routes only *changed* fields through the value encoder, so a record-state contract
-/// violation sitting on an unchanged field reached the wire while
-/// `Record::encode` rejected the identical record. Both records are now
-/// validated in full.
 #[test]
 fn an_update_validates_both_records_not_just_the_changed_fields() {
     let mut d = Field::new(2, Kind::Unsigned);
@@ -157,12 +145,13 @@ fn an_update_validates_both_records_not_just_the_changed_fields() {
     ]);
     let c = &s.collections[0];
 
-    // Unsigned(10) is the derived field's LIVE variant, not its stored one, and
-    // it never changes across this transition.
     let prior = Record::new(vec![Value::Unsigned(10), Value::Bool(false)]);
     let next = Record::new(vec![Value::Unsigned(10), Value::Bool(true)]);
     let mut reject = Vec::new();
-    assert!(next.encode(c, &mut reject).is_err(), "the record path rejects it");
+    assert!(
+        next.encode(c, &mut reject).is_err(),
+        "the record path rejects it"
+    );
     let mut out = Vec::new();
     assert_eq!(
         wire_format::update::encode(c, &prior, &next, &mut out),
@@ -170,7 +159,6 @@ fn an_update_validates_both_records_not_just_the_changed_fields() {
         "the update path must reject it too"
     );
 
-    // The valid form of the same transition still encodes and round-trips.
     let prior = Record::new(vec![Value::Signed(10), Value::Bool(false)]);
     let next = Record::new(vec![Value::Signed(10), Value::Bool(true)]);
     let mut out = Vec::new();
@@ -179,9 +167,6 @@ fn an_update_validates_both_records_not_just_the_changed_fields() {
     assert_eq!(back.values, next.values);
 }
 
-/// schema-kind contract's monotone difference is modulo 2^64, because both endpoints are `u64` and
-/// their mathematical difference need not fit an `i64`. The rule is now stated;
-/// this pins that every pair of valid endpoints round-trips exactly.
 #[test]
 fn a_monotone_delta_round_trips_across_the_whole_u64_range() {
     let s = one(vec![
@@ -207,6 +192,10 @@ fn a_monotone_delta_round_trips_across_the_whole_u64_range() {
             .unwrap_or_else(|e| panic!("{p} -> {v}: {e:?}"));
         let (back, pos) = wire_format::update::decode(c, &prior, &out, 0).unwrap();
         assert_eq!(pos, out.len(), "{p} -> {v}: exact byte consumption");
-        assert_eq!(back.values, vec![Value::Unsigned(v)], "{p} -> {v} must round-trip");
+        assert_eq!(
+            back.values,
+            vec![Value::Unsigned(v)],
+            "{p} -> {v} must round-trip"
+        );
     }
 }

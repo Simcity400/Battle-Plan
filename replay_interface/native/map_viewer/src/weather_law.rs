@@ -1,119 +1,3 @@
-//! WEATHER1 — weather overlay rendering law, files-first, capture-validated.
-//!
-//! the game draws weather (clouds, rain, snow, blizzard, sandstorm, lightning) as a
-//! **particle system**, not a map-composite shader pass. There is no
-//! `cloud`/`weather` string anywhere in `gfx/FX/*.shader`/`*.fxh`; the visible
-//! overlay the user sees from map altitude (e.g. clouds over the Alps) is the
-//! `fading_entity` half of each weather effect — a cloud billboard particle
-//! emitter drawn with `gfx/FX/particle.shader`.
-//!
-//! This module encodes the RENDER law: given a weather *type* per strategic
-//! region (exact D24 supplies the type; this module never invents it),
-//! how does the engine draw the overlay — 100% from shipped files, with every
-//! parameter cited or explicitly assigned to its production owner.
-//!
-//! # The binding chain (shipped files, source of truth)
-//!
-//! Strategic-region weather uses these type keys (`map/strategicregions/*.txt`
-//! `weather = { period = { ... } }`): `no_phenomenon`, `rain_light`,
-//! `rain_heavy`, `snow`, `blizzard`, `sandstorm` (`arctic_water` / `mud` are
-//! ground/water post-effects with no airborne particle, handled by SNOW1's
-//! `snow_law` and the mud system, not here).
-//!
-//! `common/weather.txt` `weather_effects = { ... }` maps each type to one or
-//! two `weather_effect` entries, each naming a foreground `entity` and (for the
-//! precipitating types) a `fading_entity` — the cloud layer that is what
-//! remains visible when zoomed out. The second entry per type carries
-//! `small = yes` and is the *small* variant. Verbatim (`common/weather.txt`,
-//! `weather_effects` block):
-//! ```text
-//! rain_light  -> entity=rain_entity            fading_entity=rain_clouds_entity
-//!             -> entity=rain_small_entity       fading_entity=rain_small_clouds_entity        small=yes
-//! rain_heavy  -> entity=lightning_storm_entity  fading_entity=lightning_storm_clouds_entity
-//!             -> entity=lightning_storm_small_entity fading_entity=lightning_storm_small_clouds_entity small=yes
-//! snow        -> entity=snow_entity             fading_entity=snow_clouds_entity
-//!             -> entity=snow_small_entity        fading_entity=snow_small_clouds_entity          small=yes
-//! blizzard    -> entity=snow_storm_entity        fading_entity=snow_storm_clouds_entity
-//!             -> entity=snow_storm_small_entity   fading_entity=snow_storm_small_clouds_entity     small=yes
-//! sandstorm   -> entity=sandstorm_entity   (no fading_entity — sandstorm has no cloud layer)
-//! ```
-//!
-//! `<name>_clouds_entity` resolves in `gfx/entities/weather_entities.asset` to
-//! an `entity = { ... state = { event = { particle = "<name>_clouds_particle"
-//! ... } } }`. `<name>_clouds_particle` resolves in
-//! `gfx/entities/particles.gfx` `pdxparticle = { name=... type="<name>_clouds_file" }`
-//! to the particle definition file `type`, which is the `name=` of the
-//! `particle = { ... }` block in `gfx/particles/environment/<name>_clouds.asset`.
-//!
-//! # The cloud subsystem (per `gfx/particles/environment/*_clouds.asset`)
-//!
-//! Each cloud `.asset` has a `subsystem = { ... }` (the lightning variants have
-//! a second `flash` additive subsystem). The render-relevant fields (example
-//! `rain_clouds.asset`):
-//! - `texture = { file="gfx/particles/cloud_6.dds" shader="ParticleAdditive" }`
-//!   — the billboard sprite and its `gfx/FX/particle.shader` Effect.
-//! - `color = { x=110 y=120 z=150 alpha={ 180,smoke_fade 20 } }` — the vertex
-//!   COLOR, components in 0..255, alpha modulated by an animation curve.
-//! - `size = { 60.5 20 }` — billboard world size (mean, variance).
-//! - `billboard = yes` — camera-facing quad (particle.shader's default, not the
-//!   `NO_BILLBOARD` path).
-//! - `life = { 2.6 0.7 }`, `emission`, `max_amount`, `velocity`, `force` —
-//!   simulation params consumed by XMAP20's generic particle runtime.
-//!
-//! # The pixel-shader color law (`gfx/FX/particle.shader`)
-//!
-//! `VertexSimpleParticle` sets `Out.vColor = ToLinear( v.vColor )`
-//! (`particle.shader:151`). `ToLinear(float4)` is
-//! `float4( pow(rgb, 2.2), a )` (`standardfuncsgfx.fxh:53-56`) — gamma 2.2 on
-//! RGB, alpha passed through. The vertex COLOR `v.vColor` is the asset `color`
-//! normalized to 0..1 (the D3D `COLOR` semantic is a UNORM8 that the engine
-//! fills from the 0..255 asset components — `SnowMudData`/`color_lut` in this
-//! crate use the same `/255` convention, `color_lut.rs:128-130`).
-//! `PixelSimpleParticle` returns `tex2D(DiffuseMap, uv) * vColor`
-//! (`particle.shader:168`) — the sprite texel (linear, from the DXT5/BC3 DDS)
-//! times the linear vertex color. The `FOG` define (present on
-//! `ParticleAlphaBlend`, absent on `ParticleAdditive`) applies the exact
-//! compile-time `constants.fxh`/`standardfuncsgfx.fxh` distance-fog law to RGB
-//! before return (`particle.shader:189-191`).
-//!
-//! Blend (`particle.shader` BlendState blocks, `WriteMask="RED|GREEN|BLUE"` —
-//! particles never write alpha to the target):
-//! - `ParticleAlphaBlend`  : Src=SRC_ALPHA Dst=INV_SRC_ALPHA (`:200-206`)
-//! - `ParticleAdditive`    : Src=SRC_ALPHA Dst=ONE           (`:208-214`)
-//! - `ParticlePreAlphaBlend`: Src=ONE      Dst=INV_SRC_ALPHA (`:216-222`)
-//! So over a destination `Dst.rgb` a particle fragment `src = texel*vColor`
-//! contributes:
-//! - AlphaBlend : `src.rgb*src.a + Dst.rgb*(1-src.a)`
-//! - Additive   : `src.rgb*src.a + Dst.rgb`
-//!
-//! # Camera distance / zoom fade (`common/defines/00_graphics.lua:1008-1015`)
-//!
-//! Exact-a729 `CAirInterface::GetWeatherEffectForAirRegion`
-//! (`hoi4.exe+0x0166ec50`) applies a piecewise whole-layer alpha and particle
-//! playback-rate law to camera distance. The constants remain effective-VFS
-//! inputs. Constants:
-//! `WEATHER_DISTANCE_CUTOFF=1500` (hidden beyond),
-//! `WEATHER_DISTANCE_FADE_LENGTH=400`, `WEATHER_ZOOM_IN_CUTOFF=358`,
-//! `WEATHER_ZOOM_IN_FADE_LENGTH=220`, `WEATHER_ZOOM_IN_FADE_FACTOR=0.0`,
-//! `WEATHER_PLAYBACK_RATE=0.15`, `WEATHER_PLAYBACK_RATE_CUTOFF=500`, and
-//! `WEATHER_PLAYBACK_RATE_LENGTH=200`.
-//!
-//! # Spawn positions (`map/weatherpositions.txt`)
-//!
-//! One entry per line, `;`-separated: `region_id;x;y;z;size` with `size` in
-//! `{big,small}`. `(x,y,z)` is the world position of a weather emitter (same
-//! `[0,5632] x [0,2048]` map plane in x/z that SNOW1 documents; `y` is height
-//! ~9..15). `big` uses the primary `weather_effect`, `small` uses the
-//! `small=yes` variant. Multiple entries per region place multiple emitters.
-//!
-//! # What is a pure function of files (this module) vs. runtime state
-//!
-//! Pure function of mod-resolved files + a supplied weather *type*: the sprite
-//! texture, the linear vertex color, the blend mode, the billboard size, the
-//! spawn positions, and fade constants. Runtime state comes from exact D24,
-//! the presentation-independent visual epoch, viewer camera, and the owning
-//! lighting/composition packets. Live particle age and turbulence are renderer
-//! temporal state, never selected-Present authority.
 
 use crate::image_load::load_dds_rgba;
 use crate::mod_resolver::GameFileResolver;
@@ -121,46 +5,27 @@ use crate::types::RgbaImage;
 use crate::Result;
 use std::{collections::BTreeSet, path::Path};
 
-/// `common/weather.txt` source path (mod-resolved).
 pub const WEATHER_EFFECTS_SOURCE: &str = "common/weather.txt";
-/// `gfx/entities/weather_entities.asset` source path (mod-resolved).
 pub const WEATHER_ENTITIES_SOURCE: &str = "gfx/entities/weather_entities.asset";
-/// `gfx/entities/particles.gfx` source path (mod-resolved).
 pub const PARTICLES_GFX_SOURCE: &str = "gfx/entities/particles.gfx";
-/// `map/weatherpositions.txt` source path (mod-resolved).
 pub const WEATHER_POSITIONS_SOURCE: &str = "map/weatherpositions.txt";
-/// `common/defines/00_graphics.lua` source path (mod-resolved).
 pub const GRAPHICS_DEFINES_SOURCE: &str = "common/defines/00_graphics.lua";
-/// Shipped particle program whose named effects bind the decoded cloud law.
 pub const PARTICLE_SHADER_SOURCE: &str = "gfx/FX/particle.shader";
-/// Compile-time distance-fog constants included by the particle shader.
 pub const FOG_CONSTANTS_SOURCE: &str = "gfx/FX/constants.fxh";
 
-/// `standardfuncsgfx.fxh:48-56` `ToLinear` gamma exponent.
 pub const TO_LINEAR_GAMMA: f32 = 2.2;
 
-/// The weather *type* keys used by `map/strategicregions/*.txt` weather periods
-/// and keyed by `common/weather.txt` `weather_effects`. Only the types with a
-/// particle overlay are represented here (`no_phenomenon` draws nothing;
-/// `arctic_water`/`mud` are ground post-effects, not airborne particles).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum WeatherType {
-    /// No weather particle overlay.
     NoPhenomenon,
-    /// `rain_light` — rain + `rain_clouds` overlay.
     RainLight,
-    /// `rain_heavy` — lightning storm + `lightning_storm_clouds` overlay.
     RainHeavy,
-    /// `snow` — snowfall + `snow_clouds` overlay.
     Snow,
-    /// `blizzard` — snowstorm + `snow_storm_clouds` overlay.
     Blizzard,
-    /// `sandstorm` — sandstorm (no cloud fading layer).
     Sandstorm,
 }
 
 impl WeatherType {
-    /// Parse the strategic-region / `weather_effects` key.
     pub fn from_key(key: &str) -> Option<Self> {
         match key.trim() {
             "no_phenomenon" => Some(Self::NoPhenomenon),
@@ -173,7 +38,6 @@ impl WeatherType {
         }
     }
 
-    /// The `common/weather.txt` `weather_effects` key for this type.
     pub fn key(self) -> &'static str {
         match self {
             Self::NoPhenomenon => "no_phenomenon",
@@ -185,22 +49,14 @@ impl WeatherType {
         }
     }
 
-    /// Decode only the exact `common/weather.txt` key recorded by D24.
-    /// Friendly aliases are intentionally rejected: production cannot infer
-    /// an engine phenomenon from display-oriented naming.
     pub fn from_recording_kind(kind: &str) -> Option<Self> {
         Self::from_key(kind)
     }
 }
 
-/// The `big`/`small` variant of a weather emitter position
-/// (`map/weatherpositions.txt` column 5). `big` selects the primary
-/// `weather_effect`, `small` selects the `small = yes` entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum WeatherPositionSize {
-    /// `big` — primary (non-small) `weather_effect`.
     Big,
-    /// `small` — the `small = yes` `weather_effect`.
     Small,
 }
 
@@ -214,33 +70,23 @@ impl WeatherPositionSize {
     }
 }
 
-/// One `weather_effect` binding row from `common/weather.txt`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeatherEffectBinding {
-    /// The foreground `entity = ...` (precipitation particle emitter).
     pub entity: String,
-    /// The `fading_entity = ...` (cloud layer), if present. `sandstorm` has none.
     pub fading_entity: Option<String>,
-    /// True iff this row carried `small = yes`.
     pub small: bool,
 }
 
-/// The `common/weather.txt` `weather_effects` table.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WeatherEffectsTable {
-    /// Rows in file order, keyed by weather type.
     entries: Vec<(WeatherType, WeatherEffectBinding)>,
 }
 
 impl WeatherEffectsTable {
-    /// Every `(type, binding)` row, in file order.
     pub fn rows(&self) -> &[(WeatherType, WeatherEffectBinding)] {
         &self.entries
     }
 
-    /// The binding for a `(type, size)` pair — `Big` picks the non-small row,
-    /// `Small` picks the `small = yes` row (falling back to the sole row when a
-    /// type has no small variant, e.g. `sandstorm`).
     pub fn binding(
         &self,
         weather: WeatherType,
@@ -260,12 +106,6 @@ impl WeatherEffectsTable {
             .or_else(|| of_type.first().copied())
     }
 
-    /// All authored candidates for a weather type/size in file order.
-    ///
-    /// Exact-a729 selects one candidate for every non-empty emitter vector and
-    /// advances the epoch PRNG once. A `big` position uses the big vector when
-    /// non-empty and otherwise falls back to the small vector; `small` uses
-    /// only the small vector.
     pub fn bindings(
         &self,
         weather: WeatherType,
@@ -290,46 +130,22 @@ impl WeatherEffectsTable {
     }
 }
 
-/// The fully-resolved cloud (`fading_entity`) render descriptor for one weather
-/// type/size — the airborne overlay the user sees from map altitude.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CloudRenderLaw {
-    /// The particle `.asset` `name` (== `pdxparticle` `type`), e.g.
-    /// `rain_clouds_file`.
     pub particle_file: String,
-    /// The relative sprite texture path, e.g. `gfx/particles/cloud_6.dds`.
     pub texture: String,
-    /// The `gfx/FX/particle.shader` Effect name, e.g. `ParticleAdditive`.
     pub shader_effect: String,
-    /// The `ParticleBlend` decoded from `shader_effect`.
     pub blend: ParticleBlend,
-    /// The mean vertex COLOR in 0..255 (RGB) — the value the asset declares.
     pub color_rgb_255: [f32; 3],
-    /// The mean base alpha in 0..255 (before the `smoke_fade`/`cloud_fade`
-    /// animation multiplies it).
     pub base_alpha_255: f32,
-    /// The animation-curve name modulating alpha (`smoke_fade`/`cloud_fade`), if
-    /// any.
     pub alpha_anim: Option<String>,
-    /// The peak (maximum) value of `alpha_anim`'s curve — the multiplier at the
-    /// particle's brightest life phase ([`animation_curve_peak`]); 1.0 when no
-    /// curve is declared. The static overlay samples the curve at this peak.
     pub alpha_anim_peak: f32,
-    /// The mean billboard world size (asset `size` mean).
     pub size_mean: f32,
-    /// The mean particle life in seconds (asset `life` mean).
     pub life_mean: f32,
-    /// The subsystem's `sort` mode if declared (e.g. `"depth"` on the lightning
-    /// cloud layers) — the engine depth-sorts these particles back-to-front. The
-    /// non-lightning cloud subsystems declare no `sort`.
     pub sort: Option<String>,
 }
 
 impl CloudRenderLaw {
-    /// The linear vertex color `ToLinear(color/255)` the pixel shader multiplies
-    /// the sprite by — `pow(rgb/255, 2.2)` with alpha (a UNORM) passed through
-    /// un-gamma'd. `anim_alpha_mul` in 0..1 is the evaluated `smoke_fade` value
-    /// for the particle's current life fraction (1.0 = un-aged / peak).
     pub fn linear_vertex_color(&self, anim_alpha_mul: f32) -> [f32; 4] {
         let lin = |c: f32| (c / 255.0).powf(TO_LINEAR_GAMMA);
         let a = (self.base_alpha_255 / 255.0) * anim_alpha_mul.clamp(0.0, 1.0);
@@ -342,19 +158,14 @@ impl CloudRenderLaw {
     }
 }
 
-/// The `gfx/FX/particle.shader` blend law for a cloud sprite.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParticleBlend {
-    /// `ParticleAlphaBlend`: Src=SRC_ALPHA Dst=INV_SRC_ALPHA (`particle.shader:200-206`).
     AlphaBlend,
-    /// `ParticleAdditive`: Src=SRC_ALPHA Dst=ONE (`particle.shader:208-214`).
     Additive,
-    /// `ParticlePreAlphaBlend`: Src=ONE Dst=INV_SRC_ALPHA (`particle.shader:216-222`).
     PreAlphaBlend,
 }
 
 impl ParticleBlend {
-    /// Decode the `texture.shader` string from an asset into a blend law.
     pub fn from_effect(effect: &str) -> Option<Self> {
         match effect.trim() {
             "ParticleAlphaBlend" | "ParticleAlphaBlendNoBillboard" => Some(Self::AlphaBlend),
@@ -366,22 +177,15 @@ impl ParticleBlend {
         }
     }
 
-    /// Blend one premultiplied-by-nothing source fragment `src` (linear rgba,
-    /// alpha in [0,1]) over a linear destination `dst.rgb`, per the D3D
-    /// `SourceBlend`/`DestBlend` this effect declares. `WriteMask` is RGB only
-    /// (`particle.shader:205`), so destination alpha is never written.
     pub fn blend_over(self, src: [f32; 4], dst: [f32; 3]) -> [f32; 3] {
         let (sr, sg, sb, sa) = (src[0], src[1], src[2], src[3]);
         match self {
-            // Src*SRC_ALPHA + Dst*(1-SRC_ALPHA)
             Self::AlphaBlend => [
                 sr * sa + dst[0] * (1.0 - sa),
                 sg * sa + dst[1] * (1.0 - sa),
                 sb * sa + dst[2] * (1.0 - sa),
             ],
-            // Src*SRC_ALPHA + Dst*ONE
             Self::Additive => [sr * sa + dst[0], sg * sa + dst[1], sb * sa + dst[2]],
-            // Src*ONE + Dst*(1-SRC_ALPHA)
             Self::PreAlphaBlend => [
                 sr + dst[0] * (1.0 - sa),
                 sg + dst[1] * (1.0 - sa),
@@ -391,28 +195,19 @@ impl ParticleBlend {
     }
 }
 
-/// A `map/weatherpositions.txt` emitter position with a decoded size tag. This
-/// wraps the shared [`crate::map_static_data::WeatherPosition`] row (which keeps
-/// `size` as a raw string) with the `big`/`small` variant this render law needs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherEmitter {
-    /// Strategic-region id (column 1).
     pub region_id: u32,
-    /// World `(x, y, z)` — x/z on the `[0,5632] x [0,2048]` map plane, y=height.
     pub position: [f32; 3],
-    /// `big`/`small` variant selector.
     pub size: WeatherPositionSize,
 }
 
-/// The parsed `map/weatherpositions.txt` table (decoded emitters).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeatherEmitterTable {
-    /// Every emitter position, in file order.
     pub emitters: Vec<WeatherEmitter>,
 }
 
 impl WeatherEmitterTable {
-    /// All emitters for one strategic region.
     pub fn for_region(&self, region_id: u32) -> impl Iterator<Item = &WeatherEmitter> {
         self.emitters
             .iter()
@@ -420,31 +215,18 @@ impl WeatherEmitterTable {
     }
 }
 
-/// The `WEATHER_*` camera-fade and playback constants
-/// (`00_graphics.lua:1008-1015`), consumed by the exact-a729 law.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherFadeDefines {
-    /// `WEATHER_DISTANCE_CUTOFF` — hidden beyond this camera distance.
     pub distance_cutoff: f32,
-    /// `WEATHER_DISTANCE_FADE_LENGTH` — length of the distant fade band.
     pub distance_fade_length: f32,
-    /// `WEATHER_ZOOM_IN_CUTOFF` — most faded when zoomed in below this.
     pub zoom_in_cutoff: f32,
-    /// `WEATHER_ZOOM_IN_FADE_LENGTH` — length of the zoom-in fade band.
     pub zoom_in_fade_length: f32,
-    /// `WEATHER_ZOOM_IN_FADE_FACTOR` — residual factor at max zoom-in.
     pub zoom_in_fade_factor: f32,
-    /// Minimum particle playback rate beyond the playback cutoff.
     pub playback_rate: f32,
-    /// Camera distance at/after which the minimum playback rate applies.
     pub playback_rate_cutoff: f32,
-    /// Length of the full-to-minimum playback transition.
     pub playback_rate_length: f32,
 }
 
-/// The default vanilla fade constants (`00_graphics.lua:1008-1012`). Present so
-/// callers/tests have the shipped values without a resolver; the resolver path
-/// [`weather_fade_defines_from_resolver`] is authoritative for mods.
 pub const VANILLA_WEATHER_FADE_DEFINES: WeatherFadeDefines = WeatherFadeDefines {
     distance_cutoff: 1500.0,
     distance_fade_length: 400.0,
@@ -456,8 +238,6 @@ pub const VANILLA_WEATHER_FADE_DEFINES: WeatherFadeDefines = WeatherFadeDefines 
     playback_rate_length: 200.0,
 };
 
-/// Effective-file distance-fog constants consumed by
-/// `standardfuncsgfx.fxh::CalculateDistanceFogFactor`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherDistanceFogDefines {
     pub color: [f32; 3],
@@ -473,11 +253,6 @@ pub const VANILLA_WEATHER_DISTANCE_FOG: WeatherDistanceFogDefines = WeatherDista
     max: 0.35,
 };
 
-/// Exact role-specific alpha and particle playback-rate outputs.
-///
-/// `0x14166ec50` applies the near-zoom branch only to the fading/cloud entity.
-/// The primary precipitation entity remains fully visible until the shared
-/// far-distance fade applies to both roles.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WeatherVisibilityLaw {
     pub primary_alpha: f32,
@@ -548,7 +323,6 @@ pub fn weather_visibility_law(
     })
 }
 
-/// Exact `standardfuncsgfx.fxh` distance-fog factor.
 pub fn weather_distance_fog_factor(
     camera_position: [f32; 3],
     world_position: [f32; 3],
@@ -583,7 +357,6 @@ pub fn weather_distance_fog_factor(
     Ok(distance * directional)
 }
 
-/// Exact `lerp(vColor, FOG_COLOR, factor)` application.
 pub fn apply_weather_distance_fog(
     color: [f32; 3],
     factor: f32,
@@ -628,17 +401,11 @@ pub fn weather_selected_candidate_index(
     Ok(Some(selection_word as usize % candidate_count))
 }
 
-// -------------------------------------------------------------------------
-// Parsers (pure string -> struct; resolver wrappers below).
-// -------------------------------------------------------------------------
 
-/// Parse `common/weather.txt`'s `weather_effects` block.
 pub fn weather_effects_from_source(source: &str) -> Result<WeatherEffectsTable> {
     let block = extract_braced_block(source, "weather_effects")
         .ok_or("common/weather.txt: missing weather_effects block")?;
     let mut entries = Vec::new();
-    // Iterate the type keys inside the block; each is `<key> = { weather_effect
-    // = { ... } ... }`.
     let mut rest: &str = &block;
     while let Some((key, inner, after)) = next_braced_entry(rest) {
         if let Some(ty) = WeatherType::from_key(&key) {
@@ -665,17 +432,12 @@ pub fn weather_effects_from_source(source: &str) -> Result<WeatherEffectsTable> 
     Ok(WeatherEffectsTable { entries })
 }
 
-/// Resolve the entity name (`<name>_clouds_entity`) to its `particle` name via
-/// `gfx/entities/weather_entities.asset` (`entity -> event.particle`).
 pub fn entity_particle_name(entities_source: &str, entity_name: &str) -> Option<String> {
     entity_particle_names(entities_source, entity_name)
         .into_iter()
         .next()
 }
 
-/// Resolve every authored `event.particle` reference for one entity in event
-/// order. Production uses the whole vector; the singular helper above remains
-/// for compatibility with the older cloud-law inspection API.
 pub fn entity_particle_names(entities_source: &str, entity_name: &str) -> Vec<String> {
     entity_default_state_events(entities_source, entity_name)
         .map(|state| {
@@ -693,19 +455,12 @@ pub fn entity_particle_names(entities_source: &str, entity_name: &str) -> Vec<St
         .unwrap_or_default()
 }
 
-/// Count exact named entity definitions so callers can reject ambiguous
-/// effective-VFS registration rather than accepting the first match.
 pub fn entity_definition_count(entities_source: &str, entity_name: &str) -> usize {
     each_braced_value(entities_source, "entity")
         .filter(|block| braced_field(block, "name").as_deref() == Some(entity_name))
         .count()
 }
 
-/// One exact authored row in the selected weather entity state.
-///
-/// The index counts every `event = {}` row, including sound-only events.
-/// Optional values preserve source omission; no parser or engine default is
-/// manufactured here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeatherAuthoredEvent {
     pub authored_event_index: u32,
@@ -722,18 +477,12 @@ pub struct WeatherAuthoredParticleEffect {
     pub particle_token: String,
 }
 
-/// Exact default state selected by one weather entity definition.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeatherEntityStateEvents {
     pub state_name: String,
     pub ordered_events: Vec<WeatherAuthoredEvent>,
 }
 
-/// Parse the unique entity's exact `default_state` and its ordered event rows.
-///
-/// Weather entities are created in their authored default state by the exact
-/// weather producer. Returning an error for an absent/ambiguous state keeps
-/// XMAP19/XMAP20 from guessing which event program the engine selected.
 pub fn entity_default_state_events(
     entities_source: &str,
     entity_name: &str,
@@ -874,10 +623,6 @@ fn authored_particle_effects(
     Ok(particles)
 }
 
-/// Return top-level `key = value` assignments while treating a braced value as
-/// one value. This is deliberately smaller than a Clausewitz parser, but it
-/// preserves exact source order, repeated keys, comments, strings, and nested
-/// braces for the authored weather event grammar.
 fn top_level_assignments(source: &str) -> Result<Vec<(String, Option<String>)>> {
     let bytes = source.as_bytes();
     let mut index = 0usize;
@@ -1016,8 +761,6 @@ fn optional_pdx_bool(
     }
 }
 
-/// Resolve a `pdxparticle` name (`<name>_clouds_particle`) to its `type`
-/// (`<name>_clouds_file`) via `gfx/entities/particles.gfx`.
 pub fn pdxparticle_type(particles_gfx_source: &str, particle_name: &str) -> Option<String> {
     for block in each_braced_value(particles_gfx_source, "pdxparticle") {
         if braced_field(&block, "name").as_deref() == Some(particle_name) {
@@ -1027,10 +770,6 @@ pub fn pdxparticle_type(particles_gfx_source: &str, particle_name: &str) -> Opti
     None
 }
 
-/// Parse one cloud particle `.asset` (`gfx/particles/environment/*_clouds.asset`)
-/// into a [`CloudRenderLaw`]. Reads the *first* `subsystem` (the cloud layer;
-/// the lightning `flash` subsystem is a secondary additive burst, reported
-/// separately by [`asset_subsystem_count`]).
 pub fn cloud_law_from_asset(
     asset_source: &str,
     particle_file_name: &str,
@@ -1056,12 +795,9 @@ pub fn cloud_law_from_asset(
         parse_first_number(&braced_field(&color_block, "z").unwrap_or_default())
             .ok_or("cloud asset: color missing z")?,
     ];
-    // alpha can be `alpha=60,smoke_fade` or `alpha={ 180,smoke_fade 20 }`.
     let alpha_raw =
         braced_field(&color_block, "alpha").ok_or("cloud asset: color missing alpha")?;
     let (base_alpha_255, alpha_anim) = parse_alpha_field(&alpha_raw);
-    // The representative static frame samples the alpha curve at its peak
-    // (e.g. snow_clouds' smoke_fade peaks at 0.914, NOT 1.0).
     let alpha_anim_peak = alpha_anim
         .as_deref()
         .map(|name| animation_curve_peak(asset_source, name))
@@ -1071,8 +807,6 @@ pub fn cloud_law_from_asset(
         .ok_or("cloud asset: subsystem missing size")?;
     let life_mean = parse_first_number(&braced_field(&subsystem, "life").unwrap_or_default())
         .ok_or("cloud asset: subsystem missing life")?;
-    // `sort` is optional (present as `sort="depth"` on the lightning cloud
-    // layers). A bareword/quoted value; absence means no explicit depth sort.
     let sort = braced_field(&subsystem, "sort").filter(|s| !s.is_empty());
 
     Ok(CloudRenderLaw {
@@ -1090,18 +824,10 @@ pub fn cloud_law_from_asset(
     })
 }
 
-/// The number of `subsystem` blocks in a cloud `.asset` (2 for the lightning
-/// variants: the cloud layer plus the additive `flash`).
 pub fn asset_subsystem_count(asset_source: &str) -> usize {
     each_braced_value(asset_source, "subsystem").count()
 }
 
-/// Evaluate a named animation curve from a cloud `.asset` at a life fraction
-/// `t` in [0,1]. Curves are piecewise-linear `x0 y0 x1 y1 ...` control points
-/// (`smoke_fade`/`cloud_fade`), `op="MUL"` on the alpha. Returns the multiplier
-/// (defaults to 1.0 if the named curve is absent). The engine samples this by
-/// each particle's *own* age; a static overlay uses the mid-life peak by
-/// passing the curve's max, or a specific `t`.
 pub fn evaluate_animation_curve(asset_source: &str, anim_name: &str, t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     for block in each_braced_value(asset_source, "animation") {
@@ -1118,8 +844,6 @@ pub fn evaluate_animation_curve(asset_source: &str, anim_name: &str, t: f32) -> 
     1.0
 }
 
-/// The peak (maximum) value of a named animation curve — the brightest phase of
-/// the particle's life, used to draw a representative static overlay.
 pub fn animation_curve_peak(asset_source: &str, anim_name: &str) -> f32 {
     for block in each_braced_value(asset_source, "animation") {
         if braced_field(&block, "name").as_deref() == Some(anim_name) {
@@ -1137,9 +861,6 @@ pub fn animation_curve_peak(asset_source: &str, anim_name: &str) -> f32 {
     1.0
 }
 
-/// Decode the shared `map/weatherpositions.txt` rows (parsed by
-/// [`crate::map_static_data::weather_positions_from_source`]) into
-/// size-tagged [`WeatherEmitter`]s. Fails closed on an unrecognised size tag.
 pub fn weather_emitters_from_source(source: &str) -> Result<WeatherEmitterTable> {
     let rows = crate::map_static_data::weather_positions_from_source(source)?;
     decode_weather_positions(&rows)
@@ -1165,7 +886,6 @@ fn decode_weather_positions(
     Ok(WeatherEmitterTable { emitters })
 }
 
-/// Parse the `WEATHER_*` fade constants out of `00_graphics.lua` source.
 pub fn weather_fade_defines_from_source(source: &str) -> Result<WeatherFadeDefines> {
     let get = |name: &str| -> Result<f32> {
         lua_number(source, name).ok_or_else(|| format!("00_graphics.lua: missing {name}").into())
@@ -1182,7 +902,6 @@ pub fn weather_fade_defines_from_source(source: &str) -> Result<WeatherFadeDefin
     })
 }
 
-/// Parse the effective compile-time distance-fog constants.
 pub fn weather_distance_fog_defines_from_source(source: &str) -> Result<WeatherDistanceFogDefines> {
     let color = hlsl_static_numbers(source, "FOG_COLOR")
         .filter(|values| values.len() == 3)
@@ -1202,28 +921,22 @@ pub fn weather_distance_fog_defines_from_source(source: &str) -> Result<WeatherD
     Ok(defines)
 }
 
-/// Count exact named `pdxparticle` registrations.
 pub fn pdxparticle_registration_count(particles_gfx_source: &str, particle_name: &str) -> usize {
     each_braced_value(particles_gfx_source, "pdxparticle")
         .filter(|block| braced_field(block, "name").as_deref() == Some(particle_name))
         .count()
 }
 
-/// Count exact named `particle` definitions in one effective asset source.
 pub fn particle_asset_definition_count(asset_source: &str, particle_type: &str) -> usize {
     each_braced_value(asset_source, "particle")
         .filter(|block| braced_field(block, "name").as_deref() == Some(particle_type))
         .count()
 }
 
-/// True when an effective particle asset defines the requested
-/// `pdxparticle.type` name.
 pub fn particle_asset_defines(asset_source: &str, particle_type: &str) -> bool {
     particle_asset_definition_count(asset_source, particle_type) != 0
 }
 
-/// Every texture file referenced by one named particle definition, in authored
-/// subsystem order with duplicates removed after their first occurrence.
 pub fn particle_asset_texture_files(asset_source: &str, particle_type: &str) -> Vec<String> {
     for block in each_braced_value(asset_source, "particle") {
         if braced_field(&block, "name").as_deref() == Some(particle_type) {
@@ -1241,8 +954,6 @@ pub fn particle_asset_texture_files(asset_source: &str, particle_type: &str) -> 
     Vec::new()
 }
 
-/// Every shader Effect referenced by one named particle definition, in
-/// authored subsystem order with duplicates removed after first occurrence.
 pub fn particle_asset_shader_effects(asset_source: &str, particle_type: &str) -> Vec<String> {
     for block in each_braced_value(asset_source, "particle") {
         if braced_field(&block, "name").as_deref() == Some(particle_type) {
@@ -1260,24 +971,17 @@ pub fn particle_asset_shader_effects(asset_source: &str, particle_type: &str) ->
     Vec::new()
 }
 
-// -------------------------------------------------------------------------
-// Resolver wrappers (mod-aware reads; source of truth for merged pipeline).
-// -------------------------------------------------------------------------
 
-/// Load + parse `common/weather.txt` via the mod-aware resolver.
 pub fn weather_effects_from_resolver(resolver: &GameFileResolver) -> Result<WeatherEffectsTable> {
     let source = resolve_to_string(resolver, WEATHER_EFFECTS_SOURCE, "weather.txt")?;
     weather_effects_from_source(&source)
 }
 
-/// Load + decode `map/weatherpositions.txt` via the mod-aware resolver, reusing
-/// the shared [`crate::map_static_data`] parser.
 pub fn weather_emitters_from_resolver(resolver: &GameFileResolver) -> Result<WeatherEmitterTable> {
     let rows = crate::map_static_data::weather_positions_from_resolver(resolver)?;
     decode_weather_positions(&rows)
 }
 
-/// Load + parse the `WEATHER_*` fade constants via the mod-aware resolver.
 pub fn weather_fade_defines_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<WeatherFadeDefines> {
@@ -1285,10 +989,6 @@ pub fn weather_fade_defines_from_resolver(
     weather_fade_defines_from_source(&source)
 }
 
-/// Resolve the full cloud (`fading_entity`) render law for a `(type, size)` via
-/// the whole shipped binding chain: `weather.txt` -> `weather_entities.asset`
-/// -> `particles.gfx` -> `*_clouds.asset`. Returns `Ok(None)` for a type with
-/// no cloud layer (`no_phenomenon`, `sandstorm`).
 pub fn cloud_law_from_resolver(
     resolver: &GameFileResolver,
     weather: WeatherType,
@@ -1313,8 +1013,6 @@ pub fn cloud_law_from_resolver(
     let particle_file = pdxparticle_type(&particles_gfx, &particle_name)
         .ok_or_else(|| format!("particles.gfx: pdxparticle {particle_name} not found"))?;
 
-    // The .asset filename is <particle_file without the _file suffix>.asset in
-    // gfx/particles/environment/. E.g. rain_clouds_file -> rain_clouds.asset.
     let asset_stem = particle_file
         .strip_suffix("_file")
         .unwrap_or(&particle_file);
@@ -1324,9 +1022,6 @@ pub fn cloud_law_from_resolver(
     Ok(Some(law))
 }
 
-/// The cloud sprite texture (DXT5/BC3 DDS) for a resolved [`CloudRenderLaw`],
-/// decoded to straight RGBA8 (`width, height, rgba`). `RgbaImage` is
-/// crate-private, so this returns plain types usable from a `bin/` binary.
 pub fn cloud_texture_rgba_from_resolver(
     resolver: &GameFileResolver,
     law: &CloudRenderLaw,
@@ -1336,16 +1031,9 @@ pub fn cloud_texture_rgba_from_resolver(
     Ok((img.width, img.height, img.pixels))
 }
 
-/// The map world plane extent in x/z, matching SNOW1's documented
-/// `provinces.bmp` resolution (`[0,5632] x [0,2048]`), used to place the
-/// `map/weatherpositions.txt` emitters onto a top-down overlay.
 pub const MAP_PLANE_X: f32 = 5632.0;
-/// See [`MAP_PLANE_X`].
 pub const MAP_PLANE_Z: f32 = 2048.0;
 
-// -------------------------------------------------------------------------
-// Small parsing helpers (self-contained; no external PDX parser dependency).
-// -------------------------------------------------------------------------
 
 fn resolve_to_string(resolver: &GameFileResolver, rel: &str, label: &str) -> Result<String> {
     let path = resolver.resolve_required(rel, label)?;
@@ -1354,19 +1042,15 @@ fn resolve_to_string(resolver: &GameFileResolver, rel: &str, label: &str) -> Res
 
 fn read_path_to_string(path: &Path, rel: &str) -> Result<String> {
     let bytes = std::fs::read(path).map_err(|err| format!("failed to read {rel}: {err}"))?;
-    // PDX text is Windows-1252/ASCII; lossy UTF-8 is safe for the tokens we read.
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// First whitespace/comma-delimited number in a value string.
 fn parse_first_number(raw: &str) -> Option<f32> {
     raw.split(|c: char| c.is_whitespace() || c == ',' || c == '{' || c == '}')
         .filter(|s| !s.is_empty())
         .find_map(|tok| tok.parse::<f32>().ok())
 }
 
-/// Parse an alpha field that may be `60,smoke_fade` or `{ 180,smoke_fade 20 }`:
-/// returns `(base_alpha_255, Some(anim_name))`.
 fn parse_alpha_field(raw: &str) -> (f32, Option<String>) {
     let cleaned = raw.replace(['{', '}'], " ");
     let base = parse_first_number(&cleaned).unwrap_or(0.0);
@@ -1378,13 +1062,11 @@ fn parse_alpha_field(raw: &str) -> (f32, Option<String>) {
     (base, anim)
 }
 
-/// Sample a piecewise-linear curve encoded as flat `x0 y0 x1 y1 ...` at `t`.
 fn sample_piecewise_linear(flat: &[f32], t: f32) -> f32 {
     if flat.len() < 2 {
         return 1.0;
     }
     let n = flat.len() / 2;
-    // Before first / after last: clamp to endpoint y.
     if t <= flat[0] {
         return flat[1];
     }
@@ -1405,7 +1087,6 @@ fn sample_piecewise_linear(flat: &[f32], t: f32) -> f32 {
     flat[(n - 1) * 2 + 1]
 }
 
-/// A Lua `NAME = <number>,` reader (tolerant of trailing comment/whitespace).
 fn lua_number(source: &str, name: &str) -> Option<f32> {
     for line in source.lines() {
         let line = line.trim();
@@ -1419,7 +1100,6 @@ fn lua_number(source: &str, name: &str) -> Option<f32> {
                     .next()
                     .unwrap_or("")
                     .trim_end_matches(',');
-                // Capture up to the first comment/space.
                 let token: String = value
                     .chars()
                     .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
@@ -1461,20 +1141,16 @@ fn hlsl_static_numbers(source: &str, name: &str) -> Option<Vec<f32>> {
     (matches.len() == 1).then(|| matches[0].clone())
 }
 
-/// Extract the `{...}` body of `key = { ... }` (balanced braces).
 fn extract_braced_block(source: &str, key: &str) -> Option<String> {
     let start = find_key_brace(source, key)?;
     balanced_body(source, start)
 }
 
-/// Find the byte index of the `{` that opens `key`'s block (allowing `=`/spaces
-/// between the key and the brace).
 fn find_key_brace(source: &str, key: &str) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut search_from = 0usize;
     while let Some(rel) = source[search_from..].find(key) {
         let idx = search_from + rel;
-        // Ensure it's a whole token (preceded by non-word char or start).
         let ok_before = idx == 0
             || !source[..idx]
                 .chars()
@@ -1483,7 +1159,6 @@ fn find_key_brace(source: &str, key: &str) -> Option<usize> {
                 .unwrap_or(false);
         let after = idx + key.len();
         if ok_before {
-            // Skip whitespace/`=` to the brace.
             let mut j = after;
             while j < bytes.len() && (bytes[j] as char).is_whitespace() {
                 j += 1;
@@ -1503,8 +1178,6 @@ fn find_key_brace(source: &str, key: &str) -> Option<usize> {
     None
 }
 
-/// Given the index of an opening `{`, return the body between it and its
-/// matching `}`.
 fn balanced_body(source: &str, brace_index: usize) -> Option<String> {
     let bytes = source.as_bytes();
     if bytes.get(brace_index) != Some(&b'{') {
@@ -1529,21 +1202,17 @@ fn balanced_body(source: &str, brace_index: usize) -> Option<String> {
     None
 }
 
-/// The first `key = { ... }` body inside `source`.
 fn first_braced_value(source: &str, key: &str) -> Option<String> {
     extract_braced_block(source, key)
 }
 
-/// Iterator over every `key = { ... }` body in `source` (top-level scan, brace
-/// balanced). Non-recursive: repeated keys at any depth are all yielded.
 fn each_braced_value<'a>(source: &'a str, key: &'a str) -> impl Iterator<Item = String> + 'a {
     let mut from = 0usize;
     std::iter::from_fn(move || {
         while from < source.len() {
             let brace = find_key_brace(&source[from..], key)? + from;
             let body = balanced_body(source, brace)?;
-            // Advance past this block's closing brace.
-            let consumed = brace + body.len() + 2; // { body }
+            let consumed = brace + body.len() + 2;
             from = consumed.min(source.len());
             return Some(body);
         }
@@ -1551,11 +1220,7 @@ fn each_braced_value<'a>(source: &'a str, key: &'a str) -> impl Iterator<Item = 
     })
 }
 
-/// The next `key = { ... }` at the top of a block, returning
-/// `(key, body, remainder_after_block)`. Used to walk `weather_effects`'s type
-/// entries in order.
 fn next_braced_entry(source: &str) -> Option<(String, String, &str)> {
-    // Find the first `<ident> = {`.
     let bytes = source.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -1571,7 +1236,6 @@ fn next_braced_entry(source: &str) -> Option<(String, String, &str)> {
                 }
             }
             let ident = &source[start..i];
-            // Skip ws/`=`.
             let mut j = i;
             while j < bytes.len() && (bytes[j] as char).is_whitespace() {
                 j += 1;
@@ -1588,7 +1252,6 @@ fn next_braced_entry(source: &str) -> Option<(String, String, &str)> {
                     }
                 }
             }
-            // Not a block; continue scanning after the ident.
         } else {
             i += 1;
         }
@@ -1596,9 +1259,6 @@ fn next_braced_entry(source: &str) -> Option<(String, String, &str)> {
     None
 }
 
-/// Read a scalar field `key = value` (up to end of line / next token) from a
-/// block body. Handles `key = "quoted"`, `key = bareword`, `key = 1.0`,
-/// `key = { ... }` (returns the braced body's trimmed content).
 fn braced_field(block: &str, key: &str) -> Option<String> {
     let bytes = block.as_bytes();
     let mut search_from = 0usize;
@@ -1637,7 +1297,6 @@ fn braced_field(block: &str, key: &str) -> Option<String> {
                     let end = block[start..].find('"')? + start;
                     return Some(block[start..end].to_string());
                 }
-                // Bareword / number: to end of whitespace.
                 let start = j;
                 let mut k = j;
                 while k < bytes.len() && !(bytes[k] as char).is_whitespace() {
@@ -1673,7 +1332,6 @@ mod tests {
         assert_eq!(WeatherType::from_recording_kind("volcano"), None);
     }
 
-    // --- Real vanilla-file fixtures (verbatim excerpts from the shipped game). ---
 
     const WEATHER_TXT: &str = r#"
 weather_effects = {
@@ -1731,7 +1389,6 @@ entity = {
 	}
 "#;
 
-    // Verbatim rain_clouds.asset (ParticleAdditive, color 110/120/150, alpha 180).
     const RAIN_CLOUDS_ASSET: &str = r#"particle={
 	name="rain_clouds_file"
 	subsystem={
@@ -1766,7 +1423,6 @@ entity = {
 }
 "#;
 
-    // Verbatim snow_clouds.asset (ParticleAlphaBlend, color 200/200/200, alpha 60).
     const SNOW_CLOUDS_ASSET: &str = r#"particle={
 	name="snow_clouds_file"
 	subsystem={
@@ -1796,7 +1452,6 @@ entity = {
 }
 "#;
 
-    // Verbatim lightning_storm_clouds.asset excerpt: two subsystems.
     const LIGHTNING_CLOUDS_ASSET: &str = r#"particle={
 	name="lightning_storm_clouds_file"
 	subsystem={
@@ -1862,7 +1517,6 @@ entity = {
     #[test]
     fn parses_weather_effects_bindings() {
         let table = weather_effects_from_source(WEATHER_TXT).expect("parse");
-        // rain_light big -> rain_clouds_entity; small -> rain_small_clouds_entity.
         let big = table
             .binding(WeatherType::RainLight, WeatherPositionSize::Big)
             .expect("rain big");
@@ -1880,7 +1534,6 @@ entity = {
         );
         assert!(small.small);
 
-        // sandstorm has one row, no fading_entity; small falls back to it.
         let sand = table
             .binding(WeatherType::Sandstorm, WeatherPositionSize::Small)
             .expect("sandstorm");
@@ -1971,24 +1624,19 @@ entity = {
         assert_eq!(law.color_rgb_255, [110.0, 120.0, 150.0]);
         assert_eq!(law.base_alpha_255, 180.0);
         assert_eq!(law.alpha_anim.as_deref(), Some("smoke_fade"));
-        // rain smoke_fade peaks at 1.0.
         assert!((law.alpha_anim_peak - 1.0).abs() < 1e-6);
         assert!((law.size_mean - 60.5).abs() < 1e-6);
         assert!((law.life_mean - 2.6).abs() < 1e-6);
-        // rain clouds declare no depth sort.
         assert_eq!(law.sort, None);
     }
 
     #[test]
     fn parses_snow_clouds_bare_alpha_syntax() {
-        // snow_clouds uses `alpha=60.000,smoke_fade` (no braces).
         let law = cloud_law_from_asset(SNOW_CLOUDS_ASSET, "snow_clouds_file").expect("parse");
         assert_eq!(law.blend, ParticleBlend::AlphaBlend);
         assert_eq!(law.color_rgb_255, [200.0, 200.0, 200.0]);
         assert_eq!(law.base_alpha_255, 60.0);
         assert_eq!(law.alpha_anim.as_deref(), Some("smoke_fade"));
-        // snow smoke_fade curve (0.000 0.000 0.321 0.750 0.635 0.914 1.000
-        // 0.000) peaks at 0.914 — NOT 1.0; the static overlay must use it.
         assert!((law.alpha_anim_peak - 0.914).abs() < 1e-6);
     }
 
@@ -1997,20 +1645,16 @@ entity = {
         assert_eq!(asset_subsystem_count(LIGHTNING_CLOUDS_ASSET), 2);
         let law = cloud_law_from_asset(LIGHTNING_CLOUDS_ASSET, "lightning_storm_clouds_file")
             .expect("law");
-        // First subsystem is the alpha-blended cloud layer, not the additive flash.
         assert_eq!(law.blend, ParticleBlend::AlphaBlend);
         assert_eq!(law.color_rgb_255, [160.0, 160.0, 160.0]);
         assert_eq!(law.base_alpha_255, 150.0);
         assert_eq!(law.alpha_anim.as_deref(), Some("cloud_fade"));
-        // cloud_fade (0.1 -> 1.0 -> 1.0 -> 0.0) peaks at 1.0.
         assert!((law.alpha_anim_peak - 1.0).abs() < 1e-6);
-        // The lightning cloud layer declares depth sorting.
         assert_eq!(law.sort.as_deref(), Some("depth"));
     }
 
     #[test]
     fn to_linear_vertex_color_matches_hand_computed() {
-        // rain_clouds: rgb 110/120/150, alpha 180. ToLinear = (c/255)^2.2, alpha /255.
         let law = cloud_law_from_asset(RAIN_CLOUDS_ASSET, "rain_clouds_file").unwrap();
         let c = law.linear_vertex_color(1.0);
         let lin = |v: f32| (v / 255.0f32).powf(2.2);
@@ -2018,7 +1662,6 @@ entity = {
         assert!((c[1] - lin(120.0)).abs() < 1e-6, "g {}", c[1]);
         assert!((c[2] - lin(150.0)).abs() < 1e-6, "b {}", c[2]);
         assert!((c[3] - 180.0 / 255.0).abs() < 1e-6, "a {}", c[3]);
-        // Alpha scales linearly with the animation multiplier; RGB does not.
         let half = law.linear_vertex_color(0.5);
         assert!((half[3] - (180.0 / 255.0) * 0.5).abs() < 1e-6);
         assert!((half[0] - c[0]).abs() < 1e-6);
@@ -2028,32 +1671,25 @@ entity = {
     fn blend_modes_match_d3d_equations() {
         let src = [0.4f32, 0.5, 0.6, 0.5];
         let dst = [0.2f32, 0.2, 0.2];
-        // AlphaBlend: src*0.5 + dst*0.5
         let ab = ParticleBlend::AlphaBlend.blend_over(src, dst);
         assert!((ab[0] - (0.4 * 0.5 + 0.2 * 0.5)).abs() < 1e-6);
-        // Additive: src*0.5 + dst
         let add = ParticleBlend::Additive.blend_over(src, dst);
         assert!((add[0] - (0.4 * 0.5 + 0.2)).abs() < 1e-6);
-        // PreAlphaBlend: src + dst*0.5
         let pre = ParticleBlend::PreAlphaBlend.blend_over(src, dst);
         assert!((pre[0] - (0.4 + 0.2 * 0.5)).abs() < 1e-6);
     }
 
     #[test]
     fn animation_curve_sampling_and_peak() {
-        // rain smoke_fade curve: 0->0.1, 0.3->0.1, 0.5->1.0, 0.8->1.0, 1.0->0.0
         assert!(
             (evaluate_animation_curve(RAIN_CLOUDS_ASSET, "smoke_fade", 0.0) - 0.1).abs() < 1e-6
         );
         assert!(
             (evaluate_animation_curve(RAIN_CLOUDS_ASSET, "smoke_fade", 0.5) - 1.0).abs() < 1e-6
         );
-        // Midpoint 0.4 between (0.3,0.1) and (0.5,1.0): 0.1 + 0.9*0.5 = 0.55
         let mid = evaluate_animation_curve(RAIN_CLOUDS_ASSET, "smoke_fade", 0.4);
         assert!((mid - 0.55).abs() < 1e-6, "mid={mid}");
-        // Peak of the curve is 1.0.
         assert!((animation_curve_peak(RAIN_CLOUDS_ASSET, "smoke_fade") - 1.0).abs() < 1e-6);
-        // Missing curve -> 1.0.
         assert!((evaluate_animation_curve(RAIN_CLOUDS_ASSET, "nope", 0.5) - 1.0).abs() < 1e-6);
     }
 
@@ -2067,7 +1703,6 @@ entity = {
         assert!((first.position[1] - 9.90).abs() < 1e-3);
         assert!((first.position[2] - 1571.49).abs() < 1e-3);
         assert_eq!(first.size, WeatherPositionSize::Small);
-        // for_region filters correctly.
         assert_eq!(table.for_region(1).count(), 2);
         assert_eq!(table.for_region(7).count(), 1);
         assert_eq!(table.for_region(999).count(), 0);
@@ -2076,10 +1711,7 @@ entity = {
 
     #[test]
     fn weather_emitters_reject_unknown_size_tag() {
-        // Shared parser accepts any 5-column row; our decoder fails closed on
-        // an unrecognised size tag.
         assert!(weather_emitters_from_source("1;2.0;3.0;4.0;huge").is_err());
-        // Shared parser itself rejects a missing size column (< 5 fields).
         assert!(weather_emitters_from_source("1;2.0;3.0").is_err());
     }
 
@@ -2193,13 +1825,11 @@ static const float FOG_MAX = 0.35f;
         assert_eq!(law.texture, "gfx/particles/cloud_6.dds");
         assert_eq!(law.blend, ParticleBlend::Additive);
 
-        // sandstorm has no cloud layer -> Ok(None).
         let none =
             cloud_law_from_resolver(&resolver, WeatherType::Sandstorm, WeatherPositionSize::Big)
                 .expect("sandstorm resolve");
         assert!(none.is_none());
 
-        // Positions + fade defines resolve too.
         let positions = weather_emitters_from_resolver(&resolver).expect("positions");
         assert_eq!(positions.for_region(1).count(), 2);
         let defines = weather_fade_defines_from_resolver(&resolver).expect("defines");
@@ -2212,7 +1842,6 @@ static const float FOG_MAX = 0.35f;
         let vanilla = root.join("vanilla");
         let mod_root = root.join("mod");
         write_text(&vanilla, WEATHER_POSITIONS_SOURCE, WEATHER_POSITIONS);
-        // Mod replaces the file with a single big row for region 42.
         write_text(
             &mod_root,
             WEATHER_POSITIONS_SOURCE,

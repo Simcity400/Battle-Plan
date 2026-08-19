@@ -1,13 +1,3 @@
-//! Shared, activation-neutral campaign-identity H4CT control codec (CIF1/CIA1).
-//!
-//! The `IdentityFailure` (collector -> recorder) and `IdentityFailureAck`
-//! (recorder -> collector) wire formats live here so the recorder host and the
-//! injected collector DLL encode/decode exactly one implementation. The
-//! recorder host re-exports these from
-//! `recorder_host::duplex_session::identity_control`; the collector client
-//! (`collector::duplex_client`) consumes them for its CAMPAIGN_IDENTITY path.
-//! The codec is byte-neutral and carries no activation authority.
-
 use std::fmt;
 
 use crate::campaign_identity::Sha256;
@@ -497,7 +487,6 @@ mod tests {
         assert_eq!(decode_identity_failure(&wire).unwrap(), value);
         assert_eq!(&wire[0..4], IDENTITY_FAILURE_MAGIC);
 
-        // A flipped suffix-hash byte is rejected deny-by-default.
         let mut corrupt = wire.clone();
         corrupt[84] ^= 0xff;
         assert_eq!(
@@ -505,7 +494,6 @@ mod tests {
             Err(IdentityControlCodecError::SuffixHashMismatch)
         );
 
-        // Short payload rejects before field access.
         assert!(matches!(
             decode_identity_failure(&wire[..IDENTITY_FAILURE_FIXED_LEN - 1]),
             Err(IdentityControlCodecError::InvalidLength { .. })
@@ -524,7 +512,6 @@ mod tests {
         assert_eq!(decode_identity_failure_ack(&wire).unwrap(), ack);
         assert_eq!(&wire[0..4], IDENTITY_FAILURE_ACK_MAGIC);
 
-        // DurablyRecorded with a nonzero error is incoherent and rejected.
         let incoherent = IdentityFailureAckV1 { error: 5, ..ack };
         assert!(matches!(
             encode_identity_failure_ack(incoherent),

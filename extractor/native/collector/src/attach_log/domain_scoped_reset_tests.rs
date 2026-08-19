@@ -1,43 +1,7 @@
-//! Gates for the DOMAIN-SCOPED rejected-bracket reset.
-//!
-//! `reset_trackers_after_rejected_bracket` used to wipe every domain's delta
-//! pin whenever ANY domain crossed an hour boundary. At speed five that is
-//! essentially every frame. Measured on
-//! `runs/live_unlock/t26/collector_stream.bin` (2,594,412,495 bytes), keyframes
-//! are 82.0% of all bytes; of those, **273.15 MB in 2,554 records** were
-//! emitted by a domain that had NO gap of its own and lost its pin only because
-//! somebody else crossed an hour boundary. Those are the records this narrowing
-//! converts back into deltas. The larger 1,126.91 MB measurement is a
-//! different bucket — keyframes following the
-//! domain's OWN gap — and this change deliberately does not touch it.
-//!
-//! [`for_each_domain_scoped_tracker`] narrows that to the domains actually
-//! rejected. This module holds the questions the narrowing has to answer, and
-//! every test is written so that a production change turns it red:
-//!
-//! 1. **Is the table right?**
-//!    `domain_scoped_tracker_allowlist_matches_the_borrow_sites` re-derives the
-//!    (field, tag) pairs from this crate's own source text and compares them to
-//!    the table. Point a table entry at a different domain and it fails.
-//! 2. **Does a rejected domain still lose its pin?**
-//!    `a_rejected_domain_loses_its_pin` rejects one domain each probe's tag
-//!    covers and asserts the marked field came back `Default`.
-//! 3. **Does an unrejected domain keep its pin?**
-//!    `an_unrejected_domain_keeps_its_pin` is the control that stops every
-//!    other test here from passing trivially under a blanket reset.
-
 use super::*;
 
 use std::collections::BTreeMap;
 
-// ---------------------------------------------------------------------
-// The table, and the source text it must agree with
-// ---------------------------------------------------------------------
-
-/// Fields of `CompactPerfGateTrackers` that are deliberately NOT domain-scoped,
-/// each with the reason. `every_perf_gate_tracker_field_is_classified` holds
-/// this list and [`DOMAIN_SCOPED_TRACKER_RETENTION`] to cover the struct, so a
-/// field added later cannot quietly land on one side or the other.
 const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     (
         "hook_reservations",
@@ -120,21 +84,10 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
 ];
 
-/// This crate's own `attach_log.rs`, with line endings normalised to LF.
-///
-/// Every structural match below is written against `\n`, and this repo checks
-/// `attach_log.rs` out with CRLF. Un-normalised, the two-line rustfmt shape of
-/// a binding (`let x =` / `&mut trackers.field;`) stops being recognised, so
-/// those fields are reported as having no borrow site at all — which is how
-/// this module first went red, and is why the normalisation is load-bearing
-/// rather than tidy. The shared `collector_source_lf` in the sibling `tests`
-/// module is the one place that idiom lives.
 fn attach_log_source() -> String {
     super::tests::collector_source_lf()
 }
 
-/// The body of `build_compact_extraction_gate_records`, which is the only
-/// function that hands a per-domain tracker to a reader.
 fn frame_builder_body(source: &str) -> &str {
     const OPEN: &str = "\nfn build_compact_extraction_gate_records(";
     let start = source
@@ -150,30 +103,15 @@ fn frame_builder_body(source: &str) -> &str {
     &source[start..start + 1 + end]
 }
 
-/// One `spawn_gated(..)` / `lane_time_main(..)` call: its byte span inside the
-/// frame builder's body, and the bracket tag it opens.
 struct ReaderCallSpan {
     start: usize,
     end: usize,
     tag: String,
 }
 
-/// Every reader call in `body`, paren-matched so the span is exact.
-///
-/// A nearest-preceding-`spawn_gated` heuristic is not good enough: several
-/// tracker locals are rebound (`let frd_depth_tracker = frd_depth_tracker;`)
-/// or projected (`let d47_roots = &..._tracker.roots;`) in the statement that
-/// PRECEDES a call, and a heuristic reads those as uses inside the previous
-/// reader's call — which is exactly the misattribution this table must not
-/// make.
 fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
     let bytes = body.as_bytes();
     let mut spans = Vec::new();
-    // `spawn_gated_lane_only(` is the country parent since lane KS: one permit,
-    // one lane span, NO clock guard. It is listed here because the derivation
-    // still has to find the call that consumes the country tracker struct --
-    // the tag it carries is the parent's lane tag, and
-    // `country_child_bracket_tags` resolves the second hop to the real bracket.
     for (name, tag_arg) in [
         ("spawn_gated(", 3usize),
         ("spawn_gated_lane_only(", 3usize),
@@ -215,7 +153,6 @@ fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
     spans
 }
 
-/// Split a call's argument list on top-level commas, dropping comment lines.
 fn split_top_level_args(call: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut depth = 0i32;
@@ -249,7 +186,6 @@ fn strip_comment_lines(arg: &str) -> String {
         .to_string()
 }
 
-/// Is `at` a use of the identifier rather than a substring of a longer one?
 fn is_word_boundary(body: &str, at: usize, len: usize) -> bool {
     let bytes = body.as_bytes();
     let before_ok = at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_');
@@ -261,7 +197,10 @@ fn is_word_boundary(body: &str, at: usize, len: usize) -> bool {
 
 fn line_bounds(body: &str, at: usize) -> (usize, usize) {
     let start = body[..at].rfind('\n').map(|nl| nl + 1).unwrap_or(0);
-    let end = body[at..].find('\n').map(|nl| at + nl).unwrap_or(body.len());
+    let end = body[at..]
+        .find('\n')
+        .map(|nl| at + nl)
+        .unwrap_or(body.len());
     (start, end)
 }
 
@@ -270,9 +209,6 @@ fn line_containing(body: &str, at: usize) -> &str {
     &body[start..end]
 }
 
-/// Re-derive `field -> {bracket tag}` from the source, exactly as a reader of
-/// the code would: find the `&mut trackers.<field>` binding, then find every
-/// use of the local it bound and the reader call that encloses it.
 fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
     let spans = reader_call_spans(body);
     assert!(
@@ -283,19 +219,6 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
 
     let mut derived: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
-    // The struct-literal form: `CompactCountryGateTrackers { fuel: &mut
-    // trackers.fuel, .. }`. The whole struct moves into ONE reader call -- and
-    // until lane KS that call's tag, `LW_TAG_COUNTRY_BUNDLE`, was the whole
-    // answer for all eight fields. That is exactly what made a torn politics
-    // child wipe the fuel baseline.
-    //
-    // It is a TWO-HOP resolution now, and the second hop is the point: the
-    // parent call establishes only that these eight belong to the country
-    // bundle, and each field's real bracket is the CHILD bracket the bundle
-    // hands its local to. `country_child_bracket_tags` reads that second hop
-    // out of the same source text, so a child that moves to another tag, or a
-    // tracker handed to the wrong child, fails here rather than silently
-    // retaining a baseline whose read was refused.
     assert!(
         spans.iter().any(|span| span.tag == "LW_TAG_COUNTRY_BUNDLE"),
         "the country bundle reader call is present"
@@ -312,14 +235,15 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
                              `country_child_bracket` call in this crate takes its local"
                         )
                     });
-                    derived.entry(rhs.to_string()).or_default().push(tag.clone());
+                    derived
+                        .entry(rhs.to_string())
+                        .or_default()
+                        .push(tag.clone());
                 }
             }
         }
     }
 
-    // The `let <local> = &mut trackers.<field>;` form, including the two-line
-    // rustfmt shape where the borrow lands on its own line.
     let flat = body.replace("=\n", "= ");
     let mut bindings: Vec<(String, String)> = Vec::new();
     for line in flat.lines() {
@@ -359,7 +283,6 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
                 continue;
             }
             let trimmed = line_containing(body, use_at).trim().to_string();
-            // The binding statement itself, in either rustfmt shape.
             if trimmed.starts_with(&format!("let {local} = &mut trackers."))
                 || trimmed.starts_with(&format!("let {local} = &trackers."))
                 || trimmed == format!("let {local} =")
@@ -368,7 +291,6 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
             {
                 continue;
             }
-            // A rebind that exists only to name the capture for a move closure.
             if trimmed == format!("let {local} = {local};") {
                 continue;
             }
@@ -378,9 +300,6 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
                 .max_by_key(|span| span.start);
             match innermost {
                 Some(span) => entry.push(span.tag.clone()),
-                // A use outside every reader call: recorded under a name no
-                // table entry can carry, so the comparison reports it rather
-                // than silently accepting it.
                 None => entry.push(format!(
                     "OUTSIDE-EVERY-READER-CALL(body line {})",
                     body[..use_at].matches('\n').count() + 1
@@ -396,13 +315,6 @@ fn derive_field_tags_from_source(body: &str) -> BTreeMap<String, Vec<String>> {
     derived
 }
 
-/// The table of table entries, flattened out of the macros.
-///
-/// TWO macros since lane KS. The country trackers moved to
-/// [`for_each_country_scoped_tracker`] because they take a THIRD answer --
-/// roll back this frame's staged advance -- rather than the carry/wipe switch
-/// the rest take. They are still (field, bracket tag) pairs, and this
-/// derivation gate must cover them exactly as it covers the others.
 fn table() -> BTreeMap<&'static str, &'static str> {
     let mut table = BTreeMap::new();
     macro_rules! collect_table {
@@ -415,15 +327,6 @@ fn table() -> BTreeMap<&'static str, &'static str> {
     table
 }
 
-/// `country tracker field -> child bracket tag`, read out of the crate's own
-/// source: the bundle's destructuring names the local each field is handed to,
-/// and the `country_child_bracket(lanes, TAG, ..)` call that encloses that
-/// local names the bracket.
-///
-/// What production change makes this fail: moving a child to another tag,
-/// handing a child the wrong tracker local, or dropping a child's bracket --
-/// each of which puts a tracker back under a verdict its own reader did not
-/// take.
 fn country_child_bracket_tags() -> BTreeMap<String, String> {
     let source = attach_log_source();
     let destructure_start = source
@@ -457,8 +360,10 @@ fn country_child_bracket_tags() -> BTreeMap<String, String> {
     while let Some(at) = source[search..].find(needle) {
         let open = search + at + needle.len() - 1;
         search = open + 1;
-        // Skip the definition itself.
-        if source[..open].trim_end().ends_with("fn country_child_bracket") {
+        if source[..open]
+            .trim_end()
+            .ends_with("fn country_child_bracket")
+        {
             continue;
         }
         let Some(close) = matching_paren(&source, open) else {
@@ -477,13 +382,6 @@ fn country_child_bracket_tags() -> BTreeMap<String, String> {
                 .lines()
                 .any(|line| line.trim().trim_end_matches(',') == local.as_str());
             if hit {
-                // NO INDIRECTION LEFT TO RESOLVE. There used to be exactly one:
-                // the focus+tech child's tag was a function of its roster
-                // (`country_focus_tech_bracket_tag`: 12 alone, 13 alone, or the
-                // pair), so its call site passed a LOCAL rather than a constant
-                // and this had to resolve it. Lane LE split that child in two,
-                // and each half names its own domain id as a constant, so every
-                // one of the eight call sites now passes a constant directly.
                 tag_of_local.insert(local.clone(), tag.to_string());
             }
         }
@@ -504,7 +402,6 @@ fn country_child_bracket_tags() -> BTreeMap<String, String> {
         .collect()
 }
 
-/// Byte index of the `)` closing the `(` at `open`.
 fn matching_paren(source: &str, open: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut depth = 0usize;
@@ -523,17 +420,6 @@ fn matching_paren(source: &str, open: usize) -> Option<usize> {
     None
 }
 
-/// The allowlist must say what the code says.
-///
-/// This is what turns a hand-written table into a checked one. The retention
-/// predicate is "the reader that writes this field was not rejected", and the
-/// only thing that makes a (field, tag) pair TRUE is that the field's `&mut`
-/// borrow is consumed by a reader running under that tag. So the test
-/// re-derives the pairs from the source and demands equality.
-///
-/// What production change makes this fail: point a table entry at a different
-/// domain constant; move a reader to a different bracket tag; give a listed
-/// field a second writer, or any writer outside a reader's bracket.
 #[test]
 fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     let source = attach_log_source();
@@ -567,11 +453,6 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
         disagreements.join("\n  ")
     );
 
-    // Following the BINDING's uses cannot see a direct write that never touches
-    // the local — `trackers.weather = ...` further down the frame builder would
-    // be a second writer the derivation above is blind to. So each allowlisted
-    // field is also required to appear exactly ONCE as `trackers.<field>` in the
-    // whole frame builder: its `&mut` borrow, and nothing else.
     let mut second_writers = Vec::new();
     for field in table.keys() {
         let needle = format!("trackers.{field}");
@@ -598,8 +479,6 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
         second_writers.join("\n  ")
     );
 
-    // The converse: every field the source shows being handed to a reader must
-    // be classified one way or the other before it ships.
     let blanket: BTreeMap<&str, &str> = BLANKET_RESET_TRACKER_FIELDS.iter().copied().collect();
     let mut unclassified = Vec::new();
     for (field, tags) in &derived {
@@ -615,13 +494,6 @@ fn domain_scoped_tracker_allowlist_matches_the_borrow_sites() {
     );
 }
 
-/// The division root cache must remain excluded for the stated reason: it is
-/// touched somewhere no single reader bracket covers, so no one tag can decide
-/// whether it survived.
-///
-/// What production change makes this fail: making the division root cache a
-/// per-reader product, which would make the field eligible and this exclusion
-/// stale.
 #[test]
 fn the_division_root_cache_is_touched_outside_every_reader_bracket() {
     let source = attach_log_source();
@@ -639,18 +511,6 @@ fn the_division_root_cache_is_touched_outside_every_reader_bracket() {
     );
 }
 
-/// d47's discovery cache is excluded from the allowlist for a DIFFERENT reason
-/// (lane MX): it is carried across the reset UNCONDITIONALLY by its own
-/// carve-out, whether or not its bracket survived, because its validity is
-/// decided by the next frame's witness replay and not by this bracket's
-/// verdict. Its discovery has run inside the worker's bracket since lane HT,
-/// so "written outside every reader bracket" stopped being the reason then.
-///
-/// What production change makes this fail: putting the field on the
-/// domain-scoped allowlist (a claim that bracket survival decides it), or
-/// removing the carve-out (the field would then be neither carried nor
-/// classified as such — `d47_cache_survives_refusal_tests` holds the runtime
-/// half of that).
 #[test]
 fn the_d47_discovery_cache_is_an_unconditional_carve_out_not_a_bracket_scoped_pin() {
     let field = "characters_leaders_cabinet_live";
@@ -672,36 +532,24 @@ fn the_d47_discovery_cache_is_an_unconditional_carve_out_not_a_bracket_scoped_pi
     let reset_start = source
         .find("fn reset_trackers_after_rejected_bracket(")
         .expect("the reset function is declared");
-    let reset_body = &source[reset_start..reset_start + source[reset_start..].find("
+    let reset_body = &source[reset_start
+        ..reset_start
+            + source[reset_start..]
+                .find(
+                    "
 }
-").expect("closed")];
+",
+                )
+                .expect("closed")];
     assert!(
         reset_body.contains("std::mem::take(&mut trackers.characters_leaders_cabinet_live)")
-            && reset_body.contains("trackers.characters_leaders_cabinet_live = d47_discovery_cache;"),
+            && reset_body
+                .contains("trackers.characters_leaders_cabinet_live = d47_discovery_cache;"),
         "the reset must take the d47 cache before the blanket `fresh` and reinstall it after"
     );
 }
 
-/// d45 and d55 are held OUT of the allowlist deliberately, and re-adding either
-/// must be a decision rather than an edit.
-///
 /// Both survive their clock bracket and can still acquire a failure-class status
-/// afterwards, from hook-reservation custody settled on the main thread. Bracket
-/// survival — which is the entire retention predicate — does not decide that
-/// question for these two, so the allowlist cannot express what they need.
-///
-/// What they take instead is PRE-FRAME RESTORATION, not the blanket reset: their
-/// pins are staged during the read, committed at emission under the shared
-/// `compact_delta_pin_may_advance` predicate, and their OWN rejection undoes
-/// this frame's commits rather than wiping the tracker. `Default` is the wrong
-/// answer for them in exactly the way an advanced pin is —
-/// `no_transactional_domain_is_default_constructed_on_its_own_rejection` holds
-/// that half. This test holds the allowlist half.
-///
-/// What production change makes this fail: putting either field back in the
-/// allowlist. That would be a claim about what the fold does with a RETAINED pin
-/// across a rejected frame, which is a different question from the one the
-/// transaction answers and owes its own fold-equivalence proof.
 #[test]
 fn the_two_late_failure_domains_are_not_domain_scoped() {
     for field in [
@@ -725,11 +573,6 @@ fn the_two_late_failure_domains_are_not_domain_scoped() {
     }
 }
 
-/// Every field of the tracker struct is classified, one way or the other.
-///
-/// What production change makes this fail: adding a field to
-/// `CompactPerfGateTrackers` without deciding whether a rejected bracket may
-/// retain it.
 #[test]
 fn every_perf_gate_tracker_field_is_classified() {
     let source = attach_log_source();
@@ -796,28 +639,14 @@ fn every_perf_gate_tracker_field_is_classified() {
     }
 }
 
-// ---------------------------------------------------------------------
-// The retention predicate itself
-// ---------------------------------------------------------------------
-
-/// Every domain a bracket tag covers, through the production expansion.
 fn covered_domains(tag: u16) -> Vec<u16> {
     let mut domains = Vec::new();
     for_each_bracket_covered_domain(tag, |domain| domains.push(domain));
     domains
 }
 
-/// A domain id nothing in the table covers, used as the "unrelated rejection"
-/// in the control tests.
 const UNRELATED_DOMAIN: u16 = 0xBEEF;
 
-/// A tag that covers more than one domain must lose its fields when ANY of
-/// them is rejected, not only when all of them are.
-///
-/// What production change makes this fail: testing `rejected_domains` against
-/// the raw tag instead of expanding it through
-/// `for_each_bracket_covered_domain` — which would let the country bundle keep
-/// eight pins when domain 14 tore, and let d49 keep its pin when d50 tore.
 #[test]
 fn a_multi_domain_tag_survives_only_when_every_covered_domain_did() {
     let multi: Vec<u16> = DOMAIN_SCOPED_TRACKER_RETENTION
@@ -846,8 +675,6 @@ fn a_multi_domain_tag_survives_only_when_every_covered_domain_did() {
     }
 }
 
-/// Every tag in the table loses its fields when its own domain is rejected,
-/// and keeps them when an unrelated domain is.
 #[test]
 fn the_retention_predicate_answers_per_tag() {
     for (field, tag) in DOMAIN_SCOPED_TRACKER_RETENTION {
@@ -875,35 +702,16 @@ fn the_retention_predicate_answers_per_tag() {
     }
 }
 
-// ---------------------------------------------------------------------
-// The reset, end to end over the real struct
-// ---------------------------------------------------------------------
-
-/// One observable per-domain tracker field: how to put a non-default value in
-/// it, and how to ask whether it is still there.
-///
-/// The fields differ in type, so there is no generic "is this default"; each
-/// probe names a concrete leaf whose default is unambiguous (an empty map, a
-/// `None`). Three probes cover a multi-domain tag and two single-domain ones.
 struct TrackerProbe {
     field: &'static str,
     mark: fn(&mut CompactPerfGateTrackers),
     is_marked: fn(&CompactPerfGateTrackers) -> bool,
 }
 
-/// A country tracker seen from BOTH sides of its transaction.
-///
-/// The other probes are one-sided because the other trackers are: the reset
-/// either keeps the field or default-constructs it. A country tracker has a
-/// committed half the reset may never touch and a staged half it must drop on
-/// that child's own rejection, so a one-sided probe cannot tell the new
-/// behaviour from either of the two old ones.
 struct CountryTrackerProbe {
     field: &'static str,
-    /// The COMMITTED baseline: what the consumer already holds.
     committed: fn(&mut CompactPerfGateTrackers),
     is_committed: fn(&CompactPerfGateTrackers) -> bool,
-    /// THIS FRAME'S staged advance: what the consumer has not received yet.
     staged: fn(&mut CompactPerfGateTrackers),
     is_staged: fn(&CompactPerfGateTrackers) -> bool,
 }
@@ -943,13 +751,12 @@ fn country_probe_tag(field: &str) -> u16 {
 }
 
 const TRACKER_PROBES: &[TrackerProbe] = &[
-    // d44, whose tracker ALSO carries the two install booleans the reset
-    // carves out unconditionally — so this probe is the one that would notice
-    // the carry-over and the carve-out fighting each other.
     TrackerProbe {
         field: "supply_logistics_attrition_live",
         mark: |trackers| {
-            trackers.supply_logistics_attrition_live.csupply_system_object = Some(0x1234);
+            trackers
+                .supply_logistics_attrition_live
+                .csupply_system_object = Some(0x1234);
         },
         is_marked: |trackers| {
             trackers
@@ -958,8 +765,6 @@ const TRACKER_PROBES: &[TrackerProbe] = &[
                 .is_some()
         },
     },
-    // d43, a sweep-generation cache rather than a row diff: the retention
-    // question is the same one.
     TrackerProbe {
         field: "market_trade_live",
         mark: |trackers| {
@@ -977,12 +782,6 @@ fn probe_tag(field: &str) -> u16 {
         .unwrap_or_else(|| panic!("`{field}` is a domain-scoped tracker field"))
 }
 
-/// A rejected domain still loses its pin — the invariant the narrowing must
-/// not weaken.
-///
-/// What production change makes this fail: retaining a field whose domain is
-/// in the rejected set (drop the negation from the predicate, or compare
-/// against the wrong set).
 #[test]
 fn a_rejected_domain_loses_its_pin() {
     for probe in TRACKER_PROBES {
@@ -1010,11 +809,6 @@ fn a_rejected_domain_loses_its_pin() {
     }
 }
 
-/// The control: a domain nobody rejected keeps its pin. Without this every
-/// test above passes trivially under the old blanket reset.
-///
-/// What production change makes this fail: restoring the unconditional
-/// `*trackers = CompactPerfGateTrackers::default()`.
 #[test]
 fn an_unrejected_domain_keeps_its_pin() {
     for probe in TRACKER_PROBES {
@@ -1030,19 +824,11 @@ fn an_unrejected_domain_keeps_its_pin() {
     }
 }
 
-/// One domain's rejection must not take another domain's pin with it. This is
-/// the whole point of the change, stated as a test.
-///
-/// What production change makes this fail: any reset that is not per-tag —
-/// including one that drops every field whenever the rejected set is
-/// non-empty.
 #[test]
 fn one_domains_rejection_does_not_reset_another_domains_pin() {
     for probe in TRACKER_PROBES {
         let tag = probe_tag(probe.field);
         let covered = covered_domains(tag);
-        // Reject every OTHER table domain at once, and nothing this probe's
-        // tag covers.
         let rejected: BTreeSet<u16> = DOMAIN_SCOPED_TRACKER_RETENTION
             .iter()
             .flat_map(|(_, other)| covered_domains(*other))
@@ -1066,13 +852,6 @@ fn one_domains_rejection_does_not_reset_another_domains_pin() {
     }
 }
 
-/// The carve-outs the reset already made must keep working after the
-/// narrowing, in both directions — the domain that survived and the domain
-/// that did not.
-///
-/// What production change makes this fail: applying the carry-over AFTER the
-/// unconditional carve-outs, which would let a surviving d44 tracker overwrite
-/// the install booleans the caller had already saved.
 #[test]
 fn the_unconditional_carve_outs_still_win_over_the_allowlist() {
     for rejected in [
@@ -1115,21 +894,6 @@ fn the_unconditional_carve_outs_still_win_over_the_allowlist() {
     }
 }
 
-/// THE COLD-START LOOP, STATED AS A TEST: a rejected country child drops only
-/// what this frame staged, and the committed baseline the consumer already
-/// holds survives.
-///
-/// This is the whole of deliverable (a) at the reset. Before it, every one of
-/// the eight country fields named `LW_TAG_COUNTRY_BUNDLE`, that tag expanded to
-/// 10..=17, and so ANY country domain's rejection default-constructed ALL EIGHT
-/// baselines -- which made the next read a full 439-country deep read of every
-/// domain (233 ms/frame against a 76 ms hour on t55), which guaranteed the next
-/// rejection.
-///
-/// What production change makes this fail: default-constructing a country
-/// tracker on rejection (the old wipe); or NOT dropping the staged half, which
-/// would let a baseline advance past records that became a `DOMAIN_GAP` and
-/// leave the producer permanently ahead of the fold.
 #[test]
 fn a_rejected_country_child_drops_its_staged_advance_and_keeps_its_baseline() {
     for probe in COUNTRY_TRACKER_PROBES {
@@ -1156,18 +920,10 @@ fn a_rejected_country_child_drops_its_staged_advance_and_keeps_its_baseline() {
     }
 }
 
-/// A country child that survived keeps BOTH halves: its staged advance is
-/// settled later, at the frame's publish/refuse verdict, not here.
-///
-/// What production change makes this fail: rolling back on a sibling's
-/// rejection -- which is what the shared tag-200 coverage did -- or committing
-/// here, where no verdict on the frame exists yet.
 #[test]
 fn a_surviving_country_child_keeps_its_staged_advance_for_the_frame_verdict() {
     for probe in COUNTRY_TRACKER_PROBES {
         let covered = covered_domains(country_probe_tag(probe.field));
-        // Reject every country domain this child does NOT read, plus an
-        // unrelated one.
         let mut rejected: BTreeSet<u16> = (10u16..=17)
             .filter(|domain| !covered.contains(domain))
             .collect();
@@ -1190,11 +946,6 @@ fn a_surviving_country_child_keeps_its_staged_advance_for_the_frame_verdict() {
     }
 }
 
-/// Even with EVERY domain rejected a country baseline stands. The blanket reset
-/// is deliberately not the floor for these eight any more.
-///
-/// What production change makes this fail: restoring the wipe for the country
-/// fields, which is what put every capture to date in permanent cold start.
 #[test]
 fn rejecting_every_domain_still_leaves_the_country_baselines_standing() {
     let everything: BTreeSet<u16> = (0u16..=1000).collect();
@@ -1217,12 +968,6 @@ fn rejecting_every_domain_still_leaves_the_country_baselines_standing() {
     }
 }
 
-/// A frame refused WHOLE returns the country baselines to the published slot
-/// with their staged advance dropped.
-///
-/// What production change makes this fail: restoring `drop(pending_trackers)`
-/// with nothing salvaged (960 recurring wipes on t55 alone), or salvaging the
-/// tracker WITHOUT rolling back -- which would claim rows the refusal withheld.
 #[test]
 fn a_refused_frame_returns_the_country_baselines_and_drops_the_candidate() {
     for probe in COUNTRY_TRACKER_PROBES {
@@ -1246,14 +991,6 @@ fn a_refused_frame_returns_the_country_baselines_and_drops_the_candidate() {
     }
 }
 
-/// A published frame commits the staged advance -- unless that domain was
-/// published DEGRADED, in which case the consumer may discard the record and
-/// the advance rolls back instead.
-///
-/// What production change makes this fail: committing unconditionally (a
-/// degraded d11/d12/d13 record is discarded whole by the fold, so its advance
-/// would leave the producer ahead of it), or never committing (the baseline
-/// would never warm and the cold start would survive the whole change).
 #[test]
 fn a_published_frame_commits_unless_the_domain_was_degraded() {
     for probe in COUNTRY_TRACKER_PROBES {
@@ -1288,26 +1025,9 @@ fn a_published_frame_commits_unless_the_domain_was_degraded() {
     }
 }
 
-/// A parent panic synthesizes brackets ONLY for the children this frame
-/// scheduled, and never over a child that already recorded one.
-///
-/// The country parent holds no clock bracket, so its panic -- visible only at
-/// the join -- would otherwise leave its domains unbracketed and
-/// `replace_rejected_domain_records_with_gaps` would call that
-/// `ClockUnreadable` rather than `WorkerPanic`. Both bounds matter and neither
-/// is data loss: synthesizing over a child that finished doubles the bracket
-/// count and lets a fabricated outcome outrank a recorded one, and
-/// synthesizing for an unscheduled child prices domain-hours the frame never
-/// attempted (`lw_bracketed_domains` and the mismatch instrument are both
-/// counted in domain-hours).
-///
-/// What production change makes this fail: dropping the `scheduled` filter;
-/// dropping the already-covered check; or going back to one bracket over all
-/// of 10..=17.
 #[test]
 fn a_parent_panic_brackets_only_the_scheduled_and_uncovered_children() {
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
-    // A decisions-and-fuel roster where fuel already closed its own bracket.
     let scheduled: BTreeSet<u16> = [LW_TAG_COUNTRY_FUEL, LW_TAG_COUNTRY_DECISIONS]
         .into_iter()
         .collect();
@@ -1337,38 +1057,12 @@ fn a_parent_panic_brackets_only_the_scheduled_and_uncovered_children() {
     );
 }
 
-/// The same bound, on the two children whose bracket tag IS a bare domain id.
-///
-/// Focus and tech are the only country children not tagged with a 20x constant:
-/// lane LE split them and gave each its own domain id, 12 and 13, which
-/// `for_each_bracket_covered_domain` resolves through its DEFAULT arm rather
-/// than a named one. Before that split those values were reachable only on a
-/// one-spec roster; on the production roster the child was tag 203 and covered
-/// both. So this is the first time a real capture can synthesize a panic
-/// bracket over a bare domain id, and it is the case the roster in the test
-/// above cannot reach.
-///
-/// The claim under test is that d13 tearing tells you nothing about d12: a
-/// parent panic after focus has closed its own bracket synthesizes for tech
-/// ALONE, and the covered set is exactly {12, 13} with neither doubled.
-///
-/// What production change makes this fail:
-///  * Recombining focus and tech under one 203 tag, i.e. taking 12 and 13 out
-///    of `COUNTRY_CHILD_BRACKET_TAGS`. The synthesized list goes EMPTY, not to
-///    `[203]` — this fixture's scheduled set is `{12, 13}`, and the synthesiser
-///    only ever brackets a tag that set contains, so 203 is skipped rather than
-///    emitted.
-///  * Breaking the `own => visit(own)` default arm, so d12 is no longer seen as
-///    covered by the bracket it recorded: BOTH 12 and 13 are then synthesized.
-///  * Dropping the already-covered check: focus is bracketed twice, and a
-///    fabricated WorkerPanic outranks the clean bracket it recorded.
 #[test]
 fn a_parent_panic_over_the_split_focus_and_tech_children_brackets_tech_alone() {
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let scheduled: BTreeSet<u16> = [COMPACT_DOMAIN_FOCUS, COMPACT_DOMAIN_TECH]
         .into_iter()
         .collect();
-    // Focus closed cleanly; the technology census is the child that did not.
     lanes.record_clock_bracket(COMPACT_DOMAIN_FOCUS, None, None, false);
     lanes.record_worker_panicked_country_brackets(&scheduled);
 
@@ -1395,12 +1089,6 @@ fn a_parent_panic_over_the_split_focus_and_tech_children_brackets_tech_alone() {
     );
 }
 
-/// A rejected set naming every domain must reproduce the old blanket reset
-/// exactly. This is the compatibility floor: whatever the allowlist says, a
-/// frame in which nothing survived behaves as it did before.
-///
-/// What production change makes this fail: a retention predicate that ignores
-/// `rejected_domains` for some field.
 #[test]
 fn rejecting_every_domain_is_the_old_blanket_reset() {
     let everything: BTreeSet<u16> = (0u16..=1000).collect();

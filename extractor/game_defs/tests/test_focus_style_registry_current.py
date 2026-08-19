@@ -7,7 +7,7 @@ import sys
 GAME_DEFS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(GAME_DEFS))
 
-import parse_focus_def  # noqa: E402
+import parse_focus_def
 
 
 GAME = Path(r"X:\SteamLibrary\steamapps\common\Hearts of Iron IV")

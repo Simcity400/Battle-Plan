@@ -1,10 +1,5 @@
-//! Unit tests for the supersede algorithm, rollback retention, fail-closed
-//! identity/order gate, serialization, and determinism.
-
 use super::*;
 use std::collections::BTreeMap;
-
-// --------------------------- construction helpers ---------------------------
 
 fn verified(scheme: u16, key: &[u8]) -> CampaignIdentityResolution {
     CampaignIdentityResolution::Verified {
@@ -36,8 +31,6 @@ fn stitch_inputs() -> StitchRequiredInputs {
     }
 }
 
-/// A segment whose coverage is a Snapshot for every hour in `range`, verified for
-/// campaign `key` with a ticket, one session per play_order.
 fn snap_seg(
     play_order: u64,
     ord: u32,
@@ -151,37 +144,25 @@ fn extend_source_bounds(segment: &mut SegmentInput, record_end: u64, byte_end: u
     participation.byte_bounds = (0, byte_end);
 }
 
-/// Visible main hours as a plain sorted vec for assertions.
 fn main_hours(p: &StitchedPlan) -> Vec<i64> {
     p.supersede.main.keys().copied().collect()
 }
 
-// ------------------------------- KEY constant -------------------------------
-
 const K: &[u8] = b"campaign-A";
-
-// =========================================================================
-// Supersede acceptance examples
-// =========================================================================
 
 #[test]
 fn rollback_middle_supersedes_and_retains() {
-    // S0=0..100, rollback S1=80..90.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let s1 = snap_seg(1, 0, K, 80..=90);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
 
-    // main = 0..79 (S0) + 80..90 (S1)
     assert_eq!(main_hours(&plan), (0..=90).collect::<Vec<_>>());
     assert_eq!(plan.supersede.main_head, Some(90));
-    // hours 0..79 owned by segment 0, 80..90 by segment 1.
     assert_eq!(plan.supersede.main[&79].segment_id, 0);
     assert_eq!(plan.supersede.main[&80].segment_id, 1);
     assert_eq!(plan.supersede.main[&90].segment_id, 1);
-    // playback does NOT resume at old hour 91: hour 91 is absent from main.
     assert!(!plan.supersede.main.contains_key(&91));
 
-    // S0:80..100 retained as ONE superseded span, superseded_by S1.
     let sup: Vec<_> = plan
         .supersede
         .superseded
@@ -195,14 +176,11 @@ fn rollback_middle_supersedes_and_retains() {
 
 #[test]
 fn overlap_at_start_boundary() {
-    // exact-boundary: later branch cutover == earlier head.
     let s0 = snap_seg(0, 0, K, 0..=50);
     let s1 = snap_seg(1, 0, K, 50..=60);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
     assert_eq!(main_hours(&plan), (0..=60).collect::<Vec<_>>());
-    // hour 50 is owned by the LATER segment (cutover deletes h>=50 first).
     assert_eq!(plan.supersede.main[&50].segment_id, 1);
-    // S0:50 is superseded.
     assert!(plan.supersede.superseded.iter().any(|s| s.segment_id == 0
         && s.start_hour <= 50
         && 50 <= s.end_hour
@@ -211,7 +189,6 @@ fn overlap_at_start_boundary() {
 
 #[test]
 fn overlap_at_end_extends_past_old_head() {
-    // later branch starts inside old span and extends BEYOND old head.
     let s0 = snap_seg(0, 0, K, 0..=40);
     let s1 = snap_seg(1, 0, K, 30..=80);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
@@ -224,7 +201,6 @@ fn overlap_at_end_extends_past_old_head() {
 
 #[test]
 fn relaunch_continuation_extends_main() {
-    // Normal relaunch S2=91..120 after S0/S1 rollback.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let s1 = snap_seg(1, 0, K, 80..=90);
     let s2 = snap_seg(2, 0, K, 91..=120);
@@ -238,7 +214,6 @@ fn relaunch_continuation_extends_main() {
 
 #[test]
 fn cross_session_gap_is_explicit_not_invented() {
-    // Later session begins at 110 after prior head 100 -> 101..109 gap.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let mut s2 = snap_seg(1, 0, K, 110..=120);
     for hour in 101..=109 {
@@ -251,7 +226,6 @@ fn cross_session_gap_is_explicit_not_invented() {
         );
     }
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s2]));
-    // Every absent observation is explicit, reason/evidence-coded coverage.
     for h in 101..=109 {
         assert!(matches!(&plan.supersede.main[&h].disposition,
             CoverageDisposition::Gap { reason, evidence_id }
@@ -317,8 +291,6 @@ fn refuse_compatibility_proof_binding_mismatch() {
 
 #[test]
 fn later_failed_hour_is_a_main_gap_over_older_snapshot() {
-    // section 11 gate 3: S1 fails to capture hour 85 -> main hour 85 is a gap even
-    // though S0 captured it. S0:85 stays rollback-only.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let mut s1 = snap_seg(1, 0, K, 80..=90);
     s1.coverage.insert(
@@ -332,14 +304,12 @@ fn later_failed_hour_is_a_main_gap_over_older_snapshot() {
     observation.observation_id = "ev-85".into();
     observation.disposition = s1.coverage[&85].clone();
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
-    // hour 85 present in main but NOT a snapshot (it is a visible gap owned by S1).
     let mh85 = &plan.supersede.main[&85];
     assert_eq!(mh85.segment_id, 1);
     assert!(
         !mh85.disposition.is_snapshot(),
         "later failed hour must be a gap"
     );
-    // the main index lists hour 85 as coverage, never a snapshot file.
     let idx = plan.main_index_value();
     let snaps = idx["snapshots"].as_array().unwrap();
     assert!(snaps.iter().all(|e| e["hour_index"].as_i64() != Some(85)));
@@ -350,10 +320,6 @@ fn later_failed_hour_is_a_main_gap_over_older_snapshot() {
             && c["kind"].as_str() == Some("capture_failed")));
 }
 
-/// R5-H2: the published playback index must DATE every visible snapshot hour.
-/// A reader answers jump-to-date from the index and never from a frame body,
-/// so a dateless stitched index silently degrades date navigation into "seek
-/// to hour zero" while still reporting success.
 #[test]
 fn main_index_dates_every_visible_snapshot_hour() {
     let plan = stitched(plan_stitch(
@@ -374,8 +340,6 @@ fn main_index_dates_every_visible_snapshot_hour() {
     }
 }
 
-/// A visible snapshot hour with no date is refused at plan validation rather
-/// than published as an index a reader cannot navigate.
 #[test]
 fn a_visible_snapshot_without_a_date_is_refused() {
     let mut undated = snap_seg(0, 0, K, 0..=0);
@@ -390,25 +354,27 @@ fn a_visible_snapshot_without_a_date_is_refused() {
     let disposition = undated.coverage.get(&0).unwrap().clone();
     undated.observations.get_mut(&0).unwrap()[0].disposition = disposition;
     assert!(matches!(
-        plan_stitch("g", stitch_inputs(), vec![undated, snap_seg(1, 0, K, 1..=1)]),
+        plan_stitch(
+            "g",
+            stitch_inputs(),
+            vec![undated, snap_seg(1, 0, K, 1..=1)]
+        ),
         StitchOutcome::Separate { .. }
     ));
 }
 
 #[test]
 fn multi_reload_chain() {
-    // three rollbacks in a row, each superseding the previous future.
     let s0 = snap_seg(0, 0, K, 0..=100);
-    let s1 = snap_seg(1, 0, K, 90..=95); // rollback 1
-    let s2 = snap_seg(2, 0, K, 50..=55); // rollback 2 (below both)
-    let s3 = snap_seg(3, 0, K, 52..=200); // rollback-then-long continuation
+    let s1 = snap_seg(1, 0, K, 90..=95);
+    let s2 = snap_seg(2, 0, K, 50..=55);
+    let s3 = snap_seg(3, 0, K, 52..=200);
     let plan = stitched(plan_stitch(
         "g",
         stitch_inputs(),
         vec![s0.clone(), s1.clone(), s2.clone(), s3.clone()],
     ));
 
-    // final main: S0:0..49, S2:50..51, S3:52..200.
     assert_eq!(plan.supersede.main[&49].segment_id, 0);
     assert_eq!(plan.supersede.main[&50].segment_id, 2);
     assert_eq!(plan.supersede.main[&51].segment_id, 2);
@@ -416,8 +382,6 @@ fn multi_reload_chain() {
     assert_eq!(plan.supersede.main[&200].segment_id, 3);
     assert_eq!(plan.supersede.main_head, Some(200));
 
-    // EVERY excluded snapshot appears in a rollback (superseded) span (gate 11).
-    // Reconstruct which (segment,hour) snapshots are excluded from main and verify.
     let inputs = [(&s0, 0u32), (&s1, 1), (&s2, 2), (&s3, 3)];
     for (seg, gid) in inputs {
         for (h, disp) in seg.coverage.iter() {
@@ -431,7 +395,6 @@ fn multi_reload_chain() {
                 .map(|mh| mh.segment_id == gid)
                 .unwrap_or(false);
             if !visible_here {
-                // must be covered by a superseded span of this segment.
                 let covered = plan
                     .supersede
                     .superseded
@@ -448,11 +411,9 @@ fn multi_reload_chain() {
 
 #[test]
 fn abandoned_future_never_resumed() {
-    // self-refutation #5: after the new branch ends, the old future must not resume.
     let s0 = snap_seg(0, 0, K, 0..=100);
     let s1 = snap_seg(1, 0, K, 20..=30);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
-    // main ends at 30; nothing from S0 beyond 19 is visible.
     assert_eq!(plan.supersede.main_head, Some(30));
     for h in 31..=100 {
         assert!(
@@ -462,17 +423,12 @@ fn abandoned_future_never_resumed() {
     }
 }
 
-// =========================================================================
-// Rollback retention round-trip
-// =========================================================================
-
 #[test]
 fn rollback_retention_roundtrip_via_serialization() {
     let s0 = snap_seg(0, 0, K, 0..=100);
     let s1 = snap_seg(1, 0, K, 80..=90);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, s1]));
 
-    // segments.json retains the superseded span with superseded_by.
     let segs = plan.segments_value();
     let seg0 = segs["segments"]
         .as_array()
@@ -486,7 +442,6 @@ fn rollback_retention_roundtrip_via_serialization() {
     assert_eq!(sup[0]["end_hour"].as_i64(), Some(100));
     assert_eq!(sup[0]["superseded_by"].as_i64(), Some(1));
 
-    // the per-segment index still lists the superseded snapshot hours 80..100.
     let pseg0 = plan.segments.iter().find(|p| p.segment_id == 0).unwrap();
     let idx0 = plan.segment_index_value(pseg0);
     let hours: Vec<i64> = idx0["hours"]
@@ -500,7 +455,6 @@ fn rollback_retention_roundtrip_via_serialization() {
         (0..=100).collect::<Vec<_>>(),
         "no retained hour dropped"
     );
-    // hour 95 snapshot file is segment-0-prefixed and still present.
     let h95 = idx0["hours"]
         .as_array()
         .unwrap()
@@ -520,17 +474,11 @@ fn visible_index_uses_segment_prefixed_filenames() {
         .into_iter()
         .map(|(_, f)| f)
         .collect();
-    // hour 0 from segment 0; hours 1..3 from segment 1.
     assert!(files.contains(&"s00000000.000000000000.snapshot.json".to_string()));
     assert!(files.contains(&"s00000001.000000000001.snapshot.json".to_string()));
     assert!(files.contains(&"s00000001.000000000003.snapshot.json".to_string()));
-    // NO segment-0 file for hour 1 in the visible set (superseded).
     assert!(!files.contains(&"s00000000.000000000001.snapshot.json".to_string()));
 }
-
-// =========================================================================
-// Fail-closed refusals
-// =========================================================================
 
 #[test]
 fn refuse_unbound_identity_missing() {
@@ -590,7 +538,7 @@ fn refuse_mismatched_campaign_keys() {
 fn refuse_mixed_scheme_major() {
     let s0 = snap_seg(0, 0, K, 0..=10);
     let mut s1 = snap_seg(1, 0, K, 5..=15);
-    s1.identity = verified(2, K); // different scheme major, same key bytes
+    s1.identity = verified(2, K);
     match plan_stitch("g", stitch_inputs(), vec![s0, s1]) {
         StitchOutcome::Separate { reason } => assert!(reason.contains("scheme_major")),
         other => panic!("expected Separate, got {other:?}"),
@@ -610,10 +558,8 @@ fn refuse_mixed_stream_major() {
 
 #[test]
 fn refuse_duplicate_play_order_key() {
-    // two distinct sessions cannot share the same (play_order, in_session_ordinal).
     let mut s0 = snap_seg(0, 0, K, 0..=10);
     let mut s1 = snap_seg(0, 0, K, 5..=15);
-    // give them distinct nonces so this is genuinely two sessions colliding on order.
     s0.provenance.session_nonce = "nonce-A".into();
     s1.provenance.session_nonce = "nonce-B".into();
     s0.ticket = Some(AppendTicket {
@@ -635,7 +581,7 @@ fn refuse_duplicate_play_order_key() {
 #[test]
 fn refuse_ticket_campaign_key_disagreement() {
     let mut s = snap_seg(0, 0, K, 0..=10);
-    s.ticket = Some(ticket(b"other-key", 0)); // ticket key != identity key
+    s.ticket = Some(ticket(b"other-key", 0));
     match plan_stitch("g", stitch_inputs(), vec![s]) {
         StitchOutcome::Separate { reason } => assert!(reason.contains("disagrees")),
         other => panic!("expected Separate, got {other:?}"),
@@ -667,19 +613,14 @@ fn refuse_every_ticket_field_disagreement() {
 
 #[test]
 fn refuse_corrupt_coverage_hole() {
-    // a segment with a hole in cutover..=head is corrupt input (self-refutation #3).
     let mut s = snap_seg(0, 0, K, 0..=10);
-    s.coverage.remove(&5); // create a hole
+    s.coverage.remove(&5);
     s.observations.remove(&5);
     match plan_stitch("g", stitch_inputs(), vec![s]) {
         StitchOutcome::Separate { reason } => assert!(reason.contains("missing coverage")),
         other => panic!("expected Separate, got {other:?}"),
     }
 }
-
-// =========================================================================
-// Determinism
-// =========================================================================
 
 #[test]
 fn determinism_input_order_permutation() {
@@ -690,7 +631,6 @@ fn determinism_input_order_permutation() {
             snap_seg(1, 0, K, 80..=90),
         ]
     };
-    // permuted input order must produce an identical plan + identical bytes.
     let mut a = build();
     let mut b = build();
     a.reverse();
@@ -699,11 +639,9 @@ fn determinism_input_order_permutation() {
     let pb = stitched(plan_stitch("g", stitch_inputs(), b));
     assert_eq!(pa, pb, "plan is a pure function of the segment set");
 
-    // and the serialized container files are byte-identical.
     let fa = pa.to_container_files();
     let fb = pb.to_container_files();
     assert_eq!(fa, fb);
-    // digests stable too.
     assert_eq!(pa.stitch_input_digest, pb.stitch_input_digest);
     assert_eq!(pa.play_order_ledger_digest, pb.play_order_ledger_digest);
 }
@@ -713,7 +651,6 @@ fn determinism_input_change_moves_digest() {
     let base = vec![snap_seg(0, 0, K, 0..=100), snap_seg(1, 0, K, 80..=90)];
     let p_base = stitched(plan_stitch("g", stitch_inputs(), base));
 
-    // mutate one cutover: S1 now 81..90.
     let changed = vec![snap_seg(0, 0, K, 0..=100), snap_seg(1, 0, K, 81..=90)];
     let p_changed = stitched(plan_stitch("g", stitch_inputs(), changed));
     assert_ne!(
@@ -724,7 +661,6 @@ fn determinism_input_change_moves_digest() {
 
 #[test]
 fn global_ordinals_scan_from_zero_in_play_order() {
-    // ids are assigned by scanning (play_order, in_session_ordinal), NOT input order.
     let mut same_session_0 = snap_seg(5, 0, K, 0..=10);
     let mut same_session_1 = snap_seg(5, 1, K, 10..=20);
     for observations in same_session_1.observations.values_mut() {
@@ -748,7 +684,6 @@ fn global_ordinals_scan_from_zero_in_play_order() {
         stitch_inputs(),
         vec![same_session_1, same_session_0, snap_seg(2, 0, K, 30..=40)],
     ));
-    // sorted order: (2,0)->gid0, (5,0)->gid1, (5,1)->gid2
     assert_eq!(plan.segments[0].input.play_order, 2);
     assert_eq!(plan.segments[0].segment_id, 0);
     assert_eq!(plan.segments[1].input.play_order, 5);
@@ -757,29 +692,22 @@ fn global_ordinals_scan_from_zero_in_play_order() {
     assert_eq!(plan.segments[2].segment_id, 2);
 }
 
-// =========================================================================
-// Empty recovery retention
-// =========================================================================
-
 #[test]
 fn empty_recovery_segment_retained_not_placed() {
     let mut recovery = snap_seg(1, 0, K, 0..=0);
-    recovery.coverage.clear(); // empty recovery segment (no complete frame)
+    recovery.coverage.clear();
     recovery.observations.clear();
     let s0 = snap_seg(0, 0, K, 0..=10);
     let plan = stitched(plan_stitch("g", stitch_inputs(), vec![s0, recovery]));
-    // it is retained as a planned segment...
     assert_eq!(plan.segments.len(), 2);
     let rec = plan
         .segments
         .iter()
         .find(|p| p.input.is_empty_recovery())
         .unwrap();
-    // ...with no visible or superseded span, and no cutover/head.
     assert!(rec.visible_spans.is_empty());
     assert!(rec.superseded_spans.is_empty());
     assert_eq!(rec.input.cutover(), None);
-    // main timeline is unaffected.
     assert_eq!(main_hours(&plan), (0..=10).collect::<Vec<_>>());
 }
 
@@ -861,8 +789,6 @@ fn adjacent_different_failure_causes_do_not_coalesce() {
     assert_eq!(coverage[1]["reason"], "cause-b");
 }
 
-// W12G round-2 regressions are kept below the round-1 gates.
-
 #[test]
 fn same_hour_success_then_failure_keeps_both_and_serializes_exact_owner() {
     let mut segment = snap_seg(0, 0, K, 100..=100);
@@ -930,8 +856,6 @@ fn same_hour_failure_then_success_keeps_both_and_selects_later_sequence() {
             },
         ],
     );
-    // Deliberately reverse input order: source sequence, not vector position,
-    // remains the selection authority.
     segment.observations.get_mut(&100).unwrap().reverse();
     extend_source_bounds(&mut segment, 3, 200);
 
@@ -945,8 +869,6 @@ fn same_hour_failure_then_success_keeps_both_and_selects_later_sequence() {
 
 #[test]
 fn one_process_can_reenter_campaign_under_distinct_participation_tickets() {
-    // One attachment can load A -> B -> A. The two A participations therefore
-    // share one session/process/raw source but have distinct campaign-local tickets.
     let mut first_a = snap_seg(0, 0, K, 0..=10);
     let mut second_a = snap_seg(1, 1, K, 11..=20);
     for segment in [&mut first_a, &mut second_a] {
@@ -1092,7 +1014,6 @@ fn windows_source_path_aliases_share_one_ownership_ledger() {
 
 #[test]
 fn parent_is_captured_before_each_cutover_not_from_final_main() {
-    // At S1 insertion, S0 owns hour 79. Future S2 must never rewrite S1's parent.
     let plan = stitched(plan_stitch(
         "g",
         stitch_inputs(),
@@ -1119,9 +1040,7 @@ fn mandatory_source_inputs_are_rejected_and_schema_moves_digest() {
     writer_a.schema_version = "writer-schema-a".into();
     let mut segment_a = snap_seg(0, 0, K, 0..=1);
     segment_a.provenance.schema_version = Some("writer-schema-a".into());
-    if let CompatibilityResolution::Proven { schema_version, .. } =
-        &mut segment_a.compatibility
-    {
+    if let CompatibilityResolution::Proven { schema_version, .. } = &mut segment_a.compatibility {
         *schema_version = "writer-schema-a".into();
     }
     let a = stitched(plan_stitch("g", writer_a, vec![segment_a]));
@@ -1129,9 +1048,7 @@ fn mandatory_source_inputs_are_rejected_and_schema_moves_digest() {
     writer_b.schema_version = "writer-schema-b".into();
     let mut segment_b = snap_seg(0, 0, K, 0..=1);
     segment_b.provenance.schema_version = Some("writer-schema-b".into());
-    if let CompatibilityResolution::Proven { schema_version, .. } =
-        &mut segment_b.compatibility
-    {
+    if let CompatibilityResolution::Proven { schema_version, .. } = &mut segment_b.compatibility {
         *schema_version = "writer-schema-b".into();
     }
     let b = stitched(plan_stitch("g", writer_b, vec![segment_b]));
@@ -1242,11 +1159,7 @@ fn digests_and_transition_evidence_use_canonical_grammars() {
     }
     mismatched_publication_schema.provenance.schema_version = Some("foreign-schema".into());
     assert!(matches!(
-        plan_stitch(
-            "g",
-            stitch_inputs(),
-            vec![mismatched_publication_schema]
-        ),
+        plan_stitch("g", stitch_inputs(), vec![mismatched_publication_schema]),
         StitchOutcome::Separate { .. }
     ));
 

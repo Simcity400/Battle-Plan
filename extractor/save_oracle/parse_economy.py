@@ -61,9 +61,6 @@ FACTORY_BLD = {
     "dockyard": "dockyard",
 }
 
-# Law tokens are mod-specific, but the engine's law IDEAS reliably contain these
-# substrings. We classify a flat idea token as a law if it matches; everything
-# else (spirits, advisors, traits) is kept separately.
 LAW_PATTERNS = {
     "economy": ("_economy", "war_economy", "civilian_economy",
                 "early_mobilization", "partial_mobilization",
@@ -85,9 +82,6 @@ def _classify_idea(token):
     return None
 
 
-# ---------------------------------------------------------------------------
-# states pass: per-owner factory totals from state buildings
-# ---------------------------------------------------------------------------
 
 def _parse_state_buildings(tz):
     f = {"civ": 0, "mil": 0, "dockyard": 0}
@@ -133,9 +127,6 @@ def _parse_states(tz, owner_factories):
             agg["dockyard"] += f["dockyard"]
 
 
-# ---------------------------------------------------------------------------
-# countries pass
-# ---------------------------------------------------------------------------
 
 def _parse_offmap_buildings(tz):
     f = {"civ": 0, "mil": 0, "dockyard": 0}
@@ -168,7 +159,7 @@ def _parse_general_lines(tz, queue):
                "priority": None, "created_date": None}
         for k, op in iter_block_entries(tz):
             if op is LBRACE:
-                if k == "building":  # inner { template location }
+                if k == "building":
                     for kk, oo in iter_block_entries(tz):
                         if oo is LBRACE:
                             _skip_block_body(tz)
@@ -338,7 +329,6 @@ def build(text, source, was_melted):
             "under_construction": len(rec["construction_queue"]),
         }
 
-        # Laws vs other ideas.
         laws = {"economy": None, "trade": None, "conscription": None}
         ideas_other = []
         for tok in rec["ideas_all"]:
@@ -346,12 +336,10 @@ def build(text, source, was_melted):
             if kind and laws[kind] is None:
                 laws[kind] = tok
             elif kind:
-                # multiple matched the same bucket; keep first, push rest to other
                 ideas_other.append(tok)
             else:
                 ideas_other.append(tok)
 
-        # Derived available resources.
         avail = {}
         for r, amt in rec["res_produced"].items():
             exp = rec["res_exported"].get(r, 0) or 0

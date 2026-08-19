@@ -40,10 +40,6 @@ assert _SPEC is not None and _SPEC.loader is not None
 _VSR = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_VSR)
 
-# Run t63's own receipt fields, with `pipe_token_sha256` rebound to the token
-# below because that is the only per-attach token still known and the payload's
-# token binding requires the two to agree. Identical to the `t63_install_freeze_*`
-# fixture cases and to `t63_ready_fields` in the Rust test.
 PIPE_TOKEN = "f743c8f124d2572ad18b99db033554ba"
 
 T63_RECEIPT: dict[str, object] = {
@@ -88,7 +84,6 @@ T63_RECEIPT: dict[str, object] = {
         "758746092eb8b83c15916bce1842ab8d1d50d99dd0c14cafe0d3403206bded36",
 }
 
-# Produced by CaptureReadyV2::encode_authenticated, not by this module.
 PAYLOAD_SHA_FREEZE_13 = \
     "e8b08ebca73f6b9d4821931b3c53f74dc55e7c48bc203b0f6a69f4b596ad16b8"
 PAYLOAD_SHA_FREEZE_1000 = \

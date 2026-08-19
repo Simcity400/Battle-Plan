@@ -1,17 +1,8 @@
-//! A34 complete heterogeneous country-decision panel carrier (compact d87).
-//!
-//! DPN1 v3 preserves the exact materialized grid and raw interface state, not
-//! merely decision cards.
-//! Runtime order, geometry, category/event structure, scroll state, text, and
-//! alert membership come from the receipt-bound country-view update. The
-//! selected-Present receipt proves that materialization completed before the
-//! frame which the replay actually displays.
-
 #[cfg(windows)]
 pub mod a729_hook;
 
-use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 87;
 pub const DOMAIN_NAME: &str = "decision_panel_live";
@@ -23,21 +14,13 @@ pub const EXACT20_FUNCTION_MANIFEST_SHA256: [u8; 32] =
     hex32(b"712233abfbd1352f0c84ede6267a99f4de8f5406cabfd20d76046a094b5fec0a");
 pub const EXACT20_DATA_ARTIFACT_SHA256: [u8; 32] =
     hex32(b"ccca7fbfe0378821f22ed82d1a371a58ea12c24a9601fd3dd36d97bef093f0ea");
-/// Exact-a729 CCountryDecisionView update/controller/country-owner join.
-/// Ghidra job:
-/// `20260720T130318Z-wave5-a34-country-view-owner-tag-join-ro-f6d9b428`.
 pub const COUNTRY_VIEW_OWNER_TAG_MANIFEST_SHA256: [u8; 32] =
     hex32(b"a31b9fa4d886d509ceceef46819b6048331ef65065c2f07a8cc086e0868dd07a");
-/// Exact interface-state and numeric timer/cooldown leaf producers used by the
-/// ordinary semantic resolver.
 pub const SEMANTIC_LEAF_MANIFEST_SHA256: [u8; 32] =
     hex32(b"082d3f982a260c085f19c320bf1368e79395821e3b0a42007eb1648bcee6348e");
-/// Exact decision-definition +0x220/0x22c on-map vector and 0x130 entry stride.
 pub const ON_MAP_IDENTITY_MANIFEST_SHA256: [u8; 32] =
     hex32(b"a412d4480732030ae8bbffd5c135f9e22029bdcdee40dcd760c025da30fc0130");
 pub const PRODUCTION_SCHEDULING_ENABLED: bool = true;
-/// Optional regression evidence only. Production is owned by the exact static
-/// hook graph and fail-closed ordinary collector transaction.
 pub const LIVE_FIXTURE_ACCEPTED: bool = false;
 pub const MAX_ROWS: usize = 32_768;
 pub const MAX_TEXT_BYTES: usize = 16_384;
@@ -152,16 +135,10 @@ pub struct DecisionPanelChild {
 pub struct DecisionRow {
     pub decision_id: String,
     pub category_id: String,
-    /// Ordinal in `DecisionPanelSnapshot.children`, not in the decision-only
-    /// subset.
     pub presentation_index: u32,
     pub availability: Availability,
     pub lifecycle: Lifecycle,
-    /// Exact raw result of the engine's decision interface-state helper.
-    /// On-map materializers have no equivalent helper and retain `None`.
     pub interface_state: Option<u32>,
-    /// Stable ordinal in the owning decision definition's +0x220 on-map
-    /// descriptor vector. Present only for on-map materializer children.
     pub on_map_entry_ordinal: Option<u32>,
     pub target: Option<Target>,
     pub cost: Option<Cost>,
@@ -229,13 +206,9 @@ fn sha256_ok(value: &str) -> bool {
 }
 
 fn event_identity_ok(value: &str) -> bool {
-    value
-        .strip_prefix("event_")
-        .is_some_and(|id| {
-            !id.is_empty()
-                && id.bytes().all(|byte| byte.is_ascii_digit())
-                && id.parse::<u32>().is_ok()
-        })
+    value.strip_prefix("event_").is_some_and(|id| {
+        !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()) && id.parse::<u32>().is_ok()
+    })
 }
 
 fn interface_state_matches(row: &DecisionRow) -> bool {
@@ -243,29 +216,21 @@ fn interface_state_matches(row: &DecisionRow) -> bool {
         return false;
     }
     if row.cooldown_remaining_days.is_some_and(|days| days > 0) {
-        return row.availability == Availability::OnCooldown
-            && row.lifecycle == Lifecycle::Pending;
+        return row.availability == Availability::OnCooldown && row.lifecycle == Lifecycle::Pending;
     }
     match row.interface_state {
-        None => {
-            row.availability == Availability::Available
-                && row.lifecycle == Lifecycle::Pending
-        }
+        None => row.availability == Availability::Available && row.lifecycle == Lifecycle::Pending,
         Some(1 | 6 | 9) if row.on_map_entry_ordinal.is_none() => {
-            row.availability == Availability::Available
-                && row.lifecycle == Lifecycle::Pending
+            row.availability == Availability::Available && row.lifecycle == Lifecycle::Pending
         }
         Some(3 | 4 | 10 | 11) if row.on_map_entry_ordinal.is_none() => {
-            row.availability == Availability::Active
-                && row.lifecycle == Lifecycle::Running
+            row.availability == Availability::Active && row.lifecycle == Lifecycle::Running
         }
         Some(12) if row.on_map_entry_ordinal.is_none() => {
-            row.availability == Availability::Unavailable
-                && row.lifecycle == Lifecycle::Completed
+            row.availability == Availability::Unavailable && row.lifecycle == Lifecycle::Completed
         }
         Some(0 | 2 | 5 | 7 | 8) if row.on_map_entry_ordinal.is_none() => {
-            row.availability == Availability::Unavailable
-                && row.lifecycle == Lifecycle::Pending
+            row.availability == Availability::Unavailable && row.lifecycle == Lifecycle::Pending
         }
         _ => false,
     }
@@ -279,13 +244,8 @@ pub fn validate_snapshot(snapshot: &DecisionPanelSnapshot) -> Result<(), Carrier
         || snapshot.materialization_qpc_ticks == 0
         || snapshot.selected_present.selected_present_qpc_ticks == 0
         || snapshot.selected_present.qpc_frequency_hz == 0
-        || !sha256_ok(
-            &snapshot
-                .selected_present
-                .selected_present_receipt_sha256,
-        )
-        || snapshot.materialization_qpc_ticks
-            > snapshot.selected_present.selected_present_qpc_ticks
+        || !sha256_ok(&snapshot.selected_present.selected_present_receipt_sha256)
+        || snapshot.materialization_qpc_ticks > snapshot.selected_present.selected_present_qpc_ticks
         || snapshot.rows.len() > MAX_ROWS
         || snapshot.children.len() > MAX_ROWS
     {
@@ -307,7 +267,10 @@ pub fn validate_snapshot(snapshot: &DecisionPanelSnapshot) -> Result<(), Carrier
     for (ordinal, child) in snapshot.children.iter().enumerate() {
         if child.presentation_index as usize != ordinal
             || !text_ok(&child.identity, true)
-            || child.name_text.as_deref().is_some_and(|v| !text_ok(v, true))
+            || child
+                .name_text
+                .as_deref()
+                .is_some_and(|v| !text_ok(v, true))
             || child
                 .secondary_text
                 .as_deref()
@@ -337,9 +300,7 @@ pub fn validate_snapshot(snapshot: &DecisionPanelSnapshot) -> Result<(), Carrier
             _ => {}
         }
         match child.kind {
-            PanelChildKind::Category
-                if child.name_text.is_none() || child.expanded.is_none() =>
-            {
+            PanelChildKind::Category if child.name_text.is_none() || child.expanded.is_none() => {
                 return invalid("DPN1 category child lacks exact name/expansion state")
             }
             PanelChildKind::FixedHeader
@@ -431,7 +392,9 @@ pub fn validate_snapshot(snapshot: &DecisionPanelSnapshot) -> Result<(), Carrier
 
 pub fn validate_frame(frame: &DecisionPanelFrame) -> Result<(), CarrierError> {
     match frame.authority {
-        AuthorityState::Unavailable if frame.status_flags != 0 && frame.snapshot.is_none() => Ok(()),
+        AuthorityState::Unavailable if frame.status_flags != 0 && frame.snapshot.is_none() => {
+            Ok(())
+        }
         AuthorityState::Exact20Receipt if frame.status_flags == 0 && frame.snapshot.is_some() => {
             let snapshot = frame.snapshot.as_ref().expect("checked snapshot");
             if snapshot.selected_present.frame_hour != frame.frame_hour {
@@ -510,7 +473,10 @@ pub fn encode_payload(frame: &DecisionPanelFrame) -> Result<Vec<u8>, CarrierErro
         textv(&mut output, &snapshot.decision_catalog_sha256);
         u64v(&mut output, snapshot.materialization_qpc_ticks);
         u64v(&mut output, snapshot.selected_present.frame_hour);
-        u32v(&mut output, snapshot.selected_present.selected_present_ordinal);
+        u32v(
+            &mut output,
+            snapshot.selected_present.selected_present_ordinal,
+        );
         u64v(
             &mut output,
             snapshot.selected_present.selected_present_qpc_ticks,
@@ -518,9 +484,7 @@ pub fn encode_payload(frame: &DecisionPanelFrame) -> Result<Vec<u8>, CarrierErro
         u64v(&mut output, snapshot.selected_present.qpc_frequency_hz);
         textv(
             &mut output,
-            &snapshot
-                .selected_present
-                .selected_present_receipt_sha256,
+            &snapshot.selected_present.selected_present_receipt_sha256,
         );
         encode_grid(&mut output, &snapshot.grid);
         u32v(&mut output, snapshot.children.len() as u32);
@@ -713,7 +677,12 @@ fn encode_grid(output: &mut Vec<u8>, grid: &DecisionGridState) {
     ] {
         i32v(output, value);
     }
-    for value in [grid.scroll_min, grid.scroll_max, grid.scroll_target, grid.scroll_current] {
+    for value in [
+        grid.scroll_min,
+        grid.scroll_max,
+        grid.scroll_target,
+        grid.scroll_current,
+    ] {
         i64v(output, value);
     }
 }
@@ -745,29 +714,80 @@ fn encode_row(output: &mut Vec<u8>, row: &DecisionRow) {
         Some(Target::State(_)) => 2,
     });
     let mut flags = 0u16;
-    if row.cost.is_some() { flags |= 1; }
-    if row.cost.as_ref().and_then(|v| v.political_power).is_some() { flags |= 2; }
-    if row.cost.as_ref().and_then(|v| v.custom_cost_available).is_some() { flags |= 4; }
-    if row.cost.as_ref().and_then(|v| v.custom_cost_available) == Some(true) { flags |= 8; }
-    if row.cost.as_ref().and_then(|v| v.formatted_text.as_ref()).is_some() { flags |= 16; }
-    if row.remaining_timer_days.is_some() { flags |= 32; }
-    if row.cooldown_remaining_days.is_some() { flags |= 64; }
-    if row.timer_text.is_some() { flags |= 128; }
-    if row.alert_to_take { flags |= 256; }
-    if row.alert_timeout { flags |= 512; }
+    if row.cost.is_some() {
+        flags |= 1;
+    }
+    if row.cost.as_ref().and_then(|v| v.political_power).is_some() {
+        flags |= 2;
+    }
+    if row
+        .cost
+        .as_ref()
+        .and_then(|v| v.custom_cost_available)
+        .is_some()
+    {
+        flags |= 4;
+    }
+    if row.cost.as_ref().and_then(|v| v.custom_cost_available) == Some(true) {
+        flags |= 8;
+    }
+    if row
+        .cost
+        .as_ref()
+        .and_then(|v| v.formatted_text.as_ref())
+        .is_some()
+    {
+        flags |= 16;
+    }
+    if row.remaining_timer_days.is_some() {
+        flags |= 32;
+    }
+    if row.cooldown_remaining_days.is_some() {
+        flags |= 64;
+    }
+    if row.timer_text.is_some() {
+        flags |= 128;
+    }
+    if row.alert_to_take {
+        flags |= 256;
+    }
+    if row.alert_timeout {
+        flags |= 512;
+    }
     u16v(output, flags);
     i32v(output, row.remaining_timer_days.unwrap_or(-1));
     i32v(output, row.cooldown_remaining_days.unwrap_or(-1));
-    i64v(output, row.cost.as_ref().and_then(|v| v.political_power).unwrap_or(0));
-    u32v(output, match &row.target { Some(Target::State(v)) => *v, _ => 0 });
+    i64v(
+        output,
+        row.cost
+            .as_ref()
+            .and_then(|v| v.political_power)
+            .unwrap_or(0),
+    );
+    u32v(
+        output,
+        match &row.target {
+            Some(Target::State(v)) => *v,
+            _ => 0,
+        },
+    );
     u32v(output, row.interface_state.unwrap_or(u32::MAX));
     u32v(output, row.on_map_entry_ordinal.unwrap_or(u32::MAX));
     textv(output, &row.decision_id);
     textv(output, &row.category_id);
-    textv(output, match &row.target { Some(Target::Country(v)) => v, _ => "" });
+    textv(
+        output,
+        match &row.target {
+            Some(Target::Country(v)) => v,
+            _ => "",
+        },
+    );
     textv(output, &row.name_text);
     opt_textv(output, row.timer_text.as_deref());
-    opt_textv(output, row.cost.as_ref().and_then(|v| v.formatted_text.as_deref()));
+    opt_textv(
+        output,
+        row.cost.as_ref().and_then(|v| v.formatted_text.as_deref()),
+    );
 }
 
 fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
@@ -792,8 +812,8 @@ fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
         return invalid("DPN1 interface state encoding invalid");
     };
     let raw_on_map_entry_ordinal = reader.u32()?;
-    let on_map_entry_ordinal = (raw_on_map_entry_ordinal != u32::MAX)
-        .then_some(raw_on_map_entry_ordinal);
+    let on_map_entry_ordinal =
+        (raw_on_map_entry_ordinal != u32::MAX).then_some(raw_on_map_entry_ordinal);
     let decision_id = reader.text()?;
     let category_id = reader.text()?;
     let target_country = reader.text()?;
@@ -809,7 +829,11 @@ fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
     let cost = if flags & 1 != 0 {
         Some(Cost {
             political_power: (flags & 2 != 0).then_some(political_power),
-            custom_cost_available: if flags & 4 != 0 { Some(flags & 8 != 0) } else { None },
+            custom_cost_available: if flags & 4 != 0 {
+                Some(flags & 8 != 0)
+            } else {
+                None
+            },
             formatted_text: cost_text,
         })
     } else {
@@ -819,7 +843,11 @@ fn decode_row(reader: &mut Reader<'_>) -> Result<DecisionRow, CarrierError> {
         None
     };
     if (flags & 128 != 0) != timer_text.is_some()
-        || (flags & 16 != 0) != cost.as_ref().and_then(|v| v.formatted_text.as_ref()).is_some()
+        || (flags & 16 != 0)
+            != cost
+                .as_ref()
+                .and_then(|v| v.formatted_text.as_ref())
+                .is_some()
     {
         return invalid("DPN1 optional text flags mismatch");
     }
@@ -862,39 +890,136 @@ fn child_kind_from(value: u8) -> Result<PanelChildKind, CarrierError> {
 }
 
 fn availability_raw(value: Availability) -> u8 {
-    match value { Availability::Available => 0, Availability::Unavailable => 1, Availability::Active => 2, Availability::OnCooldown => 3 }
+    match value {
+        Availability::Available => 0,
+        Availability::Unavailable => 1,
+        Availability::Active => 2,
+        Availability::OnCooldown => 3,
+    }
 }
 fn availability_from(value: u8) -> Result<Availability, CarrierError> {
-    match value { 0 => Ok(Availability::Available), 1 => Ok(Availability::Unavailable), 2 => Ok(Availability::Active), 3 => Ok(Availability::OnCooldown), _ => invalid("DPN1 availability enum unknown") }
+    match value {
+        0 => Ok(Availability::Available),
+        1 => Ok(Availability::Unavailable),
+        2 => Ok(Availability::Active),
+        3 => Ok(Availability::OnCooldown),
+        _ => invalid("DPN1 availability enum unknown"),
+    }
 }
 fn lifecycle_raw(value: Lifecycle) -> u8 {
-    match value { Lifecycle::Pending => 0, Lifecycle::Running => 1, Lifecycle::Completed => 2, Lifecycle::Failed => 3, Lifecycle::Removed => 4 }
+    match value {
+        Lifecycle::Pending => 0,
+        Lifecycle::Running => 1,
+        Lifecycle::Completed => 2,
+        Lifecycle::Failed => 3,
+        Lifecycle::Removed => 4,
+    }
 }
 fn lifecycle_from(value: u8) -> Result<Lifecycle, CarrierError> {
-    match value { 0 => Ok(Lifecycle::Pending), 1 => Ok(Lifecycle::Running), 2 => Ok(Lifecycle::Completed), 3 => Ok(Lifecycle::Failed), 4 => Ok(Lifecycle::Removed), _ => invalid("DPN1 lifecycle enum unknown") }
+    match value {
+        0 => Ok(Lifecycle::Pending),
+        1 => Ok(Lifecycle::Running),
+        2 => Ok(Lifecycle::Completed),
+        3 => Ok(Lifecycle::Failed),
+        4 => Ok(Lifecycle::Removed),
+        _ => invalid("DPN1 lifecycle enum unknown"),
+    }
 }
 fn optional_nonnegative(value: i32, present: bool) -> Result<Option<i32>, CarrierError> {
-    if present && value >= 0 { Ok(Some(value)) } else if !present && value == -1 { Ok(None) } else { invalid("DPN1 optional timer encoding invalid") }
+    if present && value >= 0 {
+        Ok(Some(value))
+    } else if !present && value == -1 {
+        Ok(None)
+    } else {
+        invalid("DPN1 optional timer encoding invalid")
+    }
 }
-fn u16v(output: &mut Vec<u8>, value: u16) { output.extend_from_slice(&value.to_le_bytes()); }
-fn u32v(output: &mut Vec<u8>, value: u32) { output.extend_from_slice(&value.to_le_bytes()); }
-fn i32v(output: &mut Vec<u8>, value: i32) { output.extend_from_slice(&value.to_le_bytes()); }
-fn u64v(output: &mut Vec<u8>, value: u64) { output.extend_from_slice(&value.to_le_bytes()); }
-fn i64v(output: &mut Vec<u8>, value: i64) { output.extend_from_slice(&value.to_le_bytes()); }
-fn textv(output: &mut Vec<u8>, value: &str) { u32v(output, value.len() as u32); output.extend_from_slice(value.as_bytes()); }
-fn opt_textv(output: &mut Vec<u8>, value: Option<&str>) { match value { Some(value) => { output.push(1); textv(output, value); } None => output.push(0) } }
+fn u16v(output: &mut Vec<u8>, value: u16) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn u32v(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn i32v(output: &mut Vec<u8>, value: i32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn u64v(output: &mut Vec<u8>, value: u64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn i64v(output: &mut Vec<u8>, value: i64) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+fn textv(output: &mut Vec<u8>, value: &str) {
+    u32v(output, value.len() as u32);
+    output.extend_from_slice(value.as_bytes());
+}
+fn opt_textv(output: &mut Vec<u8>, value: Option<&str>) {
+    match value {
+        Some(value) => {
+            output.push(1);
+            textv(output, value);
+        }
+        None => output.push(0),
+    }
+}
 
-struct Reader<'a> { payload: &'a [u8], at: usize }
+struct Reader<'a> {
+    payload: &'a [u8],
+    at: usize,
+}
 impl<'a> Reader<'a> {
-    fn bytes(&mut self, count: usize) -> Result<&'a [u8], CarrierError> { let end = self.at.checked_add(count).ok_or(CarrierError::Truncated)?; let bytes = self.payload.get(self.at..end).ok_or(CarrierError::Truncated)?; self.at = end; Ok(bytes) }
-    fn u8(&mut self) -> Result<u8, CarrierError> { Ok(self.bytes(1)?[0]) }
-    fn u16(&mut self) -> Result<u16, CarrierError> { Ok(u16::from_le_bytes(self.bytes(2)?.try_into().expect("length"))) }
-    fn u32(&mut self) -> Result<u32, CarrierError> { Ok(u32::from_le_bytes(self.bytes(4)?.try_into().expect("length"))) }
-    fn i32(&mut self) -> Result<i32, CarrierError> { Ok(i32::from_le_bytes(self.bytes(4)?.try_into().expect("length"))) }
-    fn u64(&mut self) -> Result<u64, CarrierError> { Ok(u64::from_le_bytes(self.bytes(8)?.try_into().expect("length"))) }
-    fn i64(&mut self) -> Result<i64, CarrierError> { Ok(i64::from_le_bytes(self.bytes(8)?.try_into().expect("length"))) }
-    fn text(&mut self) -> Result<String, CarrierError> { let count = self.u32()? as usize; if count > MAX_TEXT_BYTES { return invalid("DPN1 text exceeds bound"); } String::from_utf8(self.bytes(count)?.to_vec()).map_err(|_| CarrierError::Invalid("DPN1 text invalid UTF-8".into())) }
-    fn opt_text(&mut self) -> Result<Option<String>, CarrierError> { match self.u8()? { 0 => Ok(None), 1 => Ok(Some(self.text()?)), _ => invalid("DPN1 optional text marker invalid") } }
+    fn bytes(&mut self, count: usize) -> Result<&'a [u8], CarrierError> {
+        let end = self.at.checked_add(count).ok_or(CarrierError::Truncated)?;
+        let bytes = self
+            .payload
+            .get(self.at..end)
+            .ok_or(CarrierError::Truncated)?;
+        self.at = end;
+        Ok(bytes)
+    }
+    fn u8(&mut self) -> Result<u8, CarrierError> {
+        Ok(self.bytes(1)?[0])
+    }
+    fn u16(&mut self) -> Result<u16, CarrierError> {
+        Ok(u16::from_le_bytes(
+            self.bytes(2)?.try_into().expect("length"),
+        ))
+    }
+    fn u32(&mut self) -> Result<u32, CarrierError> {
+        Ok(u32::from_le_bytes(
+            self.bytes(4)?.try_into().expect("length"),
+        ))
+    }
+    fn i32(&mut self) -> Result<i32, CarrierError> {
+        Ok(i32::from_le_bytes(
+            self.bytes(4)?.try_into().expect("length"),
+        ))
+    }
+    fn u64(&mut self) -> Result<u64, CarrierError> {
+        Ok(u64::from_le_bytes(
+            self.bytes(8)?.try_into().expect("length"),
+        ))
+    }
+    fn i64(&mut self) -> Result<i64, CarrierError> {
+        Ok(i64::from_le_bytes(
+            self.bytes(8)?.try_into().expect("length"),
+        ))
+    }
+    fn text(&mut self) -> Result<String, CarrierError> {
+        let count = self.u32()? as usize;
+        if count > MAX_TEXT_BYTES {
+            return invalid("DPN1 text exceeds bound");
+        }
+        String::from_utf8(self.bytes(count)?.to_vec())
+            .map_err(|_| CarrierError::Invalid("DPN1 text invalid UTF-8".into()))
+    }
+    fn opt_text(&mut self) -> Result<Option<String>, CarrierError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => Ok(Some(self.text()?)),
+            _ => invalid("DPN1 optional text marker invalid"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -911,7 +1036,11 @@ mod tests {
             interface_state: Some(1),
             on_map_entry_ordinal: None,
             target: None,
-            cost: Some(Cost { political_power: Some(50), custom_cost_available: None, formatted_text: Some("50".into()) }),
+            cost: Some(Cost {
+                political_power: Some(50),
+                custom_cost_available: None,
+                formatted_text: Some("50".into()),
+            }),
             remaining_timer_days: None,
             cooldown_remaining_days: None,
             name_text: "Exact decision".into(),
@@ -930,11 +1059,54 @@ mod tests {
                 country_tag: "ENG".into(),
                 decision_catalog_sha256: "a".repeat(64),
                 materialization_qpc_ticks: 90,
-                selected_present: SelectedPresentStamp { frame_hour: 55, selected_present_ordinal: 0, selected_present_qpc_ticks: 100, qpc_frequency_hz: 10_000_000, selected_present_receipt_sha256: "b".repeat(64) },
-                grid: DecisionGridState { clip_left: 0, clip_top: 0, clip_right: 502, clip_bottom: 600, content_origin_x: 0, content_origin_y: 0, content_extent_width: 502, content_extent_height: 99, scroll_min: 0, scroll_max: 0, scroll_target: 0, scroll_current: 0 },
+                selected_present: SelectedPresentStamp {
+                    frame_hour: 55,
+                    selected_present_ordinal: 0,
+                    selected_present_qpc_ticks: 100,
+                    qpc_frequency_hz: 10_000_000,
+                    selected_present_receipt_sha256: "b".repeat(64),
+                },
+                grid: DecisionGridState {
+                    clip_left: 0,
+                    clip_top: 0,
+                    clip_right: 502,
+                    clip_bottom: 600,
+                    content_origin_x: 0,
+                    content_origin_y: 0,
+                    content_extent_width: 502,
+                    content_extent_height: 99,
+                    scroll_min: 0,
+                    scroll_max: 0,
+                    scroll_target: 0,
+                    scroll_current: 0,
+                },
                 children: vec![
-                    DecisionPanelChild { presentation_index: 0, kind: PanelChildKind::Category, decision_row_index: None, identity: "category_one".into(), name_text: Some("Category".into()), secondary_text: None, expanded: Some(true), x: 0, y: 0, width: 502, height: 58 },
-                    DecisionPanelChild { presentation_index: 1, kind: PanelChildKind::Decision, decision_row_index: Some(0), identity: "decision_one".into(), name_text: Some("Exact decision".into()), secondary_text: None, expanded: None, x: 0, y: 58, width: 502, height: 41 },
+                    DecisionPanelChild {
+                        presentation_index: 0,
+                        kind: PanelChildKind::Category,
+                        decision_row_index: None,
+                        identity: "category_one".into(),
+                        name_text: Some("Category".into()),
+                        secondary_text: None,
+                        expanded: Some(true),
+                        x: 0,
+                        y: 0,
+                        width: 502,
+                        height: 58,
+                    },
+                    DecisionPanelChild {
+                        presentation_index: 1,
+                        kind: PanelChildKind::Decision,
+                        decision_row_index: Some(0),
+                        identity: "decision_one".into(),
+                        name_text: Some("Exact decision".into()),
+                        secondary_text: None,
+                        expanded: None,
+                        x: 0,
+                        y: 58,
+                        width: 502,
+                        height: 41,
+                    },
                 ],
                 available_alert_count: 1,
                 timeout_alert_count: 0,
@@ -946,7 +1118,10 @@ mod tests {
     #[test]
     fn roundtrip_preserves_heterogeneous_order_and_selected_present() {
         let frame = frame();
-        assert_eq!(decode_payload(&encode_payload(&frame).unwrap()).unwrap(), frame);
+        assert_eq!(
+            decode_payload(&encode_payload(&frame).unwrap()).unwrap(),
+            frame
+        );
     }
 
     #[test]
@@ -988,8 +1163,12 @@ mod tests {
     fn production_source_codec_is_enabled() {
         struct Source;
         impl ExactDecisionPanelSource for Source {
-            fn is_exact_a729_materializer_source(&self) -> bool { true }
-            fn read_decision_panel(&self, _: u64) -> Result<DecisionPanelSnapshot, String> { Ok(frame().snapshot.unwrap()) }
+            fn is_exact_a729_materializer_source(&self) -> bool {
+                true
+            }
+            fn read_decision_panel(&self, _: u64) -> Result<DecisionPanelSnapshot, String> {
+                Ok(frame().snapshot.unwrap())
+            }
         }
         assert!(collect_and_encode(&Source, 55, 0).is_ok());
     }

@@ -354,7 +354,6 @@ fn decode_texture_uses_immutable_admitted_bytes_after_source_mutation() {
     let userdata = root.join("profile");
     let mod_content = root.join("mod-content");
     write_content_fixture(&game, &userdata, &mod_content);
-    // Minimal uncompressed top-left 2x1 BGRA TGA (mirrors the tga unit test).
     let mut tga = vec![0u8; 18];
     tga[2] = 2;
     tga[12..14].copy_from_slice(&2u16.to_le_bytes());
@@ -396,12 +395,9 @@ fn decode_texture_uses_immutable_admitted_bytes_after_source_mutation() {
         vec![255, 0, 0, 255, 0, 255, 0, 128]
     );
 
-    // An admitted extension without a proven decoder stays refused.
     let png_key = interpreter.content_key("gfx/interface/photo.png").unwrap();
     assert!(interpreter.decode_texture(&png_key).is_err());
 
-    // The decoded payload comes from the single verified admission read. A
-    // later source mutation cannot change or invalidate the immutable bytes.
     fs::write(&tga_path, b"mutated after admission").unwrap();
     let decoded_after_mutation = interpreter.decode_texture(&tga_key).unwrap();
     assert_eq!(decoded_after_mutation.provenance, vec![tga_key]);

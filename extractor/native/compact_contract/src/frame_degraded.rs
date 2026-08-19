@@ -1,113 +1,6 @@
-//! Frame-level DEGRADED notice (`H4FD`) and the three-state domain
-//! completeness vocabulary it belongs to.
-//!
-//! # Why this record exists
-//!
-//! Frame completeness was all-or-nothing across the whole scheduled roster: one
-//! domain whose non-tolerated status flags fired refused the entire frame
-//! (`H4FR`). With 73 scheduled domains the probability of all of them being
 //! simultaneously clean is not a design margin, it is a deadlock -- and the
-//! decisive consequence is not the lost hours, it is that NO domain fix can be
-//! verified end to end, because nothing is ever published to verify against.
-//!
-//! This record adds the other outcome: the frame IS published, and the domains
-//! that failed are named, in band, as UNKNOWN for that hour.
-//!
-//! # The distinction this record has to protect
-//!
-//! There are exactly three things a domain can be in a published frame, and a
-//! consumer must be able to tell them apart from the wire alone:
-//!
-//! | state              | PERF status                                   | named in `H4FD` | fold |
-//! |--------------------|-----------------------------------------------|-----------------|------|
-//! | complete           | no failure-class bits                         | no              | applied |
-//! | expected-partial   | failure bits, all inside the domain's `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry | no | applied as a sparse patch |
-//! | degraded-unknown   | failure bits OUTSIDE any tolerance            | YES             | discarded, accumulator retained |
-//!
-//! An expected-partial entry asserts something specific and reviewed: *this
-//! partial is expected, and the written integrity argument for why the sparse
-//! patch is safe is in the table*. A degraded domain asserts the opposite: *this
-//! failed and nobody signed off on it; here is the reason, do not use this
 //! hour*. Labelling a defect as expected would be worse than the deadlock this
 //! record solves, because the deadlock is loud and a mislabel is silent.
-//!
-//! So the two are kept apart by construction rather than by convention:
-//!
-//! * a degraded entry's `non_tolerated_flags` must equal exactly what
-//!   [`crate::compact_status_failure_flags_after_expected_partial_tolerance`]
-//!   computes for that domain and status word -- the SAME function the fold and
-//!   the certifier classify with. A status the tolerance table fully covers
-//!   yields zero there, and a zero entry is rejected. It is therefore not
-//!   possible to encode an expected-partial as a degradation, or to encode a
-//!   degradation while understating which bits forced it.
-//! * conversely a tolerated domain is never listed here, so "named in `H4FD`"
-//!   and "tolerated" are disjoint on the wire without the consumer having to
-//!   diff two tables.
-//!
-//! `H4FD` is NOT a frame boundary record. It rides inside the published frame,
-//! before its `FRAME_END`, because it describes that frame. `H4FR` closes an
-//! hour that published nothing; this one annotates an hour that published.
-//!
-//! # WHO said this domain is unknown, and on what evidence
-//!
-//! Version 1 carried the offender's `reason` and nothing structured. That was
-//! enough while every degradation came from the producer itself. It stopped
-//! being enough when the collector gained a frame-final pass that
-//! SUBSTANTIATES a diagnosis for a producer that recorded none — reading the
-//! completion and extent back out of the published bits, because the
-//! alternative was refusing all 73 domains for one silent one.
-//!
-//! Those two are different facts about an hour. "The reader said its source was
-//! unavailable" and "nobody said anything, and this was reconstructed from the
-//! status word" are worth different amounts to a consumer deciding whether to
-//! trust a neighbouring domain, and to anyone counting how much of the producer
-//! migration is left. In version 1 the difference existed only inside the
-//! collector and in the PROSE of `reason`, so replay could recover it by string
-//! matching or not at all. Under the single-file law that is a hole: the replay
-//! file is the only connection between the two halves of this system, so a
-//! distinction that matters has to be ON THE WIRE.
-//!
-//! So an entry carries the same two typed fields `H4FR`'s offenders already do,
-//! and for the same reasons:
-//!
-//! * a **predicate**, non-zero code plus name, naming WHICH check failed — and
-//!   in particular whether that check is
-//!   `outcome_substantiated_from_record`, the sweep's own code, or
-//!   `producer_declared_no_predicate`, the reserved stand-in. Both are
-//!   countable in one pass over a stream by code, without parsing text;
-//! * an **authority**, so "a different domain's roster was incomplete" or "the
-//!   frame's own clock was unreadable" is not read as this domain's defect.
-//!
-//! They are not new information. The collector builds both for the offender it
-//! would have put in `H4FR`; version 1 simply discarded them on the degraded
-//! path.
-//!
-//! Layout, all little-endian. Header is fixed; entries follow contiguously and
-//! are ordered by strictly increasing `domain_id` so one domain cannot appear
-//! twice with disagreeing bits.
-//!
-//! ```text
-//! magic          [4]  b"H4FD"
-//! version        u16  = FRAME_DEGRADED_VERSION
-//! header_len     u16  = FRAME_DEGRADED_HEADER_LEN
-//! degraded_hour  i32
-//! domain_count   u16
-//! reserved       u16
-//! -- 16 byte header --
-//! per degraded domain:
-//!   domain_id       u16
-//!   reserved        u16   MUST BE ZERO, so a later version can spend it
-//!   status_flags    u32   raw PERF status for that domain
-//!   non_tolerated   u32   the subset that made it unknown
-//!   predicate_code  u32   NON-ZERO; PREDICATE_UNDECLARED if the producer
-//!                         declared none
-//!   authority       [12]  kind u16 | domain_id u16 | rva u64
-//!   reason_len      u16
-//!   name_len        u16   version 1's trailing `reserved`, spent
-//!   -- 32 byte fixed part --
-//!   reason          [reason_len]     UTF-8, the reader's own text
-//!   predicate_name  [name_len]       UTF-8
-//! ```
 
 use crate::diagnostic_channel::{Authority, Predicate, AUTHORITY_LEN, MAX_PREDICATE_NAME_LEN};
 use crate::{
@@ -116,54 +9,19 @@ use crate::{
 };
 
 pub const FRAME_DEGRADED_MAGIC: &[u8; 4] = b"H4FD";
-/// Version 2 added the predicate and the authority. There is no dual-read path
-/// and no migration: pre-production captures are disposable, so a version this
-/// decoder does not know is refused rather than guessed at.
 pub const FRAME_DEGRADED_VERSION: u16 = 2;
 pub const FRAME_DEGRADED_HEADER_LEN: usize = 16;
 pub const FRAME_DEGRADED_ENTRY_FIXED_LEN: usize = 32;
-/// Same bound `H4FR` puts on a predicate name, from the same constant.
 pub const FRAME_DEGRADED_MAX_PREDICATE_NAME_LEN: usize = MAX_PREDICATE_NAME_LEN;
-/// Bound on one reason string, so a pathological reader cannot make the record
-/// unbounded. Same bound as `H4FR`; the reasons come from the same place.
 pub const FRAME_DEGRADED_MAX_REASON_LEN: usize = 512;
-/// Bound on named domains. The scheduled roster is 73; this leaves headroom
-/// without admitting an absurd record.
 pub const FRAME_DEGRADED_MAX_DOMAINS: usize = 1024;
 
-/// The shared reason for a domain that failed and did NOT say why.
-///
-/// Some scheduled domains attach no diagnostic units at all, so their failures
-/// arrive as a bare status bit with no typed cause. That is a defect in those
-/// domains -- but it must not become a defect a consumer cannot SEE. An entry
-/// with an empty reason is refused by this codec, so without one shared name
-/// for the condition a silent failure would either be unpublishable or
-/// laundered into a blank string.
-///
-/// This names it, identically for every domain. It is a work item, never an
-/// excuse: the number of entries carrying this reason is the exact size of the
-/// silent-domain problem, and it is now countable from any captured stream
-/// instead of being invisible.
 pub const FRAME_DEGRADED_REASON_UNDIAGNOSED: &str = "undiagnosed_failure";
 
-/// What one domain's status says about that domain in a published frame.
-///
-/// This is the single classifier. The collector decides what to publish with
-/// it, the fold decides what to apply with it, and the certifier decides what
-/// to accept with it, so the three cannot drift into disagreeing about whether
-/// an hour is usable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactDomainCompleteness {
-    /// No failure-class bit is set. The domain's rows are complete for the hour.
     Complete,
-    /// Failure-class bits are set and are entirely covered by this domain's
-    /// `COMPACT_EXPECTED_PARTIAL_TOLERANCES` entry: a reviewed partial with a
-    /// written integrity argument. Rows are a sparse patch, omissions are known
-    /// and NOT fabricated as deletions.
     ExpectedPartial,
-    /// Failure-class bits are set that no tolerance covers. The domain/hour is
-    /// UNKNOWN. Its rows must not be applied and its accumulator must be
-    /// retained. `non_tolerated_flags` is the subset that made it so.
     Degraded { non_tolerated_flags: u32 },
 }
 
@@ -173,11 +31,6 @@ impl CompactDomainCompleteness {
     }
 }
 
-/// Classify one domain's raw PERF status word.
-///
-/// Lane-local status bits are stripped first (a lane badge is not a global
-/// failure), which is why this goes through the shared normalizer rather than
-/// masking directly.
 pub fn compact_domain_completeness(
     domain_id: CompactDomainId,
     status_flags: u32,
@@ -195,20 +48,10 @@ pub fn compact_domain_completeness(
     CompactDomainCompleteness::Complete
 }
 
-/// WHO said this domain failed, and on the strength of what check.
-///
-/// One aggregate rather than two more arguments, and MANDATORY rather than a
-/// builder step, for the reason the whole record exists: the version-1 entry
-/// let a caller state a degradation without stating who decided it, and the
-/// only field that could have carried the difference was free text. A caller
-/// that has nothing to say has one thing to pass —
-/// [`FrameDegradedDiagnosis::undeclared`] — and that says so on the wire in a
-/// form a census counts by code.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameDegradedDiagnosis {
     pub predicate: Predicate,
     pub authority: Authority,
-    /// The producer's own text.
     pub reason: String,
 }
 
@@ -221,11 +64,6 @@ impl FrameDegradedDiagnosis {
         }
     }
 
-    /// The reserved stand-in for a producer that declared no predicate.
-    ///
-    /// Deliberately NOT a `Default`: reaching for this has to be a decision a
-    /// reader of the call site can see, because the count of entries carrying
-    /// it is the exact size of the remaining producer migration.
     pub fn undeclared(authority: Authority, reason: impl Into<String>) -> Self {
         Self::new(Predicate::undeclared(), authority, reason)
     }
@@ -242,14 +80,6 @@ pub struct FrameDegradedDomain {
 }
 
 impl FrameDegradedDomain {
-    /// Build an entry for a domain, or `None` when the domain is not degraded.
-    ///
-    /// This is the only sanctioned way to produce an entry: `non_tolerated_flags`
-    /// is DERIVED from the shared classifier rather than supplied, so a caller
-    /// cannot list a complete or expected-partial domain here even by mistake.
-    ///
-    /// The diagnosis is an argument and not a later `with_` step, so a site that
-    /// has not decided who refused cannot compile.
     pub fn from_status(
         domain_id: CompactDomainId,
         status_flags: u32,
@@ -272,8 +102,6 @@ impl FrameDegradedDomain {
         }
     }
 
-    /// A one-line rendering, the same shape `FrameRefusalOffenderV2::render`
-    /// produces for the same three fields.
     pub fn render(&self) -> String {
         format!(
             "d{} {}#{} {} reason={}",
@@ -292,13 +120,6 @@ pub struct FrameDegradedRecordV2 {
     pub domains: Vec<FrameDegradedDomain>,
 }
 
-/// Everything an entry has to be self-consistent about, in ONE function shared
-/// by `encode` and `validate_frame_degraded_payload`.
-///
-/// The sharing is the point: a record this codec can write and cannot read
-/// back, or the reverse, is a producer and a consumer disagreeing about a
-/// format neither can be talked out of. Every rule below is therefore stated
-/// once and applied on both sides.
 #[allow(clippy::too_many_arguments)]
 fn check_entry(
     index: usize,
@@ -312,38 +133,18 @@ fn check_entry(
     reason_len: usize,
 ) -> Result<(), String> {
     if reserved != 0 {
-        // Version 2 spent one of version 1's two spare `u16`s and left this
-        // one. A non-zero value in it is either corruption or a producer
-        // writing a field this format has not defined, and admitting it now
-        // would spend the field on nothing.
         return Err(format!(
             "frame degraded entry {index} (domain {domain_id}) sets its reserved field to \
              {reserved:#06x}, which this format does not define"
         ));
     }
     if domain_id == crate::record_semantics::COMPACT_DOMAIN_FRAME {
-        // This record's entries are PER-DOMAIN. The frame's own faults are what
-        // `H4FR`'s frame findings carry, and a frame fault refuses the hour
-        // rather than degrading one domain of it, so an entry naming the frame
-        // envelope is a category error however it got here.
         return Err(format!(
             "frame degraded entry {index} names the frame envelope domain \
              {domain_id}, which is not a per-domain degradation"
         ));
     }
     if crate::assigned_descriptor_by_id(domain_id).is_none() {
-        // Rejecting only the frame envelope above left every OTHER non-domain
-        // id admissible: a one-entry record naming domain 250 -- an id the fold
-        // uses as an unassigned probe -- validated on both sides and named a
-        // degradation of nothing. The status word is already checked against
-        // this domain's vocabulary two lines down, but that check reads the
-        // LANE-LOCAL badge mask for the id, which an unassigned id simply does
-        // not have, so a word of nothing but shared bits sailed past it.
-        //
-        // An entry is a claim about a domain the reader swept. There is no such
-        // sweep for an id the contract never assigned, so the record is not a
-        // degradation this consumer can account for and the whole notice is
-        // refused rather than one entry dropped.
         return Err(format!(
             "frame degraded entry {index} names domain {domain_id}, which this contract \
              does not assign"
@@ -351,11 +152,6 @@ fn check_entry(
     }
     let unassigned = crate::compact_status_unassigned_flags(domain_id, status_flags);
     if unassigned != 0 {
-        // The DLL and the host ship together, so a bit neither the v1
-        // vocabulary nor this domain's lane-local badge mask defines is not
-        // version skew -- it is wire disagreement, and the shared contract says
-        // a consumer must refuse the record rather than classify the rest of
-        // the word around it.
         return Err(format!(
             "frame degraded entry {index} (domain {domain_id}) status {status_flags:#010x} sets \
              unassigned bit(s) {:?}",
@@ -363,11 +159,6 @@ fn check_entry(
         ));
     }
     if status_flags & crate::COMPACT_STATUS_BASELINE_CLEAR != 0 {
-        // A baseline clear asks the consumer to REPLACE everything it holds for
-        // the domain, on the strength of the record being a complete claim
-        // about its whole extent. An entry in this record is failure-class by
-        // construction (`non_tolerated_flags` is non-zero below), so it is the
-        // one thing that can never make that claim.
         return Err(format!(
             "frame degraded entry {index} (domain {domain_id}) requests BASELINE_CLEAR on a \
              failure-class record: a read that did not complete cannot describe the whole \
@@ -375,9 +166,6 @@ fn check_entry(
         ));
     }
     if predicate_code == 0 {
-        // Zero is what an uninitialised slot holds, and `Predicate` refuses it
-        // in the type system. A record carrying it would say "no check failed"
-        // about an entry that exists only because one did.
         return Err(format!(
             "frame degraded entry {index} (domain {domain_id}) carries predicate code 0, which \
              is reserved for 'not declared'"
@@ -398,12 +186,6 @@ fn check_entry(
     if (predicate_code == crate::diagnostic_channel::PREDICATE_UNDECLARED)
         != (predicate_name == crate::diagnostic_channel::PREDICATE_UNDECLARED_NAME)
     {
-        // The reserved code and the reserved name travel together or not at
-        // all. Letting them disagree would let a producer stamp the reserved
-        // code under a name that reads like a real check -- or claim the
-        // reserved name while carrying a code a census counts as declared --
-        // and the count of undeclared producers is the measurement this pair
-        // exists to make.
         return Err(format!(
             "frame degraded entry {index} (domain {domain_id}) pairs predicate code \
              {predicate_code:#010x} with name {predicate_name:?}; the reserved code and \
@@ -419,11 +201,6 @@ fn check_entry(
         ));
     }
     if authority.encode() != authority_bytes[..AUTHORITY_LEN] {
-        // CANONICAL BYTES, not merely decodable ones. `Authority::decode` reads
-        // the domain and rva words for every kind and discards the ones that
-        // kind does not use, so two different byte strings decode to one
-        // authority -- and a record that means one thing in two spellings is a
-        // record two consumers can disagree about while both being right.
         return Err(format!(
             "frame degraded entry {index} (domain {domain_id}) authority bytes are not canonical \
              for {}",
@@ -431,18 +208,6 @@ fn check_entry(
         ));
     }
     if let Authority::OtherDomain(other) = authority {
-        // The canonicality rule above proves the BYTES spell one authority; it
-        // says nothing about whether the domain those bytes name exists. Kind 2
-        // takes any `u16`, so `02 00 FA 00 ...` decoded and re-encoded happily
-        // as "domain 250 was the authority" -- a blame assignment pointing at
-        // nothing, which is worse than `Undeclared` because it reads as an
-        // answer. The whole point of this field is that "the thing that refused
-        // is not me" names WHO, so a name that resolves to no domain fails the
-        // field's only purpose.
-        //
-        // Checked here rather than in `Authority::decode` because decode is
-        // shared with `H4FR` and its offenders; widening the shared decoder is
-        // a change to a record this lane did not review.
         if crate::assigned_descriptor_by_id(other).is_none() {
             return Err(format!(
                 "frame degraded entry {index} (domain {domain_id}) names domain {other} as its \
@@ -450,12 +215,6 @@ fn check_entry(
             ));
         }
         if other == crate::record_semantics::COMPACT_DOMAIN_FRAME {
-            // The frame envelope IS an assigned descriptor (id 1000,
-            // `Infrastructure`), so the rule above passes it. It is still not a
-            // peer whose published state another domain can have consulted: a
-            // frame-owned fault refuses the hour through `H4FR` rather than
-            // degrading one domain, which is the same category error the
-            // subject-domain rule rejects at the top of this function.
             return Err(format!(
                 "frame degraded entry {index} (domain {domain_id}) names the frame envelope as a \
                  peer domain authority; a frame-owned fault refuses the hour"
@@ -471,10 +230,6 @@ fn check_entry(
     let expected =
         compact_status_failure_flags_after_expected_partial_tolerance(domain_id, status_flags);
     if expected != non_tolerated_flags {
-        // The mislabel guard. If the status is fully covered by the domain's
-        // tolerance entry, `expected` is zero and this fires -- a defect can
-        // never be written down as an expected partial, and an expected partial
-        // can never be written down as a defect.
         let tolerance_note = match expected_partial_tolerance(domain_id) {
             Some(tolerance) if expected == 0 => format!(
                 "; domain {domain_id} status {status_flags:#010x} is covered by its expected-partial \
@@ -506,9 +261,6 @@ fn check_entry(
 impl FrameDegradedRecordV2 {
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if self.domains.is_empty() {
-            // A degraded notice naming nobody would assert a defect it cannot
-            // substantiate, and a consumer seeing it could not tell which hour
-            // data to distrust. Fail closed.
             return Err("frame degraded notice names no domain".to_string());
         }
         if self.domains.len() > FRAME_DEGRADED_MAX_DOMAINS {
@@ -528,8 +280,6 @@ impl FrameDegradedRecordV2 {
         for (index, domain) in self.domains.iter().enumerate() {
             if let Some(previous) = previous_domain_id {
                 if domain.domain_id <= previous {
-                    // Two entries for one domain could disagree about its bits,
-                    // and a consumer would have no rule for which wins.
                     return Err(format!(
                         "frame degraded entry {index} domain {} does not follow {previous} in \
                          strictly increasing order",
@@ -595,7 +345,8 @@ impl FrameDegradedRecordV2 {
             let authority = Authority::decode(&payload[offset + 16..offset + 16 + AUTHORITY_LEN])?;
             let reason_len =
                 u16::from_le_bytes([payload[offset + 28], payload[offset + 29]]) as usize;
-            let name_len = u16::from_le_bytes([payload[offset + 30], payload[offset + 31]]) as usize;
+            let name_len =
+                u16::from_le_bytes([payload[offset + 30], payload[offset + 31]]) as usize;
             let start = offset + FRAME_DEGRADED_ENTRY_FIXED_LEN;
             let reason_end = start + reason_len;
             let end = reason_end + name_len;
@@ -620,14 +371,11 @@ impl FrameDegradedRecordV2 {
         })
     }
 
-    /// The domains this notice declares unknown, for a consumer cross-checking
-    /// the frame's PERF records against the notice.
     pub fn declared_domain_ids(&self) -> Vec<u16> {
         self.domains.iter().map(|domain| domain.domain_id).collect()
     }
 }
 
-/// Complete grammar check. Total over arbitrary bytes; never panics.
 pub fn validate_frame_degraded_payload(payload: &[u8]) -> Result<(), String> {
     if payload.len() < FRAME_DEGRADED_HEADER_LEN {
         return Err(format!(
@@ -662,10 +410,6 @@ pub fn validate_frame_degraded_payload(payload: &[u8]) -> Result<(), String> {
     }
     let header_reserved = u16::from_le_bytes([payload[14], payload[15]]);
     if header_reserved != 0 {
-        // The header's spare `u16` is still spare, and it stays reservable only
-        // while nothing is admitted in it. The encoder writes zero; a decoder
-        // that shrugged at anything else would let a future field be smuggled
-        // into a record this version claims to understand.
         return Err(format!(
             "frame degraded header sets its reserved field to {header_reserved:#06x}, which this \
              format does not define"
@@ -714,10 +458,6 @@ pub fn validate_frame_degraded_payload(payload: &[u8]) -> Result<(), String> {
         let authority_bytes = &payload[offset + 16..offset + 16 + AUTHORITY_LEN];
         let reason_len = u16::from_le_bytes([payload[offset + 28], payload[offset + 29]]) as usize;
         let name_len = u16::from_le_bytes([payload[offset + 30], payload[offset + 31]]) as usize;
-        // The two variable fields are bounded and read BEFORE `check_entry`
-        // sees the name, because the name is one of the things it checks. The
-        // arithmetic is checked in one place so neither length can wrap into a
-        // shorter slice than it claims.
         let start = offset + FRAME_DEGRADED_ENTRY_FIXED_LEN;
         let Some(reason_end) = start.checked_add(reason_len) else {
             return Err(format!(
@@ -772,17 +512,6 @@ mod tests {
         COMPACT_STATUS_SOURCE_UNAVAILABLE, COMPACT_STATUS_STATE_UNAVAILABLE,
     };
 
-    /// A domain that MEASURED an empty source is complete, and the frame it
-    /// sits in is not degraded by it.
-    ///
-    /// This classifier is shared by the collector (what to publish), the fold
-    /// (what to apply) and the certifier (what to accept), so getting it wrong
-    /// here would make a measured zero unusable in all three at once — the
-    /// domain's rows would be discarded and its accumulator retained, which is
-    /// the exact behaviour the badge exists to stop.
-    ///
-    /// Production change that makes this fail: adding SOURCE_EMPTY to
-    /// `COMPACT_STATUS_FAILURE_MASK`.
     #[test]
     fn a_measured_empty_domain_is_complete_and_degrades_no_frame() {
         assert_eq!(
@@ -795,7 +524,6 @@ mod tests {
             producer_diagnosis(),
         )
         .is_none());
-        // ... and the badge does not launder a real failure sitting beside it.
         let both = COMPACT_STATUS_SOURCE_EMPTY | COMPACT_STATUS_SOURCE_UNAVAILABLE;
         assert_eq!(
             compact_domain_completeness(36, both),
@@ -808,9 +536,6 @@ mod tests {
     fn producer_diagnosis() -> FrameDegradedDiagnosis {
         FrameDegradedDiagnosis::new(
             Predicate::new(4701, "domain47_manager_is_readable").unwrap(),
-            // A DIFFERENT domain was the authority. Version 1 could not say
-            // this, and reporting another domain's incomplete roster as this
-            // domain's defect is the exact mistake the field exists to stop.
             Authority::OtherDomain(18),
             "domain47_manager_failure_kind=7",
         )
@@ -838,8 +563,6 @@ mod tests {
                     producer_diagnosis(),
                 )
                 .expect("domain 47 has no tolerance, so this status is degraded"),
-                // The frame-final sweep's own diagnosis. Telling these two
-                // apart from the wire alone is what version 2 is for.
                 FrameDegradedDomain::from_status(
                     91,
                     COMPACT_STATUS_SOURCE_UNAVAILABLE,
@@ -858,55 +581,31 @@ mod tests {
         assert_eq!(FrameDegradedRecordV2::decode(&wire).unwrap(), value);
     }
 
-    /// The three states are DISJOINT and every failure status lands in exactly
-    /// one of them.
     #[test]
     fn the_three_completeness_states_are_disjoint_and_total() {
-        // Complete: no failure-class bit at all.
         assert_eq!(
             compact_domain_completeness(26, 0),
             CompactDomainCompleteness::Complete
         );
-        // Expected-partial: domain 26's tolerance covers exactly PARTIAL_DATA.
         assert_eq!(
             compact_domain_completeness(26, COMPACT_STATUS_PARTIAL_DATA),
             CompactDomainCompleteness::ExpectedPartial
         );
-        // Degraded: the same domain with a bit the tolerance does NOT cover.
-        //
-        // Note WHICH bits come back. A tolerance is all-or-nothing per domain:
-        // `expected_partial_tolerance_applies` requires the failure set to sit
-        // ENTIRELY inside the tolerated set, so once one uncovered bit is
-        // present the tolerance stops applying and NOTHING is tolerated -- the
-        // residual is the whole failure set, PARTIAL_DATA included. That is the
-        // conservative reading and the right one: the written integrity
-        // argument for d26's partial was made about a sampled-root shortfall
-        // alone, and it does not carry over to a partial that happened
-        // alongside an unavailable state.
         assert_eq!(
             compact_domain_completeness(
                 26,
                 COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_STATE_UNAVAILABLE
             ),
             CompactDomainCompleteness::Degraded {
-                non_tolerated_flags: COMPACT_STATUS_PARTIAL_DATA
-                    | COMPACT_STATUS_STATE_UNAVAILABLE
+                non_tolerated_flags: COMPACT_STATUS_PARTIAL_DATA | COMPACT_STATUS_STATE_UNAVAILABLE
             }
         );
-        // And a domain with NO tolerance entry: the same PARTIAL_DATA is a
-        // degradation, not an expected partial.
         assert_eq!(
             compact_domain_completeness(29, COMPACT_STATUS_PARTIAL_DATA),
             CompactDomainCompleteness::Degraded {
                 non_tolerated_flags: COMPACT_STATUS_PARTIAL_DATA
             }
         );
-        // d47 used to be that example. It has a tolerance now — for a payload
-        // that DECLARES which row families it did not observe — so the shape
-        // that must stay degraded is the one carrying a second bit. Every d47
-        // reader that publishes nothing sets `SOURCE_UNAVAILABLE` for exactly
-        // this reason: it is what keeps an undeclared loss outside a tolerance
-        // written for a declared one.
         assert_eq!(
             compact_domain_completeness(47, COMPACT_STATUS_PARTIAL_DATA),
             CompactDomainCompleteness::ExpectedPartial
@@ -923,11 +622,8 @@ mod tests {
         );
     }
 
-    /// The constraint this whole record exists to protect: a tolerated partial
-    /// can NEVER be written down as a degradation, and the reverse.
     #[test]
     fn a_tolerated_partial_cannot_be_encoded_as_a_degradation() {
-        // Every tolerance entry, exercised against its own tolerated bits.
         for tolerance in crate::COMPACT_EXPECTED_PARTIAL_TOLERANCES {
             assert!(
                 FrameDegradedDomain::from_status(
@@ -939,8 +635,6 @@ mod tests {
                 "domain {} tolerated status must not build a degraded entry",
                 tolerance.domain_id
             );
-            // And a hand-built entry that lies about it is refused by the codec,
-            // not merely discouraged by the constructor.
             let forced = FrameDegradedRecordV2 {
                 degraded_hour: 7,
                 domains: vec![FrameDegradedDomain {
@@ -959,7 +653,6 @@ mod tests {
                 error.contains("expected-partial tolerance"),
                 "the refusal must name the tolerance, got {error}"
             );
-            // And the same lie cannot be smuggled in on the wire either.
             let mut wire = sample().encode().unwrap();
             wire[FRAME_DEGRADED_HEADER_LEN..FRAME_DEGRADED_HEADER_LEN + 2]
                 .copy_from_slice(&tolerance.domain_id.to_le_bytes());
@@ -975,8 +668,6 @@ mod tests {
         }
     }
 
-    /// A complete domain cannot be listed either: zero failure bits classifies
-    /// as zero non-tolerated, and a zero entry is not a degradation.
     #[test]
     fn a_complete_domain_cannot_be_encoded_as_degraded() {
         assert!(FrameDegradedDomain::from_status(47, 0, producer_diagnosis()).is_none());
@@ -994,30 +685,16 @@ mod tests {
         assert!(forced.encode().is_err());
     }
 
-    /// An entry may not understate which bits made it unknown: the record must
-    /// agree with the shared classifier exactly.
     #[test]
     fn an_entry_that_understates_its_non_tolerated_bits_is_refused() {
         let mut value = sample();
         value.domains[0].non_tolerated_flags = COMPACT_STATUS_SOURCE_UNAVAILABLE;
-        let error = value.encode().expect_err("understated bits must be refused");
+        let error = value
+            .encode()
+            .expect_err("understated bits must be refused");
         assert!(error.contains("classifies as"), "{error}");
     }
 
-    /// THE BYTE GOLDEN.
-    ///
-    /// Round-tripping proves the encoder and the decoder agree with each other,
-    /// which is exactly what a layout drift preserves: move a field and both
-    /// halves move with it, and every round-trip test still passes while every
-    /// capture on disk becomes unreadable by the version that wrote it. This
-    /// states the bytes independently, so the LAYOUT is the thing under test.
-    ///
-    /// One entry, spelled out field by field.
-    ///
-    /// kills: reordering any entry field, changing a width, writing the
-    /// predicate name before the reason, dropping the entry's reserved `u16`,
-    /// changing `FRAME_DEGRADED_VERSION` or `FRAME_DEGRADED_ENTRY_FIXED_LEN`,
-    /// or switching any field to big-endian.
     #[test]
     fn one_entry_encodes_to_exactly_these_bytes() {
         let record = FrameDegradedRecordV2 {
@@ -1036,21 +713,21 @@ mod tests {
 
         let mut expected: Vec<u8> = Vec::new();
         expected.extend_from_slice(b"H4FD");
-        expected.extend_from_slice(&2u16.to_le_bytes()); // version
-        expected.extend_from_slice(&16u16.to_le_bytes()); // header_len
-        expected.extend_from_slice(&0x0102_0304i32.to_le_bytes()); // degraded_hour
-        expected.extend_from_slice(&1u16.to_le_bytes()); // domain_count
-        expected.extend_from_slice(&0u16.to_le_bytes()); // header reserved
-        expected.extend_from_slice(&91u16.to_le_bytes()); // domain_id
-        expected.extend_from_slice(&0u16.to_le_bytes()); // entry reserved
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&16u16.to_le_bytes());
+        expected.extend_from_slice(&0x0102_0304i32.to_le_bytes());
+        expected.extend_from_slice(&1u16.to_le_bytes());
+        expected.extend_from_slice(&0u16.to_le_bytes());
+        expected.extend_from_slice(&91u16.to_le_bytes());
+        expected.extend_from_slice(&0u16.to_le_bytes());
         expected.extend_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
         expected.extend_from_slice(&COMPACT_STATUS_SOURCE_UNAVAILABLE.to_le_bytes());
-        expected.extend_from_slice(&0x0002_0011u32.to_le_bytes()); // predicate_code
-        expected.extend_from_slice(&2u16.to_le_bytes()); // authority kind = OtherDomain
-        expected.extend_from_slice(&18u16.to_le_bytes()); // authority domain
-        expected.extend_from_slice(&0u64.to_le_bytes()); // authority rva
-        expected.extend_from_slice(&3u16.to_le_bytes()); // reason_len
-        expected.extend_from_slice(&33u16.to_le_bytes()); // predicate name_len
+        expected.extend_from_slice(&0x0002_0011u32.to_le_bytes());
+        expected.extend_from_slice(&2u16.to_le_bytes());
+        expected.extend_from_slice(&18u16.to_le_bytes());
+        expected.extend_from_slice(&0u64.to_le_bytes());
+        expected.extend_from_slice(&3u16.to_le_bytes());
+        expected.extend_from_slice(&33u16.to_le_bytes());
         expected.extend_from_slice(b"why");
         expected.extend_from_slice(b"outcome_substantiated_from_record");
 
@@ -1063,27 +740,17 @@ mod tests {
         validate_frame_degraded_payload(&expected).unwrap();
     }
 
-    /// The predicate is what makes "the producer said so" and "the frame-final
-    /// sweep reconstructed this from the record" different facts on the wire,
-    /// and every way of stating that badly is refused.
-    ///
-    /// kills: dropping the zero-code check, dropping the name bound, or letting
-    /// the reserved undeclared code travel under a name that reads like a real
-    /// check (which is how a census of unmigrated producers gets quietly
-    /// wrong).
     #[test]
     fn a_predicate_that_cannot_be_counted_is_refused() {
         let wire = sample().encode().unwrap();
         let code_at = FRAME_DEGRADED_HEADER_LEN + 12;
 
-        // Zero is what an uninitialised slot holds.
         let mut zero_code = wire.clone();
         zero_code[code_at..code_at + 4].copy_from_slice(&0u32.to_le_bytes());
         let error = validate_frame_degraded_payload(&zero_code)
             .expect_err("predicate code 0 must be refused");
         assert!(error.contains("reserved for 'not declared'"), "{error}");
 
-        // The reserved code and the reserved name travel together.
         let mut lying_code = wire.clone();
         lying_code[code_at..code_at + 4]
             .copy_from_slice(&crate::diagnostic_channel::PREDICATE_UNDECLARED.to_le_bytes());
@@ -1091,7 +758,6 @@ mod tests {
             .expect_err("the reserved code under a real check's name must be refused");
         assert!(error.contains("only valid together"), "{error}");
 
-        // ... and the reverse: the reserved NAME under a declared code.
         let undeclared = FrameDegradedRecordV2 {
             degraded_hour: 7,
             domains: vec![FrameDegradedDomain::from_status(
@@ -1113,33 +779,19 @@ mod tests {
         );
     }
 
-    /// The authority has to mean exactly one thing per byte string.
-    ///
-    /// `Authority::decode` reads the domain and rva words whatever the kind is
-    /// and discards the ones that kind does not use, so without a canonicality
-    /// rule the same authority has many spellings — and two consumers diffing
-    /// two captures would see a difference that is not a difference.
-    ///
-    /// kills: dropping the `authority.encode() != bytes` comparison, and
-    /// admitting kind 0 (the in-memory-only `Undeclared`).
     #[test]
     fn a_non_canonical_or_undeclared_authority_is_refused() {
         let wire = sample().encode().unwrap();
         let authority_at = FRAME_DEGRADED_HEADER_LEN + 16;
 
-        // Kind 0 exists in memory and has no wire encoding.
         let mut undeclared = wire.clone();
         undeclared[authority_at..authority_at + 2].copy_from_slice(&0u16.to_le_bytes());
         assert!(validate_frame_degraded_payload(&undeclared).is_err());
 
-        // An unknown kind is refused by the decoder itself.
         let mut unknown = wire.clone();
         unknown[authority_at..authority_at + 2].copy_from_slice(&9u16.to_le_bytes());
         assert!(validate_frame_degraded_payload(&unknown).is_err());
 
-        // The first entry is `Authority::OtherDomain(18)`, which does not use
-        // the rva word. A non-zero one decodes to the SAME authority, and that
-        // is precisely why it has to be refused rather than normalised away.
         let mut noisy_rva = wire.clone();
         noisy_rva[authority_at + 4..authority_at + 12].copy_from_slice(&0xDEADu64.to_le_bytes());
         let error = validate_frame_degraded_payload(&noisy_rva)
@@ -1147,11 +799,6 @@ mod tests {
         assert!(error.contains("not canonical"), "{error}");
     }
 
-    /// Reserved means reserved, in the header and in every entry.
-    ///
-    /// kills: dropping either zero check — after which the field can never be
-    /// spent, because captures already in existence would be carrying values
-    /// in it.
     #[test]
     fn a_reserved_field_that_is_not_zero_is_refused() {
         let wire = sample().encode().unwrap();
@@ -1165,11 +812,6 @@ mod tests {
         assert!(validate_frame_degraded_payload(&entry).is_err());
     }
 
-    /// A status word carrying a bit no side of the contract defines is wire
-    /// disagreement, and a per-domain degradation cannot request a baseline
-    /// clear it is failure-class by construction.
-    ///
-    /// kills: dropping either check from `check_entry`.
     #[test]
     fn an_undefined_or_contradictory_status_word_is_refused() {
         let unassigned = FrameDegradedRecordV2 {
@@ -1206,11 +848,6 @@ mod tests {
         assert!(error.contains("BASELINE_CLEAR"), "{error}");
     }
 
-    /// An entry is PER-DOMAIN. The frame's own faults refuse the hour and are
-    /// carried by `H4FR`'s frame findings, so an entry naming the frame
-    /// envelope is a category error whatever produced it.
-    ///
-    /// kills: dropping the `COMPACT_DOMAIN_FRAME` check.
     #[test]
     fn an_entry_naming_the_frame_envelope_is_refused() {
         let forced = FrameDegradedRecordV2 {
@@ -1230,14 +867,6 @@ mod tests {
         assert!(error.contains("frame envelope"), "{error}");
     }
 
-    /// Rejecting only the frame envelope left every other non-domain id
-    /// admissible. Domain 250 is the id `fold_check` uses as its unassigned
-    /// probe, and a one-entry notice naming it validated on both sides: the
-    /// status word here is nothing but shared vocabulary bits, so the
-    /// per-domain badge check has nothing to object to.
-    ///
-    /// kills: dropping the `assigned_descriptor_by_id` check on the entry's
-    /// subject domain, or narrowing it back to `COMPACT_DOMAIN_FRAME`.
     #[test]
     fn an_entry_naming_an_unassigned_domain_is_refused() {
         let forced = FrameDegradedRecordV2 {
@@ -1255,20 +884,12 @@ mod tests {
             .encode()
             .expect_err("an unassigned domain cannot be degraded");
         assert!(error.contains("does not assign"), "{error}");
-        // And the decoder refuses it too, not just the encoder: a producer that
-        // never called `encode` is exactly the case a validator exists for.
         let mut wire = sample().encode().unwrap();
         wire[16] = 250u16.to_le_bytes()[0];
         wire[17] = 250u16.to_le_bytes()[1];
         assert!(validate_frame_degraded_payload(&wire).is_err());
     }
 
-    /// `Authority::OtherDomain` carries a bare `u16`, so canonical bytes could
-    /// still name a domain that does not exist -- blame pointing at nothing,
-    /// which reads as an answer and is therefore worse than `Undeclared`.
-    ///
-    /// kills: dropping the assigned check on `OtherDomain`. The bytes below are
-    /// canonical, so the canonicality rule above cannot catch this.
     #[test]
     fn an_authority_naming_an_unassigned_domain_is_refused() {
         let forced = FrameDegradedRecordV2 {
@@ -1286,14 +907,10 @@ mod tests {
             .encode()
             .expect_err("an unassigned authority names nobody");
         assert!(error.contains("as its authority"), "{error}");
-        // The frame envelope needs its OWN branch here, unlike the subject
-        // domain: 1000 is an assigned `Infrastructure` descriptor, so the
-        // unassigned rule above passes it straight through. It is still not a
-        // peer whose state a domain can have consulted.
-        assert!(crate::assigned_descriptor_by_id(
-            crate::record_semantics::COMPACT_DOMAIN_FRAME
-        )
-        .is_some());
+        assert!(
+            crate::assigned_descriptor_by_id(crate::record_semantics::COMPACT_DOMAIN_FRAME)
+                .is_some()
+        );
         let framed = FrameDegradedRecordV2 {
             degraded_hour: 7,
             domains: vec![FrameDegradedDomain {
@@ -1301,9 +918,7 @@ mod tests {
                 status_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
                 non_tolerated_flags: COMPACT_STATUS_SOURCE_UNAVAILABLE,
                 predicate: producer_diagnosis().predicate,
-                authority: Authority::OtherDomain(
-                    crate::record_semantics::COMPACT_DOMAIN_FRAME,
-                ),
+                authority: Authority::OtherDomain(crate::record_semantics::COMPACT_DOMAIN_FRAME),
                 reason: "blamed the frame as a peer".to_string(),
             }],
         };
@@ -1311,8 +926,6 @@ mod tests {
             .encode()
             .expect_err("the frame envelope is not a peer domain");
         assert!(error.contains("frame envelope"), "{error}");
-        // A real peer domain still passes, so the rule is not simply refusing
-        // every `OtherDomain`.
         let ok = FrameDegradedRecordV2 {
             degraded_hour: 7,
             domains: vec![FrameDegradedDomain {
@@ -1324,7 +937,9 @@ mod tests {
                 reason: "d91's roster was the authority".to_string(),
             }],
         };
-        let wire = ok.encode().expect("an assigned peer domain is a real authority");
+        let wire = ok
+            .encode()
+            .expect("an assigned peer domain is a real authority");
         validate_frame_degraded_payload(&wire).unwrap();
     }
 
@@ -1345,7 +960,9 @@ mod tests {
     fn a_domain_named_twice_is_refused() {
         let mut value = sample();
         value.domains[1].domain_id = value.domains[0].domain_id;
-        let error = value.encode().expect_err("duplicate domain must be refused");
+        let error = value
+            .encode()
+            .expect_err("duplicate domain must be refused");
         assert!(error.contains("strictly increasing"), "{error}");
     }
 
@@ -1356,7 +973,6 @@ mod tests {
         assert!(value.encode().is_err());
     }
 
-    /// A consumer that has not been taught this record type must FAIL, not skip.
     #[test]
     fn an_untaught_consumer_fails_loudly_on_an_unknown_record_type() {
         use crate::record_semantics::{
@@ -1373,14 +989,12 @@ mod tests {
         )
         .expect("the new type must be wired into the canonical dispatch");
 
-        // Wrong envelope domain is refused: this is a FRAME-level record.
         assert!(
             validate_compact_record_semantics(47, COMPACT_RECORD_TYPE_FRAME_DEGRADED, 0, &wire)
                 .is_err(),
             "a frame-level record carried on a domain envelope must be refused"
         );
 
-        // A malformed payload is refused through the same dispatch.
         assert!(validate_compact_record_semantics(
             COMPACT_DOMAIN_FRAME,
             COMPACT_RECORD_TYPE_FRAME_DEGRADED,
@@ -1390,8 +1004,6 @@ mod tests {
         .is_err());
     }
 
-    /// `H4FD` and `H4FR` must not be confusable for one another. They share a
-    /// header shape, so only the magic separates them -- and it must.
     #[test]
     fn a_refusal_payload_is_not_a_degraded_notice_and_the_reverse() {
         let degraded = sample().encode().unwrap();

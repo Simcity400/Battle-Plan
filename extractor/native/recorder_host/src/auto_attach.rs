@@ -1,22 +1,3 @@
-//! Dual-order automatic attach. See `PROJECT.md` heading "Passive recording".
-//!
-//! Both launch orders attach with zero user precision (memory
-//! `product-session-semantics`): APP-FIRST (the watcher sees the game launch)
-//! and GAME-FIRST (startup enumeration finds an already-running game). The
-//! resident [`coordinator::Coordinator`] drives every detected
-//! `(pid, creation_filetime)` identity through the attach state machine, keeps
-//! the SINGLE-INJECTION LAW via the [`reducer::CandidateRegistry`] no-double-
-//! inject guard, and journals durably for crash recovery.
-//!
-//! ## What this lane ships vs. what it depends on
-//!
-//! The coordinator, WMI+reconciliation discovery, identity/journal/policy,
-//! restrictive paired H4CR/H4CT backend, heartbeat/first-frame authority, and
-//! installed-payload resolution are composed in the live product. The child
-//! publishes its attempt-bound status ladder to a recorder-created durable file;
-//! H4CT remains the authority for every forwarded heartbeat. Explicit stop owns
-//! the authenticated stop event and bounded H4CR drain/finalization path.
-
 pub mod coordinator;
 pub mod duplex_worker;
 pub mod identity;
@@ -37,39 +18,18 @@ pub use coordinator::{Coordinator, CoordinatorConfig, CoordinatorDeps, Superviso
 pub use identity::{ProcessIdentity, ProcessKey};
 pub use state::CandidateState;
 
-/// Options for the resident supervisor. No correctness policy is user-tunable;
-/// these are location/identity facts resolved at boot.
 #[cfg(windows)]
 pub struct SupervisorOptions {
-    /// Packaged collector DLL to stage per attempt (resolved relative to the
-    /// packaged app executable/manifest, never this repository).
     pub source_dll: std::path::PathBuf,
-    /// Root under which per-attempt staging directories are created.
     pub staging_root: std::path::PathBuf,
-    /// Root under which per-attempt run/output directories are created.
     pub out_root: std::path::PathBuf,
-    /// Path to the `auto_attach_journal.jsonl`.
     pub journal_path: std::path::PathBuf,
-    /// `collector_record` executable to spawn as the per-game worker (defaults
-    /// to the current executable — the supervisor and worker are the same binary
-    /// in different modes, mirroring the dev launcher).
     pub worker_exe: std::path::PathBuf,
-    /// Extra worker args (e.g. static-catalog paths, profile). The `--pid`,
-    /// `--dll`, and `--out-dir` are supplied per attempt.
     pub worker_extra_args: Vec<String>,
-    /// Retain the legacy visible-window readiness proof. The packaged headless
-    /// product disables this and relies on the exact same-user process identity
-    /// re-probe so injection precedes one-shot UI setup.
     pub require_visible_window: bool,
-    /// Poll cadence for the supervisor loop.
     pub poll_ms: u64,
 }
 
-/// Run the resident coordinator until `should_stop` returns true.
-/// Wires the real Windows discovery/identity adapters and process-isolated
-/// worker invoked from `main.rs` under `--auto-attach`. Frozen activation keeps
-/// the explicit Legacy path; the jointly gated product path selects the
-/// duplex/combined backend and authenticated cooperative stop event.
 #[cfg(windows)]
 pub fn run_supervisor(
     opts: SupervisorOptions,
@@ -78,8 +38,6 @@ pub fn run_supervisor(
     run_supervisor_with_events(opts, should_stop, |_| {})
 }
 
-/// Run the resident coordinator and synchronously publish durable lifecycle
-/// events to a product-facing observer. The callback is informational only.
 #[cfg(windows)]
 pub fn run_supervisor_with_events(
     opts: SupervisorOptions,
@@ -92,7 +50,6 @@ pub fn run_supervisor_with_events(
 
     let (own_session, own_sid_hash) = ToolhelpProbe::current_session_and_sid_hash()?;
     // Acquire and retain before journal recovery, WMI subscription, or process
-    // enumeration so two supervisors cannot reach independent registries.
     let _singleton = singleton::SupervisorMutex::acquire(own_session, &own_sid_hash)?;
     let instance_id = live::coordinator_instance_id();
     let clock = SystemClock::new();
@@ -122,21 +79,11 @@ pub fn run_supervisor_with_events(
     };
 
     let mut coord = Coordinator::new(config, deps, opts.journal_path)?;
-    // Reconcile any prior journal before touching live processes.
     coord.recover_from_journal()?;
 
-    // PATCH DAY (owner ruling 2026-08-18). An unknown game build stops the
-    // recorder, not just the candidate: the host's install is the build it is,
-    // and only a recorder update changes that, so a supervisor that kept
-    // watching would be waiting for something that cannot arrive. The stop goes
-    // through the SAME cooperative path as an explicit stop below, so a
-    // recording already in flight is finalized rather than abandoned.
     let mut unsupported_game_build = None;
     let mut loop_error = None;
     while !should_stop() {
-        // `step` is fallible, and it is also what DISCOVERS the refusal. Its
-        // error is held rather than thrown so the refusal it may have just
-        // recorded still gets to be the outcome.
         if let Err(error) = coord.step() {
             loop_error = Some(error);
         }
@@ -144,9 +91,6 @@ pub fn run_supervisor_with_events(
             on_event(event);
         }
         if let Some(message) = coord.take_unsupported_game_build() {
-            // Armed HERE, before the shutdown below, which is fallible. A
-            // failure while finishing up must not be able to replace "your game
-            // is newer than this recorder" with a generic fatal.
             crate::game_build::arm_refusal_exit_code();
             unsupported_game_build = Some(message);
             break;
@@ -156,10 +100,6 @@ pub fn run_supervisor_with_events(
         }
         std::thread::sleep(std::time::Duration::from_millis(opts.poll_ms));
     }
-    // Cooperative shutdown runs either way, so a recording already in flight is
-    // finalized rather than abandoned. When a refusal is in hand its errors are
-    // REPORTED, not raised: the refusal is the answer, and cleanup trouble on
-    // the way out is a second, lesser fact.
     let mut shutdown = |coord: &mut Coordinator| -> Result<(), String> {
         coord.begin_explicit_stop()?;
         for event in coord.drain_supervisor_events() {
@@ -177,9 +117,6 @@ pub fn run_supervisor_with_events(
         Ok(())
     };
     match unsupported_game_build {
-        // The message travels back as the supervisor's own outcome so `main`
-        // exits on the distinct code and the console carries the same sentence
-        // the window does. It is not an error in the recorder; it is the answer.
         Some(message) => {
             if let Err(error) = shutdown(&mut coord) {
                 eprintln!("recorder: stopping after an unsupported game build: {error}");
@@ -193,19 +130,17 @@ pub fn run_supervisor_with_events(
     }
 }
 
-/// Live Windows adapters that don't belong in `sources.rs` (they compose the
-/// existing `modset` resolver and spawn the existing worker binary).
 #[cfg(windows)]
 mod live {
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
+    use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, TryRecvError};
     use std::sync::Arc;
-    use std::ptr;
 
-    use std::os::windows::io::AsRawHandle;
     use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
 
     use super::identity::{ProcessIdentity, ProcessKey};
     use super::sources::{
@@ -213,7 +148,6 @@ mod live {
         WorkerHandle, WorkerSpawner, WorkerSpec, WorkerStatus,
     };
 
-    /// A per-boot coordinator instance id.
     pub fn coordinator_instance_id() -> String {
         use snapshot::sha256::{to_hex, Sha256};
         let mut h = Sha256::new();
@@ -223,8 +157,6 @@ mod live {
         }
         to_hex(&h.finalize())[..16].to_string()
     }
-
-    // -- Visible-window + modset environment -----------------------------
 
     pub struct LiveAttachEnvironment {
         product_root: PathBuf,
@@ -241,14 +173,6 @@ mod live {
             has_visible_window_for_process(key)
         }
 
-        /// Read the game's own files beside the running executable and say
-        /// whether this recorder was derived against that build.
-        ///
-        /// Disk only, by construction. The image path comes from the identity
-        /// the probe already resolved with a query-only handle; nothing here
-        /// opens the target for write, allocates in it, or reads its memory. It
-        /// is safe to call — and is called — before the candidate has any
-        /// staging directory or worker at all.
         fn game_build_admission(&self, id: &ProcessIdentity) -> GameBuildAdmission {
             match crate::game_build::verdict_for_image_path(std::path::Path::new(&id.image_path)) {
                 crate::game_build::GameBuildVerdict::Supported { .. } => {
@@ -261,11 +185,6 @@ mod live {
         }
 
         fn resolve_modset(&self, id: &ProcessIdentity) -> ModsetResolution {
-            // Reuse the existing fail-closed resolver. Its user-directory
-            // candidate discovery covers command-line overrides, Documents,
-            // and runtime OneDrive roots. PID-held-log corroboration and
-            // fail-closed resolution prevent an ambiguous modset from being
-            // admitted.
             let probe = ToolhelpProbe::new();
             let before = match probe.identify(id.key.pid) {
                 Ok(identity) if identity == *id => identity,
@@ -273,7 +192,7 @@ mod live {
                     return ModsetResolution {
                         resolved: false,
                         reasons: vec![
-                            "process identity changed before modset resolution".to_string(),
+                            "process identity changed before modset resolution".to_string()
                         ],
                     }
                 }
@@ -298,9 +217,6 @@ mod live {
                 before.key.pid,
                 before.key.creation_filetime.0,
             ) {
-                // The authority is the SETTINGS half; a failure to publish or
-                // recover it degrades the settings binding, and says nothing
-                // about the executable, mods or DLC.
                 report.settings.fail_public(
                     crate::modset::codes::SETTINGS_UNREADABLE,
                     format!("same-process settings authority unavailable: {error}"),
@@ -312,7 +228,7 @@ mod live {
                     return ModsetResolution {
                         resolved: false,
                         reasons: vec![
-                            "process identity changed during modset resolution".to_string(),
+                            "process identity changed during modset resolution".to_string()
                         ],
                     }
                 }
@@ -326,10 +242,6 @@ mod live {
                 }
             }
             ModsetResolution {
-                // Auto-attach arms a capture against a game it did not launch,
-                // so it asks the question it can act on: is the CONTENT bound.
-                // The settings binding travels in the manifest with its own
-                // authority; it is not a reason to refuse an attach.
                 resolved: report.content_resolved,
                 reasons: report
                     .errors
@@ -352,9 +264,9 @@ mod live {
             GetWindowThreadProcessId(hwnd, &mut owner_pid);
             if owner_pid == search.pid && IsWindowVisible(hwnd) != 0 {
                 search.found = true;
-                return 0; // stop enumeration
+                return 0;
             }
-            1 // continue
+            1
         }
     }
 
@@ -370,8 +282,7 @@ mod live {
         unsafe {
             EnumWindows(enum_windows_proc, &mut search as *mut _ as isize);
         }
-        search.found
-            && matches!(probe.identify(key.pid), Ok(identity) if identity.key == key)
+        search.found && matches!(probe.identify(key.pid), Ok(identity) if identity.key == key)
     }
 
     #[link(name = "user32")]
@@ -418,10 +329,6 @@ mod live {
     }
 
     /// A recorder-owned, handle-lifetime lease for one target identity.
-    ///
-    /// The named object is never applied to either the game process or the
-    /// recorder worker. It provides passive duplicate-worker exclusion without
-    /// termination, quota, suspension, or any other process-control capability.
     struct WorkerOwnershipLease(Handle);
 
     unsafe impl Send for WorkerOwnershipLease {}
@@ -470,10 +377,6 @@ mod live {
 
     impl SupervisorStopEvent {
         fn create(spec: &WorkerSpec) -> Result<Self, String> {
-            // `pipe_token` is a canonical 128-bit CSPRNG secret already bound
-            // to this attempt. Reusing it in a distinct Local object namespace
-            // adds no second authority source and keeps the raw name out of the
-            // journal.
             super::proof::decode_hex_16(&spec.payload.pipe_token)
                 .map_err(|error| format!("invalid stop-event token: {error}"))?;
             let name = format!(
@@ -538,21 +441,10 @@ mod live {
             })
             .is_err()
         {
-            // Thread creation failure must not make a still-running worker
-            // appear unowned. Retain the passive lease until recorder-process
-            // exit; the OS closes it without affecting either process.
             std::mem::forget(ownership_lease);
         }
     }
 
-    // -- Child-process worker spawner ------------------------------------
-
-    /// Spawns `collector_record --pid <target> --dll <staged> --out-dir <run>`
-    /// as the per-game worker, reusing the existing hook injector; the
-    /// coordinator never injects directly. This is the SAME interface the dev
-    /// launcher uses (`Start-Hoi4ProductionSpeed5Capture.ps1`).
-    /// Process-isolated worker adapter. A mintable product permit selects the child
-    /// recorder's combined H4CR/H4CT backend plus authenticated stop event.
     pub struct ProductProcessCommandSpawner {
         exe: PathBuf,
         extra_args: Vec<String>,
@@ -567,12 +459,6 @@ mod live {
     impl WorkerSpawner for ProductProcessCommandSpawner {
         fn spawn(&self, spec: &WorkerSpec) -> Result<Box<dyn WorkerHandle>, String> {
             std::fs::create_dir_all(&spec.out_dir).map_err(|e| format!("create out dir: {e}"))?;
-            // No inherited refusal receipt may survive into this attempt. The
-            // supervisor reads that file to recover what its worker told the
-            // host; one left by an earlier attempt in a reused directory would
-            // make this attempt report an older game's version. Refusing to
-            // start is the fail-closed answer: a receipt this process cannot
-            // remove is a receipt it cannot tell apart from its own.
             let stale_receipt = spec
                 .out_dir
                 .join(crate::game_build::UNSUPPORTED_GAME_BUILD_RECEIPT_FILE);
@@ -604,15 +490,9 @@ mod live {
                 ));
             }
             let ownership_lease = Arc::new(WorkerOwnershipLease::acquire(spec)?);
-            // The durable parent/child proof channel and live H4CT transport
-            // coexist inside the worker process. Session capabilities are
-            // process-global and single-claim, so the proof channel uses the
-            // independent control challenge while H4CT exclusively owns the
-            // pipe token.
             let control_session = spec.control_challenge;
-            let proof_session_id =
-                crate::control_transport::SessionId::from_bytes(control_session)
-                    .map_err(|error| format!("invalid proof session id: {error}"))?;
+            let proof_session_id = crate::control_transport::SessionId::from_bytes(control_session)
+                .map_err(|error| format!("invalid proof session id: {error}"))?;
             let expectation = super::proof::ProofExpectation {
                 pid: spec.key.pid,
                 creation_filetime: spec.key.creation_filetime.0,
@@ -621,15 +501,13 @@ mod live {
                     .map_err(|e| format!("invalid staged DLL hash: {e}"))?,
                 challenge: spec.control_challenge,
             };
-            let cooperative_stop_event =
-                if super::duplex_worker::auto_attach_identity_v1_enabled() {
-                    Some(SupervisorStopEvent::create(spec)?)
-                } else {
-                    None
-                };
-            let proof_path = spec
-                .out_dir
-                .join(super::proof::WORKER_PROOF_FILE_NAME);
+            let cooperative_stop_event = if super::duplex_worker::auto_attach_identity_v1_enabled()
+            {
+                Some(SupervisorStopEvent::create(spec)?)
+            } else {
+                None
+            };
+            let proof_path = spec.out_dir.join(super::proof::WORKER_PROOF_FILE_NAME);
             let proof_file = super::proof::create_durable_proof_file(proof_path.clone())?;
             let proof_transcript_path = proof_path.clone();
             let stderr_path = spec.out_dir.join("worker_stderr.log");
@@ -692,8 +570,7 @@ mod live {
             if let Some(stop_event) = cooperative_stop_event.as_ref() {
                 cmd.env("BATTLE_PLAN_AUTO_ATTACH_STOP_EVENT", &stop_event.name);
             }
-            cmd
-                .stdin(Stdio::null())
+            cmd.stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::from(worker_stderr));
             let child = cmd.spawn().map_err(|e| format!("spawn worker: {e}"))?;
@@ -759,8 +636,7 @@ mod live {
                     if let Err(reason) = result {
                         let _ = status_tx.send(WorkerStatus::Failed { reason });
                     }
-                })
-            {
+                }) {
                 Ok(join) => join,
                 Err(e) => {
                     if let Some(stop_event) = cooperative_stop_event.as_ref() {
@@ -796,21 +672,12 @@ mod live {
         }
     }
 
-    /// Handle over the process-isolated recorder worker. A retained, durable
-    /// per-attempt file carries hello/first-world/recurring-heartbeat proofs;
-    /// child exit is
-    /// accepted as Complete only when that ladder succeeded and recorder-main's
-    /// fold/pack/verify pipeline left a replay artifact.
     struct ChildWorkerHandle {
         child: Option<Child>,
         out_dir: PathBuf,
         stderr_path: PathBuf,
         stop_requested: bool,
-        /// Set when cooperative finalization cannot be proven. The supervisor
-        /// reports failure but never terminates the recorder worker.
         shutdown_failure: Option<String>,
-        /// Recorder-owned duplicate-worker exclusion. If a worker outlives its
-        /// handle, a passive reaper retains this lease until natural exit.
         ownership_lease: Option<Arc<WorkerOwnershipLease>>,
         cooperative_stop_event: Option<SupervisorStopEvent>,
         cooperative_stop_started: Option<std::time::Instant>,
@@ -848,8 +715,11 @@ mod live {
                     return status;
                 }
                 Ok(WorkerStatus::Failed { reason }) => {
-                    if let Ok(Some(status)) =
-                        self.child.as_mut().expect("worker child retained").try_wait()
+                    if let Ok(Some(status)) = self
+                        .child
+                        .as_mut()
+                        .expect("worker child retained")
+                        .try_wait()
                     {
                         if !status.success() {
                             return self.worker_exit_failure(status);
@@ -957,10 +827,7 @@ mod live {
                 return;
             }
 
-            // Dropping a Rust `Child` detaches without terminating it. Move the
-            // live worker, its cooperative-stop event, proof reader, and passive
             // ownership lease to a recorder-owned reaper. The handle drop stays
-            // bounded; duplicate-worker exclusion remains until natural exit.
             let child = self.child.take().expect("worker child retained");
             let ownership_lease = self
                 .ownership_lease
@@ -1002,11 +869,6 @@ mod live {
             finalization_deadman_expired(started, last_progress, now)
         }
 
-        /// The last unbroken run of non-empty lines the worker wrote to stderr.
-        ///
-        /// The refusal message is several lines and is the last thing the worker
-        /// says, so the trailing BLOCK is the message; the single-line reader in
-        /// `worker_exit_failure` would keep only "Your game reports: …".
         fn trailing_stderr_block(&self) -> Option<String> {
             const MAX_STDERR_TAIL_BYTES: usize = 8 * 1024;
             let bytes = std::fs::read(&self.stderr_path).ok()?;
@@ -1029,43 +891,14 @@ mod live {
 
         fn worker_exit_failure(&self, status: std::process::ExitStatus) -> WorkerStatus {
             const MAX_STDERR_TAIL_BYTES: usize = 8 * 1024;
-            // PATCH DAY first, before this is read as an ordinary failure.
-            //
-            // THE EXIT CODE DECIDES. It is this recorder's own binary, exiting
-            // on a code it reserves for exactly one outcome, so it is the
-            // control signal. The receipt is durable EVIDENCE and is used for
-            // the wording when it is there — but it is written best-effort by a
-            // worker that keeps refusing when the write fails, so requiring it
-            // would make a full disk turn "your game is newer than this
-            // recorder" back into a finalize failure with the recorder still
-            // watching.
-            //
-            // Without the receipt the sentence is recovered from the worker's
-            // own stderr, where it printed it WHOLE and last, with no
-            // program-name prefix. The trailing block is taken, not the last
-            // line: the message is five lines, and the last of them alone says
-            // almost nothing.
             if status.code() == Some(crate::game_build::UNSUPPORTED_GAME_BUILD_EXIT_CODE) {
                 let message = crate::game_build::refusal_message_from_receipt(&self.out_dir)
                     .or_else(|| {
-                        // EXTRACTED, not accepted or rejected whole. A log is a
-                        // place other things also write, and the line saying the
-                        // receipt could not be written is printed immediately
-                        // before the message with no blank line between them.
-                        // Discarding the block for that would cost the host the
-                        // VERSION, which was right there one line down; taking
-                        // the suffix that begins where a message begins keeps
-                        // the sentence and leaves the diagnostic behind.
                         self.trailing_stderr_block()
                             .as_deref()
                             .and_then(crate::game_build::extract_refusal_message)
                     })
-                    .unwrap_or_else(|| {
-                        // Neither surface survived. The host still gets a true
-                        // sentence rather than an exit code, and the recorder
-                        // still stops.
-                        crate::game_build::unreadable_refusal_message()
-                    });
+                    .unwrap_or_else(|| crate::game_build::unreadable_refusal_message());
                 return WorkerStatus::UnsupportedGameBuild { message };
             }
             let detail = std::fs::read(&self.stderr_path).ok().and_then(|bytes| {
@@ -1158,19 +991,11 @@ mod live {
         now: std::time::Instant,
     ) -> bool {
         now.saturating_duration_since(started)
-            >= std::time::Duration::from_millis(
-                super::policy::GRACEFUL_STOP_DEADLINE_MS,
-            )
+            >= std::time::Duration::from_millis(super::policy::GRACEFUL_STOP_DEADLINE_MS)
             || now.saturating_duration_since(last_progress)
-                >= std::time::Duration::from_millis(
-                    super::policy::GRACEFUL_STOP_STALL_DEADLINE_MS,
-                )
+                >= std::time::Duration::from_millis(super::policy::GRACEFUL_STOP_STALL_DEADLINE_MS)
     }
 
-    /// A regular-file tail reports `UnexpectedEof` both at a clean frame
-    /// boundary and after a torn append. The control codec deliberately maps
-    /// both to `Truncated`, so child-exit handling must authenticate the exact
-    /// durable transcript before treating the former as normal completion.
     fn validate_complete_proof_transcript(
         path: &std::path::Path,
         session_id: crate::control_transport::SessionId,
@@ -1205,14 +1030,10 @@ mod live {
                     "durable proof transcript frame {sequence} is partial: needs {frame_len} byte(s), has {remaining}"
                 ));
             }
-            crate::control_transport::decode_frame(
-                &bytes[cursor..end],
-                session_id,
-                sequence,
-            )
-            .map_err(|error| {
-                format!("durable proof transcript frame {sequence} is invalid: {error}")
-            })?;
+            crate::control_transport::decode_frame(&bytes[cursor..end], session_id, sequence)
+                .map_err(|error| {
+                    format!("durable proof transcript frame {sequence} is invalid: {error}")
+                })?;
             cursor = end;
             sequence = sequence
                 .checked_add(1)
@@ -1308,20 +1129,13 @@ mod live {
             ));
 
             let absolute = started
-                + std::time::Duration::from_millis(
-                    super::super::policy::GRACEFUL_STOP_DEADLINE_MS,
-                );
-            assert!(finalization_deadman_expired(
-                started,
-                absolute,
-                absolute
-            ));
+                + std::time::Duration::from_millis(super::super::policy::GRACEFUL_STOP_DEADLINE_MS);
+            assert!(finalization_deadman_expired(started, absolute, absolute));
         }
 
         #[test]
         fn proof_transcript_clean_eof_is_distinct_from_a_torn_frame() {
-            let session =
-                crate::control_transport::SessionId::from_bytes([0xA5; 16]).unwrap();
+            let session = crate::control_transport::SessionId::from_bytes([0xA5; 16]).unwrap();
             let mut bytes = crate::control_transport::encode_frame(
                 session,
                 0,
@@ -1352,6 +1166,5 @@ mod live {
             assert!(validate_complete_proof_transcript(&path, session).is_err());
             portable_test_fs_retry::remove_file(path).unwrap();
         }
-
     }
 }

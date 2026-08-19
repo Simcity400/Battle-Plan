@@ -1,9 +1,3 @@
-//! Fail-closed admission for the M01 visible 3D-unit runtime producer seam.
-//!
-//! The GPU key in this module is only a synchronized, frame-local join key. It
-//! is never promoted to a replay/native unit identity. Likewise, A7 selection
-//! and A14 visibility are accepted only as explicit producer inputs; this code
-//! does not infer either value from meshes, anchors, or positive rendering.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -30,8 +24,6 @@ pub enum M01VisibilityOrIntelState {
     Hidden,
 }
 
-/// Required and explicit for every row. A plain `Option<u32>` is forbidden:
-/// serde accepts a missing optional field, weakening the frozen 15-field gate.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "province")]
 pub enum M01AirBaseProvinceIfWing {
@@ -91,8 +83,6 @@ pub struct M01RuntimeInputEnvelope {
     pub rows: Vec<M01RuntimeRowPair>,
 }
 
-/// Opaque admission result. M01 render-list construction must consume this
-/// type, never an unvalidated `M01PositiveRuntimeRow`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct M01AdmittedRuntimeRows {
     pairs: Vec<M01RuntimeRowPair>,

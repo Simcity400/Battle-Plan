@@ -1,43 +1,4 @@
-//! Domain 11 (`production_live`) payload grammar -- one structural walk and
-//! one encoder for every site.
-//!
-//! # Why this crate exists
-//!
-//! Five shipping sites wrote or walked the same 40-byte base payload and ten
-//! additive trailer families. The layout constants were already shared, but
-//! the walks were not. A new trailer could therefore be added at one site
-//! without making the other four fail to compile. This dependency-free leaf is
-//! the common drift boundary: every family is a public exhaustive enum arm,
 //! every declared block is an ownership transition, and the encoder lives next
-//! to the only structural walk.
-//!
-//! # Grammar here; semantics at the sites
-//!
-//! This crate owns byte widths, field offsets, versions, counts that determine
-//! boundaries, checked extents, PLIC's country-to-item partition, PCV1's
-//! canonical ranges, duplicate trailer detection, and exact block consumption.
-//! It does not own tag or id ranges, line `kind` values, the fixed-point scale
-//! policy, construction's reserved-word policy, cross-family bijections, exact
-//! totals, JSON, counters, or diagnostic strings. Those rules do not decide a
-//! byte boundary and the sites do not agree about all of them.
-//!
-//! # Traversal is lazy and owned
-//!
-//! The readers interleave semantics with structural checks and therefore care
-//! which diagnostic is observed first. [`TrailerCursor::next`] names a magic
-//! without reading behind it; [`TrailerCursor::peek_header`] exposes header
-//! operands without applying a family rule; [`TrailerCursor::read_body`]
-//! consumes the parent. The parent returns only through the final
-//! [`TrailerResume`] after every declared block was walked or explicitly
-//! discarded. A whole-payload eager layout would change diagnostic order, and
-//! advancing the parent at header time would make a forgotten block invisible.
-//!
-//! # Violations are data
-//!
-//! [`Violation`] carries operands, never text. Each site owns one exhaustive
-//! formatter and decides whether a recoverable PCV1 range defect is fatal.
-//! Caller defects are a separate [`ViolationKind`] arm so a broken consumer is
-//! never presented as a malformed recording.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -53,11 +14,6 @@ mod tests;
 #[cfg(test)]
 mod deployment_tests;
 
-// =============================================================================
-// Shared scalar widths and spans
-// =============================================================================
-
-/// A field's exact wire width.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Width {
     Bytes4,
@@ -78,7 +34,6 @@ impl Width {
     }
 }
 
-/// A checked half-open byte span.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Span {
     pub start: usize,
@@ -92,18 +47,12 @@ impl Span {
     }
 }
 
-// =============================================================================
-// Base field tables
-// =============================================================================
-
-/// Canonical fixed-point scale written in the D11 base header.
 pub const PRODUCTION_SCALE_RAW: u32 = 100_000;
 pub const BASE_HEADER_LEN: usize = 40;
 pub const STOCKPILE_ROW_LEN: usize = 16;
 pub const LINE_ROW_LEN: usize = 32;
 pub const CONSTRUCTION_ROW_LEN: usize = 32;
 
-/// A field of the 40-byte base header.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum BaseHeaderField {
     ElapsedWallMs,
@@ -130,7 +79,6 @@ impl BaseHeaderField {
         BaseHeaderField::ConstructionCount,
     ];
 
-    /// The four fields which structurally size the base blocks.
     pub const STRUCTURAL_COUNTS: [BaseHeaderField; 4] = [
         BaseHeaderField::StockpileCount,
         BaseHeaderField::MilitaryCount,
@@ -138,7 +86,6 @@ impl BaseHeaderField {
         BaseHeaderField::ConstructionCount,
     ];
 
-    /// Fields that do not move a base-block boundary.
     pub const SEMANTIC: [BaseHeaderField; 5] = [
         BaseHeaderField::ElapsedWallMs,
         BaseHeaderField::CountryCount,
@@ -176,7 +123,6 @@ impl BaseHeaderField {
     }
 }
 
-/// A field of one stockpile row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StockpileField {
     TagDbId,
@@ -207,7 +153,6 @@ impl StockpileField {
     }
 }
 
-/// A field of one military or naval line row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LineField {
     TagDbId,
@@ -267,7 +212,6 @@ impl LineField {
     }
 }
 
-/// A field of one construction row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConstructionField {
     TagDbId,
@@ -423,10 +367,6 @@ const _: () = {
         panic!("d11_grammar: ConstructionField::ALL does not tile its row");
     }
 };
-
-// =============================================================================
-// Violations and checked arithmetic
-// =============================================================================
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Section {
@@ -608,10 +548,6 @@ pub(crate) fn need_row(
     need(payload.len(), at, section, end)
 }
 
-// =============================================================================
-// Checked byte readers (all public paths bounds-check first)
-// =============================================================================
-
 pub(crate) fn u16_at(bytes: &[u8], at: usize) -> u16 {
     u16::from_le_bytes([bytes[at], bytes[at + 1]])
 }
@@ -640,10 +576,6 @@ pub(crate) fn u64_at(bytes: &[u8], at: usize) -> u64 {
 pub(crate) fn i64_at(bytes: &[u8], at: usize) -> i64 {
     u64_at(bytes, at) as i64
 }
-
-// =============================================================================
-// The base payload
-// =============================================================================
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BaseHeader {
@@ -681,8 +613,6 @@ pub struct BaseLayout {
     pub base_len: usize,
 }
 
-/// Compute the three base blocks with checked arithmetic and bounds-check the
-/// whole base before any row is yielded.
 pub fn derive_base_layout(header: &BaseHeader) -> Result<BaseLayout, Violation> {
     let stockpiles = checked_span(
         Section::BaseStockpiles,
@@ -810,10 +740,6 @@ pub fn construction_row_at(payload: &[u8], at: usize) -> Result<ConstructionRow,
     })
 }
 
-// =============================================================================
-// The ten-family trailer alphabet
-// =============================================================================
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum Trailer {
     Plic,
@@ -829,7 +755,6 @@ pub enum Trailer {
 }
 
 impl Trailer {
-    /// Wire order; PCV1 is pinned immediately before final PDQ1.
     pub const ALL: [Trailer; 10] = [
         Trailer::Plic,
         Trailer::Pvj1,
@@ -952,7 +877,6 @@ pub enum TrailerStep {
     End(usize),
 }
 
-/// The one parent cursor. Deliberately neither `Clone` nor `Copy`.
 #[derive(Debug)]
 #[must_use]
 pub struct TrailerCursor {
@@ -970,10 +894,6 @@ impl TrailerCursor {
         }
     }
 
-    /// Start a walk over a slice whose first byte is the first trailer magic.
-    ///
-    /// This is the wire port's boundary: it exposes its historical trailer-only
-    /// slice without granting callers an arbitrary continuation offset.
     pub const fn for_trailer_slice() -> Self {
         TrailerCursor::new(0)
     }
@@ -1023,7 +943,6 @@ impl TrailerCursor {
         })
     }
 
-    /// Read header operands without applying a family rule or advancing.
     pub fn peek_header(&self, payload: &[u8]) -> Result<HeaderPreview, Violation> {
         let Some((at, trailer)) = self.pending else {
             return Err(Violation::caller(self.at, CallerDefect::BodyNotDelimited));
@@ -1031,41 +950,6 @@ impl TrailerCursor {
         family::read_header_preview(payload, at, trailer)
     }
 
-    /// Parse the named family and consume the parent until every block ends.
-    ///
-    /// The only successful route back is the final [`TrailerResume`].
-    ///
-    /// ```compile_fail
-    /// use d11_grammar::*;
-    /// fn use_after_move(mut cursor: TrailerCursor, payload: &[u8]) {
-    ///     let _body = cursor.read_body(payload);
-    ///     let _ = cursor.next(payload);
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail
-    /// use d11_grammar::*;
-    /// fn clone_parent(cursor: TrailerCursor) -> (TrailerCursor, TrailerCursor) {
-    ///     let spare = cursor.clone();
-    ///     (cursor, spare)
-    /// }
-    /// ```
-    ///
-    /// A caller cannot forge a continuation at a published extent either:
-    ///
-    /// ```compile_fail
-    /// use d11_grammar::*;
-    /// fn forge_continuation(end: usize) -> TrailerCursor {
-    ///     TrailerCursor::new(end)
-    /// }
-    /// ```
-    ///
-    /// ```compile_fail
-    /// use d11_grammar::*;
-    /// fn skip_declared_block(pcv: PcvCursor) -> BlockCursor<TrailerResume> {
-    ///     pcv.variants()
-    /// }
-    /// ```
     pub fn read_body(self, payload: &[u8]) -> Result<TrailerBody, Violation> {
         let at = self.at;
         let body = self.read_body_recoverable(payload)?;
@@ -1084,8 +968,6 @@ impl TrailerCursor {
         Ok(body)
     }
 
-    /// Parse a family while leaving caller-policy PLIC item-count mismatch
-    /// recoverable after its country rows have been inspected.
     pub fn read_body_recoverable(self, payload: &[u8]) -> Result<TrailerBody, Violation> {
         let Some((at, trailer)) = self.pending else {
             return Err(Violation::caller(self.at, CallerDefect::BodyNotDelimited));

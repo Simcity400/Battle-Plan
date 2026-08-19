@@ -1,89 +1,29 @@
-//! U1 — Topbar alerts strip / notification-area binding.
-//! Generic geometry follows `compose.rs` and `widget_layout.rs`.
-//!
-//! Population seam (Constraint 2: parses **no** recording bytes) mapping
-//! `replay_core`'s READ-ONLY [`TopbarAlerts`] view (requirements item 9b) onto
-//! the topbar alert-icon display state. [`AlertKind::ALL`] is the canonical
-//! set and order for every independently produced count leaf.
-//!
-//! Like [`crate::binding`], it fabricates no value: a `Leaf` that is
-//! `Absent`/`Unobtained` renders the **fail-closed absent form** (a `None` count
-//! / no badge), never a default `0` (Constraint 3).
-//!
-//! ## FILE citations — element names, `interface/topbar.gui`
-//!
-//! Each badge count drives one shipped `instantTextBoxType` in
-//! `topbar.gui`'s `country_menu_window`; the shared `game_ui` parser resolves
-//! them (layout gate: `game_ui/tests/alerts_binding.rs`). See
-//! [`AlertKind::gui_element`]. The badge backgrounds are `GFX_topbar_alert_bg`
-//! (`topbar.gui`), and the scrolling feed icon is `GFX_global_alert_icons`
-//! (`interface/alerts.gui`, `global_alerticon_window`).
-//!
-//! ## Runtime and presentation contracts
-//!
-//! - **Badge zero-suppression is FIT, not FILE.** Whether a `0` count renders a
-//!   badge at all is engine C++ logic, *not* encoded in the `.gui`. The
-//!   [`AlertBadge::badge_shown`] flag is a documented **FIT** product convention
-//!   (shown when a positive count is measured); it makes no engine-parity claim.
-//! - **Count number formatting is UNKNOWN → rendered raw** (same rationale as
-//!   the topbar scalars in `binding.rs`): [`AlertBadge::count_text`] is
-//!   `format!("{}")` of the exact leaf, no grouping/scaling.
-//! - **Each badge has its own typed leaf.** Available/timeout decisions,
-//!   available/prepared-or-completed intel operations, non-delivering/ongoing
-//!   market contracts, initiative, and prototype rewards are not conflated.
-//!   Prototype rewards are the exact sum of complete owner-joined D65 program
-//!   rows. An individually unavailable leaf fails closed without suppressing
-//!   independently measured categories.
-//! - **The scrolling alert FEED is a current active snapshot.** Exact-a729
-//!   closure proves that `global_alerticon_window` is backed by 0x52
-//!   type-indexed active-slot vectors. D79 carries the pointer-free slot rows;
-//!   [`alert_feed_from_frame`] exposes them while keeping command-group and
-//!   opaque identities explicitly omitted. Display order is never reinterpreted
-//!   as time: the engine slot has no fire-time field.
 
 use replay_core::{
     alert_icon_frame_for_type, ActiveAlertRow, AlertDedupIdentity, Leaf, TopbarAlerts, ViewStatus,
     WorldFrame,
 };
 
-/// FILE — the alerts feed layout file (`global_alerticon_window`).
 pub const ALERTS_GUI: &str = "interface/alerts.gui";
-/// FILE — the topbar layout file carrying the canonical alert count badges.
 pub const TOPBAR_GUI: &str = "interface/topbar.gui";
 
-/// FILE — the alerts-feed container window (`interface/alerts.gui`).
 pub const ALERT_FEED_WINDOW: &str = "global_alerticon_window";
-/// FILE — the alerts-feed icon sprite (`interface/alerts.gui`).
 pub const ALERT_FEED_ICON_SPRITE: &str = "GFX_global_alert_icons";
-/// FILE — the shared alert count-badge background sprite (`interface/topbar.gui`).
 pub const ALERT_BADGE_BG_SPRITE: &str = "GFX_topbar_alert_bg";
 
-/// One topbar alert category served by the read-only [`TopbarAlerts`] view
-/// (requirements item 9b). The badge's target `topbar.gui` element is
-/// [`AlertKind::gui_element`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AlertKind {
-    /// Faction/initiative counter (`initiative_text`).
     Initiative,
-    /// Decisions available to take (`decisionview_amount_to_take_items`).
     DecisionsAvailable,
-    /// Decisions nearing their exact engine timeout threshold.
     DecisionsTimeout,
-    /// Intel operations available (`intelview_ops_available_items`).
     Intel,
-    /// Intel operations prepared or completed.
     IntelPreparedOrCompleted,
-    /// Unread special-project prototype rewards.
     PrototypeRewards,
-    /// Market contracts alert (`non_delivering_contract_amount`).
     MarketContracts,
-    /// Ongoing/delivering international-market contracts.
     MarketContractsOngoing,
 }
 
 impl AlertKind {
-    /// Every category in canonical display order (left→right in the topbar
-    /// alert area). Consumers derive their count and order from this constant.
     pub const ALL: [AlertKind; 8] = [
         AlertKind::Initiative,
         AlertKind::DecisionsAvailable,
@@ -95,8 +35,6 @@ impl AlertKind {
         AlertKind::MarketContractsOngoing,
     ];
 
-    /// FILE — the `topbar.gui` `instantTextBoxType` element whose text this
-    /// count drives (`country_menu_window` alert area).
     pub fn gui_element(self) -> &'static str {
         match self {
             AlertKind::Initiative => "initiative_text",
@@ -110,7 +48,6 @@ impl AlertKind {
         }
     }
 
-    /// The matching leaf on a [`TopbarAlerts`] view.
     fn leaf(self, alerts: &TopbarAlerts) -> &Leaf<i64> {
         match self {
             AlertKind::Initiative => &alerts.initiative,
@@ -125,38 +62,23 @@ impl AlertKind {
     }
 }
 
-/// One alert count badge's display state, fail-closed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlertBadge {
     pub kind: AlertKind,
-    /// FILE — the target `topbar.gui` element name ([`AlertKind::gui_element`]).
     pub gui_element: &'static str,
-    /// The measured count (including measured zero), or `None` (fail-closed)
-    /// when unmeasured. No default zero is fabricated.
     pub count: Option<i64>,
-    /// FIT product convention: `true` when a positive count is measured. The
-    /// engine's exact zero-suppression is UNKNOWN (C++ logic, not in the
-    /// `.gui`); this is NOT a file law (see module header).
     pub badge_shown: bool,
-    /// Raw count text for the badge (UNKNOWN formatting → `format!("{}")`), or
-    /// `None` when the badge is not shown.
     pub count_text: Option<String>,
 }
 
-/// The topbar alerts strip for one POV at one world frame (U1).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlertsStripBinding {
     pub pov_tag: String,
-    /// `true` when the general [`TopbarAlerts`] view is `Present`, or when the
-    /// validated D65 projection supplies a prototype-reward count.
     pub available: bool,
-    /// Every canonical alert badge, always in [`AlertKind::ALL`] order.
     pub badges: Vec<AlertBadge>,
 }
 
 impl AlertsStripBinding {
-    /// The badge for `kind` (always present because the strip is derived from
-    /// [`AlertKind::ALL`]).
     pub fn badge(&self, kind: AlertKind) -> &AlertBadge {
         self.badges
             .iter()
@@ -165,9 +87,6 @@ impl AlertsStripBinding {
     }
 }
 
-/// Build one badge from the (optional) POV alert view. A view that is absent, a
-/// POV missing from a present view, or an unmeasured leaf all yield the
-/// fail-closed absent badge (`count: None`, `badge_shown: false`).
 fn badge_from(kind: AlertKind, alerts: Option<&TopbarAlerts>) -> AlertBadge {
     let count = alerts
         .map(|a| kind.leaf(a))
@@ -200,8 +119,6 @@ fn set_badge_count(badges: &mut [AlertBadge], kind: AlertKind, count: Option<i64
         .map(|count| count.to_string());
 }
 
-/// Sum prototype rewards only from the complete, owner-joined D65 view. The
-/// looser scalar projection is never accepted as independent badge authority.
 fn validated_prototype_reward_count(frame: &WorldFrame, pov_tag: &str) -> Option<i64> {
     if frame.special_project_programs_status() != ViewStatus::Present {
         return None;
@@ -225,8 +142,6 @@ fn compose_alerts_strip(
         .map(|&kind| badge_from(kind, alerts))
         .collect();
 
-    // The scalar projection is not complete D65 authority. Replace its value
-    // even when validation failed, so malformed or stale rows cannot survive.
     set_badge_count(
         &mut badges,
         AlertKind::PrototypeRewards,
@@ -239,11 +154,6 @@ fn compose_alerts_strip(
     }
 }
 
-/// Build the topbar alerts strip for `pov_tag`.
-///
-/// General typed-leaf availability is owned by
-/// [`WorldFrame::topbar_alerts_status`]. When that status is not `Present`, or
-/// the POV is absent from a present view, those leaves stay fail-closed.
 pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStripBinding {
     let present = frame.topbar_alerts_status() == ViewStatus::Present;
     let alerts = if present {
@@ -259,7 +169,6 @@ pub fn alerts_strip_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertsStrip
     )
 }
 
-/// One visible icon projected from an exact active-alert snapshot row.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AlertFeedIconBinding {
     pub alert_type: u16,
@@ -268,36 +177,23 @@ pub struct AlertFeedIconBinding {
     pub template_class: u32,
     pub dedup_identity: AlertDedupIdentity,
     pub country_target_db_id: Option<u32>,
-    /// Explicitly records that command-group identities were not serialized.
     pub command_group_target_omitted: bool,
-    /// Exact frame within `GFX_global_alert_icons`.
     pub icon_frame: u16,
     pub display_order: i32,
     pub sprite: &'static str,
 }
 
-/// The scrolling alert / notification FEED (`alerts.gui`
-/// `global_alerticon_window`). This is the current active snapshot, not a
-/// historical stream; the engine slot carries no fire-time field.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AlertFeedBinding {
     pub available: bool,
-    /// All current-active rows, including members which have not materialized
-    /// an icon. Command-group and opaque identities remain explicitly omitted.
     pub rows: Vec<ActiveAlertRow>,
-    /// Icon-bearing rows in exact engine display order.
     pub icons: Vec<AlertFeedIconBinding>,
 }
 
-/// The fail-closed absent alert feed (see [`AlertFeedBinding`]).
 pub fn alert_feed_binding() -> AlertFeedBinding {
     AlertFeedBinding::default()
 }
 
-/// Bind the exact pointer-free current-active snapshot for one POV. Any
-/// malformed family/order relation fails the whole surface closed. Gated on
-/// [`WorldFrame::topbar_alerts_status`], the status that owns the alerts
-/// surface (the feed lives on the same [`TopbarAlerts`] view).
 pub fn alert_feed_from_frame(frame: &WorldFrame, pov_tag: &str) -> AlertFeedBinding {
     if frame.topbar_alerts_status() != ViewStatus::Present {
         return AlertFeedBinding::default();
@@ -417,8 +313,6 @@ mod tests {
 
     #[test]
     fn zero_count_measured_is_absent_badge_never_shown() {
-        // A *measured* zero is a real value (count = Some(0)) but the FIT
-        // convention suppresses the badge; it is never a fabricated default.
         let b = badge_from(
             AlertKind::DecisionsAvailable,
             Some(&alerts(

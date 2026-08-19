@@ -1,10 +1,3 @@
-//! A product recording dump executes the same XMAP22 packet-native composition used by windowed playback.
-//! It selects one timeline hour before publishing the final BMP and its
-//! content-bound composition receipt.
-//!
-//! Retained bundle-based and explicit evidence helpers remain non-product
-//! screen-free tooling; they may render/read back evidence without authorizing
-//! product-map output.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -21,18 +14,10 @@ use crate::render::{validate_day_night_hour, MapRenderer, POLITICAL_COLOR_BLOCKE
 use crate::timeline::{build_provider, resolve_dump_hour, DumpHourRequest, OwnerProvider};
 use crate::{Result, TimelineMode};
 
-/// Exact quarter of the 5632x2048 map: full-map fit with zero letterbox,
-/// so every pixel is map content and dumps diff cleanly.
 const DUMP_WIDTH: u32 = 1408;
 const DUMP_HEIGHT: u32 = 512;
 static IMMUTABLE_PUBLISH_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Verify the immutable XMAP22 dump pair published by `--dump-frame`.
-///
-/// The composition receipt is decoded through its deny-unknown-fields Rust
-/// type and re-sealed by `validate`.  The BMP is then decoded back to the
-/// top-down BGRA byte order hashed by the compositor.  This is the product
-/// replacement for the retired selected-Present/pixel-gate sidecar check.
 pub(crate) fn verify_xmap22_dump(path: &Path) -> Result<()> {
     let receipt_path = xmap22_receipt_path(path);
     let receipt_bytes = std::fs::read(&receipt_path).map_err(|error| {
@@ -144,18 +129,6 @@ fn read_xmap22_bmp(path: &Path) -> Result<(u32, u32, Vec<u8>)> {
     Ok((width, height, pixels))
 }
 
-/// Typed failure of a post-publication evidence sink (R18-4). The two
-/// retained non-product frame-dump evidence writers
-/// ([`write_snow_mud_h2_receipt`] and
-/// [`write_occupation_secondary_h2_evidence`]) run AFTER `write_bmp` has
-/// already published the frame BMP; a create-new collision, serialization,
-/// or I/O failure there fails the non-product evidence dump while its BMP
-/// stays on disk. Unlike
-/// the env-gated interactive twins in `render.rs` — which are registered
-/// blocker surfaces the product refuses to start with — these sinks are on
-/// the retained evidence path, so their failure carries a type naming the sink
-/// and the partial-publication state instead of a bare prose string. Consumers
-/// treat a BMP missing its requested companion evidence as incomplete.
 #[derive(Debug)]
 pub(crate) struct ProductionEvidenceSinkError {
     sink: &'static str,
@@ -249,14 +222,6 @@ fn snow_mud_h2_payload_path(out: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-/// Durable publication of the snow/mud H2 raw plane next to its receipt.
-///
-/// The production dump is the only shipping invocation that produces the
-/// tight readback bytes, and (unlike the registry-blocked
-/// `REPLAY_SNOW_MUD_H2_RECEIPT_DIR` diagnostic sink) this is its only durable
-/// outlet, exactly mirroring the occupation secondary H2 evidence pair: the
-/// sidecar bytes must re-verify against the sealed receipt before either file
-/// is published, and both files are immutable create-new-or-equal.
 fn write_snow_mud_h2_evidence(
     out: &Path,
     receipt: &replay_core::SnowMudReplayReadbackReceipt,
@@ -386,13 +351,6 @@ pub(crate) fn write_create_new_or_equal(path: &Path, bytes: &[u8], label: &str) 
     result
 }
 
-/// Select `hour` (default: the timeline's first hour).
-///
-/// A supplied bundle is an explicitly non-product debug/evidence renderer and
-/// may write a 32-bit BMP. Bundle-less recording playback is a product route:
-/// it binds semantic/content authority, executes the complete packet-native
-/// map composition, and requires every applicable native execution receipt
-/// before map pixels, BMP, or a success receipt.
 
 struct FrameKeying {
     owners: std::sync::Arc<std::collections::BTreeMap<u32, String>>,
@@ -400,9 +358,6 @@ struct FrameKeying {
     world_frame: Option<std::sync::Arc<replay_core::WorldFrame>>,
 }
 
-/// The data-only half of the real headless keying seam. It deliberately runs
-/// before D3D initialization so selection and recording-load failures cannot
-/// be replaced by a rendered all-underlay frame.
 fn load_frame_keying(provider: &dyn OwnerProvider, hour: i64) -> Result<FrameKeying> {
     Ok(FrameKeying {
         owners: provider.owners_at(hour)?,
@@ -460,10 +415,6 @@ pub fn dump_frame(
     }
 }
 
-/// Seam-level defense in depth behind `main.rs`'s registry-driven
-/// `reject_production_recording_debug_cli` gate: a non-CLI caller of
-/// `dump_frame` gets the same registry rejection, with the
-/// `blockers::REGISTRY` row's reason verbatim.
 fn reject_recording_dump_debug_bundle(mode: &TimelineMode, has_bundle: bool) -> Result<()> {
     if matches!(mode, TimelineMode::Recording { .. }) && has_bundle {
         return Err(crate::blockers::reason(crate::blockers::BlockerId::RecordingBundle).into());
@@ -543,20 +494,11 @@ fn dump_debug_frame(
         camera.center_y = y;
     }
     camera.normalize(f64::from(DUMP_HEIGHT));
-    // Day/night terminator shading is opt-in via --hour; the default keeps
-    // the captured CB0 state (off), matching the game's default map view.
     let day_night_hour = day_night_hour_override;
     renderer.render(&gfx, &camera, day_night_hour, None)?;
-    // COLOR-lane debug readback (--dump-hdr): the rendered HDR MainScene
-    // (captured-pass RGBA16F output, capture-native dimensions, BEFORE the
-    // final composite/postfx). Never a render input.
     if let Some(hdr_path) = dump_hdr {
         renderer.dump_hdr_mainscene(&gfx, hdr_path)?;
     }
-    // Same overlay as app.rs so the dump verifies the real product path:
-    // line 1 the raw Clausewitz date + hour (GAP: localisation-formatted
-    // dates are a later slice), line 2 mode + play state + probe. Headless
-    // has no cursor, so the probe shows the empty readout.
     let hour_label = provider.hour_label(hour)?;
     let hour_index = match hours.binary_search(&hour) {
         Ok(index) => index,
@@ -647,9 +589,6 @@ fn dump_debug_frame(
     Ok(())
 }
 
-/// Select one portable recording hour and execute the packet-native map chain
-/// used by normal windowed playback on an offscreen target. Incomplete map
-/// families prevent map pixels, BMP output, and a success receipt.
 fn dump_production_recording_frame(
     mode: &TimelineMode,
     hour: Option<i64>,
@@ -773,10 +712,6 @@ fn dump_production_recording_frame(
     write_create_new_or_equal(&receipt_path, &receipt_bytes, "XMAP22 composition receipt")
 }
 
-/// Seam-level defense in depth behind `main.rs`'s registry-driven
-/// `reject_production_recording_debug_cli` gate: a non-CLI caller of the
-/// production dump gets the same per-input registry rejection, with each
-/// `blockers::REGISTRY` row's reason verbatim.
 fn reject_production_dump_debug_inputs(
     dump_zoom: Option<f64>,
     dump_center: Option<(f64, f64)>,
@@ -803,8 +738,6 @@ fn reject_production_dump_debug_inputs(
     Ok(())
 }
 
-/// Minimal 32-bit BI_RGB BMP writer. `pixels` are top-down BGRA rows (the
-/// readback layout); BMP stores rows bottom-up.
 fn write_bmp(path: &Path, width: u32, height: u32, pixels: &[u8]) -> Result<()> {
     let row_bytes = width as usize * 4;
     if pixels.len() != row_bytes * height as usize {
@@ -879,9 +812,6 @@ mod tests {
         corrupt.push(0);
         let corrupt_path = root.join("corrupt.bmp");
         std::fs::write(&corrupt_path, corrupt).unwrap();
-        // The guard matters MORE here than on the positive case above: this
-        // asserts only `is_err()`, so a scanner's `os error 32` would satisfy
-        // it and the truncation refusal would go unproven.
         assert!(
             portable_test_fs_retry::with_read_guard(&corrupt_path, || read_xmap22_bmp(
                 &corrupt_path
@@ -895,7 +825,6 @@ mod tests {
             corrupt[offset] ^= 1;
             let corrupt_path = root.join(format!("corrupt-header-{offset}.bmp"));
             std::fs::write(&corrupt_path, corrupt).unwrap();
-            // Same reason as above: `is_err()` alone would accept error 32.
             assert!(
                 portable_test_fs_retry::with_read_guard(&corrupt_path, || read_xmap22_bmp(
                     &corrupt_path
@@ -927,9 +856,6 @@ mod tests {
 
     #[test]
     fn post_publication_h2_evidence_sink_failure_is_typed() {
-        // R18-4: the retained non-product H2 evidence sinks run after the BMP
-        // is already published. Their failures carry a typed
-        // ProductionEvidenceSinkError naming the partial-publication state.
         let root = std::env::temp_dir().join(format!(
             "battle-plan-evidence-sink-{}-{}",
             std::process::id(),
@@ -937,7 +863,6 @@ mod tests {
         ));
         std::fs::create_dir(&root).unwrap();
         let out = root.join("frame.bmp");
-        // The dump's BMP is already on disk when the sinks run.
         std::fs::write(&out, b"published bmp bytes").unwrap();
         std::fs::write(snow_mud_h2_receipt_path(&out), b"different\n").unwrap();
         let snow_receipt = replay_core::SnowMudReplayReadbackReceipt {
@@ -978,7 +903,7 @@ mod tests {
         );
         assert_eq!(portable_test_fs_retry::read(&out).unwrap(), b"published bmp bytes");
 
-        let payload = b"bgra"; // 4 bytes, matching the receipt below
+        let payload = b"bgra";
         std::fs::write(occupation_secondary_h2_payload_path(&out), b"other\n").unwrap();
         let occupation_receipt = replay_core::OccupationSecondaryReplayReadbackReceipt {
             schema: "test".to_string(),
@@ -1044,15 +969,12 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let out = root.join("hour-00000000.bmp");
 
-        // Sidecar bytes that disagree with the sealed receipt never publish
-        // either half of the evidence pair.
         let mut wrong = bytes.clone();
         wrong[0] ^= 0xff;
         assert!(write_snow_mud_h2_evidence(&out, &receipt, &wrong).is_err());
         assert!(!snow_mud_h2_receipt_path(&out).exists());
         assert!(!snow_mud_h2_payload_path(&out).exists());
 
-        // Verified bytes publish the raw plane AND the receipt, idempotently.
         let (receipt_path, payload_path) =
             write_snow_mud_h2_evidence(&out, &receipt, &bytes).unwrap();
         assert_eq!(portable_test_fs_retry::read(&payload_path).unwrap(), bytes);
@@ -1064,7 +986,6 @@ mod tests {
         );
         write_snow_mud_h2_evidence(&out, &receipt, &bytes).unwrap();
 
-        // A different sealed receipt can never silently replace the published one.
         let mut altered = receipt.clone();
         altered.replaced_binding_count += 1;
         assert!(write_snow_mud_h2_evidence(&out, &altered, &bytes).is_err());
@@ -1200,8 +1121,6 @@ mod tests {
     fn production_recording_dump_rejects_every_debug_substitute() {
         use crate::blockers::{reason, BlockerId};
         assert!(reject_production_dump_debug_inputs(None, None, None, None, None).is_ok());
-        // Each rejection is the corresponding registry row's reason verbatim
-        // (the registry stays the single source of the message text).
         let err = reject_production_dump_debug_inputs(Some(1.0), None, None, None, None)
             .expect_err("zoom");
         assert_eq!(err.to_string(), reason(BlockerId::RecordingDumpZoom));

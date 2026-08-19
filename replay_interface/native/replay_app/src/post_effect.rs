@@ -1,8 +1,4 @@
-//! CPU mirror of the grounded scene-restore tone curve used by the map shader.
-//! This stays dependency-free so evidence checks can use the same math as the
-//! HLSL port without pulling in a shader compiler or GPU readback path.
 
-// gfx/FX/constants.fxh:117-119.
 pub(crate) const LUMINANCE_VECTOR: [f32; 3] = [0.2125, 0.7154, 0.0721];
 
 const COLOR_CUBE_SIZE: usize = 32;
@@ -64,7 +60,6 @@ impl ColorCube32 {
     }
 }
 
-// gfx/FX/restorescene.shader:155-164.
 fn uncharted2_tonemap_channel(x: f32) -> f32 {
     let a = 0.22;
     let b = 0.30;
@@ -76,9 +71,6 @@ fn uncharted2_tonemap_channel(x: f32) -> f32 {
     ((x * (a * x + c * b) + d * e) / (x * (a * x + b) + d * f)) - e / f
 }
 
-/// gfx/FX/restorescene.shader:194-202, followed by the final saturate at
-/// restorescene.shader:223. Exposure, bloom, and COLOR_LUT are runtime-buffer
-/// gaps documented in the shader port in `render.rs`.
 pub(crate) fn hoi4_scene_restore_tone_map_rgb(rgb: [f32; 3]) -> [f32; 3] {
     let exposure_bias = 1.0;
     let white_point = 11.2;
@@ -92,9 +84,6 @@ pub(crate) fn hoi4_scene_restore_tone_map_rgb(rgb: [f32; 3]) -> [f32; 3] {
     })
 }
 
-/// gfx/FX/restorescene.shader:90-109. The 32^3 LUT is stored as a 1024x32
-/// strip: 32 blue slices laid out horizontally, with hardware bilinear
-/// filtering inside a slice and the shader's manual lerp across blue slices.
 pub(crate) fn sample_color_cube(lut: &ColorCube32, rgb: [f32; 3]) -> [f32; 3] {
     let color = saturate_rgb(rgb);
     let cube_size = COLOR_CUBE_SIZE as f32;
@@ -112,8 +101,6 @@ pub(crate) fn sample_color_cube(lut: &ColorCube32, rgb: [f32; 3]) -> [f32; 3] {
     lerp3(color1, color2, scale * color[2] * cube_size - z_floor)
 }
 
-/// gfx/FX/restorescene.shader:116-120 plus standardfuncsgfx.fxh RGB/HSV
-/// helpers. Hue is in the shader's 0..6 post-processing domain.
 pub(crate) fn apply_hsv_shift(rgb: [f32; 3], hsv: [f32; 4]) -> [f32; 3] {
     let mut shifted = rgb_to_hsv(rgb);
     shifted[1] *= hsv[1];
@@ -130,21 +117,16 @@ pub(crate) fn apply_color_balance(rgb: [f32; 3], color_balance: [f32; 3]) -> [f3
     ])
 }
 
-/// standardfuncsgfx.fxh:172-176.
 pub(crate) fn apply_levels(rgb: [f32; 3], min_input: f32, max_input: f32) -> [f32; 3] {
     let denom = max_input - min_input;
     rgb.map(|channel| ((channel - min_input).clamp(0.0, 1.0) / denom).clamp(0.0, 1.0))
 }
 
-/// gfx/FX/restorescene.shader:135-140, ADJUSTED_EXPOSURE branch.
 pub(crate) fn exposure(rgb: [f32; 3], middle_grey: f32, average_luminance: f32) -> [f32; 3] {
     let scale = middle_grey / average_luminance;
     rgb.map(|channel| channel * scale)
 }
 
-/// Full RestoreScene CPU mirror. `Levels` is part of the COLOR_LUT block in
-/// restorescene.shader:112-129, so this function applies LUT/HSV/balance/levels
-/// only when capture evidence says that group is live.
 pub(crate) fn restore_scene_full_rgb(
     rgb: [f32; 3],
     lut: &ColorCube32,
@@ -166,21 +148,6 @@ pub(crate) fn restore_scene_full_rgb(
     color
 }
 
-/// CPU mirror of the FULL `restorescene.shader` `main()` composite order,
-/// including the `#ifdef BLOOM` step. This is the reference the GPU compositor
-/// (`render.rs` `CAPTURED_PASS_COMPOSITE_HLSL`) reproduces, and the order is
-/// load-bearing, so it is pinned by a unit test.
-///
-/// Cited from `gfx/FX/restorescene.shader:206-224`:
-///   1. `color = MainScene.rgb`                                  (line 208)
-///   2. `#ifdef BLOOM`: `color = bloom.rgb + color`              (lines 210-213)
-///      — ADDITIVE, no extra scale (BLOOM_SCALE is baked into the blur),
-///      sampled at `uv * BloomToScreenScale`.
-///   3. `#ifdef HDR`: `color = Exposure(color); color = ToneMap(color)` (215-218)
-///   4. `return RestoreScene( saturate(color) )` — the COLOR_LUT block
-///      (SampleColorCube -> HSV -> ColorBalance -> Levels)       (112-129, 223)
-///
-/// So bloom is added to the LINEAR scene BEFORE exposure/tonemap/LUT.
 #[cfg(test)]
 pub(crate) fn restore_scene_full_with_bloom_rgb(
     scene_rgb: [f32; 3],
@@ -188,14 +155,11 @@ pub(crate) fn restore_scene_full_with_bloom_rgb(
     lut: &ColorCube32,
     params: RestoreSceneFullParams,
 ) -> [f32; 3] {
-    // Step 2: additive bloom onto the linear scene (restorescene.shader:212).
     let composited = [
         scene_rgb[0] + bloom_rgb[0],
         scene_rgb[1] + bloom_rgb[1],
         scene_rgb[2] + bloom_rgb[2],
     ];
-    // Steps 3-4: exposure -> tonemap -> saturate -> COLOR_LUT block, exactly as
-    // `restore_scene_full_rgb` orders them.
     restore_scene_full_rgb(composited, lut, params)
 }
 
@@ -389,9 +353,6 @@ mod tests {
 
     #[test]
     fn bloom_composites_additively_before_tonemap_hand_computed() {
-        // restorescene.shader:212 is `color = bloom.rgb + color` in LINEAR space,
-        // BEFORE ToneMap (restorescene.shader:217). Hand-compute the reference:
-        // add bloom to the scene, then tone-map the sum (no exposure, no LUT).
         let scene = [0.20f32, 0.30, 0.40];
         let bloom = [0.05f32, 0.10, 0.15];
         let lut = ColorCube32::identity();
@@ -411,9 +372,6 @@ mod tests {
 
     #[test]
     fn adding_bloom_before_tonemap_differs_from_adding_after() {
-        // The ORDER matters: because the tone map is non-linear, `tonemap(scene +
-        // bloom)` (the shader's order) must NOT equal `tonemap(scene) + bloom`.
-        // This pins that bloom is composited pre-tonemap, not post.
         let scene = [0.40f32, 0.50, 0.60];
         let bloom = [0.20f32, 0.20, 0.20];
         let lut = ColorCube32::identity();
@@ -440,8 +398,6 @@ mod tests {
 
     #[test]
     fn zero_bloom_is_identical_to_no_bloom_path() {
-        // A zero bloom buffer (nothing above the bright threshold) must leave the
-        // graded scene byte-for-byte unchanged — the additive identity.
         let scene = [0.23f32, 0.31, 0.40];
         let lut = ColorCube32::identity();
         let params = RestoreSceneFullParams {

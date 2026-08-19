@@ -94,9 +94,6 @@ pub struct LocalisationProbeReport {
     pub file_count: usize,
     pub key_count: usize,
     pub parse_failures: Vec<String>,
-    /// Byte-level decode damage, carried through instead of dropped. A separate
-    /// axis from `parse_failures`, which is line-level: a U+FFFD inside a quoted
-    /// value leaves a well-formed row, so the line parser reports nothing.
     pub decode_lossy_files: Vec<String>,
 }
 
@@ -211,10 +208,6 @@ pub fn run_probe(config: &ProbeConfig) -> Result<ProbeReport> {
     })
 }
 
-/// Parse one `.gfx` file and report its destructive decode EVENT count
-/// alongside the document. Same read-and-parse the previous
-/// `paradox_text::parse_file` call performed, with the byte-level observation
-/// that call discarded.
 fn load_gfx_document(path: &Path) -> Result<(crate::paradox_text::Document, usize)> {
     let bytes = std::fs::read(path)?;
     let events = destructive_event_count(&diagnose_text_decode(&bytes));
@@ -229,8 +222,6 @@ pub fn parse_gfx_files(resolver: &AssetResolver) -> Result<(SpriteRegistry, GfxP
         ..GfxParseStats::default()
     };
     for file in files {
-        // Read the bytes here rather than calling `paradox_text::parse_file`, so
-        // decode damage is observable; the parse itself is identical.
         match load_gfx_document(&file.path) {
             Ok((doc, decode_events)) => {
                 stats.recovery_count += doc.recoveries.len();
@@ -260,11 +251,6 @@ pub fn parse_gui_files(resolver: &AssetResolver) -> Result<(LayoutSet, GuiParseS
     let files = resolver.list_files_recursive("interface", Some("gui"))?;
     let mut layouts = LayoutSet::default();
     for file in files {
-        // Must go through `LayoutSet::parse_file`, the byte-owning entry point:
-        // it is the only one that can observe decode damage. Routing through
-        // `paradox_text::parse_file` + `add_document` discards the bytes and
-        // records "decode not observed", so the decode-loss report below could
-        // never fire no matter how damaged the input was.
         match layouts.parse_file(&file.path, &file.rel_path) {
             Ok(()) => {}
             Err(err) => {
@@ -757,11 +743,6 @@ impl ProbeReport {
                 out.push_str(&format!("  {file}\n"));
             }
         }
-        // Byte-level decode damage is a different axis from parser recoveries
-        // and gets its own line rather than being counted into `recoveries=`.
-        // Emitted only when non-empty, exactly like the recoveries block above,
-        // so a clean corpus (which is every shipped one — measured) reports
-        // nothing extra.
         if !self.gui.files_with_decode_loss.is_empty() {
             out.push_str(&format!(
                 "gui files with destructive decode loss (events={}):\n",
@@ -783,9 +764,6 @@ impl ProbeReport {
                 out.push_str(&format!("  {item}\n"));
             }
         }
-        // Byte-level damage gets its own line, never counted into the
-        // `parse_failures=` total above. Emitted only when non-empty, so a clean
-        // corpus (which every shipped one is, measured) reports nothing extra.
         if !self.localisation.decode_lossy_files.is_empty() {
             out.push_str("localisation files with destructive decode loss:\n");
             for item in &self.localisation.decode_lossy_files {

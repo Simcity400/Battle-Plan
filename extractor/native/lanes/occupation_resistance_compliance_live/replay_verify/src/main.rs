@@ -158,12 +158,6 @@ struct DataAuthority {
     row_count: u64,
     changed_rows: u64,
     observed_state_rows: u64,
-    /// The frame's coverage verdict, header `+52`. Certification requires zero: a
-    /// capture whose wire says its coverage is not to be trusted is a capture
-    /// whose occupation census the replay map correctly refuses, so certifying
-    /// it here would put the two authorities in disagreement. Only the zero/
-    /// nonzero distinction is read — the magnitude is the producer's accounting
-    /// and not a count this verifier could defend.
     invalid_state_rows: u64,
     status_flags: u32,
     units: BTreeMap<String, u64>,
@@ -715,20 +709,12 @@ fn validate_live_root_evidence(summary: &Value, errors: &mut Vec<String>) -> boo
         });
     let valid = game_state.is_some_and(is_heap_ptr)
         && province_array.is_some_and(is_heap_ptr)
-        // The 10_000-province floor was lane GK's residual R3 shape: an unproven
-        // claim that a real game has at least a vanilla-sized map, which refuses
-        // a legal smaller total conversion. What is structural is that slot 0 is
-        // the vacant province, so a loaded table declares at least two, and that
-        // the walk must authenticate at least one row rather than publish a
-        // successful empty.
         && province_count.is_some_and(|count| (2..=65_536).contains(&count))
         && province_rows.is_some_and(|rows| {
             rows >= 1 && province_count.is_some_and(|count| rows <= count)
         })
         && invalid_province_rows == Some(0)
         && invalid_state_links == Some(0)
-        // Same for the 1_000-state floor: a conversion may define far fewer.
-        // "at least one authenticated state root" is the structural rule.
         && state_roots.is_some_and(|rows| {
             rows >= 1 && province_rows.is_some_and(|provinces| rows <= provinces)
         })
@@ -838,14 +824,6 @@ fn validate_summary_against_authority(
             ));
         }
     }
-    // The WIRE's own coverage verdict, a different claim from the summary's.
-    // The summary is written beside the capture and says what the producer
-    // believed; `invalid_state_rows` at header `+52` is what the producer
-    // actually encoded, hour by hour. Certifying a stream whose wire reports
-    // untrusted coverage while its summary claims a clean extraction would put this
-    // verifier in direct disagreement with the replay map, which refuses the
-    // occupation census of exactly those hours
-    // (`replay_interface/native/map_viewer/src/map_authority.rs::occupation_resistance_compliance_status`).
     for frame in &stream.frames {
         if frame.rows_invalid != 0 {
             errors.push(format!(
@@ -995,16 +973,6 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
                             .into_iter()
                             .map(|(key, value)| (key.to_string(), value))
                             .collect::<BTreeMap<_, _>>();
-                        // The header words below are read by fixed offset, and
-                        // nothing in the generic record framing bounds a
-                        // DOMAIN_DATA payload's length -- so a short payload has
-                        // to be refused HERE, not indexed. `decode_payload` has
-                        // already pushed its own named short-header error, which
-                        // is the refusal this frame should carry; building an
-                        // authority out of bytes that are not there would replace
-                        // it with a panic. The window is the whole header,
-                        // including the trailing `invalid_state_rows` at `+52`
-                        // that widened it from 24 bytes to 56.
                         if payload.len() < domain52_compact::HEADER_LEN {
                             errors.push(format!(
                                 "offset {record_offset}: domain {DOMAIN_ID} DATA payload is {}                                  byte(s), too short for the {}-byte header",
@@ -1522,12 +1490,6 @@ mod tests {
         assert!(validate_game_id("").is_err());
     }
 
-    /// kills: reading the d52 header by fixed offset without bounding the
-    /// payload first. Nothing in the generic record framing bounds a
-    /// `DOMAIN_DATA` payload's length, so a truncated one -- including a capture
-    /// written against the old 52-byte header -- indexed past its end and
-    /// PANICKED instead of returning the decoder's named refusal. Discarding old
-    /// captures is the standing rule; crashing on them is not fail-closed.
     #[test]
     fn a_short_d52_data_payload_is_refused_by_name_not_by_panic() {
         for len in [0usize, 24, 52, 55] {
@@ -1551,19 +1513,10 @@ mod tests {
         }
     }
 
-    /// kills: certifying a capture whose WIRE reports untrusted coverage.
-    /// The summary is written beside the capture and says what the producer
-    /// believed; `invalid_state_rows` at header `+52` is what it encoded. A
-    /// stream where those disagree must not certify here, because the replay map
-    /// refuses the occupation census of exactly those hours -- two authorities
-    /// reaching opposite verdicts about one capture is the defect.
     #[test]
     fn a_stream_whose_wire_reports_dropped_state_roots_does_not_certify() {
         let mut stream = valid_stream(100, 20, 0);
         let summary = valid_summary(&stream);
-        // Find the DATA payload's header and say one of its two roots was
-        // unreadable, keeping the full-frame identity intact so the failure is
-        // the census verdict and not a framing error.
         let data_at = stream
             .windows(4)
             .position(|w| w == 100_000u32.to_le_bytes())
@@ -1571,9 +1524,6 @@ mod tests {
         let header = data_at - 32;
         stream[header + 20..header + 24].copy_from_slice(&2u32.to_le_bytes());
         stream[header + 52..header + 56].copy_from_slice(&1u32.to_le_bytes());
-        // PERF's `row_count` is the same root census from the other record, and
-        // `certify_frame` requires the two to agree. Moving only one would fail
-        // on that disagreement instead of on the census verdict under test.
         let perf_at = stream
             .windows(8)
             .position(|w| w == 3_000u64.to_le_bytes())
@@ -1603,9 +1553,6 @@ mod tests {
         assert_eq!(cert.first_elapsed_wall_ms, 20);
         assert_eq!(cert.last_elapsed_wall_ms, 45);
         assert_eq!(cert.certified_duration_ms, 25);
-        // Two frames, one observed root each: down from 2_000 with the DATA and
-        // PERF fixtures, which declared a live-sized root count beside a single
-        // emitted row.
         assert_eq!(cert.rows_observed_total, 2);
         assert_eq!(cert.rows_emitted_total, 2);
         assert_eq!(cert.rows_changed_total, 2);
@@ -1859,9 +1806,6 @@ mod tests {
                 "province_rows": 14000,
                 "invalid_province_rows": 0,
                 "invalid_state_links": 0,
-                // One authenticated state root, matching what the DATA and PERF
-                // fixtures now declare. The rule this satisfies is "at least
-                // one", not a thousand.
                 "state_roots": 1,
                 "sample_state_roots": {"1": "0x10000000010"},
             },
@@ -1972,15 +1916,6 @@ mod tests {
                 elapsed_wall_ms: 3,
                 status_flags: status,
                 changed_rows: 1,
-                // ONE root walked, one row emitted, no drops. The fixture used
-                // to declare a live-sized 1_000 against its single row, which
-                // was never a shape the producer could build and which the
-                // full-frame identity `row_count + invalid == observed` now
-                // rejects. Restating it as 999 drops would have made it decode
-                // while inverting what it asserts -- this fixture exists to
-                // certify a CLEAN extraction, and the surrounding summary claims
-                // zero invalid rows. So the observed count comes down to match
-                // the rows instead.
                 observed_state_rows: 1,
                 occupied_state_rows: 0,
                 wall_badge_rows: 1,
@@ -2019,11 +1954,6 @@ mod tests {
         let mut payload = Vec::new();
         payload.extend_from_slice(&elapsed_wall_ms.to_le_bytes());
         payload.extend_from_slice(&3_000u64.to_le_bytes());
-        // PERF row_count, which `certify_frame` requires to equal DATA's
-        // `observed_state_rows`. It came down from 1_000 with the DATA fixture:
-        // one root walked, one row emitted, no drops. A live-sized root count
-        // beside a single emitted row was never a shape the producer could
-        // build, and the full-frame identity now says so.
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());
         payload.extend_from_slice(&1u32.to_le_bytes());

@@ -1,4 +1,3 @@
-//! XMAP16 state-first railroad and supply-map production adapter.
 
 use crate::rail_files::{
     exact_supply_arrow_mesh_from_resolver, supply_hub_content_identity_from_resolver,
@@ -67,8 +66,6 @@ pub struct PreparedXmap16RailProgram {
     pub vertex_bytecode_sha256: String,
     pub pixel_bytecode_sha256: String,
     pub samplers: Vec<PreparedXmap16RailSampler>,
-    /// Effective `map/provinces.bmp` dimensions used to compile the engine
-    /// map-shader defines. These are content-derived, never vanilla defaults.
     pub map_width: u32,
     pub map_height: u32,
     pub vertex_stride_bytes: u32,

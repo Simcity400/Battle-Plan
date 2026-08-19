@@ -39,10 +39,6 @@ pub const STATUS_BRIDGE_UNAVAILABLE: u32 = 1 << 7;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const STATUS_DELTA_DATA: u32 = 1 << 10;
-/// Re-exported, not re-spelled. This was an OR-list of every bit the contract
-/// had assigned when it was written, which drifts exactly like a literal mask:
-/// the day the contract assigned COMPACT_STATUS_SOURCE_EMPTY, this gate began
-/// rejecting a valid record as carrying an unknown bit.
 pub const STATUS_KNOWN_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
 
 pub const SOURCE_FLAG_DLL_NATIVE: u32 = 1;
@@ -50,7 +46,6 @@ pub const SOURCE_FLAG_SESSION_ROOT_VALIDATED: u32 = 1 << 1;
 pub const SOURCE_FLAG_COMMAND_HOOK_VALIDATED: u32 = 1 << 2;
 pub const SOURCE_FLAG_MESSAGE_HOOK_VALIDATED: u32 = 1 << 3;
 pub const SOURCE_FLAG_NOTIFICATION_HOOK_VALIDATED: u32 = 1 << 4;
-/// X12 unified speed/pause transition queue is installed and signature-gated.
 pub const SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED: u32 = 1 << 5;
 pub const SOURCE_FLAG_PROOF_FIXTURE: u32 = 1 << 31;
 pub const SOURCE_FLAG_KNOWN_MASK: u32 = SOURCE_FLAG_DLL_NATIVE
@@ -61,10 +56,6 @@ pub const SOURCE_FLAG_KNOWN_MASK: u32 = SOURCE_FLAG_DLL_NATIVE
     | SOURCE_FLAG_SPEED_PAUSE_HOOK_VALIDATED
     | SOURCE_FLAG_PROOF_FIXTURE;
 
-/// Header offset 56 carries the signed world-tension scalar: fixed3 percent,
-/// equivalently fixed5 after normalization to a 0.0..=1.0 ratio.
-/// Absence is represented by `i64::MIN`; the schema/root bits must agree with
-/// the value so old reserved-zero bytes can never be promoted as a real 0%.
 pub const SCHEMA_FLAG_WORLD_TENSION_FIXED5: u32 = 1;
 pub const SCHEMA_FLAG_WORLD_TENSION_DETAILS: u32 = 1 << 1;
 pub const SCHEMA_FLAG_KNOWN_MASK: u32 =
@@ -80,30 +71,6 @@ pub const WORLD_TENSION_DETAILS_FLAG_INCREASED: u32 = 1;
 pub const WORLD_TENSION_DETAILS_FLAG_KNOWN_MASK: u32 = WORLD_TENSION_DETAILS_FLAG_INCREASED;
 pub const MAX_WORLD_TENSION_LEDGER_ROWS: u32 = 100_000;
 
-/// THE key for a published player display name: an FNV-1a-SHAPED 64-bit hash
-/// over its exact UTF-8 bytes, no normalisation of any kind.
-///
-/// SHAPED, not equal to. The multiplier below is `0x1000_0000_01B3`, which is
-/// one hex group longer than the canonical FNV-1a 64 prime `0x100000001B3`.
-/// That is what this project has always computed and what every recorded key is
-/// -- t80's live row keys "Simcity400" as 10518238906223256613, which is this
-/// function and not canonical FNV -- so the constant stays and the description
-/// is corrected to match it. The key is an internal join key between the
-/// collector's rows and the fold's recomputation; nothing outside this codebase
-/// consumes it, and no consumer is entitled to reproduce it from a standard
-/// FNV implementation.
-///
-/// It lives here, in the domain's own contract crate, because BOTH sides must
-/// compute it: the collector stamps it onto every `player_key_hash` /
-/// `actor_key_hash` field it emits, and the fold RECOMPUTES it from the name
-/// carried in the same row and refuses the pair when the two disagree. With the
-/// routine private to the producer the fold could only check "nonzero", so a
-/// name and a key that contradicted each other were published as one fact.
-///
-/// kills: changing the offset basis, the prime, the byte order, or adding any
-/// case/whitespace folding here makes every collector-stamped key disagree with
-/// the fold's recomputation and the identity pair is refused rather than
-/// silently re-keyed.
 pub fn player_key_hash(name: &str) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for &byte in name.as_bytes() {
@@ -124,7 +91,6 @@ pub const EVENT_FLAG_DIRECT_CAPTURE: u32 = 1;
 pub const EVENT_FLAG_UI_VISIBLE: u32 = 1 << 1;
 pub const EVENT_FLAG_HOST_COMMAND: u32 = 1 << 2;
 pub const EVENT_FLAG_TEXT_PRESENT: u32 = 1 << 3;
-/// Row came from the ordered X12 post-mutation hook queue, not hourly polling.
 pub const EVENT_FLAG_TRANSITION_HOOK: u32 = 1 << 4;
 pub const EVENT_FLAG_KNOWN_MASK: u32 = EVENT_FLAG_DIRECT_CAPTURE
     | EVENT_FLAG_UI_VISIBLE
@@ -137,86 +103,10 @@ pub const EVENT_SOURCE_X12_SPEED_SETTER: u32 = 0x1201;
 pub const EVENT_SOURCE_X12_PAUSE_TOGGLE: u32 = 0x1202;
 pub const EVENT_SOURCE_X12_PAUSE_FORCED: u32 = 0x1203;
 
-/// Was `4096`, a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags). ENGINE-STRUCTURAL now: a country database id is admissible iff
-/// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
-/// is the widest id a loadable database holds.
 pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 
-/// Fail-closed budget on the LIVE `CGameState` country-object count the d57
-/// world-tension walk reads before iterating it.
-///
-/// A COUNT, not an id. It gated on `MAX_TAG_DB_ID`, and when that became the
-/// engine's structural id-space width the loop it controls — two live-memory
-/// reads per iteration, inside the sweep — became bounded by 2.1 billion. This
-/// is the same defect the air-loss country count had, one lane away, and it is
-/// why an id ceiling and a read budget must never be one constant.
-///
-/// # What this is, and what it is NOT
-///
-/// It is a FAIL-CLOSED CEILING on a torn or crafted count word, set to the same
-/// 65 536 the rest of the tree uses for the country table so the family holds
-/// one number. It is NOT engine-proven, and — the part an earlier draft of this
-/// doc got wrong — it is NOT a measured performance budget.
-///
-/// That draft priced it as "two 512 KB array reads", which is what a bulk copy
-/// of the two arrays would cost and is not what this walk does. The loop makes
-/// two separately guarded scalar reads per iteration and then, for every live
-/// country, further vtable, identity, policy and threshold reads. At the
-/// ceiling that is upwards of 131 000 guarded reads before the per-country work,
-/// and no measurement in this tree says what that costs against the 48 ms sweep
-/// budget. Stating a price that does not bound the actual work is worse than
-/// admitting there is none, because the next reader trusts it.
-///
-/// So: the value is chosen for consistency and to stop a garbage word, and the
-/// cost of reaching it is UNMEASURED. Lane GV residual R-GV-10. Lowering the
-/// literal instead would only reintroduce a content cap wearing a performance
-/// excuse.
-///
-/// # What closing R-GV-10 actually takes
-///
-/// An earlier draft of this note offered two one-line recipes — "measure the
-/// per-iteration work, or bulk-copy the two arrays". Both were too small, and
-/// an under-specified closing step is how a residual gets closed on paper:
-///
-/// * **Copying the two arrays does not make this walk copy-only.** Freezing the
-///   country-pointer and aggregate arrays leaves every per-country
-///   dereference live — country identity, the tag-equivalence table, the
-///   relation rows, five policy maps, the metadata block and global policy
-///   state. The closing bracket rechecks only the top-level pointers and
-///   counts, so a two-array copy would neither freeze the walk nor stop
-///   cross-state attribution. A real snapshot plan has to cover every
-///   transitively dereferenced structure.
-/// * **The work is not flat per country, so a single per-country price cannot
-///   establish the envelope.** There are FIVE separate quantities, and an
-///   earlier draft of this note conflated two of them:
-///   [`MAX_WORLD_TENSION_LEDGER_ROWS`] bounds the GLOBAL ledger loop, not a
-///   per-country one; the per-country relation walk carries its own separate
-///   `4_096` ceiling at its read site. Beyond those two there are the policy-map
-///   reads per country, the country loop itself, and the post-walk membership
-///   check — which is QUADRATIC (`sums.keys().any(|id| country_rows.iter()
-///   .any(..))`), on the order of `country_count^2` comparisons at a full
-///   roster. All five have to be enumerated and bounded together.
-///
-/// And the two branches are not alternatives. A complete snapshot plan does not
-/// close a residual about UNMEASURED cost — it changes what is being paid for
-/// without saying what it costs — so any such design still has to pass the same
-/// end-to-end measurement. The snapshot is what makes the walk copy-only and
-/// attribution-safe; the measurement is what closes R-GV-10.
-///
-/// A production closure should also replace the quadratic membership scan with
-/// an id set, which is a strict improvement independent of the ceiling.
-///
-/// Overflow refuses the whole extension with its named failure stage.
 pub const MAX_WORLD_TENSION_COUNTRY_COUNT: u32 = 65_536;
 
-/// The world-tension extension's country ROW COUNT, which is a different
-/// question from [`MAX_TAG_DB_ID`] and used to share it. It needs no
-/// content-scale ceiling of its own: the count is multiplied by
-/// `WORLD_TENSION_COUNTRY_ROW_LEN` with checked arithmetic and the result must
-/// reconstruct the extension's exact length, so what actually bounds it is the
-/// payload. This ceiling only keeps that multiply away from the checked-overflow
-/// path, and is the structural row width.
 pub const MAX_WORLD_TENSION_COUNTRY_ROWS: u32 = i32::MAX as u32;
 pub const MAX_STRING_BLOB_BYTES: usize = 256 * 1024;
 pub const MAX_PLAYER_ROWS: u32 = 4096;
@@ -1195,8 +1085,11 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
         zero_skipped_hours: true,
         ..StreamGate::default()
     };
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
-        gate.errors.push(format!("stateful stream placement: {error}"));
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(raw)
+    {
+        gate.errors
+            .push(format!("stateful stream placement: {error}"));
     }
     let mut offset = 0usize;
     let mut previous_frame_hour: Option<i32> = None;
@@ -1363,9 +1256,12 @@ pub fn gate_compact_stream(raw: &[u8]) -> StreamGate {
                 observe_open_frame(&mut gate, &mut open_frame_hour, game_hour_raw, offset);
             }
             compact_contract::KnownRecordType::FreezeCensus => {
-                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                if let Ok(census) =
+                    compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                {
                     final_record_is_clean_world_boundary = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
-                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    release_epilogue_seen |= census.phase()
+                        == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
             compact_contract::KnownRecordType::ContentIdentityCensus
@@ -1623,10 +1519,6 @@ fn validate_string_ref(
 }
 
 fn valid_country_tag(value: &str) -> bool {
-    // A D57 player row may legitimately carry the no-country sentinel for a
-    // slot with no country yet, so this admits it — exactly as the previous
-    // `-`-permitting spelling did. Dynamic tags are ordinary countries; see
-    // `compact_contract::country_tag` for the engine rule and its evidence.
     compact_contract::country_tag::is_engine_country_tag_or_no_country_sentinel(value)
 }
 
@@ -1642,8 +1534,6 @@ fn read_u32(bytes: &[u8], offset: usize) -> u32 {
 pub struct WorldTensionCountryRow {
     pub tag_db_id: u32,
     pub flags: u32,
-    /// Exact `CWorldThreat+0x28` per-country aggregate, in the ledger's
-    /// fixed-point scale (0..=10_000_000).
     pub generated_threat_fixed: i64,
     pub generate_wargoal_threshold_fixed5: i64,
     pub join_faction_threshold_fixed5: i64,
@@ -1659,7 +1549,6 @@ pub struct WorldTensionLedgerRow {
     pub current_threat_fixed: i64,
     pub original_threat_fixed: i64,
     pub reason: String,
-    /// Stable ordinal in the manager's authenticated pointer-vector snapshot.
     pub source_sequence: u64,
 }
 
@@ -2133,11 +2022,6 @@ mod tests {
             compact_contract::COMPACT_STATUS_DELTA_DATA,
             compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
             compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
-            // A measured zero is an ANSWER, so this gate must admit it without
-            // a failure override. Production change that makes this fail:
-            // re-spelling this lane's known-status mask as an OR-list of the
-            // bits assigned at the time, which is what it was before and which
-            // rejected bit 14 as unknown.
             compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
         ];
         for bit in informational_bits {

@@ -70,15 +70,10 @@ class OwnGapBucketing(unittest.TestCase):
             seq += 1
             blobs.append(record(seq, hour, domain, rtype, payload))
 
-        # hour 0: both domains deliver 1000-byte keyframes (seed records).
         emit(0, 10, RT_DOMAIN_DATA, data_payload(1000, 0))
         emit(0, 11, RT_DOMAIN_DATA, data_payload(1000, 0))
-        # hour 1: domain 11 is gapped; domain 10 delivers 100 bytes.
         emit(1, 10, RT_DOMAIN_DATA, data_payload(100, 0))
         emit(1, 11, RT_DOMAIN_GAP)
-        # hour 2: domain 10 delivers 100 bytes with NO own gap behind it, even
-        # though hour 1 had a gap for domain 11. Domain 11 delivers 900 bytes
-        # WITH an own gap behind it.
         emit(2, 10, RT_DOMAIN_DATA, data_payload(100, 0))
         emit(2, 11, RT_DOMAIN_DATA, data_payload(900, 0))
         handle = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
@@ -102,10 +97,8 @@ class OwnGapBucketing(unittest.TestCase):
         path = self.build()
         try:
             rows = prize.collect(path)
-            # domain 10: seed, then two steady records; no own gap anywhere.
             self.assertEqual([(k, first) for k, _n, _d, first in rows[10]],
                              [(0, True), (0, False), (0, False)])
-            # domain 11: seed, then one record with exactly one own gap behind it.
             self.assertEqual([(k, first) for k, _n, _d, first in rows[11]],
                              [(0, True), (1, False)])
         finally:
@@ -125,10 +118,10 @@ class DeltaBitSplit(unittest.TestCase):
             seq += 1
             blobs.append(record(seq, hour, domain, rtype, payload))
 
-        emit(0, 12, RT_DOMAIN_DATA, data_payload(1000, 0))          # seed keyframe
+        emit(0, 12, RT_DOMAIN_DATA, data_payload(1000, 0))
         for hour in range(1, 5):
-            emit(hour, 12, RT_DOMAIN_DATA, data_payload(24, 0))     # nothing changed
-        emit(5, 12, RT_DOMAIN_DATA, data_payload(800, STATUS_DELTA_DATA))  # a real patch
+            emit(hour, 12, RT_DOMAIN_DATA, data_payload(24, 0))
+        emit(5, 12, RT_DOMAIN_DATA, data_payload(800, STATUS_DELTA_DATA))
         handle = tempfile.NamedTemporaryFile(suffix=".bin", delete=False)
         handle.write(b"".join(blobs))
         handle.close()

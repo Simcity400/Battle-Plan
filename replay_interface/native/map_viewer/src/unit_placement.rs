@@ -1,74 +1,11 @@
-//! C2 — division / fleet / wing placement over time (the DATA + PLACEMENT half
-//! of unit rendering; the counter VISUAL law is CAP6-gated and NOT in scope).
-//!
-//! This module turns per-hour unit views (division, fleet, air-wing rows served
-//! by `replay_core`'s certified `WorldTimeline`) into **world-space placement
-//! records**: each unit gets an anchor province and a world `(x, y, z)` point on
-//! the 5632×2048 map plane. It is deliberately decoupled from `replay_core`: it
-//! consumes plain input structs ([`DivisionPlacementInput`] etc.), exactly like
-//! the other recording-fed `map_viewer` consumers (`naval_supremacy_tint`,
-//! `map_furniture`) take primitive inputs and let `replay_app` adapt the typed
-//! views. The A2 fixtures are the numeric oracle; the round-trip gate lives in
-//! `map_viewer/tests/unit_placement_gates.rs` (opens the fixtures through the
-//! real `replay_core` source, so the placement is proven against the generator
-//! ground truth).
-//!
-//! # Placement law
-//!
-//! | Element | Class | Rule |
-//! |---|---|---|
-//! | Land division anchor province | FILE (recording) | the division's own `location_province` for the hour. |
-//! | Fleet anchor province | FILE (recording) | the task force's own `location_province` (sea / naval-base province). |
-//! | Air-wing anchor province | FIT | wings carry no on-map province today; anchored via the air-base **state**'s representative province (caller-supplied `state_id → province_id`). Exact air-base locator is UNKNOWN (see gap below). A future recording `location_province` (item 8 "airbase province") is honored first when present. |
-//! | Province → world point | FILE | `map/unitstacks.txt` **stack-center** row (`type == 0`) for the province — the engine's own per-province unit-stack centre `(x, y, z)` in world space. When a province has no `type 0` row, the lowest available slot kind is used (still FILE, provenance records the kind). |
-//! | Province → world point (fallback) | FIT | province pixel **centroid** (the `map_furniture` DERIVED_APPROXIMATION) may be injected via [`ProvinceAnchorTable::insert`] with [`AnchorProvenance::ProvinceCentroid`] for provinces missing from `unitstacks.txt`. Not auto-loaded here (raster load is heavy); it is an explicit, labelled extension. |
-//! | Which unitstacks **slot** a specific unit occupies; multi-unit **stacking**; screen-space size / anchor offset / aggregation-by-zoom | UNKNOWN / CAP6 | `unitstacks.txt` ships ~20 slot kinds per province (`type 0..=38`) but the semantic enum (land/naval/air, sub-slot order) is NOT shipped; the counter visual law is capture-gated (CAP6). This module places every unit at the province **stack centre**; slotting/stacking slots in later without changing the province→anchor seam. |
-//!
-//! # Interpolation policy
-//!
-//! **Step function — hold the last hourly sample until the next hour.** The
-//! recording carries `moving` / `move_target_province` / `move_progress`, but the
-//! product contract forbids invented smoothing without capture evidence, so
-//! position is the `location_province` of the frame at-or-before the requested
-//! hour. Because `replay_core::WorldTimeline::state_at` already resolves to the nearest
-//! snapshot at-or-before, calling [`place_frame_inputs`] once per resolved frame
-//! yields the step-hold for free, and `seek(h) == play_to(h)` placement equality
-//! is inherited from the timeline (gated in the test). `move_*` fields are left
-//! available for a FUTURE evidence-based interpolation; they do NOT move the
-//! anchor today.
-//!
-//! # Fail-closed honesty
-//!
-//! Nothing is invented. A unit whose recording gives no anchor province is
-//! [`PlacementStatus::AnchorProvinceUnavailable`]; a province with no entry in
-//! the anchor table is [`PlacementStatus::AnchorProvinceUnresolved`] (no world
-//! point). Only a resolved province yields [`PlacementStatus::Placed`] with a
-//! world anchor and its [`AnchorProvenance`].
-//!
-//! # Recording-side gap (filed)
-//!
-//! Air wings need an on-map anchor. The schema (item 8) mentions an "airbase
-//! province" but `WingUnitRow` exposes only `air_base` (an opaque id string),
-//! `state_id`, and `strategic_region_id`; none is a clean province. Until the
-//! recording carries an air-base province, wing placement is a state-centroid
-//! FIT. This legacy placement helper is not XMAP13 product authority; the
-//! shipping adapter requires its authenticated air-base-location carrier.
 
 use crate::*;
 use std::collections::BTreeMap;
 
-/// Map plane extent (world x), shared with the terrain/weather plane
-/// (`weather_law::MAP_PLANE_X`); the province raster and unit-stack anchors live
-/// in the same `[0, 5632] × [0, 2048]` world x/z space.
 pub const UNIT_PLACEMENT_MAP_PLANE_X: f32 = MAP_PLANE_X;
-/// Map plane extent (world z), shared with `weather_law::MAP_PLANE_Z`.
 pub const UNIT_PLACEMENT_MAP_PLANE_Z: f32 = MAP_PLANE_Z;
-/// `map/unitstacks.txt` slot kind for the per-province stack CENTRE row (the
-/// canonical base anchor; rotation 0, the point the other slots cluster around).
 pub const UNIT_STACK_BASE_SLOT_KIND: u32 = 0;
 
-/// A point on the world map plane (x right, z down/vertical-map-axis, y = terrain
-/// height). Same convention as `map/unitstacks.txt` / `map/buildings.txt`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldAnchor {
     pub x: f32,
@@ -77,8 +14,6 @@ pub struct WorldAnchor {
 }
 
 impl WorldAnchor {
-    /// Whether the point falls inside the `[0, plane] × [0, plane]` map bounds
-    /// (the gate's "within map bounds" predicate). `y` (height) is unbounded.
     pub fn in_map_bounds(&self) -> bool {
         self.x >= 0.0
             && self.x <= UNIT_PLACEMENT_MAP_PLANE_X
@@ -87,31 +22,20 @@ impl WorldAnchor {
     }
 }
 
-/// Provenance + fidelity label for a resolved province → world anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorProvenance {
-    /// FILE: `map/unitstacks.txt` stack-centre row (`type == 0`) for the province.
     UnitStackBaseSlot,
-    /// FILE: `map/unitstacks.txt` lowest-kind slot, used when a province has no
-    /// `type 0` row. Still shipped-file-derived; the exact slot is not the
-    /// centre, recorded for honesty.
     UnitStackLowestSlot { kind_raw: u32 },
-    /// FIT: province pixel centroid (a DERIVED_APPROXIMATION; see module docs).
     ProvinceCentroid,
-    /// Test / fixture injected anchor.
     Synthetic,
 }
 
-/// A resolved province anchor: the world point plus how it was derived.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProvinceAnchor {
     pub anchor: WorldAnchor,
     pub provenance: AnchorProvenance,
 }
 
-/// `province_id → world anchor` table. Built FILE-first from `map/unitstacks.txt`
-/// (the engine's per-province stack centres); callers may inject FIT centroids or
-/// synthetic test anchors with [`ProvinceAnchorTable::insert`].
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProvinceAnchorTable {
     by_province: BTreeMap<u32, ProvinceAnchor>,
@@ -122,8 +46,6 @@ impl ProvinceAnchorTable {
         ProvinceAnchorTable::default()
     }
 
-    /// Build from parsed `map/unitstacks.txt` rows. For each province, the
-    /// stack-centre (`type 0`) row wins; failing that, the lowest slot kind.
     pub fn from_unit_stacks(rows: &[UnitStackPlacement]) -> ProvinceAnchorTable {
         let mut best: BTreeMap<u32, (u32, WorldAnchor)> = BTreeMap::new();
         for row in rows {
@@ -155,19 +77,15 @@ impl ProvinceAnchorTable {
         ProvinceAnchorTable { by_province }
     }
 
-    /// FILE constructor: load `map/unitstacks.txt` through the mod-aware
-    /// resolver (mod override wins) and build the stack-centre table.
     pub fn from_resolver(resolver: &GameFileResolver) -> Result<ProvinceAnchorTable> {
         let rows = unit_stack_placements_from_resolver(resolver)?;
         Ok(ProvinceAnchorTable::from_unit_stacks(&rows))
     }
 
-    /// Insert / override a province anchor (FIT centroid injection, tests).
     pub fn insert(&mut self, province_id: u32, anchor: ProvinceAnchor) {
         self.by_province.insert(province_id, anchor);
     }
 
-    /// Convenience: inject a synthetic anchor (test / fixture harness).
     pub fn insert_synthetic(&mut self, province_id: u32, x: f32, y: f32, z: f32) {
         self.insert(
             province_id,
@@ -191,8 +109,6 @@ impl ProvinceAnchorTable {
     }
 }
 
-/// Whether unitstacks slot `cand` is a better per-province base than `cur`
-/// (stack centre `type 0` always wins; otherwise the lower kind).
 fn better_slot(cand: u32, cur: u32) -> bool {
     if cur == UNIT_STACK_BASE_SLOT_KIND {
         false
@@ -203,7 +119,6 @@ fn better_slot(cand: u32, cur: u32) -> bool {
     }
 }
 
-/// Unit domain of a placement record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitKind {
     Division,
@@ -211,31 +126,20 @@ pub enum UnitKind {
     Wing,
 }
 
-/// How a placement's anchor province was obtained (fidelity of the province
-/// choice, separate from the province → world anchor provenance).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorProvinceSource {
-    /// FILE / recording: the unit's own `location_province`.
     LocationProvince,
-    /// FIT: wing anchored via its air-base state's representative province.
     AirBaseStateRepresentative,
-    /// No province could be determined for the unit.
     None,
 }
 
-/// Resolution outcome for one unit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PlacementStatus {
-    /// Anchored: `world_anchor` and `anchor_provenance` are set.
     Placed,
-    /// The recording gave no anchor province (or a state with no mapping) — the
-    /// unit exists but cannot be placed. Fail-closed, never invented.
     AnchorProvinceUnavailable,
-    /// A province was known but the anchor table has no world point for it.
     AnchorProvinceUnresolved,
 }
 
-/// One placed (or unplaceable) unit at one hour.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnitPlacement {
     pub unit_uid: String,
@@ -248,8 +152,6 @@ pub struct UnitPlacement {
     pub status: PlacementStatus,
 }
 
-/// Minimal land-division input (adapt from `replay_core::DivisionUnitRow`:
-/// `uid = div_uid`, `owner`/`location_province` from the `Leaf`s).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DivisionPlacementInput {
     pub uid: String,
@@ -257,7 +159,6 @@ pub struct DivisionPlacementInput {
     pub location_province: Option<u32>,
 }
 
-/// Minimal task-force / fleet input (adapt from `replay_core::FleetUnitRow`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FleetPlacementInput {
     pub uid: String,
@@ -265,9 +166,6 @@ pub struct FleetPlacementInput {
     pub location_province: Option<u32>,
 }
 
-/// Minimal air-wing input (adapt from `replay_core::WingUnitRow`). The exact
-/// recorded air-base province is honored first. `state_id` is retained only
-/// for legacy recordings that predate the A7 D34 placement carrier.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WingPlacementInput {
     pub uid: String,
@@ -276,10 +174,6 @@ pub struct WingPlacementInput {
     pub location_province: Option<u32>,
 }
 
-/// Production replay adapter for the A7 air-base placement carrier.
-///
-/// `Leaf::Unobtained` and `Leaf::Absent` both remain `None`; no state centroid
-/// or neighboring province is relabeled as exact recording data here.
 pub fn wing_placement_input_from_world_row(row: &replay_core::WingUnitRow) -> WingPlacementInput {
     WingPlacementInput {
         uid: row.wing_uid.clone(),
@@ -289,7 +183,6 @@ pub fn wing_placement_input_from_world_row(row: &replay_core::WingUnitRow) -> Wi
     }
 }
 
-/// A whole hour's placement set (the per-frame product).
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnitPlacementSet {
     pub hour_index: i64,
@@ -342,7 +235,6 @@ fn resolve(
     }
 }
 
-/// Place one land division at its `location_province` (step-hold; see module).
 pub fn place_division(
     input: &DivisionPlacementInput,
     table: &ProvinceAnchorTable,
@@ -357,7 +249,6 @@ pub fn place_division(
     )
 }
 
-/// Place one fleet / task force at its `location_province` (sea province).
 pub fn place_fleet(input: &FleetPlacementInput, table: &ProvinceAnchorTable) -> UnitPlacement {
     resolve(
         input.uid.clone(),
@@ -369,9 +260,6 @@ pub fn place_fleet(input: &FleetPlacementInput, table: &ProvinceAnchorTable) -> 
     )
 }
 
-/// Place one air wing. Resolution order: exact recorded air-base province
-/// from A7/D34 → air-base **state** representative province (legacy FIT,
-/// via `state_anchor_provinces`) → unplaceable.
 pub fn place_wing(
     input: &WingPlacementInput,
     table: &ProvinceAnchorTable,
@@ -422,8 +310,6 @@ pub fn place_wings(
         .collect()
 }
 
-/// Place a whole hour's unit inputs into one [`UnitPlacementSet`]. Call once per
-/// timeline-resolved frame (`state_at(hour)`) to get the step-hold placement.
 pub fn place_frame_inputs(
     hour_index: i64,
     divisions: &[DivisionPlacementInput],
@@ -454,7 +340,6 @@ mod tests {
 
     #[test]
     fn unitstacks_prefers_stack_centre_slot() {
-        // Two slots for province 7: kind 3 first, then the centre kind 0.
         let rows = vec![
             UnitStackPlacement {
                 province_id: 7,
@@ -470,7 +355,6 @@ mod tests {
                 rotation: 0.0,
                 offset: 0.3,
             },
-            // Province 8 has no centre; lowest kind (5) wins over 9.
             UnitStackPlacement {
                 province_id: 8,
                 kind_raw: 9,
@@ -639,7 +523,7 @@ mod tests {
     fn wing_places_via_air_base_state_fit() {
         let table = table_with(&[(2500, 1200.0, 9.0, 800.0)]);
         let mut state_anchor = BTreeMap::new();
-        state_anchor.insert(30u32, 2500u32); // state 30 -> representative province
+        state_anchor.insert(30u32, 2500u32);
         let w = WingPlacementInput {
             uid: "800:1".into(),
             owner: Some("ENG".into()),
@@ -666,7 +550,7 @@ mod tests {
             uid: "800:1".into(),
             owner: Some("ENG".into()),
             state_id: Some(30),
-            location_province: Some(3000), // exact A7 air-base province wins
+            location_province: Some(3000),
         };
         let p = place_wing(&w, &table, &state_anchor);
         assert_eq!(p.anchor_province, Some(3000));
@@ -710,12 +594,12 @@ mod tests {
         let w = WingPlacementInput {
             uid: "800:1".into(),
             owner: Some("ENG".into()),
-            state_id: Some(99), // not in the state map
+            state_id: Some(99),
             location_province: None,
         };
         let p = place_wing(&w, &table, &BTreeMap::new());
         assert_eq!(p.status, PlacementStatus::AnchorProvinceUnavailable);
-        let _ = table; // table irrelevant when no province is chosen
+        let _ = table;
     }
 
     #[test]

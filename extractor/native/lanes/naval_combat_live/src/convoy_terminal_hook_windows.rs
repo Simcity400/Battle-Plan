@@ -1,11 +1,4 @@
-//! Fail-closed a729 CTA1 pre-collapse call-site observer.
-//!
-//! The installer is gated by the exact-a729 static authority and full byte
-//! window. It
-//! replaces only the authenticated five-byte CALL with a rel32 call to a near
 //! relay; the relay performs a pointer-free absolute jump to the Rust ABI
-//! wrapper. The wrapper invokes the original aggregator exactly once and emits
-//! only after a same-hour, exact D70 before/after mutation has been proved.
 
 #![cfg(all(windows, target_arch = "x86_64"))]
 
@@ -33,14 +26,13 @@ use crate::convoy_route_source::{
 };
 use crate::convoy_terminal_attribution::{
     a729_call_window_is_exact, activation_blockers, capture_candidate, prepare_a729_hook,
-    A729PreCollapseRegisters,
-    ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory, A729_CALL_BYTES,
-    A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
+    A729PreCollapseRegisters, ActivationBlocker, ConvoyTerminalAttributionCarrier, ExactMemory,
+    A729_CALL_BYTES, A729_EXE_SHA256, A729_HOOK_RVA, MAX_COUNTRY_TAG_DB_ID,
 };
 use crate::convoy_terminal_runtime::{
     clear_convoy_terminal_resolver_snapshot, convoy_terminal_resolver_ever_partial,
-    current_convoy_terminal_publication_receipt,
-    try_current_convoy_terminal_resolver_snapshot, ResolverPublicationReceipt,
+    current_convoy_terminal_publication_receipt, try_current_convoy_terminal_resolver_snapshot,
+    ResolverPublicationReceipt,
 };
 use crate::convoy_transport_attack::{
     encode_convoy_transport_attack_batch, BatchDecodeError, ConvoyD70MutationKind,
@@ -168,8 +160,6 @@ pub struct ConvoyTerminalDrain {
     pub producer_sequence_next: u64,
     pub queue_mutation_generation: u64,
     pub resolver: ResolverPublicationReceipt,
-    /// Monotonic latch: some publication in this capture was partial. Read at
-    /// drain time so rolled-back rows carry it into every later batch.
     pub resolver_ever_partial: bool,
 }
 
@@ -210,15 +200,7 @@ pub enum ConvoyTerminalInstallError {
     RelayFree,
     RelayDrift,
     Rel32OutOfRange,
-    /// The process could not be frozen, so NOTHING was patched or unpatched.
-    /// The typed refusal is the shared one: which thread, why, and the fact
-    /// that no target byte was touched. The four separate thread-failure
-    /// variants this replaced could each be produced by a different reading of
-    /// the same OS condition, and none of them could say "the enumeration was
-    /// truncated" at all.
     FreezeRefused(inline_detour::FreezeRefusal),
-    /// A frozen thread was stopped inside the bytes about to be rewritten, so
-    /// restoring or installing them would tear its instruction stream.
     InstructionPointerInPatchSite,
     ByteGateDrift,
     PatchProtect,
@@ -239,8 +221,6 @@ pub enum ConvoyTerminalInstallError {
 
 pub const H_CONVOY_EVIDENCE_ACTIVATION_ENV: &str = "BATTLE_PLAN_ENABLE_H_CONVOY_EVIDENCE_HOOK";
 
-/// Explicit process-launch authorization for the isolated acquisition hook.
-/// It neither changes the domain registry nor satisfies production blockers.
 pub fn convoy_terminal_evidence_activation_enabled() -> bool {
     matches!(
         std::env::var(H_CONVOY_EVIDENCE_ACTIVATION_ENV).as_deref(),
@@ -346,9 +326,6 @@ struct PreObservation {
     raw: HConvoyPositiveRawObservation,
 }
 
-/// Pointer-bearing, process-local custody retained only for the isolated
-/// H-CONVOY fixture.  The acquisition owner serializes these windows into
-/// hashed raw-role files; CTA1/CTA2 remain pointer-free.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct HConvoyRouteRawObservation {
     pub client_id: u32,
@@ -426,10 +403,6 @@ impl ExactMemory for ProcessMemory {
     }
 }
 
-/// Resolve one complete client handle through the exact engine reference
-/// registry law and concrete producer serializer layout. This uses only
-/// repeated process-memory reads: it performs no engine call, save correlation,
-/// or endpoint inference.
 pub fn read_live_a729_client_route(
     client: crate::convoy_terminal_attribution::EntityHandle,
 ) -> Result<ExactA729RouteRead, RouteSourceError> {
@@ -485,9 +458,6 @@ fn capture_route_raw(
     })
 }
 
-/// Publish the validated game-state root used by the collector's clean
-/// d49/d50 walk.  It is usable only while the evidence environment gate is
-/// armed and its hour agrees with the immutable resolver receipt.
 pub fn publish_h_convoy_evidence_game_state(game_state: usize, game_hour_raw: i32) {
     if convoy_terminal_evidence_activation_enabled() && game_state != 0 {
         EVIDENCE_GAME_STATE.store(game_state, Ordering::Release);
@@ -495,9 +465,6 @@ pub fn publish_h_convoy_evidence_game_state(game_state: usize, game_hour_raw: i3
     }
 }
 
-/// Capture one no-loss boundary without invoking engine code.  The requested
-/// client must have exactly one active d49/d50 member in the current immutable
-/// resolver epoch.
 pub fn capture_h_convoy_control_raw(
     client: crate::convoy_terminal_attribution::EntityHandle,
 ) -> Result<HConvoyControlRawObservation, String> {
@@ -581,29 +548,12 @@ counters!(
     DROP_D70_MUTATION,
     DROP_QUEUE_BUSY,
     DROP_QUEUE_FULL,
-    // The four sites that all report as `DROP_HOUR_OR_EPOCH`, counted
-    // separately. The aggregate stays exactly as it was -- these are additional
-    // words, not a replacement -- so t26's 83 remains directly comparable while
-    // the next capture also says WHICH of the four produced it. See
-    // `HOUR_DROP_SITES_ARE_COUNTED_SEPARATELY` for why the aggregate alone
-    // could not close this.
     DROP_PRE_HOUR_UNREADABLE,
     DROP_RECEIPT_HOUR_MISMATCH,
     DROP_POST_HOUR_UNREADABLE,
     DROP_POST_HOUR_CHANGED,
-    // Same split for `DROP_RESOLVER`, whose two sites mean different things: no
-    // snapshot could be obtained at all, versus a snapshot that exists but
-    // carries no publication.
     DROP_RESOLVER_SNAPSHOT_ABSENT,
     DROP_RESOLVER_UNPUBLISHED,
-    // Running extrema of the SIGNED distance `engine_hour - receipt_hour` at
-    // the receipt classifier, split by sign so one unsigned word each can carry
-    // them. Lag is the receipt describing an OLDER hour than the live engine
-    // clock -- the shape a publication that is slower than the game clock
-    // produces. Lead is the receipt describing a NEWER one, which is a clock
-    // inversion and a different defect entirely. A mismatch count alone cannot
-    // tell those apart, and cannot say whether the miss was by one hour or by
-    // ten thousand.
     RECEIPT_HOUR_LAG_MAX,
     RECEIPT_HOUR_LEAD_MAX,
 );
@@ -676,9 +626,6 @@ pub fn convoy_terminal_hook_installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Report lifecycle custody that still requires an explicit retry, commit,
-/// rollback, or receipt handoff even when the live callsite is no longer
-/// installed.
 pub fn convoy_terminal_hook_lifecycle_pending() -> bool {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -711,8 +658,6 @@ pub fn convoy_terminal_hook_lifecycle_pending() -> bool {
         .is_some()
 }
 
-/// Return the exact production receipt only while the authenticated D90
-/// callsite patch remains installed and enabled.
 pub fn installed_hook_receipt() -> Option<InstalledRvaHookReceipt> {
     if !convoy_terminal_hook_installed() {
         return None;
@@ -750,7 +695,6 @@ pub fn installed_hook_receipt() -> Option<InstalledRvaHookReceipt> {
 
 /// Consume the exact release receipt minted only after D90's original CALL
 /// bytes, callback quiescence, callsite removal, and relay release are all
-/// attested.
 pub fn take_released_hook_receipt() -> Option<ReleasedRvaHookReceipt> {
     let _lifecycle = HOOK_LIFECYCLE_LOCK
         .lock()
@@ -775,8 +719,6 @@ pub fn convoy_terminal_hook_heartbeat() -> ConvoyTerminalHookHeartbeat {
     }
 }
 
-/// Reserve one immutable bounded prefix without consuming it. Only one
-/// reservation may exist; callbacks can continue appending behind the prefix.
 pub fn peek_convoy_terminal_events(
     max_events: usize,
 ) -> Result<ConvoyTerminalDrainReservation, String> {
@@ -958,8 +900,6 @@ pub fn rollback_convoy_terminal_events(reservation_id: u64) -> Result<(), String
 }
 
 /// Encode one reserved prefix. Encoding failure releases the reservation;
-/// successful encoding leaves it owned by the caller until sink publication
-/// is explicitly committed or rolled back.
 pub fn peek_convoy_transport_attack_payload(
     max_events: usize,
 ) -> Result<Option<ConvoyTerminalPayloadReservation>, ConvoyTerminalSealError> {
@@ -987,23 +927,13 @@ pub fn rollback_convoy_transport_attack_payload(reservation_id: u64) -> Result<(
     rollback_convoy_terminal_events(reservation_id)
 }
 
-/// Seals, restores and discards the whole D90 carrier for a production hook
-/// registry that could not complete its install.
-///
-/// The normal teardown only consumes an empty sealed payload, because a
-/// non-empty one is owed to the terminal DATA frame. A partial install has no
-/// terminal frame and never will, so a non-empty payload is discarded here with
-/// an exact row count rather than refused forever. The physical half — callsite
 /// restoration, quiescence and release-receipt observation — is the same seal
-/// the normal path uses, and a failed discard rolls the reservation back so the
-/// exact carrier stays retryable.
 pub fn abort_partial_install_and_uninstall(
     max_events: usize,
 ) -> Result<InstallAbortDiscard, String> {
     let reservation = seal_and_drain_convoy_transport_attack_payload(max_events)
         .map_err(|error| format!("D90 install abort seal failed: {error:?}"))?;
     let Some(reservation) = reservation else {
-        // The lane held no installed lease; nothing to discard, and the seal
         // has already finalized any release-only custody.
         return Ok(InstallAbortDiscard::default());
     };
@@ -1121,17 +1051,6 @@ fn telemetry() -> ConvoyTerminalHookTelemetry {
     }
 }
 
-/// Every lock [`reset_observer_state_with`] needs, HELD.
-///
-/// Acquiring a mutex with every other thread suspended is the hang this
-/// module's audit exists to prevent -- the holder may be a thread that can no
-/// longer run. HOLDING one across a freeze is not: nothing is waited for, and a
-/// game thread that wants it is suspended rather than blocking us.
-///
-/// So the three acquisitions happen out here and the reset happens inside the
-/// window, where it belongs: past the freeze refusal, the instruction-pointer
-/// refusal and the byte-drift refusal, none of which should be able to delete a
-/// queue they then decline to replace.
 struct HeldObserverState<'a> {
     reservation: Option<MutexGuard<'a, DrainReservationState>>,
     queue: Option<MutexGuard<'a, VecDeque<ConvoyTerminalValidatedEvent>>>,
@@ -1152,11 +1071,6 @@ fn lock_observer_state() -> HeldObserverState<'static> {
     }
 }
 
-/// Reset every observer counter and buffer, ALLOCATING AND LOCKING NOTHING.
-///
-/// Safe to call with the process stopped, because `held` already owns the three
-/// mutexes and the counters are atomics. `clear` frees nothing: the carrier is
-/// a fixed-width record that owns no memory, and clearing keeps the buffer.
 fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
     for counter in [
         &CALLBACKS_SEEN,
@@ -1200,7 +1114,6 @@ fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
     EVIDENCE_HEARTBEAT_SEQUENCE.store(1, Ordering::Release);
 }
 
-/// The whole reset, for callers that are NOT inside a stopped window.
 fn reset_observer_state_for_install() {
     let mut held = lock_observer_state();
     reset_observer_state_with(&mut held);
@@ -1248,67 +1161,13 @@ unsafe extern "system" fn convoy_terminal_hook(
     result
 }
 
-/// Why a resolver receipt refuses a candidate observation.
-///
-/// These are two different failures with two different owners and they were
-/// counted as one. `publication_sequence == 0` means NO RESOLVER SNAPSHOT IS
-/// CURRENTLY PUBLISHED -- the receipt is the default the runtime installs, so
-/// its `game_hour_raw` is an unset field and no hour was ever compared. It
-/// does NOT say the publication never ran: clearing the snapshot puts the same
-/// default back, and a clear can follow an earlier successful publication or a
-/// current attempt that failed. `game_hour_raw != hour` means a snapshot IS
-/// published and describes a different hour -- which is a disagreement, not
-/// necessarily the engine having moved forward.
-///
-/// Measured, which is why this is separated at all: in
-/// `runs/live_unlock/t15` all 107 convoy-attack callbacks were dropped and all
-/// 107 were attributed to `dropped_hour_or_epoch`, with `dropped_resolver` at
-/// zero.
-///
-/// (107 is the LAST batch's absolute counter, measured by scanning the sealed
-/// stream's 396 CTA2 headers. The t15 manifest says 19,470 for the same
-/// quantity because these counters are cumulative-since-install and the
-/// recorder host sums them once per frame; 19,470 is that frame-sum and is not
-/// an event count. The proportions below are unaffected -- every batch has
-/// callbacks_seen == original_calls == dropped_hour_or_epoch and
-/// resolver_publication_sequence == 0 -- but the magnitude was overstated by
-/// ~180x and is corrected here.)
-///
-/// The frames' own diagnostics carry `h_convoy_resolver_error_hash_sample`,
-/// whose per-frame value is FNV-1a-64 of "clean d49/d50 walk lacks one or more
-/// exact CFEXMember+0xD0 client handles" (14547190417989963716) -- so the
-/// publication was refused every frame, the snapshot was cleared, and the
-/// receipt's sequence was zero whenever a callback reached this check.
-///
-/// The `_sample` suffix is what makes that readable. The unit was unsuffixed
-/// when t15 ran, so the host SUMMED it and the value in that run's manifest is
-/// 18446744073709551615 -- a saturated u64, not the hash. Saturation still
-/// establishes that the unit was published on many frames, which is what the
-/// paragraph above rests on; it does not by itself name the text.
-///
-/// What that capture does NOT establish is that every one of those callbacks
-/// DID reach it: `DROP_HOUR_OR_EPOCH` is also incremented by the pre-call
-/// stable-hour read below, and twice more in `complete_observation`. The
-/// counters exclude the latter two -- no callback got past
-/// `prepare_observation` in t15, since every D70 drop counter and
-/// `events_emitted` are zero -- but "all callbacks failed the pre-call hour
-/// read" is not formally excluded. Splitting the counter is what lets the
-/// NEXT capture tell the two apart. What is certain either way is that the
-/// resolver was never published, so `dropped_hour_or_epoch` was at best an
-/// ambiguous label for all 107 of them and at worst the wrong subsystem
-/// entirely.
 #[cfg(windows)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResolverRefusal {
-    /// No H-CONVOY publication is currently in effect, so there is no binding
-    /// set to resolve against. Says nothing about whether one ever succeeded:
-    /// a clear restores the same default receipt.
     Unpublished,
-    /// A publication exists but describes a different game hour.
     HourMismatch,
 }
 
-/// `None` when the receipt admits the candidate.
 #[cfg(windows)]
 fn classify_resolver_receipt(
     publication_sequence: u64,
@@ -1316,9 +1175,6 @@ fn classify_resolver_receipt(
     engine_hour: i32,
 ) -> Option<ResolverRefusal> {
     if publication_sequence == 0 {
-        // Checked FIRST and reported on its own: an unpublished receipt's
-        // `game_hour_raw` is not a stale hour, it is an unset field, and
-        // reading it as a clock disagreement is what hid this defect.
         return Some(ResolverRefusal::Unpublished);
     }
     if receipt_game_hour_raw != engine_hour {
@@ -1327,25 +1183,8 @@ fn classify_resolver_receipt(
     None
 }
 
-/// Record how far, and in which direction, a refused receipt's hour sat from
-/// the live engine hour.
-///
-/// A refusal count says a receipt disagreed; it cannot say by how much or which
-/// way. Those are different defects: a receipt describing an OLDER hour is a
-/// publication that did not keep up with the game clock, and its magnitude is
-/// the number of hours it fell behind. A receipt describing a NEWER hour is a
-/// clock inversion -- the sweep labelling a publication with an hour the engine
-/// has not reached -- which no amount of publishing faster would fix. Splitting
-/// by sign lets each be a running maximum in an unsigned word, and a maximum
-/// rather than a sample because the interesting question is the worst case the
-/// capture contained.
-///
-/// The distance is computed in `i64` because both operands are `i32` read from
-/// engine memory and an unvalidated one could otherwise overflow the
-/// subtraction.
 fn record_receipt_hour_distance(receipt_game_hour_raw: i32, engine_hour: i32) {
-    let (direction, magnitude) =
-        receipt_hour_distance(receipt_game_hour_raw, engine_hour);
+    let (direction, magnitude) = receipt_hour_distance(receipt_game_hour_raw, engine_hour);
     let counter = match direction {
         ReceiptHourDirection::Lag => &RECEIPT_HOUR_LAG_MAX,
         ReceiptHourDirection::Lead => &RECEIPT_HOUR_LEAD_MAX,
@@ -1353,24 +1192,12 @@ fn record_receipt_hour_distance(receipt_game_hour_raw: i32, engine_hour: i32) {
     counter.fetch_max(magnitude, Ordering::Relaxed);
 }
 
-/// Which side of the live clock a refused receipt sat on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReceiptHourDirection {
-    /// The receipt describes an OLDER hour than the engine clock: the
-    /// publication did not keep up.
     Lag,
-    /// The receipt describes a NEWER hour than the engine clock: an inversion.
     Lead,
 }
 
-/// The signed distance, split into a direction and an unsigned magnitude.
-///
-/// Separated from the counter update so it is testable: `record_...` runs only
-/// inside an injected `hoi4.exe`, but the arithmetic that decides WHICH counter
-/// a distance belongs to does not have to.
-///
-/// Computed in `i64` because both operands are `i32` read out of engine memory,
-/// and `engine_hour - receipt_hour` on two unvalidated `i32`s can overflow.
 fn receipt_hour_distance(
     receipt_game_hour_raw: i32,
     engine_hour: i32,
@@ -1704,9 +1531,6 @@ fn read_stable_i32(memory: &ProcessMemory, address: usize) -> Option<i32> {
     (read_i32(memory, address)? == first).then_some(first)
 }
 
-/// Install only after the fresh exact-a729 static authority and compile-time
-/// activation gate are present. Any missing gate returns `PromotionBlocked`
-/// before process mutation.
 pub fn install_convoy_terminal_hook(
     executable_sha256: &str,
 ) -> Result<(), ConvoyTerminalInstallError> {
@@ -1717,8 +1541,6 @@ pub fn install_convoy_terminal_hook(
     install_convoy_terminal_hook_inner(executable_sha256, HookInstallMode::Production)
 }
 
-/// Install the exact hook only for the isolated H-CONVOY loss/no-loss capture.
-/// This regression-only acquisition path does not mint production authority.
 pub fn install_convoy_terminal_evidence_hook(
     executable_sha256: &str,
 ) -> Result<(), ConvoyTerminalInstallError> {
@@ -1738,10 +1560,6 @@ fn install_convoy_terminal_hook_inner(
     if !executable_sha256.eq_ignore_ascii_case(A729_EXE_SHA256) {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
-    // The caller's expected hash is a policy input, not an observation. Hash
-    // the executable backing the current process before any allocation or
-    // code mutation so passing the a729 constant cannot make the binary gate
-    // tautological. The exact in-memory call window is revalidated below.
     if current_process_executable_sha256()?.as_str() != A729_EXE_SHA256 {
         return Err(ConvoyTerminalInstallError::BinaryGate);
     }
@@ -1788,28 +1606,6 @@ fn install_convoy_terminal_hook_inner(
             prepared.activation_blockers,
         ));
     }
-    // THE RECEIPT AUTHORITY IS BOUGHT HERE, WITH THE GAME RUNNING, and BEFORE
-    // the owner token and the relay allocation below.
-    //
-    // WHY IT IS BOUGHT AT ALL: the frozen window further down calls
-    // `observe_enabled_rel32_callsite` with `suspended` still held, and that
-    // bottoms out in `production_hook_receipt`'s `MAIN_MODULE_AUTHORITY` -- a
-    // `OnceLock` whose initialiser OPENS `hoi4.exe`, READS THE WHOLE FILE into
-    // a heap `Vec` and SHA-256s it. Whether that already ran is install order,
-    // so on a process where this lane is first the entire game used to stop for
-    // a file read and a full-file hash, taking that `Vec` from the process
-    // default heap whose lock a suspended thread may own.
-    //
-    // WHY *HERE* AND NOT LOWER: `?` on a fallible call that sits after
-    // `next_teardown_owner_token` and `allocate_near_relay` returns without
-    // freeing the relay or recording it anywhere, so a repeatedly failing
-    // authority would leak executable pages and burn owner tokens. Before both
-    // allocations there is nothing to leak.
-    //
-    // WHY ONLY IN PRODUCTION: evidence mode mints no `teardown_owner_token`
-    // and therefore never reaches `observe_enabled_rel32_callsite` at all
-    // (the `match teardown_owner_token` below has `None => None`). Priming it
-    // unconditionally would invent a refusal evidence installation never had.
     if mode.is_production() {
         production_hook_receipt::prime_main_module_authority()
             .map_err(ConvoyTerminalInstallError::HookReceipt)?;
@@ -1827,14 +1623,8 @@ fn install_convoy_terminal_hook_inner(
             return Err(ConvoyTerminalInstallError::Rel32OutOfRange);
         }
     };
-    // THE LOCKS ARE TAKEN HERE; THE RESET HAPPENS PAST THE REFUSAL GATES.
-    // Acquiring a mutex with every other thread suspended is the hang; holding
-    // one across the freeze is not. See `lock_observer_state`.
     let mut held_observer_state = lock_observer_state();
     let suspended = suspend_all_other_threads()?;
-    // The five bytes about to be rewritten, and the relay they will branch to.
-    // Both are asked about while the freeze is held, so the answer cannot go
-    // stale between here and the write below.
     let patch_ranges = [
         (
             prepared.hook_address,
@@ -1847,11 +1637,6 @@ fn install_convoy_terminal_hook_inner(
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(error);
     }
-    // THE BYTE GATE, RE-ASKED UNDER THE FREEZE -- but only the byte gate.
-    // `prepare_a729_hook` was called here, and it builds an activation-blocker
-    // `Vec` that this caller discards, having asked only whether it errored.
-    // `a729_call_window_is_exact` is the same reads and the same refusals with
-    // nothing built.
     if a729_call_window_is_exact(&memory, module_base, executable_sha256).is_err() {
         drop(suspended);
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
@@ -1865,28 +1650,9 @@ fn install_convoy_terminal_hook_inner(
         unsafe { VirtualFree(relay.cast(), 0, MEM_RELEASE) };
         return Err(ConvoyTerminalInstallError::ByteGateDrift);
     }
-    // PAST EVERY REFUSAL GATE -- the freeze, the parked-thread check, the
-    // frozen byte gate and the exact original-call compare have all passed, so
-    // this install is going to happen. Discarding the previous observer's
-    // counters and queued rows before that point would delete observations
-    // because an install that never happened was attempted.
     reset_observer_state_with(&mut held_observer_state);
     // AND RELEASED IMMEDIATELY, still inside the window, which is the whole
-    // reason the guards were bound to a name at all.
-    //
-    // Holding them one statement longer is two separate defects. Every rollback
-    // path below re-enters `reset_observer_state_for_install`, which takes
-    // these same three mutexes -- and a `MutexGuard` lives until its scope
-    // ends, not until its last use, so this thread would block on a lock it
-    // holds itself, forever, while still owning `HOOK_LIFECYCLE_LOCK` and
-    // `INSTALL_STATE`. And the success path resumes the game before returning,
-    // so a callback that arrives in that gap would wait on the event queue --
-    // making the game wait, which is the law this hoist exists to serve.
-    //
-    // RELEASING a mutex with the process stopped is not the hazard that
     // ACQUIRING one is: it hands ownership on and waits for nothing. Nothing
-    // can be observing yet either -- not one byte of the callsite has been
-    // rewritten; `write_code` below is the first.
     drop(held_observer_state);
     MODULE_BASE.store(module_base, Ordering::Release);
     ORIGINAL_TARGET.store(prepared.original_target_address, Ordering::Release);
@@ -1903,9 +1669,6 @@ fn install_convoy_terminal_hook_inner(
             patched_call,
         );
         drop(suspended);
-        // Everything below runs with the game moving again: the
-        // counters take two mutexes, and both errors are built from
-        // `Copy` reasons the frozen rollback handed back.
         if outcome == RollbackOutcome::Restored {
             reset_observer_state_for_install();
         }
@@ -1924,9 +1687,6 @@ fn install_convoy_terminal_hook_inner(
             patched_call,
         );
         drop(suspended);
-        // Everything below runs with the game moving again: the
-        // counters take two mutexes, and both errors are built from
-        // `Copy` reasons the frozen rollback handed back.
         if outcome == RollbackOutcome::Restored {
             reset_observer_state_for_install();
         }
@@ -1944,9 +1704,6 @@ fn install_convoy_terminal_hook_inner(
             patched_call,
         );
         drop(suspended);
-        // Everything below runs with the game moving again: the
-        // counters take two mutexes, and both errors are built from
-        // `Copy` reasons the frozen rollback handed back.
         if outcome == RollbackOutcome::Restored {
             reset_observer_state_for_install();
         }
@@ -1972,9 +1729,6 @@ fn install_convoy_terminal_hook_inner(
                     patched_call,
                 );
                 drop(suspended);
-                // Everything below runs with the game moving again: the
-                // counters take two mutexes, and both errors are built from
-                // `Copy` reasons the frozen rollback handed back.
                 if outcome == RollbackOutcome::Restored {
                     reset_observer_state_for_install();
                 }
@@ -2102,20 +1856,10 @@ fn rollback_failed_install(
     RollbackOutcome::Retained(rollback_error)
 }
 
-/// What a rollback under the freeze did, WITHOUT SAYING IT IN WORDS.
-///
-/// `rollback_failed_install` runs with every other thread in the process
-/// suspended, and it used to `format!` both the install error and its own -- on
-/// the failure paths, which is the worst place for it, because the hang would
-/// then happen exactly when the install had already gone wrong. Both of these
-/// are `Copy` and own no memory; [`RollbackOutcome::into_error`] builds the
-/// sentences after the resume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RollbackOutcome {
     /// The original bytes are back and the relay is released.
     Restored,
-    /// The callsite is still mutated, or the relay is still mapped, or both;
-    /// custody of it stays in `INSTALL_STATE` for an explicit retry.
     Retained(RollbackRefusal),
 }
 
@@ -2128,10 +1872,6 @@ enum RollbackRefusal {
 }
 
 impl RollbackOutcome {
-    /// The error to return, built once the game is running again.
-    ///
-    /// `Restored` gives back the install error unchanged -- the rollback was
-    /// clean, so what failed is the install and nothing else.
     fn into_error(self, install_error: ConvoyTerminalInstallError) -> ConvoyTerminalInstallError {
         let refusal = match self {
             Self::Restored => return install_error,
@@ -2164,10 +1904,6 @@ fn restore_and_quiesce_convoy_terminal_hook(
     TEARDOWN.store(true, Ordering::Release);
     if !installed.patch_restored {
         let suspended = suspend_all_other_threads()?;
-        // Restoring the callsite tears the instruction stream of a thread
-        // parked inside it exactly as installing does, and the relay is freed
-        // afterwards, so a thread inside the relay is the same fault one step
-        // later. Both are refused here rather than discovered afterwards.
         let patch_ranges = [
             (installed.callsite, installed.callsite + 5),
             (installed.relay, installed.relay + RELAY_LEN),
@@ -2250,9 +1986,6 @@ fn restore_and_quiesce_convoy_terminal_hook(
     let deadline = Instant::now() + QUIESCE_TIMEOUT;
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
         if Instant::now() >= deadline {
-            // The callsite is restored. Retain the relay and original pointer
-            // so an in-flight callback can finish safely; retrying teardown can
-            // reclaim them after quiescence.
             return Err(ConvoyTerminalInstallError::QuiesceTimeout);
         }
         std::thread::yield_now();
@@ -2352,10 +2085,6 @@ fn finalize_convoy_terminal_uninstall(
     Ok(())
 }
 
-/// Restore the callsite, wait for every in-flight callback, and reserve the
-/// final queue prefix while the resolver receipt is still resident.
-/// The returned token remains rollbackable until the caller confirms sink
-/// publication; teardown never commits the queue on the caller's behalf.
 pub fn seal_and_drain_convoy_transport_attack_payload(
     max_events: usize,
 ) -> Result<Option<ConvoyTerminalPayloadReservation>, ConvoyTerminalSealError> {
@@ -2497,13 +2226,6 @@ fn relay_targets_convoy_terminal_hook(memory: &ProcessMemory, relay: usize) -> b
             == convoy_terminal_hook as usize as u64
 }
 
-/// Why a code write refused. `Copy`, and owning no memory, because
-/// `write_code` runs with every other thread in the process suspended.
-///
-/// It used to hand back a `ConvoyTerminalInstallError`, which carries a `String`
-/// in one variant and a `Vec` in another -- so merely holding the refusal
-/// inside the stopped window was one `match` away from an allocation, and the
-/// rollback path really did `format!` it there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum WriteRefusal {
     Protect,
@@ -2545,30 +2267,10 @@ unsafe fn write_code(address: usize, bytes: &[u8]) -> Result<(), WriteRefusal> {
     Ok(())
 }
 
-/// The process freeze D90 patches under.
-///
-/// It used to be hand-rolled here, with three holes the shared freeze closes:
-/// the enumeration ended on any `Thread32Next` stop and only checked
-/// `GetLastError` afterwards, which reads a stale code as often as a fresh one;
-/// it enumerated exactly once, so a thread created after the snapshot ran
-/// through the patch; and it opened threads without `THREAD_GET_CONTEXT`, so it
-/// could not ask where a suspended thread was stopped and therefore never
-/// asked. The shared freeze refuses a broken enumeration, iterates to a fixed
-/// point, and hands back handles this module can read a context from -- which
-/// is what makes `patch_sites_are_clear_of_every_frozen_thread` below possible
-/// at all.
 fn suspend_all_other_threads() -> Result<inline_detour::ProcessFreeze, ConvoyTerminalInstallError> {
     inline_detour::freeze_process().map_err(ConvoyTerminalInstallError::FreezeRefused)
 }
 
-/// Refuse if any frozen thread is stopped inside the bytes about to be
-/// rewritten.
-///
-/// NEW WITH THE MIGRATION, and stated as such: the hand-rolled suspender could
-/// not ask this question, so D90 used to rewrite its five-byte callsite with a
-/// thread possibly parked inside it. The relay is included because the restore
-/// path frees it, and a thread inside a freed relay is the same crash one step
-/// later.
 fn patch_sites_are_clear(
     suspended: &inline_detour::ProcessFreeze,
     ranges: &[(usize, usize)],
@@ -2584,12 +2286,6 @@ fn patch_sites_are_clear(
 
 #[cfg(test)]
 mod freeze_call_site_tests {
-    /// This module's production text, up to its test modules.
-    ///
-    /// A text pin for the same reason ARC1's is: D90's installer refuses before
-    /// it reaches the freeze unless the running process is the exact a729
-    /// `hoi4.exe`, so no offline test can drive it far enough to observe a
-    /// freeze counter move.
     pub(super) fn production_code() -> String {
         let source = include_str!("convoy_terminal_hook_windows.rs").replace("\r\n", "\n");
         source
@@ -2599,21 +2295,14 @@ mod freeze_call_site_tests {
             .to_string()
     }
 
-    /// Falsifiable: fails if D90 ever rewrites its five-byte callsite without
-    /// the shared process freeze, or without first proving no frozen thread is
-    /// parked inside the callsite or the relay.
-    ///
-    /// The instruction-pointer check is NEW with the migration -- the
-    /// hand-rolled suspender opened threads without `THREAD_GET_CONTEXT` and so
-    /// could not ask -- which makes it exactly the kind of guard a later edit
-    /// removes as redundant. It is not: a thread stopped inside those five
-    /// bytes resumes into a half-old, half-new instruction stream, and the
-    /// restore path additionally frees the relay underneath it.
     #[test]
     fn every_d90_code_mutation_happens_under_the_shared_freeze() {
         let production = production_code();
         for (signature, write) in [
-            ("fn install_convoy_terminal_hook_inner(", "write_code(prepared.hook_address"),
+            (
+                "fn install_convoy_terminal_hook_inner(",
+                "write_code(prepared.hook_address",
+            ),
             (
                 "fn restore_and_quiesce_convoy_terminal_hook(",
                 "write_code(installed.callsite",
@@ -2642,26 +2331,6 @@ mod freeze_call_site_tests {
         }
     }
 
-    /// Falsifiable: fails if the receipt authority is ever built with the game
-    /// stopped again.
-    ///
-    /// This installer calls `observe_enabled_rel32_callsite` with `suspended`
-    /// still held, and that reaches `production_hook_receipt`'s
-    /// `MAIN_MODULE_AUTHORITY` -- a `OnceLock` whose initialiser OPENS
-    /// `hoi4.exe`, reads the WHOLE file into a heap `Vec` and SHA-256s it.
-    /// Whichever caller in the process reaches it first pays for that, so
-    /// before `prime_main_module_authority` existed a process where D90
-    /// installed first stopped the entire game for a file read and a full-file
-    /// hash -- and took that `Vec` from the process default heap, whose lock a
-    /// suspended thread may own.
-    ///
-    /// A source pin and not a behavioural test for the same reason the two
-    /// tests either side of it are: the installer refuses before the freeze
-    /// unless the running process is the exact a729 `hoi4.exe`, so no offline
-    /// test can drive it that far.
-    ///
-    /// kills: deleting the prime call; moving it after
-    /// `suspend_all_other_threads()`; moving it after the first `write_code`.
     #[test]
     fn the_receipt_authority_is_bought_before_the_freeze_not_inside_it() {
         let production = production_code();
@@ -2692,13 +2361,6 @@ mod freeze_call_site_tests {
         );
     }
 
-    /// Falsifiable: fails if this module reaches for a private suspender again.
-    ///
-    /// The names are assembled from fragments rather than written whole. This
-    /// file is scanned by `inline_detour`'s workspace-wide suspender ban, and a
-    /// literal list here would BE a violation of it -- which is exactly how the
-    /// first version of this test failed: green in its own crate, red in the
-    /// workspace run that scans this file.
     #[test]
     fn d90_declares_no_thread_suspender_of_its_own() {
         let production = production_code();
@@ -2726,49 +2388,12 @@ mod freeze_call_site_tests {
 mod resolver_refusal_tests {
     use super::{classify_resolver_receipt, ResolverRefusal};
 
-    /// Law: "no H-CONVOY publication is currently in effect" is never reported
-    /// as a clock disagreement.
-    ///
-    /// The classifier sees only the current receipt, so that -- and not
-    /// "publication never ran" -- is the whole of what sequence zero
-    /// establishes.
-    ///
-    /// An unpublished receipt carries `publication_sequence == 0` and an unset
-    /// `game_hour_raw`. The original guard was
-    /// `publication_sequence == 0 || game_hour_raw != hour`, so an unset field
-    /// that happened to differ from the engine hour was counted as
-    /// `dropped_hour_or_epoch` -- the label ALL 107 dropped convoy-attack
-    /// events in `runs/live_unlock/t15` carry, with `dropped_resolver` at
-    /// zero, while the resolver was demonstrably never published: those
-    /// frames' own
-    /// `h_convoy_resolver_error_hash_sample`, whose per-frame value is
-    /// FNV-1a-64 of "clean d49/d50 walk lacks one or more exact
-    /// CFEXMember+0xD0 client handles" (14547190417989963716). That unit was
-    /// unsuffixed when t15 ran, so the manifest carries the SUM -- saturated
-    /// to 18446744073709551615 -- rather than the hash itself.
-    ///
-    /// What the t15 aggregate does NOT prove: that every one of those 107
-    /// callbacks reached the receipt check. `DROP_HOUR_OR_EPOCH` is also
-    /// incremented when the pre-call stable hour read fails, and twice more in
-    /// `complete_observation`. The counters do exclude the second of those --
-    /// no callback got past `prepare_observation` in t15, since every D70 drop
-    /// counter and `events_emitted` are zero -- but "all callbacks failed the
-    /// pre-call hour read" is not formally excluded by that capture. Splitting
-    /// the counter is what makes the NEXT capture discriminate the two: an
-    /// unpublished receipt will land in `dropped_resolver` and a failed or
-    /// disagreeing hour in `dropped_hour_or_epoch`.
-    ///
-    /// Restore the collapsed `||` guard in `classify_resolver_receipt` and the
-    /// first case below fails: it answers `HourMismatch`.
     #[test]
     fn an_unpublished_receipt_is_not_an_hour_disagreement() {
         assert_eq!(
             classify_resolver_receipt(0, 0, 4_211),
             Some(ResolverRefusal::Unpublished)
         );
-        // Even when the unset hour happens to equal the engine's, an
-        // unpublished receipt has no bindings and must still refuse -- so the
-        // answer cannot be derived from the hour comparison at all.
         assert_eq!(
             classify_resolver_receipt(0, 4_211, 4_211),
             Some(ResolverRefusal::Unpublished)
@@ -2788,17 +2413,6 @@ mod resolver_refusal_tests {
         assert_eq!(classify_resolver_receipt(7, 4_211, 4_211), None);
     }
 
-    /// Law: the classifier's two answers reach two DIFFERENT counters.
-    ///
-    /// Without this the classifier is decoration: reverting only the match in
-    /// `prepare_observation` so both arms increment `DROP_HOUR_OR_EPOCH`
-    /// leaves every assertion above green while the wire goes back to
-    /// misattributing every unpublished-resolver drop to the clock -- which is
-    /// the entire defect.
-    ///
-    /// A source pin because `prepare_observation` is a detour callback: it
-    /// runs only inside an injected `hoi4.exe`, so no offline test can move
-    /// the counters.
     #[test]
     fn each_refusal_reaches_its_own_counter() {
         let production = super::freeze_call_site_tests::production_code();
@@ -2811,7 +2425,10 @@ mod resolver_refusal_tests {
             .0;
         for (arm, counter) in [
             ("Some(ResolverRefusal::Unpublished) => {", "DROP_RESOLVER"),
-            ("Some(ResolverRefusal::HourMismatch) => {", "DROP_HOUR_OR_EPOCH"),
+            (
+                "Some(ResolverRefusal::HourMismatch) => {",
+                "DROP_HOUR_OR_EPOCH",
+            ),
         ] {
             let body = routing
                 .split_once(arm)
@@ -2825,12 +2442,6 @@ mod resolver_refusal_tests {
                 "{arm} must increment {counter}; collapsing the two arms onto one \
                  counter is the defect this split exists to remove"
             );
-            // Counting the drop is only half of a refusal. Without the return,
-            // a refused receipt falls through to the sequence mint below and
-            // becomes an ADMITTED observation -- a failed resolver check
-            // turned into a successful read, which is the one outcome this
-            // project forbids outright. Pinned separately because an edit that
-            // only touched the counters would otherwise leave this green.
             assert!(
                 body.contains("return None;"),
                 "{arm} must REFUSE, not merely count: without the return the \
@@ -2843,34 +2454,6 @@ mod resolver_refusal_tests {
         );
     }
 
-    /// Law: each of the FOUR sites that report `dropped_hour_or_epoch`, and
-    /// each of the TWO that report `dropped_resolver`, also names itself.
-    ///
-    /// # The defect this closes
-    ///
-    /// t26 published `dropped_hour_or_epoch = 83`, `dropped_candidate = 23`,
-    /// `dropped_resolver = 3` and `events_emitted = 0` over 109 callbacks. That
-    /// is enough to say d90 lost every event and not enough to say why:
-    /// `DROP_HOUR_OR_EPOCH` is incremented at four unrelated places -- the
-    /// pre-call stable hour read failing, the published receipt naming a
-    /// different hour, the post-call stable hour read failing, and the hour
-    /// changing across the capture -- and `DROP_RESOLVER` at two. So "83 events
-    /// were lost to the clock" is compatible with four different defects, three
-    /// of which would not be fixed by anything done to the fourth.
-    ///
-    /// The counters cannot be made to discriminate by reading them harder; the
-    /// producer has to say which site it was. This pins that every site does.
-    ///
-    /// A source pin, for the same reason as `each_refusal_reaches_its_own_counter`
-    /// directly above: these are detour callbacks that run only inside an
-    /// injected `hoi4.exe`, so no offline test can move the counters.
-    ///
-    /// MUTATION RUN: delete
-    /// `DROP_POST_HOUR_CHANGED.fetch_add(1, Ordering::Relaxed);` from
-    /// `complete_observation`. OBSERVED: FAILED, `every site that increments
-    /// DROP_HOUR_OR_EPOCH must also increment its own counter; 4 aggregate
-    /// increments but only 3 site increments means one site is still
-    /// anonymous`.
     #[test]
     fn every_conflated_drop_site_also_names_itself() {
         let production = super::freeze_call_site_tests::production_code();
@@ -2905,7 +2488,8 @@ mod resolver_refusal_tests {
                 })
                 .sum();
             assert_eq!(
-                aggregate_increments, sites.len(),
+                aggregate_increments,
+                sites.len(),
                 "{aggregate} is incremented at {aggregate_increments} sites but \
                  only {} are enumerated here; an unenumerated site is a cause \
                  the wire cannot name",
@@ -2926,20 +2510,6 @@ mod resolver_refusal_tests {
 mod receipt_hour_distance_tests {
     use super::{receipt_hour_distance, ReceiptHourDirection};
 
-    /// Law: a refused receipt's distance from the live clock is recorded with
-    /// its DIRECTION, and the two directions are different defects.
-    ///
-    /// A receipt naming an older hour than the engine is a publisher that fell
-    /// behind the game clock; its magnitude is how far. A receipt naming a
-    /// newer hour is a clock inversion -- the sweep labelling a publication
-    /// with an hour the engine has not reached -- and publishing faster would
-    /// not touch it. A single unsigned "hours apart" word would report those
-    /// two as the same number and send the next capture after the wrong one.
-    ///
-    /// MUTATION RUN: change the `distance >= 0` test in `receipt_hour_distance`
-    /// to `distance > 0`. OBSERVED: FAILED, `an equal receipt is zero LAG, not
-    /// lead: a receipt that agrees has not inverted the clock` -- left `Lead`,
-    /// right `Lag`.
     #[test]
     fn a_refused_receipt_records_which_side_of_the_clock_it_sat_on() {
         assert_eq!(
@@ -2958,11 +2528,7 @@ mod receipt_hour_distance_tests {
             "an equal receipt is zero LAG, not lead: a receipt that agrees has \
              not inverted the clock"
         );
-        // Both operands are `i32` read out of engine memory and are not
-        // validated before this point, so the subtraction must not be done in
-        // `i32`: `i32::MIN - i32::MAX` overflows and would panic in debug and
         // wrap to 1 in release, reporting a ten-billion-hour disagreement as a
-        // one-hour one.
         assert_eq!(
             receipt_hour_distance(i32::MAX, i32::MIN),
             (ReceiptHourDirection::Lead, 4_294_967_295),
@@ -2975,20 +2541,11 @@ mod receipt_hour_distance_tests {
     }
 }
 
-/// WHAT THE STOPPED WINDOW ACTUALLY REACHED, MEASURED.
-///
-/// The source scan in `lib.rs` proves nothing in the window is SPELLED like an
-/// allocation, on every path, whether or not a test drives it. It cannot prove
-/// the other half -- that the frozen re-validation really builds nothing, and
-/// that a refusal really carries no owned memory. That is what this module
-/// does: it runs the window's own helpers under a counting allocator and reads
-/// the number.
 #[cfg(test)]
 mod frozen_window_allocation_tests {
     use super::*;
     use crate::convoy_terminal_attribution::PrepareError;
 
-    /// Without this every count below is zero for the wrong reason.
     #[test]
     fn the_allocation_probe_is_this_test_binarys_allocator() {
         assert!(
@@ -2998,27 +2555,16 @@ mod frozen_window_allocation_tests {
         );
     }
 
-    /// THE FROZEN RE-VALIDATION ALLOCATES NOTHING.
-    ///
-    /// What production change would make this fail? Putting
-    /// `prepare_a729_hook` back at the frozen callsite -- it builds the
-    /// activation-blocker `Vec` this caller throws away -- or adding anything
-    /// owned to `PrepareError`.
-    ///
-    /// It is driven against an image base that cannot be the game's, so the
-    /// path measured is the REFUSAL, which is the one that mattered: a gate
-    /// that allocates only when it rejects hangs exactly when the install had
-    /// already found something wrong.
     #[test]
     fn the_frozen_byte_gate_allocates_nothing_when_it_refuses() {
         let memory = ProcessMemory;
         let mut refusals = [PrepareError::NullImageBase; 3];
         let ((), allocations) = freeze_window_audit::observed(|| {
             refusals[0] = a729_call_window_is_exact(&memory, 0, A729_EXE_SHA256).unwrap_err();
-            refusals[1] = a729_call_window_is_exact(&memory, 0x1000, "not the a729 hash")
-                .unwrap_err();
-            refusals[2] = a729_call_window_is_exact(&memory, usize::MAX, A729_EXE_SHA256)
-                .unwrap_err();
+            refusals[1] =
+                a729_call_window_is_exact(&memory, 0x1000, "not the a729 hash").unwrap_err();
+            refusals[2] =
+                a729_call_window_is_exact(&memory, usize::MAX, A729_EXE_SHA256).unwrap_err();
         });
         assert_eq!(refusals[0], PrepareError::NullImageBase);
         assert_eq!(refusals[1], PrepareError::BinaryHashMismatch);
@@ -3026,19 +2572,6 @@ mod frozen_window_allocation_tests {
         assert_eq!(allocations, 0, "the frozen byte gate reached the allocator");
     }
 
-    /// THE ROLLBACK ITSELF ALLOCATES NOTHING -- the real function, driven.
-    ///
-    /// `rollback_failed_install` runs with every other thread in the process
-    /// suspended, and it used to `format!` both the install error and its own,
-    /// on the failure paths. This drives it over the shape that reaches the
-    /// most of it: bytes that already match the original (so no `write_code`
-    /// is attempted on this process's own memory) and a relay of 0, whose
-    /// `VirtualFree` fails and sends it down the RETAINED path that publishes
-    /// custody and returns a refusal.
-    ///
-    /// What production change would make this fail? Putting the `format!` of
-    /// the install error back at the top of it, or giving `RollbackRefusal` or
-    /// `WriteRefusal` a variant that owns memory.
     #[test]
     fn the_frozen_rollback_allocates_nothing() {
         let original_call = A729_CALL_BYTES;

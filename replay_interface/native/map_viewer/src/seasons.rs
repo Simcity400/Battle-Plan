@@ -153,16 +153,6 @@ const TREE_SEASON_CB1_LERP_OFFSET: usize = 64;
 const TREE_SEASON_CB1_COLUMN_OFFSET: usize = 68;
 const TREE_SEASON_CB1_OVERRIDE_END: usize = 72;
 
-/// Exact a729 `gfx/FX/tree.shader` CB1 season lanes.
-///
-/// then writes one 64-bit zero at byte 64 before writing `vTreeFade` at byte
-/// 72. That store is exactly `vSeasonLerp = 0.0` and
-/// `vSeasonColumn = 0.0`; it does not read replay date or `map/seasons.txt`.
-/// The same zero pair is present in every retained 80-byte tree CB1 capture.
-///
-/// The parsed seasons table remains production input for the other seasonal
-/// map laws, but it is deliberately ignored here. A date-derived tree value
-/// would invent behavior absent from hoi4.exe 1.19.2.0.a729.
 pub fn tree_season_cb_values(_seasons: &SeasonsTable, month: u32, day: u32) -> Option<(f32, f32)> {
     let month = u8::try_from(month).ok()?;
     let day = u8::try_from(day).ok()?;
@@ -170,12 +160,6 @@ pub fn tree_season_cb_values(_seasons: &SeasonsTable, month: u32, day: u32) -> O
     Some((0.0, 0.0))
 }
 
-/// Apply an already-computed tree-season override to captured tree CB1 bytes.
-///
-/// `None` is the flag-off/no-date path and leaves the buffer byte-identical.
-/// `Some((lerp, column))` writes only `vSeasonLerp` and the raw
-/// `vSeasonColumn` float at bytes 64..72; it deliberately does not touch
-/// `vTreeFade` at byte 72.
 pub fn apply_tree_season_cb_override(cb1_bytes: &mut [u8], values: Option<(f32, f32)>) -> bool {
     let Some((lerp, column)) = values else {
         return false;
@@ -190,7 +174,6 @@ pub fn apply_tree_season_cb_override(cb1_bytes: &mut [u8], values: Option<(f32, 
     true
 }
 
-/// Test-only convenience wrapper; production callers pass a `GameFileResolver`.
 pub fn seasons_table_from_game_dir(game_dir: &Path) -> Result<SeasonsTable> {
     let resolver = GameFileResolver::vanilla(game_dir.to_path_buf())?;
     seasons_table_from_resolver(&resolver)

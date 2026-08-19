@@ -36,9 +36,6 @@ from deep_common import (
 )
 
 
-# ---------------------------------------------------------------------------
-# strategic_air
-# ---------------------------------------------------------------------------
 
 def _parse_air_base(tz):
     rec = {"id": None, "type": None, "state": None, "capacity": None,
@@ -48,8 +45,6 @@ def _parse_air_base(tz):
             if key == "id":
                 rec["id"], rec["type"] = read_id_block(tz)
             elif key == "countries":
-                # countries={ id={id type} motorization_level=0 country="GER"
-                #            capacity_penalty=1 }  (one block per using country)
                 tag = None
                 pen = None
                 for k, op in iter_block_entries(tz):
@@ -92,7 +87,6 @@ def _parse_strategic_air(tz, result):
             if key == "air_base":
                 air_bases.append(_parse_air_base(tz))
             elif key in ("air_theatre_index", "air_group_index"):
-                # { id=N }
                 v = None
                 for k, op in iter_block_entries(tz):
                     if op is LBRACE:
@@ -102,7 +96,6 @@ def _parse_strategic_air(tz, result):
                 indices[key] = v
             elif (len(key) == 3 and key.isupper()) or (
                     len(key) == 3 and key[0] == "D" and key[1:].isdigit()):
-                # per-country strategic-region block: count its top sub-keys
                 subkeys = 0
                 for k, op in iter_block_entries(tz):
                     if op is LBRACE:
@@ -112,15 +105,11 @@ def _parse_strategic_air(tz, result):
             else:
                 _skip_block_body(tz)
             continue
-        # scalars ignored
     result["air_bases"] = air_bases
     result["per_country_region_blocks"] = per_country
     result["indices"] = indices
 
 
-# ---------------------------------------------------------------------------
-# strategic_operatives
-# ---------------------------------------------------------------------------
 
 def _parse_pid(tz):
     val = None
@@ -143,9 +132,6 @@ def _parse_operative_entry(tz):
             elif key == "danger_level":
                 rec["danger_level"] = _parse_pid(tz)
             elif key == "intel_network":
-                # An entry can carry MULTIPLE intel_network blocks (one per
-                # target). Collect them all.
-                # intel_network={ target="ENG" intel_network={ vertices=N ... } }
                 target = None
                 vertices = None
                 for k, op in iter_block_entries(tz):
@@ -179,7 +165,6 @@ def _parse_strategic_operatives(tz, result):
         if key != "strategic_operative":
             _skip_block_body(tz)
             continue
-        # the operative pool: index-keyed entries 0={...} 1={...} ...
         for idx, op in iter_block_entries(tz):
             if op is not LBRACE:
                 continue
@@ -187,9 +172,6 @@ def _parse_strategic_operatives(tz, result):
     result["operatives"] = entries
 
 
-# ---------------------------------------------------------------------------
-# raids
-# ---------------------------------------------------------------------------
 
 def _parse_raid_target(tz):
     rec = {"existing_target_num": None, "detectable_target_num": None,
@@ -199,7 +181,6 @@ def _parse_raid_target(tz):
     for key, opener in iter_block_entries(tz):
         if opener is LBRACE:
             if key == "target":
-                # target={ province=N } OR target={ building={template location} }
                 for k, op in iter_block_entries(tz):
                     if op is LBRACE:
                         if k == "building":
@@ -258,7 +239,6 @@ def _parse_raids(tz, result):
                              "detectable_target_num", "next_target"):
                         counters[k] = to_int(v)
             elif key == "countries":
-                # countries={ { tag="GER" priority=1 dummy={...} } ... } (anon)
                 countries = _parse_raid_countries(tz)
             else:
                 _skip_block_body(tz)
@@ -298,9 +278,6 @@ def _parse_raid_countries(tz):
     return out
 
 
-# ---------------------------------------------------------------------------
-# build
-# ---------------------------------------------------------------------------
 
 def build(text, source, was_melted):
     sa = {}

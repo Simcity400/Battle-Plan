@@ -1,8 +1,3 @@
-//! Strict portable XUI17 G8/G11 presentation carrier.
-//!
-//! The carrier is passive, all-country, UI-open independent and split into
-//! independently fail-closed trait and ace components. It is admitted only
-//! after joining the same-hour D47/D46 identity censuses.
 
 use crate::world::{
     AceRosterExactView, CharacterRosterExactView, CharacterTraitNodeState, D18CountryRosterView,
@@ -36,7 +31,6 @@ pub struct CharacterG8TraitNodeObservation {
     pub state_raw: u8,
     pub state: CharacterTraitNodeState,
     pub progress_raw: Option<i64>,
-    /// Exact a729 fixed-point scale paired with `progress_raw`.
     pub progress_scale: Option<i64>,
     pub blocked_reason: String,
 }
@@ -180,7 +174,6 @@ pub(crate) fn build_character_presentation_g8_exact(
         return unavailable();
     }
     if value.get("schema_version").and_then(Value::as_u64) != Some(4) {
-        // Schema-v3 is selected-panel history, never passive all-country G8.
         return CharacterPresentationG8ExactView {
             status: ViewStatus::DomainAbsent,
             presentation: None,

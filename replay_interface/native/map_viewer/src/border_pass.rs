@@ -1,87 +1,9 @@
-//! Legacy BORD2 `--borders-from-files` diagnostic GPU pass.
-//!
-//! Renders the [`crate::border_world_synthesis`] mesh (all six classes:
-//! province/state/country/coast/sea-region/impassable) over the production-map
-//! terrain target with the shipped `gfx/FX/border.shader` `Effect border`
-//! compiled byte-exact through the OFF-3 machinery, per-class `BorderDiffuse`
-//! textures resolved from the shipped `map/terrain/border_*_0.dds` files, and
-//! the camera-height fade from [`crate::border_law::border_transparency`].
-//!
-//! Everything here is files-first and fail-closed under the diagnostic flag.
-//! The shipping route is the unconditional XMAP06 adapter and
-//! [`crate::NativeXmap06ThinBorderHandoff`]; `replay_app` rejects this legacy
-//! switch, so this module cannot replace or suppress either product phase.
-//!
-//! # Design decisions (each grounded in a shipped file or captured evidence)
-//!
-//! BORD5 (session_BORDERZOOM_3) captured a GENUINE border draw end-to-end;
-//! every decision below now cites either that capture or shipped files.
-//!
-//! * **Vertex layout** — one interleaved vertex buffer using the captured
-//!   stride 16 (`float3 position` at offset 0 + `R16G16_SINT uv` at offset 12),
-//!   matching the shader's `VS_INPUT_BORDER` integer semantics.
-//! * **Per-class draws** — the mesh's indices are reordered once into
-//!   contiguous per-material runs ([`crate::BorderWorldMesh::class_index_partition`]);
-//!   geometry uploads ONCE and each frame re-issues one `DrawIndexed` per class
-//!   with only the tiny CB2 rewritten, so the fade can rescale every class per
-//!   frame without touching the big buffers.
-//! * **CB2** — captured 32-byte allocation containing `float4 vSelectionColor; float2
-//!   vTime_Transparency; }` (border.shader:73-77). `vSelectionColor = 0` (no
-//!   selection pulse in the replay), `vTime_Transparency.x` = map clock (the
-//!   pulse time base), `.y` = the per-class transparency from the fade law.
-//! * **Scene CB0/CB1** — the border VS reads `ViewProjectionMatrix` and
-//!   `vCamLookAtDir`, and the PS reads distance-fog/day-night/`ShadowFadeFactor`
-//!   constants; all live in the shared scene CB0 declared by the included
-//!   `standardfuncsgfx.fxh`. The pass BORROWS the frame's terrain-draw CB0/CB1
-//!   buffer pointers, so camera updates (including per-wrap-copy shifts) written
-//!   by `native_d3d11_update_prepared_map_pass_scene` are seen automatically.
-//! * **SRVs** — the shader DECLARES four samplers (BorderDiffuse 0 /
-//!   SnowMudData 1 / IntelMap 2 / ShadowMap 3), but the compiled PS blob keeps
-//!   exactly TWO in its DXBC reflection: `BorderDiffuse` (t0/s0) and
-//!   `ShadowMap` (t3/s3) — verified empirically via `parse_dxbc_reflection` on
-//!   the blob this module compiles (FXC strips the commented-out SnowMudData
-//!   and the unreferenced IntelMap). BorderDiffuse binds the class's shipped
-//!   DDS with sRGB sampling — the CAPTURED state-border SRV is
-//!   `BC3_UNORM_SRGB` (78) and its payload is byte-identical to the shipped
-//!   `map/terrain/border_state_0.dds` (all 7 mips), so the shipped per-class
-//!   DDS is PROVEN to be the bound texture; its decoded cross-section law
-//!   lives in `border_texture_law.rs`.
-//!   Slots 1/2 still get the inert neutral
-//!   texel defensively (a no-op for this blob). ShadowMap doubles as the
-//!   shadow AND FOW
-//!   input (`GetShadowScaled` reads `.r`, `ApplyFOW` reads `.g/.b`;
-//!   shadow.fxh:44-53, fow.fxh:85-89) and is sampled as a PLAIN texture — the
-//!   shipped DX11 header maps `sampler2DShadow` to a regular sampler and
-//!   `tex2Dproj` to `SampleLevel(uv.xy/uv.w, 0)` (defines_hlsl_dx11.fxh:47,54).
-//!   The neutral texel `(1, 1, 0, 1)` therefore yields shadow term 1.0 and FoW
-//!   alpha 0. That is an intentional limitation of this legacy diagnostic.
-//!   Product XMAP06 instead requires and binds the authenticated current
-//!   XMAP10 `ShadowMap` for the replay camera.
-//! * **Blend** — src_alpha / inv_src_alpha, add, RGB-only write mask: the
-//!   shader's `BlendState` block (border.shader:160-167) AND the captured
-//!   draw's live blend state agree exactly (write mask 7, blend 5/6/ADD).
-//! * **Depth** — test `LESS_EQUAL`, write OFF — exactly the captured
-//!   depth-stencil state; the VS nudges its Z toward the camera to clear the
-//!   terrain (border.shader:96-99).
-//! * **Rasterizer** — solid, CULL BACK, front CCW — the captured draw's live
-//!   rasterizer state. Winding is direction-invariant for our chains (a chain
-//!   reversal flips row order AND sides, preserving orientation).
-//! * **SeaRegion** — rendered through the recovered south-up contour producer,
-//!   literal f32 water smoothing, and closed-water loop law; it is no longer a
-//!   typed omission.
-//! * **Draw order** — production uses exact-a729's two phases. This legacy
-//!   diagnostic hook remains non-authoritative.
 
 use crate::Result;
 
-/// Resolver-relative shipped shader for the border pass (same file the
-/// synthesis module cites).
 pub const BORDER_PASS_SHADER_SOURCE: &str = "gfx/FX/border.shader";
-/// Effect name inside `border.shader`.
 pub const BORDER_PASS_EFFECT_NAME: &str = "border";
 
-/// CPU-side stats for the prepared pass (VRAM + partition shape), for
-/// reporting. Sizes are the exact byte widths of the created D3D11 buffers.
 #[derive(Clone, Debug)]
 pub struct BorderFilesPassStats {
     pub vertex_count: usize,
@@ -92,15 +14,9 @@ pub struct BorderFilesPassStats {
     pub prepare_ms: f64,
 }
 
-/// Per-render outcome of the border pass: which classes drew, which were
-/// skipped as fully faded (visually identical to an alpha-0 draw).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BorderFilesPassRenderReport {
-    /// Classes that issued a DrawIndexed this render.
     pub drawn_class_count: usize,
-    /// Classes skipped because [`crate::border_transparency`] returned `<= 0`
-    /// at this camera height (the shader would multiply every fragment to
-    /// alpha 0, so skipping is visually identical and saves fill rate).
     pub fully_faded_class_count: usize,
 }
 
@@ -139,20 +55,11 @@ mod windows_impl {
     };
     use winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 
-    /// Captured border vertex stride: `float3 position` + `R16G16_SINT uv`.
     const BORDER_PASS_VERTEX_STRIDE: u32 = 16;
-    /// CAPTURE: `session_BORDERZOOM_3/map_frame_borders_pass_bundle.json`
-    /// records the engine PS slot-2 buffer as 32 bytes. The float4 + float2
-    /// payload occupies 24 bytes and D3D11 pads the allocation to 32.
     const BORDER_PASS_CB2_BYTES: usize = 32;
-    /// `MipMapLodBias = -0.5` from the BorderDiffuse sampler block.
     const BORDER_DIFFUSE_MIP_LOD_BIAS: f32 = -0.5;
-    /// `MipMapMaxLod = 4` from the BorderDiffuse sampler block.
     const BORDER_DIFFUSE_MAX_LOD: f32 = 4.0;
 
-    /// A fully-prepared `--borders-from-files` pass: compiled shaders, the
-    /// once-uploaded geometry, per-class textures/ranges, and the state
-    /// objects. Rendered per frame with [`native_d3d11_render_border_files_pass`].
     pub(crate) struct NativeD3d11BorderFilesPass {
         pub(crate) vertex_shader: D3dPtr<ID3D11VertexShader>,
         pub(crate) pixel_shader: D3dPtr<ID3D11PixelShader>,
@@ -160,14 +67,11 @@ mod windows_impl {
         pub(crate) vertex_buffer: D3dPtr<ID3D11Buffer>,
         pub(crate) index_buffer: D3dPtr<ID3D11Buffer>,
         pub(crate) cb2: D3dPtr<ID3D11Buffer>,
-        /// One `(range, BorderDiffuse SRV)` per non-empty class, in draw order.
         pub(crate) class_draws: Vec<(BorderClassIndexRange, D3dPtr<ID3D11ShaderResourceView>)>,
         /// Keep the class textures alive for the SRV lifetimes.
         pub(crate) _class_textures: Vec<D3dPtr<ID3D11Texture2D>>,
-        /// Neutral (1,1,0,1) texel for SnowMudData/IntelMap/ShadowMap.
         pub(crate) neutral_srv: D3dPtr<ID3D11ShaderResourceView>,
         pub(crate) _neutral_texture: D3dPtr<ID3D11Texture2D>,
-        /// PS samplers 0..=3 per the shader's Samplers block.
         pub(crate) samplers: [D3dPtr<ID3D11SamplerState>; 4],
         pub(crate) blend_state: D3dPtr<ID3D11BlendState>,
         pub(crate) depth_state: D3dPtr<ID3D11DepthStencilState>,
@@ -186,11 +90,6 @@ mod windows_impl {
         format!("--borders-from-files border pass blocked: {detail}")
     }
 
-    /// Compile one stage of `Effect border` through the byte-exact machinery
-    /// (resolver-routed so mods are honoured) at [`ENGINE_COMPILE_FLAGS`]
-    /// (`OPTIMIZATION_LEVEL3`) — the level OFF-3 established reproduces the
-    /// shipped map shader blobs byte-exact. FXC's default level-1 (flags 0) does
-    /// NOT match the captured engine border DXBC (`d16f3aba`); O3 does.
     fn compile_border_stage(resolver: &GameFileResolver, stage: ShaderStage) -> Result<Vec<u8>> {
         let hlsl = build_stage_hlsl(
             resolver,
@@ -241,17 +140,6 @@ mod windows_impl {
         D3dPtr::from_raw(buffer, role)
     }
 
-    /// Upload an RGBA8 mip chain as an immutable `R8G8B8A8_UNORM_SRGB`
-    /// Texture2D + full SRV.
-    ///
-    /// BORD5: the REAL captured BorderDiffuse SRV (session_BORDERZOOM_3, the
-    /// genuine state-border draw) is `BC3_UNORM_SRGB` (78) — sRGB sampling.
-    /// The earlier non-sRGB reading came from diag23b, which is a proven
-    /// contaminated capture. The CPU BC decode here follows the D3D BC spec,
-    /// so decoding to RGBA8 and letting the GPU apply the sRGB-to-linear ramp
-    /// on sample matches the engine's BC3_SRGB path (residual risk: BC
-    /// interpolation rounding differences, an open unknown in
-    /// `border_texture_law.rs`).
     unsafe fn create_rgba_mip_texture(
         device: &NativeD3d11Device,
         mips: &[RgbaImage],
@@ -313,13 +201,6 @@ mod windows_impl {
         Ok((texture, srv))
     }
 
-    /// The four PS samplers from the shader's `Samplers` block
-    /// (border.shader:13-49): BorderDiffuse linear wrap/clamp with LOD bias
-    /// -0.5 and max LOD 4; SnowMudData/IntelMap linear wrap; ShadowMap linear
-    /// wrap — a REGULAR sampler, because the shipped DX11 header translates
-    /// `sampler2DShadow` to a plain texture+sampler pair
-    /// (defines_hlsl_dx11.fxh:47) and `tex2Dproj` to a plain `SampleLevel`
-    /// (line 54); no comparison sampling exists in the compiled PS.
     unsafe fn create_border_samplers(
         device: &NativeD3d11Device,
     ) -> Result<[D3dPtr<ID3D11SamplerState>; 4]> {
@@ -344,7 +225,6 @@ mod windows_impl {
             D3dPtr::from_raw(state, role)
         };
         Ok([
-            // BorderDiffuse: AddressU Wrap / AddressV Clamp, bias -0.5, max LOD 4.
             make(
                 D3D11_TEXTURE_ADDRESS_CLAMP,
                 BORDER_DIFFUSE_MIP_LOD_BIAS,
@@ -372,10 +252,6 @@ mod windows_impl {
         ])
     }
 
-    /// Blend state from the shader's `BlendState` block (border.shader:160-167):
-    /// enabled, `src_alpha` / `inv_src_alpha`, add, `WriteMask = RED|GREEN|BLUE`
-    /// (0x7 — the border never writes destination alpha). Alpha-channel blend is
-    /// ONE/ZERO (unspecified by the block; the mask makes it inert).
     unsafe fn create_border_blend_state(
         device: &NativeD3d11Device,
     ) -> Result<D3dPtr<ID3D11BlendState>> {
@@ -398,10 +274,6 @@ mod windows_impl {
         D3dPtr::from_raw(state, "border blend state")
     }
 
-    /// Depth: test `LESS_EQUAL`, write OFF. The border VS biases its clip-space
-    /// Z toward the camera (border.shader:96-99) so the overlay clears the
-    /// terrain surface; the test still culls fragments behind hills, and not
-    /// writing depth keeps later passes (trees) unoccluded by border quads.
     unsafe fn create_border_depth_state(
         device: &NativeD3d11Device,
     ) -> Result<D3dPtr<ID3D11DepthStencilState>> {
@@ -429,13 +301,6 @@ mod windows_impl {
         D3dPtr::from_raw(state, "border depth state")
     }
 
-    /// Rasterizer: the CAPTURED border draw state (session_BORDERZOOM_3):
-    /// solid fill, CULL BACK, `front_counter_clockwise = true`, depth clip on,
-    /// no scissor/multisample/AA-line. Our chain emission replicates the
-    /// engine's per-row index pattern and side assignment, and a full chain
-    /// reversal flips both row order and the left/right sides (an
-    /// orientation-preserving 180° parameter rotation), so winding — and
-    /// therefore back-face culling — is direction-invariant.
     unsafe fn create_border_rasterizer_state(
         device: &NativeD3d11Device,
     ) -> Result<D3dPtr<ID3D11RasterizerState>> {
@@ -459,9 +324,6 @@ mod windows_impl {
         D3dPtr::from_raw(state, "border rasterizer state")
     }
 
-    /// Prepare the whole pass ONCE per prepared production map: synthesize the
-    /// mesh, compile both border shader stages, upload geometry, load per-class
-    /// textures, and build the state objects. Fail-closed on every input.
     pub(crate) fn native_d3d11_prepare_border_files_pass(
         device: &NativeD3d11Device,
         resolver: &GameFileResolver,
@@ -499,7 +361,6 @@ mod windows_impl {
             )?;
             let pixel_shader = D3dPtr::from_raw(ps, "border pixel shader")?;
 
-            // VS_INPUT_BORDER as ONE interleaved stream (both elements slot 0).
             let elements = [
                 RuntimeInputElementMeta {
                     semantic_name: "POSITION".to_string(),
@@ -544,7 +405,6 @@ mod windows_impl {
                 "border pass index buffer",
             )?;
 
-            // Dynamic CB2, rewritten per class per frame.
             let cb2_desc = D3D11_BUFFER_DESC {
                 ByteWidth: BORDER_PASS_CB2_BYTES as UINT,
                 Usage: D3D11_USAGE_DYNAMIC,
@@ -566,7 +426,6 @@ mod windows_impl {
             )?;
             let cb2 = D3dPtr::from_raw(cb2_raw, "border CB2")?;
 
-            // Per-class BorderDiffuse textures from the shipped DDS files.
             let mut class_draws = Vec::with_capacity(partition.ranges.len());
             let mut class_textures = Vec::with_capacity(partition.ranges.len());
             for range in &partition.ranges {
@@ -582,10 +441,6 @@ mod windows_impl {
                 class_draws.push((*range, srv));
             }
 
-            // Neutral (1,1,0,1): shadow term 1.0 (no darkening), FOW alpha 0
-            // (no fog). The compiled PS reflection keeps only BorderDiffuse
-            // (t0) and ShadowMap (t3), so the slot-1/2 binds below are
-            // defensive no-ops; slot 3 is the load-bearing neutral.
             let neutral_mip = RgbaImage {
                 width: 1,
                 height: 1,
@@ -636,7 +491,6 @@ mod windows_impl {
         }
     }
 
-    /// Find the scene constant buffer bound by the frame at `stage`/`slot`.
     fn borrowed_scene_cb(
         scene_draw: &NativeD3d11PreparedDraw,
         stage: &str,
@@ -649,14 +503,6 @@ mod windows_impl {
             .map(|cb| cb.buffer.as_raw())
     }
 
-    /// Render the prepared border pass over the production-map terrain target.
-    ///
-    /// `scene_draw` is a terrain draw of the SAME frame: its live CB0/CB1
-    /// buffers (camera-patched by the scene updater, including per-wrap-copy
-    /// shifts) and viewports are borrowed for the border VS/PS. `camera_height`
-    /// is the world-Y camera eye height driving [`border_transparency`];
-    /// `clock` feeds `vTime_Transparency.x` (selection-pulse time base — inert
-    /// with `vSelectionColor = 0`, kept for shader fidelity).
     pub(crate) fn native_d3d11_render_border_files_pass(
         device: &NativeD3d11Device,
         pass: &NativeD3d11BorderFilesPass,
@@ -674,9 +520,6 @@ mod windows_impl {
             )
         })?;
         let vs_cb1 = borrowed_scene_cb(scene_draw, "VS", 1);
-        // The scene CB0 is one shared buffer; if the terrain draw lacks an
-        // explicit PS slot-0 binding, the VS slot-0 buffer carries the same
-        // scene constants (fog / day-night / ShadowFadeFactor).
         let ps_cb0 = borrowed_scene_cb(scene_draw, "PS", 0).unwrap_or(vs_cb0);
         let ps_cb1 = borrowed_scene_cb(scene_draw, "PS", 1);
         if scene_draw.viewports.is_empty() {
@@ -686,9 +529,6 @@ mod windows_impl {
         unsafe {
             let context = device.context.as_raw();
 
-            // Per-frame CB2 base: vSelectionColor = 0 (no selection pulse in
-            // the replay), vTime_Transparency = [clock, <per-class alpha>].
-            // The per-class alpha is written inside the class loop below.
             (*context).VSSetShader(pass.vertex_shader.as_raw(), ptr::null_mut(), 0);
             (*context).PSSetShader(pass.pixel_shader.as_raw(), ptr::null_mut(), 0);
             (*context).IASetInputLayout(pass.input_layout.as_raw());
@@ -716,7 +556,6 @@ mod windows_impl {
                 let mut raw = sampler.as_raw();
                 (*context).PSSetSamplers(slot as UINT, 1, &mut raw);
             }
-            // Neutral SnowMudData(1) / IntelMap(2) / ShadowMap(3).
             for slot in 1..=3u32 {
                 let mut raw = pass.neutral_srv.as_raw();
                 (*context).PSSetShaderResources(slot, 1, &mut raw);
@@ -741,14 +580,9 @@ mod windows_impl {
                 let transparency =
                     border_transparency(&pass.fade_windows, range.material, camera_height)?;
                 if transparency <= 0.0 {
-                    // Fully faded at this camera height: nothing to draw. The
-                    // shader would multiply every fragment's alpha to zero, so
-                    // skipping is visually identical and saves the fill rate.
                     report.fully_faded_class_count += 1;
                     continue;
                 }
-                // CB2 = { vSelectionColor: float4 = 0; vTime_Transparency:
-                // float2 = [clock, transparency]; pad to the captured 32 B }.
                 let mut mapped: D3D11_MAPPED_SUBRESOURCE = std::mem::zeroed();
                 native_d3d11_hr(
                     (*context).Map(
@@ -778,9 +612,6 @@ mod windows_impl {
                 report.drawn_class_count += 1;
             }
 
-            // Unbind the borrowed scene CBs and our SRVs so later passes see a
-            // clean slate (they re-bind their own state anyway; this guards
-            // against dangling references to the border textures).
             let mut null_srv: *mut ID3D11ShaderResourceView = ptr::null_mut();
             for slot in 0..=3u32 {
                 (*context).PSSetShaderResources(slot, 1, &mut null_srv);
@@ -796,7 +627,6 @@ pub(crate) use windows_impl::{
     NativeD3d11BorderFilesPass,
 };
 
-// Compile-time reference so the constants are used on all platforms.
 #[allow(dead_code)]
 const _: fn() -> Result<()> = || {
     let _ = (BORDER_PASS_SHADER_SOURCE, BORDER_PASS_EFFECT_NAME);
@@ -809,19 +639,13 @@ mod tests {
     use crate::{GameFileResolver, NativeD3d11TerrainRenderer};
     use std::fs;
 
-    /// The spec's fail-closed no-resolver gate: `--borders-from-files` set on
-    /// the renderer WITHOUT a resolver must be a hard error at prepare time,
-    /// and flag-OFF must be `Ok(None)` (no work at all — the byte-identical
-    /// path).
     #[test]
     fn borders_from_files_without_resolver_fails_closed() {
         let mut renderer = NativeD3d11TerrainRenderer::new().expect("headless D3D11 device");
-        // Flag OFF (default): no resolver required, no work requested.
         assert!(renderer
             .border_files_resolver_for_prepare()
             .expect("flag off is Ok")
             .is_none());
-        // Flag ON without a resolver: hard error naming the fix.
         renderer.set_borders_from_files(true);
         let err = renderer
             .border_files_resolver_for_prepare()
@@ -835,8 +659,6 @@ mod tests {
             err.to_string().contains("with_border_resolver"),
             "error must name the fix: {err}"
         );
-        // Flag ON with a resolver: the gate passes (prepare itself is
-        // exercised by the missing-game-files test below).
         let root = temp_test_dir("border_pass_resolver_ok");
         fs::create_dir_all(root.join("map")).expect("create map dir");
         fs::write(
@@ -853,9 +675,6 @@ mod tests {
         fs::remove_dir_all(root).ok();
     }
 
-    /// Full prepare against a resolver whose game dir lacks the border inputs:
-    /// the pass must fail closed (via the synthesis fail-closed chain), never
-    /// produce an empty/partial pass.
     #[test]
     fn prepare_border_files_pass_fails_closed_on_missing_game_files() {
         let renderer = NativeD3d11TerrainRenderer::new().expect("headless D3D11 device");

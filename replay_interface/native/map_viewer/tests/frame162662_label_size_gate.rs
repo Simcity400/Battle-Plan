@@ -1,24 +1,3 @@
-//! NAME2 cross-session size gate (audit F-024 confrontation, 2026-07-11).
-//!
-//! A BLIND dual-derivation session (rounds 2-3, `rederive-titlesize2/3`)
-//! byte-decoded eight country labels from `postfx_frame162662` — a capture
-//! session and camera height (1060.04) entirely disjoint from the frame4700
-//! oracle the law was fitted on — and measured their world cap heights. Its
-//! free two-coefficient fits over ITS OWN ray-reconstructed drivers left an
-//! 8.54% floor, which is consistent with (not in excess of) this law's
-//! long-documented accuracy envelope. W11B subsequently traced the engine
-//! breadth numerator to the full province-area raster count in
-//! instruction skeleton only, not DAT values or upstream/helper semantics. This
-//! independent research gate prints every joined per-label
-//! ratio while retaining the established aggregate band.
-//!
-//! This gate closes the confrontation: OUR pipeline (bundle raster -> OLS
-//! owned-segment arc -> `engine_glyph_scale`) must reproduce the session's
-//! independently measured heights within the SAME envelope as frame4700
-//! (every joined label within +/-25%, median within [0.90, 1.10]). A future
-//! drift of the size law now trips against two independent capture sessions.
-//!
-//! SKIPS (visible) when the untracked map bundle is absent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -64,8 +43,6 @@ fn fixture_rows() -> Vec<KeyRow> {
         .collect()
 }
 
-/// Bundle reader duplicated from `frame4700_label_size_gate.rs` (integration
-/// tests cannot link bins).
 struct Bundle {
     width: usize,
     height: usize,
@@ -163,10 +140,6 @@ fn load_bundle(dir: &Path) -> Option<Bundle> {
     })
 }
 
-/// Geographic instance join (frame4700 convention): the session's label
-/// anchors were extracted from its cited glyph blobs, so each key row joins
-/// the nearest same-tag placement within `max(25, 0.6 x half_length)` map px
-/// — Portugal's metropole label joins Iberia, never a colonial component.
 fn matching_instance<'a>(
     placements: &'a [CountryLabelPlacement],
     row: &KeyRow,

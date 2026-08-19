@@ -1,21 +1,9 @@
-//! Receipt-bound a729 controller observations for the generic DCT1 carrier.
-//!
-//! This module is the shared admission boundary for owner-run harness
-//! observations. It does not install hooks and does not make domain 71
-//! schedulable. Only a collection family whose complete twenty-field producer
-//! law is pinned below may be admitted. Static generic widget laws are never
-//! treated as controller-specific source/filter/identity authority.
-
-use crate::{
-    validate_frame, CollectionTrace, ExactControllerTraceSource, TraceFrame,
-};
+use crate::{validate_frame, CollectionTrace, ExactControllerTraceSource, TraceFrame};
 
 pub const A729_BINARY_ID: &str = "hoi4.exe 1.19.2.0.a729";
 pub const A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
-/// Fresh exact20 receipt covering the equipment producer, callback boundary,
-/// generic grid append/finalize law, and enclosing scroll-container sync.
 pub const EQUIPMENT_GRID_JOB_ID: &str =
     "20260720T133905Z-w5-a28-equipment-grid-owner-geometry-7d8900a4";
 pub const EQUIPMENT_GRID_MANIFEST_SHA256: &str =
@@ -65,20 +53,10 @@ impl ControllerKind {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClosureDisposition {
-    /// All twenty DCT1 fields have exact static producer law. A live receipt is
-    /// still required for each admitted transition.
     OwnerRunnable,
-    /// Source/filter/order/template are closed, but the outer resolved
-    /// clip/viewport and same-transition scroll owner are not.
     MissingOuterGeometryAndScroll,
-    /// Only accepted rows are currently rooted; excluded candidates and their
-    /// portable identities/reasons are incomplete.
     MissingRejectedSourceAccounting,
-    /// Runtime list identity and resolved row/clip/viewport producers remain
-    /// conditional on a live object join.
     MissingRuntimeIdentityAndGeometry,
-    /// Generic overlap placement is closed, but controller-specific source,
-    /// stable identity, filtering, binding, and outer viewport are incomplete.
     MissingControllerSpecificJoin,
 }
 
@@ -117,8 +95,6 @@ pub struct HarnessAuthorityReceipt {
     pub phase: ObservationPhase,
     pub transition_sequence: u64,
     pub observation_qpc_ticks: u64,
-    /// Hash of the harness-owned raw observation record. This is retained as
-    /// provenance and must be lowercase SHA-256; it is not a process pointer.
     pub producer_record_sha256: String,
 }
 
@@ -145,9 +121,6 @@ pub enum AdmissionError {
     InvalidCollection(String),
 }
 
-/// A pointer-free observation set admitted against a pinned exact-a729
-/// producer receipt. Construction validates the complete frame before this
-/// type can implement the DCT1 source trait.
 #[derive(Clone, Debug)]
 pub struct ExactA729ControllerObservationSource {
     frame_hour: u64,
@@ -220,9 +193,7 @@ impl ExactControllerTraceSource for ExactA729ControllerObservationSource {
     }
 }
 
-fn validate_equipment_receipt(
-    receipt: &HarnessAuthorityReceipt,
-) -> Result<(), AdmissionError> {
+fn validate_equipment_receipt(receipt: &HarnessAuthorityReceipt) -> Result<(), AdmissionError> {
     if receipt.binary_id != A729_BINARY_ID {
         return Err(AdmissionError::ForeignAuthority("binary id"));
     }
@@ -258,16 +229,12 @@ fn validate_equipment_receipt(
         ));
     }
     if !lower_hex_sha256(&receipt.producer_record_sha256) {
-        return Err(AdmissionError::ForeignAuthority(
-            "producer record SHA-256",
-        ));
+        return Err(AdmissionError::ForeignAuthority("producer record SHA-256"));
     }
     Ok(())
 }
 
-fn require_complete(
-    observation: &HarnessControllerObservation,
-) -> Result<(), AdmissionError> {
+fn require_complete(observation: &HarnessControllerObservation) -> Result<(), AdmissionError> {
     let fields = [
         (observation.source_complete, "source accounting"),
         (
@@ -279,10 +246,7 @@ fn require_complete(
             observation.materialization_complete,
             "materialized slot binding",
         ),
-        (
-            observation.clip_viewport_complete,
-            "resolved clip/viewport",
-        ),
+        (observation.clip_viewport_complete, "resolved clip/viewport"),
         (observation.scroll_complete, "fixed scroll state"),
     ];
     for (complete, label) in fields {

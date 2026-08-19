@@ -1,11 +1,3 @@
-//! Exact-build terminal land-combat writer capture for hoi4.exe 1.19.2.0.a729.
-//!
-//! The two writer detours establish the owning active-combat pointer. Their
-//! only shared record allocator is detoured as a nested observer, after the
-//! engine has copied the complete 0x448-byte record into its global table.
-//! Raw bytes never cross the replay wire: the collector projects only proven
-//! pointer-free scalar fields from this process-local carrier.
-
 #![cfg(windows)]
 
 use crate::terminal_coordinator::{
@@ -36,21 +28,10 @@ pub const RECORD_ALLOCATOR_RVA: usize = 0x0CC9_F10;
 pub const TERMINAL_RECORD_VTABLE_RVA: usize = 0x0294_6FB8;
 pub const GAME_DATE_VTABLE_RVA: usize = 0x0270_2388;
 pub const TERMINAL_RECORD_LEN: usize = 0x448;
-/// Byte extent of one MinHook x64 relay stub: the `FF 25 00 00 00 00`
-/// RIP-relative indirect jump followed by its 8-byte absolute destination.
-/// This is the MinHook 0.9.0 trampoline layout, not a hoi4.exe constant, and it
-/// is exactly the width both live-relay verifiers already parse -
-/// `verify_live_minhook_rel5` below and `x2_carriers::observe_live_relay` each
-/// check `stub[..6]` against the `FF25` prefix and decode `stub[6..14]` as the
-/// destination. `x2_carriers::receipt_relay_ranges` uses it as the relay's
-/// extent when it censuses relay address ranges.
 pub(crate) const MINHOOK_RELAY_LEN: usize = 14;
 pub const WRITER_KIND_OVERRUN: u32 = 1;
 pub const WRITER_KIND_NORMAL: u32 = 2;
 
-/// Runtime production admission requires exact installed receipts for all
-/// three MinHook sites in addition to their entry-byte sentinels. Teardown
-/// likewise remains incomplete until all three original prefixes have exact
 /// release receipts.
 pub const TERMINAL_WRITER_ACTIVATION: bool = true;
 pub const A729_EXECUTABLE_SHA256: &str =
@@ -182,8 +163,6 @@ pub struct CombatBinding {
     pub generation: u64,
 }
 
-/// Process-local exact record carrier. `record_bytes` may contain engine
-/// pointers and therefore MUST be projected before serialization.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawTerminalRecordCapture {
     pub combat_id: u32,
@@ -202,27 +181,9 @@ pub struct TerminalDrain {
     pub dropped_overflow: u64,
 }
 
-/// A bounded, non-destructive publication view of the pending terminal records
-/// in queue order, plus all current diagnostics. Every reserved record remains
-/// in place until the matching reservation is committed, and a commit removes
-/// only the records the publisher declared through
-/// [`declare_record_reservation_consumption`]. A failed publication must roll
-/// the reservation back.
-///
-/// The whole pending queue is offered, not just its front, because a terminal
-/// record has exactly ONE frame in which it may be published: the payload that
-/// also carries its `EVENT_PHASE_ENDED` row (enforced by
-/// `validate_payload_referential_consistency`), and the transition tracker
-/// emits that row exactly once, in the frame where the epoch leaves the combat
-/// roster. Two combats ending in the same frame therefore have exactly one
-/// shared opportunity, so a front-only view would strand every record but the
-/// first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TerminalRecordReservation {
     pub reservation_id: u64,
-    /// Publishable reservation payload. `records` holds the pending queue in
-    /// order, while the diagnostic fields are exact non-destructive counter
-    /// snapshots taken at the same reservation boundary.
     pub drain: TerminalDrain,
 }
 
@@ -232,9 +193,6 @@ pub struct SealedTerminalReservation {
     pub drain: TerminalDrain,
 }
 
-/// Position-independent identity of one queued capture, used to prove at commit
-/// time that a declared index still names the record the reservation handed
-/// over.
 type ReservedRecordIdentity = (u32, u64, u32, u32);
 
 fn reserved_record_identity(record: &RawTerminalRecordCapture) -> ReservedRecordIdentity {
@@ -246,26 +204,15 @@ fn reserved_record_identity(record: &RawTerminalRecordCapture) -> ReservedRecord
     )
 }
 
-/// Publisher-side bookkeeping for one non-sealed record reservation.
-///
-/// Lives and dies with its reservation: every disposition that ends one clears
-/// this, and reserving REFUSES a retained one rather than clearing it, so a
-/// declaration can never be applied to records it was not made against.
 struct ReservedRecordCustody {
     reservation_id: u64,
-    /// Identity of every reserved record, in queue order, taken at reservation.
-    /// A commit re-checks these against the live queue: an index alone is not
-    /// evidence that it still names the same record.
     identities: Vec<ReservedRecordIdentity>,
-    /// Indices the publisher declared it decided. `None` until it declares, and
-    /// a commit refuses while it is `None` rather than guessing.
     consumed: Option<Vec<usize>>,
 }
 
 #[derive(Clone, Copy)]
 struct ActiveTerminalReservation {
     reservation_id: u64,
-    /// Records handed to the publisher, counted from the queue front. Those
     /// `record_count` entries are pinned for the reservation's lifetime.
     record_count: usize,
     diagnostics: [u64; 4],
@@ -276,7 +223,6 @@ struct HookState {
     bindings: BTreeMap<usize, (u32, u64)>,
     records: VecDeque<RawTerminalRecordCapture>,
     reservation: Option<ActiveTerminalReservation>,
-    /// Publisher-side bookkeeping for the active non-sealed reservation.
     reserved_custody: Option<ReservedRecordCustody>,
     reservation_admission_sealed: bool,
 }
@@ -307,8 +253,6 @@ impl Default for HookState {
     fn default() -> Self {
         Self {
             bindings: BTreeMap::new(),
-            // Allocate off the game thread during hook installation so the
-            // terminal callback never grows the carrier heap.
             records: VecDeque::with_capacity(MAX_PENDING_RECORDS),
             reservation: None,
             reserved_custody: None,
@@ -399,22 +343,8 @@ fn complete_released_receipts(
     }
 }
 
-/// Whether the D55 terminal writer may still have a detour in the executable.
-///
-/// `STATE` is initialized before the first fallible MinHook create and retains
-/// per-site bits even for a creation that was left disabled, so its presence is
-/// what says "this lane touched the executable", independently of `INSTALLED`
-/// -- which is only set after a complete install.
-///
-/// The production hook registry consults this before accepting that there is
 /// nothing to release.
 pub fn terminal_release_pending() -> bool {
-    // `STATE` is a OnceLock initialized BEFORE the first fallible create and
-    // never cleared, so using it here reported "may be patched" forever after a
-    // clean first-create failure -- turning an isolatable unit failure into a
-    // registry-wide abort. `CREATED_HOOK_MASK` is the real custody: a bit is
-    // set only after a site is actually created, and cleared only when that
-    // site is proved removed.
     terminal_release_pending_from(
         INSTALLED.load(Ordering::Acquire),
         CREATED_HOOK_MASK.load(Ordering::Acquire),
@@ -422,48 +352,22 @@ pub fn terminal_release_pending() -> bool {
 }
 
 /// The state logic of [`terminal_release_pending`], separated from the process
-/// globals it reads so it can be exercised offline.
-///
-/// `created_mask` must be the count of sites actually created and not yet
-/// proved removed -- NOT any "we got as far as initializing" flag. A flag set
-/// before the first fallible create and never cleared reports "may be patched"
-/// forever after a clean first-create failure, which converts an isolatable
-/// unit failure into a registry-wide abort.
 pub fn terminal_release_pending_from(installed: bool, created_mask: usize) -> bool {
     installed || created_mask != 0
 }
 
 /// Whether this lane still owns RELEASE CUSTODY that no transaction has
 /// resolved: it published its three released-hook receipts during a seal, and
-/// nothing has committed or aborted the reservation that seal opened.
-///
 /// This is a DIFFERENT question from [`terminal_release_pending`], which asks
-/// whether a detour may still be patched into the executable. A seal restores
-/// every detour, clears `INSTALLED` and clears `CREATED_HOOK_MASK`, so after a
-/// seal whose reservation was ROLLED BACK -- the shape a failed terminal frame
 /// leaves -- both of those answer false while the released receipts sit here
 /// with `release_delivery_committed == false` and the drained records still in
-/// custody.
-///
-/// That state was invisible to every registry predicate, and it is a DEAD END:
 /// `take_released_hook_receipts` refuses it with "terminal released hook
-/// receipts await sink commit", and only a sealed-reservation commit or abort
-/// can ever clear the flag. A production teardown therefore refused
-/// byte-identically forever, its bounded recovery driver gave up, and the
-/// attach worker exited with the collector pinned. Reporting it here is what
-/// puts the group back into the registry's terminal-custody recovery, whose
-/// abort transaction resolves the custody with a counted discard.
-///
-/// `aborted_install_removed` is deliberately NOT consulted: a failed install
-/// archives its receipts through `archive_resolved_aborted_install`, which is
-/// its own resolution.
 pub fn terminal_release_custody_unresolved() -> bool {
     let receipts = match HOOK_RECEIPTS
         .get_or_init(|| Mutex::new(HookReceiptState::default()))
         .lock()
     {
         Ok(receipts) => receipts,
-        // A poisoned receipt mutex is not evidence that custody was resolved.
         Err(_) => return true,
     };
     terminal_release_custody_unresolved_from(
@@ -473,11 +377,6 @@ pub fn terminal_release_custody_unresolved() -> bool {
 }
 
 /// The state logic of [`terminal_release_custody_unresolved`], separated from
-/// the process globals so it can be exercised offline.
-///
-/// Held-and-uncommitted is the unresolved state. Held-and-committed is the
-/// ordinary window between a commit and the registry's receipt handoff, and
-/// nothing-held is either a fresh lane or one whose handoff already happened.
 pub const fn terminal_release_custody_unresolved_from(
     any_released_receipt_held: bool,
     release_delivery_committed: bool,
@@ -538,8 +437,6 @@ pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 3], Stri
 }
 
 /// Borrow the exact released receipt set for the combined D55 terminal
-/// transaction without consuming producer custody. The receipts remain owned
-/// here until the combined sink transaction has been preflighted and committed.
 pub(crate) fn combined_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; 3], String> {
     if !individual_terminal_api_blocked() {
         return Err("terminal combined release receipt snapshot requires combined custody".into());
@@ -626,8 +523,6 @@ pub fn install() -> Result<InstalledHookAddresses, String> {
         &ALLOCATOR_SENTINEL,
         "terminal record allocator",
     )?;
-    // Publish the exact module owner immediately before the first fallible
-    // MinHook create. Per-site bits retain even disabled creations.
     MODULE_BASE.store(base, Ordering::Release);
     STATE.get_or_init(|| Mutex::new(HookState::default()));
 
@@ -696,10 +591,6 @@ pub fn install() -> Result<InstalledHookAddresses, String> {
     ORIGINAL_NORMAL.store(normal as usize, Ordering::Release);
     ORIGINAL_OVERRUN.store(overrun as usize, Ordering::Release);
     ORIGINAL_ALLOCATOR.store(allocator as usize, Ordering::Release);
-    // Arm the passive nested observer before either writer can publish a
-    // context. This prevents a writer from reaching an unhooked allocator in
-    // the installation window. The batch keeps that readable order and makes
-    // it atomic to game threads, at the cost of one freeze instead of three.
     let mut batch = hook_batch(&[
         sites.normal_writer,
         sites.overrun_writer,
@@ -976,8 +867,6 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
         receipts.rollback_relays.clone()
     };
     let mut errors = Vec::new();
-    // Both writers are restored under one freeze rather than two, in their
-    // original order. The allocator remains a separate post-quiescence group.
     errors.extend(
         unsafe { inline_detour::disable_batch(&writer_hook_batch(sites)) }
             .failures()
@@ -1002,9 +891,6 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
             errors.push(error);
         }
     }
-    // Never remove a target while a writer could still be entering its nested
-    // allocator. Retaining disabled hooks and live trampolines is the safe
-    // fail-closed state when quiescence or disablement cannot be proven.
     if !errors.is_empty() {
         return Err(errors.join("; "));
     }
@@ -1015,8 +901,6 @@ fn rollback_failed_install(sites: InstalledHookAddresses) -> Result<(), String> 
         sites.record_allocator,
     ]);
     removal.reverse();
-    // All three trampoline frees share one freeze instead of three. Reversing
-    // the batch preserves the rollback's allocator/overrun/normal order.
     for ((name, outcome), index) in unsafe { inline_detour::remove_batch(&removal) }
         .outcomes()
         .iter()
@@ -1126,13 +1010,6 @@ fn clear_hook_trampoline_addresses() {
 fn release_hook_receipts(
     sites: InstalledHookAddresses,
 ) -> Result<[ReleasedRvaHookReceipt; 3], String> {
-    // DRAINED-BY-CALLER: the seal above this call disables both writers,
-    // `wait_for_writer_quiescence()?`, disables the allocator, and
-    // `wait_for_allocator_quiescence()?` -- each with `?`, so a refused disable
-    // or a drain that did not reach zero returns BEFORE reaching here rather
-    // than being recorded and freed over. The two groups are drained
-    // separately because the allocator admits on its own schedule, which is
-    // why this cannot be restated as one wait in here.
     let installed = {
         let state = HOOK_RECEIPTS
             .get_or_init(|| Mutex::new(HookReceiptState::default()))
@@ -1159,7 +1036,6 @@ fn release_hook_receipts(
     ]);
     removal.reverse();
     // Production release frees all three relays with one freeze instead of
-    // three, retaining the allocator/overrun/normal reverse order.
     let removed = unsafe { inline_detour::remove_batch(&removal) };
     let mut removal_error = None;
     for ((name, outcome), index) in removed.outcomes().iter().zip([2usize, 1, 0]) {
@@ -1234,12 +1110,6 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Legacy non-transactional teardown entry point.
-///
-/// Production callers must use `seal_and_reserve_all_for_uninstall`, publish
-/// the returned drain, and then explicitly commit or roll back its reservation.
-/// Refusing here prevents a caller from releasing hook custody and
-/// self-attesting sink delivery without that transaction.
 pub fn uninstall() -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal uninstall")?;
     let _guard = INSTALL_LOCK
@@ -1280,8 +1150,6 @@ pub fn uninstall() -> Result<(), String> {
 }
 
 /// Stop hook admission, release all three exact hook custodies, and reserve the
-/// complete sealed terminal carrier without removing records or diagnostics.
-/// Commit only after the final H4CR reaches its sink; roll back on sink failure.
 pub fn seal_and_reserve_all_for_uninstall() -> Result<SealedTerminalReservation, String> {
     let _individual = try_admit_individual_api("terminal seal")?;
     seal_and_reserve_all_impl()
@@ -1310,14 +1178,9 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
         if state.reservation.is_some() {
             return Err("terminal sealed carrier already has an active reservation".into());
         }
-        // Close admission before disabling any target. This prevents a live
-        // reservation or callback append from entering between the quiescence
-        // boundary and the complete terminal snapshot below.
         state.reservation_admission_sealed = true;
     }
     if let Some(sites) = sites {
-        // Seal both writers with one freeze rather than two. Their original
-        // order remains visible, and the allocator stays after the wait below.
         if let Some((name, status)) =
             unsafe { inline_detour::disable_batch(&writer_hook_batch(sites)) }.first_failure()
         {
@@ -1341,13 +1204,10 @@ fn seal_and_reserve_all_impl() -> Result<SealedTerminalReservation, String> {
         .lock()
         .map_err(|_| "terminal hook state mutex poisoned during seal".to_string())?;
     // This lock is held through release-custody publication and full carrier
-    // reservation after the earlier admission seal and callback quiescence.
     if let Some(sites) = sites {
         release_hook_receipts(sites)?;
         INSTALLED.store(false, Ordering::Release);
         // Trampolines cease to be callable after exact release, but the
-        // executable base remains immutable projection custody until every raw
-        // terminal record has been authenticated and sink-committed.
         clear_hook_trampoline_addresses();
         WRITER_CONTEXT.with(|slot| slot.set(None));
     } else {
@@ -1398,15 +1258,8 @@ pub fn commit_sealed_terminal_reservation(reservation_id: u64) -> Result<(), Str
     consume_sealed_terminal_reservation(reservation_id, "commit").map(|_| ())
 }
 
-/// Discards the sealed terminal carrier of a production install that could not
 /// finish, and resolves the release custody the hooks already left behind.
-///
-/// [`seal_and_reserve_all_for_uninstall`] has already restored the three
 /// detours and published their release receipts by the time this runs, so this
-/// half only decides the fate of the reserved records. Commit means the sink
-/// accepted them; this means the roster never became installable, so there is
-/// no terminal frame to accept them and the exact reserved prefix is dropped
-/// with a count. Neither half can run without a matching sealed reservation.
 pub fn abort_sealed_terminal_reservation(
     reservation_id: u64,
 ) -> Result<InstallAbortDiscard, String> {
@@ -1415,8 +1268,6 @@ pub fn abort_sealed_terminal_reservation(
 }
 
 /// Seals, physically releases and then discards the whole D55 terminal carrier
-/// in one step, for a production hook registry that could not complete its
-/// install.
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
     let reservation = seal_and_reserve_all_for_uninstall()?;
     abort_sealed_terminal_reservation(reservation.reservation_id)
@@ -1511,11 +1362,6 @@ pub(crate) fn preflight_combined_commit(reservation_id: u64) -> Result<(), Strin
     Ok(())
 }
 
-/// Apply a previously successful combined-commit preflight. The coordinator
-/// serializes this with every individual terminal API and calls it only after
-/// every D55 lane has preflighted, so no fallible work remains. Poisoned locks
-/// are recovered because their invariants were independently checked by the
-/// preflight immediately preceding the atomic multi-lane mutation.
 pub(crate) fn commit_combined_preflighted(reservation_id: u64) {
     let _guard = match INSTALL_LOCK.lock() {
         Ok(guard) => guard,
@@ -1546,10 +1392,6 @@ pub(crate) fn commit_combined_preflighted(reservation_id: u64) {
     };
     debug_assert!(complete_released_receipts(&receipts).is_ok());
     debug_assert!(!receipts.release_delivery_committed);
-    // The combined reservation itself carried this exact immutable receipt
-    // array through the same durable sink transaction as the terminal rows.
-    // Clear producer custody here so combined commit has no residual
-    // individual handoff and reinstall is immediately eligible.
     receipts.released = [None; 3];
     receipts.release_delivery_committed = false;
     MODULE_BASE.store(0, Ordering::Release);
@@ -1574,7 +1416,6 @@ pub(crate) fn preflight_combined_rollback(reservation_id: u64) -> Result<(), Str
 
 /// Release only the active reservation token after a successful combined
 /// rollback preflight. The raw records, diagnostics, and release receipts stay
-/// in producer custody and can be reserved identically on retry.
 pub(crate) fn rollback_combined_preflighted(reservation_id: u64) {
     let _guard = match INSTALL_LOCK.lock() {
         Ok(guard) => guard,
@@ -1617,10 +1458,6 @@ fn matching_sealed_reservation(
     }
 }
 
-/// Removed compatibility path retained only as a fail-closed source-API guard.
-///
-/// A terminal drain cannot be consumed safely without an external durable sink
-/// boundary. Callers must migrate to the explicit sealed reservation API.
 pub fn seal_drain_and_uninstall() -> Result<TerminalDrain, String> {
     Err(
         "terminal seal_drain_and_uninstall is disabled; use explicit sealed reserve/commit/rollback custody"
@@ -1709,8 +1546,6 @@ pub(crate) fn wait_for_combined_capture_quiescence() -> Result<(), String> {
     Ok(())
 }
 
-/// Replace the process-pointer join only after the preceding queue has been
-/// drained. This preserves bindings for combats that ended between frames.
 pub fn publish_active_combat_bindings(bindings: &[CombatBinding]) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal binding publication")?;
     publish_active_combat_bindings_impl(bindings)
@@ -1767,9 +1602,6 @@ fn diagnostic_snapshot() -> [u64; 4] {
     diagnostic_counters().map(|counter| counter.load(Ordering::Acquire))
 }
 
-/// A consumption declaration lives and dies with its reservation, and every
-/// disposition that ends a reservation clears it. Reserving therefore REFUSES a
-/// retained declaration rather than clearing it: silently absorbing one would
 /// hide a disposition that failed to release its own state, and a second clear
 /// here would make the release-side clears untestable.
 fn require_no_retained_custody(state: &HookState) -> Result<(), String> {
@@ -1814,20 +1646,6 @@ fn subtract_reserved_diagnostics(active: ActiveTerminalReservation) {
     }
 }
 
-/// Reserve clones of every pending terminal record, in queue order, without
-/// removing or moving any of them, together with exact snapshots of every
-/// diagnostic counter. A diagnostic-only reservation is returned when no record
-/// is pending. Only one reservation may exist so a publisher cannot overtake an
-/// older record while hook callbacks append newer records at the back.
-///
-/// The publisher names exactly which reserved records it decided, with
-/// [`declare_record_reservation_consumption`]; a commit then removes exactly
-/// those and leaves the rest queued in their relative order.
-///
-/// This offers the whole queue rather than only its front because each terminal
-/// record has exactly one payload it may legally appear in -- the one carrying
-/// its `EVENT_PHASE_ENDED` row -- and several combats can end in the same
-/// frame. A front-only view gives those records no second chance.
 pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, String> {
     let _individual = try_admit_individual_api("terminal record reservation")?;
     if !INSTALLED.load(Ordering::Acquire) {
@@ -1874,21 +1692,6 @@ pub fn reserve_pending_records() -> Result<Option<TerminalRecordReservation>, St
     }))
 }
 
-/// Declare exactly which of the reserved records a commit will remove, as
-/// indices into the slice the reservation handed over.
-///
-/// The publisher judges every reserved record and names the ones it decided.
-/// The declaration is deliberately NOT a prefix. Queue order is capture order,
-/// which is not the same as the order the combats leave the roster, so a record
-/// whose one publishable frame is still ahead can sit in front of one whose
-/// frame is NOW. Letting the undecided record block its successor would spend
-/// that successor's only opportunity -- the head-of-line defect in a different
-/// costume.
-///
-/// Fails closed: the indices must be strictly increasing and inside the
-/// reserved range, and a reservation may be declared only once, so a publisher
-/// can never consume a record it did not judge. Undeclared records keep their
-/// places and their relative order.
 pub fn declare_record_reservation_consumption(
     reservation_id: u64,
     consumed: &[usize],
@@ -1936,9 +1739,6 @@ pub fn declare_record_reservation_consumption(
     Ok(())
 }
 
-/// Commit the exact active reservation after its projected rows have been
-/// durably published. Exactly the declared records are removed; every other
-/// reserved record keeps its place and its relative order.
 pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record commit")?;
     let mut state = STATE
@@ -1963,9 +1763,6 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
         );
     }
     validate_reserved_diagnostics(active, reservation_id)?;
-    // Fail closed on an undeclared commit rather than guessing. Consuming
-    // everything would destroy records the publisher never judged, and
-    // consuming nothing would silently stop the queue draining.
     match state.reserved_custody.as_ref() {
         Some(custody) if custody.reservation_id != reservation_id => {
             return Err("terminal hook reservation commit custody id mismatch".into())
@@ -1976,13 +1773,6 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
         Some(_) => {}
         None => return Err("terminal hook reservation commit has no record custody".into()),
     }
-    // An index is not on its own evidence that it still names the record the
-    // reservation handed over, so re-check every reserved position by identity
-    // before removing anything. If the queue moved under the reservation, a
-    // declared index could otherwise remove a record the publisher never
-    // judged. No production path moves it today -- a full queue drops the
-    // incoming record while a reservation is held, and requeue refuses one
-    // outright -- so this makes that a proof rather than an assumption.
     let custody = state
         .reserved_custody
         .as_ref()
@@ -2003,7 +1793,6 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
         .take()
         .and_then(|custody| custody.consumed)
         .expect("declared consumption was just matched");
-    // Highest index first so the lower ones stay valid as the queue shrinks.
     for index in consumed.iter().rev() {
         state.records.remove(*index);
     }
@@ -2012,8 +1801,6 @@ pub fn commit_record_reservation(reservation_id: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Roll back a failed publication. Every reserved record remains in place and
-/// will be offered again before every record appended while it was reserved.
 pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record rollback")?;
     let mut state = STATE
@@ -2041,21 +1828,7 @@ pub fn rollback_record_reservation(reservation_id: u64) -> Result<(), String> {
 }
 
 /// Release a reservation whose frame was rejected by its own drop diagnostics,
-/// consuming the diagnostic snapshot but leaving every reserved record queued.
-///
-/// This is the disposition for "the frame counted a drop, and it consumed none
-/// of the reserved records". The drop counters are cumulative and only a
-/// consuming transition subtracts them, so a frame that reported a drop must
-/// consume that snapshot or every later frame is handed the same non-zero
-/// counters and re-reports them forever. The records are a separate question:
-/// none of them was consumed, so all of them stay queued to be judged by a
-/// later frame. That is a retention, not a guarantee of delivery: once custody
 /// is released, an append into a full queue may still evict the front record,
-/// which is counted as a drop exactly as it is after a rollback.
-///
-/// `commit_record_reservation` is not a substitute: it pops the declared
-/// records. `rollback_record_reservation` is not a substitute: it leaves the
-/// counters.
 pub fn release_record_reservation_diagnostics(reservation_id: u64) -> Result<(), String> {
     let _individual = try_admit_individual_api("terminal record diagnostic release")?;
     let mut state = STATE
@@ -2101,9 +1874,6 @@ pub fn requeue(records: Vec<RawTerminalRecordCapture>) -> Result<(), String> {
     if state.reservation.is_some() {
         return Err("terminal hook requeue refused an active record reservation".into());
     }
-    // These records predate anything appended after the legacy drain. Restore
-    // them at the front, in their original order, rather than allowing newer
-    // callback records to overtake them.
     for record in records.into_iter().rev() {
         if state.records.len() == MAX_PENDING_RECORDS {
             state.records.pop_back();
@@ -2114,37 +1884,10 @@ pub fn requeue(records: Vec<RawTerminalRecordCapture>) -> Result<(), String> {
     Ok(())
 }
 
-/// Why a captured terminal record can never be published.
-///
-/// Every variant is a PROOF, not an expiry. Nothing here is decided by how long
-/// a record has waited.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TerminalRecordUnpublishable {
-    /// The record's epoch is neither ended in this frame nor present in this
-    /// frame's authoritative combat roster.
-    ///
-    /// A terminal record row is only valid in a payload that also carries the
-    /// `EVENT_PHASE_ENDED` row for its epoch, and the transition tracker emits
-    /// that row exactly once -- in the single frame where the epoch leaves the
-    /// roster. An epoch that is absent from both sets has therefore either
-    /// already had its one ended frame, or never entered an observed roster at
-    /// all, so no future frame can carry a legal home for this record.
     EndedPhaseUnreachable,
-    /// The captured bytes failed class/date-vtable or writer/result-byte
-    /// authentication.
-    ///
-    /// [`project_pointer_free_record`] is a pure function of the capture's
-    /// immutable `record_bytes` and `MODULE_BASE`, and `MODULE_BASE` is written
-    /// once per install and cleared only on uninstall, so while the hooks that
-    /// let this record be reserved stay installed the same call returns the
-    /// same refusal on every future frame.
     AuthenticationFailed,
-    /// The record authenticated, its epoch's ended-phase row is in THIS frame,
-    /// and the two disagree about the combat's location.
-    ///
-    /// Both operands are fixed: the row's location comes from the capture's
-    /// immutable bytes, and the ended-phase row is the only one this epoch will
-    /// ever get. This frame was the record's one opportunity and it failed.
     LocationDisagreesWithEndedPhase,
 }
 
@@ -2157,7 +1900,6 @@ impl TerminalRecordUnpublishable {
         }
     }
 
-    /// Stable wire-ish code for the status-origin sample word.
     pub const fn code(self) -> u64 {
         match self {
             Self::EndedPhaseUnreachable => 1,
@@ -2167,31 +1909,13 @@ impl TerminalRecordUnpublishable {
     }
 }
 
-/// The three genuinely different outcomes of judging one captured record
-/// against one frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TerminalRecordVerdict {
-    /// This frame is the record's ended frame and the record authenticated
-    /// against it.
     Publishable(crate::TerminalCombatRecordRow),
-    /// The epoch is still live in this frame's authoritative roster, so its
-    /// ended-phase row is still ahead. Retain and re-judge; this is an ordinary
-    /// one-frame lead, not a failure, and it must not badge the frame.
     EndedPhasePending,
-    /// Proven to have no publishable frame left, ever.
     Unpublishable(TerminalRecordUnpublishable),
 }
 
-/// Decide a captured terminal record against exactly one frame.
-///
-/// `ended_location` is `Some(location)` when this frame's event rows carry the
-/// `EVENT_PHASE_ENDED` row for the capture's epoch (the inner `Option` is that
-/// row's own optional location), and `None` when they do not. `epoch_is_live`
-/// is whether this frame's authoritative combat roster still lists the epoch.
-///
-/// The two inputs are complementary by construction: the tracker builds the
-/// ended set as `previous \ current` and the roster is `current`, so no epoch
-/// is in both.
 pub fn judge_terminal_record(
     capture: &RawTerminalRecordCapture,
     ended_location: Option<Option<u32>>,
@@ -2421,9 +2145,6 @@ fn capture_record(context: WriterContext, record_index: u64, record_ptr: usize) 
         return;
     }
     if state.records.len() == MAX_PENDING_RECORDS {
-        // Never evict the front while a publisher holds its reservation. Drop
-        // the incoming newest record instead, preserving the exact order and
-        // identity promised by the active reservation.
         if state.reservation.is_some() {
             DROPPED_OVERFLOW.fetch_add(1, Ordering::Relaxed);
             return;
@@ -2471,58 +2192,10 @@ fn read_exact_bytes(address: usize, len: usize) -> Result<Vec<u8>, String> {
     Ok(actual)
 }
 
-// ---------------------------------------------------------------------------
 // Process-lifetime detour region retention
-// ---------------------------------------------------------------------------
-//
-// Teardown restores the patched target bytes, then retains the trampoline, the
-// relay and any registered unwind entry for the life of the process. Nothing is
-// freed, so there is nothing to prove quiescent.
-//
-// Why: no cheap evidence exists that no thread is still resident in a detour
-// body, a relay or an unwind path. `d55_nonsuspending_hook_feasibility_a729.json`
-// records that the quiescent boundary is absent from the recovered static
-// evidence, and this policy routes around that absence instead of manufacturing
-// it. Deleting a function-table entry while a thread is unwinding through it is
-// not survivable, and the recorder may not suspend target threads to rule that
-// out. `production_hook_receipt` already ships the same custody decision for its
-// PE64 import-slot route (`retained_until_process_exit: true`).
-//
-// Accepted cost: one small permanent allocation per hook site - a MinHook
-// trampoline slot plus its relay - held until process exit. That is a bounded,
-// deliberate trade, not a leak: the roster is fixed, the allocations are
-// recorded below rather than forgotten, and the process is a game client that
-// exits normally.
-//
-// Consequently `MinHook::remove_hook` must not be called on a retained site: it
-// `FreeBuffer`s the trampoline (minhook-0.9.0 `hook.c` `MH_RemoveHook`), which is
-// exactly the operation this policy forbids. `MinHook::disable_hook` is the
-// permitted step - it restores the original target bytes and frees nothing.
-//
-// WHICH SITES THIS GOVERNS TODAY, exactly - the ten-site D55 roster is NOT yet
-// uniform, and this comment previously read as though it were:
-//
-// * The seven `x2_carriers` sites (two width, two loss, three panel) are
 //   retained. They record their relay and detour ranges here, they release
-//   through `production_hook_receipt`'s retained route with `relay_freed: false`,
-//   and `x2_carriers::require_retained_relay_census` refuses to mint such a
-//   receipt for a region this census does not hold. `MinHook::remove_hook` is
-//   absent from that file and a source-law test keeps it absent.
-//
-// * The three terminal-writer sites owned by THIS module (normal writer,
-//   overrun writer, record allocator) still remove-and-free. `rollback_failed_install`
 //   and the terminal release both call `MinHook::remove_hook`, and
-//   `completed_teardown_attestation` correspondingly attests `relay_freed: true`.
-//   Their record and their behaviour agree, so this is not the receipt
-//   contradiction the seven sites had - but they are NOT covered by the
-//   retention above, and they never enter this census. `rollback_failed_install`
-//   additionally collects `rollback_relays` and then discards the list
-//   (`let _retained_relays = ...`) before removing, so the relays it lists as
-//   retained for rollback custody are the ones it frees moments later.
-//
-// Converting those three is a separate change: their teardown owns a different
 // quiescence path and a `CREATED_HOOK_MASK` that the release gate requires to
-// reach zero, which removal is currently what clears. OPEN.
 
 #[repr(C)]
 struct RuntimeFunctionEntry {
@@ -2546,24 +2219,8 @@ pub(crate) struct RetainedDetourRegion {
     pub(crate) label: String,
     /// Half-open `[start, end)` runtime addresses retained for process lifetime.
     pub(crate) regions: Vec<(usize, usize)>,
-    /// The observed callback counters all read zero, so the roster is closed to
-    /// new entries. This is necessary but NOT sufficient for absence of
-    /// residency - a thread can sit in an out-of-line guard prologue before its
-    /// counter increment, or in an epilogue after its decrement. That gap is
-    /// precisely why the regions below are retained rather than freed.
     pub(crate) callbacks_closed_to_new_entries: bool,
-    /// Always true. Retained because residency cannot be disproven.
     pub(crate) retained_for_process_lifetime: bool,
-    /// The teardown owner token of the receipt roster this retention belongs
-    /// to, when the recording lane had one.
-    ///
-    /// Without this the census is only a record that SOME lifecycle once
-    /// retained a range. Because teardown keeps the MinHook entry, a later
-    /// install adopts the same entry and therefore the same relay address -- so
-    /// an entry recorded by the FIRST teardown would otherwise satisfy a second
-    /// teardown that never ran its own retention step. The token changes on
-    /// every install (`next_teardown_owner_token`), which is what makes the
-    /// check per-teardown rather than per-address.
     pub(crate) teardown_owner_token: Option<u64>,
 }
 
@@ -2573,9 +2230,6 @@ fn retained_detour_regions_slot() -> &'static Mutex<Vec<RetainedDetourRegion>> {
     RETAINED_DETOUR_REGIONS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Every region this process has retained, in retention order. Append-only:
-/// there is deliberately no way to clear it, because a cleared entry would
-/// describe memory that is still reachable by a resident thread.
 pub(crate) fn retained_detour_regions() -> Result<Vec<RetainedDetourRegion>, String> {
     Ok(retained_detour_regions_slot()
         .lock()
@@ -2584,28 +2238,6 @@ pub(crate) fn retained_detour_regions() -> Result<Vec<RetainedDetourRegion>, Str
 }
 
 /// Refuse to attest process-lifetime retention over a region the census does
-/// not record.
-///
-/// This is what stops the census being decorative. Every teardown that mints a
-/// `relay_retained_until_process_exit` receipt must first show that the exact
-/// range it is about to describe was actually pushed here by
-/// [`close_callbacks_and_retain_regions`]. A teardown that skipped the
-/// retention step, or that recorded a different range than the one it attests,
-/// cannot mint the receipt at all.
-///
-/// # What this does not establish
-///
-/// **That the bytes are still mapped.** The census records the decision not to
-/// free them; proving residency of the mapping after teardown needs a live
-/// patched `hoi4.exe` and no offline test can do it. What this closes is the
-/// contradiction the record itself can contain -- a receipt claiming retention
-/// for a region THIS teardown never recorded.
-///
-/// The owner token is what makes that "this teardown" rather than "some
-/// teardown". Retention keeps the MinHook entry alive, so the next install
-/// adopts it and gets the same relay address; matching on the address alone
-/// would let the first lifecycle's census entry answer for a second lifecycle
-/// that skipped its own retention step.
 pub(crate) fn require_regions_recorded_retained(
     label: &str,
     teardown_owner_token: u64,
@@ -2641,22 +2273,7 @@ pub(crate) fn require_regions_recorded_retained(
     Ok(())
 }
 
-/// Exact runtime extent of one function inside this DLL, read from the PE64
-/// exception directory via `RtlLookupFunctionEntry`.
-///
-/// This is the containing runtime-function interval only. It is not a
-/// transitive closure over outlined guard code, inlined-away helpers or
-/// callees, so a set of these ranges under-approximates "everywhere a thread
 /// could be executing our detour code". Under process-lifetime retention that
-/// under-approximation is harmless - the ranges are a diagnostic record of what
-/// is being kept, not a gate on a free.
-///
-/// Fails closed when the address carries no `.pdata` entry. On x64 a true leaf
-/// function - one that allocates no stack and calls nothing - is emitted without
-/// an unwind entry, so this refuses rather than inventing a range. Every detour
-/// this lane passes here is an `extern "system"` callback with a real prologue,
-/// which is the shape that always carries an entry; `x2_carriers`'
-/// `every_production_detour_has_a_resolvable_runtime_range` pins that.
 pub(crate) fn exact_runtime_function_range(
     function: usize,
     label: &str,
@@ -2689,15 +2306,6 @@ pub(crate) fn exact_runtime_function_range(
     Ok((start, end))
 }
 
-/// Close a detour roster to new entries and retain its code regions for the
-/// life of the process.
-///
-/// This deliberately does NOT assert quiescence, and is named accordingly. It
-/// establishes exactly two things: every supplied callback counter reads zero,
-/// so no new callback can be admitted; and the supplied regions are recorded as
-/// retained. Residency is not disproven and is not claimed to be - see the
-/// module comment above for why that proof is unavailable and why retention is
-/// the answer to its absence.
 pub(crate) fn close_callbacks_and_retain_regions(
     label: &str,
     teardown_owner_token: Option<u64>,
@@ -2739,9 +2347,6 @@ pub(crate) fn close_callbacks_and_retain_regions(
     Ok(retained)
 }
 
-/// Serialises tests that drive the process-wide terminal hook statics
-/// (`STATE`, `INSTALLED`, `MODULE_BASE`, the drop counters). They are one
-/// shared resource, and cargo runs the tests in this binary concurrently.
 #[cfg(test)]
 static TERMINAL_HOOK_STATIC_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2749,22 +2354,7 @@ static TERMINAL_HOOK_STATIC_TEST_LOCK: Mutex<()> = Mutex::new(());
 mod terminal_diagnostic_release_tests {
     use super::*;
 
-    /// A frame rejected by its own drop diagnostics must be able to clear those
-    /// diagnostics WITHOUT destroying the record it never projected.
-    ///
-    /// The two pre-existing dispositions each get exactly one of those halves
-    /// wrong. `commit_record_reservation` clears the counters but pops the front
-    /// record -- and since projection is skipped entirely when the diagnostics
-    /// failed, that record was never examined, so popping it destroys a record
-    /// whose matching END row may simply belong to a later frame.
-    /// `rollback_record_reservation` keeps the record but leaves the counters,
-    /// which re-reports the same drop to every later frame and keeps projection
-    /// disabled forever. Neither can be used for this case.
-    ///
     /// FALSIFIABILITY: make `release_record_reservation_diagnostics` pop the
-    /// record the way commit does and the surviving-record assertion fails;
-    /// drop its `subtract_reserved_diagnostics` call the way rollback does and
-    /// the cleared-counter assertion fails.
     #[test]
     fn releasing_poisoned_diagnostics_keeps_the_unprojected_record() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -2784,7 +2374,6 @@ mod terminal_diagnostic_release_tests {
             writer_kind: 0,
             record_bytes: [0u8; TERMINAL_RECORD_LEN],
         });
-        // One unreadable drop, exactly as the live run reported.
         DROPPED_UNREADABLE.store(1, Ordering::Release);
         state.reservation = Some(ActiveTerminalReservation {
             reservation_id: 4_242,
@@ -2834,8 +2423,6 @@ mod terminal_record_verdict_tests {
         record_bytes[0x428..0x430].copy_from_slice(&date_vtable);
         record_bytes[0x438..0x440].copy_from_slice(&date_vtable);
         record_bytes[0x440..0x444].copy_from_slice(&location.to_le_bytes());
-        // The only (writer_kind, result_selector) pairing the projector admits
-        // for a normal writer.
         record_bytes[0x446] = 1;
         RawTerminalRecordCapture {
             combat_id,
@@ -2859,18 +2446,6 @@ mod terminal_record_verdict_tests {
         BaseGuard
     }
 
-    /// "Its ended row has not arrived yet" and "its ended row can never arrive"
-    /// are different facts and the queue depends on telling them apart.
-    ///
-    /// The transition tracker emits `EVENT_PHASE_ENDED` for an epoch exactly
-    /// once -- in the frame where the epoch leaves the roster -- and the payload
-    /// validator only accepts a terminal row alongside that ended row. So while
-    /// the epoch is still listed in the roster its one chance is ahead of it,
-    /// and once it is in neither set its one chance is behind it. Nothing here
-    /// is a timeout.
-    ///
-    /// FALSIFIABILITY: return `Unpublishable` for a live epoch, or
-    /// `EndedPhasePending` for an absent one, and this fails.
     #[test]
     fn a_live_epoch_is_pending_and_an_absent_one_is_proven_unreachable() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -2893,13 +2468,6 @@ mod terminal_record_verdict_tests {
         );
     }
 
-    /// A capture that fails its own class/date/writer authentication is decided,
-    /// not deferred: the bytes are an immutable snapshot and `MODULE_BASE` is
-    /// fixed while the hooks stay installed, so the same call refuses it on
-    /// every future frame.
-    ///
-    /// FALSIFIABILITY: route the projection error to `EndedPhasePending` and
-    /// this fails.
     #[test]
     fn a_capture_that_fails_authentication_is_decided_not_deferred() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -2907,7 +2475,6 @@ mod terminal_record_verdict_tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _base = publish_test_module_base();
         let mut capture = authentic_capture(11, 4, 0, 77);
-        // Break exactly one authenticator: the record class vtable.
         capture.record_bytes[0] ^= 0xFF;
 
         assert_eq!(
@@ -2915,7 +2482,6 @@ mod terminal_record_verdict_tests {
             TerminalRecordVerdict::Unpublishable(TerminalRecordUnpublishable::AuthenticationFailed),
         );
 
-        // ...and the writer/result pairing is the other authenticator.
         let mut capture = authentic_capture(11, 4, 0, 77);
         capture.record_bytes[0x446] = 0;
         assert_eq!(
@@ -2924,11 +2490,6 @@ mod terminal_record_verdict_tests {
         );
     }
 
-    /// The ended row present in this frame is the only one this epoch will ever
-    /// get, so a location disagreement with it is final.
-    ///
-    /// FALSIFIABILITY: drop the location comparison and the disagreeing capture
-    /// becomes `Publishable`.
     #[test]
     fn a_location_disagreement_with_the_only_ended_row_is_final() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -2949,7 +2510,6 @@ mod terminal_record_verdict_tests {
                 TerminalRecordUnpublishable::LocationDisagreesWithEndedPhase
             ),
         );
-        // An ended row that carries no location cannot disagree with one.
         assert!(matches!(
             judge_terminal_record(&capture, Some(None), false),
             TerminalRecordVerdict::Publishable(_)
@@ -3017,18 +2577,6 @@ mod terminal_reservation_consumption_tests {
             .collect()
     }
 
-    /// A record the frame cannot publish must not hide the records behind it.
-    ///
-    /// Each terminal record has exactly ONE frame it may be published in, so a
-    /// front record that keeps being re-offered does not merely delay itself --
-    /// it spends the single opportunity of every record queued behind it. The
-    /// reservation therefore offers the whole queue, and a commit removes
-    /// exactly the leading run the publisher decided.
-    ///
-    /// FALSIFIABILITY: make `reserve_pending_records` offer only
-    /// `state.records.front()` and the second epoch is never seen; make
-    /// `commit_record_reservation` remove one record instead of the declared
-    /// set and the queue is not drained as declared.
     #[test]
     fn the_whole_queue_is_offered_so_a_decided_front_cannot_strand_the_rest() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3055,7 +2603,6 @@ mod terminal_reservation_consumption_tests {
             "reserving must not remove or reorder anything"
         );
 
-        // The publisher decided the first two and could not decide the third.
         declare_record_reservation_consumption(reservation.reservation_id, &[0, 1])
             .expect("declared consumption");
         commit_record_reservation(reservation.reservation_id).expect("commit");
@@ -3066,18 +2613,6 @@ mod terminal_reservation_consumption_tests {
         );
     }
 
-    /// An undecided record must not block the record BEHIND it.
-    ///
-    /// Queue order is capture order, which is not the order the combats leave
-    /// the roster, so the queue can hold [still-live, ends-now]. Each record has
-    /// exactly one frame it may publish in, so making the second wait for the
-    /// first spends the second's only opportunity -- the head-of-line defect
-    /// again, one record further along. The declaration is therefore a set, not
-    /// a prefix.
-    ///
-    /// FALSIFIABILITY: make the declaration reject a set that does not start at
-    /// zero, or make the commit remove a prefix of the same length, and the
-    /// surviving epochs are the wrong ones.
     #[test]
     fn a_record_that_cannot_be_decided_does_not_block_the_one_behind_it() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3088,7 +2623,6 @@ mod terminal_reservation_consumption_tests {
         let reservation = reserve_pending_records()
             .expect("reservation")
             .expect("records are pending");
-        // Only the middle record could be decided; the outer two are still live.
         declare_record_reservation_consumption(reservation.reservation_id, &[1])
             .expect("declared consumption");
         commit_record_reservation(reservation.reservation_id).expect("commit");
@@ -3099,13 +2633,6 @@ mod terminal_reservation_consumption_tests {
         );
     }
 
-    /// A commit with no declaration must fail rather than guess.
-    ///
-    /// Guessing "everything" destroys records the publisher never judged;
-    /// guessing "nothing" silently stops the queue draining. Both are the exact
-    /// failure modes this disposition exists to prevent.
-    ///
-    /// FALSIFIABILITY: default an undeclared commit to either guess.
     #[test]
     fn an_undeclared_commit_is_refused_and_changes_nothing() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3128,18 +2655,7 @@ mod terminal_reservation_consumption_tests {
         rollback_record_reservation(reservation.reservation_id).expect("rollback");
     }
 
-    /// A declaration must not outlive the reservation it belongs to.
-    ///
-    /// Sink failure is the reachable case: the frame declares, the sink fails,
-    /// the reservation rolls back, and the NEXT frame reserves the same records
-    /// again. A surviving declaration would make that frame's own declaration
-    /// refuse as already-declared and its commit refuse on the id mismatch --
-    /// fail-closed, but permanently, which is the absorbing state again.
-    ///
-    /// FALSIFIABILITY: drop the `reserved_custody = None` from
-    /// `rollback_record_reservation` or from
     /// `release_record_reservation_diagnostics` and the retry's declaration is
-    /// refused.
     #[test]
     fn a_declaration_does_not_survive_its_reservation() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3162,7 +2678,6 @@ mod terminal_reservation_consumption_tests {
         assert_eq!(queued_epochs(), vec![(40, 1)]);
 
         // The diagnostic release is the other non-committing disposition and
-        // must clear the declaration the same way.
         DROPPED_UNREADABLE.store(1, Ordering::Release);
         let third = reserve_pending_records()
             .expect("reservation")
@@ -3177,16 +2692,8 @@ mod terminal_reservation_consumption_tests {
         rollback_record_reservation(fourth.reservation_id).expect("rollback");
     }
 
-    /// Reserving refuses a retained declaration rather than clearing it.
-    ///
     /// The dispositions own the declaration's lifetime. One that outlived its
     /// reservation means a disposition failed to release its own state, and
-    /// clearing it here would absorb that silently -- and would also make the
-    /// disposition-side clears untestable, because either half alone keeps the
-    /// observable behaviour identical.
-    ///
-    /// FALSIFIABILITY: replace `require_no_retained_custody` in
-    /// `reserve_pending_records` with a clear and this fails.
     #[test]
     fn reserving_refuses_a_declaration_that_outlived_its_reservation() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3199,7 +2706,6 @@ mod terminal_reservation_consumption_tests {
                 .expect("terminal state")
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            // Exactly the state a disposition that forgot to clear would leave.
             state.reserved_custody = Some(ReservedRecordCustody {
                 reservation_id: 9_999,
                 identities: vec![(50, 1, 0, WRITER_KIND_NORMAL)],
@@ -3222,9 +2728,6 @@ mod terminal_reservation_consumption_tests {
             "the refused reservation must not have taken custody"
         );
 
-        // The sealed constructor is the other reservation entry and must refuse
-        // the same state; it is exercised directly because its public callers
-        // require an installed, quiesced, admission-sealed carrier.
         state.reserved_custody = Some(ReservedRecordCustody {
             reservation_id: 9_999,
             identities: Vec::new(),
@@ -3241,20 +2744,7 @@ mod terminal_reservation_consumption_tests {
         state.reserved_custody = None;
     }
 
-    /// A declared index is not evidence that it still names the record the
-    /// reservation handed over.
-    ///
-    /// If the queue moved under a held reservation, index 1 of [A, B, C] and
-    /// index 1 of [B, C] are different records, and the commit would remove one
-    /// the publisher never judged while keeping the one it decided. Position
-    /// checks alone cannot see that: both indices are in range. No production
-    /// path moves the queue under a reservation today, which is exactly why the
     /// check has to be an identity check rather than a bounds check -- a bounds
-    /// check would be satisfied by the corrupted state.
-    ///
-    /// FALSIFIABILITY: replace the identity comparison in
-    /// `commit_record_reservation` with a `state.records.len()` bound and the
-    /// commit succeeds, removing the wrong record.
     #[test]
     fn a_commit_refuses_when_the_reserved_records_moved_underneath_it() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3268,9 +2758,6 @@ mod terminal_reservation_consumption_tests {
         declare_record_reservation_consumption(reservation.reservation_id, &[1])
             .expect("declare the middle record");
         {
-            // The front record disappears and a new one arrives at the back, so
-            // every declared index is still inside the queue and inside the
-            // reserved count -- and every index now names a different record.
             let mut state = STATE
                 .get()
                 .expect("terminal state")
@@ -3298,15 +2785,6 @@ mod terminal_reservation_consumption_tests {
         rollback_record_reservation(reservation.reservation_id).expect("rollback");
     }
 
-    /// The declaration cannot reach past what was reserved, cannot repeat, and
-    /// is exactly what the commit removes.
-    ///
-    /// Reaching past the reservation would consume records the publisher never
-    /// saw; redeclaring would let a second, wider claim replace a narrow one.
-    ///
-    /// FALSIFIABILITY: drop the range check, drop the canonical-order check,
-    /// drop the already-declared refusal, or make the commit remove
-    /// `record_count` records instead of the declared ones.
     #[test]
     fn the_declaration_is_bounded_single_shot_and_exactly_what_the_commit_removes() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3338,11 +2816,6 @@ mod terminal_reservation_consumption_tests {
         );
     }
 
-    /// A rollback returns every reserved record, in order, and a frame that
-    /// decided nothing consumes nothing.
-    ///
-    /// FALSIFIABILITY: make `rollback_record_reservation` drop the reserved
-    /// prefix and this fails.
     #[test]
     fn a_rollback_returns_every_reserved_record_in_order() {
         let _serial = TERMINAL_HOOK_STATIC_TEST_LOCK
@@ -3376,14 +2849,6 @@ mod terminal_reservation_consumption_tests {
 mod minhook_relay_layout_tests {
     use super::MINHOOK_RELAY_LEN;
 
-    /// Falsifiable: this fails if `MINHOOK_RELAY_LEN` is ever changed away from
-    /// the stub layout the live-relay verifiers actually parse. Both
-    /// `verify_live_minhook_rel5` and `x2_carriers::observe_live_relay` read
-    /// `MINHOOK_RELAY_LEN` bytes and then index `stub[..6]` for the `FF 25`
-    /// RIP-relative prefix and `stub[6..14]` for the absolute destination, so a
-    /// smaller value panics those slices at runtime and a larger one makes
-    /// `x2_carriers::receipt_relay_ranges` census a relay extent wider than the
-    /// stub, over-reporting the quiescence range.
     #[test]
     fn relay_len_covers_exactly_the_ff25_prefix_and_its_absolute_destination() {
         const FF25_RIP_INDIRECT_PREFIX_LEN: usize = 6;
@@ -3403,10 +2868,6 @@ mod retained_detour_region_tests {
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Deliberately non-leaf: it allocates a stack buffer and makes an opaque
-    /// call, so the compiler must emit a prologue and therefore a `.pdata`
-    /// unwind entry. A leaf function would have no entry at all, which is the
-    /// case `exact_runtime_function_range` refuses.
     #[inline(never)]
     fn sample_non_leaf_function_in_this_image(seed: usize) -> usize {
         let mut buffer = [0usize; 8];
@@ -3417,13 +2878,6 @@ mod retained_detour_region_tests {
             + std::hint::black_box(buffer).len()
     }
 
-    /// Falsifiable: fails if `exact_runtime_function_range` stops converting the
-    /// image-relative `begin_address`/`end_address` from the PE64 exception
-    /// directory into absolute runtime addresses - for example if the
-    /// `image_base` addition is dropped, or if `begin`/`end` are swapped. Either
-    /// change yields a range that does not contain the queried address, which is
-    /// the containment invariant every caller relies on when it pushes the range
-    /// into the retained-region record.
     #[test]
     fn runtime_function_range_is_absolute_and_contains_the_queried_address() {
         let function = sample_non_leaf_function_in_this_image as usize;
@@ -3434,14 +2888,9 @@ mod retained_detour_region_tests {
             (start..end).contains(&function),
             "0x{function:X} must lie inside 0x{start:X}..0x{end:X}"
         );
-        // An image-relative range would be far below any real load address.
         assert!(start > 0x1_0000, "range must be absolute, got 0x{start:X}");
     }
 
-    /// Falsifiable: fails if the non-zero callback-counter check is removed or
-    /// weakened. Retention is only honest if the roster is genuinely closed to
-    /// new entries at the moment it is recorded; a build that recorded retention
-    /// while callbacks were still being admitted would return `Ok` here.
     #[test]
     fn retention_is_refused_while_callbacks_are_still_admitted() {
         static BUSY: AtomicUsize = AtomicUsize::new(0);
@@ -3457,11 +2906,6 @@ mod retained_detour_region_tests {
         assert!(error.contains('3'), "{error}");
     }
 
-    /// Falsifiable: fails if the function stops recording retention into the
-    /// append-only registry, or if it ever reports a region as freed rather than
-    /// retained. A build that reintroduced a free path - for instance by calling
-    /// `MinHook::remove_hook` and clearing the registry - would not leave this
-    /// entry behind for inspection.
     #[test]
     fn closed_roster_is_recorded_as_retained_for_process_lifetime() {
         static IDLE: AtomicUsize = AtomicUsize::new(0);
@@ -3483,21 +2927,10 @@ mod retained_detour_region_tests {
         );
     }
 
-    /// Falsifiable: fails if `require_regions_recorded_retained` stops consulting
-    /// the census -- for instance if it were reduced to `Ok(())`, or if it
-    /// matched an entry loosely (by containment, or ignoring
     /// `retained_for_process_lifetime`) instead of on the exact recorded range.
-    ///
-    /// This is the check that makes the census load-bearing: the teardown paths
-    /// in `x2_carriers` call it for every relay they are about to attest as
-    /// retained, so a teardown that skipped its
-    /// `close_*_detours_and_retain_regions` step can no longer mint a
-    /// retained-relay receipt.
     #[test]
     fn attesting_retention_requires_the_census_to_record_that_exact_region() {
         static IDLE: AtomicUsize = AtomicUsize::new(0);
-        // Distinctive addresses: the census is process-global and append-only,
-        // so these must not collide with any other test's regions.
         let recorded = (0x5100_0000usize, 0x5100_0040usize);
         let never_recorded = (0x5200_0000usize, 0x5200_0040usize);
         const OWNER: u64 = 0x5100;
@@ -3516,11 +2949,6 @@ mod retained_detour_region_tests {
         require_regions_recorded_retained("census probe", OWNER, &[recorded])
             .expect("the census now records this exact region");
 
-        // THE ADOPTION CASE. Teardown keeps the MinHook entry, so the next
-        // install adopts it and sees the SAME relay address. A census entry from
-        // the previous lifecycle must not answer for this one: without the owner
-        // token, a teardown that skipped its own retention step would be handed
-        // the earlier teardown's evidence and mint a receipt on it.
         let error = require_regions_recorded_retained("census probe", OWNER + 1, &[recorded])
             .expect_err("another lifecycle's retention must not answer for this one");
         assert!(
@@ -3536,22 +2964,13 @@ mod retained_detour_region_tests {
             "{error}"
         );
 
-        // A neighbouring range that the census does NOT hold is refused even
-        // though a recorded region overlaps it: retention is recorded per exact
-        // range, and a loose match would let a teardown attest more than was kept.
         let overlapping = (recorded.0, recorded.1 + 0x10);
         require_regions_recorded_retained("census probe", OWNER, &[overlapping])
             .expect_err("only the exact recorded range may be attested");
 
-        // An empty attestation is not a vacuous success.
         require_regions_recorded_retained("census probe", OWNER, &[])
             .expect_err("attesting retention over nothing must be refused");
 
-        // A census entry that records the range but does NOT claim retention
-        // must not satisfy a retention attestation. This can only be reached by
-        // writing the registry directly, because close_callbacks_and_retain_regions
-        // always records true -- which is exactly why the check on that field
-        // would otherwise be untestable, and therefore deletable, dead weight.
         let recorded_but_not_retained = (0x5400_0000usize, 0x5400_0040usize);
         retained_detour_regions_slot()
             .lock()

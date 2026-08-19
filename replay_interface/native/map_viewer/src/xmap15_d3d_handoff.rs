@@ -1,9 +1,3 @@
-//! Native XMAP15 orders/fronts/movement-arrow handoff.
-//!
-//! This is the product consumer for the state-first XMAP15 frame. Plan meshes
-//! are rebuilt with the recovered exact-a729 map-arrow builder and effective
-//! heightmap. Movement meshes and their non-camera CB1 values are copied from
-//! the unconditional producer boundary. No recorded draw is replayed.
 
 use crate::{GameFileResolver, PreparedXmap15Frame, Result};
 use portable_render_stream::{Xmap15PlanKey, Xmap15PreparedRow};
@@ -174,9 +168,6 @@ mod native {
     }
 
     impl NativeXmap15Handoff {
-        /// Build exact native resources for one authenticated current-hour
-        /// frame. The product runtime retains this object until the frame hash
-        /// changes, so playback does not recompile within a stable hour.
         pub unsafe fn create_on_device(
             device: *mut ID3D11Device,
             resolver: &GameFileResolver,
@@ -586,8 +577,6 @@ mod native {
         }
     }
 
-    // The native compiler may only consume source files that the prepared
-    // frame admitted into its exact effective-VFS content closure.
     fn verify_shader_closure(
         resolver: &GameFileResolver,
         frame: &PreparedXmap15Frame,

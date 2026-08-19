@@ -60,40 +60,10 @@ WITNESS_FILE = "passive_speed5_witness.jsonl"
 READY_RECEIPT_FILE = "CAPTURE_READY_V2.json"
 PASSIVE_INTERVALS_FILE = "PASSIVE_CLOCK_INTERVALS_V2.json"
 
-# The graded-window phases that measure the game WHILE the collector is
-# attached. `pre_attach` precedes injection and `post_teardown` follows the hook
 # release, so both would quietly dilute the numerator toward the baseline;
-# `ready_wait` and `ready_validated` straddle injection itself, where hooks are
-# being installed and the rate is neither one thing nor the other.
 WITH_COLLECTOR_PHASES = ("capture",)
 
-# THE ONLY ANCHOR THAT CAN BE PROVED to precede the collector's dwell clock.
-#
-# The recorder starts its own `duration_ms` deadline when its capture worker
-# begins, inside the injected DLL, BEFORE the READY/ACK exchange and before the
-# harness observes anything about the attach. So no witness sample taken after
-# the recorder was launched is provably earlier than that clock -- not
-# `ready_validated`, not `ready_wait`, and not `attach_started`, because the
-# child is already running when the harness takes that bracket and nothing stops
-# the DLL from reaching its worker first (Codex gate findings, rounds 1 and 2).
-# Anchoring on any of them can push the window's END past the real detach and
-# re-admit exactly the post-detach samples this bound exists to remove.
-#
-# The settle control is on the other side of that line. Its samples are taken
-# with no collector attached and before the recorder process is launched at all,
-# so the LAST of them is an instant that provably precedes the dwell clock, and
-# `last_settle + duration_ms` provably precedes the real detach. The window can
-# then only END EARLY: its error costs attached samples and can never admit
-# detached ones.
-#
-# It costs almost nothing. Across the live_unlock runs the gap between the last
-# settle sample and the attach observation is 1.3-1.5 s of a 60 s dwell, and the
-# settle-anchored window keeps 6-7 capture samples where an attach-anchored one
-# keeps 5-6.
 ATTACH_ANCHOR_SOURCE = "settle_no_collector"
-# Used only when the settle control is absent -- a run that failed before it, or
-# an older layout. None of these is sound, so a window anchored on one is
-# reported as unsound and raises a problem; it is still better than no bound.
 ATTACH_START_PHASE_FALLBACKS = ("attach_started", "ready_wait", "ready_validated")
 
 
@@ -161,9 +131,6 @@ def attach_window(run_dir, witness_rows, settle_rows):
                 "taken after the collector detached"
             ),
         }
-    # THE SOUND ANCHOR FIRST: the LAST settle sample, `max`, because it is the
-    # latest instant that is still provably before the recorder existed, so it
-    # is the largest sound window available.
     settle_stamps = [
         row.get("observed_at_unix_ms")
         for row in settle_rows
@@ -179,10 +146,6 @@ def attach_window(run_dir, witness_rows, settle_rows):
         anchor_is_sound = True
     else:
         for phase in ATTACH_START_PHASE_FALLBACKS:
-            # The EARLIEST sample of the earliest available phase: `min`, not
-            # `max`. A later sample of the same phase sits further from the
-            # recorder's clock start in the direction that admits detached
-            # samples, and these anchors are already unsound in that direction.
             stamps = [
                 row.get("observed_at_unix_ms")
                 for row in witness_rows
@@ -259,8 +222,6 @@ def read_jsonl(path):
         return [], []
     rows = []
     problems = []
-    # utf-8-sig: PowerShell's Add-Content -Encoding UTF8 writes a BOM on the
-    # first line under Windows PowerShell 5.1.
     with open(path, encoding="utf-8-sig") as handle:
         raw_lines = handle.readlines()
     terminated = (not raw_lines) or raw_lines[-1].endswith("\n")
@@ -371,10 +332,6 @@ def span_aggregate(rows, label):
     wall_ms = 0
     cpu_ms = 0
     for first, second in zip(rows, rows[1:]):
-        # SAME PROCESS INCARNATION, not merely the same pid. A pid is reused,
-        # and both rows carry the creation FILETIME that tells two incarnations
-        # apart; comparing only the pid would fold a relaunched game's counters
-        # into the same rate (Codex gate finding, round 1).
         if first.get("pid") != second.get("pid"):
             dropped += 1
             continue
@@ -385,11 +342,6 @@ def span_aggregate(rows, label):
         if paused_in_sample(first) or paused_in_sample(second):
             dropped += 1
             continue
-        # EVERY FIELD PRESENT ON BOTH ROWS, or the segment is not a
-        # measurement. Coercing a missing counter to zero manufactures numbers:
-        # two absent CPU readings become an accepted "this hour cost no CPU",
-        # and one absent reading followed by a real one becomes a delta the size
-        # of the whole counter (Codex gate finding, round 1).
         fields = ("hour_a", "observed_at_unix_ms", "processor_milliseconds")
         if any(not isinstance(row.get(field), int)
                for row in (first, second) for field in fields):
@@ -400,11 +352,6 @@ def span_aggregate(rows, label):
                       - first["observed_at_unix_ms"])
         delta_cpu = (second["processor_milliseconds"]
                      - first["processor_milliseconds"])
-        # A non-advancing or backwards segment is not a rate. The hour counter
-        # is monotonic within a session, the wall clock is taken by one
-        # observer, and CPU time is cumulative, so any of these going backwards
-        # means the two rows are not a pair (a reload, a different process) and
-        # counting it would corrupt both terms.
         if delta_hours <= 0 or delta_wall <= 0 or delta_cpu < 0:
             dropped += 1
             continue
@@ -421,9 +368,6 @@ def span_aggregate(rows, label):
         "target_cpu_ms": cpu_ms,
         "hours_per_second": (hours * 1000.0 / wall_ms) if wall_ms > 0 else None,
         "cpu_ms_per_game_hour": (cpu_ms / hours) if hours > 0 else None,
-        # Mean number of logical cores the TARGET process kept busy. Read with
-        # the machine's core count beside it: the same collector is free on a
-        # box the game leaves idle and is not on one it already fills.
         "target_cpu_cores": (cpu_ms / wall_ms) if wall_ms > 0 else None,
     }
 
@@ -555,26 +499,12 @@ def summarize(run_dir):
             "capture-phase sample inside the collector's attach window"
         )
     if not window["bounded"] and window["samples_labelled"] > 0:
-        # NOT a soft note. An unbounded numerator is the exact defect that
-        # published t26 at 7.17 h/s, and a run that cannot be bounded has to
-        # say so where the exit code carries it, not in a field a reader may
-        # never open.
-        #
-        # Conditioned on there being something to bound. A run that produced no
-        # capture-labelled sample at all -- an attempt refused before the
-        # graded window, which is a normal outcome -- has no sample that could
-        # be misattributed, and reporting an unbounded window there would fire
-        # this on every refusal and teach a reader to ignore it.
         problems.append(
             "the with-collector rate is NOT bounded to the collector's attach "
             f"window: {window['reason']}"
         )
     if (window["bounded"] and not window["anchor_is_sound"]
             and window["samples_labelled"] > 0):
-        # Bounded, but on an anchor that cannot be proved to precede the
-        # recorder's own dwell clock -- so the window may end LATE and re-admit
-        # post-detach samples. That is the original defect in miniature, and it
-        # must not hide behind `bounded=true`.
         problems.append(
             "the attach window is anchored on "
             f"{window['start_source']}, which is taken after the recorder was "
@@ -583,16 +513,6 @@ def summarize(run_dir):
             "may still include post-detach samples"
         )
     if pause_ms and with_collector_span["segments"] > 0:
-        # WHAT THIS DOES AND DOES NOT SAY. It says the run demonstrably paused,
-        # which makes it a run in which pausing happens rather than one where
-        # the question is hypothetical. It does NOT say a pause fell in a gap:
-        # the detected pause may lie entirely inside brackets that
-        # `span_aggregate` already dropped, and nothing in the run can decide
-        # that either way (Codex gate finding, round 3). So the message reports
-        # the demonstrated pause and the exposure it was measured against, and
-        # says the span term is not RELIABLE here -- not that it is wrong, and
-        # not by how much. The exposure figure alone is never a problem: it is
-        # nonzero on every healthy run.
         exposure = (
             f"{unobserved_ms} ms" if isinstance(unobserved_ms, int) else "an unknown amount"
         )
@@ -645,9 +565,6 @@ def render(summary):
         f"excluded_paused={with_collector['samples_excluded_paused']} "
         f"game_hours={with_collector['game_hours']} "
         f"observed_window_ms={with_collector['observed_window_ms']}",
-        # The truncation is never silent: how many capture-labelled samples
-        # this run took, and how many of them the attach bound threw out, on
-        # the same transcript line as the rate they would otherwise have moved.
         "phase=clock_baseline_attach_window "
         f"bounded={str(summary['attach_window']['bounded']).lower()} "
         f"samples_labelled={summary['attach_window']['samples_labelled']} "
@@ -655,9 +572,6 @@ def render(summary):
         f"requested_duration_ms={summary['attach_window'].get('requested_duration_ms', 'unknown')} "
         f"anchor={summary['attach_window'].get('start_source', 'none')} "
         f"anchor_is_sound={str(summary['attach_window']['anchor_is_sound']).lower()}",
-        # The span terms, which cover the whole window rather than the sample
-        # brackets, and the CPU the target burned while doing it. These are the
-        # two numbers a perf change is judged on.
         "phase=clock_baseline_span "
         f"free_run_hours_per_second={quote(summary['free_run_span']['hours_per_second'])} "
         f"with_collector_hours_per_second={quote(summary['with_collector_span']['hours_per_second'])} "
@@ -693,17 +607,8 @@ def main(argv=None):
     sys.stdout.write(render(summary) + "\n")
 
     if not args.no_receipt:
-        # Best effort. The summary already went to the transcript, and a run
-        # directory that cannot be written to must not turn reporting into a
-        # failure.
         receipt = os.path.join(args.run_dir, RECEIPT_NAME)
         try:
-            # "x", NOT "w". A run directory is evidence: once a capture has
-            # published its receipt, re-running this tool over the same run must
-            # not silently replace the number that run was judged on. Truncating
-            # mode made `clock_baseline_summary.py --run-dir runs/live_unlock/t22`
-            # -- an ordinary read of an old run -- an overwrite of that run's
-            # receipt.
             with open(receipt, "x", encoding="utf-8") as handle:
                 json.dump(summary, handle, indent=2, sort_keys=True)
         except FileExistsError:

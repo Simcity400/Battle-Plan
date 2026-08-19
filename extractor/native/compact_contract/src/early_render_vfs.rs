@@ -1,7 +1,3 @@
-//! Typed, bounded H4CT transfer for the effective-VFS winner index used by
-//! suspended-launch rendering capture. The transport carries authority only;
-//! portable replay output still retains only rows proven used by captured work.
-
 use crate::control_transport::CONTROL_MAX_PAYLOAD_LEN;
 
 const VERSION: u16 = 1;
@@ -328,7 +324,6 @@ pub fn decode_early_render_vfs_winner_row(
     if at != bytes.len() {
         return Err(EarlyRenderVfsCodecError::Length);
     }
-    // Re-encoding applies every scalar and string invariant.
     if encode_early_render_vfs_winner_row(&row)? != bytes {
         return Err(EarlyRenderVfsCodecError::InvalidField);
     }

@@ -26,9 +26,9 @@ REPO = LANE.parents[3]
 sys.path.insert(0, str(LANE))
 sys.path.insert(0, str(REPO / "extractor" / "memory_reader"))
 
-import winmem  # noqa: E402
+import winmem
 
-from a729_layout import (  # noqa: E402
+from a729_layout import (
     COUNTRY_PROD_MANAGER,
     COUNTRY_TAG,
     COUNTRY_TEMPLATES_COUNT,
@@ -56,16 +56,6 @@ GS_COUNTRY_TABLE = 0x310
 GS_COUNTRY_COUNT = 0x31C
 GS_CURRENT_DATE = 0x468
 DATE_EPOCH_CONST = 43_799_999
-# A COUNT budget, not an identity ceiling. `2048` was a guess at the
-# vanilla-plus-DLC country count (vanilla defines 439 tags), and this file is a
-# PRODUCTION producer that `recorder_host` launches and waits 30 s on for
-# readiness -- so on an overhaul above the guess it raised, and recording never
-# started at all.
-#
-# 65_536 is the tree's country-table budget: a slot is one 8-byte pointer, so the
-# registry bulk read below is 512 KB at the ceiling, and it is 149x the vanilla
-# count. Both use sites bound a count before a read or a loop, and neither is an
-# id, so neither takes the structural id ceiling.
 MAX_COUNTRIES = 65536
 MAX_VECTOR = 100_000
 HEAP_LO = 0x10000000000
@@ -218,8 +208,6 @@ def _catalog_objects(p, vtable_rva: int, object_type: int, label: str) -> list[t
             raise RuntimeError(f"{label}: stable ID {object_id} has multiple live pointers")
     if not by_id:
         raise RuntimeError(f"{label}: empty heap catalog")
-    # Heap address is deliberately not replay/UI order.  It is retained only
-    # as a deterministic scan epoch ordinal and same-snapshot identity.
     return [(object_id, by_id[object_id]) for object_id in sorted(by_id, key=lambda value: by_id[value])]
 
 
@@ -240,9 +228,6 @@ def _tag_map(p) -> dict[int, str]:
     if not _heap(database):
         raise RuntimeError("country database root is invalid")
     table = p.u64(database)
-    # Packed header: low u32 is capacity, high u32 is logical size.  Entry zero
-    # is the engine's --- sentinel.  Dynamic tags are allocated immediately
-    # after this immutable table as D01, D02, ... in raw-ID order.
     capacity = p.u32(database + 8)
     count = p.u32(database + 0x0C)
     if not _heap(table) or not (1 <= count <= MAX_COUNTRIES):
@@ -441,8 +426,6 @@ def _template_definition(p, pointer: int, template_id: int) -> dict:
         max(1, p.u32(pointer + TEMPLATE_SUPPORT_COUNT)),
         f"template {template_id} support",
     )
-    # One pointer slot per regiment column.  Empty columns contain the engine's
-    # placeholder object; populated slots are exact subunit definitions at y=0.
     regimental_support, regimental_support_placeholders = _subunit_rows(
         p,
         p.u64(pointer + TEMPLATE_REGIMENTAL_SUPPORT_DATA),
@@ -612,11 +595,6 @@ def capture(p) -> dict:
             }
         )
 
-    # A stable vector header alone does not make a multi-second heap sweep one
-    # coherent observation. Re-read every membership root and every exact
-    # semantic field after the first projection, then repeat both vtable
-    # censuses. Any create/edit/rename/obsolete/delete or owner/order mutation
-    # during the sweep rejects the entire capture.
     if p.u32(game_state + GS_CURRENT_DATE) != current_date_raw:
         raise RuntimeError("A27 catalog crossed a game-hour boundary")
     if tags != _tag_map(p):
@@ -920,9 +898,6 @@ def main(argv=None) -> int:
         )
         return 0
 
-    # Read the same-tick oracle only after the process capture is frozen.  This
-    # makes it mechanically impossible for save-derived values to populate the
-    # native snapshot.
     oracle = json.loads(args.oracle.read_text(encoding="utf-8"))
     report = compare(snapshot, oracle)
     args.report_out.parent.mkdir(parents=True, exist_ok=True)

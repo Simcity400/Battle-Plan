@@ -1,31 +1,18 @@
-//! Per-attempt payload staging with a unique DLL path.
-//!
-//! Every attach attempt copies the packaged collector DLL into a fresh,
-//! never-before-used directory. A live incident proved that reusing a DLL path
-//! already hooked into a running game crashes the game; unique per-attempt
-//! directories fixed it. The staged copy's SHA-256 is verified
-//! against the source; a mismatch fails closed.
-
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs::OpenOptions, io::Write};
 
-use snapshot::sha256::{to_hex, Sha256};
 use serde::Deserialize;
+use snapshot::sha256::{to_hex, Sha256};
 
 use super::identity::ProcessKey;
 use super::sources::{PayloadStager, StagedPayload};
 
 /// Process-global monotonic counter making generated ids unique even within the
-/// same millisecond.
 static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Generate a collision-resistant attempt id from (instance, pid, filetime,
-/// wall-ms, counter). Not a security token — just a never-repeating directory /
-/// pipe discriminator.
 pub fn generate_attempt_id(instance_id: &str, key: ProcessKey, now_ms: u64) -> String {
     let n = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    // Hash the composite so the id is fixed-width and filesystem-safe.
     let mut h = Sha256::new();
     h.update(instance_id.as_bytes());
     h.update(&key.pid.to_le_bytes());
@@ -36,9 +23,6 @@ pub fn generate_attempt_id(instance_id: &str, key: ProcessKey, now_ms: u64) -> S
     hex[..24].to_string()
 }
 
-/// Generate a random-ish pipe token (directory-unique discriminator) and return
-/// (raw_token, sha256_hex). The raw token is used to name the pipe; only the
-/// hash is ever journalled.
 pub fn generate_secret_128() -> Result<[u8; 16], String> {
     #[cfg(windows)]
     {
@@ -174,8 +158,7 @@ fn validate_identity_commitment(
             .dll_sha256
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        || expected_dll_sha256
-            .is_some_and(|expected| commitment.dll_sha256 != expected)
+        || expected_dll_sha256.is_some_and(|expected| commitment.dll_sha256 != expected)
         || commitment.pipe_token_hash.len() != 64
         || !commitment
             .pipe_token_hash
@@ -206,7 +189,10 @@ fn has_retired_identity_commitment(
         .map_err(|error| format!("enumerate identity commitments {}: {error}", root.display()))?
     {
         let entry = entry.map_err(|error| {
-            format!("enumerate identity commitment entry {}: {error}", root.display())
+            format!(
+                "enumerate identity commitment entry {}: {error}",
+                root.display()
+            )
         })?;
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
@@ -248,8 +234,6 @@ fn has_retired_identity_commitment(
     Ok(found)
 }
 
-/// Filesystem-backed stager. Copies `source_dll` into a fresh directory under
-/// `staging_root` per attempt.
 pub struct FsPayloadStager {
     source_dll: PathBuf,
     staging_root: PathBuf,
@@ -279,11 +263,6 @@ impl PayloadStager for FsPayloadStager {
             .strip_prefix("attempt_")
             .filter(|value| !value.is_empty())
             .ok_or("prior staged DLL directory is not an attempt directory")?;
-        // Capture cleanup may remove the completed attempt directory after the
-        // collector has been proven absent from the retained process. The
-        // durable identity commitment, not disposable staged payload bytes, is
-        // the generation authority in that case. If the old DLL still exists,
-        // retain the stronger byte-for-byte hash cross-check.
         let expected_dll_sha256 = prior_dll_path
             .is_file()
             .then(|| hash_file(prior_dll_path))
@@ -306,12 +285,7 @@ impl PayloadStager for FsPayloadStager {
             )?;
             return Ok(());
         }
-        validate_identity_commitment(
-            &active,
-            key,
-            attempt_id,
-            expected_dll_sha256.as_deref(),
-        )?;
+        validate_identity_commitment(&active, key, attempt_id, expected_dll_sha256.as_deref())?;
         std::fs::rename(&active, &retired).map_err(|error| {
             format!(
                 "retire proven-unloaded identity commitment {} -> {}: {error}",
@@ -331,8 +305,6 @@ impl PayloadStager for FsPayloadStager {
         std::fs::create_dir_all(&self.staging_root)
             .map_err(|e| format!("create staging root {}: {e}", self.staging_root.display()))?;
         let staging_dir = self.staging_root.join(format!("attempt_{attempt_id}"));
-        // A fresh directory per attempt: creation MUST fail if it already
-        // exists so an attempt can never reuse a staging destination.
         std::fs::create_dir(&staging_dir).map_err(|e| {
             format!(
                 "staging dir {} already exists or cannot be created: {e}",
@@ -345,7 +317,6 @@ impl PayloadStager for FsPayloadStager {
             .map_err(|e| format!("copy collector dll: {e}"))?;
         let dll_sha256 = hash_file(&dll_path)?;
         if dll_sha256 != source_sha256 {
-            // Corrupt copy — remove and fail closed.
             let _ = std::fs::remove_dir_all(&staging_dir);
             return Err(format!(
                 "staged dll hash {dll_sha256} != source {source_sha256}"
@@ -354,11 +325,6 @@ impl PayloadStager for FsPayloadStager {
         let identity_commitment_root = self.staging_root.join("identity_commitments");
         let rearmed_after_proven_unload =
             has_retired_identity_commitment(&identity_commitment_root, key)?;
-        // This durable create-new marker is independent of both journal files.
-        // Once staged bytes could be authorized for a process identity, no
-        // rewritten/rolled-back journal can authorize another attempt for that
-        // same retained PID+FILETIME. Any uncertainty is a permanent refusal for
-        // that process, never a retry.
         if let Err(error) = persist_identity_commitment(
             &self.staging_root,
             key,
@@ -401,7 +367,6 @@ mod tests {
 
     #[test]
     fn attempt_ids_unique_even_same_inputs() {
-        // Same (instance, key, now) still differ thanks to the counter.
         let key = ProcessKey::new(1, 2);
         let a = generate_attempt_id("c", key, 5);
         let b = generate_attempt_id("c", key, 5);
@@ -463,8 +428,6 @@ mod tests {
         stager
             .rearm_after_proven_unload(key, &first.dll_path)
             .unwrap();
-        // Crash-idempotent: the active marker is already retired, but the exact
-        // retired generation still validates.
         stager
             .rearm_after_proven_unload(key, &first.dll_path)
             .unwrap();
@@ -492,10 +455,6 @@ mod tests {
             .stage(key, "first", "token-a", &"ab".repeat(32))
             .unwrap();
 
-        // Completed capture data and its staged DLL are disposable. The
-        // process-identity commitment remains durable so a recorder-only
-        // restart can retire the proven-unloaded generation without depending
-        // on deleted payload bytes.
         portable_test_fs_retry::remove_dir_all(&first.staging_dir).unwrap();
         assert!(!first.dll_path.exists());
         stager
@@ -524,7 +483,6 @@ mod tests {
         let stager = FsPayloadStager::new(src.clone(), stage_root.clone(), 1);
         let key = ProcessKey::new(1, 1);
         stager.stage(key, "same", "token", "token-hash").unwrap();
-        // Second stage with the SAME attempt id must fail closed (dir exists).
         let err = stager
             .stage(key, "same", "token", "token-hash")
             .unwrap_err();

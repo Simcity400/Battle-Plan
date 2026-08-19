@@ -1,11 +1,3 @@
-//! Exact-a729 A31 owner/item producer boundary.
-//!
-//! This module freezes the double-read and transient-join contract proved by
-//! the exact20 owner export. It intentionally installs no hooks yet: the live
-//! fixture gate in `compact_contract::national_focus_presentation` is false.
-//! All addresses below are process-local evidence and are removed before the
-//! returned pointer-free snapshot can enter compact domain 89.
-
 use compact_contract::national_focus_presentation::{
     valid_focus_id, validate_semantic_snapshot, ExactNationalFocusPresentationSource,
     FocusPresentationItem, Snapshot, EXACT20_FUNCTION_MANIFEST_SHA256,
@@ -57,8 +49,6 @@ pub struct ProcessLocalItemObservation {
     pub presentation_state_code: u8,
     pub display_progress_percent: Option<u8>,
     pub highlight_glow_visible: Option<bool>,
-    /// Outer `None` means the producer leaf was missed. Inner `None` is the
-    /// authenticated zero/hidden result from the joint-view helper.
     pub joint_viewing_country_tag: Option<Option<String>>,
     pub historical_marker_visible: bool,
 }
@@ -103,8 +93,6 @@ impl<B: ExactA729FocusObservationBoundary> ExactNationalFocusPresentationSource
     for A729FocusItemSource<B>
 {
     fn is_exact_a729_focus_view_source(&self) -> bool {
-        // The compact activation latch is independently false. This assertion
-        // authenticates the static producer contract, not a live fixture.
         true
     }
 
@@ -224,16 +212,28 @@ mod tests {
     }
 
     impl ExactA729FocusObservationBoundary for Boundary {
-        fn read_complete_observation(&self, _: u64, _: &str) -> Result<ProcessLocalFrameObservation, String> {
+        fn read_complete_observation(
+            &self,
+            _: u64,
+            _: &str,
+        ) -> Result<ProcessLocalFrameObservation, String> {
             Ok(self.observation.clone())
         }
         fn stable_focus_id(&self, definition_address: usize) -> Result<String, String> {
-            self.ids.get(&definition_address).cloned().ok_or_else(|| "missing stable focus id".into())
+            self.ids
+                .get(&definition_address)
+                .cloned()
+                .ok_or_else(|| "missing stable focus id".into())
         }
     }
 
     fn boundary() -> Boundary {
-        let header = VectorHeader { data: 0x2000, capacity: 2, count: 2, allocator: 0x3000 };
+        let header = VectorHeader {
+            data: 0x2000,
+            capacity: 2,
+            count: 2,
+            allocator: 0x3000,
+        };
         Boundary {
             observation: ProcessLocalFrameObservation {
                 source_sequence: 5,
@@ -244,8 +244,28 @@ mod tests {
                 opening_header: header,
                 opening_item_addresses: vec![0x4000, 0x5000],
                 items: vec![
-                    ProcessLocalItemObservation { item_address: 0x4000, primary_vtable: ITEM_PRIMARY_VTABLE, secondary_vtable: ITEM_SECONDARY_VTABLE, definition_address: 0x6000, presentation_state_code: 1, display_progress_percent: Some(100), highlight_glow_visible: Some(false), joint_viewing_country_tag: Some(None), historical_marker_visible: true },
-                    ProcessLocalItemObservation { item_address: 0x5000, primary_vtable: ITEM_PRIMARY_VTABLE, secondary_vtable: ITEM_SECONDARY_VTABLE, definition_address: 0x7000, presentation_state_code: 3, display_progress_percent: Some(25), highlight_glow_visible: Some(true), joint_viewing_country_tag: Some(Some("ITA".into())), historical_marker_visible: false },
+                    ProcessLocalItemObservation {
+                        item_address: 0x4000,
+                        primary_vtable: ITEM_PRIMARY_VTABLE,
+                        secondary_vtable: ITEM_SECONDARY_VTABLE,
+                        definition_address: 0x6000,
+                        presentation_state_code: 1,
+                        display_progress_percent: Some(100),
+                        highlight_glow_visible: Some(false),
+                        joint_viewing_country_tag: Some(None),
+                        historical_marker_visible: true,
+                    },
+                    ProcessLocalItemObservation {
+                        item_address: 0x5000,
+                        primary_vtable: ITEM_PRIMARY_VTABLE,
+                        secondary_vtable: ITEM_SECONDARY_VTABLE,
+                        definition_address: 0x7000,
+                        presentation_state_code: 3,
+                        display_progress_percent: Some(25),
+                        highlight_glow_visible: Some(true),
+                        joint_viewing_country_tag: Some(Some("ITA".into())),
+                        historical_marker_visible: false,
+                    },
                 ],
                 closing_item_addresses: vec![0x4000, 0x5000],
                 closing_header: header,
@@ -262,7 +282,12 @@ mod tests {
         let boundary = boundary();
         let snapshot = materialize_pointer_free_snapshot(&boundary.observation, &boundary).unwrap();
         assert_eq!(snapshot.visible_items[0].focus_id, "ger_a");
-        assert_eq!(snapshot.visible_items[1].joint_viewing_country_tag.as_deref(), Some("ITA"));
+        assert_eq!(
+            snapshot.visible_items[1]
+                .joint_viewing_country_tag
+                .as_deref(),
+            Some("ITA")
+        );
         assert!(!snapshot.producer_record_identity.contains("0x"));
     }
 

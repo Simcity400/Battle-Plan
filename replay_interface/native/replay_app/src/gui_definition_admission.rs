@@ -1,4 +1,3 @@
-//! Product adapter from the mod-aware game VFS to XUI01 definition admission.
 
 use crate::Result;
 use game_ui::assets::AssetResolver;
@@ -34,11 +33,6 @@ use portable_content_manifest::authored_ui::{
 use replay_core::ValidatedContentAdmission;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Semantic-consumer capabilities whose rows must cover the complete effective
-/// GUI, GFX, active-language localisation, scripted-localisation, and resolved
-/// authored dependency namespaces. Existing selected-Present-only recordings
-/// do not carry these capabilities and therefore fail closed for observer
-/// panels.
 pub const AUTHORED_GUI_NAMESPACE_CONSUMER: &str = GUI_NAMESPACE_CONSUMER;
 pub const AUTHORED_GFX_NAMESPACE_CONSUMER: &str = GFX_NAMESPACE_CONSUMER;
 pub const AUTHORED_LOCALISATION_NAMESPACE_CONSUMER: &str = LOCALISATION_NAMESPACE_CONSUMER;
@@ -59,11 +53,6 @@ pub struct AuthoredScrollBinding {
     pub geometry_source_record: String,
 }
 
-/// Complete typed product input for one authenticated authored surface.
-///
-/// Geometry, clipping, paint order, runtime tokens, and pixels stay private to
-/// `game_ui`. Callers provide only the current viewport, a complete
-/// manifest-derived element semantic census, and viewer-owned input state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AuthoredPanelViewerBindings {
     pub viewport_width: usize,
@@ -86,8 +75,6 @@ pub struct ComposedAuthoredPanel {
     pub frontend: Option<ComposedFrontendAdmission>,
 }
 
-/// XUI26 content facts attached only after the exact panel has successfully
-/// composed under a current manager instance and staged frame generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComposedFrontendAdmission {
     pub family_id: String,
@@ -120,12 +107,6 @@ struct PersistentHudPanelBindings {
     tooltip_selectors: BTreeMap<String, ReplayTooltipAlternateSelection>,
 }
 
-/// Replay-owned observer window namespace initialized from the replay's exact
-/// effective content admission.
-///
-/// This is deliberately independent of recorder POV and selected-Present panel
-/// activation. Recorder pixels are oracle history and never participate in
-/// viewer-owned panel activation.
 pub struct AuthoredObserverUi {
     assets: AssetResolver,
     localisation_language: String,
@@ -190,10 +171,6 @@ impl AuthoredObserverUi {
         localisation_language: &str,
     ) -> Result<Self> {
         require_complete_authored_namespaces(resolver, admission, localisation_language)?;
-        // Materialize only the authenticated authored-UI namespaces and their
-        // dependency closure. In particular, other localisation languages
-        // required by unrelated replay consumers never enter the UI resolver
-        // and therefore cannot become accidental localisation winners.
         let mut authored_rows = BTreeMap::new();
         let mut namespace_paths = BTreeSet::new();
         for consumer in [
@@ -275,9 +252,6 @@ impl AuthoredObserverUi {
         {
             Localisation::load_admitted_language(&assets, &localisation_language)?
         } else {
-            // `require_complete_authored_namespaces` already proved the
-            // authenticated empty capability. Retain an exact empty catalogue;
-            // never reopen an ambient profile or fall back to English.
             Localisation::default()
         };
         let (index, catalog) = AuthenticatedGuiRoleIndex::emit_with_game_resolver_and_language(
@@ -366,15 +340,10 @@ impl AuthoredObserverUi {
         &self.index
     }
 
-    /// Exact effective-VFS catalogue used to join XUI22's authenticated d84
-    /// manager census to the authored scripted-GUI definitions.
     pub fn catalog(&self) -> &GuiDefinitionCatalog {
         &self.catalog
     }
 
-    /// Exact manifest-restricted resolver used to issue every strict token.
-    /// Compositors must use this authority rather than rebuilding an
-    /// unrestricted filesystem resolver.
     pub fn assets(&self) -> &AssetResolver {
         &self.assets
     }
@@ -383,8 +352,6 @@ impl AuthoredObserverUi {
         &self.localisation_language
     }
 
-    /// Cached exact selected-language catalogue loaded only from the
-    /// manifest-restricted authored namespace.
     pub fn localisation(&self) -> &Localisation {
         &self.localisation
     }
@@ -416,10 +383,6 @@ impl AuthoredObserverUi {
             .map_err(|error| format!("XUI26 effective frontend inventory rejected: {error:?}"))?)
     }
 
-    /// Complete content-authenticated XUI26 disposition census. This is
-    /// emitted at shipping initialization so dynamic families remain explicit
-    /// unavailable states even though the viewer cannot open them without a
-    /// complete typed producer.
     pub fn frontend_family_dispositions(
         &self,
         admission: &ValidatedContentAdmission,
@@ -456,9 +419,6 @@ impl AuthoredObserverUi {
         Ok(out)
     }
 
-    /// Complete immutable root-token census for persistent-HUD/atomic
-    /// consumers. Empty authored namespaces return an authenticated empty
-    /// vector after index/admission validation.
     pub(crate) fn strict_root_census(
         &self,
         admission: &ValidatedContentAdmission,
@@ -500,8 +460,6 @@ impl AuthoredObserverUi {
         self.seal_surface(admission, panel, frontend)
     }
 
-    /// Gate shipping compositor source observations against the exact
-    /// effective winning authored-root registry.
     pub fn validate_composed_roots(&self, roots: &[game_ui::hud::HudSourceWindow]) -> Result<()> {
         if roots.is_empty() {
             return Err("XUI01 shipping compositor reported no authored roots".into());
@@ -557,8 +515,6 @@ impl AuthoredObserverUi {
         }
     }
 
-    /// Request a replay-viewer panel by a discovered dynamic window identity.
-    /// Manager mutation is delayed until the complete frame transaction.
     pub fn open_panel_with_bindings(
         &mut self,
         admission: &ValidatedContentAdmission,
@@ -605,10 +561,6 @@ impl AuthoredObserverUi {
         Ok(())
     }
 
-    /// Install or refresh the complete typed XUI12 canvas in the ordinary
-    /// replay-owned panel stack. The exact owner and every row template are
-    /// re-admitted from the effective content identity before any pixels or
-    /// input geometry can be produced.
     pub fn set_production_lines_canvas(
         &mut self,
         admission: &ValidatedContentAdmission,
@@ -715,9 +667,6 @@ impl AuthoredObserverUi {
         Ok(window_id.clone())
     }
 
-    /// Feature-local XUI12 rejection must never retain an older drawable
-    /// production canvas. This deliberately touches only the effective
-    /// country-production root(s); unrelated authored/persistent UI remains.
     pub(crate) fn reject_production_lines_canvas_feature_locally(&mut self) {
         let window_ids = self
             .index
@@ -755,11 +704,6 @@ impl AuthoredObserverUi {
         Ok(true)
     }
 
-    /// Viewer-owned shipping route for XUI26 chrome. Repeated requests advance
-    /// through the exact effective-VFS order, then close the final panel.
-    /// Static families are always eligible; replay families require a sealed
-    /// current-hour carrier. Host-runtime and service families are explicit
-    /// nonshipping inventory because this product owns no truthful producer.
     pub fn cycle_frontend_panel(
         &mut self,
         admission: &ValidatedContentAdmission,
@@ -947,10 +891,6 @@ impl AuthoredObserverUi {
         Ok(closed)
     }
 
-    /// Dynamic XUI26 semantics and materialized membership are exact-hour
-    /// observations. An ordinary playback tick therefore closes an older
-    /// panel before composition; only an explicit viewer cycle can admit and
-    /// open the current-hour replacement.
     pub fn reconcile_frontend_frame(&mut self, world: &replay_core::WorldFrame) -> Result<bool> {
         self.require_no_pending_desired_presentation()?;
         let stale = self
@@ -997,9 +937,6 @@ impl AuthoredObserverUi {
         Ok(())
     }
 
-    /// Re-admit the shipping HUD source observations and install them beneath
-    /// all viewer-opened panels. Geometry is derived only inside game_ui from
-    /// the sealed surface and current viewport.
     pub fn bind_persistent_hud_roots(
         &mut self,
         admission: &ValidatedContentAdmission,
@@ -1234,9 +1171,6 @@ impl AuthoredObserverUi {
         Ok(self.manager.authenticated_tooltip_owner_at_cursor()?)
     }
 
-    /// Join the current Presented hover to the exact sealed hovered surface,
-    /// structural tooltip shell, and viewer pointer. No caller geometry or
-    /// authored name is accepted.
     pub fn authenticated_tooltip_context_at_cursor(
         &self,
         admission: &ValidatedContentAdmission,
@@ -1282,9 +1216,6 @@ impl AuthoredObserverUi {
         ))
     }
 
-    /// Join XUI05 to the exact newly staged geometry and selector that will be
-    /// displayed if the current framebuffer Presents. This does not expose
-    /// staged geometry to viewer input.
     pub fn authenticated_pending_tooltip_context_at_cursor(
         &self,
         admission: &ValidatedContentAdmission,
@@ -1330,8 +1261,6 @@ impl AuthoredObserverUi {
         ))
     }
 
-    /// Seal the same structural XUI05 tooltip shell used by authenticated
-    /// manager hover, for packet-owned ExactSemanticPayload producers.
     pub fn authenticated_tooltip_shell_surface(
         &self,
         admission: &ValidatedContentAdmission,
@@ -1779,12 +1708,6 @@ impl AuthoredObserverUi {
             .collect())
     }
 
-    /// Compose the complete authenticated panel batch while containing a late
-    /// XUI12 materialization failure. The manager's compose call is atomic;
-    /// after a failed batch we restore the exact pre-attempt desired state,
-    /// remove only the production root, clear the scratch framebuffer, and
-    /// retry the unrelated batch. A second failure is therefore independent of
-    /// XUI12 and remains a whole-runtime error.
     pub(crate) fn compose_open_panels_with_xui12_feature_local_retry(
         &mut self,
         final_framebuffer: &mut game_ui::dds::RgbaImage,
@@ -3544,9 +3467,6 @@ mod tests {
             )
             .unwrap();
 
-        // This canvas passes producer/content admission but deliberately names
-        // a viewport that differs from the actual framebuffer. The failure is
-        // late and XUI12-local; the unrelated panel must still recompose.
         let wrong_viewport = xui12_canvas(
             &authored,
             &admission,

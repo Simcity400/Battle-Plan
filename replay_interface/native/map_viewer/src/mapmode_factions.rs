@@ -1,73 +1,17 @@
-//! Factions map mode (toolbar button
-//! `mapmode_button_11` / `ui_mapmode_factions` / F10, engine layer
-//! `game_map_mode_factions`).
-//!
-//! The factions map mode colours every country by faction membership: members
-//! take the faction **leader's COL3-baked** country colour (so each faction reads as one
-//! bloc), and non-members are greyed out. Colours are computed replay-side from
-//! the recorded faction rosters, **never recorded** (standing override).
-//!
-//! ## Colour law provenance
-//!
-//! * **Non-member fill** — FILE. `common/defines/00_graphics.lua`
-//!   `FACTIONS_COLOR_NOT_MEMBER = { 0.7, 0.7, 0.7, 0.7 }`
-//!   (`NDefines.NMapMode`). Parsed through the mod-aware resolver so mods
-//!   override correctly; [`VANILLA_FACTIONS_DEFINES`] is the offline gate
-//!   reference. `FACTIONS_MEMBER_TRANSPARENCY = 1.0` (members are opaque) is the
-//!   companion FILE define.
-//!
-//! * **Member fill = faction-leader COL3 colour** — CAPTURE. The engine layer
-//!   `game_map_mode_factions` has no scriptable colour (it is a hard-coded C++
-//!   layer; `common/map_modes/documentation.md` lists it among the hard-coded
-//!   types, and the matrix records the rule as "colour = faction/leader"). A
-//!   faction is keyed by its leader TAG, so members read the leader's country
-//!   colour. Retained carrier evidence contains the leader's COL3-baked colour
-//!   and contains no raw leader-colour texels. Carrier base alpha is zero;
-//!   boundary propagation owns positive alpha separately.
-//!
-//! ## Seam
-//!
-//! [`FactionInput`] mirrors `replay_core::world::DiplomacyView` faction data
-//! (`faction_members` id→TAGs plus the per-country `faction_is_leader` /
-//! `diplomacy_world.factions.leader`). The typed roster status is required at
-//! this seam so an unwitnessed roster stays unknown.
-//!
-//! ## Production dispatch status
-//!
-//! The factions map render consumer is not built in-tree yet. Production
-//! `map_viewer` currently re-exports this classifier/fill seam but has no live
-//! factions-mode dispatch or draw call; all calls to
-//! [`country_faction_memberships`] are tests. The tri-state is preserved through
-//! typed replay and the game-UI binding, and this helper is ready. When the live
-//! render consumer lands it MUST consume that typed status through this helper
-//! (so `Unavailable` produces no classification/fill), with an integration test
-//! that drives the real production dispatch. That renderer test is explicitly
-//! owed; a test-only helper call is not evidence of production enforcement.
 
 use crate::mod_resolver::GameFileResolver;
 use crate::Result;
 use replay_core::world::FactionRosterStatus;
 use std::collections::BTreeMap;
 
-/// `00_graphics.lua` — source of the factions map-mode FILE colours below.
 pub const FACTIONS_GRAPHICS_DEFINES_SOURCE: &str = "common/defines/00_graphics.lua";
 
-/// The `00_graphics.lua` constants that drive the factions map mode.
-///
-/// FILE citations (`common/defines/00_graphics.lua`, `NDefines.NMapMode`):
-/// - `FACTIONS_COLOR_NOT_MEMBER` — the RGBA every non-faction country is painted.
-/// - `FACTIONS_MEMBER_TRANSPARENCY` — the alpha applied to member (leader-colour)
-///   fills; 1.0 = opaque in vanilla.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FactionsDefines {
-    /// `FACTIONS_COLOR_NOT_MEMBER` (FILE).
     pub not_member_color: [f32; 4],
-    /// `FACTIONS_MEMBER_TRANSPARENCY` (FILE).
     pub member_transparency: f32,
 }
 
-/// The vanilla `00_graphics.lua` values, verbatim (FILE, cited above). Offline
-/// gate reference; the resolver path re-parses the shipped file so mods override.
 pub const VANILLA_FACTIONS_DEFINES: FactionsDefines = FactionsDefines {
     not_member_color: [0.7, 0.7, 0.7, 0.7],
     member_transparency: 1.0,
@@ -87,7 +31,6 @@ fn parse_color4(source: &str, key: &str) -> Result<[f32; 4]> {
     Ok([values[0], values[1], values[2], values[3]])
 }
 
-/// Parse the factions defines out of `00_graphics.lua` source text.
 pub fn factions_defines_from_source(source: &str) -> Result<FactionsDefines> {
     Ok(FactionsDefines {
         not_member_color: parse_color4(source, "FACTIONS_COLOR_NOT_MEMBER")?,
@@ -98,7 +41,6 @@ pub fn factions_defines_from_source(source: &str) -> Result<FactionsDefines> {
     })
 }
 
-/// Load + parse the factions defines via the mod-aware resolver.
 pub fn factions_defines_from_resolver(resolver: &GameFileResolver) -> Result<FactionsDefines> {
     let path = resolver.resolve_required(
         FACTIONS_GRAPHICS_DEFINES_SOURCE,
@@ -108,9 +50,6 @@ pub fn factions_defines_from_resolver(resolver: &GameFileResolver) -> Result<Fac
     factions_defines_from_source(&source)
 }
 
-/// One faction roster, shaped like the recorded `diplomacy_world.factions` /
-/// `faction_members` data: a faction id, its leader TAG (the colour key), and
-/// its member TAGs. `leader` is `None` when the recording omits it (fail-closed).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FactionInput {
     pub faction_id: String,
@@ -118,27 +57,16 @@ pub struct FactionInput {
     pub members: Vec<String>,
 }
 
-/// A country's faction membership in the factions map mode.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FactionMembership {
-    /// No completeness witness: membership is unknown and must not receive the
-    /// positive non-member grey.
     Unknown,
-    /// In a faction; painted with `leader`'s country colour (`None` leader ⇒
-    /// fail-closed to no member colour at fill time).
     Member {
         faction_id: String,
         leader: Option<String>,
     },
-    /// In no faction; painted `FACTIONS_COLOR_NOT_MEMBER`.
     NonMember,
 }
 
-/// Build the TAG → membership map from a witnessed faction roster. Any
-/// unavailable or contradictory status/row shape fails closed to `None`, and a
-/// duplicate member makes the entire roster unknown. Only a measured roster
-/// may classify a country omitted from all rows as
-/// [`FactionMembership::NonMember`].
 pub fn country_faction_memberships(
     roster_status: FactionRosterStatus,
     factions: &[FactionInput],
@@ -172,9 +100,6 @@ pub fn country_faction_memberships(
     Some(out)
 }
 
-/// Look up a country's membership. An unavailable roster yields
-/// [`FactionMembership::Unknown`]; only a measured roster can establish
-/// [`FactionMembership::NonMember`].
 pub fn membership_for(
     tag: &str,
     memberships: &Option<BTreeMap<String, FactionMembership>>,
@@ -188,17 +113,6 @@ pub fn membership_for(
         .unwrap_or(FactionMembership::NonMember)
 }
 
-/// The fill colour for a country in the factions map mode.
-///
-/// - [`FactionMembership::NonMember`] → byte-truncated RGB from
-///   `FACTIONS_COLOR_NOT_MEMBER` with captured carrier base alpha zero.
-/// - [`FactionMembership::Member`] → the leader's already-COL3-baked RGB with
-///   captured carrier base alpha zero. Fails
-///   **closed** to `None` when the leader tag is missing or has no colour entry
-///   — no invented colour.
-///
-/// `col3_country_colors` is an explicit tag → already-COL3-baked RGB table. Raw
-/// country colours are not accepted by this seam.
 pub fn faction_fill(
     membership: &FactionMembership,
     col3_country_colors: &BTreeMap<String, [u8; 3]>,
@@ -275,13 +189,11 @@ NDefines = {
         let d = VANILLA_FACTIONS_DEFINES;
         let colors: BTreeMap<String, [u8; 3]> =
             BTreeMap::from([("GER".to_string(), [80u8, 80, 90])]);
-        // Missing leader.
         let m = FactionMembership::Member {
             faction_id: "axis".to_string(),
             leader: None,
         };
         assert_eq!(faction_fill(&m, &colors, &d), None);
-        // Leader with no colour entry.
         let m = FactionMembership::Member {
             faction_id: "axis".to_string(),
             leader: Some("ZZZ".to_string()),
@@ -289,19 +201,7 @@ NDefines = {
         assert_eq!(faction_fill(&m, &colors, &d), None);
     }
 
-    // ---------------------------------------------------------------------
-    // fx_war_faction_matrix gate (matrix row 11).
-    //
-    // Expectations derived from the FIXTURE GENERATOR SOURCE
-    // (`replay_fixture_gen/src/main.rs::fx_war_faction_matrix`), NOT by running
-    // the code under test. SNAPSHOT_COUNT = 12 (ticks 0..=11):
-    //   tick <  3 : no factions -> everyone NonMember.
-    //   tick >= 3 : diplomacy_world.factions = { axis{leader GER, [GER,ITA]},
-    //               allies{leader ENG, [ENG]} } (and faction_members keyed by id).
-    // Membership flips at tick 3.
-    // ---------------------------------------------------------------------
 
-    /// The generator's faction rosters at a given tick.
     fn fixture_factions(tick: usize) -> Vec<FactionInput> {
         if tick < 3 {
             Vec::new()
@@ -331,7 +231,6 @@ NDefines = {
 
     #[test]
     fn fx_war_faction_matrix_membership_flips_at_tick_3() {
-        // Pre-faction: all three are non-members.
         for tick in 0..3 {
             let m =
                 country_faction_memberships(fixture_roster_status(tick), &fixture_factions(tick));
@@ -343,7 +242,6 @@ NDefines = {
                 );
             }
         }
-        // Post-faction: GER+ITA -> Axis (leader GER); ENG -> Allies (leader ENG).
         for tick in 3..12 {
             let m =
                 country_faction_memberships(fixture_roster_status(tick), &fixture_factions(tick));
@@ -372,7 +270,6 @@ NDefines = {
                 "ENG tick {tick}"
             );
         }
-        // The flip itself: ITA non-member at tick 2, member at tick 3.
         let before = membership_for(
             "ITA",
             &country_faction_memberships(fixture_roster_status(2), &fixture_factions(2)),
@@ -384,8 +281,6 @@ NDefines = {
         assert_ne!(before, after);
     }
 
-    /// The full fill flips at tick 3: everyone grey before, leader-coloured blocs
-    /// after (Axis = GER colour, Allies = ENG colour).
     #[test]
     fn fx_war_faction_matrix_fill_flips_at_tick_3() {
         let d = VANILLA_FACTIONS_DEFINES;
@@ -398,7 +293,6 @@ NDefines = {
         let eng = [200, 40, 40, 0];
         let gray = [178, 178, 178, 0];
 
-        // Tick 2: all grey.
         let m2 = country_faction_memberships(fixture_roster_status(2), &fixture_factions(2));
         for tag in ["GER", "ITA", "ENG"] {
             assert_eq!(
@@ -407,7 +301,6 @@ NDefines = {
                 "{tag} tick 2"
             );
         }
-        // Tick 3: Axis members (GER, ITA) both take GER (leader) colour; ENG takes ENG.
         let m3 = country_faction_memberships(fixture_roster_status(3), &fixture_factions(3));
         assert_eq!(
             faction_fill(&membership_for("GER", &m3), &colors, &d),
@@ -422,14 +315,12 @@ NDefines = {
             faction_fill(&membership_for("ENG", &m3), &colors, &d),
             Some(eng)
         );
-        // A country in no faction stays grey after tick 3.
         assert_eq!(
             faction_fill(&membership_for("SWE", &m3), &colors, &d),
             Some(gray)
         );
     }
 
-    /// Vanilla defines parse gate (skips without `BATTLE_PLAN_GAME_DIR`).
     #[test]
     #[cfg_attr(
         not(gate_hoi4_install),

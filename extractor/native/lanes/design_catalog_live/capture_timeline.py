@@ -22,8 +22,8 @@ REPO = LANE.parents[3]
 sys.path.insert(0, str(LANE))
 sys.path.insert(0, str(REPO / "extractor" / "memory_reader"))
 
-import winmem  # noqa: E402
-import live_a729_acceptance as a27  # noqa: E402
+import winmem
+import live_a729_acceptance as a27
 
 SCHEMA = "extractor.a27.live_heap_catalog_timeline.a729.v1"
 ACTION_SCHEMA = "extractor.a27.authenticated_transaction_request.v1"
@@ -241,12 +241,6 @@ def acquire(
         try:
             process = winmem.Process(pid, "hoi4.exe")
         except (OSError, RuntimeError, ValueError) as error:
-            # Early-launch production capture starts this helper while the game
-            # is still suspended. Windows can return ERROR_PARTIAL_COPY until
-            # the primary thread has entered the user-mode loader, so module
-            # discovery is a retryable observation just like an uninitialized
-            # CGameState root. Do not let that expected pre-resume phase kill
-            # the authenticated producer.
             rejection = {
                 "sequence_before_retry": len(timeline["captures"]),
                 "error": str(error),
@@ -321,10 +315,6 @@ def acquire(
                 previous_snapshot = snapshot
                 last_hour = capture_hour
                 _atomic_json(output, timeline)
-                # This is the recorder's baseline barrier, not merely a
-                # CGameState-root probe.  Exposing readiness before the first
-                # coherent whole sweep allowed the compact stream to begin
-                # while A27 still had no census for its first hour.
                 if len(timeline["captures"]) == 1:
                     ready.parent.mkdir(parents=True, exist_ok=True)
                     ready.touch(exist_ok=True)

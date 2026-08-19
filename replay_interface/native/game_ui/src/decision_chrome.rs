@@ -1,38 +1,3 @@
-//! Decisions-panel chrome. Generic element geometry follows
-//! `compose.rs` and the structured UI-layout evidence fixture; shipping XUI19
-//! presentation is governed by its packet-local production contract.
-//!
-//! the game renders decisions and missions through the authored
-//! `interface/countrydecisionview.gui` category and card templates. This module
-//! provides two file-derived utilities plus a carrier-neutral card projection:
-//!
-//!   1. **Layout** ([`parse_decision_layout`]) — parse the shipped `.gui` via the
-//!      shared [`crate::gui`] parser and surface the chrome windows + card
-//!      templates and their sub-elements (icon / name / cost-timer / flag).
-//!   2. **Decision-def → card mapping** ([`parse_decisions`] +
-//!      [`resolve_decisions`]) — parse every decision definition to
-//!      `id → {category, name-loc-key, icon-sprite}` and resolve those against
-//!      the recording's localisation + sprite registry (the `N resolve / total`
-//!      gate).
-//!   3. **Card projection** ([`decision_card_binding`]) — fold caller-supplied
-//!      state onto one card. The helper grants no carrier authority: XUI18 uses
-//!      it only after power-balance admission, while XUI19 owns its independent
-//!      all-country decision carrier.
-//!
-//! ## Data label discipline (Constraint 3)
-//!
-//!   * **FILE** — the layout, the `id → name-key` law (loc key == decision id,
-//!     or the decision's own `name =` override key), the icon-sprite naming law
-//!     (`GFX_decision_<icon>` / category `GFX_decision_category_<icon>`), and the
-//!     card-icon fail-closed default (`GFX_decision_unknown`, the `decision_item`
-//!     `icon` element's shipped `spriteType`). All cited from shipped files.
-//!   * **RUNTIME** — shipping XUI19 state comes from its strict passive
-//!     all-country decision-evaluation carrier; XUI18 supplies state only after
-//!     its own authenticated power-balance admission. [`decision_card_binding`]
-//!     remains carrier-neutral and fails closed when state is not supplied.
-//!   * **UNKNOWN** — cost/timer NUMBER formatting (PP glyph, +/- colouring,
-//!     day/week rendering) is engine-computed; any supplied text is carried raw
-//!     (never fabricated).
 
 use crate::assets::AssetResolver;
 use crate::gfx::SpriteRegistry;
@@ -42,31 +7,17 @@ use crate::paradox_text::{parse_file, Value};
 use crate::{GameUiError, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
-// ===========================================================================
-// FILE constants — shipped paths + element names + naming laws
-// ===========================================================================
 
-/// The decisions-panel chrome layout (FILE).
 pub const DECISION_VIEW_GUI: &str = "interface/countrydecisionview.gui";
-/// Directory of per-country decision-definition scripts (FILE).
 pub const DECISIONS_DIR: &str = "common/decisions";
-/// Sub-directory of decision *category* definitions (FILE).
 pub const DECISION_CATEGORIES_DIR: &str = "common/decisions/categories";
 
-/// Root panel window (FILE: `countrydecisionview.gui`).
 pub const ROOT_WINDOW: &str = "countrydecisionview";
-/// The scrolling gridbox that holds the category/decision rows.
 pub const DECISION_GRID: &str = "decision_grid";
-/// The category-tab header template.
 pub const CATEGORY_HEADER_WINDOW: &str = "category_header";
-/// Authored category-description child inserted immediately after a native
-/// category header when no category-owned scripted GUI replaces it.
 pub const CATEGORY_DESCRIPTION_WINDOW: &str = "decision_category_desc";
 pub const CUSTOM_ICON_ITEM_WINDOW: &str = "custom_icon_item";
 
-/// The four decision-card templates, in shipped declaration order. Each renders
-/// one decision instance; which template a decision uses is classified from its
-/// script fields ([`classify_template`]).
 pub const CARD_TEMPLATES: [&str; 4] = [
     "decision_item",
     "targeted_decision_item",
@@ -74,30 +25,16 @@ pub const CARD_TEMPLATES: [&str; 4] = [
     "on_map_decision_locator_item",
 ];
 
-/// Card sub-element names the binding fills (FILE). The `on_map` locator card
-/// names its text element `name_text` and its icon `decision_icon`, so the icon
-/// probe accepts either spelling.
 pub const CARD_NAME_TEXT: &str = "name_text";
 pub const CARD_COST_TIMER_TEXT: &str = "cost_and_timer_text";
 pub const CARD_TARGET_FLAG: &str = "target_flag";
 
-/// Fail-closed card icon when a decision declares no `icon` (FILE: the
-/// `decision_item`/`icon` element ships `spriteType = "GFX_decision_unknown"`).
 pub const DECISION_UNKNOWN_ICON: &str = "GFX_decision_unknown";
 
-/// GFX name prefix for a decision `icon = <token>` (FILE naming law, verified
-/// against `interface/decisions.gfx` + `countrydecisionview.gfx`: 601 shipped
-/// `GFX_decision_*` sprites).
 const DECISION_ICON_PREFIX: &str = "GFX_decision_";
-/// GFX name prefix for a category `icon = <token>` (FILE: 112 shipped
-/// `GFX_decision_category_*` sprites).
 const CATEGORY_ICON_PREFIX: &str = "GFX_decision_category_";
 
-// ===========================================================================
-// Layout
-// ===========================================================================
 
-/// One decision-card template's sub-element presence (FILE, from the `.gui`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionCardTemplate {
     pub name: String,
@@ -106,24 +43,19 @@ pub struct DecisionCardTemplate {
     pub has_name_text: bool,
     pub has_cost_and_timer_text: bool,
     pub has_target_flag: bool,
-    /// The card `icon`/`decision_icon` element's declared default sprite.
     pub icon_default_sprite: Option<String>,
 }
 
-/// The parsed decisions-panel chrome (layout only; no state).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionPanelLayout {
     pub source_file: String,
     pub has_root_window: bool,
     pub has_decision_grid: bool,
     pub has_category_header: bool,
-    /// The four card templates, in [`CARD_TEMPLATES`] order.
     pub cards: Vec<DecisionCardTemplate>,
     pub recoveries: usize,
 }
 
-/// Exact effective-VFS authored trees consumed by the shipping XUI19 compositor.
-/// This contains no runtime rows or recorder geometry.
 #[derive(Clone, Debug)]
 pub struct DecisionAuthoredScene {
     pub source_file: String,
@@ -136,9 +68,6 @@ pub struct DecisionAuthoredScene {
 }
 
 impl DecisionPanelLayout {
-    /// True when every gated chrome window + all four card templates parsed, and
-    /// each card carries at least an icon + a name text element. This is the
-    /// layout gate the binding relies on.
     pub fn is_complete(&self) -> bool {
         self.has_root_window
             && self.has_decision_grid
@@ -151,8 +80,6 @@ impl DecisionPanelLayout {
     }
 }
 
-/// Find the first icon-bearing sprite on a card sub-element named `icon` or
-/// `decision_icon`; returns `(present, default_sprite)`.
 fn card_icon(card: &GuiElement) -> (bool, Option<String>) {
     for icon_name in ["icon", "decision_icon"] {
         let mut hits = Vec::new();
@@ -167,7 +94,6 @@ fn card_icon(card: &GuiElement) -> (bool, Option<String>) {
     (false, None)
 }
 
-/// True when the card has a direct-or-nested child element named `name`.
 fn has_named_child(card: &GuiElement, name: &str) -> bool {
     let mut hits = Vec::new();
     card.find_by_name(name, &mut hits);
@@ -197,9 +123,6 @@ fn card_template(layouts: &LayoutSet, name: &str) -> DecisionCardTemplate {
     }
 }
 
-/// Parse the decisions-panel chrome layout from the shipped `.gui` via the
-/// shared parser (reuse; no bare joins — the resolver owns the mod/vanilla root
-/// order).
 pub fn parse_decision_layout(resolver: &AssetResolver) -> Result<DecisionPanelLayout> {
     let resolved = resolver.resolve_file(DECISION_VIEW_GUI)?;
     let doc = parse_file(&resolved.path)?;
@@ -228,26 +151,14 @@ pub fn parse_decision_layout(resolver: &AssetResolver) -> Result<DecisionPanelLa
     })
 }
 
-// ===========================================================================
-// Decision + category definitions (script)
-// ===========================================================================
 
-/// A decision *category* (the tab chrome keys off this).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionCategoryDef {
     pub id: String,
-    /// The bare `icon = <token>` (resolved to a sprite by [`category_icon_sprite`]).
     pub icon_token: Option<String>,
-    /// A full `picture = GFX_...` sprite (takes precedence over `icon`).
     pub picture: Option<String>,
-    /// Exact authored `scripted_gui = <definition-id>` binding, when present.
-    /// Runtime scripted-GUI rows never infer their decision-category parent.
     pub scripted_gui: Option<String>,
-    /// Whether this category declares dynamic custom-icon children. Their
-    /// runtime rows need a separate authenticated carrier.
     pub has_custom_icons: bool,
-    /// Exact authored declarations in file order. Runtime trigger results and
-    /// final formatted text come from the passive XUI19 carrier.
     pub custom_icons: Vec<DecisionCategoryCustomIconDef>,
     pub source_file: String,
 }
@@ -278,8 +189,6 @@ fn unique_named_kind(layouts: &LayoutSet, name: &str, kind: &str) -> Result<GuiE
     }
 }
 
-/// Load the authored roots/templates which dynamic XUI19 rows will clone.
-/// The grid must be uniquely owned by the returned panel root.
 pub fn load_decision_authored_scene(resolver: &AssetResolver) -> Result<DecisionAuthoredScene> {
     let resolved = resolver.resolve_file(DECISION_VIEW_GUI)?;
     let doc = parse_file(&resolved.path)?;
@@ -328,41 +237,26 @@ pub fn load_decision_authored_scene(resolver: &AssetResolver) -> Result<Decision
     })
 }
 
-/// One decision definition (the card content source).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecisionDef {
     pub id: String,
-    /// The owning category (the top-level block key in the decision file).
     pub category: String,
-    /// A `name = <key>` loc-key override, when the decision declares one.
     pub name_override: Option<String>,
-    /// The decision's own `icon = <token>`, when declared.
     pub icon_token: Option<String>,
-    /// Which card template renders this decision ([`classify_template`]).
     pub template: String,
     pub source_file: String,
 }
 
-/// The full parsed decision inventory + parse diagnostics.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionSet {
     pub categories: BTreeMap<String, DecisionCategoryDef>,
     pub decisions: Vec<DecisionDef>,
-    /// Top-level blocks in decision files whose key is NOT a known category
-    /// (the game requires decision-file top-level == category; expected empty).
     pub orphan_category_blocks: BTreeSet<String>,
     pub category_file_count: usize,
     pub decision_file_count: usize,
     pub recoveries: usize,
 }
 
-/// Card-template classifier (FILE heuristic from the decision's declared fields):
-///   * a `targets` / `target_root_trigger` / `target_trigger` field → targeted;
-///   * else a `days_remove` / `days_mission_timeout` timer field → timed;
-///   * else the plain `decision_item`.
-///
-/// `on_map_decision_locator_item` is an on-map locator surface, not selected by
-/// a script field, so it is never auto-assigned here.
 pub fn classify_template(decision: &Value) -> &'static str {
     let has = |key: &str| decision.first_value_ci(key).is_some();
     if has("targets") || has("target_root_trigger") || has("target_trigger") {
@@ -374,8 +268,6 @@ pub fn classify_template(decision: &Value) -> &'static str {
     }
 }
 
-/// Resolve an `icon = <token>` to its GFX sprite name (FILE law): a token that
-/// already starts with `GFX_` is used verbatim, else it is prefixed.
 fn token_to_sprite(token: &str, prefix: &str) -> String {
     let token = token.trim();
     if token.to_ascii_uppercase().starts_with("GFX_") {
@@ -385,9 +277,6 @@ fn token_to_sprite(token: &str, prefix: &str) -> String {
     }
 }
 
-/// The category-tab icon sprite (FILE): `picture` if present, else the prefixed
-/// `icon` token, else `None` (the tab falls back to `GFX_decision_category_generic`
-/// in the shipped layout, but that default is a *layout* value, not a def value).
 pub fn category_icon_sprite(category: &DecisionCategoryDef) -> Option<String> {
     if let Some(picture) = &category.picture {
         return Some(token_to_sprite(picture, CATEGORY_ICON_PREFIX));
@@ -398,8 +287,6 @@ pub fn category_icon_sprite(category: &DecisionCategoryDef) -> Option<String> {
         .map(|token| token_to_sprite(token, CATEGORY_ICON_PREFIX))
 }
 
-/// The decision-card icon sprite (FILE): the decision's own `icon` token
-/// (prefixed), else the fail-closed layout default [`DECISION_UNKNOWN_ICON`].
 pub fn decision_icon_sprite(def: &DecisionDef) -> String {
     match &def.icon_token {
         Some(token) => token_to_sprite(token, DECISION_ICON_PREFIX),
@@ -407,13 +294,10 @@ pub fn decision_icon_sprite(def: &DecisionDef) -> String {
     }
 }
 
-/// The decision name loc key (FILE): the `name =` override key when declared,
-/// else the decision id (the game's default: the id IS the loc key).
 pub fn decision_name_loc_key(def: &DecisionDef) -> String {
     def.name_override.clone().unwrap_or_else(|| def.id.clone())
 }
 
-/// The decision description/tooltip loc key (FILE convention `<id>_desc`).
 pub fn decision_desc_loc_key(def: &DecisionDef) -> String {
     format!("{}_desc", def.id)
 }
@@ -503,8 +387,6 @@ fn insert_effective_decision_category(
     }
 }
 
-/// Parse every decision *category* definition under
-/// `common/decisions/categories/`.
 pub fn parse_decision_categories(
     resolver: &AssetResolver,
 ) -> Result<BTreeMap<String, DecisionCategoryDef>> {
@@ -528,9 +410,6 @@ pub fn parse_decision_categories(
     Ok(out)
 }
 
-/// Parse the full decision inventory: every `category = { decision = { .. } }`
-/// block in `common/decisions/*.txt` (excluding the `categories/` sub-dir),
-/// cross-referenced against the parsed category set.
 pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
     let categories = parse_decision_categories(resolver)?;
     let mut set = DecisionSet {
@@ -555,7 +434,7 @@ pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
                 continue;
             };
             let Some(_) = cat_entry.value.as_object() else {
-                continue; // scalars (e.g. @vars) are not category blocks
+                continue;
             };
             if category.starts_with('@') {
                 continue;
@@ -568,7 +447,7 @@ pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
                     continue;
                 };
                 let Some(_) = dec_entry.value.as_object() else {
-                    continue; // scalars inside a category (e.g. @vars) aren't decisions
+                    continue;
                 };
                 if id.starts_with('@') {
                     continue;
@@ -595,40 +474,23 @@ pub fn parse_decisions(resolver: &AssetResolver) -> Result<DecisionSet> {
     Ok(set)
 }
 
-// ===========================================================================
-// Resolution (the N-resolve/total gate)
-// ===========================================================================
 
-/// Counts of how much of the decision inventory resolves against the recording's
-/// localisation + sprite registry. Every field is an exact count (the gate).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionResolutionReport {
     pub total_decisions: usize,
-    /// Decisions whose name loc key exists in the localisation.
     pub name_key_resolved: usize,
-    /// Decisions whose `<id>_desc` tooltip key exists.
     pub desc_key_resolved: usize,
-    /// Decisions that declare an `icon` field.
     pub icon_declared: usize,
-    /// Of the declared icons, how many resolve to a real sprite.
     pub icon_sprite_resolved: usize,
-    /// Decisions whose category is a known category definition.
     pub category_known: usize,
-    /// Per-card-template decision counts.
     pub template_histogram: BTreeMap<String, usize>,
 
     pub total_categories: usize,
-    /// Categories whose id resolves as a loc key (the tab name).
     pub category_name_resolved: usize,
-    /// Categories whose tab icon/picture resolves to a real sprite.
     pub category_icon_resolved: usize,
-    /// Categories declaring neither icon nor picture (tab falls back to the
-    /// layout default `GFX_decision_category_generic`).
     pub category_icon_absent: usize,
 }
 
-/// Resolve the whole [`DecisionSet`] against the recording's localisation +
-/// sprite registry.
 pub fn resolve_decisions(
     set: &DecisionSet,
     loc: &Localisation,
@@ -679,64 +541,39 @@ pub fn resolve_decisions(
     report
 }
 
-// ===========================================================================
-// Carrier-neutral state → card projection (fail-closed)
-// ===========================================================================
 
-/// A decision's dynamic availability for card projection. `Unknown` is the
-/// fail-closed value when the supplying authenticated route or diagnostic
-/// caller has no decodable status.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DecisionAvailability {
-    /// Available to take (passes `available`).
     Available,
-    /// Visible but not currently available.
     Unavailable,
-    /// Currently active / running (timed or mission decisions).
     Active,
-    /// Taken and on cooldown (`days_re_enable`).
     OnCooldown,
     #[default]
     Unknown,
 }
 
-/// Optional dynamic state consumed by [`decision_card_binding`]. This shape is
-/// not carrier authority; callers must authenticate their own route.
-/// `cost_text` / `timer_text` are raw engine strings (UNKNOWN formatting →
-/// carried verbatim).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionStateEntry {
     pub decision_id: String,
     pub availability: DecisionAvailability,
-    /// The card `cost_and_timer_text` value (PP/other cost), raw.
     pub cost_text: Option<String>,
-    /// The card `timer_text` value (remaining days), raw.
     pub timer_text: Option<String>,
-    /// The `target_flag` tag for a targeted decision.
     pub target_tag: Option<String>,
 }
 
-/// One populated decision card: FILE-derived static chrome (id/category/name-
-/// key/icon/template) plus the fail-closed dynamic state from the stream.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DecisionCardBinding {
-    // --- FILE-derived static chrome (always present) ---
     pub decision_id: String,
     pub category: String,
     pub name_loc_key: String,
     pub icon_sprite: String,
     pub template: String,
-    // --- dynamic state (None == fail-closed absent) ---
     pub availability: Option<DecisionAvailability>,
     pub cost_and_timer_text: Option<String>,
     pub timer_text: Option<String>,
     pub target_tag: Option<String>,
 }
 
-/// Build a decision card for `def`, folding in an optional [`DecisionStateEntry`].
-/// The helper authenticates no carrier. Static chrome is filled from files;
-/// every dynamic field is `Some` only when the caller supplies it, else `None`
-/// (fail-closed — never a fabricated "Available"/cost/timer).
 pub fn decision_card_binding(
     def: &DecisionDef,
     state: Option<&DecisionStateEntry>,
@@ -776,12 +613,10 @@ mod tests {
             decision_icon_sprite(&def("d", Some("generic_civil_support"), None)),
             "GFX_decision_generic_civil_support"
         );
-        // Already a GFX_ sprite → verbatim.
         assert_eq!(
             decision_icon_sprite(&def("d", Some("GFX_decision_BRA_integralism"), None)),
             "GFX_decision_BRA_integralism"
         );
-        // No icon → fail-closed layout default.
         assert_eq!(
             decision_icon_sprite(&def("d", None, None)),
             DECISION_UNKNOWN_ICON
@@ -993,12 +828,10 @@ mod tests {
     #[test]
     fn binding_is_fail_closed_without_state() {
         let card = decision_card_binding(&def("GER_mefo_bills", Some("steel"), None), None);
-        // Static chrome present…
         assert_eq!(card.decision_id, "GER_mefo_bills");
         assert_eq!(card.name_loc_key, "GER_mefo_bills");
         assert_eq!(card.icon_sprite, "GFX_decision_steel");
         assert_eq!(card.template, "decision_item");
-        // …dynamic state fail-closed absent (never fabricated).
         assert_eq!(card.availability, None);
         assert_eq!(card.cost_and_timer_text, None);
         assert_eq!(card.timer_text, None);
@@ -1022,8 +855,6 @@ mod tests {
 
     #[test]
     fn parse_decisions_two_level_structure() {
-        // A category block wrapping two decisions; effect-block `name=`s inside
-        // must NOT leak as a decision name override.
         let doc = parse_str(
             r#"
             my_category = {
@@ -1052,7 +883,6 @@ mod tests {
                 source_file: "c.txt".into(),
             },
         )]);
-        // Simulate the inner loop of parse_decisions against the in-memory doc.
         for cat_entry in doc.root.fields() {
             let category = cat_entry.key.as_deref().unwrap();
             for dec_entry in cat_entry.value.fields() {

@@ -1,5 +1,3 @@
-//! Signature-gated post-refresh observer for `0x1417797A0`.
-
 use crate::{
     encode_payload, CarrierError, DesignCatalogContextFrame, DesignerFamily, DesignerViewContext,
 };
@@ -28,24 +26,8 @@ pub const DESIGNER_ROW_BIND_RVA: u32 = 0x0149_2B70;
 const REFRESH_SENTINEL: [u8; 16] = [
     0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x48, 0x8B, 0x89, 0xA0, 0xF3, 0x00, 0x00,
 ];
-/// This module owns exactly one production site.
 pub const HOOK_RECEIPT_COUNT: usize = 1;
 
-/// The post-refresh observer at `0x1417797A0`.
-///
-/// The logical name says `d78` because that is whose producer this is: the
-/// designer view context. It travelled inside `StandardHookReceiptGroup::D85`
-/// until 2026-08-13, because d85 could not produce a row without it --
-/// `install_a729_selected_designer_hooks` installs this first and calls it the
-/// "d78 prerequisite", since equipment family ordering is joined to this
-/// refresh -- and this comment said the name would move when a D78 group
-/// existed. It has: `domain_registry.json` deschedules domain 85, the seven
-/// selected-designer detours left the
-/// production hook registry with it, and this site stayed as
-/// `StandardHookReceiptGroup::D78`'s only member because domain 78 was never
-/// descheduled. The registry now calls
-/// `crate::install_a729_design_catalog_context_hook` directly rather than the
-/// wrapper that would drag the seven back in.
 pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [ExpectedRvaHook {
     logical_name: "gameplay.d78.designer_refresh",
     requested_rva: DESIGNER_REFRESH_RVA as u64,
@@ -86,41 +68,16 @@ static ORIGINAL_REFRESH: AtomicUsize = AtomicUsize::new(0);
 static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static INSTALLED: AtomicBool = AtomicBool::new(false);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
-/// A failed installation could not PROVE it removed its detour.
-///
-/// `INSTALLED` is set only after the enable succeeds, so an enable failure --
-/// which may still have patched the target -- leaves every other predicate
-/// answering "nothing here". One-way, like D94's twin.
 static FAILED_INSTALL_REMOVAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
     static IN_CALLBACK: Cell<bool> = const { Cell::new(false) };
 }
 
-/// HOW MANY THREADS ARE INSIDE `hook_refresh` RIGHT NOW.
-///
-/// [`IN_CALLBACK`] above is a THREAD-LOCAL reentrancy flag and is not this: it
-/// answers "is this thread already inside the detour" so a nested refresh does
-/// not capture twice, and a teardown reading it reads its own `false`.
-///
-/// `inline_detour::remove` frees the trampoline, and `hook_refresh` returns
-/// through it after `original(view)`. The freeze's instruction-pointer check
-/// cannot see a thread in the body -- the body is this crate's own function, at
-/// an address `inline_detour` is never told -- so the count has to come from
-/// here. `a40_peace_evidence.rs` in this same crate has had exactly this pair
-/// since it was written; the designer-refresh site never did.
 static IN_FLIGHT_CALLBACKS: AtomicUsize = AtomicUsize::new(0);
-/// Stops the CAPTURE half early during teardown. `inline_detour::disable` is
-/// what actually closes admission, because the detour stays reachable until the
-/// target's own bytes are back; this only means the bodies still in flight
-/// finish sooner.
 static ADMISSION_OPEN: AtomicBool = AtomicBool::new(false);
-/// Bounded: a teardown that spins forever is a hung game. On exhaustion the
-/// target is RETAINED and named rather than freed.
 const QUIESCE_YIELDS: usize = 4096;
 
-/// Spans the whole detour body, INCLUDING the call through the original, which
-/// is the part that returns through the trampoline.
 struct CallbackLease;
 
 impl CallbackLease {
@@ -136,9 +93,6 @@ impl Drop for CallbackLease {
     }
 }
 
-/// The quiescence half of `inline_detour::remove`'s contract, measured AFTER
-/// the caller has disabled the target. A count taken while the detour is still
-/// patched in is stale before it is read, so the order is the caller's.
 fn drained_after_disable() -> bool {
     ADMISSION_OPEN.store(false, Ordering::Release);
     for _ in 0..QUIESCE_YIELDS {
@@ -150,9 +104,6 @@ fn drained_after_disable() -> bool {
     IN_FLIGHT_CALLBACKS.load(Ordering::Acquire) == 0
 }
 
-/// The refusal a caller returns instead of freeing a trampoline a body is about
-/// to return through. The target stays DISABLED, so nothing new enters it, and
-/// its trampoline stays allocated for whoever is inside.
 fn retained_for_in_flight_bodies() -> String {
     format!(
         "A27 designer refresh detour retained: {} callback body/bodies still in flight after disable",
@@ -170,9 +121,6 @@ struct HookState {
     callback_count: u64,
 }
 
-/// Process-local bridge for the independently serialized HUD-role observer.
-/// The pointers never enter DCX1 and are consumed only while the collector is
-/// resident. `context` remains the exact d78 family/visibility/order authority.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessLocalDesignerRoot {
     pub context: DesignerViewContext,
@@ -213,23 +161,6 @@ pub fn install() -> Result<InstalledHookAddress, String> {
     MODULE_BASE.store(base, Ordering::Release);
     ADMISSION_OPEN.store(true, Ordering::Release);
     if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-        // An enable that reported failure may still have patched the target,
-        // and `remove` here is the only attempt to take it back out. Its result
-        // was discarded outright before 2026-08-03, which left a possibly-live
-        // detour with `INSTALLED` false and nothing recording it.
-        //
-        // QUIESCED: and it is NOT the vacuous never-enabled case, precisely
-        // because of the sentence above. `minhook_h4/vendor/src/hook.c`'s
-        // `EnableHookLL` WRITES THE PATCH, then sets `isEnabled` and reports
-        // `MH_ERROR_MEMORY_PROTECT` when the protection restore or the
-        // instruction-cache flush did not complete -- so a thread may be inside
-        // `hook_refresh` right now.
-        //
-        // THE DISABLE IS THIS ARM'S OWN. Closing `ADMISSION_OPEN` stops the
-        // capture half but NOT entry into the detour: the target's bytes are
-        // still the jump until `disable` puts them back, so a drain taken
-        // without it measures a set that keeps refilling. `NOT_CREATED` and
-        // `DISABLED` are the shapes where the enable genuinely did nothing.
         match unsafe { inline_detour::disable(target as *mut c_void) } {
             Ok(())
             | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
@@ -250,14 +181,6 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         }
         if let Err(removal) = unsafe { inline_detour::remove(target as *mut c_void) } {
             FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
-            // BOTH statics survive an unproved removal, and neither is
-            // bookkeeping. `MODULE_BASE` is how the cleanup retry finds the
-            // target at all. `ORIGINAL_REFRESH` is worse than bookkeeping: the
-            // detour may be live, and `hook_refresh` calls the game's original
-            // function THROUGH this pointer -- zeroing it while a patched site
-            // can still dispatch into the callback made the collector skip the
-            // engine's own work, which is a mutated simulation rather than a
-            // lost row.
             return Err(format!(
                 "A27 designer refresh hook enable failed: {status}; removal failed: {removal}"
             ));
@@ -266,48 +189,24 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("A27 designer refresh hook enable failed: {status}"));
     }
-    // Fail closed on identity. The observation re-derives the module from the
-    // running process, refuses anything that is not an exact-a729 `hoi4.exe`,
-    // re-checks the admitted original prefix against that file's own bytes at
-    // this RVA, and binds the installed relay to this detour. An installation
-    // that cannot be attested is rolled back rather than shipped.
     if let Err(error) = HOOK_RECEIPTS.observe_installed(
         base,
         [SiteDetour::new(
             "gameplay.d78.designer_refresh",
             hook_refresh as *const () as usize,
         )],
-    )
-    {
-        // ADMISSION CLOSES BEFORE THE DISABLE, on every exit from this arm. The
-        // refusal below used to return with the capture gate still open over a
-        // site this branch has already decided to tear down.
+    ) {
         ADMISSION_OPEN.store(false, Ordering::Release);
         let disabled = unsafe { inline_detour::disable(target as *mut c_void) };
         if disabled.is_err() {
-            // The target may still be patched, so the custody record is the
-            // only remaining evidence that it is. Keep it, and latch.
             FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
                 "A27 designer refresh hook receipt refused: {error}; rollback failed: {}",
                 disabled.unwrap_err()
             ));
         }
-        // The removal result is NOT discarded. It was, and that lost the only
-        // record of a live detour on this branch: `disable` succeeding says the
-        // site is inert, not that the patch is gone, and a refused `remove`
-        // leaves a created MinHook target behind. With the result thrown away
-        // the module then answered `installed() == false` and
         // `release_pending() == false`, so the registry recorded a clean
         // release over it and a later install could refuse with
-        // MH_ERROR_ALREADY_CREATED.
-        //
-        // QUIESCED FIRST, and this branch is the one that most needs it: the
-        // enable above SUCCEEDED, so the detour has been live and a game thread
-        // can be inside `hook_refresh` right now. The disable stops new entries;
-        // it says nothing about the bodies already in. A refusal latches the
-        // same unproved-removal custody a refused `remove` does, because the
-        // outcome is the same -- a created MinHook target still owed a free.
         if !drained_after_disable() {
             FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
@@ -316,9 +215,6 @@ pub fn install() -> Result<InstalledHookAddress, String> {
             ));
         }
         if let Err(status) = unsafe { inline_detour::remove(target as *mut c_void) } {
-            // Keep the base and the custody: `retry_failed_install_cleanup`
-            // needs the first to find the target and the second is the
-            // remaining evidence of what may still be patched.
             FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
                 "A27 designer refresh hook receipt refused: {error}; removal failed: {status}"
@@ -327,7 +223,9 @@ pub fn install() -> Result<InstalledHookAddress, String> {
         HOOK_RECEIPTS.discard_all_custody();
         ORIGINAL_REFRESH.store(0, Ordering::Release);
         MODULE_BASE.store(0, Ordering::Release);
-        return Err(format!("A27 designer refresh hook receipt refused: {error}"));
+        return Err(format!(
+            "A27 designer refresh hook receipt refused: {error}"
+        ));
     }
     INSTALLED.store(true, Ordering::Release);
     Ok(InstalledHookAddress {
@@ -335,68 +233,33 @@ pub fn install() -> Result<InstalledHookAddress, String> {
     })
 }
 
-/// True once this module owns an enabled, receipt-observed production hook.
 pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// The exact enabled-byte receipt for the single d78 refresh site.
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
     HOOK_RECEIPTS.installed_receipts()
 }
 
 /// Consume the release receipt. One-shot, like every other lane's take.
-pub fn take_released_hook_receipts(
-) -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String>
+{
     HOOK_RECEIPTS.take_released_receipts()
 }
 
 /// True while this module holds a release it could not PROVE: a failed install
-/// whose removal did not take, an ORDINARY teardown that stopped part-way, or
-/// receipt custody still on the installed side.
-///
-/// The middle clause is not redundant with the third. A teardown that disabled
-/// the site and then failed to remove it holds no receipt custody worth the
-/// name, and its `INSTALLED` flag is already false, so without the phase this
-/// predicate answered "nothing outstanding" over a created MinHook target.
 pub fn release_pending() -> bool {
     FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
         || teardown_pending()
         || (!installed() && HOOK_RECEIPTS.may_still_hold_installed_custody())
 }
 
-/// True while a FAILED install left a removal this module could not prove.
-///
 /// The narrower half of [`release_pending`], and the one an abort can actually
-/// act on: it names the state [`retry_failed_install_cleanup`] exists to clear.
 pub fn failed_install_cleanup_required() -> bool {
     FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
 }
 
-/// Retries the removal a failed install could not prove.
-///
-/// # The dead end this exists to open
-///
-/// `install` latches `FAILED_INSTALL_REMOVAL_UNPROVED` when its own rollback
-/// could not take the detour back out, and it clears `INSTALLED` and
-/// `MODULE_BASE` on the way past. `uninstall` then returns `Ok` immediately --
-/// `INSTALLED` is already false -- WITHOUT retrying anything, so the registry's
 /// post-abort proof kept seeing `release_pending()` and refusing, the orphan
-/// driver kept calling the same no-op teardown, and the loop only ended when
-/// orphan recovery gave up with the detour possibly still live. D45 has had the
-/// primitive that breaks this since its own rollback grew one; this is the
-/// same shape for the d78 site, and `clear_failed_install_cleanup_before_abort`
-/// in the collector is what calls it.
-///
-/// The overwhelmingly likely cause of the original failure is a refused thread
-/// freeze, which is transient -- so a retry is a real second chance rather
-/// than a ritual.
-///
-/// `MODULE_BASE` is re-derived rather than read, because the failing path
-/// zeroed it before latching. `MH_RemoveHook` disables an enabled hook on the
-/// way out, so removal alone covers both shapes of failure: an `enable` that
-/// reported failure and could not be removed, and a receipt refusal whose
-/// `disable` did not take.
 pub fn retry_failed_install_cleanup() -> Result<(), String> {
     if !FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire) {
         return Err("A27 designer refresh failed-install cleanup has no retryable custody".into());
@@ -409,19 +272,6 @@ pub fn retry_failed_install_cleanup() -> Result<(), String> {
         return Err("A27 designer refresh cleanup could not resolve the module base".into());
     }
     let target = base + DESIGNER_REFRESH_RVA as usize;
-    // QUIESCED, AND THE DISABLE IS THIS FUNCTION'S OWN NOW.
-    //
-    // The paragraph above used to end "`MH_RemoveHook` disables an enabled hook
-    // on the way out, so removal alone covers both shapes of failure", and that
-    // stopped being true when `inline_detour::remove` grew its quiescence
-    // contract: it now REFUSES a target MinHook still reports as enabled
-    // (`StillEnabled`) rather than removing it, because a caller that has not
-    // disabled cannot have drained. Relying on the old behaviour would have
-    // made this retry fail forever on the one shape it exists for -- a live
-    // detour -- which is the shape that matters.
-    //
-    // So: disable, drain, free. A `NOT_CREATED` disable is the other shape (the
-    // enable never took) and is not an error here.
     match unsafe { inline_detour::disable(target as *mut c_void) } {
         Ok(())
         | Err(InlineDetourReleaseError::MinHook(MH_STATUS::MH_ERROR_DISABLED))
@@ -433,103 +283,47 @@ pub fn retry_failed_install_cleanup() -> Result<(), String> {
         }
     }
     if !drained_after_disable() {
-        // The latch stays set: this is still a site that may be live, and the
-        // next retry is the whole point of it.
         return Err(retained_for_in_flight_bodies());
     }
     unsafe { inline_detour::remove(target as *mut c_void) }
         .map_err(|status| format!("A27 designer refresh hook removal retry failed: {status}"))?;
-    // The install never completed, so any custody on the installed side is a
-    // partial roster from the attempt that failed. Discarding it is what
-    // `install`'s own rollback does with it; leaving it would keep
     // `release_pending` true over a site that is now provably out.
-    //
-    // BEFORE the latch is cleared, deliberately. `discard_all_custody` is
-    // silent on a poisoned lock, so a discard that did not take must leave this
     // module still reporting a pending release rather than a clean one -- and
-    // the latch is the last thing standing between the two.
     HOOK_RECEIPTS.discard_all_custody();
-    // Only now. The latch is the sole record that a detour may be live, so it
-    // is cleared exactly when a removal has come back clean -- never on the
-    // way in, and never because the retry was merely attempted.
     FAILED_INSTALL_REMOVAL_UNPROVED.store(false, Ordering::Release);
     ORIGINAL_REFRESH.store(0, Ordering::Release);
     MODULE_BASE.store(0, Ordering::Release);
     Ok(())
 }
 
-/// What an interrupted teardown still owes, so a RETRY RESUMES instead of
-/// starting over or, worse, doing nothing.
-///
-/// The phases exist because each of the three steps can fail independently and
-/// none of them is safely repeatable from the top: `MH_DisableHook` on an
-/// already-disabled hook is an error, so a retry that blindly re-disabled would
-/// never converge, and a retry that blindly skipped straight to the receipt
 /// would publish a release over a detour still in the executable.
-///
-/// See [`teardown_owes`] for what each value means and
-/// [`uninstall`] for the transitions.
 const TEARDOWN_OWES_NOTHING: u8 = 0;
 const TEARDOWN_OWES_DISABLE: u8 = 1;
 const TEARDOWN_OWES_REMOVE: u8 = 2;
 const TEARDOWN_OWES_RECEIPT: u8 = 3;
 
-/// The teardown phase this module is parked in. Set the moment teardown becomes
-/// owed and advanced only by a step that came back clean.
 static TEARDOWN_PHASE: AtomicU8 = AtomicU8::new(TEARDOWN_OWES_NOTHING);
 
-/// The three questions a teardown attempt asks itself, from the phase it is
-/// resuming at: `(disable, remove, publish receipt)`.
-///
-/// Free-standing and total so the resumption rule is testable without a patched
-/// `hoi4.exe` — the physical half needs a live target, this half is where a
-/// wedge or a premature receipt actually comes from.
 const fn teardown_owes(phase: u8) -> (bool, bool, bool) {
     match phase {
         TEARDOWN_OWES_DISABLE => (true, true, true),
         TEARDOWN_OWES_REMOVE => (false, true, true),
         TEARDOWN_OWES_RECEIPT => (false, false, true),
-        // TEARDOWN_OWES_NOTHING, and any value that could only come from a
-        // corrupted store: owing nothing is the only safe reading, because the
-        // caller has already established there is work to do before asking.
         _ => (false, false, false),
     }
 }
 
-/// True while an interrupted teardown still owes physical work or a receipt.
 pub fn teardown_pending() -> bool {
     TEARDOWN_PHASE.load(Ordering::Acquire) != TEARDOWN_OWES_NOTHING
 }
 
 /// Releases the site, RESUMABLY.
-///
-/// # The wedge this shape exists to prevent
-///
-/// This used to clear `INSTALLED` first and then run disable, remove and
-/// receipt-publication, any of which can fail — a refused process freeze is the
-/// ordinary cause and is transient. A failure left `INSTALLED` false with the
-/// work half done, so every later call returned `Ok` at the top having done
 /// nothing, while `release_pending()` stayed true through the surviving receipt
-/// custody. The registry's post-abort proof therefore refused forever, the
-/// orphan driver re-ran the same no-op teardown, and one transient freeze
-/// refusal became a permanently live detour.
-///
-/// Now the owed work is recorded in [`TEARDOWN_PHASE`] before any of it is
-/// attempted, each step advances the phase only when it comes back clean, and a
-/// retry picks up exactly where the last attempt stopped.
 pub fn uninstall() -> Result<(), String> {
-    // A FAILED INSTALL is serviced first, and by every caller rather than only
-    // by the production registry's abort. The legacy evidence-mode install site
-    // discards its error and the matching teardown calls this function, so a
-    // failed install whose removal could not be proved reached the
-    // owes-nothing return below and cleaned up nothing at all -- there is no
-    // registry in that mode to call `retry_failed_install_cleanup` for it.
     if FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire) {
         retry_failed_install_cleanup()?;
     }
     if INSTALLED.swap(false, Ordering::AcqRel) {
-        // Newly owed. Never downgrade a phase an earlier interrupted attempt
-        // already advanced past.
         let _ = TEARDOWN_PHASE.compare_exchange(
             TEARDOWN_OWES_NOTHING,
             TEARDOWN_OWES_DISABLE,
@@ -542,8 +336,6 @@ pub fn uninstall() -> Result<(), String> {
         return Ok(());
     }
     let (owes_disable, owes_remove, owes_receipt) = teardown_owes(phase);
-    // Re-derived when a previous attempt already zeroed it, for the same reason
-    // `retry_failed_install_cleanup` re-derives.
     let mut base = MODULE_BASE.load(Ordering::Acquire);
     if base == 0 {
         base = unsafe { GetModuleHandleW(ptr::null()) } as usize;
@@ -558,21 +350,7 @@ pub fn uninstall() -> Result<(), String> {
         TEARDOWN_PHASE.store(TEARDOWN_OWES_REMOVE, Ordering::Release);
     }
     if owes_remove {
-        // QUIESCED, AND THE DRAIN IS ASKED ON EVERY ATTEMPT, not only the one
-        // that disabled. The phase machine lets a retry arrive with the disable
-        // already owed-and-done by an earlier attempt, and that earlier attempt
-        // proved nothing about whether a body is in flight NOW. Draining here,
-        // beside the free, is what makes the two adjacent rather than separated
-        // by a process restart's worth of state.
-        //
-        // A refusal RETAINS: the target stays disabled -- nothing new can enter
-        // it -- the trampoline stays allocated for whoever is inside, and the
-        // phase stays at `TEARDOWN_OWES_REMOVE` so the next attempt retries
         // exactly this step. Freeing here instead is the use-after-free
-        // `inline_detour::remove`'s contract exists to prevent: the freeze's
-        // instruction-pointer check cannot see a thread in `hook_refresh`,
-        // because that body is this crate's own function at an address
-        // `inline_detour` is never told, and it returns THROUGH the trampoline.
         if !drained_after_disable() {
             return Err(retained_for_in_flight_bodies());
         }
@@ -581,22 +359,12 @@ pub fn uninstall() -> Result<(), String> {
         TEARDOWN_PHASE.store(TEARDOWN_OWES_RECEIPT, Ordering::Release);
     }
     // Mint the release receipt only for a teardown that provably restored the
-    // target. Every physical step above returned clean to reach here -- on this
     // attempt or an earlier one -- and `observe_released_set` then
-    // independently re-reads the site's bytes and refuses unless the admitted
-    // original prefix is back.
-    //
-    // `relay_freed: true` is the truth of this path: `inline_detour::remove` is
-    // MinHook's `MH_RemoveHook` and frees the trampoline.
     if owes_receipt && HOOK_RECEIPTS.has_complete_installed_custody() {
         HOOK_RECEIPTS
             .publish_release(true)
             .map_err(|error| format!("A27 designer refresh release receipt refused: {error}"))?;
     }
-    // The detour is out and the receipt is settled. Clearing the failed-install
-    // latch here too is correct and not a shortcut: reaching this line means a
-    // removal came back clean for this exact site, which is the whole of what
-    // that latch records.
     TEARDOWN_PHASE.store(TEARDOWN_OWES_NOTHING, Ordering::Release);
     FAILED_INSTALL_REMOVAL_UNPROVED.store(false, Ordering::Release);
     ORIGINAL_REFRESH.store(0, Ordering::Release);
@@ -685,9 +453,6 @@ pub fn encode_latest(
 }
 
 unsafe extern "system" fn hook_refresh(view: usize) {
-    // TAKEN FIRST AND HELD TO THE END, so it spans the call through the
-    // original -- the part that returns through the trampoline teardown wants
-    // to free.
     let _lease = CallbackLease::enter();
     let nested = IN_CALLBACK.with(|guard| guard.replace(true));
     let original = ORIGINAL_REFRESH.load(Ordering::Acquire);
@@ -695,10 +460,6 @@ unsafe extern "system" fn hook_refresh(view: usize) {
         let original: RefreshFn = unsafe { mem::transmute(original) };
         unsafe { original(view) };
     }
-    // THE ORIGINAL IS ALWAYS CALLED, admission or not: it is the game's own
-    // refresh and skipping it would mutate the simulation. `ADMISSION_OPEN`
-    // gates only the OBSERVATION, so a teardown that has closed it stops paying
-    // for captures it is about to discard.
     if !nested && ADMISSION_OPEN.load(Ordering::Acquire) {
         let result = capture_after_refresh(view);
         if let Some(mut state) = STATE.get().and_then(|state| state.lock().ok()) {
@@ -900,17 +661,8 @@ fn read_usize(address: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// The drain has to be able to say NO, and it has to say it in bounded
-    /// time. A `drained_after_disable` that returned true with a body inside
     /// `hook_refresh` is the use-after-free `inline_detour::remove`'s contract
-    /// exists to stop -- the body returns through the trampoline the free
     /// releases -- and one that never returned is a hung game at teardown.
-    ///
-    /// kills: deleting the `CallbackLease::enter` in `hook_refresh` (the count
-    /// never rises, so this reads zero and returns true); replacing the bounded
-    /// loop with `while != 0` (this test never terminates); returning `true`
-    /// unconditionally. It also pins the ADMISSION half: the drain closes
-    /// `ADMISSION_OPEN`, so a caller cannot drain and leave the gate open.
     #[test]
     fn the_drain_refuses_while_a_detour_body_is_in_flight_and_closes_admission() {
         assert_eq!(
@@ -937,13 +689,6 @@ mod tests {
         );
     }
 
-    /// Law: the single pinned spec describes the site this module patches.
-    ///
-    /// The name says `d78` because that is whose producer it is, and since
-    /// 2026-08-13 the install unit that patches it is named for d78 too.
-    ///
-    /// Mutation proof: change `DESIGNER_REFRESH_RVA` or `REFRESH_SENTINEL`
-    /// without changing the spec, and this fails.
     #[test]
     fn the_receipt_spec_matches_the_site_this_module_patches() {
         let spec = PRODUCTION_HOOK_SPECS[0];
@@ -965,22 +710,7 @@ mod tests {
         );
     }
 
-    /// Law: the cleanup retry refuses when there is nothing to retry, and says
     /// so rather than reporting a release it did not perform.
-    ///
-    /// This is the half of the primitive that can be exercised without a
-    /// patched `hoi4.exe`, and it is the half that decides whether the abort
-    /// path can be lied to. `clear_failed_install_cleanup_before_abort` only
-    /// calls the retry when `failed_install_cleanup_required()` is true, so a
-    /// retry that returned `Ok` over an unlatched module would let a caller
-    /// that skipped the predicate believe a removal happened.
-    ///
-    /// The success half needs a live target: it calls `MH_RemoveHook` on a real
-    /// detour. What is checked here is the refusal and the predicate's resting
-    /// state.
-    ///
-    /// kills: making `retry_failed_install_cleanup` return `Ok(())` when the
-    /// unproved-removal latch is clear.
     #[test]
     fn the_failed_install_cleanup_retry_refuses_when_nothing_is_latched() {
         assert!(
@@ -999,19 +729,7 @@ mod tests {
         );
     }
 
-    /// Law: an interrupted teardown RESUMES at the step that failed, and a
-    /// teardown that owes nothing does nothing.
-    ///
-    /// This is the offline half of the wedge fix. The physical half needs a
-    /// patched `hoi4.exe`; what can be checked here is the rule that decides
-    /// which steps a retry runs, and that rule is where both failure modes
-    /// live: repeating `disable` on an already-disabled hook never converges
-    /// (MinHook refuses it), and skipping straight to the receipt publishes a
     /// release over a detour still in the executable.
-    ///
-    /// kills: making `teardown_owes` return `(true, true, true)` for every
-    /// phase (the restart-from-the-top bug), or `(false, false, true)` for
-    /// `TEARDOWN_OWES_DISABLE` (the premature-receipt bug).
     #[test]
     fn an_interrupted_teardown_resumes_at_the_step_that_failed() {
         assert_eq!(teardown_owes(TEARDOWN_OWES_DISABLE), (true, true, true));
@@ -1019,8 +737,6 @@ mod tests {
         assert_eq!(teardown_owes(TEARDOWN_OWES_RECEIPT), (false, false, true));
         assert_eq!(teardown_owes(TEARDOWN_OWES_NOTHING), (false, false, false));
 
-        // The phases are ordered, and the order is what makes "resume" mean
-        // anything: a later phase owes a strict subset of an earlier one's work.
         for (earlier, later) in [
             (TEARDOWN_OWES_DISABLE, TEARDOWN_OWES_REMOVE),
             (TEARDOWN_OWES_REMOVE, TEARDOWN_OWES_RECEIPT),
@@ -1033,16 +749,6 @@ mod tests {
         }
     }
 
-    /// Law: a module that never installed owes no teardown, and says so without
-    /// touching the executable.
-    ///
-    /// `uninstall` is called unconditionally by several collector paths, and
-    /// the production hook registry's D78 arm is one of them. In a test process
-    /// nothing is patched, so the only correct behaviour is an immediate clean
-    /// return — an attempt to disable an unpatched site would be a MinHook
-    /// error on every capture that ended without installing.
-    ///
-    /// kills: dropping the `TEARDOWN_OWES_NOTHING` early return.
     #[test]
     fn a_module_that_never_installed_owes_no_teardown() {
         assert!(!installed());

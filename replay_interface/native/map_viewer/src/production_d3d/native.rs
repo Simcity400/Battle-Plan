@@ -25,10 +25,6 @@ pub struct ProductionD3dReadback {
     pub sha256: String,
 }
 
-/// Opaque app-owned D3D11 production target. It can render without a window or
-/// attach to the replay application's existing device/context. Raw target
-/// transfer is proof plumbing only; display presentation requires the carried
-/// post-process draw to `SwapchainBackBuffer`.
 pub struct NativeProductionD3dBackend {
     device: NativeD3d11Device,
     color_texture: D3dPtr<ID3D11Texture2D>,
@@ -105,9 +101,6 @@ impl<'a> NativeProductionD3dExecutor<'a> {
         Self::new_with_snow_mud_h2(backend, resolver, resources, false)
     }
 
-    /// Construct the native executor with optional output-only SnowMud H2
-    /// staging readback. Ordinary interactive rendering leaves this false;
-    /// exact source binding/cardinality remains mandatory in both modes.
     pub fn new_with_snow_mud_h2(
         backend: &'a mut NativeProductionD3dBackend,
         resolver: &'a crate::GameFileResolver,
@@ -139,8 +132,6 @@ impl<'a> NativeProductionD3dExecutor<'a> {
         })
     }
 
-    /// Product-only H2 materialization proof for the most recently executed
-    /// frame. It is absent when the frame had no SnowMudTexture consumers.
     pub fn snow_mud_execution_proof(&self) -> Option<&SnowMudD3dExecutionProof> {
         self.snow_mud_proof.as_ref()
     }
@@ -891,12 +882,7 @@ impl NativeProductionD3dBackend {
         }
     }
 
-    /// Create the opaque production target on the replay application's existing D3D11 device.
     /// The backend AddRefs both interfaces and releases them on drop.
-    ///
-    /// # Safety
-    /// Both pointers must be live, belong to the same D3D11 device, and remain
-    /// valid for the duration of this call.
     pub unsafe fn create_on_device(
         device: *mut ID3D11Device,
         context: *mut ID3D11DeviceContext,
@@ -973,8 +959,6 @@ impl NativeProductionD3dBackend {
         })
     }
 
-    /// Attach the app-owned back-buffer RTV used only when an authenticated
-    /// carried draw names `SwapchainBackBuffer` as its color output.
     pub unsafe fn attach_presentation_target(
         &mut self,
         rtv: *mut ID3D11RenderTargetView,
@@ -1111,10 +1095,7 @@ impl NativeProductionD3dBackend {
         Ok(())
     }
 
-    /// Bind the exact opaque production target plus carried viewport/scissor for one draw.
     pub fn bind_output_state(&mut self, output: &RenderOutputState) -> Result<()> {
-        // Reject malformed carried state before any context mutation so a
-        // refused draw leaves no partially bound output behind.
         super::native_draw::validate_output_viewport_scissor(output)?;
         validate_output_for_target(output, &self.desc)?;
         let viewport = D3D11_VIEWPORT {
@@ -1148,12 +1129,6 @@ impl NativeProductionD3dBackend {
         Ok(())
     }
 
-    /// Copy or resolve MainScene into a caller-owned proof Texture2D. This is
-    /// not product presentation; exact display output is an authenticated
-    /// post-process draw targeting `SwapchainBackBuffer`.
-    ///
-    /// # Safety
-    /// `destination` must be a live Texture2D created by this backend's device.
     pub unsafe fn copy_main_scene_to_proof_texture(
         &mut self,
         destination: *mut ID3D11Texture2D,
@@ -1451,12 +1426,9 @@ unsafe fn create_exact_graph_texture(
         })
         .collect::<Result<Vec<_>>>()?;
     if !exact.ordered_initial_subresources.is_empty() && resource.mip_levels == 0 {
-        // A captured GetDesc never reports zero mips; without an explicit mip
-        // count the per-subresource geometry below cannot be derived.
         return Err("exact render-target initialization requires an explicit mip count".into());
     }
     for (initial, bytes) in exact.ordered_initial_subresources.iter().zip(&storage) {
-        // D3D11 subresource ordering is mip-major within each array slice.
         let mip_level = initial.subresource_ordinal % resource.mip_levels;
         super::native_draw::validate_texture_subresource_payload(
             resource.dimension,
@@ -1946,8 +1918,8 @@ unsafe fn readback_texture(
 
 fn bytes_per_pixel(format: u32) -> Result<u32> {
     match format {
-        2 => Ok(16), // R32G32B32A32_FLOAT
-        10 => Ok(8), // R16G16B16A16_FLOAT
+        2 => Ok(16),
+        10 => Ok(8),
         28 | 29 | 87 | 88 | 91 => Ok(4),
         _ => Err(format!("MainScene readback does not support DXGI format {format}").into()),
     }

@@ -1,10 +1,3 @@
-//! Normal MainScene execution for the file/state-derived XMAP11 tree frame.
-//!
-//! Material and shared map resources are borrowed from the product resource
-//! registry, but every pointer is paired with a pointer-free content/descriptor
-//! identity and checked against the prepared frame before use. TreeMask,
-//! geometry, instances, CB1, shaders, and fixed pipeline state remain XMAP11
-//! owned.
 
 use crate::{
     PreparedTreeFrame, Result, TreeActualDrawExecution, TreePipelineStateDescriptor,
@@ -46,10 +39,7 @@ pub struct TreeNativeExecutionAuthority {
     pub viewer_state_sha256: String,
     pub main_scene_target_sha256: String,
     pub map_copy_receipt_set_sha256: String,
-    /// Digest of the complete Trees `FamilyDisposition` sealed by the
-    /// production-foundation adapter for this frame.
     pub foundation_authorization_sha256: String,
-    /// Explicit effect state: `true` means t5 is intentionally null.
     pub color_map_second_is_null: bool,
 }
 
@@ -240,12 +230,9 @@ pub struct NativeTreeMainSceneBindings {
     pub depth_dsv: *mut winapi::um::d3d11::ID3D11DepthStencilView,
     pub width: u32,
     pub height: u32,
-    /// One exact SceneCB0 per admitted XMAP04 map-copy row.
     pub ordered_partition_scene_cb0: Vec<NativeTreePartitionSceneBinding>,
-    /// Exact tree/fog PS CB2.
     pub pixel_cb2: *mut winapi::um::d3d11::ID3D11Buffer,
     pub shadow_map_texture_matrix_f32_bits: [u32; 16],
-    /// t2,t3,t4,(optional t5),t6,t8..t13,t15 in slot order.
     pub ordered_shared_resources: Vec<NativeTreeShaderResource>,
     pub ordered_asset_resources: Vec<NativeTreeAssetResources>,
 }
@@ -279,8 +266,6 @@ struct OwnedTreeInstances {
     buffer: crate::d3d11_device::D3dPtr<winapi::um::d3d11::ID3D11Buffer>,
 }
 
-/// Same-device XMAP11 owner for all immutable MainScene and TreeShadow GPU
-/// resources. Per-frame execution creates only the target/light-dependent CB1.
 #[cfg(windows)]
 pub struct NativeXmap11ResourceOwner {
     device_identity: usize,
@@ -312,9 +297,6 @@ pub struct NativeXmap11ResourceOwner {
 
 #[cfg(windows)]
 impl NativeXmap11ResourceOwner {
-    /// # Safety
-    /// `device` must remain live for this call. Returned COM objects retain
-    /// their resources and are accepted only for the exact prepared frame.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &crate::GameFileResolver,

@@ -1,37 +1,9 @@
-//! The leaf's own suite.
-//!
-//! Three kinds of test live here, and the difference matters:
-//!
-//! 1. **Tiling drift-killers.** Most of them are `const` assertions in
-//!    `lib.rs` and `family.rs` and are proved by the BUILD, not by this file --
-//!    that is stronger than a test, because a table that stops tiling cannot be
-//!    compiled at all. What is left for runtime is what a `const` context cannot
-//!    reach: that each family's fixture set exercises every version and every
-//!    flag its table declares, so a hand-written fixture list cannot silently
-//!    stop covering a new one.
-//!
-//! 2. **Byte goldens, written out here from the documented layout.** Every
-//!    fixture in this file is assembled by [`Bytes`], which pushes little-endian
-//!    words at offsets stated in the test. NONE of them is produced by
-//!    `crate::encode`. That is the whole point of playbook step 8: a round-trip
-//!    cannot catch a mistake both sides make, so the encoder is checked AGAINST
-//!    these bytes rather than used to make them.
-//!
-//! 3. **Structural refusals.** One per [`ViolationKind`], each on a fixture that
-//!    is legal except for the one fact under test.
-
 use alloc::vec::Vec;
 use alloc::{format, vec};
 
 use crate::encode;
 use crate::*;
 
-/// The two budgets this tree ships, restated here ONLY because a `no_std` leaf
-/// under test has no `compact_contract` to read them from. The production sites
-/// pass `compact_contract::build_profile::MAX_COMPACT_STRATEGIC_RESOURCE_COUNT`
-/// and `COMPACT_STRATEGIC_RESOURCE_IDENTITY_STRIDE`; the registry row in
-/// `verify_world_fold_citations.py` records that, so this pair cannot drift
-/// without the gate noticing that a site stopped naming those identifiers.
 const TEST_LIMITS: Limits = Limits::new(64, 64);
 
 fn test_decode_context(
@@ -50,8 +22,6 @@ fn test_decode_context(
     )
 }
 
-// kills: making the eager entry point reject a structurally complete empty-core
-// payload, or failing to publish its canonical zero units.
 #[test]
 fn eager_decoder_accepts_the_minimal_payload() {
     let payload = core_bytes(&[]).done();
@@ -65,8 +35,6 @@ fn eager_decoder_accepts_the_minimal_payload() {
     assert_eq!(report.units.market_trade_contract_rows, Some(0));
 }
 
-// kills: a driver arm that resumes without visiting any declared block, or
-// that visits a block without retaining its decoded rows.
 #[test]
 fn eager_decoder_walks_every_declared_block_of_every_family() {
     for trailer in Trailer::ALL {
@@ -100,8 +68,6 @@ fn eager_decoder_walks_every_declared_block_of_every_family() {
     }
 }
 
-// kills: treating a semantic row refusal as an unreadable byte boundary, which
-// drops the bad family's structurally read count or a later decoded family.
 #[test]
 fn semantic_family_findings_do_not_cut_structurally_read_units() {
     let append_resource = |builder: &mut Bytes| {
@@ -158,8 +124,6 @@ fn semantic_family_findings_do_not_cut_structurally_read_units() {
     assert_eq!(report.units.market_trade_stockpile_item_rows, Some(2));
 }
 
-// kills: storing only an MTRR token range and rereading the caller's payload
-// after decode_record, which would let later buffer mutation change the report.
 #[test]
 fn decoded_identity_text_is_self_contained() {
     let mut payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
@@ -174,8 +138,6 @@ fn decoded_identity_text_is_self_contained() {
     assert_eq!(crate::decode::identity_token(identity), Some("oil"));
 }
 
-// kills: returning immediately on a structural stop and thereby discarding a
-// semantic defect already available in the partial document.
 #[test]
 fn structural_stop_retains_an_earlier_semantic_finding() {
     let mut payload = core_bytes(&[[1, 1 << 31, 0]]).done();
@@ -195,8 +157,6 @@ fn structural_stop_retains_an_earlier_semantic_finding() {
         .any(|f| f.rule == crate::decode::D43DecodeRule::D43StructuralViolation));
 }
 
-// kills: short-circuiting semantic evaluation after one bad core word, or
-// selecting by discovery order instead of the fold's historical rule order.
 #[test]
 fn multi_defect_core_retains_all_and_selects_the_historical_first() {
     let mut payload = core_bytes(&[[0, 1 << 31, 0]]).done();
@@ -230,8 +190,6 @@ fn multi_defect_core_retains_all_and_selects_the_historical_first() {
     );
 }
 
-// kills: ordering fatal findings by rule kind before row index, which would
-// let a later row's zero contract id outrank an earlier row's unknown flags.
 #[test]
 fn fatal_selection_preserves_row_order_before_rule_order() {
     let payload = core_bytes(&[[1, 1 << 31, 0], [0, 0, 0]]).done();
@@ -245,8 +203,6 @@ fn fatal_selection_preserves_row_order_before_rule_order() {
     );
 }
 
-// kills: comparing row indexes across MTRR's identity and row blocks without
-// first ordering those blocks as the owned cursor walks them.
 #[test]
 fn fatal_selection_preserves_mtrr_block_order() {
     let mut payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
@@ -267,8 +223,6 @@ fn fatal_selection_preserves_mtrr_block_order() {
     );
 }
 
-// kills: comparing row indexes across MTRD's witness and deal-row blocks
-// without first ordering witnesses, incomplete owners, then rows.
 #[test]
 fn fatal_selection_preserves_mtrd_block_order() {
     let mut payload = a_fixture_with_every_block_filled(Trailer::ClassicDeal);
@@ -276,8 +230,7 @@ fn fatal_selection_preserves_mtrd_block_order() {
         panic!("expected MTRD");
     };
     let header = *cursor.header();
-    payload[header.witnesses_at + 4..header.witnesses_at + 8]
-        .copy_from_slice(&0u32.to_le_bytes());
+    payload[header.witnesses_at + 4..header.witnesses_at + 8].copy_from_slice(&0u32.to_le_bytes());
     payload[header.rows_at..header.rows_at + 4].copy_from_slice(&0u32.to_le_bytes());
     let report = crate::decode::decode_record(
         &payload,
@@ -289,8 +242,6 @@ fn fatal_selection_preserves_mtrd_block_order() {
     );
 }
 
-// kills: comparing row indexes across MTS1's country and item blocks without
-// first ordering the complete country block before the item block.
 #[test]
 fn fatal_selection_preserves_mts1_block_order() {
     let mut payload = a_fixture_with_every_block_filled(Trailer::Stockpile);
@@ -310,8 +261,6 @@ fn fatal_selection_preserves_mts1_block_order() {
     );
 }
 
-// kills: assigning aggregate MTS1 coverage to a later policy block than item
-// rows, which would make item 0's bad variant hide the historical coverage error.
 #[test]
 fn mts1_country_coverage_precedes_item_validation() {
     let mut builder = core_bytes(&[]);
@@ -321,24 +270,22 @@ fn mts1_country_coverage_precedes_item_validation() {
         panic!("expected MTS1");
     };
     let header = *cursor.header();
-    payload[header.countries_at + 8..header.countries_at + 12]
-        .copy_from_slice(&1u32.to_le_bytes());
+    payload[header.countries_at + 8..header.countries_at + 12].copy_from_slice(&1u32.to_le_bytes());
     payload[header.items_at..header.items_at + 4].copy_from_slice(&0u32.to_le_bytes());
     let report = crate::decode::decode_record(
         &payload,
         test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
     );
-    assert!(report.findings.iter().any(|finding| {
-        finding.rule == crate::decode::D43DecodeRule::D43StockpileVariantRange
-    }));
+    assert!(report
+        .findings
+        .iter()
+        .any(|finding| { finding.rule == crate::decode::D43DecodeRule::D43StockpileVariantRange }));
     assert_eq!(
         crate::decode::select_first_fatal(&report).map(|finding| finding.rule),
         Some(crate::decode::D43DecodeRule::D43StockpileCountryCoverage)
     );
 }
 
-// kills: ordering MTRD aggregate findings by predicate ordinal instead of the
-// BTree identity order the historical fold completed one identity at a time.
 #[test]
 fn mtrd_identity_order_precedes_half_predicate_order() {
     fn row(
@@ -376,7 +323,14 @@ fn mtrd_identity_order_precedes_half_predicate_order() {
 
     let rows = [
         row(1, 2, DealDirection::Export, 1, 2, FIXED_SCALE_RAW as i64),
-        row(2, 1, DealDirection::Import, 1, 2, 2 * FIXED_SCALE_RAW as i64),
+        row(
+            2,
+            1,
+            DealDirection::Import,
+            1,
+            2,
+            2 * FIXED_SCALE_RAW as i64,
+        ),
         row(3, 4, DealDirection::Export, 3, 4, FIXED_SCALE_RAW as i64),
     ];
     let mut payload = core_bytes(&[]).done();
@@ -389,7 +343,10 @@ fn mtrd_identity_order_precedes_half_predicate_order() {
         test_decode_context(crate::decode::D43AcceptedFamilies::SHIPPING),
     );
     let first = crate::decode::select_first_fatal(&report).expect("fatal deal finding");
-    assert_eq!(first.rule, crate::decode::D43DecodeRule::D43DealHalfMismatch);
+    assert_eq!(
+        first.rule,
+        crate::decode::D43DecodeRule::D43DealHalfMismatch
+    );
     assert_eq!(
         first.deal_identity,
         Some(crate::decode::D43DealIdentityOperands {
@@ -401,8 +358,6 @@ fn mtrd_identity_order_precedes_half_predicate_order() {
     );
 }
 
-// kills: labeling a valid core header whose declared rows are truncated as a
-// core-header finding instead of a core-rows finding.
 #[test]
 fn structural_core_row_truncation_names_the_core_rows_block() {
     let mut payload = core_bytes(&[[1, 0, 0]]).done();
@@ -416,14 +371,9 @@ fn structural_core_row_truncation_names_the_core_rows_block() {
         .iter()
         .find(|finding| finding.rule == crate::decode::D43DecodeRule::D43StructuralViolation)
         .expect("structural finding");
-    assert_eq!(
-        structural.block,
-        crate::decode::D43DecodeBlock::D43CoreRows
-    );
+    assert_eq!(structural.block, crate::decode::D43DecodeBlock::D43CoreRows);
 }
 
-// kills: selecting a bad core scale before proving the declared core-row
-// extent, contrary to the fold's length-before-scale prefix order.
 #[test]
 fn truncated_core_rows_outrank_a_bad_core_scale() {
     let mut payload = core_bytes(&[[1, 0, 0]]).done();
@@ -439,8 +389,6 @@ fn truncated_core_rows_outrank_a_bad_core_scale() {
     );
 }
 
-// kills: labeling the duplicate-family refusal discovered by `next()` at the
-// second magic as a trailer-header failure.
 #[test]
 fn duplicate_trailer_finding_names_the_magic_block() {
     let mut b = core_bytes(&[]);
@@ -461,8 +409,6 @@ fn duplicate_trailer_finding_names_the_magic_block() {
     );
 }
 
-// kills: dropping resource_index from the MTRD half-join identity, which would
-// merge two distinct deals sharing exporter/importer/ordinal into four halves.
 #[test]
 fn deal_half_join_keys_distinct_resources_separately() {
     let mut b = core_bytes(&[]);
@@ -478,8 +424,6 @@ fn deal_half_join_keys_distinct_resources_separately() {
     )));
 }
 
-// kills: parsing an unaccepted shipping family header before refusing its
-// magic, or forgetting to expose that family to the all-family lane policy.
 #[test]
 fn lane_only_families_are_refused_at_magic_or_fully_walked_by_policy() {
     for trailer in [Trailer::Residual, Trailer::LendLease] {
@@ -504,8 +448,6 @@ fn lane_only_families_are_refused_at_magic_or_fully_walked_by_policy() {
     }
 }
 
-// kills: collapsing the lane-only MTRB/MTLL payload checks back into one
-// umbrella finding, or accidentally making those gate diagnostics record-fatal.
 #[test]
 fn lane_only_family_predicates_are_fine_grained_and_nonfatal() {
     use crate::decode::{D43LaneRule, D43RuleFatality};
@@ -528,8 +470,6 @@ fn lane_only_family_predicates_are_fine_grained_and_nonfatal() {
     }));
 }
 
-// kills: moving residual current-domain vocabulary or the row-width ceiling
-// back into the lane formatter, or accidentally making either payload finding fatal.
 #[test]
 fn residual_domain_and_row_width_predicates_are_leaf_owned_and_nonfatal() {
     use crate::decode::{D43LaneRule, D43RuleFatality};
@@ -547,14 +487,11 @@ fn residual_domain_and_row_width_predicates_are_leaf_owned_and_nonfatal() {
         D43LaneRule::D43LaneResidualCurrentRowLenRange,
     ] {
         assert!(report.findings.iter().any(|finding| {
-            finding.lane_rule == Some(rule)
-                && finding.fatality == D43RuleFatality::NonFatal
+            finding.lane_rule == Some(rule) && finding.fatality == D43RuleFatality::NonFatal
         }));
     }
 }
 
-// kills: counting an invalid flow kind as a decoded lane country, which drops
-// the lane's historical country-count diagnostic when every row kind is unknown.
 #[test]
 fn lane_flow_country_count_ignores_unknown_kinds() {
     let mut payload = core_bytes(&[]);
@@ -569,15 +506,12 @@ fn lane_flow_country_count_ignores_unknown_kinds() {
         test_decode_context(crate::decode::D43AcceptedFamilies::LANE_ALL),
     );
     assert!(report.findings.iter().any(|finding| {
-        finding.lane_rule
-            == Some(crate::decode::D43LaneRule::D43LaneFlowDecodedCountryCount)
+        finding.lane_rule == Some(crate::decode::D43LaneRule::D43LaneFlowDecodedCountryCount)
             && finding.operand_a == 0
             && finding.operand_b == 1
     }));
 }
 
-// kills: leaving the lane's historical speed ceiling in the removed lane
-// decoder, or silently replacing its 100 ceiling with the fold's wider range.
 #[test]
 fn lane_detail_speed_ceiling_is_a_shared_leaf_finding() {
     let mut b = core_bytes(&[]);
@@ -595,8 +529,6 @@ fn lane_detail_speed_ceiling_is_a_shared_leaf_finding() {
     }));
 }
 
-// kills: dropping country witnesses from one family, or comparing an MTRR
-// identity-only trailer as though it had witnessed a country set.
 #[test]
 fn cross_family_country_sets_are_compared_with_identity_only_exception() {
     let mut b = core_bytes(&[]);
@@ -634,8 +566,6 @@ fn cross_family_country_sets_are_compared_with_identity_only_exception() {
         .any(|f| f.rule == crate::decode::D43DecodeRule::D43CrossCountrySetAgreement));
 }
 
-// kills: removing the MTRF-v3/MTRR-identity join rule or treating a count-only
-// MTRR as identity-bearing.
 #[test]
 fn variable_flow_requires_identity_bearing_resource_rows() {
     let mut b = core_bytes(&[]);
@@ -670,8 +600,6 @@ fn variable_flow_requires_identity_bearing_resource_rows() {
         .any(|f| f.rule == crate::decode::D43DecodeRule::D43CrossFlowV3NeedsIdentityResourceRows));
 }
 
-// kills: evaluating cross-family absence rules after a structural stop, which
-// would falsely claim a truncated later MTRR was absent from a complete record.
 #[test]
 fn cross_family_absence_rules_wait_for_exact_consumption() {
     let mut b = core_bytes(&[]);
@@ -687,8 +615,6 @@ fn cross_family_absence_rules_wait_for_exact_consumption() {
     }));
 }
 
-// kills: letting read_body's header_len refusal outrank the owner-approved
-// MTRF resource-count diagnostic when both words are wrong.
 #[test]
 fn flow_v3_double_fault_selects_resource_count_before_header_len() {
     let mut b = core_bytes(&[]);
@@ -706,8 +632,6 @@ fn flow_v3_double_fault_selects_resource_count_before_header_len() {
     );
 }
 
-// kills: emitting both the previewed MTRF resource-count rule and a second
-// generic structural finding for the same rejected header word.
 #[test]
 fn flow_v3_bad_resource_count_is_reported_once() {
     let mut b = core_bytes(&[]);
@@ -732,8 +656,6 @@ fn flow_v3_bad_resource_count_is_reported_once() {
         .any(|finding| finding.rule == crate::decode::D43DecodeRule::D43StructuralViolation));
 }
 
-// kills: collapsing an honestly published zero into "not reached", or
-// publishing authority units after its core-scale early-return boundary.
 #[test]
 fn authority_units_distinguish_zero_from_not_reached() {
     let empty = crate::decode::decode_record(
@@ -761,8 +683,6 @@ fn authority_units_distinguish_zero_from_not_reached() {
     assert_eq!(refused_detail.units.market_trade_detail_rows, None);
 }
 
-// kills: deriving the publication cut from a semantic family or cross-family
-// fatal verdict, which erases counts whose complete byte ranges were all read.
 #[test]
 fn cross_family_refusal_retains_fully_decoded_family_units() {
     let mut payload = core_bytes(&[]);
@@ -803,8 +723,6 @@ fn cross_family_refusal_retains_fully_decoded_family_units() {
     assert_eq!(duplicate.units.market_trade_activation_rows, Some(1));
 }
 
-// kills: retaining every malformed core-row finding or silently truncating
-// excess findings without an explicit per-rule suppression summary.
 #[test]
 fn large_malformed_core_bounds_findings_with_explicit_summaries() {
     const ROWS: usize = 4_096;
@@ -817,8 +735,7 @@ fn large_malformed_core_bounds_findings_with_explicit_summaries() {
     assert_eq!(report.document.core_rows.len(), ROWS);
     assert!(report.findings.iter().any(|finding| {
         finding.rule == crate::decode::D43DecodeRule::D43FindingsSuppressed
-            && finding.suppressed_rule
-                == Some(crate::decode::D43DecodeRule::D43CoreContractIdZero)
+            && finding.suppressed_rule == Some(crate::decode::D43DecodeRule::D43CoreContractIdZero)
             && finding.operand_a > 0
     }));
     for rule in [
@@ -838,8 +755,6 @@ fn large_malformed_core_bounds_findings_with_explicit_summaries() {
     assert!(report.findings.len() < 1_000);
 }
 
-// kills: reversing the legacy MTRF all-zero predicate, which would reject the
-// producer's measured exported values and admit an empty observation.
 #[test]
 fn legacy_flow_requires_at_least_one_nonzero_resource_value() {
     let mut b = core_bytes(&[]);
@@ -871,10 +786,6 @@ fn legacy_flow_requires_at_least_one_nonzero_resource_value() {
         .iter()
         .any(|f| f.rule == crate::decode::D43DecodeRule::D43FlowLegacyValuesAllZero));
 }
-
-// =============================================================================
-// A byte builder, so every fixture is written out rather than encoded
-// =============================================================================
 
 #[derive(Default)]
 struct Bytes(Vec<u8>);
@@ -925,32 +836,31 @@ impl Bytes {
     }
 }
 
-/// A core payload with `row_count` rows, written out at the documented offsets.
 fn core_bytes(rows: &[[u64; 3]]) -> Bytes {
     let mut b = Bytes::new();
-    b.u64(7); // elapsed_wall_ms
-    b.u32(rows.len() as u32); // +8  row_count
-    b.u32(0); // +12 changed_rows
-    b.u32(0); // +16 status_flags
-    b.u32(rows.len() as u32); // +20 observed_contract_rows
-    b.u32(rows.len() as u32); // +24 emitted_contract_rows
-    b.u32(0); // +28 buyer_ptr_valid_rows
-    b.u32(0); // +32 variant_valid_rows
-    b.u32(0); // +36 amount_valid_rows
-    b.u32(rows.len() as u32); // +40 partial_field_rows
-    b.u32(FIXED_SCALE_RAW); // +44 scale_raw
+    b.u64(7);
+    b.u32(rows.len() as u32);
+    b.u32(0);
+    b.u32(0);
+    b.u32(rows.len() as u32);
+    b.u32(rows.len() as u32);
+    b.u32(0);
+    b.u32(0);
+    b.u32(0);
+    b.u32(rows.len() as u32);
+    b.u32(FIXED_SCALE_RAW);
     for row in rows {
-        b.u32(row[0] as u32); // +0  contract_id
-        b.u32(CORE_CONTRACT_TYPE); // +4  contract_type
-        b.u32(row[1] as u32); // +8  flags
-        b.u32(11); // +12 seller_tag_db_id
-        b.u32(12); // +16 buyer_tag_db_id
-        b.u32(0); // +20 equipment_variant_id
-        b.i64(row[2] as i64); // +24 amount_raw
-        b.u32(0); // +32 equipment_subbuf_status
-        b.u32(0); // +36 delivery_subbuf_status
-        b.u32(0); // +40 buyer_ptr_status
-        b.u32(0); // +44 reserved
+        b.u32(row[0] as u32);
+        b.u32(CORE_CONTRACT_TYPE);
+        b.u32(row[1] as u32);
+        b.u32(11);
+        b.u32(12);
+        b.u32(0);
+        b.i64(row[2] as i64);
+        b.u32(0);
+        b.u32(0);
+        b.u32(0);
+        b.u32(0);
     }
     b
 }
@@ -967,7 +877,6 @@ impl<N> WalkBlockToEndForTest<N> for BlockCursor<N> {
     }
 }
 
-/// Every declared block of `body`, consumed through the production walk.
 fn walk_body_to_end_for_test(body: TrailerBody) -> TrailerResume {
     match body {
         TrailerBody::Detail(c) => c.rows().walk_to_end_for_test().next,
@@ -975,7 +884,14 @@ fn walk_body_to_end_for_test(body: TrailerBody) -> TrailerResume {
         TrailerBody::FactoryHeader(c) => c.rows().walk_to_end_for_test().next,
         TrailerBody::Residual(c) => c.rows().walk_to_end_for_test().next,
         TrailerBody::LendLease(c) => c.rows().walk_to_end_for_test().next,
-        TrailerBody::ResourceRow(c) => c.identities().walk_to_end_for_test().next.rows().walk_to_end_for_test().next,
+        TrailerBody::ResourceRow(c) => {
+            c.identities()
+                .walk_to_end_for_test()
+                .next
+                .rows()
+                .walk_to_end_for_test()
+                .next
+        }
         TrailerBody::ClassicDeal(c) => {
             c.witnesses()
                 .walk_to_end_for_test()
@@ -987,14 +903,18 @@ fn walk_body_to_end_for_test(body: TrailerBody) -> TrailerResume {
                 .walk_to_end_for_test()
                 .next
         }
-        TrailerBody::Stockpile(c) => c.countries().walk_to_end_for_test().next.items().walk_to_end_for_test().next,
+        TrailerBody::Stockpile(c) => {
+            c.countries()
+                .walk_to_end_for_test()
+                .next
+                .items()
+                .walk_to_end_for_test()
+                .next
+        }
         TrailerBody::Activation(c) => c.end().next,
     }
 }
 
-/// Walk every trailer of `payload`, handing each family's owned cursor to
-/// `visit`, which must hand back the [`TrailerResume`] it can obtain in no way
-/// other than consuming every declared block.
 fn visit_trailers<F>(payload: &[u8], mut visit: F) -> Result<usize, Violation>
 where
     F: FnMut(&[u8], usize, TrailerBody) -> Result<TrailerResume, Violation>,
@@ -1025,14 +945,6 @@ fn walk_all(payload: &[u8]) -> Result<Vec<(Trailer, usize, usize)>, Violation> {
     Ok(seen)
 }
 
-// =============================================================================
-// 1. Coverage drift-killers
-// =============================================================================
-
-/// Every trailer this grammar declares has a fixture in this file.
-///
-/// A tenth family added to `Trailer::ALL` and not given a fixture fails HERE,
-/// which is the failure a hand-written fixture list otherwise never produces.
 #[test]
 fn every_declared_trailer_has_a_handwritten_fixture() {
     let mut covered = Vec::new();
@@ -1052,7 +964,6 @@ fn every_declared_trailer_has_a_handwritten_fixture() {
     }
 }
 
-/// Every VERSION of every multi-version family has a fixture.
 #[test]
 fn every_declared_version_has_a_handwritten_fixture() {
     let mut flow = Vec::new();
@@ -1081,10 +992,6 @@ fn every_declared_version_has_a_handwritten_fixture() {
     }
 }
 
-/// The union of every fixture's core flag word is exactly `KNOWN_ROW_FLAGS`.
-///
-/// This is d68's drift-killer, applied to d43's core row: a sixth flag added to
-/// `RowFlag::ALL` and never set by a fixture fails here.
 #[test]
 fn core_flag_fixtures_cover_exactly_the_known_mask() {
     let mut union = 0u32;
@@ -1101,7 +1008,6 @@ fn core_flag_fixtures_cover_exactly_the_known_mask() {
     );
 }
 
-/// The union of every fixture's MTD1 flag word is exactly `KNOWN_DETAIL_FLAGS`.
 #[test]
 fn detail_flag_fixtures_cover_exactly_the_known_mask() {
     let mut union = 0u32;
@@ -1121,8 +1027,6 @@ fn detail_flag_fixtures_cover_exactly_the_known_mask() {
     assert_eq!(union, KNOWN_DETAIL_FLAGS);
 }
 
-/// The union of every fixture's MTRR flag word is exactly
-/// `KNOWN_RESOURCE_FLAGS`, and every `NeededType` is exercised.
 #[test]
 fn resource_row_fixtures_cover_every_flag_and_needed_type() {
     let mut union = 0u32;
@@ -1152,8 +1056,6 @@ fn resource_row_fixtures_cover_every_flag_and_needed_type() {
     }
 }
 
-/// Every `FlowKind`, `DealDirection`, `DealRoute` and `DealStatus` bit appears
-/// in a fixture.
 #[test]
 fn deal_and_flow_vocabularies_are_covered() {
     let mut flow_kinds = Vec::new();
@@ -1217,38 +1119,33 @@ fn deal_and_flow_vocabularies_are_covered() {
     assert_eq!(status_union, KNOWN_DEAL_STATUS);
 }
 
-// =============================================================================
-// 2. The handwritten fixtures
-// =============================================================================
-
 fn mtd1_v1(b: &mut Bytes) {
     let start = b.at();
     b.magic(b"MTD1");
-    b.u16(1); // +4  version
-    b.u16(32); // +6  header_len
-    b.u16(64); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32(2); // +12 row_count
-    b.u32(1); // +16 price_valid_rows
-    b.u32(1); // +20 speed_valid_rows
-    b.u32(1); // +24 delivery_route_valid_rows
-    b.u32(1); // +28 progress_valid_rows
-              // Two rows whose flag words together cover every declared MTD1 bit.
+    b.u16(1);
+    b.u16(32);
+    b.u16(64);
+    b.u16(0);
+    b.u32(2);
+    b.u32(1);
+    b.u32(1);
+    b.u32(1);
+    b.u32(1);
     for (contract_id, flags) in [(1u32, 0b0000011111u32), (2u32, 0b1111100000u32)] {
-        b.u32(contract_id); // +0
-        b.u32(flags); // +4
-        b.i64(100_000); // +8  price_raw
-        b.i64(200_000); // +16 amount_raw
-        b.i32(3); // +24 speed_raw
-        b.i32(4); // +28 completed_raw
-        b.i32(5); // +32 days
-        b.u32(12); // +36 delivery_country_tag_db_id
-        b.i32(6); // +40 convoys_assigned
-        b.i32(7); // +44 convoys_total
-        b.i32(8); // +48 efficiency_raw
-        b.i32(9); // +52 factory_cic_progress_raw
-        b.i32(10); // +56 equipment_transfer_progress_raw
-        b.u32(0); // +60 reserved
+        b.u32(contract_id);
+        b.u32(flags);
+        b.i64(100_000);
+        b.i64(200_000);
+        b.i32(3);
+        b.i32(4);
+        b.i32(5);
+        b.u32(12);
+        b.i32(6);
+        b.i32(7);
+        b.i32(8);
+        b.i32(9);
+        b.i32(10);
+        b.u32(0);
     }
     assert_eq!(b.at() - start, 32 + 2 * 64);
 }
@@ -1269,24 +1166,23 @@ fn mtrf(b: &mut Bytes, version: FlowVersion, resource_count: u32, kinds: &[u32])
         FlowVersion::Variable => resource_count as usize,
     };
     b.magic(b"MTRF");
-    b.u16(version.wire()); // +4
-    b.u16(32); // +6  header_len
-    b.u16(row_len as u16); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32(kinds.len() as u32); // +12 row_count
+    b.u16(version.wire());
+    b.u16(32);
+    b.u16(row_len as u16);
+    b.u16(0);
+    b.u32(kinds.len() as u32);
     b.u32(match version {
-        // v1 states the exported-row count here; v2/v3 state the country count.
         FlowVersion::Legacy => kinds.len() as u32,
         FlowVersion::Fixed7 | FlowVersion::Variable => (kinds.len() / 6) as u32,
-    }); // +16
-    b.u32(FIXED_SCALE_RAW); // +20 scale_raw
-    b.u32(mask_or_count); // +24
-    b.u32(kind_mask); // +28
+    });
+    b.u32(FIXED_SCALE_RAW);
+    b.u32(mask_or_count);
+    b.u32(kind_mask);
     for kind in kinds {
-        b.u32(21); // +0  tag_db_id
-        b.u32(*kind); // +4  flow_kind
-        b.u32(mask_or_count); // +8
-        b.u32(0); // +12 reserved
+        b.u32(21);
+        b.u32(*kind);
+        b.u32(mask_or_count);
+        b.u32(0);
         for slot in 0..values {
             b.i64(1_000 + slot as i64);
         }
@@ -1297,22 +1193,20 @@ fn mtrf(b: &mut Bytes, version: FlowVersion, resource_count: u32, kinds: &[u32])
 fn mtrh_v1(b: &mut Bytes) {
     let start = b.at();
     b.magic(b"MTRH");
-    b.u16(1); // +4  version
-    b.u16(24); // +6  header_len
-    b.u16(16); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32(1); // +12 row_count
-    b.u32(1); // +16 country_count
-    b.u32(0); // +20 reserved1
-    b.u32(21); // +0  tag_db_id
-    b.i32(10); // +4  total
-    b.i32(4); // +8  used
-    b.i32(6); // +12 available
+    b.u16(1);
+    b.u16(24);
+    b.u16(16);
+    b.u16(0);
+    b.u32(1);
+    b.u32(1);
+    b.u32(0);
+    b.u32(21);
+    b.i32(10);
+    b.i32(4);
+    b.i32(6);
     assert_eq!(b.at() - start, 24 + 16);
 }
 
-/// `MTRR` at any version. `tokens` is empty for the versions with no identity
-/// block; `rows` is `(resource_index, needed_type, flags)`.
 fn mtrr(
     b: &mut Bytes,
     version: ResourceRowVersion,
@@ -1324,19 +1218,19 @@ fn mtrr(
     let start = b.at();
     let stride = TEST_LIMITS.identity_stride();
     b.magic(b"MTRR");
-    b.u16(version.wire()); // +4
-    b.u16(32); // +6  header_len
-    b.u16(64); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32((countries.len() * rows.len()) as u32); // +12 row_count
-    b.u32(countries.len() as u32); // +16 country_count
-    b.u32(resource_count); // +20 resource_count
-    b.u32(1); // +24 display_scale
+    b.u16(version.wire());
+    b.u16(32);
+    b.u16(64);
+    b.u16(0);
+    b.u32((countries.len() * rows.len()) as u32);
+    b.u32(countries.len() as u32);
+    b.u32(resource_count);
+    b.u32(1);
     b.u32(if version.carries_identity() {
         stride as u32
     } else {
         0
-    }); // +28
+    });
     for token in tokens {
         b.u16(token.len() as u16);
         b.raw(token.as_bytes());
@@ -1344,22 +1238,22 @@ fn mtrr(
     }
     for country in countries {
         for (resource_index, needed_type, flags) in rows {
-            b.u32(*country); // +0  tag_db_id
-            b.u32(*resource_index); // +4  resource_index
-            b.u32(*resource_index); // +8  visible_order
-            b.u32(*needed_type); // +12 needed_type
-            b.i32(5); // +16 balance
-            b.i32(5); // +20 produced
-            b.i32(0); // +24 imported
-            b.i32(0); // +28 exported
-            b.i32(0); // +32 special_project
-            b.i32(0); // +36 production_line
-            b.i32(5); // +40 needed
-            b.i32(0); // +44 needed_current
-            b.i32(0); // +48 needed_max
-            b.u32(*flags); // +52 flags
-            b.u32(resource_index + 1); // +56 descriptor_db_index
-            b.u32(0); // +60 reserved
+            b.u32(*country);
+            b.u32(*resource_index);
+            b.u32(*resource_index);
+            b.u32(*needed_type);
+            b.i32(5);
+            b.i32(5);
+            b.i32(0);
+            b.i32(0);
+            b.i32(0);
+            b.i32(0);
+            b.i32(5);
+            b.i32(0);
+            b.i32(0);
+            b.u32(*flags);
+            b.u32(resource_index + 1);
+            b.u32(0);
         }
     }
     let identity = if version.carries_identity() {
@@ -1392,24 +1286,21 @@ fn mtrd_with_routes(
 ) {
     let start = b.at();
     b.magic(b"MTRD");
-    b.u16(version.wire()); // +4
-    b.u16(32); // +6  header_len
-    b.u16(96); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32(2); // +12 row_count -- one deal, two halves
-    b.u32(witnesses.len() as u32); // +16 country_count
-    b.u32(FIXED_SCALE_RAW); // +20 scale_raw
-    b.u32(witnesses.len() as u32); // +24 witness_count
-    b.u32(incomplete.len() as u32); // +28 incomplete_count
+    b.u16(version.wire());
+    b.u16(32);
+    b.u16(96);
+    b.u16(0);
+    b.u32(2);
+    b.u32(witnesses.len() as u32);
+    b.u32(FIXED_SCALE_RAW);
+    b.u32(witnesses.len() as u32);
+    b.u32(incomplete.len() as u32);
     for w in witnesses {
         b.u32(*w);
     }
     for owner in incomplete {
         b.u32(*owner);
     }
-    // Two halves of one deal: an exporter half and an importer half, with the
-    // two route kinds and both status bits split across them so the vocabulary
-    // drift-killer sees all of them.
     let exporter = witnesses[0];
     let importer = witnesses[1];
     for (half, (owner, counterpart, direction, route, status)) in [
@@ -1432,42 +1323,40 @@ fn mtrd_with_routes(
     .enumerate()
     {
         let _ = half;
-        b.u32(owner); // +0  owner_tag_db_id
-        b.u32(counterpart); // +4  counterpart_tag_db_id
-        b.u32(1); // +8  resource_index
-        b.u32(0); // +12 visible_order
-        b.u32(direction); // +16 direction
-        b.u32(route); // +20 route_kind
-        b.u32(DEAL_FLAG_EXACT); // +24 flags
+        b.u32(owner);
+        b.u32(counterpart);
+        b.u32(1);
+        b.u32(0);
+        b.u32(direction);
+        b.u32(route);
+        b.u32(DEAL_FLAG_EXACT);
         b.u32(if version.carries_route_status() {
             status
         } else {
             0
-        }); // +28
+        });
         match version.identity_shape() {
             DealIdentityShape::Wide => {
-                b.u32(exporter); // +32 identity exporter
-                b.u32(importer); // +36 identity importer
+                b.u32(exporter);
+                b.u32(importer);
             }
             DealIdentityShape::Packed => {
-                let packed = ((exporter as u64) << 32)
-                    | ((importer as u64) << 16)
-                    | (1u64 << 8) // the resource byte the row repeats
-                    | 1u64; // the eight-bit ordinal
-                b.u64(packed); // +32
+                let packed =
+                    ((exporter as u64) << 32) | ((importer as u64) << 16) | (1u64 << 8) | 1u64;
+                b.u64(packed);
             }
         }
-        b.i64(FIXED_SCALE_RAW as i64); // +40 requested_raw
-        b.i64(0); // +48 delivered_raw
-        b.i64(0); // +56 available_export_raw
-        b.i64(0); // +64 factory_cost_raw
-        b.i64(0); // +72 efficiency_raw
-        b.i32(0); // +80 civilian_factories
-        b.i32(0); // +84 convoys_assigned
-        b.i32(0); // +88 convoys_required
+        b.i64(FIXED_SCALE_RAW as i64);
+        b.i64(0);
+        b.i64(0);
+        b.i64(0);
+        b.i64(0);
+        b.i32(0);
+        b.i32(0);
+        b.i32(0);
         match version.identity_shape() {
-            DealIdentityShape::Wide => b.u32(1), // +92 the one-based ordinal
-            DealIdentityShape::Packed => b.u32(0), // +92 reserved zero
+            DealIdentityShape::Wide => b.u32(1),
+            DealIdentityShape::Packed => b.u32(0),
         };
     }
     assert_eq!(
@@ -1521,13 +1410,13 @@ fn mtrd_two_resources_same_parties(b: &mut Bytes) {
 fn mtra_v1(b: &mut Bytes) {
     let start = b.at();
     b.magic(b"MTRA");
-    b.u16(1); // +4  version
-    b.u16(32); // +6  header_len
-    b.u32(0b11); // +8  flags: active | root_exact
-    b.u32(21); // +12 country_tag_db_id
-    b.u64(9); // +16 observation_sequence
-    b.u32(1); // +24 root_kind
-    b.u32(0x015e_c520); // +28 open_rva
+    b.u16(1);
+    b.u16(32);
+    b.u32(0b11);
+    b.u32(21);
+    b.u64(9);
+    b.u32(1);
+    b.u32(0x015e_c520);
     assert_eq!(b.at() - start, 32);
 }
 
@@ -1535,28 +1424,28 @@ fn mts1_v1(b: &mut Bytes) {
     let start = b.at();
     let segment = 40 + 1 * 20 + 2 * 24;
     b.magic(b"MTS1");
-    b.u16(1); // +4  version
-    b.u16(40); // +6  header_len
-    b.u16(20); // +8  country_row_len
-    b.u16(24); // +10 item_row_len
-    b.u32(segment as u32); // +12 segment_len
-    b.u32(1); // +16 country_count
-    b.u32(2); // +20 item_count
-    b.u32(1); // +24 expected_country_count
-    b.u32(FIXED_SCALE_RAW); // +28 scale_raw
-    b.u32(STOCKPILE_GLOBAL_FLAGS); // +32 flags
-    b.u32(0); // +36 reserved
-    b.u32(21); // +0  tag_db_id
-    b.u32(0); // +4  item_first
-    b.u32(2); // +8  item_count
-    b.u32(STOCKPILE_COUNTRY_COMPLETE); // +12 flags
-    b.u32(0); // +16 reserved
+    b.u16(1);
+    b.u16(40);
+    b.u16(20);
+    b.u16(24);
+    b.u32(segment as u32);
+    b.u32(1);
+    b.u32(2);
+    b.u32(1);
+    b.u32(FIXED_SCALE_RAW);
+    b.u32(STOCKPILE_GLOBAL_FLAGS);
+    b.u32(0);
+    b.u32(21);
+    b.u32(0);
+    b.u32(2);
+    b.u32(STOCKPILE_COUNTRY_COMPLETE);
+    b.u32(0);
     for ordinal in 0..2u32 {
-        b.u32(100 + ordinal); // +0  equipment_variant_id
-        b.u32(STOCKPILE_EQUIPMENT_TYPE); // +4  variant_type
-        b.u32(ordinal); // +8  ordinal
-        b.u32(0); // +12 reserved
-        b.i64(5 * FIXED_SCALE_RAW as i64); // +16 amount_raw
+        b.u32(100 + ordinal);
+        b.u32(STOCKPILE_EQUIPMENT_TYPE);
+        b.u32(ordinal);
+        b.u32(0);
+        b.i64(5 * FIXED_SCALE_RAW as i64);
     }
     assert_eq!(b.at() - start, segment);
 }
@@ -1564,15 +1453,15 @@ fn mts1_v1(b: &mut Bytes) {
 fn mtrb_v1(b: &mut Bytes) {
     let start = b.at();
     b.magic(b"MTRB");
-    b.u16(1); // +4  version
-    b.u16(32); // +6  header_len
-    b.u16(48); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32(1); // +12 row_count
-    b.u32(1); // +16 source_blocked_rows
-    b.u32(0); // +20 schema_blocked_rows
-    b.u32(0); // +24 owned_elsewhere_rows
-    b.u32(0); // +28 shared_patch_blocked_rows
+    b.u16(1);
+    b.u16(32);
+    b.u16(48);
+    b.u16(0);
+    b.u32(1);
+    b.u32(1);
+    b.u32(0);
+    b.u32(0);
+    b.u32(0);
     for word in 0..12u32 {
         b.u32(word);
     }
@@ -1582,39 +1471,33 @@ fn mtrb_v1(b: &mut Bytes) {
 fn mtll_v1(b: &mut Bytes) {
     let start = b.at();
     b.magic(b"MTLL");
-    b.u16(1); // +4  version
-    b.u16(32); // +6  header_len
-    b.u16(48); // +8  row_len
-    b.u16(0); // +10 reserved0
-    b.u32(1); // +12 row_count
-    b.u32(1); // +16 outgoing_rows
-    b.u32(0); // +20 incoming_rows
-    b.u32(1); // +24 amount_valid_rows
-    b.u32(0); // +28 price_valid_rows
-    b.u32(1); // +0  contract_id
-    b.u32(11); // +4  perspective_tag_db_id
-    b.u32(12); // +8  counterpart_tag_db_id
-    b.u32(1); // +12 direction
-    b.u32(100); // +16 equipment_variant_id
-    b.u32(1); // +20 flags
-    b.i64(FIXED_SCALE_RAW as i64); // +24 amount_raw
-    b.i64(0); // +32 price_raw
-    b.u32(0); // +40 source_record_kind
-    b.u32(0); // +44 reserved
+    b.u16(1);
+    b.u16(32);
+    b.u16(48);
+    b.u16(0);
+    b.u32(1);
+    b.u32(1);
+    b.u32(0);
+    b.u32(1);
+    b.u32(0);
+    b.u32(1);
+    b.u32(11);
+    b.u32(12);
+    b.u32(1);
+    b.u32(100);
+    b.u32(1);
+    b.i64(FIXED_SCALE_RAW as i64);
+    b.i64(0);
+    b.u32(0);
+    b.u32(0);
     assert_eq!(b.at() - start, 32 + 48);
 }
 
-/// Every handwritten fixture, with a name, so the coverage tests above can
-/// iterate them and no family can quietly lose its only fixture.
 fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     let mut out = Vec::new();
 
-    // A core-only payload: no trailers at all.
     out.push((core_bytes(&[[1, 0b11111, 5]]).done(), "core only"));
 
-    // Each family alone behind the core. MTRF is deliberately FIRST in its own
-    // fixture, with no MTD1 in front of it: the dispatch is by magic and does
-    // not require an optional predecessor.
     let mut b = core_bytes(&[]);
     mtrf(&mut b, FlowVersion::Variable, 3, &[1, 2, 3, 4, 5, 6]);
     out.push((b.done(), "MTRF v3 alone, no MTD1 predecessor"));
@@ -1635,7 +1518,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     mtrh_v1(&mut b);
     out.push((b.done(), "MTRH v1"));
 
-    // MTRR v1: seven resources, no identity block.
     let mut b = core_bytes(&[]);
     let seven: Vec<(u32, u32, u32)> = (0..7)
         .map(|i| {
@@ -1649,7 +1531,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     mtrr(&mut b, ResourceRowVersion::Legacy, 7, &[], &[21], &seven);
     out.push((b.done(), "MTRR v1 fixed-seven, no identity"));
 
-    // MTRR v2: a stated count, still no identity block.
     let mut b = core_bytes(&[]);
     mtrr(
         &mut b,
@@ -1665,8 +1546,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     );
     out.push((b.done(), "MTRR v2 count-only, no identity"));
 
-    // MTRR v3 IDENTITY-ONLY: the shape the producer emits when it discovered
-    // the resource set but its per-country rows failed. Zero rows, and legal.
     let mut b = core_bytes(&[]);
     mtrr(
         &mut b,
@@ -1678,7 +1557,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     );
     out.push((b.done(), "MTRR v3 identity-only, zero rows"));
 
-    // MTRR v3 with identity AND dense rows.
     let mut b = core_bytes(&[]);
     mtrr(
         &mut b,
@@ -1694,7 +1572,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     );
     out.push((b.done(), "MTRR v3 identity plus dense rows"));
 
-    // MTRR v4 with a needed-unavailable oil row.
     let mut b = core_bytes(&[]);
     mtrr(
         &mut b,
@@ -1732,7 +1609,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
         ));
     }
 
-    // A locked route: the third route kind, which no other fixture states.
     let mut b = core_bytes(&[]);
     mtrd_with_routes(
         &mut b,
@@ -1759,8 +1635,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     mtll_v1(&mut b);
     out.push((b.done(), "MTLL v1 (lane gate only)"));
 
-    // The producer's own order, and the exact reverse of it. Both are legal:
-    // the walk dispatches by magic, not by position.
     let mut b = core_bytes(&[[1, 0b11111, 5]]);
     mtd1_v1(&mut b);
     mtrf(&mut b, FlowVersion::Variable, 3, &[1, 2, 3, 4, 5, 6]);
@@ -1780,7 +1654,6 @@ fn every_fixture() -> Vec<(Vec<u8>, &'static str)> {
     out
 }
 
-/// Every handwritten fixture walks to exact consumption.
 #[test]
 fn every_fixture_walks_to_exact_consumption() {
     for (payload, name) in every_fixture() {
@@ -1791,8 +1664,6 @@ fn every_fixture_walks_to_exact_consumption() {
     }
 }
 
-/// The two orders carry the same five families and the same extents, so trailer
-/// ORDER is not part of this grammar.
 #[test]
 fn trailer_order_does_not_change_what_is_delimited() {
     let fixtures = every_fixture();
@@ -1819,10 +1690,6 @@ fn trailer_order_does_not_change_what_is_delimited() {
     assert_eq!(a, b);
     assert_eq!(forward.0.len(), reverse.0.len());
 }
-
-// =============================================================================
-// 3. Structural refusals
-// =============================================================================
 
 #[test]
 fn a_short_core_header_is_refused() {
@@ -1877,12 +1744,6 @@ fn a_truncated_magic_is_refused_rather_than_treated_as_the_end() {
     ));
 }
 
-/// Every declared family refuses a duplicate.
-///
-/// This is the structural disagreement the conversion closes: the fold already
-/// refused a duplicate of all seven families, the authority refused only three
-/// (`MTD1`, `MTRA`, `MTS1`) and the lane only two. The leaf refuses all nine, so
-/// no site can accept a payload another refuses.
 #[test]
 fn every_family_refuses_a_duplicate() {
     for trailer in Trailer::ALL {
@@ -1989,8 +1850,6 @@ fn a_declared_row_len_that_is_not_the_versions_is_refused() {
     ));
 }
 
-/// An `MTRF` v3 whose resource count is outside the ceiling is refused BEFORE
-/// its row width is computed from it.
 #[test]
 fn an_mtrf_v3_resource_count_outside_the_ceiling_is_refused() {
     for count in [0u32, TEST_LIMITS.max_resource_count() + 1] {
@@ -2014,9 +1873,6 @@ fn an_mtrf_v3_resource_count_outside_the_ceiling_is_refused() {
     }
 }
 
-/// An `MTRR` v1/v2 that states an identity stride is refused: `+28` means
-/// something else in the version that has it, so sizing it either way would be
-/// reading a payload under a grammar it did not declare.
 #[test]
 fn an_mtrr_without_an_identity_block_may_not_declare_one() {
     let mut b = core_bytes(&[]);
@@ -2037,9 +1893,6 @@ fn an_mtrr_without_an_identity_block_may_not_declare_one() {
     ));
 }
 
-/// An `MTRD` v1/v2 that states an incomplete-owner count is refused, which is
-/// how a v3 payload mislabelled v2 fails instead of parsing its completeness
-/// block as deal rows.
 #[test]
 fn an_mtrd_without_an_incomplete_block_may_not_declare_one() {
     let mut b = core_bytes(&[]);
@@ -2060,7 +1913,6 @@ fn an_mtrd_without_an_incomplete_block_may_not_declare_one() {
     ));
 }
 
-/// Every family refuses a payload one byte shorter than its own declared extent.
 #[test]
 fn every_family_refuses_a_payload_one_byte_short() {
     for (payload, name) in every_fixture() {
@@ -2082,7 +1934,6 @@ fn every_family_refuses_a_payload_one_byte_short() {
     }
 }
 
-/// Trailing bytes that are not a trailer are refused by exact consumption.
 #[test]
 fn trailing_bytes_past_the_last_trailer_are_refused() {
     let mut b = core_bytes(&[]);
@@ -2098,10 +1949,6 @@ fn trailing_bytes_past_the_last_trailer_are_refused() {
         }
     ));
 }
-
-// =============================================================================
-// 4. The encoder is checked AGAINST the handwritten bytes
-// =============================================================================
 
 #[test]
 fn the_encoder_reproduces_the_handwritten_core_bytes() {
@@ -2188,8 +2035,6 @@ fn the_encoder_reproduces_the_handwritten_mtrh_bytes() {
     );
 }
 
-/// Every MTRF version the encoder can write is byte-identical to the
-/// handwritten fixture for that version.
 #[test]
 fn the_encoder_reproduces_the_handwritten_mtrf_bytes_at_every_version() {
     for (version, resource_count, kinds) in [
@@ -2226,8 +2071,6 @@ fn the_encoder_reproduces_the_handwritten_mtrf_bytes_at_every_version() {
     }
 }
 
-/// The encoder refuses to write an `MTRD` v1/v2 with incomplete owners, and
-/// refuses an identity that does not fit the packed key.
 #[test]
 fn the_encoder_refuses_the_structurally_impossible_mtrd_shapes() {
     let err = encode::encode_classic_deals(DealVersion::Statuses, &[21, 22], &[22], &[])
@@ -2249,7 +2092,6 @@ fn the_encoder_refuses_the_structurally_impossible_mtrd_shapes() {
         route_kind: DealRoute::Sea.wire(),
         flags: DEAL_FLAG_EXACT,
         route_status_or_reserved: 0,
-        // Wider than the packed key's sixteen bits.
         identity_exporter_tag_db_id: 70_000,
         identity_importer_tag_db_id: 22,
         identity_ordinal: 1,
@@ -2272,8 +2114,6 @@ fn the_encoder_refuses_the_structurally_impossible_mtrd_shapes() {
     ));
 }
 
-/// The encoder refuses an `MTRF` row whose value count is not the trailer's, and
-/// an `MTRR` identity block whose entry count is not the resource count.
 #[test]
 fn the_encoder_refuses_rows_that_do_not_fit_their_own_header() {
     let values = [1i64, 2];
@@ -2311,7 +2151,6 @@ fn the_encoder_refuses_rows_that_do_not_fit_their_own_header() {
     ));
 }
 
-/// Everything the encoder writes walks, and consumes exactly what it wrote.
 #[test]
 fn everything_the_encoder_writes_walks_to_exact_consumption() {
     let core = encode::encode_core(
@@ -2349,12 +2188,6 @@ fn everything_the_encoder_writes_walks_to_exact_consumption() {
     );
 }
 
-// =============================================================================
-// 5. Version-selected reading
-// =============================================================================
-
-/// The same 96 bytes are read as two different identities under v3 and v4, and
-/// each version's rule about the OTHER spelling's word still applies.
 #[test]
 fn the_deal_identity_is_read_at_the_width_its_version_spells() {
     let mut b = core_bytes(&[]);
@@ -2384,9 +2217,6 @@ fn the_deal_identity_is_read_at_the_width_its_version_spells() {
     assert_eq!(wide.packed_identity, None);
     assert_eq!(wide.reserved_ordinal_word, None);
 
-    // Read the SAME bytes under the packed spelling: a different identity comes
-    // out, which is exactly why an unknown version must be refused rather than
-    // reinterpreted.
     let packed = deal_row_at(&payload, at, DealVersion::PerOwner);
     assert!(packed.packed_identity.is_some());
     assert_ne!(
@@ -2401,9 +2231,6 @@ fn the_deal_identity_is_read_at_the_width_its_version_spells() {
     );
 }
 
-/// An MTRR v3 identity-only trailer delimits its identity block and yields no
-/// rows -- the shape the producer emits when the resource set was discovered but
-/// the per-country rows failed.
 #[test]
 fn an_identity_only_mtrr_delimits_its_identities_and_no_rows() {
     let mut b = core_bytes(&[]);
@@ -2438,15 +2265,11 @@ fn an_identity_only_mtrr_delimits_its_identities_and_no_rows() {
         vec![b"oil".to_vec(), b"steel".to_vec(), b"rubber".to_vec()]
     );
     assert_eq!(t.end, payload.len());
-    // The zero-row block still has to be consumed to reach the parent, which is
-    // what stops "this version has no rows" from being learned by NOT asking.
     let rows = identities.into_end().expect("identities").next.rows();
     assert_eq!(rows.remaining(), 0);
     assert_eq!(rows.into_end().expect("rows").next.end(), payload.len());
 }
 
-/// An `MTRF` v3 with a resource count that is NOT seven walks, which is the
-/// whole reason v3 exists: a modded `common/resources` is not vanilla's seven.
 #[test]
 fn an_mtrf_v3_with_a_non_seven_resource_count_walks() {
     for count in [1u32, 3, 12, TEST_LIMITS.max_resource_count()] {
@@ -2458,15 +2281,6 @@ fn an_mtrf_v3_with_a_non_seven_resource_count_walks() {
         assert_eq!(seen[0].2, payload.len());
     }
 }
-
-// =============================================================================
-// 6. Every encoder is checked against a HANDWRITTEN fixture
-// =============================================================================
-//
-// Codex review thread `01a00794-8e7e-7a02-b932-0eeb40336eb3`, finding 4: five
-// families had no encoder-to-fixture equality, so swapping two adjacent counted
-// words in an encoder would have left the suite green. One test per family, and
-// the fixture is the same handwritten one the walk tests use.
 
 #[test]
 fn the_encoder_reproduces_the_handwritten_mtd1_bytes() {
@@ -2506,9 +2320,6 @@ fn the_encoder_reproduces_the_handwritten_mtd1_bytes() {
     );
 }
 
-/// The counted words are checked POSITIONALLY, not just as a set: two of them
-/// swapped must change the bytes. Without this, `encode_detail` could write
-/// `speed_valid_rows` where `price_valid_rows` belongs and nothing would fail.
 #[test]
 fn the_mtd1_encoder_puts_each_counted_word_in_its_own_slot() {
     let base = encode::encode_detail(
@@ -2751,10 +2562,6 @@ fn the_encoder_reproduces_the_handwritten_mtll_bytes() {
     );
 }
 
-/// Every family this grammar declares has an encoder-to-handwritten-bytes test.
-///
-/// A list, checked against `Trailer::ALL`, so a tenth family cannot be added
-/// with an encoder and no golden -- which is the gap finding 4 named.
 #[test]
 fn every_family_has_an_encoder_golden() {
     let with_goldens = [
@@ -2777,9 +2584,6 @@ fn every_family_has_an_encoder_golden() {
     }
 }
 
-/// The `MTRB` and `MTLL` row readers read back exactly what the handwritten
-/// fixtures state -- the other half of finding 1: a family the leaf can only
-/// delimit is a family each site still has to decode by hand.
 #[test]
 fn the_lane_only_families_have_row_readers() {
     let mut b = core_bytes(&[]);
@@ -2820,31 +2624,12 @@ fn the_lane_only_families_have_row_readers() {
     assert!(saw_residual && saw_lend_lease);
 }
 
-/// The two masks are the LOW bit runs, stated as literals here rather than read
-/// back from the constants the encoder also uses.
-///
-/// Finding 3: the build-time proofs used to check only a popcount, so `0x7E`
-/// and `0xFE` would have compiled, and every fixture and the encoder read the
-/// same constant -- a coordinated error a round trip cannot see. The `const`
-/// assertions now check the exact value; this pins the literal independently.
 #[test]
 fn the_flow_masks_are_the_documented_literals() {
     assert_eq!(FLOW_KIND_MASK, 0x3F);
     assert_eq!(FLOW_RESOURCE_MASK, 0x7F);
 }
 
-// =============================================================================
-// 7. The owned walk: a skipped block is refused
-// =============================================================================
-//
-// This section is lane KU's open headline finding, closed. Its shape came from
-// Codex design thread `01a007a9-1e92-7a82-8263-3c5b37bcacab`.
-
-/// Write a fixture whose every declared block of `trailer` is NON-EMPTY.
-///
-/// A block with no rows cannot demonstrate the property -- `remaining() == 0` is
-/// exactly the legal state -- so the probe below needs fixtures that fill every
-/// block, and `every_declared_block_is_probed_and_non_empty` checks it got them.
 fn a_fixture_with_every_block_filled(trailer: Trailer) -> Vec<u8> {
     let mut b = core_bytes(&[]);
     match trailer {
@@ -2862,7 +2647,6 @@ fn a_fixture_with_every_block_filled(trailer: Trailer) -> Vec<u8> {
                 (1, NeededType::Surplus.wire(), 0),
             ],
         ),
-        // v4 so the incomplete-owner block exists AND is non-empty.
         Trailer::ClassicDeal => mtrd(&mut b, DealVersion::WideIdentity, &[21, 22], &[22]),
         Trailer::Activation => mtra_v1(&mut b),
         Trailer::Stockpile => mts1_v1(&mut b),
@@ -2872,7 +2656,6 @@ fn a_fixture_with_every_block_filled(trailer: Trailer) -> Vec<u8> {
     b.done()
 }
 
-/// Take the ONE trailer of `payload` and hand back its owned body.
 fn only_body(payload: &[u8]) -> TrailerBody {
     let header = read_core_header(payload).expect("header");
     let cursor = TrailerCursor::new(core_end(payload, header.row_count()).expect("core"));
@@ -2898,19 +2681,6 @@ fn assert_not_consumed(err: Violation, trailer: Trailer, block: TrailerBlock, re
     );
 }
 
-/// **THE PROPERTY.** For every declared block of every family, asking for the
-/// block's end without consuming it is refused, and the refusal names the
-/// family, the block and how many rows were left.
-///
-/// kills: `BlockCursor::into_end` returning `Ok` on a non-empty block;
-/// `read_body` handing the parent back before the last block; any family cursor
-/// growing a second route to `TrailerResume`; a new declared block reached
-/// through a path that does not go through `BlockCursor`.
-///
-/// The coverage assertion at the end is what makes it a drift-killer rather
-/// than thirteen hand-written cases: a tenth family, or a new arm of
-/// [`TrailerBlock`], leaves the covered set short of the declared one and fails
-/// HERE.
 #[test]
 fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     let mut covered: Vec<(Trailer, TrailerBlock)> = Vec::new();
@@ -2920,7 +2690,6 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
         }
     };
 
-    // The five one-block families.
     for trailer in [
         Trailer::Detail,
         Trailer::ResourceFlow,
@@ -2946,7 +2715,6 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
         note(trailer, TrailerBlock::Rows);
     }
 
-    // MTRR: identities, then rows.
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
@@ -2977,7 +2745,6 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     assert_not_consumed(err, Trailer::ResourceRow, TrailerBlock::Rows, remaining);
     note(Trailer::ResourceRow, TrailerBlock::Rows);
 
-    // MTRD: witnesses, then incomplete owners, then rows.
     let payload = a_fixture_with_every_block_filled(Trailer::ClassicDeal);
     let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
         panic!("expected MTRD");
@@ -2999,7 +2766,11 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
         panic!("expected MTRD");
     };
-    let incomplete = c.witnesses().walk_to_end_for_test().next.incomplete_owners();
+    let incomplete = c
+        .witnesses()
+        .walk_to_end_for_test()
+        .next
+        .incomplete_owners();
     let remaining = incomplete.remaining();
     assert!(remaining > 0, "MTRD fixture has no incomplete owners");
     let err = incomplete
@@ -3032,7 +2803,6 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     assert_not_consumed(err, Trailer::ClassicDeal, TrailerBlock::Rows, remaining);
     note(Trailer::ClassicDeal, TrailerBlock::Rows);
 
-    // MTS1: countries, then items.
     let payload = a_fixture_with_every_block_filled(Trailer::Stockpile);
     let TrailerBody::Stockpile(c) = only_body(&payload) else {
         panic!("expected MTS1");
@@ -3058,17 +2828,12 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     assert_not_consumed(err, Trailer::Stockpile, TrailerBlock::Items, remaining);
     note(Trailer::Stockpile, TrailerBlock::Items);
 
-    // MTRA declares no block at all, so it has nothing to skip: its header IS
-    // its end. Stated rather than omitted, so "MTRA is missing from the covered
-    // set" cannot read as an oversight.
     let payload = a_fixture_with_every_block_filled(Trailer::Activation);
     let TrailerBody::Activation(c) = only_body(&payload) else {
         panic!("expected MTRA");
     };
     assert_eq!(c.end().next.end(), payload.len());
 
-    // Drift-killer: every family with blocks is covered, and every arm of
-    // `TrailerBlock` is exercised at least once.
     let mut families: Vec<Trailer> = Vec::new();
     for (trailer, _) in &covered {
         if !families.contains(trailer) {
@@ -3086,10 +2851,6 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
         );
     }
     for block in TrailerBlock::ALL {
-        // Exhaustive and wildcard-free ON THE ENUM, not only on `ALL`. A
-        // seventh `TrailerBlock` arm is a compile error HERE even if nobody
-        // adds it to `ALL` -- which is the half the build-time ordinal
-        // assertion in `walk.rs` cannot reach.
         let must_be_probed = match block {
             TrailerBlock::Rows
             | TrailerBlock::Identities
@@ -3107,11 +2868,6 @@ fn every_declared_block_refuses_to_end_before_it_is_consumed() {
     }
 }
 
-/// Walking a block lands on the block's own end -- the offset the header
-/// declared -- never past it.
-///
-/// kills: `RowCursor::next` advancing by the wrong stride, or `into_end`
-/// accepting an end other than the one reached after every declared row.
 #[test]
 fn walking_a_block_lands_on_exactly_that_blocks_end() {
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
@@ -3123,8 +2879,6 @@ fn walking_a_block_lands_on_exactly_that_blocks_end() {
     let walked = identities.walk_to_end_for_test();
     assert_eq!(walked.at, header.rows_at);
 
-    // And walking it reaches the same offset, which is what makes the two
-    // routes interchangeable to the GRAMMAR and different only at the site.
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
     };
@@ -3136,18 +2890,11 @@ fn walking_a_block_lands_on_exactly_that_blocks_end() {
     );
 }
 
-/// `read_body` without a delimited magic is a CALLER defect, not a payload one,
-/// and it is reported rather than panicked.
-///
-/// kills: reinstating a `NotDelimited` body arm (which every site would have to
-/// write an unreachable arm for), or panicking in a leaf that runs under a
-/// recorder which must fail closed.
 #[test]
 fn reading_a_body_that_was_never_delimited_is_a_caller_defect() {
     let payload = a_fixture_with_every_block_filled(Trailer::Detail);
     let header = read_core_header(&payload).expect("header");
     let cursor = TrailerCursor::new(core_end(&payload, header.row_count()).expect("core"));
-    // No `next` call, so nothing is pending.
     let err = cursor
         .read_body(&payload, TEST_LIMITS)
         .unwrap_err_or_panic("an undelimited body was read");
@@ -3157,13 +2904,6 @@ fn reading_a_body_that_was_never_delimited_is_a_caller_defect() {
     );
 }
 
-/// `peek_header` reads the family's own header words, applies no rule, and does
-/// not advance -- so a site can keep checking a header VALUE before it checks
-/// the header's SHAPE, which is the order three of the four sites already use.
-///
-/// kills: `peek_header` advancing the cursor, applying the version table, or
-/// applying the declared-header-length rule; and a preview whose words are read
-/// at different offsets from the body's.
 #[test]
 fn peeking_a_header_reads_the_bodys_words_and_moves_nothing() {
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceFlow);
@@ -3178,7 +2918,6 @@ fn peeking_a_header_reads_the_bodys_words_and_moves_nothing() {
     let HeaderPreview::ResourceFlow(words) = cursor.peek_header(&payload).expect("preview") else {
         panic!("expected an MTRF preview");
     };
-    // Peeking twice is the same answer, and neither moved the cursor.
     let second = cursor.peek_header(&payload).expect("preview");
     assert_eq!(second, HeaderPreview::ResourceFlow(words));
     assert_eq!(cursor.offset(), core);
@@ -3202,9 +2941,6 @@ fn peeking_a_header_reads_the_bodys_words_and_moves_nothing() {
     assert_eq!(words.kind_mask, body.kind_mask);
 }
 
-/// A preview of a header the payload is too short for carries the SAME
-/// violation `read_body` would, so looking first never changes what a truncated
-/// header reports.
 #[test]
 fn peeking_a_truncated_header_reports_what_reading_it_would() {
     let payload = a_fixture_with_every_block_filled(Trailer::Detail);
@@ -3232,10 +2968,6 @@ fn peeking_a_truncated_header_reports_what_reading_it_would() {
     );
 }
 
-/// Completing a PARTIAL walk still lands on the block's own end.
-///
-/// kills: `RowCursor::next` forgetting the already consumed index or advancing
-/// the remaining rows by any stride other than the declared one.
 #[test]
 fn completing_a_partly_walked_block_still_lands_on_its_own_end() {
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
@@ -3256,7 +2988,6 @@ fn completing_a_partly_walked_block_still_lands_on_its_own_end() {
     let walked = identities.walk_to_end_for_test();
     assert_eq!(walked.at, header.rows_at);
 
-    // Every intermediate consumed-count lands on the same end.
     for consume in 0..=2usize {
         let TrailerBody::ResourceRow(c) = only_body(&payload) else {
             panic!("expected MTRR");
@@ -3273,19 +3004,8 @@ fn completing_a_partly_walked_block_still_lands_on_its_own_end() {
     }
 }
 
-/// A block a version declares NOTHING for is already at its end, and walking it
-/// moves nothing.
-///
-/// kills: `RowCursor::next` on an empty cursor advancing at all, and a
-/// zero-length block whose `at` is not the next block's start.
-///
-/// It does NOT kill a wrong stride: zero rows advance zero bytes at every
-/// stride, so this case cannot observe one. `every_declared_block_walks_to_
-/// its_own_end_from_every_position` is what does (Codex round 3 called the
-/// earlier wording of this comment vacuous, and it was).
 #[test]
 fn walking_a_version_absent_block_moves_nothing() {
-    // MTRR v2 carries no identity block; MTRD v2 carries no incomplete owners.
     let mut b = core_bytes(&[]);
     mtrr(
         &mut b,
@@ -3318,22 +3038,17 @@ fn walking_a_version_absent_block_moves_nothing() {
     };
     let header = *c.header();
     assert_eq!(header.incomplete_count, 0);
-    let incomplete = c.witnesses().walk_to_end_for_test().next.incomplete_owners();
+    let incomplete = c
+        .witnesses()
+        .walk_to_end_for_test()
+        .next
+        .incomplete_owners();
     assert_eq!(incomplete.remaining(), 0);
     assert_eq!(incomplete.walk_to_end_for_test().at, header.rows_at);
 }
 
-/// `peek_header` applies NO rule: it reports a header the body refuses, and
-/// reports it with the wrong value it actually found.
-///
-/// kills: `peek_header` applying the version table, the declared-header-length
-/// rule, or the declared-row-length rule -- any of which would move a site's
-/// pre-structural check behind a structural refusal and change which diagnostic
-/// a doubly-malformed payload carries. That is the whole reason the preview
-/// exists.
 #[test]
 fn peeking_reports_a_header_the_body_refuses() {
-    // A declared header_len of 64 where MTD1's is 32, and an unknown version.
     for (version, declared_header_len, declared_row_len) in [
         (1u16, 64u16, 64u16),
         (9u16, 32u16, 64u16),
@@ -3364,20 +3079,12 @@ fn peeking_reports_a_header_the_body_refuses() {
         assert_eq!(words.sized.row_len, declared_row_len);
         assert_eq!(cursor.offset(), core);
 
-        // And the body refuses it, which is what makes the preview's silence a
-        // decision rather than an oversight.
         cursor
             .read_body(&payload, TEST_LIMITS)
             .unwrap_err_or_panic("a malformed MTD1 header was accepted");
     }
 }
 
-/// The preview is available for every one of the nine families and reads inside
-/// that family's own declared header.
-///
-/// kills: a family whose preview arm reads a word past its header (`MTRH`'s
-/// header is 24 bytes and has no `+24`), and a family added to `Trailer::ALL`
-/// with no preview arm.
 #[test]
 fn every_family_previews_inside_its_own_header() {
     for trailer in Trailer::ALL {
@@ -3398,9 +3105,6 @@ fn every_family_previews_inside_its_own_header() {
             "{} previewed a declared header_len its own table disagrees with",
             trailer.label()
         );
-        // Truncating the payload to one byte less than this family's header
-        // makes the preview refuse, which is what "reads inside its own header"
-        // means operationally.
         let short = &payload[..core + trailer.header_len() - 1];
         let mut cursor = TrailerCursor::new(core);
         cursor.next(short).expect("magic");
@@ -3410,24 +3114,11 @@ fn every_family_previews_inside_its_own_header() {
     }
 }
 
-// =============================================================================
-// 8. Round-3 review: the identity stride, and the proofs that were vacuous
-// =============================================================================
-
-/// A stride an identity entry cannot fit is refused where the block is SIZED,
-/// so no reader ever holds a trailer it would have to defend against.
-///
-/// kills: dropping the `< 2` refusal in `read_resource_row_trailer`, which is
-/// what makes `identity_entry_at`'s `stride - 2` unable to underflow. Before
-/// this, `Limits::new(_, 0)` plus a v3 header whose `+28` word is zero parsed
-/// happily and handed a public reader a zero stride.
 #[test]
 fn an_identity_stride_an_entry_cannot_fit_is_refused() {
     for stride in [0usize, 1] {
         let limits = Limits::new(TEST_LIMITS.max_resource_count(), stride);
         let mut b = core_bytes(&[]);
-        // A v3 header whose `+28` states exactly this stride, so nothing else
-        // in the header can be the reason it is refused.
         b.magic(b"MTRR")
             .u16(ResourceRowVersion::Identity.wire())
             .u16(32)
@@ -3452,14 +3143,8 @@ fn an_identity_stride_an_entry_cannot_fit_is_refused() {
     }
 }
 
-/// A version with no identity block yields no identity offsets, and the reader
-/// refuses the zero stride such a trailer carries.
-///
-/// kills: giving a version-absent block a non-empty cursor, or dropping the
-/// `stride < 2` guard that stops a zero stride reaching `stride - 2`.
 #[test]
 fn a_version_with_no_identity_block_yields_no_entries() {
-    // v2: no identity block at all.
     let mut b = core_bytes(&[]);
     mtrr(
         &mut b,
@@ -3478,13 +3163,10 @@ fn a_version_with_no_identity_block_yields_no_entries() {
     };
     let header = *c.header();
     assert_eq!(header.identity_stride, 0);
-    // The CURSOR is what refuses a version with no identity block: it is empty,
-    // so it yields no offset to read with, and a zero stride is refused anyway.
     let identities = c.identities();
     assert_eq!(identities.remaining(), 0);
     assert!(identity_entry_at(&payload, header.identity_at, header.identity_stride).is_none());
 
-    // v3: two slots, and the cursor yields exactly two offsets.
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
@@ -3501,20 +3183,12 @@ fn a_version_with_no_identity_block_yields_no_entries() {
     assert_eq!(offsets[1] - offsets[0], header.identity_stride);
 }
 
-/// EVERY family's preview reports a header its own body refuses, with the wrong
-/// value it actually found.
-///
-/// kills: any ONE family's preview arm starting to apply the version table or
-/// the declared-header-length rule. The earlier version of this proof tested
-/// `MTD1` alone, so eight of the nine arms were unpinned -- Codex round 3.
 #[test]
 fn every_familys_preview_reports_a_header_its_body_refuses() {
     for trailer in Trailer::ALL {
         let good = a_fixture_with_every_block_filled(trailer);
         let header = read_core_header(&good).expect("header");
         let core = core_end(&good, header.row_count()).expect("core");
-        // Corrupt the declared header_len at `+6`: a fully sized payload whose
-        // header is refused for a reason the preview must not apply.
         let mut payload = good.clone();
         let bad = (trailer.header_len() as u16) + 8;
         payload[core + TRAILER_HEADER_LEN_OFFSET] = (bad & 0xFF) as u8;
@@ -3550,8 +3224,6 @@ fn every_familys_preview_reports_a_header_its_body_refuses() {
             trailer.label()
         );
 
-        // And an unknown VERSION, which is the other rule the preview must not
-        // apply. `+4` is the version word in every family.
         let mut payload = good.clone();
         payload[core + TRAILER_VERSION_OFFSET] = 0xFE;
         payload[core + TRAILER_VERSION_OFFSET + 1] = 0x00;
@@ -3582,15 +3254,8 @@ fn every_familys_preview_reports_a_header_its_body_refuses() {
     }
 }
 
-/// EVERY declared block lands on its own end from EVERY consumed-count, not
-/// only from zero.
-///
-/// kills: `RowCursor::next` using a wrong stride for any declared block, or a
-/// family transition starting its next block anywhere but the previous block's
-/// declared end.
 #[test]
 fn every_declared_block_walks_to_its_own_end_from_every_position() {
-    // (family, block, the block's own end, how to reach the block)
     for trailer in [
         Trailer::Detail,
         Trailer::ResourceFlow,
@@ -3608,11 +3273,6 @@ fn every_declared_block_walks_to_its_own_end_from_every_position() {
             _ => panic!("{} fixture produced another family", trailer.label()),
         };
         assert!(total > 0, "{} has no rows", trailer.label());
-        // The HEADER'S declared end, read off the grammar's own extent -- not
-        // this loop's zero-consumed answer. Comparing the positions with each
-        // other passes a cursor that lands one byte past the end from every
-        // position, which is exactly the production change this test exists to
-        // catch (Codex round 4).
         let declared_end = match only_body(&payload) {
             TrailerBody::Detail(c) => c.header().sized.end,
             TrailerBody::ResourceFlow(c) => c.header().end,
@@ -3648,7 +3308,6 @@ fn every_declared_block_walks_to_its_own_end_from_every_position() {
         }
     }
 
-    // MTRR: identities, then rows.
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
     let TrailerBody::ResourceRow(c) = only_body(&payload) else {
         panic!("expected MTRR");
@@ -3683,7 +3342,6 @@ fn every_declared_block_walks_to_its_own_end_from_every_position() {
         );
     }
 
-    // MTRD: witnesses, incomplete owners, rows.
     let payload = a_fixture_with_every_block_filled(Trailer::ClassicDeal);
     let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
         panic!("expected MTRD");
@@ -3707,7 +3365,11 @@ fn every_declared_block_walks_to_its_own_end_from_every_position() {
         let TrailerBody::ClassicDeal(c) = only_body(&payload) else {
             panic!("expected MTRD");
         };
-        let mut incomplete = c.witnesses().walk_to_end_for_test().next.incomplete_owners();
+        let mut incomplete = c
+            .witnesses()
+            .walk_to_end_for_test()
+            .next
+            .incomplete_owners();
         for _ in 0..consume {
             incomplete.next();
         }
@@ -3732,10 +3394,13 @@ fn every_declared_block_walks_to_its_own_end_from_every_position() {
         for _ in 0..consume {
             rows.next();
         }
-        assert_eq!(rows.walk_to_end_for_test().at, mtrd.end, "MTRD rows after {consume}");
+        assert_eq!(
+            rows.walk_to_end_for_test().at,
+            mtrd.end,
+            "MTRD rows after {consume}"
+        );
     }
 
-    // MTS1: countries, items.
     let payload = a_fixture_with_every_block_filled(Trailer::Stockpile);
     let TrailerBody::Stockpile(c) = only_body(&payload) else {
         panic!("expected MTS1");
@@ -3771,17 +3436,7 @@ fn every_declared_block_walks_to_its_own_end_from_every_position() {
     }
 }
 
-/// `identity_entry_at` refuses rather than panics for every argument a caller
-/// can invent, and it reads exactly the entry at the offset it was given.
-///
-/// It takes the CURSOR'S offset and the parsed stride, so it has no arithmetic
-/// of its own to redirect -- which is the whole of the round-5 fix. What is left
 /// is the argument checking, and all of it is RELEASE checking: a
-/// `debug_assert` is compiled out of the build that ships.
-///
-/// kills: turning the `stride < 2` guard into a `debug_assert`, turning
-/// `checked_add` back into `+`, dropping the payload bound, or making the bound
-/// `>=` instead of `>`.
 #[test]
 fn a_forged_identity_read_is_refused_rather_than_panicking() {
     let payload = a_fixture_with_every_block_filled(Trailer::ResourceRow);
@@ -3793,7 +3448,6 @@ fn a_forged_identity_read_is_refused_rather_than_panicking() {
     assert!(stride >= 2);
     assert!(identity_entry_at(&payload, parsed.identity_at, stride).is_some());
 
-    // A stride the parser would have refused.
     for bad in [0usize, 1] {
         assert!(
             identity_entry_at(&payload, parsed.identity_at, bad).is_none(),
@@ -3801,22 +3455,16 @@ fn a_forged_identity_read_is_refused_rather_than_panicking() {
         );
     }
 
-    // Arithmetic that overflows rather than landing anywhere.
     assert!(identity_entry_at(&payload, usize::MAX - 1, stride).is_none());
     assert!(identity_entry_at(&payload, parsed.identity_at, usize::MAX).is_none());
 
-    // An offset past the payload, and a payload shorter than the parsed one.
     assert!(identity_entry_at(&payload, payload.len(), stride).is_none());
     let short = &payload[..parsed.identity_at + 1];
     assert!(identity_entry_at(short, parsed.identity_at, stride).is_none());
 
-    // An entry that ends EXACTLY at the payload's end is still readable, so the
-    // bound is `>` and not `>=`.
     let exact = &payload[..parsed.identity_at + stride];
     assert!(identity_entry_at(exact, parsed.identity_at, stride).is_some());
 
-    // And the reader reads the entry it was given, not a neighbour: the two
-    // slots of this fixture carry different tokens.
     let first = identity_entry_at(&payload, parsed.identity_at, stride).expect("slot 0");
     let second = identity_entry_at(&payload, parsed.identity_at + stride, stride).expect("slot 1");
     assert_ne!(first.token, second.token);

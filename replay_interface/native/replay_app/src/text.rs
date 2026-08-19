@@ -1,11 +1,3 @@
-//! D3D11 overlay drawing: bitmap-font text batches + solid quads.
-//!
-//! Follows the render.rs house patterns exactly: raw winapi COM behind
-//! [`ComPtr`], `hr_ok` on every HRESULT, runtime-compiled HLSL via
-//! `D3DCompile`. Glyph atlas pages are uploaded once as immutable
-//! `R8G8B8A8` SRVs; every draw fills a dynamic vertex buffer with
-//! screen-space pixel quads and renders them alpha-blended over whatever
-//! is already in the target (the map).
 
 use std::ffi::CString;
 use std::mem;
@@ -30,11 +22,6 @@ use crate::font::{Font, GlyphQuad};
 use crate::render::{compile_shader, create_immutable_texture};
 use crate::Result;
 
-/// Screen-space textured-quad shader shared by text and solid rects.
-/// Vertices are window pixels; the VS converts to clip space; the PS
-/// samples the bound page (glyph atlas or the 1x1 white texel) and
-/// multiplies by the vertex color, so text tinting matches the game's
-/// white-glyphs-times-font-color scheme observed in the real pages.
 const OVERLAY_SHADER_HLSL: &str = r#"
 cbuffer ScreenCB : register(b0) {
     float2 screen_size;
@@ -72,24 +59,20 @@ float4 ps_main(VsOut input) : SV_Target {
 }
 "#;
 
-/// One overlay vertex: window-pixel position, page UV, RGBA color.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Vertex {
     pub pos: [f32; 2],
     pub uv: [f32; 2],
-    /// `R8G8B8A8_UNORM` bytes r,g,b,a (see [`color_to_rgba_bytes`]).
     pub color: u32,
 }
 
-/// A solid rectangle request for [`QuadRenderer::draw_rects`].
 #[derive(Clone, Copy, Debug)]
 pub struct SolidRect {
     pub x: f32,
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    /// `0xAARRGGBB`, same convention as core.gfx font colors.
     pub color: u32,
 }
 
@@ -99,11 +82,8 @@ struct ScreenConstants {
     _pad: [f32; 2],
 }
 
-/// Vertex capacity of the dynamic buffer; longer batches draw in chunks.
 const VERTEX_CAPACITY: usize = 8192;
 
-/// Convert an `0xAARRGGBB` color (core.gfx convention) into the
-/// `R8G8B8A8_UNORM` little-endian vertex encoding (bytes r, g, b, a).
 pub fn color_to_rgba_bytes(argb: u32) -> u32 {
     let a = (argb >> 24) & 0xFF;
     let r = (argb >> 16) & 0xFF;
@@ -112,7 +92,6 @@ pub fn color_to_rgba_bytes(argb: u32) -> u32 {
     r | (g << 8) | (b << 16) | (a << 24)
 }
 
-/// Append the two triangles of one glyph quad.
 pub fn push_glyph_vertices(out: &mut Vec<Vertex>, quad: &GlyphQuad, rgba: u32) {
     let corners = [
         Vertex {
@@ -141,8 +120,6 @@ pub fn push_glyph_vertices(out: &mut Vec<Vertex>, quad: &GlyphQuad, rgba: u32) {
     ]);
 }
 
-/// Append the two triangles of one solid rect (UV pinned to the center of
-/// the 1x1 white texel).
 pub fn push_rect_vertices(out: &mut Vec<Vertex>, rect: &SolidRect) {
     push_glyph_vertices(
         out,
@@ -161,10 +138,6 @@ pub fn push_rect_vertices(out: &mut Vec<Vertex>, rect: &SolidRect) {
     );
 }
 
-/// [`create_immutable_texture`] with an explicit mip chain: `levels[0]` is
-/// mip 0, each subsequent level halves (validated). Needed because the render
-/// helper is single-mip and the label atlas ships a real chain the engine
-/// trilinear-samples (see the FontPage::mips law).
 unsafe fn create_immutable_texture_mips(
     gfx: &Gfx,
     levels: &[(usize, usize, &[u8])],
@@ -232,14 +205,11 @@ unsafe fn create_immutable_texture_mips(
     Ok((texture, srv))
 }
 
-/// Atlas sampling filter for a [`Pipeline`]. Overlay text and solid rects use
-/// `Point` (1:1 authored bitmap pixels, byte-stable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TextureFilter {
     Point,
 }
 
-/// Shared pipeline objects for the overlay shader.
 struct Pipeline {
     vs: ComPtr<ID3D11VertexShader>,
     ps: ComPtr<ID3D11PixelShader>,
@@ -324,14 +294,9 @@ impl Pipeline {
             let input_layout = ComPtr::from_raw(input_layout, "overlay input layout")?;
 
             let mut sampler_desc: D3D11_SAMPLER_DESC = mem::zeroed();
-            // Point for overlay/rects (1:1 authored bitmap pixels); Linear for
-            // map-label/furniture paths is intentionally absent from replay_app.
             sampler_desc.Filter = match filter {
                 TextureFilter::Point => D3D11_FILTER_MIN_MAG_MIP_POINT,
             };
-            // FILE LAW: `gfx/FX/mapname.shader` Samplers declare
-            // `MipMapLodBias = -0.4` for the label atlas; the overlay path
-            // (single-mip Point pages) keeps 0.
             sampler_desc.MipLODBias = match filter {
                 TextureFilter::Point => 0.0,
             };
@@ -397,10 +362,6 @@ impl Pipeline {
         }
     }
 
-    /// Draw `vertices` (triangle list) with `srv` bound as the page,
-    /// chunking through the dynamic vertex buffer. Restores default blend
-    /// state afterwards so the map pass is unaffected next frame.
-    ///
     fn draw(
         &self,
         gfx: &Gfx,
@@ -486,7 +447,6 @@ impl Pipeline {
             let blend_factor = [0.0f32; 4];
             (*context).OMSetBlendState(self.blend.as_raw(), &blend_factor, 0xFFFF_FFFF);
 
-            // Whole triangles per chunk (capacity is a multiple of 3).
             for chunk in vertices.chunks(VERTEX_CAPACITY - VERTEX_CAPACITY % 3) {
                 let mut mapped: D3D11_MAPPED_SUBRESOURCE = mem::zeroed();
                 let hr = (*context).Map(
@@ -506,25 +466,18 @@ impl Pipeline {
                 (*context).Draw(chunk.len() as UINT, 0);
             }
 
-            // Back to default opaque blending for the next map pass.
             (*context).OMSetBlendState(ptr::null_mut(), &blend_factor, 0xFFFF_FFFF);
         }
         Ok(())
     }
 }
 
-/// Solid-rect renderer (the scrub bar path). Independent of any font so
-/// the bar can still draw when font loading failed closed.
 pub struct QuadRenderer {
     pipeline: Pipeline,
     _white_texture: ComPtr<ID3D11Texture2D>,
     white_srv: ComPtr<ID3D11ShaderResourceView>,
 }
 
-/// Full RGBA production-UI image renderer.  The CPU compositor only rebuilds
-/// an image when its exact replay inputs change; this object retains that
-/// immutable image on the GPU and draws it after the map on every presented
-/// frame.  It shares the same straight-alpha blend law as text/sprites.
 pub struct ImageRenderer {
     pipeline: Pipeline,
     image: Option<(ComPtr<ID3D11Texture2D>, ComPtr<ID3D11ShaderResourceView>)>,
@@ -540,8 +493,6 @@ impl ImageRenderer {
         })
     }
 
-    /// Replace the retained UI image.  Dimensions and byte count are strict;
-    /// malformed or empty images never reach D3D.
     pub fn set_rgba(&mut self, gfx: &Gfx, image: &game_ui::dds::RgbaImage) -> Result<()> {
         if image.width == 0
             || image.height == 0
@@ -580,9 +531,6 @@ impl ImageRenderer {
         let Some((width, height)) = self.extent else {
             return Err("production UI texture exists without an extent".into());
         };
-        // XUI25 rejects resampling one physical-pixel oracle into another
-        // viewport. Resize therefore clears/omits the UI until an exact image
-        // for that viewport is composed and uploaded.
         if width != gfx.width as usize || height != gfx.height as usize {
             return Err(format!(
                 "production UI image {}x{} does not match exact viewport {}x{}",
@@ -630,7 +578,6 @@ impl QuadRenderer {
         })
     }
 
-    /// Draw all rects in a single batch.
     pub fn draw_rects(&self, gfx: &Gfx, rects: &[SolidRect]) -> Result<()> {
         let mut vertices = Vec::with_capacity(rects.len() * 6);
         for rect in rects {
@@ -639,11 +586,6 @@ impl QuadRenderer {
         self.pipeline.draw(gfx, self.white_srv.as_raw(), &vertices)
     }
 
-    /// Draw caller-authenticated textured GUI vertices through the same
-    /// screen-space quad pipeline used by the product HUD.
-    ///
-    /// # Safety
-    /// `srv` must remain live on `gfx`'s D3D11 device for this call.
     pub(crate) unsafe fn draw_textured_vertices(
         &self,
         gfx: &Gfx,
@@ -660,11 +602,9 @@ impl QuadRenderer {
     }
 }
 
-/// Bitmap-font text renderer over a loaded game [`Font`].
 pub struct TextRenderer {
     pipeline: Pipeline,
     font: Font,
-    /// One immutable texture + SRV per atlas page.
     pages: Vec<(ComPtr<ID3D11Texture2D>, ComPtr<ID3D11ShaderResourceView>)>,
 }
 
@@ -687,8 +627,6 @@ impl TextRenderer {
                         &label,
                     )?
                 } else {
-                    // The SHIPPED mip chain (FontPage::mips) — the engine
-                    // trilinear-samples it with the -0.4 LOD bias above.
                     let mut levels: Vec<(usize, usize, &[u8])> =
                         vec![(page.width as usize, page.height as usize, &page.rgba)];
                     levels.extend(
@@ -712,18 +650,11 @@ impl TextRenderer {
         &self.font
     }
 
-    /// Measure one line of text: (width, line height) in pixels.
-    /// The overlay currently only needs [`TextRenderer::draw_text`]; this
-    /// is the other half of the API surface for upcoming counter/panel
-    /// layout work.
     #[allow(dead_code)]
     pub fn measure(&self, text: &str) -> (u32, u32) {
         self.font.measure(text)
     }
 
-    /// Draw one line of text with its top-left at (`x`, `y`) window
-    /// pixels; `color` is `0xAARRGGBB`. Returns the characters that had no
-    /// glyph (skipped and recorded, never substituted).
     pub fn draw_text(
         &self,
         gfx: &Gfx,
@@ -735,9 +666,6 @@ impl TextRenderer {
         Ok(self.draw_text_with_page_receipts(gfx, x, y, text, color)?.0)
     }
 
-    /// Draw one line and return the exact atlas-page indices that issued a
-    /// non-empty D3D draw. XMAP14 uses these indices in its authenticated
-    /// compositor receipt; ordinary UI callers keep the simpler API above.
     pub(crate) fn draw_text_with_page_receipts(
         &self,
         gfx: &Gfx,
@@ -749,7 +677,6 @@ impl TextRenderer {
         let layout = self.font.layout_text(x, y, text);
         let rgba = color_to_rgba_bytes(color);
         let mut submitted_pages = Vec::new();
-        // Batch per page (the fonts in use today have a single page).
         for (page_index, (_, srv)) in self.pages.iter().enumerate() {
             let mut vertices = Vec::new();
             for quad in layout.quads.iter().filter(|quad| quad.page == page_index) {
@@ -763,10 +690,6 @@ impl TextRenderer {
         Ok((layout.missing, submitted_pages))
     }
 
-    /// Submit a pre-positioned, already-authenticated text operation to a
-    /// caller-owned render target. The caller owns semantic placement; this
-    /// method only executes the effective-font glyph quads and reports the
-    /// atlas pages that issued draws.
     pub(crate) fn draw_text_to_target_with_page_receipts(
         &self,
         gfx: &Gfx,
@@ -812,7 +735,6 @@ mod tests {
 
     #[test]
     fn color_converts_argb_to_rgba_byte_order() {
-        // 0xAARRGGBB -> bytes r,g,b,a (little-endian u32).
         assert_eq!(color_to_rgba_bytes(0xFF00_0000), 0xFF00_0000);
         assert_eq!(color_to_rgba_bytes(0x0000_00FF), 0x00FF_0000);
         assert_eq!(color_to_rgba_bytes(0x00FF_0000), 0x0000_00FF);
@@ -845,7 +767,6 @@ mod tests {
         assert_eq!(vertices[0].uv, [0.1, 0.2]);
         assert_eq!(vertices[2].pos, [3.0, 6.0]);
         assert_eq!(vertices[2].uv, [0.3, 0.4]);
-        // Both triangles share the top-left and bottom-right corners.
         assert_eq!(vertices[3], vertices[0]);
         assert_eq!(vertices[4], vertices[2]);
         assert_eq!(vertices[5].pos, [1.0, 6.0]);

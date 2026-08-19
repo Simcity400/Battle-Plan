@@ -1,19 +1,3 @@
-//! Domain-46 air ace roster: the `ACE1` trailer codec.
-//!
-//! The ace roster ships INSIDE the domain-46 `air_variant_archetypes` data
-//! record, appended after the self-delimiting base payload (the MTD1
-//! purchase-contract trailer precedent from domain 43). This preserves the
-//! stream invariant of exactly one data record per domain per frame; trailer
-//! presence is decided by trailing bytes + the `ACE1` magic, which is
-//! unambiguous because the base payload's exact length is derived from its
-//! own header (a legacy no-trailer record decodes exactly to its end).
-//!
-//! Rows are FULL-REPLACE per frame (no delta/tombstones): every valid roster
-//! ace is re-emitted, and the fold replaces its whole ace map whenever a
-//! trailer is present. All fields fail closed: `absent != 0` is enforced by
-//! presence flags, and killer fields are only valid on a confirmed-dead ace
-//! (their content on living aces was never validated).
-
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const ACE_TRAILER_MAGIC: &[u8; 4] = b"ACE1";
@@ -29,35 +13,6 @@ pub const ACE_TRAILER_HEADER_LEN: usize = 40;
 pub const ACE_TRAILER_ROW_LEN: usize = 40;
 pub const ACE_TRAILER_ROW_LEN_V1: usize = 32;
 
-// Trailer status flags, and which of them the record status carries.
-//
-// The original rule here was "NEVER fed into the global compact status
-// interpretation". It was written for the whole word and it contradicted the
-// fold: `WorldFold::apply_air_ace_roster` treats SOURCE_UNAVAILABLE and
-// PARTIAL_DATA as decisive -- on either it RETAINS the previous hour's ace map
-// and sidecars rather than full-replacing, and withholds
-// `air_aces_fresh_this_hour`. An hour that serves an unmeasured, retained
-// roster while its record status reads clean is a certified lie, so the two had
-// to be made to agree.
-//
-// They are reconciled on this rule's own second clause -- values are chosen to
-// match the global semantics where one exists -- which is exactly the admission
-// test:
-//
-// * SOURCE_UNAVAILABLE (1<<8) and PARTIAL_DATA (1<<9) ARE their global
-//   namesakes, same bit and same meaning, and they are the two the fold gates
-//   on. `domain46_air_variant_archetypes_live::decode_payload` ORs these, and
-//   only these, into the d46 record status.
-// * WING_ASSIGNMENT_BLOCKED (1<<13) stays trailer-local. Globally 1<<13 is
-//   COMPACT_STATUS_WAR_SEGMENT_ABSENT, an unrelated fact, so it has no global
-//   semantics to borrow -- and it is precisely the bit the fold does NOT gate
-//   on: identity is complete and the frame is still full-replaced. Feeding it
-//   in would assert a war-segment fact about an air domain.
-//
-// What the original clause protected is unchanged: the record's own WIRE status
-// word is still the base archetype payload's, and WHICH slice degraded is still
-// named exactly, by the `air_ace_roster_*_frames` data units and the fold's
-// `ace_roster_source_unavailable` / `ace_roster_partial` domain problems.
 pub const ACE_STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 8;
 pub const ACE_STATUS_PARTIAL_DATA: u32 = 1 << 9;
 pub const ACE_STATUS_WING_ASSIGNMENT_BLOCKED: u32 = 1 << 13;
@@ -68,24 +23,12 @@ pub const ROW_FLAG_NAME: u32 = 1 << 1;
 pub const ROW_FLAG_SURNAME: u32 = 1 << 2;
 pub const ROW_FLAG_CALLSIGN: u32 = 1 << 3;
 pub const ROW_FLAG_WING_ID: u32 = 1 << 4;
-/// The alive byte (+0x158) read back a validated boolean; without this flag
-/// the row's death state is UNKNOWN (torn/out-of-domain read), never "alive".
 pub const ROW_FLAG_ALIVE_KNOWN: u32 = 1 << 5;
-/// Requires ROW_FLAG_ALIVE_KNOWN. Set = dead (alive byte 0).
 pub const ROW_FLAG_DEAD: u32 = 1 << 6;
-/// Requires ROW_FLAG_DEAD. Killer ace id (+0x164) present. Independent of
-/// KILLER_COUNTRY: two D04 dead aces carry a killer country but no killer
-/// ace id.
 pub const ROW_FLAG_KILLER_ACE: u32 = 1 << 7;
-/// Requires ROW_FLAG_DEAD. Killer country tag-db-id (+0x168) present.
 pub const ROW_FLAG_KILLER_COUNTRY: u32 = 1 << 8;
-/// The serializer-owned handled byte (`CAceEntry+0x16C`) was read as a
-/// validated boolean. A trailer-v1 row leaves this field unknown.
 pub const ROW_FLAG_HANDLED_KNOWN: u32 = 1 << 9;
-/// Requires `ROW_FLAG_HANDLED_KNOWN`. Set = the death record was handled.
 pub const ROW_FLAG_HANDLED: u32 = 1 << 10;
-/// The serializer-owned raw kill type (`CAceEntry+0x15C`) was read. No enum
-/// label is assigned because the retained corpus only proves raw value 1.
 pub const ROW_FLAG_KILL_TYPE_KNOWN: u32 = 1 << 11;
 
 pub const SOURCE_LIVE_COUNTRY_ACE_VECTOR: u32 = 1;
@@ -96,21 +39,10 @@ pub const SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT: u32 = 1 << 4;
 pub const SOURCE_LIVE_ACE_DEATH_RECORD: u32 = 1 << 5;
 pub const SOURCE_LIVE_ACE_LIFECYCLE_RECORD: u32 = 1 << 6;
 
-/// Was `4096`, a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags). ENGINE-STRUCTURAL now, by the same derivation `MAX_ACE_ID` and
-/// `MAX_WING_ID` below already use for their own engine id spaces: a country
-/// database id is admissible iff `id < *(int32*)(db + 0x0C)` and that size is a
-/// signed `int`, so `i32::MAX - 1` is the widest id a loadable database holds.
-/// (This crate takes no dependencies, so the value is spelled rather than
-/// imported; `wire_format/tests/producer_consumer_admission_agreement.rs` pins
-/// it to `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID` through its d46
-/// mirror.)
 pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_ACE_ID: u32 = i32::MAX as u32;
 pub const MAX_COUNTRY_ACE_INDEX: u32 = 4096;
 pub const MAX_WING_ID: u32 = i32::MAX as u32;
-/// UTF-8 byte cap. Raw cp1252 strings are capped at 96 bytes at the read
-/// layer; cp1252->UTF-8 can grow each byte to at most 3 bytes.
 pub const MAX_STRING_LEN: usize = 96 * 3;
 pub const MAX_ACE_ROWS: usize = 65_536;
 
@@ -174,9 +106,6 @@ pub struct AirAceRosterRow {
     pub callsign: Option<String>,
 }
 
-/// Mechanically derive the only lifecycle states proven by the raw
-/// serializer-owned booleans. Contradictory or incomplete tuples remain
-/// absent instead of being normalized.
 pub fn ace_lifecycle_state(row: &AirAceRosterRow) -> Option<&'static str> {
     match (row.alive, row.handled) {
         (Some(true), Some(false)) => Some("alive"),
@@ -232,11 +161,6 @@ fn row_flags(row: &AirAceRosterRow) -> u32 {
     flags
 }
 
-/// Encode the `ACE1` trailer bytes to append after a self-delimiting base
-/// archetype payload. The encoder is strict the same way the decoder is:
-/// killer fields on a non-dead row are DROPPED (never encoded), so a
-/// fail-open reader bug upstream cannot produce a decodable fail-open wire
-/// image.
 pub fn encode_trailer(header: &AirAceRosterHeader, rows: &[AirAceRosterRow]) -> Vec<u8> {
     let mut out = Vec::with_capacity(
         ACE_TRAILER_HEADER_LEN
@@ -290,21 +214,13 @@ pub fn encode_trailer(header: &AirAceRosterHeader, rows: &[AirAceRosterRow]) -> 
     out
 }
 
-/// The decoded `ACE1` trailer: validated header + full-replace rows.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AceTrailerFrame {
-    /// Exact wire version retained for the portable authority envelope. V1 is
-    /// alive-only historical transport; v2 is the stable raw lifecycle tuple.
     pub version: u16,
     pub header: AirAceRosterHeader,
     pub rows: Vec<AirAceRosterRow>,
 }
 
-/// Strictly decode the `ACE1` trailer at `trailer_offset` within `payload`
-/// into rows. Every wire-validation rule lives HERE (single source of
-/// truth); the gate summary decoder and the world fold both consume this.
-/// Any violation fails the whole trailer (`Err`), never a partial decode.
-/// The trailer must consume `payload` to its exact end.
 pub fn decode_trailer_rows(
     payload: &[u8],
     trailer_offset: usize,
@@ -364,12 +280,6 @@ pub fn decode_trailer_rows(
             "ace trailer assignment/dead counters exceed row_count {row_count}"
         ));
     }
-    // SOURCE_UNAVAILABLE is a whole-frame absence: it must carry zero rows
-    // (absent, never zero-filled). PARTIAL (roster incomplete) still carries
-    // the surviving rows for observability; the fold retains prior state on
-    // both. `skipped_rows` is an informational counter and may be nonzero on
-    // a complete frame (ambiguous-assignment-only drops), so it does NOT by
-    // itself require PARTIAL.
     if header.status_flags & ACE_STATUS_SOURCE_UNAVAILABLE != 0 && row_count != 0 {
         return Err(format!(
             "ace trailer SOURCE_UNAVAILABLE carries {row_count} rows (must be empty)"
@@ -473,18 +383,14 @@ pub fn decode_trailer_rows(
             }
             None
         };
-        if wing.is_some()
-            != (source_mask & SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT != 0)
-        {
+        if wing.is_some() != (source_mask & SOURCE_LIVE_WING_ACE_ID_ASSIGNMENT != 0) {
             return Err(format!(
                 "ace row {row_index} wing assignment disagrees with source authority"
             ));
         }
         let frame_assignment_blocked =
             header.status_flags & ACE_STATUS_WING_ASSIGNMENT_BLOCKED != 0;
-        if frame_assignment_blocked
-            != (source_mask & SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED != 0)
-        {
+        if frame_assignment_blocked != (source_mask & SOURCE_WING_ASSIGNMENT_SCAN_BLOCKED != 0) {
             return Err(format!(
                 "ace row {row_index} assignment-blocked source disagrees with frame status"
             ));
@@ -571,10 +477,6 @@ pub fn decode_trailer_rows(
                 "ace row {row_index} has nonzero death-only kill_type_raw on a living ace"
             ));
         }
-        // V2's lifecycle bytes are captured as one stable tuple.  Partial
-        // presence would turn a torn read into apparently authoritative raw
-        // state.  V1 is the only supported alive-only wire shape: it predates
-        // handled/kill-type capture and is decoded with both new fields absent.
         if !v1 && (alive_known != handled_known || alive_known != kill_type_known) {
             return Err(format!(
                 "ace row {row_index} has partial v2 lifecycle tuple presence"
@@ -587,10 +489,7 @@ pub fn decode_trailer_rows(
                 "ace row {row_index} claims lifecycle-record source without alive, handled, and kill_type presence"
             ));
         }
-        if !v1
-            && alive_known
-            && source_mask & SOURCE_LIVE_ACE_LIFECYCLE_RECORD == 0
-        {
+        if !v1 && alive_known && source_mask & SOURCE_LIVE_ACE_LIFECYCLE_RECORD == 0 {
             return Err(format!(
                 "ace row {row_index} has a v2 lifecycle tuple without lifecycle-record source"
             ));
@@ -665,9 +564,6 @@ pub fn decode_trailer_rows(
     })
 }
 
-/// Decode + gate the `ACE1` trailer at `trailer_offset` within `payload`,
-/// producing gate units. Thin wrapper over `decode_trailer_rows` (the single
-/// validation source); a violation surfaces as one parse error.
 pub fn decode_trailer(
     offset: usize,
     payload: &[u8],
@@ -1003,8 +899,6 @@ mod tests {
     #[test]
     fn encoder_drops_killer_fields_on_living_rows() {
         let mut bad = alive_row(5440);
-        // A buggy upstream reader claims killer fields on a LIVING ace: the
-        // encoder must not let them reach the wire.
         bad.killer_ace_id = Some(6265);
         bad.killer_country_tag_db_id = Some(92);
         let rows = vec![bad];
@@ -1071,8 +965,7 @@ mod tests {
         let mut row = alive_row(5440);
         row.kill_type_raw = Some(1);
         let bytes = encode_trailer(&header_for(std::slice::from_ref(&row)), &[row]);
-        let error =
-            decode_trailer_rows(&bytes, 0).expect_err("living nonzero kill type must fail");
+        let error = decode_trailer_rows(&bytes, 0).expect_err("living nonzero kill type must fail");
         assert!(error.contains("death-only kill_type_raw"), "{error}");
     }
 
@@ -1080,7 +973,6 @@ mod tests {
     fn rejects_killer_flag_on_non_dead_row() {
         let rows = vec![dead_row(6265)];
         let mut trailer = encode_trailer(&header_for(&rows), &rows);
-        // Clear DEAD (bit 6) but keep the killer flags: must be rejected.
         let flags_offset = ACE_TRAILER_HEADER_LEN + 8;
         let mut flags = read_u32_le(&trailer, flags_offset);
         flags &= !ROW_FLAG_DEAD;
@@ -1122,9 +1014,6 @@ mod tests {
 
     #[test]
     fn source_unavailable_must_carry_zero_rows() {
-        // SOURCE_UNAVAILABLE is whole-frame absence; carrying rows is a
-        // fail-open contradiction (the fold would retain AND the frame claims
-        // rows).
         let rows = vec![alive_row(5440)];
         let mut header = header_for(&rows);
         header.status_flags = ACE_STATUS_SOURCE_UNAVAILABLE;
@@ -1138,9 +1027,6 @@ mod tests {
 
     #[test]
     fn partial_frame_carries_surviving_rows_for_observability() {
-        // A partial (incomplete-roster) frame still carries its surviving
-        // rows; skipped_rows is informational and does NOT require any
-        // particular row count relationship beyond the full-replace identity.
         let rows = vec![alive_row(5440)];
         let mut header = header_for(&rows);
         header.skipped_rows = 3;
@@ -1164,8 +1050,6 @@ mod tests {
 
     #[test]
     fn skipped_rows_without_partial_is_allowed_for_ambiguous_only_drops() {
-        // Ambiguous-assignment-only drops count toward skipped_rows but do
-        // NOT force PARTIAL (identity is complete). This must decode clean.
         let rows = vec![alive_row(5440)];
         let mut header = header_for(&rows);
         header.skipped_rows = 2;

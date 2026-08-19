@@ -1,17 +1,7 @@
-//! Owner-runnable evidence acquisition for reserved A34/d87, A36/d88, and
-//! A40/d85.
-//!
-//! These owners are deliberately absent from the production scheduler. They
-//! install the exact sentinel-gated hooks and uninstall only after all detour
-//! callbacks have quiesced. A34/A40 destructively drain pointer-free payloads
-//! and frame them as ordinary H4CR domain data on request. A36 instead retains
-//! authenticated raw transactions plus hashes of the pointer-free ABL1 frames
-//! constructed from collector-owned same-frame roots; it never schedules d88.
-
-use design_catalog_context_live_lane::selected_designer_identity as designer;
-use design_catalog_context_live_lane::a40_peace_evidence as peace;
-use decision_panel_live_lane as panel;
 use active_command_abilities_live_lane::a729_hook as abilities;
+use decision_panel_live_lane as panel;
+use design_catalog_context_live_lane::a40_peace_evidence as peace;
+use design_catalog_context_live_lane::selected_designer_identity as designer;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
@@ -41,8 +31,6 @@ pub struct EvidenceUninstallReceipt {
     pub domain_id: u16,
     pub callbacks_observed: u64,
     pub callbacks_quiesced: bool,
-    /// A40 borrows d78's independently owned designer-refresh observer. The
-    /// evidence owner never tears that shared prerequisite down.
     pub shared_prerequisite_retained: bool,
 }
 
@@ -85,8 +73,6 @@ impl ReservedDomainEvidenceRecord {
         })
     }
 
-    /// Frame this already-authenticated payload as an ordinary H4CR domain
-    /// record. Sequence authority remains with the recorder/harness caller.
     pub fn encode_h4cr(&self, sequence: u64, game_hour_raw: i32) -> Result<Vec<u8>, String> {
         if sequence == 0 {
             return Err("reserved-domain H4CR sequence is zero".into());
@@ -137,13 +123,6 @@ pub struct A40PeaceEvidenceInstallReceipt {
     pub production_carrier_enabled: bool,
 }
 
-/// Evidence-only owner for autonomous positive active-conference validation.
-///
-/// Unlike d85 this observer has no compact domain. Exact-a729 proves there is
-/// no intrinsic action/allocation id and no terminal allocation-result join,
-/// so raw process-local pointers and memory blocks may only leave the hook as a
-/// diagnostic receipt. A production reducer must emit complete snapshots with
-/// snapshot-scoped row ids and preserve terminal rows as explicitly unjoined.
 pub struct A40PeaceEvidenceOwner {
     install_receipt: A40PeaceEvidenceInstallReceipt,
     installed: bool,
@@ -229,17 +208,21 @@ fn a36_timer_receipt(
 ) -> A36PortableTimerReceipt {
     use active_command_abilities_live_lane::TimerValue;
     match value {
-        TimerValue::NotStarted => A36PortableTimerReceipt { kind: "not_started", hours: None },
-        TimerValue::Indefinite => A36PortableTimerReceipt { kind: "indefinite", hours: None },
-        TimerValue::Hours(hours) => A36PortableTimerReceipt { kind: "hours", hours: Some(hours) },
+        TimerValue::NotStarted => A36PortableTimerReceipt {
+            kind: "not_started",
+            hours: None,
+        },
+        TimerValue::Indefinite => A36PortableTimerReceipt {
+            kind: "indefinite",
+            hours: None,
+        },
+        TimerValue::Hours(hours) => A36PortableTimerReceipt {
+            kind: "hours",
+            hours: Some(hours),
+        },
     }
 }
 
-/// Evidence-only owner for A36 selected-context ability refresh and tooltip
-/// transactions. The raw receipt deliberately retains process-local runtime
-/// identities so the fixture regrader can prove producer joins. It hashes the
-/// ABL1 built by the real pointer-erasing source constructor, but can never
-/// publish ABL1/ABA2 or authorize compact scheduling.
 pub struct A36ActiveAbilityEvidenceOwner {
     install_receipt: A36ActiveAbilityInstallReceipt,
     installed: bool,
@@ -266,8 +249,7 @@ impl A36ActiveAbilityEvidenceOwner {
                 ghidra_manifest_sha256: abilities::EXACT_A729_AUTHORITY_MANIFEST_SHA256,
                 final_static_audit_job_id: abilities::FINAL_STATIC_AUDIT_JOB_ID,
                 final_static_audit_shard: abilities::FINAL_STATIC_AUDIT_SHARD,
-                final_static_audit_manifest_sha256:
-                    abilities::FINAL_STATIC_AUDIT_MANIFEST_SHA256,
+                final_static_audit_manifest_sha256: abilities::FINAL_STATIC_AUDIT_MANIFEST_SHA256,
                 final_roots_job_id: abilities::FINAL_ROOTS_JOB_ID,
                 final_roots_shard: abilities::FINAL_ROOTS_SHARD,
                 final_roots_manifest_sha256: abilities::FINAL_ROOTS_MANIFEST_SHA256,
@@ -324,10 +306,10 @@ impl A36ActiveAbilityEvidenceOwner {
             controller,
             tooltips,
         )?;
-        let frame = active_command_abilities_live_lane::ExactA729AbilityControllerSource::collect_frame(
-            &source,
-            frame_hour,
-        )?;
+        let frame =
+            active_command_abilities_live_lane::ExactA729AbilityControllerSource::collect_frame(
+                &source, frame_hour,
+            )?;
         let tooltip_sequences = source.tooltip_sequences().to_vec();
         let tooltip_game_hours_raw = tooltip_sequences
             .iter()
@@ -347,21 +329,25 @@ impl A36ActiveAbilityEvidenceOwner {
         }
         let abl1 = active_command_abilities_live_lane::encode_payload(&frame)
             .map_err(|error| format!("A36 evidence ABL1 encode failed: {error:?}"))?;
-        let abl1_rows = frame.rows.iter().map(|row| A36PortableAbilityRowReceipt {
-            ability_id: row.ability_id.clone(),
-            available: row.available,
-            active: row.active,
-            activation_hour: row.activation_hour,
-            cooldown_total: a36_timer_receipt(row.cooldown_total),
-            cooldown_remaining: a36_timer_receipt(row.cooldown_remaining),
-            duration_total: a36_timer_receipt(row.duration_total),
-            duration_remaining: a36_timer_receipt(row.duration_remaining),
-            cost_command_power_fixed: row.cost_command_power_fixed,
-            display_order: row.display_order,
-            tooltip: row.tooltip.clone(),
-            disabled_reason: row.disabled_reason.clone(),
-            affected_division_ids: row.affected_division_ids.clone(),
-        }).collect::<Vec<_>>();
+        let abl1_rows = frame
+            .rows
+            .iter()
+            .map(|row| A36PortableAbilityRowReceipt {
+                ability_id: row.ability_id.clone(),
+                available: row.available,
+                active: row.active,
+                activation_hour: row.activation_hour,
+                cooldown_total: a36_timer_receipt(row.cooldown_total),
+                cooldown_remaining: a36_timer_receipt(row.cooldown_remaining),
+                duration_total: a36_timer_receipt(row.duration_total),
+                duration_remaining: a36_timer_receipt(row.duration_remaining),
+                cost_command_power_fixed: row.cost_command_power_fixed,
+                display_order: row.display_order,
+                tooltip: row.tooltip.clone(),
+                disabled_reason: row.disabled_reason.clone(),
+                affected_division_ids: row.affected_division_ids.clone(),
+            })
+            .collect::<Vec<_>>();
         let selected_context_runtime = [
             controller.selected_leader_runtime,
             controller.selected_army_group_runtime,
@@ -394,10 +380,17 @@ impl A36ActiveAbilityEvidenceOwner {
             context_kind: context.kind,
             stable_context_id: context.stable_id,
             division_ids_by_leader_runtime: divisions,
-            abl1_len: abl1.len().try_into().map_err(|_| "A36 ABL1 length exceeds u64")?,
+            abl1_len: abl1
+                .len()
+                .try_into()
+                .map_err(|_| "A36 ABL1 length exceeds u64")?,
             abl1_hex: abl1.iter().map(|byte| format!("{byte:02x}")).collect(),
             abl1_sha256: format!("{:x}", Sha256::digest(&abl1)),
-            row_count: frame.rows.len().try_into().map_err(|_| "A36 row count exceeds u32")?,
+            row_count: frame
+                .rows
+                .len()
+                .try_into()
+                .map_err(|_| "A36 row count exceeds u32")?,
             abl1_rows,
         });
         self.portable_joins
@@ -477,8 +470,6 @@ impl Drop for A40PeaceEvidenceOwner {
 
 impl A40SelectedDesignerEvidenceOwner {
     pub fn install() -> Result<Self, String> {
-        // d78 owns exact controller order and remains independently installed;
-        // A40 never fabricates or accepts an ordered identity list.
         design_catalog_context_live_lane::a729_hook::install()
             .map_err(|error| format!("A40 evidence d78 prerequisite failed: {error}"))?;
         designer::a729_hook::install_for_fixture()?;
@@ -492,8 +483,7 @@ impl A40SelectedDesignerEvidenceOwner {
                     hex(&designer::CLASSIFIER_MANIFEST_SHA256),
                     hex(&designer::DIVISION_CLICK_THUNK_ARTIFACT_SHA256),
                     hex(&designer::DIVISION_WRAPPER_ARTIFACT_SHA256),
-                    designer::a729_hook::EQUIPMENT_AUTODESIGN_SUCCESS_MANIFEST_SHA256
-                        .to_string(),
+                    designer::a729_hook::EQUIPMENT_AUTODESIGN_SUCCESS_MANIFEST_SHA256.to_string(),
                     designer::a729_hook::EQUIPMENT_AUTODESIGN_SUCCESS_SENTINEL_ARTIFACT_SHA256
                         .to_string(),
                 ],
@@ -517,12 +507,9 @@ impl A40SelectedDesignerEvidenceOwner {
         if !self.installed {
             return Err("A40 evidence owner is uninstalled".into());
         }
-        let payload = designer::a729_hook::drain_fixture_payload(
-            frame_hour,
-            elapsed_wall_ms,
-            family,
-        )
-        .map_err(|error| format!("A40 SDI1 evidence drain failed: {error:?}"))?;
+        let payload =
+            designer::a729_hook::drain_fixture_payload(frame_hour, elapsed_wall_ms, family)
+                .map_err(|error| format!("A40 SDI1 evidence drain failed: {error:?}"))?;
         let decoded = designer::decode_payload(&payload)
             .map_err(|error| format!("A40 drained SDI1 failed self-decode: {error:?}"))?;
         let sequence = decoded
@@ -565,8 +552,6 @@ impl Drop for A40SelectedDesignerEvidenceOwner {
     }
 }
 
-/// Opaque one-shot A34 join ticket. The public witness rows contain only
-/// hook-observed identity/presentation facts; callers cannot replace them.
 pub struct A34DecisionPanelResolutionTicket {
     receipt: panel::a729_hook::MaterializationReceipt,
 }
@@ -644,9 +629,7 @@ impl A34DecisionCatalog {
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| format!("A34 decision {map_id} lacks category"))?
                 .to_string();
-            let targets = row
-                .get("targets")
-                .and_then(serde_json::Value::as_object);
+            let targets = row.get("targets").and_then(serde_json::Value::as_object);
             let targeted = targets.is_some_and(|targets| {
                 targets
                     .get("targeted_decision")
@@ -676,18 +659,20 @@ impl A34DecisionCatalog {
                 None => None,
             };
             let cost = row.get("cost").and_then(serde_json::Value::as_object);
-            let political_power = cost
-                .and_then(|cost| cost.get("political_power"))
-                .and_then(|value| {
-                    value
-                        .as_i64()
-                        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-                });
+            let political_power =
+                cost.and_then(|cost| cost.get("political_power"))
+                    .and_then(|value| {
+                        value
+                            .as_i64()
+                            .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+                    });
             let custom_cost = cost.is_some_and(|cost| {
                 cost.get("has_custom_cost_trigger")
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
-                    || cost.get("custom_cost_text").is_some_and(|value| !value.is_null())
+                    || cost
+                        .get("custom_cost_text")
+                        .is_some_and(|value| !value.is_null())
             });
             if parsed
                 .insert(
@@ -721,10 +706,6 @@ pub struct A34DecisionPanelProductionSession {
     installed: bool,
 }
 
-/// Complete owner-runnable A34 evidence transaction result. All three
-/// receipts are retained so an external harness can prove that hook
-/// installation, the one-shot DPN1 drain, and quiescent teardown belonged to
-/// the same invocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct A34DecisionPanelEvidenceTransaction {
     pub install: EvidenceInstallReceipt,
@@ -732,17 +713,6 @@ pub struct A34DecisionPanelEvidenceTransaction {
     pub uninstall: EvidenceUninstallReceipt,
 }
 
-/// Run the complete A34 evidence lifecycle around one real engine UI update.
-///
-/// `drive_ui_update` is the only environment-owned action: it must cause the
-/// already-installed hooks to observe one complete country-decision view
-/// materialization and return the selected-Present stamp captured afterward.
-/// `resolve` receives the hook-minted one-shot ticket and may only supply the
-/// pointer-free semantic supplement; family, identity, order, geometry, text,
-/// alert membership, and receipt chronology remain hook-owned.
-///
-/// Every failure attempts quiescent uninstall before returning. The production
-/// scheduling and fixture-acceptance latches remain untouched.
 pub fn run_a34_decision_panel_evidence_transaction<Drive, Resolve>(
     frame_hour: u64,
     elapsed_wall_ms: u64,
@@ -859,10 +829,7 @@ impl A34DecisionPanelEvidenceOwner {
             .generation
             .take()
             .ok_or("A34 evidence owner has no armed epoch")?;
-        panel::a729_hook::seal_capture_epoch_at_selected_present(
-            generation,
-            selected_present,
-        )?;
+        panel::a729_hook::seal_capture_epoch_at_selected_present(generation, selected_present)?;
         Ok(A34DecisionPanelResolutionTicket {
             receipt: panel::a729_hook::take_materialization_receipt()?,
         })
@@ -922,10 +889,7 @@ struct A34ProductionSemanticResolver<'a> {
 }
 
 impl<'a> A34ProductionSemanticResolver<'a> {
-    fn new(
-        state: &'a super::attach_log::CollectorState,
-        catalog: &'a A34DecisionCatalog,
-    ) -> Self {
+    fn new(state: &'a super::attach_log::CollectorState, catalog: &'a A34DecisionCatalog) -> Self {
         Self {
             state,
             catalog,
@@ -1064,9 +1028,7 @@ impl<'a> A34ProductionSemanticResolver<'a> {
     }
 }
 
-impl panel::a729_hook::ProductionDecisionSemanticSource
-    for A34ProductionSemanticResolver<'_>
-{
+impl panel::a729_hook::ProductionDecisionSemanticSource for A34ProductionSemanticResolver<'_> {
     fn country_tag(&mut self, country_tag_db_id: u32) -> Result<String, String> {
         let row = self
             .state
@@ -1137,8 +1099,7 @@ impl panel::a729_hook::ProductionDecisionSemanticSource
         } else {
             None
         };
-        let mut remaining_timer_days =
-            self.active_days(query.decision_id, target.as_ref());
+        let mut remaining_timer_days = self.active_days(query.decision_id, target.as_ref());
         if remaining_timer_days.is_none()
             && query.family == panel::a729_hook::PresenterFamily::Timed
             && query.record != 0
@@ -1269,32 +1230,27 @@ mod tests {
 
     #[test]
     fn reserved_record_frames_exact_domain_data_without_scheduling() {
-        let record = ReservedDomainEvidenceRecord::new(
-            "fixture",
-            designer::DOMAIN_ID,
-            42,
-            7,
-            vec![1, 2, 3],
-        )
-        .unwrap();
+        let record =
+            ReservedDomainEvidenceRecord::new("fixture", designer::DOMAIN_ID, 42, 7, vec![1, 2, 3])
+                .unwrap();
         let bytes = record.encode_h4cr(11, 42).unwrap();
         let header = compact_contract::parse_compact_record_header(&bytes).unwrap();
         assert_eq!(header.sequence, 11);
         assert_eq!(header.domain_id, designer::DOMAIN_ID);
-        assert_eq!(header.record_type, compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA);
-        assert_eq!(&bytes[compact_contract::COMPACT_RECORD_HEADER_LEN..], &[1, 2, 3]);
+        assert_eq!(
+            header.record_type,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA
+        );
+        assert_eq!(
+            &bytes[compact_contract::COMPACT_RECORD_HEADER_LEN..],
+            &[1, 2, 3]
+        );
     }
 
     #[test]
     fn reserved_record_rejects_hour_or_sequence_substitution() {
-        let record = ReservedDomainEvidenceRecord::new(
-            "fixture",
-            panel::DOMAIN_ID,
-            42,
-            7,
-            vec![1],
-        )
-        .unwrap();
+        let record =
+            ReservedDomainEvidenceRecord::new("fixture", panel::DOMAIN_ID, 42, 7, vec![1]).unwrap();
         assert!(record.encode_h4cr(0, 42).is_err());
         assert!(record.encode_h4cr(11, 43).is_err());
     }

@@ -1,15 +1,3 @@
-//! Exact-a729 A40 peace-conference transition observer.
-//!
-//! Exact-a729 closes the identity question negatively: peace actions are serialized value
-//! objects without intrinsic allocation ids, and the terminal summary is an
-//! aggregate formatter without result objects or an allocation-to-result join.
-//! The observer retains bounded raw process-local witnesses for optional
-//! validation and publishes only the proven portable refresh identity/scalars
-//! to the production carrier. Production reduction must use complete
-//! snapshots, snapshot-scoped row ids, and explicitly unjoined terminal rows;
-//! it may never promote pointers, inferred ordinals, or payload hashes into
-//! engine lifecycle identity.
-
 use core::ffi::c_void;
 use minhook::MinHook;
 use production_hook_receipt::rel5_roster::Rel5HookRoster;
@@ -51,32 +39,20 @@ pub const NEGATIVE_IDENTITY_VTABLE_B_MANIFEST_SHA256: &str =
     "1fb2e8c659d9454cd8f2b1fc37a60b5bfa0baa566d915977c06d96e62a79720b";
 
 const CONFERENCE_REFRESH_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B,
-    0xF9, 0x48,
+    0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B, 0xF9, 0x48,
 ];
 const CLAIM_BREAKDOWN_SENTINEL: [u8; 16] = [
-    0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48,
-    0x08, 0x55,
+    0x48, 0x8B, 0xC4, 0x4C, 0x89, 0x40, 0x18, 0x48, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x55,
 ];
 const CONTEST_BREAKDOWN_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57,
-    0x41, 0x54,
+    0x48, 0x89, 0x54, 0x24, 0x10, 0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54,
 ];
 const TERMINAL_SUMMARY_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
-    0x56, 0x41,
+    0x48, 0x89, 0x4C, 0x24, 0x08, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41,
 ];
 
-/// The canonical roster admits exactly these four D97 sites.
 pub const HOOK_RECEIPT_COUNT: usize = 4;
 
-/// The exact production-hook specifications this lane may install, in the same
-/// order as the `hooks` table `install_for_evidence` walks and as the detour
-/// list `observe_installed` is handed.
-///
-/// Each `original_prefix` is the SAME constant the installer's own
-/// `verify_sentinel` loop reads, so the byte gate and the receipt cannot end up
-/// describing different functions.
 pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
     ExpectedRvaHook {
         logical_name: "gameplay.d97.conference_refresh",
@@ -108,7 +84,6 @@ pub const PRODUCTION_HOOK_SPECS: [ExpectedRvaHook; HOOK_RECEIPT_COUNT] = [
     },
 ];
 
-/// Pair a canonical D97 target prefix with the pinned logical names.
 fn hook_batch(targets: &[usize]) -> Vec<(&'static str, *mut c_void)> {
     targets
         .iter()
@@ -125,13 +100,6 @@ fn hook_batch(targets: &[usize]) -> Vec<(&'static str, *mut c_void)> {
 static HOOK_RECEIPTS: Rel5HookRoster<HOOK_RECEIPT_COUNT> =
     Rel5HookRoster::new("D97", PRODUCTION_HOOK_SPECS);
 
-/// The detour addresses, each TAGGED with the site it services. A function
-/// rather than a `const` because a function item's address is not an integer at
-/// compile time.
-///
-/// `observe_installed` binds these to the specs BY NAME and refuses two sites
-/// that share an address, which is what a linker fold of two detour bodies
-/// looks like.
 fn detours() -> [SiteDetour; HOOK_RECEIPT_COUNT] {
     [
         SiteDetour::new(
@@ -188,17 +156,7 @@ static DROPPED_REENTRANT: AtomicUsize = AtomicUsize::new(0);
 static DROPPED_LOCK_BUSY: AtomicUsize = AtomicUsize::new(0);
 static STATE: OnceLock<Mutex<HookState>> = OnceLock::new();
 static HOOK_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
-/// A failed installation could not PROVE it removed its detours.
-///
-/// Without this, `INSTALLED` reads false over a live patch and nothing records
-/// it: the install sets `INSTALLED` only after the WHOLE roster is enabled, so
-/// an enable failure whose rollback also failed leaves every other predicate
-/// answering "nothing here". A production hook registry asking only those would
 /// release the lane, see success, and report the domain as a tidy "unavailable"
-/// while the game still executed through the detour.
-///
-/// One-way on purpose, exactly like D94's twin: there is no later state in
-/// which a patch this lane could not remove becomes provably gone.
 static FAILED_INSTALL_REMOVAL_UNPROVED: AtomicBool = AtomicBool::new(false);
 
 thread_local! {
@@ -207,7 +165,6 @@ thread_local! {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawMemoryBlock {
-    /// Process-local diagnostic address. It is never a portable identity.
     pub process_local_address: u64,
     pub bytes: Vec<u8>,
 }
@@ -371,8 +328,6 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
             Err(status) => {
                 let mut rollback = hook_batch(&created);
                 rollback.reverse();
-                // A partially created prefix is removed in reverse order under
-                // one freeze instead of one freeze per created target.
                 let _ = unsafe { inline_detour::remove_batch(&rollback) };
                 clear_originals();
                 MODULE_BASE.store(0, Ordering::Release);
@@ -384,15 +339,11 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
         original_slot.store(original as usize, Ordering::Release);
         created.push(target);
     }
-    // Enable the four canonical sites with one freeze instead of four. The
-    // order is unchanged and no game thread can observe a partial roster.
     let enabled = unsafe { inline_detour::enable_batch(&hook_batch(&created)) };
     if let Some((name, status)) = enabled.refusal() {
         let mut cleanup_failures = Vec::new();
         let mut rollback = hook_batch(&created);
         rollback.reverse();
-        // Disable the rollback set in the same reverse order with one freeze;
-        // receipt observation remains after the successful enable batch.
         cleanup_failures.extend(
             unsafe { inline_detour::disable_batch(&rollback) }
                 .failures()
@@ -405,8 +356,6 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
             }
         }
         if cleanup_failures.is_empty() {
-            // Keep removal after quiescence, but free the reverse-order set
-            // under one freeze rather than one per target.
             cleanup_failures.extend(
                 unsafe { inline_detour::remove_batch(&rollback) }
                     .failures()
@@ -415,9 +364,6 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
             );
         }
         if !cleanup_failures.is_empty() {
-            // The enable failed and the rollback could not finish, so one or
-            // more targets may still be patched with `INSTALLED` never set.
-            // Latch it: this is the only remaining record.
             FAILED_INSTALL_REMOVAL_UNPROVED.store(true, Ordering::Release);
             return Err(format!(
                 "A40 peace hook enable for {name} failed: {status}; rollback failed: {}",
@@ -428,16 +374,6 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
         MODULE_BASE.store(0, Ordering::Release);
         return Err(format!("A40 peace hook enable for {name} failed: {status}"));
     }
-    // Fail closed on identity, exactly as D94 does. The observation re-derives
-    // the module from the running process, refuses anything that is not an
-    // exact-a729 `hoi4.exe`, re-checks each admitted original prefix against
-    // that file's own bytes at the site's RVA, and binds each installed relay to
-    // the detour this lane actually passed to MinHook.
-    //
-    // An installation that cannot be attested is rolled back rather than
-    // shipped: without receipts the production hook registry has nothing to put
-    // on the wire, and a silently receipt-less install is how a domain reports
-    // itself installed while the READY evidence describes no patch at all.
     if let Err(error) = HOOK_RECEIPTS.observe_installed(base, detours()) {
         let cleanup = release_created_sites(&created);
         if !cleanup.is_empty() {
@@ -447,8 +383,6 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
                 cleanup.join(", ")
             ));
         }
-        // Only once the detours are provably gone. Discarding custody while a
-        // site is still patched would erase the one record that a patch exists.
         HOOK_RECEIPTS.discard_all_custody();
         clear_originals();
         MODULE_BASE.store(0, Ordering::Release);
@@ -458,20 +392,10 @@ pub fn install_for_evidence() -> Result<InstalledHookAddresses, String> {
     Ok(addresses)
 }
 
-/// Disable, quiesce and remove every site this install created, in reverse
-/// order. Returns the failures; an empty result means every target's original
-/// bytes are back and nothing is patched.
-///
-/// Ordering matches the enable-failure arm above and is load-bearing: the
-/// quiescence wait only terminates once nothing is admitting callbacks, so a
-/// disable that failed must stop the sequence rather than let the wait spin
-/// against a live detour.
 fn release_created_sites(created: &[usize]) -> Vec<String> {
     let mut failures = Vec::new();
     let mut batch = hook_batch(created);
     batch.reverse();
-    // Reverse-order disablement now shares one freeze instead of one per site;
-    // the quiescence barrier below remains between disable and removal.
     failures.extend(
         unsafe { inline_detour::disable_batch(&batch) }
             .failures()
@@ -485,7 +409,6 @@ fn release_created_sites(created: &[usize]) -> Vec<String> {
         failures.push(error);
         return failures;
     }
-    // The same reverse-order sites are removed under one freeze instead of N.
     failures.extend(
         unsafe { inline_detour::remove_batch(&batch) }
             .failures()
@@ -499,44 +422,28 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// The exact enabled-byte receipts for the four D97 production hook sites.
 pub fn installed_hook_receipts() -> Result<[InstalledRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
     HOOK_RECEIPTS.installed_receipts()
 }
 
 /// Consume the release receipts. One-shot: a second call after the registry has
 /// taken custody reports them unavailable rather than minting a second release.
-pub fn take_released_hook_receipts(
-) -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String> {
+pub fn take_released_hook_receipts() -> Result<[ReleasedRvaHookReceipt; HOOK_RECEIPT_COUNT], String>
+{
     HOOK_RECEIPTS.take_released_receipts()
 }
 
 /// True while this lane holds a release it could not PROVE.
-///
-/// Two independent ways that happens, and `installed()` reports false for both:
-///
-///   * [`FAILED_INSTALL_REMOVAL_UNPROVED`] -- a failed install whose rollback
-///     could not finish. `INSTALLED` was never set, so nothing else records it.
-///   * receipt custody still on the installed side. `uninstall_hooks` publishes
 ///     the release only after every disable AND every removal came back clean,
-///     but it clears `INSTALLED` as soon as the disables succeed, so a removal
-///     that failed leaves `installed()` false with the receipts still held.
 pub fn release_pending() -> bool {
     FAILED_INSTALL_REMOVAL_UNPROVED.load(Ordering::Acquire)
         || (!installed() && HOOK_RECEIPTS.may_still_hold_installed_custody())
 }
 
 /// Release this lane for a production install that is being given up, and
-/// report what the abort threw away.
-///
-/// The retained events and the two drop tallies are real observations this
-/// window is discarding, so they are counted rather than defaulted. The drain
-/// runs INSIDE `seal_drain_and_uninstall`, which uninstalls first and then
-/// takes the state: after the detours are gone nothing can add to it, so the
-/// count cannot race the producer it has just removed.
 pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, String> {
-    let drain = seal_drain_and_uninstall()
-        .map_err(|error| format!("D97 install abort: {error}"))?;
+    let drain =
+        seal_drain_and_uninstall().map_err(|error| format!("D97 install abort: {error}"))?;
     let dropped = drain
         .diagnostics
         .dropped_reentrant
@@ -549,57 +456,25 @@ pub fn abort_partial_install_and_uninstall() -> Result<InstallAbortDiscard, Stri
     })
 }
 
-/// Production uses the same exact sentinels and passive detours. Keeping a
-/// separately named entry point prevents evidence receipts from being treated
-/// as the source of product authority.
 pub fn install() -> Result<InstalledHookAddresses, String> {
     install_for_evidence()
 }
 
-/// Which of D97's three answers this hour produced.
-///
-/// Kept as a type rather than left implicit in the payload bytes because the
-/// collector has to record a DIFFERENT domain outcome for each: a published
-/// refresh is a success, a measured zero is `measured_empty`, and neither is
-/// the other. Before this existed the lane returned `Result<Vec<u8>, String>`
-/// and the collector had exactly two outcomes to choose from, so the one world
-/// state d97 spends nearly all of its hours in had to be reported as a
-/// failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PeaceProductionOutcome {
-    /// A window refresh boundary was observed and published. `active` is the
-    /// engine's own answer at that boundary.
     RefreshPublished { active: bool },
-    /// The engine's peace-conference container was read whole and held
-    /// nothing. A measurement, not a failure.
     NoConferenceInProgress,
 }
 
-/// One hour's D97 answer: the bytes, the status word they must be published
-/// under, and which answer it was.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeaceProductionRead {
     pub payload: Vec<u8>,
-    /// Fixed by the answer, not by the caller: a measured zero carries exactly
-    /// [`crate::peace_conference_live::MEASURED_EMPTY_STATUS`] and a published
-    /// refresh carries the caller's clean word.
     pub status_flags: u32,
     pub row_count: u32,
     pub outcome: PeaceProductionOutcome,
-    /// The engine container's element count, when this hour read it.
-    ///
-    /// `None` for an hour answered from a pending refresh: the presence read
-    /// does not run then, and reporting a zero would be inventing an
-    /// observation nobody made.
     pub conference_count: Option<u32>,
 }
 
-/// A D97 hour that produced no answer, and what it saw on the way.
-///
-/// The count rides the FAILURE deliberately. The one failure this lane can now
-/// report -- a conference in progress that the window observer never saw -- is
-/// the case where the count is the deciding fact, and a `String` return would
-/// have left it recoverable only by parsing the reason text.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeaceProductionFailure {
     pub message: String,
@@ -621,21 +496,6 @@ impl std::fmt::Display for PeaceProductionFailure {
     }
 }
 
-/// Materialize this hour's D97 answer.
-///
-/// Two sources, in priority order, and the order is the point:
-///
-/// 1. A pending window refresh, if the observer holds one. This is the richer
-///    answer -- it carries the engine's portable registered reference, the
-///    conference turn and the completion flag -- and it CONSUMES: see
-///    `a_production_payload_consumes_the_refresh_it_published`.
-/// 2. Otherwise the game state's own peace-conference container. Empty is a
-///    measured zero; non-empty with no refresh is a real miss and says so.
-///
-/// The refresh is taken first because a refresh that exists is strictly more
-/// informative than a count, and because the take must happen on the hour the
-/// bracket survives (lane AO's reorder). The presence read runs only when
-/// there was no refresh to take, so it can never mask one.
 pub fn production_read(
     module_base: usize,
     frame_hour: u64,
@@ -643,13 +503,6 @@ pub fn production_read(
     status_flags: u32,
 ) -> Result<PeaceProductionRead, PeaceProductionFailure> {
     let latest = match STATE.get() {
-        // The observer was never installed, so its state was never created and
-        // there is no refresh to take. That is a fact about the hook, not a
-        // failure of this read -- and it is the state EVERY passive product
-        // capture runs in, because the collector gates the A40 peace install
-        // behind `!passive_product_capture`. Refusing here (which is what an
-        // `ok_or` did) meant the presence read below was unreachable in
-        // exactly the mode this lane exists to fix.
         None => None,
         Some(state) => {
             let mut state = state.lock().map_err(|_| {
@@ -695,8 +548,6 @@ pub fn production_read(
     })
 }
 
-/// The hour had no window refresh to publish. Ask the engine whether that is
-/// because there is no conference, or because the observer missed one.
 fn no_refresh_answer(
     module_base: usize,
     frame_hour: u64,
@@ -705,10 +556,6 @@ fn no_refresh_answer(
     let presence = crate::peace_conference_presence::observe(module_base)
         .map_err(PeaceProductionFailure::unseen)?;
     if presence.conference_in_progress() {
-        // The one case that is still a genuine failure, and it now names
-        // itself. The old wire said "A40 peace refresh was not observed" for
-        // this AND for the peaceful world, so a capture could not tell a
-        // missed conference from no conference at all.
         return Err(PeaceProductionFailure {
             message: format!(
                 "A40 peace conference is in progress ({} in the game state) but no window \
@@ -734,12 +581,6 @@ fn no_refresh_answer(
     })
 }
 
-/// How many window refresh boundaries this observer has taken custody of.
-///
-/// Lane AI's H2 asks a capture to separate "the hook is installed and the world
-/// is quiet" from "the hook is on the wrong function". This is the counter that
-/// answers it: in a capture that CONTAINS a conference, a zero here means the
-/// detour never saw the refresh.
 pub fn refresh_observed_total() -> u64 {
     STATE
         .get()
@@ -748,9 +589,6 @@ pub fn refresh_observed_total() -> u64 {
         .unwrap_or(0)
 }
 
-/// Drop any process-local conference refresh identity at a campaign boundary.
-/// Optional evidence events remain append-only; production refresh identity
-/// restarts because registered references are scoped to the new campaign.
 pub fn reset_campaign_observations() -> Result<(), String> {
     let mut state = STATE
         .get()
@@ -771,12 +609,10 @@ pub fn diagnostics() -> HookDiagnostics {
             let mut diagnostics = state.diagnostics;
             diagnostics.events_retained = state.events.len() as u64;
             diagnostics.refresh_epochs = state.refresh_epoch;
-            diagnostics.dropped_reentrant =
-                DROPPED_REENTRANT.load(Ordering::Acquire) as u64;
-            diagnostics.dropped_lock_busy =
-                DROPPED_LOCK_BUSY.load(Ordering::Acquire) as u64;
-            diagnostics.completeness_poisoned |= diagnostics.dropped_reentrant != 0
-                || diagnostics.dropped_lock_busy != 0;
+            diagnostics.dropped_reentrant = DROPPED_REENTRANT.load(Ordering::Acquire) as u64;
+            diagnostics.dropped_lock_busy = DROPPED_LOCK_BUSY.load(Ordering::Acquire) as u64;
+            diagnostics.completeness_poisoned |=
+                diagnostics.dropped_reentrant != 0 || diagnostics.dropped_lock_busy != 0;
             diagnostics
         })
         .unwrap_or_default()
@@ -791,12 +627,10 @@ pub fn seal_drain_and_uninstall() -> Result<HookDrain, String> {
         .map_err(|_| "A40 peace hook state mutex poisoned")?;
     state.diagnostics.events_retained = state.events.len() as u64;
     state.diagnostics.refresh_epochs = state.refresh_epoch;
-    state.diagnostics.dropped_reentrant =
-        DROPPED_REENTRANT.load(Ordering::Acquire) as u64;
-    state.diagnostics.dropped_lock_busy =
-        DROPPED_LOCK_BUSY.load(Ordering::Acquire) as u64;
-    state.diagnostics.completeness_poisoned |= state.diagnostics.dropped_reentrant != 0
-        || state.diagnostics.dropped_lock_busy != 0;
+    state.diagnostics.dropped_reentrant = DROPPED_REENTRANT.load(Ordering::Acquire) as u64;
+    state.diagnostics.dropped_lock_busy = DROPPED_LOCK_BUSY.load(Ordering::Acquire) as u64;
+    state.diagnostics.completeness_poisoned |=
+        state.diagnostics.dropped_reentrant != 0 || state.diagnostics.dropped_lock_busy != 0;
     Ok(HookDrain {
         events: mem::take(&mut state.events),
         diagnostics: state.diagnostics,
@@ -823,8 +657,6 @@ pub fn uninstall_hooks() -> Result<(), String> {
     targets.reverse();
     let mut first_error = None;
     if needs_disable {
-        // Teardown retains terminal-to-refresh order while one freeze restores
-        // all four targets; game threads cannot interleave with a partial set.
         if let Some((name, status)) =
             unsafe { inline_detour::disable_batch(&targets) }.first_failure()
         {
@@ -838,8 +670,6 @@ pub fn uninstall_hooks() -> Result<(), String> {
         INSTALLED.store(false, Ordering::Release);
     }
     wait_for_quiescence()?;
-    // Removal stays after the wait and uses one freeze instead of four, in the
-    // same reverse order.
     for (name, status) in unsafe { inline_detour::remove_batch(&targets) }.failures() {
         first_error
             .get_or_insert_with(|| format!("A40 peace hook removal for {name} failed: {status}"));
@@ -848,19 +678,8 @@ pub fn uninstall_hooks() -> Result<(), String> {
         return Err(error);
     }
     // Mint the release receipts only for a teardown that provably restored
-    // every target. Reaching here means every disable AND every removal
     // returned clean; `observe_released_set` then independently re-reads each
-    // site's bytes and refuses unless the admitted original prefix is back, so
-    // this cannot attest a restoration that did not happen.
-    //
-    // `relay_freed: true` is the truth of this path: it calls
-    // `inline_detour::remove_batch`, which applies MinHook removal and frees the
-    // trampolines.
-    //
-    // A lane that never observed receipts -- an evidence-only install predating
-    // this custody, or a second uninstall after the registry already took the
     // receipts -- has nothing to release, and that is not an error: the physical
-    // teardown above succeeded and is what this function promises.
     if HOOK_RECEIPTS.has_complete_installed_custody() {
         if let Err(error) = HOOK_RECEIPTS.publish_release(true) {
             return Err(format!("A40 peace hook release receipt refused: {error}"));
@@ -1007,9 +826,6 @@ fn capture_conference_refresh(window: usize) -> Result<Option<PeaceEvidenceEvent
             .ok_or("A40 peace conference reference word 1 unreadable")?,
     ];
     if first == [0, 0] {
-        // This refresh boundary also runs while the peace window has no active
-        // conference. That is a measured inactive observation, not evidence
-        // loss and not an active lifecycle event.
         return Ok(None);
     }
     let base = MODULE_BASE.load(Ordering::Acquire);
@@ -1128,10 +944,7 @@ fn capture_claim(claim: usize) -> Result<RawClaimObservation, String> {
     })
 }
 
-fn publish_capture(
-    result: Result<Option<PeaceEvidenceEventKind>, String>,
-    advances_epoch: bool,
-) {
+fn publish_capture(result: Result<Option<PeaceEvidenceEventKind>, String>, advances_epoch: bool) {
     let Some(state) = STATE.get() else {
         return;
     };
@@ -1139,8 +952,7 @@ fn publish_capture(
         DROPPED_LOCK_BUSY.fetch_add(1, Ordering::AcqRel);
         return;
     };
-    state.diagnostics.callbacks_observed =
-        state.diagnostics.callbacks_observed.saturating_add(1);
+    state.diagnostics.callbacks_observed = state.diagnostics.callbacks_observed.saturating_add(1);
     let kind = match result {
         Ok(Some(kind)) => Some(kind),
         Ok(None) if advances_epoch => None,
@@ -1188,12 +1000,8 @@ fn publish_capture(
     let Some(kind) = kind else {
         return;
     };
-    // Evidence retention is bounded independently of the production refresh
-    // latch. Even after the optional raw-event buffer fills, the newest exact
-    // refresh above remains publishable to PCS1.
     if state.events.len() >= MAX_EVENTS {
-        state.diagnostics.dropped_overflow =
-            state.diagnostics.dropped_overflow.saturating_add(1);
+        state.diagnostics.dropped_overflow = state.diagnostics.dropped_overflow.saturating_add(1);
         state.diagnostics.completeness_poisoned = true;
         return;
     }
@@ -1215,9 +1023,7 @@ fn verify_sentinel(address: usize, expected: &[u8]) -> Result<(), String> {
         ));
     }
     if actual != expected {
-        return Err(format!(
-            "A40 peace hook sentinel mismatch at {address:#x}"
-        ));
+        return Err(format!("A40 peace hook sentinel mismatch at {address:#x}"));
     }
     Ok(())
 }
@@ -1270,19 +1076,6 @@ fn read_usize(address: usize) -> Option<usize> {
 mod tests {
     use super::*;
 
-    /// Law: the receipt roster describes the sites the installer actually
-    /// patches, in the order the installer patches them.
-    ///
-    /// The tables are independent literals -- `install_for_evidence` walks its
-    /// own sentinel and hook lists, and `PRODUCTION_HOOK_SPECS` is what the
-    /// receipts and the pinned allowlist are built from -- so nothing but this
-    /// holds them together. Drift here is not cosmetic: `observe_installed` is
-    /// handed `detours()` positionally, so a reordered spec table would bind
-    /// each receipt to the wrong detour and the whole install would be refused
-    /// live, on a real image, with no offline signal.
-    ///
-    /// Mutation proof: swap two entries of `PRODUCTION_HOOK_SPECS`, or point
-    /// one `original_prefix` at a different sentinel, and this fails.
     #[test]
     fn the_receipt_specs_match_the_installers_own_site_table() {
         let expected: [(u32, &[u8]); HOOK_RECEIPT_COUNT] = [
@@ -1305,18 +1098,18 @@ mod tests {
             .collect::<Vec<_>>();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), HOOK_RECEIPT_COUNT, "receipt names must be distinct");
+        assert_eq!(
+            names.len(),
+            HOOK_RECEIPT_COUNT,
+            "receipt names must be distinct"
+        );
         let detours = detours();
         assert!(detours.iter().all(|detour| detour.address != 0));
         for (index, spec) in PRODUCTION_HOOK_SPECS.iter().enumerate() {
             assert_eq!(detours[index].logical_name, spec.logical_name);
         }
-        production_hook_receipt::bind_detours_by_identity(
-            "D97",
-            &PRODUCTION_HOOK_SPECS,
-            detours,
-        )
-        .expect("the D97 detour roster must bind to its specs by name");
+        production_hook_receipt::bind_detours_by_identity("D97", &PRODUCTION_HOOK_SPECS, detours)
+            .expect("the D97 detour roster must bind to its specs by name");
         let mut distinct = detours.iter().map(|d| d.address).collect::<Vec<_>>();
         distinct.sort_unstable();
         distinct.dedup();
@@ -1351,39 +1144,6 @@ mod tests {
         assert!(!drain.loss_free());
     }
 
-    /// Law: `production_payload` CONSUMES the refresh latch. One observation
-    /// reaches exactly one frame, and the frame it reaches is decided by WHEN
-    /// the collector reads.
-    ///
-    /// This is the fact lane AO's reorder (2026-08-05) turns on, and it is the
-    /// one place d97 differs from its three companions in that change: d85's
-    /// `encode_latest` clones a retained map, and d94/d95's `drain_latest`
-    /// clone a retained slot, so for those three the read position only picks
-    /// WHICH sample is served. d97's read TAKES.
-    ///
-    /// The consequence is why the read had to move rather than being left
-    /// alone. `production_payload` runs inside the collector frame's clock
-    /// bracket; if that bracket does not observe the frame's own hour,
-    /// `rejected_bracket_domains` STRIPS d97's DOMAIN_DATA record and replaces
-    /// it with a gap -- but the `take()` has already happened, so the
-    /// observation is consumed AND destroyed, and no later frame can recover
-    /// it. Capture t21 measured d97 mismatching its label in all 98 of its
-    /// mismatching frames, so that destruction was the normal case, not a
-    /// corner. Reading at the front of the build instead (t22: the earliest
-    /// in-build hour boundary is at 36.4 ms, the latest fan-out origin
-    /// 31.9 ms, and the two distributions do not overlap) pairs the take with
-    /// a record that survives.
-    ///
-    /// Mutation proof: replace `.take()` with `.as_ref().copied()` in
-    /// `production_read`. The second call then republishes the same refresh
-    /// and this fails on `a consumed refresh must not be served twice` -- and
-    /// d97 would silently republish one engine refresh under every subsequent
-    /// hour's label.
-    ///
-    /// The second call is made with a null module base ON PURPOSE. That is the
-    /// one input for which the presence read is guaranteed to refuse, so the
-    /// assertion isolates the consume law from whatever the host process
-    /// happens to have at the a729 singleton RVA.
     #[test]
     fn a_production_payload_consumes_the_refresh_it_published() {
         let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -1423,15 +1183,7 @@ mod tests {
         state.latest_refresh = refresh;
     }
 
-    /// A container staged in this process's own memory, so the presence read
-    /// can be driven offline against both of its answers.
-    ///
-    /// The layout is the engine's, not an invention: `[singleton slot]` at
-    /// `module_base + GAME_STATE_SINGLETON_RVA` holds a pointer to a
-    /// CGameState whose `+0x4E0` container carries the element array at `+0x08`
-    /// and the live count at `+0x14`.
     struct StagedGameState {
-        // Boxed so the addresses stay put while the read runs.
         image: Box<[u8]>,
         game_state: Box<[u8]>,
         _elements: Box<[u64]>,
@@ -1451,14 +1203,12 @@ mod tests {
                 elements.as_ptr() as u64
             };
             game_state[data_at..data_at + 8].copy_from_slice(&data_ptr.to_le_bytes());
-            game_state[count_at..count_at + 4]
-                .copy_from_slice(&conference_count.to_le_bytes());
+            game_state[count_at..count_at + 4].copy_from_slice(&conference_count.to_le_bytes());
             let mut image =
                 vec![0u8; crate::peace_conference_presence::GAME_STATE_SINGLETON_RVA + 0x20]
                     .into_boxed_slice();
             let slot = crate::peace_conference_presence::GAME_STATE_SINGLETON_RVA;
-            image[slot..slot + 8]
-                .copy_from_slice(&(game_state.as_ptr() as u64).to_le_bytes());
+            image[slot..slot + 8].copy_from_slice(&(game_state.as_ptr() as u64).to_le_bytes());
             Self {
                 image,
                 game_state,
@@ -1477,14 +1227,6 @@ mod tests {
         }
     }
 
-    /// THE d97 defect, closed. With no refresh pending and no conference in
-    /// the game state, the hour publishes a measured zero rather than
-    /// `source_unavailable`.
-    ///
-    /// Mutation proof: delete the `no_refresh_answer` call and restore
-    /// `.ok_or("A40 peace refresh was not observed")?`. This fails with that
-    /// exact string -- which is the reason 100% of d97's delivered hours in
-    /// t18..t23 carried.
     #[test]
     fn a_quiet_world_publishes_a_measured_zero_not_a_refusal() {
         let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -1498,7 +1240,11 @@ mod tests {
 
         assert_eq!(read.outcome, PeaceProductionOutcome::NoConferenceInProgress);
         assert_eq!(read.row_count, 0, "a measured zero carries no rows");
-        assert_eq!(read.conference_count, Some(0), "the zero is an OBSERVED zero");
+        assert_eq!(
+            read.conference_count,
+            Some(0),
+            "the zero is an OBSERVED zero"
+        );
         assert_eq!(
             read.status_flags,
             crate::peace_conference_live::MEASURED_EMPTY_STATUS
@@ -1516,14 +1262,6 @@ mod tests {
         );
     }
 
-    /// The other half, and the reason the presence read is not merely a way to
-    /// stop reporting failures: a conference that IS in progress with no
-    /// refresh observed is still a miss, and it now names itself.
-    ///
-    /// Mutation proof: make `no_refresh_answer` publish the measured zero
-    /// unconditionally. This fails, and d97 would report a peaceful world
-    /// during a live peace conference -- a fabricated answer, strictly worse
-    /// than the refusal it replaced.
     #[test]
     fn a_live_conference_with_no_refresh_is_still_a_miss() {
         let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -1536,7 +1274,9 @@ mod tests {
         let failure = production_read(staged.module_base(), 12, 5, 0)
             .expect_err("a conference the observer never saw is a miss");
         assert!(
-            failure.message.contains("in progress (3 in the game state)"),
+            failure
+                .message
+                .contains("in progress (3 in the game state)"),
             "the miss must name what it saw: {failure}"
         );
         assert_eq!(
@@ -1546,13 +1286,6 @@ mod tests {
         );
     }
 
-    /// Law: an unreadable source is never a measured zero.
-    ///
-    /// A count word that cannot be believed must refuse. Mutation proof: drop
-    /// the `MAX_PLAUSIBLE_CONFERENCES` bound in `peace_conference_presence`
-    /// and this fails -- a garbage count would be published as a live-
-    /// conference miss, or, with the sign check also gone, as a peaceful
-    /// world.
     #[test]
     fn an_implausible_container_count_refuses() {
         let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -1564,23 +1297,17 @@ mod tests {
         let failure = production_read(staged.module_base(), 13, 5, 0)
             .expect_err("a negative count is not a world");
         assert!(failure.message.contains("out of bounds"), "{failure}");
-        assert_eq!(failure.conference_count, None, "an unbelievable count is not a count");
-
-        staged.set_count(
-            crate::peace_conference_presence::MAX_PLAUSIBLE_CONFERENCES as i32 + 1,
+        assert_eq!(
+            failure.conference_count, None,
+            "an unbelievable count is not a count"
         );
+
+        staged.set_count(crate::peace_conference_presence::MAX_PLAUSIBLE_CONFERENCES as i32 + 1);
         let failure = production_read(staged.module_base(), 14, 5, 0)
             .expect_err("an absurd count is not a world");
         assert!(failure.message.contains("out of bounds"), "{failure}");
     }
 
-    /// Law: a pending refresh always wins over the presence read.
-    ///
-    /// The refresh is the richer answer and the only one that carries the
-    /// engine's portable reference. Mutation proof: swap the order in
-    /// `production_read` so the presence read runs first. This fails: the
-    /// staged ACTIVE refresh would be replaced by a measured zero and its
-    /// conference reference would never reach the wire.
     #[test]
     fn a_pending_refresh_outranks_a_quiet_container() {
         let _lifecycle = HOOK_LIFECYCLE_LOCK
@@ -1600,8 +1327,8 @@ mod tests {
         }));
         let staged = StagedGameState::new(0);
 
-        let read = production_read(staged.module_base(), 15, 5, 0)
-            .expect("the staged refresh publishes");
+        let read =
+            production_read(staged.module_base(), 15, 5, 0).expect("the staged refresh publishes");
         assert_eq!(
             read.outcome,
             PeaceProductionOutcome::RefreshPublished { active: true }

@@ -1,12 +1,3 @@
-//! Filesystem-backed durable candidates for the dormant identity-control path.
-//!
-//! Every candidate is a unique, immutable journal entry. Existing entries are
-//! opened neither for overwrite nor truncation, so a failed admission cannot
-//! damage a previously durable entry. An entry remains cleanup-armed until its
-//! file has been flushed and `sync_all` has completed under the caller's exact
-//! deadline and cancellation authority. Only `IdentityControlJournal` can turn
-//! that completed sink operation into a durable CFA1/CIA1 receipt.
-
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -27,10 +18,6 @@ pub const IDENTITY_FAILURE_GAP_LEDGER_DIRECTORY: &str = "identity-failure-gap-le
 
 static CANDIDATE_NONCE: AtomicU64 = AtomicU64::new(0);
 
-/// Production filesystem sink used underneath `IdentityControlJournal`.
-///
-/// `root` is intentionally only configuration. Directories and entries are
-/// created during a deadline-bearing operation, not during construction.
 #[derive(Clone, Debug)]
 pub struct FilesystemIdentityDurableSink {
     root: PathBuf,
@@ -175,8 +162,6 @@ impl FilesystemIdentityDurableSink {
     }
 }
 
-/// Cleanup-armed filesystem entry. It is public only because it is an
-/// associated type of the public sink trait; callers cannot mark it durable.
 #[derive(Debug)]
 pub struct FilesystemDurableCandidate {
     state: Option<CandidateState>,
@@ -288,8 +273,6 @@ impl Drop for CandidateState {
         if self.durable {
             return;
         }
-        // Close before deletion on Windows. Cleanup is best-effort because Drop
-        // cannot report a second error without hiding the primary journal fault.
         let _ = self.file.take();
         let _ = fs::remove_file(&self.path);
     }
@@ -449,8 +432,6 @@ where
         .name(worker_name.to_string())
         .spawn(move || {
             let result = operation();
-            // If the caller timed out or cancelled, dropping a successful
-            // cleanup-armed CandidateState here removes the abandoned entry.
             let _ = sender.send(result);
         })
         .map_err(|error| format!("spawn {worker_name} worker: {error}"))?;
@@ -486,10 +467,6 @@ fn open_unique_candidate(path: &Path) -> io::Result<File> {
     {
         use std::os::windows::fs::OpenOptionsExt;
 
-        // CreateFile's FILE_FLAG_WRITE_THROUGH forces file data and metadata
-        // through the Windows system cache. This is the Windows directory-entry
-        // durability primitive for the unique create; sync_all remains required
-        // below before the journal can mint a receipt.
         const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
         options.custom_flags(FILE_FLAG_WRITE_THROUGH);
     }

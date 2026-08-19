@@ -1,23 +1,3 @@
-//! A3/A4/A6 round-trip certification gates.
-//!
-//! Each positive fixture is opened through the real `ReplaySource` and, at
-//! every recorded hour, the typed `WorldTimeline` view is asserted equal to the
-//! generator's ground truth — which is exactly the value the packed snapshot
-//! carries at that raw JSON path (the fixture is the oracle: what the generator
-//! wrote == what `frame.raw()` returns == what the typed view must expose).
-//!
-//! * A3 — per-domain round-trip gates below, one test per consumer contract.
-//! * A4 — `seek(h) == play_to(h)` on every fixture, forward/backward/mid-file
-//!   plus in-between scrub.
-//! * A6 — absence honesty: domain-absent vs domain-unavailable vs present.
-//!
-//! Delta==snapshot cross-check: the A1/A2 fixtures are **snapshot-flavor**
-//! containers (per-hour `role: "snapshot"` entries); their `collector_raw`
-//! stream is an audit placeholder, not a field-level delta encoding, and
-//! `replay_core` has no delta-reconstruction path (Backend 2 is fail-closed in
-//! `source.rs`). So there is no delta to reconstruct; instead
-//! `snapshot_path_is_deterministic` gates the snapshot path (re-open yields
-//! byte-identical world state).
 
 use replay_core::{
     open_recording, Leaf, PlayerCountry, SnowMudCell, ViewStatus, WarRelationRow, WorldFrame,
@@ -28,9 +8,6 @@ use std::collections::BTreeMap;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 
-// ---------------------------------------------------------------------------
-// fixture plumbing
-// ---------------------------------------------------------------------------
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -65,8 +42,6 @@ fn open_fixture(name: &str) -> WorldTimeline {
     WorldTimeline::open(source).unwrap_or_else(|err| panic!("timeline fixture {name}: {err}"))
 }
 
-/// Navigate a raw JSON path under a frame's untouched domain map (arrays keyed
-/// by decimal-index segments), mirroring the manifest probe addressing.
 fn raw<'a>(frame: &'a WorldFrame, path: &[&str]) -> Option<&'a Value> {
     let mut cur = frame.domain(path[0])?;
     for seg in &path[1..] {
@@ -79,9 +54,6 @@ fn raw<'a>(frame: &'a WorldFrame, path: &[&str]) -> Option<&'a Value> {
     Some(cur)
 }
 
-// Expected-leaf builders: None => Absent, explicit null => Unobtained, a
-// typed value => Measured. A wrong JSON type panics the test (fixtures are
-// well-formed; a type mismatch means a broken fixture/test, never a coercion).
 fn exp_string(v: Option<&Value>) -> Leaf<String> {
     match v {
         None => Leaf::Absent,
@@ -90,9 +62,6 @@ fn exp_string(v: Option<&Value>) -> Leaf<String> {
         other => panic!("exp_string: not a string: {other:?}"),
     }
 }
-/// Expectation for a NULLABLE leaf (see `CountryIdentity::cosmetic_tag`): the
-/// producer's null is a measured "there is none", not a gap, so it must round
-/// trip as `Measured(None)` and only a missing key may read `Absent`.
 fn exp_nullable_string(v: Option<&Value>) -> Leaf<Option<String>> {
     match v {
         None => Leaf::Absent,
@@ -152,7 +121,6 @@ fn exp_string_list(v: Option<&Value>) -> Leaf<Vec<String>> {
     }
 }
 
-/// Every recorded hour's frame, in index order.
 fn frames(t: &WorldTimeline) -> Vec<std::sync::Arc<WorldFrame>> {
     t.hours()
         .iter()
@@ -160,9 +128,6 @@ fn frames(t: &WorldTimeline) -> Vec<std::sync::Arc<WorldFrame>> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// A3 — per-domain round-trip gates
-// ---------------------------------------------------------------------------
 
 #[test]
 fn rt_owner_controller_flip() {
@@ -229,8 +194,6 @@ fn rt_war_faction_matrix() {
     let t = open_fixture("fx_war_faction_matrix");
     for f in frames(&t) {
         let dip = f.diplomacy();
-        // Faction membership derives from politics.faction.{name,is_leader};
-        // a null faction (pre-formation) is captured-but-unobtained.
         for tag in ["GER", "ITA", "ENG"] {
             let faction = raw(&f, &["countries", tag, "politics", "faction"]);
             let want_name = match faction {
@@ -246,7 +209,6 @@ fn rt_war_faction_matrix() {
                 f.hour_index()
             );
         }
-        // War edges derive from diplomacy.wars[*].against.
         let ger_at_war_eng = matches!(
             raw(&f, &["countries", "GER", "diplomacy", "wars", "0", "against"]),
             Some(Value::String(s)) if s == "ENG"
@@ -274,7 +236,6 @@ fn rt_war_faction_matrix() {
                 f.hour_index()
             );
         }
-        // Same-faction folds from equal faction names.
         let ger_axis = matches!(
             raw(&f, &["countries", "GER", "politics", "faction", "name"]),
             Some(Value::String(s)) if s == "Axis"
@@ -325,13 +286,6 @@ fn rt_weather_sweep() {
     }
 }
 
-/// Every province cell round-trips the recorded carrier byte for byte: the
-/// engine's raw fixed-point snow accumulator and its mud byte, with the
-/// producer-declared denominator on the view.
-///
-/// kills: quantising, rescaling or rounding `snow_raw` anywhere between the
-/// recorded carrier and the view; substituting `mud_present` for the mud
-/// value; and dropping `scale_raw`.
 #[test]
 fn rt_snow_mud_accumulator() {
     let t = open_fixture("fx_snow_mud_accumulator");
@@ -358,8 +312,6 @@ fn rt_snow_mud_accumulator() {
                 "snow_raw p{pid} @ {}",
                 f.hour_index()
             );
-            // An unmeasured mud byte stays unmeasured; a measured one arrives
-            // as the boolean the engine holds.
             let expected_mud = if row.get("mud_present") == Some(&Value::Bool(true)) {
                 exp_bool(row.get("mud_active"))
             } else {
@@ -436,7 +388,6 @@ fn rt_topbar_scalars_sweep() {
                 s.supply_ratio,
                 exp_f64(p(&["scalars", "supply_ratio"]).as_ref())
             );
-            // convoys: the sweep reports the scalar `military.convoys_count`.
             let convoys = p(&["military", "convoys_count"]);
             let want = convoys
                 .as_ref()
@@ -444,10 +395,6 @@ fn rt_topbar_scalars_sweep() {
                 .map(Leaf::Measured)
                 .unwrap();
             assert_eq!(s.convoys, want, "{tag} convoys @ {}", f.hour_index());
-            // DOCUMENTED GAP (honest, fail-closed): the fixture parks world
-            // tension under a non-canonical `world.world_tension_inputs.*`
-            // fixture key, so the canonical topbar reader leaves it Absent —
-            // never a fabricated default.
             assert_eq!(
                 s.world_tension,
                 Leaf::Absent,
@@ -490,7 +437,6 @@ fn rt_division_movement() {
             d.strength,
             exp_f64(raw(&f, &["divisions", "0", "strength"]))
         );
-        // Active combats round-trip when present.
         if let Some(Value::Array(cs)) = f.domain("combats") {
             if !cs.is_empty() {
                 let c = &f.combats()[0];
@@ -510,7 +456,6 @@ fn rt_division_movement() {
 fn rt_naval_air_activity() {
     let t = open_fixture("fx_naval_air_activity");
     for f in frames(&t) {
-        // Region naval supremacy (from naval_air.region_control array rows).
         let sup = f.naval_supremacy_by_region().get(&301).expect("region 301");
         assert_eq!(
             sup.controller,
@@ -528,7 +473,6 @@ fn rt_naval_air_activity() {
                 &["naval_air", "region_control", "301", "0", "supremacy"]
             ))
         );
-        // Fleet / task-force presence.
         let tf = f
             .fleets()
             .iter()
@@ -570,7 +514,6 @@ fn rt_naval_air_activity() {
             exp_string(probe("dominant_hull_class").as_ref())
         );
         assert_eq!(tf.owner, exp_string(probe("owner").as_ref()));
-        // Air wing presence.
         let w = f
             .wings()
             .iter()
@@ -596,12 +539,6 @@ fn rt_naval_air_activity() {
     }
 }
 
-/// Air-superiority surface (requirements item 5). Oracle: the fixture
-/// generator (`fx_naval_air_activity`) writes
-/// `naval_air.air_superiority.301 = {controller, mission_mask, wing_count,
-/// plane_count}` every tick; the view must expose each verbatim, per the
-/// trichotomy. (Previously there was NO typed view for this — the surface
-/// returned nothing; `naval_supremacy_by_region` only carried region control.)
 #[test]
 fn rt_air_superiority() {
     let t = open_fixture("fx_naval_air_activity");
@@ -626,14 +563,10 @@ fn rt_air_superiority() {
     }
 }
 
-/// Trichotomy: a fixture whose base snapshot parks `naval_air.air_superiority`
-/// as explicit-null (every fixture except `fx_naval_air_activity`) yields a
-/// `DomainUnavailable` view with no rows — genuinely-unobtained, never coerced.
 #[test]
 fn rt_air_superiority_unobtained_when_null() {
     let t = open_fixture("fx_owner_controller_flip");
     for f in frames(&t) {
-        // Base snapshot: naval_air present, air_superiority = null.
         assert!(
             matches!(
                 raw(&f, &["naval_air", "air_superiority"]),
@@ -652,20 +585,12 @@ fn rt_air_superiority_unobtained_when_null() {
     }
 }
 
-/// Live diplomacy surfaces (requirements item 8b), all previously `Absent`:
-/// `diplomacy_live.war_relations`, `diplomacy_live.faction_members`, and
-/// per-owner `countries.*.diplomacy.relation_flags`. Oracle = the generator
-/// source (`fx_war_faction_matrix`): faction_members appear at tick>=3,
-/// war_relations + GER relation_flags at tick>=7; all park as explicit-null in
-/// the base before then. These are surfaced verbatim and NOT folded into the
-/// certified boolean `pairs` matrix (whose directional semantics are locked).
 #[test]
 fn rt_diplomacy_live_surfaces() {
     let t = open_fixture("fx_war_faction_matrix");
     for f in frames(&t) {
         let dip = f.diplomacy();
 
-        // war_relations: null (Unobtained) before the war, an array after.
         match raw(&f, &["diplomacy_live", "war_relations"]) {
             Some(serde_json::Value::Null) => {
                 assert_eq!(
@@ -710,7 +635,6 @@ fn rt_diplomacy_live_surfaces() {
             other => panic!("unexpected war_relations {other:?} @ {}", f.hour_index()),
         }
 
-        // faction_members: null (Unobtained) before formation, a map after.
         match raw(&f, &["diplomacy_live", "faction_members"]) {
             Some(serde_json::Value::Null) => {
                 assert_eq!(
@@ -744,8 +668,6 @@ fn rt_diplomacy_live_surfaces() {
             other => panic!("unexpected faction_members {other:?} @ {}", f.hour_index()),
         }
 
-        // relation_flags: GER carries null (Unobtained) before tick 7, then an
-        // object; the surface preserves the raw flag arrays verbatim.
         match raw(&f, &["countries", "GER", "diplomacy", "relation_flags"]) {
             Some(serde_json::Value::Null) => {
                 assert_eq!(
@@ -779,10 +701,6 @@ fn rt_diplomacy_live_surfaces() {
             other => panic!("unexpected relation_flags {other:?} @ {}", f.hour_index()),
         }
 
-        // The certified boolean matrix is UNPERTURBED by the relation_flags
-        // surfacing: military_access/embargo remain unset from flags (they are
-        // only ever Measured via the canonical `wars[]`/relation lists, which
-        // this fixture leaves empty), so GER|ITA military_access stays Absent.
         if let Some(pair) = f.diplomatic_pair_state("GER", "ITA") {
             assert_eq!(
                 pair.military_access,
@@ -794,11 +712,6 @@ fn rt_diplomacy_live_surfaces() {
     }
 }
 
-/// Topbar ratio bars + alert counts (requirements item 9b), both previously
-/// without any typed field. Oracle: `fx_topbar_scalars_sweep` writes
-/// `countries.<tag>.scalars.{industrial_ratio,convoy_ratio,fuel_ratio,
-/// xp_ratio}` and `scalars.alerts.{initiative,decisions_available,intel,
-/// market_contracts}` per tick.
 #[test]
 fn rt_topbar_ratios_alerts() {
     let t = open_fixture("fx_topbar_scalars_sweep");
@@ -844,14 +757,10 @@ fn rt_topbar_ratios_alerts() {
     }
 }
 
-/// Trichotomy for the ratio/alert surface: a fixture that never writes the
-/// `scalars` bag leaves every ratio/alert leaf `Absent` (present-country,
-/// empty scalars object) — never a fabricated `0`.
 #[test]
 fn rt_topbar_ratios_alerts_absent_without_scalars() {
     let t = open_fixture("fx_owner_controller_flip");
     for f in frames(&t) {
-        // Base country carries `scalars: {}` (present, empty) → each leaf Absent.
         for tag in f.topbar_ratios_by_country().keys() {
             let r = f.topbar_ratios(tag).unwrap();
             let a = f.topbar_alerts(tag).unwrap();
@@ -868,14 +777,12 @@ fn rt_building_damage() {
     let t = open_fixture("fx_building_damage");
     for f in frames(&t) {
         let sb = f.buildings_by_state().get(&10).expect("state 10 buildings");
-        // Undamaged buildings round-trip as level-only from states.10.buildings.
         assert_eq!(
             sb.state_buildings["infrastructure"].level,
             exp_f64(raw(&f, &["states", "10", "buildings", "infrastructure"])),
             "infra level @ {}",
             f.hour_index()
         );
-        // arms_factory carries the overlaid building_damage[0] status.
         let arms = &sb.state_buildings["arms_factory"];
         let dmg0 = &["states", "10", "building_damage", "0"];
         let d = |k: &str| {
@@ -896,7 +803,6 @@ fn rt_building_damage() {
             arms.under_construction,
             exp_bool(d("under_construction").as_ref())
         );
-        // Province-scope damage overlays into province_buildings[1000].
         let naval = sb
             .province_buildings
             .get(&1000)
@@ -934,7 +840,6 @@ fn rt_pov_visibility() {
                 "{pov} pov present @ {}",
                 f.hour_index()
             );
-            // Every recorded province visibility level round-trips.
             let provinces = raw(&f, &["visibility", "povs", pov, "provinces"])
                 .and_then(Value::as_object)
                 .expect("pov provinces");
@@ -950,7 +855,6 @@ fn rt_pov_visibility() {
                     f.hour_index()
                 );
             }
-            // Spotted-unit sets round-trip from visible_foreign_units.
             let spot = &["visibility", "povs", pov, "visible_foreign_units"];
             let sp = |k: &str| {
                 let mut path = spot.to_vec();
@@ -990,14 +894,6 @@ fn rt_dlc_language_variation() {
             "language @ {}",
             f.hour_index()
         );
-        // DLC-gated cosmetic. CAN carries the SAME value under both legacy
-        // mirrors, `misc.cosmetic_tag` and `extra.cosmetic_tag` — since lane KE,
-        // where the generator stopped leaving `extra` at the null it seeds every
-        // country with. Reading `misc` here is reading one of two agreeing
-        // spellings, not the only one that carries it: a disagreement between
-        // them would now resolve to `Unobtained`
-        // (`replay_core::world::first_available_nullable_string`) and this
-        // assertion would fail rather than quietly follow the surviving mirror.
         let can = f.country_identity("CAN").expect("CAN identity");
         assert_eq!(
             can.cosmetic_tag,
@@ -1008,15 +904,6 @@ fn rt_dlc_language_variation() {
     }
 }
 
-/// Player-country picker round-trip (observer-POV dependency): the list lives
-/// under `world.scenario.players` in the recording/fixture schema, not the
-/// internal `session.player_countries` key. The view must surface it so the
-/// POV country picker is not fail-closed on every real recording.
-///
-/// Oracle derived from the fixture generator source
-/// (`replay_fixture_gen/src/main.rs` `base_snapshot`): each player entry is
-/// `{"tag": <TAG>, "slot": <n>, "label": <name>}`, so the view's `tag` is the
-/// entry's `tag` and `player_name` falls back to `label`.
 #[test]
 fn rt_player_countries_from_world_scenario_players() {
     for name in POSITIVE_FIXTURES {
@@ -1050,11 +937,6 @@ fn rt_player_countries_from_world_scenario_players() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// fx-streams lane — the 12 UI-inventory data streams.
-// Oracle for every assertion is the generator source: what the packed snapshot
-// carries at the raw JSON path == what the typed view must expose.
-// ---------------------------------------------------------------------------
 
 #[test]
 fn rt_research_focus() {
@@ -1186,7 +1068,6 @@ fn rt_research_focus() {
 fn rt_country_management() {
     let t = open_fixture("fx_country_management");
     for f in frames(&t) {
-        // --- politics detail + command abilities ---
         let pd = f.politics_detail("GER").expect("GER politics detail");
         assert_eq!(
             pd.ideas,
@@ -1230,7 +1111,6 @@ fn rt_country_management() {
             f.hour_index()
         );
 
-        // --- production queue + stockpile ---
         let prod = f.production("GER").expect("GER production");
         assert_eq!(
             prod.stockpile_total,
@@ -1317,7 +1197,6 @@ fn rt_country_management() {
             assert_eq!(*actual, expected, "production lines @ {}", f.hour_index());
         }
 
-        // --- intel / operatives ---
         let intel = f.intel("GER").expect("GER intel");
         assert_eq!(
             intel.agency_name,
@@ -1348,7 +1227,6 @@ fn rt_country_management() {
             f.hour_index()
         );
 
-        // --- trade ---
         let trade = f.trade("GER").expect("GER trade");
         let prod_res = raw(
             &f,
@@ -1460,7 +1338,6 @@ fn rt_designs_catalog() {
             "obsolete @ {}",
             f.hour_index()
         );
-        // 100:3 name is explicit-null before tick 6 -> Unobtained, never coerced.
         let art = d.equipment_variants.get("100:3").expect("variant 100:3");
         assert_eq!(
             art.name,
@@ -1665,14 +1542,10 @@ fn rt_scripted_gui_vars() {
     }
 }
 
-/// Trichotomy for the fx-streams views: a fixture that carries none of the new
-/// data reports absence/emptiness honestly, never a fabricated row/value.
 #[test]
 fn rt_fx_streams_domain_absence() {
     let t = open_fixture("fx_owner_controller_flip");
     for f in frames(&t) {
-        // Occupation is explicit-null per state in the base -> no active
-        // occupation rows, DomainAbsent (never an invented resistance row).
         assert_eq!(
             f.occupation_status(),
             ViewStatus::DomainAbsent,
@@ -1680,13 +1553,9 @@ fn rt_fx_streams_domain_absence() {
             f.hour_index()
         );
         assert!(f.occupation_by_state().is_empty());
-        // world.power_balances = [] -> Present but empty (measured empty).
         assert!(f.power_balance().balances.is_empty());
-        // naval_combats key absent -> no naval combat rows.
         assert!(f.naval_air_combat().naval_combats.is_empty());
-        // Present-country empty sub-objects: a genuine measured 0, not Unobtained.
         assert_eq!(f.research("GER").unwrap().tech_count, Leaf::Measured(0));
-        // Base script_variables {} -> measured empty per country, never null.
         assert_eq!(
             f.scripted_gui().by_country.get("GER"),
             Some(&Leaf::Measured(BTreeMap::new()))
@@ -1696,7 +1565,6 @@ fn rt_fx_streams_domain_absence() {
 
 #[test]
 fn well_formed_fixtures_emit_no_coverage_warnings() {
-    // The fixtures are well-typed, so no view should ever coerce or warn.
     for name in POSITIVE_FIXTURES {
         let t = open_fixture(name);
         for f in frames(&t) {
@@ -1723,7 +1591,6 @@ const POSITIVE_FIXTURES: [&str; 19] = [
     "fx_building_damage",
     "fx_pov_visibility",
     "fx_dlc_language_variation",
-    // fx-streams lane: the 12 UI-inventory data streams.
     "fx_research_focus",
     "fx_country_management",
     "fx_designs_catalog",
@@ -1733,14 +1600,7 @@ const POSITIVE_FIXTURES: [&str; 19] = [
     "fx_scripted_gui_vars",
 ];
 
-// ---------------------------------------------------------------------------
-// A4 — seek(h) == play_to(h) equality (forward / backward / mid-file / scrub)
-// ---------------------------------------------------------------------------
 
-/// Compare all observable world state between two frames. The frame is a pure
-/// function of (hour, date, save_version, raw), so raw-map equality is total;
-/// a spread of typed views is asserted alongside it to lock the contract that
-/// `seek` and `play_to` expose byte-identical *views*, not just identical raw.
 fn assert_state_equal(a: &WorldFrame, b: &WorldFrame, ctx: &str) {
     assert_eq!(a.hour_index(), b.hour_index(), "{ctx}: hour");
     assert_eq!(a.date(), b.date(), "{ctx}: date");
@@ -1820,7 +1680,6 @@ fn assert_state_equal(a: &WorldFrame, b: &WorldFrame, ctx: &str) {
             "{ctx}: visibility {pov}"
         );
     }
-    // fx-streams lane views (additive; seek==play must expose them identically).
     assert_eq!(
         a.research_by_country(),
         b.research_by_country(),
@@ -1866,23 +1725,16 @@ fn seek_equals_play_on_every_fixture() {
         let t = open_fixture(name);
         let hours = t.hours().to_vec();
 
-        // Forward pass over every exact hour.
         for &h in &hours {
             let s = t.seek(h).unwrap();
             let p = t.play_to(h).unwrap();
             assert_state_equal(&s, &p, &format!("{name} fwd h{h}"));
         }
-        // Backward pass (mid-file start is implicit: play_to is stateless, so
-        // jumping straight to the last hour then walking back must still match
-        // seek at each step).
         for &h in hours.iter().rev() {
             let s = t.seek(h).unwrap();
             let p = t.play_to(h).unwrap();
             assert_state_equal(&s, &p, &format!("{name} bwd h{h}"));
         }
-        // In-between scrub: an arbitrary hour between two anchors resolves to
-        // the nearest snapshot at-or-before, identically for seek and play,
-        // and equals the exact anchor frame.
         for w in hours.windows(2) {
             let mid = w[0] + (w[1] - w[0]) / 2;
             if mid == w[0] {
@@ -1898,8 +1750,6 @@ fn seek_equals_play_on_every_fixture() {
                 &format!("{name} scrub h{mid} -> anchor {}", w[0]),
             );
         }
-        // Mid-file cold start: a fresh timeline whose first access is a middle
-        // hour must resolve identically to a from-the-top one.
         let fresh = open_fixture(name);
         let mid_idx = hours.len() / 2;
         let cold = fresh.play_to(hours[mid_idx]).unwrap();
@@ -1912,15 +1762,9 @@ fn seek_equals_play_on_every_fixture() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// A6 — absence honesty: absent vs unavailable vs present, all distinct
-// ---------------------------------------------------------------------------
 
 #[test]
 fn absence_honesty_absent_vs_unavailable_vs_present() {
-    // DOMAIN ABSENT: a recording that never carried a domain reports absent,
-    // not unavailable and not a default. `visibility` is only present in the
-    // POV fixture; everywhere else the domain key is entirely missing.
     let owner = open_fixture("fx_owner_controller_flip");
     let of = owner.frame(owner.first_hour()).unwrap();
     assert_eq!(
@@ -1939,10 +1783,6 @@ fn absence_honesty_absent_vs_unavailable_vs_present() {
         "snow_mud absent"
     );
 
-    // DOMAIN UNAVAILABLE: the domain key is present but its contents are an
-    // explicit null (captured-but-unobtained) — distinct from absent. The base
-    // snapshot carries `weather: {regions: null, ...}` and
-    // `naval_air: {region_control: null, ...}`.
     assert_eq!(
         of.weather_status(),
         ViewStatus::DomainUnavailable,
@@ -1954,7 +1794,6 @@ fn absence_honesty_absent_vs_unavailable_vs_present() {
         "naval null -> unavailable"
     );
 
-    // PRESENT: the domains the fixture exercises report present.
     let pov = open_fixture("fx_pov_visibility");
     let pf = pov.frame(pov.first_hour()).unwrap();
     assert_eq!(
@@ -1989,8 +1828,6 @@ fn absence_honesty_absent_vs_unavailable_vs_present() {
         "naval present"
     );
 
-    // A POV that the recording never listed is absent within a present domain
-    // (distinct from the domain itself being absent).
     assert_eq!(
         pf.visibility_for("USA").status,
         ViewStatus::DomainAbsent,
@@ -1998,9 +1835,6 @@ fn absence_honesty_absent_vs_unavailable_vs_present() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// snapshot-path determinism (stands in for delta==snapshot; see module docs)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn snapshot_path_is_deterministic() {
@@ -2016,23 +1850,15 @@ fn snapshot_path_is_deterministic() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// adversarial: a wrong oracle MUST fail the gate (a gate that can't fail is
-// worthless)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn adversarial_wrong_oracle_makes_gate_fail() {
     let owner = open_fixture("fx_owner_controller_flip");
     let f = owner.frame(owner.hours()[5]).unwrap();
 
-    // The correct oracle passes.
     assert_eq!(f.owner_by_state()[&10], Leaf::Measured("SOV".into()));
-    // The discriminating gate: the view is NOT the pre-flip value.
     assert_ne!(f.owner_by_state()[&10], Leaf::Measured("GER".into()));
 
-    // A perturbed expectation must actually panic the assertion — prove the
-    // gate can fail rather than silently pass on a wrong value.
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
@@ -2044,7 +1870,6 @@ fn adversarial_wrong_oracle_makes_gate_fail() {
         "a wrong oracle must fail the round-trip gate"
     );
 
-    // Same for a Measured-vs-Unobtained perturbation (trichotomy honesty).
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {

@@ -1,8 +1,3 @@
-//! Fail-closed XUI22 authored-root composition.
-//!
-//! Scripted-GUI definitions are attached to contextual parents by authored
-//! content. The compositor therefore requires the owning parent extent and
-//! never substitutes the physical viewport.
 
 use crate::compose::{
     resolve_element_rect, ComposeOptions, ComposeReport, Compositor, Rect, UiAssetCache,
@@ -28,7 +23,6 @@ pub struct ScriptedGuiInteractionState {
     pub visual_enabled: BTreeMap<String, bool>,
     pub click_enabled: BTreeMap<String, bool>,
     pub right_click_enabled: BTreeMap<String, bool>,
-    /// Effect names are semantic callback names, not inferred widget names.
     pub effect_enabled: BTreeMap<String, bool>,
 }
 
@@ -43,9 +37,6 @@ pub struct ComposedScriptedGuiRoot {
     pub interaction: ScriptedGuiInteractionState,
 }
 
-/// A root ready for insertion into XUI19's exact decision-category child
-/// stream. XUI19 owns viewport placement, clipping, scrolling and the final
-/// child cursor; this value retains only parent-relative authored geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedDecisionCategoryScriptedGuiRoot {
     pub category_id: String,
@@ -146,10 +137,6 @@ fn merge_map<K: Ord, V>(
     Ok(())
 }
 
-/// Namespace and transactionally merge one prepared root into XUI19's shared
-/// composition options. `list_y` is supplied by XUI19 after the exact
-/// preceding category children; the returned height is the authored resolved
-/// amount by which XUI19 must advance following children.
 pub fn merge_prepared_decision_category_root(
     mut prepared: PreparedDecisionCategoryScriptedGuiRoot,
     namespace: &str,
@@ -297,9 +284,6 @@ pub fn merge_prepared_decision_category_root(
     Ok((prepared.root, root_height, prepared.interaction))
 }
 
-/// Join complete d84 rows to exact rendered XUI19 category parents. A runtime
-/// row cannot select its parent; the effective FILE `scripted_gui` field is
-/// the only admitted identity join.
 pub fn prepare_decision_category_scripted_gui_roots(
     content_admission: &ValidatedContentAdmission,
     catalog: &GuiDefinitionCatalog,
@@ -380,10 +364,6 @@ fn prepare_decision_category_scripted_gui_roots_with_admission(
             )));
         }
         let Some(row) = rows_by_id.get(gui_id).copied() else {
-            // This is exact only because require_ready_panel requires the
-            // authenticated post-owner current-manager snapshot. Absence from
-            // that complete engine container is measured uninstantiated, not
-            // a missing member of an invented Cartesian product.
             continue;
         };
         match row.evaluation.visible {
@@ -448,8 +428,6 @@ fn prepare_decision_category_scripted_gui_roots_with_admission(
                     row.gui_id
                 )));
             }
-            // A collapsed or absent rendered parent is measured inactive. It
-            // must not be relocated into another parent or overlaid globally.
         }
     }
     Ok(outputs)
@@ -614,10 +592,6 @@ fn xui22_dynamic_widgets(
     Ok(output)
 }
 
-/// Supply exactly one XUI22 child to XUI19's authenticated category callback.
-/// XUI19 owns list placement, clipping, scrolling, z-order and Presented
-/// lifecycle. This adapter owns only the effective FILE/d84/authored-root join
-/// and namespaces the child options before returning it to that parent.
 pub fn supply_xui19_decision_category_child(
     content_admission: &ValidatedContentAdmission,
     catalog: &GuiDefinitionCatalog,
@@ -639,10 +613,6 @@ pub fn supply_xui19_decision_category_child(
         ));
     }
 
-    // The request is constructed only from XUI19's already parsed effective
-    // category definition. Reconstructing this one-row DecisionSet preserves
-    // the existing provider's exact FILE join without reparsing content inside
-    // every category callback.
     let decisions = DecisionSet {
         categories: BTreeMap::from([(
             request.category_id.clone(),
@@ -677,8 +647,6 @@ pub fn supply_xui19_decision_category_child(
         ));
     }
     let Some(prepared) = prepared_roots.pop() else {
-        // A complete d84 manager snapshot proves the bound provider is not
-        // instantiated or is measured invisible for this country/hour.
         return Ok(
             crate::production_renderer::ObserverDecisionCategoryDynamicOutcome::MeasuredInactive,
         );
@@ -726,9 +694,6 @@ pub fn supply_xui19_decision_category_child(
     )
 }
 
-/// Compose visible roots in authenticated manager order for an exact supplied
-/// contextual parent. This is a reusable provider; it is not a shipping route
-/// until the owning panel supplies activation, placement and extent.
 pub fn compose_scripted_gui_panel(
     resolver: &crate::assets::AssetResolver,
     registry: &SpriteRegistry,

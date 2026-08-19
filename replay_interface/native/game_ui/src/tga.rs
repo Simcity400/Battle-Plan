@@ -4,19 +4,6 @@ use std::fs;
 use std::path::Path;
 
 const TGA_HEADER_LEN: usize = 18;
-/// Upper bound on header-claimed pixel count (8192x8192), mirroring
-/// `dds::DDS_MAX_PIXELS`. TGA and DDS are adjacent arms of one texture switch
-/// (`assets::AssetResolver::decode_texture`), so they must agree on allocation
-/// policy: a header-claimed size that DDS refuses must not be one TGA honours.
-///
-/// The length preflight below is necessary but NOT sufficient on its own: RLE
-/// amplifies, so a 67 MB `image_type = 11, bpp = 8, 65535x65535` file clears
-/// the minimum-encoded-length check and then asks for a 17 GB output buffer.
-/// `vec![0u8; len]` has no fallible form — a refused allocation aborts the
-/// process — so the claim must be refused before the buffer exists.
-///
-/// Measured headroom: the largest TGA shipped by the game 1.19.2 is 4096x2048
-/// (8.4 M pixels, `gfx/fonts/japanese/garamond_24.tga`), 8x under this cap.
 const TGA_MAX_PIXELS: usize = 1 << 26;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,11 +80,6 @@ pub fn decode_bytes(data: &[u8]) -> Result<TgaImage> {
         ));
     }
 
-    // Validate the header-claimed pixel payload BEFORE allocating the output
-    // buffer: a truncated 18-byte file claiming 65535x65535 must be a typed
-    // refusal, never a ~17 GB allocation. Checked arithmetic is defensive
-    // (u16 dimensions cannot overflow usize on 64-bit) but keeps every
-    // header-derived size expression checked, per the fail-closed doctrine.
     let overflow = || {
         GameUiError::new(
             ErrorKind::InvalidTexture("tga_dimensions".to_string()),
@@ -121,10 +103,7 @@ pub fn decode_bytes(data: &[u8]) -> Result<TgaImage> {
             require_len(data, needed, "TGA pixel data")?;
         }
         10 | 11 => {
-            // Best-case RLE: every packet is a run covering 128 pixels, so
-            // the payload is at least ceil(total/128) * (header + one pixel)
             // bytes. Per-packet bounds checks in decode_rle remain the
-            // authoritative enforcement during decode.
             let min_encoded = total
                 .div_ceil(128)
                 .checked_mul(1 + pixel_bytes)
@@ -159,9 +138,6 @@ fn decode_uncompressed(
     pixel_bytes: usize,
     out: &mut [u8],
 ) -> Result<()> {
-    // Checked like every other header-derived size in this file: the pixel cap
-    // already makes overflow impossible, but no size expression is left to
-    // wrap silently if that cap ever moves.
     let needed = header
         .width
         .checked_mul(header.height)
@@ -256,11 +232,6 @@ fn decode_pixel(bytes: &[u8], bits_per_pixel: u8, attribute_bits: u8) -> [u8; 4]
             let b = ((u32::from(raw & 0x1f) * 255 + 15) / 31) as u8;
             let g = ((u32::from((raw >> 5) & 0x1f) * 255 + 15) / 31) as u8;
             let r = ((u32::from((raw >> 10) & 0x1f) * 255 + 15) / 31) as u8;
-            // TGA image-descriptor bits 3-0 are the attribute-bits-per-pixel
-            // count. The 16-bit high bit is alpha only when the file says it
-            // carries one; when the count is 0 the bit is undefined padding
-            // and the pixel is opaque. Both branches previously returned 255,
-            // discarding every transparent 5-5-5-1 pixel (R11 C10(b)).
             let a = if attribute_bits == 0 || raw & 0x8000 != 0 {
                 255
             } else {
@@ -292,7 +263,6 @@ fn write_oriented_pixel(out: &mut [u8], header: &Header, src_index: usize, rgba:
 }
 
 impl Header {
-    /// Image-descriptor bits 3-0: attribute (alpha) bits per pixel.
     fn attribute_bits(&self) -> u8 {
         self.descriptor & 0x0f
     }
@@ -342,8 +312,8 @@ mod tests {
     #[test]
     fn decodes_rle_run_packet() {
         let mut data = tga_header(10, 2, 1, 32, 0x20);
-        data.push(0x81); // run packet, 2 pixels
-        data.extend_from_slice(&[0, 0, 255, 255]); // BGRA -> red
+        data.push(0x81);
+        data.extend_from_slice(&[0, 0, 255, 255]);
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![255, 0, 0, 255, 255, 0, 0, 255]);
     }
@@ -351,9 +321,9 @@ mod tests {
     #[test]
     fn decodes_rle_raw_packet() {
         let mut data = tga_header(10, 2, 1, 32, 0x20);
-        data.push(0x01); // raw packet, 2 pixels
-        data.extend_from_slice(&[255, 0, 0, 255]); // BGRA -> blue
-        data.extend_from_slice(&[0, 255, 0, 128]); // BGRA -> green
+        data.push(0x01);
+        data.extend_from_slice(&[255, 0, 0, 255]);
+        data.extend_from_slice(&[0, 255, 0, 128]);
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![0, 0, 255, 255, 0, 255, 0, 128]);
     }
@@ -361,7 +331,7 @@ mod tests {
     #[test]
     fn rle_run_packet_overrunning_image_is_rejected() {
         let mut data = tga_header(10, 1, 1, 32, 0x20);
-        data.push(0x81); // run of 2 into a 1-pixel image
+        data.push(0x81);
         data.extend_from_slice(&[0, 0, 255, 255]);
         let err = decode_bytes(&data).expect_err("run overrun must be rejected");
         assert_eq!(err.kind, ErrorKind::InvalidTexture("tga_rle".to_string()));
@@ -370,7 +340,7 @@ mod tests {
     #[test]
     fn rle_raw_packet_overrunning_image_is_rejected() {
         let mut data = tga_header(10, 1, 1, 32, 0x20);
-        data.push(0x01); // raw packet of 2 into a 1-pixel image
+        data.push(0x01);
         data.extend_from_slice(&[0, 0, 255, 255]);
         data.extend_from_slice(&[0, 255, 0, 255]);
         let err = decode_bytes(&data).expect_err("raw overrun must be rejected");
@@ -388,16 +358,16 @@ mod tests {
     #[test]
     fn decodes_16_bit_arrrrrgg_gggbbbbb() {
         let mut data = tga_header(2, 1, 1, 16, 0x20);
-        data.extend_from_slice(&0x7c00u16.to_le_bytes()); // r=31 g=0 b=0
+        data.extend_from_slice(&0x7c00u16.to_le_bytes());
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![255, 0, 0, 255]);
     }
 
     #[test]
     fn bottom_left_origin_flips_rows() {
-        let mut data = tga_header(2, 1, 2, 32, 0); // no 0x20: bottom row first
-        data.extend_from_slice(&[1, 2, 3, 4]); // file row 0 -> output row 1
-        data.extend_from_slice(&[5, 6, 7, 8]); // file row 1 -> output row 0
+        let mut data = tga_header(2, 1, 2, 32, 0);
+        data.extend_from_slice(&[1, 2, 3, 4]);
+        data.extend_from_slice(&[5, 6, 7, 8]);
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![7, 6, 5, 8, 3, 2, 1, 4]);
     }
@@ -405,17 +375,14 @@ mod tests {
     #[test]
     fn right_to_left_origin_flips_columns() {
         let mut data = tga_header(2, 2, 1, 32, 0x20 | 0x10);
-        data.extend_from_slice(&[1, 2, 3, 4]); // file col 0 -> output col 1
-        data.extend_from_slice(&[5, 6, 7, 8]); // file col 1 -> output col 0
+        data.extend_from_slice(&[1, 2, 3, 4]);
+        data.extend_from_slice(&[5, 6, 7, 8]);
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![7, 6, 5, 8, 3, 2, 1, 4]);
     }
 
     #[test]
     fn huge_uncompressed_claim_refuses_before_allocating() {
-        // 18-byte file claiming 65535x65535x32bpp: must be a typed refusal,
-        // never a ~17 GB zeroed allocation. The pixel cap now refuses this
-        // one dimension check earlier than the truncation preflight did.
         let data = tga_header(2, u16::MAX, u16::MAX, 32, 0x20);
         let err = decode_bytes(&data).expect_err("truncated giant claim must be rejected");
         assert_eq!(
@@ -436,15 +403,10 @@ mod tests {
 
     #[test]
     fn rle_amplified_giant_claim_is_refused_before_the_output_buffer() {
-        // R11 C4: `image_type = 11, bpp = 8, 65535x65535` needs only ~67 MB of
-        // input to clear the minimum-encoded-length preflight, and then asks
-        // for a 17 GB `vec![0u8; out_len]` — an abort, not an error. Supply a
-        // payload large enough to clear that preflight and prove the refusal
-        // comes from the pixel cap, before any allocation.
         let total = usize::from(u16::MAX) * usize::from(u16::MAX);
         let min_encoded = total.div_ceil(128) * 2 + TGA_HEADER_LEN;
         let mut data = tga_header(11, u16::MAX, u16::MAX, 8, 0x20);
-        data.resize(min_encoded, 0x80); // run packets, one payload byte each
+        data.resize(min_encoded, 0x80);
         let err = decode_bytes(&data).expect_err("amplified RLE claim must be refused");
         assert_eq!(
             err.kind,
@@ -455,15 +417,12 @@ mod tests {
 
     #[test]
     fn pixel_cap_matches_the_dds_arm_of_the_same_texture_switch() {
-        // 8193x8193 is one pixel over 2^26 on both decoders.
         let data = tga_header(2, 8193, 8193, 32, 0x20);
         let err = decode_bytes(&data).expect_err("over-cap claim must be refused");
         assert_eq!(
             err.kind,
             ErrorKind::InvalidTexture("tga_dimensions".to_string())
         );
-        // The largest TGA the game 1.19.2 ships is 4096x2048; it must still parse
-        // past the cap and fail only on its (absent) payload.
         let data = tga_header(2, 4096, 2048, 32, 0x20);
         let err = decode_bytes(&data).expect_err("no payload supplied");
         assert_eq!(
@@ -474,18 +433,16 @@ mod tests {
 
     #[test]
     fn sixteen_bit_attribute_bit_drives_alpha_only_when_declared() {
-        // descriptor low nibble = 1 attribute bit: the 0x8000 bit is alpha.
         let mut data = tga_header(2, 1, 1, 16, 0x20 | 0x01);
-        data.extend_from_slice(&0x7c00u16.to_le_bytes()); // attribute bit clear
+        data.extend_from_slice(&0x7c00u16.to_le_bytes());
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![255, 0, 0, 0]);
 
         let mut data = tga_header(2, 1, 1, 16, 0x20 | 0x01);
-        data.extend_from_slice(&0xfc00u16.to_le_bytes()); // attribute bit set
+        data.extend_from_slice(&0xfc00u16.to_le_bytes());
         let image = decode_bytes(&data).unwrap().image;
         assert_eq!(image.pixels, vec![255, 0, 0, 255]);
 
-        // Zero declared attribute bits: the high bit is padding, pixel opaque.
         let mut data = tga_header(2, 1, 1, 16, 0x20);
         data.extend_from_slice(&0x7c00u16.to_le_bytes());
         let image = decode_bytes(&data).unwrap().image;

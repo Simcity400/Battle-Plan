@@ -1,90 +1,12 @@
-//! Pointer-free exact-a729 current-POV province visibility carrier (d94).
-
 pub const DOMAIN_ID: u16 = 94;
 pub const DOMAIN_NAME: &str = "pov_province_visibility_live";
 pub const CARRIER_MAGIC: [u8; 4] = *b"FOW1";
 pub const CARRIER_VERSION: u16 = 1;
-/// Upper bound (INCLUSIVE) on the NUMBER of province slots one d94 frame
-/// carries. A COUNT and a transport budget -- never an id bound.
-///
-/// # Why this one does not move with `MAX_PROVINCE_ID`
-///
-/// Lane IA proved the province ID SPACE is `i32`-wide (`build_profile::
-/// MAX_PROVINCE_ID`, `claim_347234c20a542ca79032`) and retired the `65_535`
-/// guess everywhere it was acting as an identity ceiling. This constant keeps
-/// the number, and that is a deliberate split rather than a site the sweep
-/// missed.
-///
-/// D94's carrier is DENSE: one byte of visibility level per province, and the
-/// province id IS the byte's position in the vector. So this number sizes a
-/// buffer taken from a stream word. At the id space's structural width it
-/// would authorise a 2 GB allocation from a two-byte header field -- the same
-/// shape as the `PairSeenSet` abort lane GV hit, where a widened identity
-/// ceiling reached an allocation and took the process with it.
-///
-/// The two jobs are now two constants: this one bounds the vector, and
-/// [`MAX_PROVINCE_SLOT_INDEX`] bounds a slot index and is DERIVED from it, so
-/// the id side can never be widened without widening the buffer that has to
-/// hold it.
-///
-/// # The cost, stated rather than hidden
-///
-/// A mod set defining more than 65 535 provinces loses domain 94 -- refused by
-/// name (`"province vector length ... is outside the admitted range"`), never
-/// silently truncated, so the hour is accounted rather than quietly wrong.
-/// That is a real mod-compatibility limit and it is a TRANSPORT limit, not a
-/// claim about how many provinces a game may define. Raising it means pricing
-/// a bigger frame or changing the carrier to a sparse encoding, which is a
-/// format decision and not a bounds edit.
 pub const MAX_PROVINCE_SLOTS: usize = 65_535;
 
-/// Upper bound (INCLUSIVE) on a d94 province SLOT INDEX.
-///
-/// Derived from [`MAX_PROVINCE_SLOTS`] and not from the province id space:
-/// this domain's "province id" is a POSITION in a dense vector, so the widest
-/// addressable index is one less than the widest vector. Spelling it as its
-/// own constant is what keeps the `>= count` / `> max_index` off-by-one from
-/// being re-derived at each call site.
 pub const MAX_PROVINCE_SLOT_INDEX: u32 = (MAX_PROVINCE_SLOTS - 1) as u32;
-/// A POV country id is a country-database id, so it carries the family bound:
-/// [`crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`]. Was `2_048`, a guess
-/// at the vanilla-plus-DLC country count (vanilla defines 439 tags), which cost
-/// this whole carrier on any overhaul whose human player sat above it.
 pub const MAX_POV_COUNTRY_ID: u32 = crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
-/// The frame carries the hour its PRODUCER observed at, not the hour the
-/// collector drained it in.
-///
-/// # Why the drain hour is not enough
-///
-/// D94 retains the last authenticated visibility vector and re-serves it until
-/// the producer replaces it (`fow_visibility_live::a729::drain_latest`), which
-/// is what stops a speed-5 game from opening false coverage holes on every hour
-/// between two renderer calls. The consequence is that the hour label on the
-/// record is the hour of the DRAIN, and the payload said nothing about when the
-/// state it carries was observed -- so "this POV's fog has stood since H-1" and
-/// "this POV's fog was rebuilt in H" were the same bytes. Moving the drain to
-/// the front of the frame build (lane AO) widened the window in which a
-/// producer publication lands after the drain, which makes the distinction
-/// worth stating rather than arguing.
-///
-/// The producer reads its hour from the `CGameState` it is HANDED, at
-/// `GS_CURRENT_DATE_OFFSET` (`0x468`) -- the same object and the same word the
-/// collector's own frame label comes from. That the parameter is the
-/// is already load-bearing in this lane: `read_pov_input` reads the
-/// `+0x520`/`+0x524` pair off that same pointer to reconstruct the producer's
-/// own rebuild arm. So the two words subtract, and their difference is the
-/// frame's age in hours.
-///
-/// Additive, in the shape the D95 SPU1 change set: the carrier version does NOT
-/// move, the fact rides the previously-reserved flag word, and a payload
-/// without the bit decodes exactly as it did before. The word rides AFTER the
-/// province vector, so every byte offset a pre-existing decoder reads is where
-/// it was.
 pub const FLAG_PRODUCER_HOUR: u16 = 1 << 0;
-/// Every flag bit this carrier version defines. An unknown bit is refused, so
-/// the strictness of the old `reserved != 0` check is preserved exactly: the
-/// only word that decodes now and did not decode before is one that sets
-/// [`FLAG_PRODUCER_HOUR`] and nothing else.
 const KNOWN_FLAGS: u16 = FLAG_PRODUCER_HOUR;
 pub const HEADER_LEN: usize = 24;
 const HOUR_LEN: usize = 8;
@@ -93,10 +15,7 @@ const HOUR_LEN: usize = 8;
 pub struct PovVisibilitySnapshot {
     pub capture_sequence: u64,
     pub pov_country_id: u32,
-    /// The raw engine date word the producer read at the moment its invocation
-    /// began, or `None` when that read failed. See [`FLAG_PRODUCER_HOUR`].
     pub producer_hour_raw: Option<i32>,
-    /// Complete engine byte vector. Index is the province database ID.
     pub province_levels: Vec<u8>,
 }
 
@@ -130,10 +49,6 @@ impl PovVisibilitySnapshot {
         out.extend_from_slice(&self.pov_country_id.to_le_bytes());
         out.extend_from_slice(&count.to_le_bytes());
         out.extend_from_slice(&self.province_levels);
-        // The producer hour rides AFTER the province vector, one 8-byte word
-        // when the flag is set and no bytes at all when it is not. Appending
-        // rather than widening the header is what keeps every byte offset the
-        // pre-existing decoders read at exactly where it was.
         if let Some(hour) = self.producer_hour_raw {
             out.extend_from_slice(&i64::from(hour).to_le_bytes());
         }
@@ -195,22 +110,6 @@ mod tests {
         }
     }
 
-    /// Law: the producer hour is ADDITIVE. A payload without it is byte-for-byte
-    /// what this carrier produced before the field existed.
-    ///
-    /// The version does not move and the header does not widen, exactly as the
-    /// D95 SPU1 change did it: the fact rides the previously-reserved flag word
-    /// and an 8-byte word AFTER the province vector, so every offset a
-    /// pre-existing reader walks is where it was. A capture archived before this
-    /// lane still decodes, and this test states the archived bytes literally
-    /// rather than deriving them from the encoder it is checking.
-    ///
-    /// MUTATION RUN: write the hour word into the payload unconditionally,
-    /// before the province vector. OBSERVED: FAILED -- `assertion `left ==
-    /// right` failed: a snapshot with no producer hour is exactly header plus
-    /// provinces / left: 36 / right: 28`, taking
-    /// `a_producer_hour_round_trips_in_exactly_one_appended_word` and
-    /// `a_truncated_or_padded_producer_hour_tail_fails_closed` with it.
     #[test]
     fn a_payload_without_a_producer_hour_is_unchanged() {
         let bare = snapshot();
@@ -220,7 +119,6 @@ mod tests {
             HEADER_LEN + 4,
             "a snapshot with no producer hour is exactly header plus provinces"
         );
-        // The literal bytes a recorder built before this field existed.
         let archived: Vec<u8> = b"FOW1"
             .iter()
             .copied()
@@ -231,22 +129,16 @@ mod tests {
             .chain(4u32.to_le_bytes())
             .chain([0u8, 1, 2, 3])
             .collect();
-        assert_eq!(bytes, archived, "the encoder still emits the archived shape");
+        assert_eq!(
+            bytes, archived,
+            "the encoder still emits the archived shape"
+        );
         assert_eq!(
             PovVisibilitySnapshot::decode(&archived).expect("archived payloads still decode"),
             bare
         );
     }
 
-    /// Law: the producer hour round-trips, and costs exactly one word.
-    ///
-    /// MUTATION RUN: drop the `hour_words` term from the expected length in
-    /// `decode`. OBSERVED: FAILED -- `round trip: "visibility carrier is
-    /// truncated or has trailing bytes"` on the first hour-carrying arm, and
-    /// `a_truncated_or_padded_producer_hour_tail_fails_closed` panics with
-    /// `range end index 36 out of range for slice of length 28` -- the length
-    /// equation is what makes the hour-word slice in-bounds, so dropping its
-    /// term does not merely lose the field, it un-bounds the read.
     #[test]
     fn a_producer_hour_round_trips_in_exactly_one_appended_word() {
         for hour in [Some(60_832_312), Some(0), Some(-7), Some(i32::MIN), None] {
@@ -260,7 +152,11 @@ mod tests {
             );
             assert_eq!(
                 u16::from_le_bytes(bytes[6..8].try_into().unwrap()),
-                if hour.is_some() { FLAG_PRODUCER_HOUR } else { 0 },
+                if hour.is_some() {
+                    FLAG_PRODUCER_HOUR
+                } else {
+                    0
+                },
                 "the flag word says exactly what the tail carries"
             );
             assert_eq!(
@@ -274,20 +170,11 @@ mod tests {
         }
     }
 
-    /// Law: the flag word is still refused for anything this version does not
-    /// define, so widening `reserved` into `flags` gave up no strictness.
-    ///
-    /// A decoder that predates the bit refuses the payload rather than silently
-    /// dropping the field, which is the correct failure for a fact a consumer
-    /// reasons with -- and symmetrically, a decoder that postdates it must
-    /// refuse a bit it cannot interpret rather than ignore the tail it implies.
-    ///
-    /// MUTATION RUN: replace `flags & !KNOWN_FLAGS != 0` with `false`.
-    /// OBSERVED: FAILED -- `panicked at compact_contract\src\pov_visibility.rs:
-    /// a reserved flag bit 1 must still be refused`.
     #[test]
     fn an_undefined_flag_bit_is_still_refused() {
-        let bytes = snapshot().encode().expect("the codec encodes this snapshot");
+        let bytes = snapshot()
+            .encode()
+            .expect("the codec encodes this snapshot");
         for bit in 1..16u32 {
             let mut dirty = bytes.clone();
             dirty[6..8].copy_from_slice(&(1u16 << bit).to_le_bytes());
@@ -298,21 +185,6 @@ mod tests {
         }
     }
 
-    /// Law: a truncated or padded hour tail is refused, never read as a
-    /// province byte.
-    ///
-    /// This is the d94 shape of D95's orphan-hour guard. D95 has two surfaces
-    /// and either may be absent, so an hour there can outlive the frame it
-    /// dates and `validate` refuses that pairing. D94 has exactly one surface
-    /// and `validate` already requires a non-empty province vector, so an
-    /// orphan hour is unconstructible -- the only way the word and the vector
-    /// can disagree is a length disagreement, and that is what this pins.
-    ///
-    /// MUTATION RUN: slice the body as `bytes[HEADER_LEN..]` again instead of
-    /// `bytes[HEADER_LEN..HEADER_LEN + count]`. OBSERVED: FAILED --
-    /// `left: [0, 1, 2, 3, 56, 58, 160, 3, 0, 0, 0, 0] / right: [0, 1, 2, 3]`,
-    /// i.e. the eight hour bytes are decoded as eight extra provinces (and the
-    /// round-trip test above fails on the same eight bytes).
     #[test]
     fn a_truncated_or_padded_producer_hour_tail_fails_closed() {
         let mut value = snapshot();
@@ -327,7 +199,6 @@ mod tests {
         let mut extended = bytes.clone();
         extended.push(0);
         assert!(PovVisibilitySnapshot::decode(&extended).is_err());
-        // And the hour word is not counted as provinces.
         assert_eq!(
             PovVisibilitySnapshot::decode(&bytes)
                 .expect("round trip")
@@ -336,13 +207,6 @@ mod tests {
         );
     }
 
-    /// Law: an hour word outside the engine's `int` date range is refused
-    /// rather than truncated into one.
-    ///
-    /// MUTATION RUN: replace the `i32::try_from` with `word as i32`. OBSERVED:
-    /// FAILED -- `assertion failed: PovVisibilitySnapshot::decode(&bytes)
-    /// .is_err()`; the payload decodes and reports hour 0 for a word of
-    /// 0x1_0000_0000.
     #[test]
     fn a_producer_hour_outside_the_engines_date_range_is_refused() {
         let mut value = snapshot();

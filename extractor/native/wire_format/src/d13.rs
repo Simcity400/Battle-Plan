@@ -7,7 +7,7 @@
 // shared leaf `d13_grammar`, which this port EXECUTES rather than transcribes.
 // The closure above cannot follow it across the crate boundary, so the leaf's
 // own source is pinned here instead.
-// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=23069ce1f109dcd23d697b71e18be75dc806d6169733ea41b7d36e78a19d0c29
+// @leaf-source-authority crate=d13_grammar root=extractor/native/d13_grammar files=4 sha256=ec84da6e0618aad3c8fdb720f0e048195d65bb6e37963e92391049463644b6d2
 //! (`extractor/native/collector/src/attach_log.rs:69183`-`:69328`) and the
 //! collector read that produces every presence flag (`:80860`-`:81047`,
 //! `:81311`-`:81356`). A29 producer knowledge is retained as

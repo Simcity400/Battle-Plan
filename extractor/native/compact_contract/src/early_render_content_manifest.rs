@@ -1,7 +1,3 @@
-//! Typed H4CT transfer for the canonical portable-content manifest used by
-//! strict in-process d77/d80 admission. The manifest is transmitted only over
-//! the authenticated early-render session; no install path or sidecar is used.
-
 use crate::control_transport::CONTROL_MAX_PAYLOAD_LEN;
 
 const VERSION: u16 = 1;
@@ -18,8 +14,6 @@ pub struct EarlyRenderContentManifestChunkV1 {
     pub launch_bind_sha256: [u8; 32],
     pub effective_vfs_manifest_sha256: [u8; 32],
     pub effective_vfs_index_sha256: [u8; 32],
-    /// SHA-256 of the exact canonical JSON bytes, including the manifest's
-    /// independently validated `manifest_digest_sha256` field.
     pub content_manifest_bytes_sha256: [u8; 32],
     pub chunk_index: u32,
     pub chunk_count: u32,

@@ -145,12 +145,6 @@ impl NativeD3d11TerrainChunkLibrary {
         })
     }
 
-    /// Load only the manifest's chunk-draw records and coverage, WITHOUT the
-    /// full runtime-texture/shader sidecar reconciliation the render path needs.
-    /// The mesh-law corpus gate only touches the captured VB/IB/CB buffer files
-    /// and the shipped heightmap, so it does not require the texture sidecars —
-    /// this lets it run against lightweight quick-capture harness runs that omit
-    /// them. The manifest schema is still checked.
     pub fn load_records_only(path: impl AsRef<Path>) -> Result<Self> {
         let manifest_path = terrain_chunk_library_manifest_path(path.as_ref());
         let bundle_dir = manifest_path
@@ -190,8 +184,6 @@ impl NativeD3d11TerrainChunkLibrary {
         self.manifest.chunks.len()
     }
 
-    /// The captured chunk-draw records, in manifest order. Used by the mesh-law
-    /// corpus validator to regenerate and byte-compare every captured draw.
     pub(crate) fn chunk_records(&self) -> &[TerrainChunkRecord] {
         &self.manifest.chunks
     }
@@ -530,9 +522,6 @@ pub(crate) fn terrain_chunk_frame_from_draws(
         runtime_files: manifest.runtime_files.clone(),
         blockers: Vec::new(),
         synthetic_payloads: BTreeMap::new(),
-        // This frame is assembled from the chunk-library manifest, not run
-        // through `validate_map_frame_vanilla_sources`; no verification
-        // outcome has been established for it.
         vanilla_source_verification: None,
     })
 }
@@ -563,10 +552,6 @@ fn validate_terrain_chunk_draw_payloads(
             }
         }
     }
-    // The chunk library is itself the terrain reference, so an absent post-pass
-    // output-merger capture is not a blocker here; an integrity failure of a
-    // post-pass capture that IS present still is. Clear provenance is likewise
-    // waived only where it is absent, never where it is present and invalid.
     let replay_blockers =
         native_d3d11_replay_payload_blockers_without_post_pass_reference(frame, false)
             .into_iter()

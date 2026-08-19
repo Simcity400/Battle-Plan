@@ -1,6 +1,3 @@
-//! Raw winapi Win32 window: class registration, message pump, and an
-//! event queue drained once per frame. House style: raw unsafe Win32 with
-//! explicit error strings (see map_viewer for the D3D11 counterpart).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -60,22 +57,14 @@ pub enum WindowEvent {
         x: i32,
         y: i32,
     },
-    /// Wheel delta in WHEEL_DELTA (120) units; x/y are client coords.
     Wheel {
         delta: i32,
         x: i32,
         y: i32,
     },
-    /// Mouse capture was taken away (WM_CAPTURECHANGED): cancel drags.
     CaptureLost,
 }
 
-/// Input family implemented by this concrete client event pump.
-///
-/// This value describes the messages the running standalone viewer actually
-/// accepts (WM_KEY* plus WM_MOUSE*). It is deliberately not decoded from a
-/// replay carrier. Adding controller or focus-traversal messages requires a
-/// new implementation here before XUI25 can admit that family.
 pub fn actual_client_input_variant() -> game_ui::variant_admission::InputVariant {
     game_ui::variant_admission::InputVariant::MouseKeyboard
 }
@@ -89,7 +78,6 @@ fn push_event(event: WindowEvent) {
 }
 
 fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
-    // Client coords are signed 16-bit packed into lparam.
     let x = (lparam & 0xffff) as u16 as i16 as i32;
     let y = ((lparam >> 16) & 0xffff) as u16 as i16 as i32;
     (x, y)
@@ -151,13 +139,10 @@ unsafe extern "system" fn wnd_proc(
             0
         }
         WM_CAPTURECHANGED => {
-            // Capture can be stolen (alt-tab, menus) without a button-up;
-            // tell the app so a pan drag never sticks.
             push_event(WindowEvent::CaptureLost);
             0
         }
         WM_MOUSEWHEEL => {
-            // WM_MOUSEWHEEL reports screen coordinates; convert to client.
             let delta = ((wparam >> 16) & 0xffff) as u16 as i16 as i32;
             let (sx, sy) = lparam_xy(lparam);
             let mut point = POINT { x: sx, y: sy };
@@ -183,8 +168,6 @@ pub struct Window {
 }
 
 impl Window {
-    /// Create a visible, resizable top-level window with the requested
-    /// client area size.
     pub fn create(title: &str, client_width: i32, client_height: i32) -> Result<Window> {
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
@@ -249,7 +232,6 @@ impl Window {
         self.hwnd
     }
 
-    /// Current client area size in pixels.
     pub fn client_size(&self) -> Result<(u32, u32)> {
         unsafe {
             let mut rect: RECT = mem::zeroed();
@@ -265,8 +247,6 @@ impl Window {
         }
     }
 
-    /// Drain pending Win32 messages. Returns queued events and whether
-    /// the window is still alive (false once WM_QUIT arrives).
     pub fn pump(&self) -> (Vec<WindowEvent>, bool) {
         let mut alive = true;
         unsafe {
@@ -284,8 +264,6 @@ impl Window {
         (events, alive)
     }
 
-    /// Update the title bar (probe readout lives here in this phase; no
-    /// in-window text rendering yet). Skips the call when unchanged.
     pub fn set_title(&mut self, title: &str) {
         if title == self.last_title {
             return;
@@ -297,7 +275,6 @@ impl Window {
         self.last_title = title.to_string();
     }
 
-    /// Ask the window to close (Escape path); WM_DESTROY then ends the pump.
     pub fn request_close(&self) {
         unsafe {
             DestroyWindow(self.hwnd);

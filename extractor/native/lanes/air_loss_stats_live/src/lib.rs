@@ -1,45 +1,8 @@
-//! air_loss_stats_live (domain 61) — per-country CUMULATIVE air-combat loss statistics.
-//!
-//! This is the compact-packet DATA layer for statistic id 23, the per-country
-//! 89-field aggregate air-loss history record. Verified root chain:
-//!
-//! ```text
-//! CGameState  = u64[module_base + 0x3316E90]
-//! registry    = u64[CGameState + 0x690]        // per-country stats registry
-//! mgr_array   = u64[registry + 0x30]           // per-country stat-manager pointer array
-//! country_mgr = u64[mgr_array + country_idx*8]
-//! stat_base   = u64[country_mgr + 0x158]        // 89-field aggregate-history array base
-//! loophist    = u64[stat_base + 23*8]           // CLoopHistory* (air = stat key 23)
-//! record      = u64[ u64[loophist+0x20] + 0x30 ]
-//! field[i]    = i64[ u64[record] + i*8 ] / 100000
-//! ```
-//!
-//! FAIL-CLOSED, both directions:
-//!   * `country_idx` is the stats registry's internal slot. It is bound to a country tag by
-//!     cross-checking the EXTRACTOR's own country table (`CGameState+0x310`, indexed by
-//!     `tag_db_id`): a row is emitted ONLY when `country_table[idx]` is a valid CCountry
-//!     (vtable RVA 0x27D0E90) whose `tag_db_id (@+0x08) == idx`. This binding is PROVEN
-//!     live (index self-consistent 437/440; the stat-bearing managers resolve through this
-//!     table to exactly the 1939.12 belligerent set — GER richest, SOV+FIN share the
-//!     Winter-War stat key, and ITA at idx 16 carries air key 23).
-//!   * Any torn/invalid read, a CLoopHistory vtable mismatch, a field_count != 89, an absent
-//!     air stat, a failed self-ref/yearly-window guard, or an out-of-bounds
-//!     value FAILS THE ROW CLOSED (absent, never 0).
-//!
-//! SEMANTICS: all 24 channels displayed by the strategic-air details panel are emitted in
-//! exact engine display order. The static `u32[24]` channel-to-field table at RVA `0x29f8940`
-//! and `AIRVIEW_DETAILS_CHANNEL_1..24` localisation keys prove the complete mapping.
-//!
-//! SCHEDULING: domain 61 is production-scheduled after the D04 1944 populated
-//! fixture revalidation proved 23/23 countries and 2047/2047 fields against the
-//! melt oracle with the yearly `lh+0x20` cumulative window.
-
 use std::collections::BTreeMap;
 
 pub const DOMAIN_ID: u16 = 61;
 pub const DOMAIN_NAME: &str = "air_loss_stats_live";
 
-// ---- proven root-chain offsets (build 870ebf; RVA == module-base-relative) ----
 pub const CGAMESTATE_RVA: u64 = 0x3316E90;
 pub const REGISTRY_OFF: u64 = 0x690;
 pub const MGR_ARRAY_OFF: u64 = 0x30;
@@ -56,17 +19,12 @@ pub const EXPECTED_YEARLY_CAPACITY: u32 = 5;
 pub const FIELD_SCALE: i64 = 100_000;
 pub const BUILDINGS_BOMBED_DISPLAY_SCALE: i64 = 1_000;
 
-// ---- binding guard offsets (the EXTRACTOR's own country index) ----
 pub const COUNTRY_TABLE_OFF: u64 = 0x310;
 pub const COUNTRY_COUNT_OFF: u64 = 0x31C;
-/// Exact a729 CGameState tag-equivalence table pointer. Keep the lane
-/// dependency-free; the central build profile pins the same offset.
 pub const COUNTRY_TAG_EQUIVALENCE_OFF: u64 = 0x340;
 pub const COUNTRY_VTABLE_RVA: u64 = 0x27D0E90;
 pub const COUNTRY_TAG_DB_ID_OFF: u64 = 0x08;
 
-/// Strategic-air details channels in exact UI order: (aggregate field index, stable label).
-/// Proven by the current-build table at RVA `0x29f8940` and the matching localisation keys.
 pub const PINNED_CHANNELS: &[(u32, &str)] = &[
     (0, "our_buildings_bombed"),
     (1, "our_troops_bombed"),
@@ -96,8 +54,6 @@ pub const PINNED_CHANNELS: &[(u32, &str)] = &[
 
 pub const CHANNEL_COUNT: usize = 24;
 
-/// Engine display divisor in `PINNED_CHANNELS` order. Only buildings-bombed fields 0 and 41
-/// use 1000; all other displayed fields use 100000.
 pub const CHANNEL_DISPLAY_DIVISORS: [i64; CHANNEL_COUNT] = [
     BUILDINGS_BOMBED_DISPLAY_SCALE,
     FIELD_SCALE,
@@ -125,22 +81,16 @@ pub const CHANNEL_DISPLAY_DIVISORS: [i64; CHANNEL_COUNT] = [
     FIELD_SCALE,
 ];
 
-/// Max plausible cumulative loss (raw ×100000): 10,000,000 planes. Above this the row fails
-/// closed (guards against a torn/aliased read passing the structural checks).
 pub const MAX_CHANNEL_RAW: i64 = 1_000_000_000_000;
 
-// ---- packet schema ----
 pub const SCHEMA_VERSION: u32 = 2;
 pub const PAYLOAD_HEADER_LEN: usize = 32;
-/// Row: owner_tag_db_id u32 | country_idx u32 | flags u32 | pad u32 | 24 × i64 = 16+192.
 pub const ROW_LEN: usize = 208;
 
 pub const STATUS_OK: u32 = 0;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 0;
 pub const STATUS_BINDING_UNVERIFIED: u32 = 1 << 1;
 pub const STATUS_PARTIAL: u32 = 1 << 2;
-/// Legacy lane-local status from the pre-promotion packet. Production emission
-/// no longer sets this after D04 1944 value validation.
 pub const STATUS_VALUE_VALIDATION_FIXTURE_REQUIRED: u32 = 1 << 3;
 
 pub const ROW_FLAG_BINDING_VERIFIED: u32 = 1 << 0;
@@ -151,12 +101,10 @@ pub struct AirLossStatRow {
     pub owner_tag_db_id: u32,
     pub country_idx: u32,
     pub flags: u32,
-    /// All 24 strategic-air details channels, in `PINNED_CHANNELS` order, stored raw.
     pub channels: [i64; CHANNEL_COUNT],
 }
 
 impl AirLossStatRow {
-    /// Human display value for channel `n` (0..24), using the engine's per-channel divisor.
     pub fn channel_value(&self, n: usize) -> f64 {
         self.channels[n] as f64 / CHANNEL_DISPLAY_DIVISORS[n] as f64
     }
@@ -174,9 +122,6 @@ pub struct AirLossStatHeader {
     pub field_count: u32,
 }
 
-// ---------------------------------------------------------------------------
-// encode / decode
-// ---------------------------------------------------------------------------
 pub fn encode_payload(header: &AirLossStatHeader, rows: &[AirLossStatRow]) -> Vec<u8> {
     let mut p = Vec::with_capacity(PAYLOAD_HEADER_LEN + rows.len() * ROW_LEN);
     p.extend_from_slice(&header.elapsed_wall_ms.to_le_bytes());
@@ -184,14 +129,14 @@ pub fn encode_payload(header: &AirLossStatHeader, rows: &[AirLossStatRow]) -> Ve
     p.extend_from_slice(&header.status_flags.to_le_bytes());
     p.extend_from_slice(&header.schema_version.to_le_bytes());
     p.extend_from_slice(&header.field_count.to_le_bytes());
-    p.extend_from_slice(&(ROW_LEN as u32).to_le_bytes()); // self-describing row length
-    p.extend_from_slice(&0u32.to_le_bytes()); // pad to a 32-byte header
+    p.extend_from_slice(&(ROW_LEN as u32).to_le_bytes());
+    p.extend_from_slice(&0u32.to_le_bytes());
     debug_assert_eq!(p.len(), PAYLOAD_HEADER_LEN);
     for r in rows {
         p.extend_from_slice(&r.owner_tag_db_id.to_le_bytes());
         p.extend_from_slice(&r.country_idx.to_le_bytes());
         p.extend_from_slice(&r.flags.to_le_bytes());
-        p.extend_from_slice(&0u32.to_le_bytes()); // pad
+        p.extend_from_slice(&0u32.to_le_bytes());
         for c in &r.channels {
             p.extend_from_slice(&c.to_le_bytes());
         }
@@ -207,13 +152,10 @@ pub struct AirLossGateSummary {
     pub row_len: u32,
     pub row_count: u64,
     pub binding_verified_rows: u64,
-    /// Per-label totals across all rows (raw ×100000 summed).
     pub channel_totals: BTreeMap<&'static str, i64>,
     pub parse_errors: Vec<String>,
 }
 
-/// Strict decode used by the replay/verification gate. Re-validates the self-describing row
-/// length, field_count, and that every value is in range; accumulates per-label totals.
 pub fn decode_payload(payload: &[u8]) -> AirLossGateSummary {
     let mut s = AirLossGateSummary::default();
     if payload.len() < PAYLOAD_HEADER_LEN {
@@ -355,22 +297,12 @@ pub fn decode_payload_rows(
     }
 }
 
-// ---------------------------------------------------------------------------
-// live derivation (fail-closed) — testable via the Mem trait (no live process needed)
-// ---------------------------------------------------------------------------
-
-/// Minimal read-only memory interface. `None` on any unreadable address (torn read) so the
-/// derivation can fail the row closed rather than fabricate a value.
 pub trait Mem {
     fn u32(&self, addr: u64) -> Option<u32>;
     fn u64(&self, addr: u64) -> Option<u64>;
     fn i64(&self, addr: u64) -> Option<i64>;
 }
 
-/// Stable machine-readable reason for a D61 per-country read failure.
-///
-/// These values are emitted in compact perf diagnostics. Keep discriminants
-/// stable so a retained H4CR can be diagnosed without the collector log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub enum AirLossRowFailureReason {
@@ -417,15 +349,11 @@ pub enum AirLossRowFailureReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AirLossRowFailure {
     pub country_idx: u32,
-    /// Aggregate-history field index for channel failures; `None` otherwise.
     pub field_index: Option<u32>,
-    /// Exact address whose read or validation failed.
     pub address: u64,
     pub reason: AirLossRowFailureReason,
 }
 
-/// Result of reading one country slot. Clean null optional links are positive
-/// absence; unreadable fields and failed guards carry exact diagnostics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AirLossRowRead {
     Present(AirLossStatRow),
@@ -437,9 +365,6 @@ fn ok_ptr(v: u64) -> bool {
     (0x1_0000..0x7FFF_FFFF_FFFF).contains(&v)
 }
 
-/// Derive one country's air-loss row, or `None` (fail closed). Emits ONLY when the country_idx
-/// binding is verified AND the CLoopHistory structure matches AND all 24 display channels read
-/// in range. `country_idx` is the stats-registry slot (== tag_db_id after the binding check).
 pub fn derive_country_row<M: Mem>(
     mem: &M,
     module_base: u64,
@@ -449,7 +374,6 @@ pub fn derive_country_row<M: Mem>(
     if !ok_ptr(cgs) {
         return None;
     }
-    // --- binding guard: country_table[idx] is a CCountry with tag_db_id == idx ---
     let country_table = mem.u64(cgs + COUNTRY_TABLE_OFF)?;
     let country_count = mem.u32(cgs + COUNTRY_COUNT_OFF)?;
     if !ok_ptr(country_table) || country_idx >= country_count {
@@ -460,13 +384,12 @@ pub fn derive_country_row<M: Mem>(
         return None;
     }
     if mem.u64(cc)? != module_base + COUNTRY_VTABLE_RVA {
-        return None; // not a CCountry — binding unverifiable, fail closed
+        return None;
     }
     let tag_db_id = mem.u32(cc + COUNTRY_TAG_DB_ID_OFF)?;
     if tag_db_id != country_idx {
-        return None; // index not parallel for this slot — fail closed
+        return None;
     }
-    // --- stats chain ---
     let registry = mem.u64(cgs + REGISTRY_OFF)?;
     let mgr_array = mem.u64(registry + MGR_ARRAY_OFF)?;
     if !ok_ptr(registry) || !ok_ptr(mgr_array) {
@@ -482,9 +405,8 @@ pub fn derive_country_row<M: Mem>(
     }
     let loophist = mem.u64(stat_base + AIR_STAT_KEY * 8)?;
     if !ok_ptr(loophist) {
-        return None; // country carries no air stat -> ABSENT (not zero)
+        return None;
     }
-    // --- structural guard ---
     if mem.u64(loophist)? != module_base + LOOPHIST_VTABLE_RVA {
         return None;
     }
@@ -513,7 +435,7 @@ pub fn derive_country_row<M: Mem>(
     for (k, (idx, _)) in PINNED_CHANNELS.iter().enumerate() {
         let raw = mem.i64(arr + u64::from(*idx) * 8)?;
         if raw < 0 || raw > MAX_CHANNEL_RAW {
-            return None; // implausible -> fail the whole row closed
+            return None;
         }
         channels[k] = raw;
     }
@@ -525,8 +447,6 @@ pub fn derive_country_row<M: Mem>(
     })
 }
 
-/// Tri-state production reader. Clean null optional links are `Absent`; every
-/// unreadable field or failed structural guard is `Failed`.
 pub fn derive_country_row_result<M: Mem>(
     mem: &M,
     module_base: u64,
@@ -542,7 +462,11 @@ pub fn derive_country_row_result<M: Mem>(
     };
     let cgs_addr = module_base + CGAMESTATE_RVA;
     let Some(cgs) = mem.u64(cgs_addr) else {
-        return failed(AirLossRowFailureReason::CGameStateUnreadable, cgs_addr, None);
+        return failed(
+            AirLossRowFailureReason::CGameStateUnreadable,
+            cgs_addr,
+            None,
+        );
     };
     if !ok_ptr(cgs) {
         return failed(AirLossRowFailureReason::CGameStateInvalid, cgs_addr, None);
@@ -596,18 +520,10 @@ pub fn derive_country_row_result<M: Mem>(
         );
     }
     let Some(country_vtable) = mem.u64(cc) else {
-        return failed(
-            AirLossRowFailureReason::CountryVtableUnreadable,
-            cc,
-            None,
-        );
+        return failed(AirLossRowFailureReason::CountryVtableUnreadable, cc, None);
     };
     if country_vtable != module_base + COUNTRY_VTABLE_RVA {
-        return failed(
-            AirLossRowFailureReason::CountryVtableMismatch,
-            cc,
-            None,
-        );
+        return failed(AirLossRowFailureReason::CountryVtableMismatch, cc, None);
     }
     let country_tag_addr = cc + COUNTRY_TAG_DB_ID_OFF;
     let Some(tag_db_id) = mem.u32(country_tag_addr) else {
@@ -618,21 +534,12 @@ pub fn derive_country_row_result<M: Mem>(
         );
     };
     if tag_db_id != country_idx {
-        // The live CGameState table contains a small number of authenticated
-        // alias slots. They point at the same CCountry as their canonical slot
-        // and are mapped by CGameState+0x340's tag-equivalence array. They are
-        // not independent owners and therefore have no independent statistic
-        // manager row. Admit only that exact, pointer-joined alias shape as
-        // measured absence; every unreadable or inconsistent mismatch remains
-        // the same diagnosed failure.
         let alias_is_exact = mem
             .u64(cgs + COUNTRY_TAG_EQUIVALENCE_OFF)
             .filter(|equivalence| ok_ptr(*equivalence))
             .and_then(|equivalence| {
-                let slot_canonical =
-                    mem.u32(equivalence + u64::from(country_idx) * 4)?;
-                let object_canonical =
-                    mem.u32(equivalence + u64::from(tag_db_id) * 4)?;
+                let slot_canonical = mem.u32(equivalence + u64::from(country_idx) * 4)?;
+                let object_canonical = mem.u32(equivalence + u64::from(tag_db_id) * 4)?;
                 (slot_canonical != 0
                     && slot_canonical < country_count
                     && slot_canonical == object_canonical)
@@ -661,7 +568,11 @@ pub fn derive_country_row_result<M: Mem>(
         );
     };
     if !ok_ptr(registry) {
-        return failed(AirLossRowFailureReason::RegistryInvalid, registry_addr, None);
+        return failed(
+            AirLossRowFailureReason::RegistryInvalid,
+            registry_addr,
+            None,
+        );
     }
     let mgr_array_addr = registry + MGR_ARRAY_OFF;
     let Some(mgr_array) = mem.u64(mgr_array_addr) else {
@@ -778,11 +689,7 @@ pub fn derive_country_row_result<M: Mem>(
     }
     let window_addr = loophist + LOOPHIST_WINDOW_OFF;
     let Some(window) = mem.u64(window_addr) else {
-        return failed(
-            AirLossRowFailureReason::WindowUnreadable,
-            window_addr,
-            None,
-        );
+        return failed(AirLossRowFailureReason::WindowUnreadable, window_addr, None);
     };
     if !ok_ptr(window) {
         return failed(AirLossRowFailureReason::WindowInvalid, window_addr, None);
@@ -818,11 +725,7 @@ pub fn derive_country_row_result<M: Mem>(
         );
     }
     let Some(arr) = mem.u64(recflds) else {
-        return failed(
-            AirLossRowFailureReason::FieldArrayUnreadable,
-            recflds,
-            None,
-        );
+        return failed(AirLossRowFailureReason::FieldArrayUnreadable, recflds, None);
     };
     if !ok_ptr(arr) {
         return failed(AirLossRowFailureReason::FieldArrayInvalid, recflds, None);
@@ -896,7 +799,6 @@ mod tests {
         }
     }
 
-    /// Build a memory image that resolves the full chain for one country (idx=1).
     fn good_image(idx: u32) -> MockMem {
         let mut m = MockMem::new();
         let cgs = 0x2000_0000_u64;
@@ -911,13 +813,11 @@ mod tests {
         let recflds = 0x2900_0000_u64;
         let arr = 0x2A00_0000_u64;
         m.su(BASE + CGAMESTATE_RVA, cgs);
-        // binding
         m.su(cgs + COUNTRY_TABLE_OFF, country_table);
         m.sw(cgs + COUNTRY_COUNT_OFF, 440);
         m.su(country_table + u64::from(idx) * 8, cc);
         m.su(cc, BASE + COUNTRY_VTABLE_RVA);
         m.sw(cc + COUNTRY_TAG_DB_ID_OFF, idx);
-        // stats chain
         m.su(cgs + REGISTRY_OFF, registry);
         m.su(registry + MGR_ARRAY_OFF, mgr_array);
         m.su(mgr_array + u64::from(idx) * 8, country_mgr);
@@ -933,7 +833,6 @@ mod tests {
         );
         m.su(window + LOOPHIST_RECFLDS_OFF, recflds);
         m.su(recflds, arr);
-        // pinned channel values (planes × scale)
         for (k, (fi, _)) in PINNED_CHANNELS.iter().enumerate() {
             let raw = if k == 0 {
                 3 * BUILDINGS_BOMBED_DISPLAY_SCALE
@@ -961,7 +860,6 @@ mod tests {
     #[test]
     fn fails_closed_on_binding_tag_mismatch() {
         let mut m = good_image(1);
-        // corrupt the tag_db_id so it no longer equals idx
         m.sw(0x2200_0000 + COUNTRY_TAG_DB_ID_OFF, 999);
         assert!(derive_country_row(&m, BASE, 1).is_none());
     }
@@ -969,7 +867,7 @@ mod tests {
     #[test]
     fn fails_closed_on_wrong_country_vtable() {
         let mut m = good_image(1);
-        m.su(0x2200_0000, BASE + 0xDEAD); // wrong CCountry vtable
+        m.su(0x2200_0000, BASE + 0xDEAD);
         assert!(derive_country_row(&m, BASE, 1).is_none());
     }
 
@@ -1004,7 +902,6 @@ mod tests {
     #[test]
     fn fails_closed_when_air_stat_absent() {
         let mut m = good_image(1);
-        // country carries no key-23 CLoopHistory (peaceful country) -> absent, not zero
         m.su(0x2600_0000 + AIR_STAT_KEY * 8, 0);
         assert!(derive_country_row(&m, BASE, 1).is_none());
     }
@@ -1019,7 +916,7 @@ mod tests {
     #[test]
     fn fails_closed_on_torn_read() {
         let mut m = good_image(1);
-        m.u.remove(&(0x2700_0000 + LOOPHIST_WINDOW_OFF)); // window read now returns None
+        m.u.remove(&(0x2700_0000 + LOOPHIST_WINDOW_OFF));
         assert!(derive_country_row(&m, BASE, 1).is_none());
     }
 
@@ -1106,12 +1003,9 @@ mod tests {
         mismatch.su(cgs + COUNTRY_TAG_EQUIVALENCE_OFF, equivalence);
         mismatch.sw(equivalence + 365 * 4, 1);
         mismatch.sw(equivalence + 4, 1);
-        // The canonical country-table slot is deliberately not the alias
-        // object, so the mismatch cannot be silently classified as absence.
         mismatch.su(0x2100_0000 + 8, 0x2C00_0000);
 
-        let AirLossRowRead::Failed(failure) =
-            derive_country_row_result(&mismatch, BASE, 365)
+        let AirLossRowRead::Failed(failure) = derive_country_row_result(&mismatch, BASE, 365)
         else {
             panic!("unjoined mismatch must fail closed");
         };
@@ -1195,7 +1089,7 @@ mod tests {
             field_count: EXPECTED_FIELD_COUNT,
         };
         let mut payload = encode_payload(&header, &[]);
-        payload[24..28].copy_from_slice(&48u32.to_le_bytes()); // corrupt row_len (!= ROW_LEN)
+        payload[24..28].copy_from_slice(&48u32.to_le_bytes());
         let s = decode_payload(&payload);
         assert!(s.parse_errors.iter().any(|e| e.contains("row_len")));
     }

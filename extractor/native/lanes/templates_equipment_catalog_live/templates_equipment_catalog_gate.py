@@ -34,14 +34,14 @@ STEAM_APP_ID = "394360"
 
 sys.path.insert(0, str(GAME_ASSETS))
 sys.path.insert(0, str(GAME_DEFS))
-from paradox_parser import Node, parse  # noqa: E402
-from extract import (  # noqa: E402
+from paradox_parser import Node, parse
+from extract import (
     Layer,
     build_file_map_layers,
     build_modset_layers,
     parse_mod_descriptor,
 )
-import source_inventory_layers as SIL  # noqa: E402
+import source_inventory_layers as SIL
 
 
 STATIC_SUBDIRS = {

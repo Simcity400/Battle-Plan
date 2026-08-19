@@ -31,39 +31,19 @@ from pathlib import Path
 
 from paradox_parser import Node, parse, parse_xy, coerce_scalar
 
-# --------------------------------------------------------------------------
-# Defaults (documented; no personal home path -- mod/game paths via CLI/config)
-# --------------------------------------------------------------------------
-# Vanilla game path is ENV/CLI-driven so NO machine-specific drive path is baked
-# into the committed script. Resolution order:
-#   1. --vanilla CLI flag (highest priority; see build_argparser)
-#   2. BATTLE_PLAN_VANILLA environment variable
-#   3. the generic, documented default Steam install location below
-# A Steam library on another drive is selected by setting BATTLE_PLAN_VANILLA or
-# passing --vanilla, never by editing this file.
 _DEFAULT_VANILLA_FALLBACK = (
     r"C:/Program Files (x86)/Steam/steamapps/common/Hearts of Iron IV"
 )
 DEFAULT_VANILLA = os.environ.get("BATTLE_PLAN_VANILLA", os.environ.get("HOI4_VANILLA")) or _DEFAULT_VANILLA_FALLBACK
-HERE = Path(__file__).resolve().parent          # .../battle-plan/replay_interface/game_assets
-REPLAY_INTERFACE = HERE.parent                  # .../battle-plan/replay_interface
-REPO = REPLAY_INTERFACE.parent                  # .../battle-plan
-# The the game user-data dir holds dlc_load.json + the .mod descriptors. It is the
-# grandparent of the mod/ dir this repo lives in: .../the game/.
-DEFAULT_USERDATA = str(REPO.parent.parent.resolve())  # .../the game
-# Single-mod default overlay: sibling "test" mod next to this repo.
-DEFAULT_MOD = str((REPO.parent / "test").resolve())  # .../mod/test
+HERE = Path(__file__).resolve().parent
+REPLAY_INTERFACE = HERE.parent
+REPO = REPLAY_INTERFACE.parent
+DEFAULT_USERDATA = str(REPO.parent.parent.resolve())
+DEFAULT_MOD = str((REPO.parent / "test").resolve())
 
-# Canonical ideology suffixes. Anything else after the last underscore is part
-# of a cosmetic-tag flag name, NOT an ideology (e.g. SPR_republic, ISR_zion).
 IDEOLOGIES = {"fascism", "communism", "democratic", "neutrality"}
 
-# Priority .gui views to parse into layout JSON (filename stem -> output name).
-# Scope = core in-game replay-target views. This excludes frontend/lobby files
-# and is independent of nation-specific *_scripted_gui overlays. The parser extends
-# mechanically; adding a stem here parses it on the next run.
 PRIORITY_GUI = {
-    # --- Topbar / clock / minimap / alerts / menu / outliner ---
     "topbar": "topbar",
     "menubar": "menubar",
     "ingameclock": "ingame_clock",
@@ -72,48 +52,37 @@ PRIORITY_GUI = {
     "alerts": "alerts",
     "findview": "find_view",
     "rightclickmenu": "rightclick_menu",
-    # --- Map-mode chrome ---
     "mapmodes_interface": "mapmodes",
     "mapicons": "mapicons",
-    # --- State / province / occupation ---
     "countrystateview": "province_state",
     "countryoccupationview": "occupation",
-    # --- Politics / government ---
     "countrypoliticsview": "politics",
     "powerbalanceview": "power_balance",
     "command_character_view": "command_character",
     "advisorroleselectionview": "advisor_role_selection",
-    # --- Focus tree ---
     "nationalfocusview": "national_focus",
-    # --- Research / doctrine (side panel + the two TREE views) ---
     "countrytechnologyview": "research",
     "countrytechtreeview": "tech_tree",
     "countrydoctrinetreeview": "doctrine_tree",
-    # --- Production / construction / deployment / equipment overview ---
     "countryproductionlineview": "production",
     "countryconstructionsview": "construction",
     "countrydeploymentview": "deployment",
     "equipmentoverview": "equipment_overview",
-    # --- Designers ---
     "tank_designer_view": "tank_designer",
     "plane_designer_view": "plane_designer",
     "divisiondesignerview": "division_designer",
     "equipmentdesignerview": "equipment_designer",
     "equipmentupgradedesignerwindow": "equipment_upgrade_designer",
-    # --- Decisions / operations ---
     "countrydecisionview": "decisions",
     "operationoverview": "operation_overview",
-    # --- Diplomacy / trade / peace / tension ---
     "countrydiplomacyview": "diplomacy",
     "countrytradeview": "trade",
     "peaceconferencewindow": "peace_conference",
     "worldtensionwindowpopup": "world_tension_popup",
-    # --- Intel / operatives / MIO ---
     "countryintelligenceagencyview": "intel_agency",
     "countryintelledger": "intel_ledger",
     "operative": "operative",
     "operativeleader": "operative_leader",
-    # --- Officer corps / high command / leaders / traits ---
     "countryofficercorpview": "officer_corps",
     "unitleaderwindow": "unit_leader",
     "navyleaderview": "navy_leader",
@@ -122,7 +91,6 @@ PRIORITY_GUI = {
     "armytraittreewindow": "army_trait_tree",
     "navytraittreewindow": "navy_trait_tree",
     "traittreewindow_common": "trait_tree_common",
-    # --- Army / navy / air mgmt + plans ---
     "countryarmyview": "army",
     "naviesview": "navies",
     "airgroupview": "air_group",
@@ -136,10 +104,8 @@ PRIORITY_GUI = {
     "theatreselector": "theatre_selector",
     "divisions_summary": "divisions_summary",
     "railway_gun": "railway_gun",
-    # --- Logistics / supply ---
     "countrylogisticsview": "logistics",
     "garrisonlogview": "garrison_log",
-    # --- Combat ---
     "landcombat": "land_combat",
     "navalcombat": "naval_combat",
     "combatlogview": "combat_log",
@@ -147,20 +113,16 @@ PRIORITY_GUI = {
     "destroyedshipswindow": "destroyed_ships",
     "naval_losses": "naval_losses",
     "naval_strategic_region_view": "naval_strategic_region",
-    # --- Unit / division detail ---
     "unitview": "unit_view",
-    # --- Events / popups / notifications ---
     "eventwindow": "event_window",
     "popupwindow": "popup_window",
     "detailedwindows": "detailed_windows",
     "core": "core",
-    # --- War / faction / insignia ---
     "waroverview": "war_overview",
     "insigniaselection": "insignia_selection",
     "insrevolutionwindow": "ins_revolution",
 }
 
-# Sprite-name prefixes that constitute the CORE UI chrome priority set (cat a).
 CORE_CHROME_HINTS = (
     "GFX_topbar", "GFX_fuel", "GFX_supply", "GFX_pp_", "GFX_power",
     "GFX_stability", "GFX_war_support", "GFX_manpower", "GFX_factory",
@@ -171,12 +133,6 @@ CORE_CHROME_HINTS = (
 PNG_DIRS = ("flags", "icons", "frames", "window_chrome", "goals", "ideas", "misc")
 
 
-# ==========================================================================
-# Active mod-set resolution (Clausewitz mod-over-vanilla, ordered playset)
-# ==========================================================================
-# A Layer is one source in the load order: vanilla (base) or a mod. `root` is the
-# absolute dir to enumerate; `replace_paths` is the mod's list of replace_path
-# directories (each REPLACES one exact directory's lower-layer contents).
 class Layer:
     __slots__ = ("label", "root", "replace_paths", "meta")
 
@@ -309,18 +265,15 @@ def build_file_map_layers(layers: list, subdir: str, exts) -> dict:
     lowercase suffix. replace_path dirs are matched against the full relpath, so
     a mod's replace_path="interface" correctly nukes lower interface/*.gfx here.
     """
-    eff: dict[str, Path] = {}         # real-case relpath -> abs Path
-    fold: dict[str, str] = {}         # case-folded relpath -> real-case relpath
+    eff: dict[str, Path] = {}
+    fold: dict[str, str] = {}
     for layer in layers:
-        # 1) apply this layer's replace_path: drop lower-layer files whose
-        #    immediate parent dir is exactly one of the replace_path dirs.
         rps = {rp.lower() for rp in layer.replace_paths}
         if rps:
             for fkey in list(fold.keys()):
                 if _immediate_parent(fkey) in rps:
                     real = fold.pop(fkey)
                     eff.pop(real, None)
-        # 2) add this layer's own files under `subdir`
         root = layer.root / subdir
         if not root.is_dir():
             continue
@@ -328,8 +281,6 @@ def build_file_map_layers(layers: list, subdir: str, exts) -> dict:
             if p.is_file() and p.suffix.lower() in exts:
                 rel = p.relative_to(layer.root).as_posix()
                 fkey = rel.lower()
-                # a later layer overriding a differently-cased lower-layer file
-                # must displace the old real-case key, not leave a stale dup.
                 prev_real = fold.get(fkey)
                 if prev_real is not None and prev_real != rel:
                     eff.pop(prev_real, None)
@@ -338,10 +289,6 @@ def build_file_map_layers(layers: list, subdir: str, exts) -> dict:
     return eff
 
 
-# Memoized lowercase indexes for _lc_lookup, keyed by id(gfx_map). Each entry
-# also stores the map object itself: the identity check (`cached[0] is
-# gfx_map`) guards against id() reuse after a map is garbage-collected, which
-# a bare id-keyed cache would silently mistake for a hit.
 _lc_index_cache: dict[int, tuple[dict, dict]] = {}
 
 
@@ -390,9 +337,7 @@ def normalize_texpath(raw: str) -> str:
     if raw is None:
         return ""
     s = raw.replace("\\", "/").strip()
-    # Reject absolute / drive-rooted paths (defense against personal-path leak).
     if s[1:3] == ":/" or s.startswith("/"):
-        # keep only the relative tail under a known gfx/ root if present
         idx = s.lower().find("gfx/")
         s = s[idx:] if idx != -1 else ""
     while "//" in s:
@@ -412,16 +357,10 @@ def safe_basename(name: str) -> str:
     return base or "_unnamed"
 
 
-# ==========================================================================
-# .gfx sprite manifest
-# ==========================================================================
 SPRITE_BLOCK_TYPES = {
     "spritetype", "frameanimatedspritetype", "corneredtilespritetype",
-    "textspritetype",  # generic button/list frames (GFX_button_*, list_button, ...)
+    "textspritetype",
 }
-# Special texture-backed types the topbar/UI reference but that aren't plain
-# single-texture strips: masked shields (player flags) and progress bars
-# (fuel/stability/war-support/resource bars). They use textureFile1/2.
 SPECIAL_BLOCK_TYPES = {"maskedshieldtype", "progressbartype"}
 
 
@@ -448,7 +387,7 @@ def parse_gfx_file(node: Node, source_rel: str, sprites: dict, dup_log: list):
         name = blk.get("name")
         if not isinstance(name, str) or not name:
             return
-        tex = blk.get("texturefile")  # case-insensitive in Node.get
+        tex = blk.get("texturefile")
         entry = {
             "name": name,
             "type": key,
@@ -456,7 +395,6 @@ def parse_gfx_file(node: Node, source_rel: str, sprites: dict, dup_log: list):
             "source_gfx": source_rel,
         }
         if kl == "corneredtilespritetype":
-            # 9-slice metadata, NOT a frame strip.
             entry["nine_slice"] = True
             entry["size"] = parse_xy(blk.get("size")) if isinstance(blk.get("size"), Node) else None
             entry["border_size"] = parse_xy(blk.get("borderSize")) if isinstance(blk.get("borderSize"), Node) else None
@@ -484,12 +422,11 @@ def parse_gfx_file(node: Node, source_rel: str, sprites: dict, dup_log: list):
         entry = {
             "name": name, "type": key, "no_of_frames": 1,
             "source_gfx": source_rel,
-            # primary texture for conversion = textureFile1 (shield/bar fill)
             "texturefile": normalize_texpath(t1) if isinstance(t1, str) else None,
             "texturefile2": normalize_texpath(t2) if isinstance(t2, str) else None,
         }
         if kl == "maskedshieldtype":
-            entry["masked_shield"] = True  # t1=flag/shield, t2=mask
+            entry["masked_shield"] = True
         elif kl == "progressbartype":
             entry["progress_bar"] = True
             entry["color"] = colorlist(blk, "color")
@@ -500,14 +437,12 @@ def parse_gfx_file(node: Node, source_rel: str, sprites: dict, dup_log: list):
                             "shadowed": sprites[name]["source_gfx"]})
         sprites[name] = entry
 
-    # spriteTypes wrapper(s)
     for k, v in node.entries:
         if isinstance(v, Node) and k.lower() == "spritetypes":
             for kk, vv in v.entries:
                 if isinstance(vv, Node):
                     handle_block(kk, vv)
         elif isinstance(v, Node):
-            # tolerate sprites defined at root level
             handle_block(k, v)
 
 
@@ -515,13 +450,12 @@ def build_sprite_manifest(iface_map: dict) -> tuple[dict, list]:
     """Parse all effective interface/*.gfx files into a sprite manifest."""
     sprites: dict = {}
     dup_log: list = []
-    # Deterministic order: sort by relative path so output is stable.
     for rel in sorted(iface_map):
         if not rel.lower().endswith(".gfx"):
             continue
         path = iface_map[rel]
         try:
-            text = path.read_bytes().decode("latin-1")  # the game files are 1252/latin-1ish
+            text = path.read_bytes().decode("latin-1")
         except Exception as e:
             dup_log.append({"name": "<read-error>", "kept": rel, "error": str(e)})
             continue
@@ -530,11 +464,6 @@ def build_sprite_manifest(iface_map: dict) -> tuple[dict, list]:
     return sprites, dup_log
 
 
-# ==========================================================================
-# .gui layout parsing
-# ==========================================================================
-# Known geometry / sprite / text fields we lift to first-class keys.
-# NOTE: buttonText is a localization KEY (text), not a sprite reference.
 _SPRITE_REF_KEYS = ("spriteType", "quadTextureSprite", "background")
 _TEXT_KEYS = ("text", "buttonText", "font", "format", "maxWidth", "maxHeight")
 
@@ -558,14 +487,12 @@ def gui_node_to_json(key: str, blk: Node) -> dict:
     if isinstance(orient, str):
         out["orientation"] = orient
 
-    # sprite reference (icon/button/background)
     for sk in _SPRITE_REF_KEYS:
         v = blk.get(sk)
         if isinstance(v, str):
             out["sprite"] = v
             break
 
-    # text fields
     text_fields = {}
     for tk in _TEXT_KEYS:
         v = blk.get(tk)
@@ -574,16 +501,13 @@ def gui_node_to_json(key: str, blk: Node) -> dict:
     if text_fields:
         out["text"] = text_fields
 
-    # tooltip
     tip = blk.get("pdx_tooltip")
     if isinstance(tip, str):
         out["tooltip"] = tip
 
-    # nested children: any child Node becomes a child element. Preserve order.
     children = []
     for ck, cv in blk.entries:
         if isinstance(cv, Node):
-            # skip the geometry sub-blocks we already consumed
             if ck.lower() in ("position", "size", "show_position"):
                 continue
             children.append(gui_node_to_json(ck, cv))
@@ -635,7 +559,6 @@ def parse_gui_file(path: Path) -> tuple[list, dict, dict]:
         for c in n.get("children", []):
             count(c)
 
-    # guiTypes = { containerWindowType = {...} ... }
     containers = []
     for k, v in root.entries:
         if isinstance(v, Node) and k.lower() == "guitypes":
@@ -653,9 +576,6 @@ def parse_gui_file(path: Path) -> tuple[list, dict, dict]:
     return windows, defines, {"element_type_counts": type_counts}
 
 
-# ==========================================================================
-# Texture conversion (TGA / DDS uncompressed / DXT1-3-5 via Pillow / DX10 raw)
-# ==========================================================================
 def _decode_dx10_uncompressed(path: Path):
     """Decode an uncompressed DX10 DDS (DXGI 28/29 RGBA8, 87/91 BGRA8) that
     Pillow refuses. Returns a Pillow Image (RGBA) or raises."""
@@ -671,7 +591,7 @@ def _decode_dx10_uncompressed(path: Path):
     dxgi = struct.unpack_from("<I", data, 128)[0]
     res_dim = struct.unpack_from("<I", data, 132)[0]
     array_size = struct.unpack_from("<I", data, 140)[0]
-    if res_dim != 3:  # D3D10_RESOURCE_DIMENSION_TEXTURE2D
+    if res_dim != 3:
         raise ValueError(f"unsupported resourceDimension {res_dim}")
     if array_size != 1:
         raise ValueError(f"unsupported arraySize {array_size}")
@@ -680,9 +600,9 @@ def _decode_dx10_uncompressed(path: Path):
     if len(data) < need:
         raise ValueError(f"truncated DX10 ({len(data)} < {need})")
     raw = data[pixel_off:pixel_off + width * height * 4]
-    if dxgi in (28, 29):       # R8G8B8A8_UNORM(_SRGB)
+    if dxgi in (28, 29):
         im = Image.frombytes("RGBA", (width, height), raw)
-    elif dxgi in (87, 91):     # B8G8R8A8_UNORM(_SRGB) -> swap to RGBA
+    elif dxgi in (87, 91):
         im = Image.frombytes("RGBA", (width, height), raw, "raw", "BGRA")
     else:
         raise ValueError(f"unsupported DXGI format {dxgi}")
@@ -697,7 +617,6 @@ def load_texture(path: Path):
         im.load()
         return im.convert("RGBA")
     except NotImplementedError:
-        # Pillow can't do DX10/RXGB -- try our uncompressed DX10 decoder.
         return _decode_dx10_uncompressed(path)
 
 
@@ -710,7 +629,6 @@ def slice_and_save(im, no_of_frames: int, out_base: Path, name: str):
     w, h = im.size
     if no_of_frames and no_of_frames > 1:
         if w % no_of_frames != 0:
-            # Do NOT silently floor -- save whole strip and flag anomaly.
             whole = out_base.with_suffix(".png")
             im.save(whole)
             return [whole.name], {
@@ -730,9 +648,6 @@ def slice_and_save(im, no_of_frames: int, out_base: Path, name: str):
     return [out.name], None
 
 
-# ==========================================================================
-# Flag enumeration (no .gfx; loaded by filename convention)
-# ==========================================================================
 def enumerate_flags(layers: list) -> dict:
     """Return {relative: abs Path} for flag .tga/.dds, resolved across the
     ordered mod-set (mod over vanilla, replace_path honored)."""
@@ -749,9 +664,6 @@ def parse_flag_filename(stem: str):
     return stem, None
 
 
-# ==========================================================================
-# Main build
-# ==========================================================================
 def categorize_sprite(name: str, texrel: str) -> str:
     t = (texrel or "").lower()
     if "/goals/" in t:
@@ -767,9 +679,6 @@ def categorize_sprite(name: str, texrel: str) -> str:
     return "icons"
 
 
-# ==========================================================================
-# Font map (core.gfx bitmapfont name -> glyph atlas path)
-# ==========================================================================
 def parse_font_map(iface_map: dict) -> dict:
     """Extract the bitmapfont name->path map from the effective core.gfx.
 
@@ -827,9 +736,6 @@ def parse_font_map(iface_map: dict) -> dict:
             "source": "interface/core.gfx"}
 
 
-# ==========================================================================
-# Localisation resolution (mod-over-vanilla; resolved file LIST only)
-# ==========================================================================
 def resolve_loc(layers: list, language: str = "english") -> dict:
     """Resolve the effective localisation/<language>/*.yml set (mod over vanilla).
 
@@ -840,9 +746,6 @@ def resolve_loc(layers: list, language: str = "english") -> dict:
     return build_file_map_layers(layers, f"localisation/{language}", (".yml",))
 
 
-# ==========================================================================
-# Active mod-set assembly (from CLI: dlc_load.json playset OR explicit mods)
-# ==========================================================================
 def build_active_modset(args, vanilla: Path):
     """Return (layers, modset_manifest, warnings).
 
@@ -864,7 +767,6 @@ def build_active_modset(args, vanilla: Path):
         p = Path(t)
         if not p.is_absolute():
             p = userdata / p
-        # accept either a .mod descriptor or a "mod/foo.mod" relative token
         return p
 
     if getattr(args, "mods", None):
@@ -875,7 +777,6 @@ def build_active_modset(args, vanilla: Path):
                 mod_files.append(as_modfile(tok))
     elif getattr(args, "dlc_load", None) or getattr(args, "use_dlc_load", False):
         dlc_path = Path(args.dlc_load) if getattr(args, "dlc_load", None) else (userdata / "dlc_load.json")
-        # do NOT bake the absolute dlc_load path into the committed manifest
         source = "launcher dlc_load.json"
         try:
             dl = json.loads(Path(dlc_path).read_text(encoding="utf-8"))
@@ -886,12 +787,10 @@ def build_active_modset(args, vanilla: Path):
     elif args.mod:
         source = "legacy single --mod overlay"
         modp = Path(args.mod)
-        # find the descriptor next to the mod dir (mod/<name>.mod) if present
         descr = modp.parent / f"{modp.name}.mod"
         if descr.is_file():
             mod_files.append(descr)
         else:
-            # no descriptor: synthesize a path-only layer (no replace_path)
             layers = [Layer("vanilla", vanilla), Layer(modp.name, modp)]
             manifest = _modset_manifest(layers, source, warnings, userdata)
             return layers, manifest, warnings
@@ -953,7 +852,7 @@ def _modset_manifest(layers: list, source: str, warnings: list,
 
 def run(args):
     if not args.manifest_only:
-        from PIL import Image  # noqa: ensure Pillow present early
+        from PIL import Image
     vanilla = Path(args.vanilla)
     out_assets = HERE / "assets"
     out_gui = HERE / "gui"
@@ -963,7 +862,6 @@ def run(args):
         print(f"ERROR: vanilla install not found: {vanilla}")
         return 2
 
-    # ---- 0. active mod-set (ordered playset over vanilla) ------------------
     layers, modset_manifest, modset_warnings = build_active_modset(args, vanilla)
     print(f"[*] vanilla = {vanilla}")
     print(f"[*] mod-set ({modset_manifest['selection_source']}):")
@@ -977,18 +875,13 @@ def run(args):
     (HERE / "active_modset.json").write_text(
         json.dumps(modset_manifest, indent=1), encoding="utf-8")
 
-    # ---- 1. sprite manifest ------------------------------------------------
     iface_map = build_file_map_layers(layers, "interface", (".gfx",))
     sprites, dup_log = build_sprite_manifest(iface_map)
     print(f"[*] parsed {len(iface_map)} effective .gfx files -> "
           f"{len(sprites)} sprites ({len(dup_log)} duplicate-name events)")
 
-    # texture overlay map (gfx/**). Used to resolve sprite + flag paths.
-    # Include .png: some .gfx reference a .png that ships as .dds (engine tries
-    # alternate extensions), and some textures ship as real .png.
     gfx_map = build_file_map_layers(layers, "gfx", (".dds", ".tga", ".png"))
 
-    # ---- 1b. font map + loc set (mod-resolved) -----------------------------
     font_map = parse_font_map(iface_map)
     loc_map = resolve_loc(layers, getattr(args, "language", "english"))
     (HERE / "fonts.json").write_text(
@@ -1000,7 +893,6 @@ def run(args):
           f"({len(font_map['overrides'])} language overrides); "
           f"loc/{getattr(args,'language','english')}: {len(loc_map)} .yml")
 
-    # ---- 2. gui layouts ----------------------------------------------------
     gui_iface = build_file_map_layers(layers, "interface", (".gui",))
     gui_index = {}
     gui_parsed = 0
@@ -1029,7 +921,6 @@ def run(args):
     print(f"[*] parsed {gui_parsed} priority .gui layouts "
           f"({len(gui_skipped)} failed)")
 
-    # ---- 3. conversion -----------------------------------------------------
     converted = {c: 0 for c in PNG_DIRS}
     failures = []
     frame_anomalies = []
@@ -1038,8 +929,6 @@ def run(args):
     do_sprites = "sprites" in args.only or "all" in args.only
     do_flags = ("flags" in args.only or "all" in args.only) and not args.manifest_only
 
-    # Merge mode: a partial pass (e.g. --only flags) keeps the other section's
-    # metadata from a prior full run instead of wiping it.
     if args.merge and (HERE / "sprites.json").exists():
         try:
             prev = json.loads((HERE / "sprites.json").read_text(encoding="utf-8"))
@@ -1050,13 +939,10 @@ def run(args):
         except Exception as e:
             print(f"[!] --merge: could not read prior manifest: {e}")
 
-    # which sprite categories to convert
     cat_filter = None
     if args.categories:
         cat_filter = set(args.categories.split(","))
 
-    # Always record sprite METADATA (so --manifest-only is useful); convert
-    # bytes only when do_sprites and not --manifest-only.
     convert_bytes = do_sprites and not args.manifest_only
     if do_sprites or args.manifest_only:
         items = sorted(sprites.items())
@@ -1070,13 +956,12 @@ def run(args):
                 "source_gfx": sp["source_gfx"], "texturefile": texrel,
                 "category": cat,
             }
-            # carry forward special-type metadata
             for fld in ("nine_slice", "size", "border_size", "texturefile2",
                         "masked_shield", "progress_bar", "color", "color_two"):
                 if fld in sp:
                     entry[fld] = sp[fld]
             if not convert_bytes:
-                manifest["sprites"][name] = entry  # metadata only
+                manifest["sprites"][name] = entry
                 continue
             if cat_filter and cat not in cat_filter:
                 manifest["sprites"][name] = entry
@@ -1107,8 +992,6 @@ def run(args):
                 failures.append({"sprite": name, "texture": texrel,
                                  "reason": f"{type(e).__name__}: {e}"})
                 entry["png"] = []
-            # Secondary texture (shield mask / progress-bar background): convert
-            # so the UI renderer has both compositing layers as PNGs.
             tex2 = sp.get("texturefile2")
             if tex2:
                 src2 = resolve_texture(tex2, gfx_map)
@@ -1138,10 +1021,6 @@ def run(args):
         for rel, src in items:
             stem = Path(rel).stem
             tag, ideology = parse_flag_filename(stem)
-            # Flags ship at three resolutions: gfx/flags/<stem> (large, ~82x52),
-            # gfx/flags/medium/<stem> (~41x26), gfx/flags/small/<stem> (~10x7).
-            # Key them distinctly so the large flag is never clobbered by a
-            # smaller one. The manifest entry per (tag,ideology) lists all res.
             parts = rel.split("/")
             res = parts[2] if len(parts) > 3 and parts[2] in ("medium", "small") else "large"
             key = f"{tag}_{ideology}" if ideology else tag
@@ -1157,7 +1036,6 @@ def run(args):
                     "width": im.size[0], "height": im.size[1],
                     "source": rel,
                 }
-                # convenience: top-level png points at the largest available
                 if res == "large" or "png" not in entry:
                     entry["png"] = f"assets/flags/{pngs[0]}"
                     entry["width"], entry["height"] = im.size
@@ -1166,7 +1044,6 @@ def run(args):
                 failures.append({"flag": stem, "res": res,
                                  "reason": f"{type(e).__name__}: {e}"})
 
-    # ---- 4. write manifest + report ---------------------------------------
     manifest["_meta"] = {
         "sprite_count": len(manifest["sprites"]),
         "flag_count": len(manifest["flags"]),
@@ -1191,7 +1068,6 @@ def run(args):
     (out_gui / "_index.json").write_text(json.dumps(gui_index, indent=1),
                                          encoding="utf-8")
 
-    # diagnostics (gitignored alongside assets) -- keep failures visible
     diag = {
         "duplicate_name_events": dup_log[:500],
         "conversion_failures": failures,
@@ -1201,7 +1077,6 @@ def run(args):
     (HERE / "extract_report.json").write_text(json.dumps(diag, indent=1),
                                               encoding="utf-8")
 
-    # ---- console summary (ASCII only) -------------------------------------
     print("\n==== EXTRACTION SUMMARY ====")
     print(f"sprites in manifest : {len(manifest['sprites'])}")
     print(f"flags  in manifest  : {len(manifest['flags'])}")
@@ -1224,7 +1099,6 @@ def build_argparser():
                     help="Path to the vanilla the game install. Default comes from the "
                          "BATTLE_PLAN_VANILLA env var, else the documented generic Steam path. "
                          "Set BATTLE_PLAN_VANILLA or pass this flag for a non-default drive.")
-    # ---- active mod-set selection (Clausewitz playset over vanilla) --------
     ap.add_argument("--mod", default=DEFAULT_MOD,
                     help="Legacy single-mod overlay dir (default: sibling test mod). "
                          "Use '' for vanilla-only. Superseded by --mods / --use-dlc-load.")

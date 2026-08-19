@@ -1,5 +1,3 @@
-//! Dependency-free canonical semantics for fully framed H4CR record envelopes.
-
 macro_rules! compact_record_type_roster {
     ($(
         $(#[$attribute:meta])*
@@ -10,8 +8,6 @@ macro_rules! compact_record_type_roster {
             pub const $constant: u16 = $value;
         )+
 
-        /// Every assigned H4CR record type. This enum is deliberately exhaustive
-        /// so whole-stream consumers fail to compile when the wire vocabulary grows.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         #[repr(u16)]
         pub enum KnownRecordType {
@@ -47,76 +43,17 @@ macro_rules! compact_record_type_roster {
 }
 
 compact_record_type_roster! {
-/// Per-domain performance outcome. It closes one scheduled domain outcome.
 DomainPerf => COMPACT_RECORD_TYPE_DOMAIN_PERF = 1, "domain_perf";
-/// Canonical frame boundary. It closes one published game hour.
 FrameEnd => COMPACT_RECORD_TYPE_FRAME_END = 2, "frame_end";
-/// Subordinate per-domain world-state payload. It closes no outcome itself.
 DomainData => COMPACT_RECORD_TYPE_DOMAIN_DATA = 3, "domain_data";
-/// Sequence-zero campaign identity and logical-stream header.
 StreamHeader => COMPACT_RECORD_TYPE_STREAM_HEADER = 4, "stream_header";
-/// Ordinary control record reporting one acquisition outcome with no data.
 DomainGap => COMPACT_RECORD_TYPE_DOMAIN_GAP = 5, "domain_gap";
-/// Frame-level record: this hour was assembled and REFUSED, naming the
-/// domains that forced it. Not a per-domain outcome -- a refused frame is one
-/// event with a list of offenders, which is why it is not a DOMAIN_GAP. Type 4
-/// is STREAM_HEADER (campaign_identity.rs), hence 6.
 FrameRefused => COMPACT_RECORD_TYPE_FRAME_REFUSED = 6, "frame_refused";
-/// Frame-level record: this hour WAS published, and these named domains are
-/// UNKNOWN in it. The counterpart to `FRAME_REFUSED` -- that one closes an hour
-/// which published nothing, this one annotates an hour which published while
-/// some of its domains failed. It is deliberately NOT a boundary record: it
-/// rides inside the frame it describes, before that frame's `FRAME_END`, so a
-/// consumer reads the degradation as part of the same closed hour.
 FrameDegraded => COMPACT_RECORD_TYPE_FRAME_DEGRADED = 7, "frame_degraded";
-/// Frame-independent producer-abort notice. Unlike FRAME_REFUSED and
-/// FRAME_DEGRADED, this closes or qualifies no game hour and claims no domain
-/// coverage. Its H4CR envelope uses domain 1000 and game-hour sentinel zero.
 CaptureTerminated => COMPACT_RECORD_TYPE_CAPTURE_TERMINATED = 8, "capture_terminated";
-/// Frame-level record: these hours ELAPSED and were never observed, because the
-/// authenticated clock could not be read across them.
-///
-/// The one record in this family that names a RANGE rather than an hour, and
-/// the reason it had to exist: an outage's hours are never admitted by the
-/// scheduler at all, so no domain gaps over them and no frame is assembled for
-/// them. The per-domain gap vocabulary cannot carry them either -- a control gap
-/// range is closed by `FRAME_END(range_end)`, which would publish a frame for an
-/// hour nobody looked at.
-///
-/// It CLOSES no hour and claims no coverage. Its envelope carries the RESUMED
-/// hour, which is a real hour the producer was observing when it wrote the
-/// record, and `crate::clock_unreadable_interval` requires the two to agree.
 ClockUnreadableInterval => COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL = 9, "clock_unreadable_interval";
-/// Frame-level record: the authenticated clock read again after an outage, and
-/// the value it returned is one this producer does not trust.
-///
-/// The counterpart to `CLOCK_UNREADABLE_INTERVAL`, minted by the other branch of
-/// the same decision and never alongside it. That record names a range and
-/// ACCOUNTS for it; this one names the same two endpoints and accounts for
-/// nothing, because the span rests entirely on a value the producer has just
-/// declared untrustworthy. What it does state is that the resumed hour — and so
-/// every hour published after it — descends from an untrusted read, which is the
-/// only way a consumer can tell those hours apart from hours reached through a
-/// clock read that was believed.
-///
-/// Like its counterpart it CLOSES no hour and publishes no `FRAME_END`. Its
-/// envelope carries the RESUMED hour, and `crate::untrusted_clock_recovery`
-/// requires the two to agree.
 UntrustedClockRecovery => COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY = 10, "untrusted_clock_recovery";
-/// Frame-independent freeze-census telemetry. It closes no game hour, claims
-/// no domain coverage, and uses domain 1000 with the game-hour sentinel zero.
 FreezeCensus => COMPACT_RECORD_TYPE_FREEZE_CENSUS = 11, "freeze_census";
-/// Frame-independent session CONTENT IDENTITY: what the loaded game calls each
-/// building and each strategic resource, read once from the engine's own
-/// databases (`crate::content_identity_census`).
-///
-/// Like the freeze census it closes no game hour and claims no domain
-/// coverage - domain 1000, game-hour sentinel zero - because it is a statement
-/// about the SESSION, not about an hour. It rides once per LOGICAL STREAM: a
-/// rolled or split stream can be opened without its predecessor, so each one
-/// carries the whole census or none of it, and hours in a stream that has none
-/// are named unavailable by the consumers that need it rather than counted
-/// with a table shipped in the binary.
 ContentIdentityCensus => COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS = 12, "content_identity_census";
 }
 
@@ -144,90 +81,20 @@ pub const DOMAIN_GAP_REASON_OVERRUN: u16 = 2;
 pub const DOMAIN_GAP_REASON_BACKPRESSURE: u16 = 3;
 pub const DOMAIN_GAP_REASON_CLOCK_UNREADABLE: u16 = 4;
 pub const DOMAIN_GAP_REASON_WORKER_PANIC: u16 = 5;
-/// The reader ran to completion inside its clock bracket and could not produce
-/// a payload: a root, header, or object invariant it depends on was not
-/// available this hour. The clock was read fine, which is exactly why this is
-/// not `CLOCK_UNREADABLE`; the per-domain PERF diagnostics carry the typed
-/// stage and reason.
 pub const DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE: u16 = 6;
-/// The domain was scheduled and the frame sealed without it emitting either a
-/// DATA record or a gap naming why there is none. This reason asserts only what
-/// is actually known -- that no outcome was recorded -- and exists so that such
-/// an hour is a NAMED loss rather than an absence no ledger can see.
 pub const DOMAIN_GAP_REASON_READER_SILENT: u16 = 7;
-/// The reader's clock bracket neither tore nor observed the frame's own hour:
-/// it opened and closed in some OTHER hour entirely.
-///
-/// This is the equal-but-wrong case, and it is invisible to `TORN`. A bracket
-/// proves the hour did not CHANGE across the read; it does not prove the read
-/// happened in the hour the frame is labelled with. A sweep that begins after
-/// the label's hour has already elapsed reads hour H+1 from end to end, so
-/// `tick_before == tick_after` and every tear check passes -- while the frame
-/// still publishes under label H.
-///
-/// The witnesses make the claim self-proving: `tick_before == tick_after`
-/// (nothing tore) and both differ from `target_hour_raw` (and so name the hour
-/// actually observed). A consumer never has to take the reason's word for it.
 pub const DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH: u16 = 8;
 pub const DOMAIN_GAP_PART_STATE: u16 = 0;
 pub const DOMAIN_GAP_PART_EVENT: u16 = 1;
 pub const DOMAIN_GAP_PART_BOTH: u16 = 2;
 
-/// WHERE THE TWO TICK WITNESSES CAME FROM, spelled on the wire instead of
-/// inferred from the reason (lane FQ, 2026-08-08).
-///
-/// THE DEFECT THIS CLOSES. A gap record's `tick_before`/`tick_after` are read
-/// by offline tools as an ENGINE OBSERVATION, and for several reasons the
-/// grammar cannot tell an observation from a restatement of the frame's own
-/// label: `SOURCE_UNAVAILABLE` and `WORKER_PANIC` require only that the two
-/// ticks are EQUAL, which a label copy satisfies exactly as well as a real
-/// non-advancing clock reading does. `hour_label_audit` therefore had to
-/// exclude those reasons wholesale — comparing a label against itself is
-/// arithmetic, not evidence, and presenting it beside real witnesses would
-/// manufacture corroboration. That exclusion keyed on the REASON, so a producer
-/// that started stamping real observations could not be believed either.
-///
-/// The provenance is a claim by the PRODUCER, in the same way `TORN`'s
-/// unequal ticks are. What the grammar adds is that the claim cannot contradict
-/// the witnesses it describes: an observation may not be built on the wire's
-/// no-witness zero, and "no observation" may not carry a nonzero one.
-///
-/// IT LIVES IN THE FIRST RESERVED WORD, which every previous producer wrote as
-/// zero and every previous decoder REQUIRED to be zero. Zero is therefore
-/// exactly `UNSTATED`, and every record sealed before this field existed
-/// decodes as "this producer did not say" rather than as a claim it never made.
-/// The remaining half of that word stays reserved and is still required to be
-/// zero, so the next field to be spent here is admitted the same way.
 pub const DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED: u16 = 0;
-/// The two ticks are hours a reader's own clock bracket ACTUALLY OBSERVED.
-///
-/// Both must be nonzero: zero is the wire's no-witness value everywhere else in
-/// this record, and an observation that could not be represented is not an
-/// observation.
 pub const DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED: u16 = 1;
-/// No clock observation reached the site that minted this record, and the two
-/// ticks are the wire's no-witness zero rather than a borrowed reading.
-///
-/// A POSITIVE CLAIM, and not the same as `UNSTATED`: this says the producer
-/// looked and had nothing, where `UNSTATED` says the producer never spoke.
 pub const DOMAIN_GAP_WITNESS_PROVENANCE_UNOBSERVED: u16 = 2;
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
-/// Trailer version written by the current producer.
-///
-/// Identical layout to version 1 with ONE change: the two bytes that version 1
-/// reserved and required to be zero now carry the unit's
-/// [`crate::diagnostic_channel::UnitRole`] and
-/// [`crate::diagnostic_channel::UnitPresence`], both non-zero. Version 1 stays
-/// legal on the wire and still requires those bytes to be zero, so retained
-/// telemetry from earlier recorder builds is unaffected and a version-1 unit
-/// lifts to `Undeclared`/`Undeclared` rather than to a fabricated declaration.
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2: u16 = 2;
 
-/// Whether one ordinary record is the terminal outcome for a scheduled domain.
-///
-/// Exactly one PERF or DOMAIN_GAP exhausts each scheduled domain. DATA records
-/// are subordinate payloads and never occupy a second outcome slot.
 pub const fn compact_record_counts_toward_terminal_outcome(record_type: u16) -> bool {
     matches!(
         record_type,
@@ -235,12 +102,10 @@ pub const fn compact_record_counts_toward_terminal_outcome(record_type: u16) -> 
     )
 }
 
-/// Whether one ordinary record occupies the exact per-domain PERF cardinality.
 pub const fn compact_record_counts_toward_perf_cardinality(record_type: u16) -> bool {
     record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
 }
 
-/// Canonical record-header flag mask for one record envelope.
 pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u32 {
     let mut allowed = 0;
     if record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF {
@@ -252,7 +117,6 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     allowed
 }
 
-/// Header flag bits that are unknown or invalid for this domain/record type.
 pub const fn compact_record_rejected_flags(
     domain_id: u16,
     record_type: u16,
@@ -261,11 +125,6 @@ pub const fn compact_record_rejected_flags(
     record_flags & !compact_record_allowed_flags(domain_id, record_type)
 }
 
-/// Validate canonical semantics for a fully framed compact record payload.
-///
-/// The caller owns H4CR framing and must pass the payload slice selected by the
-/// header. This validates record flags for every type, the exact DOMAIN_PERF
-/// base/PDU1 trailer grammar, and the exact FRAME_END domain/payload contract.
 pub fn validate_compact_record_semantics(
     domain_id: u16,
     record_type: u16,
@@ -367,11 +226,6 @@ pub fn validate_compact_record_semantics(
     }
 }
 
-/// Validate the dependency-free, authenticated H4DG payload grammar.
-///
-/// This proves the complete payload layout and witness semantics. Authentication
-/// belongs to the enclosing retained H4CR sequence/campaign/session digest,
-/// which also binds the affected domain carried by the H4CR header.
 pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
     if payload.len() != COMPACT_DOMAIN_GAP_PAYLOAD_LEN {
         return Err(format!(
@@ -415,11 +269,6 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
     ) {
         return Err(format!("DOMAIN_GAP part {part} is unknown"));
     }
-    // The first reserved word is now HALF SPENT: bytes 12..14 carry the witness
-    // provenance and bytes 14..16 are still reserved. Both halves are admitted
-    // exactly -- an unknown provenance code is refused here rather than falling
-    // through to a witness arm that happens to match, which is the same
-    // admission discipline the reason and part codes get above.
     let witness_provenance = u16::from_le_bytes([payload[12], payload[13]]);
     if !matches!(
         witness_provenance,
@@ -521,20 +370,6 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
                 && queue_capacity == 0
                 && queue_depth == 0
                 && queue_dropped == 0 => {}
-        // The reader held a bracket, so the two tick witnesses are a real,
-        // non-advancing clock reading for the hour it failed in. One hour, no
-        // queue: nothing was dropped, the source simply was not there.
-        //
-        // THE HOUR IT FAILED IN IS NOT ALWAYS THE FRAME'S LABEL, and the
-        // equality below is deliberately silent about which. A reader whose
-        // bracket held steady in H+1 and then failed carries H+1 here; the
-        // frame still publishes under H. Which of the two a given record holds
-        // is not inferable from the reason, which is what the witness
-        // provenance stamp says (see
-        // [`DOMAIN_GAP_WITNESS_PROVENANCE_UNSTATED`]). Where no observation
-        // reached the mint site the honest pair is the wire's no-witness zero,
-        // which this arm's equality also admits and which the provenance rule
-        // below requires to be declared `UNOBSERVED`.
         DOMAIN_GAP_REASON_SOURCE_UNAVAILABLE
             if range_start == range_end
                 && target_hour == range_start
@@ -542,9 +377,6 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
                 && queue_capacity == 0
                 && queue_depth == 0
                 && queue_dropped == 0 => {}
-        // No per-domain witness of any kind exists -- that absence IS the
-        // claim -- so both ticks are required to be zero rather than carrying a
-        // borrowed reading that would assert more than is known.
         DOMAIN_GAP_REASON_READER_SILENT
             if range_start == range_end
                 && target_hour == range_start
@@ -553,22 +385,6 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
                 && queue_capacity == 0
                 && queue_depth == 0
                 && queue_dropped == 0 => {}
-        // SELF-PROVING. The other clock reasons are believed on the producer's
-        // word -- `TORN` says the ticks differ and the grammar checks only
-        // that. This one is checkable end to end from the payload alone:
-        //
-        //   tick_before == tick_after      nothing tore, so the read is not a
-        //                                  straddle wearing a different name;
-        //   tick_before != target_hour     and the hour it DID observe is not
-        //                                  the hour the frame published under.
-        //
-        // Both conjuncts are required. Drop the first and a torn bracket
-        // encodes as a mismatch; drop the second and any clean bracket does,
-        // which would let this reason swallow the whole capture.
-        //
-        // A zero tick is rejected with the rest: zero is the wire's "no
-        // witness" value (see `READER_SILENT` above), and a reason whose entire
-        // content is "the observed hour was X" cannot be built on an absent X.
         DOMAIN_GAP_REASON_HOUR_LABEL_MISMATCH
             if range_start == range_end
                 && target_hour == range_start
@@ -584,20 +400,6 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
             ))
         }
     }
-    // THE PROVENANCE MAY NOT CONTRADICT THE WITNESSES IT DESCRIBES.
-    //
-    // It is a producer claim, like `TORN`'s unequal ticks, and the grammar
-    // cannot check that a nonzero pair really came off a clock. What it CAN
-    // check is the one confusion that would let the claim be free: zero is the
-    // wire's no-witness value in every other rule in this function, so an
-    // observation may not be built on it and an absence may not be dressed in a
-    // nonzero reading. Without these two conjuncts a producer could stamp
-    // `BRACKET_OBSERVED` on `READER_SILENT`'s required zeros and an offline tool
-    // would read "the reader observed hour 0".
-    //
-    // `UNSTATED` is deliberately unconstrained. It is what every record sealed
-    // before this field existed carries, and adding a predicate to it would
-    // make old captures undecodable.
     match witness_provenance {
         DOMAIN_GAP_WITNESS_PROVENANCE_BRACKET_OBSERVED if tick_before == 0 || tick_after == 0 => {
             return Err(
@@ -616,7 +418,6 @@ pub fn validate_domain_gap_payload(payload: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Read the target-hour witness after validating the complete H4DG grammar.
 pub fn domain_gap_target_hour_raw(payload: &[u8]) -> Result<i32, String> {
     validate_domain_gap_payload(payload)?;
     Ok(i32::from_le_bytes(
@@ -701,10 +502,6 @@ fn validate_domain_perf(record_flags: u32, payload: &[u8]) -> Result<(), String>
                 ));
             }
         } else {
-            // Version 2 spends those two bytes on the unit's declaration. Both
-            // halves must be DEFINED codes: a zero here would be a unit that
-            // says nothing about itself while claiming to be self-describing,
-            // which is the shape the version bump exists to eliminate.
             let role = (reserved & 0x00FF) as u8;
             let presence = (reserved >> 8) as u8;
             if crate::diagnostic_channel::UnitRole::from_code(role).is_none() {
@@ -911,13 +708,6 @@ mod tests {
         }
     }
 
-    /// This test used to assert that trailer version 2 is refused. Version 2
-    /// is now a DEFINED version -- same layout, with the two bytes version 1
-    /// reserved carrying the unit's role and presence -- so that assertion
-    /// was asserting the absence of a contract that now exists. The test keeps
-    /// its whole job: an undefined version is still refused loudly, and a
-    /// silently-skipped unknown version is still impossible. What changed is
-    /// which number is undefined.
     #[test]
     fn rejects_bad_pdu1_magic_and_undefined_version() {
         let mut bad_magic = perf_with_trailer(None, 0);
@@ -938,7 +728,6 @@ mod tests {
             );
         }
 
-        // Both DEFINED versions are accepted through the same dispatch.
         for version in [
             COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION,
             COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2,
@@ -951,10 +740,6 @@ mod tests {
         }
     }
 
-    /// Version 2 spends version 1's reserved word on the unit's declaration,
-    /// and both halves must be DEFINED codes. A unit that claims to be
-    /// self-describing while describing nothing is the exact shape the version
-    /// bump exists to remove, so it fails closed.
     #[test]
     fn a_version_two_unit_must_declare_a_defined_role_and_presence() {
         use crate::diagnostic_channel::{UnitPresence, UnitRole};
@@ -983,8 +768,6 @@ mod tests {
             assert!(err.contains(expected), "{err}");
         }
 
-        // And version 1 still requires those bytes to be zero, so retained
-        // telemetry is validated exactly as it was.
         let mut legacy = perf_with_trailer(Some(b"x"), 1);
         legacy[COMPACT_DOMAIN_PERF_BASE_LEN + 4..COMPACT_DOMAIN_PERF_BASE_LEN + 6]
             .copy_from_slice(&COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION.to_le_bytes());
@@ -1064,8 +847,6 @@ mod tests {
         assert!(wrong_flags.contains("rejected bits"), "{wrong_flags}");
     }
 
-    /// kills: type 11 acquiring world-domain meaning, accepting H4CR flags, or
-    /// counting as a domain outcome/PERF record instead of pure telemetry.
     #[test]
     fn freeze_census_envelope_is_frame_domain_zero_flags_and_no_coverage() {
         use crate::freeze_census_record::{
@@ -1112,12 +893,6 @@ mod tests {
         ));
     }
 
-    /// kills: treating the next unassigned raw wire value as an ignorable
-    /// record merely because the exhaustive enum has not learned it.
-    ///
-    /// Twelve is now `CONTENT_IDENTITY_CENSUS`, so the case moved to thirteen -
-    /// and it also pins that twelve is a real type with a real payload
-    /// grammar, rather than a value that merely stopped being rejected.
     #[test]
     fn raw_unknown_record_type_thirteen_rejects() {
         let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 13, 0, &[])

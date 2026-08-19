@@ -1,9 +1,3 @@
-//! Closed, activation-disabled codecs for campaign-identity H4CT control.
-//!
-//! The byte codecs remain activation-neutral.  The dormant recorder dispatcher
-//! below adds only durable-before-ack barriers; it does not create pipes,
-//! authorize live activation, or mint a stateful CID1 proof.
-
 use std::fmt;
 
 use snapshot::sha256::Sha256;
@@ -22,11 +16,6 @@ use crate::control_transport::{
 };
 use crate::duplex_session::rollover_control::AuthenticatedRolloverRebind;
 
-// The CIF1/CIA1 byte codec now lives in the shared `compact_contract` crate so
-// the recorder host and the injected collector DLL use one implementation. This
-// transparent re-export keeps every existing
-// `identity_control::{IdentityFailureV1, encode_identity_failure, ...}` path
-// resolving; the dispatcher, WAL, and durable journaling below are unchanged.
 pub use compact_contract::identity_control::{
     decode_identity_failure, decode_identity_failure_ack, encode_identity_failure,
     encode_identity_failure_ack, IdentityControlCodecError, IdentityFailureAckDisposition,
@@ -69,9 +58,6 @@ impl fmt::Display for ValidatedFirstCompactRecordError {
     }
 }
 
-/// Exact first-record authority.  IdentityV1 and Legacy are selected only by
-/// separate constructors; neither constructor sniffs or falls back to the
-/// other protocol. Exact complete bytes are retained for durable admission.
 #[derive(Clone, Debug)]
 pub struct ValidatedFirstCompactRecord {
     mode: StreamIdentityMode,
@@ -182,9 +168,6 @@ impl ValidatedFirstCompactRecord {
     }
 }
 
-/// Candidate writer implemented by product storage.  It cannot mint a durable
-/// receipt: the adapter below performs write -> flush -> sync under one exact
-/// deadline/cancellation authority and mints the receipt only afterwards.
 pub trait IdentityDurableCandidateSink {
     type FirstRecordCandidate;
     type IdentityFailureCandidate;
@@ -232,9 +215,6 @@ pub trait IdentityDurableCandidateSink {
         cancellation: &ControlCancellation,
     ) -> Result<(), String>;
 
-    /// Materialize the capture failure into the durable manifest/gap ledger.
-    /// The exact CIF1 WAL candidate above is forensic evidence, but it cannot
-    /// authorize CIA1 disposition 1 by itself.
     fn write_identity_failure_gap_ledger_candidate(
         &mut self,
         failure: &IdentityFailureV1,
@@ -275,8 +255,6 @@ pub struct DurableIdentityFailureReceipt {
     gap_ledger: DurableIdentityFailureGapLedgerReceipt,
 }
 
-/// Opaque proof minted by `IdentityControlJournal` only after the sink's
-/// manifest/gap-ledger candidate completed write -> flush -> sync.
 #[derive(Clone, Debug)]
 pub struct DurableIdentityFailureGapLedgerReceipt {
     attempt_id: u64,
@@ -494,10 +472,16 @@ impl fmt::Display for IdentityDispatchError {
                 write!(f, "first compact record was already acknowledged")
             }
             Self::RolloverRebindMismatch => {
-                write!(f, "rollover CFA1 did not match its authenticated rebind authority")
+                write!(
+                    f,
+                    "rollover CFA1 did not match its authenticated rebind authority"
+                )
             }
             Self::RolloverNonceNotIncreasing => {
-                write!(f, "rollover rebind proposal nonce did not strictly increase")
+                write!(
+                    f,
+                    "rollover rebind proposal nonce did not strictly increase"
+                )
             }
             Self::FailureTupleCrosswire => {
                 write!(f, "identity failure did not match the bound logical stream")
@@ -520,9 +504,6 @@ struct BoundLogicalStream {
     cid1_payload_sha256: Option<[u8; 32]>,
 }
 
-/// Recorder-side CFA1/CIF1/CIA1 dispatch barrier.  It binds all messages to one
-/// logical-stream tuple and permanently poisons itself together with H4CT on
-/// any codec, journal, crosswire, capability, or I/O failure.
 pub struct RecorderIdentityControlDispatcher<S> {
     journal: IdentityControlJournal<S>,
     bound: Option<BoundLogicalStream>,
@@ -554,8 +535,6 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
         self.bound.and_then(|bound| bound.campaign_id)
     }
 
-    /// Journal the exact first-record tuple before emitting its canonical CFA1.
-    /// A journal-success/write-failure ambiguity is terminal and never retried.
     pub fn acknowledge_first_record<I: DeadlineControlIo>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -610,10 +589,6 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
         })
     }
 
-    /// Journal and send a second CFA1 only when a completed rollover
-    /// transaction supplies the exact move-only old/new binding authority.
-    /// This is intentionally separate from `acknowledge_first_record`, which
-    /// remains permanently first-only once a logical stream is bound.
     pub(crate) fn acknowledge_rollover_rebind<I: DeadlineControlIo>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -660,17 +635,17 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
             self.poison(channel);
             return Err(IdentityDispatchError::RolloverRebindMismatch);
         }
-        let durable_receipt = match self.journal.durable_first_record_admission(
-            &first_record,
-            deadline,
-            cancellation,
-        ) {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                self.poison(channel);
-                return Err(IdentityDispatchError::Journal(error));
-            }
-        };
+        let durable_receipt =
+            match self
+                .journal
+                .durable_first_record_admission(&first_record, deadline, cancellation)
+            {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    self.poison(channel);
+                    return Err(IdentityDispatchError::Journal(error));
+                }
+            };
         let payload = encode_first_compact_frame_ack(acknowledgement).map_err(|error| {
             self.poison(channel);
             IdentityDispatchError::Cfa1(error)
@@ -692,8 +667,6 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
         })
     }
 
-    /// Decode an exact collector-originated CIF1, durably append its raw
-    /// evidence, then and only then emit a matching CIA1 disposition 1.
     pub(crate) fn receive_and_dispatch_identity_failure<I: DeadlineControlIo>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -712,11 +685,6 @@ impl<S: IdentityDurableCandidateSink> RecorderIdentityControlDispatcher<S> {
         self.dispatch_identity_failure_frame(channel, frame, deadline, cancellation)
     }
 
-    /// Dispatch a CIF1 frame already received by a central H4CT router. This
-    /// prevents a heartbeat receive loop from consuming an asynchronous
-    /// identity failure as a wrong-kind terminal error while preserving the
-    /// same channel sequence, capability, durability, deadline, and poison
-    /// authority as the direct receive path.
     pub(crate) fn dispatch_identity_failure_frame<I: DeadlineControlIo>(
         &mut self,
         channel: &mut DeadlineControlChannel<I>,
@@ -1204,7 +1172,6 @@ mod tests {
     fn identity_failure_roundtrips_exact_raw_suffix_and_hash() {
         let value = failure();
         let wire = encode_identity_failure(&value).unwrap();
-        // The declared total length (LE u32 at offset 8) equals the wire length.
         assert_eq!(
             u32::from_le_bytes(wire[8..12].try_into().unwrap()) as usize,
             wire.len()

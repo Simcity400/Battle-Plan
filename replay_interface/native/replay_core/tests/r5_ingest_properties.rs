@@ -1,9 +1,3 @@
-//! Ingest-boundary properties fixed in the R5 review round.
-//!
-//! Each test pins ONE property of `replay_core::source`, using the inputs the
-//! review named. A directory store is the cheapest anchor that still runs the
-//! real `open_store_impl` admission, so these fixtures use one wherever the
-//! property under test is about the INDEX rather than about container bytes.
 
 use replay_core::{open_recording as open_recording_raw, ReplaySource, SourceError};
 
@@ -13,8 +7,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// `Box<dyn ReplaySource>` is not `Debug`, so `expect_err` is unavailable; this
-/// keeps the refusal path readable without weakening the assertion.
 fn open_err(path: &std::path::Path, why: &str) -> SourceError {
     match open_recording_raw(path) {
         Ok(_) => panic!("{why}"),
@@ -52,8 +44,6 @@ fn snapshot_body(hour: i64, date: &str) -> Value {
     })
 }
 
-/// Write a directory store from an explicit index body plus explicit snapshot
-/// bodies keyed by their file name.
 fn write_store(root: &PathBuf, index: Value, bodies: &[(&str, Value)]) {
     fs::write(
         root.join(GAME).join("index.json"),
@@ -89,9 +79,7 @@ fn stitched_index(rows: Value, coverage: Value) -> Value {
     })
 }
 
-/// The exact shape the stitcher emits for a main-timeline coverage row
 /// (`CoverageDisposition::to_value` + `add_main_ownership_fields` +
-/// start/end/segment, in `recorder_host/src/stitching.rs`).
 fn coverage_row(start: i64, end: i64) -> Value {
     json!({
         "start_hour": start,
@@ -115,7 +103,6 @@ fn coverage_row(start: i64, end: i64) -> Value {
     })
 }
 
-// -- H1: recorder-declared coverage gaps survive ingest ----------------------
 
 #[test]
 fn h1_declared_coverage_gap_reaches_the_source_with_reason_and_witness() {
@@ -144,7 +131,6 @@ fn h1_declared_coverage_gap_reaches_the_source_with_reason_and_witness() {
     assert!(coverage.main_head.is_some(), "main_head is carried");
     assert_eq!(coverage.gaps.len(), 1);
 
-    // A gap carries its hour, its reason, the domains it affects, and a witness.
     let gap = coverage.gap_at(1).expect("hour 1 is declared absent");
     assert_eq!((gap.start_hour, gap.end_hour), (1, 1));
     assert_eq!(gap.hour_count(), 1);
@@ -198,9 +184,6 @@ fn h1_a_coverage_row_without_a_witness_is_refused_not_dropped() {
 fn h1_a_partial_selection_evidence_bundle_is_refused() {
     let root = temp_root("h1_partial_selection");
     let mut row = coverage_row(1, 1);
-    // The recorder emits all four selection members together; half a bundle is
-    // a rewritten row, and keeping the survivors would present partial
-    // provenance as the whole claim.
     row.as_object_mut().unwrap().remove("source_byte_bounds");
     write_store(
         &root,
@@ -220,10 +203,6 @@ fn h1_a_partial_selection_evidence_bundle_is_refused() {
 
 #[test]
 fn h1_a_cross_session_transition_gap_has_no_selection_bundle_and_is_still_admitted() {
-    // The recorder's forward cross-session transition coverage has no logical
-    // frame observation to select (`MainHour::selected_observation` is `None`),
-    // so it emits segment_id + owner and no selection members. That is real
-    // recorder output and must be admitted, not refused.
     let root = temp_root("h1_transition");
     let mut row = coverage_row(1, 2);
     row["kind"] = json!("gap");
@@ -309,7 +288,6 @@ fn h1_a_declared_gap_that_is_also_a_playable_hour_is_refused() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- H2: a stitched index dates every visible hour ---------------------------
 
 #[test]
 fn h2_stitched_index_without_dates_is_refused_instead_of_disabling_date_navigation() {
@@ -383,7 +361,6 @@ fn h2_a_plain_v1_index_keeps_its_historical_optional_date() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- M1: one hour, one claim -------------------------------------------------
 
 #[test]
 fn m1_two_index_rows_for_one_hour_are_refused_not_resolved_first_wins() {
@@ -409,7 +386,6 @@ fn m1_two_index_rows_for_one_hour_are_refused_not_resolved_first_wins() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- M2: the store source joins the whole snapshot header --------------------
 
 #[test]
 fn m2_body_date_disagreeing_with_the_index_date_is_refused() {
@@ -420,8 +396,6 @@ fn m2_body_date_disagreeing_with_the_index_date_is_refused() {
         &[("h3.json", snapshot_body(3, "1941.12.7.3"))],
     );
     let source = open_recording(&root).expect("the index alone is consistent");
-    // `date_at` reads the index and `frame()` reads the body: without the join
-    // they answered differently for one hour with no refusal anywhere.
     assert_eq!(source.date_at(3).unwrap().as_deref(), Some("1936.1.1.3"));
     let error = source
         .frame(3)
@@ -461,7 +435,6 @@ fn m2_a_body_that_agrees_with_its_index_still_folds() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- M3: no unauthenticated A27 design catalog -------------------------------
 
 #[test]
 fn m3_directory_backed_design_catalog_without_a_byte_authority_is_refused() {
@@ -475,8 +448,6 @@ fn m3_directory_backed_design_catalog_without_a_byte_authority_is_refused() {
         .join(GAME)
         .join(replay_core::A27_DESIGN_CATALOG_ARTIFACT_PATH);
     fs::create_dir_all(catalog_path.parent().unwrap()).unwrap();
-    // Loose bytes on disk: no container entry digest, no recorder-manifest
-    // sha256/length. Nothing can detect an edit.
     fs::write(&catalog_path, b"{\"schema\":\"anything\"}").unwrap();
 
     let error = open_err(&root, "an unauthenticated semantic catalog must not reach the fold");
@@ -498,7 +469,6 @@ fn m3_a_directory_store_without_a_catalog_still_opens() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- L1: "not found" means not found -----------------------------------------
 
 #[test]
 fn l1_a_missing_path_is_not_found_with_its_historical_rendering() {
@@ -506,8 +476,6 @@ fn l1_a_missing_path_is_not_found_with_its_historical_rendering() {
     let missing = root.join("nope.battleplan");
     let error = open_err(&missing, "a path that does not exist is NotFound");
     assert!(matches!(error, SourceError::NotFound(_)), "{error}");
-    // The absent-path message is a contract (replay_app pins it). Metadata-based
-    // classification must not change it.
     assert_eq!(
         error.to_string(),
         format!(
@@ -524,13 +492,9 @@ fn l1_an_unreadable_path_is_not_reported_as_absent() {
     let root = temp_root("l1_unreadable");
     let file = root.join("recording.battleplan");
     fs::write(&file, b"not a container").unwrap();
-    // A path UNDER a regular file exists in no directory: the OS reports a
-    // not-a-directory failure, not "no such file". `is_file()`/`is_dir()` both
-    // answered false and the old code reported NotFound for it.
     let descendant = file.join("child.battleplan");
     match fs::metadata(&descendant) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            // This platform genuinely reports absence; nothing to distinguish.
         }
         _ => {
             let error = open_err(&descendant, "this path cannot be opened");
@@ -543,7 +507,6 @@ fn l1_an_unreadable_path_is_not_reported_as_absent() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- A2: an unknown coverage kind is not carried into playback ---------------
 
 #[test]
 fn a2_an_unknown_coverage_disposition_kind_is_refused() {
@@ -566,7 +529,6 @@ fn a2_an_unknown_coverage_disposition_kind_is_refused() {
     let _ = fs::remove_dir_all(root);
 }
 
-// -- L5: container identity is proved for EVERY prefolded hour ---------------
 
 #[derive(Debug)]
 struct LaterHourProvenanceMismatchPrefolder;
@@ -589,9 +551,6 @@ impl replay_core::CertifiedPrefoldDecoder for LaterHourProvenanceMismatchPrefold
                 "hour_index": hour,
                 "date": format!("1936.1.1.{hour}"),
             });
-            // Only the SECOND hour disagrees with the container manifest. When
-            // admission proved identity for entry 0 alone, this reached
-            // playback unchecked.
             if hour == 1 {
                 body["provenance"] = json!({"mod": {"modset_id": "snapshot-modset"}});
             }

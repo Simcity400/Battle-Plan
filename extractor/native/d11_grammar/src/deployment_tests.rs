@@ -3,75 +3,28 @@ use alloc::{vec, vec::Vec};
 
 fn v1_golden() -> Vec<u8> {
     vec![
-        // 40-byte header.
-        9, 0, 0, 0, 0, 0, 0, 0, // elapsed_wall_ms
-        1, 0, 0, 0, // country_count
-        1, 0, 0, 0, // changed_country_rows
-        0x12, 0, 0, 0, // status_flags
-        1, 0, 0, 0, // schema_version
-        1, 0, 0, 0, // declared_conveyors
-        1, 0, 0, 0, // declared_lines
-        1, 0, 0, 0, // declared_equipment
-        0, 0, 0, 0, // reserved
-        // Country row.
-        7, 0, 0, 0, // tag_db_id
-        1, 0, 0, 0, // flags
-        1, 0, 0, 0, // conveyor_count
-        0, 0, 0, 0, // reserved
-        // Conveyor fixed row.
-        0, 0, 0, 0, // ordinal
-        8, 0, 0, 0, // conveyor_id
-        64, 0, 0, 0, // id_type
-        9, 0, 0, 0, // template_id
-        52, 0, 0, 0, // template_id_type
-        1, 0, 0, 0, // amount
-        10, 0, 0, 0, // location
-        11, 0, 0, 0, // priority
-        1, 0, 0, 0, // flags
-        1, 0, 0, 0, // line_count
-        1, 0, 0, 0, b'N', // name
-        1, 0, 0, 0, b'R', // role
-        // Line row. v1 deliberately carries no NAME_ORDER flag.
-        0, 0, 0, 0, // ordinal
-        12, 0, 0, 0, // line_id
-        63, 0, 0, 0, // id_type
-        13, 0, 0, 0, // name_order
-        14, 0, 0, 0, // amount
-        0x1f, 0, 0, 0, // flags
-        0, 0, 0, 0, 0, 0, 0xf0, 0x3f, // training = 1.0
-        0, 0, 0, 0, 0, 0, 0, 0x40, // max_training = 2.0
-        3, 0, 0, 0, 0, 0, 0, 0, // manpower_have
-        4, 0, 0, 0, 0, 0, 0, 0, // manpower_need
-        5, 0, 0, 0, 0, 0, 0, 0, // max_manpower
-        1, 0, 0, 0, // equipment_count
-        0, 0, 0, 0, // reserved
-        // Equipment row: v1 always carries the following string although flags=0.
-        0, 0, 0, 0, // ordinal
-        10, 0, 0, 0, // equipment_id
-        70, 0, 0, 0, // id_type
-        0, 0, 0, 0, // flags
-        0, 0, 0, 0, 0, 0, 0xf0, 0x3f, // amount = 1.0
-        1, 0, 0, 0, b'A', // archetype
+        9, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0x12, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1,
+        0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 8, 0, 0, 0, 64, 0, 0, 0, 9, 0, 0, 0, 52, 0, 0, 0, 1, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0,
+        1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, b'N', 1, 0, 0, 0, b'R', 0, 0, 0, 0, 12, 0, 0, 0, 63, 0,
+        0, 0, 13, 0, 0, 0, 14, 0, 0, 0, 0x1f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0,
+        0, 0, 0x40, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 1, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 70, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0,
+        0x3f, 1, 0, 0, 0, b'A',
     ]
 }
 
 fn v2_golden() -> Vec<u8> {
     vec![
-        // 40-byte header.
-        9, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0x12, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1, 0,
-        0, 0, 2, 0, 0, 0, 0, 0, 0, 0, // Country row.
-        7, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-        // Conveyor fixed row and its two strings.
-        0, 0, 0, 0, 8, 0, 0, 0, 64, 0, 0, 0, 9, 0, 0, 0, 52, 0, 0, 0, 1, 0, 0, 0, 10, 0, 0, 0, 11,
-        0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, b'N', 1, 0, 0, 0, b'R',
-        // Line row; every known line flag is present in this fixture.
-        0, 0, 0, 0, 12, 0, 0, 0, 63, 0, 0, 0, 13, 0, 0, 0, 14, 0, 0, 0, 0x3f, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0x40, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0,
-        0, 5, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
-        // Equipment 0: flag says the archetype string is present.
-        0, 0, 0, 0, 10, 0, 0, 0, 70, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 1, 0, 0, 0,
-        b'A', // Equipment 1: no archetype flag and therefore no following string.
-        1, 0, 0, 0, 11, 0, 0, 0, 70, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x40,
+        9, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0x12, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0, 0, 1,
+        0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 8, 0, 0, 0, 64, 0, 0, 0, 9, 0, 0, 0, 52, 0, 0, 0, 1, 0, 0, 0, 10, 0, 0, 0, 11, 0, 0, 0,
+        1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, b'N', 1, 0, 0, 0, b'R', 0, 0, 0, 0, 12, 0, 0, 0, 63, 0,
+        0, 0, 13, 0, 0, 0, 14, 0, 0, 0, 0x3f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0, 0, 0, 0, 0,
+        0, 0, 0x40, 3, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 2, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0, 0, 0, 70, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0,
+        0x3f, 1, 0, 0, 0, b'A', 1, 0, 0, 0, 11, 0, 0, 0, 70, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0x40,
     ]
 }
 
@@ -265,7 +218,8 @@ fn line_flag_fixture_union_equals_the_generated_known_mask() {
     let mut union = 0u32;
     for fixture in [v1_golden(), v2_golden()] {
         union |= u32::from_le_bytes(
-            fixture[LINE_AT + DqLineField::Flags.offset()..LINE_AT + DqLineField::Flags.offset() + 4]
+            fixture
+                [LINE_AT + DqLineField::Flags.offset()..LINE_AT + DqLineField::Flags.offset() + 4]
                 .try_into()
                 .unwrap(),
         );
@@ -518,15 +472,6 @@ fn string_bytes_are_spans_and_the_leaf_has_no_site_budget_or_charset_rule() {
     assert_eq!(consume(&bytes).unwrap().at, bytes.len());
 }
 
-/// kills: deleting the `out.len() != p.len` check in `deployment::encode` (or
-/// putting it back behind `debug_assert!`) makes this test see `Ok` and a
-/// malformed frame instead of `PreflightMismatch`.
-///
-/// `CountryEncoding` is a PUBLIC trait, so an implementation may use interior
-/// mutability and answer `conveyors()` differently on the preflight pass and on
-/// the write pass. This one does exactly that: the first call reports one
-/// conveyor, every later call reports none. The header would then declare a
-/// conveyor that the body does not contain.
 #[test]
 fn encode_refuses_an_encoding_that_changes_between_preflight_and_write() {
     use core::cell::Cell;
@@ -592,20 +537,6 @@ fn encode_refuses_an_encoding_that_changes_between_preflight_and_write() {
     }
 }
 
-/// kills: reducing `encode` to the LENGTH guard alone -- that is, writing the
-/// header counts from the preflight AND dropping the four `written.* != p.*`
-/// comparisons. The two divergences below cancel to exactly the same total
-/// length, so a length check sees nothing and `encode_v2` returns `Ok` with a
-/// header declaring a line the body does not carry. That is the case Codex
-/// round 14 raised against the first fix, and this test is the reason the
-/// encoder now derives the counts from the write rather than the preflight.
-///
-/// The assertion is on the OUTCOME, not the mechanism: either the encoder
-/// refuses, or it produces a frame whose header agrees with its body. Both are
-/// correct; a frame declaring a line that is not there is not.
-///
-/// The conveyor reports one line on the first `lines()` call and none after,
-/// and its `name()` grows by exactly the bytes that line would have occupied.
 #[test]
 fn encode_header_counts_come_from_the_write_not_the_preflight() {
     use core::cell::Cell;
@@ -647,8 +578,6 @@ fn encode_header_counts_come_from_the_write_not_the_preflight() {
             0
         }
         fn name(&self) -> &[u8] {
-            // Grows on the write pass by exactly one LINE_ROW_LEN, cancelling
-            // the line the write no longer emits.
             if self.seen.get() {
                 &self.long_name
             } else {
@@ -717,14 +646,9 @@ fn encode_header_counts_come_from_the_write_not_the_preflight() {
     };
     let result = encode_v2(words, core::slice::from_ref(&country));
     match result {
-        // Refusing is correct.
         Err(DqEncodeError::PreflightMismatch { .. }) => {}
-        // Encoding is correct too -- PROVIDED the header describes the body that
-        // was written. The write emitted no line row, so the declared line count
-        // must be zero. A length-guard-only encoder writes the preflight's 1 here.
         Ok(frame) => {
-            let declared_lines =
-                u32::from_le_bytes([frame[28], frame[29], frame[30], frame[31]]);
+            let declared_lines = u32::from_le_bytes([frame[28], frame[29], frame[30], frame[31]]);
             assert_eq!(
                 declared_lines, 0,
                 "the header declares {declared_lines} line(s) but the body carries none"

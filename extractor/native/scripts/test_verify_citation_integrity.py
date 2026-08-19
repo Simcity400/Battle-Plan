@@ -34,12 +34,6 @@ def _load(name: str):
 VERIFY = _load("verify_citation_integrity")
 RESTAMP = _load("restamp_citation_allowance")
 
-# The fixture citations below are ASSEMBLED, never spelt out literally.  This
-# file lives inside the gate's own scan roots, so a worked example written out in
-# full would be a citation the gate then demanded be grandfathered -- and a test
-# whose fixtures sit in the production allowance is a test that has quietly
-# changed what it tests.  Written this way each one is inert text on disk and
-# becomes a citation only inside the temporary tree.
 DOT_RS = "." + "rs"
 A = f"crate_a/src/lib{DOT_RS}"
 B = f"crate_b/src/lib{DOT_RS}"
@@ -112,7 +106,6 @@ class CitationIntegrityTests(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.fixture = Fixture(Path(self._tmp.name))
 
-    # ---------------------------------------------------------------- rule L
 
     def test_a_new_line_citation_fails(self) -> None:
         """kills: deleting the `line_references` budget check in verify_repo.
@@ -175,7 +168,6 @@ class CitationIntegrityTests(unittest.TestCase):
         _files, lines, _items, unused = self.fixture.verify()
         self.assertEqual((lines, unused), (0, 1))
 
-    # ---------------------------------------------------------------- rule U
 
     def test_a_grandfathered_citation_past_the_end_of_its_file_fails(self) -> None:
         """kills: dropping the range check once a citation is grandfathered.
@@ -241,7 +233,6 @@ class CitationIntegrityTests(unittest.TestCase):
             self.fixture.verify()
         self.assertIn("permit nothing", str(raised.exception))
 
-    # ---------------------------------------------------------------- rule I
 
     def test_an_item_citation_naming_no_definition_fails(self) -> None:
         """kills: accepting an item citation without checking the item exists.
@@ -302,7 +293,6 @@ class CitationIntegrityTests(unittest.TestCase):
         self.fixture.write_document("DESIGN.md", f"see `{A}::Row::VERSION`\n")
         self.assertEqual(self.fixture.verify()[2], 1)
 
-    # --------------------------------------------------------------- scoping
 
     def test_evidence_directories_are_not_scanned(self) -> None:
         """kills: scanning `runs/`.
@@ -347,7 +337,6 @@ class CitationIntegrityTests(unittest.TestCase):
         _files, lines, items, _unused = self.fixture.verify()
         self.assertEqual((lines, items), (0, 1))
 
-    # ------------------------------------------------ Codex review round 1
 
     def test_a_range_endpoint_is_part_of_the_budget_key(self) -> None:
         """kills: dropping the `-<end>` group from the citation's canonical form.
@@ -461,7 +450,6 @@ class CitationIntegrityTests(unittest.TestCase):
         self.assertNotIn("asset.unheard_of", VERIFY.scan_files(self.fixture.root))
         self.assertEqual(self.fixture.verify()[1], 0)
 
-    # ------------------------------------------------ Codex review round 2
 
     def test_a_split_range_endpoint_is_part_of_the_budget_key(self) -> None:
         """kills: reading only the one-token `a-b` range form.
@@ -562,7 +550,6 @@ class CitationIntegrityTests(unittest.TestCase):
             self.fixture.verify()
         self.assertIn("empty reason", str(raised.exception))
 
-    # ------------------------------------------------ Codex review round 3
 
     def test_a_member_of_another_type_fails(self) -> None:
         """kills: resolving an item path by independent file-wide presence.
@@ -634,7 +621,6 @@ class CitationIntegrityTests(unittest.TestCase):
             self.fixture.verify()
         self.assertIn("past the end", str(raised.exception))
 
-    # ------------------------------------------------ Codex review round 4
 
     def test_a_function_local_item_is_not_a_member(self) -> None:
         """kills: collecting an owner's whole body regardless of brace depth.
@@ -671,7 +657,6 @@ class CitationIntegrityTests(unittest.TestCase):
             self.fixture.verify()
         self.assertIn("r#missing", str(raised.exception))
 
-    # ------------------------------------------------ Codex review round 5
 
     def test_same_named_types_in_two_modules_do_not_share_members(self) -> None:
         """kills: keying the scope index by bare owner name.
@@ -723,7 +708,6 @@ class CitationIntegrityTests(unittest.TestCase):
             self.fixture.verify()
         self.assertIn("föo", str(raised.exception))
 
-    # ------------------------------------------------ Codex review round 6
 
     def test_a_function_body_is_a_route_barrier(self) -> None:
         """kills: treating any lexically enclosed scope as a route child.
@@ -805,7 +789,6 @@ class CitationIntegrityTests(unittest.TestCase):
             with self.subTest(case=index):
                 self.assertEqual(VERIFY._sanitize_rust(case), reviewed.sanitize_rust(case))
 
-    # ------------------------------------------------ Codex review round 7
 
     def test_an_unfinished_raw_identifier_is_reported(self) -> None:
         """kills: malformed-item detection that stops at a trailing `::`.
@@ -865,7 +848,6 @@ class CitationIntegrityTests(unittest.TestCase):
         self.fixture.write_document("DESIGN.md", f"see `{A}::ForeignType::method`\n")
         self.assertEqual(self.fixture.verify()[2], 1)
 
-    # ------------------------------------------------ Codex review round 8
 
     def test_an_item_citation_with_no_segments_at_all_is_reported(self) -> None:
         """kills: requiring at least one completed segment before reporting.
@@ -893,7 +875,6 @@ class CitationIntegrityTests(unittest.TestCase):
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify()
 
-    # ------------------------------------------------ Codex review round 10
 
     def test_a_text_file_with_a_binary_suffix_is_still_scanned(self) -> None:
         """kills: returning False from `is_text_file` on the suffix alone.
@@ -928,7 +909,6 @@ class CitationIntegrityTests(unittest.TestCase):
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify()
 
-    # ------------------------------------------------ Codex review round 11
 
     def test_a_wrapped_field_type_is_not_a_member(self) -> None:
         """kills: reading a struct body line by line.
@@ -972,7 +952,6 @@ class CitationIntegrityTests(unittest.TestCase):
         A citation of a non-ASCII filename was not seen AT ALL -- neither
         checked nor reported. (Codex round 11, finding 2.)
         """
-        # Assembled, not spelt out, for the reason given at the top of this file.
         unicode_file = f"crate_a/src/\u00e9{DOT_RS}"
         self.fixture.write_source(unicode_file, "pub fn only_here() {}\n")
         self.fixture.write_document("DESIGN.md", f"see `{unicode_file}::missing`\n")
@@ -982,7 +961,6 @@ class CitationIntegrityTests(unittest.TestCase):
         self.fixture.write_document("DESIGN.md", f"see `{unicode_file}::only_here`\n")
         self.assertEqual(self.fixture.verify()[2], 1)
 
-    # ------------------------------------------------ Codex review round 12
 
     def test_a_generic_argument_is_not_a_member(self) -> None:
         """kills: splitting entries on every comma at body depth.
@@ -1036,7 +1014,6 @@ class CitationIntegrityTests(unittest.TestCase):
         self.fixture.write_document("DESIGN.md", f"see `{odd}::only_here`\n")
         self.assertEqual(self.fixture.verify()[2], 1)
 
-    # ------------------------------------------------ Codex review round 13
 
     def test_an_xid_mark_outside_the_listed_blocks_is_not_truncated(self) -> None:
         """kills: hand-enumerated combining-mark ranges in the identifier class.
@@ -1050,8 +1027,6 @@ class CitationIntegrityTests(unittest.TestCase):
         continuation character is part of the name.
         """
         self.fixture.write_source(A, "pub fn a() {}\n")
-        # One mark from each of five blocks the hand-written list did not name,
-        # every one of them a valid XID continuation character.
         for mark in ("\u0483", "\u0eb4", "\u1cd0", "\u0f39", "\U000e0100"):
             with self.subTest(mark=hex(ord(mark))):
                 self.fixture.write_document("DESIGN.md", f"see `{A}::a{mark}`\n")
@@ -1072,12 +1047,10 @@ class CitationIntegrityTests(unittest.TestCase):
         self.fixture.write_document("DESIGN.md", f"see `{A}::cafe`\n")
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify()
-        # The real name still resolves, written either way.
         for spelling in (composed, decomposed):
             with self.subTest(spelling=repr(spelling)):
                 self.fixture.write_document("DESIGN.md", f"see `{A}::{spelling}`\n")
                 self.assertEqual(self.fixture.verify()[2], 1)
-        # A scope header and a member entry are read with the same class.
         self.fixture.write_source(
             A, "pub struct Ro\u0301w {\n    pub fie\u0301ld: u32,\n}\n"
         )
@@ -1108,10 +1081,8 @@ class CitationIntegrityTests(unittest.TestCase):
         with self.assertRaises(VERIFY.VerificationError) as raised:
             self.fixture.verify()
         self.assertIn("my file" + DOT_RS, str(raised.exception))
-        # The whole component resolves when it is what the author meant.
         self.fixture.write_document("DESIGN.md", f"see `{spaced}::only_here`\n")
         self.assertEqual(self.fixture.verify()[2], 1)
-        # A space in a DIRECTORY component is completed the same way.
         deep = f"crate_a/my dir/deep{DOT_RS}"
         self.fixture.write_source(deep, "pub fn in_the_deep() {}\n")
         self.fixture.write_source(f"crate_b/src/deep{DOT_RS}", "pub fn elsewhere() {}\n")
@@ -1119,7 +1090,6 @@ class CitationIntegrityTests(unittest.TestCase):
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify()
 
-    # ------------------------------------------------ Codex review round 14
 
     def test_a_spaced_filename_that_names_nothing_is_reported(self) -> None:
         """kills: resolving a spaced path by existence alone.
@@ -1151,7 +1121,6 @@ class CitationIntegrityTests(unittest.TestCase):
         """
         self.fixture.write_document("DESIGN.md", f"`see {A}::only_in_a` holds\n")
         self.assertEqual(self.fixture.verify()[2], 1)
-        # And the citation is still keyed as written, not as the widened span.
         self.fixture.write_document("DESIGN.md", f"`see {A}:3` holds\n")
         self.fixture.restamp()
         self.assertEqual(
@@ -1258,7 +1227,6 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertEqual(len(summary), 1, notices)
         self.assertIn(f"{expected} file(s) reused", summary[0])
 
-    # -------------------------------------------------- the cache is consulted
 
     def test_a_recorded_result_is_what_a_reused_file_reports(self) -> None:
         """kills: making the cache decorative -- written, never read.
@@ -1274,7 +1242,6 @@ class IncrementalCacheTests(unittest.TestCase):
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify()
 
-        # Take the entry the failing run wrote and re-tag it as a clean one.
         document = self.fixture.cache()
         entry = document["entries"]["extractor/documents/DESIGN.md"]
         self.assertTrue(entry["failures"])
@@ -1291,11 +1258,9 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertEqual((lines, items), (0, 0))
         self.assert_reused(notices, files)
 
-        # And the same tree, verified with no cache consulted, still fails.
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify(use_cache=False)
 
-    # ------------------------------------------------ the five recorded inputs
 
     def test_a_citation_broken_after_a_cached_pass_is_caught(self) -> None:
         """kills: keying a cached result on anything but the file's bytes.
@@ -1489,10 +1454,6 @@ class IncrementalCacheTests(unittest.TestCase):
         nothing for a later run to find under a key that means nothing.
         """
         self.fixture.write_document("DESIGN.md", f"see `{A}::ghost_item`\n")
-        # A LIE LEFT WHERE AN UNIDENTIFIED RUN MIGHT FIND IT. Deleting the cache
-        # first would have proved only that nothing was written; a run that
-        # consulted the cache under the empty key would have passed that.
-        # (Codex review round 3, finding 3.)
         relative = "extractor/documents/DESIGN.md"
         clean = {
             "digest": VERIFY.digest_bytes(
@@ -1517,9 +1478,7 @@ class IncrementalCacheTests(unittest.TestCase):
             notices: list[str] = []
             with self.assertRaises(VERIFY.VerificationError) as raised:
                 self.fixture.verify(notices=notices)
-            # The forged entry was not consulted: the broken citation is found.
             self.assertIn("ghost_item", str(raised.exception))
-            # And no key can be minted while the gate has no identity.
             with self.assertRaises(VERIFY.VerificationError):
                 VERIFY.cache_key(self.fixture.root.resolve(), b"{}")
         finally:
@@ -1527,10 +1486,6 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertTrue(
             any("identity of its own code" in notice for notice in notices), notices
         )
-        # Nothing recorded: the file is byte for byte what was left there. The
-        # key alone was not enough -- a run that skipped the forged entry but
-        # then wrote its own results under the empty key would have kept it.
-        # (Codex review round 4, finding 4.)
         self.assertEqual(self.fixture.cache_path().read_bytes(), untouched)
 
     def test_the_gates_identity_is_the_same_in_every_process(self) -> None:
@@ -1602,15 +1557,6 @@ class IncrementalCacheTests(unittest.TestCase):
             if is_allowance:
                 first.append(data)
                 if len(first) == 1:
-                    # THE FILE ITSELF IS REPLACED, with bytes that are not JSON
-                    # at all. A second read reached by ANY route -- this stub,
-                    # `Path.read_bytes`, `open` -- now sees them, so a gate that
-                    # parses twice fails outright and a gate that hashes a second
-                    # read stores a key these assertions reject. Whitespace was
-                    # not enough: it re-parses to the same object, so an
-                    # implementation that hashed one read and parsed another
-                    # still satisfied both assertions. (Codex review rounds 3
-                    # and 4, finding 2 both times.)
                     allowance_path.write_bytes(b"{ this is not an allowance")
                 else:
                     return data + b" " * len(first)
@@ -1627,7 +1573,6 @@ class IncrementalCacheTests(unittest.TestCase):
             self.fixture.cache()["key"], VERIFY.cache_key(root, first[0])
         )
 
-    # ------------------------------------------------------- damage and repair
 
     def test_a_hand_edited_entry_is_verified_again(self) -> None:
         """kills: trusting an entry's recorded RESULT without a tag over it.
@@ -1795,9 +1740,6 @@ class IncrementalCacheTests(unittest.TestCase):
         )
         with self.assertRaises(VERIFY.VerificationError):
             self.fixture.verify()
-        # EXIT 1 IS NOT ENOUGH: a traceback also exits non-zero, and a silent
-        # failure exits 1 too. What this gate promises is a REPORT that names
-        # the file and the reason. (Codex review round 3, finding 4.)
         captured = io.StringIO()
         saved = sys.stderr
         sys.stderr = captured
@@ -1828,7 +1770,6 @@ class IncrementalCacheTests(unittest.TestCase):
             with self.assertRaises(VERIFY.VerificationError, msg=alias) as raised:
                 self.fixture.verify(cache_path=Path(alias))
             self.assertIn("inside the tree this gate scans", str(raised.exception))
-        # And the default is still accepted, by the same identity walk.
         self.assertTrue(str(VERIFY.cache_location(root, None)).endswith(
             os.path.join("target", "citation_integrity_cache.json")
         ))
@@ -1904,7 +1845,6 @@ class IncrementalCacheTests(unittest.TestCase):
             self.assertTrue(
                 any("cannot be reached" in notice for notice in notices), notices
             )
-            # And a broken citation is still caught while the cache is unusable.
             self.fixture.write_document("DESIGN.md", f"see `{A}::ghost_item`\n")
             with self.assertRaises(VERIFY.VerificationError) as raised:
                 self.fixture.verify(cache_path=unreachable)
@@ -1966,8 +1906,6 @@ class IncrementalCacheTests(unittest.TestCase):
         """
         blocked = self.fixture.root / "target" / "citation_integrity_cache.json"
         blocked.parent.mkdir(parents=True, exist_ok=True)
-        # A DIRECTORY where the file belongs: every write to it fails, on every
-        # platform, without needing permissions this test cannot rely on.
         blocked.mkdir()
         self.fixture.write_document("DESIGN.md", f"see `{A}::only_in_a`\n")
         notices: list[str] = []
@@ -1975,7 +1913,6 @@ class IncrementalCacheTests(unittest.TestCase):
         self.assertEqual(items, 1)
         self.assertTrue(any("not written" in notice for notice in notices), notices)
 
-    # ------------------------------------------------------------ the two paths
 
     def test_full_and_incremental_agree_on_the_same_tree(self) -> None:
         """kills: letting the two paths report different counts.
@@ -2100,8 +2037,6 @@ class DecoderTests(unittest.TestCase):
                     expected = handle.read()
                 self.assertEqual(VERIFY.decode(data), expected, name)
                 self.assertEqual(VERIFY.read_text(path), expected, name)
-                # The reader the gate actually verifies files through, including
-                # the second read a store takes after it has taken the digest.
                 store = VERIFY.FileStore(root)
                 self.assertEqual(store.text("probe.txt"), expected, name)
                 self.assertEqual(store.digest("probe.txt"), VERIFY.digest_bytes(data))

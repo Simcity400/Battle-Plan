@@ -28,11 +28,10 @@ import sys
 
 from output_contract import REQUIRED_OUTPUTS
 
-TAG_RE = re.compile(r"^[A-Z][A-Z0-9]{2}$")  # GER, ENG, and dynamic tags like D01
-SENTINELS = {"", "---"}                       # legal "no country" markers
+TAG_RE = re.compile(r"^[A-Z][A-Z0-9]{2}$")
+SENTINELS = {"", "---"}
 LEAK_HARD = ("redacted", "C:\\Users\\", "C:/Users/", "/c/Users/")
 
-# Metaless outputs inherit the fingerprint of the run that produced them.
 ASSOC = {
     "country_snapshot.json": "meta.json",
     "state_ownership.json": "meta.json",
@@ -40,8 +39,6 @@ ASSOC = {
     "state_control.json": "control_meta.json",
 }
 
-# Backward-compatible name used throughout this validator.  The old inline list
-# silently omitted parser outputs including projects/intel/weather/designs.
 ALL_FILES = REQUIRED_OUTPUTS
 
 
@@ -87,7 +84,7 @@ def load(odir, name, rep, *, allow_missing=False):
     try:
         with open(path, encoding="utf-8") as fh:
             value = json.load(fh)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         rep.fail(f"load {name}", f"unreadable: {exc}")
         return None
     if not isinstance(value, dict):
@@ -133,7 +130,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         sys.stdout.reconfigure(encoding="utf-8")
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
 
     odir = args.output_dir
@@ -143,7 +140,6 @@ def main(argv=None):
         for n in ALL_FILES
     }
 
-    # fingerprint per file, with association for metaless outputs
     fps = {}
     for n in ALL_FILES:
         fp = fingerprint(docs.get(n))
@@ -154,7 +150,6 @@ def main(argv=None):
     def same_src(a, b):
         return fps.get(a) is not None and fps.get(a) == fps.get(b)
 
-    # --- 1. source coherence (FAIL on stale mix) -----------------------------
     groups = {}
     for n, fp in fps.items():
         if fp is not None and docs.get(n) is not None:
@@ -168,14 +163,10 @@ def main(argv=None):
     else:
         rep.warn("source coherence", "no source fingerprints found")
 
-    # --- known country universe ----------------------------------------------
     cs = docs["country_snapshot.json"] or {}
     known = {t for t in cs if is_tag(t)}
     dom_sizes = {"country_snapshot": len(known)}
     domain_sets = {}
-    # Only FULL-coverage domains may define the legitimate universe. production
-    # is partial (only countries with production lines), so it must be a SUBSET
-    # and is NOT allowed to launder a bogus production-only tag into "known".
     for dom, sub in (("economy.json", "countries"), ("focus.json", "countries"),
                      ("tech.json", "countries"), ("diplomacy.json", "countries")):
         d = docs.get(dom) or {}
@@ -197,11 +188,10 @@ def main(argv=None):
                  ok_d=f"{len(prod_tags)} production tags all known",
                  bad_d=f"{len(prod_only)} production-only tags: {prod_only[:8]}", soft=True)
 
-    # cross-domain country-set agreement (catches a tag laundering itself in)
     if known and cs:
         base = {t for t in cs if is_tag(t)}
         odd = {dom: sorted(s ^ base)[:8] for dom, s in domain_sets.items()
-               if s and s != base and dom != "production.json"}  # production legitimately partial
+               if s and s != base and dom != "production.json"}
         rep.gate(not odd, "country-set agreement",
                  ok_d="all full-coverage domains share the roster",
                  bad_d=f"domains differ from country_snapshot: {odd}", soft=True)
@@ -269,14 +259,12 @@ def main(argv=None):
     compare_states(so, sd, "ownership vs detail agree", "state_ownership.json", "state_detail.json")
     compare_states(sc, sd, "detail vs state_control agree", "state_control.json", "state_detail.json")
 
-    # raw controller-override count vs control_meta (same-source only)
     cm_stats = stats_of(docs["control_meta.json"])
     if sd and "raw_state_controller_overrides" in cm_stats and same_src("state_detail.json", "control_meta.json"):
         raw = sum(1 for r in sd.values() if isinstance(r, dict) and r.get("controller") is not None)
         exp = cm_stats["raw_state_controller_overrides"]
         rep.gate(raw == exp, "raw controller overrides vs meta", f"{raw}", f"{raw} != meta {exp}")
 
-    # --- province control -----------------------------------------------------
     pc = docs["province_control.json"] or {}
     for pid, tag in (pc.items() if isinstance(pc, dict) else []):
         ref(tag, "province_control")
@@ -288,7 +276,6 @@ def main(argv=None):
         else:
             rep.ok("province control coverage", f"{len(pc)} provinces")
 
-    # --- divisions: count, template join, equipment join, state_id, ranges ----
     dv = docs["divisions.json"] or {}
     divs = dv.get("divisions") or []
     by_t = dv.get("by_template")
@@ -299,7 +286,6 @@ def main(argv=None):
             rep.gate(meta_n == len(divs), "division count vs meta",
                      f"{len(divs)}", f"list={len(divs)} meta={meta_n}")
 
-        # template join (empty by_template is itself a failure, not a free pass)
         if not by_t:
             rep.fail("division->template join", "by_template index missing/empty")
         else:
@@ -308,7 +294,6 @@ def main(argv=None):
             rep.gate(bad == 0, "division->template join", f"0/{len(divs)} unresolved",
                      f"{bad}/{len(divs)} unresolved")
 
-        # equipment id join into production.equipment_archetypes
         arch = (docs["production.json"] or {}).get("equipment_archetypes") or {}
         if arch and same_src("divisions.json", "production.json"):
             refs = unres = 0
@@ -320,7 +305,6 @@ def main(argv=None):
             rep.gate(unres == 0, "division equipment->archetype join",
                      f"{refs} refs, 0 unresolved", f"{unres}/{refs} unresolved")
 
-        # owners + state_id sanity
         bad_org = bad_str = bad_state = at_sea = 0
         for d in divs:
             if not isinstance(d, dict):
@@ -338,7 +322,6 @@ def main(argv=None):
         rep.gate(bad_state == 0, "division state_id valid",
                  f"all valid ({at_sea} at-sea/null)", f"{bad_state} invalid state_id")
 
-    # --- diplomacy: refs, faction leader/membership bidirectional -------------
     dp = docs["diplomacy.json"] or {}
     factions = dp.get("factions") or []
     dp_countries = dp.get("countries") or {}
@@ -355,7 +338,6 @@ def main(argv=None):
     if factions:
         rep.gate(leader_bad == 0, "faction leader is member", f"{len(factions)} factions",
                  f"{leader_bad} faction(s) whose leader is not a member")
-        # bidirectional: country.faction_id <-> faction.members
         bad_fwd = bad_rev = 0
         for tag, info in dp_countries.items():
             if not isinstance(info, dict):
@@ -368,8 +350,6 @@ def main(argv=None):
         for fid, members in fac_by_id.items():
             for m in members:
                 ci = dp_countries.get(m)
-                # a member missing from diplomacy.countries, or with a null/other
-                # faction_id, is a real reverse-mismatch (not a free pass)
                 if not (isinstance(ci, dict) and ci.get("faction_id") == fid):
                     bad_rev += 1
         rep.gate(bad_fwd == 0 and bad_rev == 0, "faction_id <-> membership",
@@ -383,11 +363,6 @@ def main(argv=None):
             ref(s.get("overlord"), "subject.overlord")
             ref(s.get("subject"), "subject.subject")
 
-    # --- combats: unit handles -> units, owners -> wars ----------------------
-    # Combat units are [id, type] handles. LAND combats reference divisions
-    # (divisions.json); NAVAL combats reference fleets/task-forces/ships and AIR
-    # combats reference air wings (oob.json). Build one "id:type"-keyed handle
-    # map across all three so a combat of any kind resolves.
     combats = (docs["combats.json"] or {}).get("combats") or []
     if combats:
         handle_owner = {}
@@ -444,15 +419,11 @@ def main(argv=None):
             rep.gate(unit_unres == 0, "combat unit -> unit resolve",
                      f"{unit_refs} unit refs (land+naval+air), 0 unresolved",
                      f"{unit_unres}/{unit_refs} unresolved", soft=not coherent)
-            # at-war is advisory: expeditionaries/volunteers fight under other tags
             rep.gate(not_at_war == 0, "combat owners are at war",
                      "all engaged owner-pairs are at war",
                      f"{not_at_war} engaged pair(s) not found in wars", soft=True)
 
-    # --- per-country domains define the universe; nothing extra to ref --------
-    # (economy/focus/tech/production country keys already folded into `known`)
 
-    # --- tag integrity verdict -----------------------------------------------
     if known:
         if referenced:
             sample = "; ".join(f"{t}({','.join(sorted(w))[:30]})"
@@ -469,7 +440,6 @@ def main(argv=None):
     else:
         rep.ok("tag well-formedness", "no malformed country references")
 
-    # --- leak guard on recorded source paths ---------------------------------
     leaks = []
     for n in ("meta.json", "control_meta.json", "divisions.json", "combats.json"):
         d = docs.get(n)

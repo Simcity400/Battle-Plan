@@ -1,12 +1,3 @@
-//! Exact-a729 country-trade window activation observer.
-//!
-//! `CCountryTradeView::Open` and `CCountryTradeView::Close` are the engine
-//! lifecycle boundary for the authored `countrytradeview` root.  The hook
-//! publishes only a pointer-free-able country object identity plus a monotonic
-//! lifecycle sequence.  The d43 collector must join that object to its exact
-//! current country census before emitting MTRA; a missing join is omission,
-//! never an inferred selected POV.
-
 use core::ffi::c_void;
 use minhook::MinHook;
 use std::mem;
@@ -24,22 +15,18 @@ pub const COUNTRY_TRADE_VIEW_VTABLE_RVA: usize = 0x029c_b560;
 pub const COUNTRY_SOURCE_HOLDER_OFFSET: usize = 0x548;
 pub const COUNTRY_REFERENCE_VIRTUAL_OFFSET: usize = 0xa0;
 
-pub const AUTHORITY_JOB_ID: &str =
-    "20260722T013354Z-x15-open-close-lifecycle-521d1851";
+pub const AUTHORITY_JOB_ID: &str = "20260722T013354Z-x15-open-close-lifecycle-521d1851";
 pub const AUTHORITY_MANIFEST_SHA256: &str =
     "de07756d379ffa51de678e5083ac8f4c6efb7453bfc20306499c44b18fba78e2";
-pub const SENTINEL_JOB_ID: &str =
-    "20260722T013608Z-x15-activation-hook-sentinels-feaea801";
+pub const SENTINEL_JOB_ID: &str = "20260722T013608Z-x15-activation-hook-sentinels-feaea801";
 pub const SENTINEL_ARTIFACT_SHA256: &str =
     "7dff1c3afb8d48be2987c5ce1e9f9ade92cf805094ef634fef75b444d835c62b";
 
 const OPEN_SENTINEL: [u8; 16] = [
-    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0x82, 0x2b, 0x81, 0xff, 0x83,
-    0x38,
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0xe8, 0x82, 0x2b, 0x81, 0xff, 0x83, 0x38,
 ];
 const CLOSE_SENTINEL: [u8; 16] = [
-    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x89, 0x10, 0x1f, 0x00,
-    0x00,
+    0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xd9, 0x48, 0x8b, 0x89, 0x10, 0x1f, 0x00, 0x00,
 ];
 
 type WindowLifecycleFn = unsafe extern "system" fn(usize);
@@ -95,8 +82,6 @@ unsafe extern "system" fn hook_open(view: usize) {
         return;
     }
     let Some(country_ptr) = exact_selected_country(view) else {
-        // An engine-open window without an exact country join is not active
-        // authority.  Clear any previous observation instead of retaining it.
         publish(0, 0, next_sequence());
         return;
     };
@@ -127,9 +112,7 @@ fn publish(view: usize, country_ptr: usize, sequence: u64) {
 
 fn exact_selected_country(view: usize) -> Option<usize> {
     let base = MODULE_BASE.load(Ordering::Acquire);
-    if base == 0
-        || read_value::<usize>(view)? != base.checked_add(COUNTRY_TRADE_VIEW_VTABLE_RVA)?
-    {
+    if base == 0 || read_value::<usize>(view)? != base.checked_add(COUNTRY_TRADE_VIEW_VTABLE_RVA)? {
         return None;
     }
     let holder = read_value::<usize>(view.checked_add(COUNTRY_SOURCE_HOLDER_OFFSET)?)?;
@@ -251,7 +234,9 @@ pub(crate) fn uninstall() -> Result<(), String> {
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
         if Instant::now() >= deadline {
             BROKEN.store(true, Ordering::Release);
-            return Err("X15 activation callbacks did not quiesce; process restart required".into());
+            return Err(
+                "X15 activation callbacks did not quiesce; process restart required".into(),
+            );
         }
         thread::yield_now();
     }
@@ -300,25 +285,9 @@ fn rollback(specs: &[HookSpec], created: usize, enabled: usize) -> String {
             failures.push(format!("0x{target:X} disable: {status}"));
         }
     }
-    // QUIESCED: `DRAINING` closed above, every enabled target disabled, and the
-    // in-flight count observed at zero here -- the same three steps `uninstall`
-    // takes, and for the same reason.
-    //
-    // THIS IS NOT THE VACUOUS CREATE-ONLY CASE, and the parameter list is the
-    // proof: `enabled` is how many of these targets were ENABLED, so whenever
-    // it is non-zero a game thread can be inside a detour body right now, and
-    // the trampoline the loop below frees is what its call through the original
-    // returns into. The freeze inside `remove` cannot see that thread -- the
-    // body is this module's own function, at an address `inline_detour` is
-    // never told. Classifying this path as create-only because it is named
-    // `rollback` is what a name-based audit does.
     let deadline = Instant::now() + Duration::from_secs(5);
     while ACTIVE_CALLBACKS.load(Ordering::Acquire) != 0 {
         if Instant::now() >= deadline {
-            // RETAINED, not freed: the targets are disabled so nothing new can
-            // enter them, and every trampoline stays allocated for whoever is
-            // still inside. `BROKEN` is the same latch a non-quiescing
-            // `uninstall` sets.
             BROKEN.store(true, Ordering::Release);
             return "; rollback incomplete: callbacks did not quiesce, hooks retained".to_string();
         }

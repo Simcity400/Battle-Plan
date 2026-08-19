@@ -116,11 +116,6 @@ def verify(run_dir: Path, snapshot_dir: Path, extraction_report_path: Path) -> d
     extracted_rows = extraction.get("snapshots")
     if not isinstance(extracted_rows, list) or len(extracted_rows) < 2:
         raise VerifyError("snapshot extraction report contains fewer than two snapshots")
-    # The retained extraction directory and report are mutable sidecars. Re-read
-    # the replay container into a private temporary directory and require the
-    # recorded index/inventory to match that independent extraction exactly. This
-    # prevents a regrade from accepting hand-edited snapshots plus a correspondingly
-    # edited report while the retained replay bytes remain unchanged.
     try:
         with tempfile.TemporaryDirectory(prefix="hoi4_f6_pause_reextract_") as temp_root:
             fresh = extract_replay_snapshots(replay_path, Path(temp_root) / "snapshots")

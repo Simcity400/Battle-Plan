@@ -16,13 +16,13 @@ for _p in (str(_GAME_ASSETS), str(_DEFS)):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from extract import Layer  # noqa: E402
-from paradox_parser import parse  # noqa: E402
-from static_artifact_common import sha256_bytes  # noqa: E402
-import pytest  # noqa: E402
-import parse_ship_definitions  # noqa: E402
-import gfx_icon_manifest_gate  # noqa: E402
-import build_all  # noqa: E402
+from extract import Layer
+from paradox_parser import parse
+from static_artifact_common import sha256_bytes
+import pytest
+import parse_ship_definitions
+import gfx_icon_manifest_gate
+import build_all
 
 
 def _write(root: Path, rel: str, text: str):
@@ -791,11 +791,9 @@ spriteTypes = {
     catalog = gfx_icon_manifest_gate.build_catalog(_gfx_args(vanilla, userdata, _allowlist(tmp_path)))
     row = catalog["sprites"]["GFX_recovered_absolute"]
 
-    # The game-relative path is recovered and resolves...
     assert row["texturefile"] == "gfx/interface/foo.dds"
     assert row["texture_sha256"]
     assert catalog["meta"]["unresolved_textures"] == 0
-    # ...but the absolute original may not survive anywhere in the catalog.
     assert row["raw"]["texturefile"] == "<absolute>/foo.dds"
     assert row["raw_texturefile"] == "<absolute>/foo.dds"
     assert "F:/bad" not in json.dumps(catalog)

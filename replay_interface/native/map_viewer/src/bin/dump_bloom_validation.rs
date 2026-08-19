@@ -1,25 +1,3 @@
-//! BLOOM1 validation bin: run the file-derived bloom chain on the captured
-//! MainScene and compare the result to the captured RestoreBloom, byte for byte.
-//!
-//! Files-first: the chain parameters come from the installed content via the mod-aware
-//! resolver (see `map_viewer::resolve_bloom_params`). The captured
-//! restore_gate_1 bundle is VALIDATION only — it supplies the MainScene input,
-//! the ground-truth RestoreBloom output, and the PostEffectBase CB whose
-//! BrightThreshold/EmissiveBloomStrength we cross-check against the file-derived
-//! params.
-//!
-//! Usage:
-//!   dump_bloom_validation --bundle <restore_gate_1 dir or bundle.json>
-//!                         --game <the game dir> [--mod <content dir>]...
-//!                         [--out <output dir>]
-//!
-//! Outputs (in --out, default: <bundle dir>/bloom_validation):
-//!   main_scene.bmp             tonemapped preview of the captured MainScene
-//!   bloom_expected.bmp         captured RestoreBloom (ground truth)
-//!   bloom_actual.bmp           our file-derived bloom output
-//!   bloom_bright_pass.bmp      the intermediate bright-pass/downsample
-//!   bloom_diff_heatmap.bmp     per-pixel abs error, heat-mapped
-//!   bloom_validation_stats.json  exact-match %, ULP/8-bit deltas, MAE, params
 
 use map_viewer::{
     load_restore_scene_bundle, resolve_bloom_params, run_bloom_chain, BloomImageRgba, BloomParams,
@@ -40,7 +18,6 @@ const DXGI_FORMAT_R16G16B16A16_FLOAT: u64 = 10;
 fn main() -> Result<()> {
     let args = Args::parse(env::args().skip(1))?;
 
-    // --- Resolve bloom parameters from installed content (source of truth). ---
     let resolver = if args.mods.is_empty() {
         GameFileResolver::vanilla(&args.game)?
     } else {
@@ -50,17 +27,10 @@ fn main() -> Result<()> {
     let kernel =
         map_viewer::BloomBlurKernel::from_gaussian(params.bloom_width, params.bloom_scale)?;
 
-    // --- Load captured evidence (validation only). ---
     let (bundle_dir, bundle_path) = locate_bundle(&args.bundle)?;
-    // Structural validation of the whole restore-pass bundle (fails closed on
-    // any inconsistency) and the decoded PostEffectBase CB.
     let restore = load_restore_scene_bundle(&bundle_path)?;
     let cb = &restore.posteffect_cb;
 
-    // Cross-check: the file-derived bright-pass params must match the CB that
-    // was actually in effect for the captured frame. If a mod retuned the
-    // volume differently from the capture, fail closed rather than validate
-    // against a mismatched ground truth.
     check_close(
         "BrightThreshold",
         params.bright_threshold,
@@ -74,7 +44,6 @@ fn main() -> Result<()> {
         1e-4,
     )?;
 
-    // --- Read the raw captured MainScene + RestoreBloom payloads. ---
     let raw = serde_json::from_slice::<serde_json::Value>(&fs::read(&bundle_path)?)?;
     let main_bind = find_ps_srv(&raw, MAIN_SCENE_NAME)?;
     let bloom_bind = find_ps_srv(&raw, RESTORE_BLOOM_NAME)?;
@@ -82,7 +51,6 @@ fn main() -> Result<()> {
     let main_scene = load_captured_rgba16f(&bundle_dir, &main_bind, MAIN_SCENE_NAME)?;
     let expected_bloom = load_captured_rgba16f(&bundle_dir, &bloom_bind, RESTORE_BLOOM_NAME)?;
 
-    // The bloom output must be exactly half the MainScene size.
     if expected_bloom.width != main_scene.width / 2
         || expected_bloom.height != main_scene.height / 2
     {
@@ -93,14 +61,11 @@ fn main() -> Result<()> {
         .into());
     }
 
-    // --- Run the file-derived chain. ---
     let output = run_bloom_chain(&main_scene, params)?;
     let actual_bloom = &output.bloom;
 
-    // --- Compare, pixel for pixel. ---
     let stats = compare(&expected_bloom, actual_bloom);
 
-    // --- Write outputs. ---
     let out_dir = args
         .out
         .clone()
@@ -149,7 +114,6 @@ fn main() -> Result<()> {
     let json = serde_json::to_string_pretty(&report)?;
     fs::write(out_dir.join("bloom_validation_stats.json"), &json)?;
 
-    // --- Console summary. ---
     println!("BLOOM1 validation ({})", bundle_path.display());
     println!(
         "  params (files): BLOOM_WIDTH={} BLOOM_SCALE={} BRIGHT_THRESHOLD={} EMISSIVE_BLOOM_STRENGTH={}",
@@ -277,7 +241,6 @@ fn locate_bundle(arg: &Path) -> Result<(PathBuf, PathBuf)> {
     .into())
 }
 
-/// A minimal view of a PS SRV binding needed to read its raw payload.
 struct CapturedBinding {
     file: String,
     width: usize,
@@ -322,7 +285,6 @@ fn find_ps_srv(root: &serde_json::Value, declared_name: &str) -> Result<Captured
         .and_then(|f| f.as_str())
         .ok_or_else(|| format!("bloom validation blocked: {declared_name} has no payload file"))?
         .to_string();
-    // Prefer the subresource's row pitch / offset; fall back to a tight pitch.
     let sub = resource
         .get("subresources")
         .and_then(|s| s.as_array())
@@ -436,7 +398,6 @@ fn load_captured_rgba16f(
     BloomImageRgba::from_r16g16b16a16_float(slice, binding.width, binding.height, binding.row_pitch)
 }
 
-// ---------- Comparison ----------
 
 #[derive(Clone, Serialize)]
 struct Stats {
@@ -448,14 +409,9 @@ struct Stats {
     mean_abs_error: f64,
     max_error_8bit_levels: f64,
     max_error_half_ulps: u32,
-    /// Localization: where the max error sits, and per-channel max error.
     max_error_at: [usize; 2],
     max_error_channel: usize,
     per_channel_max_abs_error: [f32; 3],
-    /// Divergence localization bins (per pixel, using the max-channel error and
-    /// the captured bloom magnitude at that pixel). These back the claim that
-    /// the residual is half-float/filter rounding confined to bright bloom
-    /// cores, not a stage error: background pixels must be ~exact.
     background_pixels: usize,
     background_max_abs_error: f32,
     core_pixels: usize,
@@ -463,14 +419,10 @@ struct Stats {
     core_mean_abs_error: f64,
 }
 
-/// Captured bloom magnitude below this counts as "background" (should be exact);
-/// above `CORE_MAGNITUDE` counts as a bright "core" (where half-float LSBs bite).
 const BACKGROUND_MAGNITUDE: f32 = 1.0e-6;
 const CORE_MAGNITUDE: f32 = 0.01;
 
 fn compare(expected: &BloomImageRgba, actual: &BloomImageRgba) -> Stats {
-    // Compare RGB only (bloom.shader writes color to RGB; alpha is a forced 1.0
-    // and not consumed by restorescene's bloom add).
     let mut total = 0usize;
     let mut exact = 0usize;
     let mut within = 0usize;
@@ -493,7 +445,6 @@ fn compare(expected: &BloomImageRgba, actual: &BloomImageRgba) -> Stats {
             let mut pixel_max_err = 0.0f32;
             for c in 0..3 {
                 total += 1;
-                // Half-float exactness: re-quantize our value and compare bits.
                 let e_bits = map_viewer::f32_to_half_float(e[c]);
                 let a_bits = map_viewer::f32_to_half_float(a[c]);
                 if e_bits == a_bits {
@@ -520,7 +471,6 @@ fn compare(expected: &BloomImageRgba, actual: &BloomImageRgba) -> Stats {
                     max_ch = c;
                 }
             }
-            // Bin by captured bloom magnitude at this pixel.
             let magnitude = e[0].max(e[1]).max(e[2]);
             if magnitude < BACKGROUND_MAGNITUDE {
                 bg_pixels += 1;
@@ -556,11 +506,9 @@ fn compare(expected: &BloomImageRgba, actual: &BloomImageRgba) -> Stats {
     }
 }
 
-/// Monotonic-ordering ULP distance between two IEEE-754 half-float bit patterns.
 fn half_ulp_distance(a: u16, b: u16) -> u32 {
     let ord = |bits: u16| -> i32 {
         if bits & 0x8000 != 0 {
-            // Negative: flip to a descending order below zero.
             -(i32::from(bits & 0x7fff))
         } else {
             i32::from(bits)
@@ -569,7 +517,6 @@ fn half_ulp_distance(a: u16, b: u16) -> u32 {
     (ord(a) - ord(b)).unsigned_abs()
 }
 
-// ---------- BMP writers (24-bit BGR, bottom-up; shared writer) ----------
 
 fn write_bmp_linear(path: &Path, image: &BloomImageRgba) -> Result<()> {
     let rgb: Vec<[u8; 3]> = image
@@ -580,7 +527,6 @@ fn write_bmp_linear(path: &Path, image: &BloomImageRgba) -> Result<()> {
     bmp_out::write_bmp24_rgb(path, image.width, image.height, &rgb)
 }
 
-/// A gamma-ish tonemap preview so the HDR MainScene is legible.
 fn write_bmp_tonemap(path: &Path, image: &BloomImageRgba) -> Result<()> {
     let rgb: Vec<[u8; 3]> = image
         .texels
@@ -605,20 +551,17 @@ fn write_diff_heatmap(
     expected: &BloomImageRgba,
     actual: &BloomImageRgba,
 ) -> Result<()> {
-    // Per-pixel max-channel abs error, scaled so 1/255 maps near full intensity.
     let rgb: Vec<[u8; 3]> = (0..expected.texels.len())
         .map(|i| {
             let e = expected.texels[i];
             let a = actual.texels[i];
             let d = (0..3).map(|c| (e[c] - a[c]).abs()).fold(0.0f32, f32::max);
-            heat(d * 255.0) // scale so a full 8-bit level saturates the ramp
+            heat(d * 255.0)
         })
         .collect();
     bmp_out::write_bmp24_rgb(path, expected.width, expected.height, &rgb)
 }
 
-/// Blue(0) -> green -> red(>=1) heat ramp over `t` (already scaled so 1.0 ~= a
-/// full 8-bit level of error).
 fn heat(t: f32) -> [u8; 3] {
     let t = t.clamp(0.0, 1.0);
     if t < 0.5 {
@@ -644,7 +587,6 @@ fn check_close(name: &str, derived: f32, captured: f32, tol: f32) -> Result<()> 
     Ok(())
 }
 
-// ---------- JSON report ----------
 
 #[derive(Serialize)]
 struct ValidationReport {

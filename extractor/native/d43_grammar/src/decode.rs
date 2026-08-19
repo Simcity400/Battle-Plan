@@ -1,11 +1,3 @@
-//! The complete D43 decode, payload-only rule evaluation, and shared verdict.
-//!
-//! Cursor advancement remains exclusively in the lazy grammar.  This module is
-//! an eager owner of that cursor: it walks every declared block, records every
-//! row it can delimit, and evaluates payload-only rules without allowing a
-//! semantic finding to affect the walk.  Only a structural [`Violation`] or a
-//! caller policy refusal at a named magic stops decoding.
-
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -14,10 +6,6 @@ use core::ops::Range;
 
 use crate::*;
 
-/// Every caller-supplied ceiling used by the shared D43 rules.
-///
-/// There is deliberately no `Default`: these values come from the caller's
-/// build profile, not from a second copy in this dependency-free leaf.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecodeContext {
     pub accepted_families: D43AcceptedFamilies,
@@ -62,14 +50,11 @@ impl DecodeContext {
     }
 }
 
-/// The family alphabet a caller accepts after magic delimitation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct D43AcceptedFamilies(u16);
 
 impl D43AcceptedFamilies {
-    /// The seven families accepted by both shipping readers.
     pub const SHIPPING: Self = Self(0x007f);
-    /// All nine families, including lane-only MTRB and MTLL.
     pub const LANE_ALL: Self = Self(0x01ff);
 
     pub const fn contains(self, trailer: Trailer) -> bool {
@@ -91,7 +76,6 @@ const fn family_bit(trailer: Trailer) -> u16 {
     }
 }
 
-/// A flat decoded row, retaining its wire index and absolute payload offset.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct D43DecodedRow<T> {
     pub index: usize,
@@ -99,7 +83,6 @@ pub struct D43DecodedRow<T> {
     pub row: T,
 }
 
-/// An MTRF row and its half-open range in `DecodeDocument::flow_values`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct D43DecodedFlowRow {
     pub index: usize,
@@ -108,8 +91,6 @@ pub struct D43DecodedFlowRow {
     pub values: Range<usize>,
 }
 
-/// One MTRR identity entry. The ranges retain wire provenance; `token_text`
-/// carries the validated token so no consumer has to read the payload again.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct D43DecodedIdentity {
     pub index: usize,
@@ -120,8 +101,6 @@ pub struct D43DecodedIdentity {
     pub padding: Option<Range<usize>>,
 }
 
-/// Headers and one flat vector for every wire block. It remains useful after a
-/// structural stop because every field is populated incrementally.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeDocument {
     pub core_header: Option<CoreHeader>,
@@ -183,7 +162,6 @@ impl DecodeDocument {
     }
 }
 
-/// The once-computed public counters used by the authority and fold adapters.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct D43UnitCounts {
     pub market_trade_contract_rows: Option<usize>,
@@ -263,8 +241,6 @@ impl D43UnitCounts {
     }
 }
 
-/// A shared payload rule. Variants are intentionally prefixed and carry no
-/// strings; formatting operands live on [`Finding`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum D43DecodeRule {
     D43FindingsSuppressed,
@@ -418,10 +394,7 @@ pub enum D43DecodeRule {
     D43CrossFlowV3NeedsIdentityResourceRows,
 }
 
-/// Fine-grained payload predicates that only the lane gate diagnosed before
-/// the shared rewire. They are kept separate from [`D43DecodeRule`] so the
 /// shipping formatters do not acquire an unreachable formatting surface. Each
-/// finding also carries a shared umbrella rule for ordering and block identity.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum D43LaneRule {
     D43LaneResidualHeaderCountSum,
@@ -476,15 +449,12 @@ pub enum D43LaneRule {
     D43LaneLendLeasePriceCount,
 }
 
-/// Whether one rule participates in the shared record verdict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum D43RuleFatality {
     Fatal,
     NonFatal,
 }
 
-/// A value field whose site-owned spelling is needed by a generic presence
-/// rule. This is an identity, not a diagnostic string.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum D43ValueField {
     D43PriceRaw,
@@ -548,8 +518,6 @@ impl D43DecodeRule {
     }
 }
 
-/// Stable fold-policy order. `phase` is: core prefix, trailers, cross-family,
-/// core rows. The prefix preserves the fold's scale-before-trailers refusal.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct D43PolicyOrder {
     pub phase: u8,
@@ -561,7 +529,6 @@ pub struct D43PolicyOrder {
     pub at: usize,
 }
 
-/// The decoded block a finding belongs to, including non-trailer blocks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum D43DecodeBlock {
     D43CoreHeader,
@@ -577,7 +544,6 @@ pub enum D43DecodeBlock {
     D43CrossFamily,
 }
 
-/// The complete identity used by an MTRD half-join diagnostic.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct D43DealIdentityOperands {
     pub exporter_tag_db_id: u32,
@@ -586,7 +552,6 @@ pub struct D43DealIdentityOperands {
     pub ordinal: u32,
 }
 
-/// One rule finding, carrying only scalar formatting operands.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Finding {
     pub rule: D43DecodeRule,
@@ -602,7 +567,6 @@ pub struct Finding {
     pub value_field: Option<D43ValueField>,
     pub deal_identity: Option<D43DealIdentityOperands>,
     pub lane_rule: Option<D43LaneRule>,
-    /// The original rule summarized by [`D43DecodeRule::D43FindingsSuppressed`].
     pub suppressed_rule: Option<D43DecodeRule>,
     pub header_preview: Option<HeaderPreview>,
     pub fatality: D43RuleFatality,
@@ -610,7 +574,6 @@ pub struct Finding {
     pub structural: Option<Violation>,
 }
 
-/// Why the eager walk stopped before exact consumption.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum D43DecodeStop {
     D43Grammar(Violation),
@@ -618,8 +581,6 @@ pub enum D43DecodeStop {
     D43Allocation { at: usize, rows: usize },
 }
 
-/// The partial document, all semantic/structural findings, canonical counts,
-/// and the optional condition that made the next boundary unknowable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodeReport {
     pub document: DecodeDocument,
@@ -629,8 +590,6 @@ pub struct DecodeReport {
     finding_tallies: BTreeMap<(D43DecodeRule, Option<D43LaneRule>), D43FindingTally>,
 }
 
-/// At most this many instances of one rule are retained verbatim. Any excess
-/// is represented by one explicit `D43FindingsSuppressed` finding.
 pub const D43_MAX_FINDINGS_PER_RULE: usize = 64;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -640,10 +599,6 @@ struct D43FindingTally {
     first_suppressed: Option<Finding>,
 }
 
-/// The fold's two payload-only refusal boundaries. A site first selects through
-/// trailers/cross-family rules, performs its non-payload baseline/failure gates
-/// and trailer state application, then selects the whole record only when it
-/// is about to consume core rows.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum D43VerdictBoundary {
     D43TrailersAndCrossFamily,
@@ -701,8 +656,6 @@ fn policy_block_ordinal(
 ) -> u8 {
     if phase != 1 {
         if phase == 0 && rule == D43DecodeRule::D43CoreScale {
-            // The fold proves the whole declared core extent before inspecting
-            // scale, then checks scale before it enters the trailer phase.
             return 2;
         }
         return match block {
@@ -807,28 +760,34 @@ fn push_rule(
     family_ordinal: u16,
     rule_ordinal: u16,
 ) {
-    retain_finding(report, finding(
-        rule,
-        family,
-        block,
-        at,
-        row_or_slot,
-        operands,
-        other_family,
-        phase,
-        family_ordinal,
-        rule_ordinal,
-    ));
+    retain_finding(
+        report,
+        finding(
+            rule,
+            family,
+            block,
+            at,
+            row_or_slot,
+            operands,
+            other_family,
+            phase,
+            family_ordinal,
+            rule_ordinal,
+        ),
+    );
 }
 
 fn retain_finding(report: &mut DecodeReport, item: Finding) {
     let key = (item.rule, item.lane_rule);
     let retain = {
-        let tally = report.finding_tallies.entry(key).or_insert(D43FindingTally {
-            retained: 0,
-            suppressed: 0,
-            first_suppressed: None,
-        });
+        let tally = report
+            .finding_tallies
+            .entry(key)
+            .or_insert(D43FindingTally {
+                retained: 0,
+                suppressed: 0,
+                first_suppressed: None,
+            });
         if tally.retained < D43_MAX_FINDINGS_PER_RULE {
             tally.retained += 1;
             true
@@ -1056,7 +1015,6 @@ fn violation_block(violation: Violation) -> Option<TrailerBlock> {
     }
 }
 
-/// Decode one D43 payload with the leaf's one structural walk.
 pub fn decode_record(payload: &[u8], ctx: DecodeContext) -> DecodeReport {
     let mut report = DecodeReport {
         document: DecodeDocument::empty(),
@@ -1119,8 +1077,6 @@ pub fn decode_record(payload: &[u8], ctx: DecodeContext) -> DecodeReport {
         return report;
     }
 
-    // Copy core rows now, but defer their semantic findings until after trailer
-    // and cross-family evaluation to reproduce the fold's application order.
     let mut core = CoreRowCursor::new(header.row_count());
     loop {
         match core.next(payload) {
@@ -1175,8 +1131,6 @@ pub fn decode_record(payload: &[u8], ctx: DecodeContext) -> DecodeReport {
             break;
         }
 
-        // MTRF's count/mask word historically precedes header_len in both
-        // shipping diagnostics. Peek without advancing, then let read_body own
         // the structural decision and cursor ownership.
         let preview = match cursor.peek_header(payload) {
             Ok(words) => words,
@@ -1213,15 +1167,10 @@ pub fn decode_record(payload: &[u8], ctx: DecodeContext) -> DecodeReport {
     report
 }
 
-/// Select the shared record refusal in fold policy order, independent of
-/// discovery order.
 pub fn select_first_fatal(report: &DecodeReport) -> Option<&Finding> {
     select_first_fatal_through(report, D43VerdictBoundary::D43WholeRecord)
 }
 
-/// Select through one fold application boundary without restating fatality or
-/// order at a site. This is what preserves the shipping fold's early-success
-/// failure-status gate while still collecting core findings in the report.
 pub fn select_first_fatal_through(
     report: &DecodeReport,
     boundary: D43VerdictBoundary,
@@ -1239,7 +1188,6 @@ pub fn select_first_fatal_through(
         .min_by_key(|item| item.policy_order)
 }
 
-/// Borrow the token validated and copied by [`decode_record`].
 pub fn identity_token(identity: &D43DecodedIdentity) -> Option<&str> {
     identity.token_text.as_deref()
 }
@@ -2653,8 +2601,7 @@ fn evaluate_flow(
             }
         }
         FlowVersion::Variable => {
-            if header.resource_count == 0 || header.resource_count > ctx.max_resource_count { /* preview already emitted */
-            }
+            if header.resource_count == 0 || header.resource_count > ctx.max_resource_count {}
             if header.kind_mask != FLOW_KIND_MASK {
                 push_rule(
                     report,
@@ -4515,8 +4462,6 @@ fn evaluate_stockpile(
             family_ordinal,
             40,
         );
-        // The historical fold completed all country-range checks, then
-        // checked aggregate coverage, and only then inspected any item row.
         item.policy_order.block_ordinal = 3;
         item.policy_order.scope_ordinal = 0;
         retain_finding(report, item);
@@ -5186,9 +5131,6 @@ fn compute_units(report: &mut DecodeReport) {
         .map(|r| r.row.tag_db_id)
         .collect::<BTreeSet<_>>()
         .len();
-    // Only a structural stop makes the current family and everything after it
-    // unreadable. A semantic family finding can refuse the record, but it does
-    // not erase counts from a family whose complete byte extent was delimited.
     let publication_cut = match report.structural_stop {
         Some(D43DecodeStop::D43Grammar(violation)) => Some(violation.at),
         Some(D43DecodeStop::D43RejectedFamily { at, .. }) => Some(at),

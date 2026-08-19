@@ -1,47 +1,12 @@
-//! Pointer-free exact-a729 current-POV map-spotted unit carrier (d95).
-
-
 pub const DOMAIN_ID: u16 = 95;
 pub const DOMAIN_NAME: &str = "pov_spotted_units_live";
 pub const CARRIER_MAGIC: [u8; 4] = *b"SPU1";
 pub const CARRIER_VERSION: u16 = 1;
-/// A POV country id is a country-database id, so it carries the family bound:
-/// [`crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`]. Was `2_048`, a guess
-/// at the vanilla-plus-DLC country count (vanilla defines 439 tags), which cost
-/// this whole carrier on any overhaul whose human player sat above it.
 pub const MAX_POV_COUNTRY_ID: u32 = crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_ROWS_PER_SURFACE: usize = 131_072;
 pub const FLAG_LAND_FRAME: u16 = 1 << 0;
 pub const FLAG_TASKFORCE_FRAME: u16 = 1 << 1;
-/// The land frame carries the hour its PRODUCER observed at, not the hour the
-/// collector drained it in.
-///
-/// # Why the drain hour is not enough
-///
-/// D95 retains a producer frame and re-serves it until the producer replaces
-/// it, which is what stops a speed-5 game from opening false coverage holes on
-/// every hour between two renderer calls. The consequence is that the hour
-/// label on the record is the hour of the DRAIN, and the payload said nothing
-/// about when the state it carries was observed -- so "the POV has seen these
-/// units since H-1" and "the POV saw these units in H" were the same bytes.
-/// Moving the drain to the front of the frame build widened the window in
-/// which a producer publication lands after the drain from roughly 7 ms to
-/// roughly 80 ms, which makes the distinction worth stating rather than
-/// arguing.
-///
-/// The producer reads its hour from the SAME authenticated root the collector's
-/// own date label comes from -- the CGameState singleton at
-/// `build_profile::DOMAIN57_CGAMESTATE_SINGLETON_RVA`, offset
-/// `0x468` -- so the two words are directly comparable and their difference is
-/// the frame's age in hours.
-///
-/// Additive, in the shape the D97 kind-3 change already set: the carrier
-/// version does NOT move, the fact rides a previously unused flag bit, and a
-/// payload without the bit decodes exactly as it did before. A decoder that
-/// predates the bit refuses the payload rather than silently dropping the
-/// field, which is the correct failure for a fact the fold reasons with.
 pub const FLAG_LAND_FRAME_HOUR: u16 = 1 << 2;
-/// The task-force frame's producer hour. See [`FLAG_LAND_FRAME_HOUR`].
 pub const FLAG_TASKFORCE_FRAME_HOUR: u16 = 1 << 3;
 const KNOWN_FLAGS: u16 =
     FLAG_LAND_FRAME | FLAG_TASKFORCE_FRAME | FLAG_LAND_FRAME_HOUR | FLAG_TASKFORCE_FRAME_HOUR;
@@ -62,29 +27,15 @@ pub struct SpottedUnitsSnapshot {
     pub pov_country_id: u32,
     pub land_frame_sequence: Option<u64>,
     pub taskforce_frame_sequence: Option<u64>,
-    /// The raw engine date word the LAND producer read at the moment it
-    /// published, or `None` when the producer's clock read failed. See
-    /// [`FLAG_LAND_FRAME_HOUR`].
     pub land_frame_hour_raw: Option<i32>,
-    /// The task-force producer's own hour. See [`FLAG_LAND_FRAME_HOUR`].
     pub taskforce_frame_hour_raw: Option<i32>,
     pub land: Vec<SpottedUnitHandle>,
     pub taskforces: Vec<SpottedUnitHandle>,
 }
 
-/// The land surface's admitted intel floor; rows below it are refused.
 pub const LAND_MINIMUM_INTEL: u8 = 250;
-/// The task-force surface's admitted intel floor.
 pub const TASKFORCE_MINIMUM_INTEL: u8 = 150;
 
-/// The snapshot's validation over BORROWED parts, so a holder of the two
-/// frames can validate before it copies a row. [`SpottedUnitsSnapshot::validate`]
-/// is exactly this over its own fields, so the two cannot disagree. It is
-/// [`validate_snapshot_header`] plus [`validate_surface_rows`] per surface —
-/// the D95 producer certifies its rows with the latter at publish time (outside
-/// the slot mutex) and the D95 drain runs only the former under the mutex the
-/// engine's hooks block on (lane LO), so nothing that allocates or walks rows
-/// happens while it is held.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_snapshot_parts(
     capture_sequence: u64,
@@ -162,10 +113,6 @@ impl SpottedUnitsSnapshot {
             out.push(row.raw_intel);
             out.extend_from_slice(&[0u8; 3]);
         }
-        // The producer hours ride AFTER the rows, one 8-byte word per set flag,
-        // in (land, taskforce) order. Appending rather than widening the header
-        // is what keeps every byte offset the pre-existing decoders read at
-        // exactly where it was.
         for hour in [self.land_frame_hour_raw, self.taskforce_frame_hour_raw]
             .into_iter()
             .flatten()
@@ -284,17 +231,6 @@ mod tests {
         }
     }
 
-    /// Law: the producer hour is ADDITIVE. A payload without it is byte-for-byte
-    /// what this carrier produced before the field existed.
-    ///
-    /// The version does not move and the header does not widen, exactly as the
-    /// D97 kind-3 change did it: the fact rides a previously unused flag bit and
-    /// an 8-byte word AFTER the rows, so every offset a pre-existing reader
-    /// walks is where it was. A capture archived before this lane still decodes.
-    ///
-    /// MUTATION RUN: write the hour words into the header instead, between
-    /// `pov_country_id` and the row counts. OBSERVED: FAILED on the no-hour
-    /// length -- every archived payload's row counts move by 16 bytes.
     #[test]
     fn a_payload_without_a_producer_hour_is_unchanged() {
         let bare = snapshot();
@@ -317,15 +253,6 @@ mod tests {
         assert_eq!(SpottedUnitsSnapshot::decode(&bytes).unwrap(), bare);
     }
 
-    /// Law: each surface's producer hour round-trips independently.
-    ///
-    /// Independently, because the two producers publish on different engine
-    /// calls and a drain routinely serves one fresh frame beside one retained
-    /// one -- which is the whole reason the hour is on the wire.
-    ///
-    /// MUTATION RUN: swap the encode order of the two hour words while leaving
-    /// the decode order alone. OBSERVED: FAILED on the both-hours case, land
-    /// reading 4099 against 4100.
     #[test]
     fn each_surfaces_producer_hour_round_trips_on_its_own() {
         for (land_hour, taskforce_hour, extra_words) in [
@@ -350,14 +277,6 @@ mod tests {
         }
     }
 
-    /// Law: a producer hour needs the producer frame it dates.
-    ///
-    /// An hour without its frame would let a consumer age an observation that
-    /// is not in the payload -- the same class of claim as a row without a
-    /// complete frame, which `validate_surface` has always refused.
-    ///
-    /// MUTATION RUN: delete the two `_hour_raw.is_some() && _sequence.is_none()`
-    /// arms from `validate`. OBSERVED: both encodes below succeed.
     #[test]
     fn a_producer_hour_may_not_outlive_its_frame() {
         let mut orphan_land = snapshot();
@@ -373,11 +292,6 @@ mod tests {
         assert!(orphan_taskforce.encode().is_err());
     }
 
-    /// Law: a truncated or padded hour tail is refused, not read as a row.
-    ///
-    /// MUTATION RUN: drop the `hour_words` term from the expected length.
-    /// OBSERVED: the truncations below decode, and the hour words are silently
-    /// lost.
     #[test]
     fn a_truncated_producer_hour_tail_fails_closed() {
         let mut value = snapshot();
@@ -396,13 +310,6 @@ mod tests {
     }
 }
 
-/// The header-only half of a snapshot's validation: the two surfaces' shape
-/// (count ceiling, sequence rules) and the cross-surface rules. Constant time
-/// and ALLOCATION-FREE on every path — the errors are static — because this is
-/// the half a holder of an engine-shared mutex runs (lane LO: the D95 drain,
-/// while the engine's producer hooks may be waiting for the slot).
-/// [`validate_snapshot_parts`] is this plus [`validate_surface_rows`] per
-/// surface, so the two cannot drift.
 #[allow(clippy::too_many_arguments)]
 pub fn validate_snapshot_header(
     capture_sequence: u64,
@@ -425,9 +332,6 @@ pub fn validate_snapshot_header(
     if land_frame_sequence.is_none() && taskforce_frame_sequence.is_none() {
         return Err("spotted-units snapshot has no complete producer frame");
     }
-    // A producer hour is a statement BY a producer frame. Without the
-    // frame there is nothing for it to date, and admitting one would let a
-    // consumer age an observation that is not in the payload.
     if land_frame_hour_raw.is_some() && land_frame_sequence.is_none() {
         return Err("spotted-units land producer hour has no land frame");
     }
@@ -467,20 +371,11 @@ fn validate_surface_shape(
     }
 }
 
-/// The per-row admission rule, one row at a time: what
-/// [`validate_surface_rows`] enforces per element and what a producer that
-/// already emits rows in strict key order can apply INLINE while it
-/// materialises (lane LO: the D95 producer certifies rows this way in the one
-/// pass it already makes, on the engine's thread, outside the slot mutex).
 #[inline]
 pub fn row_in_admitted_range(row: &SpottedUnitHandle, minimum_intel: u8) -> bool {
     row.type_id != 0 && row.stable_id != 0 && row.raw_intel >= minimum_intel
 }
 
-/// The per-row half: every row inside the admitted range, and the rows
-/// strictly increasing by `(type_id, stable_id)` — which is what makes them
-/// unique, so no set is built (lane LO: the earlier `BTreeSet` was redundant
-/// with the strict-order check and allocated on every validation).
 pub fn validate_surface_rows(
     name: &str,
     rows: &[SpottedUnitHandle],

@@ -1,9 +1,3 @@
-//! Semantic admission for the recorder-packaged research/focus catalog set.
-//!
-//! `source` authenticates each artifact's container role, byte hash, and
-//! content-manifest epoch.  This module is the next boundary: it parses those
-//! exact bytes and proves the three catalogs agree semantically.  Consumers
-//! never reopen `game_defs/out` or substitute the playback machine's files.
 
 use crate::source::PackagedStaticArtifact;
 use serde::{de::DeserializeOwned, Deserialize};
@@ -16,30 +10,11 @@ pub const IDEA_TECH_LOC_XREF_ARTIFACT: &str = "idea_tech_loc_xref_static";
 pub const TECHNOLOGY_SHARING_ARTIFACT: &str = "technology_sharing_static";
 
 const LOCALISATION_SCHEMA: &str = "static_localisation_join_r3.static_artifact.v1";
-/// v2 is the first revision whose `tokens.technologies` rows carry the authored
-/// `start_year`. Pinned exactly, with no v1 fallback: on a v1 catalog an absent
-/// `start_year` means "the generator never emitted one" and on a v2 catalog it
-/// means "this technology authors none", and only the second reading lets
-/// `game_ui`'s derived-quartet authentication treat the absence as a fact. A
-/// stale catalog is refused here rather than quietly weakening that check.
 const IDEA_TECH_SCHEMA: &str = "idea_tech_loc_xref_static.static_artifact.v2";
 const TECHNOLOGY_SHARING_SCHEMA: &str = "technology_sharing_static.static_artifact.v1";
 const ARTIFACT_KIND: &str = "deterministic_static_replay_enrichment";
-/// What `tokens.technologies` rows actually spell in `kind`
-/// (`extractor/game_defs/parse_idea_tech_loc.py`), and what every packaged
-/// catalog has ever carried. The technology-only rules below used to be written
-/// against `"technology"`, a spelling no catalog has, so they never ran on any
-/// artifact; `game_ui`'s observer carried the identical mistake and lane JT
-/// fixed it there. Spelled once here so the two cannot drift apart again.
 pub const PACKAGED_TECHNOLOGY_KIND: &str = "tech";
 const PACKAGED_IDEA_KIND: &str = "idea";
-/// The engine multiplies a technology's authored template year by the hours in
-/// wrap are pinned by
-/// `game_ui/src/research_observer.rs::the_engines_i32_year_intermediate_is_refused_rather_than_wrapped`).
-/// The usable domain is DERIVED from that multiply rather than written down.
-/// Admission uses the same bound the generator does, so an authored year that
-/// is admitted here is one the presentation path can actually check -- the two
-/// were inconsistent while this said "any i32".
 const ENGINE_HOURS_PER_YEAR: i64 = 8_760;
 const ENGINE_YEAR_MAX: i64 = i32::MAX as i64 / ENGINE_HOURS_PER_YEAR;
 
@@ -131,17 +106,8 @@ pub struct IdeaTechnologyDefinition {
     pub folders: Vec<String>,
     #[serde(default)]
     pub picture: Option<String>,
-    /// The authored template year, present only when the definition declares
-    /// one AND the generator could read it.
     #[serde(default)]
     pub start_year: Option<f64>,
-    /// Set when the definition DOES declare a start year that the generator
-    /// could not read -- an undefined `@ref`, declarations that disagree, a
-    /// value that is not a whole engine year. It is the third state, and it
-    /// exists because the other two are indistinguishable without it: a
-    /// consumer that read this row as "authors no start year" would
-    /// authenticate the technology against the weaker check while believing it
-    /// had nothing stronger available.
     #[serde(default)]
     pub start_year_unresolved: bool,
     #[serde(default)]
@@ -192,8 +158,6 @@ impl IdeaTechnologyLocalisationCatalog {
         self.technologies.get(id)
     }
 
-    /// Iterate effective recorder-packaged technology definitions in stable
-    /// identifier order for observer-owned replay composition.
     pub fn technologies(
         &self,
     ) -> impl Iterator<Item = (&str, &IdeaTechnologyDefinition)> {
@@ -210,7 +174,6 @@ impl IdeaTechnologyLocalisationCatalog {
         self.technologies.len()
     }
 
-    /// Stable effective-VFS technology identities in canonical key order.
     pub fn technology_ids(&self) -> impl Iterator<Item = &str> {
         self.technologies.keys().map(String::as_str)
     }
@@ -287,9 +250,6 @@ impl AdmittedStaticResearchCatalogs {
         &self.technology_sharing
     }
 
-    /// Focus definitions/topology are not present in this artifact set.  This
-    /// lookup consumes the exact packaged localisation row only; callers must
-    /// obtain node geometry/icon/kind from a separately authenticated owner.
     pub fn focus_display_name(&self, focus_id: &str) -> Option<&str> {
         self.localisation.text(focus_id)
     }
@@ -331,10 +291,6 @@ struct IdeaTechnologyRoot {
     meta: IdeaTechnologyMeta,
 }
 
-/// The definitions the generator found and could NOT map, each with the reason.
-/// Required, and checked against the counts: without reading these rows the
-/// mapped/omitted contract could be satisfied by a catalog that simply claims a
-/// larger total, which is the forgery the old (wrong) rule happened to refuse.
 #[derive(Deserialize)]
 struct IdeaTechnologyOmissions {
     ideas: Vec<OmittedDefinition>,
@@ -354,12 +310,6 @@ struct IdeaTechnologyTokens {
     technologies: BTreeMap<String, IdeaTechnologyDefinition>,
 }
 
-/// Schema v2's authored-start-year census. Required, not optional: v2 is
-/// exactly the revision that emits the field, so a v2 catalog that cannot say
-/// how many technologies carry a year is not a v2 catalog. The three counts are
-/// re-derived from the rows below and a disagreement is refused, so a catalog
-/// cannot claim coverage it does not have -- nor hide, as the shipped v1
-/// catalogs did, that the number is zero.
 #[derive(Deserialize)]
 struct IdeaTechnologyMeta {
     idea_count: u64,
@@ -455,17 +405,7 @@ pub fn admit_static_research_catalogs(
         IDEA_TECH_SCHEMA,
         IDEA_TECH_LOC_XREF_ARTIFACT,
     )?;
-    // `*_count` is the generator's TOTAL -- mapped plus the definitions it
-    // could not map (`parse_idea_tech_loc.py`: `idea_count = len(ideas) +
-    // len(idea_omitted)`) -- and `*_mapped` is what the token maps actually
-    // carry. This used to compare the TOTAL against the map length, which is
-    // only true when nothing was omitted: vanilla omits nothing, so the rule
     // held on every catalog ever generated, and the first mod with one
-    // unmappable definition would have produced a catalog that the generator
-    // passes, the recorder packages, and this loader then refuses IN FULL --
-    // losing every research catalog in the recording over one excluded row.
-    // Both halves are checked instead: the map length is the mapped count, and
-    // the total is mapped plus omitted.
     for (mapped_field, mapped, mapped_rows, total_field, total, omitted, omitted_field, omitted_rows, kind) in [
         (
             "meta.idea_mapped",
@@ -496,12 +436,6 @@ pub fn admit_static_research_catalogs(
             mapped,
             mapped_rows.len(),
         )?;
-        // The omitted count is checked against the NAMED rows, not taken on
-        // trust: a total that does not follow from the map length has to be
-        // explained by definitions the generator actually excluded, each with
-        // its identity and its reason. Otherwise a catalog could raise its
-        // total by an arbitrary amount and satisfy the arithmetic while
-        // excluding nothing.
         count_matches(
             IDEA_TECH_LOC_XREF_ARTIFACT,
             omitted_field,
@@ -844,11 +778,6 @@ fn validate_definition_map(
             ));
         }
         if expected_kind == PACKAGED_TECHNOLOGY_KIND {
-            // The authored template year the consumer authenticates the engine's
-            // ahead-of-time quartet against. The engine multiplies it as an i32
-            // whole year, so a fractional or out-of-range value is not a year at
-            // all and is refused here rather than quietly disabling the check
-            // downstream. A technology that authors none carries no key.
             if definition.start_year.is_some_and(|year| {
                 !year.is_finite()
                     || year.fract() != 0.0
@@ -860,9 +789,6 @@ fn validate_definition_map(
                     format!("technology row {key:?} has an authored start year that is not a whole engine year"),
                 ));
             }
-            // The three states are exclusive by construction. A row claiming
-            // both a readable year and an unreadable one describes no content
-            // at all, and reading it either way would be a guess.
             if definition.start_year.is_some() && definition.start_year_unresolved {
                 return Err(StaticResearchCatalogError::new(
                     artifact,

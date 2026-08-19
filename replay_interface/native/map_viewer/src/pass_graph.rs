@@ -84,14 +84,6 @@ pub enum ProductionMapPassStatus {
     Blocked,
 }
 
-// The close-zoom law disposition table that used to live here was deleted.
-// It was a two-level dead chain — `close_zoom_blockers()` was reached only by
-// two `d3d11_replay` wrappers that themselves had no callers — and three of its
-// seven rows declared work "blocked" that the product route already executes
-// through its own carrier admission. A policy table that nothing consults, and
-// that would refuse shipping behaviour if anything ever did, is worse than
-// none. Whether a pass may draw is decided by the carriers and the pass status
-// in this graph, never by a source-level law label.
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProductionMapTargetPlan {
@@ -333,10 +325,6 @@ impl ProductionMapPassGraph {
     ) -> Result<Self> {
         camera.validate()?;
         let frame = terrain_library.target_evidence_frame()?;
-        // This route takes its terrain reference from the chunk library, so an
-        // absent post-pass output-merger capture is not a blocker here. Every
-        // structural, bounds and hash-integrity failure of a post-pass capture
-        // that IS present still is.
         let blockers =
             native_d3d11_replay_payload_blockers_without_post_pass_reference(&frame, false);
         if !blockers.is_empty() {
@@ -597,11 +585,6 @@ mod tests {
 
     use std::fs;
 
-    /// R18-1. The routes that establish their terrain reference from the chunk
-    /// library used to drop every blocker whose text contained "post-pass
-    /// output-merger" — thirteen distinct templates, of which only two are
-    /// absence notices. Bounds violations and runtime-file hash disagreement
-    /// were swallowed with them. The waiver is now a typed discriminant.
     #[test]
     fn post_pass_output_merger_waiver_drops_absence_but_never_integrity() {
         let root = temp_test_dir("post_pass_typed_waiver");
@@ -622,8 +605,6 @@ mod tests {
             waived(&frame)
         );
 
-        // Absence stays waived on this route, and is still reported on the
-        // strict one.
         let mut absent = frame.clone();
         absent.post_pass_output_merger = None;
         assert!(waived(&absent).is_empty(), "{:?}", waived(&absent));
@@ -641,8 +622,6 @@ mod tests {
             .post_pass_payload = None;
         assert!(waived(&byteless).is_empty(), "{:?}", waived(&byteless));
 
-        // A subresource extending past payload.byte_len is a structural
-        // integrity failure, never an absence notice.
         let mut out_of_bounds = frame.clone();
         out_of_bounds
             .post_pass_output_merger
@@ -662,7 +641,6 @@ mod tests {
             "{blockers:?}"
         );
 
-        // So is runtime-file evidence disagreeing with the payload metadata.
         let mut forged = frame;
         let file = forged
             .post_pass_output_merger

@@ -6,9 +6,6 @@ use game_ui::widget_layout::{
 };
 use std::path::{Path, PathBuf};
 
-/// The vanilla install root. Panics rather than returning `None`: every
-/// caller is gated on `gate_hoi4_install`, so an absent install here is a
-/// failure, never a silent skip that libtest would report as a pass.
 fn game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
@@ -103,18 +100,15 @@ fn listbox_row_index_overflow_is_a_typed_refusal() {
         scrollbar_offset: (0, 0),
         scrollbar_side: None,
     };
-    // Index does not fit in i32 at all.
     let err = layout
         .declared_row_rect(usize::MAX, (10, 20))
         .expect_err("index beyond i32 must refuse");
     assert!(err.message.contains("UNTRACED"));
     assert!(err.message.contains("overflows pixel space"));
-    // Index fits in i32 but the pixel multiplication overflows.
     let err = layout
         .declared_row_rect(i32::MAX as usize, (10, 20))
         .expect_err("pixel overflow must refuse");
     assert!(err.message.contains("overflows pixel space"));
-    // Sanity: small indices still lay out exactly.
     assert_eq!(
         layout.declared_row_rect(2, (10, 20)).expect("row 2"),
         Rect::new(0, 40, 10, 20)
@@ -131,18 +125,15 @@ fn gridbox_slot_index_overflow_is_a_typed_refusal() {
         max_slots_y: None,
         add_horizontal: Some(false),
     };
-    // Unbounded rows (max_slots_y = None): row does not fit in i32.
     let err = layout
         .slot_rect(usize::MAX)
         .expect_err("index beyond i32 must refuse");
     assert!(err.message.contains("UNTRACED"));
     assert!(err.message.contains("overflows pixel space"));
-    // Row fits in i32 but the pixel multiplication overflows.
     let err = layout
         .slot_rect(i32::MAX as usize)
         .expect_err("pixel overflow must refuse");
     assert!(err.message.contains("overflows pixel space"));
-    // Sanity: small indices still lay out exactly.
     assert_eq!(layout.slot_rect(4).expect("slot 4"), Rect::new(10, 20, 10, 20));
 }
 

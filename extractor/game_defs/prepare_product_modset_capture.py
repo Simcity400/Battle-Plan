@@ -224,8 +224,6 @@ def _copy_binding_corpus(source: Path, destination: Path) -> dict[str, Any]:
         target.write_bytes(before)
         if target.read_bytes() != before:
             raise LR.ResolutionError(f"copied binding corpus changed for {name}")
-        # Strict JSON decoding happens again in the role-specific validators;
-        # this early read rejects a non-object handoff before static work starts.
         SB.load_object(target, f"copied binding corpus {name}")
         rows.append({"name": name, "bytes": len(before), "sha256": SB.sha256_bytes(before)})
     core = {"schema": "extractor.product_modset_binding_corpus.v1", "files": rows}
@@ -237,12 +235,6 @@ def _validate_binding_corpus(
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Validate every cross-document join needed by live or offline preparation."""
     exe_sha = SB.sha256_file(exe)
-    # Keep the exact wire documents alongside their normalized validation
-    # results.  The runtime builder's source re-hasher consumes the strict
-    # mod_state.v1 wire shape (``mods``), while the cross-document joins below
-    # deliberately consume the normalized shape (``items``).  Passing the
-    # normalized document to the wire-shape helper used to fail with a KeyError
-    # before an otherwise valid offline corpus could be admitted.
     wire_documents = {
         role: SB.load_object(
             bindings_dir / f"{role}.json", f"capture {role}"
@@ -301,7 +293,6 @@ def _validate_binding_corpus(
     ):
         raise LR.ResolutionError("binding corpus UI14 receipt does not match its executable/mod set")
 
-    # This independently re-hashes every selected descriptor, directory tree,
     # and archive container before any generated catalog can consume it.
     sources = RB._load_resolved_mod_sources(bindings_dir, wire_documents["mod_state"])
     source_by_id = {row["id"]: row for row in sources}
@@ -533,11 +524,6 @@ def prepare(
             "executable, userdir, UI14 engine-VFS receipt and UI14 capture root must exist"
         )
 
-    # The raw capture receipt, rather than process liveness after capture, is
-    # the authority for the captured process identity.  This permits a
-    # fail-closed postmortem preparation if the game exits after the DLL has
-    # durably flushed its process-bound UI14 artifacts.  The complete nonce,
-    # manifest, active-config and trace joins are rechecked below.
     captured_ready = _strict_object(
         ui14_capture_root.resolve() / "cpu" / "cpu_capture_ready.json"
     )
@@ -628,10 +614,6 @@ def prepare_offline(
         pass
     else:
         raise LR.ResolutionError("offline output cannot be nested inside its binding corpus")
-    # A six-document binding set alone proves content, not how the engine
-    # selected it.  Offline reuse is admitted only from a prior live-prepared
-    # handoff that retained the four raw process-bound UI14 artifacts and the
-    # corresponding resolution-report join.
     report, _source_inventory, _product_modset = _validate_binding_corpus(exe, bindings)
     source_evidence = bindings.parent / "ui14_capture_evidence"
     evidence_paths = {

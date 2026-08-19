@@ -127,25 +127,6 @@ from collections import Counter
 from pathlib import Path
 
 
-# Citing side: THE WHOLE REPOSITORY, minus the directories below.
-#
-# An enumerated root list was tried first and is the wrong shape for this gate.
-# It scanned six trees and therefore silently exempted everything else --
-# repository-root documents, `tools/`, `extractor/coverage_audit/`, and fixture
-# trees -- and nothing about the list said which files were outside it. The world_fold
-# gate had already been bitten by exactly this: `replay_interface/documents` was
-# found citing `world_fold.rs` 28 times while only `extractor/documents` was
-# being scanned.  Scanning everything and naming the exclusions makes the
-# exemptions visible and finite.
-# EVERY TEXT FILE, not a suffix whitelist.  A whitelist was tried and kept
-# leaking: `.sh`, then `.json`, then `.txt`, then `.toml`, then `.yml` -- and a
-# case-sensitive one still missed `.C` and left `seh_read.c`, `StringXref.java`
-# and `f1_stress.hlsl` unscanned, all of which carry comments.  (Codex review
-# rounds 6, 8 and 9.)  What the gate claims is whole-repository coverage, so the
-# rule is: read it unless it is binary.
-#
-# BINARY_SUFFIXES is a speed filter, not the decision -- the decision is the NUL
-# sniff below, which is what a file with an unlisted binary extension hits.
 BINARY_SUFFIXES = frozenset(
     """
     .png .jpg .jpeg .gif .bmp .ico .tga .dds .webp .svgz
@@ -155,22 +136,8 @@ BINARY_SUFFIXES = frozenset(
     .pyc .pyd .class .jar .rlib .rmeta .db .sqlite .parquet
     """.split()
 )
-# How much of a file to sniff for a NUL byte before calling it text.
 BINARY_SNIFF_BYTES = 8192
 
-# The files that must NOT be scanned.
-#
-# The allowance, whose KEYS are citations.  Scanning it would read every
-# grandfathered citation back as a fresh citation of the allowance file, and the
-# ratchet would demand the allowance grandfather itself.  Named by path, not by
-# suffix, so `.json` documents (the dossiers carry real item citations) are still
-# covered.
-#
-# The cache, for the same reason twice over: it records the citations each file
-# was found to carry, and a failure message it caches spells the citation that
-# failed.  Its directory is in `SKIP_DIRS` already, so this is the second of two
-# independent reasons it is not scanned rather than the only one -- a cache that
-# became visible to the scan would fail the gate with citations nobody wrote.
 UNSCANNED = (
     "extractor/native/scripts/citation_integrity_allowance.json",
     "target/citation_integrity_cache.json",
@@ -178,52 +145,15 @@ UNSCANNED = (
 
 ALLOWANCE = Path("extractor/native/scripts/citation_integrity_allowance.json")
 
-# Where a verified result is remembered.  Under `target/`, which is git-ignored
-# at the repository root and is in `SKIP_DIRS`, so the cache is neither committed
-# nor scanned.  A `cargo clean` removes it, and removing it costs one full run.
 CACHE = Path("target/citation_integrity_cache.json")
-# Bumped whenever the shape of an entry changes.  It is hashed into the cache
-# key, so an older cache is not misread -- it is discarded and rebuilt.
 CACHE_SCHEMA = "battle-plan.citation_integrity_cache.v1"
 
-# Directory names that never contain a file worth indexing or scanning.
-# `target` and `.cargo-target` are build outputs: a basename that resolves into
-# one resolves to a copy nobody edits, which would make an ambiguous citation
-# look resolvable.
-# `.pnpm-store`, `.reference`, `.t3-worktrees`: foreign tool caches/checkouts that
-# appeared in the checkout root (2026-08-16/17); one contains files this process
-# cannot read, which turned a landing gate red over content that is not ours.
 SKIP_DIRS = frozenset(
     {"target", ".git", ".claude", "node_modules", ".cargo-target", ".venv",
      ".pnpm-store", ".reference", ".t3-worktrees", "captures"}
 )
-# Append-only evidence.  Named as directory components, matched at any depth.
 FROZEN_DIRS = frozenset({"runs", "re_evidence"})
 
-# Rust identifiers follow Unicode XID rules and are compared after NFC
-# normalization.  Python's `\w` excludes COMBINING MARKS, so a decomposed name
-# (`cafe` + U+0301) was truncated to its ASCII head -- the citation
-# `<file>::cafe\u0301` matched as `<file>::cafe` and resolved against a
-# different function, and a decomposed FILENAME let the match restart inside the
-# component.  (Codex review round 12, findings 3 and 4.)
-#
-# The first repair ENUMERATED six combining-mark blocks by hand, and a hand
-# enumeration of a Unicode property is wrong the moment the property is wider
-# than the hand that wrote it: U+0483 (COMBINING CYRILLIC TITLO) is a valid XID
-# continuation character in none of those six blocks, so `<file>::a\u0483` was
-# still truncated to `a` and still resolved against the wrong function.  (Codex
-# review round 13, findings 1 and 2.)  The classes below are DERIVED, from the
-# only XID tables that are certainly the same ones Rust-shaped names are compared
-# with here -- Python's own, reached through `str.isidentifier`, whose rule is
-# XID_Start (plus `_`) followed by XID_Continue.  The sweep costs ~0.2 s once per
-# process and can never disagree with the interpreter running it.
-#
-# The derived set is a SUPERSET of XID_Continue, not an equality: `\w` is kept in
-# the class even though it admits a few characters XID excludes (`\u00bd`, say).
-# The directions are not symmetric.  A class that is too WIDE captures the whole
-# of a malformed name, which then resolves against nothing and is REPORTED; a
-# class that is too NARROW truncates a real name to a shorter one that resolves
-# against something else, which is silent and is the defect itself.
 
 
 def _class_body(codepoints: list[int]) -> str:
@@ -270,15 +200,10 @@ def _xid_extras() -> tuple[str, str]:
 
 
 XID_START_EXTRA, XID_CONT_EXTRA = _xid_extras()
-# `[^\W\d]` is a NEGATED class and cannot be unioned with more members, so the
-# start class is an alternation; the rest are ordinary positive classes.
 IDENT_START = f"(?:[^\\W\\d]|[{XID_START_EXTRA}])"
 IDENT_CONT = f"[\\w{XID_CONT_EXTRA}]"
 IDENT = f"{IDENT_START}{IDENT_CONT}*"
 PATH_CHAR = f"[\\w.\\-{XID_CONT_EXTRA}]"
-# The left boundary shared by all three citation patterns: a match may not start
-# in the middle of a path or of a name.  One definition, because three copies of
-# it drifted from the identifier class they are supposed to mirror.
 NOT_AFTER = f"(?<![\\w.\\-{XID_CONT_EXTRA}/\\\\])"
 
 
@@ -287,15 +212,6 @@ def normalized(name: str) -> str:
     return unicodedata.normalize("NFC", name)
 
 
-# Matches `dir/file.rs:<line>`, `file.rs:<line>` and `file.rs:<line>-<line>`.
-# The path prefix is captured separately: a qualified citation is resolved by
-# PATH SUFFIX (which is exact where it matches one indexed file) and a bare one
-# by BASENAME (the form that gives 71 candidates for `lib.rs`).
-#
-# The trailing `(?![0-9])` stops a four-digit line number being read as its
-# first three digits; the leading look-behind stops a match starting in the
-# middle of a path, so a two-directory citation is one citation of the full path
-# and not also one of its tail.
 LINE_CITATION = re.compile(
     rf"{NOT_AFTER}"
     rf"(?P<path>(?:{PATH_CHAR}+[/\\])*)"
@@ -304,44 +220,17 @@ LINE_CITATION = re.compile(
     r"(?:-(?P<end>\d+))?"
     r"(?![0-9])"
 )
-# THE SPLIT RANGE.  This repository writes most ranges with the endpoint in its
-# own backticks -- ``file.rs:<start>`-`:<end>`` -- across 102 files, and an endpoint that
-# is not part of the citation is an endpoint nothing keys a budget on and nothing
-# range-checks.  (Codex review round 2, finding 1.)  Matched immediately after a
-# `LINE_CITATION`, allowing the closing backtick, either dash the tree uses, and
-# the reopening backtick.
-# The gap may contain a line break and the next line's comment prefix: a range
-# written at the end of a `///` line continues on the following one, and reading
-# only horizontal whitespace lost the endpoint entirely.  (Codex review round 9,
-# finding 2.)
 SPLIT_RANGE = re.compile(
     r"`?[ \t]*(?:\r?\n[ \t]*(?://[/!]?|\#+|\*)?[ \t]*)?"
     r"[-–—]"
     r"[ \t]*(?:\r?\n[ \t]*(?://[/!]?|\#+|\*)?[ \t]*)?"
     r"`?:(?P<end>\d+)(?![0-9])"
 )
-# Matches `<file>::<item>` and `<file>::<Type>::<method>` (a real one names a
-# `.rs` file; the placeholders here deliberately do not, because this file is
-# inside the scan roots).  Matched FIRST and
-# its spans are excluded from the line scan, so an item citation is never also
-# read as a malformed line citation.  (Placeholders again: a worked example here
-# would be an item citation this gate then had to resolve.)
-# An item-shaped string that does NOT tokenize completely.  `<file>::okay::`
-# has a trailing separator, so it names no item -- and before this it simply did
-# not match, which meant the gate said nothing at all about it.  (Codex review
-# round 6, finding 1.)  Silence about a malformed citation is the same failure as
-# silence about a broken one.
 MALFORMED_ITEM = re.compile(
     rf"{NOT_AFTER}"
     rf"(?P<path>(?:{PATH_CHAR}+[/\\])*)"
     rf"(?P<base>{PATH_CHAR}+\.rs)"
-    # The trailing `(?:r#)?` catches an item path that stops on a raw-identifier
-    # prefix (`...::r#`), which is as unfinished as one that stops on the `::`
-    # and matched neither pattern before.  (Codex review round 7, finding 1.)
     rf"::(?P<item>(?:(?:r#)?{IDENT}::)*(?:r#)?)"
-    # `<` excluded: `world_fold.rs::<item_name>` is a PLACEHOLDER in prose about
-    # the citation form, not an unfinished citation, and the world_fold gate's
-    # own files write several.
     rf"(?!{IDENT_CONT}|<)"
 )
 ITEM_CITATION = re.compile(
@@ -349,14 +238,6 @@ ITEM_CITATION = re.compile(
     rf"(?P<path>(?:{PATH_CHAR}+[/\\])*)"
     rf"(?P<base>{PATH_CHAR}+\.rs)"
     rf"::(?P<item>(?:r#)?{IDENT}(?:::(?:r#)?{IDENT})*)"
-    # A RAW IDENTIFIER IS ONE IDENTIFIER.  Without the `r#` alternative and this
-    # boundary, a citation of a raw identifier `r#<name>` parsed as just `r` and
-    # resolved against a
-    # function called `r`.  (Codex review round 4, finding 2.)
-    # A partial match is a different citation.  The boundary rejects a further
-    # identifier character (so a Unicode name is not truncated to its ASCII
-    # head), a `#` (so `r#name` is one identifier), and a trailing `::` (so an
-    # unfinished path is not read as the prefix that happens to resolve).
     rf"(?!{IDENT_CONT}|#|::)"
 )
 
@@ -365,15 +246,8 @@ class VerificationError(RuntimeError):
     """A citation in this tree does not resolve, or is not grandfathered."""
 
 
-# Comments and literals, in the order they must be recognized: a `//` inside a
-# string is not a comment, and a `"` inside a comment is not a string.  Nested
-# block comments are legal Rust and this pattern cannot express them, so a
-# nested one is REFUSED below rather than mis-scanned.
 _BLANKABLE = re.compile(
     r"(?P<raw>(?:b?r)(?P<hashes>\#*)\"(?s:.*?)\"(?P=hashes))"
-    # `\<newline>` is a Rust string CONTINUATION, so the escape has to match a
-    # newline; a non-DOTALL `\\.` ended the string early and every literal after
-    # it in the file went unblanked.
     r"|(?P<string>b?\"(?:\\(?s:.)|[^\"\\])*\")"
     r"|(?P<char>b?\'(?:\\(?s:.)|[^\'\\])\')"
     r"|(?P<line>//[^\n]*)"
@@ -445,10 +319,6 @@ def _immediate_depth_spans(body: str) -> list[tuple[int, int]]:
     depth = 0
     start: int | None = None
     for index, char in enumerate(body):
-        # ALL THREE DELIMITERS.  A brace-only walk left the inside of `(..)` and
-        # `[..]` at the enclosing item depth, so item-shaped tokens handed to a
-        # macro that discards them -- `discard!(fn ghost() {});` -- were indexed
-        # as real items.  (Codex review round 9, finding 1.)
         if char in "{([":
             depth += 1
             if depth == 1:
@@ -492,14 +362,12 @@ def index_scopes(source: str) -> dict[tuple[str, ...], tuple[frozenset[str], fro
     """
     sanitized = _sanitize_rust(source)
 
-    # Every scope with a body, in source order: (header start, body start, body
-    # end, owner).
     found: list[tuple[int, int, int, str]] = []
     for header in SCOPE_HEADER.finditer(sanitized):
         open_brace = sanitized.find("{", header.end())
         semicolon = sanitized.find(";", header.end())
         if open_brace < 0 or (0 <= semicolon < open_brace):
-            continue  # `mod tests;` -- a declaration, not a body.
+            continue
         depth = 0
         close_brace = -1
         for index in range(open_brace, len(sanitized)):
@@ -522,35 +390,15 @@ def index_scopes(source: str) -> dict[tuple[str, ...], tuple[frozenset[str], fro
             )
     found.sort()
 
-    # The file is the empty route; its "immediate depth" is brace depth zero.
-    # Computed ONCE: recomputing it per top-level scope made the index O(scopes
-    # x file size) and the gate three minutes long.
     file_level = _outermost_spans(sanitized)
-    # (start, end, route, does this body declare FIELDS).  The last flag is
-    # per BODY, not per route: `struct Row { .. }` and `impl Row { .. }` share
-    # the route `("Row",)`, and only the first of them declares fields.
     spans: list[tuple[int, int, tuple[str, ...], bool]] = [
         (span_start, span_end, (), False) for span_start, span_end in file_level
     ]
-    # DECLARATIONS and MEMBERS are kept apart.  Flattened together, a struct
-    # field satisfied an ownerless citation of its bare name -- `<file>::field`
-    # resolved because `Row` happened to have one.  (Codex review round 7,
-    # finding 2.)  A member is reachable only as the LAST segment of its owner's
-    # route; a declaration is reachable on its own.
     declarations: dict[tuple[str, ...], set[str]] = {(): set()}
     members: dict[tuple[str, ...], set[str]] = {(): set()}
 
-    # One outward-to-inward sweep with a stack, so a scope's route costs nothing
-    # to find.  A scope whose header does not sit at its parent's item level is
-    # inside a function body: it gets no route, and neither does anything under
-    # it, because it never goes on the stack.
     stack: list[tuple[int, tuple[str, ...] | None, list[tuple[int, int]]]] = []
     field_bodies: list[tuple[tuple[str, ...], str]] = []
-    # Only a body that DECLARES FIELDS may contribute `MEMBER_RE` names.  An
-    # `impl` body's `Other { .. }` struct-literal expression is a type being
-    # constructed, not an associated item, and admitting it made `Row::Other`
-    # resolve.  (Codex review round 10, finding 2.)  `impl`/`trait`/`mod` bodies
-    # contribute through `DEFINITION_RE`, which is what actually declares there.
     for header_start, body_start, body_end, owner, kind in found:
         while stack and header_start > stack[-1][0]:
             stack.pop()
@@ -559,22 +407,12 @@ def index_scopes(source: str) -> dict[tuple[str, ...], tuple[frozenset[str], fro
             parent_end, parent_route, parent_level = stack[-1]
         else:
             parent_route, parent_level = (), file_level
-        # Bisect on the span STARTS, not on the span tuples: a probe tuple
-        # `(position, position)` sorts before a span that begins at the same
-        # position, so a scope declared at offset zero read as unaddressable and
-        # the whole file's first item vanished from the index.
         addressable = _within(parent_level, header_start)
         if parent_route is None or not addressable:
-            # Not addressable from outside: record it as a barrier so its own
-            # children are excluded too, and contribute nothing.
             stack.append((body_end, None, []))
             continue
         owner = normalized(owner)
         route = parent_route + (owner,)
-        # An `impl Row` block declares the route `Row` even when the `struct`
-        # itself lives in another file, so a route owner counts as declared --
-        # without which removing `impl` from DEFINITION_RE would make
-        # `<file>::ForeignType::method` unresolvable.
         declarations.setdefault(parent_route, set()).add(owner)
         level = [
             (body_start + span_start, body_start + span_end)
@@ -606,12 +444,6 @@ def index_scopes(source: str) -> dict[tuple[str, ...], tuple[frozenset[str], fro
             return route, carries
         return None, False
 
-    # ONLY A FIELD-CARRYING BODY CONTRIBUTES MEMBERS, and it contributes its
-    # parsed ENTRIES rather than anything line-shaped inside it.  An `impl`
-    # body's `Other { .. }` struct-literal expression is a type being
-    # constructed, not an associated item (round 10), and a wrapped field's type
-    # on its own line is not an entry (round 11).  `impl`/`trait`/`mod` bodies
-    # contribute through `DEFINITION_RE`, which is what declares anything there.
     for route, body in field_bodies:
         members.setdefault(route, set()).update(entry_names(body))
 
@@ -623,9 +455,6 @@ def index_scopes(source: str) -> dict[tuple[str, ...], tuple[frozenset[str], fro
             name = match.group("name") or (
                 match.group("macro") if "macro" in match.re.groupindex else None
             )
-            # `const _: u32 = 0;` is an anonymous item: `_` is the ABSENCE of a
-            # name, not a name, so a citation of it names nothing.  (Codex
-            # review round 8, finding 3.)
             if name and name != "_":
                 target.setdefault(route, set()).add(normalized(name))
     return {
@@ -649,7 +478,6 @@ def _outermost_spans(source: str) -> list[tuple[int, int]]:
     depth = 0
     start = 0
     for index, char in enumerate(source):
-        # All three delimiters, for the reason given in `_immediate_depth_spans`.
         if char in "{([":
             if depth == 0:
                 spans.append((start, index))
@@ -663,44 +491,15 @@ def _outermost_spans(source: str) -> list[tuple[int, int]]:
     return spans
 
 
-# Every item DEFINITION in one line of Rust, name captured.
-#
-# Deliberately lexical and deliberately generous about the keyword set: this
-# decides which of several same-named files an item citation means, not whether
-# the item is spelt correctly.  Requiring the definition keyword is what makes it
-# discriminating -- `stream_fold.rs` and `bin/stream_fold.rs` both MENTION
-# `fold_compact_stream_file`, and only one defines it.
-#
-#
-# THE DECLARATION SIDE USES THE SAME IDENTIFIER CLASS AS THE CITATION SIDE.  It
-# had its own, `[^\W\d]\w*`, and a class that truncates a DECLARATION is the
-# citation defect running backwards: `pub fn café() {}` was indexed as `cafe`,
-# so a citation of the shorter, nonexistent `cafe` resolved against it.  (Codex
-# review round 13, finding 2.)  `\b` is likewise `\w`-based and cannot end a name
-# that ends in a combining mark, so the terminator is the identifier class too.
 DEFINITION_RE = re.compile(
     r"^[ \t]*(?:(?:pub(?:\([^)\r\n]*\))?|unsafe|async|const|default|"
     r"extern(?:[ \t]+\"[^\"]+\")?)[ \t]+)*"
-    # `impl` is NOT here.  `impl std::fmt::Display for Row` would declare `std`,
-    # and a citation of `<file>::std` then resolved against nothing.  (Codex
-    # review round 7, finding 3.)  An `impl` block still contributes its SUBJECT
-    # through `SCOPE_HEADER`/`_impl_subject`, which reads `Row` from that header.
     r"(?:fn|struct|enum|union|trait|mod|const|static|type)[ \t]+"
     rf"(?:mut[ \t]+)?(?:r#)?(?P<name>{IDENT})(?!{IDENT_CONT})"
     rf"|^[ \t]*macro_rules![ \t]*(?P<macro>{IDENT})(?!{IDENT_CONT})",
     re.MULTILINE,
 )
 
-# A MEMBER: an enum variant or a struct field.  Neither carries a declaration
-# keyword, so `DEFINITION_RE` cannot see them, and `Row::VERSION`-shaped
-# citations are legitimate and common.  The shapes matched are `Variant,`,
-# `Variant = 3,`, `Variant(u32)`, `Variant {`, and `pub field: Type`.
-#
-# A struct/enum/union body's ENTRIES.  Not a line pattern: a line pattern read a
-# wrapped field's type as an entry of its own -- `pub actual:` / `    Other,`
-# made `Row::Other` resolve.  (Codex review round 11, finding 1.)  Entries are
-# separated by commas at the body's own depth, and each one's name is its
-# leading identifier, after any attributes and visibility.
 ENTRY_NAME = re.compile(
     r"\A(?:\s*\#\s*\[[^\]]*\])*\s*"
     r"(?:pub(?:\([^)]*\))?\s+)*"
@@ -733,12 +532,6 @@ def entry_names(body: str) -> set[str]:
                 _take_entry(body[segment_start:index], names)
                 segment_start = None
             continue
-        # GENERIC ARGUMENTS ARE NOT ENTRIES.  `pub actual: Pair<Other, Ghost>,`
-        # is one field, and splitting on its inner comma invented a member
-        # called `Ghost`.  (Codex review round 12, finding 2.)  `<<` is a shift
-        # and `->`/`=>` end in `>` without opening anything, so neither moves
-        # the angle depth -- the same three exceptions the sibling gate's
-        # scanner makes.
         if char == "<" and not (
             body[index : index + 2] == "<<"
             or (index > 0 and body[index - 1] == "<")
@@ -760,9 +553,6 @@ def _take_entry(segment: str, names: set[str]) -> None:
         names.add(normalized(match.group("name")))
 
 
-# An item scope: the `struct`/`enum`/`union`/`trait`/`mod` that owns a body, or
-# an `impl` block whose subject owns one.  Used to answer "does `B` belong to
-# `A`", which a file-wide name set cannot.
 SCOPE_HEADER = re.compile(
     r"^[ \t]*(?:(?:pub(?:\([^)\r\n]*\))?|unsafe|default)[ \t]+)*"
     r"(?:(?P<impl>impl)\b"
@@ -802,8 +592,6 @@ class Tree:
     def __init__(self, repo_root: Path, store: "FileStore | None" = None) -> None:
         self.repo_root = repo_root
         self.store = store if store is not None else FileStore(repo_root)
-        # Set to a `Dependencies` while one citing file is being verified; every
-        # question asked in that window is recorded into it.
         self.recording: Dependencies | None = None
         self.by_basename: dict[str, list[str]] = {}
         self._lines: dict[str, int] = {}
@@ -885,11 +673,6 @@ class Tree:
                 for relative in indexed
                 if relative == wanted or relative.endswith("/" + wanted)
             ]
-        # EVERY lookup is recorded, including the ones `cited_path` makes while
-        # deciding how much of a spaced filename the author wrote. Which spelling
-        # wins there depends on which of them names an indexed file, so a cache
-        # that recorded only the final lookup would miss a new file changing that
-        # decision.
         if self.recording is not None:
             self.recording.candidates[(path, base)] = answer
         return answer
@@ -911,11 +694,6 @@ class Tree:
         body.  A citation names a path, and a path that does not lead anywhere
         misdirects exactly like a drifted line number.
         """
-        # `r#type` and `type` name the same item; the index stores the bare
-        # name, so the citation is normalized to match it.
-        # `r#type` and `type` name the same item, and a DECOMPOSED citation names
-        # the same item as a composed declaration, so both are folded before
-        # lookup.  (Codex review round 12, finding 3.)
         segments = [
             normalized(segment[2:] if segment.startswith("r#") else segment)
             for segment in item_path.split("::")
@@ -924,56 +702,18 @@ class Tree:
             return False
         if len(segments) == 1:
             return True
-        # Built only now: a single-segment citation needs no route, and scope
-        # indexing sanitizes the whole file, which is expensive on the 5 MB one.
         prefix, last = tuple(segments[:-1]), segments[-1]
         for route, (declared, listed) in self.scope_members(relative).items():
             if len(route) < len(prefix):
                 continue
             if route[len(route) - len(prefix) :] != prefix:
                 continue
-            # A MEMBER is only reachable as the last segment: a struct field
-            # owns nothing, so it can never be an intermediate step, and the
-            # route walk above has already required every earlier segment to be
-            # a declared scope.
             if last in declared or last in listed:
                 return True
         return False
 
 
-# A FILENAME MAY CONTAIN A SPACE; `PATH_CHAR` MAY NOT.  A path class that
-# admitted spaces would swallow the prose on both sides of every citation --
-# `see <file>::<item_name>` would be read as naming a file called `see <file>`
-# -- so a citation of `dir/my <file>` matched only its TAIL, `<file>`, and that
-# tail then resolved happily against an unrelated `file.rs` somewhere else in
-# the tree.  (Codex review round 13, finding 3.)
-#
-# The match is therefore extended leftwards over spaces, but only as far as an
-# extension that names a file THIS TREE ACTUALLY INDEXES.  That is what makes the
-# extension safe to do unconditionally: where no such file exists -- which is the
-# whole repository today, 0 `.rs` files with a space in the name -- every
-# candidate fails the lookup and the original match stands unchanged, so no
-# allowance key and no resolution moves.  Where such a file does exist, the
-# citation is read as the whole component the author wrote.
-#
-# AND WHEN THE SPACED FILE DOES NOT EXIST AT ALL?  Resolving by existence alone
-# left the case the gate is for: a citation of `dir/missing <file>` -- a typo, or
-# a file since deleted -- extended to nothing, fell back to its tail, and the
-# tail resolved against an unrelated file of that name.  A citation that names a
-# file this tree does not have must say so.  (Codex review round 14, finding 1.)
-#
-# The discriminator is what the author DELIMITED and what they WROTE.  Inside a
-# backtick span -- how this repository writes a citation -- a run that reaches
-# the opening backtick and carries a path SEPARATOR is a path the author wrote
-# whole, so the whole of it is the citation, and it is reported when it names
-# nothing.  A run with no separator in it is prose (`see <file>`), and a
-# separator-less prefix drops no path, so the narrow match stands.  Outside
-# backticks nothing is assumed: prose runs on, and a run that reaches back
-# through an earlier sentence would make an ordinary citation fail.
 _SPACED_PATH_TAIL = re.compile(rf"(?:{PATH_CHAR}|[ \t/\\])*\Z")
-# How far back to look.  A path component is short and a citation sits in prose;
-# scanning the whole preceding text of a 5 MB file to find one would cost more
-# than the defect.
 EXTENSION_WINDOW = 256
 
 
@@ -988,22 +728,18 @@ def cited_path(text: str, match: re.Match[str], tree: "Tree") -> tuple[str, str]
     """
     path, base = match.group("path"), match.group("base")
     if not text[: match.start()].endswith((" ", "\t")):
-        # The pattern's own left boundary already refused a path character here,
-        # so with no space there is nothing a longer spelling could reach.
         return path, base
     window = text[max(0, match.start() - EXTENSION_WINDOW) : match.start()]
     run = _SPACED_PATH_TAIL.search(window).group(0)
     starts = [0] + [index + 1 for index, char in enumerate(run) if char in " \t"]
     for start in starts:
         if start < len(run) and run[start] in " \t":
-            continue  # a start inside a run of spaces is the next start
+            continue
         wider = _split_path(run[start:] + path + base)
         if wider == (path, base):
             continue
         if tree.candidates(*wider):
             return wider
-    # No spelling names a file.  Inside a code span, a run that reaches the
-    # opening backtick and contains a separator is a path written whole.
     opening = len(window) - len(run) - 1
     if ("/" in run or "\\" in run) and opening >= 0 and window[opening] == "`":
         return _split_path(run + path + base)
@@ -1139,22 +875,6 @@ def _script_digest() -> "str | None":
         return None
 
 
-# THE MARSHAL VERSION IS PART OF THE CORRECTNESS, not a detail.
-#
-# Versions 3 and 4 carry a REFERENCE TABLE: an object that appears twice is
-# written once and back-referenced, and whether two equal strings are one object
-# depends on what the running process happened to intern earlier.  So the modern
-# spellings encode object IDENTITY as well as value, and the same source
-# compiled in two processes -- or in one process at two moments -- can marshal to
-# different bytes.  Measured, not feared: compiling this file before and after an
-# unrelated test in the same interpreter produced two different version-4 blobs,
-# differing in exactly one byte, the FLAG_REF bit on an interned string.
-#
-# That would not have failed anything loudly.  It would have given each run a key
-# no other run computes, and the cache would simply never be reused again -- this
-# gate quietly back to 70 s with every test still green.  Version 2 predates the
-# reference table, so its output is a function of the code's VALUE alone; it is
-# larger and slower to produce, and neither matters for one hash of one module.
 CODE_MARSHAL_VERSION = 2
 
 
@@ -1268,11 +988,6 @@ def is_text_file(full_path: str, name: str) -> bool:
     reported rather than skipped: a citation the gate could not read is not a
     citation the gate has checked.
     """
-    # THE BYTES DECIDE, ALWAYS.  An earlier version returned False on a
-    # known-binary SUFFIX without reading, which contradicted this function's own
-    # contract: a UTF-8 file named `probe.png` was skipped unread and a citation
-    # inside it was never checked.  (Codex review round 10, finding 1.)  A sniff
-    # is one 8 KB read, so there is nothing to buy by guessing.
     try:
         with open(full_path, "rb") as handle:
             head = handle.read(BINARY_SNIFF_BYTES)
@@ -1317,12 +1032,6 @@ def load_allowance(repo_root: Path) -> dict:
 
 def _parse_allowance(path: Path, data: bytes) -> dict:
     """Validate the allowance's shape, given the bytes it was read as."""
-    # `RecursionError` IS ONE OF THESE, and unlike the cache it must be FATAL.
-    # An allowance too nested for the parser is an allowance nobody knows the
-    # contents of; continuing with an empty one would fail every citation in the
-    # tree, and continuing with a partial one is worse. It is a `RuntimeError`,
-    # so a `ValueError` catch let it out of `main` as a traceback instead of the
-    # named failure this gate promises. (Codex review round 2, finding 3.)
     try:
         loaded = json.loads(decode(data))
     except (ValueError, RecursionError) as error:
@@ -1347,10 +1056,6 @@ def _parse_allowance(path: Path, data: bytes) -> dict:
                     f"{ALLOWANCE.as_posix()}: \"{section}\".\"{citing}\" must map "
                     f"each citation to a {value_kind.__name__}"
                 )
-            # A REASON MUST SAY SOMETHING.  `""` satisfied `isinstance(_, str)`
-            # and bought the same exemption as a written justification, which is
-            # the standing-permission-nobody-read shape these sections exist to
-            # prevent.  (Codex review round 2, finding 5.)
             if value_kind is str:
                 blank = sorted(
                     citation
@@ -1443,10 +1148,6 @@ def verify_one(
     budget = Counter(permitted.get(citing, {}))
     item_spans: list[tuple[int, int]] = []
 
-    # A malformed item citation is REPORTED, not ignored.  `<file>::okay::`
-    # names no item; before this it simply did not match any pattern, so the
-    # gate said nothing about it at all, which is the same silence as a
-    # citation that resolves wrongly.  (Codex review round 6, finding 1.)
     for match in MALFORMED_ITEM.finditer(text):
         line = text.count("\n", 0, match.start()) + 1
         path, base = cited_path(text, match, tree)
@@ -1502,26 +1203,13 @@ def verify_one(
             continue
         path, base = cited_path(text, match, tree)
         cited_line = int(match.group("line"))
-        # THE RANGE ENDPOINT IS PART OF THE CITATION.  Dropping it made
-        # a `file.rs:<start>-<end>` citation key the budget on its START
-        # alone and range-check that alone: the endpoint could be moved to
-        # any number, existing or not,
-        # without changing a budget key or being checked against the file.
-        # (Codex review 019fdd05-0dd0-7833-8b8b-cc0bfa4e3aa2, finding 3.)
         cited_end = citation_end(text, match)
         written = written_citation(text, match, tree)
         if _external(external, path, base):
             continue
-        # Counted AFTER the external skip, so the reported total is the
-        # number of citations the allowance actually has to carry and a
-        # reader can compare it against the file.
         line_total += 1
         line = text.count("\n", 0, match.start()) + 1
 
-        # Rule L first: whether the citation is ALLOWED TO EXIST is
-        # independent of whether it currently resolves, and reporting the
-        # resolution failure of a citation that should not have been written
-        # at all buries the instruction that matters.
         if budget[written] <= 0:
             failures.append(
                 f"{citing}:{line}: `{written}` is a new free-text line "
@@ -1540,9 +1228,6 @@ def verify_one(
         if len(candidates) == 1:
             total = tree.line_count(candidates[0])
             last = cited_end if cited_end is not None else cited_line
-            # `1 <= start <= end <= total`.  Line zero does not exist and an
-            # end before its start denotes nothing; both read as resolvable
-            # while only the start was bounds-checked.
             if 1 <= cited_line <= last <= total:
                 continue
             if reason is None and cited_end is not None and cited_end < cited_line:
@@ -1581,19 +1266,7 @@ def verify_one(
     return failures, line_total, item_total, used
 
 
-# ---------------------------------------------------------------------------
-# THE CACHE.  Everything below decides whether a recorded result may be reused;
-# nothing below decides whether a citation resolves.  That separation is the
-# safety argument: the rules live in `verify_one` and are reached identically on
-# both paths, so the worst a mistake down here can do is verify a file that did
-# not need verifying.  For the failure direction that would matter -- reusing a
-# result that is no longer true -- every reuse has to clear all four of the
-# checks in `reusable`, and any one of them not being decidable is a re-verify.
-# ---------------------------------------------------------------------------
 
-# The fields of an entry the tag covers.  Named explicitly rather than "whatever
-# keys the dict has", so a field ADDED later without being listed here fails the
-# tests below rather than travelling unauthenticated.
 ENTRY_FIELDS = (
     "digest",
     "candidates",
@@ -1705,7 +1378,6 @@ def well_formed(entry: object) -> bool:
         isinstance(message, str) for message in entry["failures"]
     ):
         return False
-    # `bool` is an `int` in Python and would sum silently into a count.
     for field in ("line_total", "item_total"):
         value = entry.get(field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -1770,9 +1442,6 @@ def verify_and_record(
             citing, text, tree, permitted, unresolved_ok, items_ok, external
         )
     finally:
-        # Restored even on the way out of a `VerificationError`, so a later
-        # candidate lookup made while VALIDATING an entry cannot be recorded as
-        # though some file had asked it.
         tree.recording = None
     entry = {
         "digest": store.digest(citing),
@@ -1808,20 +1477,6 @@ def cache_location(
     if notices is None:
         notices = []
     path = (repo_root / CACHE) if given is None else Path(given)
-    # BOTH SPELLINGS ARE CHECKED, the one written and the one it resolves to.
-    # Resolving alone was a hole: a scanned path that is a SYMLINK to somewhere
-    # outside the repository resolves outside it and was accepted, and the gate
-    # then wrote the cache through the link -- leaving the in-tree symlink for
-    # the next scan to follow and read as a file full of citations nobody wrote.
-    # (Codex review round 1, finding 3.)  The written spelling is what the scan
-    # walks, so the written spelling is what has to be outside it too.
-    # A PATH THAT CANNOT BE RESOLVED IS NOT A GATE FAILURE.  `resolve()` reaches
-    # the filesystem, and on Windows an unreachable UNC host raises WinError 53
-    # out here, past `main`, which catches only `VerificationError` -- so an
-    # unavailable network drive turned an optional optimization into an
-    # unexplained failure of the citation gate. (Codex review round 3, finding
-    # 1.)  There is nothing to fail about: a cache whose home cannot be reached
-    # is a cache that is not used, which is the same as not having one.
     try:
         resolved = path.resolve()
     except OSError as error:
@@ -1835,13 +1490,6 @@ def cache_location(
         if inside is None:
             continue
         written = "/".join(inside)
-        # ONLY a skipped directory, and NOT merely "somewhere the scan does not
-        # read". `UNSCANNED` also names the ALLOWANCE, and accepting it here let
-        # `--cache <the allowance>` be taken, verified against, and then
-        # OVERWRITTEN by the cache document -- the gate's own authority file
-        # destroyed by a flag. (Codex review round 4, finding 1.) The default
-        # cache path is under `target/`, so it passes on the skip-directory rule
-        # alone and needs no exception of its own.
         if any(part in SKIP_DIRS for part in inside):
             continue
         raise VerificationError(
@@ -1875,7 +1523,7 @@ def _within_repo(path: Path, repo_root: Path) -> "list[str] | None":
         try:
             if current.is_dir() and os.path.samefile(current, repo_root):
                 return components
-        except OSError:  # a name that cannot be stat'd is not the root
+        except OSError:
             pass
         parent = current.parent
         if parent == current:
@@ -1898,13 +1546,6 @@ def load_cache(path: Path, key: str, notices: list[str]) -> dict:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
-    # `RecursionError` IS ONE OF THESE.  A cache of a few thousand nested arrays
-    # parses to a `RecursionError`, which is a `RuntimeError` and so slipped past
-    # a `ValueError` catch -- and out of `main`, which catches only
-    # `VerificationError`, as a traceback. (Codex review round 1, finding 2.)
-    # The gate failed rather than passed, so nothing unchecked got through, but
-    # "cannot understand the cache" must mean "verify everything" on every route
-    # into it, not on most of them.
     except (OSError, ValueError, UnicodeDecodeError, RecursionError) as error:
         notices.append(
             f"citation integrity cache: {path.name} could not be read ({error}); "
@@ -1918,7 +1559,6 @@ def load_cache(path: Path, key: str, notices: list[str]) -> dict:
         )
         return {}
     if raw.get("key") != key:
-        # The usual and expected case: this script or the allowance changed.
         notices.append(
             f"citation integrity cache: this script, the allowance or the "
             f"interpreter changed; verifying every file"
@@ -1982,21 +1622,12 @@ def verify_repo(
         notices = []
     store = FileStore(repo_root)
     tree = Tree(repo_root, store)
-    # ONE read, feeding both the rules and the key they are recorded under.
     allowance_bytes, allowance = read_allowance(repo_root)
     permitted: dict[str, dict[str, int]] = allowance.get("line_references", {})
     unresolved_ok: dict[str, dict[str, str]] = allowance.get("unresolved", {})
     items_ok: dict[str, dict[str, str]] = allowance.get("items", {})
     external: list[str] = allowance.get("external_sources", [])
 
-    # An `unresolved` entry that is not also a `line_references` entry
-    # grandfathers a citation this gate would reject at rule L anyway, so it is
-    # a record of a permission that does nothing -- the kind of entry that
-    # accumulates and then gets cited as precedent.
-    #
-    # Checked on every run, cached or not: it is a property of the allowance
-    # alone, it costs nothing, and a whole-allowance check that ran only when
-    # some file happened to need verifying would be a check with a hole in it.
     orphaned = sorted(
         f"{citing} :: {citation}"
         for citing, entries in unresolved_ok.items()
@@ -2010,10 +1641,6 @@ def verify_repo(
         )
 
     location = cache_location(repo_root, cache_path, notices)
-    # A run that cannot say which rules it is running records nothing and reuses
-    # nothing. Loud, because the alternative -- a key nothing will ever match --
-    # looks exactly like an ordinary cold run, for ever. The same is true of a
-    # cache location that cannot be reached at all.
     identified = SCRIPT_DIGEST is not None and location is not None
     if SCRIPT_DIGEST is None:
         notices.append(
@@ -2046,9 +1673,6 @@ def verify_repo(
                 external,
                 key,
             )
-        # Only the files SCANNED THIS RUN are carried forward, so an entry for a
-        # deleted file leaves the cache with it rather than lingering as a result
-        # about nothing.
         entries[citing] = entry
         failures.extend(entry["failures"])
         line_total += entry["line_total"]
@@ -2056,9 +1680,6 @@ def verify_repo(
         for written, count in entry["used"]:
             used[(citing, written)] += count
 
-    # Written BEFORE the failure check, so a failing run is as cheap to re-run as
-    # a passing one: the file whose citation is broken is the file the next run
-    # verifies again.
     if identified:
         save_cache(location, key, entries, notices)
     notices.append(
@@ -2112,18 +1733,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     notices: list[str] = []
-    # A REPORT MUST SURVIVE THE CONSOLE IT IS PRINTED TO.  Now that a name is
-    # captured whole, a failure message can carry any character a Rust identifier
-    # or a filename may carry -- and on the Windows console this gate runs on,
-    # `sys.stdout` is cp1252, where printing one raises `UnicodeEncodeError`.
-    # That turns "citation X does not resolve" into a traceback with no citation
-    # in it, which is the reporting failure this gate exists to prevent, one
-    # level up.  Unrepresentable characters are escaped instead.
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             try:
                 stream.reconfigure(errors="backslashreplace")
-            except (OSError, ValueError):  # a stream that cannot be reconfigured
+            except (OSError, ValueError):
                 pass
     try:
         files, lines, items, unused = verify_repo(
@@ -2133,18 +1747,10 @@ def main(argv: list[str] | None = None) -> int:
             notices=notices,
         )
     except VerificationError as error:
-        # The notices go out even on a failure: "the cache could not be read" is
-        # part of understanding what the run did, and a failing run is exactly
-        # when someone reads this output.
         _report(notices)
         print(f"citation integrity check: FAIL: {error}", file=sys.stderr)
         return 1
     _report(notices)
-    # STDOUT IS THE ONE PASS LINE AND NOTHING ELSE.  `recorder_host`'s
-    # `citation_integrity` test refuses a stdout that is not a single line
-    # beginning `citation integrity check: PASS (`, because a gate whose report
-    # can drift is a gate whose counts nobody is comparing. Everything about how
-    # the run was performed -- reused, verified, cache trouble -- is stderr.
     print(
         f"citation integrity check: PASS ({files} files scanned, "
         f"{lines} line citations grandfathered, {items} item citations resolved, "

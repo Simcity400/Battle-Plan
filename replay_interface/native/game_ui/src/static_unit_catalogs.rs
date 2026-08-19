@@ -1,9 +1,3 @@
-//! Semantic consumers for recorder-packaged static unit catalogs.
-//!
-//! These catalogs are not merely content-admission receipts.  Product replay
-//! parses their authenticated payload bytes into lookup structures and joins
-//! them to the typed dynamic frame.  No installed-game file is reopened and no
-//! vanilla fallback is available through this module.
 
 use replay_core::{Leaf, PackagedStaticArtifact, WorldFrame};
 use serde_json::{Map, Value};
@@ -38,9 +32,6 @@ impl StaticCatalogIdentity {
     }
 }
 
-/// One authored division template.  `raw` retains all schema-v1 fields so a
-/// specialised UI consumer can use more than the currently indexed leaves
-/// without reading the package a second time.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StaticDivisionTemplate {
     pub name: String,
@@ -53,7 +44,6 @@ pub struct StaticDivisionTemplate {
     pub raw: Value,
 }
 
-/// One effective definition selected from an authored wrapper block.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StaticDefinition {
     pub token: String,
@@ -157,11 +147,6 @@ pub struct StaticUnitFrameBindings {
 }
 
 impl StaticUnitCatalogs {
-    /// Join typed dynamic identities to the authenticated static catalogs.
-    ///
-    /// An unresolved row remains explicit in the returned report because
-    /// player-created templates/designs can legitimately have no authored
-    /// static row.  Callers must not substitute a similar definition.
     pub fn bind_frame(&self, frame: &WorldFrame) -> StaticUnitFrameBindings {
         let mut out = StaticUnitFrameBindings::default();
         for template in &frame.designs().division_templates {
@@ -234,8 +219,6 @@ impl fmt::Display for StaticUnitCatalogError {
 
 impl std::error::Error for StaticUnitCatalogError {}
 
-/// Consume both required recorder artifacts.  Missing, renamed, malformed, or
-/// semantically inconsistent bytes fail product construction.
 pub fn admit_static_unit_catalogs(
     templates_equipment: Option<&PackagedStaticArtifact>,
     ship_definitions: Option<&PackagedStaticArtifact>,
@@ -720,20 +703,6 @@ fn matching_id(
 
 #[cfg(test)]
 mod tests {
-    //! Domain 59's absent/malformed admission half.
-    //!
-    //! The catalogs here are REQUIRED artifacts: replay parses their payload
-    //! bytes into the lookup structures the unit views join against, and no
-    //! installed-game file is reopened to fill a hole. So the product's answer
-    //! to a recording that omits one, renames one, or carries one whose rows
-    //! disagree with their own declared counts must be a refusal with a reason,
-    //! never a silently empty catalog. None of that was tested; the artifacts
-    //! are built by a Python gate that needs an installed game, so the only way
-    //! to drive these paths is over bytes the test writes itself.
-    //!
-    //! `unauthenticated_for_consumer_tests` skips only the container/index
-    //! join. Everything below it -- the artifact-name check, the schema check,
-    //! the counts and every row rule -- is the product's own code.
 
     use super::*;
     use replay_core::PackagedStaticArtifact;
@@ -832,9 +801,6 @@ mod tests {
         admit_static_unit_catalogs(Some(&templates), Some(&ships))
     }
 
-    /// The anchor the refusals below are measured against: with nothing wrong,
-    /// the same fixture is ADMITTED and joins by the keys replay uses. Without
-    /// this, every assertion after it could be passing for the wrong reason.
     #[test]
     fn a_well_formed_pair_is_admitted_and_joins_by_name_and_token() {
         let catalogs = admit(&templates_value()).expect("the well-formed fixture is admitted");
@@ -859,9 +825,6 @@ mod tests {
         assert_eq!(catalogs.ships.modules.len(), 1);
     }
 
-    /// kills: admitting a recording that carries no templates/equipment catalog
-    /// at all. Replay would then join every unit view against an empty catalog
-    /// and show authored rows as missing rather than saying the recording is.
     #[test]
     fn a_recording_without_the_templates_catalog_is_refused_by_name() {
         let ships = artifact(SHIP_DEFINITIONS_ARTIFACT, &ships_value());
@@ -873,7 +836,6 @@ mod tests {
         );
     }
 
-    /// kills: the same hole on the ship half.
     #[test]
     fn a_recording_without_the_ship_definitions_catalog_is_refused_by_name() {
         let templates = artifact(TEMPLATES_EQUIPMENT_ARTIFACT, &templates_value());
@@ -885,8 +847,6 @@ mod tests {
         );
     }
 
-    /// kills: dropping `require_artifact_name`, which would let a container
-    /// hand any packaged payload to this consumer under the wrong role.
     #[test]
     fn an_artifact_delivered_under_another_name_is_refused() {
         let templates = artifact("some_other_static_artifact", &templates_value());
@@ -899,8 +859,6 @@ mod tests {
         );
     }
 
-    /// kills: dropping the schema check, which is what stops a future format
-    /// from being read with this format's rules.
     #[test]
     fn a_payload_declaring_another_schema_is_refused() {
         let mut value = templates_value();
@@ -909,9 +867,6 @@ mod tests {
         assert!(error.to_string().contains("schema"), "{error}");
     }
 
-    /// kills: dropping the count cross-check. The counts are the only thing
-    /// that can catch a payload truncated between its rows and its census, and
-    /// a truncated catalog reads as a game that simply has fewer definitions.
     #[test]
     fn counts_that_disagree_with_the_rows_are_refused() {
         for field in ["division_templates", "equipment_definitions", "unit_definitions"] {
@@ -924,8 +879,6 @@ mod tests {
         }
     }
 
-    /// kills: dropping `require_array_len` on a template's own regiment and
-    /// support grids, which are what the unit view counts battalions from.
     #[test]
     fn a_template_whose_grid_disagrees_with_its_declared_count_is_refused() {
         let mut value = templates_value();
@@ -934,8 +887,6 @@ mod tests {
         assert!(error.to_string().contains("regiments"), "{error}");
     }
 
-    /// kills: dropping the block-key/token agreement rule, which is what stops
-    /// one definition being filed under another definition's name.
     #[test]
     fn a_unit_block_whose_key_disagrees_with_its_token_is_refused() {
         let mut value = templates_value();
@@ -945,9 +896,6 @@ mod tests {
         assert!(error.to_string().contains("token"), "{error}");
     }
 
-    /// kills: admitting rows that are not the shape the schema promises -- a
-    /// template that is not an object, a source digest that is not a digest,
-    /// an empty definition token.
     #[test]
     fn rows_of_the_wrong_shape_are_refused_one_by_one() {
         let mut not_an_object = templates_value();
@@ -972,8 +920,6 @@ mod tests {
         assert!(admit(&missing_name).is_err(), "a template with no name");
     }
 
-    /// kills: handing bytes that are not JSON to the parser and treating the
-    /// failure as an empty catalog.
     #[test]
     fn bytes_that_are_not_json_are_refused() {
         let templates = PackagedStaticArtifact::unauthenticated_for_consumer_tests(

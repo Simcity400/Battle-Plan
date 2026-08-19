@@ -1,23 +1,15 @@
-//! A28/XUI03 exact dynamic-collection controller trace carrier (production d71).
-//!
-//! This module owns the complete non-address producer contract. It deliberately
-//! has no screen/layout fallback. Receipt-bound equipment observations and the
-//! exact-a729 family hooks below supply fail-closed same-transition traces.
-//! The legacy all-families fixture latch remains closed; production scheduling
-//! must drain only the independently bound hook-owned families.
-
-pub mod a729_controller_observation;
 pub mod a729_air_mio_controller;
 #[cfg(windows)]
 pub mod a729_air_selection_hook;
+pub mod a729_controller_observation;
+#[cfg(windows)]
+pub mod a729_facility_smooth_list_hook;
 #[cfg(windows)]
 pub mod a729_headless_inactive;
 #[cfg(windows)]
-pub mod a729_mio_history_hook;
-#[cfg(windows)]
 pub mod a729_mio_bonus_hook;
 #[cfg(windows)]
-pub mod a729_facility_smooth_list_hook;
+pub mod a729_mio_history_hook;
 #[cfg(windows)]
 pub mod a729_named_overlap_hook;
 #[cfg(windows)]
@@ -32,22 +24,12 @@ pub const DOMAIN_ID: u16 = 71;
 pub const DOMAIN_NAME: &str = "dynamic_collection_trace_live";
 pub const SCHEMA_VERSION: u32 = 1;
 pub const AUTHORITY_EXACT_A729_CONTROLLER: u32 = 1;
-/// Static root/owner/accepted-order authority only. This older direct-root
-/// receipt does not schedule d71; owner-harness admission is pinned separately
-/// in `a729_controller_observation`.
 pub const A28_STATIC_ROOT_ORDER_AUTHORITY_BOUND: bool = true;
-pub const A28_DIRECT_ROOT_JOB_ID: &str =
-    "20260720T021840Z-w3-a28-direct-retry-5065e703";
+pub const A28_DIRECT_ROOT_JOB_ID: &str = "20260720T021840Z-w3-a28-direct-retry-5065e703";
 pub const A28_DIRECT_ROOT_MANIFEST_SHA256: &str =
     "8ce0d88387228dc8a67553e6772c253f40792971760e2f2b695a87af2199b841";
-/// Ordinary production scheduling is active for the independently proven Air
-/// selection, heterogeneous MIO aggregate-bonus, and paired MIO-history
-/// subfamilies.
 pub const A28_D71_SCHEDULED: bool = true;
 pub const A28_PASSIVE_SUBFAMILIES_PRODUCTION_BOUND: bool = true;
-/// Legacy all-families fixture promotion. The exact Air, MIO aggregate-bonus,
-/// and paired MIO-history hook-owned constructors do not open this broad
-/// latch.
 pub const A28_LIVE_PROMOTION_BOUND: bool = false;
 pub const MAGIC: u32 = u32::from_le_bytes(*b"DCT1");
 pub const HEADER_LEN: usize = 40;
@@ -93,9 +75,6 @@ pub struct CollectionTrace {
     pub source_items: Vec<SourceItemTrace>,
     pub ordered_item_ids: Vec<String>,
     pub group_boundaries: Vec<GroupTrace>,
-    /// Controller-level default/family template identity. Individual
-    /// materialized slots retain their exact template and may differ for
-    /// heterogeneous grids such as `decision_grid`.
     pub row_template_id: String,
     pub materialized_slots: Vec<MaterializedSlotTrace>,
     pub clip_rect: RectI32,
@@ -153,8 +132,6 @@ pub fn collect_and_encode<S: ExactControllerTraceSource>(
     encode_payload(&frame)
 }
 
-/// Typed unavailable DCT1 frame. Callers must supply nonzero failure status;
-/// an empty zero-status frame would be a fabricated measured-empty result.
 pub fn encode_source_unavailable(
     frame_hour: u64,
     elapsed_wall_ms: u64,

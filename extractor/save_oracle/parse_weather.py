@@ -35,15 +35,13 @@ def parse_weather(text):
     Robust to key order and optional fields; brace-depth scoped to the weather block so
     a stray `temperature=` elsewhere can't leak in.
     """
-    # locate the top-level weather block start
     m = re.search(r'(^|\n)weather=\{', text)
     if not m:
         return {"provinces": {}, "summary": {"found": False}}
-    start = m.end() - 1  # at the '{'
+    start = m.end() - 1
     depth = 0
     i = start
     n = len(text)
-    # find matching close for the weather block
     while i < n:
         c = text[i]
         if c == '{':
@@ -105,7 +103,7 @@ def parse_weather(text):
         "temp_mean_c": (sum(temps) / len(temps)) if temps else None,
         "with_snow": sum(1 for r in provinces.values() if r.get("snow")),
         "with_water": sum(1 for r in provinces.values() if r.get("water")),
-        "provenance": "save",  # authoritative; the value the game displays
+        "provenance": "save",
     }
     return {"provinces": provinces, "summary": summary}
 
@@ -117,7 +115,6 @@ def _load_text(path):
 
 def main(argv):
     arg = argv[1] if len(argv) > 1 else None
-    # accept a melted .txt directly; else look for the standard melt in re_scratch
     candidates = []
     if arg and os.path.isfile(arg):
         candidates = [arg]
@@ -139,7 +136,6 @@ def main(argv):
         json.dump({str(k): v for k, v in out["provinces"].items()}, fh)
     print("source:", os.path.relpath(candidates[0], os.path.dirname(_HERE)))
     print("summary:", json.dumps(out["summary"]))
-    # spot-check the four validated anchors if present
     for pid, disp in ((1896, 20.09), (6421, 11.57), (3544, 18.16), (9244, 10.46)):
         r = out["provinces"].get(pid)
         if r:

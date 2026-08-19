@@ -1,7 +1,3 @@
-//! On-demand, bounded H4CT transfer of exact effective-VFS payload ranges.
-//! Requests are keyed by the authenticated winner row and every response is
-//! bound to the launch BIND, session, process nonce, VFS manifest, and index.
-
 use crate::control_transport::CONTROL_MAX_PAYLOAD_LEN;
 use crate::early_render_vfs::{
     decode_early_render_vfs_winner_row, encode_early_render_vfs_winner_row,

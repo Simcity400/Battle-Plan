@@ -21,10 +21,6 @@ pub const XMAP08_RIVER_OPERATION_ID: &str = "rivers.prepare-and-draw";
 pub const XMAP08_STRAIT_STAGE_NAME: &str = "straits";
 pub const XMAP08_STRAIT_OPERATION_ID: &str = "straits.prepare-and-draw";
 
-/// Exact XMAP08 nodes for XMAP22's complete production topology census.
-///
-/// XMAP08 publishes identities and its evidence-owned internal dependency;
-/// it never seals a packet-local topology or assigns an ordinal.
 pub fn xmap08_assigned_stage_identities() -> [AssignedStageIdentity; 2] {
     [
         AssignedStageIdentity::new(XMAP08_RIVER_STAGE_NAME, XMAP08_RIVER_OPERATION_ID),
@@ -264,13 +260,6 @@ impl PreparedMapEffectProgram {
             return Err("XMAP08 sampler registers are not contiguous from zero".into());
         }
         validate_fixed_pipeline_state(self)?;
-        // D3DCompile optimization legitimately removes declared samplers that
-        // the selected effect branch does not read (all FoW declarations in
-        // `strait`, plus high-GFX-only river declarations in
-        // `river_low_gfx`). The executable gate therefore proves that every
-        // retained texture/sampler pair is one of the declared engine slots,
-        // while the complete declaration list above remains the admission
-        // census. Native execution binds only this compiled reflection set.
         let mut reflected_textures = BTreeSet::new();
         let mut reflected_samplers = BTreeSet::new();
         for resource in &pixel_reflection.resources {
@@ -303,8 +292,6 @@ impl PreparedMapEffectProgram {
         Ok(())
     }
 
-    /// The exact texture/sampler rows retained by the compiled pixel shader.
-    /// Declarations optimized out by D3DCompile are deliberately excluded.
     pub fn retained_sampler_requirements(&self) -> Result<Vec<&PreparedMapSamplerRequirement>> {
         self.validate()?;
         Ok(reflected_resource_requirements(self)?
@@ -313,8 +300,6 @@ impl PreparedMapEffectProgram {
             .collect())
     }
 
-    /// Whether the compiled VS/PS pair retains the declared packet owner at
-    /// this constant-buffer slot.
     pub fn retains_constant_buffer_owner(&self, slot: u32, owner: &str) -> Result<bool> {
         self.validate()?;
         Ok(reflected_constant_buffer_requirements(self)?
@@ -386,7 +371,6 @@ fn validate_fixed_pipeline_state(program: &PreparedMapEffectProgram) -> Result<(
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedRiverDraw {
-    /// Engine render-view bit: 1 main, 2 west wrapped copy, 4 east copy.
     pub render_view_mask: u8,
     pub map_copy_offset_f32_bits: u32,
     pub first_vertex: u32,
@@ -905,9 +889,6 @@ impl Xmap08Content {
             let first_vertex = u32::try_from(strip.pair_start * 2)?;
             let vertex_count = u32::try_from((strip.pair_end - strip.pair_start) * 2 - 2)?;
             let mut indices = Vec::with_capacity(vertex_count as usize * 3);
-            // The active-a729 shared-index path stores one relative strip
-            // pattern and supplies the record's first vertex as
-            // DrawIndexed BaseVertexLocation.
             let mut index = 0u32;
             for _ in 0..vertex_count / 2 {
                 for value in [index, index + 2, index + 1, index + 2, index + 3, index + 1] {

@@ -1,16 +1,3 @@
-//! C3 files-first decode of the on-map combat indicators ("battle bubbles").
-//!
-//! This is the same treatment C1 gave unit counters (`unit_counter_assets.rs`):
-//! decode the shipped asset/layout chain for the land/naval combat map icons
-//! from interface `*.gfx` + `*.gui` files, resolve every referenced sprite to a
-//! real `.dds` with a resolution gate, and expose the layout element tree via
-//! the existing `.gui` parser. XMAP14 combines this FILE authority with the
-//! exact-a729 `CMapIcon`/combat-controller laws and the minimum state carrier;
-//! no recorded UI draw or capture-space geometry is a product input.
-//!
-//! All shipped-file reads go through `GameFileResolver` keyed by the recording
-//! modset (the `PROJECT.md` heading "Content and mod contract"), reusing the C1
-//! parser/DDS-resolution helpers verbatim (no forked parser).
 
 use crate::unit_counter_assets::{
     container_layout_from_text, parse_bitmap_fonts, parse_progress_bar_assets,
@@ -29,7 +16,6 @@ pub const COMBAT_INDICATOR_NAVAL_LEADER_MODULE_GFX_SOURCE: &str =
     "interface/building_roster/naval_leader_module.gfx";
 pub const COMBAT_INDICATOR_CORE_GFX_SOURCE: &str = "interface/core.gfx";
 
-/// Land combat map-icon sprites declared in `mapicons.gfx`.
 const LAND_COMBAT_MAPICONS_GFX_SPRITES: &[&str] = &[
     "GFX_mapicon_land_combat",
     "GFX_mapicon_land_combat_frame",
@@ -39,11 +25,8 @@ const LAND_COMBAT_MAPICONS_GFX_SPRITES: &[&str] = &[
     "GFX_landbattle_strip",
 ];
 
-/// Land combat sprite declared in `landcombat.gfx` and referenced by the on-map
-/// land combat icon (`air_superiority_icon` control).
 const LAND_COMBAT_LANDCOMBAT_GFX_SPRITES: &[&str] = &["GFX_battle_modifier_strip"];
 
-/// Naval combat map-icon sprites declared in `mapicons.gfx`.
 const NAVAL_COMBAT_MAPICONS_GFX_SPRITES: &[&str] = &[
     "GFX_mapicon_naval_combat",
     "GFX_naval_combat_result",
@@ -56,18 +39,11 @@ const NAVAL_COMBAT_MAPICONS_GFX_SPRITES: &[&str] = &[
     "GFX_naval_combat_results_icon",
 ];
 
-/// Naval combat frame declared in `building_roster/naval_leader_module.gfx` and
-/// referenced by the on-map naval combat icon (`frame_btn` control).
 const NAVAL_COMBAT_NAVAL_LEADER_GFX_SPRITES: &[&str] = &["GFX_naval_hq_combat_frame"];
 
-/// Combat progress bars: naval attacker bar (`navalcombat.gfx`) + the small land
-/// unit combat progress bar (`unitview.gfx`) reused by the naval on-map icon.
 const NAVALCOMBAT_PROGRESS_BAR_NAMES: &[&str] = &["GFX_navalcombat_bar_progress_attacker_154"];
 const UNITVIEW_PROGRESS_BAR_NAMES: &[&str] = &["GFX_land_unit_combat_progressbar"];
 
-/// Font used by both the land combat `combat_progress` textbox and the naval
-/// fleet-status combat count textboxes.
-/// On-map combat containers in `mapicons.gui`.
 const COMBAT_INDICATOR_GUI_CONTAINERS: &[&str] = &[
     "land_combat_mapicon",
     "naval_combat_mapicon",
@@ -79,22 +55,11 @@ const COMBAT_INDICATOR_GUI_CONTAINERS: &[&str] = &[
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CombatIndicatorAssetManifest {
-    /// Land combat bubble sprites (frame, backing, bombardment overlay, urban
-    /// variant, direction indicator, animated battle strip, air-superiority
-    /// modifier strip). Resolved DDS with frame rects.
     pub land_combat_sprites: BTreeMap<String, CounterSpriteAsset>,
-    /// Naval combat bubble sprites (icon, result variants, HQ frame, small
-    /// fleet-status combat/result icons). Resolved DDS with frame rects.
     pub naval_combat_sprites: BTreeMap<String, CounterSpriteAsset>,
-    /// Shipped combat sprite references that failed to resolve through the
-    /// active resolver (reported, never silently remapped). Expected empty on a
-    /// clean vanilla install.
     pub unresolved_sprites: Vec<crate::unit_counter_assets::UnresolvedSpriteAsset>,
-    /// Combat progress bars (naval attacker bar + land unit combat bar).
     pub progress_bars: BTreeMap<String, ProgressBarAsset>,
-    /// On-map combat container layouts + their named child controls.
     pub gui_layouts: CombatIndicatorGuiLayouts,
-    /// Font bindings used by the combat textboxes.
     pub fonts: Vec<BitmapFontBinding>,
 }
 
@@ -107,12 +72,10 @@ impl CombatIndicatorAssetManifest {
         self.naval_combat_sprites.get(name)
     }
 
-    /// Total resolved combat sprite definitions across land + naval groups.
     pub fn resolved_sprite_count(&self) -> usize {
         self.land_combat_sprites.len() + self.naval_combat_sprites.len()
     }
 
-    /// Distinct resolved combat sprite texture files.
     pub fn unique_sprite_texture_count(&self) -> usize {
         self.land_combat_sprites
             .values()
@@ -130,8 +93,6 @@ pub struct CombatIndicatorGuiLayouts {
     pub naval_combat_results_mapicon: GuiContainerLayout,
     pub ongoing_combat_container: GuiContainerLayout,
     pub combat_results_container: GuiContainerLayout,
-    /// Exact FILE template constructed by `CTinyUnitCounter` for the naval
-    /// `*_adds_grid` summaries.
     pub tiny_unit_counter: GuiContainerLayout,
 }
 
@@ -149,7 +110,6 @@ impl CombatIndicatorGuiLayouts {
     }
 }
 
-/// Which on-map combat container a placement refers to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CombatIndicatorKind {
     Land,
@@ -167,25 +127,16 @@ impl CombatIndicatorKind {
     }
 }
 
-/// Legacy FILE-derived inventory placement keyed by province.
-///
-/// XMAP14 production does not consume this helper: it projects and aligns the
-/// live FILE container against the viewer camera from its exact state carrier.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CombatIndicatorPlacement {
     pub province_id: u32,
     pub kind: CombatIndicatorKind,
-    /// Declared container size from the `.gui` (`size = { width height }`).
-    /// FILE fact; not the prepared production screen quad.
     pub declared_size: Option<GuiSize>,
-    /// Screen-space rendered quad size (not part of this inventory helper).
     pub screen_quad_size: Option<GuiSize>,
-    /// Whether this FILE-only helper contains an anchor law (always false).
     pub anchor_law_known: bool,
 }
 
 impl CombatIndicatorAssetManifest {
-    /// Build a FILE-only inventory stub for a province + combat kind.
     pub fn placement_stub(
         &self,
         province_id: u32,
@@ -227,11 +178,6 @@ pub fn combat_indicator_assets_from_resolver(
 fn referenced_combat_assets(
     layouts: &CombatIndicatorGuiLayouts,
 ) -> Result<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> {
-    // The map-icon controllers select several surfaces directly in native code
-    // (for example the land urban/backing variants and naval result variants),
-    // so they are not all reachable by walking the authored GUI controls.  Keep
-    // that exact engine-selected closure, then union the effective FILE aliases
-    // so a mod-selected control cannot be silently omitted.
     let mut land = LAND_COMBAT_MAPICONS_GFX_SPRITES
         .iter()
         .chain(LAND_COMBAT_LANDCOMBAT_GFX_SPRITES)
@@ -298,13 +244,6 @@ fn referenced_sprite_inventory(
     let mut assets = BTreeMap::new();
     let mut unresolved = Vec::new();
     for (source_file, path) in resolver.resolve_dir_files_recursive("interface", Some("gfx"))? {
-        // Preserve the complete effective-registry census (and therefore
-        // definitions placed by a mod in any .gfx file), but do not feed an
-        // unrelated file through the expensive braced-block parser. The
-        // admission below compares parsed aliases to `wanted` byte-for-byte,
-        // so an exact substring check cannot discard a definition that the
-        // existing admission could accept. Comments and other false positives
-        // deliberately fall through to the exact parser.
         let text = read_latin1(&path)?;
         if !mentions_wanted_alias(&text, wanted) {
             continue;
@@ -539,7 +478,6 @@ fn referenced_combat_fonts_from_resolver(
     Ok(fonts)
 }
 
-/// Number of GUI containers this module gates (for tests / callers).
 pub fn combat_indicator_gui_container_count() -> usize {
     COMBAT_INDICATOR_GUI_CONTAINERS.len()
 }
@@ -604,8 +542,6 @@ mod tests {
                 }
             }
         "#;
-        // The land inventory also reads landcombat.gfx (battle modifier strip);
-        // provide a minimal one in both roots so the multi-file read resolves.
         let landcombat_gfx = br#"
             spriteTypes = {
                 spriteType = {
@@ -659,7 +595,6 @@ mod tests {
         assert_eq!(frame.texture_width, 152);
         assert_eq!(frame.no_of_frames, 2);
         assert_eq!(frame.frame_width, 76);
-        // Overrides hit: both gfx files + both dds textures.
         assert_eq!(resolver.stats().overridden_file_count, 4);
         let _ = fs::remove_dir_all(root);
     }
@@ -719,7 +654,6 @@ mod tests {
         let resolver = vanilla_resolver();
         let manifest = combat_indicator_assets_from_resolver(&resolver).expect("manifest");
 
-        // N/N resolution gate: every declared land sprite resolves, none unresolved.
         assert_eq!(manifest.land_combat_sprites.len(), 7);
         assert!(manifest.unresolved_sprites.is_empty());
 
@@ -833,8 +767,6 @@ mod tests {
         );
         assert_eq!((tiny.texture_width, tiny.texture_height), (66, 20));
 
-        // Full inventory sanity: the 17 combat-bubble surfaces plus the four
-        // CTinyUnitCounter surfaces used by the naval adds grids.
         assert_eq!(manifest.resolved_sprite_count(), 21);
     }
 
@@ -913,7 +845,6 @@ mod tests {
             }
         );
 
-        // Land combat container child controls (the file-derived layout tree).
         let bg = layouts
             .land_combat_mapicon
             .control("bg_btn")
@@ -940,7 +871,6 @@ mod tests {
             Some("GFX_battle_modifier_strip")
         );
 
-        // Naval combat progress icons.
         let naval_progress = layouts
             .naval_combat_mapicon
             .control("progress")
@@ -977,8 +907,6 @@ mod tests {
         assert_eq!(tiny_count.max_width, Some(20));
         assert_eq!(tiny_count.max_height, Some(14));
 
-        // Legacy inventory helper: FILE size present, production placement is
-        // owned by the XMAP14 adapter rather than this stub.
         let manifest = combat_indicator_assets_from_resolver(&resolver).expect("manifest");
         let stub = manifest.placement_stub(4242, CombatIndicatorKind::Land);
         assert_eq!(stub.province_id, 4242);

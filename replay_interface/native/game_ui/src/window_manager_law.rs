@@ -1,9 +1,3 @@
-//! XUI02 runtime-window-manager admission gate.
-//!
-//! XUI01 admits all exact file-derived window definitions, but admits no
-//! runtime compositor state. This module registers every admitted definition
-//! in a dormant manager registry and rejects fabricated activation until a
-//! typed owner contract supplies the complete state.
 
 use crate::authored_role_index::{
     AuthenticatedGuiRoleIndex, AuthenticatedPanelSurface, StrictAuthoredPanelAdmission,
@@ -52,13 +46,6 @@ pub const XUI02_REJECTED_DEFINITIONS: usize = 0;
 pub const XUI02_RUNTIME_ACTIVATIONS: usize = 0;
 pub const XUI02_DEPENDENCY_WINDOWS: usize = 190;
 pub const XUI02_DEPENDENCY_FILES: usize = 77;
-/// The five fields [`FrozenActivationWindow`] declares, for all 9,155 windows.
-///
-/// Distilled from the XUI02 activation-dependency inventory, which carries
-/// sixteen fields per row. serde discarded the other eleven at parse time, so
-/// embedding the full inventory shipped 6.2 MB to every user in order to read
-/// a third of it. Regenerate with the same field list if the struct gains a
-/// field; a missing one is a parse failure, not a silent omission.
 const ACTIVATION_INVENTORY_JSON: &str = include_str!("xui02_activation_inventory.json");
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,23 +248,6 @@ impl fmt::Display for WindowManagerRejection {
 
 impl Error for WindowManagerRejection {}
 
-/// Register every exact XUI01 definition as dormant and reject all fabricated
-/// runtime state. Dormant fields are product fail-closed defaults, not claims
-/// about a live engine window.
-/// # On the file-admission conditions below
-///
-/// `rejected_file_count() != 0` and `admitted_file_count() != ...` cannot fire
-/// for a catalog produced by `definition_admission`'s loaders: every parsed
-/// file is admitted there, because the only candidate rejection criterion —
-/// Clausewitz parse recovery — is something vanilla the game 1.19.2 itself ships
-/// (four brace-damaged `.gui` files; see `FileAdmission::parse_recoveries`),
-/// so gating on it would refuse the base game (R11 C5).
-///
-/// They are kept deliberately. `GuiDefinitionCatalog` and `FileAdmission` are
-/// `pub` with `pub` fields: any caller can hand this function a catalog whose
-/// file rows and window vectors disagree, and these conditions are the
-/// invariant that such a catalog is not registered. They are assertions about
-/// the argument, not dead branches of a production decision.
 pub fn register_dormant_window_manager(
     catalog: &GuiDefinitionCatalog,
     runtime_states: &[RuntimeWindowManagerState],
@@ -304,15 +274,6 @@ pub fn register_dormant_window_manager(
     Ok(registry)
 }
 
-/// Register the exact effective GUI namespace selected by the admitted VFS.
-///
-/// Unlike [`register_dormant_window_manager`], this production entry point
-/// does not compare a modded/DLC profile to the frozen vanilla census. The
-/// replay manifest and VFS capability authenticate the files; this gate owns
-/// only the namespace invariants needed by the replay-owned manager. A
-/// mod-local unsupported window remains in the catalog's rejection inventory
-/// but does not poison unrelated admitted winners; its own identity is simply
-/// absent from the returned manager namespace.
 pub fn register_effective_dormant_window_manager(
     catalog: &GuiDefinitionCatalog,
     runtime_states: &[RuntimeWindowManagerState],
@@ -428,9 +389,6 @@ fn activation_class(value: &str) -> Option<ResolvableActivationClass> {
     }
 }
 
-/// Parse the embedded activation inventory exactly once per process. The JSON
-/// is a compile-time constant, so the parse outcome is deterministic; a parse
-/// failure stays a typed fatal rejection on every call.
 fn parsed_activation_inventory(
 ) -> Result<&'static FrozenActivationInventory, WindowManagerRejection> {
     static PARSED: OnceLock<Result<FrozenActivationInventory, WindowManagerRejection>> =
@@ -467,9 +425,6 @@ fn activation_inventory(
     Ok(inventory)
 }
 
-/// Return the exact source-window rows for which current controller or state-
-/// seam code can supply a runtime manager record. Descendants are expanded by
-/// [`apply_runtime_activation_frame`] from their nearest effective source.
 pub fn resolvable_activation_sources(
     registry: &DormantWindowManagerRegistry,
 ) -> Result<Vec<RuntimeActivationSource>, WindowManagerRejection> {
@@ -549,10 +504,6 @@ fn validate_runtime_state(state: &RuntimeWindowManagerState) -> bool {
     true
 }
 
-/// Validate a controller-produced manager frame and expand every supplied
-/// source state through exact GUI window ancestry. All other rows retain an
-/// explicit, narrow dependency instead of being collapsed into one dormant
-/// bucket.
 pub fn apply_runtime_activation_frame(
     registry: &DormantWindowManagerRegistry,
     runtime_states: &[RuntimeWindowManagerState],
@@ -683,9 +634,6 @@ pub fn apply_runtime_activation_frame(
     Ok(ActiveWindowManagerFrame { resolved, blocked })
 }
 
-/// Input family used by the replay-owned focus traversal law. This is product
-/// view state: it is intentionally separate from captured simulation state and
-/// from the game's private platform event enums.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayTraversalDevice {
     Keyboard,
@@ -708,7 +656,6 @@ pub struct ReplayFocusTarget {
 pub struct ReplayTooltipOwnership {
     pub window_id: String,
     pub widget_id: String,
-    /// Identity of the already-resolved tooltip payload. XUI02 owns only its
     /// presentation lifetime; tooltip content remains validated separately.
     pub tooltip_instance_record: String,
 }
@@ -797,15 +744,10 @@ impl AuthenticatedReplayTooltipOwner {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayPanelActivation {
     pub window_id: String,
-    /// `Some(owner)` opens this window as a modal child of the current input
-    /// owner. `None` opens an ordinary replay panel.
     pub modal_owner: Option<String>,
     pub initial_focus: Option<String>,
-    /// Exact product traversal order supplied by the admitted panel
-    /// implementation. XUI02 never reconstructs this from source order.
     pub keyboard_traversal: Vec<String>,
     pub controller_traversal: Vec<String>,
-    /// Exact widget identities permitted to own an already-resolved tooltip
     /// payload. Empty means the panel admits no tooltip ownership.
     pub tooltip_targets: Vec<String>,
 }
@@ -814,12 +756,10 @@ pub struct ReplayPanelActivation {
 pub struct ReplayPanelState {
     pub window_id: String,
     /// Viewer-owned, pointer-free identity for this particular open lifetime.
-    /// It changes every time the panel is closed and reopened.
     runtime_instance_token: Option<String>,
     pub open: bool,
     pub visible: bool,
     pub composed: bool,
-    /// Contiguous back-to-front ordinal among open replay panels.
     pub stack_ordinal: Option<u32>,
     pub modal_owner: Option<String>,
     pub focused_widget: Option<String>,
@@ -830,11 +770,8 @@ pub struct ReplayPanelState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReplayPointerDisposition {
-    /// The element is an admitted replay navigation target.
     Interactive,
-    /// The element blocks lower z-order windows but cannot be activated.
     BlockOnly,
-    /// Painted content that does not participate in pointer hit testing.
     PassThrough,
 }
 
@@ -850,9 +787,6 @@ pub enum ReplayTooltipAlternateSelection {
     AuthoredDefault,
     AuthoredRuntimeAlternate,
     CustomProvider,
-    /// The authored node declares an enabled/disabled alternate family, but
-    /// the authenticated XUI04 pointer binding has no exact visual-enabled
-    /// state. XUI05 must refuse this feature locally rather than guess.
     UnavailableAuthoredAlternate,
 }
 
@@ -905,8 +839,6 @@ pub enum ProductionLinesViewerAction {
     ToggleRow(crate::production_lines::Xui12RowIdentity),
 }
 
-/// Exhaustive typed viewer actions. Packet owners add domain variants here;
-/// authored names and caller strings are never action dispatch keys.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReplayViewerAction {
     Politics(PoliticsViewerAction),
@@ -974,11 +906,6 @@ impl ReplayViewerAction {
     }
 }
 
-/// Semantic-owner attachment to one exact authored or materialized child.
-///
-/// Construction is crate-private. XUI02 additionally validates the authored
-/// template path against the strict panel token and the rendered path against
-/// the same-generation compositor census.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayViewerActionBinding {
     authored_tree_identity_sha256: String,
@@ -1039,10 +966,6 @@ impl AuthenticatedReplayViewerAction {
     }
 }
 
-/// Typed viewer-owned scroll state for one authenticated authored collection.
-///
-/// The caller supplies only semantic bounds/current offset. XUI02 derives the
-/// viewport rectangle and instance identity from XUI07's sealed preflight.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayAuthenticatedScrollBinding {
     pub element_id: String,
@@ -1053,11 +976,6 @@ pub struct ReplayAuthenticatedScrollBinding {
     pub producer_record: String,
 }
 
-/// Complete, typed semantic input for one authenticated authored element.
-///
-/// Product callers bind these values by the manifest-derived `element_id`.
-/// The manager rejects missing, duplicate, or foreign identities and converts
-/// the complete map to XUI07's private child-path census only after it has
 /// staged the current frame and panel lifetime.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1106,9 +1024,6 @@ impl ReplayAuthenticatedPersistentHudBinding {
     }
 }
 
-/// Opaque selected-country XUI07 materialization capability. Product callers
-/// can select viewer-owned mode/settings state, but cannot choose templates,
-/// child paths, geometry, paint order, or controller semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayAuthenticatedTheatreBinding {
     index_identity_sha256: String,
@@ -1120,8 +1035,6 @@ pub struct ReplayAuthenticatedTheatreBinding {
     surface: crate::production_renderer::ObserverTheatreSurface,
     mode: Option<crate::production_renderer::ObserverTheatreMode>,
     settings_land_id: Option<u32>,
-    /// Retained viewer target. The effective offset is derived only after the
-    /// authenticated preflight supplies the final clipped list viewport.
     scroll_offset_pixels: i32,
     identity_sha256: String,
 }
@@ -1153,9 +1066,6 @@ struct ReplayAuthenticatedExtendedScrollbarBinding {
     slider: ReplayAuthenticatedScrollbarPartBinding,
 }
 
-/// Opaque complete XUI12 materialization capability. It is built only after
-/// the exact effective root, row templates, complete semantic censuses, global
-/// order, stable identities, and viewer scroll state have all joined.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReplayAuthenticatedProductionLinesBinding {
     index_identity_sha256: String,
@@ -1192,10 +1102,6 @@ struct ReplayAuthenticatedFrontendCollectionBinding {
     scroll_offset_pixels: i32,
 }
 
-/// Opaque XUI26 dynamic-row capability. The external carrier owns complete
-/// semantic membership/order and template identity. Replay re-admits every
-/// template from the effective VFS and derives geometry, clipping, paint and
-/// hit order from the exact authored collection law.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReplayAuthenticatedFrontendCollectionsBinding {
     index_identity_sha256: String,
@@ -4453,10 +4359,6 @@ fn build_exact_a729_production_lines_materialization_plan(
         })
         .ok_or_else(reject)?;
     let max_offset = content_height.saturating_sub(list_clip.height()).max(0);
-    // A retained viewer offset can exceed a newly authenticated extent after
-    // row collapse/removal. Exact a729 scrollbar law clamps that value; it is
-    // not malformed producer input. The composed effective offset is persisted
-    // into the pending binding and reaches viewer state only after Present.
     let effective_scroll_offset = binding.scroll_offset_pixels.min(max_offset);
     let rects = crate::production_lines::plan_xui12_canvas_row_rects(
         &layout,
@@ -4906,11 +4808,6 @@ fn persistent_hud_binding_digest(binding: &ReplayAuthenticatedPersistentHudBindi
     ))
 }
 
-/// Non-geometry inputs for one panel in an atomic authenticated replay frame.
-///
-/// Product callers may select viewer-owned enabled/interaction and scroll
-/// state, but cannot supply rectangles, clipping, paint order, runtime tokens,
-/// frame generations, or pixels.
 pub struct ReplayAuthenticatedPanelFrameInput<'a> {
     surface: &'a AuthenticatedPanelSurface,
     panel: &'a StrictAuthoredPanelAdmission,
@@ -5062,18 +4959,12 @@ pub struct ReplayHitTarget {
     pub element_id: String,
     pub authored_name: String,
     pub child_path: Vec<u32>,
-    /// Exact materialization placement. The synthetic child-path namespace is
-    /// not a z-order signal because nested and global materialized instances
-    /// both use it.
     pub global_root_sibling: bool,
     pub element_type: String,
     pub screen_rect: Rect,
     pub clip_rect: Rect,
-    /// Contiguous back-to-front ordinal within this panel's composed output.
     pub paint_ordinal: u32,
     pub disposition: ReplayPointerDisposition,
-    /// Authenticated current visual enabled state. Activation permission is
-    /// represented separately by `disposition`.
     pub visual_enabled: Option<bool>,
 }
 
@@ -5083,10 +4974,6 @@ pub enum ReplayScrollAxis {
     Vertical,
 }
 
-/// Exact pixel-space scroll delta issued by a typed widget-family owner.
-///
-/// The raw Win32 wheel unit cannot construct this value. Its conversion must
-/// follow the authenticated family/controller law before reaching XUI02.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReplayScrollDeltaPixels(i32);
 
@@ -5120,20 +5007,12 @@ pub struct ReplayScrollRegion {
     pub child_path: Vec<u32>,
     pub viewport_rect: Rect,
     pub axis: ReplayScrollAxis,
-    /// Exact lower and upper pixel offsets supplied by the typed panel owner.
     pub min_offset_pixels: i32,
     pub max_offset_pixels: i32,
     pub offset_pixels: i32,
-    /// Exact authored pixels per emitted wheel notch for this widget family.
-    /// `None` means the family has no authenticated wheel conversion law.
     pub wheel_step_pixels: Option<i32>,
-    /// Whether the effective authored definition requests the engine's
-    /// continuous target/interpolation path.
     pub smooth_scrolling: bool,
-    /// Exact extended-scrollbar graphics/input geometry when the authored
-    /// collection names an admitted `extendedScrollbarType`.
     pub extended_scrollbar: Option<ReplayExtendedScrollbarGeometry>,
-    /// Provenance record for the resolved viewport and content extent.
     pub geometry_source_record: String,
 }
 
@@ -5145,11 +5024,7 @@ pub struct ReplayComposedPanelGeometry {
     pub surface_id: String,
     pub screen_rect: Rect,
     pub clip_rect: Rect,
-    /// Provenance binding to the strict authored-panel admission and exact
-    /// composition output that produced these final screen coordinates.
     pub geometry_source_record: String,
-    /// Complete authenticated child-path census, including currently hidden
-    /// elements that do not participate in hit testing.
     pub element_states: Vec<ReplayComposedElementState>,
     pub hit_targets: Vec<ReplayHitTarget>,
     pub scroll_regions: Vec<ReplayScrollRegion>,
@@ -5220,7 +5095,6 @@ impl ReplayPointerRelease {
     }
 
     /// Exact manager-authenticated identity consumed by the one-shot release.
-    /// A caller cannot manufacture this result because `activated` is private.
     pub fn activated_target(&self) -> Option<&ReplayPointerTarget> {
         self.activated
             .then_some(self.released_over.as_ref())
@@ -5266,9 +5140,6 @@ impl ReplayAuthenticatedComposedPanel {
 }
 
 /// Manager-sealed identity for one currently open panel lifetime.
-///
-/// The lease borrows the manager, so the window cannot be closed/reopened
-/// while a downstream admission is using this identity.
 #[derive(Debug)]
 pub struct AuthenticatedReplayPanelLease<'a> {
     manager: &'a ReplayOwnedWindowManager,
@@ -5292,12 +5163,6 @@ impl AuthenticatedReplayPanelLease<'_> {
     }
 }
 
-/// Non-copyable authority for the single prospective replay frame currently
-/// staged by this manager.
-///
-/// Sibling `game_ui` providers may borrow this value while sealing their
-/// current-frame output. Only XUI02's manager can issue or retire it, and a
-/// manager transition invalidates it before any stale output can publish.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct AuthenticatedReplayFrameAuthority {
     manager_namespace_ordinal: u64,
@@ -5305,10 +5170,6 @@ pub(crate) struct AuthenticatedReplayFrameAuthority {
     viewer_clock_micros: u64,
 }
 
-/// Exact manager-sealed canonical state census for one prospective frame.
-///
-/// The fields are private and the bundle is not cloneable, so a sibling module
-/// cannot substitute an empty, stale, or caller-edited state map at commit.
 #[derive(Debug)]
 pub(crate) struct StagedReplayCanonicalStates {
     frame_authority: AuthenticatedReplayFrameAuthority,
@@ -5347,9 +5208,7 @@ impl AuthenticatedReplayFrameAuthority {
     }
 }
 
-/// Non-cloneable authority issued once for a canonical primary-button press
 /// edge. The manager refuses a second authority until the matching release has
-/// consumed the active generation.
 #[derive(Debug)]
 pub(crate) struct AuthenticatedReplayPressAuthority {
     manager_namespace_ordinal: u64,
@@ -5392,7 +5251,6 @@ impl AuthenticatedReplayPressAuthority {
 
 /// One-shot authority for the release that consumed a canonical press
 /// generation. XUI04 must take this value by ownership; it is intentionally
-/// neither cloneable nor reconstructible.
 #[derive(Debug)]
 pub(crate) struct AuthenticatedReplayReleaseAuthority {
     manager_namespace_ordinal: u64,
@@ -5607,14 +5465,7 @@ impl fmt::Display for ReplayWindowManagerRejection {
 
 impl Error for ReplayWindowManagerRejection {}
 
-/// Deterministic replay-owned window state for the complete XUI01 namespace.
-///
-/// This manager does not claim to capture a remote player's private UI. It
-/// owns the replay application's view state and applies exact, testable
-/// invariants: visibility equals open state, composition equals stack
-/// membership, ordinals are contiguous, an active modal exclusively owns
 /// input, focus restores when that modal closes, and tooltip ownership cannot
-/// outlive its input panel.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ReplayOwnedWindowManager {
     panels: BTreeMap<String, ReplayPanelState>,
@@ -5623,8 +5474,6 @@ pub struct ReplayOwnedWindowManager {
     focus: Option<ReplayFocusTarget>,
     focus_restore: BTreeMap<String, Option<ReplayFocusTarget>>,
     tooltip: Option<ReplayTooltipOwnership>,
-    /// Always-on observer HUD roots, in authenticated back-to-front order.
-    /// They are not viewer-opened panels and therefore never own modal focus.
     persistent_instances: BTreeMap<String, String>,
     engine_instance_tokens: BTreeMap<String, u64>,
     persistent_tooltip_targets: BTreeMap<String, Vec<String>>,
@@ -5682,9 +5531,6 @@ struct ReplayManagerAtomicCheckpoint {
     canonical_viewer_actions: BTreeMap<(String, Vec<u32>), AuthenticatedReplayViewerAction>,
 }
 
-/// Opaque pre-event snapshot for the shipping observer Present transaction.
-/// Callers can only restore it or apply the one durable OS capture-loss fact;
-/// manager internals and issuance ordinals remain inaccessible.
 #[derive(Clone, Debug)]
 pub struct ReplayWindowManagerInputCheckpoint {
     state: ReplayManagerAtomicCheckpoint,
@@ -5795,9 +5641,7 @@ impl ReplayOwnedWindowManager {
         Ok(())
     }
 
-    /// Retire the committed hit-test/state surface after a viewport or GPU
     /// target invalidation. Open lifetimes and viewer-owned bindings survive,
-    /// but no input is admitted until a fresh authenticated frame commits.
     pub fn invalidate_composed_frame(&mut self) {
         if let Some(checkpoint) = self.pending_presentation.take() {
             self.restore_atomic_checkpoint(*checkpoint);
@@ -5880,8 +5724,6 @@ impl ReplayOwnedWindowManager {
     }
 
     fn restore_atomic_checkpoint(&mut self, checkpoint: ReplayManagerAtomicCheckpoint) {
-        // Issued frame generations and runtime-instance ordinals deliberately
-        // do not roll back: failed/aborted authorities are never reissued.
         self.panels = checkpoint.panels;
         self.stack = checkpoint.stack;
         self.activation_contracts = checkpoint.activation_contracts;
@@ -5998,13 +5840,6 @@ impl ReplayOwnedWindowManager {
         Ok(())
     }
 
-    /// Atomically authenticate geometry, canonical widget state, and pixels
-    /// for the complete viewer-opened panel stack.
-    ///
-    /// A closed input is opened inside the transaction. Every existing open
-    /// panel must also be present. Any admission/composition failure restores
-    /// manager state and leaves the destination framebuffer byte-identical;
-    /// only never-reused frame and runtime-instance issuance counters advance.
     pub fn compose_authenticated_panel_frame(
         &mut self,
         final_framebuffer: &mut RgbaImage,
@@ -6047,8 +5882,6 @@ impl ReplayOwnedWindowManager {
         }
     }
 
-    /// Publish the manager state paired with the frame the swap chain actually
-    /// displayed. Until this call, input continues to be refused.
     pub fn confirm_presented_frame(&mut self) -> Result<(), ReplayWindowManagerRejection> {
         if self.pending_presentation.take().is_none() {
             return Err(ReplayWindowManagerRejection::InvalidPointerState(
@@ -6059,8 +5892,6 @@ impl ReplayOwnedWindowManager {
         Ok(())
     }
 
-    /// Restore the last displayed input/state snapshot when DXGI did not
-    /// present the newly staged framebuffer. Issuance ordinals remain spent.
     pub fn reject_unpresented_frame(&mut self) -> Result<(), ReplayWindowManagerRejection> {
         let checkpoint = self.pending_presentation.take().ok_or_else(|| {
             ReplayWindowManagerRejection::InvalidPointerState(
@@ -6781,15 +6612,10 @@ impl ReplayOwnedWindowManager {
         self.tooltip.as_ref()
     }
 
-    /// Viewer pointer position associated with the last committed hit-test
-    /// surface. XUI05 consumes this for placement; it is never recorder POV.
     pub fn pointer_position(&self) -> Option<(i32, i32)> {
         self.pointer_position.map(|point| (point[0], point[1]))
     }
 
-    /// Opaque exact owner under the cursor from the last Presented frame.
-    /// Tooltip payload owners consume this value directly; no authored-name
-    /// lookup or caller geometry participates.
     pub fn authenticated_tooltip_owner_at_cursor(
         &self,
     ) -> Result<Option<AuthenticatedReplayTooltipOwner>, ReplayWindowManagerRejection> {
@@ -6797,9 +6623,6 @@ impl ReplayOwnedWindowManager {
         self.authenticated_tooltip_owner_from_current_state()
     }
 
-    /// Opaque exact owner from the newly staged framebuffer while it awaits
-    /// Present. XUI05 uses this only to composite into that same framebuffer;
-    /// viewer input remains bound to the last Presented frame.
     pub fn authenticated_pending_tooltip_owner_at_cursor(
         &self,
     ) -> Result<Option<AuthenticatedReplayTooltipOwner>, ReplayWindowManagerRejection> {
@@ -6865,8 +6688,6 @@ impl ReplayOwnedWindowManager {
         }))
     }
 
-    /// The topmost modal owns input. Without a modal, the topmost composed
-    /// panel owns input. This is also the only panel allowed to own a tooltip.
     pub fn input_window_id(&self) -> Option<&str> {
         self.stack
             .iter()
@@ -6932,9 +6753,6 @@ impl ReplayOwnedWindowManager {
                 activation.window_id,
             ));
         }
-        // The new panel's prospective back-to-front ordinal is the current
-        // length. Validate it before changing the open generation, focus, or
-        // stack so the transition cannot fail after mutation.
         u32::try_from(self.stack.len())
             .map_err(|_| ReplayWindowManagerRejection::StackOrdinalOverflow)?;
         if !valid_traversal(&activation.keyboard_traversal)
@@ -7279,11 +7097,7 @@ impl ReplayOwnedWindowManager {
             })
     }
 
-    /// Install the final authored screen geometry for one open panel.
-    ///
-    /// The caller owns composition and clipping. XUI02 only accepts the exact
     /// resulting rectangles and binds them to the current open lifetime, so a
-    /// stale output from an earlier open can never receive viewer input.
     fn install_composed_geometry(
         &mut self,
         geometry: ReplayComposedPanelGeometry,
@@ -7322,8 +7136,6 @@ impl ReplayOwnedWindowManager {
         Ok(())
     }
 
-    /// Immutable, pointer-free state consumed by XUI04/XUI05 and headless
-    /// evidence. Every composed panel must have exact installed geometry.
     pub fn composed_snapshot(
         &self,
     ) -> Result<ReplayWindowManagerSnapshot, ReplayWindowManagerRejection> {
@@ -7407,10 +7219,6 @@ impl ReplayOwnedWindowManager {
         })
     }
 
-    /// Convert the manager's private current geometry and pointer state into
-    /// XUI04 sealed lifecycle states. Callers can supply semantic enabled
-    /// state and strict panel tokens, but cannot supply coordinates, z-order,
-    /// hover, press, focus, or runtime-instance identity.
     fn stage_current_widget_states(
         &mut self,
         index: &AuthenticatedGuiRoleIndex,
@@ -7685,9 +7493,6 @@ impl ReplayOwnedWindowManager {
         Ok(())
     }
 
-    /// Move the viewer pointer through the exact composed z-order. Block-only
-    /// geometry prevents click-through but is still returned so consumers can
-    /// distinguish occlusion from empty desktop.
     pub fn pointer_target_at(
         &self,
         x: i32,
@@ -7696,12 +7501,6 @@ impl ReplayOwnedWindowManager {
         self.hit_test(x, y)
     }
 
-    /// Whether the authored UI prevents this pointer edge from reaching the
-    /// map/debug controls beneath it.
-    ///
-    /// An active modal blocks the complete lower surface even when the cursor
-    /// is outside every authored child. Returning only `pointer_target_at`
-    /// would collapse that modal backdrop into an unowned map hit.
     pub fn blocks_lower_pointer_input_at(
         &self,
         x: i32,
@@ -7735,9 +7534,6 @@ impl ReplayOwnedWindowManager {
         Ok(self.hovered.as_ref())
     }
 
-    /// Retain pre-layout cursor coordinates without authorizing a hit target.
-    /// The first sealed layout install re-runs hit testing at this coordinate
-    /// before final widget state and pixels are published.
     pub fn record_pending_pointer_position(
         &mut self,
         x: i32,
@@ -7800,9 +7596,6 @@ impl ReplayOwnedWindowManager {
         result
     }
 
-    /// Record a primary-button press through the manager-owned transition
-    /// generation. The hit identity must belong to the exact canonical state
-    /// census published with the current framebuffer generation.
     pub fn pointer_press(
         &mut self,
         x: i32,
@@ -7841,9 +7634,7 @@ impl ReplayOwnedWindowManager {
                 pointer_y: y,
                 pressed,
                 released_over,
-                // Only the public manager wrapper may set this while consuming
                 // the one-shot release authority returned alongside this
-                // internal geometry outcome.
                 activated: false,
                 activated_action: None,
             },
@@ -7906,11 +7697,8 @@ impl ReplayOwnedWindowManager {
     }
 
     /// Consume a release-sealed viewer action exactly once.
-    ///
     /// The semantic action is returned only while its panel lifetime, last
-    /// Presented frame, canonical child path, and consumed input edge all
     /// remain current. Retaining or cloning the opaque release value cannot
-    /// dispatch the same input transition twice.
     pub fn consume_authenticated_viewer_action(
         &mut self,
         action: &AuthenticatedReplayViewerAction,
@@ -7944,9 +7732,6 @@ impl ReplayOwnedWindowManager {
         Ok(action.action.clone())
     }
 
-    /// Seal one keyboard activation for the currently focused, enabled
-    /// interactive child. The shipping MouseKeyboard adapter routes Enter and
-    /// Space here; controller activation remains unsupported by that client.
     pub fn activate_focused_viewer_action(
         &mut self,
     ) -> Result<Option<AuthenticatedReplayViewerAction>, ReplayWindowManagerRejection> {
@@ -8039,9 +7824,6 @@ impl ReplayOwnedWindowManager {
         true
     }
 
-    /// Apply an exact pixel delta supplied by the typed panel owner. XUI02
-    /// deliberately does not convert wheel notches to pixels because that
-    /// conversion is controller/family-specific.
     pub fn scroll_at(
         &mut self,
         x: i32,
@@ -8055,9 +7837,6 @@ impl ReplayOwnedWindowManager {
         self.apply_scroll_delta(target, delta_pixels.value())
     }
 
-    /// Apply an integer notch count emitted by the exact Win32/SDL wheel
-    /// accumulator. The target widget supplies its authenticated authored
-    /// factor; positive wheel motion decreases the vertical content offset.
     pub fn scroll_wheel_notches_at(
         &mut self,
         x: i32,
@@ -8232,10 +8011,6 @@ impl ReplayOwnedWindowManager {
         y: i32,
     ) -> Result<Option<ReplayPointerTarget>, ReplayWindowManagerRejection> {
         self.ensure_complete_geometry()?;
-        // The u32::MAX path prefix identifies the materialized namespace; it
-        // does not by itself establish placement. `global_root_sibling`
-        // records actual shared-root placement, and hit testing follows the
-        // same paint order used by the compositor.
         let global_stack_ordinal = u32::try_from(
             self.persistent_geometry
                 .len()
@@ -8324,8 +8099,6 @@ impl ReplayOwnedWindowManager {
         x: i32,
         y: i32,
     ) -> Result<Option<ReplayScrollRegion>, ReplayWindowManagerRejection> {
-        // A raised global-root settings sibling blocks wheel input from
-        // reaching panel/list regions beneath it.
         if self
             .geometry
             .values()
@@ -8363,8 +8136,6 @@ impl ReplayOwnedWindowManager {
             {
                 return Ok(Some(region.clone()));
             }
-            // A top window containing the pointer blocks scroll-through even
-            // when it has no scroll region.
             if geometry.hit_targets.iter().any(|target| {
                 target.disposition != ReplayPointerDisposition::PassThrough
                     && rect_contains(target.screen_rect, x, y).unwrap_or(false)
@@ -8454,8 +8225,6 @@ impl ReplayOwnedWindowManager {
     }
 
     fn bump_transition(&mut self) {
-        // Any manager mutation between staging and publication invalidates the
-        // prospective frame authority. The atomic product path must restage.
         self.staged_frame_generation = None;
         self.transition_ordinal = self.transition_ordinal.saturating_add(1);
     }
@@ -10327,8 +10096,6 @@ fn geometry_from_authenticated_compose_report(
         });
     }
     if let Some(plan) = plan {
-        // XUI26 may materialize multiple independently authored collections in
-        // one window. Each host retains its own authenticated scroll extent.
         if input.frontend_collections_capability.is_some() {
             if input.theatre_capability.is_some()
                 || input.production_lines_capability.is_some()

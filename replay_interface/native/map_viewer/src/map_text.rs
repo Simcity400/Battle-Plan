@@ -1,27 +1,3 @@
-//! Map-label text sources (OFF-4): localisation strings and the
-//! country-name zoom cutoff, resolver-routed per the `PROJECT.md` heading
-//! "Content and mod contract".
-//!
-//! This backs research-only map-label experiments. The engine's curved label
-//! layout is not implemented by these straight-label helpers, so they are not
-//! product render inputs.
-//!
-//! Sources:
-//! * `localisation/<language>/*.yml` — UTF-8 (BOM) files of
-//!   `KEY:VERSION "text"` lines under an `l_<language>:` header. Country
-//!   display names key off the plain tag (`GER: "Germany"`); ideology
-//!   variants (`GER_fascism`) need game state the recording does not carry
-//!   yet and stay out of the research helper.
-//! * `common/defines/00_graphics.lua` `NGraphics.DRAW_COUNTRY_NAMES_CUTOFF`
-//!   (vanilla 260) — "Cutoff for drawing country names on the map"; the
-//!   only shipped numeric law tying country-name visibility to camera
-//!   distance.
-//!
-//! Merge law note: the engine's exact cross-file localisation precedence
-//! (replace dirs, key version numbers) is NOT reproduced here; files merge
-//! in sorted rel-path order with later files overriding duplicate keys.
-//! That is sufficient for tag -> display-name lookups and is documented as
-//! part of the research helper.
 
 use crate::*;
 use std::collections::BTreeMap;
@@ -29,8 +5,6 @@ use std::collections::BTreeMap;
 pub const LOCALISATION_ROOT: &str = "localisation";
 pub const DRAW_COUNTRY_NAMES_CUTOFF_KEY: &str = "DRAW_COUNTRY_NAMES_CUTOFF";
 
-/// Load and merge every `localisation/<language>/*.yml` through the
-/// resolver (mod overrides win file-by-file; mod-added files merge in).
 pub fn localisation_table_from_resolver(
     resolver: &GameFileResolver,
     language: &str,
@@ -47,7 +21,6 @@ pub fn localisation_table_from_resolver(
     Ok(table)
 }
 
-/// Parse one localisation yml source into `table` (later keys override).
 pub fn merge_localisation_source(
     table: &mut BTreeMap<String, String>,
     source: &str,
@@ -66,7 +39,6 @@ pub fn merge_localisation_source(
             continue;
         }
         let rest = line[colon + 1..].trim_start();
-        // Optional version number between ':' and the quoted text.
         let rest = rest.trim_start_matches(|c: char| c.is_ascii_digit());
         let rest = rest.trim_start();
         let Some(unquoted) = rest.strip_prefix('"') else {
@@ -79,12 +51,6 @@ pub fn merge_localisation_source(
     }
 }
 
-/// Production localisation parser for exact map consumers.
-///
-/// The effective namespace has already been fixed by `GameFileResolver`.
-/// Replay deliberately rejects duplicate effective keys instead of inventing
-/// an unproved cross-file precedence rule, and rejects malformed non-comment
-/// rows instead of silently shrinking the semantic input set.
 pub fn merge_localisation_source_exact(
     table: &mut BTreeMap<String, String>,
     source: &str,
@@ -247,8 +213,6 @@ mod tests {
             Some("Deutsches Kaiserreich"),
             "mod layer must win"
         );
-        // The whole vanilla file was overridden, so FRA vanished with it —
-        // Paradox file-level override semantics.
         assert_eq!(table.get("FRA"), None);
         assert_eq!(resolver.stats().overridden_file_count, 1);
         fs::remove_dir_all(root).ok();
@@ -342,26 +306,6 @@ mod tests {
 }
 
 
-/// Where the quoted value on one localisation line ends.
-///
-/// SHIPPED VANILLA CONTAINS UNESCAPED INNER QUOTES. `aat_events_l_english.yml`
-/// line 1886 is `iceland_events.23.t: "[ICE.GetName] Declares itself "Protector
-/// of the North Sea Passage""` -- the game loads it and shows the inner quotes.
-/// Taking the FIRST unescaped quote as the terminator made that line "trailing
-/// syntax" and refused the whole file, which refused the frame: a recording of
-/// a clean vanilla install could not be drawn because of a quotation mark in an
-/// event title (measured, t83).
-///
-/// So the terminator is the FIRST unescaped quote whose remainder is empty or
-/// a comment. On the vanilla line only the final quote qualifies -- every
-/// earlier one leaves prose behind -- so the whole title survives; on
-/// `key: "value" # see "this"` the quote before the comment qualifies first, so
-/// the comment is not swallowed (Codex review round 1); and a line with no
-/// closing quote at all is still refused.
-///
-/// kills: reverting to "first unescaped quote, then reject any trailing text"
-/// fails `unescaped_inner_quotes_are_a_value_not_a_syntax_error`, and fails the
-/// whole map frame on a vanilla install.
 pub(crate) fn closing_quote_index(quoted: &str) -> Option<usize> {
     let mut escaped = false;
     for (index, character) in quoted.char_indices() {

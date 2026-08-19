@@ -57,14 +57,13 @@ DEFAULT_MANIFESTS = [
 ]
 
 # --- Pinned roster, cross-checked against the release-compiled registry ----
-# wire_name -> (domain_id, in_production_profile)
 ROSTER = {
     "clock": (1, False),
     "fuel_live": (10, True), "production_live": (11, True),
     "focus_live": (12, True), "tech_live": (13, True),
     "politics_live": (14, True), "politics_residuals": (15, True),
     "decisions_live": (16, True), "diplomacy_live": (17, True),
-    "country_identity": (18, False),  # ActiveIntegration: profile-excluded
+    "country_identity": (18, False),
     "divisions": (20, True), "land_combats": (21, True),
     "map_control": (22, True), "map_detail": (23, True),
     "weather_live": (24, True), "division_equipment": (26, True),
@@ -123,20 +122,8 @@ ROSTER = {
     "convoy_transport_attack_live": (90, True),
     "frame": (1000, False),
 }
-# d72, d75, d79, d85, d88 and d89 are pinned out of the profile because the
-# owner ruled them out of capture scope as POV-local presentation. They keep a
-# production status and stay schedulable,
-# so `schedulable and status` alone still classifies them as in-profile;
-# `descheduled_capture_ids()` is what makes the computed value agree with these
-# pins. See the KNOWN GATE DRIFT note below for what this file still owes.
 PROFILE = {n: i for n, (i, p) in ROSTER.items() if p}
 
-# KNOWN GATE DRIFT (pre-existing, not closed here): ROSTER pins 79 domains
-# against a compiled registry of 88 and predates d91-d99, so
-# `registry_drift` reports a roster-length finding and this gate blocks before
-# it evaluates any manifest. Closing that needs a deliberate re-pin pass over
-# the full descriptor table, including `c0_registry_golden.json`, which also
-# still carries d79 as ValidatedSlice against a compiled ProductionComplete.
 
 
 def descheduled_capture_ids(native_root=NATIVE_ROOT):
@@ -168,9 +155,6 @@ PROFILE_STATUSES = {
     "Existing", "ProductionComplete", "ProductionCompleteBase",
     "ValidatedSlice", "ValidatedPartialSlice", "ValidatedSliceOpenGaps",
 }
-# All profile domains require data records (pinned: only clock/d59/frame
-# carry requires_data_record=false, all non-profile). A registry change here
-# must drift so the dark-domain check gets re-judged.
 REQUIRES_DATA_FALSE = {"clock", "templates_equipment_catalog_live", "frame"}
 
 
@@ -209,11 +193,6 @@ def _target_is(message, name, kind, source_path, manifest_path):
     target = message.get("target")
     if type(target) is not dict:
         return False
-    # Round-10: bind to PACKAGE identity, not just target name/kind/src_path.
-    # Cargo lets a target's src_path be configured relative to ANOTHER package's
-    # manifest, so a recorder_host-package `registry_dump` pointing at collector's
-    # source (compiled against a different contract) would otherwise match. The
-    # message's manifest_path MUST resolve to the collector package's Cargo.toml.
     reported_manifest = message.get("manifest_path")
     if type(reported_manifest) is not str:
         return False
@@ -327,10 +306,6 @@ def obtain_compiler_truth(requested_collector_path=None,
         return None, ("production build reported "
                       f"{len(dump_messages)} registry_dump binary artifacts; "
                       "exactly one required")
-    # Round-10: the attested DLL and the dump we trust must be the SAME nonempty
-    # collector package. Both already bind to collector/Cargo.toml via _target_is;
-    # cross-check their package_id so the dump can never come from a sibling
-    # package that merely reuses collector's source path.
     collector_pid = collector_messages[0].get("package_id")
     dump_pid = dump_messages[0].get("package_id")
     if not (type(collector_pid) is str and collector_pid
@@ -403,10 +378,6 @@ DESCRIPTOR_FIELDS = (
 )
 
 
-# Emitted by the compiled dump but deliberately NOT compared against
-# `c0_registry_golden.json`, which predates the field. Optional so the golden
-# still validates; required on compiled entries, which is enforced where profile
-# membership is computed rather than here.
 OPTIONAL_DESCRIPTOR_FIELDS = ("capture_scheduled",)
 
 
@@ -486,9 +457,6 @@ def descriptor_uniqueness_findings(entries, label):
         else:
             ids[domain_id] = wire
 
-        # matches_scheduled_name() accepts wire_name plus aliases. Check every
-        # descriptor, including currently-unschedulable entries, so making one
-        # schedulable later cannot silently activate a pre-existing collision.
         local_names = set()
         for name in [wire, *entry["tags"]]:
             if name in local_names:
@@ -504,9 +472,6 @@ def descriptor_uniqueness_findings(entries, label):
                     f"{prior!r} and {wire!r}")
             else:
                 scheduled_names[name] = wire
-        # assigned_descriptor_by_name()/matches_any_name() additionally accept
-        # internal_name. Same-descriptor equality is normal; cross-descriptor
-        # equality is ambiguous and must fail even if the golden was updated.
         for name in set([wire, entry["internal_name"], *entry["tags"]]):
             prior = lookup_names.get(name)
             if prior is not None and prior != wire:
@@ -547,15 +512,9 @@ def registry_drift(dump_text, golden_loader=load_registry_golden):
                     f"({pinned['wire_name']!r}) field {field}: golden "
                     f"{pinned[field]!r}, compiled {compiled[field]!r}")
 
-    # Keep the full semantic pins as an independent cross-check.
     if len(entries) != len(ROSTER):
         findings.append(f"compiled registry has {len(entries)} descriptors, "
                         f"semantic roster has {len(ROSTER)}")
-    # The deschedule has two authorities and the compiled one wins. Reading only
-    # the JSON mirror would let compiled Rust reinstate a domain into the
-    # shipped roster while this gate still scored it as excluded — a gate-local
-    # false green. So take the value from the dump, and report the mirror
-    # disagreeing rather than silently preferring one.
     try:
         mirrored_descheduled = descheduled_capture_ids()
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as e:
@@ -580,8 +539,6 @@ def registry_drift(dump_text, golden_loader=load_registry_golden):
     for entry in entries:
         domain_id = entry["id"]
         wire = entry["wire_name"]
-        # Schedulable + production status is not the whole profile: a domain the
-        # owner ruled out of capture scope keeps both and is still not captured.
         in_profile = (entry["schedulable"]
                       and entry["status"] in PROFILE_STATUSES
                       and domain_id not in compiled_descheduled)
@@ -605,17 +562,12 @@ def registry_drift(dump_text, golden_loader=load_registry_golden):
     return findings
 
 
-# --- Status bit model (compact_contract lib.rs:132-226) --------------------
 STATUS_BITS = {
     0: "STATE_UNAVAILABLE", 1: "PROFILE_MISMATCH", 2: "NO_CLOCK",
     3: "NO_SCALAR_SOURCE", 4: "WAR_BRIDGE_APPLIED", 5: "EXTRACTION_PERF_GATE",
     6: "WORKER_PANIC", 7: "BRIDGE_UNAVAILABLE", 8: "SOURCE_UNAVAILABLE",
     9: "PARTIAL_DATA", 10: "DELTA_DATA", 11: "TRANSITION_BASELINE_RESET",
     12: "CONTROL_INVALID", 13: "WAR_SEGMENT_ABSENT",
-    # The read reached its source and the answer was empty. Informational:
-    # a measured zero is an ANSWER. Before bit 14 existed, a domain that
-    # legitimately observed nothing published SOURCE_UNAVAILABLE -- the word
-    # a broken reader publishes -- and this census could not separate them.
     14: "SOURCE_EMPTY",
     15: "BASELINE_CLEAR",
 }
@@ -625,15 +577,6 @@ MARKER_BITS = {11}
 BIT13_VALID_DOMAINS = {"diplomacy_live", "diplomacy_intel_operatives_live"}
 KNOWN_MASK = (1 << 16) - 1
 
-# Lane-local overlays. The AUTHORITY is
-# `compact_contract::lane_local_status_mask` (lib.rs), which registers exactly
-# d49, d51, d53, d60 and d99; the lane declarations alias the contract
-# constants so lane and contract cannot drift. This table is a COPY of that
-# registry and is pinned against it by
-# `compact_contract/tests/script_status_vocabulary_sweep.rs` -- an incomplete
-# copy here does not merely mislabel, it makes `classify_bits` report a
-# registered badge as "UNKNOWN status bits (contract drift)" and block C0 on
-# it, which is what a missing d60 bit 17 did.
 LANE_LOCAL = {
     "naval_combat_lifecycle_live": {
         11: ("LANE:LOCATION_CANDIDATE_UNVALIDATED", True,
@@ -661,15 +604,8 @@ LANE_LOCAL = {
              "Failed/UnvalidatedDetail"),
     },
     "capitulation_war_state_live": {
-        # MANDATORY semantics badge whenever war rows exist - informational.
         16: ("LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR", False,
              "CapturedSemantic: running accumulator"),
-        # v2 frame shape: every war row carries the complete exact H-B5
-        # residual block. Informational for the same reason bit 16 is - it
-        # describes the shape of a COMPLETE frame, not a shortfall. Absent
-        # from this table the census called it "UNKNOWN status bits 0x20000
-        # (contract drift)" and blocked, on the majority of every capture:
-        # 245 of the 394 d60 frames of runs/live_unlock/t15 carry it.
         17: ("LANE:WAR_RESIDUALS_EXACT", False,
              "CapturedSemantic: all rows carry exact residuals"),
     },
@@ -682,8 +618,6 @@ LANE_LOCAL = {
     },
 }
 
-# --- Attribution: NEVER clears C0. -----------------------------------------
-# (wire_name, bit) -> (policy, attribution, note)
 ATTRIBUTED = {
     ("market_trade_live", 8): ("candidate",
         "d43 cold first sweep frame (elapsed-0 warmup)",
@@ -1013,8 +947,6 @@ def census_manifest(manifest, label, blocking, notes):
                             f"not exactly the integer {len(PROFILE)} "
                             "(roster drift)")
     expected = cs.get("expected_domains")
-    # Length AND set equality: a duplicate-padded list must not pass via set
-    # collapse (round-3 gate finding 3).
     if (not string_list(expected) or len(expected) != len(PROFILE)
             or set(expected) != set(PROFILE)):
         missing = sorted(set(PROFILE) - set(expected or []))
@@ -1023,16 +955,11 @@ def census_manifest(manifest, label, blocking, notes):
         blocking.append(f"{label}: expected_domains != pinned profile "
                         f"(len {len(expected) if isinstance(expected, list) else 'n/a'}, "
                         f"missing {missing}, extra {extra})")
-    # Round-3 gate finding 2: parse/ordering evidence must be POSITIVELY
-    # empty — absent/null/mistyped is unproven cleanliness, not cleanliness.
     for field in ("parse_errors", "ordering_errors"):
         errors = manifest.get(field, cs.get(field))
         if errors != []:
             blocking.append(f"{label}: {field} not exactly [] "
                             f"(absent/mistyped blocks): {errors!r}")
-    # Hourly gate (combined finding 2): must POSITIVELY prove required+met
-    # with zero problems - absent/older-schema/met-false all block, matching
-    # the authoritative verification gate.
     hourly = manifest.get("hourly_requirement")
     if (not isinstance(hourly, dict)
             or hourly.get("required") is not True
@@ -1079,8 +1006,6 @@ def census_manifest(manifest, label, blocking, notes):
             blocking.append(f"{label}/{name}: DARK domain "
                             f"(records={d['record_count']}, "
                             f"data={d['data_record_count']})")
-        # world_folded is STATIC fold-support membership; all profile domains
-        # are fold-supported, so False is drift.
         if d["world_folded"] is not True:
             blocking.append(f"{label}/{name}: fold_supported=false on a "
                             "profile domain (FOLDED_DOMAIN_IDS drift)")
@@ -1137,7 +1062,6 @@ def run_paths(paths, dump_text, oracle_error=None, artifact_findings=None,
     for drift in registry_drift(dump_text):
         blocking.append(f"ROSTER DRIFT (audit pin unverifiable): {drift}")
     if blocking:
-        # A wrong pin invalidates every downstream judgment - stop here.
         return blocking, notes
     for finding in artifact_findings or []:
         blocking.append(f"ARTIFACT ATTESTATION FAILED: {finding}")
@@ -1281,7 +1205,6 @@ def main(argv, oracle_loader=obtain_compiler_truth,
     return 0
 
 
-# --- Self-test: every claim above, exercised through the REAL paths --------
 def selftest():
 
     def domain(name, **kw):
@@ -1321,13 +1244,7 @@ def selftest():
         return m["compact_stream"]["per_domain"]
 
     def compiled_descriptors():
-        # JSON round-trip makes nested alias arrays independent for mutations.
         descriptors = json.loads(json.dumps(load_registry_golden()))
-        # The golden predates `capture_scheduled` and is deliberately not
-        # updated, but a real compiled dump always emits it and `registry_drift`
-        # fails closed without it. Stand the fixture up as the compiler would,
-        # from the same mirror the drift check compares against, so the
-        # self-test exercises that requirement instead of tripping over it.
         mirrored = descheduled_capture_ids()
         for descriptor in descriptors:
             descriptor["capture_scheduled"] = descriptor["id"] not in mirrored
@@ -1458,9 +1375,7 @@ def selftest():
     descriptors = compiled_descriptors()
     registry_dump = dump_descriptors(descriptors)
     cases = []
-    # Clean manifest through the REAL path -> zero blocking.
     cases.append(("clean", run_m(), 0))
-    # v2 pins (tooling-gate findings).
     cases.append(("dark-domain", run_m(
         lambda m: pd(m).pop("fuel_live")), 1))
     cases.append(("zero-data", run_m(
@@ -1471,8 +1386,6 @@ def selftest():
     cases.append(("fold-problem", run_m(
         lambda m: pd(m)["divisions"].update(
             problems=["delta_before_baseline"])), 1))
-    # Bit 15, not 14: bit 14 is the assigned SOURCE_EMPTY badge now, so it is
-    # classified rather than reported as contract drift.
     cases.append(("unknown-bit", run_m(
         lambda m: pd(m)["fuel_live"].update(status_flags_or=1 << 15)), 1))
     cases.append(("d51-lane-bit13", run_m(
@@ -1500,14 +1413,12 @@ def selftest():
     cases.append(("d17-bit13-informational", run_m(
         lambda m: pd(m)["diplomacy_live"].update(
             status_flags_or=1 << 13)), 0))
-    # v3: d53 lane badge blocks; d60 badge informational.
     cases.append(("d53-lane-bit16", run_m(
         lambda m: pd(m)["diplomacy_intel_operatives_live"].update(
             status_flags_or=1 << 16)), 1))
     cases.append(("d60-badge-informational", run_m(
         lambda m: pd(m)["capitulation_war_state_live"].update(
             status_flags_or=1 << 16)), 0))
-    # combined finding 2: hourly evidence is mandatory + positive.
     cases.append(("hourly-absent", run_m(
         lambda m: m.pop("hourly_requirement")), 1))
     cases.append(("hourly-wrong-type", run_m(
@@ -1515,7 +1426,6 @@ def selftest():
     cases.append(("hourly-met-false", run_m(
         lambda m: m.update(hourly_requirement={
             "required": True, "met": False, "problems": []})), 1))
-    # combined finding 3: strict types.
     cases.append(("bool-counts", run_m(
         lambda m: pd(m)["fuel_live"].update(
             record_count=True, data_record_count=True)), 1))
@@ -1528,16 +1438,12 @@ def selftest():
             errors=["missing d10"])), 1))
     cases.append(("session-id-missing", run_m(
         lambda m: m.pop("session_id")), 1))
-    # combined finding 4: duplicate JSON members are malformed evidence.
     clean = json.dumps(full_manifest())
     dup_member = clean.replace(
         '"decodable": true', '"decodable": false, "decodable": true', 1)
     cases.append(("duplicate-json-member", run_texts(dup_member), 1))
-    # Duplicate sessions across manifests.
     cases.append(("duplicate-session", run_texts(
         json.dumps(full_manifest()), json.dumps(full_manifest())), 1))
-    # Compiler-truth pin: mutations are applied to the emitted descriptors,
-    # never inferred from Rust source text.
     id_mutant = [dict(descriptor) for descriptor in descriptors]
     next(d for d in id_mutant if d["wire_name"] == "tech_sharing_groups_live")[
         "id"] = 70
@@ -1556,11 +1462,9 @@ def selftest():
                   registry_drift("{not-json}\n"), 1))
 
     # Round 7 mutation A: an outer macro can make the release registry empty.
-    # The compiled oracle observes empty stdout and blocks.
     cases.append(("registry-attr-test-outer-macro-release-empty",
                   registry_drift(""), 1))
 
-    # Round 7 mutation B: domain() can rewrite schedulable under cfg!(test).
     constructor_mutant = [dict(descriptor) for descriptor in descriptors]
     for descriptor in constructor_mutant:
         descriptor["schedulable"] = False
@@ -1569,9 +1473,6 @@ def selftest():
                       dump_descriptors(constructor_mutant)),
                       "semantic pin mismatch"), 1))
 
-    # Round 8 critical: under the collector-package oracle, compact_contract is
-    # a dependency. A CARGO_PRIMARY_PACKAGE-gated constructor therefore emits
-    # false here and must be caught, unlike the old primary-package oracle.
     cases.append(("registry-cargo-primary-package-dependency-mutation",
                   caught(registry_drift(
                       dump_descriptors(constructor_mutant)),
@@ -1639,12 +1540,9 @@ def selftest():
     cases.append(("registry-nonliteral-additive-include",
                   registry_drift(registry_dump + "include!()\n"), 1))
 
-    # Legal Rust raw strings are irrelevant to JSONL compiler truth and cannot
-    # false-positive merely because the source spelling changed.
     cases.append(("registry-raw-string-wire-name",
                   registry_drift(registry_dump), 0))
 
-    # Acquisition failures are each distinct and fail closed without cargo.
     cases.append(("oracle-toolchain-absent",
                   caught_oracle_error(
                       fake_oracle(available=False), "absent from PATH"), 1))
@@ -1705,15 +1603,10 @@ def selftest():
                   caught_oracle_error(
                       fake_oracle(unexpected_json=True),
                       "had an unexpected shape"), 1))
-    # Round-10: a registry_dump whose manifest_path is a SIBLING package
-    # (recorder_host reusing collector's src_path) must not be accepted as
-    # collector's dump -> it is filtered out and the count check blocks.
     cases.append(("oracle-foreign-manifest-dump-blocks",
                   caught_oracle_error(
                       fake_oracle(dump_manifest=recorder_manifest),
                       "0 registry_dump binary artifacts"), 1))
-    # Round-10: a dump binding to collector's manifest but reporting a DIFFERENT
-    # package_id than the attested cdylib must block on the cross-check.
     cases.append(("oracle-mismatched-package-id-dump-blocks",
                   caught_oracle_error(
                       fake_oracle(dump_package_id=(
@@ -1727,9 +1620,6 @@ def selftest():
                       fake_oracle(requested_path=wrong_external),
                       "not the build-reported cdylib output"), 1))
 
-    # Round 9 CRITICAL: a recorder_host-only feature may change the unified
-    # compact_contract descriptors. The collector-only dump would be golden,
-    # but the one selected two-package build's emitted dump is authoritative.
     feature_unified_dump = dump_descriptors(constructor_mutant)
     feature_commands = []
     feature_evidence, feature_error = fake_oracle(
@@ -1744,28 +1634,22 @@ def selftest():
     cases.append(("registry-recorder-host-feature-unification-mutation",
                   [] if feature_caught else [
                       feature_error or str(feature_findings)], 0))
-    # ...and a duplicate-padded expected_domains must not pass via set
-    # collapse (round-3 finding 3), nor a float count.
     cases.append(("expected-domains-dup-padded", run_m(
         lambda m: m["compact_stream"].update(
             expected_domains=sorted(PROFILE) + ["fuel_live"])), 1))
     cases.append(("expected-count-float", run_m(
         lambda m: m["compact_stream"]["domain_coverage"].update(
             expected_domain_count=float(len(PROFILE)))), 1))
-    # Round-3 finding 2: ABSENT parse/ordering evidence blocks.
     cases.append(("parse-errors-absent", run_m(
         lambda m: m.pop("parse_errors")), 1))
     cases.append(("ordering-errors-null", run_m(
         lambda m: m.update(ordering_errors=None)), 1))
-    # Zero usable manifests blocks (through run_paths' real path).
     zero_blocking, _ = run_paths(
         [os.path.join(HERE, "definitely_missing.json")], registry_dump,
         quiet=True)
     cases.append(("zero-usable",
                   [b for b in zero_blocking
                    if "ZERO usable" in b or "unreadable" in b], 2))
-    # Round-3 finding 4: pin main()'s OWN exit-code gate (the decisive
-    # return), including the registry-unreadable arm.
     with tempfile.TemporaryDirectory() as td:
         digest_root = os.path.join(td, "digest-root")
         cache_root = os.path.join(digest_root, "redirected-cargo-output")
@@ -1890,8 +1774,6 @@ def selftest():
                       [] if build_attest_rc == 0 else [f"rc={build_attest_rc}"],
                       0))
 
-        # Pin the actual command-line sys.exit wrapper with a stub cargo found
-        # only through this child process's temporary PATH.
         dump_path = os.path.join(td, "registry_dump.jsonl")
         with open(dump_path, "w", encoding="utf-8") as f:
             f.write(registry_dump)

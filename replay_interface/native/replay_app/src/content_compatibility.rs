@@ -1,8 +1,3 @@
-//! Playback-installation compatibility diagnostics.
-//!
-//! Validation laws live in `portable_content_manifest`; this module is only a
-//! product-facing formatter. It never guesses, substitutes, or weakens an
-//! incompatibility reported by the shared portable-file contract.
 
 use map_viewer::{GameFileResolver, RecordedContentSource};
 use portable_content_manifest::{
@@ -19,9 +14,6 @@ use crate::timeline::OwnerProvider;
 pub const BUNDLE_CONTENT_AUTHORITY_SCHEMA: &str = "hoi4.replay.xmap02-bundle-content-authority.v1";
 
 /// Mechanical agreement between a generated map bundle and the exact content
-/// admission used for playback. The legacy FNV values are accepted only after
-/// being recomputed over the admitted one-read payloads; the portable SHA-256
-/// tuple remains the product authority.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BundleContentAuthority {
@@ -35,8 +27,6 @@ pub struct BundleContentAuthority {
     pub authority_sha256: String,
 }
 
-/// Derive the shipping authority directly from the recording admission and
-/// the mounted effective VFS. Normal recording routes are bundle-less; an
 /// external generated `MapBundle` is never a prerequisite for this gate.
 pub fn derive_bundle_content_authority(
     manifest: &ContentManifest,
@@ -57,18 +47,6 @@ pub fn derive_bundle_content_authority(
                 .into(),
         );
     }
-    // BOTH SIDES OF THIS COMPARISON MUST NAME THE SAME THING. The resolver
-    // reports every non-vanilla layer it mounted, and `resolver_for_manifest`
-    // mounts exactly the recording's required non-base layers -- so the
-    // recording's side is that same set, not the mod-kind subset of it.
-    // Counting mods against mounted layers was harmless only while DLC never
-    // arrived as its own mounted layer; on a recording whose content manifest
-    // enumerates the effective VFS (the attach-time census route) it refused a
-    // vanilla capture on its own install: "mounted resolver ... (24 mods) and
-    // recording (0 mods)", where the 24 were the recording's own DLC layers.
-    //
-    // The identities are compared, not just the count: two rosters of the same
-    // size that name different layers are a different content roster.
     let recorded_layer_ids = manifest
         .ordered_layers
         .iter()
@@ -80,8 +58,6 @@ pub fn derive_bundle_content_authority(
     let mounted_layer_ids = resolver
         .active_sources()
         .into_iter()
-        // The vanilla root and the base layer are the ground both sides stand
-        // on, never part of the roster either side enumerates.
         .filter(|source| source.kind != "vanilla" && source.kind != "base")
         .map(|source| source.source_id)
         .collect::<std::collections::BTreeSet<_>>();
@@ -142,8 +118,6 @@ pub fn derive_bundle_content_authority(
 }
 
 /// Optional evidence/debug comparison for a supplied generated map bundle.
-/// Shipping derives authority without this input; when one is supplied, every
-/// legacy source hash must agree with the exact admitted payload.
 pub fn bind_bundle_provenance(
     provenance: &crate::bundle::BundleProvenance,
     manifest: &ContentManifest,
@@ -215,10 +189,6 @@ fn fnv1a64_hex(bytes: &[u8]) -> String {
     format!("{hash:016x}")
 }
 
-/// Admit the selected installation/profile before any renderer or asset
-/// consumer is constructed. The returned resolver embeds the capability, so
-/// every subsequent file/directory lookup rejects paths that the portable
-/// replay did not record and exact identities that no longer match.
 pub fn bind_provider_content(
     provider: &dyn OwnerProvider,
     paths: &ProductPaths,
@@ -234,18 +204,10 @@ pub fn bind_provider_content(
             }],
         })
     })?;
-    // Mount only replay-required layers, in the recorded order. Extra locally
-    // enabled but unused DLC/mods must neither be required nor override a used
-    // path during playback.
     let resolver = resolver_for_manifest(paths, manifest)?;
     let environment = crate::install_paths::playback_environment_from_paths(
         paths,
         &resolver,
-        // No filter: `required_settings` IS what this replay must reproduce.
-        // Anything the recorder merely observed about its own machine lives in
-        // `recorder_local_settings`, and the manifest refuses a recording that
-        // mixes the two -- so a key here is always one the local install is
-        // supposed to be able to answer.
         manifest.required_settings.keys().cloned(),
     )
     .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
@@ -286,8 +248,6 @@ fn resolver_for_manifest(
     })
 }
 
-/// Single product gate for every renderer consumer after a timeline is open.
-/// Callers must not resolve or upload assets before this succeeds.
 pub fn admit_selected_content(
     timeline: &replay_core::WorldTimeline,
     inventory: &replay_core::PlaybackContentInventory,
@@ -319,11 +279,6 @@ pub fn validate_timeline_content(
     let environment = crate::install_paths::playback_environment_from_paths(
         paths,
         &resolver,
-        // No filter: `required_settings` IS what this replay must reproduce.
-        // Anything the recorder merely observed about its own machine lives in
-        // `recorder_local_settings`, and the manifest refuses a recording that
-        // mixes the two -- so a key here is always one the local install is
-        // supposed to be able to answer.
         manifest.required_settings.keys().cloned(),
     )
     .map_err(|error| format!("CONTENT INCOMPATIBLE: {error}"))?;
@@ -385,9 +340,6 @@ pub fn compatibility_summary(
     text.push_str(&format!(
         "Required DLC: {required_dlcs}; selected but unused/optional DLC: {optional_dlcs} (optional items do not block playback)."
     ));
-    // The default remediation assumes the replay is fine and the SELECTION is
-    // wrong. Two classes break that assumption and need their own sentence, or
-    // the operator reconfigures a profile that was never the problem.
     if report
         .issues
         .iter()
@@ -397,9 +349,6 @@ pub fn compatibility_summary(
             "\nThe local installation/profile inventory is itself malformed (not the replay): repair or reselect the installation, then reopen the replay.",
         );
     }
-    // When the ONLY defect is the replay's own manifest, the generic
-    // profile-remediation sentence contradicts the line above it and sends the
-    // operator to reconfigure an installation that is not at fault.
     let only_invalid_manifest = !report.issues.is_empty()
         && report
             .issues
@@ -725,10 +674,6 @@ mod tests {
         };
         let text = compatibility_summary(&manifest(), &report);
         for needle in [
-            // The two malformation classes name OPPOSITE subjects and carry
-            // opposite remediations. Collapsing them sends the operator to
-            // reconfigure a local profile over a defect in the recording, or
-            // to blame a recording for a broken local install.
             "invalid replay content manifest",
             "invalid local content inventory",
             "The local installation/profile inventory is itself malformed",
@@ -756,9 +701,6 @@ mod tests {
         assert!(text.contains("--configure"));
     }
 
-    /// When the recording itself is the only defect, the summary must not also
-    /// tell the operator to reconfigure a playback profile that is not at
-    /// fault -- the two sentences contradicted each other.
     #[test]
     fn a_manifest_only_failure_does_not_advise_reconfiguring_the_profile() {
         let report = ContentValidationReport {
@@ -778,8 +720,6 @@ mod tests {
             "the profile remediation contradicts the sentence above it: {text}"
         );
 
-        // ... but a report that ALSO carries a local-profile defect still says
-        // how to fix that one.
         let mixed = ContentValidationReport {
             compatible: false,
             verified_required_content: 0,
@@ -849,8 +789,6 @@ mod tests {
         );
         fs::create_dir_all(game.join("gfx")).unwrap();
         fs::create_dir_all(game.join("map")).unwrap();
-        // Deliberately corrupt UI content exists locally but is neither opened
-        // nor required by this non-UI replay.
         write(
             &game,
             "interface/unused.gui",

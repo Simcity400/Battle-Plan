@@ -1,0 +1,4923 @@
+
+use crate::production_features::xmap10::{
+    PreparedXmap10Frame, Xmap10CompiledProgramIdentity, Xmap10LutBlendPassKind, Xmap10LutInput,
+    Xmap10NativeCompositorReceiptRef, Xmap10NativeProgramReceiptRef, Xmap10PassKind,
+    Xmap10ProgramRole, Xmap10TargetPlan, Xmap10TargetRole, Xmap10TemporalAdaptationSource,
+    XMAP10_NATIVE_COMPOSITOR_RECEIPT_SCHEMA, XMAP10_NATIVE_PROGRAM_RECEIPT_SCHEMA,
+};
+use crate::{GameFileResolver, Result, Xmap10PreParticleSceneReceipt};
+use portable_render_stream::{AssignedStage, AssignedStageSchedule};
+use serde::{Deserialize, Serialize};
+use snapshot::sha256::Sha256;
+
+pub const XMAP10_REDUCTION_PLAN_SCHEMA: &str = "hoi4.xmap10.luminance-reduction-plan.a729.v1";
+pub const XMAP10_TEMPORAL_POLICY_SCHEMA: &str = "hoi4.xmap10.temporal-native-policy.a729.v1";
+pub const XMAP10_POSTFX_FRAME_RECEIPT_SCHEMA: &str = "hoi4.xmap10.postfx-frame-receipt.a729.v1";
+pub const XMAP10_TARGET_BOUND_PASS_RECEIPT_SCHEMA: &str =
+    "hoi4.xmap10.target-bound-pass-receipt.a729.v1";
+pub const XMAP10_LUMINANCE_DOWNSAMPLE_CHAIN_RECEIPT_SCHEMA: &str =
+    "hoi4.xmap10.luminance-downsample-chain-receipt.a729.v1";
+pub const XMAP10_LUMINANCE_DOWNSAMPLE_SUBPASS_RECEIPT_SCHEMA: &str =
+    "hoi4.xmap10.luminance-downsample-subpass-receipt.a729.v1";
+pub const XMAP10_LUT_EXECUTION_RECEIPT_SCHEMA: &str = "hoi4.xmap10.lut-execution-receipt.a729.v1";
+
+const DXGI_FORMAT_R16G16B16A16_FLOAT_U32: u32 = 10;
+const DXGI_FORMAT_R8G8B8A8_UNORM_U32: u32 = 28;
+const DXGI_FORMAT_B8G8R8A8_UNORM_U32: u32 = 87;
+pub const XMAP10_LUMINANCE_REDUCTION_EVIDENCE_SHA256: &str =
+    "f2d8ae114eb89fe6ef80ea27c535d9b3b7e3e4361dc50e4f83c0b3ba3c79dca8";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Xmap10ReductionStep {
+    pub ordinal: u8,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub destination_width: u32,
+    pub destination_height: u32,
+    pub source_is_bright_alpha: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Xmap10LuminanceReductionPlan {
+    pub schema: String,
+    pub steps: Vec<Xmap10ReductionStep>,
+    pub evidence_receipt_sha256: String,
+    pub deterministic_sha256: String,
+}
+
+impl Xmap10LuminanceReductionPlan {
+    pub fn from_target_plan(targets: &Xmap10TargetPlan) -> Result<Self> {
+        targets.validate()?;
+        let main = targets
+            .ordered_targets
+            .iter()
+            .find(|target| target.role == Xmap10TargetRole::MainScene)
+            .ok_or("XMAP10 target plan omitted MainScene")?;
+        let steps = targets
+            .ordered_passes
+            .iter()
+            .filter_map(|pass| match pass.pass {
+                Xmap10PassKind::LuminanceDownsample(ordinal) => Some((ordinal, pass)),
+                _ => None,
+            })
+            .map(|(ordinal, pass)| {
+                let source = pass
+                    .read_extents
+                    .first()
+                    .ok_or("XMAP10 luminance pass omitted its source extent")?;
+                let destination = pass
+                    .viewport
+                    .ok_or("XMAP10 luminance pass omitted its destination viewport")?;
+                Ok(Xmap10ReductionStep {
+                    ordinal: u8::try_from(ordinal)
+                        .map_err(|_| "XMAP10 luminance ordinal exceeds u8")?,
+                    source_width: source.width,
+                    source_height: source.height,
+                    destination_width: destination.width,
+                    destination_height: destination.height,
+                    source_is_bright_alpha: ordinal == 0,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Self::new(
+            steps,
+            XMAP10_LUMINANCE_REDUCTION_EVIDENCE_SHA256.into(),
+            main.width,
+            main.height,
+        )
+    }
+
+    pub fn new(
+        steps: Vec<Xmap10ReductionStep>,
+        evidence_receipt_sha256: String,
+        main_scene_width: u32,
+        main_scene_height: u32,
+    ) -> Result<Self> {
+        let mut plan = Self {
+            schema: XMAP10_REDUCTION_PLAN_SCHEMA.into(),
+            steps,
+            evidence_receipt_sha256,
+            deterministic_sha256: String::new(),
+        };
+        plan.deterministic_sha256 = reduction_plan_digest(&plan);
+        plan.validate_for_main_scene(main_scene_width, main_scene_height)?;
+        Ok(plan)
+    }
+
+    pub fn validate_for_main_scene(&self, width: u32, height: u32) -> Result<()> {
+        if self.schema != XMAP10_REDUCTION_PLAN_SCHEMA
+            || self.steps.is_empty()
+            || self.evidence_receipt_sha256 != XMAP10_LUMINANCE_REDUCTION_EVIDENCE_SHA256
+            || self.deterministic_sha256 != reduction_plan_digest(self)
+            || width < 4
+            || height < 4
+        {
+            return Err("XMAP10 luminance reduction plan identity is invalid".into());
+        }
+        let first = self
+            .steps
+            .first()
+            .ok_or("XMAP10 luminance reduction plan is empty")?;
+        if first.ordinal != 0
+            || !first.source_is_bright_alpha
+            || (first.source_width, first.source_height) != (width / 2, height / 2)
+            || (first.destination_width, first.destination_height)
+                != (((width / 2) + 1) / 2, ((height / 2) + 1) / 2)
+        {
+            return Err(
+                "XMAP10 first luminance reduction is not the bright-alpha quarter-scene pass"
+                    .into(),
+            );
+        }
+        for (index, step) in self.steps.iter().enumerate() {
+            if usize::from(step.ordinal) != index
+                || step.source_width == 0
+                || step.source_height == 0
+                || step.destination_width == 0
+                || step.destination_height == 0
+                || (index != 0 && step.source_is_bright_alpha)
+                || step.destination_width != (step.source_width + 1) / 2
+                || step.destination_height != (step.source_height + 1) / 2
+            {
+                return Err("XMAP10 luminance reduction step is malformed".into());
+            }
+            if index > 0 {
+                let prior = &self.steps[index - 1];
+                if (step.source_width, step.source_height)
+                    != (prior.destination_width, prior.destination_height)
+                {
+                    return Err(
+                        "XMAP10 luminance reduction viewports do not form a contiguous chain"
+                            .into(),
+                    );
+                }
+            }
+            if step.destination_width > ((width / 2) + 1) / 2
+                || step.destination_height > ((height / 2) + 1) / 2
+            {
+                return Err("XMAP10 luminance reduction exceeds its R16 ping-pong backing".into());
+            }
+        }
+        let final_step = self.steps.last().expect("non-empty checked above");
+        if !(final_step.destination_width > 3 || final_step.destination_height > 3)
+            || (final_step.destination_width + 1) / 2 > 3
+            || (final_step.destination_height + 1) / 2 > 3
+        {
+            return Err(
+                "XMAP10 luminance reduction does not stop at the exact-a729 gather boundary".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Xmap10TemporalPolicy {
+    Continue { prior_frame_sequence: u64 },
+    EngineResourceReset {
+        reason: crate::TemporalLuminanceResetReason,
+        main_scene_resource_identity_sha256: String,
+        allocation_generation: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Xmap10TemporalExecutionInput {
+    pub frame_sequence: u64,
+    pub delta_seconds: f32,
+    pub scalar_source_receipt_sha256: String,
+    pub policy: Xmap10TemporalPolicy,
+}
+
+impl Xmap10TemporalExecutionInput {
+    fn validate(&self, frame: &PreparedXmap10Frame) -> Result<()> {
+        if self.frame_sequence != frame.grade.frame_sequence
+            || self.frame_sequence != frame.temporal_adaptation.frame_sequence
+            || !self.delta_seconds.is_finite()
+            || self.delta_seconds < 0.0
+            || !is_sha256(&self.scalar_source_receipt_sha256)
+        {
+            return Err("XMAP10 temporal execution input is invalid".into());
+        }
+        match &self.policy {
+            Xmap10TemporalPolicy::Continue {
+                prior_frame_sequence,
+            } => {
+                let Xmap10TemporalAdaptationSource::Continue {
+                    prior_frame_sequence: prepared_prior,
+                    ..
+                } = &frame.temporal_adaptation.source
+                else {
+                    return Err("XMAP10 temporal continuation uses a reset preparation".into());
+                };
+                if prior_frame_sequence != prepared_prior {
+                    return Err(
+                        "XMAP10 temporal continuation does not match the prepared prior frame"
+                            .into(),
+                    );
+                }
+            }
+            Xmap10TemporalPolicy::EngineResourceReset {
+                reason,
+                main_scene_resource_identity_sha256,
+                allocation_generation,
+            } => {
+                let Xmap10TemporalAdaptationSource::EngineResourceReset {
+                    reason: prepared_reason,
+                    main_scene_resource_identity_sha256: prepared_main_scene,
+                    allocation_generation: prepared_generation,
+                } = &frame.temporal_adaptation.source
+                else {
+                    return Err("XMAP10 engine reset uses a continuation preparation".into());
+                };
+                if self.delta_seconds != 0.0
+                    || reason != prepared_reason
+                    || main_scene_resource_identity_sha256 != prepared_main_scene
+                    || allocation_generation != prepared_generation
+                {
+                    return Err("XMAP10 engine-reset policy is unauthenticated".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10AttachedFinalTarget {
+    pub width: u32,
+    pub height: u32,
+    pub dxgi_format: u32,
+    pub sample_count: u32,
+    pub descriptor_sha256: String,
+    pub target_identity_sha256: String,
+    pub resource_identity_sha256: String,
+    pub allocation_generation: u64,
+}
+
+impl Xmap10AttachedFinalTarget {
+    fn validate(&self, frame: &PreparedXmap10Frame) -> Result<()> {
+        let expected = frame
+            .targets
+            .ordered_targets
+            .iter()
+            .find(|target| target.role == Xmap10TargetRole::Swapchain)
+            .ok_or("XMAP10 preparation omitted Swapchain target")?;
+        if self.width != expected.width
+            || self.height != expected.height
+            || self.dxgi_format != expected.dxgi_format
+            || self.sample_count != expected.sample_count
+            || self.sample_count != 1
+            || !matches!(
+                self.dxgi_format,
+                DXGI_FORMAT_R8G8B8A8_UNORM_U32 | DXGI_FORMAT_B8G8R8A8_UNORM_U32
+            )
+            || self.descriptor_sha256 != expected.descriptor_sha256
+            || !is_sha256(&self.target_identity_sha256)
+            || !is_sha256(&self.resource_identity_sha256)
+            || self.allocation_generation == 0
+        {
+            return Err(
+                "XMAP10 attached final target differs from the prepared single-sample BGRA/RGBA8 target"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10TargetBoundPassReceipt {
+    pub schema: String,
+    pub hour_index: i64,
+    pub assigned_stage: AssignedStage,
+    pub ordered_input_target_identity_sha256s: Vec<String>,
+    pub output_target_identity_sha256: String,
+    pub program_identity_sha256: String,
+    pub ordered_resource_identity_sha256s: Vec<String>,
+    pub ordered_constant_buffer_receipt_sha256s: Vec<String>,
+    pub draw_receipt_sha256: String,
+    pub packet_pass_receipt_sha256: String,
+}
+
+impl Xmap10TargetBoundPassReceipt {
+    #[allow(clippy::too_many_arguments)]
+    pub fn seal(
+        hour_index: i64,
+        assigned_stage: AssignedStage,
+        ordered_input_target_identity_sha256s: Vec<String>,
+        output_target_identity_sha256: String,
+        program_identity_sha256: String,
+        ordered_resource_identity_sha256s: Vec<String>,
+        ordered_constant_buffer_receipt_sha256s: Vec<String>,
+        draw_receipt_sha256: String,
+    ) -> Result<Self> {
+        let mut receipt = Self {
+            schema: XMAP10_TARGET_BOUND_PASS_RECEIPT_SCHEMA.into(),
+            hour_index,
+            assigned_stage,
+            ordered_input_target_identity_sha256s,
+            output_target_identity_sha256,
+            program_identity_sha256,
+            ordered_resource_identity_sha256s,
+            ordered_constant_buffer_receipt_sha256s,
+            draw_receipt_sha256,
+            packet_pass_receipt_sha256: String::new(),
+        };
+        receipt.validate_body()?;
+        receipt.packet_pass_receipt_sha256 = canonical_packet_sha256(&receipt)?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_body()?;
+        if !is_sha256(&self.packet_pass_receipt_sha256) {
+            return Err("XMAP10 pass receipt digest is invalid".into());
+        }
+        let mut unsigned = self.clone();
+        unsigned.packet_pass_receipt_sha256.clear();
+        if self.packet_pass_receipt_sha256 != canonical_packet_sha256(&unsigned)? {
+            return Err("XMAP10 pass receipt digest mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn validate_body(&self) -> Result<()> {
+        if self.schema != XMAP10_TARGET_BOUND_PASS_RECEIPT_SCHEMA || self.hour_index < 0 {
+            return Err("XMAP10 target-bound pass receipt identity is invalid".into());
+        }
+        self.assigned_stage
+            .validate()
+            .map_err(|error| format!("XMAP10 assigned pass: {error}"))?;
+        if !is_xmap10_postfx_assignment(&self.assigned_stage) {
+            return Err("XMAP10 pass receipt names an unowned scheduled operation".into());
+        }
+        if self.ordered_input_target_identity_sha256s.is_empty()
+            || self.ordered_resource_identity_sha256s.is_empty()
+            || self.ordered_constant_buffer_receipt_sha256s.is_empty()
+            || !is_sha256(&self.output_target_identity_sha256)
+            || !is_sha256(&self.program_identity_sha256)
+            || !is_sha256(&self.draw_receipt_sha256)
+            || self
+                .ordered_input_target_identity_sha256s
+                .iter()
+                .chain(&self.ordered_resource_identity_sha256s)
+                .chain(&self.ordered_constant_buffer_receipt_sha256s)
+                .any(|value| !is_sha256(value))
+        {
+            return Err(
+                "XMAP10 target-bound pass omits an actual target/program/resource/cbuffer/draw identity"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10LuminanceDownsampleSubpassReceipt {
+    pub schema: String,
+    pub ordinal: u8,
+    pub input_width: u32,
+    pub input_height: u32,
+    pub output_width: u32,
+    pub output_height: u32,
+    pub actual_pass_receipt_sha256: String,
+    pub packet_subpass_receipt_sha256: String,
+}
+
+impl Xmap10LuminanceDownsampleSubpassReceipt {
+    pub fn seal(
+        ordinal: u8,
+        input_width: u32,
+        input_height: u32,
+        output_width: u32,
+        output_height: u32,
+        actual_pass_receipt_sha256: String,
+    ) -> Result<Self> {
+        let mut receipt = Self {
+            schema: XMAP10_LUMINANCE_DOWNSAMPLE_SUBPASS_RECEIPT_SCHEMA.into(),
+            ordinal,
+            input_width,
+            input_height,
+            output_width,
+            output_height,
+            actual_pass_receipt_sha256,
+            packet_subpass_receipt_sha256: String::new(),
+        };
+        receipt.validate_body()?;
+        receipt.packet_subpass_receipt_sha256 = canonical_packet_sha256(&receipt)?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_body()?;
+        let mut unsigned = self.clone();
+        unsigned.packet_subpass_receipt_sha256.clear();
+        if !is_sha256(&self.packet_subpass_receipt_sha256)
+            || self.packet_subpass_receipt_sha256 != canonical_packet_sha256(&unsigned)?
+        {
+            return Err("XMAP10 luminance subpass receipt digest mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn validate_body(&self) -> Result<()> {
+        if self.schema != XMAP10_LUMINANCE_DOWNSAMPLE_SUBPASS_RECEIPT_SCHEMA
+            || self.input_width == 0
+            || self.input_height == 0
+            || self.output_width != (self.input_width + 1) / 2
+            || self.output_height != (self.input_height + 1) / 2
+            || !is_sha256(&self.actual_pass_receipt_sha256)
+        {
+            return Err("XMAP10 luminance subpass dimensions or draw identity are invalid".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10LuminanceDownsampleChainReceipt {
+    pub schema: String,
+    pub assigned_stage: AssignedStage,
+    pub initial_width: u32,
+    pub initial_height: u32,
+    pub ordered_subpasses: Vec<Xmap10LuminanceDownsampleSubpassReceipt>,
+    pub terminal_next_width: u32,
+    pub terminal_next_height: u32,
+    pub packet_chain_receipt_sha256: String,
+}
+
+impl Xmap10LuminanceDownsampleChainReceipt {
+    pub fn seal(
+        assigned_stage: AssignedStage,
+        initial_width: u32,
+        initial_height: u32,
+        ordered_subpasses: Vec<Xmap10LuminanceDownsampleSubpassReceipt>,
+    ) -> Result<Self> {
+        let last = ordered_subpasses
+            .last()
+            .ok_or("XMAP10 luminance chain has no subpasses")?;
+        let mut receipt = Self {
+            schema: XMAP10_LUMINANCE_DOWNSAMPLE_CHAIN_RECEIPT_SCHEMA.into(),
+            assigned_stage,
+            initial_width,
+            initial_height,
+            terminal_next_width: (last.output_width + 1) / 2,
+            terminal_next_height: (last.output_height + 1) / 2,
+            ordered_subpasses,
+            packet_chain_receipt_sha256: String::new(),
+        };
+        receipt.validate_body()?;
+        receipt.packet_chain_receipt_sha256 = canonical_packet_sha256(&receipt)?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_body()?;
+        let mut unsigned = self.clone();
+        unsigned.packet_chain_receipt_sha256.clear();
+        if !is_sha256(&self.packet_chain_receipt_sha256)
+            || self.packet_chain_receipt_sha256 != canonical_packet_sha256(&unsigned)?
+        {
+            return Err("XMAP10 luminance chain receipt digest mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn validate_body(&self) -> Result<()> {
+        if self.schema != XMAP10_LUMINANCE_DOWNSAMPLE_CHAIN_RECEIPT_SCHEMA
+            || self.assigned_stage.stage_name != "postfx"
+            || self.assigned_stage.operation_name != "postfx.luminance_downsample_chain"
+            || self.initial_width == 0
+            || self.initial_height == 0
+            || self.ordered_subpasses.is_empty()
+        {
+            return Err("XMAP10 luminance chain identity is invalid".into());
+        }
+        self.assigned_stage
+            .validate()
+            .map_err(|error| format!("XMAP10 luminance assignment: {error}"))?;
+        let mut expected_width = self.initial_width;
+        let mut expected_height = self.initial_height;
+        for (index, subpass) in self.ordered_subpasses.iter().enumerate() {
+            subpass.validate()?;
+            if usize::from(subpass.ordinal) != index
+                || (subpass.input_width, subpass.input_height) != (expected_width, expected_height)
+            {
+                return Err("XMAP10 luminance subpass chain is not contiguous".into());
+            }
+            expected_width = subpass.output_width;
+            expected_height = subpass.output_height;
+        }
+        if self.terminal_next_width != (expected_width + 1) / 2
+            || self.terminal_next_height != (expected_height + 1) / 2
+            || self.terminal_next_width > 3
+            || self.terminal_next_height > 3
+            || (expected_width <= 3 && expected_height <= 3)
+        {
+            return Err("XMAP10 luminance chain does not stop at the exact gather boundary".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10PostFxFrameReceipt {
+    pub schema: String,
+    pub hour_index: i64,
+    pub content_manifest_sha256: String,
+    pub foundation_content_operation_sha256: String,
+    pub viewer_state_sha256: String,
+    pub main_scene_target_sha256: String,
+    pub main_scene_resource_identity_sha256: String,
+    pub main_scene_allocation_generation: u64,
+    pub map_copy_receipt_set_sha256: String,
+    pub upstream_map_scene_receipt_sha256: String,
+    pub final_target: Xmap10AttachedFinalTarget,
+    pub topology_sha256: String,
+    pub ordered_assigned_operations: Vec<AssignedStage>,
+    pub ordered_actual_pass_receipt_sha256s: Vec<String>,
+    pub lut_execution_receipt_sha256: String,
+    pub restore_scene_receipt_sha256: String,
+    pub packet_frame_receipt_sha256: String,
+}
+
+impl Xmap10PostFxFrameReceipt {
+    #[allow(clippy::too_many_arguments)]
+    pub fn seal(
+        hour_index: i64,
+        content_manifest_sha256: String,
+        foundation_content_operation_sha256: String,
+        viewer_state_sha256: String,
+        main_scene_target_sha256: String,
+        main_scene_resource_identity_sha256: String,
+        main_scene_allocation_generation: u64,
+        map_copy_receipt_set_sha256: String,
+        upstream_map_scene_receipt_sha256: String,
+        final_target: Xmap10AttachedFinalTarget,
+        lut_execution_receipt_sha256: String,
+        ordered_passes: &[Xmap10TargetBoundPassReceipt],
+    ) -> Result<Self> {
+        let first = ordered_passes
+            .first()
+            .ok_or("XMAP10 post-FX frame has no actual pass receipts")?;
+        let ordered_assigned_operations = ordered_passes
+            .iter()
+            .map(|pass| pass.assigned_stage.clone())
+            .collect();
+        let ordered_actual_pass_receipt_sha256s = ordered_passes
+            .iter()
+            .map(|pass| pass.packet_pass_receipt_sha256.clone())
+            .collect::<Vec<_>>();
+        let restore_scene_receipt_sha256 = ordered_actual_pass_receipt_sha256s
+            .last()
+            .cloned()
+            .ok_or("XMAP10 post-FX frame has no RestoreScene receipt")?;
+        let mut receipt = Self {
+            schema: XMAP10_POSTFX_FRAME_RECEIPT_SCHEMA.into(),
+            hour_index,
+            content_manifest_sha256,
+            foundation_content_operation_sha256,
+            viewer_state_sha256,
+            main_scene_target_sha256,
+            main_scene_resource_identity_sha256,
+            main_scene_allocation_generation,
+            map_copy_receipt_set_sha256,
+            upstream_map_scene_receipt_sha256,
+            final_target,
+            topology_sha256: first.assigned_stage.topology_sha256.clone(),
+            ordered_assigned_operations,
+            ordered_actual_pass_receipt_sha256s,
+            lut_execution_receipt_sha256,
+            restore_scene_receipt_sha256,
+            packet_frame_receipt_sha256: String::new(),
+        };
+        receipt.validate_body(Some(ordered_passes))?;
+        receipt.packet_frame_receipt_sha256 = canonical_packet_sha256(&receipt)?;
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        self.validate_body(None)?;
+        let mut unsigned = self.clone();
+        unsigned.packet_frame_receipt_sha256.clear();
+        if !is_sha256(&self.packet_frame_receipt_sha256)
+            || self.packet_frame_receipt_sha256 != canonical_packet_sha256(&unsigned)?
+        {
+            return Err("XMAP10 post-FX frame receipt digest mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn validate_body(&self, actual_passes: Option<&[Xmap10TargetBoundPassReceipt]>) -> Result<()> {
+        if self.schema != XMAP10_POSTFX_FRAME_RECEIPT_SCHEMA || self.hour_index < 0 {
+            return Err("XMAP10 post-FX frame identity is invalid".into());
+        }
+        for value in [
+            &self.content_manifest_sha256,
+            &self.foundation_content_operation_sha256,
+            &self.viewer_state_sha256,
+            &self.main_scene_target_sha256,
+            &self.main_scene_resource_identity_sha256,
+            &self.map_copy_receipt_set_sha256,
+            &self.upstream_map_scene_receipt_sha256,
+            &self.topology_sha256,
+            &self.lut_execution_receipt_sha256,
+            &self.restore_scene_receipt_sha256,
+        ] {
+            if !is_sha256(value) {
+                return Err("XMAP10 post-FX frame omits a shared authenticated identity".into());
+            }
+        }
+        if self.main_scene_allocation_generation == 0
+            || self.final_target.width == 0
+            || self.final_target.height == 0
+            || self.final_target.sample_count != 1
+            || !matches!(
+                self.final_target.dxgi_format,
+                DXGI_FORMAT_R8G8B8A8_UNORM_U32 | DXGI_FORMAT_B8G8R8A8_UNORM_U32
+            )
+            || !is_sha256(&self.final_target.descriptor_sha256)
+            || !is_sha256(&self.final_target.target_identity_sha256)
+        {
+            return Err("XMAP10 post-FX frame final target is invalid".into());
+        }
+        if self.ordered_assigned_operations.len() != XMAP10_POSTFX_OPERATION_NAMES.len()
+            || self.ordered_actual_pass_receipt_sha256s.len() != XMAP10_POSTFX_OPERATION_NAMES.len()
+        {
+            return Err("XMAP10 post-FX frame does not contain the six aggregate passes".into());
+        }
+        let mut prior_ordinal = 0;
+        for (index, (assignment, receipt_sha256)) in self
+            .ordered_assigned_operations
+            .iter()
+            .zip(&self.ordered_actual_pass_receipt_sha256s)
+            .enumerate()
+        {
+            assignment
+                .validate()
+                .map_err(|error| format!("XMAP10 frame assignment: {error}"))?;
+            let (expected_stage, expected_operation) = XMAP10_POSTFX_OPERATION_NAMES[index];
+            if assignment.stage_name != expected_stage
+                || assignment.operation_name != expected_operation
+                || assignment.topology_sha256 != self.topology_sha256
+                || assignment.assigned_ordinal <= prior_ordinal
+                || !is_sha256(receipt_sha256)
+            {
+                return Err(
+                    "XMAP10 aggregate pass order differs from the assigned schedule".into(),
+                );
+            }
+            prior_ordinal = assignment.assigned_ordinal;
+        }
+        if self.restore_scene_receipt_sha256
+            != *self
+                .ordered_actual_pass_receipt_sha256s
+                .last()
+                .expect("six pass receipts checked above")
+        {
+            return Err("XMAP10 RestoreScene receipt is not the aggregate tail".into());
+        }
+        if let Some(actual_passes) = actual_passes {
+            if actual_passes.len() != XMAP10_POSTFX_OPERATION_NAMES.len() {
+                return Err("XMAP10 actual pass receipt count differs from aggregate order".into());
+            }
+            for ((assignment, receipt_sha256), actual) in self
+                .ordered_assigned_operations
+                .iter()
+                .zip(&self.ordered_actual_pass_receipt_sha256s)
+                .zip(actual_passes)
+            {
+                actual.validate()?;
+                if actual.hour_index != self.hour_index
+                    || &actual.assigned_stage != assignment
+                    || &actual.packet_pass_receipt_sha256 != receipt_sha256
+                {
+                    return Err("XMAP10 frame receipt differs from an actual pass receipt".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Xmap10PostFxExecutionInput {
+    pub content_manifest_sha256: String,
+    pub foundation_content_operation_sha256: String,
+    pub viewer_state_sha256: String,
+    pub main_scene_target_sha256: String,
+    pub map_copy_receipt_set_sha256: String,
+    pub upstream_map_scene_receipt_sha256: String,
+    pub assigned_stage_schedule: AssignedStageSchedule,
+}
+
+impl Xmap10PostFxExecutionInput {
+    fn validate(
+        &self,
+        frame: &PreparedXmap10Frame,
+        pre_particle_scene: &Xmap10PreParticleSceneReceipt,
+    ) -> Result<Vec<AssignedStage>> {
+        frame.validate()?;
+        pre_particle_scene.validate()?;
+        self.assigned_stage_schedule
+            .validate()
+            .map_err(|error| format!("XMAP10 assigned-stage schedule: {error}"))?;
+        if self.content_manifest_sha256 != frame.content.content_manifest_sha256
+            || self.content_manifest_sha256 != pre_particle_scene.content_manifest_sha256
+            || self.main_scene_target_sha256 != pre_particle_scene.main_scene_target_sha256
+            || frame.hour_index != pre_particle_scene.hour_index
+        {
+            return Err(
+                "XMAP10 post-FX input differs from its prepared/pre-particle frame identity".into(),
+            );
+        }
+        for value in [
+            &self.content_manifest_sha256,
+            &self.foundation_content_operation_sha256,
+            &self.viewer_state_sha256,
+            &self.main_scene_target_sha256,
+            &self.map_copy_receipt_set_sha256,
+            &self.upstream_map_scene_receipt_sha256,
+        ] {
+            if !is_sha256(value) {
+                return Err("XMAP10 post-FX input omits a shared authenticated identity".into());
+            }
+        }
+        XMAP10_POSTFX_OPERATION_NAMES
+            .iter()
+            .map(|(stage, operation)| {
+                self.assigned_stage_schedule
+                    .require(stage, operation)
+                    .map(Clone::clone)
+                    .map_err(|error| format!("XMAP10 required assignment: {error}").into())
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10CompletedPostFxFrame {
+    pub postfx_frame: Xmap10PostFxFrameReceipt,
+    pub target_bound_passes: Vec<Xmap10TargetBoundPassReceipt>,
+    pub luminance_downsample_chain: Xmap10LuminanceDownsampleChainReceipt,
+    pub lut_execution: Xmap10LutExecutionReceipt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10LutPassExecutionReceipt {
+    pub ordinal: u8,
+    pub output_target_index: u8,
+    pub ordered_input_resource_identity_sha256s: Vec<String>,
+    pub output_resource_identity_sha256: String,
+    pub program_identity_sha256: String,
+    pub execution_receipt_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10LutExecutionReceipt {
+    pub schema: String,
+    pub frame_sequence: u64,
+    pub lut_program_sha256: String,
+    pub ordered_lut_source_resource_identity_sha256s: Vec<String>,
+    pub ordered_color_cube_resource_identity_sha256s: Vec<String>,
+    pub ordered_passes: Vec<Xmap10LutPassExecutionReceipt>,
+    pub final_color_cube_content_identity_sha256: String,
+    pub deterministic_sha256: String,
+}
+
+impl Xmap10LutExecutionReceipt {
+    fn validate_against(&self, frame: &PreparedXmap10Frame) -> Result<()> {
+        self.validate()?;
+        if self.schema != XMAP10_LUT_EXECUTION_RECEIPT_SCHEMA
+            || self.frame_sequence != frame.grade.frame_sequence
+            || self.lut_program_sha256 != frame.grade.lut_program.deterministic_sha256
+            || self.ordered_color_cube_resource_identity_sha256s.len() != 3
+            || self.ordered_passes.len() != frame.grade.lut_program.ordered_passes.len()
+        {
+            return Err("XMAP10 LUT execution does not name the prepared pass plan".into());
+        }
+        for ((receipt, planned), index) in self
+            .ordered_passes
+            .iter()
+            .zip(&frame.grade.lut_program.ordered_passes)
+            .zip(0usize..)
+        {
+            let expected_inputs = match &planned.kind {
+                Xmap10LutBlendPassKind::Copy { source } => vec![source],
+                Xmap10LutBlendPassKind::Blend1 { base, blend, .. } => vec![base, blend],
+                Xmap10LutBlendPassKind::Blend2 {
+                    base_day,
+                    base_night,
+                    blend_day,
+                    blend_night,
+                    ..
+                } => vec![base_day, base_night, blend_day, blend_night],
+            }
+            .into_iter()
+            .map(|input| match input {
+                Xmap10LutInput::Source(source) => self
+                    .ordered_lut_source_resource_identity_sha256s
+                    .get(usize::from(*source))
+                    .cloned()
+                    .ok_or_else(|| "XMAP10 LUT source receipt index is unavailable".into()),
+                Xmap10LutInput::Intermediate(ordinal) => self
+                    .ordered_passes
+                    .get(usize::from(*ordinal))
+                    .filter(|prior| prior.ordinal < receipt.ordinal)
+                    .map(|prior| prior.output_resource_identity_sha256.clone())
+                    .ok_or_else(|| "XMAP10 LUT receipt references a non-prior intermediate".into()),
+            })
+            .collect::<Result<Vec<_>>>()?;
+            if usize::from(receipt.ordinal) != index
+                || receipt.ordinal != planned.ordinal
+                || receipt.output_target_index != planned.output_target_index
+                || receipt.ordered_input_resource_identity_sha256s != expected_inputs
+                || receipt.ordered_input_resource_identity_sha256s.is_empty()
+                || receipt
+                    .ordered_input_resource_identity_sha256s
+                    .iter()
+                    .chain([
+                        &receipt.output_resource_identity_sha256,
+                        &receipt.program_identity_sha256,
+                        &receipt.execution_receipt_sha256,
+                    ])
+                    .any(|value| !is_sha256(value))
+                || receipt.output_resource_identity_sha256
+                    != self.ordered_color_cube_resource_identity_sha256s
+                        [usize::from(receipt.output_target_index)]
+            {
+                return Err("XMAP10 LUT execution pass identity is invalid".into());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != XMAP10_LUT_EXECUTION_RECEIPT_SCHEMA
+            || self.frame_sequence == 0
+            || !is_sha256(&self.lut_program_sha256)
+            || self.ordered_color_cube_resource_identity_sha256s.len() != 3
+            || self.ordered_passes.is_empty()
+        {
+            return Err("XMAP10 LUT execution receipt identity is invalid".into());
+        }
+        if self
+            .ordered_lut_source_resource_identity_sha256s
+            .iter()
+            .chain(&self.ordered_color_cube_resource_identity_sha256s)
+            .any(|value| !is_sha256(value))
+        {
+            return Err("XMAP10 LUT execution omits a physical LUT resource identity".into());
+        }
+        for (index, receipt) in self.ordered_passes.iter().enumerate() {
+            if usize::from(receipt.ordinal) != index
+                || usize::from(receipt.output_target_index)
+                    >= self.ordered_color_cube_resource_identity_sha256s.len()
+                || receipt.ordered_input_resource_identity_sha256s.is_empty()
+                || receipt
+                    .ordered_input_resource_identity_sha256s
+                    .iter()
+                    .chain([
+                        &receipt.output_resource_identity_sha256,
+                        &receipt.program_identity_sha256,
+                        &receipt.execution_receipt_sha256,
+                    ])
+                    .any(|value| !is_sha256(value))
+                || receipt.execution_receipt_sha256 != lut_pass_execution_digest(receipt)?
+            {
+                return Err("XMAP10 LUT execution pass receipt is invalid".into());
+            }
+        }
+        if self
+            .ordered_color_cube_resource_identity_sha256s
+            .iter()
+            .any(|value| !is_sha256(value))
+            || !is_sha256(&self.final_color_cube_content_identity_sha256)
+        {
+            return Err("XMAP10 LUT execution omits a physical ColorCube identity".into());
+        }
+        let final_pass = self
+            .ordered_passes
+            .last()
+            .ok_or("XMAP10 LUT execution has no final pass")?;
+        let expected_final = xmap10_identity_set(
+            "postfx.color_cube.final-content",
+            &[
+                final_pass.output_resource_identity_sha256.clone(),
+                self.lut_program_sha256.clone(),
+                xmap10_identity_set(
+                    "postfx.lut.ordered-pass-executions",
+                    &self
+                        .ordered_passes
+                        .iter()
+                        .map(|pass| pass.execution_receipt_sha256.clone())
+                        .collect::<Vec<_>>(),
+                ),
+            ],
+        );
+        if self.final_color_cube_content_identity_sha256 != expected_final {
+            return Err(
+                "XMAP10 final ColorCube content identity is not the executed LUT chain".into(),
+            );
+        }
+        let mut unsigned = self.clone();
+        unsigned.deterministic_sha256.clear();
+        if !is_sha256(&self.deterministic_sha256)
+            || self.deterministic_sha256 != canonical_packet_sha256(&unsigned)?
+        {
+            return Err("XMAP10 LUT execution receipt digest mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+fn lut_pass_execution_digest(pass: &Xmap10LutPassExecutionReceipt) -> Result<String> {
+    canonical_packet_sha256(&(
+        "postfx.lut.pass-execution.v1",
+        pass.ordinal,
+        pass.output_target_index,
+        &pass.ordered_input_resource_identity_sha256s,
+        &pass.output_resource_identity_sha256,
+        &pass.program_identity_sha256,
+    ))
+}
+
+fn xmap10_identity_set(label: &str, ordered_identities: &[String]) -> String {
+    Sha256::hex(
+        &serde_json::to_vec(&(
+            "hoi4.xmap10.native-identity-set.v1",
+            label,
+            ordered_identities,
+        ))
+        .expect("XMAP10 identity-set serialization cannot fail"),
+    )
+}
+
+pub const XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA: &str = "hoi4.xmap10.screen-shadow-execution.v1";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10NativeShaderResourceBinding {
+    pub symbol: String,
+    pub owner_packet: String,
+    pub producer_camera_frame_sha256: String,
+    pub producer_replay_frame_identity_sha256: String,
+    pub consumer_camera_frame_sha256: String,
+    pub consumer_replay_frame_identity_sha256: String,
+    pub stable_resource_id: String,
+    pub resource_sha256: String,
+    pub descriptor_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Xmap10ScreenShadowExecutionReceipt {
+    pub schema: String,
+    pub active: bool,
+    pub prior_screen_shadow_execution_sha256: Option<String>,
+    pub terrain_frame_sha256: String,
+    pub map_copy_receipt_set_sha256: String,
+    pub xmap09_light_depth_execution_sha256: String,
+    pub xmap09_shadow_matrix_payload_sha256: String,
+    pub screen_chain_plan_sha256: String,
+    pub content_closure_sha256: String,
+    pub ordered_scene_cb0_composition_sha256s: Vec<String>,
+    pub terrain_unlit_vertex_bytecode_sha256: String,
+    pub terrain_unlit_pixel_bytecode_sha256: String,
+    pub blur_horizontal_vertex_bytecode_sha256: String,
+    pub blur_horizontal_pixel_bytecode_sha256: String,
+    pub blur_vertical_vertex_bytecode_sha256: String,
+    pub blur_vertical_pixel_bytecode_sha256: String,
+    pub draw_count: u32,
+    pub binding: Xmap10NativeShaderResourceBinding,
+    pub deterministic_sha256: String,
+}
+
+impl Xmap10ScreenShadowExecutionReceipt {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA
+            || self.binding.symbol != "ShadowMap"
+            || self.binding.owner_packet != "XMAP10"
+        {
+            return Err("XMAP10 screen-shadow receipt identity is invalid".into());
+        }
+        match (
+            self.active,
+            self.draw_count,
+            self.ordered_scene_cb0_composition_sha256s.is_empty(),
+            self.prior_screen_shadow_execution_sha256.as_ref(),
+        ) {
+            (true, draw_count, false, None) if draw_count > 0 => {}
+            (false, 0, true, Some(prior)) if is_sha256(prior) => {}
+            _ => {
+                return Err(
+                    "XMAP10 screen-shadow receipt active/retained-frame law is invalid".into(),
+                )
+            }
+        }
+        if self.active
+            && (self.binding.producer_camera_frame_sha256
+                != self.binding.consumer_camera_frame_sha256
+                || self.binding.producer_replay_frame_identity_sha256
+                    != self.binding.consumer_replay_frame_identity_sha256)
+        {
+            return Err("XMAP10 active screen-shadow producer/consumer frame mismatch".into());
+        }
+        for hash in [
+            &self.terrain_frame_sha256,
+            &self.map_copy_receipt_set_sha256,
+            &self.xmap09_light_depth_execution_sha256,
+            &self.xmap09_shadow_matrix_payload_sha256,
+            &self.screen_chain_plan_sha256,
+            &self.terrain_unlit_vertex_bytecode_sha256,
+            &self.terrain_unlit_pixel_bytecode_sha256,
+            &self.blur_horizontal_vertex_bytecode_sha256,
+            &self.blur_horizontal_pixel_bytecode_sha256,
+            &self.blur_vertical_vertex_bytecode_sha256,
+            &self.blur_vertical_pixel_bytecode_sha256,
+            &self.binding.producer_camera_frame_sha256,
+            &self.binding.producer_replay_frame_identity_sha256,
+            &self.binding.consumer_camera_frame_sha256,
+            &self.binding.consumer_replay_frame_identity_sha256,
+            &self.content_closure_sha256,
+            &self.binding.resource_sha256,
+            &self.binding.descriptor_sha256,
+        ]
+        .into_iter()
+        .chain(&self.ordered_scene_cb0_composition_sha256s)
+        {
+            if !is_sha256(hash) {
+                return Err("XMAP10 screen-shadow receipt contains an invalid SHA-256".into());
+            }
+        }
+        if self.binding.stable_resource_id.trim().is_empty() {
+            return Err("XMAP10 screen-shadow binding has no stable resource ID".into());
+        }
+        let mut unsigned = self.clone();
+        unsigned.deterministic_sha256.clear();
+        if !is_sha256(&self.deterministic_sha256)
+            || self.deterministic_sha256 != canonical_packet_sha256(&unsigned)?
+        {
+            return Err("XMAP10 screen-shadow receipt digest mismatch".into());
+        }
+        Ok(())
+    }
+}
+
+pub fn xmap10_terrain_unlit_cb1_bytes(
+    xmap04_draw_cb1: &[u8],
+    shadow_matrix: &crate::Xmap09ShadowMatrixBinding,
+) -> Result<Vec<u8>> {
+    if xmap04_draw_cb1.len() != crate::TERRAIN_CHUNK_CB1_BYTES
+        || xmap04_draw_cb1[..64].iter().any(|byte| *byte != 0)
+        || shadow_matrix.symbol != "ShadowMapTextureMatrix"
+        || shadow_matrix.owner_packet != "XMAP09"
+        || !is_sha256(&shadow_matrix.input_payload_sha256)
+        || shadow_matrix.descriptor_sha256
+            != Sha256::hex(b"XMAP09\0ShadowMapTextureMatrix\0float4x4\064")
+        || shadow_matrix
+            .shadow_map_texture_matrix_f32_bits
+            .iter()
+            .any(|bits| !f32::from_bits(*bits).is_finite())
+    {
+        return Err("XMAP10 terrainunlit CB1 inputs violate the XMAP04/XMAP09 join".into());
+    }
+    let matrix_bytes = shadow_matrix
+        .shadow_map_texture_matrix_f32_bits
+        .iter()
+        .flat_map(|bits| bits.to_le_bytes())
+        .collect::<Vec<_>>();
+    if shadow_matrix.payload_sha256 != Sha256::hex(&matrix_bytes) {
+        return Err("XMAP10 terrainunlit shadow-matrix payload digest mismatch".into());
+    }
+    let mut bytes = xmap04_draw_cb1.to_vec();
+    bytes[..64].copy_from_slice(&matrix_bytes);
+    Ok(bytes)
+}
+
+impl Xmap10CompletedPostFxFrame {
+    pub fn validate(&self) -> Result<()> {
+        self.luminance_downsample_chain.validate()?;
+        self.lut_execution.validate()?;
+        self.postfx_frame
+            .validate_body(Some(&self.target_bound_passes))?;
+        self.postfx_frame.validate()?;
+        if self.postfx_frame.lut_execution_receipt_sha256 != self.lut_execution.deterministic_sha256
+        {
+            return Err("XMAP10 completed frame does not bind the LUT execution receipt".into());
+        }
+        let luminance_pass = self
+            .target_bound_passes
+            .get(1)
+            .ok_or("XMAP10 completed frame omits the luminance chain pass")?;
+        if luminance_pass.assigned_stage != self.luminance_downsample_chain.assigned_stage
+            || luminance_pass.draw_receipt_sha256
+                != self.luminance_downsample_chain.packet_chain_receipt_sha256
+        {
+            return Err(
+                "XMAP10 completed frame does not bind the aggregate luminance chain receipt".into(),
+            );
+        }
+        let restore = self
+            .target_bound_passes
+            .last()
+            .ok_or("XMAP10 completed frame omits RestoreScene")?;
+        if restore.ordered_input_target_identity_sha256s.get(2)
+            != Some(&self.lut_execution.final_color_cube_content_identity_sha256)
+            || restore.ordered_resource_identity_sha256s.get(2)
+                != Some(&self.lut_execution.final_color_cube_content_identity_sha256)
+        {
+            return Err(
+                "XMAP10 RestoreScene does not consume the authenticated final LUT content".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
+const XMAP10_POSTFX_OPERATION_NAMES: [(&str, &str); 6] = [
+    ("postfx", "postfx.bright_pass"),
+    ("postfx", "postfx.luminance_downsample_chain"),
+    ("postfx", "postfx.luminance_gather"),
+    ("postfx", "postfx.bloom.horizontal"),
+    ("postfx", "postfx.bloom.vertical"),
+    ("postfx", "postfx.restore_scene"),
+];
+
+pub fn xmap10_postfx_assigned_stage_topology(
+) -> Result<portable_render_stream::AssignedStageTopology> {
+    let nodes = XMAP10_POSTFX_OPERATION_NAMES
+        .iter()
+        .map(|(stage, operation)| {
+            portable_render_stream::AssignedStageIdentity::new(*stage, *operation)
+        })
+        .collect::<Vec<_>>();
+    let edges = nodes
+        .windows(2)
+        .map(|pair| {
+            portable_render_stream::AssignedStageEdge::new(pair[0].clone(), pair[1].clone())
+        })
+        .collect();
+    portable_render_stream::AssignedStageTopology::seal(nodes, edges).map_err(Into::into)
+}
+
+fn is_xmap10_postfx_assignment(assignment: &AssignedStage) -> bool {
+    XMAP10_POSTFX_OPERATION_NAMES
+        .iter()
+        .any(|(stage, operation)| {
+            assignment.stage_name == *stage && assignment.operation_name == *operation
+        })
+}
+
+fn reduction_plan_digest(plan: &Xmap10LuminanceReductionPlan) -> String {
+    let mut bytes = Vec::new();
+    push_string(&mut bytes, &plan.schema);
+    push_string(&mut bytes, &plan.evidence_receipt_sha256);
+    for step in &plan.steps {
+        bytes.push(step.ordinal);
+        bytes.extend_from_slice(&step.source_width.to_le_bytes());
+        bytes.extend_from_slice(&step.source_height.to_le_bytes());
+        bytes.extend_from_slice(&step.destination_width.to_le_bytes());
+        bytes.extend_from_slice(&step.destination_height.to_le_bytes());
+        bytes.push(u8::from(step.source_is_bright_alpha));
+    }
+    Sha256::hex(&bytes)
+}
+
+fn push_string(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(value.as_bytes());
+}
+
+fn canonical_packet_sha256<T: Serialize>(value: &T) -> Result<String> {
+    Ok(Sha256::hex(&serde_json::to_vec(value)?))
+}
+
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value.bytes().any(|byte| byte != b'0')
+}
+
+#[cfg(windows)]
+mod native {
+    use super::*;
+    use crate::bloom::BloomBlurKernel;
+    use crate::color_lut::{parse_color_correction_tga, ColorCorrectionLut};
+    use crate::d3d11_device::{native_d3d11_check_void_upload_device, D3dPtr};
+    use crate::shader_compile::{
+        build_stage_hlsl_with_defines, d3d_compile_stage, effect_file_from_resolver,
+        parse_dxbc_reflection, DxbcReflection, ShaderStage, ENGINE_COMPILE_FLAGS,
+    };
+    use crate::{
+        NativeProductionMainSceneTarget, NativeXmap04TerrainHandoff,
+        NativeXmap09ShaderResourceView, NativeXmap10MapCopySceneCb0View, PreparedTerrainFrame,
+        ProductionMainSceneTargetDesc, ShadowScreenChainPlan, ShadowScreenPassKind,
+    };
+    use std::collections::BTreeMap;
+    use std::{mem, ptr};
+    use winapi::shared::dxgiformat::{
+        DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16_FLOAT, DXGI_FORMAT_R32G32_SINT,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+    };
+    use winapi::shared::dxgitype::DXGI_SAMPLE_DESC;
+    use winapi::shared::guiddef::GUID;
+    use winapi::um::d3d11::*;
+    use winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP;
+    use winapi::um::unknwnbase::IUnknown;
+    use winapi::Interface;
+
+    const LUMINANCE_SHADER: &str = "gfx/FX/downsample_luminance.shader";
+    const LUT_SHADER: &str = "gfx/FX/lut_blender.shader";
+    const REPLAY_PRESENTATION_RESOURCE_IDENTITY_GUID: GUID = GUID {
+        Data1: 0x7d3f2c91,
+        Data2: 0x8b2e,
+        Data3: 0x4f6d,
+        Data4: [0xa1, 0x73, 0x24, 0x68, 0x91, 0xcf, 0x52, 0x0b],
+    };
+
+    struct NativeTarget {
+        _texture: D3dPtr<ID3D11Texture2D>,
+        rtv: D3dPtr<ID3D11RenderTargetView>,
+        srv: D3dPtr<ID3D11ShaderResourceView>,
+        width: u32,
+        height: u32,
+        resource_identity_sha256: String,
+    }
+
+    struct NativeSampledTexture {
+        _texture: D3dPtr<ID3D11Texture2D>,
+        srv: D3dPtr<ID3D11ShaderResourceView>,
+        resource_identity_sha256: String,
+    }
+
+    struct NativeProgram {
+        vertex: D3dPtr<ID3D11VertexShader>,
+        pixel: D3dPtr<ID3D11PixelShader>,
+        vertex_bytecode: Vec<u8>,
+        pixel_bytecode: Vec<u8>,
+        reflection_sha256: String,
+    }
+
+    struct NativeLutProgram {
+        program: NativeProgram,
+        effect_name: String,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct PostEffectBaseCb {
+        values: [f32; 20],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct LuminanceDownsampleCb {
+        values: [f32; 12],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct LuminanceGatherCb {
+        values: [f32; 12],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct BloomCb {
+        values: [f32; 12],
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct LutBlendCb {
+        values: [f32; 4],
+    }
+
+    pub struct NativeXmap10PostFxExecutor {
+        device: D3dPtr<ID3D11Device>,
+        context: D3dPtr<ID3D11DeviceContext>,
+        prepared_frame_sha256: String,
+        content_closure_sha256: String,
+        target_plan_sha256: String,
+        main_scene_resource_identity_sha256: String,
+        main_scene_allocation_generation: u64,
+        main_scene_texture: D3dPtr<ID3D11Texture2D>,
+        programs: Vec<(Xmap10ProgramRole, NativeProgram)>,
+        scalar_downsample: NativeProgram,
+        lut_blend1: NativeLutProgram,
+        lut_blend2: NativeLutProgram,
+        program_receipt: Xmap10NativeProgramReceiptRef,
+        main_scene_srv: D3dPtr<ID3D11ShaderResourceView>,
+        bright: NativeTarget,
+        luminance_ping: [NativeTarget; 2],
+        temporal: [NativeTarget; 2],
+        temporal_read: usize,
+        bloom_horizontal: NativeTarget,
+        restore_bloom: NativeTarget,
+        lut_source_keys: Vec<portable_content_manifest::UsedContentKey>,
+        lut_sources: Vec<NativeSampledTexture>,
+        color_cubes: [NativeTarget; 3],
+        final_color_cube_index: usize,
+        input_layout: D3dPtr<ID3D11InputLayout>,
+        fullscreen_vertices: D3dPtr<ID3D11Buffer>,
+        post_effect_cb: D3dPtr<ID3D11Buffer>,
+        luminance_cb: D3dPtr<ID3D11Buffer>,
+        luminance_gather_cb: D3dPtr<ID3D11Buffer>,
+        bloom_cb: D3dPtr<ID3D11Buffer>,
+        lut_cb: D3dPtr<ID3D11Buffer>,
+        linear_clamp: D3dPtr<ID3D11SamplerState>,
+        point_clamp: D3dPtr<ID3D11SamplerState>,
+        opaque_blend: D3dPtr<ID3D11BlendState>,
+        rgb_only_blend: D3dPtr<ID3D11BlendState>,
+        depth_disabled: D3dPtr<ID3D11DepthStencilState>,
+        rasterizer: D3dPtr<ID3D11RasterizerState>,
+        main_width: u32,
+        main_height: u32,
+        last_frame_sequence: Option<u64>,
+    }
+
+    pub struct NativeXmap10ScreenShadowHandoff {
+        device: D3dPtr<ID3D11Device>,
+        terrain_unlit: NativeProgram,
+        terrain_input_layout: D3dPtr<ID3D11InputLayout>,
+        blur_horizontal: NativeProgram,
+        blur_vertical: NativeProgram,
+        blur_input_layout: D3dPtr<ID3D11InputLayout>,
+        blur_vertices: D3dPtr<ID3D11Buffer>,
+        blur_cb0: D3dPtr<ID3D11Buffer>,
+        terrain_cb1: D3dPtr<ID3D11Buffer>,
+        static_textures: BTreeMap<u32, crate::xmap04_d3d_handoff::NativeXmap04UnderwaterTexture>,
+        terrain_samplers: BTreeMap<u32, D3dPtr<ID3D11SamplerState>>,
+        blur_sampler: D3dPtr<ID3D11SamplerState>,
+        final_target: NativeTarget,
+        intermediate_target: NativeTarget,
+        opaque_blend: D3dPtr<ID3D11BlendState>,
+        depth_disabled: D3dPtr<ID3D11DepthStencilState>,
+        terrain_rasterizer: D3dPtr<ID3D11RasterizerState>,
+        fullscreen_rasterizer: D3dPtr<ID3D11RasterizerState>,
+        plan: ShadowScreenChainPlan,
+        plan_sha256: String,
+        content_closure_sha256: String,
+        terrain_frame_sha256: String,
+        receipt: Option<Xmap10ScreenShadowExecutionReceipt>,
+    }
+
+    pub struct NativeXmap10ShaderResourceView<'a> {
+        binding: Xmap10NativeShaderResourceBinding,
+        raw_srv: *mut ID3D11ShaderResourceView,
+        device_identity: usize,
+        shader_register: Option<u32>,
+        _owner: std::marker::PhantomData<&'a NativeXmap10ScreenShadowHandoff>,
+    }
+
+    impl NativeXmap10ShaderResourceView<'_> {
+        pub fn binding(&self) -> &Xmap10NativeShaderResourceBinding {
+            &self.binding
+        }
+
+        pub fn frame_identity_sha256(&self) -> &str {
+            &self.binding.consumer_camera_frame_sha256
+        }
+
+        pub fn replay_frame_identity_sha256(&self) -> &str {
+            &self.binding.consumer_replay_frame_identity_sha256
+        }
+
+        pub fn resource_sha256(&self) -> &str {
+            &self.binding.resource_sha256
+        }
+
+        pub fn descriptor_sha256(&self) -> &str {
+            &self.binding.descriptor_sha256
+        }
+
+        pub fn as_raw(&self) -> *mut ID3D11ShaderResourceView {
+            self.raw_srv
+        }
+
+        pub fn device_identity(&self) -> usize {
+            self.device_identity
+        }
+
+        pub fn at_shader_register(mut self, shader_register: u32) -> Self {
+            self.shader_register = Some(shader_register);
+            self
+        }
+    }
+
+    unsafe impl crate::NativeXmap04UnderwaterShaderResource for NativeXmap10ShaderResourceView<'_> {
+        fn owner_packet(&self) -> &str {
+            &self.binding.owner_packet
+        }
+        fn symbol(&self) -> &str {
+            &self.binding.symbol
+        }
+        fn shader_register(&self) -> u32 {
+            self.shader_register.unwrap_or(u32::MAX)
+        }
+        fn frame_identity_sha256(&self) -> &str {
+            &self.binding.consumer_camera_frame_sha256
+        }
+        fn replay_frame_identity_sha256(&self) -> &str {
+            &self.binding.consumer_replay_frame_identity_sha256
+        }
+        fn resource_sha256(&self) -> &str {
+            &self.binding.resource_sha256
+        }
+        fn descriptor_sha256(&self) -> &str {
+            &self.binding.descriptor_sha256
+        }
+        fn raw_shader_resource_view(&self) -> *mut ID3D11ShaderResourceView {
+            self.raw_srv
+        }
+    }
+
+    impl NativeXmap10PostFxExecutor {
+        pub unsafe fn create_on_main_scene(
+            device: *mut ID3D11Device,
+            context: *mut ID3D11DeviceContext,
+            resolver: &GameFileResolver,
+            frame: &PreparedXmap10Frame,
+            main_scene: &NativeProductionMainSceneTarget,
+        ) -> Result<Self> {
+            if main_scene.device_identity() != device as usize {
+                return Err("XMAP10 post-FX MainScene belongs to another D3D11 device".into());
+            }
+            Self::create_from_main_scene_parts(
+                device,
+                context,
+                main_scene.desc(),
+                main_scene.color_texture(),
+                main_scene.resource_identity_sha256().to_owned(),
+                main_scene.allocation_generation(),
+                resolver,
+                frame,
+            )
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        unsafe fn create_from_main_scene_parts(
+            device_raw: *mut ID3D11Device,
+            context_raw: *mut ID3D11DeviceContext,
+            main_desc: &ProductionMainSceneTargetDesc,
+            main_scene_texture: *mut ID3D11Texture2D,
+            main_scene_resource_identity_sha256: String,
+            main_scene_allocation_generation: u64,
+            resolver: &GameFileResolver,
+            frame: &PreparedXmap10Frame,
+        ) -> Result<Self> {
+            frame.validate()?;
+            if !resolver.has_content_admission() {
+                return Err("XMAP10 native execution requires an admission-bound VFS".into());
+            }
+            for key in &frame.content.ordered_used_content {
+                resolver.read_admitted_used_content(key)?;
+            }
+            validate_target_plan_for_desc(frame, main_desc)?;
+            if !is_sha256(&main_scene_resource_identity_sha256)
+                || main_scene_allocation_generation == 0
+            {
+                return Err(
+                    "XMAP10 post-FX MainScene has no authenticated resource identity".into(),
+                );
+            }
+
+            if device_raw.is_null() || context_raw.is_null() || main_scene_texture.is_null() {
+                return Err("XMAP10 post-FX exposes null D3D11 interfaces".into());
+            }
+            (*(device_raw as *mut IUnknown)).AddRef();
+            (*(context_raw as *mut IUnknown)).AddRef();
+            let device = D3dPtr::from_raw(device_raw, "XMAP10 app device")?;
+            let context = D3dPtr::from_raw(context_raw, "XMAP10 app context")?;
+            validate_context_for_device(&device, context_raw)?;
+            validate_texture_for_device(&device, main_scene_texture)?;
+            (*(main_scene_texture as *mut IUnknown)).AddRef();
+            let retained_main_scene_texture =
+                D3dPtr::from_raw(main_scene_texture, "XMAP10 MainScene color texture")?;
+
+            let mut programs = Vec::with_capacity(frame.active_effects.len());
+            let mut identities = Vec::with_capacity(frame.active_effects.len());
+            for effect in &frame.active_effects {
+                let program = compile_program(
+                    &device,
+                    resolver,
+                    &effect.shader_root,
+                    &effect.effect_name,
+                    effect.role,
+                    &effect.ordered_defines,
+                )?;
+                identities.push(Xmap10CompiledProgramIdentity {
+                    role: effect.role,
+                    active_effect_sha256: effect.deterministic_sha256.clone(),
+                    vertex_bytecode_sha256: Sha256::hex(&program.vertex_bytecode),
+                    pixel_bytecode_sha256: Sha256::hex(&program.pixel_bytecode),
+                    reflection_sha256: program.reflection_sha256.clone(),
+                });
+                programs.push((effect.role, program));
+            }
+
+            let luminance_effect = frame
+                .active_effects
+                .iter()
+                .find(|effect| effect.role == Xmap10ProgramRole::LuminanceDownsample)
+                .ok_or("XMAP10 preparation omitted luminance downsample program")?;
+            if !luminance_effect
+                .ordered_defines
+                .iter()
+                .any(|define| define.eq_ignore_ascii_case("LUMINANCE_SAMPLE_ALPHA"))
+            {
+                return Err("XMAP10 first luminance program omits LUMINANCE_SAMPLE_ALPHA".into());
+            }
+            let scalar_defines = luminance_effect
+                .ordered_defines
+                .iter()
+                .filter(|define| !define.eq_ignore_ascii_case("LUMINANCE_SAMPLE_ALPHA"))
+                .cloned()
+                .collect::<Vec<_>>();
+            let scalar_downsample = compile_program(
+                &device,
+                resolver,
+                LUMINANCE_SHADER,
+                "LuminanceDownsample",
+                Xmap10ProgramRole::LuminanceDownsample,
+                &scalar_defines,
+            )?;
+
+            frame.grade.lut_program.validate()?;
+            let lut_blend1 = NativeLutProgram {
+                program: compile_lut_program(&device, resolver, "LutBlend1", 2)?,
+                effect_name: "LutBlend1".into(),
+            };
+            let lut_blend2 = NativeLutProgram {
+                program: compile_lut_program(&device, resolver, "LutBlend2", 4)?,
+                effect_name: "LutBlend2".into(),
+            };
+
+            let mut program_receipt = Xmap10NativeProgramReceiptRef {
+                schema: XMAP10_NATIVE_PROGRAM_RECEIPT_SCHEMA.into(),
+                prepared_frame_sha256: frame.deterministic_sha256.clone(),
+                ordered_programs: identities,
+                receipt_sha256: String::new(),
+            };
+            program_receipt.receipt_sha256 = native_program_receipt_digest(
+                &program_receipt,
+                &scalar_downsample,
+                [&lut_blend1, &lut_blend2],
+            );
+
+            let main_scene_srv =
+                create_srv_for_texture(&device, main_scene_texture, "XMAP10 MainScene SRV")?;
+            let half_width = main_desc.color_width / 2;
+            let half_height = main_desc.color_height / 2;
+            let quarter_width = (half_width + 1) / 2;
+            let quarter_height = (half_height + 1) / 2;
+            let bright = create_target(
+                &device,
+                &frame.deterministic_sha256,
+                half_width,
+                half_height,
+                DXGI_FORMAT_R16G16B16A16_FLOAT as u32,
+                "XMAP10 BrightPass",
+            )?;
+            let luminance_ping = [
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    quarter_width,
+                    quarter_height,
+                    DXGI_FORMAT_R16_FLOAT as u32,
+                    "XMAP10 LuminancePing0",
+                )?,
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    quarter_width,
+                    quarter_height,
+                    DXGI_FORMAT_R16_FLOAT as u32,
+                    "XMAP10 LuminancePing1",
+                )?,
+            ];
+            let temporal = [
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    1,
+                    1,
+                    DXGI_FORMAT_R16_FLOAT as u32,
+                    "XMAP10 AdaptedLuminance0",
+                )?,
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    1,
+                    1,
+                    DXGI_FORMAT_R16_FLOAT as u32,
+                    "XMAP10 AdaptedLuminance1",
+                )?,
+            ];
+            let bloom_horizontal = create_target(
+                &device,
+                &frame.deterministic_sha256,
+                half_width,
+                half_height,
+                DXGI_FORMAT_R16G16B16A16_FLOAT as u32,
+                "XMAP10 BloomHorizontal",
+            )?;
+            let restore_bloom = create_target(
+                &device,
+                &frame.deterministic_sha256,
+                half_width,
+                half_height,
+                DXGI_FORMAT_R16G16B16A16_FLOAT as u32,
+                "XMAP10 RestoreBloom",
+            )?;
+
+            let mut lut_sources =
+                Vec::with_capacity(frame.grade.lut_program.ordered_lut_sources.len());
+            for lut in &frame.grade.lut_program.ordered_lut_sources {
+                let bytes = resolver.read_admitted_used_content(lut)?;
+                let decoded =
+                    parse_color_correction_tga(&bytes, &lut.normalized_game_relative_path)?;
+                lut_sources.push(upload_lut(&device, &decoded, &lut.payload_sha256)?);
+            }
+            let color_cubes = [
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    1024,
+                    32,
+                    DXGI_FORMAT_R8G8B8A8_UNORM as u32,
+                    "XMAP10 ColorCube0",
+                )?,
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    1024,
+                    32,
+                    DXGI_FORMAT_R8G8B8A8_UNORM as u32,
+                    "XMAP10 ColorCube1",
+                )?,
+                create_target(
+                    &device,
+                    &frame.deterministic_sha256,
+                    1024,
+                    32,
+                    DXGI_FORMAT_R8G8B8A8_UNORM as u32,
+                    "XMAP10 ColorCube2",
+                )?,
+            ];
+            let final_color_cube_index = usize::from(
+                frame.grade.lut_program.ordered_passes
+                    [usize::from(frame.grade.lut_program.final_pass_ordinal)]
+                .output_target_index,
+            );
+            let first_program = programs
+                .first()
+                .ok_or("XMAP10 compiled no active programs")?;
+            let input_layout =
+                create_fullscreen_input_layout(&device, &first_program.1.vertex_bytecode)?;
+            let fullscreen_vertices = create_fullscreen_vertices(&device)?;
+            let post_effect_cb = create_constant_buffer(
+                &device,
+                mem::size_of::<PostEffectBaseCb>() as u32,
+                "XMAP10 PostEffectBase",
+            )?;
+            let luminance_cb = create_constant_buffer(
+                &device,
+                mem::size_of::<LuminanceDownsampleCb>() as u32,
+                "XMAP10 luminance vertex/downsample cb2",
+            )?;
+            let luminance_gather_cb = create_constant_buffer(
+                &device,
+                mem::size_of::<LuminanceGatherCb>() as u32,
+                "XMAP10 luminance gather pixel cb2",
+            )?;
+            let bloom_cb = create_constant_buffer(
+                &device,
+                mem::size_of::<BloomCb>() as u32,
+                "XMAP10 bloom cb2",
+            )?;
+            let lut_cb = create_constant_buffer(
+                &device,
+                mem::size_of::<LutBlendCb>() as u32,
+                "XMAP10 LUT cb0",
+            )?;
+            let linear_clamp = create_sampler(&device, false)?;
+            let point_clamp = create_sampler(&device, true)?;
+            let opaque_blend = create_blend(&device, false)?;
+            let rgb_only_blend = create_blend(&device, true)?;
+            let depth_disabled = create_depth_disabled(&device)?;
+            let rasterizer = create_rasterizer(&device)?;
+
+            let executor = Self {
+                device,
+                context,
+                prepared_frame_sha256: frame.deterministic_sha256.clone(),
+                content_closure_sha256: frame.content.deterministic_sha256.clone(),
+                target_plan_sha256: frame.targets.deterministic_sha256.clone(),
+                main_scene_resource_identity_sha256,
+                main_scene_allocation_generation,
+                main_scene_texture: retained_main_scene_texture,
+                programs,
+                scalar_downsample,
+                lut_blend1,
+                lut_blend2,
+                program_receipt,
+                main_scene_srv,
+                bright,
+                luminance_ping,
+                temporal,
+                temporal_read: 0,
+                bloom_horizontal,
+                restore_bloom,
+                lut_source_keys: frame.grade.lut_program.ordered_lut_sources.clone(),
+                lut_sources,
+                color_cubes,
+                final_color_cube_index,
+                input_layout,
+                fullscreen_vertices,
+                post_effect_cb,
+                luminance_cb,
+                luminance_gather_cb,
+                bloom_cb,
+                lut_cb,
+                linear_clamp,
+                point_clamp,
+                opaque_blend,
+                rgb_only_blend,
+                depth_disabled,
+                rasterizer,
+                main_width: main_desc.color_width,
+                main_height: main_desc.color_height,
+                last_frame_sequence: None,
+            };
+            executor.bind_common_pipeline();
+            Ok(executor)
+        }
+
+        pub fn program_receipt(&self) -> &Xmap10NativeProgramReceiptRef {
+            &self.program_receipt
+        }
+
+        pub fn main_scene_resource_identity_sha256(&self) -> &str {
+            &self.main_scene_resource_identity_sha256
+        }
+
+        pub unsafe fn prepare_frame(
+            &mut self,
+            resolver: &GameFileResolver,
+            frame: &PreparedXmap10Frame,
+        ) -> Result<()> {
+            frame.validate()?;
+            if !resolver.has_content_admission()
+                || frame.targets.deterministic_sha256 != self.target_plan_sha256
+                || frame.active_effects.len() != self.program_receipt.ordered_programs.len()
+                || frame
+                    .active_effects
+                    .iter()
+                    .zip(&self.program_receipt.ordered_programs)
+                    .any(|(effect, program)| {
+                        effect.role != program.role
+                            || effect.deterministic_sha256 != program.active_effect_sha256
+                    })
+            {
+                return Err(
+                    "XMAP10 retained compositor cannot accept a changed shader/target variant"
+                        .into(),
+                );
+            }
+            for key in &frame.content.ordered_used_content {
+                resolver.read_admitted_used_content(key)?;
+            }
+            if self.lut_source_keys != frame.grade.lut_program.ordered_lut_sources {
+                let mut refreshed =
+                    Vec::with_capacity(frame.grade.lut_program.ordered_lut_sources.len());
+                for lut in &frame.grade.lut_program.ordered_lut_sources {
+                    let bytes = resolver.read_admitted_used_content(lut)?;
+                    let decoded =
+                        parse_color_correction_tga(&bytes, &lut.normalized_game_relative_path)?;
+                    refreshed.push(upload_lut(&self.device, &decoded, &lut.payload_sha256)?);
+                }
+                self.lut_source_keys = frame.grade.lut_program.ordered_lut_sources.clone();
+                self.lut_sources = refreshed;
+            }
+            self.prepared_frame_sha256 = frame.deterministic_sha256.clone();
+            self.content_closure_sha256 = frame.content.deterministic_sha256.clone();
+            self.program_receipt.prepared_frame_sha256 = frame.deterministic_sha256.clone();
+            self.program_receipt.receipt_sha256 = native_program_receipt_digest(
+                &self.program_receipt,
+                &self.scalar_downsample,
+                [&self.lut_blend1, &self.lut_blend2],
+            );
+            Ok(())
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        pub unsafe fn execute(
+            &mut self,
+            frame: &PreparedXmap10Frame,
+            pre_particle_scene: &Xmap10PreParticleSceneReceipt,
+            postfx_input: &Xmap10PostFxExecutionInput,
+            scene: &NativeXmap10MapCopySceneCb0View<'_>,
+            final_rtv: *mut ID3D11RenderTargetView,
+            final_target: &Xmap10AttachedFinalTarget,
+            reduction: &Xmap10LuminanceReductionPlan,
+            temporal: &Xmap10TemporalExecutionInput,
+        ) -> Result<Xmap10CompletedPostFxFrame> {
+            let assignments = self.validate_execution(
+                frame,
+                pre_particle_scene,
+                postfx_input,
+                scene,
+                final_rtv,
+                final_target,
+                reduction,
+                temporal,
+            )?;
+
+            let kernel = BloomBlurKernel::from_gaussian(
+                f32::from_bits(frame.grade.bloom_width_f32_bits),
+                f32::from_bits(frame.grade.bloom_scale_f32_bits),
+            )?;
+            let compositor_receipt = self.compositor_receipt(frame, reduction);
+            let _ready = frame
+                .admit_native_execution(self.program_receipt.clone(), compositor_receipt.clone())?;
+
+            self.apply_temporal_policy(temporal)?;
+            self.bind_common_pipeline();
+
+            let lut_execution = self.execute_lut_program(frame)?;
+            lut_execution.validate_against(frame)?;
+
+            let post_cb = post_effect_constants(frame, self.main_width, self.main_height);
+            update_constant_buffer(&self.context, &self.device, &self.post_effect_cb, &post_cb)?;
+            let scene_native_binding_receipt = native_identity_set(
+                "postfx.scene_cb0",
+                &[
+                    scene.payload_sha256().into(),
+                    scene.composition_receipt_sha256().into(),
+                    scene.descriptor_sha256().into(),
+                    scene.reflected_layout_sha256().into(),
+                ],
+            );
+            let post_cb_receipt =
+                native_constant_buffer_receipt("postfx.post_effect_base.cb1", &post_cb.values);
+            let common_constant_buffers = vec![scene_native_binding_receipt, post_cb_receipt];
+
+            let scene_buffers = [scene.raw_buffer()];
+            let post_buffers = [self.post_effect_cb.as_raw()];
+            (*self.context.as_raw()).VSSetConstantBuffers(0, 1, scene_buffers.as_ptr());
+            (*self.context.as_raw()).PSSetConstantBuffers(0, 1, scene_buffers.as_ptr());
+            (*self.context.as_raw()).VSSetConstantBuffers(1, 1, post_buffers.as_ptr());
+            (*self.context.as_raw()).PSSetConstantBuffers(1, 1, post_buffers.as_ptr());
+
+            self.draw_pass(
+                Xmap10ProgramRole::BrightPass,
+                self.bright.rtv.as_raw(),
+                self.bright.width,
+                self.bright.height,
+                &[self.main_scene_srv.as_raw()],
+                &[self.linear_clamp.as_raw()],
+                self.opaque_blend.as_raw(),
+            )?;
+            let bright_program_identity =
+                native_program_identity(self.program(Xmap10ProgramRole::BrightPass)?);
+            let bright_inputs = vec![self.main_scene_resource_identity_sha256.clone()];
+            let bright_output = self.bright.resource_identity_sha256.clone();
+            let bright_resources = vec![
+                self.main_scene_resource_identity_sha256.clone(),
+                bright_output.clone(),
+            ];
+            let bright_draw = native_draw_receipt(
+                &assignments[0],
+                "postfx.bright_pass",
+                &bright_program_identity,
+                &bright_inputs,
+                &bright_output,
+                &bright_resources,
+                &common_constant_buffers,
+                self.bright.width,
+                self.bright.height,
+            );
+            let bright_pass = Xmap10TargetBoundPassReceipt::seal(
+                frame.hour_index,
+                assignments[0].clone(),
+                bright_inputs,
+                bright_output,
+                bright_program_identity,
+                bright_resources,
+                common_constant_buffers.clone(),
+                bright_draw,
+            )?;
+
+            let (luminance_chain, luminance_constant_buffers) = self.execute_luminance_reduction(
+                reduction,
+                &assignments[1],
+                &common_constant_buffers,
+            )?;
+            let luminance_program_identity = native_identity_set(
+                "postfx.luminance_downsample_chain.programs",
+                &[
+                    native_program_identity(self.program(Xmap10ProgramRole::LuminanceDownsample)?),
+                    native_program_identity(&self.scalar_downsample),
+                ],
+            );
+            let luminance_inputs = vec![self.bright.resource_identity_sha256.clone()];
+            let luminance_output = native_identity_set(
+                "postfx.luminance_downsample_chain.outputs",
+                &[
+                    self.luminance_ping[0].resource_identity_sha256.clone(),
+                    self.luminance_ping[1].resource_identity_sha256.clone(),
+                ],
+            );
+            let luminance_resources = vec![
+                self.bright.resource_identity_sha256.clone(),
+                self.luminance_ping[0].resource_identity_sha256.clone(),
+                self.luminance_ping[1].resource_identity_sha256.clone(),
+            ];
+            let luminance_pass = Xmap10TargetBoundPassReceipt::seal(
+                frame.hour_index,
+                assignments[1].clone(),
+                luminance_inputs,
+                luminance_output,
+                luminance_program_identity,
+                luminance_resources,
+                luminance_constant_buffers,
+                luminance_chain.packet_chain_receipt_sha256.clone(),
+            )?;
+
+            let temporal_write = 1 - self.temporal_read;
+            let gather_source_index = (reduction.steps.len() - 1) & 1;
+            let gather_inputs = vec![
+                self.luminance_ping[gather_source_index]
+                    .resource_identity_sha256
+                    .clone(),
+                self.temporal[self.temporal_read]
+                    .resource_identity_sha256
+                    .clone(),
+            ];
+            let gather_output = self.temporal[temporal_write]
+                .resource_identity_sha256
+                .clone();
+            let mut gather_resources = gather_inputs.clone();
+            gather_resources.push(gather_output.clone());
+            let (gather_draw, gather_constant_buffers) = self.execute_luminance_gather(
+                frame,
+                reduction,
+                temporal,
+                temporal_write,
+                &assignments[2],
+                &common_constant_buffers,
+            )?;
+            let gather_pass = Xmap10TargetBoundPassReceipt::seal(
+                frame.hour_index,
+                assignments[2].clone(),
+                gather_inputs,
+                gather_output,
+                native_program_identity(self.program(Xmap10ProgramRole::LuminanceGather)?),
+                gather_resources,
+                gather_constant_buffers,
+                gather_draw,
+            )?;
+
+            let bloom_receipts = self.execute_bloom(
+                &kernel,
+                [&assignments[3], &assignments[4]],
+                &common_constant_buffers,
+            )?;
+            if bloom_receipts.len() != 2 {
+                return Err("XMAP10 bloom execution omitted an aggregate pass".into());
+            }
+            let bloom_horizontal_pass = Xmap10TargetBoundPassReceipt::seal(
+                frame.hour_index,
+                assignments[3].clone(),
+                vec![self.bright.resource_identity_sha256.clone()],
+                self.bloom_horizontal.resource_identity_sha256.clone(),
+                native_program_identity(self.program(Xmap10ProgramRole::BloomHorizontal)?),
+                vec![
+                    self.bright.resource_identity_sha256.clone(),
+                    self.bloom_horizontal.resource_identity_sha256.clone(),
+                ],
+                bloom_receipts[0].1.clone(),
+                bloom_receipts[0].0.clone(),
+            )?;
+            let bloom_vertical_pass = Xmap10TargetBoundPassReceipt::seal(
+                frame.hour_index,
+                assignments[4].clone(),
+                vec![self.bloom_horizontal.resource_identity_sha256.clone()],
+                self.restore_bloom.resource_identity_sha256.clone(),
+                native_program_identity(self.program(Xmap10ProgramRole::BloomVertical)?),
+                vec![
+                    self.bloom_horizontal.resource_identity_sha256.clone(),
+                    self.restore_bloom.resource_identity_sha256.clone(),
+                ],
+                bloom_receipts[1].1.clone(),
+                bloom_receipts[1].0.clone(),
+            )?;
+
+            self.draw_pass(
+                Xmap10ProgramRole::RestoreScene,
+                final_rtv,
+                final_target.width,
+                final_target.height,
+                &[
+                    self.main_scene_srv.as_raw(),
+                    self.restore_bloom.srv.as_raw(),
+                    self.color_cubes[self.final_color_cube_index].srv.as_raw(),
+                    self.temporal[temporal_write].srv.as_raw(),
+                ],
+                &[
+                    self.linear_clamp.as_raw(),
+                    self.linear_clamp.as_raw(),
+                    self.linear_clamp.as_raw(),
+                    self.linear_clamp.as_raw(),
+                ],
+                self.rgb_only_blend.as_raw(),
+            )?;
+            let restore_inputs = vec![
+                self.main_scene_resource_identity_sha256.clone(),
+                self.restore_bloom.resource_identity_sha256.clone(),
+                lut_execution
+                    .final_color_cube_content_identity_sha256
+                    .clone(),
+                self.temporal[temporal_write]
+                    .resource_identity_sha256
+                    .clone(),
+            ];
+            let mut restore_resources = restore_inputs.clone();
+            restore_resources.push(final_target.target_identity_sha256.clone());
+            let restore_program_identity =
+                native_program_identity(self.program(Xmap10ProgramRole::RestoreScene)?);
+            let restore_draw = native_draw_receipt(
+                &assignments[5],
+                "postfx.restore_scene",
+                &restore_program_identity,
+                &restore_inputs,
+                &final_target.target_identity_sha256,
+                &restore_resources,
+                &common_constant_buffers,
+                final_target.width,
+                final_target.height,
+            );
+            let restore_pass = Xmap10TargetBoundPassReceipt::seal(
+                frame.hour_index,
+                assignments[5].clone(),
+                restore_inputs,
+                final_target.target_identity_sha256.clone(),
+                restore_program_identity,
+                restore_resources,
+                common_constant_buffers,
+                restore_draw,
+            )?;
+
+            self.temporal_read = temporal_write;
+            self.last_frame_sequence = Some(temporal.frame_sequence);
+
+            let target_bound_passes = vec![
+                bright_pass,
+                luminance_pass,
+                gather_pass,
+                bloom_horizontal_pass,
+                bloom_vertical_pass,
+                restore_pass,
+            ];
+            let postfx_frame = Xmap10PostFxFrameReceipt::seal(
+                frame.hour_index,
+                postfx_input.content_manifest_sha256.clone(),
+                postfx_input.foundation_content_operation_sha256.clone(),
+                postfx_input.viewer_state_sha256.clone(),
+                postfx_input.main_scene_target_sha256.clone(),
+                self.main_scene_resource_identity_sha256.clone(),
+                self.main_scene_allocation_generation,
+                postfx_input.map_copy_receipt_set_sha256.clone(),
+                postfx_input.upstream_map_scene_receipt_sha256.clone(),
+                final_target.clone(),
+                lut_execution.deterministic_sha256.clone(),
+                &target_bound_passes,
+            )?;
+            let completed = Xmap10CompletedPostFxFrame {
+                postfx_frame,
+                target_bound_passes,
+                luminance_downsample_chain: luminance_chain,
+                lut_execution,
+            };
+            completed.validate()?;
+            Ok(completed)
+        }
+
+        #[allow(clippy::too_many_arguments)]
+        unsafe fn validate_execution(
+            &self,
+            frame: &PreparedXmap10Frame,
+            pre_particle_scene: &Xmap10PreParticleSceneReceipt,
+            postfx_input: &Xmap10PostFxExecutionInput,
+            scene: &NativeXmap10MapCopySceneCb0View<'_>,
+            final_rtv: *mut ID3D11RenderTargetView,
+            final_target: &Xmap10AttachedFinalTarget,
+            reduction: &Xmap10LuminanceReductionPlan,
+            temporal: &Xmap10TemporalExecutionInput,
+        ) -> Result<Vec<AssignedStage>> {
+            frame.validate()?;
+            if frame.deterministic_sha256 != self.prepared_frame_sha256
+                || frame.content.deterministic_sha256 != self.content_closure_sha256
+                || frame.targets.deterministic_sha256 != self.target_plan_sha256
+                || scene.raw_buffer().is_null()
+                || final_rtv.is_null()
+            {
+                return Err(
+                    "XMAP10 executor/frame identity changed or a native binding is null".into(),
+                );
+            }
+            if scene.owner_packet() != "XMAP10"
+                || scene.symbol() != "SceneCB0"
+                || scene.shader_register() != 0
+                || scene.byte_len() != 416
+                || scene.payload_sha256() != frame.scene_cb0.scene_cb0_sha256
+                || scene.composition_receipt_sha256() != frame.scene_cb0.receipt_sha256
+                || scene.device_identity() != self.device.as_raw() as usize
+                || scene.render_view_mask() != 1
+                || scene.main_scene_resource_identity_sha256()
+                    != self.main_scene_resource_identity_sha256
+                || scene.main_scene_allocation_generation() != self.main_scene_allocation_generation
+                || scene.raw_main_scene_color_texture() != self.main_scene_texture.as_raw()
+            {
+                return Err(
+                    "XMAP10 native SceneCB0/MainScene view is stale or cross-allocation".into(),
+                );
+            }
+            final_target.validate(frame)?;
+            reduction.validate_for_main_scene(self.main_width, self.main_height)?;
+            temporal.validate(frame)?;
+            if let Xmap10TemporalPolicy::EngineResourceReset {
+                main_scene_resource_identity_sha256,
+                allocation_generation,
+                ..
+            } = &temporal.policy
+            {
+                if main_scene_resource_identity_sha256 != &self.main_scene_resource_identity_sha256
+                    || *allocation_generation != self.main_scene_allocation_generation
+                {
+                    return Err(
+                        "XMAP10 temporal reset does not name this MainScene allocation".into(),
+                    );
+                }
+            }
+            let assignments = postfx_input.validate(frame, pre_particle_scene)?;
+            if pre_particle_scene.scene_cb0.sha256 != scene.payload_sha256()
+                || pre_particle_scene.scene_cb0.byte_count != scene.byte_len()
+            {
+                return Err(
+                    "XMAP10 native SceneCB0 differs from the pre-particle operation receipt".into(),
+                );
+            }
+            validate_buffer_desc(scene.raw_buffer(), 416, D3D11_BIND_CONSTANT_BUFFER)?;
+            validate_final_rtv(self.device.as_raw(), final_rtv, final_target)?;
+            Ok(assignments)
+        }
+
+        fn apply_temporal_policy(&mut self, input: &Xmap10TemporalExecutionInput) -> Result<()> {
+            match &input.policy {
+                Xmap10TemporalPolicy::Continue {
+                    prior_frame_sequence,
+                } => {
+                    if self.last_frame_sequence != Some(*prior_frame_sequence) {
+                        return Err(
+                            "XMAP10 temporal continuation has no matching retained R16 state"
+                                .into(),
+                        );
+                    }
+                }
+                Xmap10TemporalPolicy::EngineResourceReset { .. } => unsafe {
+                    self.temporal_read = 0;
+                    let zero = [0.0_f32; 4];
+                    for target in &self.temporal {
+                        (*self.context.as_raw()).ClearRenderTargetView(target.rtv.as_raw(), &zero);
+                    }
+                    self.last_frame_sequence = None;
+                },
+            }
+            Ok(())
+        }
+
+        unsafe fn bind_common_pipeline(&self) {
+            let stride = mem::size_of::<[i32; 2]>() as u32;
+            let offset = 0u32;
+            let vertex = [self.fullscreen_vertices.as_raw()];
+            (*self.context.as_raw()).IASetInputLayout(self.input_layout.as_raw());
+            (*self.context.as_raw()).IASetVertexBuffers(0, 1, vertex.as_ptr(), &stride, &offset);
+            (*self.context.as_raw()).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            (*self.context.as_raw()).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
+            (*self.context.as_raw()).RSSetState(self.rasterizer.as_raw());
+        }
+
+        unsafe fn execute_lut_program(
+            &self,
+            frame: &PreparedXmap10Frame,
+        ) -> Result<Xmap10LutExecutionReceipt> {
+            frame.grade.lut_program.validate()?;
+            let mut ordered_passes =
+                Vec::with_capacity(frame.grade.lut_program.ordered_passes.len());
+            for pass in &frame.grade.lut_program.ordered_passes {
+                let target = &self.color_cubes[usize::from(pass.output_target_index)];
+                let inputs = match &pass.kind {
+                    Xmap10LutBlendPassKind::Copy { source } => vec![source],
+                    Xmap10LutBlendPassKind::Blend1 { base, blend, .. } => vec![base, blend],
+                    Xmap10LutBlendPassKind::Blend2 {
+                        base_day,
+                        base_night,
+                        blend_day,
+                        blend_night,
+                        ..
+                    } => vec![base_day, base_night, blend_day, blend_night],
+                };
+                let ordered_input_resource_identity_sha256s = inputs
+                    .iter()
+                    .map(|input| self.lut_input_resource_identity(&frame.grade.lut_program, input))
+                    .collect::<Result<Vec<_>>>()?;
+                let program_identity_sha256;
+                match &pass.kind {
+                    Xmap10LutBlendPassKind::Copy { source } => {
+                        program_identity_sha256 = native_identity_set(
+                            "postfx.lut.copy-resource",
+                            &[frame.grade.lut_program.deterministic_sha256.clone()],
+                        );
+                        let source_texture =
+                            self.lut_input_texture(&frame.grade.lut_program, source)?;
+                        (*self.context.as_raw()).CopyResource(
+                            target._texture.as_raw() as *mut _,
+                            source_texture as *mut _,
+                        );
+                        native_d3d11_check_void_upload_device(
+                            &self.device,
+                            "XMAP10 LUT endpoint copy",
+                        )?;
+                    }
+                    Xmap10LutBlendPassKind::Blend1 {
+                        base,
+                        blend,
+                        factor_f32_bits,
+                    } => {
+                        program_identity_sha256 = native_program_identity(&self.lut_blend1.program);
+                        self.execute_lut_draw(
+                            &self.lut_blend1.program,
+                            target,
+                            &[
+                                self.lut_input_srv(&frame.grade.lut_program, base)?,
+                                self.lut_input_srv(&frame.grade.lut_program, blend)?,
+                            ],
+                            0.0,
+                            f32::from_bits(*factor_f32_bits),
+                        )?;
+                    }
+                    Xmap10LutBlendPassKind::Blend2 {
+                        base_day,
+                        base_night,
+                        blend_day,
+                        blend_night,
+                        day_night_factor_f32_bits,
+                        cross_factor_f32_bits,
+                    } => {
+                        program_identity_sha256 = native_program_identity(&self.lut_blend2.program);
+                        self.execute_lut_draw(
+                            &self.lut_blend2.program,
+                            target,
+                            &[
+                                self.lut_input_srv(&frame.grade.lut_program, base_day)?,
+                                self.lut_input_srv(&frame.grade.lut_program, base_night)?,
+                                self.lut_input_srv(&frame.grade.lut_program, blend_day)?,
+                                self.lut_input_srv(&frame.grade.lut_program, blend_night)?,
+                            ],
+                            f32::from_bits(*day_night_factor_f32_bits),
+                            f32::from_bits(*cross_factor_f32_bits),
+                        )?;
+                    }
+                }
+                let output_resource_identity_sha256 = target.resource_identity_sha256.clone();
+                let mut receipt = Xmap10LutPassExecutionReceipt {
+                    ordinal: pass.ordinal,
+                    output_target_index: pass.output_target_index,
+                    ordered_input_resource_identity_sha256s,
+                    output_resource_identity_sha256,
+                    program_identity_sha256,
+                    execution_receipt_sha256: String::new(),
+                };
+                receipt.execution_receipt_sha256 = lut_pass_execution_digest(&receipt)?;
+                ordered_passes.push(receipt);
+            }
+            let final_color_cube_content_identity_sha256 = native_identity_set(
+                "postfx.color_cube.final-content",
+                &[
+                    self.color_cubes[self.final_color_cube_index]
+                        .resource_identity_sha256
+                        .clone(),
+                    frame.grade.lut_program.deterministic_sha256.clone(),
+                    native_identity_set(
+                        "postfx.lut.ordered-pass-executions",
+                        &ordered_passes
+                            .iter()
+                            .map(|pass| pass.execution_receipt_sha256.clone())
+                            .collect::<Vec<_>>(),
+                    ),
+                ],
+            );
+            let mut receipt = Xmap10LutExecutionReceipt {
+                schema: XMAP10_LUT_EXECUTION_RECEIPT_SCHEMA.into(),
+                frame_sequence: frame.grade.frame_sequence,
+                lut_program_sha256: frame.grade.lut_program.deterministic_sha256.clone(),
+                ordered_lut_source_resource_identity_sha256s: self
+                    .lut_sources
+                    .iter()
+                    .map(|source| source.resource_identity_sha256.clone())
+                    .collect(),
+                ordered_color_cube_resource_identity_sha256s: self
+                    .color_cubes
+                    .iter()
+                    .map(|target| target.resource_identity_sha256.clone())
+                    .collect(),
+                ordered_passes,
+                final_color_cube_content_identity_sha256,
+                deterministic_sha256: String::new(),
+            };
+            receipt.deterministic_sha256 = canonical_packet_sha256(&receipt)?;
+            receipt.validate_against(frame)?;
+            Ok(receipt)
+        }
+
+        fn lut_input_resource_identity(
+            &self,
+            program: &crate::production_features::xmap10::Xmap10LutBlendProgram,
+            input: &Xmap10LutInput,
+        ) -> Result<String> {
+            match input {
+                Xmap10LutInput::Source(index) => self
+                    .lut_sources
+                    .get(usize::from(*index))
+                    .map(|source| source.resource_identity_sha256.clone())
+                    .ok_or_else(|| "XMAP10 LUT source identity is unavailable".into()),
+                Xmap10LutInput::Intermediate(ordinal) => {
+                    let pass = program
+                        .ordered_passes
+                        .get(usize::from(*ordinal))
+                        .ok_or("XMAP10 LUT intermediate identity is unavailable")?;
+                    Ok(self.color_cubes[usize::from(pass.output_target_index)]
+                        .resource_identity_sha256
+                        .clone())
+                }
+            }
+        }
+
+        unsafe fn execute_lut_draw(
+            &self,
+            program: &NativeProgram,
+            target: &NativeTarget,
+            srvs: &[*mut ID3D11ShaderResourceView],
+            factor1: f32,
+            factor2: f32,
+        ) -> Result<()> {
+            let constants = LutBlendCb {
+                values: [
+                    1.0 / target.width as f32,
+                    1.0 / target.height as f32,
+                    factor1,
+                    factor2,
+                ],
+            };
+            update_constant_buffer(&self.context, &self.device, &self.lut_cb, &constants)?;
+            let buffers = [self.lut_cb.as_raw()];
+            (*self.context.as_raw()).VSSetConstantBuffers(0, 1, buffers.as_ptr());
+            (*self.context.as_raw()).PSSetConstantBuffers(0, 1, buffers.as_ptr());
+            let samplers = vec![self.point_clamp.as_raw(); srvs.len()];
+            self.draw_native_program(
+                program,
+                target.rtv.as_raw(),
+                target.width,
+                target.height,
+                srvs,
+                &samplers,
+                self.rgb_only_blend.as_raw(),
+            )
+        }
+
+        fn lut_input_srv(
+            &self,
+            program: &crate::production_features::xmap10::Xmap10LutBlendProgram,
+            input: &Xmap10LutInput,
+        ) -> Result<*mut ID3D11ShaderResourceView> {
+            match input {
+                Xmap10LutInput::Source(index) => self
+                    .lut_sources
+                    .get(usize::from(*index))
+                    .map(|source| source.srv.as_raw())
+                    .ok_or_else(|| "XMAP10 LUT source index is unavailable".into()),
+                Xmap10LutInput::Intermediate(ordinal) => {
+                    let pass = program
+                        .ordered_passes
+                        .get(usize::from(*ordinal))
+                        .ok_or("XMAP10 LUT intermediate pass is unavailable")?;
+                    Ok(self.color_cubes[usize::from(pass.output_target_index)]
+                        .srv
+                        .as_raw())
+                }
+            }
+        }
+
+        fn lut_input_texture(
+            &self,
+            program: &crate::production_features::xmap10::Xmap10LutBlendProgram,
+            input: &Xmap10LutInput,
+        ) -> Result<*mut ID3D11Texture2D> {
+            match input {
+                Xmap10LutInput::Source(index) => self
+                    .lut_sources
+                    .get(usize::from(*index))
+                    .map(|source| source._texture.as_raw())
+                    .ok_or_else(|| "XMAP10 LUT source texture is unavailable".into()),
+                Xmap10LutInput::Intermediate(ordinal) => {
+                    let pass = program
+                        .ordered_passes
+                        .get(usize::from(*ordinal))
+                        .ok_or("XMAP10 LUT intermediate texture is unavailable")?;
+                    Ok(self.color_cubes[usize::from(pass.output_target_index)]
+                        ._texture
+                        .as_raw())
+                }
+            }
+        }
+
+        unsafe fn execute_luminance_reduction(
+            &self,
+            reduction: &Xmap10LuminanceReductionPlan,
+            assigned_stage: &AssignedStage,
+            common_constant_buffers: &[String],
+        ) -> Result<(Xmap10LuminanceDownsampleChainReceipt, Vec<String>)> {
+            let alpha_program = self.program(Xmap10ProgramRole::LuminanceDownsample)?;
+            let mut source = self.bright.srv.as_raw();
+            let mut source_identity = self.bright.resource_identity_sha256.clone();
+            let mut subpasses = Vec::with_capacity(reduction.steps.len());
+            let mut aggregate_constant_buffers = common_constant_buffers.to_vec();
+            for (index, step) in reduction.steps.iter().enumerate() {
+                let destination_index = index & 1;
+                let constants = LuminanceDownsampleCb {
+                    values: [
+                        1.0 / step.destination_width as f32,
+                        1.0 / step.destination_height as f32,
+                        0.0,
+                        0.0,
+                        if index == 0 {
+                            1.0
+                        } else {
+                            step.source_width as f32 / self.luminance_ping[0].width as f32
+                        },
+                        if index == 0 {
+                            1.0
+                        } else {
+                            step.source_height as f32 / self.luminance_ping[0].height as f32
+                        },
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                    ],
+                };
+                update_constant_buffer(
+                    &self.context,
+                    &self.device,
+                    &self.luminance_cb,
+                    &constants,
+                )?;
+                let buffers = [self.luminance_cb.as_raw()];
+                (*self.context.as_raw()).VSSetConstantBuffers(2, 1, buffers.as_ptr());
+                (*self.context.as_raw()).PSSetConstantBuffers(2, 1, buffers.as_ptr());
+                let program = if index == 0 {
+                    alpha_program
+                } else {
+                    &self.scalar_downsample
+                };
+                let program_identity_sha256 = native_program_identity(program);
+                let cbuffer_receipt_sha256 = native_constant_buffer_receipt(
+                    &format!("postfx.luminance_downsample_chain.{index}.cb2"),
+                    &constants.values,
+                );
+                let mut ordered_constant_buffers = common_constant_buffers.to_vec();
+                ordered_constant_buffers.push(cbuffer_receipt_sha256.clone());
+                let output_identity = self.luminance_ping[destination_index]
+                    .resource_identity_sha256
+                    .clone();
+                self.draw_native_program(
+                    program,
+                    self.luminance_ping[destination_index].rtv.as_raw(),
+                    step.destination_width,
+                    step.destination_height,
+                    &[source],
+                    &[self.linear_clamp.as_raw()],
+                    self.opaque_blend.as_raw(),
+                )?;
+                let ordered_inputs = vec![source_identity.clone()];
+                let ordered_resources = vec![source_identity.clone(), output_identity.clone()];
+                let draw_receipt_sha256 = native_draw_receipt(
+                    assigned_stage,
+                    &format!("postfx.luminance_downsample_chain.{index}"),
+                    &program_identity_sha256,
+                    &ordered_inputs,
+                    &output_identity,
+                    &ordered_resources,
+                    &ordered_constant_buffers,
+                    step.destination_width,
+                    step.destination_height,
+                );
+                subpasses.push(Xmap10LuminanceDownsampleSubpassReceipt::seal(
+                    u8::try_from(index)?,
+                    step.source_width,
+                    step.source_height,
+                    step.destination_width,
+                    step.destination_height,
+                    draw_receipt_sha256,
+                )?);
+                aggregate_constant_buffers.push(cbuffer_receipt_sha256);
+                source = self.luminance_ping[destination_index].srv.as_raw();
+                source_identity = output_identity;
+            }
+            let first = reduction
+                .steps
+                .first()
+                .ok_or("XMAP10 luminance reduction has no first step")?;
+            Ok((
+                Xmap10LuminanceDownsampleChainReceipt::seal(
+                    assigned_stage.clone(),
+                    first.source_width,
+                    first.source_height,
+                    subpasses,
+                )?,
+                aggregate_constant_buffers,
+            ))
+        }
+
+        unsafe fn execute_luminance_gather(
+            &self,
+            frame: &PreparedXmap10Frame,
+            reduction: &Xmap10LuminanceReductionPlan,
+            temporal: &Xmap10TemporalExecutionInput,
+            temporal_write: usize,
+            assigned_stage: &AssignedStage,
+            common_constant_buffers: &[String],
+        ) -> Result<(String, Vec<String>)> {
+            let last = reduction
+                .steps
+                .last()
+                .ok_or("XMAP10 luminance gather has no reduction input")?;
+            let source_index = (reduction.steps.len() - 1) & 1;
+            let vertex_constants = LuminanceDownsampleCb {
+                values: [
+                    1.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    last.destination_width as f32 / self.luminance_ping[source_index].width as f32,
+                    last.destination_height as f32
+                        / self.luminance_ping[source_index].height as f32,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                ],
+            };
+            let pixel_constants = LuminanceGatherCb {
+                values: [
+                    1.0 / last.destination_width as f32,
+                    1.0 / last.destination_height as f32,
+                    match &temporal.policy {
+                        Xmap10TemporalPolicy::EngineResourceReset { .. } => 100.0,
+                        Xmap10TemporalPolicy::Continue { .. } => {
+                            temporal.delta_seconds
+                                * f32::from_bits(frame.grade.hdr_adjustment_speed_f32_bits)
+                        }
+                    },
+                    0.0,
+                    last.destination_width as f32,
+                    last.destination_height as f32,
+                    1.0 / self.luminance_ping[source_index].width as f32,
+                    1.0 / self.luminance_ping[source_index].height as f32,
+                    f32::from_bits(frame.grade.min_hdr_adjustment_f32_bits),
+                    f32::from_bits(frame.grade.max_hdr_adjustment_f32_bits),
+                    0.0,
+                    0.0,
+                ],
+            };
+            update_constant_buffer(
+                &self.context,
+                &self.device,
+                &self.luminance_cb,
+                &vertex_constants,
+            )?;
+            update_constant_buffer(
+                &self.context,
+                &self.device,
+                &self.luminance_gather_cb,
+                &pixel_constants,
+            )?;
+            let vertex_buffers = [self.luminance_cb.as_raw()];
+            let pixel_buffers = [self.luminance_gather_cb.as_raw()];
+            (*self.context.as_raw()).VSSetConstantBuffers(2, 1, vertex_buffers.as_ptr());
+            (*self.context.as_raw()).PSSetConstantBuffers(2, 1, pixel_buffers.as_ptr());
+            let vertex_cbuffer_receipt_sha256 = native_constant_buffer_receipt(
+                "postfx.luminance_gather.vs_cb2",
+                &vertex_constants.values,
+            );
+            let pixel_cbuffer_receipt_sha256 = native_constant_buffer_receipt(
+                "postfx.luminance_gather.ps_cb2",
+                &pixel_constants.values,
+            );
+            let mut ordered_constant_buffers = common_constant_buffers.to_vec();
+            ordered_constant_buffers.push(vertex_cbuffer_receipt_sha256);
+            ordered_constant_buffers.push(pixel_cbuffer_receipt_sha256);
+            self.draw_pass(
+                Xmap10ProgramRole::LuminanceGather,
+                self.temporal[temporal_write].rtv.as_raw(),
+                1,
+                1,
+                &[
+                    self.luminance_ping[source_index].srv.as_raw(),
+                    self.temporal[self.temporal_read].srv.as_raw(),
+                ],
+                &[self.linear_clamp.as_raw(), self.point_clamp.as_raw()],
+                self.opaque_blend.as_raw(),
+            )?;
+            let input_identities = vec![
+                self.luminance_ping[source_index]
+                    .resource_identity_sha256
+                    .clone(),
+                self.temporal[self.temporal_read]
+                    .resource_identity_sha256
+                    .clone(),
+            ];
+            let output_identity = self.temporal[temporal_write]
+                .resource_identity_sha256
+                .clone();
+            let mut resource_identities = input_identities.clone();
+            resource_identities.push(output_identity.clone());
+            let draw_receipt_sha256 = native_draw_receipt(
+                assigned_stage,
+                "postfx.luminance_gather",
+                &native_program_identity(self.program(Xmap10ProgramRole::LuminanceGather)?),
+                &input_identities,
+                &output_identity,
+                &resource_identities,
+                &ordered_constant_buffers,
+                1,
+                1,
+            );
+            Ok((draw_receipt_sha256, ordered_constant_buffers))
+        }
+
+        unsafe fn execute_bloom(
+            &self,
+            kernel: &BloomBlurKernel,
+            assigned_stages: [&AssignedStage; 2],
+            common_constant_buffers: &[String],
+        ) -> Result<Vec<(String, Vec<String>)>> {
+            let mut receipts = Vec::with_capacity(2);
+            for (index, (role, axis, source, source_identity, target)) in [
+                (
+                    Xmap10ProgramRole::BloomHorizontal,
+                    1.0,
+                    self.bright.srv.as_raw(),
+                    self.bright.resource_identity_sha256.as_str(),
+                    &self.bloom_horizontal,
+                ),
+                (
+                    Xmap10ProgramRole::BloomVertical,
+                    0.0,
+                    self.bloom_horizontal.srv.as_raw(),
+                    self.bloom_horizontal.resource_identity_sha256.as_str(),
+                    &self.restore_bloom,
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let constants = BloomCb {
+                    values: [
+                        1.0 / target.width as f32,
+                        1.0 / target.height as f32,
+                        axis,
+                        kernel.weight0,
+                        kernel.weights[0],
+                        kernel.weights[1],
+                        kernel.weights[2],
+                        kernel.weights[3],
+                        kernel.offsets[0],
+                        kernel.offsets[1],
+                        kernel.offsets[2],
+                        kernel.offsets[3],
+                    ],
+                };
+                update_constant_buffer(&self.context, &self.device, &self.bloom_cb, &constants)?;
+                let buffers = [self.bloom_cb.as_raw()];
+                (*self.context.as_raw()).VSSetConstantBuffers(2, 1, buffers.as_ptr());
+                (*self.context.as_raw()).PSSetConstantBuffers(2, 1, buffers.as_ptr());
+                let cbuffer_receipt_sha256 = native_constant_buffer_receipt(
+                    if index == 0 {
+                        "postfx.bloom.horizontal.cb2"
+                    } else {
+                        "postfx.bloom.vertical.cb2"
+                    },
+                    &constants.values,
+                );
+                let mut ordered_constant_buffers = common_constant_buffers.to_vec();
+                ordered_constant_buffers.push(cbuffer_receipt_sha256);
+                self.draw_pass(
+                    role,
+                    target.rtv.as_raw(),
+                    target.width,
+                    target.height,
+                    &[source],
+                    &[self.linear_clamp.as_raw()],
+                    self.opaque_blend.as_raw(),
+                )?;
+                let input_identities = vec![source_identity.to_owned()];
+                let output_identity = target.resource_identity_sha256.clone();
+                let resource_identities = vec![source_identity.to_owned(), output_identity.clone()];
+                receipts.push((
+                    native_draw_receipt(
+                        assigned_stages[index],
+                        if index == 0 {
+                            "postfx.bloom.horizontal"
+                        } else {
+                            "postfx.bloom.vertical"
+                        },
+                        &native_program_identity(self.program(role)?),
+                        &input_identities,
+                        &output_identity,
+                        &resource_identities,
+                        &ordered_constant_buffers,
+                        target.width,
+                        target.height,
+                    ),
+                    ordered_constant_buffers,
+                ));
+            }
+            Ok(receipts)
+        }
+
+        unsafe fn draw_pass(
+            &self,
+            role: Xmap10ProgramRole,
+            rtv: *mut ID3D11RenderTargetView,
+            width: u32,
+            height: u32,
+            srvs: &[*mut ID3D11ShaderResourceView],
+            samplers: &[*mut ID3D11SamplerState],
+            blend: *mut ID3D11BlendState,
+        ) -> Result<()> {
+            let program = self.program(role)?;
+            self.draw_native_program(program, rtv, width, height, srvs, samplers, blend)
+        }
+
+        unsafe fn draw_native_program(
+            &self,
+            program: &NativeProgram,
+            rtv: *mut ID3D11RenderTargetView,
+            width: u32,
+            height: u32,
+            srvs: &[*mut ID3D11ShaderResourceView],
+            samplers: &[*mut ID3D11SamplerState],
+            blend: *mut ID3D11BlendState,
+        ) -> Result<()> {
+            if rtv.is_null() || width == 0 || height == 0 || srvs.iter().any(|srv| srv.is_null()) {
+                return Err("XMAP10 draw received a null target/resource or empty viewport".into());
+            }
+            let viewport = D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: width as f32,
+                Height: height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            (*self.context.as_raw()).OMSetRenderTargets(1, &rtv, ptr::null_mut());
+            (*self.context.as_raw()).RSSetViewports(1, &viewport);
+            (*self.context.as_raw()).RSSetScissorRects(0, ptr::null());
+            (*self.context.as_raw()).OMSetBlendState(blend, &[0.0; 4], u32::MAX);
+            (*self.context.as_raw()).VSSetShader(program.vertex.as_raw(), ptr::null_mut(), 0);
+            (*self.context.as_raw()).PSSetShader(program.pixel.as_raw(), ptr::null_mut(), 0);
+            (*self.context.as_raw()).PSSetShaderResources(0, srvs.len() as u32, srvs.as_ptr());
+            (*self.context.as_raw()).PSSetSamplers(0, samplers.len() as u32, samplers.as_ptr());
+            (*self.context.as_raw()).Draw(4, 0);
+            let nulls = vec![ptr::null_mut(); srvs.len()];
+            (*self.context.as_raw()).PSSetShaderResources(0, nulls.len() as u32, nulls.as_ptr());
+            native_d3d11_check_void_upload_device(&self.device, "XMAP10 postfx draw")
+        }
+
+        fn program(&self, role: Xmap10ProgramRole) -> Result<&NativeProgram> {
+            self.programs
+                .iter()
+                .find(|(candidate, _)| *candidate == role)
+                .map(|(_, program)| program)
+                .ok_or_else(|| format!("XMAP10 compiled program set omitted {role:?}").into())
+        }
+
+        fn compositor_receipt(
+            &self,
+            frame: &PreparedXmap10Frame,
+            reduction: &Xmap10LuminanceReductionPlan,
+        ) -> Xmap10NativeCompositorReceiptRef {
+            let mut bytes = Vec::new();
+            push_string(&mut bytes, &frame.deterministic_sha256);
+            push_string(&mut bytes, &frame.targets.deterministic_sha256);
+            push_string(&mut bytes, &reduction.deterministic_sha256);
+            for pass in native_pass_names(
+                frame.grade.lut_program.ordered_passes.len(),
+                reduction.steps.len(),
+            ) {
+                push_string(&mut bytes, &pass);
+            }
+            Xmap10NativeCompositorReceiptRef {
+                schema: XMAP10_NATIVE_COMPOSITOR_RECEIPT_SCHEMA.into(),
+                prepared_frame_sha256: frame.deterministic_sha256.clone(),
+                target_plan_sha256: frame.targets.deterministic_sha256.clone(),
+                ordered_pass_count: native_pass_names(
+                    frame.grade.lut_program.ordered_passes.len(),
+                    reduction.steps.len(),
+                )
+                .len() as u16,
+                receipt_sha256: Sha256::hex(&bytes),
+            }
+        }
+    }
+
+    impl NativeXmap10ScreenShadowHandoff {
+        pub unsafe fn create_on_device(
+            device: *mut ID3D11Device,
+            resolver: &GameFileResolver,
+            terrain: &PreparedTerrainFrame,
+            xmap10: &PreparedXmap10Frame,
+            plan: ShadowScreenChainPlan,
+        ) -> Result<Self> {
+            terrain.validate()?;
+            xmap10.validate()?;
+            if device.is_null() || !resolver.has_content_admission() {
+                return Err(
+                    "XMAP10 screen shadow requires a live device and admission-bound VFS".into(),
+                );
+            }
+            validate_screen_shadow_plan(&plan)?;
+            for root in ["gfx/fx/pdxmap.shader", "gfx/fx/shadowblur.shader"] {
+                if !xmap10
+                    .content
+                    .shader_translation_units
+                    .iter()
+                    .any(|unit| unit.root_path == root)
+                {
+                    return Err(format!(
+                        "XMAP10 screen shadow shader {root} is outside the admitted content closure"
+                    )
+                    .into());
+                }
+            }
+            (*(device as *mut IUnknown)).AddRef();
+            let device = D3dPtr::from_raw(device, "XMAP10 screen-shadow device")?;
+            let plan_sha256 = Sha256::hex(&serde_json::to_vec(&plan)?);
+            let (terrain_unlit, terrain_input_layout) =
+                compile_terrain_unlit(&device, resolver, terrain)?;
+            let blur_horizontal = compile_shadow_blur(&device, resolver, "ShadowBlurHorizontal")?;
+            let blur_vertical = compile_shadow_blur(&device, resolver, "ShadowBlurVertical")?;
+            let blur_input_layout =
+                create_shadow_blur_input_layout(&device, &blur_horizontal.vertex_bytecode)?;
+            let blur_vertices = create_shadow_blur_vertices(&device)?;
+            let blur_cb0 = create_constant_buffer(&device, 32, "XMAP10 shadow blur cb0")?;
+            let terrain_cb1 = create_constant_buffer(
+                &device,
+                u32::try_from(crate::TERRAIN_CHUNK_CB1_BYTES)?,
+                "XMAP10 terrainunlit cb1",
+            )?;
+
+            let mut static_textures = BTreeMap::new();
+            let mut terrain_samplers = BTreeMap::new();
+            for slot in [0u32, 1, 2, 12] {
+                let sampler = terrain
+                    .program
+                    .samplers
+                    .iter()
+                    .find(|sampler| sampler.shader_register == slot)
+                    .ok_or_else(|| {
+                        format!("XMAP10 terrainunlit requires admitted sampler s{slot}")
+                    })?;
+                terrain_samplers.insert(
+                    slot,
+                    crate::xmap04_d3d_handoff::create_underwater_sampler(device.as_raw(), sampler)?,
+                );
+                if slot != 12 {
+                    static_textures.insert(
+                        slot,
+                        crate::xmap04_d3d_handoff::create_underwater_static_texture(
+                            device.as_raw(),
+                            resolver,
+                            sampler,
+                        )?,
+                    );
+                }
+            }
+            let final_target = create_target(
+                &device,
+                &plan_sha256,
+                plan.producer_and_final_target.width,
+                plan.producer_and_final_target.height,
+                plan.producer_and_final_target.dxgi_format,
+                &plan.producer_and_final_target.stable_resource_id,
+            )?;
+            let intermediate_target = create_target(
+                &device,
+                &plan_sha256,
+                plan.blur_intermediate_target.width,
+                plan.blur_intermediate_target.height,
+                plan.blur_intermediate_target.dxgi_format,
+                &plan.blur_intermediate_target.stable_resource_id,
+            )?;
+            let blur_sampler = create_shadow_blur_sampler(device.as_raw())?;
+            let terrain_rasterizer = create_terrain_rasterizer(device.as_raw())?;
+            let opaque_blend = create_blend(&device, false)?;
+            let depth_disabled = create_depth_disabled(&device)?;
+            let fullscreen_rasterizer = create_rasterizer(&device)?;
+            Ok(Self {
+                device,
+                terrain_unlit,
+                terrain_input_layout,
+                blur_horizontal,
+                blur_vertical,
+                blur_input_layout,
+                blur_vertices,
+                blur_cb0,
+                terrain_cb1,
+                static_textures,
+                terrain_samplers,
+                blur_sampler,
+                final_target,
+                intermediate_target,
+                opaque_blend,
+                depth_disabled,
+                terrain_rasterizer,
+                fullscreen_rasterizer,
+                plan,
+                plan_sha256,
+                content_closure_sha256: xmap10.content.deterministic_sha256.clone(),
+                terrain_frame_sha256: terrain.deterministic_sha256.clone(),
+                receipt: None,
+            })
+        }
+
+        pub unsafe fn execute(
+            &mut self,
+            context: *mut ID3D11DeviceContext,
+            terrain: &PreparedTerrainFrame,
+            terrain_handoff: &NativeXmap04TerrainHandoff,
+            scene_cb0s: &[&NativeXmap10MapCopySceneCb0View<'_>],
+            shadow_matrix: &crate::Xmap09ShadowMatrixBinding,
+            light_depth: &NativeXmap09ShaderResourceView<'_>,
+            light_depth_execution: &crate::Xmap09LightDepthExecutionReceipt,
+        ) -> Result<&Xmap10ScreenShadowExecutionReceipt> {
+            use crate::NativeXmap04UnderwaterSceneConstantBuffer;
+            use winapi::shared::dxgiformat::DXGI_FORMAT_R16_UINT;
+            use winapi::um::d3dcommon::D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+
+            terrain.validate()?;
+            light_depth_execution.validate()?;
+            validate_context_for_device(&self.device, context)?;
+            if terrain.deterministic_sha256 != self.terrain_frame_sha256
+                || terrain_handoff.receipt().terrain_frame_sha256 != terrain.deterministic_sha256
+                || shadow_matrix.input_payload_sha256 != light_depth_execution.input_payload_sha256
+                || !light_depth_execution.active
+                || light_depth.binding.owner_packet != "XMAP09"
+                || light_depth.binding.symbol != "LightDepthMap"
+                || light_depth.binding.camera_frame_sha256 != terrain.camera_frame_sha256
+                || light_depth.binding.replay_frame_identity_sha256
+                    != terrain.replay_frame_identity_sha256
+                || light_depth.binding
+                    != light_depth_execution
+                        .binding
+                        .clone()
+                        .ok_or("XMAP10 active XMAP09 execution omitted LightDepthMap")?
+            {
+                return Err(
+                    "XMAP10 screen shadow received a stale terrain or XMAP09 light-depth frame"
+                        .into(),
+                );
+            }
+            let rows = terrain.ordered_map_copy_receipts()?;
+            let map_copy_receipt_set_sha256 = terrain.map_copy_receipt_set_sha256()?;
+            if scene_cb0s.len() != rows.len() {
+                return Err("XMAP10 screen shadow has the wrong SceneCB0 map-copy census".into());
+            }
+            for (scene, row) in scene_cb0s.iter().zip(&rows) {
+                if scene.owner_packet() != "XMAP10"
+                    || scene.symbol() != "SceneCB0"
+                    || scene.shader_register() != 0
+                    || scene.byte_len() != 416
+                    || scene.frame_identity_sha256() != terrain.camera_frame_sha256
+                    || scene.replay_frame_identity_sha256() != terrain.replay_frame_identity_sha256
+                    || scene.map_copy_receipt_set_sha256() != map_copy_receipt_set_sha256
+                    || scene.render_view_mask() != row.render_view_mask
+                    || scene.map_copy_offset_f32_bits() != row.map_copy_offset_f32_bits
+                    || scene.device_identity() != self.device.as_raw() as usize
+                    || scene.raw_buffer().is_null()
+                {
+                    return Err(
+                        "XMAP10 screen shadow SceneCB0 rows differ from XMAP04 map-copy order"
+                            .into(),
+                    );
+                }
+            }
+
+            let width = self.plan.producer_and_final_target.width;
+            let height = self.plan.producer_and_final_target.height;
+            let viewport = D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: width as f32,
+                Height: height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            let final_rtv = self.final_target.rtv.as_raw();
+            (*context).OMSetRenderTargets(1, &final_rtv, ptr::null_mut());
+            (*context).RSSetViewports(1, &viewport);
+            (*context).RSSetScissorRects(0, ptr::null());
+            (*context).RSSetState(self.terrain_rasterizer.as_raw());
+            (*context).OMSetBlendState(self.opaque_blend.as_raw(), &[0.0; 4], u32::MAX);
+            (*context).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
+            (*context).IASetInputLayout(self.terrain_input_layout.as_raw());
+            (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            (*context).IASetIndexBuffer(
+                terrain_handoff.xmap10_shared_index(),
+                DXGI_FORMAT_R16_UINT,
+                0,
+            );
+            (*context).VSSetShader(self.terrain_unlit.vertex.as_raw(), ptr::null_mut(), 0);
+            (*context).PSSetShader(self.terrain_unlit.pixel.as_raw(), ptr::null_mut(), 0);
+            for (slot, texture) in &self.static_textures {
+                let raw = texture.view.as_raw();
+                (*context).PSSetShaderResources(*slot, 1, &raw);
+            }
+            let raw_light_depth = light_depth.as_raw();
+            (*context).PSSetShaderResources(12, 1, &raw_light_depth);
+            for (slot, sampler) in &self.terrain_samplers {
+                let raw = sampler.as_raw();
+                (*context).PSSetSamplers(*slot, 1, &raw);
+            }
+            let slot0 = terrain_handoff.xmap10_shared_slot0();
+            let mut strides = [
+                crate::TERRAIN_CHUNK_SLOT0_STRIDE,
+                crate::TERRAIN_CHUNK_SLOT1_STRIDE,
+            ];
+            let mut offsets = [0u32, 0u32];
+            for (draw_index, draw) in terrain.draws.iter().enumerate() {
+                let scene = scene_cb0s
+                    .iter()
+                    .find(|scene| scene.render_view_mask() == draw.render_view_mask)
+                    .ok_or("XMAP10 terrain draw has no matching map-copy SceneCB0")?;
+                let slot1 = terrain_handoff.xmap10_draw_slot1(draw_index)?;
+                let buffers = [slot0, slot1];
+                (*context).IASetVertexBuffers(
+                    0,
+                    2,
+                    buffers.as_ptr(),
+                    strides.as_mut_ptr(),
+                    offsets.as_mut_ptr(),
+                );
+                let scene_raw = scene.raw_buffer();
+                (*context).VSSetConstantBuffers(0, 1, &scene_raw);
+                (*context).PSSetConstantBuffers(0, 1, &scene_raw);
+                let joined_cb1 = xmap10_terrain_unlit_cb1_bytes(&draw.cb1, shadow_matrix)?;
+                (*context).UpdateSubresource(
+                    self.terrain_cb1.as_raw() as *mut _,
+                    0,
+                    ptr::null(),
+                    joined_cb1.as_ptr() as *const _,
+                    0,
+                    0,
+                );
+                let terrain_cb1 = self.terrain_cb1.as_raw();
+                (*context).VSSetConstantBuffers(1, 1, &terrain_cb1);
+                (*context).DrawIndexed(crate::TERRAIN_CHUNK_INDEX_COUNT, 0, 0);
+            }
+            native_d3d11_check_void_upload_device(
+                &self.device,
+                "UpdateSubresource(XMAP10 terrainunlit cb1)",
+            )?;
+            let null_srv = ptr::null_mut();
+            (*context).PSSetShaderResources(12, 1, &null_srv);
+
+            let horizontal_bits = self.plan.passes[1]
+                .cb0_f32_bits
+                .ok_or("XMAP10 horizontal blur omitted CB0")?;
+            self.draw_shadow_blur(
+                context,
+                &self.blur_horizontal,
+                &self.final_target,
+                &self.intermediate_target,
+                horizontal_bits,
+            )?;
+            let vertical_bits = self.plan.passes[2]
+                .cb0_f32_bits
+                .ok_or("XMAP10 vertical blur omitted CB0")?;
+            self.draw_shadow_blur(
+                context,
+                &self.blur_vertical,
+                &self.intermediate_target,
+                &self.final_target,
+                vertical_bits,
+            )?;
+            (*context).OMSetRenderTargets(0, ptr::null(), ptr::null_mut());
+
+            let descriptor_sha256 = Sha256::hex(&serde_json::to_vec(&(
+                "hoi4.xmap10.screen-shadow-descriptor.v1",
+                width,
+                height,
+                self.plan.producer_and_final_target.dxgi_format,
+                self.plan.producer_and_final_target.mip_levels,
+                self.plan.producer_and_final_target.bind_flags,
+            ))?);
+            let mut binding = Xmap10NativeShaderResourceBinding {
+                symbol: "ShadowMap".into(),
+                owner_packet: "XMAP10".into(),
+                producer_camera_frame_sha256: terrain.camera_frame_sha256.clone(),
+                producer_replay_frame_identity_sha256: terrain.replay_frame_identity_sha256.clone(),
+                consumer_camera_frame_sha256: terrain.camera_frame_sha256.clone(),
+                consumer_replay_frame_identity_sha256: terrain.replay_frame_identity_sha256.clone(),
+                stable_resource_id: self
+                    .plan
+                    .producer_and_final_target
+                    .stable_resource_id
+                    .clone(),
+                resource_sha256: String::new(),
+                descriptor_sha256,
+            };
+            binding.resource_sha256 = Sha256::hex(&serde_json::to_vec(&(
+                "hoi4.xmap10.screen-shadow-resource.v1",
+                &self.plan_sha256,
+                &terrain.deterministic_sha256,
+                &light_depth_execution.deterministic_sha256,
+                &shadow_matrix.payload_sha256,
+                scene_cb0s
+                    .iter()
+                    .map(|scene| scene.composition_receipt_sha256())
+                    .collect::<Vec<_>>(),
+                &binding.descriptor_sha256,
+            ))?);
+            let mut receipt = Xmap10ScreenShadowExecutionReceipt {
+                schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(),
+                active: true,
+                prior_screen_shadow_execution_sha256: None,
+                terrain_frame_sha256: terrain.deterministic_sha256.clone(),
+                map_copy_receipt_set_sha256,
+                xmap09_light_depth_execution_sha256: light_depth_execution
+                    .deterministic_sha256
+                    .clone(),
+                xmap09_shadow_matrix_payload_sha256: shadow_matrix.payload_sha256.clone(),
+                screen_chain_plan_sha256: self.plan_sha256.clone(),
+                content_closure_sha256: self.content_closure_sha256.clone(),
+                ordered_scene_cb0_composition_sha256s: scene_cb0s
+                    .iter()
+                    .map(|scene| scene.composition_receipt_sha256().into())
+                    .collect(),
+                terrain_unlit_vertex_bytecode_sha256: Sha256::hex(
+                    &self.terrain_unlit.vertex_bytecode,
+                ),
+                terrain_unlit_pixel_bytecode_sha256: Sha256::hex(
+                    &self.terrain_unlit.pixel_bytecode,
+                ),
+                blur_horizontal_vertex_bytecode_sha256: Sha256::hex(
+                    &self.blur_horizontal.vertex_bytecode,
+                ),
+                blur_horizontal_pixel_bytecode_sha256: Sha256::hex(
+                    &self.blur_horizontal.pixel_bytecode,
+                ),
+                blur_vertical_vertex_bytecode_sha256: Sha256::hex(
+                    &self.blur_vertical.vertex_bytecode,
+                ),
+                blur_vertical_pixel_bytecode_sha256: Sha256::hex(
+                    &self.blur_vertical.pixel_bytecode,
+                ),
+                draw_count: u32::try_from(terrain.draws.len())?,
+                binding,
+                deterministic_sha256: String::new(),
+            };
+            receipt.deterministic_sha256 = canonical_packet_sha256(&receipt)?;
+            receipt.validate()?;
+            self.receipt = Some(receipt);
+            native_d3d11_check_void_upload_device(&self.device, "XMAP10 screen shadow")?;
+            Ok(self.receipt.as_ref().expect("receipt inserted"))
+        }
+
+        pub fn retain_inactive(
+            &mut self,
+            terrain: &PreparedTerrainFrame,
+            light_depth_execution: &crate::Xmap09LightDepthExecutionReceipt,
+        ) -> Result<&Xmap10ScreenShadowExecutionReceipt> {
+            terrain.validate()?;
+            light_depth_execution.validate()?;
+            if light_depth_execution.active
+                || light_depth_execution.binding.is_some()
+                || light_depth_execution.camera_frame_sha256 != terrain.camera_frame_sha256
+                || light_depth_execution.replay_frame_identity_sha256
+                    != terrain.replay_frame_identity_sha256
+            {
+                return Err(
+                    "XMAP10 inactive screen shadow received an active or cross-frame XMAP09 receipt"
+                        .into(),
+                );
+            }
+            let prior = self
+                .receipt
+                .as_ref()
+                .ok_or("XMAP10 inactive screen shadow has no defined prior target contents")?
+                .clone();
+            prior.validate()?;
+            let map_copy_receipt_set_sha256 = terrain.map_copy_receipt_set_sha256()?;
+            let mut binding = prior.binding.clone();
+            binding.consumer_camera_frame_sha256 = terrain.camera_frame_sha256.clone();
+            binding.consumer_replay_frame_identity_sha256 =
+                terrain.replay_frame_identity_sha256.clone();
+            let mut receipt = Xmap10ScreenShadowExecutionReceipt {
+                schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(),
+                active: false,
+                prior_screen_shadow_execution_sha256: Some(prior.deterministic_sha256.clone()),
+                terrain_frame_sha256: terrain.deterministic_sha256.clone(),
+                map_copy_receipt_set_sha256,
+                xmap09_light_depth_execution_sha256: light_depth_execution
+                    .deterministic_sha256
+                    .clone(),
+                xmap09_shadow_matrix_payload_sha256: prior
+                    .xmap09_shadow_matrix_payload_sha256
+                    .clone(),
+                screen_chain_plan_sha256: self.plan_sha256.clone(),
+                content_closure_sha256: self.content_closure_sha256.clone(),
+                ordered_scene_cb0_composition_sha256s: Vec::new(),
+                terrain_unlit_vertex_bytecode_sha256: prior
+                    .terrain_unlit_vertex_bytecode_sha256
+                    .clone(),
+                terrain_unlit_pixel_bytecode_sha256: prior
+                    .terrain_unlit_pixel_bytecode_sha256
+                    .clone(),
+                blur_horizontal_vertex_bytecode_sha256: prior
+                    .blur_horizontal_vertex_bytecode_sha256
+                    .clone(),
+                blur_horizontal_pixel_bytecode_sha256: prior
+                    .blur_horizontal_pixel_bytecode_sha256
+                    .clone(),
+                blur_vertical_vertex_bytecode_sha256: prior
+                    .blur_vertical_vertex_bytecode_sha256
+                    .clone(),
+                blur_vertical_pixel_bytecode_sha256: prior
+                    .blur_vertical_pixel_bytecode_sha256
+                    .clone(),
+                draw_count: 0,
+                binding,
+                deterministic_sha256: String::new(),
+            };
+            receipt.deterministic_sha256 = canonical_packet_sha256(&receipt)?;
+            receipt.validate()?;
+            self.receipt = Some(receipt);
+            Ok(self.receipt.as_ref().expect("receipt inserted"))
+        }
+
+        unsafe fn draw_shadow_blur(
+            &self,
+            context: *mut ID3D11DeviceContext,
+            program: &NativeProgram,
+            source: &NativeTarget,
+            target: &NativeTarget,
+            cb0_f32_bits: [u32; 8],
+        ) -> Result<()> {
+            let constants = cb0_f32_bits.map(f32::from_bits);
+            (*context).UpdateSubresource(
+                self.blur_cb0.as_raw() as *mut _,
+                0,
+                ptr::null(),
+                constants.as_ptr() as *const _,
+                0,
+                0,
+            );
+            native_d3d11_check_void_upload_device(
+                &self.device,
+                "UpdateSubresource(XMAP10 shadow blur cb0)",
+            )?;
+            let rtv = target.rtv.as_raw();
+            let viewport = D3D11_VIEWPORT {
+                TopLeftX: 0.0,
+                TopLeftY: 0.0,
+                Width: target.width as f32,
+                Height: target.height as f32,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            };
+            (*context).OMSetRenderTargets(1, &rtv, ptr::null_mut());
+            (*context).RSSetViewports(1, &viewport);
+            (*context).RSSetState(self.fullscreen_rasterizer.as_raw());
+            (*context).OMSetBlendState(self.opaque_blend.as_raw(), &[0.0; 4], u32::MAX);
+            (*context).OMSetDepthStencilState(self.depth_disabled.as_raw(), 0);
+            (*context).IASetInputLayout(self.blur_input_layout.as_raw());
+            (*context).IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+            let vertices = [self.blur_vertices.as_raw()];
+            let strides = [24u32];
+            let offsets = [0u32];
+            (*context).IASetVertexBuffers(
+                0,
+                1,
+                vertices.as_ptr(),
+                strides.as_ptr() as *mut _,
+                offsets.as_ptr() as *mut _,
+            );
+            (*context).VSSetShader(program.vertex.as_raw(), ptr::null_mut(), 0);
+            (*context).PSSetShader(program.pixel.as_raw(), ptr::null_mut(), 0);
+            let cb = self.blur_cb0.as_raw();
+            (*context).PSSetConstantBuffers(0, 1, &cb);
+            let srv = source.srv.as_raw();
+            (*context).PSSetShaderResources(0, 1, &srv);
+            let sampler = self.blur_sampler.as_raw();
+            (*context).PSSetSamplers(0, 1, &sampler);
+            (*context).Draw(4, 0);
+            let null_srv = ptr::null_mut();
+            (*context).PSSetShaderResources(0, 1, &null_srv);
+            Ok(())
+        }
+
+        pub fn receipt(&self) -> Option<&Xmap10ScreenShadowExecutionReceipt> {
+            self.receipt.as_ref()
+        }
+
+        pub fn shadow_map_view(&self) -> Result<NativeXmap10ShaderResourceView<'_>> {
+            let receipt = self
+                .receipt
+                .as_ref()
+                .ok_or("XMAP10 screen shadow has not executed")?;
+            receipt.validate()?;
+            Ok(NativeXmap10ShaderResourceView {
+                binding: receipt.binding.clone(),
+                raw_srv: self.final_target.srv.as_raw(),
+                device_identity: self.device.as_raw() as usize,
+                shader_register: None,
+                _owner: std::marker::PhantomData,
+            })
+        }
+    }
+
+    fn validate_screen_shadow_plan(plan: &ShadowScreenChainPlan) -> Result<()> {
+        if plan.producer_and_final_target.width == 0
+            || plan.producer_and_final_target.height == 0
+            || plan.producer_and_final_target.width != plan.blur_intermediate_target.width
+            || plan.producer_and_final_target.height != plan.blur_intermediate_target.height
+            || plan.producer_and_final_target.dxgi_format != 87
+            || plan.blur_intermediate_target.dxgi_format != 87
+            || plan.producer_and_final_target.mip_levels != 1
+            || plan.blur_intermediate_target.mip_levels != 1
+            || plan.producer_and_final_target.bind_flags
+                != (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE)
+            || plan.blur_intermediate_target.bind_flags
+                != (D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE)
+            || plan.producer_and_final_target.stable_resource_id
+                == plan.blur_intermediate_target.stable_resource_id
+            || plan.passes.len() != 3
+            || plan.passes[0].kind != ShadowScreenPassKind::TerrainUnlitProducer
+            || plan.passes[1].kind != ShadowScreenPassKind::HorizontalBlur
+            || plan.passes[2].kind != ShadowScreenPassKind::VerticalBlur
+            || plan.passes[0].source_resource_id != plan.light_depth_target.stable_resource_id
+            || plan.passes[0].target_resource_id
+                != plan.producer_and_final_target.stable_resource_id
+            || plan.passes[1].source_resource_id
+                != plan.producer_and_final_target.stable_resource_id
+            || plan.passes[1].target_resource_id != plan.blur_intermediate_target.stable_resource_id
+            || plan.passes[2].source_resource_id != plan.blur_intermediate_target.stable_resource_id
+            || plan.passes[2].target_resource_id
+                != plan.producer_and_final_target.stable_resource_id
+            || plan.passes[0].cb0_f32_bits.is_some()
+            || plan.passes[1].cb0_f32_bits.is_none()
+            || plan.passes[2].cb0_f32_bits.is_none()
+        {
+            return Err("XMAP10 screen-shadow plan violates the exact S1 ping-pong law".into());
+        }
+        Ok(())
+    }
+
+    unsafe fn validate_context_for_device(
+        device: &D3dPtr<ID3D11Device>,
+        context: *mut ID3D11DeviceContext,
+    ) -> Result<()> {
+        if context.is_null() {
+            return Err("XMAP10 screen-shadow context is null".into());
+        }
+        let mut context_device = ptr::null_mut();
+        (*context).GetDevice(&mut context_device);
+        let context_device =
+            D3dPtr::from_raw(context_device, "XMAP10 screen-shadow context device")?;
+        if context_device.as_raw() != device.as_raw() {
+            return Err("XMAP10 screen-shadow context belongs to another device".into());
+        }
+        Ok(())
+    }
+
+    unsafe fn validate_texture_for_device(
+        device: &D3dPtr<ID3D11Device>,
+        texture: *mut ID3D11Texture2D,
+    ) -> Result<()> {
+        if texture.is_null() {
+            return Err("XMAP10 post-FX MainScene texture is null".into());
+        }
+        let mut texture_device = ptr::null_mut();
+        (*texture).GetDevice(&mut texture_device);
+        let texture_device = D3dPtr::from_raw(texture_device, "XMAP10 post-FX MainScene device")?;
+        if texture_device.as_raw() != device.as_raw() {
+            return Err("XMAP10 post-FX MainScene texture belongs to another device".into());
+        }
+        Ok(())
+    }
+
+    unsafe fn compile_terrain_unlit(
+        device: &D3dPtr<ID3D11Device>,
+        resolver: &GameFileResolver,
+        terrain: &PreparedTerrainFrame,
+    ) -> Result<(NativeProgram, D3dPtr<ID3D11InputLayout>)> {
+        let defines =
+            crate::engine_map_shader_defines(crate::derive_a729_engine_map_shader_constants(
+                terrain.map_width,
+                terrain.map_height,
+                false,
+                0,
+            )?);
+        let vertex_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            "gfx/FX/pdxmap.shader",
+            "terrainunlit",
+            ShaderStage::Vertex,
+            &defines,
+        )?;
+        let pixel_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            "gfx/FX/pdxmap.shader",
+            "terrainunlit",
+            ShaderStage::Pixel,
+            &defines,
+        )?;
+        let vertex_bytecode =
+            d3d_compile_stage(&vertex_hlsl, ShaderStage::Vertex, ENGINE_COMPILE_FLAGS)?;
+        let pixel_bytecode =
+            d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
+        let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
+        let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
+        require_cbuffer(&vertex_reflection, 0, 416)?;
+        require_cbuffer(&vertex_reflection, 1, 32)?;
+        require_cbuffer(&pixel_reflection, 0, 416)?;
+        for slot in [0u32, 1, 2, 12] {
+            require_texture(&pixel_reflection, slot)?;
+            require_sampler(&pixel_reflection, slot)?;
+        }
+        let input_layout = create_terrain_unlit_input_layout(device, &vertex_bytecode)?;
+        let program = create_program(
+            device,
+            vertex_bytecode,
+            pixel_bytecode,
+            vertex_reflection,
+            pixel_reflection,
+            "terrainunlit",
+        )?;
+        Ok((program, input_layout))
+    }
+
+    unsafe fn compile_shadow_blur(
+        device: &D3dPtr<ID3D11Device>,
+        resolver: &GameFileResolver,
+        effect_name: &str,
+    ) -> Result<NativeProgram> {
+        let vertex_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            "gfx/FX/shadowblur.shader",
+            effect_name,
+            ShaderStage::Vertex,
+            &[],
+        )?;
+        let pixel_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            "gfx/FX/shadowblur.shader",
+            effect_name,
+            ShaderStage::Pixel,
+            &[],
+        )?;
+        let vertex_bytecode =
+            d3d_compile_stage(&vertex_hlsl, ShaderStage::Vertex, ENGINE_COMPILE_FLAGS)?;
+        let pixel_bytecode =
+            d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
+        let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
+        let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
+        require_cbuffer(&pixel_reflection, 0, 32)?;
+        require_texture(&pixel_reflection, 0)?;
+        require_sampler(&pixel_reflection, 0)?;
+        create_program(
+            device,
+            vertex_bytecode,
+            pixel_bytecode,
+            vertex_reflection,
+            pixel_reflection,
+            effect_name,
+        )
+    }
+
+    unsafe fn create_terrain_unlit_input_layout(
+        device: &D3dPtr<ID3D11Device>,
+        vertex_bytecode: &[u8],
+    ) -> Result<D3dPtr<ID3D11InputLayout>> {
+        let position = b"POSITION\0";
+        let texcoord = b"TEXCOORD\0";
+        let elements = [
+            D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: position.as_ptr() as *const i8,
+                SemanticIndex: 0,
+                Format: crate::TERRAIN_CHUNK_SLOT0_POSITION_FORMAT as _,
+                InputSlot: 0,
+                AlignedByteOffset: 0,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+            D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: texcoord.as_ptr() as *const i8,
+                SemanticIndex: 0,
+                Format: crate::TERRAIN_CHUNK_SLOT1_TEXCOORD_FORMAT as _,
+                InputSlot: 1,
+                AlignedByteOffset: 0,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+        ];
+        let mut layout = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateInputLayout(
+                elements.as_ptr(),
+                elements.len() as u32,
+                vertex_bytecode.as_ptr() as *const _,
+                vertex_bytecode.len(),
+                &mut layout,
+            ),
+            "CreateInputLayout(XMAP10 terrainunlit)",
+        )?;
+        D3dPtr::from_raw(layout, "XMAP10 terrainunlit input layout")
+    }
+
+    unsafe fn create_shadow_blur_input_layout(
+        device: &D3dPtr<ID3D11Device>,
+        vertex_bytecode: &[u8],
+    ) -> Result<D3dPtr<ID3D11InputLayout>> {
+        let position = b"POSITION\0";
+        let texcoord = b"TEXCOORD\0";
+        let elements = [
+            D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: position.as_ptr() as *const i8,
+                SemanticIndex: 0,
+                Format: winapi::shared::dxgiformat::DXGI_FORMAT_R32G32B32A32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 0,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+            D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: texcoord.as_ptr() as *const i8,
+                SemanticIndex: 0,
+                Format: winapi::shared::dxgiformat::DXGI_FORMAT_R32G32_FLOAT,
+                InputSlot: 0,
+                AlignedByteOffset: 16,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                InstanceDataStepRate: 0,
+            },
+        ];
+        let mut layout = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateInputLayout(
+                elements.as_ptr(),
+                elements.len() as u32,
+                vertex_bytecode.as_ptr() as *const _,
+                vertex_bytecode.len(),
+                &mut layout,
+            ),
+            "CreateInputLayout(XMAP10 shadow blur)",
+        )?;
+        D3dPtr::from_raw(layout, "XMAP10 shadow blur input layout")
+    }
+
+    unsafe fn create_shadow_blur_vertices(
+        device: &D3dPtr<ID3D11Device>,
+    ) -> Result<D3dPtr<ID3D11Buffer>> {
+        let vertices = [
+            [-1.0f32, 1.0, 0.0, 1.0, 0.0, 0.0],
+            [-1.0, -1.0, 0.0, 1.0, 0.0, 1.0],
+            [1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+            [1.0, -1.0, 0.0, 1.0, 1.0, 1.0],
+        ];
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: mem::size_of_val(&vertices) as u32,
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_VERTEX_BUFFER,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+            StructureByteStride: 0,
+        };
+        let initial = D3D11_SUBRESOURCE_DATA {
+            pSysMem: vertices.as_ptr() as *const _,
+            SysMemPitch: 0,
+            SysMemSlicePitch: 0,
+        };
+        let mut buffer = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateBuffer(&desc, &initial, &mut buffer),
+            "CreateBuffer(XMAP10 shadow blur vertices)",
+        )?;
+        D3dPtr::from_raw(buffer, "XMAP10 shadow blur vertices")
+    }
+
+    unsafe fn create_shadow_blur_sampler(
+        device: *mut ID3D11Device,
+    ) -> Result<D3dPtr<ID3D11SamplerState>> {
+        let desc = D3D11_SAMPLER_DESC {
+            Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MipLODBias: 0.0,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            BorderColor: [0.0; 4],
+            MinLOD: 0.0,
+            MaxLOD: f32::MAX,
+        };
+        let mut sampler = ptr::null_mut();
+        hr(
+            (*device).CreateSamplerState(&desc, &mut sampler),
+            "CreateSamplerState(XMAP10 shadow blur)",
+        )?;
+        D3dPtr::from_raw(sampler, "XMAP10 shadow blur sampler")
+    }
+
+    unsafe fn create_terrain_rasterizer(
+        device: *mut ID3D11Device,
+    ) -> Result<D3dPtr<ID3D11RasterizerState>> {
+        let desc = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_SOLID,
+            CullMode: D3D11_CULL_BACK,
+            FrontCounterClockwise: 0,
+            DepthBias: 0,
+            DepthBiasClamp: 0.0,
+            SlopeScaledDepthBias: 0.0,
+            DepthClipEnable: 1,
+            ScissorEnable: 0,
+            MultisampleEnable: 0,
+            AntialiasedLineEnable: 0,
+        };
+        let mut state = ptr::null_mut();
+        hr(
+            (*device).CreateRasterizerState(&desc, &mut state),
+            "CreateRasterizerState(XMAP10 terrainunlit)",
+        )?;
+        D3dPtr::from_raw(state, "XMAP10 terrainunlit rasterizer")
+    }
+
+    fn validate_target_plan_for_desc(
+        frame: &PreparedXmap10Frame,
+        desc: &ProductionMainSceneTargetDesc,
+    ) -> Result<()> {
+        if desc.color_format != DXGI_FORMAT_R16G16B16A16_FLOAT_U32 || desc.color_samples != 1 {
+            return Err("XMAP10 requires a single-sample R16G16B16A16 MainScene".into());
+        }
+        let main = frame
+            .targets
+            .ordered_targets
+            .iter()
+            .find(|target| target.role == Xmap10TargetRole::MainScene)
+            .ok_or("XMAP10 target plan omitted MainScene")?;
+        if (main.width, main.height, main.dxgi_format, main.sample_count)
+            != (
+                desc.color_width,
+                desc.color_height,
+                desc.color_format,
+                desc.color_samples,
+            )
+        {
+            return Err("XMAP10 prepared MainScene differs from production backend".into());
+        }
+        let passes = &frame.targets.ordered_passes;
+        if !matches!(
+            passes.first().map(|pass| pass.pass),
+            Some(Xmap10PassKind::BrightPass)
+        ) || !matches!(
+            passes.last().map(|pass| pass.pass),
+            Some(Xmap10PassKind::SwapLuminanceHistory)
+        ) {
+            return Err(
+                "XMAP10 target plan does not bracket MainScene through presentation".into(),
+            );
+        }
+        Ok(())
+    }
+
+    unsafe fn compile_program(
+        device: &D3dPtr<ID3D11Device>,
+        resolver: &GameFileResolver,
+        shader_root: &str,
+        effect_name: &str,
+        role: Xmap10ProgramRole,
+        ordered_defines: &[String],
+    ) -> Result<NativeProgram> {
+        let effect_file = effect_file_from_resolver(resolver, shader_root)?;
+        let effect = effect_file
+            .effect(effect_name)
+            .ok_or_else(|| format!("XMAP10 effect {shader_root}:{effect_name} is absent"))?;
+        if role == Xmap10ProgramRole::RestoreScene {
+            let state_name = effect
+                .blend_state
+                .as_deref()
+                .ok_or("XMAP10 RestoreScene effective effect omits its blend state")?;
+            let state = effect_file
+                .blend_states
+                .get(state_name)
+                .ok_or("XMAP10 RestoreScene effective blend state is unresolved")?;
+            let value = |key: &str| {
+                state
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                    .map(|(_, value)| value.trim_matches('"'))
+            };
+            if value("BlendEnable") != Some("no") || value("WriteMask") != Some("RED|GREEN|BLUE") {
+                return Err(
+                    "XMAP10 RestoreScene effective blend state is not RGB-only overwrite".into(),
+                );
+            }
+        }
+        let effect_defines = effect
+            .defines
+            .iter()
+            .map(|define| define.to_ascii_uppercase())
+            .collect::<Vec<_>>();
+        let engine_defines = ordered_defines
+            .iter()
+            .filter(|define| !effect_defines.contains(&define.to_ascii_uppercase()))
+            .map(|define| define_pair(define))
+            .collect::<Result<Vec<_>>>()?;
+        let vertex_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            shader_root,
+            effect_name,
+            ShaderStage::Vertex,
+            &engine_defines,
+        )?;
+        let mut pixel_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            shader_root,
+            effect_name,
+            ShaderStage::Pixel,
+            &engine_defines,
+        )?;
+        if role == Xmap10ProgramRole::LuminanceGather {
+            pixel_hlsl = select_luminance_gather_cbuffer(pixel_hlsl, &effect_file)?;
+        }
+        let vertex_bytecode =
+            d3d_compile_stage(&vertex_hlsl, ShaderStage::Vertex, ENGINE_COMPILE_FLAGS)?;
+        let pixel_bytecode =
+            d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
+        let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
+        let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
+        validate_program_reflection(role, &vertex_reflection, &pixel_reflection)?;
+        create_program(
+            device,
+            vertex_bytecode,
+            pixel_bytecode,
+            vertex_reflection,
+            pixel_reflection,
+            effect_name,
+        )
+    }
+
+    unsafe fn compile_lut_program(
+        device: &D3dPtr<ID3D11Device>,
+        resolver: &GameFileResolver,
+        effect_name: &str,
+        resource_count: u32,
+    ) -> Result<NativeProgram> {
+        let vertex_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            LUT_SHADER,
+            effect_name,
+            ShaderStage::Vertex,
+            &[],
+        )?;
+        let pixel_hlsl = build_stage_hlsl_with_defines(
+            resolver,
+            LUT_SHADER,
+            effect_name,
+            ShaderStage::Pixel,
+            &[],
+        )?;
+        let vertex_bytecode =
+            d3d_compile_stage(&vertex_hlsl, ShaderStage::Vertex, ENGINE_COMPILE_FLAGS)?;
+        let pixel_bytecode =
+            d3d_compile_stage(&pixel_hlsl, ShaderStage::Pixel, ENGINE_COMPILE_FLAGS)?;
+        let vertex_reflection = parse_dxbc_reflection(&vertex_bytecode)?;
+        let pixel_reflection = parse_dxbc_reflection(&pixel_bytecode)?;
+        require_cbuffer(&vertex_reflection, 0, 16)?;
+        for slot in 0..resource_count {
+            require_texture(&pixel_reflection, slot)?;
+            require_sampler(&pixel_reflection, slot)?;
+        }
+        create_program(
+            device,
+            vertex_bytecode,
+            pixel_bytecode,
+            vertex_reflection,
+            pixel_reflection,
+            effect_name,
+        )
+    }
+
+    fn select_luminance_gather_cbuffer(
+        mut hlsl: String,
+        file: &crate::shader_compile::EffectFile,
+    ) -> Result<String> {
+        let body = file
+            .elements
+            .iter()
+            .filter_map(|(_, element)| match element {
+                crate::shader_compile::EffectElement::ConstantBuffer { slot: 2, body, .. }
+                    if body.contains("InvSize_TauDeltaTime")
+                        && body.contains("GatherSize_PixelSize") =>
+                {
+                    Some(body)
+                }
+                _ => None,
+            })
+            .next()
+            .ok_or("XMAP10 effective luminance shader omitted the gather cb2 declaration")?;
+        let marker = "cbuffer dx11_cb2 : register(b2)";
+        let start = hlsl
+            .find(marker)
+            .ok_or("XMAP10 reconstructed luminance HLSL omitted cb2")?;
+        let brace = hlsl[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .ok_or("XMAP10 reconstructed luminance cb2 has no body")?;
+        let close = matching_brace(&hlsl, brace)?;
+        hlsl.replace_range(
+            brace..=close,
+            &format!("{{\n{}\n}}", normalize_effect_body(body)),
+        );
+        Ok(hlsl)
+    }
+
+    fn matching_brace(text: &str, open: usize) -> Result<usize> {
+        let mut depth = 0u32;
+        for (offset, byte) in text.as_bytes()[open..].iter().enumerate() {
+            match *byte {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth = depth.checked_sub(1).ok_or("XMAP10 HLSL brace underflow")?;
+                    if depth == 0 {
+                        return Ok(open + offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Err("XMAP10 HLSL cbuffer body is unterminated".into())
+    }
+
+    fn normalize_effect_body(body: &str) -> String {
+        body.lines()
+            .map(|line| {
+                let trimmed = line.trim_start();
+                if let Some(rest) = trimmed.strip_prefix('@') {
+                    format!("{}#{}", &line[..line.len() - trimmed.len()], rest)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn define_pair(define: &str) -> Result<(String, String)> {
+        let trimmed = define.trim();
+        if trimmed.is_empty() {
+            return Err("XMAP10 shader define is empty".into());
+        }
+        let (name, value) = trimmed
+            .split_once('=')
+            .map(|(name, value)| (name.trim(), value.trim()))
+            .unwrap_or((trimmed, ""));
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(format!("XMAP10 shader define name is invalid: {trimmed:?}").into());
+        }
+        Ok((name.to_string(), value.to_string()))
+    }
+
+    fn validate_program_reflection(
+        role: Xmap10ProgramRole,
+        vertex: &DxbcReflection,
+        pixel: &DxbcReflection,
+    ) -> Result<()> {
+        if vertex.target >> 16 != 0xfffe
+            || pixel.target >> 16 != 0xffff
+            || !vertex
+                .inputs
+                .iter()
+                .any(|input| input.semantic_name.eq_ignore_ascii_case("POSITION"))
+        {
+            return Err(format!("XMAP10 {role:?} shader stage/signature mismatch").into());
+        }
+        match role {
+            Xmap10ProgramRole::BrightPass => {
+                require_texture(pixel, 0)?;
+                require_sampler(pixel, 0)?;
+                require_cbuffer(pixel, 1, 80)?;
+            }
+            Xmap10ProgramRole::LuminanceDownsample => {
+                require_texture(pixel, 0)?;
+                require_sampler(pixel, 0)?;
+                require_cbuffer(vertex, 2, 48)?;
+            }
+            Xmap10ProgramRole::LuminanceGather => {
+                for slot in 0..2 {
+                    require_texture(pixel, slot)?;
+                    require_sampler(pixel, slot)?;
+                }
+                require_cbuffer(vertex, 2, 48)?;
+                require_cbuffer(pixel, 2, 48)?;
+            }
+            Xmap10ProgramRole::BloomHorizontal | Xmap10ProgramRole::BloomVertical => {
+                require_texture(pixel, 0)?;
+                require_sampler(pixel, 0)?;
+                require_cbuffer(vertex, 2, 48)?;
+            }
+            Xmap10ProgramRole::RestoreScene => {
+                for slot in 0..4 {
+                    require_texture(pixel, slot)?;
+                    require_sampler(pixel, slot)?;
+                }
+                require_cbuffer(pixel, 1, 80)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn require_texture(reflection: &DxbcReflection, slot: u32) -> Result<()> {
+        if reflection
+            .resources
+            .iter()
+            .any(|resource| resource.resource_type == 2 && resource.bind_point == slot)
+        {
+            Ok(())
+        } else {
+            Err(format!("XMAP10 reflection omitted texture t{slot}").into())
+        }
+    }
+
+    fn require_sampler(reflection: &DxbcReflection, slot: u32) -> Result<()> {
+        if reflection
+            .resources
+            .iter()
+            .any(|resource| resource.resource_type == 3 && resource.bind_point == slot)
+        {
+            Ok(())
+        } else {
+            Err(format!("XMAP10 reflection omitted sampler s{slot}").into())
+        }
+    }
+
+    fn require_cbuffer(reflection: &DxbcReflection, slot: u32, size: u32) -> Result<()> {
+        let name = format!("dx11_cb{slot}");
+        if reflection
+            .cbuffers
+            .iter()
+            .any(|cbuffer| cbuffer.name == name && cbuffer.size == size)
+        {
+            Ok(())
+        } else {
+            Err(format!("XMAP10 reflection omitted {name} at {size} bytes").into())
+        }
+    }
+
+    unsafe fn create_program(
+        device: &D3dPtr<ID3D11Device>,
+        vertex_bytecode: Vec<u8>,
+        pixel_bytecode: Vec<u8>,
+        vertex_reflection: DxbcReflection,
+        pixel_reflection: DxbcReflection,
+        label: &str,
+    ) -> Result<NativeProgram> {
+        let mut vertex = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateVertexShader(
+                vertex_bytecode.as_ptr() as *const _,
+                vertex_bytecode.len(),
+                ptr::null_mut(),
+                &mut vertex,
+            ),
+            &format!("CreateVertexShader(XMAP10 {label})"),
+        )?;
+        let mut pixel = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreatePixelShader(
+                pixel_bytecode.as_ptr() as *const _,
+                pixel_bytecode.len(),
+                ptr::null_mut(),
+                &mut pixel,
+            ),
+            &format!("CreatePixelShader(XMAP10 {label})"),
+        )?;
+        Ok(NativeProgram {
+            vertex: D3dPtr::from_raw(vertex, "XMAP10 vertex shader")?,
+            pixel: D3dPtr::from_raw(pixel, "XMAP10 pixel shader")?,
+            reflection_sha256: reflection_digest(&vertex_reflection, &pixel_reflection),
+            vertex_bytecode,
+            pixel_bytecode,
+        })
+    }
+
+    fn reflection_digest(vertex: &DxbcReflection, pixel: &DxbcReflection) -> String {
+        let mut bytes = Vec::new();
+        for reflection in [vertex, pixel] {
+            bytes.extend_from_slice(&reflection.target.to_le_bytes());
+            push_string(&mut bytes, &reflection.creator);
+            for resource in &reflection.resources {
+                push_string(&mut bytes, &resource.name);
+                bytes.extend_from_slice(&resource.resource_type.to_le_bytes());
+                bytes.extend_from_slice(&resource.bind_point.to_le_bytes());
+                bytes.extend_from_slice(&resource.bind_count.to_le_bytes());
+            }
+            for cbuffer in &reflection.cbuffers {
+                push_string(&mut bytes, &cbuffer.name);
+                bytes.extend_from_slice(&cbuffer.size.to_le_bytes());
+                for var in &cbuffer.vars {
+                    push_string(&mut bytes, &var.name);
+                    bytes.extend_from_slice(&var.offset.to_le_bytes());
+                    bytes.extend_from_slice(&var.size.to_le_bytes());
+                    bytes.push(u8::from(var.used));
+                }
+            }
+            for parameter in reflection.inputs.iter().chain(&reflection.outputs) {
+                push_string(&mut bytes, &parameter.semantic_name);
+                bytes.extend_from_slice(&parameter.semantic_index.to_le_bytes());
+                bytes.extend_from_slice(&parameter.register.to_le_bytes());
+                bytes.extend_from_slice(&parameter.component_type.to_le_bytes());
+                bytes.push(parameter.mask);
+                bytes.push(parameter.read_write_mask);
+            }
+        }
+        Sha256::hex(&bytes)
+    }
+
+    fn native_program_receipt_digest(
+        receipt: &Xmap10NativeProgramReceiptRef,
+        scalar: &NativeProgram,
+        luts: [&NativeLutProgram; 2],
+    ) -> String {
+        let mut bytes = Vec::new();
+        push_string(&mut bytes, &receipt.schema);
+        push_string(&mut bytes, &receipt.prepared_frame_sha256);
+        for program in &receipt.ordered_programs {
+            bytes.push(program_role_byte(program.role));
+            push_string(&mut bytes, &program.active_effect_sha256);
+            push_string(&mut bytes, &program.vertex_bytecode_sha256);
+            push_string(&mut bytes, &program.pixel_bytecode_sha256);
+            push_string(&mut bytes, &program.reflection_sha256);
+        }
+        push_string(&mut bytes, &Sha256::hex(&scalar.vertex_bytecode));
+        push_string(&mut bytes, &Sha256::hex(&scalar.pixel_bytecode));
+        push_string(&mut bytes, &scalar.reflection_sha256);
+        for lut in luts {
+            push_string(&mut bytes, &lut.effect_name);
+            push_string(&mut bytes, &Sha256::hex(&lut.program.vertex_bytecode));
+            push_string(&mut bytes, &Sha256::hex(&lut.program.pixel_bytecode));
+            push_string(&mut bytes, &lut.program.reflection_sha256);
+        }
+        Sha256::hex(&bytes)
+    }
+
+    fn program_role_byte(role: Xmap10ProgramRole) -> u8 {
+        match role {
+            Xmap10ProgramRole::BrightPass => 0,
+            Xmap10ProgramRole::LuminanceDownsample => 1,
+            Xmap10ProgramRole::LuminanceGather => 2,
+            Xmap10ProgramRole::BloomHorizontal => 3,
+            Xmap10ProgramRole::BloomVertical => 4,
+            Xmap10ProgramRole::RestoreScene => 5,
+        }
+    }
+
+    fn native_program_identity(program: &NativeProgram) -> String {
+        Sha256::hex(
+            &serde_json::to_vec(&(
+                "hoi4.xmap10.native-program.v1",
+                Sha256::hex(&program.vertex_bytecode),
+                Sha256::hex(&program.pixel_bytecode),
+                &program.reflection_sha256,
+            ))
+            .expect("native program identity serialization cannot fail"),
+        )
+    }
+
+    fn native_identity_set(label: &str, ordered_identities: &[String]) -> String {
+        Sha256::hex(
+            &serde_json::to_vec(&(
+                "hoi4.xmap10.native-identity-set.v1",
+                label,
+                ordered_identities,
+            ))
+            .expect("native identity-set serialization cannot fail"),
+        )
+    }
+
+    fn native_constant_buffer_receipt(label: &str, values: &[f32]) -> String {
+        let bits = values
+            .iter()
+            .map(|value| value.to_bits())
+            .collect::<Vec<_>>();
+        Sha256::hex(
+            &serde_json::to_vec(&("hoi4.xmap10.native-cbuffer.v1", label, bits))
+                .expect("native cbuffer identity serialization cannot fail"),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn native_draw_receipt(
+        assigned_stage: &AssignedStage,
+        detail: &str,
+        program_identity_sha256: &str,
+        ordered_input_target_identity_sha256s: &[String],
+        output_target_identity_sha256: &str,
+        ordered_resource_identity_sha256s: &[String],
+        ordered_constant_buffer_receipt_sha256s: &[String],
+        width: u32,
+        height: u32,
+    ) -> String {
+        Sha256::hex(
+            &serde_json::to_vec(&(
+                "hoi4.xmap10.native-draw.v1",
+                assigned_stage,
+                detail,
+                program_identity_sha256,
+                ordered_input_target_identity_sha256s,
+                output_target_identity_sha256,
+                ordered_resource_identity_sha256s,
+                ordered_constant_buffer_receipt_sha256s,
+                width,
+                height,
+                4_u32,
+                0_u32,
+            ))
+            .expect("native draw receipt serialization cannot fail"),
+        )
+    }
+
+    unsafe fn create_target(
+        device: &D3dPtr<ID3D11Device>,
+        prepared_frame_sha256: &str,
+        width: u32,
+        height: u32,
+        format: u32,
+        label: &str,
+    ) -> Result<NativeTarget> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format as _,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut texture: *mut ID3D11Texture2D = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateTexture2D(&desc, ptr::null(), &mut texture),
+            &format!("CreateTexture2D({label})"),
+        )?;
+        let texture = D3dPtr::from_raw(texture, label)?;
+        let mut rtv = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateRenderTargetView(
+                texture.as_raw() as *mut _,
+                ptr::null(),
+                &mut rtv,
+            ),
+            &format!("CreateRenderTargetView({label})"),
+        )?;
+        let mut srv = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateShaderResourceView(
+                texture.as_raw() as *mut _,
+                ptr::null(),
+                &mut srv,
+            ),
+            &format!("CreateShaderResourceView({label})"),
+        )?;
+        Ok(NativeTarget {
+            _texture: texture,
+            rtv: D3dPtr::from_raw(rtv, "XMAP10 target RTV")?,
+            srv: D3dPtr::from_raw(srv, "XMAP10 target SRV")?,
+            width,
+            height,
+            resource_identity_sha256: Sha256::hex(&serde_json::to_vec(&(
+                "hoi4.xmap10.native-target.v1",
+                prepared_frame_sha256,
+                label,
+                width,
+                height,
+                format,
+                1_u32,
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+            ))?),
+        })
+    }
+
+    unsafe fn create_srv_for_texture(
+        device: &D3dPtr<ID3D11Device>,
+        texture: *mut ID3D11Texture2D,
+        label: &str,
+    ) -> Result<D3dPtr<ID3D11ShaderResourceView>> {
+        if texture.is_null() {
+            return Err(format!("{label} source is null").into());
+        }
+        let mut view = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateShaderResourceView(texture as *mut _, ptr::null(), &mut view),
+            &format!("CreateShaderResourceView({label})"),
+        )?;
+        D3dPtr::from_raw(view, label)
+    }
+
+    unsafe fn upload_lut(
+        device: &D3dPtr<ID3D11Device>,
+        lut: &ColorCorrectionLut,
+        payload_sha256: &str,
+    ) -> Result<NativeSampledTexture> {
+        if lut.width != 1024 || lut.height != 32 || lut.slice_size != 32 {
+            return Err(
+                "XMAP10 native ColorCube endpoint is not the exact 1024x32 cube32 layout".into(),
+            );
+        }
+        let mut rgba = Vec::with_capacity(lut.width * lut.height * 4);
+        for texel in &lut.texels {
+            for channel in texel {
+                rgba.push((channel.clamp(0.0, 1.0) * 255.0).round() as u8);
+            }
+            rgba.push(255);
+        }
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: lut.width as u32,
+            Height: lut.height as u32,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let initial = D3D11_SUBRESOURCE_DATA {
+            pSysMem: rgba.as_ptr() as *const _,
+            SysMemPitch: (lut.width * 4) as u32,
+            SysMemSlicePitch: rgba.len() as u32,
+        };
+        let mut texture = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateTexture2D(&desc, &initial, &mut texture),
+            &format!("CreateTexture2D(XMAP10 LUT {payload_sha256})"),
+        )?;
+        let texture = D3dPtr::from_raw(texture, "XMAP10 LUT texture")?;
+        let mut srv = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateShaderResourceView(
+                texture.as_raw() as *mut _,
+                ptr::null(),
+                &mut srv,
+            ),
+            "CreateShaderResourceView(XMAP10 LUT)",
+        )?;
+        Ok(NativeSampledTexture {
+            _texture: texture,
+            srv: D3dPtr::from_raw(srv, "XMAP10 LUT SRV")?,
+            resource_identity_sha256: native_identity_set(
+                "postfx.lut.source-resource",
+                &[payload_sha256.to_owned(), Sha256::hex(&rgba)],
+            ),
+        })
+    }
+
+    unsafe fn create_fullscreen_input_layout(
+        device: &D3dPtr<ID3D11Device>,
+        vertex_bytecode: &[u8],
+    ) -> Result<D3dPtr<ID3D11InputLayout>> {
+        let semantic = b"POSITION\0";
+        let element = D3D11_INPUT_ELEMENT_DESC {
+            SemanticName: semantic.as_ptr() as *const i8,
+            SemanticIndex: 0,
+            Format: DXGI_FORMAT_R32G32_SINT,
+            InputSlot: 0,
+            AlignedByteOffset: 0,
+            InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+            InstanceDataStepRate: 0,
+        };
+        let mut layout = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateInputLayout(
+                &element,
+                1,
+                vertex_bytecode.as_ptr() as *const _,
+                vertex_bytecode.len(),
+                &mut layout,
+            ),
+            "CreateInputLayout(XMAP10 fullscreen)",
+        )?;
+        D3dPtr::from_raw(layout, "XMAP10 fullscreen input layout")
+    }
+
+    unsafe fn create_fullscreen_vertices(
+        device: &D3dPtr<ID3D11Device>,
+    ) -> Result<D3dPtr<ID3D11Buffer>> {
+        let vertices = [[-1i32, -1i32], [-1, 1], [1, -1], [1, 1]];
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: mem::size_of_val(&vertices) as u32,
+            Usage: D3D11_USAGE_IMMUTABLE,
+            BindFlags: D3D11_BIND_VERTEX_BUFFER,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+            StructureByteStride: 0,
+        };
+        let initial = D3D11_SUBRESOURCE_DATA {
+            pSysMem: vertices.as_ptr() as *const _,
+            SysMemPitch: 0,
+            SysMemSlicePitch: 0,
+        };
+        let mut buffer = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateBuffer(&desc, &initial, &mut buffer),
+            "CreateBuffer(XMAP10 fullscreen vertices)",
+        )?;
+        D3dPtr::from_raw(buffer, "XMAP10 fullscreen vertices")
+    }
+
+    unsafe fn create_constant_buffer(
+        device: &D3dPtr<ID3D11Device>,
+        byte_width: u32,
+        label: &str,
+    ) -> Result<D3dPtr<ID3D11Buffer>> {
+        if byte_width == 0 || byte_width % 16 != 0 {
+            return Err(format!("{label} byte width is not 16-byte aligned").into());
+        }
+        let desc = D3D11_BUFFER_DESC {
+            ByteWidth: byte_width,
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_CONSTANT_BUFFER,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+            StructureByteStride: 0,
+        };
+        let mut buffer = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateBuffer(&desc, ptr::null(), &mut buffer),
+            &format!("CreateBuffer({label})"),
+        )?;
+        D3dPtr::from_raw(buffer, label)
+    }
+
+    unsafe fn update_constant_buffer<T: Copy>(
+        context: &D3dPtr<ID3D11DeviceContext>,
+        device: &D3dPtr<ID3D11Device>,
+        buffer: &D3dPtr<ID3D11Buffer>,
+        value: &T,
+    ) -> Result<()> {
+        (*context.as_raw()).UpdateSubresource(
+            buffer.as_raw() as *mut _,
+            0,
+            ptr::null(),
+            value as *const T as *const _,
+            0,
+            0,
+        );
+        native_d3d11_check_void_upload_device(device, "UpdateSubresource(XMAP10 constant buffer)")
+    }
+
+    unsafe fn create_sampler(
+        device: &D3dPtr<ID3D11Device>,
+        point: bool,
+    ) -> Result<D3dPtr<ID3D11SamplerState>> {
+        let desc = D3D11_SAMPLER_DESC {
+            Filter: if point {
+                D3D11_FILTER_MIN_MAG_MIP_POINT
+            } else {
+                D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT
+            },
+            AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+            AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+            MipLODBias: 0.0,
+            MaxAnisotropy: 1,
+            ComparisonFunc: D3D11_COMPARISON_NEVER,
+            BorderColor: [0.0; 4],
+            MinLOD: 0.0,
+            MaxLOD: f32::MAX,
+        };
+        let mut sampler = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateSamplerState(&desc, &mut sampler),
+            "CreateSamplerState(XMAP10)",
+        )?;
+        D3dPtr::from_raw(sampler, "XMAP10 sampler")
+    }
+
+    unsafe fn create_blend(
+        device: &D3dPtr<ID3D11Device>,
+        rgb_only: bool,
+    ) -> Result<D3dPtr<ID3D11BlendState>> {
+        let write_mask = if rgb_only {
+            (D3D11_COLOR_WRITE_ENABLE_RED
+                | D3D11_COLOR_WRITE_ENABLE_GREEN
+                | D3D11_COLOR_WRITE_ENABLE_BLUE) as u8
+        } else {
+            D3D11_COLOR_WRITE_ENABLE_ALL as u8
+        };
+        let target = D3D11_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: 0,
+            SrcBlend: D3D11_BLEND_ONE,
+            DestBlend: D3D11_BLEND_ZERO,
+            BlendOp: D3D11_BLEND_OP_ADD,
+            SrcBlendAlpha: D3D11_BLEND_ONE,
+            DestBlendAlpha: D3D11_BLEND_ZERO,
+            BlendOpAlpha: D3D11_BLEND_OP_ADD,
+            RenderTargetWriteMask: write_mask,
+        };
+        let desc = D3D11_BLEND_DESC {
+            AlphaToCoverageEnable: 0,
+            IndependentBlendEnable: 0,
+            RenderTarget: [target; 8],
+        };
+        let mut state = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateBlendState(&desc, &mut state),
+            "CreateBlendState(XMAP10)",
+        )?;
+        D3dPtr::from_raw(state, "XMAP10 blend state")
+    }
+
+    unsafe fn create_depth_disabled(
+        device: &D3dPtr<ID3D11Device>,
+    ) -> Result<D3dPtr<ID3D11DepthStencilState>> {
+        let desc = D3D11_DEPTH_STENCIL_DESC {
+            DepthEnable: 0,
+            DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ZERO,
+            DepthFunc: D3D11_COMPARISON_ALWAYS,
+            StencilEnable: 0,
+            StencilReadMask: 0,
+            StencilWriteMask: 0,
+            FrontFace: mem::zeroed(),
+            BackFace: mem::zeroed(),
+        };
+        let mut state = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateDepthStencilState(&desc, &mut state),
+            "CreateDepthStencilState(XMAP10)",
+        )?;
+        D3dPtr::from_raw(state, "XMAP10 depth-disabled state")
+    }
+
+    unsafe fn create_rasterizer(
+        device: &D3dPtr<ID3D11Device>,
+    ) -> Result<D3dPtr<ID3D11RasterizerState>> {
+        let desc = D3D11_RASTERIZER_DESC {
+            FillMode: D3D11_FILL_SOLID,
+            CullMode: D3D11_CULL_NONE,
+            FrontCounterClockwise: 0,
+            DepthBias: 0,
+            DepthBiasClamp: 0.0,
+            SlopeScaledDepthBias: 0.0,
+            DepthClipEnable: 1,
+            ScissorEnable: 0,
+            MultisampleEnable: 0,
+            AntialiasedLineEnable: 0,
+        };
+        let mut state = ptr::null_mut();
+        hr(
+            (*device.as_raw()).CreateRasterizerState(&desc, &mut state),
+            "CreateRasterizerState(XMAP10)",
+        )?;
+        D3dPtr::from_raw(state, "XMAP10 rasterizer state")
+    }
+
+    fn post_effect_constants(
+        frame: &PreparedXmap10Frame,
+        width: u32,
+        height: u32,
+    ) -> PostEffectBaseCb {
+        let hsv = frame.grade.hsv_f32_bits.map(f32::from_bits);
+        let balance = frame.grade.color_balance_f32_bits.map(f32::from_bits);
+        PostEffectBaseCb {
+            values: [
+                hsv[0],
+                hsv[1],
+                hsv[2],
+                hsv[3],
+                balance[0],
+                balance[1],
+                balance[2],
+                f32::from_bits(frame.grade.emissive_bloom_strength_f32_bits),
+                2.0 / width as f32,
+                2.0 / height as f32,
+                1.0 / width as f32,
+                1.0 / height as f32,
+                1.0,
+                1.0,
+                f32::from_bits(frame.grade.bright_threshold_f32_bits),
+                f32::from_bits(frame.grade.middle_grey_f32_bits),
+                f32::from_bits(frame.grade.luminance_white_squared_f32_bits),
+                0.0,
+                0.0,
+                0.0,
+            ],
+        }
+    }
+
+    unsafe fn validate_buffer_desc(
+        buffer: *mut ID3D11Buffer,
+        byte_width: u32,
+        bind_flags: u32,
+    ) -> Result<()> {
+        let mut desc: D3D11_BUFFER_DESC = mem::zeroed();
+        (*buffer).GetDesc(&mut desc);
+        if desc.ByteWidth != byte_width || desc.BindFlags & bind_flags != bind_flags {
+            Err("XMAP10 SceneCB0 native descriptor mismatch".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub unsafe fn final_rtv_resource_identity_sha256(
+        expected_device: *mut ID3D11Device,
+        rtv: *mut ID3D11RenderTargetView,
+        allocation_generation: u64,
+    ) -> Result<String> {
+        if expected_device.is_null() || rtv.is_null() || allocation_generation == 0 {
+            return Err("XMAP10 final RTV identity input is invalid".into());
+        }
+        let mut actual_device = ptr::null_mut();
+        (*rtv).GetDevice(&mut actual_device);
+        let actual_device = D3dPtr::from_raw(actual_device, "XMAP10 final RTV device")?;
+        if actual_device.as_raw() != expected_device {
+            return Err("XMAP10 final RTV belongs to a different D3D11 device".into());
+        }
+        let mut resource = ptr::null_mut();
+        (*rtv).GetResource(&mut resource);
+        let resource = D3dPtr::from_raw(resource, "XMAP10 final RTV resource")?;
+        let mut texture: *mut ID3D11Texture2D = ptr::null_mut();
+        hr(
+            (*resource.as_raw()).QueryInterface(
+                &ID3D11Texture2D::uuidof(),
+                &mut texture as *mut *mut ID3D11Texture2D as *mut *mut _,
+            ),
+            "QueryInterface(XMAP10 final Texture2D)",
+        )?;
+        let texture = D3dPtr::from_raw(texture, "XMAP10 final Texture2D")?;
+        let mut tag = [0u8; 72];
+        let mut tag_bytes = u32::try_from(tag.len())?;
+        hr(
+            (*texture.as_raw()).GetPrivateData(
+                &REPLAY_PRESENTATION_RESOURCE_IDENTITY_GUID,
+                &mut tag_bytes,
+                tag.as_mut_ptr().cast(),
+            ),
+            "GetPrivateData(XMAP10 final resource identity)",
+        )?;
+        if usize::try_from(tag_bytes)? != tag.len()
+            || u64::from_le_bytes(tag[..8].try_into()?) != allocation_generation
+        {
+            return Err("XMAP10 final RTV allocation tag/generation mismatch".into());
+        }
+        let identity = std::str::from_utf8(&tag[8..])?;
+        if !is_sha256(identity) {
+            return Err("XMAP10 final RTV allocation identity tag is invalid".into());
+        }
+        Ok(identity.to_owned())
+    }
+
+    unsafe fn validate_final_rtv(
+        expected_device: *mut ID3D11Device,
+        rtv: *mut ID3D11RenderTargetView,
+        expected: &Xmap10AttachedFinalTarget,
+    ) -> Result<()> {
+        let actual_identity = final_rtv_resource_identity_sha256(
+            expected_device,
+            rtv,
+            expected.allocation_generation,
+        )?;
+        let mut resource = ptr::null_mut();
+        (*rtv).GetResource(&mut resource);
+        let resource = D3dPtr::from_raw(resource, "XMAP10 final RTV validation resource")?;
+        let mut texture: *mut ID3D11Texture2D = ptr::null_mut();
+        hr(
+            (*resource.as_raw()).QueryInterface(
+                &ID3D11Texture2D::uuidof(),
+                &mut texture as *mut *mut ID3D11Texture2D as *mut *mut _,
+            ),
+            "QueryInterface(XMAP10 final validation Texture2D)",
+        )?;
+        let texture = D3dPtr::from_raw(texture, "XMAP10 final validation Texture2D")?;
+        let mut desc: D3D11_TEXTURE2D_DESC = mem::zeroed();
+        (*texture.as_raw()).GetDesc(&mut desc);
+        if desc.Width != expected.width
+            || desc.Height != expected.height
+            || desc.Format as u32 != expected.dxgi_format
+            || desc.SampleDesc.Count != expected.sample_count
+            || actual_identity != expected.resource_identity_sha256
+        {
+            return Err("XMAP10 final RTV resource descriptor mismatch".into());
+        }
+        Ok(())
+    }
+
+    fn native_pass_names(lut_pass_count: usize, reduction_pass_count: usize) -> Vec<String> {
+        let mut passes = (0..lut_pass_count)
+            .map(|ordinal| format!("postfx.lut.{ordinal}"))
+            .collect::<Vec<_>>();
+        passes.push("postfx.bright_pass".into());
+        for ordinal in 0..reduction_pass_count {
+            passes.push(format!("postfx.luminance_downsample.{ordinal}"));
+        }
+        passes.extend([
+            "postfx.luminance_gather".into(),
+            "postfx.bloom.horizontal".into(),
+            "postfx.bloom.vertical".into(),
+            "postfx.restore_scene".into(),
+        ]);
+        passes
+    }
+
+    fn hr(value: i32, action: &str) -> Result<()> {
+        if value < 0 {
+            Err(format!("{action} failed with HRESULT 0x{:08x}", value as u32).into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub use final_rtv_resource_identity_sha256 as exported_final_rtv_resource_identity_sha256;
+    pub use NativeXmap10PostFxExecutor as ExportedNativeXmap10PostFxExecutor;
+    pub use NativeXmap10ScreenShadowHandoff as ExportedNativeXmap10ScreenShadowHandoff;
+    pub use NativeXmap10ShaderResourceView as ExportedNativeXmap10ShaderResourceView;
+}
+
+#[cfg(windows)]
+pub use native::exported_final_rtv_resource_identity_sha256 as xmap10_final_rtv_resource_identity_sha256;
+#[cfg(windows)]
+pub use native::ExportedNativeXmap10PostFxExecutor as NativeXmap10PostFxExecutor;
+#[cfg(windows)]
+pub use native::ExportedNativeXmap10ScreenShadowHandoff as NativeXmap10ScreenShadowHandoff;
+#[cfg(windows)]
+pub use native::ExportedNativeXmap10ShaderResourceView as NativeXmap10ShaderResourceView;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sha(label: &str) -> String {
+        Sha256::hex(label.as_bytes())
+    }
+
+    #[test]
+    fn reduction_plan_is_derived_from_the_dynamic_target_graph() {
+        let hd = Xmap10TargetPlan::new(1920, 1080).unwrap();
+        let hd_plan = Xmap10LuminanceReductionPlan::from_target_plan(&hd).unwrap();
+        assert_eq!(hd_plan.steps.len(), 8);
+        assert_eq!(
+            (
+                hd_plan.steps[0].source_width,
+                hd_plan.steps[0].source_height,
+                hd_plan.steps[0].destination_width,
+                hd_plan.steps[0].destination_height,
+            ),
+            (960, 540, 480, 270)
+        );
+        assert_eq!(
+            (
+                hd_plan.steps.last().unwrap().destination_width,
+                hd_plan.steps.last().unwrap().destination_height,
+            ),
+            (4, 3)
+        );
+
+        let uhd = Xmap10TargetPlan::new(3840, 2160).unwrap();
+        let uhd_plan = Xmap10LuminanceReductionPlan::from_target_plan(&uhd).unwrap();
+        assert_eq!(uhd_plan.steps.len(), 9);
+        assert_eq!(
+            (
+                uhd_plan.steps.last().unwrap().destination_width,
+                uhd_plan.steps.last().unwrap().destination_height,
+            ),
+            (4, 3)
+        );
+
+        let odd = Xmap10TargetPlan::new(1365, 767).unwrap();
+        let odd_plan = Xmap10LuminanceReductionPlan::from_target_plan(&odd).unwrap();
+        assert_eq!(
+            (
+                odd_plan.steps[0].source_width,
+                odd_plan.steps[0].source_height,
+                odd_plan.steps[0].destination_width,
+                odd_plan.steps[0].destination_height,
+            ),
+            (682, 383, 341, 192)
+        );
+    }
+
+    #[test]
+    fn screen_shadow_receipt_binds_every_producer_and_rejects_tampering() {
+        let mut receipt = Xmap10ScreenShadowExecutionReceipt {
+            schema: XMAP10_SCREEN_SHADOW_RECEIPT_SCHEMA.into(),
+            active: true,
+            prior_screen_shadow_execution_sha256: None,
+            terrain_frame_sha256: sha("terrain"),
+            map_copy_receipt_set_sha256: sha("copies"),
+            xmap09_light_depth_execution_sha256: sha("light-depth"),
+            xmap09_shadow_matrix_payload_sha256: sha("shadow-matrix"),
+            screen_chain_plan_sha256: sha("plan"),
+            content_closure_sha256: sha("content-closure"),
+            ordered_scene_cb0_composition_sha256s: vec![sha("scene-main"), sha("scene-east")],
+            terrain_unlit_vertex_bytecode_sha256: sha("terrain-vs"),
+            terrain_unlit_pixel_bytecode_sha256: sha("terrain-ps"),
+            blur_horizontal_vertex_bytecode_sha256: sha("blur-h-vs"),
+            blur_horizontal_pixel_bytecode_sha256: sha("blur-h"),
+            blur_vertical_vertex_bytecode_sha256: sha("blur-v-vs"),
+            blur_vertical_pixel_bytecode_sha256: sha("blur-v"),
+            draw_count: 9,
+            binding: Xmap10NativeShaderResourceBinding {
+                symbol: "ShadowMap".into(),
+                owner_packet: "XMAP10".into(),
+                producer_camera_frame_sha256: sha("camera"),
+                producer_replay_frame_identity_sha256: sha("replay"),
+                consumer_camera_frame_sha256: sha("camera"),
+                consumer_replay_frame_identity_sha256: sha("replay"),
+                stable_resource_id: "shadow-final".into(),
+                resource_sha256: sha("resource"),
+                descriptor_sha256: sha("descriptor"),
+            },
+            deterministic_sha256: String::new(),
+        };
+        receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
+        receipt.validate().unwrap();
+        receipt.draw_count += 1;
+        assert!(receipt.validate().is_err());
+
+        receipt.draw_count -= 1;
+        receipt.active = false;
+        receipt.ordered_scene_cb0_composition_sha256s.clear();
+        receipt.prior_screen_shadow_execution_sha256 = Some(sha("prior"));
+        receipt.deterministic_sha256.clear();
+        receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
+        assert!(
+            receipt.validate().is_err(),
+            "inactive receipt must record zero draws"
+        );
+        receipt.draw_count = 0;
+        receipt.binding.consumer_camera_frame_sha256 = sha("next-camera");
+        receipt.binding.consumer_replay_frame_identity_sha256 = sha("next-replay");
+        receipt.deterministic_sha256.clear();
+        receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
+        receipt.validate().unwrap();
+        assert_eq!(receipt.binding.producer_camera_frame_sha256, sha("camera"));
+        assert_eq!(
+            receipt.binding.producer_replay_frame_identity_sha256,
+            sha("replay")
+        );
+    }
+
+    #[test]
+    fn terrain_unlit_cb1_joins_xmap09_matrix_with_xmap04_draw_rows() {
+        let mut xmap04 = vec![0u8; crate::TERRAIN_CHUNK_CB1_BYTES];
+        for (index, byte) in xmap04[64..].iter_mut().enumerate() {
+            *byte = u8::try_from(index + 1).unwrap();
+        }
+        let bits = std::array::from_fn(|index| (index as f32 + 0.25).to_bits());
+        let matrix_bytes = bits
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect::<Vec<_>>();
+        let mut matrix = crate::Xmap09ShadowMatrixBinding {
+            symbol: "ShadowMapTextureMatrix".into(),
+            owner_packet: "XMAP09".into(),
+            input_payload_sha256: sha("xmap09-input"),
+            shadow_map_texture_matrix_f32_bits: bits,
+            payload_sha256: Sha256::hex(&matrix_bytes),
+            descriptor_sha256: Sha256::hex(b"XMAP09\0ShadowMapTextureMatrix\0float4x4\064"),
+        };
+        let joined = xmap10_terrain_unlit_cb1_bytes(&xmap04, &matrix).unwrap();
+        assert_eq!(&joined[..64], matrix_bytes);
+        assert_eq!(&joined[64..], &xmap04[64..]);
+
+        matrix.shadow_map_texture_matrix_f32_bits[3] = f32::NAN.to_bits();
+        assert!(xmap10_terrain_unlit_cb1_bytes(&xmap04, &matrix).is_err());
+        matrix.shadow_map_texture_matrix_f32_bits = bits;
+        matrix.payload_sha256 = Sha256::hex(&matrix_bytes);
+        xmap04[0] = 1;
+        assert!(xmap10_terrain_unlit_cb1_bytes(&xmap04, &matrix).is_err());
+    }
+
+    #[test]
+    fn reduction_plan_rejects_tampered_chain_dimensions() {
+        let targets = Xmap10TargetPlan::new(1920, 1080).unwrap();
+        let mut plan = Xmap10LuminanceReductionPlan::from_target_plan(&targets).unwrap();
+        plan.steps[3].destination_width += 1;
+        plan.deterministic_sha256 = reduction_plan_digest(&plan);
+        assert!(plan.validate_for_main_scene(1920, 1080).is_err());
+    }
+
+    #[test]
+    fn lut_execution_recomputes_pass_chain_and_final_content() {
+        let source = Sha256::hex(b"lut-source");
+        let cubes = vec![
+            Sha256::hex(b"cube-0"),
+            Sha256::hex(b"cube-1"),
+            Sha256::hex(b"cube-2"),
+        ];
+        let mut pass = Xmap10LutPassExecutionReceipt {
+            ordinal: 0,
+            output_target_index: 0,
+            ordered_input_resource_identity_sha256s: vec![source.clone()],
+            output_resource_identity_sha256: cubes[0].clone(),
+            program_identity_sha256: Sha256::hex(b"lut-program-native"),
+            execution_receipt_sha256: String::new(),
+        };
+        pass.execution_receipt_sha256 = lut_pass_execution_digest(&pass).unwrap();
+        let lut_program = Sha256::hex(b"lut-program-plan");
+        let final_content = xmap10_identity_set(
+            "postfx.color_cube.final-content",
+            &[
+                cubes[0].clone(),
+                lut_program.clone(),
+                xmap10_identity_set(
+                    "postfx.lut.ordered-pass-executions",
+                    &[pass.execution_receipt_sha256.clone()],
+                ),
+            ],
+        );
+        let mut receipt = Xmap10LutExecutionReceipt {
+            schema: XMAP10_LUT_EXECUTION_RECEIPT_SCHEMA.into(),
+            frame_sequence: 1,
+            lut_program_sha256: lut_program,
+            ordered_lut_source_resource_identity_sha256s: vec![source],
+            ordered_color_cube_resource_identity_sha256s: cubes,
+            ordered_passes: vec![pass],
+            final_color_cube_content_identity_sha256: final_content,
+            deterministic_sha256: String::new(),
+        };
+        receipt.deterministic_sha256 = canonical_packet_sha256(&receipt).unwrap();
+        receipt.validate().unwrap();
+
+        let mut tampered_pass = receipt.clone();
+        tampered_pass.ordered_passes[0].ordered_input_resource_identity_sha256s[0] =
+            Sha256::hex(b"substituted-source");
+        tampered_pass.deterministic_sha256.clear();
+        tampered_pass.deterministic_sha256 = canonical_packet_sha256(&tampered_pass).unwrap();
+        assert!(tampered_pass.validate().is_err());
+
+        let mut tampered_final = receipt;
+        tampered_final.final_color_cube_content_identity_sha256 = Sha256::hex(b"forged-final");
+        tampered_final.deterministic_sha256.clear();
+        tampered_final.deterministic_sha256 = canonical_packet_sha256(&tampered_final).unwrap();
+        assert!(tampered_final.validate().is_err());
+    }
+}

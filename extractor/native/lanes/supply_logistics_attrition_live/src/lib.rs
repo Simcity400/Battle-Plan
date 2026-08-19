@@ -1,19 +1,5 @@
-//! Exact a729 province-supply tooltip carrier.
-//!
-//! The base D44 rows remain unchanged. `PST1` is an additive trailer carrying
-//! only pointer-free observations paired from the exact province producer and
-//! its exact numeric-formatter sink.
-
 use std::collections::BTreeSet;
 
-/// THE TEST BINARY'S ALLOCATOR IS A COUNTER, so this crate's frozen windows can
-/// be proved allocation-free by measurement and not only by reading their text.
-///
-/// `#[cfg(test)]` and therefore present in no shipped build: the collector
-/// cdylib still declares no `#[global_allocator]` at all, which is exactly why
-/// an allocation inside a stopped window is a hang -- Rust's System allocator
-/// is `HeapAlloc` on the PROCESS DEFAULT HEAP, the same heap the game's own
-/// threads reach through ordinary Win32 calls.
 #[cfg(test)]
 #[global_allocator]
 static FROZEN_WINDOW_ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
@@ -21,10 +7,10 @@ static FROZEN_WINDOW_ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
 
 pub mod domain44_contract;
 
-#[cfg(windows)]
-pub mod a729_tooltip_hook;
 #[cfg(all(windows, target_arch = "x86_64"))]
 pub mod a729_attrition_hook;
+#[cfg(windows)]
+pub mod a729_tooltip_hook;
 
 pub const TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"PST1");
 pub const TRAILER_VERSION: u32 = 1;
@@ -33,9 +19,6 @@ pub const FIXED_SCALE: u32 = 100_000;
 pub const DISPLAY_DECIMALS: u32 = 2;
 pub const TRAILER_HEADER_LEN: usize = 48;
 pub const TRAILER_ROW_LEN: usize = 40;
-// Both bounds are re-applied by the replay consumer when it reads these rows
-// back, so they live in the crate both workspaces depend on rather than being
-// written once here and once there.
 pub const MAX_PROVINCE_ID: u32 = portable_admission::SUPPLY_MAX_PROVINCE_ID;
 pub const MAX_OBSERVER_TAG_DB_ID: u32 = portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const MAX_ROWS: usize = 16_384;
@@ -49,9 +32,6 @@ pub const EXACT_A729_JOB_JSON_SHA256: &str =
 pub const EXACT_A729_MANIFEST_SHA256: &str =
     "3f346cfcaf37895c347002fcfbd0782bd15672342aa6ba3da56f2396016108fd";
 
-/// Pointer-free, current-frame transient attrition component carrier. This is
-/// separate from ATR1 because exact a729 persists only the cached total, not a
-/// reason enum.
 pub const ATTRITION_COMPONENT_TRAILER_MAGIC: u32 = u32::from_le_bytes(*b"ARC1");
 pub const ATTRITION_COMPONENT_TRAILER_VERSION: u32 = 1;
 pub const ATTRITION_COMPONENT_HEADER_LEN: usize = 40;
@@ -211,7 +191,11 @@ pub fn decode_trailer(bytes: &[u8]) -> Result<ExactProvinceSupplyTooltipBatch, C
         return Err(CodecError::Invalid("batch_header"));
     }
     let expected = TRAILER_HEADER_LEN
-        .checked_add(row_count.checked_mul(TRAILER_ROW_LEN).ok_or(CodecError::Invalid("size"))?)
+        .checked_add(
+            row_count
+                .checked_mul(TRAILER_ROW_LEN)
+                .ok_or(CodecError::Invalid("size"))?,
+        )
         .ok_or(CodecError::Invalid("size"))?;
     if bytes.len() < expected {
         return Err(CodecError::Truncated);
@@ -287,8 +271,7 @@ pub fn validate_attrition_component_row(
         .checked_mul(i128::from(row.final_multiplier_raw))
         .and_then(|value| value.checked_div(i128::from(FIXED_SCALE)))
         .ok_or(CodecError::Invalid("attrition_final_law"))?;
-    if final_total != i128::from(row.final_total_raw)
-        || row.final_total_raw != row.cached_total_raw
+    if final_total != i128::from(row.final_total_raw) || row.final_total_raw != row.cached_total_raw
     {
         return Err(CodecError::Invalid("attrition_final_join"));
     }
@@ -382,10 +365,7 @@ pub fn decode_attrition_component_trailer_prefix(
     let hook_epoch = get_u64(bytes, 16)?;
     let drain_sequence = get_u64(bytes, 24)?;
     let dropped_rows = get_u32(bytes, 32)?;
-    if hook_epoch == 0
-        || drain_sequence == 0
-        || row_count > ATTRITION_COMPONENT_MAX_ROWS
-    {
+    if hook_epoch == 0 || drain_sequence == 0 || row_count > ATTRITION_COMPONENT_MAX_ROWS {
         return Err(CodecError::Invalid("attrition_batch_header"));
     }
     let expected = ATTRITION_COMPONENT_HEADER_LEN
@@ -462,17 +442,41 @@ pub fn decode_attrition_component_trailer(
     Ok(batch)
 }
 
-fn put_u32(out: &mut Vec<u8>, value: u32) { out.extend_from_slice(&value.to_le_bytes()); }
-fn put_u64(out: &mut Vec<u8>, value: u64) { out.extend_from_slice(&value.to_le_bytes()); }
-fn put_i64(out: &mut Vec<u8>, value: i64) { out.extend_from_slice(&value.to_le_bytes()); }
+fn put_u32(out: &mut Vec<u8>, value: u32) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+fn put_u64(out: &mut Vec<u8>, value: u64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
+fn put_i64(out: &mut Vec<u8>, value: i64) {
+    out.extend_from_slice(&value.to_le_bytes());
+}
 fn get_u32(bytes: &[u8], at: usize) -> Result<u32, CodecError> {
-    Ok(u32::from_le_bytes(bytes.get(at..at + 4).ok_or(CodecError::Truncated)?.try_into().unwrap()))
+    Ok(u32::from_le_bytes(
+        bytes
+            .get(at..at + 4)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .unwrap(),
+    ))
 }
 fn get_u64(bytes: &[u8], at: usize) -> Result<u64, CodecError> {
-    Ok(u64::from_le_bytes(bytes.get(at..at + 8).ok_or(CodecError::Truncated)?.try_into().unwrap()))
+    Ok(u64::from_le_bytes(
+        bytes
+            .get(at..at + 8)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .unwrap(),
+    ))
 }
 fn get_i64(bytes: &[u8], at: usize) -> Result<i64, CodecError> {
-    Ok(i64::from_le_bytes(bytes.get(at..at + 8).ok_or(CodecError::Truncated)?.try_into().unwrap()))
+    Ok(i64::from_le_bytes(
+        bytes
+            .get(at..at + 8)
+            .ok_or(CodecError::Truncated)?
+            .try_into()
+            .unwrap(),
+    ))
 }
 
 #[cfg(test)]
@@ -512,7 +516,6 @@ mod attrition_component_tests {
             hook_epoch: 1,
             drain_sequence: 1,
             dropped_rows: 0,
-            // Causal sequence is intentionally not division-id order.
             rows: vec![row(1, 20), row(2, 10)],
         };
         let encoded = encode_attrition_component_trailer(&batch).expect("encode ARC1");
@@ -531,37 +534,8 @@ mod attrition_component_tests {
     }
 }
 
-/// EVERY HELD-FREEZE WINDOW IN THIS CRATE, READ.
-///
-/// This crate takes `inline_detour::freeze_process()` directly, which stops
-/// every other thread of the game. Until the guard drops, an allocation or a
-/// lock here is a HANG and not a slow path: the lock may be held by a thread
-/// that can no longer run, and the collector declares no `#[global_allocator]`,
-/// so Rust's allocator is `HeapAlloc` on the PROCESS DEFAULT HEAP -- the same
-/// heap the game's own threads reach through ordinary Win32 calls.
-///
-/// `inline_detour` has enforced this on its own windows for a long time. This
-/// crate did not, and the audit found real defects the first time it ran.
-///
-/// What production change would make this fail? Building an error string,
-/// collecting an iterator, taking a mutex, or growing a vector between the
-/// freeze and its drop -- at any call depth inside this crate, in any file
-/// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    /// How many findings this crate still carries, and WHICH ones.
-    ///
-    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted
-    /// findings, so any change to which ones exist fails here even when there
-    /// are the same number of them. Both may only move when a human decides
-    /// they should, and only DOWNWARD.
-    ///
-    /// IT IS ZERO. Every one of the 19 this crate carried is closed: the
-    /// ranges, the row queue and the three restore buffers are built before the
-    /// first suspension, and `patch_rel32`, `restore_hook` and
-    /// `any_instruction_pointer_in` hand back reasons that own no memory, which
-    /// the caller renders once the game is running again.
     const OPEN_FINDINGS: usize = 0;
     const OPEN_FINDINGS_FINGERPRINT: u64 = 14695981039346656037u64;
 

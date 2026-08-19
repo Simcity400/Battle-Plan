@@ -30,8 +30,6 @@ fn generated_demo_binds_all_owners_and_exposes_controller_flips() {
     let mut owners = Map::new();
     let mut province_to_state = Map::new();
     for state_id in 1..=STATE_COUNT {
-        // GER is the deterministic majority. State 1 is in the sorted
-        // non-majority flip set, so the first scripted boundary is 0 -> 1.
         let owner = if state_id <= 216 { "FRA" } else { "GER" };
         owners.insert(state_id.to_string(), Value::String(owner.to_string()));
         province_to_state.insert(

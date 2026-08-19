@@ -1,5 +1,3 @@
-//! Neutral, pointer-free HUD role wire schema shared by capture and replay.
-
 use crate::{RequiredContentKind, UsedContentKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};

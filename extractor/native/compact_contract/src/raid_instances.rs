@@ -1,9 +1,3 @@
-//! Domain 91 `raid_instances_live` pointer-free raid-system snapshot.
-//!
-//! The carrier preserves the exact `CRaidSystem` inline-parent order and each
-//! `CCountryRaidStatus` child-vector order. It never canonicalises by country
-//! or raid id: those are identities, not ordering authorities.
-
 use std::collections::BTreeSet;
 
 pub const DOMAIN_ID: u16 = 91;
@@ -15,10 +9,6 @@ pub const PARENT_LEN: usize = 32;
 pub const CHILD_LEN: usize = 80;
 pub const MAX_PARENTS: usize = 4_096;
 pub const MAX_CHILDREN: usize = 65_536;
-/// Was `4_096`, a guess at the vanilla-plus-DLC country count (vanilla defines
-/// 439 tags); the family bound is
-/// [`crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID`] and is
-/// engine-structural.
 pub const MAX_TAG_DB_ID: u32 = crate::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
 pub const RAID_REFERENCE_TYPE: u32 = 84;
 pub const EXACT_A729_EXECUTABLE_SHA256: &str =
@@ -120,18 +110,12 @@ pub struct RaidInstanceRow {
     pub prep_time_hours: i32,
     pub phase: RaidPhase,
     pub outcome: RaidOutcome,
-    /// Serializer-validity byte at CRaidInstance+0x1B0. The date object at
-    /// +0x1A8 is polymorphic and is not reinterpreted as a scalar.
     pub end_date_present: bool,
     pub victim_country_tag_db_id: u32,
-    /// Serializer presence byte at `raid_source+0x04`. A raw kind value is not
-    /// semantic unless this marker is set.
     pub source_kind_present: bool,
     pub source_kind_raw: u32,
     pub source_province_id: u32,
     pub source_country_tag_db_id: u32,
-    /// Exact two-dword `raid_source` location carrier. Semantics remain
-    /// source-kind dependent and are not guessed by this transport.
     pub source_location_raw: [u32; 2],
 }
 
@@ -216,9 +200,6 @@ pub fn encode_payload(
     Ok(out)
 }
 
-/// Encode a typed, rowless current-hour observation failure. A failed owner
-/// walk is never represented as a measured-empty raid system and never reuses
-/// rows from an earlier hour.
 pub fn encode_source_unavailable(
     frame_hour: u64,
     elapsed_wall_ms: u64,
@@ -357,11 +338,6 @@ fn validate_rows(
     {
         return Err("RID1 coverage/header is incomplete".into());
     }
-    // A rowless successful frame is an exact measured-empty population, not
-    // source-unavailable. The production reader may emit it only after the
-    // CRaidSystem parent-vector header remains coherent across its complete
-    // double-read. Keep one-sided populations impossible: without a complete
-    // parent census there is no authority for any child row.
     if parents.is_empty() {
         if children.is_empty() {
             return Ok(());

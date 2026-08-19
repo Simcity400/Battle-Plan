@@ -1,56 +1,7 @@
-//! The terminal (shutdown) write path publishes what it is holding, or names
-//! what it could not.
-//!
-//! A capture ends at an arbitrary moment -- the host asks it to stop, the
-//! duration expires, the game auto-pauses and never resumes -- and whatever the
-//! worker is still holding at that moment is the last thing the stream will ever
-//! be offered. There is no next iteration to re-attempt it, no later pass to
-//! roll a reservation back to, and no other artifact that carries it. So the
-//! terminal path has exactly two honest endings for every record it holds: the
-//! record reached every authoritative sink, or the run says which record did
-//! not and why.
-//!
-//! It had four ways of doing neither.
-//!
-//!   1. The terminal H4DG loop ended on `_ => break`. That wildcard covered a
-//!      partial sink write, a committed campaign rollover, and an identity that
-//!      would not settle. The reservation dropped uncommitted -- "rolled back to
-//!      the scheduler", which is torn down a few statements later -- and every
-//!      reserved domain-gap range went with it, unpublished and unmentioned.
-//!   2. The terminal DATA write was an `if let ... = Written(outcome)` with no
-//!      else, so both NOT-WRITTEN verdicts fell out of the bottom in silence.
-//!      Only the Windows D75 custody branch noticed; every capture without that
-//!      custody reported success with its last assembled hour never written.
-//!   3. `RetryUncertainBoundary` means NOTHING happened -- not the identity, not
-//!      the logical stream, not the published cursor -- so the record is still
-//!      owed and re-attempting it costs nothing and loses nothing. The terminal
-//!      path re-attempted zero times and dropped the frame instead.
-//!   4. The two scheduler `RolledOver` arms invoked a reset macro whose first
-//!      act is to refuse while the scheduler runtime is live -- which it is, by
-//!      construction, on every path that reaches those writes. They read as
-//!      "reset and continue" and were an abort wearing recovery's comment.
-//!
-//! Every test here fails if a terminal record can be lost without the run
-//! saying so, if a shutdown re-attempt is unbounded, or if an exhausted
-//! re-attempt reports a success it did not get.
-
 use super::*;
 
-/// The production source, read once. The shutdown sequence lives inside
-//  `write_attach_heartbeat`, a single function of several thousand lines with no
-/// seam a unit test can drive: it owns a live transport, a hook registry, an
-/// observer thread and a process-global sweep service. The properties asserted
-/// against this text are the ones that are structural -- which arms exist, what
-/// each one does with the outcome it was handed -- and each states, at the
-/// assertion, the production change that would make it fail.
 const COLLECTOR_SOURCE: &str = include_str!("../attach_log.rs");
 
-/// The terminal H4DG publication, comments stripped: from the reservation that
-/// opens it to the non-compact fallback that follows it.
-///
-/// Stripped because these arms explain themselves at length and several QUOTE
-/// the construct they replaced. Against the raw text, "the rollover arm appends
-/// a typed error" would be satisfied by a comment SAYING so.
 fn terminal_gap_region() -> String {
     code_only(
         COLLECTOR_SOURCE
@@ -63,8 +14,6 @@ fn terminal_gap_region() -> String {
     )
 }
 
-/// The terminal DATA publication, comments stripped: from the bounded-retry call
-/// that performs it to the incomplete-frame branch that follows the match.
 fn terminal_data_region() -> String {
     code_only(
         COLLECTOR_SOURCE
@@ -77,11 +26,6 @@ fn terminal_data_region() -> String {
     )
 }
 
-/// The same text with every `//` line comment removed.
-///
-/// These arms explain themselves at length, and several of them QUOTE the
-/// construct they replaced. A structural assertion that read the comments would
-/// be answering the prose instead of the code.
 fn code_only(source: &str) -> String {
     source
         .lines()
@@ -93,26 +37,8 @@ fn code_only(source: &str) -> String {
         .join("\n")
 }
 
-/// A committed rollover can only be produced by the live IdentityV1/H4CT
-/// integration, which unit tests cannot launch. The behavioral tests drive the
-/// shared production decision with an injected current logical id; this
-/// structural half pins every production arm to that decision. It is an
-/// analytical count over named call sites, not a byte-mutation battery.
-///
-/// kills: deleting successor-census recovery from any clock, refusal,
-/// prepublication, terminal-D75, terminal-DATA, or terminal-H4DG rollover arm
-/// changes the first count; deleting it from the campaign reset changes the
-/// second. Definition and delegation account for the one non-call-site entry in
-/// each expected total.
 #[test]
 fn every_production_rollover_exit_routes_through_successor_census_recovery() {
-    // NO EMBEDDED LINE BREAK IN THE MARKER. `core.autocrlf` is on for this
-    // repository, so every Windows checkout of `attach_log.rs` has CRLF endings
-    // and a marker spelling `"...\nmod ..."` matches nothing at all -- this test
-    // failed on every such checkout, saying only "freeze census publication test
-    // module". The attribute line above the module contains none of the strings
-    // counted below, so cutting at the module name alone selects the same
-    // production text without depending on how the file was checked out.
     let production = COLLECTOR_SOURCE
         .split_once("mod freeze_census_publication_tests")
         .expect("freeze census publication test module")
@@ -131,16 +57,9 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
         4,
         "campaign reset, the initial-H4CI rollover retry, the function definition          and the required-wrapper delegation are required"
     );
-    // Every one of those call sites must hand over the RETAINED content
-    // identity census, not just the freeze census. A behavioural test cannot
-    // see this: it drives the shared helper directly, so changing one
-    // production site's argument to `None` leaves it - and the counts above -
-    // green while that rollover opens a stream with world records and no
-    // session identity.
-    //
-    // kills: replacing `content_identity_payload.as_deref()` with `None` at any
-    // production rollover site, or dropping the argument from one of them.
-    let freeze_arguments = production.matches("freeze_census_payload.as_deref(),").count();
+    let freeze_arguments = production
+        .matches("freeze_census_payload.as_deref(),")
+        .count();
     let identity_arguments = production
         .matches("content_identity_payload.as_deref(),")
         .count();
@@ -155,13 +74,6 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
     );
 }
 
-/// A write that every requested sink took.
-///
-/// Sealed through the production mint, because that is now the only way a
-/// `Written` verdict exists at all. The scripted sink is handed no bytes, so
-/// the sealed value carries no receipt -- which is correct, and is not what
-/// these tests are about: they assert what the bounded re-attempt DOES with
-/// each verdict. The receipt's own rules are pinned in `write_receipt_tests`.
 fn complete_outcome() -> WrittenFrame {
     seal_completed_write(
         SinkWriteOutcome {
@@ -188,26 +100,10 @@ fn incomplete_outcome() -> WrittenFrame {
     .expect("a sealed incomplete write")
 }
 
-/// What the scripted sink does once its script runs out.
 enum ScriptEnd {
-    /// Keep answering "uncertain" forever. This is the live case the bound
-    /// exists for: a campaign-identity read that will not settle does not
-    /// eventually settle just because shutdown would like it to.
-    ///
-    /// Paired with `Refuse` below rather than used alone, because a helper that
-    /// ignored its bound would spin here and HANG the suite instead of failing
-    /// it, and a test that hangs proves nothing.
     KeepUncertain { budget: u32 },
 }
 
-/// A terminal sink that answers from an exact script and counts what it was
-/// asked.
-///
-/// `RetryUncertainBoundary` is produced only by an `IdentityV1` transport whose
-/// live campaign-identity read disagreed with itself across two reads. No
-/// file-backed or legacy transport can ever report it -- legacy sinks answer
-/// `Stable` unconditionally -- so the verdict sequence the bounded re-attempt
-/// exists to handle is reachable only by scripting it.
 struct ScriptedTerminalSink {
     verdicts: std::collections::VecDeque<CompactFrameWrite>,
     end: ScriptEnd,
@@ -236,8 +132,6 @@ impl TerminalCompactFrameSink for ScriptedTerminalSink {
         match self.end {
             ScriptEnd::KeepUncertain { budget } => {
                 if self.calls > budget {
-                    // A bounded re-attempt never gets here. An unbounded one
-                    // fails its test on this error instead of spinning forever.
                     return Err(format!(
                         "terminal re-attempt exceeded its bound: attempt {} of a {budget}-attempt \
                          budget",
@@ -250,9 +144,6 @@ impl TerminalCompactFrameSink for ScriptedTerminalSink {
     }
 }
 
-/// A back-off of zero. The production back-off is asserted separately, at the
-/// call sites, by `terminal_publication_spends_the_production_retry_budget`:
-/// a test that actually slept would spend a real second proving arithmetic.
 const NO_BACKOFF: Duration = Duration::from_millis(0);
 
 #[test]
@@ -281,7 +172,8 @@ fn an_uncertain_terminal_boundary_is_re_attempted_rather_than_dropped() {
 #[test]
 fn an_exhausted_terminal_re_attempt_reports_the_verdict_it_got_not_a_success() {
     const BOUND: u32 = 5;
-    let mut sink = ScriptedTerminalSink::new(Vec::new(), ScriptEnd::KeepUncertain { budget: BOUND });
+    let mut sink =
+        ScriptedTerminalSink::new(Vec::new(), ScriptEnd::KeepUncertain { budget: BOUND });
     let attempt = publish_terminal_compact_frame(&mut sink, b"frame", BOUND, NO_BACKOFF)
         .expect("a bounded re-attempt never exceeds its budget");
     assert!(
@@ -349,26 +241,18 @@ fn a_terminal_publication_error_is_surfaced_rather_than_retried_away() {
 
 #[test]
 fn terminal_publication_spends_the_production_retry_budget() {
-    // ~1s at the capture loop's own 50ms back-off: long enough for an identity
-    // read to settle, short enough that teardown still ends.
     assert_eq!(TERMINAL_UNCERTAIN_BOUNDARY_ATTEMPTS, 20);
     assert!(
         TERMINAL_UNCERTAIN_BOUNDARY_ATTEMPTS >= 2,
         "a bound of one is a zero-retry drop with extra steps"
     );
-    // The DATA and H4DG publications each carry their own budget and run one
-    // after the other, so the number that has to stay small is the SUM. (Each
-    // sleeps between attempts, not after the last, so it is one fewer back-off
-    // than attempts -- counted generously here.)
-    let worst_case = CAMPAIGN_IDENTITY_UNCERTAIN_BOUNDARY_BACKOFF
-        * TERMINAL_UNCERTAIN_BOUNDARY_ATTEMPTS
-        * 2;
+    let worst_case =
+        CAMPAIGN_IDENTITY_UNCERTAIN_BOUNDARY_BACKOFF * TERMINAL_UNCERTAIN_BOUNDARY_ATTEMPTS * 2;
     assert!(
         worst_case <= Duration::from_millis(2_500),
         "shutdown must end: the terminal DATA and H4DG budgets together add {worst_case:?}"
     );
 
-    // Both terminal publications spend that budget, and no other one.
     let data = terminal_data_region();
     assert_eq!(
         data.matches("publish_terminal_compact_frame(").count(),
@@ -393,7 +277,8 @@ fn terminal_publication_spends_the_production_retry_budget() {
         "there is one re-attempt budget for the terminal H4DG publication"
     );
     assert!(
-        gaps.find("let mut uncertain_gap_attempts").expect("H4DG budget")
+        gaps.find("let mut uncertain_gap_attempts")
+            .expect("H4DG budget")
             < gaps
                 .find("while !final_gap_reservation.gaps().is_empty()")
                 .expect("H4DG publication loop"),
@@ -421,9 +306,6 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
             "the terminal H4DG write must answer {variant} explicitly"
         );
     }
-    // Every ending that is not "published" states the cost, and states it in
-    // reserved ranges: a reservation that drops uncommitted at shutdown is not
-    // rolled back to anything, because nothing runs after it.
     assert_eq!(
         gaps.matches("final_gap_reservation.gaps().len()").count(),
         5,
@@ -435,11 +317,6 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         6,
         "and each one fails the run rather than ending it quietly, including a successor whose cached census cannot be published"
     );
-    // The successor-stream guard. A rollover committed during the terminal DATA
-    // publication opens a new logical stream; these ranges describe the closed
-    // one and are numbered from a cursor that counts the closed one's records,
-    // so publishing them here would stamp old-stream numbers onto a stream that
-    // starts at sequence one.
     assert!(
         gaps.find("transport.current_logical_stream_id() != terminal_logical_stream")
             .expect("successor-stream guard")
@@ -449,11 +326,6 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
         "the successor-stream check gates the publication loop; a check after it would run \
          once the ranges were already on the wrong stream"
     );
-    // A stream-id latch taken at the start of the terminal sequence can only see
-    // a rollover committed AFTER it. The capture loop's own scheduler writes can
-    // commit one and then break into that sequence, at which point the successor
-    // already IS the current stream and the latch compares equal. The flag is
-    // what covers that window, and it must gate the same publication.
     assert!(
         gaps.contains("scheduler_stream_closed_by_write"),
         "a rollover committed by a write BEFORE the terminal sequence began also stops H4DG \
@@ -479,26 +351,6 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
          interval publication, the untrusted clock-recovery publication, the ordinary terminal \
          DATA write, and the D75-owned terminal DATA write"
     );
-    // SIX, and the last three earned their places on the same argument. The
-    // `H4CU` clock-unreadable interval publication and the `H4CJ` untrusted
-    // clock-recovery publication both sit at the top of the sweep and both call
-    // `write_compact_frame` -- so each takes its own campaign-identity
-    // observation and can commit a rollover exactly as the DATA and refusal
-    // writes can. D75's owned writer reports its committed rollover back to the
-    // custody, so the caller sets the same flag before aborting that owner. A
-    // site that CAN commit one must set the flag; the whole point
-    // of the flag is that the terminal sequence's stream-id latch cannot see a
-    // rollover committed before that sequence began.
-    //
-    // The scheduler H4DG write is the one that is deliberately NOT here, and the
-    // reason is the opposite: it used to call `write_compact_frame` and now
-    // stages its frames behind the DATA frame, publishing them under the one
-    // boundary result the DATA publication already admitted, through
-    // `write_preboundary_compact_frame` -- the API for "records assembled for
-    // the currently admitted identity", which has no rollover ending to reach. A
-    // site that cannot commit a rollover has no flag to set, so an assignment
-    // there would be dead code claiming to guard a window that closed. The
-    // assertion below is what keeps it that way.
     let gap_publication = capture_loop
         .1
         .split_once("if let Some(runtime) = read_only_scheduler_runtime.as_ref() {")
@@ -518,11 +370,6 @@ fn the_terminal_gap_publication_names_every_range_it_could_not_publish() {
          could commit a rollover that nothing above records -- which is the fourth site this \
          count deliberately no longer has"
     );
-    // The refusal publication reports a committed rollover and an identity that
-    // never settled through different channels, and only the first closes the
-    // stream. If that verdict ever came to mean both, the flag above would fire
-    // on a stream that is still open and suppress H4DG that could have been
-    // published.
     let refusal = COLLECTOR_SOURCE
         .split_once("fn publish_frame_refusal_record(")
         .expect("frame refusal publication")
@@ -581,10 +428,6 @@ fn the_terminal_data_write_answers_every_not_written_outcome() {
     let (published, not_published) = published
         .split_once("not_published =>")
         .expect("the not-written arm");
-    // `commit_published_frame` and not `commit_staged(next_sequence)`: the
-    // cursor is moved by the WRITE's receipt, and `outcome` -- the sealed write
-    // -- is what carries it. The arm has to give up the outcome to commit, so
-    // the two cannot be separated by an edit that keeps compiling.
     assert!(
         published.contains("commit_published_frame(")
             && published.contains("outcome,")
@@ -623,8 +466,6 @@ fn the_terminal_data_write_answers_every_not_written_outcome() {
 
 #[test]
 fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to_reset() {
-    // The reset macro's own guard, unchanged: it refuses while the old
-    // scheduler still holds DATA-or-H4DG custody.
     let reset_body = COLLECTOR_SOURCE
         .split_once("macro_rules! reset_campaign_scoped_capture_state")
         .expect("campaign reset macro")
@@ -638,16 +479,10 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
         "the guard this lane is about: a live scheduler runtime is unfinalized custody"
     );
 
-    // The two scheduler writes are reachable only while that runtime is live,
-    // so a reset invoked from their rollover arms could only ever resolve to the
-    // guard. Neither arm may invoke it.
     let capture_loop = COLLECTOR_SOURCE
         .split_once("'capture: while Instant::now() <= deadline {")
         .expect("capture loop")
         .1;
-    // ONE scheduler site observes a boundary now, not two. The H4DG frames are
-    // staged behind the DATA frame and published under the boundary result that
-    // site already admitted, so there is no second observation to roll over.
     assert!(
         capture_loop.contains("scheduler DATA publication for hour {pending_hour}")
             && capture_loop.contains("closing the logical stream while the old scheduler still"),
@@ -673,8 +508,6 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
          put old-stream ranges on the successor"
     );
 
-    // The legacy (scheduler-off) write still resets and continues, because
-    // there is no scheduler runtime to hold custody and the guard passes.
     let legacy_rollover = rest
         .split_once("if records.is_empty() {")
         .expect("legacy compact write")
@@ -685,27 +518,7 @@ fn a_rollover_committed_inside_a_scheduler_write_stops_rather_than_pretending_to
     );
 }
 
-/// THE STAGING SLOT IS EMPTIED ON BOTH ENDINGS, AND ONCE.
-///
-/// `staged_publications` outlives the loop body so a `break` between staging a
 /// frame and publishing it can still be flushed below the loop. That lifetime
-/// is what makes emptying it load-bearing, in two opposite ways:
-///
-///   * not cleared after a SUCCESSFUL resolve, the next sweep's own guard sees
-///     this hour's published frames sitting in the slot and reads them as last
-///     hour's unpublished ones -- every capture would abort on its second sweep,
-///     and no offline test can reach a second sweep because that needs a live
-///     game clock;
-///   * not cleared after a FAILED resolve, the post-loop flush re-offers buffers
-///     the publisher already wrote, putting duplicate records on the stream.
-///
-/// So the clear must sit between the resolve and the `break`, not inside either
-/// arm. This checks exactly that placement.
-///
-/// Mutation proof: move `staged_publications.clear()` above the resolve call and
-/// the borrow no longer compiles; move it after the `break 'capture` and the
-/// ordering assertion below fails; delete it and the "cleared exactly once"
-/// count fails.
 #[test]
 fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
     let capture_loop = COLLECTOR_SOURCE
@@ -732,7 +545,9 @@ fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
          post-loop flush would re-offer buffers the publisher already wrote"
     );
     assert_eq!(
-        resolve_block.matches("staged_publications.clear();").count(),
+        resolve_block
+            .matches("staged_publications.clear();")
+            .count(),
         1,
         "cleared once, unconditionally -- a clear inside either match arm covers one ending only"
     );
@@ -746,17 +561,6 @@ fn a_resolved_publication_slot_is_emptied_before_the_loop_can_break() {
 #[cfg(windows)]
 #[test]
 fn the_d75_terminal_writer_refuses_an_uncertain_boundary_instead_of_claiming_a_write() {
-    // The one terminal publication that does NOT re-attempt an uncertain
-    // boundary, and the reason is outside this crate: every error out of this
-    // `Write` is classified by `publish_terminal_h4cr_to_authoritative_sink` as
-    // `retry_permit: None, sink_state_indeterminate: true`, so the one retry
-    // permit that API already carries cannot be reached by a refusal that
-    // provably wrote nothing.
-    //
-    // That is a residual, and it is fail-closed: the caller aborts the D75
-    // custody and fails the run. What this test forbids is the other ending --
-    // the writer reporting bytes accepted, or falling through to
-    // `accepted_outcome`, when the transport told it nothing was written.
     let writer = COLLECTOR_SOURCE
         .split_once("impl Write for D75TerminalAuthoritativeWriter<'_> {")
         .expect("D75 terminal writer")
@@ -793,10 +597,7 @@ fn the_d75_terminal_writer_refuses_an_uncertain_boundary_instead_of_claiming_a_w
         "a write that reached only some authoritative sinks is refused too"
     );
 
-    // And the caller does not shrug it off. A refusal out of that writer reaches
-    // `custody.publish` as an `Err`, and the only thing the terminal DATA site
     // may do with it is release the custody and fail the run -- never fall
-    // through to the published arm, and never leave the reservation held.
     let data = terminal_data_region();
     let custody_failure = data
         .split_once("match custody.publish(&mut transport, &records) {")
@@ -839,10 +640,6 @@ fn the_attach_worker_joins_the_sweep_thread_on_every_capture_outcome() {
         join > capture,
         "the join happens after the capture, so it covers every way the capture can end"
     );
-    // The LAST unload, deliberately. The worker has an earlier one on the
-    // startup-failure path, and that path returns before the capture runs --
-    // every `heap_sweep_ensure_started` call site is inside the capture, so
-    // there is no thread to join there and nothing for this ordering to say.
     let unload = worker
         .rfind("FreeLibraryAndExitThread(")
         .expect("module unload");

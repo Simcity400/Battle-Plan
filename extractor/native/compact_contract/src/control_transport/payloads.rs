@@ -1,13 +1,3 @@
-//! Shared, exact-byte H4CT v1 typed payload codecs.
-//!
-//! These are the single implementation of every H4CT payload the recorder host
-//! and the injected collector exchange, so neither side can drift. Each payload
-//! begins with the common `payload_schema: u16 = 1, reserved: u16 = 0` prefix;
-//! decoding is deny-by-default and exact-length: unknown schema, wrong length,
-//! nonzero reserved fields, zero IDs, and unknown enums all reject before a
-//! typed consumer sees the value. There are no sentinel values and no
-//! length-guessed schemas.
-
 use sha2::{Digest, Sha256};
 
 pub const PAYLOAD_SCHEMA: u16 = 1;
@@ -29,75 +19,32 @@ pub const CAPTURE_READY_ACK_LEN: usize = 168;
 const CAPTURE_READY_AUTH_OFFSET: usize = CAPTURE_READY_LEN - 32;
 const CAPTURE_READY_ACK_AUTH_OFFSET: usize = CAPTURE_READY_ACK_LEN - 32;
 
-/// `HeartbeatProof.state` closed enum.
 pub const HEARTBEAT_STATE_WAITING_FOR_WORLD: u16 = 1;
 pub const HEARTBEAT_STATE_PRODUCING: u16 = 2;
 pub const HEARTBEAT_STATE_PAUSED_FOR_CONTROL: u16 = 3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PayloadError {
-    /// Total payload length did not equal the exact fixed size for its kind.
     WrongLength { expected: usize, actual: usize },
-    /// The common prefix schema word was not the supported `1`.
     UnsupportedSchema(u16),
-    /// A reserved field (prefix or body) carried nonzero bytes.
     NonZeroReserved,
-    /// A 16-byte CSPRNG id/challenge decoded as all-zero.
     ZeroChallenge,
-    /// `HeartbeatProof.state` was outside the closed enum.
     UnknownHeartbeatState(u16),
-    /// A fixed READY/ACK payload carried a different four-byte magic.
     InvalidMagic,
-    /// A fixed READY/ACK payload carried an unsupported version.
     UnsupportedVersion(u16),
-    /// A fixed READY/ACK payload's encoded header/total length was not exact.
     InvalidDeclaredLength,
-    /// A READY/ACK status word carried an unknown bit.
     UnknownStatusFlags(u32),
-    /// READY declared a collector feature bit this build has no name for. A
-    /// consumer cannot tell whether an unnamed feature is diagnostic, so the
-    /// payload is refused rather than decoded with the bit dropped.
     UnknownCollectorFeatureBits(u32),
-    /// READY declared collector features WITHOUT
-    /// [`CollectorFeatureBits::DECLARED`]. A producer that knows the word sets
-    /// that bit; a value that names features without it cannot be told apart
-    /// from a corrupted reserved field.
     UndeclaredCollectorFeatureBits(u32),
-    /// A READY/ACK status word omitted a required readiness fact.
     MissingRequiredStatusFlags { required: u32, observed: u32 },
-    /// A field that must identify real production state was zero.
     ZeroRequiredField(&'static str),
-    /// A witnessed game hour was outside the canonical the game calendar range.
     InvalidGameHour(i32),
-    /// The active hook count exceeded the authenticated allowlist count.
     HookCountExceedsAllowlist { active: u16, allowed: u16 },
-    /// READY reported live INLINE DETOURS with an install freeze count of zero.
-    ///
-    /// Patching live code requires stopping the process, so this is never a
-    /// property of the capture: it is the producer's freeze counter not being
-    /// wired to its receipt. Refused rather than decoded, because a zero here
-    /// is indistinguishable from the months in which the counter existed and
-    /// nothing read it -- and a census built on it would report a capture that
-    /// stopped the game a dozen times as one that never did.
     UncountedInstallFreezes { active: u16, import_only: u16 },
-    /// READY declared a pinned production roster of a different SIZE than this
-    /// build's [`crate::passive_ready::PINNED_PRODUCTION_HOOK_SPECS_V1`].
-    ///
-    /// `allowed_hook_count` is restated by the producer straight from its own
-    /// compiled `PINNED_PRODUCTION_HOOK_COUNT_V1`, so a disagreement here is
-    /// never an install outcome: the two sides were built from different
-    /// revisions of the pinned contract. This is called out separately from
-    /// [`Self::HookCountExceedsAllowlist`] because the remedy is completely
-    /// different -- rebuild the collector, do not investigate hooks.
     ProductionHookContractSkew { declared: u16, required: u16 },
-    /// A zero-based ordinal reached the reserved terminal value.
     ExhaustedOrdinal(&'static str),
-    /// HMAC-SHA256 requires a nonempty, unpredictable per-attach token.
     EmptyAuthenticationToken,
-    /// The trailing HMAC-SHA256 did not authenticate the exact fixed body.
     AuthenticationFailed,
-    /// The compiled exact-production contract could not construct its pinned
-    /// hook authority.
     InvalidPinnedProductionContract,
 }
 
@@ -187,10 +134,6 @@ impl core::fmt::Display for PayloadError {
 
 impl std::error::Error for PayloadError {}
 
-// --- RecorderHello ----------------------------------------------------------
-
-/// `RecorderHello` (recorder -> collector): the recorder's expectation of the
-/// injected instance plus a fresh challenge id the collector must echo.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RecorderHelloV1 {
     pub expected_pid: u32,
@@ -206,7 +149,7 @@ pub fn encode_recorder_hello(fields: &RecorderHelloV1) -> Vec<u8> {
     payload.extend_from_slice(&fields.expected_pid.to_le_bytes());
     payload.extend_from_slice(&fields.expected_creation_filetime.to_le_bytes());
     payload.extend_from_slice(&fields.h4cr_version.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    payload.extend_from_slice(&0u16.to_le_bytes());
     payload.extend_from_slice(&fields.expected_dll_sha256);
     payload.extend_from_slice(&fields.challenge);
     debug_assert_eq!(payload.len(), RECORDER_HELLO_LEN);
@@ -231,10 +174,6 @@ pub fn decode_recorder_hello(payload: &[u8]) -> Result<RecorderHelloV1, PayloadE
     })
 }
 
-// --- CollectorHello ---------------------------------------------------------
-
-/// `CollectorHello` (collector -> recorder): the injected instance's exact
-/// identity, its control version, its loaded-DLL hash, and the echoed challenge.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CollectorHelloV1 {
     pub pid: u32,
@@ -274,14 +213,6 @@ pub fn decode_collector_hello(payload: &[u8]) -> Result<CollectorHelloV1, Payloa
     })
 }
 
-/// `CollectorHello` product-admission form: the exact 68-byte base hello
-/// followed by the collector's closed H4CT capability claim as a little-endian
-/// `u32` word (72 bytes total). This is the ONLY hello form the combined
-/// H4CR/H4CT product admission accepts; the historical 68-byte form remains for
-/// the stdout proof adapter. The capability bits are returned raw: semantic
-/// validation (unknown bits, required-set equality) belongs to
-/// `ControlCapabilities::from_bits` and the admission boundary, exactly as on
-/// the recorder's hand-rolled predecessor.
 pub fn encode_collector_hello_with_capabilities(
     fields: &CollectorHelloV1,
     capability_bits: u32,
@@ -307,9 +238,6 @@ pub fn decode_collector_hello_with_capabilities(
     Ok((hello, bits))
 }
 
-// --- HeartbeatChallenge -----------------------------------------------------
-
-/// `HeartbeatChallenge` (recorder -> collector).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeartbeatChallengeV1 {
     pub challenge: [u8; 16],
@@ -337,9 +265,6 @@ pub fn decode_heartbeat_challenge(payload: &[u8]) -> Result<HeartbeatChallengeV1
     })
 }
 
-// --- HeartbeatProof ---------------------------------------------------------
-
-/// `HeartbeatProof` (collector -> recorder).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HeartbeatProofV1 {
     pub challenge: [u8; 16],
@@ -353,7 +278,7 @@ pub fn encode_heartbeat_proof(fields: &HeartbeatProofV1) -> Vec<u8> {
     payload.extend_from_slice(&fields.challenge);
     payload.extend_from_slice(&fields.last_h4cr_sequence.to_le_bytes());
     payload.extend_from_slice(&fields.state.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    payload.extend_from_slice(&0u16.to_le_bytes());
     debug_assert_eq!(payload.len(), HEARTBEAT_PROOF_LEN);
     payload
 }
@@ -383,9 +308,6 @@ pub fn decode_heartbeat_proof(payload: &[u8]) -> Result<HeartbeatProofV1, Payloa
     })
 }
 
-// --- FirstCompactFrameAck ---------------------------------------------------
-
-/// `FirstCompactFrameAck` (recorder -> collector).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FirstCompactFrameAckV1 {
     pub h4cr_sequence: u64,
@@ -401,7 +323,7 @@ pub fn encode_first_compact_frame_ack(fields: &FirstCompactFrameAckV1) -> Vec<u8
     payload.extend_from_slice(&fields.h4cr_sequence.to_le_bytes());
     payload.extend_from_slice(&fields.game_hour.to_le_bytes());
     payload.extend_from_slice(&fields.record_type.to_le_bytes());
-    payload.extend_from_slice(&0u16.to_le_bytes()); // reserved
+    payload.extend_from_slice(&0u16.to_le_bytes());
     payload.extend_from_slice(&fields.total_record_len.to_le_bytes());
     payload.extend_from_slice(&fields.record_sha256);
     debug_assert_eq!(payload.len(), FIRST_COMPACT_FRAME_ACK_LEN);
@@ -424,13 +346,6 @@ pub fn decode_first_compact_frame_ack(
     })
 }
 
-// --- CaptureReady / CaptureReadyAck ----------------------------------------
-
-/// Closed passive-acquisition readiness flags in collector-authored `H4RD`.
-///
-/// The codec rejects unknown bits but does not manufacture readiness. The
-/// producer sets only facts it has established; product admission requires the
-/// complete passive-capture set.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureReadyFlags(u32);
 
@@ -443,25 +358,6 @@ impl CaptureReadyFlags {
     pub const BOUNDED_SCHEDULER_ALLOCATED: u32 = 1 << 5;
     pub const OUTPUT_PIPE_CONNECTED: u32 = 1 << 6;
     pub const ZERO_MUTATION_POLICY_ENFORCED: u32 = 1 << 7;
-    /// The stream this collector has already begun is an IdentityV1 stream: a
-    /// CID1 campaign-identity record is its sequence-zero record and every
-    /// ordinary record follows from sequence one.
-    ///
-    /// OPTIONAL, deliberately, and therefore NOT part of
-    /// [`Self::REQUIRED_PASSIVE_CAPTURE`]. The campaign identity is read from
-    /// live engine memory and can legitimately fail to validate -- an
-    /// unrecognised build, a torn read, a world that has not finished loading.
-    /// When it does, the collector clears this bit and produces a Legacy
-    /// stream, and the recording still seals with its identity named
-    /// unavailable. Making the bit mandatory would convert "we could not tell
-    /// which campaign this was" into "there is no recording", which is the one
-    /// trade this product never makes.
-    ///
-    /// It is a CLAIM ABOUT BYTES ALREADY WRITTEN, not a request: the collector
-    /// writes CID1 into every configured sink BEFORE it sends this payload, so
-    /// a set bit means the record is already in the stream. The recorder uses
-    /// it only to select the reader mode; the identity itself is decoded from
-    /// the stream bytes and nothing here can substitute for that.
     pub const IDENTITY_V1_STREAM: u32 = 1 << 8;
     pub const REQUIRED_PASSIVE_CAPTURE: u32 = Self::TARGET_IDENTITY_VALIDATED
         | Self::DLL_IDENTITY_VALIDATED
@@ -491,93 +387,22 @@ impl CaptureReadyFlags {
     }
 }
 
-/// WHICH COMPILE-TIME CARGO FEATURES the collector that produced a capture was
-/// built with.
-///
-/// # Why a capture has to declare its own build
-///
-/// The collector DLL's sha256 has always been on this payload, and a sha names
-/// a build exactly — but only to somebody who already has the build. It answers
-/// "was this the same binary as that one"; it cannot answer "was this binary
-/// compiled with the read tracer", which is the question that decides whether a
-/// capture's TIMINGS are evidence at all.
-///
-/// Runs `t34` and `t35` (2026-08-07) both carried the `range-tracer` feature
-/// DLL. Nothing in either manifest said so. Their frame timings were compared
-/// against an untraced run's and a 12.7 ms shift was investigated as a
-/// production regression for most of a day before the feature build was
-/// noticed, from a sha alone. This word is what makes that a read rather than a
-/// deduction.
-///
-/// # Bit 0 is the declaration itself
-///
-/// This word occupies what was a must-be-zero reserved `u32`, so an all-zero
-/// value is exactly what every collector built before this contract sends. That
-/// is why [`Self::DECLARED`] exists and why every declaring build sets it: `0`
-/// means "this producer predates the declaration" — ABSENT — and it must never
-/// be read as "this producer declared no features". Those are different facts
-/// and only one of them licenses a timing comparison.
-///
-/// # Stability
-///
-/// New bits are appended. An unassigned bit is refused
-/// ([`PayloadError::UnknownCollectorFeatureBits`]) rather than ignored: a
-/// consumer that does not know a feature cannot know whether it is diagnostic,
-/// and silently dropping it is how a diagnostic build passes for a production
-/// one.
-///
-/// A bit is UNASSIGNED when the cargo feature it stood for is deleted, and
-/// that is a wire-format break by construction — every stream that declared it
-/// stops decoding. Pre-production that is the intended outcome (old captures
-/// are disposable) and it is why the refusal above must never be relaxed into
-/// a mask-and-ignore. What an unassignment must not do is free the bit for
-/// reuse: a number handed to a different feature would make an old diagnostic
-/// capture decode as a new clean one, which is the exact confusion this word
-/// exists to prevent. Retired numbers stay retired and are named at the
-/// assignment site.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct CollectorFeatureBits(u32);
 
 impl CollectorFeatureBits {
-    /// This producer knows about this word. Set by every declaring build,
-    /// INCLUDING one compiled with no optional feature at all.
     pub const DECLARED: u32 = 1 << 0;
-    /// `collector/Cargo.toml` `test-support`.
     pub const TEST_SUPPORT: u32 = 1 << 1;
-    /// `collector/Cargo.toml` `range-tracer` — the capture-floor read tracer.
     pub const RANGE_TRACER: u32 = 1 << 2;
-    // Bits 3, 4 and 5 were `unshipped-a25-runtime-text-evidence`,
-    // `unshipped-a39-character-presentation-evidence` and
-    // `unshipped-a31-focus-presentation-evidence`. The fixture hooks those
-    // features gated are deleted and the features with them, so the bits are
-    // UNASSIGNED again and fall back under the refuse-unknown rule below. This
-    // is a wire-format break, taken deliberately while there is no backwards
-    // compatibility to keep: a stream that declares bit 3, 4 or 5 no longer
-    // decodes, which is correct, because no producer that can be built today
-    // has a feature to declare there. A bit added later takes the next free
-    // one; do not reuse 3..=5 for an unrelated feature, or an old diagnostic
-    // capture would decode as a new clean one.
     pub const KNOWN_MASK: u32 = Self::DECLARED | Self::TEST_SUPPORT | Self::RANGE_TRACER;
 
-    /// The features whose presence makes a capture inadmissible as TIMING
-    /// evidence, or makes it interact with the engine in a way ordinary
-    /// production does not.
-    ///
-    /// `range-tracer` records every guarded read and is the reason this word
-    /// exists. `test-support` compiles test-only lifecycle helpers into the
-    /// lane crates. Neither belongs in a capture whose numbers are compared
-    /// against production.
     pub const DIAGNOSTIC_MASK: u32 = Self::TEST_SUPPORT | Self::RANGE_TRACER;
 
-    /// Each assigned bit spelled as the CARGO FEATURE NAME it stands for, so a
-    /// manifest and an operator's `--features` line use the same words.
-    /// Ascending by bit; `DECLARED` is not a feature and is not listed.
     pub const FEATURE_NAMES: &'static [(u32, &'static str)] = &[
         (Self::TEST_SUPPORT, "test-support"),
         (Self::RANGE_TRACER, "range-tracer"),
     ];
 
-    /// The undeclared value: what a producer that predates this contract sends.
     pub const fn undeclared() -> Self {
         Self(0)
     }
@@ -600,16 +425,10 @@ impl CollectorFeatureBits {
         self.0
     }
 
-    /// Whether this producer declared its build at all. `false` is ABSENT, not
-    /// "no features".
     pub const fn declared(self) -> bool {
         self.0 & Self::DECLARED != 0
     }
 
-    /// `Some(true)` when a timing-affecting feature is compiled in,
-    /// `Some(false)` when the producer declared a clean build, `None` when it
-    /// declared nothing. The three are different and a caller that flattens
-    /// `None` into `false` reintroduces the t35 defect.
     pub const fn diagnostic_build(self) -> Option<bool> {
         if self.declared() {
             Some(self.0 & Self::DIAGNOSTIC_MASK != 0)
@@ -618,9 +437,6 @@ impl CollectorFeatureBits {
         }
     }
 
-    /// The compiled features by cargo name, ascending, or `None` when this
-    /// producer declared nothing. An empty vector is a real observation: a
-    /// declaring build with no optional feature.
     pub fn feature_names(self) -> Option<Vec<&'static str>> {
         if !self.declared() {
             return None;
@@ -635,21 +451,10 @@ impl CollectorFeatureBits {
     }
 }
 
-/// Collector-authored fixed passive-acquisition startup receipt.
-///
-/// The HMAC binds the exact body to the per-attach token. It is not a
-/// substitute for the live H4CT/named-pipe peer check: the recorder must still
-/// authenticate the peer PID and process-creation FILETIME before trusting this
-/// payload. `capture_id_sha256` is the sole optional digest and is all-zero when
-/// no capture id was assigned.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureReadyV2 {
     pub flags: CaptureReadyFlags,
     pub pid: u32,
-    /// The producer's own compile-time feature set. Occupies the `u32` at
-    /// offset 20 that was previously reserved-must-be-zero, so the payload
-    /// LENGTH and every offset after it are unchanged and an undeclaring
-    /// collector still encodes byte-identically. See [`CollectorFeatureBits`].
     pub collector_features: CollectorFeatureBits,
     pub process_creation_filetime_utc: u64,
     pub requested_duration_ms: u32,
@@ -658,42 +463,8 @@ pub struct CaptureReadyV2 {
     pub scheduler_worker_count: u16,
     pub allowed_hook_count: u16,
     pub active_hook_count: u16,
-    /// How many freezes this collector ATTEMPTED to install its detours.
-    ///
-    /// Counted as a delta CLOSED WHEN THE INSTALL FINISHED, not read when READY
-    /// is built: a value read here would also absorb anything that froze between
-    /// the two. An upper bound on the number of times it stopped the game -- see
-    /// the paragraph below.
-    ///
-    /// Occupies the `u16` at offset 50 that was previously
-    /// reserved-must-be-zero, exactly as `collector_features` took the reserved
-    /// `u32` at offset 20: the payload LENGTH and every offset after it are
-    /// unchanged.
-    ///
-    /// WHY IT IS ON THE WIRE AT ALL. `inline_detour::freeze_attempts()` has
-    /// existed for months with ZERO consumers in `collector/` or
-    /// `recorder_host/`, so no receipt and no recording carried it, and the
-    /// question "how many times does a real attach freeze the process" could not
-    /// be answered from a capture -- which is the question lane JU's
-    /// recommendation to spend a lane on `MinHook::apply_queued` turns on. Every
-    /// per-attach figure JU could have published would have been this count,
-    /// resolved to actual stopped windows by the census, multiplied by
-    /// a per-window measurement, and it refused to publish one because the count
-    /// was unverified. This is the count.
-    ///
-    /// IT IS ATTEMPTS, NOT STOPPED WINDOWS, and the difference is real rather
-    /// than pedantic. `freeze_attempts` counts every entry to the freeze,
-    /// refusals included, and a refusal comes in two shapes: one that never
-    /// reached its first `SuspendThread` and stopped nothing, and one that
-    /// suspended threads and then gave up, which DID stop the game. So this is
-    /// an upper bound on the number of times the game was stopped to install,
-    /// and the per-window rows are what resolve it exactly. An earlier version
-    /// of this comment asserted that a refusal suspends nothing; it was wrong,
-    /// and the census exists partly because nothing could have caught that.
     pub install_freeze_count: u16,
     pub clock_hour_raw: i32,
-    /// Collector-owned ordinal of the stable read-only clock observation.
-    /// This is not an engine tick.
     pub clock_observation_ordinal: u64,
     pub target_executable_sha256: [u8; 32],
     pub collector_dll_sha256: [u8; 32],
@@ -825,12 +596,6 @@ impl CaptureReadyAckFlags {
     }
 }
 
-/// Recorder-authored fixed acknowledgement. `ready_sha256` hashes the entire
-/// authenticated 512-byte `H4RD` payload, so the ACK transitively binds all
-/// collector claims. `public_receipt_core_sha256` binds the canonical READY
-/// receipt core, which excludes `ready_ack_sha256`. The published JSON can then
-/// include both this core digest and the exact ACK digest without a hash cycle.
-/// This field is not a digest of that final JSON envelope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CaptureReadyAckV2 {
     pub flags: CaptureReadyAckFlags,
@@ -899,23 +664,13 @@ impl CaptureReadyAckV2 {
     }
 }
 
-/// SHA-256 helper for binding the exact authenticated `H4RD` bytes into ACK.
 pub fn capture_ready_payload_sha256(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
 
-// --- helpers ----------------------------------------------------------------
-
 fn validate_ready(value: &CaptureReadyV2) -> Result<(), PayloadError> {
     CaptureReadyFlags::from_bits(value.flags.bits())?;
-    // Re-run on the way OUT as well as in. `CollectorFeatureBits` can only be
-    // built through `from_bits` outside this module, but the encoder is the
-    // last place an in-process construction can be caught before an unnameable
-    // build claim is signed and shipped.
     CollectorFeatureBits::from_bits(value.collector_features.bits())?;
-    // Every REQUIRED bit must be present; the optional identity bit may be
-    // present or absent. `from_bits` above has already refused anything outside
-    // KNOWN_MASK, so this cannot become a hole for an unnamed bit.
     if !value
         .flags
         .contains(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)
@@ -949,53 +704,18 @@ fn validate_ready(value: &CaptureReadyV2) -> Result<(), PayloadError> {
         "scheduler_worker_count",
         u64::from(value.scheduler_worker_count),
     )?;
-    // Two DIFFERENT questions, which used to share one `||` and one message.
-    //
-    // `allowed_hook_count` is the producer restating its own compiled
-    // `PINNED_PRODUCTION_HOOK_COUNT_V1`, so it can only disagree with ours if
-    // the two binaries were built from different revisions of the pinned
-    // contract. That is a build fault and it names itself.
     if value.allowed_hook_count != crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1 {
         return Err(PayloadError::ProductionHookContractSkew {
             declared: value.allowed_hook_count,
             required: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
         });
     }
-    // `active_hook_count` is counted from the install outcomes, so under
-    // install isolation it is legitimately LESS than the allowlist when a
-    // non-mandatory gameplay producer failed to patch. Whether that voids the
-    // capture is answered in exactly one place -- `HookAllowlistEntryV1::
-    // mandatory`, enforced by `hook_install_outcomes_preimage`, which refuses
-    // any outcome roster whose mandatory entries are not `Installed`. Refusing
-    // `active < allowed` here was a second, undeclared answer to that same
-    // question, and it answered it the other way: it aborted all 73 domains
-    // over one domain's producer. What remains refused is a count ABOVE the
-    // allowlist, which no isolation story can explain.
     if value.active_hook_count > value.allowed_hook_count {
         return Err(PayloadError::HookCountExceedsAllowlist {
             active: value.active_hook_count,
             allowed: value.allowed_hook_count,
         });
     }
-    // A LIVE INLINE DETOUR MEANS THE GAME WAS STOPPED, and this is where the
-    // freeze count stops being a field anybody can forget to fill.
-    //
-    // The pinned roster's `bootstrap.*` entries are import-slot swaps: one
-    // aligned pointer store into hoi4.exe's IAT, no code rewritten, no thread
-    // suspended. Every OTHER entry is an inline detour, and `inline_detour` is
-    // the only way one is patched -- enforced by that crate's own
-    // `no_direct_minhook_enable_outside_this_crate` -- which takes a process
-    // freeze before it calls MinHook, on every path including the failure path.
-    // So an `active_hook_count` above the import count with a freeze count of
-    // zero is not a degraded capture, it is a producer whose count is not
-    // wired to its freezes.
-    //
-    // THIS IS THE CHECK THAT MAKES THE FIELD NON-VACUOUS. Without it a
-    // regression that stopped stamping the counter would publish zeroes, and a
-    // zero is exactly what the field looked like for the whole time the counter
-    // had no consumers -- the defect this closes would have re-opened silently
-    // and every t55-style census would have read "no freezes" off a capture
-    // that stopped the game a dozen times.
     if value.install_freeze_count == 0
         && value.active_hook_count > crate::passive_ready::PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1
     {
@@ -1276,7 +996,6 @@ mod tests {
         };
         let wire = encode_collector_hello(&fields);
         assert_eq!(wire.len(), COLLECTOR_HELLO_LEN);
-        // The control-version u16 occupies the RecorderHello reserved slot.
         assert_eq!(read_u16(&wire, PREFIX_LEN + 14), 1);
         assert_eq!(decode_collector_hello(&wire).unwrap(), fields);
     }
@@ -1294,7 +1013,6 @@ mod tests {
         let bits: u32 = 0b11_0011;
         let wire = encode_collector_hello_with_capabilities(&fields, bits);
         assert_eq!(wire.len(), COLLECTOR_HELLO_WITH_CAPABILITIES_LEN);
-        // Layout: the exact 68-byte base hello, then the capability word LE.
         assert_eq!(wire[..COLLECTOR_HELLO_LEN], encode_collector_hello(&fields));
         assert_eq!(wire[COLLECTOR_HELLO_LEN..], bits.to_le_bytes());
         assert_eq!(
@@ -1302,7 +1020,6 @@ mod tests {
             (fields, bits)
         );
 
-        // The base 68-byte form is NOT this payload: exact-length deny.
         assert_eq!(
             decode_collector_hello_with_capabilities(&encode_collector_hello(&fields)),
             Err(PayloadError::WrongLength {
@@ -1404,13 +1121,6 @@ mod tests {
         out
     }
 
-    /// The exact receipt the harness-side rebuild is pinned against.
-    ///
-    /// These are run t63's own fields (`runs/lp_refusal_volume/evidence/
-    /// t63_CAPTURE_READY_V2.json`), with one substitution: `pipe_token_sha256`
-    /// is rebound to the receipt-dialect fixture's token, because that token is
-    /// the only one still known and `validate_ready_token_binding` requires the
-    /// two to agree. Nothing else is touched.
     fn t63_ready_fields(install_freeze_count: u16) -> CaptureReadyV2 {
         CaptureReadyV2 {
             flags: CaptureReadyFlags::from_bits(CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE)
@@ -1470,24 +1180,6 @@ mod tests {
         }
     }
 
-    /// THE PRODUCER SIDE OF THE FIXTURE THE HARNESS REBUILD IS PINNED AGAINST.
-    ///
-    /// `PassiveCaptureReady.ReceiptDialects.fixture.v1.json` carries two cases
-    /// derived from run t63 (`t63_install_freeze_13`, `t63_install_freeze_1000`)
-    /// and `Test-PassiveCapturePolicy.ps1` requires the PowerShell rebuild to
-    /// reproduce their digests. Those digests are only worth pinning if they are
-    /// what THIS encoder emits, so the same two vectors are asserted here, off
-    /// `encode_authenticated` itself.
-    ///
-    /// WHY IT EXISTS. `install_freeze_count` took CaptureReadyV2 offset 50 from
-    /// a reserved zero; the harness rebuild kept writing that zero, and because
-    /// installing an inline detour freezes the process, every capture that
-    /// installs one was refused on `ready_payload_sha256` for days (runs t57,
-    /// t58, t59 and t60 on C:, t62 and t63 on L:, all reporting 13).
-    /// The whole test suite stayed green because every pinned fixture receipt
-    /// predated offset 50 and genuinely had a zero there. Changing offset 50's
-    /// encoding, or dropping the field back to a constant on either side, now
-    /// fails here and in the PowerShell policy suite together.
     #[test]
     fn passive_capture_ready_pins_the_harness_rebuild_vectors_at_offset_50() {
         let token = b"f743c8f124d2572ad18b99db033554ba";
@@ -1499,9 +1191,6 @@ mod tests {
             to_hex32(&capture_ready_payload_sha256(&thirteen)),
             "e8b08ebca73f6b9d4821931b3c53f74dc55e7c48bc203b0f6a69f4b596ad16b8"
         );
-        // A SECOND, DIFFERENT COUNT. One vector is satisfied by an encoder that
-        // hardcodes 13 exactly as the old one hardcoded 0, and 1000 does not fit
-        // in a byte either.
         let thousand = t63_ready_fields(1000)
             .encode_authenticated(token)
             .expect("t63 fields are a valid CaptureReadyV2");
@@ -1549,14 +1238,6 @@ mod tests {
         }
     }
 
-    /// The campaign identity is optional on the wire and mandatory nowhere:
-    /// a collector that established it says so, a collector that could not
-    /// still produces an admissible READY, and both round-trip.
-    ///
-    /// kills: folding IDENTITY_V1_STREAM into REQUIRED_PASSIVE_CAPTURE makes
-    /// the second half fail, which is the exact defect that would turn "we
-    /// could not tell which campaign this was" into a refused capture. Leaving
-    /// the bit out of KNOWN_MASK makes the first half fail at `from_bits`.
     #[test]
     fn capture_ready_identity_bit_is_optional_and_round_trips() {
         let token = b"per-attach CSPRNG token";
@@ -1583,12 +1264,6 @@ mod tests {
             .contains(CaptureReadyFlags::IDENTITY_V1_STREAM));
     }
 
-    /// Optional does not mean lax: a READY missing any required readiness bit
-    /// is still refused, and an unnamed bit is still refused.
-    ///
-    /// kills: relaxing the required check to "any known bits" admits a
-    /// collector that never validated the target, the DLL, or the hook
-    /// allowlist.
     #[test]
     fn capture_ready_still_refuses_a_missing_required_bit_and_an_unknown_bit() {
         let token = b"per-attach CSPRNG token";
@@ -1619,15 +1294,11 @@ mod tests {
         assert_eq!(read_u16(&wire, 4), CAPTURE_READY_VERSION);
         assert_eq!(read_u16(&wire, 6) as usize, CAPTURE_READY_LEN);
         assert_eq!(read_u32(&wire, 8) as usize, CAPTURE_READY_LEN);
-        // REQUIRED, not KNOWN_MASK: the optional IDENTITY_V1_STREAM bit is
-        // part of KNOWN_MASK and this fixture does not claim it.
         assert_eq!(
             read_u32(&wire, 12),
             CaptureReadyFlags::REQUIRED_PASSIVE_CAPTURE
         );
         assert_eq!(read_u32(&wire, 16), fields.pid);
-        // The build declaration sits in what used to be reserved-must-be-zero,
-        // at the same offset and the same width, so nothing after it moved.
         assert_eq!(read_u32(&wire, 20), fields.collector_features.bits());
         assert_eq!(read_u64(&wire, 24), fields.process_creation_filetime_utc);
         assert_eq!(read_u32(&wire, 36), fields.validated_domain_count);
@@ -1660,8 +1331,6 @@ mod tests {
     fn collector_feature_bits_separate_undeclared_from_clean_from_diagnostic() {
         let undeclared = CollectorFeatureBits::from_bits(0).unwrap();
         assert!(!undeclared.declared());
-        // ABSENT, never `false`. A consumer that reads this as "clean build"
-        // is the t35 defect.
         assert_eq!(undeclared.diagnostic_build(), None);
         assert_eq!(undeclared.feature_names(), None);
 
@@ -1677,12 +1346,13 @@ mod tests {
         assert_eq!(traced.diagnostic_build(), Some(true));
         assert_eq!(traced.feature_names(), Some(vec!["range-tracer"]));
 
-        // Every assigned bit has a name, and no name is duplicated: the
-        // manifest and an operator's `--features` line use the same words.
         let named = CollectorFeatureBits::FEATURE_NAMES
             .iter()
             .fold(0u32, |acc, (bit, _)| acc | bit);
-        assert_eq!(named, CollectorFeatureBits::KNOWN_MASK & !CollectorFeatureBits::DECLARED);
+        assert_eq!(
+            named,
+            CollectorFeatureBits::KNOWN_MASK & !CollectorFeatureBits::DECLARED
+        );
         let mut names: Vec<&str> = CollectorFeatureBits::FEATURE_NAMES
             .iter()
             .map(|(_, name)| *name)
@@ -1691,7 +1361,6 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), count);
-        // Every named feature is diagnostic; the declaration bit is not.
         assert_eq!(CollectorFeatureBits::DIAGNOSTIC_MASK, named);
 
         assert_eq!(
@@ -1699,13 +1368,6 @@ mod tests {
             Err(PayloadError::UnknownCollectorFeatureBits(1 << 31))
         );
 
-        // Bits 3, 4 and 5 are RETIRED, not merely unassigned: they carried the
-        // three `unshipped-*` evidence features. Every other assertion in this
-        // test derives from the masks, so handing one of those numbers to a new
-        // feature would make it known and leave the whole file green. This is
-        // the one place that would turn red, which is the point -- an old
-        // diagnostic capture declaring bit 3, 4 or 5 must never decode as a new
-        // clean one. A genuinely new feature takes the next free bit instead.
         for retired in [1u32 << 3, 1u32 << 4, 1u32 << 5] {
             assert_eq!(
                 CollectorFeatureBits::from_bits(CollectorFeatureBits::DECLARED | retired),
@@ -1723,9 +1385,6 @@ mod tests {
 
     #[test]
     fn passive_capture_ready_from_an_undeclaring_collector_still_decodes() {
-        // A collector built before the declaration existed sends the old
-        // all-zero reserved word. That capture is still admissible; what it is
-        // not is a capture whose build is KNOWN.
         let token = b"per-attach CSPRNG token";
         let mut fields = ready_fields();
         fields.collector_features = CollectorFeatureBits::undeclared();
@@ -1740,19 +1399,11 @@ mod tests {
     fn passive_capture_ready_rejects_noncanonical_header_reserved_flags_and_tag() {
         let token = b"per-attach CSPRNG token";
         let wire = ready_fields().encode_authenticated(token).unwrap();
-        // A declared-length mutation has to actually change the encoded value.
-        // CAPTURE_READY_LEN is 512, so the low bytes of its little-endian u16
-        // at offset 6 and u32 at offset 8 are already 0x00: overwriting them
-        // with 0 left the wire byte-identical, and the decoder was right to
-        // return the canonical payload. Writing 1 declares 513 in both fields.
         let mutations: &[(usize, u8, PayloadError)] = &[
             (0, b'X', PayloadError::InvalidMagic),
             (4, 1, PayloadError::UnsupportedVersion(1)),
             (6, 1, PayloadError::InvalidDeclaredLength),
             (8, 1, PayloadError::InvalidDeclaredLength),
-            // Offset 20 is no longer reserved: it is the collector's build
-            // declaration. An unassigned bit and a feature set that omits the
-            // declaration bit are its two refusals.
             (
                 23,
                 0x80,
@@ -1761,20 +1412,16 @@ mod tests {
             (
                 20,
                 CollectorFeatureBits::RANGE_TRACER as u8,
-                PayloadError::UndeclaredCollectorFeatureBits(
-                    CollectorFeatureBits::RANGE_TRACER,
-                ),
+                PayloadError::UndeclaredCollectorFeatureBits(CollectorFeatureBits::RANGE_TRACER),
             ),
-            // Offset 50 is no longer reserved either: it is the install freeze
-            // count. Its refusal is not "nonzero" -- a count IS nonzero on
-            // every real capture -- it is ZERO beside live inline detours, so
-            // the mutation that has to be caught here is the one that erases
-            // it. Written as a whole-u16 clear because a single-byte write
-            // could not reach a two-byte field's high half.
-            (50, 0, PayloadError::UncountedInstallFreezes {
-                active: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
-                import_only: crate::passive_ready::PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1,
-            }),
+            (
+                50,
+                0,
+                PayloadError::UncountedInstallFreezes {
+                    active: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
+                    import_only: crate::passive_ready::PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1,
+                },
+            ),
         ];
         for &(offset, replacement, expected) in mutations {
             let mut bad = wire.clone();
@@ -1787,11 +1434,6 @@ mod tests {
                 "offset {offset}"
             );
         }
-        // AND THE FIELD IS A FULL `u16`, not a byte with a spare beside it. A
-        // decoder that read only the low byte would report 1 for a capture that
-        // froze 257 times and would pass every assertion above, because the
-        // fixture's count fits in one byte. This is the only assertion that
-        // fails on that mistake.
         let mut wide = ready_fields();
         wide.install_freeze_count = 0x0102;
         let wide_wire = wide.encode_authenticated(token).unwrap();
@@ -1880,8 +1522,6 @@ mod tests {
 
         let mut unknown_flag = wire.clone();
         unknown_flag[12..16].copy_from_slice(&2u32.to_le_bytes());
-        // Recompute a valid tag to prove closed-flag validation, not HMAC
-        // failure, rejects the altered semantic word.
         let tag = hmac_sha256(token, &unknown_flag[..CAPTURE_READY_ACK_AUTH_OFFSET]);
         unknown_flag[CAPTURE_READY_ACK_AUTH_OFFSET..].copy_from_slice(&tag);
         assert_eq!(
@@ -2030,11 +1670,6 @@ mod tests {
                 allowed: crate::passive_ready::PINNED_PRODUCTION_HOOK_COUNT_V1,
             })
         );
-        // A collector built from a different revision of the pinned contract
-        // restates ITS OWN roster size here. This is the exact shape live run
-        // t16 hit (a collector.dll built before fourteen specs were pinned
-        // reported allowed=41 against a required 55), and it must name the
-        // build fault rather than read as a hook install failure.
         value.active_hook_count = 0;
         value.allowed_hook_count = 0;
         assert_eq!(
@@ -2064,11 +1699,6 @@ mod tests {
             "contract skew must tell the reader to rebuild the collector, got: {rendered}"
         );
 
-        // Install isolation: a non-mandatory gameplay producer that failed to
-        // patch lowers the active count, and that is a capture worth having.
-        // `HookAllowlistEntryV1::mandatory` is the one place that decides
-        // whether a hook failing voids the capture, and it is enforced by
-        // `hook_install_outcomes_preimage`, not by this count.
         let mut degraded = ready_fields();
         degraded.active_hook_count = degraded.allowed_hook_count - 1;
         degraded

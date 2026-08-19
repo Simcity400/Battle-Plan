@@ -1,10 +1,3 @@
-//! XMAP14 state-first combat-mapicon GPU consumer.
-//!
-//! This pass accepts only `PreparedXmap14Frame`.  Geometry, draw order,
-//! texture identities, frame UVs, modulation, progress state and text boxes
-//! were already derived by the admitted map-viewer adapter.  No captured
-//! counter admission, selected-Present draw, recorder POV or prior-hour state
-//! participates.
 
 use std::collections::BTreeMap;
 use std::ffi::CString;

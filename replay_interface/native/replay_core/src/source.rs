@@ -1,13 +1,3 @@
-//! Ingest boundary: recording bytes -> raw per-hour frames.
-//!
-//! The only place recording bytes enter the replay layer. Backend 1 — the
-//! snapshot-flavor `.battleplan` container or directory store — is read
-//! through the verified `snapshot` crate reader (reuse, not a fork).
-//! Backend 2 — a compact-stream-only container — remains rejected by the
-//! ordinary product open path. An explicit caller may inject either neutral
-//! certified capability; the production-shaped route authenticates to a
-//! private spool through [`snapshot::CertifiedPrefoldSpoolDecoder`] and lazily
-//! loads one immutable certified hour at a time.
 
 use serde_json::{Map, Value};
 use snapshot::{ExpectedIdentity, Store};
@@ -18,15 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-/// Timeline format id the production recorder writes for compact-stream-only
-/// recordings (`extractor/native/recorder_host`).
 const COMPACT_STREAM_TIMELINE_FORMAT: &str = "hoi4_compact_stream_timeline_v1";
-/// Manifest-entry / timeline role of the raw compact domain stream.
 const COMPACT_STREAM_ROLE: &str = snapshot::COMPACT_STREAM_ROLE;
-/// Shipped-player compact expansion ceiling. Two GiB is intentionally aligned
-/// with the format's ordinary bounded-entry tier and is small enough for weak
-/// offline PCs to reject pathological recordings before reserving product
-/// spool storage. The streaming writer enforces this same limit again.
 pub const PRODUCT_COMPACT_STREAM_MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn admit_product_compact_stream_bytes(bytes: u64) -> Result<(), SourceError> {
@@ -48,73 +31,15 @@ struct RecorderSessionBinding {
     product_admission: RecorderProductAdmission,
 }
 
-/// One guarantee of the recorder's `--profile production` capture profile that
-/// an admitted recording does not carry.
-///
-/// A recording that holds all of them is a full production-profile capture. A
-/// recording that holds fewer is still playable — but every consumer of
-/// [`ReplaySource::product_admission`] is told exactly which guarantee is
-/// missing and, through [`RecorderProductAdmission`], exactly what it covered.
-///
-/// WHY THIS ENUM EXISTS AT ALL. `--profile production` is early-launch-only:
-/// its finalizer builds the portable content manifest from the effective-VFS
-/// content observation authenticated in-process before `ResumeThread`, so it
-/// needs the in-memory early-launch manifest and the authenticated early
-/// process receipt, neither of which a `--pid` attach has. The shipped product
-/// is a late attach and therefore deliberately does NOT run it —
-/// `recorder_host/src/main.rs::product_auto_attach_worker_args`: "Do not pass
-/// `--profile production` here. That profile additionally requires a
-/// process-bound, pre-injection static bundle. The ordinary late-attach product
-/// cannot fabricate or rebind that evidence." Refusing every recording whose
-/// `production_profile.enabled` is not `true` therefore refuses every recording
-/// the shipped attach-and-play product can make.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProductionProfileGuarantee {
-    /// The capture ran under `--profile production` / `--production`: the
-    /// recorder unioned the whole production domain roster into the schedule,
-    /// admitted and finalized a process-bound static bundle, and built the
-    /// portable content manifest from the pre-`ResumeThread` effective-VFS
-    /// observation.
-    ///
-    /// Absent on every late-attach capture. What replay loses with it is
-    /// covered by the two guarantees below plus
-    /// [`ReplaySource::content_manifest`], which already answers `None` for a
-    /// recording that carries no portable content manifest.
     ProductionProfileEnabled,
-    /// Every production-profile domain was scheduled, so the recording is
-    /// expected to carry all of them.
-    ///
-    /// What "not held" NAMES depends on the authority, because this guarantee
-    /// is manifest-only — the package cannot answer it. For a stated authority
-    /// the domains in
-    /// [`RecorderProductAdmission::profile_domains_not_scheduled`] were never
-    /// captured and will read `DomainAbsent` at every hour. For
-    /// [`ProductionProfileAuthority::Unstated`] the schedule is UNKNOWN and
-    /// that list is empty because nothing can be named — an empty list there is
-    /// unavailable evidence, never measured completeness.
     FullProfileDomainSchedule,
-    /// Every required deterministic static artifact was carried. Not held means
-    /// the artifacts named by
-    /// [`RecorderProductAdmission::missing_required_static_artifacts`] are
-    /// absent from the package; [`ReplaySource::static_artifact`] answers
-    /// `None` for each, and replay never fabricates one.
     RequiredStaticArtifacts,
-    /// The static artifacts the package DOES carry are bound to a finalized
-    /// portable content-manifest epoch, so each catalog is joined to the exact
-    /// effective content it was derived from.
-    ///
-    /// Not held means the package carries static artifacts that name no epoch
-    /// and a container that finalized none — the production finalizer is what
-    /// builds that manifest, from the pre-`ResumeThread` effective-VFS
-    /// observation a late attach never made. Replay REFUSES those artifacts
-    /// rather than joining an unbound catalog: they are named by
-    /// [`RecorderProductAdmission::static_artifacts_not_content_bound`] and
-    /// [`ReplaySource::static_artifact`] answers `None` for each.
     ContentBoundStaticArtifacts,
 }
 
 impl ProductionProfileGuarantee {
-    /// Stable token for reports and logs. Never parsed back.
     pub fn token(self) -> &'static str {
         match self {
             ProductionProfileGuarantee::ProductionProfileEnabled => "production_profile_enabled",
@@ -129,150 +54,27 @@ impl ProductionProfileGuarantee {
     }
 }
 
-/// What a recording's recorder manifest SAYS about the production capture
-/// profile, as three distinguishable states.
-///
-/// Held apart from the guarantee list because they are different questions.
-/// "This capture states it did not run the profile" and "this recording states
-/// nothing about the profile at all" both leave the MANIFEST-ONLY guarantees
-/// unevidenced, but only the first tells you the recorder looked.
-///
-/// # Which guarantee comes from where
-///
-/// Two of the four are manifest-only, because nothing in the package can answer
-/// them: [`ProductionProfileGuarantee::ProductionProfileEnabled`] and
-/// [`ProductionProfileGuarantee::FullProfileDomainSchedule`]. Absent a
-/// `production_profile` block, both are reported as not held — unevidenced, not
-/// disproved.
-///
-/// The other two are decided at the static-artifact roster join from the
-/// VERIFIED PACKAGE, whatever the authority says and even when it says nothing:
-/// [`ProductionProfileGuarantee::RequiredStaticArtifacts`] and
-/// [`ProductionProfileGuarantee::ContentBoundStaticArtifacts`], together with
-/// the two lists that name them. Where a declaration also exists it is
-/// reconciled against the package rather than believed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProductionProfileAuthority {
-    /// The recorder manifest carries no `production_profile` block. Nothing is
-    /// CLAIMED, so both manifest-only guarantees are reported as not held —
-    /// which is NOT the same as their being disproved — and
-    /// [`RecorderProductAdmission::profile_domains_not_scheduled`] is empty
-    /// because there is nothing to name. The two package-verifiable guarantees
-    /// are still decided from the package, so an unstated recording carrying
-    /// all eight epoch-bound artifacts HOLDS them.
     Unstated,
-    /// `production_profile.enabled == false`. The capture states what it did
-    /// and did not schedule, and `profile_domains_not_scheduled` is that
-    /// statement. The static-artifact lists are the package's answer, which the
-    /// capture's own declaration was reconciled against.
     Disabled,
-    /// `production_profile.enabled == true`, and the recording satisfied every
-    /// part of the profile ITS OWN RECORDER BUILD DEFINED — as far as replay
-    /// can check.
-    ///
-    /// The static-artifact half is CHECKED AGAINST THE PACKAGE: an enabled
-    /// profile whose package lacks an artifact its build required is refused at
-    /// open. The schedule half is the manifest's DECLARATION, checked only in
-    /// the one direction replay can compute without the extractor's domain
-    /// registry — see `validate_recorder_product_admission`. An enabled
-    /// manifest that under-declares its unscheduled profile domains is
-    /// therefore admitted, and that limit is deliberate, named there, and
-    /// closed producer-side.
-    ///
-    /// One package shortfall also survives, and it is not a shortfall against
-    /// that build: a pre-focus-carrier package legitimately carries every
-    /// artifact its build required, so it opens with the newer artifact
-    /// reported missing.
     Enabled,
 }
 
-/// What a recording's recorder manifest positively claims about the production
-/// capture profile, and — when it claims less than the whole profile — exactly
-/// which guarantees it does not hold and what each of them covered.
-///
-/// This is the provenance side of the late-attach admission (owner ruling,
-/// 2026-08-14). `open_recording` admits a capture that did not run the
-/// production profile, and records the difference HERE rather than discarding
-/// it: a consumer that needs the full profile can require
-/// [`RecorderProductAdmission::is_full_production_profile`] and refuse for
-/// itself, with the missing domains and artifacts already named.
-///
-/// It is not a loosening of the other admission authorities. A capture whose
-/// manifest names a mandatory domain that is not production-complete is still
-/// refused at open, enabled or not: that is a statement about the RECORDER
-/// BUILD's producers rather than about the capture's scope, so no attach mode
-/// explains it and the data it did deliver cannot be trusted as production
-/// data. A capture that positively claims the production profile
-/// (`enabled == true`) is still held to all of it — all of what ITS OWN
-/// RECORDER BUILD required, which is the one qualification that keeps a
-/// pre-focus-carrier production package readable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecorderProductAdmission {
-    /// What the manifest said, so an absent authority is never read as a
-    /// positive or a negative claim.
     pub authority: ProductionProfileAuthority,
-    /// Production-profile guarantees this recording does not hold, ascending
-    /// and deduplicated. Empty means a full production-profile capture.
-    ///
-    /// A guarantee is "not held" when the recording carries no positive
-    /// evidence for it, which covers both "the capture said it fell short" and
-    /// "the capture said nothing" — read [`RecorderProductAdmission::authority`]
-    /// to tell those apart.
     pub guarantees_not_held: Vec<ProductionProfileGuarantee>,
-    /// Production-profile domains the capture did not schedule, verbatim from
-    /// `production_profile.profile_domains_not_scheduled`.
-    ///
-    /// EMPTY MEANS TWO DIFFERENT THINGS, and
-    /// [`RecorderProductAdmission::authority`] is what separates them: for a
-    /// stated authority it means the capture declared nothing unscheduled; for
-    /// `Unstated` it means nothing was declared at all, and replay cannot
-    /// derive the set from the package.
     pub profile_domains_not_scheduled: Vec<String>,
-    /// Required static artifacts this recording does not carry, in canonical
-    /// required-static-artifact registry order.
-    ///
-    /// Taken from the VERIFIED package once a recorder manifest is present, not
-    /// from the manifest's declaration — the two are reconciled at the roster
-    /// join and must agree, but the package is what `static_artifact()` answers
-    /// from, and a legacy roster's declaration legitimately omits the one
-    /// artifact its recorder build predates.
     pub missing_required_static_artifacts: Vec<String>,
-    /// Static artifacts the package DOES carry, and replay refused, because
-    /// neither they nor the container name a finalized portable
-    /// content-manifest epoch to bind them to. In canonical
-    /// required-static-artifact registry order, which is the order the roster
-    /// join walks — not lexical.
-    ///
-    /// Filled at the roster join rather than from the manifest's profile
-    /// block: it is a fact about the packaged bytes, not about the capture's
-    /// declared scope.
     pub static_artifacts_not_content_bound: Vec<String>,
 }
 
 impl RecorderProductAdmission {
-    /// Every guarantee held: the recording ran the whole production profile.
     pub fn is_full_production_profile(&self) -> bool {
         self.guarantees_not_held.is_empty()
     }
 
-    /// The admission a recording that carries no `production_profile`
-    /// authority at all presents.
-    ///
-    /// Every MANIFEST-ONLY guarantee is reported as not held, because neither
-    /// is evidenced — an absent authority proves the schedule was complete
-    /// exactly as much as it proves the profile ran, which is not at all.
-    /// Naming only `ProductionProfileEnabled` here would have said the other
-    /// WAS held (Codex round 1, MEDIUM).
-    ///
-    /// `RequiredStaticArtifacts` is deliberately NOT among them, and the split
-    /// is the point: it is the one guarantee replay can VERIFY, because the
-    /// package either carries the artifacts or does not. It is decided once, at
-    /// the roster join, from what the package actually holds
-    /// ([`MetadataRoute::admit_static_artifacts`]). Preloading it here made an
-    /// unstated recording carrying all eight report the guarantee not held with
-    /// nothing named missing (Codex round 8, MEDIUM). Which domains were
-    /// scheduled, by contrast, is not visible in the package at all, so that
-    /// one can only ever come from the manifest.
     fn unstated() -> Self {
         RecorderProductAdmission {
             authority: ProductionProfileAuthority::Unstated,
@@ -293,9 +95,6 @@ impl RecorderProductAdmission {
     }
 }
 
-/// Shape-validated recorder-manifest campaign metadata retained by replay
-/// ingest. This is not proof that `stream_header_sha256` matches CID1 bytes;
-/// only the recorder's placement-authoritative stream path can prove that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedCampaignIdentity {
     pub state: String,
@@ -319,11 +118,6 @@ pub struct RecordedCampaignIdentityWitnesses {
     pub modset_identity: Option<String>,
 }
 
-/// Recorder-packaged effective decision catalog admitted by an exact
-/// recorder-manifest -> replay-index -> container-manifest -> payload join.
-///
-/// The bytes are immutable and pointer-free. Replay consumers never reopen a
-/// developer output path or an installed game tree to obtain this artifact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackagedDecisionCatalog {
     path: String,
@@ -338,8 +132,6 @@ impl PackagedDecisionCatalog {
     }
 }
 
-/// One recorder-owned static catalog after the complete
-/// recorder→index→container-role→content-epoch→bytes join.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackagedStaticArtifact {
     name: String,
@@ -366,28 +158,6 @@ impl PackagedStaticArtifact {
         self.bytes.as_ref()
     }
 
-    /// Author an artifact from loose bytes, WITHOUT the recorder→index→
-    /// container-role→content-epoch join that every real one goes through.
-    ///
-    /// It exists so a consumer test can drive a semantic catalog admission
-    /// (`static_research_catalog.rs`) over bytes it wrote itself, which is the
-    /// only way to test a consumer against a catalog whose contents the test
-    /// controls. The bytes it produces are unauthenticated by construction, so
-    /// this must not be reachable from the product: it is behind the
-    /// `test_support` feature, which only `game_ui`'s `[dev-dependencies]` turn
-    /// on. Cargo's v2 resolver does not unify a dev-dependency feature into a
-    /// normal build, so DEFAULT product resolution does not compile this at all
-    /// — a stronger position than `#[doc(hidden)] pub`, which is always present.
-    ///
-    /// It is not an absolute exclusion, and should not be described as one: an
-    /// explicit `--all-features` or an explicit feature selection turns it on in
-    /// any profile. What holds then is only that no product source calls it,
-    /// which is an ordinary review property rather than a compiler-enforced one.
-    ///
-    /// Everything downstream of it still runs for real: the semantic parse, the
-    /// embedded self-hash, the cross-artifact content-epoch equality and every
-    /// row-level rule are unchanged, so a test that hands it malformed bytes is
-    /// refused exactly as a recording would be.
     #[cfg(feature = "test_support")]
     pub fn unauthenticated_for_consumer_tests(
         name: &str,
@@ -406,24 +176,8 @@ impl PackagedStaticArtifact {
     }
 }
 
-/// The recorder's reserved stand-in for a manifest value the seal could not
-/// make portable (`recorder_host::portable_manifest::PORTABILITY_EXCLUDED_VALUE`).
-///
-/// Spelled again here rather than imported: the extractor's crates are not
-/// dependencies of replay, and what actually binds the two sides is the
-/// container format, not a shared symbol. A container carrying this where
-/// replay expects a claim has a HOLE there, accounted in the container's own
-/// `portability_exclusions` ledger, and replay must refuse it rather than read
-/// the stand-in as data.
 const PORTABILITY_EXCLUDED_VALUE: &str = "__portability_excluded__";
 
-/// The launch display variant, assembled from the settings binding.
-///
-/// The binding carries the display fields and the settings-file digest
-/// SEPARATELY, because a recording holds two endpoint digests (attach and
-/// capture close) and neither may be published as "the" settings hash. The
-/// digest the display values were parsed from is the attach-time one, so that
-/// is the one reassembled here.
 fn recorder_display_variant_value(settings_binding: &Value) -> Option<Value> {
     let mut display = settings_binding.get("display_variant")?.as_object()?.clone();
     let attach = settings_binding.get("attach_settings_sha256")?.as_str()?;
@@ -457,16 +211,6 @@ struct MetadataRoute {
 }
 
 impl MetadataRoute {
-    /// Join the recorder-owned static-artifact roster and record, in this
-    /// recording's provenance, every artifact the package carried and the join
-    /// refused for want of a content-manifest epoch.
-    ///
-    /// The join is reached ONLY through here, so that it and the production
-    /// profile claim it depends on are read from one object. A second reader of
-    /// `production_profile.enabled` could drift from the one that produced the
-    /// admission; this cannot. The refusal is recorded here rather than at the
-    /// manifest's profile block because it is a fact about the packaged bytes
-    /// rather than about the capture's declared scope.
     fn admit_static_artifacts(
         &mut self,
         store: &Store,
@@ -482,15 +226,6 @@ impl MetadataRoute {
             claims_production_profile,
         )?;
         if let Some(binding) = self.binding.as_mut() {
-            // RECONCILE THE DECLARATION AGAINST THE PACKAGE. The manifest's
-            // `missing_required_static_artifacts` was believed until now, so a
-            // capture could declare nothing missing while its index refused an
-            // artifact — and the admission would report the static-artifact
-            // guarantee as HELD while `static_artifact()` answered `None`
-            // (Codex round 2, MEDIUM). A manifest that states nothing about the
-            // profile (`Unstated`) declares no list, so there is nothing to
-            // reconcile; the guarantee itself is decided below from the package,
-            // exactly as it is for a stated authority.
             if binding.product_admission.authority != ProductionProfileAuthority::Unstated {
                 let declared = &binding.product_admission.missing_required_static_artifacts;
                 let declared_set = declared.iter().cloned().collect::<BTreeSet<_>>();
@@ -510,13 +245,6 @@ impl MetadataRoute {
                          {unknown:?}, which is not a required static artifact"
                     )));
                 }
-                // THE WRITER'S ADVERTISED REQUIRED SET, VALIDATED FOR EVERY
-                // STATED AUTHORITY. It used to be read only inside the legacy
-                // branch, so a current eight-artifact package could advertise
-                // `7`, `null`, repeats or unknown names and still open as a
-                // full production profile (Codex round 12, MEDIUM). The
-                // recorder writes this field unconditionally, so an absent or
-                // malformed one is malformed, not legacy-compatible.
                 let advertised = self
                     .recorder_manifest
                     .as_ref()
@@ -556,11 +284,6 @@ impl MetadataRoute {
                     .iter()
                     .map(|(name, _)| (*name).to_string())
                     .collect::<BTreeSet<_>>();
-                // EQUALITY WITH A CANONICAL SET, not merely a plausible shape.
-                // `[]`, unknown names, or a deliberately short roster would
-                // otherwise read as "some other build", and inside the legacy
-                // branch that meant "predates" — so a current build could
-                // under-declare and pass as legacy (Codex round 5, MEDIUM).
                 let mut declarable_absent = roster.absent.clone();
                 match roster.legacy_skipped {
                     None => {
@@ -590,20 +313,6 @@ impl MetadataRoute {
                         declarable_absent.remove(skipped);
                     }
                 }
-                // A CAPTURE THAT CLAIMS THE PROFILE CARRIES EVERYTHING IT COULD
-                // HAVE CARRIED. Rule 3 held the DECLARATION to an empty list;
-                // the package is the stronger statement, and this closes the
-                // shape where an enabled manifest declares nothing missing
-                // while its rosters omit an artifact (Codex round 4, HIGH).
-                //
-                // It is asked of `declarable_absent`, AFTER the exemption is
-                // established — not of `roster.absent`. A pre-focus production
-                // package legitimately carries every artifact its build had,
-                // and asking the raw set would refuse it for lacking one its
-                // writer had never heard of, contradicting the readability this
-                // join promises (Codex round 6, HIGH). The artifact is still
-                // absent, so `RequiredStaticArtifacts` is still reported as not
-                // held below.
                 if binding.product_admission.authority == ProductionProfileAuthority::Enabled
                     && !declarable_absent.is_empty()
                 {
@@ -621,24 +330,6 @@ impl MetadataRoute {
                     )));
                 }
             }
-            // THE GUARANTEE AND THE NAMED LIST BOTH FOLLOW THE PACKAGE, NOT THE
-            // DECLARATION, and they must follow the SAME thing or the provenance
-            // contradicts itself.
-            //
-            // A legacy seven-row roster declares nothing missing and is right to
-            // — its build had no eighth artifact — but the eighth is still
-            // absent and `static_artifact()` still answers `None` for it, so the
-            // guarantee is not held (Codex round 3, MEDIUM). Naming the
-            // guarantee while leaving the list as the declaration's `[]` printed
-            // "admitted without required_static_artifacts / required static
-            // artifacts missing: none" (Codex round 7, MEDIUM). The list is
-            // therefore replaced with what the VERIFIED package lacks, in
-            // canonical registry order. The declaration is not discarded — it
-            // was just proven equal to this set, minus any legacy exemption.
-            //
-            // Done outside the reconciliation block so an `Unstated` manifest,
-            // which declares nothing to reconcile, still says what its package
-            // lacks.
             binding.product_admission.missing_required_static_artifacts =
                 REQUIRED_PACKAGED_STATIC_ARTIFACTS
                     .iter()
@@ -664,48 +355,18 @@ impl MetadataRoute {
 
 #[derive(Debug)]
 pub enum SourceError {
-    /// The recording could not be opened, read, or validated.
     Open(String),
-    /// Retained bytes disagree with the digest/length that names them: a failed
-    /// SHA-256, a failed CRC-32, a truncated/short payload, or a spooled object
-    /// that changed underneath an authenticated read.
-    ///
-    /// A sibling of [`SourceError::Open`] (identical Display shape) typed so
-    /// consumers can classify "these bytes are corrupt or substituted" apart
-    /// from "this recording is malformed" without matching on error text
-    /// (the `PROJECT.md` heading "Portable boundary"). Integrity is a strictly
-    /// stronger claim than malformation: it names bytes that were authenticated
-    /// against a declared digest and lost.
     Integrity(String),
-    /// The recording path does not exist. A sibling of [`SourceError::Open`]
-    /// (identical Display shape) typed so consumers can classify "not found"
-    /// without matching on error text.
     NotFound(String),
-    /// The recording's manifest mod identity disagrees with its snapshot
-    /// provenance ([`snapshot::ContainerError::ModsetMismatch`]), typed through
-    /// so the product surface classifies a modset mismatch without string
-    /// matching across crate boundaries.
     ModsetMismatch(String),
-    /// The recording was recognized but this build cannot play it back.
     Unsupported(String),
-    /// The recording was recognized as the compact-stream-only production
-    /// flavor: an empty snapshot index alongside positive compact-stream
-    /// evidence (a `collector_compact_stream` manifest role or a compact
-    /// timeline declaration). A sibling of [`SourceError::Unsupported`]
-    /// (identical Display shape) typed so consumers — the snapshot-native
-    /// dump preflight in particular — can waive exactly this subclass
-    /// without matching on error text.
     UnsupportedCompactStreamOnly(String),
-    /// The store holds several games; pick one with [`open_recording_game`].
     MultipleGames(Vec<String>),
 }
 
 impl std::fmt::Display for SourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            // NotFound/ModsetMismatch/Integrity keep the exact "open: ..."
-            // rendering the untyped Open produced, so every message contract
-            // holds verbatim.
             SourceError::Open(m)
             | SourceError::NotFound(m)
             | SourceError::ModsetMismatch(m)
@@ -726,13 +387,6 @@ impl std::fmt::Display for SourceError {
 }
 impl std::error::Error for SourceError {}
 
-/// True when a snapshot-layer load failure is a PAYLOAD-INTEGRITY failure —
-/// retained bytes that disagree with the digest/length naming them — rather
-/// than a malformed or semantically inconsistent recording.
-///
-/// Total match on the TYPED snapshot errors; no `.contains()` on error text, so
-/// the wording of a portable message can change without silently reclassifying
-/// a corrupt payload as a schema problem (or the reverse).
 fn is_integrity_failure(error: &snapshot::LoadError) -> bool {
     let snapshot::LoadError::Container(container) = error else {
         return false;
@@ -740,13 +394,9 @@ fn is_integrity_failure(error: &snapshot::LoadError) -> bool {
     is_container_integrity_failure(container)
 }
 
-/// The container-level half of [`is_integrity_failure`], for the many routes
-/// that read a container entry directly instead of going through `Store`.
 pub(crate) fn is_container_integrity_failure(container: &snapshot::ContainerError) -> bool {
     match container {
         snapshot::ContainerError::PayloadIntegrity(_) => true,
-        // `Truncated` is NOT here: its call sites are structural shortfalls
-        // (EOCD, central directory, Zip64 records), not payload bytes.
         snapshot::ContainerError::Zip(zip) => matches!(
             zip,
             snapshot::zip::ZipError::PayloadIntegrity(_)
@@ -757,9 +407,6 @@ pub(crate) fn is_container_integrity_failure(container: &snapshot::ContainerErro
     }
 }
 
-/// Adapt a snapshot-layer load failure into the ingest error class it belongs
-/// to, preserving the integrity class losslessly instead of flattening every
-/// cause into [`SourceError::Open`].
 fn source_error_from_load(error: &snapshot::LoadError, message: String) -> SourceError {
     match error {
         snapshot::LoadError::Container(snapshot::ContainerError::ModsetMismatch { .. }) => {
@@ -770,11 +417,6 @@ fn source_error_from_load(error: &snapshot::LoadError, message: String) -> Sourc
     }
 }
 
-/// As [`source_error_from_load`], for the routes that hold a
-/// [`snapshot::Container`] and read/authenticate one entry directly. Every such
-/// site must classify through here: an authenticated read that fails its digest
-/// is the integrity class no matter which route performed it, and the shipped
-/// product open path funnels through these same routes.
 fn source_error_from_container(error: &snapshot::ContainerError, message: String) -> SourceError {
     match error {
         snapshot::ContainerError::ModsetMismatch { .. } => SourceError::ModsetMismatch(message),
@@ -783,12 +425,6 @@ fn source_error_from_container(error: &snapshot::ContainerError, message: String
     }
 }
 
-/// One raw, schema-shaped frame.
-///
-/// `hour_index` is the index's hour for this frame — the index is the canonical
-/// authority. `rest` carries every other top-level domain
-/// untouched, so unknown schema growth is preserved and reachable, never
-/// dropped. This type deliberately does not expose `snapshot` crate types.
 #[derive(Debug, Clone)]
 pub struct RawFrame {
     pub hour_index: i64,
@@ -798,111 +434,55 @@ pub struct RawFrame {
     pub rest: Map<String, Value>,
 }
 
-/// One recorder-DECLARED main-timeline coverage gap, carried verbatim from the
-/// recording index (`index.coverage`; the `PROJECT.md` heading "Loss and
-/// coverage") across the ingest boundary.
-///
-/// This is the recorder's own statement that a span of hours is missing and
-/// WHY. It is never inferred from hour arithmetic: a downstream consumer that
-/// reconstructs anonymous ranges from discontinuous hours has lost the reason,
-/// the witness, and the owning segment. Per the `PROJECT.md` heading "Loss and
-/// coverage", a gap carries its hour, its reason, the domains it affects, and a
-/// witness:
-/// * hours — `start_hour..=end_hour`, inclusive, on the canonical hour axis;
-/// * reason — `reason`, the recorder's reason text, plus the `kind` class;
-/// * affected domains — an index coverage row is a WHOLE-HOUR absence, so every
-///   domain is affected at every hour of the span (see
-///   [`DeclaredCoverageGap::affects_all_domains`]); a coverage row never
-///   describes a partial, per-domain loss;
-/// * witness — `evidence_id`, plus `segment_id`/`owner` binding the claim to
-///   the segment and observation that produced it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredCoverageGap {
-    /// First absent canonical hour (inclusive).
     pub start_hour: i64,
-    /// Last absent canonical hour (inclusive); equals `start_hour` for a
-    /// single-hour gap.
     pub end_hour: i64,
-    /// Disposition class: `"gap"`, `"capture_failed"`, or `"coalesced"`. Never
-    /// `"snapshot"` — a snapshot hour is playable, not a gap.
     pub kind: String,
-    /// The recorder's reason text. Nonblank by admission.
     pub reason: String,
-    /// The recorder's evidence id — the witness for this claim. Nonblank by
-    /// admission.
     pub evidence_id: String,
-    /// Owning segment, when the index names one.
     pub segment_id: Option<u32>,
-    /// The selected-observation owner object, verbatim, when the index carries
     /// one. Opaque here: replay ingest never reinterprets recorder ownership.
     pub owner: Option<Value>,
-    /// The recorder's selection evidence for this span, when it emitted any.
-    /// Present as a bundle because the recorder emits its four members together
     /// or not at all (`add_main_ownership_fields` in the stitcher), so a
-    /// partial bundle is a corrupt row rather than a smaller claim.
     pub selection: Option<DeclaredCoverageSelection>,
 }
 
-/// The exact observation the recorder SELECTED for a covered span, and the
-/// decoded source extent that observation occupies.
-///
-/// This is the provenance that makes a gap auditable back to bytes: without it
-/// a consumer has the reason and the evidence id but cannot point at the source
-/// region the claim was derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredCoverageSelection {
-    /// The recorder's same-hour selection rule id.
     pub selection_rule: String,
-    /// The selected observation's id.
     pub selected_observation_id: String,
-    /// Inclusive decoded record-sequence bounds of the selected observation.
     pub source_record_seq_bounds: (u64, u64),
-    /// Half-open decoded byte bounds of the selected observation.
     pub source_byte_bounds: (u64, u64),
 }
 
 impl DeclaredCoverageGap {
-    /// True when `hour` falls inside this declared gap.
     pub fn covers(&self, hour: i64) -> bool {
         self.start_hour <= hour && hour <= self.end_hour
     }
-    /// Number of absent hours this row declares (always >= 1).
     pub fn hour_count(&self) -> u64 {
         self.end_hour.abs_diff(self.start_hour).saturating_add(1)
     }
-    /// An index coverage row is a whole-hour absence: no frame exists for those
-    /// hours at all, so every domain is affected. Present as a named predicate
-    /// so a consumer never has to infer the domain scope from the row's shape.
     pub fn affects_all_domains(&self) -> bool {
         true
     }
 }
 
-/// The recording index's own declared coverage statement — the stitched-index
-/// fields (the `PROJECT.md` heading "Loss and coverage") that the ingest
-/// boundary must carry instead of dropping.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeclaredCoverage {
-    /// `index.index_schema` (`"stitched-main-v1"` for a stitched index).
     pub index_schema: Option<String>,
-    /// `index.segments_file` — where the authoritative branch graph lives.
     pub segments_file: Option<String>,
-    /// `index.main_head` (`{ segment_id, hour_index }`), verbatim.
     pub main_head: Option<Value>,
-    /// Declared gaps, ascending by `start_hour` and non-overlapping.
     pub gaps: Vec<DeclaredCoverageGap>,
 }
 
 impl DeclaredCoverage {
-    /// True when this index declares itself stitched.
     pub fn is_stitched(&self) -> bool {
         self.index_schema.as_deref() == Some(STITCHED_INDEX_SCHEMA)
     }
-    /// The declared gap covering `hour`, if any.
     pub fn gap_at(&self, hour: i64) -> Option<&DeclaredCoverageGap> {
         self.gaps.iter().find(|gap| gap.covers(hour))
     }
-    /// True when the index carries nothing beyond a plain (v1) snapshot list.
     pub fn is_empty(&self) -> bool {
         self.index_schema.is_none()
             && self.segments_file.is_none()
@@ -911,19 +491,10 @@ impl DeclaredCoverage {
     }
 }
 
-/// The stitched index schema id (the `PROJECT.md` heading "Loss and coverage").
 const STITCHED_INDEX_SCHEMA: &str = "stitched-main-v1";
 
-/// The complete set of non-snapshot coverage dispositions the recorder emits
-/// (`CoverageDisposition` in `recorder_host/src/stitching.rs`). Closed on
-/// purpose: an unrecognized kind is a gap whose class no consumer can act on.
 const DECLARED_COVERAGE_KINDS: &[&str] = &["gap", "capture_failed", "coalesced"];
 
-/// Parse the recorder-declared coverage statement out of one recording index.
-///
-/// Fail-closed: a coverage row that cannot be read as a complete gap claim is
-/// refused, never silently dropped. Dropping it would let a recording that
-/// ANNOUNCES missing hours reach the fold as an unexplained hour discontinuity.
 fn read_declared_coverage(
     game_id: &str,
     index: &snapshot::Index,
@@ -973,10 +544,6 @@ fn read_declared_coverage(
                 "{context} declares kind \"snapshot\"; a coverage row is an absence, not a frame"
             )));
         }
-        // Closed set. The stitched-container validator enforces this for a
-        // packed v2 container, but a directory store never reaches that
-        // validator, so an unknown disposition would otherwise be carried into
-        // playback as a gap whose class nothing downstream can interpret.
         if !DECLARED_COVERAGE_KINDS.contains(&kind.as_str()) {
             return Err(SourceError::Open(format!(
                 "{context} declares unknown coverage kind {kind:?} (admitted kinds: {})",
@@ -1003,10 +570,6 @@ fn read_declared_coverage(
                 )))
             }
         };
-        // The recorder emits the four selection-evidence members together or
-        // not at all. Admit them the same way: a partial bundle means the row
-        // was rewritten, and keeping the surviving half would present partial
-        // provenance as if it were the whole claim.
         let selection_members = [
             "selection_rule",
             "selected_observation_id",
@@ -1033,12 +596,7 @@ fn read_declared_coverage(
                 )))
             }
         };
-        // A stitched row always names its owning segment and observation owner
         // (`add_main_ownership_fields` emits both unconditionally). It does NOT
-        // always carry selection evidence: a cross-session TRANSITION gap has
-        // no logical frame observation to select, so the recorder legitimately
-        // emits the row without a bundle (`MainHour::selected_observation` is
-        // `None` there). Requiring it would refuse real recordings.
         if is_stitched && (segment_id.is_none() || owner.is_none()) {
             return Err(SourceError::Open(format!(
                 "{context} is a stitched-index coverage row but omits its owning segment or its \
@@ -1073,104 +631,46 @@ fn read_declared_coverage(
     })
 }
 
-/// A recording backend. Portable production recordings carry canonical H4CR
-/// plus a certified hourly offset index and sparse binary checkpoints. Legacy
-/// and debug recordings may carry per-hour JSON snapshots.
 pub trait ReplaySource: Send + Sync {
     fn game_id(&self) -> &str;
-    /// Sorted, deduplicated canonical hour indexes, taken from the recording
-    /// INDEX (the authority). Entries without an `hour_index` are skipped and
-    /// reported in [`ReplaySource::warnings`], never guessed.
     fn hours(&self) -> &[i64];
-    /// Non-fatal ingest findings (index entries skipped, duplicate hours, ...).
     fn warnings(&self) -> &[String];
-    /// The recording index's own DECLARED coverage statement, when it carries
-    /// one. `None` means the index declared nothing (a plain v1 index with no
-    /// coverage rows), which is NOT the same as declaring full coverage.
-    ///
-    /// Consumers must prefer a declared gap over any hour-arithmetic inference:
-    /// a declared gap names its reason, its witness, and its owning segment,
-    /// and an inferred one cannot.
     fn declared_coverage(&self) -> Option<&DeclaredCoverage> {
         None
     }
     fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
         None
     }
-    /// Internally consistent campaign metadata from the recorder manifest.
-    /// This never authorizes stitching without the recorder's
-    /// placement-authenticated CID1 path and exact retained payload bytes.
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         None
     }
-    /// What this recording claims about the recorder's production capture
-    /// profile, and which of that profile's guarantees it does not hold.
-    ///
-    /// `None` means the recording carried no recorder manifest at all (a
-    /// snapshot-store or already-prefolded source), which is a different
-    /// statement from a manifest that carried no `production_profile`
-    /// authority — the latter answers `Some` with
-    /// [`ProductionProfileGuarantee::ProductionProfileEnabled`] named as not
-    /// held.
-    ///
-    /// A consumer that requires a full production-profile capture checks
-    /// [`RecorderProductAdmission::is_full_production_profile`] and refuses for
-    /// itself. The missing static artifacts are always named, because the
-    /// package is read. The missing DOMAINS are named only when the manifest
-    /// stated them: an `Unstated` authority reports the schedule guarantee as
-    /// not held with nothing named, because which domains were scheduled is not
-    /// visible in the package and no claim was made.
     fn product_admission(&self) -> Option<&RecorderProductAdmission> {
         None
     }
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
         None
     }
-    /// Exact effective decision catalog authenticated through the portable
-    /// package's recorder, index, content-manifest, and entry hashes.
     fn decision_catalog(&self) -> Option<&PackagedDecisionCatalog> {
         None
     }
     fn static_artifact(&self, _name: &str) -> Option<&PackagedStaticArtifact> {
         None
     }
-    /// Exact source-byte and decoder identity for a certified compact-stream
-    /// source. Snapshot-native sources return `None`.
     fn prefold_receipt(&self) -> Option<&snapshot::PrefoldSourceReceipt> {
         None
     }
-    /// Date metadata for one canonical hour, without decoding its frame body.
-    ///
-    /// Production sources answer this from their authenticated index or
-    /// prefold manifest. Backends that do not carry indexed dates return
-    /// `None`; callers must not force a frame load merely to populate
-    /// timeline navigation metadata.
     fn date_at(&self, _hour_index: i64) -> Result<Option<String>, SourceError> {
         Ok(None)
     }
-    /// Raw snapshot frame for one canonical hour from [`ReplaySource::hours`].
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError>;
 
-    /// Install a stop switch this source's reconstructions may consult, so a
-    /// caller that has moved on can abandon a walk that is still running.
-    ///
-    /// Default: ignore it. Only a source whose `frame` does bounded, resumable
-    /// work worth abandoning implements this; the rest answer from data they
-    /// already hold and there is nothing to stop. A source that ignores the
-    /// switch is not wrong, only uninterruptible.
     fn set_scrub_interrupt(&self, _interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {}
 }
 
-/// Open a recording path. A regular file is opened as a `.battleplan`
-/// container; a directory is opened as a snapshot store root (a directory
-/// containing `<game_id>/index.json`). A directory store holding more than
-/// one game returns [`SourceError::MultipleGames`].
 pub fn open_recording(path: &Path) -> Result<Box<dyn ReplaySource>, SourceError> {
     open_recording_impl(path, None, None, None)
 }
 
-/// As [`open_recording`], selecting one game explicitly (required when a
-/// directory store holds several games).
 pub fn open_recording_game(
     path: &Path,
     game_id: &str,
@@ -1178,14 +678,6 @@ pub fn open_recording_game(
     open_recording_impl(path, Some(game_id), None, None)
 }
 
-/// Open a recording with an explicitly supplied portable certified pre-folder.
-///
-/// Snapshot-flavor recordings follow the ordinary path and do not invoke the
-/// decoder. For a compact-stream-only `.battleplan`, the verified unique
-/// `collector_compact_stream` entry is transferred to `decoder`; replay_core
-/// admits only the complete [`snapshot::PrefoldedReplay`] it returns. The
-/// default [`open_recording`] policy remains fail-closed and no extractor crate
-/// is a dependency of replay_core.
 pub fn open_recording_with_decoder(
     path: &Path,
     decoder: &dyn snapshot::CertifiedPrefoldDecoder,
@@ -1193,7 +685,6 @@ pub fn open_recording_with_decoder(
     open_recording_impl(path, None, Some(decoder), None)
 }
 
-/// As [`open_recording_with_decoder`], selecting one game explicitly.
 pub fn open_recording_game_with_decoder(
     path: &Path,
     game_id: &str,
@@ -1202,9 +693,6 @@ pub fn open_recording_game_with_decoder(
     open_recording_impl(path, Some(game_id), Some(decoder), None)
 }
 
-/// Open a compact-stream-only container through the bounded authenticated
-/// spool seam. `spool_base` must be an existing regular directory; replay_core
-/// creates a private identity-marked child, removes it on every failed open,
 /// and retains it only for the lifetime of the returned lazy source.
 pub fn open_recording_with_spooled_decoder(
     path: &Path,
@@ -1214,9 +702,6 @@ pub fn open_recording_with_spooled_decoder(
     open_recording_impl(path, None, None, Some((spool_base, decoder)))
 }
 
-/// Consume an already-open pinned container through the bounded decoder seam.
-/// No pathname is reopened: the resulting store and lazy source retain the
-/// exact container handle authenticated by the caller.
 pub fn open_container_with_spooled_decoder(
     container: snapshot::Container,
     spool_base: &Path,
@@ -1231,7 +716,6 @@ pub fn open_container_with_spooled_decoder(
     )
 }
 
-/// As [`open_recording_with_spooled_decoder`], selecting one game explicitly.
 pub fn open_recording_game_with_spooled_decoder(
     path: &Path,
     game_id: &str,
@@ -1241,16 +725,6 @@ pub fn open_recording_game_with_spooled_decoder(
     open_recording_impl(path, Some(game_id), None, Some((spool_base, decoder)))
 }
 
-/// Admit a neutral set of canonical snapshots that was fully folded before it
-/// crossed into the standalone replay layer.
-///
-/// This is intentionally a different boundary from [`open_recording`]. It does
-/// not accept H4CR bytes, a compact-stream cursor, or an extractor callback.
-/// Compact-only packages therefore remain fail-closed until an extractor-side
-/// producer has completed/certified the fold and supplied [`snapshot::PrefoldedReplay`].
-/// This is a trusted-capability API for an already authenticated producer; use
-/// [`open_recording_with_decoder`] when source-byte length/hash and decoder
-/// identity must be bound mechanically by the portable invocation receipt.
 pub fn open_prefolded_replay(
     replay: snapshot::PrefoldedReplay,
 ) -> Result<Box<dyn ReplaySource>, SourceError> {
@@ -1287,9 +761,6 @@ where
     F: FnOnce(&Store),
 {
     // Acquire the object's metadata ONCE and classify from it. `is_file()` /
-    // `is_dir()` both answer false for an existing-but-unreadable path (a
-    // permission or IO failure), which would misreport a real recording as
-    // absent; only a metadata error whose kind is NotFound is "not found".
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -1307,19 +778,12 @@ where
     };
     let store = if metadata.is_file() {
         Store::open_replay(path, &ExpectedIdentity::default()).map_err(|e| {
-            // Preserve the snapshot layer's typed modset mismatch and typed
-            // payload-integrity class across the adapter (no string matching).
             source_error_from_load(&e, format!("open .battleplan: {e}"))
         })?
     } else if metadata.is_dir() {
         Store::open_directory(path)
             .map_err(|e| source_error_from_load(&e, format!("anchor directory store: {e}")))?
     } else {
-        // DELIBERATE message change, scoped to a case whose old rendering was
-        // the defect: an existing-but-special object (a pipe, a device) used to
-        // be reported as `NotFound("path does not exist ...")`, which is false.
-        // The absent-path rendering above is unchanged, and it is the only one
-        // any fixture or product surface pins.
         return Err(SourceError::Open(format!(
             "recording path is neither a .battleplan file nor a snapshot store directory: {}",
             path.display()
@@ -1372,27 +836,15 @@ fn open_store_impl(
         },
     };
 
-    // Route recorder metadata before consulting snapshot availability. An
-    // explicit or inconsistent metadata signal can never be downgraded to
-    // legacy/unsupported because an index or role entry is missing.
     let mut metadata = recorder_metadata_route(&store, &game_id)?;
     let index = store
         .index(&game_id)
         .map_err(|e| source_error_from_load(&e, format!("read index for game {game_id:?}: {e}")))?;
     validate_recorder_portable_container_contract(&store, &game_id, &index, &metadata)?;
 
-    // The recorder's DECLARED coverage statement is admitted here, before any
-    // route is chosen, so no route can silently discard it.
     let declared_coverage = read_declared_coverage(&game_id, &index)?;
 
-    // FAIL-CLOSED by default. Only an explicit portable certified pre-folder
-    // can turn a verified compact-only container into immutable canonical
-    // snapshots; replay_core never sees H4CR records or extractor fold types.
     if index.snapshots.is_empty() {
-        // Every route below this point derives its hours from a decoder or
-        // cache, not from `index.snapshots`, and none of them can carry an
-        // index-declared gap. Refuse rather than drop the recorder's own
-        // statement that hours are missing.
         if !declared_coverage.gaps.is_empty() {
             return Err(SourceError::Unsupported(format!(
                 "recording {game_id:?} declares {} index coverage gap(s) but has no snapshot index \
@@ -1407,9 +859,6 @@ fn open_store_impl(
                 game_id,
                 index.schema_version.clone(),
                 metadata,
-                // A caller that supplied a spool base gets the non-resident
-                // cache reader. The base is the caller's, and this route never
-                // invents one.
                 spool_decoder.map(|(base, _)| base),
             );
         }
@@ -1450,12 +899,6 @@ fn open_store_impl(
                 entry.file
             )),
             Some(hour) => {
-                // REFUSE, never resolve. The index is the canonical authority
-                // for an hour; two rows claiming one
-                // hour means the recording states two different truths about
-                // it, and "keep the first" silently picks one — including its
-                // date and its file — with no evidence that the first is the
-                // right one. There is no rule that makes that choice sound.
                 if let Some(existing) = files_by_hour.get(&hour) {
                     return Err(SourceError::Open(format!(
                         "recording {game_id:?} index names hour_index {hour} twice \
@@ -1469,12 +912,6 @@ fn open_store_impl(
             }
         }
     }
-    // A STITCHED index is produced by this project's own stitcher and must
-    // carry a date on every visible snapshot row. Without it `date_at` answers
-    // `None` for the whole timeline and jump-to-date degrades into "seek to the
-    // first hour" while still reporting success — an unanswerable navigation
-    // query returning a plausible answer. Plain (v1) indexes keep the
-    // historical tolerance: their dates are optional by contract.
     if index.is_stitched() {
         if let Some((hour, _)) = dates_by_hour
             .iter()
@@ -1487,9 +924,6 @@ fn open_store_impl(
             )));
         }
     }
-    // A declared gap and a playable snapshot cannot both own an hour: the
-    // stitched index "never lists a superseded snapshot and never hides a main
-    // gap" (the `PROJECT.md` heading "Loss and coverage").
     for gap in &declared_coverage.gaps {
         if let Some((hour, file)) = files_by_hour
             .range(gap.start_hour..=gap.end_hour)
@@ -1553,12 +987,6 @@ fn open_compact_stream_with_decoder(
     let entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
     let entry = match entries.as_slice() {
         [entry] => entry,
-        // This route folds the raw H4CR itself, so it needs the stream's
-        // CONTENT and cannot serve a cache-only recording. A recording that
-        // omitted the stream is normally served by the packaged-cache route
-        // instead (its H4IX/H4CP roles are selected first), so reaching here
-        // means the cache roles are missing too — say which of the two is
-        // actually wrong rather than reporting a bare absent entry.
         [] => {
             return Err(SourceError::Unsupported(
                 match declared_raw_stream_packaging(metadata.recorder_manifest.as_ref()) {
@@ -1592,10 +1020,6 @@ fn open_compact_stream_with_decoder(
         &game_id,
         metadata.recorder_manifest.as_ref(),
     )?;
-    // Same shipped-playback ceiling the spooled sibling applies, admitted from
-    // the MANIFEST length BEFORE any bytes are materialized. This route reads
-    // the whole entry into memory, so skipping the admission here made the
-    // in-memory path the more permissive of the two.
     admit_product_compact_stream_bytes(entry.bytes)?;
     let raw_h4cr = container.read_entry_bytes(&entry.path).map_err(|error| {
         let message = format!(
@@ -1667,7 +1091,6 @@ fn packaged_replay_cache_roles_present(store: &Store) -> bool {
     })
 }
 
-/// Canonical lowercase hex SHA-256, the spelling every recorder receipt uses.
 fn is_lower_sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -1675,18 +1098,10 @@ fn is_lower_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-/// What the recorder says this recording is composed of.
-///
-/// Read from the authenticated recorder manifest, strictly: a present value
-/// must be one of the assigned spellings. A recording with no composition field
-/// predates the field, and every such recording packaged the stream, so absence
-/// resolves to `Packaged` — never to "whatever is in the container".
 fn declared_raw_stream_packaging(
     recorder_manifest: Option<&Map<String, Value>>,
 ) -> Result<snapshot::RawStreamPackaging, SourceError> {
     let Some(recorder_manifest) = recorder_manifest else {
-        // No recorder authority at all is the pre-existing legacy shape; the
-        // stream-entry rules below are unchanged for it.
         return Ok(snapshot::RawStreamPackaging::Packaged);
     };
     snapshot::read_raw_stream_packaging_with_legacy_default(recorder_manifest).map_err(|error| {
@@ -1694,8 +1109,6 @@ fn declared_raw_stream_packaging(
     })
 }
 
-/// Refuse a cache-only recording whose own documents still name a packaged
-/// stream path.
 fn validate_no_stream_path_is_claimed(
     recorder_manifest: Option<&Map<String, Value>>,
     timeline: Option<&Value>,
@@ -1707,9 +1120,6 @@ fn validate_no_stream_path_is_claimed(
             snapshot::RawStreamPackaging::Omitted.as_str(),
         ))
     };
-    // Present-but-malformed is not absent. `and_then(as_object)` would let
-    // `"replay_entries": "garbage"` skip this check entirely, so a non-object
-    // is rejected rather than waved through.
     if let Some(value) = recorder_manifest.and_then(|manifest| manifest.get("replay_entries")) {
         let entries = value.as_object().ok_or_else(|| {
             SourceError::Open("recorder replay_entries authority is not an object".to_string())
@@ -1729,15 +1139,6 @@ fn validate_no_stream_path_is_claimed(
     Ok(())
 }
 
-/// The source length and SHA-256 the certified cache is bound to, taken from
-/// the recorder manifest's capture receipt.
-///
-/// This is the same CLAIMED length and digest the packaged stream entry would
-/// have carried — the recorder writes `stream_storage` from the very capture
-/// receipt it also packs the stream against. What it is not is an independent
-/// demonstration: with the stream absent there are no source bytes to re-hash,
-/// so this identity is attested by the authenticated recorder manifest rather
-/// than proven from the source itself.
 fn recorder_manifest_source_identity(
     recorder_manifest: Option<&Map<String, Value>>,
 ) -> Result<(u64, String), SourceError> {
@@ -1808,34 +1209,8 @@ fn open_packaged_replay_cache(
                     .to_string(),
             ));
         }
-        // What this recording says it is made of, read strictly from the
-        // authenticated recorder manifest. A recording that states nothing is
-        // treated as pre-composition, and those all carried the stream.
         let packaging = declared_raw_stream_packaging(metadata.recorder_manifest.as_ref())?;
         let stream_entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
-        // The cache is bound to its source by LENGTH and SHA-256, not by the
-        // source's bytes: hours are reconstructed from H4IX/H4CP, and the H4CR
-        // entry is never parsed on this route. So a cache-only recording is
-        // admitted on that identity, taken from the recorder manifest — itself
-        // a container-authenticated entry — and `CertifiedReplayCache::open`
-        // cross-checks it before a single hour is served: the length against
-        // the H4IX header, and the SHA-256 against BOTH the H4IX header and the
-        // H4CP header. (H4CP carries the source digest but not the source
-        // length, so the length rests on H4IX alone.)
-        //
-        // What is NOT done for a cache-only recording, and cannot be, is
-        // re-hashing the source's own bytes: they are not in the container.
-        // The packaged branch below does that via `authenticate_entry`. So the
-        // cache's internal integrity is identical under both compositions,
-        // while the claimed H4CR source identity is attested by the recorder
-        // manifest rather than independently demonstrated from source bytes.
-        // That is the price of the composition, and it is stated here rather
-        // than left for a reader to discover.
-        //
-        // The composition is authority in BOTH directions: a declared stream
-        // that is missing, and an undeclared stream that is present, are each a
-        // hard error. Neither can be reached by an entry silently appearing or
-        // disappearing.
         let source_identity = match (packaging, stream_entries.as_slice()) {
             (snapshot::RawStreamPackaging::Packaged, [source_entry]) => {
                 validate_compact_stream_entry_identity(
@@ -1876,11 +1251,6 @@ fn open_packaged_replay_cache(
                 )))
             }
             (snapshot::RawStreamPackaging::Omitted, []) => {
-                // A cache-only recording must not NAME a stream entry either.
-                // The composition and the paths are two ways of saying the same
-                // thing, and a document that still points at
-                // `collector_raw/collector_stream.bin` is describing a
-                // container that does not exist.
                 validate_no_stream_path_is_claimed(
                     metadata.recorder_manifest.as_ref(),
                     metadata.timeline.as_ref(),
@@ -1912,44 +1282,6 @@ fn open_packaged_replay_cache(
                     "read certified replay_decoder hour index: {error}"
                 ))
             })?;
-        // The checkpoint cache is the one packaged entry whose size tracks
-        // campaign length rather than schema: capture t32 emitted 2,209,767,138
-        // bytes for 656 game hours, so a full campaign's cache is tens of
-        // gigabytes and reading it into a `Vec` is not a thing a supported
-        // machine can do. When the caller owns a scratch base, the entry is
-        // authenticated into a private spool and every seek reads one bounded
-        // record from it. Without a base the old resident read stands, and the
-        // container reader's 2 GiB materialization cap refuses an oversized
-        // cache BY NAME rather than truncating it.
-        // THE CONTAINER'S ACCOUNT OF THIS ENTRY IS NOT THE LAST WORD ON IT
-        // (task #192, HA-3).
-        //
-        // Both routes used to authenticate the entry against the container
-        // manifest and refuse the WHOLE recording the moment that digest
-        // disagreed — the spool route inside
-        // `spool_entry_to_file_transactionally_bounded`, the resident route
-        // inside `read_entry_bytes`. A cache entry that rotted after packing
-        // therefore cost every hour of the recording, and the per-record
-        // confinement lanes GZ and HA built was never reached, because it lives
-        // one call further in, in `CertifiedReplayCache`'s admission.
-        //
-        // The order is inverted here for the reason
-        // `compact_replay_verification_gates`' link 6 already states about the
-        // same bytes: the sealed H4IX carries a digest per cache record, and
-        // that is a STRICTLY STRONGER authority than the container manifest's
-        // one digest over the whole entry. A record whose bytes hash to the
-        // digest the SEAL published is that record, whatever the container's
-        // own account of the entry says. So the entry is streamed into a
-        // caller-owned sink that is never published on this route, the copy's
-        // outcome is KEPT AS A FACT instead of ending the open, and
-        // `CertifiedReplayCache` — the one door that can attribute damage to
-        // hours — is what judges the bytes.
-        //
-        // No unverified byte is ever served by this: every hour that
-        // reconstructs has had its record checked against the sealed
-        // per-record digest, and every hour that has not is refused by name.
-        // The two accounts disagreeing in the OTHER directions is a
-        // whole-recording refusal, in the four-outcome match below.
         let (cache, copy_outcome) = match cache_spool_base {
             Some(base) => {
                 let owner = PrefoldSpoolOwner::create(base)?;
@@ -1978,10 +1310,6 @@ fn open_packaged_replay_cache(
                     })?;
                     outcome
                 };
-                // When the container DID vouch for the entry, its receipt must
-                // still be the entry the role index names. This check is not
-                // weakened by the reordering; it is only skipped when there is
-                // no receipt to check.
                 if let Ok(receipt) = &copy_outcome {
                     if receipt.path() != cache_entry.path.as_str()
                         || receipt.uncompressed_len() != cache_entry.bytes
@@ -2025,22 +1353,8 @@ fn open_packaged_replay_cache(
                 (cache, copy_outcome)
             }
         };
-        // THE FOUR OUTCOMES of one packaged cache judged by two accounts, each
-        // named. Two are agreements; two are the container's own account of the
-        // entry and the seal's account of the same bytes contradicting each
-        // other, which is attributable to no hour and refuses the recording.
-        //
-        // This is the same match `compact_replay_verification_gates`' link 6
-        // makes over the same entry, and it is made here as well because the
-        // gate certifies a recording once while this door opens one every time
-        // a reader is constructed.
         match (&copy_outcome, cache.confined_hours().is_empty()) {
-            // The container verified the entry and every record is the sealed
-            // one.
             (Ok(_), true) => {}
-            // The container refused the entry and the sealed index says exactly
-            // which records moved. This is HA-3's case, and confining it is the
-            // point of the reordering.
             (Err(_), false) => {}
             (Ok(receipt), false) => {
                 return Err(SourceError::Open(format!(
@@ -2102,11 +1416,6 @@ fn open_packaged_replay_cache(
         (cache, receipt, hours)
     };
 
-    // Opening a recording reconstructs its first hour to check the body's
-    // identity against the container's. That is one hour, once — and it used to
-    // be one hour spelled to JSON, hashed, parsed and flattened, which on
-    // capture t53 is over a second of the time between double-clicking a
-    // recording and seeing it. Same check, same body, off the tree.
     let first_world = cache
         .reconstruct_value(hours[0])
         .map_err(|error| SourceError::Open(format!("reconstruct first replay hour: {error}")))?
@@ -2133,8 +1442,6 @@ fn open_packaged_replay_cache(
         read_packaged_decision_catalog(&store, &game_id, metadata.recorder_manifest.as_ref())?;
     Ok(Box::new(IndexedReplaySource {
         cache,
-        // Held for exactly as long as the cache that reads from it; dropping the
-        // source removes the private spool directory.
         cache_spool,
         hours,
         warnings: Vec::new(),
@@ -2164,10 +1471,6 @@ fn validate_packaged_replay_cache_index_descriptor(
         .ok_or_else(|| SourceError::Open("replay index descriptor disappeared".to_string()))?;
     let value = snapshot::parse_json_strict(&bytes)
         .map_err(|error| SourceError::Open(format!("strict replay index descriptor: {error}")))?;
-    // index.json is the third document that states the composition. The
-    // timeline and the recorder manifest are already cross-checked against each
-    // other; without this, index.json would be the one copy a rewrite could
-    // change unnoticed.
     let index_packaging = value
         .as_object()
         .ok_or_else(|| SourceError::Open("replay index descriptor is not an object".to_string()))
@@ -2282,8 +1585,6 @@ fn open_compact_stream_with_spooled_decoder(
         let entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
         let entry = match entries.as_slice() {
             [entry] => entry,
-            // Same as the unspooled seam: this performs a real H4CR fold, so a
-            // cache-only recording is refused by name rather than by absence.
             [] => {
                 return Err(SourceError::Unsupported(
                     match declared_raw_stream_packaging(metadata.recorder_manifest.as_ref()) {
@@ -2494,11 +1795,6 @@ fn validate_compact_stream_entry_identity(
     Ok(())
 }
 
-/// Prove container identity for EVERY prefolded hour, not just the first.
-///
-/// The whole prefolded set is already materialized on this route, so checking
-/// only entry 0 left every later hour's provenance unjoined to the container
-/// manifest for no saving at all.
 fn validate_prefolded_container_identity(
     container: &snapshot::Container,
     replay: &snapshot::PrefoldedReplay,
@@ -2577,9 +1873,6 @@ fn read_portable_design_catalog(
         .and_then(|packaging| packaging.get("design_catalog_live"))
         .filter(|value| !value.is_null());
 
-    // Legacy stores without a recorder binding keep the historical optional
-    // path. A recorder-owned package must join recorder seal, selected index,
-    // dedicated role, content-manifest epoch, and the verified payload bytes.
     if recorder_manifest.is_some() {
         let index_bytes = store
             .read_game_file_bytes(game_id, "index.json")
@@ -2710,14 +2003,6 @@ fn read_portable_design_catalog(
         }
     }
 
-    // No unauthenticated catalog, ever. `Store::read_game_file_bytes`
-    // authenticates a CONTAINER entry against its manifest digest, but for a
-    // directory store it is an anchored file read with no hash or length
-    // authority at all — the A27 catalog is a semantic authority the fold reads
-    // for every frame, so admitting it from loose bytes lets an edited file on
-    // disk redefine designs with nothing to detect it. A recorder-manifest row
-    // supplies its own sha256/length (verified below), which is an independent
-    // authority; without either, refuse.
     if store.container().is_none() && recorder_row.is_none() {
         let present = store
             .read_game_file_bytes(game_id, crate::design_catalog::PORTABLE_ARTIFACT_PATH)
@@ -2823,72 +2108,22 @@ const REQUIRED_PACKAGED_STATIC_ARTIFACTS: &[(&str, &str)] = &[
 const LEGACY_PACKAGED_STATIC_ARTIFACT_COUNT: usize =
     REQUIRED_PACKAGED_STATIC_ARTIFACTS.len() - 1;
 
-/// Outcome of the recorder-owned static-artifact roster join.
 struct PackagedStaticArtifactRoster {
-    /// Artifacts admitted with their full chain: recorder row, index row,
-    /// container entry, payload bytes, and content-manifest epoch.
     admitted: BTreeMap<String, PackagedStaticArtifact>,
-    /// Artifacts the package carries and the join REFUSED because neither the
-    /// container nor the recorder rows name a finalized portable
-    /// content-manifest epoch to bind them to.
     not_content_bound: Vec<String>,
-    /// Required artifacts the VERIFIED package does not carry: an index row
-    /// disposed `present: false`, or the one artifact a legacy roster predates.
-    ///
-    /// This is the observed truth. Without it the manifest's declaration was
-    /// believed: a capture could declare nothing missing while its index
-    /// refused an artifact, and the admission would report the static-artifact
-    /// guarantee as held while `static_artifact()` answered `None` (Codex
-    /// round 2, MEDIUM).
     absent: BTreeSet<String>,
-    /// The artifact a legacy seven-row roster predates, when this package has
-    /// one.
-    ///
-    /// It is held apart from the rest of `absent` because a recorder build
-    /// whose required set did not contain `focus_defs_static` truthfully
-    /// declared nothing missing while carrying all seven, so reconciling its
-    /// `[]` against an absence it had never heard of would refuse a recording
-    /// this join promises stays readable (Codex round 3, MEDIUM).
-    ///
-    /// THE ROSTER SHAPE ALONE DOES NOT ESTABLISH THAT (Codex round 4, HIGH). A
-    /// current recorder advertises all eight in
-    /// `production_profile.required_static_artifacts`, and one that ships seven
-    /// rows while advertising eight is under-declaring, not legacy. The
-    /// exemption is therefore applied by
-    /// [`MetadataRoute::admit_static_artifacts`], which is where that
-    /// advertised set is read, and only when it proves the writer predates the
-    /// artifact.
     legacy_skipped: Option<&'static str>,
 }
 
-/// The ONE content epoch a recording binds its packaged artifacts to.
-///
-/// Every consumer that admits a packaged artifact asks this, and only this.
-/// There used to be two independent askers — the static-artifact roster and the
-/// A34 decision-catalog loader — each reaching straight into
-/// `container.content_manifest()`. Teaching only the first about the
-/// attach-time epoch left the second refusing the WHOLE recording with
-/// "portable content manifest is absent or unfinalized" for the ordinary shape
-/// a shipped recorder produces (Codex round 1, HIGH).
 enum RecordingContentEpoch {
-    /// No content authority at all: nothing may be admitted.
     None,
-    /// The container's finalized portable content manifest — the launch-time
-    /// epoch, and the only authority a legacy recording could carry.
     ContainerManifest(String),
-    /// The KIND C attach-time epoch, RE-DERIVED from the sealed proof.
-    ///
-    /// The derivation result is carried rather than raised: a recording whose
-    /// proof yields no epoch and which packages nothing is simply a recording
-    /// with no epoch, and only a row that CLAIMS one turns the reason into a
-    /// refusal.
     AttachTime(
         Box<Result<portable_content_manifest::attach_content_epoch::AttachContentEpoch, String>>,
     ),
 }
 
 impl RecordingContentEpoch {
-    /// The digest every packaged row must carry, if there is one.
     fn digest(&self) -> Option<&str> {
         match self {
             RecordingContentEpoch::None => Option::None,
@@ -2900,7 +2135,6 @@ impl RecordingContentEpoch {
         }
     }
 
-    /// Why a declared proof yielded no epoch, when it declared one and failed.
     fn derivation_error(&self) -> Option<&str> {
         match self {
             RecordingContentEpoch::AttachTime(epoch) => match epoch.as_ref() {
@@ -2911,13 +2145,6 @@ impl RecordingContentEpoch {
         }
     }
 
-    /// Whether this epoch authorizes ONE named artifact carrying exactly these
-    /// bytes.
-    ///
-    /// Under the attach-time epoch the join is PER ARTIFACT: one
-    /// recording-wide digest says the world was observed, not that THIS catalog
-    /// was resolved through it. A launch-time manifest, by contrast, is taken
-    /// over the admitted bundle as a whole.
     fn authorizes(&self, role: &str, artifact_sha256: &str) -> Result<(), String> {
         match self {
             RecordingContentEpoch::None => {
@@ -2932,15 +2159,6 @@ impl RecordingContentEpoch {
     }
 }
 
-/// Resolve a recording's content epoch from its own POSITIVE declaration.
-///
-/// Exhaustive on the declared kind, never inferred from which field happens to
-/// be populated. A late attach carrying `--portable-content-use-trace` has BOTH
-/// a container content manifest and an attach-time proof, and a recording that
-/// positively declares `none` has no epoch even if a container manifest exists
-/// — reading either off field presence is the inference this loader forbids
-/// everywhere else (Codex round 1, MEDIUM). Unknown and non-string declarations
-/// are refused by the shared validator rather than falling back to anything.
 fn recording_content_epoch(
     container: &snapshot::Container,
     recorder_manifest: &Map<String, Value>,
@@ -2953,7 +2171,6 @@ fn recording_content_epoch(
         .content_manifest()
         .and_then(|manifest| manifest.manifest_digest_sha256.as_deref());
     Ok(match declared {
-        // A recording that predates the declaration.
         None => match container_digest {
             Some(digest) => RecordingContentEpoch::ContainerManifest(digest.to_string()),
             None => RecordingContentEpoch::None,
@@ -2985,50 +2202,10 @@ fn recording_content_epoch(
                 block,
             )))
         }
-        // Positively declared as having none. A container manifest that happens
-        // to exist does not become one.
         Some(_) => RecordingContentEpoch::None,
     })
 }
 
-/// Consume the complete recorder-owned static-artifact roster at replay
-/// admission.  Semantic adapters may select individual catalogs later, but no
-/// producer binding is allowed to sit in the portable file unchecked.
-///
-/// # Which content epoch binds an artifact
-///
-/// Routed on the recording's own positively-written `content_proof_kind`, never
-/// inferred from which field happens to be populated:
-///
-/// * `launch_time_static_bundle_v1` — the finalized portable content manifest
-///   the container carries, built from an effective-VFS observation taken
-///   before `ResumeThread`.
-/// * `attach_time_effective_vfs_join_v1` — the KIND C attach-time epoch,
-///   RE-DERIVED here from the sealed proof block by the one shared authority
-///   ([`portable_content_manifest::attach_content_epoch`]) the recorder stamped
-///   it with. This is the route every shipped recording takes: the
-///   pre-`ResumeThread` actuator is compiled out of `collector_record`, so no
-///   product recording can finalize a portable content manifest, and before
-///   this route existed EVERY packaged catalog on EVERY real recording was
-///   declined. An artifact is admitted only if that proof joined it, and joined
-///   the exact bytes the package carries.
-/// * `none`, or a legacy recording that declares nothing — the container's
-///   content manifest if it has one, otherwise no epoch at all.
-///
-/// # Recordings with no epoch of any kind
-///
-/// Such a recording used to abort the whole open, which refused the recording
-/// over artifacts it could simply decline.
-///
-/// It now declines them, and only them. The epoch check is not weakened in
-/// either direction: with an epoch, every row must carry exactly it; without
-/// one, every row must carry NONE — a row claiming an epoch the container never
-/// finalized is a contradiction and still refuses the recording. Unbindable
-/// artifacts are then verified for internal consistency and left OUT of the
-/// admitted map, so [`ReplaySource::static_artifact`] answers `None` for each
-/// and the semantic adapters above it stay unavailable rather than joining a
-/// catalog to content nothing proves it came from. What was refused is named in
-/// [`RecorderProductAdmission::static_artifacts_not_content_bound`].
 fn validate_packaged_static_artifact_roster(
     store: &Store,
     game_id: &str,
@@ -3052,13 +2229,6 @@ fn validate_packaged_static_artifact_roster(
                 "recorder-owned replay has no static-artifact packaging roster".into(),
             )
         })?;
-    // EVERY RECORDER ROW MUST BE A RECOGNISED, UNIQUE REQUIRED ARTIFACT. The
-    // per-name loop below selects rows by name, so a row named anything else —
-    // or a second row for a name that is not required — was matched by nothing
-    // and silently ignored, and the container-role equality check could not see
-    // it either because it only compares the paths the loop expected. An
-    // unreadable authority row in the roster is malformed, not decoration
-    // (Codex round 3, MEDIUM).
     {
         let mut seen = BTreeSet::new();
         for (index, row) in recorder_rows.iter().enumerate() {
@@ -3124,13 +2294,6 @@ fn validate_packaged_static_artifact_roster(
     })?;
     let epoch_authority = recording_content_epoch(container, recorder_manifest)?;
     let content_digest = epoch_authority.digest();
-    // THE CARVE-OUT DOES NOT REACH A CAPTURE THAT CLAIMS THE PROFILE. Building
-    // the portable content manifest is one of the things `--profile production`
-    // guarantees, so a recording asserting `production_profile.enabled == true`
-    // without a finalized epoch is contradicting itself, exactly as it would by
-    // naming an unscheduled profile domain. It keeps the original mandatory
-    // refusal; only a disabled or unstated authority reaches the declining path
-    // below (Codex round 1, HIGH).
     if claims_production_profile && content_digest.is_none() {
         return Err(SourceError::Open(
             "static-artifact roster has no finalized portable content-manifest epoch while \
@@ -3164,13 +2327,6 @@ fn validate_packaged_static_artifact_roster(
             && recorder_matches.is_empty()
             && index_matches.is_empty()
         {
-            // A pre-focus-carrier recording remains readable but exposes no
-            // focus definitions. A31 stays unavailable; there is no local VFS
-            // or playback-machine fallback. It is still an artifact the package
-            // does not carry, so the guarantee reflects it — but the recorder
-            // build that wrote a seven-row roster had no such artifact in its
-            // required set, so it is deliberately NOT something that build's
-            // declaration could have named.
             absent.insert(name.to_string());
             legacy_skipped = Some(name);
             continue;
@@ -3195,12 +2351,6 @@ fn validate_packaged_static_artifact_roster(
             (Some(true), [recorder_row]) => {
                 let sha = recorder_row.get("sha256").and_then(Value::as_str);
                 let bytes = recorder_row.get("bytes").and_then(Value::as_u64);
-                // TYPED, not `and_then(as_str)`. A row whose epoch is `7`,
-                // `{}`, `[]` or `false` would otherwise read as `None` and be
-                // taken for the null disposition the no-epoch branch requires.
-                // The recorder writes this field on every row it packs, as a
-                // digest string or as JSON null, so an absent one is malformed
-                // rather than legacy.
                 let epoch = match recorder_row.get("content_manifest_digest_sha256") {
                     Some(Value::Null) => None,
                     Some(Value::String(value)) => Some(value.as_str()),
@@ -3212,14 +2362,6 @@ fn validate_packaged_static_artifact_roster(
                         )))
                     }
                 };
-                // With a finalized epoch every row must carry exactly it.
-                // Without one every row must carry null: a row naming an epoch
-                // the container never finalized is a contradiction, and it
-                // refuses the recording here rather than being declined below.
-                // A row claiming an epoch this recording's own proof could
-                // not produce is a contradiction, and the reason the proof gave
-                // is what the refusal says. Reached only for a row that is NOT
-                // null, so a recording that packages nothing still opens.
                 if let (Some(reason), Some(_)) = (epoch_authority.derivation_error(), epoch) {
                     return Err(SourceError::Open(format!(
                         "recorder manifest static artifact {name:?} claims a content epoch its \
@@ -3294,15 +2436,6 @@ fn validate_packaged_static_artifact_roster(
                         "verified static artifact {name:?} bytes disagree with package authorities"
                     )));
                 }
-                // Verified in full above; admitted only when an epoch binds it
-                // to the effective content it was derived from.
-                // UNDER THE ATTACH-TIME EPOCH THE JOIN IS PER ARTIFACT. One
-                // recording-wide digest says the world was observed; it does not
-                // say THIS catalog was resolved through it. The proof names the
-                // roles it certified and the digest it read for each, so an
-                // artifact the proof refused, never joined, or joined in a
-                // different build is declined by name rather than admitted on
-                // the strength of its neighbours.
                 if epoch_authority.authorizes(name, &actual_sha).is_err() {
                     not_content_bound.push(name.to_string());
                     expected_container_paths.insert(container_path);
@@ -3367,18 +2500,6 @@ fn lower_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// Admit A34's immutable effective decision catalog without any machine-local
-/// fallback. A usable artifact must be named identically by all four package
-/// authorities:
-///
-/// 1. recorder_manifest.replay_packaging.static_artifacts;
-/// 2. the selected game's authenticated index static-artifact roster;
-/// 3. the portable content-manifest digest sealed into the recorder row; and
-/// 4. the container manifest entry whose verified bytes are exposed by Store.
-///
-/// Legacy packages that predate the content-manifest digest field leave A34
-/// explicitly unavailable. Contradictory declarations are corruption and
-/// reject the open.
 fn read_packaged_decision_catalog(
     store: &Store,
     game_id: &str,
@@ -3445,9 +2566,6 @@ fn read_packaged_decision_catalog(
             "recorder manifest declares A34 decision catalog but index records it absent".into(),
         ));
     }
-    // Snapshot-only and legacy directory stores may have an unauthenticated
-    // index roster but no recorder manifest at all. They remain playable with
-    // XUI19 unavailable; there is no recorder claim to contradict.
     let Some(recorder_manifest) = recorder_manifest else {
         return Ok(None);
     };
@@ -3463,8 +2581,6 @@ fn read_packaged_decision_catalog(
     let recorder_content_digest = recorder_row
         .get("content_manifest_digest_sha256")
         .and_then(Value::as_str);
-    // The field was introduced with the production A34 package join. Old
-    // packages remain playable, but this feature is unavailable rather than
     // consulting a local generated catalog.
     let Some(recorder_content_digest) = recorder_content_digest else {
         return Ok(None);
@@ -3500,16 +2616,8 @@ fn read_packaged_decision_catalog(
                 .into(),
         )
     })?;
-    // THE SAME AUTHORITY THE STATIC-ARTIFACT ROSTER ASKS. This used to reach
-    // straight into `container.content_manifest()`, which no shipped recording
-    // can carry, so the ordinary attach-time shape — a row stamped with a real
-    // KIND C epoch — refused the WHOLE recording here after the roster had
-    // already admitted the same artifact (Codex round 1, HIGH).
     let epoch_authority = recording_content_epoch(container, recorder_manifest)?;
     let Some(content_digest) = epoch_authority.digest() else {
-        // No epoch of any kind: decline the catalog exactly as the roster
-        // declines an unbound artifact. XUI19 is unavailable and the recording
-        // still opens.
         return Ok(None);
     };
     if content_digest != recorder_content_digest {
@@ -3518,8 +2626,6 @@ fn read_packaged_decision_catalog(
                 .into(),
         ));
     }
-    // And under the attach-time epoch the proof must have joined THIS catalog,
-    // at these exact bytes — not merely observed the world it came from.
     if epoch_authority
         .authorizes(DECISION_CATALOG_NAME, recorder_sha)
         .is_err()
@@ -3579,8 +2685,6 @@ fn read_packaged_decision_catalog(
 
 fn validate_index_schema_version(version: Option<&Value>) -> Result<(), SourceError> {
     match version {
-        // The canonical JSON writer uses a string. Numeric 1 is retained for
-        // legacy directory stores that predate the canonical string spelling.
         None => Ok(()),
         Some(Value::String(value)) if value == "1" => Ok(()),
         Some(Value::Number(value)) if value.as_u64() == Some(1) => Ok(()),
@@ -3598,11 +2702,6 @@ fn same_supported_schema_version(left: &Value, right: &Value) -> bool {
     is_v1(left) && is_v1(right)
 }
 
-/// Require the recorder-owned content authority to be the exact authority the
-/// container reader exposed to playback.  Both objects are individually
-/// digest-validated, but without this join a package could carry two valid,
-/// different manifests and the replay would silently follow only the outer
-/// container copy.
 fn validate_recorder_content_manifest_join(
     recorder_session_manifest: &Map<String, Value>,
     container_manifest: Option<&portable_content_manifest::ContentManifest>,
@@ -3657,9 +2756,6 @@ fn validate_recorder_content_manifest_join(
                         .into(),
                 ));
             }
-            // The launch settings live in their own binding: a resolved
-            // CONTENT chain no longer implies the settings were proven, and
-            // `settings_binding.authority` states which it is.
             let settings_binding = modset.get("settings_binding").ok_or_else(|| {
                 SourceError::Open(
                     "recorder portable content has no modset settings binding".into(),
@@ -3718,10 +2814,6 @@ fn validate_recorder_content_manifest_join(
                     "settings_file_sha256".into(),
                     display.settings_file_sha256,
                 ),
-                // HOW WELL the settings above are proven travels beside them,
-                // in the SAME map -- these are all statements about the machine
-                // that recorded, none of them a demand on the machine playing
-                // back.
                 (
                     "settings_authority".into(),
                     settings_binding
@@ -3735,10 +2827,6 @@ fn validate_recorder_content_manifest_join(
                         .to_string(),
                 ),
             ]);
-            // The recorder's own display/proof rows, joined against the
-            // recorder manifest that reported them. `required_settings` is a
-            // different subject entirely (what the LOCAL install must
-            // reproduce) and is not what this join is about.
             if container_manifest.recorder_local_settings != expected_settings {
                 return Err(SourceError::Open(
                     "recorder display variant disagrees with the portable content manifest's                      recorder-local settings"
@@ -3760,15 +2848,6 @@ fn validate_recorder_content_manifest_join(
     }
 }
 
-/// Reconcile the recorder's portable-file declarations before selecting either
-/// the snapshot or compact-prefold playback path.
-///
-/// Legacy directory fixtures do not have a container manifest and remain
-/// covered by their existing compatibility path.  A recorder-owned portable
-/// container, however, must present one exact role/schema graph: manifest and
-/// index schema v1, one canonical index role, and a one-to-one index ↔
-/// role:snapshot mapping including hour metadata.  This prevents an entry from
-/// being selected by path while its declared role says something else.
 fn validate_recorder_portable_container_contract(
     store: &Store,
     game_id: &str,
@@ -3919,9 +2998,6 @@ fn validate_recorder_portable_container_contract(
             )));
         }
     }
-    // The recording states its composition in more than one document, so those
-    // statements have to agree. A timeline that claims a composition the
-    // recorder manifest does not is a rewritten recording, not a readable one.
     let manifest_packaging = declared_raw_stream_packaging(Some(recorder_manifest))?;
     let timeline_packaging = snapshot::read_raw_stream_packaging_with_legacy_default(timeline)
         .map_err(|error| {
@@ -3935,11 +3011,6 @@ fn validate_recorder_portable_container_contract(
             manifest_packaging.as_str(),
         )));
     }
-    // index.json is the third document that states the composition. It is
-    // compared HERE rather than only in the cache-backed admission, because
-    // this contract runs for EVERY recorder-owned recording — snapshot-flavor
-    // and raw-stream-decoder routes included — and those routes would otherwise
-    // never look at it.
     let index_packaging = raw_index
         .as_object()
         .ok_or_else(|| {
@@ -3958,25 +3029,9 @@ fn validate_recorder_portable_container_contract(
             manifest_packaging.as_str(),
         )));
     }
-    // A cache-only recording must not NAME a stream path in any of its
-    // documents, and must not CARRY one either — whichever route will go on to
-    // serve it. The cache-backed admission already checks the physical entry
-    // against the declaration; doing it here too covers the snapshot-flavor and
-    // raw-decoder routes, which otherwise compare the three declarations to
-    // each other and never to the container.
-    //
-    // Both directions are reconciled, because the snapshot-flavor route serves
-    // its recording straight from `StoreSource` and would otherwise compare the
-    // three declarations only to each other, never to the container.
     let stream_entries = container.entries_by_role(snapshot::COMPACT_STREAM_ROLE);
     match (manifest_packaging, stream_entries.len()) {
         (snapshot::RawStreamPackaging::Packaged, 1) => {
-            // The cache and raw-decoder routes bind the packaged entry to the
-            // timeline path and to the recorder's capture receipt. The
-            // snapshot-flavor route goes straight to `StoreSource` and would
-            // otherwise apply neither, so a packaged snapshot recording could
-            // carry a stream role whose path or identity contradicted its own
-            // documents. Bind it here, where every route passes.
             let entry = &stream_entries[0];
             validate_compact_stream_entry_identity(
                 &entry.path,
@@ -4009,10 +3064,6 @@ fn validate_recorder_portable_container_contract(
     Ok(())
 }
 
-/// Bind the recorder's capture-time compact-stream authority to the exact role
-/// entry selected for prefolding. Older recorder manifests may omit these
-/// objects; once either object exists, all of its current identity fields are
-/// required and must agree with the authenticated container entry.
 fn validate_recorder_compact_stream_join(
     entry_path: &str,
     entry_bytes: u64,
@@ -4173,9 +3224,6 @@ fn recorder_metadata_route(store: &Store, game_id: &str) -> Result<MetadataRoute
     })
 }
 
-/// Directory metadata classification and binding over a read-once object API.
-/// The production closure performs one handle-relative final-handle read; the
-/// counting test uses this same route and makes any second read observable.
 fn directory_recorder_metadata_route_with_reader<F>(
     mut read_once: F,
 ) -> Result<MetadataRoute, SourceError>
@@ -4225,58 +3273,6 @@ fn parse_metadata_object(bytes: &[u8], context: &str) -> Result<Map<String, Valu
         .ok_or_else(|| SourceError::Open(format!("{context} must decode as a JSON object")))
 }
 
-/// Reject recorder manifests that explicitly describe a recovery/quarantined
-/// artifact, or a capture whose named shortfall is not one a capture is allowed
-/// to have. Missing fields remain legacy compatibility; once an authority is
-/// present it must positively admit the artifact rather than relying on
-/// defaults.
-///
-/// # The late-attach admission (owner ruling, 2026-08-14)
-///
-/// This used to refuse any capture whose `production_profile.enabled` was not
-/// `true`. That refused EVERY capture the shipped product can make, and every
-/// committed capture in the tree, for a reason none of them can act on:
-/// `--profile production` is early-launch-only. Its finalizer builds the
-/// portable content manifest from the effective-VFS content observation
-/// authenticated in-process before `ResumeThread`, so it requires the
-/// in-memory early-launch manifest and the authenticated early process receipt
-/// (`recorder_host/src/main.rs`, the `cfg.production` content-manifest arm) —
-/// neither of which exists on a `--pid` attach. The shipped product is a late
-/// attach and deliberately does not run the profile at all
-/// (`recorder_host/src/main.rs::product_auto_attach_worker_args`: "Do not pass
-/// `--profile production` here. That profile additionally requires a
-/// process-bound, pre-injection static bundle. The ordinary late-attach product
-/// cannot fabricate or rebind that evidence."). Capture is attach-and-play, so
-/// the gate as written refused the product it exists to admit.
-///
-/// The carve-out is reasoned rather than blanket, and it is exactly three
-/// rules.
-///
-/// 1. WHAT MAY BE MISSING IS AN ABSENCE, AND AN ABSENCE IS ACCOUNTED FOR, NOT
-///    FATAL. `profile_domains_not_scheduled` names domains this capture never
-///    scheduled and `missing_required_static_artifacts` names artifacts it
-///    never carried. Both are already first-class absences downstream — an
-///    unscheduled domain reads `DomainAbsent` at every hour, and an absent
-///    static artifact answers `None` from [`ReplaySource::static_artifact`] and
-///    is never fabricated. Destroying the whole recording over an accounted
-///    absence violates the `PROJECT.md` heading "Loss and coverage": a bad hour
-///    costs that hour with a named reason, never the recording.
-/// 2. WHAT MAY NOT BE MISSING IS CORRECTNESS.
-///    `mandatory_domains_not_production_complete` is not a scope fact about
-///    this capture at all — the recorder computes it from the descriptor
-///    STATUSES its own build carries
-///    (`compact_contract::mandatory_profile_domains_not_production_complete`).
-///    No attach mode explains it, and it says the data the capture DID deliver
-///    for those domains is not production data. It refuses, enabled or not.
-/// 3. A CAPTURE THAT CLAIMS THE PROFILE IS HELD TO ALL OF IT. When
-///    `enabled == true` every list must be empty, exactly as before. The
-///    carve-out only ever widens the `enabled == false` case.
-///
-/// Fail-closed on everything else: `enabled` must be present and boolean (an
-/// absent or non-boolean value is a malformed authority, not a false one), each
-/// of the three lists must be present and an array of strings, and the returned
-/// [`RecorderProductAdmission`] carries the named shortfall into the opened
-/// recording's provenance so no consumer has to rediscover it.
 fn validate_recorder_product_admission(
     manifest: &Map<String, Value>,
 ) -> Result<RecorderProductAdmission, SourceError> {
@@ -4328,49 +3324,12 @@ fn validate_recorder_product_admission(
             })
             .collect()
     };
-    // Read all three before judging any: a malformed list is a malformed
-    // authority whichever branch would have looked at it.
     let mandatory_domains_not_production_complete =
         read_list("mandatory_domains_not_production_complete")?;
     let profile_domains_not_scheduled = read_list("profile_domains_not_scheduled")?;
     let missing_required_static_artifacts = read_list("missing_required_static_artifacts")?;
 
-    // CHECK THE DECLARED DIFFERENCE AGAINST THE ROSTERS IT IS A DIFFERENCE OF,
-    // AS FAR AS REPLAY CAN.
-    //
-    // `profile_domains_not_scheduled` was believed outright, so a manifest
-    // could name a profile domain, omit it from `scheduled_domains`, and still
-    // declare nothing unscheduled — reporting the full schedule as held while
-    // the domain read `DomainAbsent` at every hour (Codex round 4, HIGH).
-    //
-    // THE LIMIT, AND WHY IT IS A LIMIT RATHER THAN A CHOICE. The recorder
-    // computes its own difference by RESOLVED DOMAIN ID, and `scheduled_domains`
-    // is the operator's vocabulary verbatim, which admits legacy aliases —
     // `state_ownership` resolves to the same domain as the profile's
-    // `map_control` (Codex round 5, HIGH). Replay cannot resolve them: the
-    // replay workspace takes no dependency on the extractor's domain registry
-    // (`game_ui/tests/replay_dependency_boundary.rs`), and re-deriving that
-    // table here is exactly the harness drift the project forbids. So the
-    // set-difference `profile_domains - scheduled_domains` is NOT computable
-    // here without inventing a domain as missing and refusing a legitimate
-    // full-profile recording — a false refusal, which is worse than the
-    // over-trust it would replace.
-    //
-    // What IS sound, and is enforced below:
-    //   * both rosters are arrays of strings with no repeats;
-    //   * every declared name is a member of `profile_domains` — the
-    //     declaration and that roster are built from the same descriptors, so
-    //     both are canonical wire names and no alias can appear;
-    //   * a declared-unscheduled name may not appear verbatim in
-    //     `scheduled_domains`. An alias simply does not fire this check, so it
-    //     can never refuse a real recording, and it catches a manifest claiming
-    //     a domain was unscheduled that its own schedule names.
-    //
-    // The direction that stays unchecked is a manifest UNDER-declaring, and the
-    // one step that closes it is producer-side: the recorder publishing the
-    // profile domains it actually scheduled by canonical wire name, alongside
-    // the difference it already publishes. Replay would then reconcile exactly,
-    // with no registry of its own.
     let unique_names = |rows: &Vec<String>, field: &str| -> Result<BTreeSet<String>, SourceError> {
         let set = rows.iter().cloned().collect::<BTreeSet<_>>();
         if set.len() != rows.len() {
@@ -4449,9 +3408,6 @@ fn validate_recorder_product_admission(
         )));
     }
 
-    // Rule 2. A producer that is not production-complete is a correctness
-    // statement about the recorder build, not a scope statement about this
-    // capture, so no attach mode carves it out.
     if !mandatory_domains_not_production_complete.is_empty() {
         return Err(SourceError::Open(format!(
             "recorder production_profile.mandatory_domains_not_production_complete is nonempty \
@@ -4461,7 +3417,6 @@ fn validate_recorder_product_admission(
         )));
     }
 
-    // Rule 3. A capture that claims the profile is held to all of it.
     if enabled {
         for (field, rows) in [
             (
@@ -4490,17 +3445,10 @@ fn validate_recorder_product_admission(
         });
     }
 
-    // Rule 1. Admit, naming every guarantee the capture does not hold.
     let mut guarantees_not_held = vec![ProductionProfileGuarantee::ProductionProfileEnabled];
     if !profile_domains_not_scheduled.is_empty() {
         guarantees_not_held.push(ProductionProfileGuarantee::FullProfileDomainSchedule);
     }
-    // `RequiredStaticArtifacts` is NOT decided here. It is the one guarantee
-    // replay can verify against the package rather than take on the manifest's
-    // word, and it is decided once, at the roster join
-    // ([`MetadataRoute::admit_static_artifacts`]), from what the package holds.
-    // Two places deciding one guarantee — one from the declaration, one from
-    // the package — is what let them disagree (Codex round 8, MEDIUM).
     guarantees_not_held.sort_unstable();
     guarantees_not_held.dedup();
     Ok(RecorderProductAdmission {
@@ -4653,12 +3601,6 @@ fn recorder_manifest_binding_value(
                     "recorder metadata binding check: enabled DLC path {path:?} has no exactly-mapped nonblank display name"
                 ))
             })?;
-        // A HOLE IS NOT A NAME. The seal removes any value it could not make
-        // portable and leaves a reserved stand-in in its place, accounted in
-        // the container's `portability_exclusions` ledger. A DLC display name
-        // is AUTHORED content, so one can carry an absolute path and be
-        // removed; reading the stand-in as the name would publish a recording
-        // whose active-DLC list is fiction.
         if display == PORTABILITY_EXCLUDED_VALUE {
             return Err(SourceError::Open(format!(
                 "recorder metadata binding check: enabled DLC path {path:?} has no display \
@@ -4838,8 +3780,6 @@ fn recorder_campaign_identity(
             .as_i64()
             .and_then(|value| i32::try_from(value).ok())
             .ok_or_else(|| fail("observed_game_hour_raw is not null or i32".into()))?;
-        // The extractor applies this same window when it stamps the hour; it
-        // is shared rather than re-typed so the two cannot drift.
         if !portable_admission::raw_date_in_range(raw) {
             return Err(fail("observed_game_hour_raw is outside the compact calendar".into()));
         }
@@ -4960,11 +3900,6 @@ fn validate_display_variant(
     Ok(())
 }
 
-/// Precise Unsupported error for a recording whose snapshot index is empty.
-/// When positive compact-stream evidence is present the error is the TYPED
-/// [`SourceError::UnsupportedCompactStreamOnly`] subclass (R18-5) — this
-/// function is that variant's sole producer — so consumers classify the
-/// compact-stream-only flavor structurally rather than by message text.
 fn empty_index_error(store: &Store, timeline: Option<&Value>, game_id: &str) -> SourceError {
     let contract = "playback requires certified replay_decoder hour-index/checkpoint \
                     roles, legacy per-hour snapshot entries, or an explicitly supplied \
@@ -4983,9 +3918,6 @@ fn empty_index_error(store: &Store, timeline: Option<&Value>, game_id: &str) -> 
     }
 }
 
-/// Evidence that a recording is the production compact-stream flavor: a
-/// container manifest entry with role `collector_compact_stream`, or a
-/// `timeline.json` declaring format `hoi4_compact_stream_timeline_v1`.
 fn compact_stream_evidence(store: &Store, timeline: Option<&Value>) -> Option<String> {
     if let Some(container) = store.container() {
         let compact = container.entries_by_role(COMPACT_STREAM_ROLE);
@@ -5014,28 +3946,9 @@ fn timeline_compact_evidence(timeline: &Value) -> Option<String> {
     }
 }
 
-/// Backend 1: a snapshot-flavor container or directory store, read through
-/// the verified `snapshot` crate. Never leaks `snapshot` types.
-///
-/// F2 audit note (justified O(recorded-hours) floor): `hours` (8 B/hour) and
-/// `files_by_hour` (one recorded file name per hour) are the random-access
-/// index of the recording — built once at open, never growing with scrub
-/// count. They are required to serve `frame(hour)` without re-reading the
-/// store index and are the documented per-open floor of the source's working
-/// set (~210 KB + file-name strings for a 3-year hourly recording).
-/// `warnings` is bounded by the number of malformed index entries.
 static PREFOLD_SPOOL_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const PREFOLD_SPOOL_MARKER: &str = ".hoi4-prefold-owner";
 
-/// The refusal text when `CertifiedReplayCache` will not admit the packaged
-/// artifacts at all.
-///
-/// When the container ALSO refused the entry, its complaint is carried into the
-/// sentence. The reordering in `open_packaged_replay_cache` means the
-/// container's refusal is no longer what ends the open, and a reader that saw
-/// only "admit packaged replay_decoder binary artifacts: …" would have lost the
-/// fact that the container's own account of the entry disagreed too — which is
-/// usually the more diagnostic of the two.
 fn admission_refusal(
     error: &snapshot::ReplayCacheError,
     copy_outcome: &Result<snapshot::SpoolEntryReceipt, snapshot::ContainerError>,
@@ -5050,24 +3963,6 @@ fn admission_refusal(
 }
 
 /// RAII ownership for one private bounded pre-fold workspace. Cleanup is
-/// attempted only when the exact canonical directory and unique-per-open
-/// marker still match; an identity discrepancy leaves evidence in place rather
-/// than recursively deleting an unknown target.
-/// Open this process's own checkpoint-cache spool for bounded record reads.
-///
-/// The pathname is the one just created inside this process's private
-/// [`PrefoldSpoolOwner`] root and written by the entry copy in
-/// `open_packaged_replay_cache`. Nothing outside that root is ever named here,
-/// and the file is opened read-only: the cache reader seeks in it, it never
-/// writes to it.
-///
-/// It is NOT published by the container's transactional spool any more (task
-/// #192): the container's verdict on the entry can no longer decide whether the
-/// bytes are written, because the sealed H4IX judges them record by record
-/// afterwards. So the bytes in this file are unjudged at the moment it is
-/// opened. The root's privacy is what makes that safe — nothing outside this
-/// call can see it, it is removed with the source, and nothing leaves
-/// `CertifiedReplayCache` that has not matched a digest the seal published.
 fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {
     let spool_file = fs::OpenOptions::new()
         .read(true)
@@ -5253,12 +4148,6 @@ impl PrefoldSpoolOwner {
             let Some(name) = name.to_str() else {
                 return false;
             };
-            // The private root holds the marker, the snapshot directory, and the
-            // two large artifacts this process spools into it: the raw H4CR for
-            // the folding seam and the certified checkpoint cache for the
-            // packaged one. Anything else means someone else has been writing
-            // here, and the owner disowns the directory rather than deleting
-            // whatever it now contains.
             let spooled_artifact = name == "source.h4cr" || name == "checkpoints.h4cp";
             if name != PREFOLD_SPOOL_MARKER && !spooled_artifact && name != "snapshots" {
                 return false;
@@ -5461,10 +4350,7 @@ struct StoreSource {
     game_id: String,
     hours: Vec<i64>,
     files_by_hour: BTreeMap<i64, String>,
-    /// Authenticated index dates parallel to `files_by_hour`. A missing date
-    /// stays missing; reading navigation metadata never opens a frame body.
     dates_by_hour: BTreeMap<i64, Option<String>>,
-    /// The index's own declared coverage statement, carried verbatim.
     declared_coverage: DeclaredCoverage,
     warnings: Vec<String>,
     recorder_binding: Option<RecorderSessionBinding>,
@@ -5475,9 +4361,6 @@ struct StoreSource {
 
 struct IndexedReplaySource {
     cache: snapshot::CertifiedReplayCache,
-    /// Private spool the cache reads from, when this recording's cache was too
-    /// large to hold. `None` means the cache is resident. Dropped with the
-    /// source, which removes the directory.
     #[allow(dead_code)]
     cache_spool: Option<PrefoldSpoolOwner>,
     hours: Vec<i64>,
@@ -5503,9 +4386,6 @@ struct SpooledPrefoldedSource {
     prefold_receipt: snapshot::PrefoldSourceReceipt,
 }
 
-/// Neutral, immutable already-folded backend. The portable contract owns the
-/// index/entry identity checks; this adapter only projects each typed snapshot
-/// into replay_core's existing raw-frame boundary.
 struct PrefoldedSource {
     replay: snapshot::PrefoldedReplay,
     warnings: Vec<String>,
@@ -5522,11 +4402,6 @@ impl ReplaySource for IndexedReplaySource {
         self.cache.index().game_id()
     }
 
-    /// This is the one source whose `frame` is worth abandoning: it decodes a
-    /// checkpoint and applies every delta to the wanted hour, which is seconds
-    /// of work at a 744-hour interval. The switch goes to the cache reader,
-    /// which consults it at every delta-record boundary and keeps the position
-    /// it reached.
     fn set_scrub_interrupt(&self, interrupt: Option<Arc<dyn Fn() -> bool + Send + Sync>>) {
         self.cache.set_scrub_interrupt(interrupt);
     }
@@ -5589,16 +4464,6 @@ impl ReplaySource for IndexedReplaySource {
     }
 
     fn frame(&self, hour_index: i64) -> Result<RawFrame, SourceError> {
-        // THE DRAW PATH TAKES THE TREE, NOT THE BYTES. This used to ask the
-        // reader for the hour's canonical JSON, hash it against the index's
-        // parity digest, parse those bytes back into a `Value`, and hand that
-        // `Value` to serde, which buffered the whole world a third time because
-        // `Snapshot::rest` is `#[serde(flatten)]` — four whole-world passes to
-        // put one hour on screen, 31.6 MB of them per hour on capture t53.
-        // `reconstruct_value` walks the same records and hands back the tree
-        // the reader is already holding; `admit_cache` proved the cache's bytes
-        // once when this source was opened, and the producer proved at seal
-        // time that decoding them reproduces every hour's parity digest.
         let (world, receipt) = self
             .cache
             .reconstruct_value(hour_index)
@@ -5723,11 +4588,6 @@ impl ReplaySource for SpooledPrefoldedSource {
             ))
         })?;
         let snapshot = read_spooled_hour(&self.owner, &self.snapshot_dir, &self.spool, entry)?;
-        // Admission proved container identity for the FIRST spooled hour only,
-        // because this route is deliberately lazy and never materializes the
-        // whole spool. Re-prove it for every hour that is actually read, so a
-        // later hour whose provenance disagrees with the container manifest is
-        // refused at the frame it is served from rather than never.
         if let Some(container) = self.store.container() {
             validate_snapshot_container_identity(container, &snapshot)?;
         }
@@ -5925,15 +4785,6 @@ impl ReplaySource for StoreSource {
             .store
             .load_file(&self.game_id, file)
             .map_err(|e| source_error_from_load(&e, format!("load snapshot {file:?}: {e}")))?;
-        // Join the COMPLETE snapshot header against the index, not just the
-        // hour. The spooled sibling refuses a mismatched hour/game/schema/date
-        // before it hands a frame back; without the same join here `date_at`
-        // (index) and `frame()` (body) can answer differently for one hour and
-        // the navigation UI and the frame disagree with no refusal anywhere.
-        //
-        // The index stays the authority. A header field the body does not carry
-        // stays absent (a v1 recording need not repeat it); a field the body
-        // DOES carry and that contradicts the index is refused.
         if let Some(body_hour) = snap.hour_index {
             if body_hour != hour_index {
                 return Err(SourceError::Open(format!(
@@ -6155,9 +5006,6 @@ mod tests {
         root
     }
 
-    /// R5-H3: the integrity class must travel typed. Its Display is byte-for-
-    /// byte the untyped `Open` rendering, so every existing message contract
-    /// holds while consumers gain a class to match on.
     #[test]
     fn integrity_is_a_typed_sibling_of_open_with_an_identical_rendering() {
         let message = "entry payload/g/h.json: sha256 aa != manifest bb";
@@ -6171,10 +5019,6 @@ mod tests {
         ));
     }
 
-    /// A failed digest, a failed CRC, a short payload and a decompression
-    /// failure are the integrity class; a malformed/semantic refusal is not.
-    /// Classification is a total match on the typed snapshot errors — never a
-    /// substring of the message.
     #[test]
     fn load_failures_are_classified_by_type_not_by_message_text() {
         let integrity: Vec<snapshot::LoadError> = vec![
@@ -6206,18 +5050,14 @@ mod tests {
         }
 
         let not_integrity: Vec<snapshot::LoadError> = vec![
-            // A semantic/identity refusal: nothing was authenticated and lost.
             snapshot::LoadError::Container(snapshot::ContainerError::Reject(
                 "manifest missing required_features".into(),
             )),
             snapshot::LoadError::Container(snapshot::ContainerError::NoManifest),
-            // Structural shortfalls of the ZIP scaffolding: a malformed
-            // archive, not payload bytes that failed their digest.
             snapshot::LoadError::Container(snapshot::ContainerError::Zip(
                 snapshot::zip::ZipError::Truncated("central directory"),
             )),
             snapshot::LoadError::Directory("anchor escaped its root".into()),
-            // A message that CONTAINS integrity words but is not the class.
             snapshot::LoadError::Container(snapshot::ContainerError::Reject(
                 "entry x: sha256 field is not lowercase hex".into(),
             )),
@@ -6232,7 +5072,6 @@ mod tests {
             );
         }
 
-        // The pre-existing typed modset signal is unchanged.
         assert!(matches!(
             source_error_from_load(
                 &snapshot::LoadError::Container(snapshot::ContainerError::ModsetMismatch {
@@ -6245,10 +5084,7 @@ mod tests {
         ));
     }
 
-    /// Return the body of one top-level `fn <name>(` in this module's source.
     fn function_body(name: &str) -> String {
-        // Normalize line endings: include_str! sees the checkout's bytes, and
-        // a CRLF checkout would never match the " {\n" body-open pattern.
         let source = include_str!("source.rs").replace("\r\n", "\n");
         let source = source.as_str();
         let start = source
@@ -6275,12 +5111,6 @@ mod tests {
         panic!("{name} body is unbalanced");
     }
 
-    /// R5-L4 / R5-L5. Two properties whose violation is invisible to any
-    /// fixture this build can construct — the compact ceiling needs a >2 GiB
-    /// declared entry, and the per-hour identity recheck on the LAZY spooled
-    /// route only fires for an hour a real spool serves. Both are single call
-    /// sites in this module, so the call site itself is what the gate pins:
-    /// deleting either one fails this test.
     #[test]
     fn both_compact_routes_admit_the_product_ceiling_and_every_prefold_route_proves_identity() {
         for route in [
@@ -6293,9 +5123,6 @@ mod tests {
                  or spooling the stream"
             );
         }
-        // The eager route proves identity for every entry (covered end-to-end
-        // by tests/r5_ingest_properties.rs); the lazy route cannot, so it
-        // re-proves identity for each hour it actually serves.
         let eager = function_body("validate_prefolded_container_identity");
         assert!(
             eager.contains("for entry in replay.entries()"),
@@ -6408,23 +5235,8 @@ mod tests {
         );
     }
 
-    /// kills: dropping the `enabled == false` carve-out (case 1 stops
-    /// admitting), carving out `mandatory_domains_not_production_complete`
-    /// (case 4 stops refusing), letting the carve-out leak into an enabled
-    /// profile (case 5 stops refusing), losing the named shortfall on the way
-    /// into provenance (cases 1-3 stop naming it), or accepting a
-    /// non-boolean/absent `enabled` or a non-string list element as a false
-    /// value (cases 6-7 stop refusing).
-    ///
-    /// The production change each case is aimed at is the SHORTEST fix someone
-    /// under pressure would reach for: "just accept anything when the profile
-    /// is off". That is exactly what cases 4 and 5 forbid, and they are the
-    /// reason this is a carve-out and not a loosening.
     #[test]
     fn late_attach_captures_are_admitted_with_their_shortfall_named() {
-        // The two rosters the declared difference is a difference OF are built
-        // consistently: the profile is a fixed pair plus whatever this case
-        // says is unscheduled, and the schedule is the fixed pair.
         let late_attach = |mandatory: Value, domains: Value, artifacts: Value, enabled: bool| {
             let scheduled = ["fuel_live", "production_live"];
             let mut profile_domains = scheduled.iter().map(|d| json!(d)).collect::<Vec<_>>();
@@ -6446,16 +5258,6 @@ mod tests {
             })
         };
 
-        // 1. The shipped attach-and-play product: profile off, full runtime
-        // roster scheduled, one required static artifact not carried. Admitted,
-        // with the profile bit named as not held.
-        //
-        // `RequiredStaticArtifacts` is deliberately absent from what THIS
-        // function returns: it is decided against the package at the roster
-        // join, not from the declaration, so that one guarantee and the list
-        // naming it cannot disagree. The declaration read here is what the join
-        // reconciles the package against, and the guarantee itself is covered
-        // by `tests/world_timeline.rs` end to end.
         let product = late_attach(json!([]), json!([]), json!(["focus_defs_static"]), false);
         let admission =
             validate_recorder_product_admission(product.as_object().unwrap()).expect(
@@ -6474,8 +5276,6 @@ mod tests {
         );
         assert!(admission.profile_domains_not_scheduled.is_empty());
 
-        // 2. A narrower probe additionally leaves profile domains unscheduled.
-        // Still an accounted absence, still admitted, now naming all three.
         let probe = late_attach(
             json!([]),
             json!(["decision_panel_live"]),
@@ -6496,8 +5296,6 @@ mod tests {
             vec!["decision_panel_live".to_string()]
         );
 
-        // 3. A capture that scheduled and carried everything but never claimed
-        // the profile loses exactly one guarantee, and names nothing missing.
         let admission =
             validate_recorder_product_admission(
                 late_attach(json!([]), json!([]), json!([]), false)
@@ -6510,9 +5308,6 @@ mod tests {
             vec![ProductionProfileGuarantee::ProductionProfileEnabled]
         );
 
-        // 4. THE LINE. A domain whose producer is not production-complete is a
-        // statement about the recorder BUILD, not about how this capture
-        // attached, so turning the profile off does not carve it out.
         let error = validate_recorder_product_admission(
             late_attach(json!(["weather_live"]), json!([]), json!([]), false)
                 .as_object()
@@ -6523,7 +5318,6 @@ mod tests {
             .to_string()
             .contains("mandatory_domains_not_production_complete"));
 
-        // 5. The carve-out never reaches a capture that CLAIMS the profile.
         let error = validate_recorder_product_admission(
             late_attach(json!([]), json!([]), json!(["focus_defs_static"]), true)
                 .as_object()
@@ -6534,14 +5328,6 @@ mod tests {
             .to_string()
             .contains("missing_required_static_artifacts"));
 
-        // 6. A malformed authority is malformed, not permissive: an absent or
-        // non-boolean `enabled` is refused rather than read as `false`.
-        //
-        // The ABSENT case is separate from the non-boolean ones and is checked
-        // on an otherwise fully valid manifest. Folding it into a fixture that
-        // is also missing `replay_artifact.gate_problems` would let a change
-        // that defaults only an absent `enabled` to `false` pass, because that
-        // fixture fails earlier for an unrelated reason (Codex round 1, LOW).
         let mut absent = late_attach(json!([]), json!([]), json!([]), false);
         absent["production_profile"]
             .as_object_mut()
@@ -6564,7 +5350,6 @@ mod tests {
             );
         }
 
-        // 7. The lists now reach provenance, so their elements are typed.
         let mut manifest = late_attach(json!([]), json!([]), json!([]), false);
         manifest["production_profile"]["profile_domains_not_scheduled"] = json!([7]);
         let error = validate_recorder_product_admission(manifest.as_object().unwrap())
@@ -6573,12 +5358,6 @@ mod tests {
             .to_string()
             .contains("profile_domains_not_scheduled[0] is not a string"));
 
-        // 7b. THE DECLARED DIFFERENCE IS CHECKED AGAINST THE ROSTERS IT IS A
-        // DIFFERENCE OF, in the one direction replay can compute. Declaring a
-        // domain unscheduled that the manifest's own schedule names is a
-        // contradiction inside one document, and no alias can produce it: both
-        // the declaration and `profile_domains` are canonical wire names, so a
-        // hit here means the schedule spelled it canonically too.
         let mut overstated = late_attach(json!([]), json!(["fuel_live"]), json!([]), false);
         overstated["production_profile"]["profile_domains"] =
             json!(["fuel_live", "production_live"]);
@@ -6588,17 +5367,7 @@ mod tests {
             .to_string()
             .contains("which the manifest's own scheduled_domains carries"));
 
-        // THE OTHER DIRECTION IS DELIBERATELY NOT CHECKED, and this case is
-        // here to say so rather than to leave the gap unnamed. A manifest that
-        // lists a profile domain, omits it from `scheduled_domains` and still
-        // declares nothing unscheduled is ADMITTED: `scheduled_domains` is the
-        // operator's vocabulary and admits legacy aliases the extractor's
         // registry resolves (`state_ownership` is the same domain as the
-        // profile's `map_control`), and the replay workspace may not depend on
-        // that registry. Computing the difference here would refuse a
-        // legitimate aliased full-profile recording — a false refusal, which is
-        // worse. The closing step is producer-side and is named in the function
-        // docs (Codex round 5, HIGH).
         let mut understated = late_attach(json!([]), json!([]), json!([]), false);
         understated["production_profile"]["profile_domains"] =
             json!(["fuel_live", "production_live", "decision_panel_live"]);
@@ -6611,17 +5380,12 @@ mod tests {
              computable and the comment above is stale"
         );
 
-        // An aliased schedule must NOT be refused. This is the false refusal
-        // the check above was rewritten to avoid: `map_control` is a profile
-        // domain, the schedule carries its legacy alias, and the difference is
-        // correctly declared empty.
         let mut aliased = late_attach(json!([]), json!([]), json!([]), true);
         aliased["production_profile"]["profile_domains"] = json!(["map_control"]);
         aliased["scheduled_domains"] = json!(["state_ownership"]);
         validate_recorder_product_admission(aliased.as_object().unwrap())
             .expect("a legitimate full-profile capture scheduling a legacy alias must open");
 
-        // A declared name outside the profile roster is named as such.
         let mut foreign = late_attach(json!([]), json!([]), json!([]), false);
         foreign["production_profile"]["profile_domains_not_scheduled"] =
             json!(["not_a_profile_domain"]);
@@ -6631,15 +5395,12 @@ mod tests {
             .to_string()
             .contains("is not in production_profile.profile_domains"));
 
-        // Repeats in either roster are malformed, not tolerated by set logic.
         let mut repeated = late_attach(json!([]), json!([]), json!([]), false);
         repeated["scheduled_domains"] = json!(["fuel_live", "fuel_live", "production_live"]);
         let error = validate_recorder_product_admission(repeated.as_object().unwrap())
             .expect_err("a repeated scheduled domain is malformed");
         assert!(error.to_string().contains("repeats a domain name"));
 
-        // 8. No `production_profile` authority at all: nothing is claimed, so
-        // the profile bit is not held and nothing is named missing.
         let unstated = json!({
             "replay_artifact": {
                 "recovery": false,
@@ -6651,10 +5412,6 @@ mod tests {
             validate_recorder_product_admission(unstated.as_object().unwrap()).unwrap();
         assert_eq!(admission, RecorderProductAdmission::unstated());
         assert_eq!(admission.authority, ProductionProfileAuthority::Unstated);
-        // Both MANIFEST-ONLY guarantees, not just the profile bit: an absent
-        // authority evidences the schedule exactly as little as it evidences
-        // the profile. `RequiredStaticArtifacts` is not here because it is
-        // verifiable against the package and is decided there.
         assert_eq!(
             admission.guarantees_not_held,
             vec![
@@ -6663,8 +5420,6 @@ mod tests {
             ]
         );
 
-        // 9. The three authority states are distinguishable, so "said nothing"
-        // is never read as "said it fell short" or the reverse.
         assert_eq!(
             validate_recorder_product_admission(
                 late_attach(json!([]), json!([]), json!([]), false)
@@ -6752,11 +5507,6 @@ mod tests {
                 ("borderless".into(), "true".into()),
                 ("display_mode".into(), "borderless_fullscreen".into()),
                 ("settings_file_sha256".into(), "e".repeat(64)),
-                // How well the settings are proven travels BESIDE them, in its
-                // own map, so a replay reproducing them cannot miss that a
-                // recording only OBSERVED the settings on disk rather than
-                // proving the game read them -- and is never asked to reproduce
-                // a statement the recorder made about itself.
                 ("settings_authority".into(), "pre_launch_bracketed".into()),
             ]),
             required_content: Vec::new(),
@@ -6992,9 +5742,6 @@ mod tests {
                     "schema_version": "1",
                     "host_fold_skipped": false,
                     "static_artifacts": absent_static_artifacts,
-                    // This fixture is a per-hour-snapshot recording carrying no
-                    // raw stream entry, so `omitted` is its truthful
-                    // composition; all three documents must say the same.
                     snapshot::RAW_STREAM_PACKAGING_FIELD:
                         snapshot::RawStreamPackaging::Omitted.as_str(),
                     "snapshots": [{
@@ -7056,11 +5803,6 @@ mod tests {
         fs::write(path, packed).unwrap();
     }
 
-    /// Returns a retained read handle on the container it just wrote.
-    ///
-    /// Every caller opens it on the next statement, and on Windows that is
-    /// exactly when a real-time scanner still holds it. Bind the result
-    /// (`let _guard = ...`) so it lives for the length of the test.
     #[must_use = "the scanner guard must be held until the recording is opened"]
     fn write_portable_binary_replay_fixture(
         path: &Path,
@@ -7073,10 +5815,6 @@ mod tests {
         )
     }
 
-    /// Build the same certified two-hour packaged-cache recording under either
-    /// composition. The cache, the index descriptor and the recorder identity
-    /// are byte-for-byte the same in both; only whether the raw H4CR entry is
-    /// packaged (and what the documents declare) changes.
     #[must_use = "the scanner guard must be held until the recording is opened"]
     fn write_portable_binary_replay_fixture_with_composition(
         path: &Path,
@@ -7307,8 +6045,6 @@ mod tests {
         )
         .unwrap();
         fs::write(path, packed).unwrap();
-        // The caller opens this on its next statement; the guard it holds is
-        // what keeps a scanner from getting there first.
         portable_test_fs_retry::open(path).expect("hold the fixture open across the scanner's window")
     }
 
@@ -7337,19 +6073,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// A cache-only recording replays. The raw stream is not in the container
-    /// at all, and every hour still reconstructs from the delta cache, with the
-    /// H4CR source receipt intact — because the cache is bound to its source by
-    /// LENGTH and SHA-256, and those come from the authenticated recorder
-    /// manifest rather than from the stream's own bytes.
-    ///
-    /// This is the test that says the default composition is usable: if it
-    /// fails, stream-off captures are unreplayable and the flag is not
-    /// shippable.
-    ///
-    /// Production change that would make this fail: restoring the unconditional
-    /// `select(COMPACT_STREAM_ROLE)` in `open_packaged_replay_cache`, or
-    /// sourcing the cache binding from the stream entry again.
     #[test]
     fn cache_only_recording_replays_every_hour_without_the_raw_stream() {
         let root = temp_root("binary_replay_cache_only");
@@ -7360,7 +6083,6 @@ mod tests {
             snapshot::RawStreamPackaging::Omitted,
         );
 
-        // The container really does not carry the stream.
         let container =
             snapshot::Container::open(&recording, &snapshot::ExpectedIdentity::default()).unwrap();
         assert!(container
@@ -7371,7 +6093,6 @@ mod tests {
         let source = open_recording(&recording).unwrap();
         assert_eq!(source.game_id(), "binary-game");
         assert_eq!(source.hours(), &[10, 11]);
-        // The source binding survives the stream's absence, byte-for-byte.
         assert_eq!(
             source
                 .prefold_receipt()
@@ -7379,7 +6100,6 @@ mod tests {
                 .source_len(),
             b"H4CRcanonical-world-source".len() as u64
         );
-        // Hours reconstruct identically to the stream-on fixture.
         let frame = source.frame(11).unwrap();
         assert_eq!(frame.hour_index, 11);
         assert_eq!(frame.date.as_deref(), Some("1936.1.1.11"));
@@ -7389,8 +6109,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// A decoder that must never be reached. The packaged-cache route consumes
-    /// the caller's spool BASE but not its decoder, and this proves it.
     struct UnusedSpoolDecoder;
 
     impl snapshot::CertifiedPrefoldSpoolDecoder for UnusedSpoolDecoder {
@@ -7406,20 +6124,6 @@ mod tests {
         }
     }
 
-    /// Opening a packaged cache through a caller-owned spool base reads it from
-    /// disk instead of holding it, gives byte-identical hours either way, and
-    /// leaves nothing behind.
-    ///
-    /// The resident read is what fails on a real recording — capture t32's cache
-    /// is 2,209,767,138 bytes — so this route is the one the product takes. The
-    /// fixture is small on purpose; what is under test is that the two routes
-    /// agree and that the private spool is removed, not that a big file fits.
-    ///
-    /// Production change that would make this fail: making the spooled route
-    /// return anything the resident route does not, dropping the spool owner
-    /// before the cache handle (Windows will not delete an open file), or
-    /// forgetting to admit the spooled cache name in the owner's identity check
-    /// so the directory is disowned and leaks.
     #[test]
     fn a_packaged_cache_opened_through_a_spool_base_matches_the_resident_read() {
         let root = temp_root("binary_replay_cache_spooled");
@@ -7446,8 +6150,6 @@ mod tests {
             assert_eq!(observed.rest, expected.rest, "hour {hour} differs by route");
         }
 
-        // While the source is alive the cache really is on disk, in a private
-        // directory under the caller's base.
         let spooled_caches: Vec<PathBuf> = fs::read_dir(&spool_base)
             .unwrap()
             .map(|entry| entry.unwrap().path().join("checkpoints.h4cp"))
@@ -7469,18 +6171,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// Flip one byte of the STORED H4CP entry inside an already-packed
-    /// recording, at `offset` within the cache artifact.
-    ///
-    /// POST-SEAL ROT: everything the container says about the entry — its
-    /// length, its digest, its CRC — still describes what the recorder sealed,
-    /// and only the bytes on disk have moved. Damaging the cache before packing
-    /// could not model this, because the packer would have derived its own
-    /// account from the damaged bytes.
-    ///
-    /// The entry is located by its own bytes rather than by parsing the ZIP,
-    /// and the occurrence is required to be unique so this can never damage
-    /// some other entry that happened to contain the same run.
     fn rot_sealed_cache_byte_in_recording(recording: &Path, cache_bytes: &[u8], offset: usize) {
         let mut packed = fs::read(recording).unwrap();
         let positions: Vec<usize> = packed
@@ -7498,30 +6188,6 @@ mod tests {
         fs::write(recording, &packed).unwrap();
     }
 
-    /// A PACKAGED H4CP ENTRY THAT ROTTED AFTER SEALING COSTS THE HOURS ITS
-    /// DAMAGED RECORD REACHES, NOT THE RECORDING (task #192, residual HA-3).
-    ///
-    /// Lanes GZ and HA built per-record confinement inside
-    /// `snapshot::CertifiedReplayCache`, and this door never reached it: both
-    /// routes authenticated the container entry FIRST — the spooled route
-    /// inside `spool_entry_to_file_transactionally_bounded`, the resident route
-    /// inside `read_entry_bytes` — and a digest disagreement ended the open
-    /// before one per-record digest was read. One rotted byte cost every hour.
-    ///
-    /// The fixture's cache has two records at checkpoint interval 2, so hour 10
-    /// is the window's checkpoint and hour 11 its only delta. Rotting hour 11's
-    /// record must cost hour 11 and leave hour 10 serving, byte-for-byte,
-    /// through BOTH routes — which is also what proves the two routes still
-    /// agree after the reordering.
-    ///
-    /// kills: restoring either container-first refusal. Put
-    /// `spool_entry_to_file_transactionally_bounded` back and the spooled half
-    /// fails at `open_recording_with_spooled_decoder`; put `read_entry_bytes`
-    /// back and the resident half fails at `open_recording`. Deleting the
-    /// four-outcome match instead does NOT fail this test — that arm is pinned
-    /// by the recording being refused when the two accounts agree in the wrong
-    /// direction, which no fixture here can build; it is stated at the code
-    /// site the way the gate's identical arm is.
     #[test]
     fn a_rotted_packaged_cache_entry_confines_its_hours_instead_of_the_recording() {
         let root = temp_root("binary_replay_rotted_cache");
@@ -7532,8 +6198,6 @@ mod tests {
             snapshot::RawStreamPackaging::Omitted,
         );
 
-        // Hour 11's record window comes from the container's OWN sealed H4IX,
-        // not from a second copy of the encoder's arithmetic.
         let (cache_bytes, last_byte_of_hour_11) = {
             let container =
                 snapshot::Container::open(&recording, &snapshot::ExpectedIdentity::default())
@@ -7559,7 +6223,6 @@ mod tests {
         };
         rot_sealed_cache_byte_in_recording(&recording, &cache_bytes, last_byte_of_hour_11);
 
-        // The resident route.
         let resident = open_recording(&recording).unwrap();
         assert_eq!(resident.hours(), &[10, 11]);
         let frame = resident
@@ -7572,7 +6235,6 @@ mod tests {
             "the confined hour is refused by name: {refusal}"
         );
 
-        // The spooled route reaches the same verdict over the same bytes.
         let spool_base = root.join("spool");
         fs::create_dir(&spool_base).unwrap();
         let spooled =
@@ -7594,26 +6256,15 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// The composition is authority in both directions. A recording that
-    /// declares the cache-only composition but ships a stream entry anyway is a
-    /// rewritten recording and must fail closed rather than be quietly read.
-    ///
-    /// Production change that would make this fail: matching only on the entry
-    /// count and ignoring the declared composition.
     #[test]
     fn declared_cache_only_recording_rejects_a_smuggled_stream_entry() {
         let root = temp_root("binary_replay_smuggled_stream");
         let recording = root.join("binary.battleplan");
-        // Build the stream-on container, then rewrite ONLY the declaration.
         let _scanner_guard = write_portable_binary_replay_fixture_with_composition(
             &recording,
             true,
             snapshot::RawStreamPackaging::Packaged,
         );
-        // Make the declaration fully coherent — every document says `omitted`
-        // and none of them names a stream path — so the ONLY thing left
-        // contradicting it is the entry that is still physically in the
-        // container. That is the check this test is about.
         let repacked = repack_recording_with_manifest_mutation(&recording, |document| {
             document.insert(
                 snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
@@ -7643,11 +6294,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// An unassigned composition spelling rejects at the decoder instead of
-    /// falling back to a default.
-    ///
-    /// Production change that would make this fail: giving the composition
-    /// reader a catch-all arm, or treating a bad value like a missing one.
     #[test]
     fn unassigned_composition_spelling_rejects_at_replay_admission() {
         let root = temp_root("binary_replay_bad_composition");
@@ -7679,13 +6325,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// `index.json` is the third document that states the composition, and it
-    /// is cross-checked too. Without this, it would be the one copy a rewrite
-    /// could change unnoticed while the manifest and timeline still agree.
-    ///
-    /// Production change that would make this fail: dropping the
-    /// `declared_packaging` comparison from
-    /// `validate_packaged_replay_cache_index_descriptor`.
     #[test]
     fn index_descriptor_composition_must_agree_with_the_recorder_authority() {
         let root = temp_root("binary_replay_index_composition");
@@ -7695,8 +6334,6 @@ mod tests {
             true,
             snapshot::RawStreamPackaging::Packaged,
         );
-        // Rewrite ONLY index.json. The manifest and timeline still say
-        // `packaged`, and the stream entry is genuinely present.
         let repacked = repack_recording_mutating_roles(&recording, &["index"], |index| {
             index.insert(
                 snapshot::RAW_STREAM_PACKAGING_FIELD.to_string(),
@@ -7719,9 +6356,6 @@ mod tests {
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }
 
-    /// Re-pack a fixture recording with its recorder manifest mutated, keeping
-    /// every other entry, role and path identical. Used to perturb exactly one
-    /// declaration and prove the reader notices.
     fn repack_recording_with_manifest_mutation(
         path: &Path,
         mutate: impl Fn(&mut serde_json::Map<String, Value>),
@@ -7729,7 +6363,6 @@ mod tests {
         repack_recording_mutating_roles(path, &["recorder_manifest", "timeline", "index"], mutate)
     }
 
-    /// Re-pack a fixture recording, mutating only the named roles.
     fn repack_recording_mutating_roles(
         path: &Path,
         roles: &[&str],
@@ -7742,10 +6375,6 @@ mod tests {
         let mut entries = Vec::new();
         for entry in container.entries() {
             let mut bytes = container.read_entry_bytes(&entry.path).unwrap();
-            // All three documents state the composition and replay cross-checks
-            // them, so a perturbation has to be applied to every document the
-            // caller intends to keep consistent, or it trips an agreement check
-            // instead of the check under test.
             if entry
                 .role
                 .as_deref()
@@ -7765,8 +6394,6 @@ mod tests {
                         .unwrap_or_default()
                         .into_boxed_str(),
                 ),
-                // The fixture carries no per-hour snapshot entries, so no entry
-                // in it is hour-indexed.
                 hour_index: None,
             });
         }
@@ -7902,25 +6529,12 @@ mod tests {
         assert!(recorder_campaign_identity(&root, "fabricated unavailable").is_err());
     }
 
-    /// A packaged snapshot-flavor recording is bound to its stream entry just
-    /// like the cache and raw-decoder routes are. That route serves straight
-    /// from `StoreSource`, so without the binding on the common path it would
-    /// accept a stream role whose identity contradicts the recorder's own
-    /// capture receipt.
-    ///
-    /// Production change that would make this fail: letting the
-    /// `(Packaged, 1)` arm of the composition reconciliation succeed without
-    /// calling `validate_recorder_compact_stream_join`.
     #[test]
     fn packaged_snapshot_recording_binds_its_stream_entry_to_the_recorder_receipt() {
         let root = temp_root("snapshot_stream_binding");
         let recording = root.join("snapshot.battleplan");
         write_portable_recorder_fixture(&recording, "g", "SNAPSHOT", None);
 
-        // The fixture is truthfully cache-only. Re-pack it as a PACKAGED
-        // recording carrying a stream entry, but leave `stream_storage`
-        // describing different bytes than the entry actually holds — exactly
-        // the disagreement the join exists to catch.
         let stream_bytes = b"H4CRsnapshot-route-stream".to_vec();
         let container =
             snapshot::Container::open(&recording, &snapshot::ExpectedIdentity::default()).unwrap();
@@ -7946,7 +6560,6 @@ mod tests {
                     object.insert(
                         "stream_storage".to_string(),
                         json!({
-                            // Deliberately not this entry's identity.
                             "decoded_bytes": stream_bytes.len() as u64 + 1,
                             "decoded_sha256": "a".repeat(64),
                         }),
@@ -8111,9 +6724,6 @@ mod tests {
             Err(error) => error,
             Ok(_) => panic!("raw H4CR package must not enter replay_core directly"),
         };
-        // R18-5: the compact-stream-only flavor is the TYPED subclass, so the
-        // preflight consumer classifies it structurally instead of matching
-        // "compact-stream-only production recording" in the message text.
         assert!(matches!(
             error,
             SourceError::UnsupportedCompactStreamOnly(_)
@@ -8127,9 +6737,6 @@ mod tests {
 
     #[test]
     fn empty_index_without_compact_evidence_stays_plain_unsupported() {
-        // R18-5 boundary: only positive compact-stream evidence selects the
-        // waivable typed subclass. A bare empty index must remain the plain
-        // Unsupported flavor the preflight does NOT waive.
         let root = temp_root("empty_index_no_evidence");
         let game = root.join("g");
         fs::create_dir_all(&game).unwrap();
@@ -8160,10 +6767,6 @@ mod tests {
         write_portable_recorder_fixture(&recording, "g", "ANCHORED", None);
         let moved = parent.join("anchored_object.battleplan");
         let source = open_recording_impl_with_post_anchor(&recording, None, None, None, |_| {
-            // Windows gives the retained container handle delete-denial
-            // semantics, so pathname replacement itself must fail. Unix
-            // permits unlink/rename of an open object; there the replacement
-            // succeeds and the retained handle must still supply ANCHORED.
             #[cfg(windows)]
             {
                 fs::rename(&recording, &moved)
@@ -8275,10 +6878,6 @@ mod tests {
         let parent = temp_root("selected_game_swap");
         let root = parent.join("store");
         fs::create_dir_all(&root).unwrap();
-        // Directory stores are a legacy compatibility surface. Recorder-owned
-        // metadata is portable-container-only, so this object-swap test keeps
-        // the directory fixture explicitly legacy while exercising the same
-        // retained selected-game handle boundary.
         write_playable_store(&root, "g", false, "OBJECT_A");
         let source = open_recording(&root).unwrap();
 
@@ -8678,14 +7277,10 @@ mod tests {
         matches!(
             (module, line),
             ("replay_core/source.rs", "games.join(\", \")")
-                // A message join over a static string table; no path is built.
                 | (
                     "replay_core/source.rs",
                     "DECLARED_COVERAGE_KINDS.join(\", \")"
                 )
-                // Anchoring the recording root: ONE metadata read of the
-                // caller-supplied path, then a typed classification of it.
-                // No descendant pathname is constructed or opened here.
                 | (
                     "replay_core/source.rs",
                     "let metadata = match fs::metadata(path) {"
@@ -8760,14 +7355,6 @@ mod tests {
         )
     }
 
-    /// Exact inventory for the hardened portable-container root and output
-    /// spool capabilities. The root reader lexically normalizes a caller path,
-    /// rejects non-local Windows roots, retains every component no-follow, and
-    /// denies delete rebinding. The spool sites create a private output file,
-    /// authenticate its retained handle, and publish that exact object with a
-    /// no-replace hard link. None is a manifest-selected descendant read.
-    ///
-    /// Keep every literal exact: a newly shaped open/join/push remains a gate
     /// failure until its ownership and handle-identity contract is reviewed.
     fn classified_snapshot_container_retained_io_site(module: &str, line: &str) -> bool {
         module == "snapshot/container.rs"
@@ -8775,10 +7362,7 @@ mod tests {
                 line,
                 "use std::fs::{self, File, OpenOptions};"
                     | "use std::path::{Path, PathBuf};"
-                    // String-only stitching alias canonicalization. This is
-                    // Slice/String::join, not a filesystem Path::join.
                     | "let joined = components.join(\"/\");"
-                    // Retained, no-follow container-root open.
                     | "use std::os::windows::fs::{MetadataExt, OpenOptionsExt};"
                     | "use std::path::{Component, Prefix};"
                     | "std::env::current_dir()?.join(path)"
@@ -8796,8 +7380,6 @@ mod tests {
                     | "if !metadata.is_file() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {"
                     | "File::open(path)"
                     // Authenticated transactional output-spool ownership and
-                    // identity checks. These paths originate from the product
-                    // spool owner, never from container manifest content.
                     | "use std::path::Component;"
                     | "std::env::current_dir()?.join(destination)"
                     | "let mut current = PathBuf::new();"
@@ -8817,21 +7399,10 @@ mod tests {
                     | "fs::hard_link(&temp, &destination).map_err(|error| {"
                     | "match fs::remove_file(&destination) {"
                     | "let _ = fs::remove_file(&temp);"
-                    // Non-Windows arm of identity-gated spool cleanup. The
-                    // pathname is the crate's OWN spool temporary or its own
-                    // just-published destination, never a container-supplied
-                    // name, and the unlink runs only after the pathname's file
-                    // identity matched the retained handle. Windows disposes by
-                    // handle instead and has no pathname site here.
                     | "match fs::remove_file(path) {"
             )
     }
 
-    /// Exact capability census for CID1 rollover descriptor discovery. These
-    /// sites only identify/read the caller-selected package-set descriptor or
-    /// perform bounded, portable path validation; they do not open a member
-    /// selected by an unauthenticated descendant pathname. Keep the list exact
-    /// so any new discovery primitive or descriptor read fails closed here.
     fn classified_rollover_descriptor_discovery_site(module: &str, line: &str) -> bool {
         module == "replay_core/rollover_package_set.rs"
             && matches!(
@@ -8855,11 +7426,6 @@ mod tests {
             )
     }
 
-    /// Exact capability census for descriptor-authorized rollover members.
-    /// The descriptor supplies strict relative paths and expected digests;
-    /// resolution rejects links/escapes, and bytes are consumed only from the
-    /// retained file/container handle whose receipt is then checked. This is
-    /// intentionally line-exact rather than a module-wide filesystem waiver.
     fn classified_rollover_retained_handle_site(module: &str, line: &str) -> bool {
         module == "replay_core/rollover_package_set.rs"
             && matches!(
@@ -8870,23 +7436,12 @@ mod tests {
                     | "if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {"
                     | "let canonical = fs::canonicalize(&candidate)"
                     | "let mut file = fs::File::open(&canonical).map_err(|error| {"
-                    // Whole-file SHA-256 probe over the already-resolved,
-                    // descriptor-authorized package path, run only to classify
-                    // an open that has ALREADY failed (integrity vs structure).
-                    // It admits nothing: the failed open stays failed.
                     | "let file = fs::File::open(path).ok()?;"
             )
     }
 
     fn classified_non_loader_site(module: &str, line: &str) -> bool {
         match module {
-            // Test-only module: `world.rs` includes it under `#[cfg(test)]`, so
-            // none of this compiles into a shipping build. The audit walks
-            // `src/` by filename and cannot see that, so the four lines of the
-            // XMAP19 joint-certification fixture read are named here. They open
-            // ONE committed evidence file by a fixed name under the repo's own
-            // `replay_interface/fixtures`, never a path from a recording, and
-            // nothing about a replay input is selected from them.
             "replay_core/world_xmap19_tests.rs" => matches!(
                 line,
                 "let path = std::path::PathBuf::from(env!(\"CARGO_MANIFEST_DIR\"))"
@@ -8911,10 +7466,6 @@ mod tests {
                     | "let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(\".\")))"
                     | "let anchored_out = canonical_parent.join(file_name);"
                     | "let published = fs::read(&anchored_out)"
-                    // Output-only atomic publication helpers. `out` is the
-                    // caller-selected destination; the temporary child is
-                    // created with create_new beneath its canonicalized
-                    // parent and is never used to select replay input.
                     | "fn create_unique_temp(out: &Path) -> Result<(PathBuf, fs::File), String> {"
                     | "let parent = out.parent().unwrap_or_else(|| Path::new(\".\"));"
                     | "let temp = parent.join(format!(\".{name}.pack-tmp-{nonce}.{attempt}\"));"
@@ -8961,28 +7512,13 @@ mod tests {
             ),
             "replay_core/lib.rs" => matches!(
                 line,
-                // Exact module re-export. The lexical F4 lint sees the `fs`
-                // suffix in `defs`; this line exposes no filesystem
-                // capability and performs no pathname operation.
                 "pub use static_focus_defs::{"
             ),
             _ => false,
         }
     }
 
-    /// Exact production file-capability census for the replay-owned prefold
-    /// spool. These are not caller-selected descendant reads: replay_core
-    /// creates a private, identity-marked child beneath its product-owned
-    /// parent, rejects links/replacements/extra entries before every read, and
-    /// removes only that authenticated child. Keep this list exact so any new
-    /// filesystem operation still fails the F4 gate pending review.
-    /// The certified checkpoint cache reads from a handle its CALLER opened.
-    ///
-    /// `replay_cache.rs` imports `File` and seeks within one, but it builds no
-    /// pathname and opens nothing: `CertifiedCacheFile::new` is handed an
-    /// already-open handle by the product spool site below. These two lines are
     /// exactly that fact, and the module cannot acquire a descendant-pathname
-    /// read without this list changing.
     fn classified_certified_cache_handle_site(module: &str, line: &str) -> bool {
         module == "snapshot/replay_cache.rs"
             && matches!(
@@ -8998,18 +7534,7 @@ mod tests {
                 "use std::fs;"
                     | "use std::path::{Path, PathBuf};"
                     | "let raw_path = owner.root().join(\"source.h4cr\");"
-                    // The packaged checkpoint cache, spooled into this same
-                    // private root and reopened read-only for bounded seeks.
                     | "let spooled = owner.root().join(\"checkpoints.h4cp\");"
-                    // Task #192 moved the CREATE of that file here from
-                    // `Container::spool_entry_to_file_transactionally_bounded`,
-                    // because the container's own verdict on the entry can no
-                    // longer be what decides whether the bytes are written —
-                    // the sealed H4IX judges them record by record afterwards.
-                    // The capability is unchanged in reach: the destination is
-                    // one fixed name inside the identity-marked private root
-                    // this call just created, and `create_new(true)` refuses to
-                    // replace anything.
                     | "let mut sink = fs::OpenOptions::new()"
                     | ".open(&spooled)"
                     | "fn open_private_prefold_spool_file(spool_path: &Path) -> Result<fs::File, SourceError> {"
@@ -9090,7 +7615,7 @@ mod tests {
         while cursor < bytes.len() {
             match state {
                 State::Code => {
-                    if bytes[cursor..].starts_with(b"//") {
+                    if bytes[cursor..].starts_with(b"
                         state = State::LineComment;
                         cursor += 2;
                         continue;
@@ -9147,10 +7672,7 @@ mod tests {
                     cursor += 1;
                 }
                 State::BlockComment(comment_depth) => {
-                    if bytes[cursor..].starts_with(b"/*") {
-                        state = State::BlockComment(comment_depth + 1);
-                        cursor += 2;
-                    } else if bytes[cursor..].starts_with(b"*/") {
+                    if bytes[cursor..].starts_with(b"") {
                         if comment_depth == 1 {
                             state = State::Code;
                         } else {
@@ -9230,7 +7752,7 @@ mod tests {
         let mut violations = Vec::new();
         for (index, line) in source.lines().enumerate() {
             let line = line.trim();
-            if line.starts_with("//")
+            if line.starts_with("
                 || (!import_lines[index]
                     && !loader_pathname_candidate(
                         line,
@@ -9423,9 +7945,6 @@ fn bad(root: &std::path::Path) {
             "{new_module_violations:?}"
         );
 
-        // The two `File::open` calls below are PLANTED SOURCE TEXT that the
-        // pathname audit is asked to scan; they are not calls this test makes.
-        // They must stay spelled exactly as the audit recognises them.
         let after_test = r#"
 #[cfg(test)]
 mod tests {
@@ -9453,23 +7972,6 @@ fn production(root: &std::path::Path) {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let mut modules = discover_rust_sources("replay_core", &manifest_dir.join("src"))
             .expect("discover every replay_core production source");
-        // The REAL container/loader implementation replay_core links lives in
-        // portable_replay/native/snapshot (Cargo.toml: snapshot = portable).
-        // Its command-line drivers (src/bin/pack_replay.rs and friends) live
-        // there too, so this one neutral root is the whole audited surface.
-        //
-        // This scan used to add `extractor/native/snapshot/src` as a second
-        // root, because the bins were on the extractor side. That was a
-        // filesystem reach across the replay/extractor boundary that the cargo
-        // dependency gate cannot see
-        // (`replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`
-        // reads `cargo metadata`, not paths a test opens). The bins moved to
-        // the neutral layer instead of the reach being kept: the module labels
-        // are unchanged (`snapshot/bin/pack_replay.rs`, ...), so every
-        // classification below still names exactly the same site it did before.
-        // What remains on the extractor side is `pub use
-        // portable_replay_format::*;` and three `[[bin]]` declarations, neither
-        // of which can open a file.
         modules.extend(
             discover_rust_sources(
                 "snapshot",

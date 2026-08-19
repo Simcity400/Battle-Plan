@@ -1,23 +1,8 @@
-//! E4 recording open/validate UX.
-//! Shipped opens enter through `crate::recording_open`, which statically selects
-//! the bounded decoder capability and never retries ordinary or raw input.
-//!
-//! Opens a `.battleplan` through the SHARED validator — `replay_core::
-//! open_recording`, the exact entry `replay_core/source.rs` and the timeline
-//! use — and turns success/failure into a readable, category-tagged
-//! diagnostic. There is NO parallel validation logic here: the underlying
-//! precise error string (schema / container hash / modset / version) is
-//! preserved verbatim inside the diagnostic message, so the product surface
-//! shows the same specific rejection the ingest layer produced.
 
 use std::path::Path;
 
 use replay_core::{SourceError, WorldTimeline};
 
-/// Shared normal-product caller for windowed, bundle-less headless, and
-/// recording-benchmark routes. The mandatory content operation executes before
-/// the exhaustive viewer-owned adapter graph is admitted. Recorder presentation
-/// is not an argument and cannot become a fallback.
 #[cfg(windows)]
 pub(crate) struct ProductMapFoundationSession {
     content_receipt: map_viewer::FoundationContentExecutionReceipt,
@@ -55,9 +40,6 @@ impl ProductMapFoundationSession {
         )
     }
 
-    /// Required product entry path for any promoted adapter that consumes a
-    /// named assigned stage. The complete topology is authenticated before the
-    /// adapter graph can observe its derived ordinals.
     pub(crate) fn start_with_assigned_stage_schedule(
         resolver: &map_viewer::GameFileResolver,
         content_admission: &replay_core::ValidatedContentAdmission,
@@ -91,10 +73,6 @@ impl ProductMapFoundationSession {
         })
     }
 
-    /// Exact per-frame XMAP12 entry point. The product caller supplies only
-    /// current carriers decoded from the same authenticated WorldFrame.
-    /// Authenticated absence remains typed unavailable and never reuses prior
-    /// output.
     pub(crate) fn prepare_with_xmap12_inputs(
         &mut self,
         frame: &replay_core::WorldFrame,
@@ -121,18 +99,10 @@ impl ProductMapFoundationSession {
         if fresh != candidate.envelope {
             return Err("foundation playback admitted a different terrain frame envelope".into());
         }
-        // Validate the exact RailSupply disposition/payload pairing without
-        // converting schema-v1/v2 typed unavailability into a session error.
-        // The renderer consumes this same typed state and withholds only
-        // XMAP16 execution/product-complete advertisement for the hour.
         let _ = candidate.xmap16_rail_supply_state()?;
         Ok(candidate)
     }
 
-    /// Current-frame product entry with the explicit viewer-owned XMAP15
-    /// order selection. The selected identity is checked by the XMAP15
-    /// adapter against the same authenticated frame and is never carried
-    /// forward when the order disappears.
     pub(crate) fn prepare_with_xmap12_and_xmap15_inputs(
         &mut self,
         frame: &replay_core::WorldFrame,
@@ -237,28 +207,14 @@ pub(crate) fn prepare_product_map_foundation(
         )
 }
 
-/// Category of a rejected recording, for a readable headline. The precise
-/// underlying message is carried alongside in [`OpenOutcome::Rejected::message`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RejectionKind {
-    /// The path is not a `.battleplan` file or snapshot-store directory.
     NotFound,
-    /// Container/manifest/schema validation failed.
     ContainerOrSchema,
-    /// Retained payload bytes disagree with the digest/length naming them: a
-    /// failed SHA-256 or CRC-32, a truncated payload, or a spooled object that
-    /// changed underneath an authenticated read. Distinct from
-    /// [`RejectionKind::ContainerOrSchema`]: the recording is well formed and
-    /// its bytes are corrupt or substituted, which is a different thing to tell
-    /// a player and a different thing to act on.
     Integrity,
-    /// Manifest modset disagrees with the snapshot provenance.
     Modset,
-    /// Recognized but unplayable by this build (e.g. compact-stream-only).
     Unsupported,
-    /// The store holds several games; one must be selected explicitly.
     MultipleGames,
-    /// Opened, but the hour series is unusable (empty / not increasing).
     Timeline,
 }
 
@@ -276,7 +232,6 @@ impl RejectionKind {
     }
 }
 
-/// Summary of a successfully opened recording.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenReport {
     pub game_id: String,
@@ -289,20 +244,16 @@ pub struct OpenReport {
     pub prefold_source_sha256: Option<String>,
 }
 
-/// The open/validate result surfaced to the UX.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OpenOutcome {
     Opened(OpenReport),
     Rejected {
         kind: RejectionKind,
-        /// Readable message; always CONTAINS the underlying validator string
-        /// (e.g. `sha256`, `required_features`, `empty snapshot index`).
         message: String,
     },
 }
 
 impl OpenOutcome {
-    /// One-line human summary for logs / the diagnostic banner.
     pub fn summary(&self) -> String {
         match self {
             OpenOutcome::Opened(report) => format!(
@@ -338,24 +289,10 @@ impl OpenOutcome {
     }
 }
 
-/// Run the shared validator on `path` and classify the result. The whole
-/// recording is opened (container + snapshot index + timeline) through the
-/// exact playback open path, then EVERY indexed frame payload is decoded and
-/// authenticated ([`validate_all_frame_payloads`]).
-///
-/// The equivalence with playback is one-way: a positive fixture that
-/// validates here will open for playback, and a recording that playback's
-/// open rejects is rejected here too. The converse does NOT hold for frame
-/// payloads — playback authentication is deliberately lazy/incremental (the
-/// F4 policy), so a recording whose LATER payload is corrupt fails this
-/// whole-recording certification yet still opens for playback and plays every
-/// hour before the corrupt one, refusing (fail-closed) only when playback
-/// reaches it.
 pub fn open_and_validate(path: &Path) -> OpenOutcome {
     open_and_validate_segment(path, None)
 }
 
-/// Validate one explicitly selected member of an ordered CID1 package set.
 pub fn open_and_validate_segment(path: &Path, logical_stream_id: Option<u64>) -> OpenOutcome {
     match open_timeline_segment(path, logical_stream_id) {
         Ok(timeline) => {
@@ -375,8 +312,6 @@ pub fn open_and_validate_segment(path: &Path, logical_stream_id: Option<u64>) ->
     }
 }
 
-/// Open through the same shared container/timeline path while retaining the
-/// timeline for the selected-installation compatibility gate.
 pub fn open_timeline(path: &Path) -> Result<WorldTimeline, OpenOutcome> {
     open_timeline_segment(path, None)
 }
@@ -398,18 +333,9 @@ pub fn open_timeline_segment(
     Ok(timeline)
 }
 
-/// Verify every indexed snapshot payload before declaring a recording clean.
-/// Container open validates structure/identity, but lazy entry verification
-/// means a later SHA/CRC failure otherwise remains hidden until playback seeks
-/// that hour. The explicit validation commands and startup compatibility gate
-/// are certification surfaces, so they must reject the whole recording.
 fn validate_all_frame_payloads(timeline: &WorldTimeline) -> Result<(), OpenOutcome> {
     for &hour in timeline.hours() {
         timeline.frame(hour).map_err(|error| {
-            // Classify from the TYPED source error carried inside the world
-            // error, so a frame whose bytes failed their digest is reported as
-            // an integrity failure instead of being flattened into
-            // "container/schema" at the last hop.
             let kind = match &error {
                 replay_core::WorldError::Source(source) => rejection_kind(source),
                 _ => RejectionKind::ContainerOrSchema,
@@ -425,10 +351,6 @@ fn validate_all_frame_payloads(timeline: &WorldTimeline) -> Result<(), OpenOutco
     Ok(())
 }
 
-/// Total match on the TYPED error — no `.contains()` on error text. The wording
-/// of an underlying message can change freely without silently reclassifying a
-/// rejection (the modset / not-found / integrity signals are typed all the way
-/// from the snapshot crate).
 fn rejection_kind(err: &SourceError) -> RejectionKind {
     match err {
         SourceError::NotFound(_) => RejectionKind::NotFound,
@@ -455,7 +377,6 @@ mod tests {
     use std::path::PathBuf;
 
     fn fixture_root() -> PathBuf {
-        // CARGO_MANIFEST_DIR = .../native/replay_app → .../replay_interface/fixtures
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("fixtures")
@@ -498,8 +419,6 @@ mod tests {
         let manifest = manifest();
         let negative = manifest["negative"].as_array().expect("negative list");
         assert_eq!(negative.len(), 4, "expected 4 negative fixtures");
-        // The full rejection matrix: each negative → its specific surfaced
-        // string AND a sensible category.
         for entry in negative {
             let name = entry["name"].as_str().expect("name");
             let rel = entry["path"].as_str().expect("path");
@@ -512,15 +431,10 @@ mod tests {
                         message.contains(expected),
                         "{name}: expected message to contain {expected:?}, got {message:?}"
                     );
-                    // The summary the UX shows also carries the specific string.
                     assert!(outcome_summary_contains(name, &root, rel, expected));
-                    // Category sanity per fixture.
                     let want_kind = match name {
                         "neg_empty_snapshot_index" => RejectionKind::Unsupported,
                         "neg_modset_mismatch" => RejectionKind::Modset,
-                        // A corrupted payload (CRC-32 over the stored bytes)
-                        // is an INTEGRITY failure, not a schema failure: the
-                        // recording is well formed and its bytes are not.
                         "neg_bad_snapshot_hash" => RejectionKind::Integrity,
                         _ => RejectionKind::ContainerOrSchema,
                     };
@@ -541,10 +455,6 @@ mod tests {
 
     #[test]
     fn classification_is_typed_not_string_matched() {
-        // A malformed-modset MANIFEST message (produced by replay_core's
-        // recorder-manifest validation) contains the word "modset" but is a
-        // container/schema malformation, not a modset MISMATCH: only the typed
-        // variant may classify as Modset.
         let malformed = classify_source_error(SourceError::Open(
             "recorder manifest \"session.json\" modset is missing or not an object".into(),
         ));
@@ -618,10 +528,6 @@ mod tests {
             hours: vec![5, 6, 7, 8],
         }))
         .expect("timeline index opens before lazy payload read");
-        // R7 F4 regression: certification/playback equivalence is one-way.
-        // The same recording that FAILS whole-recording validation below has
-        // already opened for playback, and every hour before the corrupt
-        // payload plays; playback refuses fail-closed only at hour 7.
         timeline
             .frame(5)
             .expect("hour before the corrupt payload plays");

@@ -1,18 +1,3 @@
-//! GP-F10's completion proof: the three identity-bearing carriers in ONE frame.
-//!
-//! Before the shared base-frame projection, XUI12, XUI15 and XUI23 each hashed
-//! "the whole raw snapshot minus MY OWN keys", so each carrier's digest covered
-//! the other two carriers' payloads — and each payload CONTAINS its own digest.
-//! With two or more real carriers that is a fixed point of composed SHA-256
-//! evaluations, which no emission order can reach. This file could not be
-//! written at all until the projection was shared; that it exists and passes is
-//! the proof the cycle is gone.
-//!
-//! It is a child module of `trade_compositor` rather than a `tests/` integration
-//! test because XUI15's authentication path is private to that module. Reaching
-//! it from a sibling would have meant widening the visibility of the opaque
-//! authenticated capability, which exists precisely so a UI caller cannot mint
-//! one — a test is not a reason to weaken it.
 
 use super::*;
 use crate::active_abilities::{
@@ -36,9 +21,6 @@ use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-/// The hour every carrier in this file binds to. XUI23's runtime rows are
-/// validated against it (activation hour + authored duration), so it is shared
-/// rather than picked per carrier.
 const FRAME_HOUR: i64 = 1_000;
 const GER_TAG_DB_ID: u32 = 73;
 
@@ -81,9 +63,6 @@ fn object(value: Value) -> Map<String, Value> {
     value.as_object().cloned().expect("object")
 }
 
-/// One country carrying everything all three consumers read off the frame: the
-/// D18 identity XUI12 and XUI23 census against, and the complete resource-trade
-/// rows XUI15's catalogue roster requires.
 fn complete_country() -> Value {
     let rows = TRADE_RESOURCE_ORDER
         .iter()
@@ -120,21 +99,10 @@ fn complete_country() -> Value {
     })
 }
 
-/// The base frame every carrier in this file binds to.
-///
-/// It carries NO `map` member on purpose. An earlier revision gave it one, and
-/// that hid a real defect: the projection rebuilt an empty `map` object after
-/// removing the map-scoped sidecars, so a snapshot whose only map member was a
-/// registered sidecar projected differently from one without it, and landing
-/// that single carrier moved all three identities. With the map absent here,
-/// `an_unrelated_registered_sidecar_landing_does_not_move_any_identity` lands
-/// the map-scoped carriers into a `map` that did not exist before — the worst
-/// case, not the convenient one.
 fn base_rest() -> Map<String, Value> {
     object(json!({"countries": {"GER": complete_country()}}))
 }
 
-/// A validated content admission whose manifest digest all three carriers pin.
 fn content_admission() -> ValidatedContentAdmission {
     use replay_core::{
         ContentLayerKind, ContentManifest, LayerStorageKind, PlaybackContentInventory,
@@ -386,8 +354,6 @@ fn xui23_payload(manifest_sha256: &str, frame_identity: String) -> ObserverAbili
     }
 }
 
-/// Everything a producer would emit for one hour, plus the identities each
-/// consumer will re-derive.
 struct ThreeCarrierHour {
     admission: ValidatedContentAdmission,
     xui12: Xui12ProducerFramePayload,
@@ -397,12 +363,6 @@ struct ThreeCarrierHour {
     rest: Map<String, Value>,
 }
 
-/// Produce all three carriers in ONE pass over ONE base frame.
-///
-/// This is the shape a real producer has: it computes the three identities from
-/// the base frame BEFORE any carrier exists, writes them into the three
-/// payloads, and inserts all five keys. Under the old per-consumer projections
-/// the last step invalidated the first, whichever order it was done in.
 fn produce_three_carrier_hour(mutate_base: impl FnOnce(&mut Map<String, Value>)) -> ThreeCarrierHour {
     let admission = content_admission();
     let manifest = admission.manifest_digest_sha256().to_owned();
@@ -452,21 +412,11 @@ fn produce_three_carrier_hour(mutate_base: impl FnOnce(&mut Map<String, Value>))
     }
 }
 
-/// kills: reverting ANY of the three consumers to "the whole frame minus my own
-/// keys". This is the test the GP-F10 finding said could not be written: with
-/// two or more real carriers, each per-consumer projection covered the other
-/// carriers' payloads, and each payload contains its own digest, so satisfying
-/// all three at once was a SHA-256 fixed-point problem. Under the shared
-/// base-frame projection the producer computes the three digests once, before
-/// any carrier exists, and all three consumers still agree afterwards.
 #[test]
 fn all_three_identity_bearing_carriers_coexist_and_admit_in_one_frame() {
     let hour = produce_three_carrier_hour(|_| {});
     let full = frame(hour.rest.clone());
 
-    // The fixed point, evaluated: the identities were taken over a base frame
-    // that held NO carriers, and each consumer re-derives the same value from
-    // the frame that holds all five carrier keys.
     assert_eq!(
         xui12_replay_frame_identity_sha256(full.as_ref()).unwrap(),
         hour.identities[0]
@@ -479,13 +429,11 @@ fn all_three_identity_bearing_carriers_coexist_and_admit_in_one_frame() {
         observer_ability_replay_frame_identity_sha256(full.as_ref()).unwrap(),
         hour.identities[2]
     );
-    // Three carriers, three distinct domains, three distinct digests.
     let mut distinct = hour.identities.to_vec();
     distinct.sort();
     distinct.dedup();
     assert_eq!(distinct.len(), 3, "two carriers share a domain separator");
 
-    // And all three admissions pass against that one frame.
     let mut viewer = Xui12ViewerState::default();
     viewer.panel_open = true;
     let sealed = seal_xui12_producer_canvas_for_frame_and_viewer(
@@ -517,17 +465,9 @@ fn all_three_identity_bearing_carriers_coexist_and_admit_in_one_frame() {
     assert_eq!(admitted.rows.len(), 1);
 }
 
-/// kills: making the base-frame projection drop game state (for instance by
-/// projecting away everything, or by hashing only hour/date/save version). Each
-/// consumer must still REFUSE a payload sealed against a different base frame —
-/// that refusal is the entire reason a carrier carries an identity. One case
-/// per consumer, all three on the same perturbation.
 #[test]
 fn every_consumer_refuses_a_payload_sealed_against_a_different_base_frame() {
-    // Sealed against the ordinary base frame...
     let hour = produce_three_carrier_hour(|_| {});
-    // ...and re-hosted in a frame whose base differs by one ordinary game-state
-    // value. No sidecar key is touched.
     let mut perturbed = hour.rest.clone();
     perturbed.insert("gp_f10_base_frame_probe".into(), json!(1));
     let stale = frame(perturbed);
@@ -573,9 +513,6 @@ fn every_consumer_refuses_a_payload_sealed_against_a_different_base_frame() {
         refusal.0
     );
 
-    // The same three payloads, produced against the perturbed base instead, all
-    // admit again — so the refusal above is the identity binding and not some
-    // unrelated shape check the probe key happened to trip.
     let rehosted = produce_three_carrier_hour(|rest| {
         rest.insert("gp_f10_base_frame_probe".into(), json!(1));
     });
@@ -605,11 +542,6 @@ fn every_consumer_refuses_a_payload_sealed_against_a_different_base_frame() {
     let _ = &rehosted.xui23;
 }
 
-/// kills: dropping a registered sidecar key from the projection's exclusion
-/// set. An unrelated Wave-2 carrier landing in the same hour must not move any
-/// of the three identities — that perturbation is the second half of GP-F10,
-/// and it is what made "add one key" a silent whole-hour rejection for three
-/// carriers a lane had never heard of.
 #[test]
 fn an_unrelated_registered_sidecar_landing_does_not_move_any_identity() {
     let hour = produce_three_carrier_hour(|_| {});
@@ -619,9 +551,6 @@ fn an_unrelated_registered_sidecar_landing_does_not_move_any_identity() {
             .entry(key.to_owned())
             .or_insert_with(|| json!({"landed": key}));
     }
-    // The map-scoped carriers land into a `map` member that did not exist in
-    // the base frame at all. If the projection left an empty `map` behind, this
-    // frame would differ from the base and every identity below would move.
     assert!(!with_neighbour.contains_key("map"));
     let mut map_scope = Map::new();
     for key in snapshot::replay_frame_identity::REGISTERED_MAP_SIDECAR_KEYS {

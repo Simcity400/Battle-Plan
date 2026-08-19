@@ -254,8 +254,6 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
     let mut ends_at_clean_frame_end = false;
     let mut release_epilogue_seen = false;
     while offset < raw.len() {
-        // Physical EOF authority: any bytes after a clean FRAME_END invalidate
-        // that boundary before the next header is even known to be parseable.
         let previous_record_closed_world = ends_at_clean_frame_end;
         ends_at_clean_frame_end = false;
         let remaining = raw.len().saturating_sub(offset);
@@ -314,9 +312,6 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
             parse_errors.push(format!("offset {offset}: {error}"));
             break;
         }
-        // Domain 250 is an instrumentation-only PERF probe. It remains subject
-        // to physical framing, sequence, record-semantics, and final-EOF checks,
-        // but it does not open a game-hour frame or contribute seal authority.
         if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF
             && header.domain_id == 250
         {

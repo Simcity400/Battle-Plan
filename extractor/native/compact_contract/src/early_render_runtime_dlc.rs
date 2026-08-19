@@ -1,9 +1,3 @@
-//! Typed post-device, pre-COMMIT H4CT proof of the a729 engine-active DLC roster.
-//!
-//! The collector samples the engine manager twice and sends the exact
-//! engine-order display names. The host, not this transport codec, resolves
-//! those names to authenticated descriptor/layer identities.
-
 use crate::campaign_identity::Sha256;
 use crate::early_render_control::EARLY_STAGED_HOOK_GENERATION;
 use std::collections::BTreeSet;

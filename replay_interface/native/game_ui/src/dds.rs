@@ -8,24 +8,8 @@ const DDPF_FOURCC: u32 = 0x4;
 const DDPF_RGB: u32 = 0x40;
 const DDSCAPS2_CUBEMAP: u32 = 0x200;
 const DDSCAPS2_VOLUME: u32 = 0x20_0000;
-/// Upper bound on header-claimed pixel count (8192x8192). Header dimensions
-/// are attacker-controlled bytes from mod content that is hash-pinned but not
-/// structurally validated; without this gate a crafted header can wrap the
-/// size arithmetic or force a multi-gigabyte allocation. Fail-closed: reject
-/// with a typed `InvalidTexture` error, never panic or abort.
 const DDS_MAX_PIXELS: usize = 1 << 26;
 
-/// Number of mip levels a `width`x`height` surface can actually carry: each
-/// level halves both axes (floored at 1), so the chain ends when both axes
-/// reach 1. Under `DDS_MAX_PIXELS` this is at most 27.
-///
-/// `dwMipMapCount` (header offset 28) is attacker-controlled and NOT covered
-/// by the pixel cap, which bounds only width x height. Without this bound a
-/// header claiming `0xFFFF_FFFF` levels asks `Vec::with_capacity` for ~160 GiB
-/// of `RgbaImage` headers; a failed allocation goes to `handle_alloc_error`,
-/// which ABORTS the process rather than returning a `GameUiError`. Bound the
-/// header field where every other header field is bounded — at parse — so no
-/// downstream size expression can ever see an impossible level count.
 fn max_mip_levels(width: usize, height: usize) -> u32 {
     let mut levels = 1u32;
     let (mut w, mut h) = (width, height);
@@ -71,10 +55,6 @@ pub fn info_file(path: &Path) -> Result<DdsInfo> {
     info_bytes(&data).map_err(|err| add_path(err, path))
 }
 
-/// Reject non-2D surface topologies. Cubemap faces and volume slices follow
-/// the mip-0 payload in the same file, so decoding one as a plain 2D surface
-/// silently reinterprets the extra faces/slices as mip data. Every decode
-/// entry point must apply this — see `decode_mip_chain_bytes`.
 fn reject_non_2d(header: &Header) -> Result<()> {
     if header.caps2 & DDSCAPS2_CUBEMAP != 0 {
         return Err(GameUiError::new(
@@ -287,10 +267,6 @@ fn dds_format(
     }
 }
 
-/// Checked `factors product + offset` for header-derived sizes. Overflow maps
-/// to a typed `InvalidTexture("dimensions")` refusal — the header math cannot
-/// overflow under the `DDS_MAX_PIXELS` gate, but every size expression stays
-/// checked so no future path can silently wrap.
 fn checked_size(factors: [usize; 3], offset: usize, label: &str) -> Result<usize> {
     factors
         .iter()
@@ -452,8 +428,6 @@ fn decode_uncompressed(data: &[u8], header: &Header) -> Result<RgbaImage> {
     decode_uncompressed_level(data, header, DDS_HEADER_LEN, header.width, header.height)
 }
 
-/// Decode one uncompressed mip level at `offset` with explicit dimensions
-/// (the header carries mip 0's; deeper levels halve, floored at 1).
 fn decode_uncompressed_level(
     data: &[u8],
     header: &Header,
@@ -500,15 +474,7 @@ fn decode_uncompressed_level(
     })
 }
 
-/// Decode EVERY mip level of an uncompressed (`A8R8G8B8`-family) DDS, in
-/// file order (level 0 first, each level half the previous, floored at 1).
-///
-/// The map-label fonts ship real mip chains the engine samples with
-/// trilinear filtering (`gfx/FX/mapname.shader` Samplers: MipFilter =
-/// "Linear", MipMapLodBias = -0.4; the frame4700 capture binds the
-/// `hoi_mapfont4` atlas with mips=4), so the replay must upload the SHIPPED
 /// mip bytes rather than mip 0 alone or regenerated approximations.
-/// Compressed formats fail closed — no current caller needs them.
 pub fn decode_mip_chain_bytes(data: &[u8]) -> Result<Vec<RgbaImage>> {
     let header = Header::parse(data)?;
     reject_non_2d(&header)?;
@@ -525,9 +491,6 @@ pub fn decode_mip_chain_bytes(data: &[u8]) -> Result<Vec<RgbaImage>> {
         ));
     }
     let bytes_per_pixel = header.rgb_bits / 8;
-    // `Header::parse` bounds `mip_count` by `max_mip_levels(width, height)`
-    // (<= 27 under the pixel cap), so this reservation is header-derived but
-    // bounded BEFORE the allocation, like every other size in this file.
     let level_count = header.mip_count.max(1);
     debug_assert!(level_count <= max_mip_levels(header.width, header.height));
     let mut levels = Vec::with_capacity(level_count as usize);
@@ -655,11 +618,7 @@ fn rgb565(value: u16) -> [u8; 3] {
     ]
 }
 
-/// Scale one masked channel to 8 bits. Every step is `u64` so no mask shape
-/// can panic: `bits == 32` would overflow `1u32 << 32`, and `value * 255`
 /// would overflow `u32` for a wide mask — both are release panics under this
-/// workspace's `overflow-checks = true`. A zero mask has no channel at all and
-/// yields 0; it must never reach the division.
 fn mask_channel(raw: u32, mask: u32) -> u8 {
     if mask == 0 {
         return 0;
@@ -760,11 +719,10 @@ mod tests {
     #[test]
     fn dxt3_known_block_decodes_color_and_nibble_alpha() {
         let mut data = minimal_header(4, 4, b"DXT3", 0, 0, 0, 0, 0);
-        // 8 bytes of 4-bit alpha (all 0xF -> 255), then color0/color1/codes.
         data.extend_from_slice(&[0xff; 8]);
-        data.extend_from_slice(&0xf800u16.to_le_bytes()); // color0 = pure red
-        data.extend_from_slice(&0x001fu16.to_le_bytes()); // color1 = pure blue
-        data.extend_from_slice(&0u32.to_le_bytes()); // all codes select color0
+        data.extend_from_slice(&0xf800u16.to_le_bytes());
+        data.extend_from_slice(&0x001fu16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
         let decoded = decode_bytes(&data).expect("decode dxt3");
         assert_eq!(decoded.format, "DXT3");
         assert_eq!(decoded.image.pixels.len(), 4 * 4 * 4);
@@ -776,12 +734,12 @@ mod tests {
     #[test]
     fn dxt5_known_block_decodes_color_and_interpolated_alpha() {
         let mut data = minimal_header(4, 4, b"DXT5", 0, 0, 0, 0, 0);
-        data.push(200); // alpha0
-        data.push(0); // alpha1
-        data.extend_from_slice(&[0u8; 6]); // all alpha codes select alpha0
-        data.extend_from_slice(&0xf800u16.to_le_bytes()); // color0 = pure red
-        data.extend_from_slice(&0u16.to_le_bytes()); // color1 = black
-        data.extend_from_slice(&0u32.to_le_bytes()); // all codes select color0
+        data.push(200);
+        data.push(0);
+        data.extend_from_slice(&[0u8; 6]);
+        data.extend_from_slice(&0xf800u16.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        data.extend_from_slice(&0u32.to_le_bytes());
         let decoded = decode_bytes(&data).expect("decode dxt5");
         assert_eq!(decoded.format, "DXT5");
         for pixel in decoded.image.pixels.chunks_exact(4) {
@@ -815,7 +773,7 @@ mod tests {
     #[test]
     fn truncated_dxt1_payload_is_rejected() {
         let mut data = minimal_header(4, 4, b"DXT1", 0, 0, 0, 0, 0);
-        data.extend_from_slice(&[0u8; 7]); // one block needs 8 bytes
+        data.extend_from_slice(&[0u8; 7]);
         let err = decode_bytes(&data).expect_err("short payload must be rejected");
         assert_eq!(err.kind, ErrorKind::InvalidTexture("truncated".to_string()));
     }
@@ -823,7 +781,6 @@ mod tests {
     #[test]
     fn huge_uncompressed_dimensions_are_a_typed_refusal_not_a_panic() {
         // width = height = 2^31: unchecked release-mode math would wrap
-        // width*height*4 to 0 and index out of bounds. Must refuse instead.
         let mut data = minimal_header(
             0x8000_0000,
             0x8000_0000,
@@ -864,12 +821,12 @@ mod tests {
             0x0000_ff00,
             0x0000_00ff,
         );
-        data[28..32].copy_from_slice(&2u32.to_le_bytes()); // mip_count = 2
+        data[28..32].copy_from_slice(&2u32.to_le_bytes());
         data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
         for _ in 0..4 {
-            data.extend_from_slice(&[0x33, 0x22, 0x11, 0x44]); // level 0 (BGRA)
+            data.extend_from_slice(&[0x33, 0x22, 0x11, 0x44]);
         }
-        data.extend_from_slice(&[0x66, 0x55, 0x44, 0x77]); // level 1 (BGRA)
+        data.extend_from_slice(&[0x66, 0x55, 0x44, 0x77]);
         let levels = decode_mip_chain_bytes(&data).expect("decode mip chain");
         assert_eq!(levels.len(), 2);
         assert_eq!((levels[0].width, levels[0].height), (2, 2));
@@ -893,7 +850,7 @@ mod tests {
         data[28..32].copy_from_slice(&2u32.to_le_bytes());
         data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
         for _ in 0..4 {
-            data.extend_from_slice(&[0x33, 0x22, 0x11, 0x44]); // level 0 only
+            data.extend_from_slice(&[0x33, 0x22, 0x11, 0x44]);
         }
         let err = decode_mip_chain_bytes(&data).expect_err("missing level 1 must be rejected");
         assert_eq!(err.kind, ErrorKind::InvalidTexture("truncated".to_string()));
@@ -901,9 +858,6 @@ mod tests {
 
     #[test]
     fn unbounded_mip_count_is_a_typed_refusal_not_an_allocation_abort() {
-        // R11 C1: 0xFFFF_FFFF levels x 40 bytes per RgbaImage header is a
-        // ~160 GiB `Vec::with_capacity`, which aborts the process instead of
-        // returning an error. The header field must be bounded at parse.
         let mut data = minimal_header(
             4,
             4,
@@ -919,7 +873,6 @@ mod tests {
         data.extend_from_slice(&[0u8; 4 * 4 * 4]);
         let err = decode_mip_chain_bytes(&data).expect_err("absurd mip count must be rejected");
         assert_eq!(err.kind, ErrorKind::InvalidTexture("mip_count".to_string()));
-        // The same bound applies to every other entry point on this header.
         let err = decode_bytes(&data).expect_err("absurd mip count must be rejected");
         assert_eq!(err.kind, ErrorKind::InvalidTexture("mip_count".to_string()));
         let err = info_bytes(&data).expect_err("absurd mip count must be rejected");
@@ -928,8 +881,6 @@ mod tests {
 
     #[test]
     fn shipped_level_counts_are_still_admitted() {
-        // A full 4x4 chain is 3 levels (4x4, 2x2, 1x1); the bound must admit
-        // exactly that and refuse only one level more.
         assert_eq!(max_mip_levels(4, 4), 3);
         assert_eq!(max_mip_levels(1, 1), 1);
         assert_eq!(max_mip_levels(2048, 1024), 12);
@@ -952,8 +903,6 @@ mod tests {
             data[104..108].copy_from_slice(&0xff00_0000u32.to_le_bytes());
             data[112..116].copy_from_slice(&caps2.to_le_bytes());
             data.extend_from_slice(&[0u8; 2 * 2 * 4]);
-            // Without the shared gate this decodes the extra faces/slices as
-            // ordinary deeper mip levels.
             let err = decode_mip_chain_bytes(&data)
                 .expect_err("mip-chain decode must reject non-2D topologies");
             assert_eq!(err.kind, ErrorKind::InvalidTexture(label.to_string()));
@@ -962,7 +911,6 @@ mod tests {
 
     #[test]
     fn mask_channel_is_total_for_every_mask_shape() {
-        // R11 C10(a) / R18-3: a 32-bit mask overflows `1u32 << 32` and
         // `value * 255`; both are release panics under overflow-checks.
         assert_eq!(mask_channel(u32::MAX, u32::MAX), 255);
         assert_eq!(mask_channel(0, u32::MAX), 0);

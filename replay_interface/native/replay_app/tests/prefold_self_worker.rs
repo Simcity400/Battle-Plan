@@ -1,6 +1,3 @@
-// The prefold worker moved to the packaged recorder executable so the replay
-// workspace remains extractor-independent. Process coverage now lives with
-// the extractor worker and the explicit package receipt validation.
 #![cfg(any())]
 
 use std::fs::File;
@@ -177,12 +174,6 @@ fn shipped_cli_opens_compact_recording_through_the_production_parent_worker() {
     let recording = root.0.join("parent-boundary.battleplan");
     write_compact_container(&recording, "production-parent-worker", &stream());
 
-    // --validate-recording enters the normal product opener. For a compact-only
-    // container that necessarily executes ProductionPrefoldWorker end to end:
-    // retained source admission, bounded child/job collection, self-image
-    // revalidation, receipt authentication, and PrefoldedSpool construction.
-    // The CHILD process opens this container, so the guard has to be held in
-    // the parent across the whole spawn-and-wait.
     let _scanner_guard = portable_test_fs_retry::open(&recording)
         .expect("hold the recording open across the scanner's window");
     let output = bounded_output(
@@ -217,9 +208,6 @@ fn shipped_replay_app_worker_folds_the_inherited_source_handle_not_its_path() {
     std::fs::write(&source_path, &bytes).expect("write compact source");
     let source_sha256 = snapshot::sha256::Sha256::hex(&bytes);
 
-    // Retain the authenticated object, then substitute the diagnostic path.
-    // The worker must consume stdin's inherited handle and never reopen this
-    // now-hostile path.
     let retained = open_substitutable_read_handle(&source_path);
     std::fs::rename(&source_path, &retained_path).expect("move retained source pathname");
     std::fs::write(&source_path, vec![0xa5; bytes.len()]).expect("substitute source path");

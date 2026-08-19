@@ -1,11 +1,4 @@
-//! End-user packaging and graceful-stop seams for the resident auto-attach app.
-//!
-//! This module deliberately does not enable duplex capture. It removes two
-//! development-only assumptions from the supervisor entry point: the packaged
-//! collector payload can be resolved beside the installed executable, and an OS
 //! stop request reaches the coordinator's stop ownership instead of bypassing
-//! it. Worker-side finalization remains governed by the activation-frozen duplex
-//! lifecycle rather than being claimed by this signal bridge.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,12 +10,6 @@ use std::sync::{Arc, Mutex};
 pub const PACKAGED_COLLECTOR_DLL_NAME: &str = "collector.dll";
 pub const PRODUCT_DATA_DIRECTORY_NAME: &str = "Battle Plan Recorder";
 
-/// Resolve the collector payload for the installed product.
-///
-/// An explicit path remains a developer/support override. The ordinary product
-/// path is exactly one non-symlink file named `collector.dll` beside the current
-/// executable. Canonical-parent equality prevents a junction/symlink escape from
-/// silently turning the install directory into an arbitrary payload search.
 pub fn resolve_packaged_collector_dll(
     explicit: Option<PathBuf>,
     current_exe: &Path,
@@ -72,9 +59,6 @@ fn validate_payload_file(
     Ok(canonical)
 }
 
-/// Resolve the ordinary per-user product data root through the Windows Known
-/// Folder API. No drive letter, profile path, OneDrive policy, or environment
-/// variable participates in the decision.
 #[cfg(windows)]
 pub fn default_product_data_root() -> Result<PathBuf, String> {
     use std::ffi::{c_void, OsString};
@@ -141,11 +125,6 @@ pub fn default_product_data_root() -> Result<PathBuf, String> {
     }
 }
 
-/// Create the per-user product root and protect it from inherited machine-wide
-/// ACL entries. `OW` is the Windows Owner Rights SID: because this directory is
-/// created inside the current user's LocalAppData, it grants the current user
-/// full inheritable access without embedding a machine-specific SID. SYSTEM is
-/// retained for backup/recovery. No administrator privilege is requested.
 #[cfg(windows)]
 fn ensure_private_product_data_root(path: &Path) -> Result<(), String> {
     private_storage::prepare(path)
@@ -531,9 +510,6 @@ mod private_storage {
         if !path.is_absolute() {
             return Err("product data root must be absolute".into());
         }
-        // Hold no-delete handles to every ancestor while creating the product
-        // root. This prevents a checked component being swapped for a junction
-        // between inspection and the first protected ACL write.
         let mut guards = Vec::new();
         let mut current = PathBuf::new();
         for component in path.components() {
@@ -576,10 +552,7 @@ mod private_storage {
     }
 }
 
-/// Run the ordinary recorder as a normal desktop window. Closing the window or
 /// pressing the explicit stop button transfers ownership to the coordinator,
-/// which drains/finalizes every worker before the window exits. There is no
-/// tray icon, background service, installer, or elevation path.
 #[cfg(windows)]
 pub fn run_product_window<F>(out_root: PathBuf, supervisor: F) -> Result<(), String>
 where
@@ -593,8 +566,6 @@ where
     desktop::run(out_root, supervisor)
 }
 
-/// Visible error boundary for failures that occur before the product window can
-/// be created (payload/storage preflight) or after its message loop exits.
 #[cfg(windows)]
 pub fn show_product_error(message: &str) {
     desktop::show_error(message);
@@ -653,9 +624,6 @@ mod desktop {
         recordings_root: PathBuf,
         terminal_result_seen: bool,
         entries: Vec<String>,
-        /// This session ended because the game is a build the recorder does not
-        /// know. Recorded so the stop that follows does not wrap the version
-        /// sentence in an error report about itself.
         unsupported_game_build: bool,
     }
 
@@ -726,53 +694,28 @@ mod desktop {
                     detail,
                     run_dir,
                 } => {
-                    // PATCH DAY (owner ruling 2026-08-18). An unknown game
-                    // build is not "recording failed" — nothing was attempted,
-                    // nothing was changed, and there is no attempt folder worth
-                    // pointing at. The host reads the version sentence and
-                    // nothing else, so no PID, no reason code, no "still
-                    // watching" (waiting will not make an unknown build known;
-                    // a recorder update will).
                     if reason == crate::auto_attach::state::ReasonCode::UnsupportedGameBuild {
                         let message = detail
                             .unwrap_or_else(|| reason.as_str().to_string())
                             .replace("\r\n", "\n")
                             .replace('\n', "\r\n");
-                        // REPLACES the log, it does not join it. `append` keeps
-                        // a scrollback — the "Watching for the game…"
-                        // line it opens with, and anything an earlier game left
-                        // behind — and a host reading "Recording finished and
-                        // verified… / This game version … is not supported yet"
-                        // in one box has been given two answers to one
-                        // question. The refusal ends the session, so it ends
-                        // the transcript with it.
                         self.entries = vec![message.clone()];
                         self.status_text = message;
                         self.unsupported_game_build = true;
-                        // The host has now seen it. `main` reads this so a
-                        // no-argument launch does not follow the window with a
-                        // modal dialog carrying the same sentence again.
                         crate::game_build::mark_refusal_presented();
                         self.open_target = self.recordings_root.clone();
                         self.terminal_result_seen = true;
                         return;
                     }
                     let detail = detail.unwrap_or_else(|| reason.as_str().to_string());
-                    let run_dir_is_directory =
-                        run_dir.as_ref().is_some_and(|path| path.is_dir());
-                    let (open_target, visible_run_dir) = select_failure_folder(
-                        &self.recordings_root,
-                        run_dir,
-                        run_dir_is_directory,
-                    );
+                    let run_dir_is_directory = run_dir.as_ref().is_some_and(|path| path.is_dir());
+                    let (open_target, visible_run_dir) =
+                        select_failure_folder(&self.recordings_root, run_dir, run_dir_is_directory);
                     let location = visible_run_dir
                         .as_ref()
                         .map(|path| format!("\r\nAttempt folder: {}", path.display()))
                         .unwrap_or_else(|| {
-                            format!(
-                                "\r\nRecordings folder: {}",
-                                self.recordings_root.display()
-                            )
+                            format!("\r\nRecordings folder: {}", self.recordings_root.display())
                         });
                     self.append(format!(
                         "Recording failed for the game (PID {pid}): {detail}{location}\r\nThe recorder is still watching for another game."
@@ -788,12 +731,6 @@ mod desktop {
         }
 
         pub(super) fn finished(&mut self, error: Option<&str>) {
-            // The unsupported-build refusal IS the supervisor's error, and the
-            // window is already showing it. Wrapping it in "Recorder stopped
-            // because of an error: …" would tell the host their recorder broke,
-            // when what happened is that their game is newer than it. One line
-            // is added: that it has stopped, and that Close is the next thing
-            // to do.
             if self.unsupported_game_build {
                 self.entries
                     .push("The recorder has stopped. Select Close when ready.".to_string());
@@ -824,9 +761,7 @@ mod desktop {
         candidate_is_directory: bool,
     ) -> (PathBuf, Option<PathBuf>) {
         match candidate {
-            Some(candidate) if candidate_is_directory => {
-                (candidate.clone(), Some(candidate))
-            }
+            Some(candidate) if candidate_is_directory => (candidate.clone(), Some(candidate)),
             _ => (recordings_root.to_path_buf(), None),
         }
     }
@@ -1153,10 +1088,9 @@ mod desktop {
         let thread = match std::thread::Builder::new()
             .name("auto-attach-supervisor".to_string())
             .spawn(move || {
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        supervisor(stop, report_event)
-                    }));
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    supervisor(stop, report_event)
+                }));
                 let state_ptr = state_address as *mut UiState;
                 let state = unsafe { &*state_ptr };
                 let error = match result {
@@ -1260,12 +1194,7 @@ mod desktop {
                     .status_text,
             )
             .as_ptr(),
-            WS_CHILD
-                | WS_VISIBLE
-                | WS_VSCROLL
-                | ES_MULTILINE
-                | ES_AUTOVSCROLL
-                | ES_READONLY,
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_READONLY,
             24,
             28,
             640,
@@ -1315,9 +1244,7 @@ mod desktop {
             ));
         }
         state.status.store(status, Ordering::Release);
-        state
-            .stop_button
-            .store(stop_button, Ordering::Release);
+        state.stop_button.store(stop_button, Ordering::Release);
         state.open_button.store(open_button, Ordering::Release);
         SendMessageW(status, EM_SETSEL, usize::MAX, -1);
         SendMessageW(status, EM_SCROLLCARET, 0, 0);
@@ -1383,9 +1310,7 @@ mod stop {
                 | CTRL_LOGOFF_EVENT
                 | CTRL_SHUTDOWN_EVENT
         ) {
-            // A console handler must do no allocation, I/O, locking, joining, or
             // finalization. It only transfers ownership to the ordinary
-            // supervisor loop, which requests stop from its owned workers.
             STOP_REQUESTED.store(true, Ordering::Release);
             1
         } else {
@@ -1393,7 +1318,6 @@ mod stop {
         }
     }
 
-    /// RAII registration for the resident supervisor's cooperative stop flag.
     pub struct GracefulStopRegistration {
         _private: (),
     }
@@ -1515,7 +1439,9 @@ mod tests {
         let run_dir = root.join("run_attempt-1");
         let replay = run_dir.join("campaign.battleplan");
         let mut presentation = ProductPresentation::watching(root.clone());
-        assert!(presentation.status_text.contains(&root.display().to_string()));
+        assert!(presentation
+            .status_text
+            .contains(&root.display().to_string()));
         assert_eq!(presentation.open_target, root);
 
         presentation.apply(SupervisorEvent::RecordingStarted {
@@ -1551,7 +1477,9 @@ mod tests {
         assert!(presentation
             .status_text
             .contains("verification rejected the artifact"));
-        assert!(presentation.status_text.contains(&replay.display().to_string()));
+        assert!(presentation
+            .status_text
+            .contains(&replay.display().to_string()));
         assert_eq!(presentation.open_target, replay.parent().unwrap());
 
         presentation.stopping();
@@ -1559,14 +1487,11 @@ mod tests {
         presentation.finished(None);
         assert!(presentation.status_text.contains("stopped safely"));
         assert!(presentation.status_text.contains("Select Close"));
-        assert!(presentation.status_text.contains(&replay.display().to_string()));
+        assert!(presentation
+            .status_text
+            .contains(&replay.display().to_string()));
     }
 
-    /// kills: routing an unsupported game build through the ordinary
-    /// "Recording failed for … (PID n): …" template, or appending "still
-    /// watching" / an attempt folder to it. The window must show the version
-    /// sentence and only the version sentence — the host has to be able to read
-    /// what happened without knowing what a PID or an attempt folder is.
     #[cfg(windows)]
     #[test]
     fn product_presentation_shows_only_the_unsupported_build_sentence() {
@@ -1592,11 +1517,6 @@ mod tests {
             run_dir: Some(root.join("run_attempt-1")),
         });
 
-        // EQUALITY, not `contains`. The window opens with "Watching for Hearts
-        // of Iron IV…" and keeps a scrollback of earlier recordings; a host
-        // reading "Recording finished and verified…" above "This game version …
-        // is not supported yet" has been given two answers to one question. The
-        // refusal ends the session, so it replaces the transcript.
         let rendered = refusal.message().replace('\n', "\r\n");
         assert_eq!(presentation.status_text, rendered);
         for absent in [
@@ -1615,9 +1535,6 @@ mod tests {
         }
         assert_eq!(presentation.open_target, root);
 
-        // ...and the stop that follows does not wrap it in an error report
-        // about the recorder. The host's game is newer than the recorder; the
-        // recorder did not break.
         presentation.finished(Some(refusal.message().as_str()));
         assert!(presentation.status_text.starts_with(&rendered));
         assert!(presentation
@@ -1628,10 +1545,6 @@ mod tests {
             .contains("Recorder stopped because of an error"));
     }
 
-    /// kills: leaving an earlier recording's transcript in the window when the
-    /// refusal lands. This is the same claim as the test above, from the other
-    /// side: a session that already recorded something must still end with the
-    /// version sentence alone.
     #[cfg(windows)]
     #[test]
     fn an_earlier_recording_does_not_survive_the_unsupported_build_sentence() {
@@ -1684,7 +1597,9 @@ mod tests {
         assert_eq!(presentation.open_target, root);
 
         presentation.finished(Some("journal write failed"));
-        assert!(presentation.status_text.contains("stopped because of an error"));
+        assert!(presentation
+            .status_text
+            .contains("stopped because of an error"));
         assert!(presentation.status_text.contains("journal write failed"));
         assert!(presentation.status_text.contains("select Close"));
     }
@@ -1693,8 +1608,7 @@ mod tests {
     #[test]
     fn stop_button_requests_stop_until_supervisor_finishes_then_closes() {
         use super::desktop::{
-            completion_disposition, stop_button_action, CompletionDisposition,
-            StopButtonAction,
+            completion_disposition, stop_button_action, CompletionDisposition, StopButtonAction,
         };
 
         assert_eq!(stop_button_action(false), StopButtonAction::RequestStop);
@@ -1732,10 +1646,7 @@ mod tests {
             select_failure_folder(&root, Some(candidate.clone()), true),
             (candidate.clone(), Some(candidate))
         );
-        assert_eq!(
-            select_failure_folder(&root, None, true),
-            (root, None)
-        );
+        assert_eq!(select_failure_folder(&root, None, true), (root, None));
     }
 
     #[cfg(windows)]

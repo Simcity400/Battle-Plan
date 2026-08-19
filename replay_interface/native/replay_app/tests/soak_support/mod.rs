@@ -1,11 +1,3 @@
-//! Shared scaffolding for the soak test binaries (`tests/soak.rs` = F3 long-run
-//! harness, `tests/soak_f2.rs` = F2 budget-knob gates).
-//!
-//! Compiled into each binary via `mod soak_support;` — the mod.rs-in-
-//! subdirectory form keeps Cargo from treating this file as a standalone test
-//! target. Measurement-critical pieces (the counting allocator, the
-//! `INDEX_COPIES` subtraction constant, the synthetic source) live here exactly
-//! once so the two binaries cannot drift.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::path::PathBuf;
@@ -15,16 +7,6 @@ use std::sync::Arc;
 use replay_core::{RawFrame, ReplaySource, SourceError, WorldFrame, WorldTimeline};
 use serde_json::{json, Map, Value};
 
-// ---------------------------------------------------------------------------
-// Memory measurement: a counting global allocator.
-//
-// Net-live bytes = sum(alloc.size) - sum(dealloc.size). Sampling it at loop
-// boundaries (when the harness holds no frame Arcs) reflects exactly what the
-// timeline is retaining: the fixed-size structures plus the budget-capped
-// frame cache. A leak accumulates here monotonically; a bounded design stays
-// flat. `realloc` routes through the default GlobalAlloc impl (alloc +
-// dealloc), so it is accounted without an explicit override.
-// ---------------------------------------------------------------------------
 
 struct CountingAlloc;
 
@@ -58,11 +40,6 @@ pub fn live_bytes() -> usize {
     LIVE.load(Ordering::Relaxed)
 }
 
-/// Number of O(length) hour-index vectors held live during a scrub: the
-/// `ReplaySource`'s own `hours` vector, plus `WorldTimeline::open`'s defensive
-/// `to_vec()` copy of it. Both are `i64`-per-hour index spines (NOT frame
-/// payloads) and scale with timeline length by design; the F2-style gates
-/// subtract them so they measure only the budget-capped frame cache.
 pub const INDEX_COPIES: usize = 2;
 
 pub fn env_usize(key: &str, default: usize) -> usize {
@@ -72,20 +49,7 @@ pub fn env_usize(key: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-// ---------------------------------------------------------------------------
-// Synthetic in-memory ReplaySource: an arbitrarily long hourly timeline.
-//
 // Frames are generated on demand (the source stores only the hour vector), so
-// the source itself never scales its live footprint with the scrub — the ONLY
-// thing that can grow during a scrub is the timeline's frame cache, which is
-// exactly what the F2-style ceiling gates are measuring.
-//
-// `pad_repeats` controls an optional deterministic per-frame payload (hex,
-// derived from the hour) under an unknown top-level domain ("soak_pad") that
-// `WorldFrame::raw()` preserves verbatim: 0 omits the key entirely (the F3
-// harness's small frames), 1024 yields 16 chars x 1024 = 16 KiB per cached
-// frame — the measurable unit of the F2 budget gates.
-// ---------------------------------------------------------------------------
 
 pub struct SyntheticSource {
     game_id: String,
@@ -95,7 +59,7 @@ pub struct SyntheticSource {
 
 impl SyntheticSource {
     pub fn new(hour_count: usize, game_id: &str, pad_repeats: usize) -> SyntheticSource {
-        let base: i64 = 16_959_360; // matches the fixture epoch style
+        let base: i64 = 16_959_360;
         let hours: Vec<i64> = (0..hour_count as i64).map(|i| base + i).collect();
         SyntheticSource {
             game_id: game_id.to_string(),
@@ -119,9 +83,6 @@ impl ReplaySource for SyntheticSource {
         if self.hours.binary_search(&hour_index).is_err() {
             return Err(SourceError::Open(format!("no such hour {hour_index}")));
         }
-        // A small but non-trivial payload whose values are a deterministic
-        // function of the hour, so seek==play equality compares real content
-        // and the typed-view builders actually run each frame.
         let owner = if (hour_index % 2) == 0 { "GER" } else { "SOV" };
         let mut states = Map::new();
         for s in 0..4u32 {
@@ -137,9 +98,6 @@ impl ReplaySource for SyntheticSource {
             json!({ "GER": { "politics": { "stability": (hour_index % 100) as f64 / 100.0 } } }),
         );
         if self.pad_repeats > 0 {
-            // Known-sized payload: an unknown top-level domain is preserved
-            // verbatim in WorldFrame::raw(), so each CACHED frame retains
-            // exactly one pad_repeats x 16-char copy.
             rest.insert(
                 "soak_pad".to_string(),
                 Value::String(format!("{hour_index:016x}").repeat(self.pad_repeats)),
@@ -155,11 +113,6 @@ impl ReplaySource for SyntheticSource {
     }
 }
 
-// ---------------------------------------------------------------------------
-// A4 equality (reused invariant): seek(h) and play_to(h) must resolve to
-// content-equal frames. We compare the canonical hour, the raw domain map, and
-// a representative typed view (owner_by_state) — the same equality A4 gates.
-// ---------------------------------------------------------------------------
 
 pub fn assert_seek_eq_play(tl: &WorldTimeline, hour: i64) {
     let s: Arc<WorldFrame> = tl.seek(hour).expect("seek");
@@ -179,10 +132,6 @@ pub fn fixture_path(name: &str) -> PathBuf {
         .join(name)
 }
 
-// ---------------------------------------------------------------------------
-// Tiny deterministic PRNG (xorshift-based LCG). No external dep; the scrub
-// scripts must be reproducible so a failure is re-runnable.
-// ---------------------------------------------------------------------------
 
 pub struct Lcg {
     state: u64,
@@ -190,7 +139,7 @@ pub struct Lcg {
 impl Lcg {
     pub fn new(seed: u64) -> Lcg {
         Lcg {
-            state: seed | 1, // never zero
+            state: seed | 1,
         }
     }
     pub fn next_u64(&mut self) -> u64 {

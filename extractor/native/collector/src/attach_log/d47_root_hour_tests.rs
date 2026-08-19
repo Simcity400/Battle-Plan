@@ -1,35 +1,3 @@
-//! d47's retained-root cache must never publish a row under an hour it did
-//! not observe.
-//!
-//! THE RETENTION. `CompactDomain47PrewarmCache::roots` is the ONLY d47 state
-//! that survives a frame. It holds, verbatim from the last SUCCESSFUL
-//! prewarm, one entry per character / unit leader / country-leader role /
-//! advisor / trait definition, and each entry carries ancillary TEXT the
-//! frame walk does not re-read: `CharacterRoot::{name, token}`,
-//! `UnitLeaderRoot::{name, token}` (plus its `country_tag_db_id` and
-//! `leader_kind`), `AdvisorRoot::{idea_token, slot, ledger}` and
-//! `TraitDefinitionRoot::token`. The walk re-reads the live scalars at each
-//! root ADDRESS every frame, but copies that text straight into the emitted
-//! row.
-//!
-//! WHY A HOLD IS ALWAYS CROSS-HOUR. One extraction frame is one scheduled
-//! game hour — the record's label is `request.stamp.hour_raw`, minted once
-//! per hour by the read-only scheduler. Consecutive frames are therefore
-//! never closer than one hour apart, and when the frame period overruns the
-//! 77.73 ms hour budget they are further apart, never nearer. So roots
-//! retained across a failed prewarm refresh were observed in a STRICTLY
-//! EARLIER hour than the frame that would publish them; there is no
-//! same-hour case to preserve, and no runtime hour comparison can find one.
-//!
-//! WHAT WAS WRONG. `domain47_note_refresh_hold` used to poison the retained
-//! roots only from the SECOND consecutive hold, so the first hold published
-//! CLEAN rows built from the previous hour's roots — no PARTIAL flag, no
-//! ledger entry, nothing naming the relabel. And because the
-//! type-root-resolution hold arms a 12-frame negative-cache window whose
-//! frames take an early return WITHOUT calling that function, the streak
-//! never advanced past 1: up to 13 consecutive hours could publish one
-//! hour's roots.
-
 use super::*;
 
 use domain47::adapter::{
@@ -49,8 +17,6 @@ const COUNTRY_LEADER_VT: u64 = 0x1000_4000;
 const ADVISOR_VT: u64 = 0x1000_5000;
 const TRAIT_VT: u64 = 0x1000_6000;
 
-/// Text that could only have come out of the retained cache. If any of these
-/// reaches a decoded row, the previous hour's roots were published.
 const STALE_NAME: &str = "Stale Hour Character";
 const STALE_TOKEN: &str = "GER_stale_hour_character";
 const STALE_IDEA: &str = "GER_stale_hour_advisor_idea";
@@ -82,8 +48,6 @@ impl domain47::extractor::LaneMemory for FakeMemory {
     }
 }
 
-/// A world whose LIVE memory is entirely readable and consistent, so the only
-/// thing that can make the reader refuse is the retained-root poison itself.
 fn stale_root_world() -> (FakeMemory, NativeRootCache) {
     let mut mem = FakeMemory::default();
     let character = 0x1000u64;
@@ -97,7 +61,10 @@ fn stale_root_world() -> (FakeMemory, NativeRootCache) {
     mem.write_u32(character + CCHARACTER_COUNTRY_TAG_DB_ID_OFF, 2);
     mem.write_u64(character + CCHARACTER_UNIT_LEADER_PTR_OFF, 0);
     mem.write_u64(country_leader, COUNTRY_LEADER_VT);
-    mem.write_u64(country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF, character);
+    mem.write_u64(
+        country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF,
+        character,
+    );
     mem.write_u64(advisor, ADVISOR_VT);
     mem.write_u64(advisor + CADVISOR_CHARACTER_PTR_OFF, character);
     mem.write_u64(trait_def, TRAIT_VT);
@@ -142,8 +109,6 @@ fn stale_root_world() -> (FakeMemory, NativeRootCache) {
     (mem, cache)
 }
 
-/// A prewarm cache holding `roots`, as it stands after one successful
-/// adoption and before any hold.
 fn adopted_cache(roots: NativeRootCache) -> CompactDomain47PrewarmCache {
     CompactDomain47PrewarmCache {
         roots,
@@ -163,10 +128,6 @@ fn emitted_row_text(mem: &FakeMemory, cache: &NativeRootCache) -> (u32, u32, Str
     )
 }
 
-/// CONTROL — the fixture is capable of publishing the retained text.
-///
-/// Without this, every "no stale text was published" assertion below could
-/// pass because the fixture never produced any rows at all.
 #[test]
 fn unheld_roots_do_publish_the_retained_text() {
     let (mem, cache) = stale_root_world();
@@ -183,14 +144,6 @@ fn unheld_roots_do_publish_the_retained_text() {
     );
 }
 
-/// THE FIX. One failed refresh must poison the retained roots, so the very
-/// next emission is a rowless PARTIAL instead of a CLEAN frame carrying the
-/// previous hour's text.
-///
-/// MUTATION: in `domain47_note_refresh_hold`, restore the tolerance —
-/// `if cache.refresh_hold_streak >= 2 { cache.roots.skipped_root_rows = ... }`
-/// This test then observes `row_count > 0`, no PARTIAL flag, and the stale
-/// name/token/idea text in the decoded rows, and fails on all three.
 #[test]
 fn first_refresh_hold_stops_the_previous_hours_roots_from_publishing() {
     let (mem, roots) = stale_root_world();
@@ -228,29 +181,8 @@ fn first_refresh_hold_stops_the_previous_hours_roots_from_publishing() {
     );
 }
 
-/// The adoption-blocked arm — the other way a refresh fails — takes the same
-/// poison, and its COLD twin still fails closed the way it always did.
-///
-/// This drives `domain47_apply_blocked_adoption`, which is the whole of what
-/// the prewarm does on that branch. The previous version of this test called
-/// `domain47_note_refresh_hold` itself, so deleting the production call would
-/// have left it green (Codex round 1, finding 2).
-///
-/// SCOPE, stated honestly: this pins the POLICY, not the call site. It cannot
-/// notice `prewarm_compact_characters_leaders_cabinet_roots` ceasing to call
-/// `domain47_apply_blocked_adoption` at all — reaching that branch needs a
-/// live engine, a warm heap sweep and a real manager roster, none of which
-/// exist offline. What it does cover is every way the policy itself could be
-/// weakened.
-///
-/// MUTATION (held arm): drop the `domain47_note_refresh_hold(cache)` call from
-/// `domain47_apply_blocked_adoption`, or restore the `>= 2` tolerance inside
-/// it — the held-arm assertions fail.
-/// MUTATION (cold arm): make the cold arm retain `cache.roots` instead of
-/// replacing it with a rootless cache — the cold-arm assertions fail.
 #[test]
 fn blocked_adoption_fails_closed_on_both_arms() {
-    // HELD: stable roots exist, so they are retained AND refused.
     let (mem, roots) = stale_root_world();
     let expected_roots = roots.stable_root_count();
     let mut held = adopted_cache(roots.clone());
@@ -283,18 +215,8 @@ fn blocked_adoption_fails_closed_on_both_arms() {
         "the previous hour's text reached a row: {rows}"
     );
 
-    // COLD: no adopted world to protect, so the cache is REPLACED with a
-    // rootless one carrying this pass's counters, and the reader then reports
-    // SOURCE_UNAVAILABLE rather than an empty resolved world.
-    //
-    // Every field below starts at a value the cold arm must overwrite. Seeded
-    // from `default()` instead, each assertion would hold whether or not the
-    // arm did anything, and the whole half would be decoration.
     let mut cold = CompactDomain47PrewarmCache {
         roots: domain47::scheduled::NativeRootCache {
-            // Populated vectors with `roots_validated` false: `has_stable_roots`
-            // is false, so this IS the cold arm, and a mutation that retained
-            // the cache instead of replacing it would leave them behind.
             roots: None,
             roots_validated: false,
             characters: roots.characters.clone(),
@@ -338,22 +260,6 @@ fn blocked_adoption_fails_closed_on_both_arms() {
     );
 }
 
-/// A hold must REFUSE the retained roots without DESTROYING them.
-///
-/// These are two different things and the obvious over-correction conflates
-/// them: "a held root view must not publish" is easiest to implement by
-/// emptying `cache.roots`, and that is the 2026-07-10 d47 data-loss defect —
-/// the fold full-replaces the live character world with nothing, and the
-/// domain then has to rediscover every character before it can emit again.
-/// The hold must leave the world intact so the next successful prewarm is a
-/// refresh and not a cold rebuild, and the ONLY thing standing between the
-/// retained roots and the wire must be `skipped_root_rows`, which a
-/// successful adoption clears by assigning a freshly built cache.
-///
-/// MUTATION: make `domain47_note_refresh_hold` empty the roots —
-/// `cache.roots = domain47::scheduled::NativeRootCache::default();` — which is
-/// exactly that over-correction. The root-count and root-identity assertions
-/// below fail, and so does the republish.
 #[test]
 fn a_hold_refuses_the_retained_roots_without_destroying_them() {
     let (mem, roots) = stale_root_world();
@@ -381,10 +287,6 @@ fn a_hold_refuses_the_retained_roots_without_destroying_them() {
         "a held cache must still count as having roots, or the next prewarm is a COLD rebuild"
     );
 
-    // Clearing the marker is all a successful adoption does to the emit
-    // decision: it assigns a freshly built cache whose `skipped_root_rows` is
-    // zero by construction. One transient outage therefore costs one rowless
-    // hour, not the domain.
     cache.roots.skipped_root_rows = 0;
     cache.refresh_hold_streak = 0;
     let (row_count, status_flags, rows) = emitted_row_text(&mem, &cache.roots);
@@ -393,34 +295,12 @@ fn a_hold_refuses_the_retained_roots_without_destroying_them() {
     assert!(rows.contains(STALE_NAME), "recovered rows must carry text");
 }
 
-// ---------------------------------------------------------------------------
-// Discovery's OWN hour, not just the hour its roots were retained from.
-//
-// The tests above are about roots that OUTLIVE their discovery. These are
-// about discovery itself: it reads the TEXT the frame walk copies into the
-// row, and since lane HT it runs INSIDE the d47 worker's clock bracket. The
-// worker judges its bracket's OPENING read against the frame label BEFORE
-// spending anything (`domain47_worker_clock_precheck`); a straddle DURING
-// discovery is the worker bracket's own Torn, minted by
-// `rejected_bracket_domains` like any other split reader's.
-// ---------------------------------------------------------------------------
-
 const FRAME_HOUR: i32 = 60_832_014;
 
-/// An authenticated clock observation, as `observe_frame_clock` returns it: the
-/// game hour, its global observation ordinal, and its position in the frame.
 fn clock(hour: i32, ordinal: u64) -> Option<ClockObservation> {
     Some(clock_obs(hour, ordinal))
 }
 
-/// Each way the worker's opening read can land, and what it proves.
-///
-/// kills: in `domain47_worker_clock_precheck`, delete the label check
-/// (`observation.hour != game_hour_raw => WrongHour`) — the "wrong hour" case
-/// fails here (left `InFrameHour`, right `WrongHour`) and
-/// `a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched` fails with
-/// it; make the `None` arm return `InFrameHour` and the "opening unreadable"
-/// case fails instead.
 #[test]
 fn the_precheck_separates_the_two_clock_failures() {
     #[allow(clippy::type_complexity)]
@@ -430,7 +310,6 @@ fn the_precheck_separates_the_two_clock_failures() {
         Option<ClockObservation>,
         bool,
     ); 3] = [
-        // (name, expected, opening, roots_unpublishable)
         (
             "clean",
             Domain47PrewarmClockVerdict::InFrameHour,
@@ -462,17 +341,11 @@ fn the_precheck_separates_the_two_clock_failures() {
             "{name}: publishability"
         );
     }
-    // The unspawned worker's shape: the default summary carries NotScheduled,
-    // which refuses nothing because nothing was built.
     assert_eq!(
         Domain47PrewarmSummary::default().clock_verdict,
         Domain47PrewarmClockVerdict::NotScheduled,
     );
     assert!(!Domain47PrewarmClockVerdict::NotScheduled.roots_are_unpublishable());
-    // Every arm reports a DISTINCT code, or a capture cannot name which clock
-    // failure refused its hour. Code 2 (the retired `Straddled`) must stay
-    // unassigned: a straddle is the worker bracket's Torn now, and reusing its
-    // code would relabel old captures' straddles as something else.
     let codes: Vec<u64> = [
         Domain47PrewarmClockVerdict::NotScheduled,
         Domain47PrewarmClockVerdict::InFrameHour,
@@ -485,32 +358,17 @@ fn the_precheck_separates_the_two_clock_failures() {
     let mut distinct = codes.clone();
     distinct.sort_unstable();
     distinct.dedup();
-    assert_eq!(distinct.len(), codes.len(), "verdict codes must be distinct");
+    assert_eq!(
+        distinct.len(),
+        codes.len(),
+        "verdict codes must be distinct"
+    );
     assert!(
         !codes.contains(&2),
         "code 2 (Straddled) is retired, not reassigned"
     );
 }
 
-/// A straddled d47 WORKER bracket must reach the wire as a Torn DOMAIN_GAP for
-/// d47 and for nothing else. This is the shape `spawn_gated_split`'s guard
-/// records — the honest (opening, closing) pair, under d47's tag, with
-/// `worker_panicked` false — fed to the same `rejected_bracket_domains` every
-/// worker's bracket goes through. Since lane HT this ONE bracket covers
-/// discovery (census + role walk) as well as the frame walk, so a boundary
-/// landing anywhere inside either phase is this rejection.
-///
-/// LIMIT: this proves the recorded SHAPE rejects d47. It cannot prove the
-/// production site records it, because that site is inside
-/// `build_compact_extraction_gate_records` and has no test seam.
-///
-/// MUTATION RUN: change the fixture's tag from
-/// `COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE` to
-/// `COMPACT_DOMAIN_DIVISIONS` — the shape a mis-tagged production record would
-/// produce.
-/// OBSERVED: `panicked at ...: a straddled prewarm must reject d47` (8 passed,
-/// 1 failed) — a mis-tagged bracket silently rejects an unrelated domain while
-/// d47 publishes the straddled text.
 #[test]
 fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
     let brackets = [DomainClockBracket {
@@ -519,8 +377,7 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
         closing: clock(FRAME_HOUR + 1, 2),
         worker_panicked: false,
     }];
-    let rejected =
-        rejected_bracket_domains(&brackets, FRAME_HOUR, HourLabelMismatchPolicy::Refuse);
+    let rejected = rejected_bracket_domains(&brackets, FRAME_HOUR, HourLabelMismatchPolicy::Refuse);
     let d47 = rejected
         .get(&COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE)
         .copied()
@@ -533,8 +390,6 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
     );
     assert_eq!(rejected.len(), 1, "only d47 is covered by d47's bracket");
 
-    // CONTROL: the same bracket that did not straddle rejects nothing, so the
-    // assertion above is not passing because every bracket is rejected.
     let clean = [DomainClockBracket {
         tag: COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
         opening: clock(FRAME_HOUR, 1),
@@ -547,37 +402,13 @@ fn a_straddled_prewarm_bracket_rejects_d47_as_torn() {
     );
 }
 
-/// The `WrongHour` arm is the one the TEAR machinery cannot catch: opening ==
-/// closing, so a `CountOnly` reconciliation accepts it, and without the direct
-/// refusal the frame publishes the other hour's text CLEAN. Since lane HT the
-/// pre-check spares the discovery walk on such a frame; since lane MX (step
-/// 1b, Codex 01a00f9e) it ALSO leaves the discovery cache untouched — the
-/// refusal is the worker's rowless failure-status return, decided before
-/// discovery, and the next correctly-labelled frame's witness replay decides
-/// the cache. This test pins the helper half: the verdict is recorded and the
-/// cache (roots, poison, sweep words) is byte-for-byte what it was. The
-/// observer-level half — the production worker returns rowless on this
-/// verdict, with the cache unchanged — is
-/// `tests::state_fixture::a_wrong_hour_or_unreadable_precheck_refuses_the_frame_and_keeps_the_cache`,
-/// which drives `observe_compact_characters_leaders_cabinet_live` itself.
-///
-/// kills: restoring `domain47_poison_prewarm_roots(cache)` inside
-/// `domain47_apply_prewarm_clock_verdict` fails `the cache must not be
-/// poisoned by a clock verdict` (left 1, right 0) — that poison cost the next
-/// frame a 75-85 ms full discovery of unchanged bytes.
 #[test]
 fn a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched() {
     let (_mem, roots) = stale_root_world();
     let mut cache = adopted_cache(roots);
     let mut summary = Domain47PrewarmSummary::default();
 
-    // Nothing tore: the worker's opening read disagrees with the label.
     let verdict = domain47_worker_clock_precheck(clock(FRAME_HOUR + 1, 1), FRAME_HOUR);
-    // PREMISE, and the reason d47's own refusal is not redundant. This frame's
-    // bracket does not tear, so the TEAR machinery -- the only thing guarding
-    // the other 67 domains when this test was written -- cannot see it.
-    // `CountOnly` is that machinery with the generalised hour-label rule
-    // switched off, and it still accepts the frame.
     let wrong_hour_bracket = [DomainClockBracket {
         tag: COMPACT_DOMAIN_CHARACTERS_LEADERS_CABINET_LIVE,
         opening: clock(FRAME_HOUR + 1, 1),
@@ -593,10 +424,6 @@ fn a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched() {
         .is_empty(),
         "premise: nothing tore, so the tear machinery accepts this frame and          the refusal below cannot have come from it"
     );
-    // With the rule ON, the frame-wide check reaches the same verdict d47
-    // reaches for itself. Two independent statements of one rule that AGREE,
-    // which is the point of generalising it -- and d47 keeps its own, because
-    // the worker can refuse the frame for free before discovery.
     assert_eq!(
         rejected_bracket_domains(
             &wrong_hour_bracket,
@@ -612,7 +439,10 @@ fn a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched() {
     let before_epoch = cache.sweep_epoch;
     domain47_apply_prewarm_clock_verdict(verdict, &mut summary);
 
-    assert_eq!(summary.clock_verdict, Domain47PrewarmClockVerdict::WrongHour);
+    assert_eq!(
+        summary.clock_verdict,
+        Domain47PrewarmClockVerdict::WrongHour
+    );
     assert!(summary.clock_verdict.roots_are_unpublishable());
     assert_eq!(
         cache.roots.skipped_root_rows, 0,
@@ -621,21 +451,8 @@ fn a_wrong_hour_verdict_is_recorded_and_the_cache_is_untouched() {
     assert!(cache.roots.has_stable_roots());
     assert_eq!(cache.sweep_gen, before_gen);
     assert_eq!(cache.sweep_epoch, before_epoch);
-    // The world survives: the next in-hour frame REPLAYS or refreshes, so one
-    // wrong-hour frame costs one hour and not the domain.
 }
 
-/// An in-hour prewarm must change NOTHING. Without this, every assertion above
-/// would still pass if the verdict refused unconditionally — and d47 would
-/// lose every hour rather than the ones it cannot attribute.
-///
-/// kills: in `roots_are_unpublishable`, move `InFrameHour` into the `true`
-/// arm — `the_precheck_separates_the_two_clock_failures` fails at
-/// `clean: publishability`, and the observer-level fixture test refuses the
-/// in-hour frame. The blunt fix costs the whole domain, which is exactly the
-/// trade this lane was told not to make silently. (Since lane MX no verdict
-/// poisons the cache, so this test's poison assertion is a control that the
-/// cache is untouched by the in-hour verdict too.)
 #[test]
 fn an_in_hour_prewarm_publishes_unchanged() {
     let (mem, roots) = stale_root_world();
@@ -661,17 +478,6 @@ fn an_in_hour_prewarm_publishes_unchanged() {
     assert!(rows.contains(STALE_NAME));
 }
 
-/// A frame that did not schedule d47 must not be charged a clock failure.
-/// Since lane HT an unscheduled frame spawns no d47 worker at all, so no
-/// pre-check runs and the summary stays at its default — this pins that the
-/// default verdict (`NotScheduled`) refuses nothing, so a path that applied it
-/// anyway could not poison a domain that was never read.
-///
-/// kills: move `NotScheduled` into `roots_are_unpublishable`'s `true` arm —
-/// `the_precheck_separates_the_two_clock_failures` fails at its
-/// `NotScheduled` publishability assertion (since lane MX no verdict poisons
-/// the cache, so the poison assertion below is a control that the recorded
-/// verdict touches nothing).
 #[test]
 fn an_unscheduled_prewarm_is_not_a_clock_failure() {
     let (_mem, roots) = stale_root_world();
@@ -690,45 +496,20 @@ fn an_unscheduled_prewarm_is_not_a_clock_failure() {
     );
 }
 
-/// The cold-window policy, as a unit: NOTHING is held through a cold sweep any
-/// more (lane FU, task #125).
-///
-/// The production branch this decides is reachable only through live process
-/// memory and a running heap-sweep service, so the policy is tested here and
-/// the branch simply calls it — the arrangement
-/// `domain47_prewarm_adoption_blocked` already uses, and for the same reason.
-///
-/// WHY EVEN THE COMPLETE-CACHE CASE IS NOW FALSE. It was true when a cold sweep
-/// cost FOUR families: retaining eight beat degrading to four. Since d47's
-/// country-leader and advisor discovery moved to the character-down container
-/// walk, a cold sweep costs the trait DEFINITION family alone, so the fresh side
-/// is seven families of eight. And the retained side is worth nothing on the
-/// wire: `domain47_prewarm_hold` calls `domain47_note_refresh_hold`, which
-/// poisons the retained roots — the hour-attribution rule — and the scheduled
-/// reader turns that poison into a ROWLESS PARTIAL. Holding trades seven live
-/// families for zero rows to protect one that is unknown either way.
-///
-/// MUTATION: restore `had_stable_roots && retained_families == FAMILY_ALL` and
-/// the second case fails. That mutation costs every capture its whole d47
-/// output on any frame where the shared sweep degrades after warming.
 #[test]
 fn nothing_is_held_through_a_cold_sweep() {
-    // Nothing adopted yet: the ordinary start of a capture.
     assert!(!domain47_prewarm_holds_instead_of_recensusing(
         false,
         domain47::FAMILY_ALL
     ));
-    // A COMPLETE world already in hand. This is the case that changed.
     assert!(!domain47_prewarm_holds_instead_of_recensusing(
         true,
         domain47::FAMILY_ALL
     ));
-    // A walk-without-traits cache — what the cold window now adopts.
     assert!(!domain47_prewarm_holds_instead_of_recensusing(
         true,
         domain47::FAMILY_WALK_WITHOUT_TRAITS
     ));
-    // And the historical census-only shape, for the same answer.
     assert!(!domain47_prewarm_holds_instead_of_recensusing(
         true,
         domain47::FAMILY_CENSUS_ONLY

@@ -716,8 +716,6 @@ fn compose_major_views(
     resolver: &AssetResolver,
     registry: &SpriteRegistry,
 ) -> Result<Vec<MajorViewComposeResult>> {
-    // Load the localisation corpus once and cache parsed layouts / decoded
-    // assets across all view specs instead of re-reading them per view.
     let localisation = Localisation::load_english(resolver)?;
     let mut layout_cache: BTreeMap<String, LayoutSet> = BTreeMap::new();
     let mut asset_cache = UiAssetCache::default();
@@ -917,9 +915,6 @@ fn collect_documented_skips(
     }
 }
 
-/// The runtime-populated-surface law: element types whose contents are filled
-/// per-frame by the binding, never laid out statically. Shared with
-/// `unitview` (`walk_subtree`) so the two consumers cannot drift.
 pub(crate) fn is_runtime_populated(element_type: &str) -> bool {
     matches!(
         element_type.to_ascii_lowercase().as_str(),

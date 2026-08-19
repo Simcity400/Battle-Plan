@@ -1,20 +1,10 @@
-//! Exact-a729 passive acquisition owner for A31 national-focus presentation.
-//!
-//! The same hook set serves the ordinary collector and optional fixture owner.
-//! It makes `ExactA729FocusObservationBoundary` reachable in-process. A
-//! selected-Present transaction admits
-//! only a completed update that happened before the selected Present's QPC
-//! frontier. Process pointers are never included in an admitted snapshot or
-//! evidence record.
-
+use crate::a729_focus_item_inline;
 use crate::a729_focus_item_producer::{
     materialize_pointer_free_snapshot, ExactA729FocusObservationBoundary,
-    ProcessLocalFrameObservation, ProcessLocalItemObservation, VectorHeader,
-    DETAIL_REFRESH_RVA, DYNAMIC_REFRESH_RVA, HIGHLIGHT_PRODUCER_RVA, ITEM_STATE_PRODUCER_RVA,
-    ITEM_STATE_WRITER_RVA,
+    ProcessLocalFrameObservation, ProcessLocalItemObservation, VectorHeader, DETAIL_REFRESH_RVA,
+    DYNAMIC_REFRESH_RVA, HIGHLIGHT_PRODUCER_RVA, ITEM_STATE_PRODUCER_RVA, ITEM_STATE_WRITER_RVA,
     VECTOR_PUBLISHER_RVA, VIEW_VTABLE,
 };
-use crate::a729_focus_item_inline;
 use compact_contract::national_focus_presentation::{
     encode_payload, validate_snapshot, AuthorityState, Frame, RectI32, SelectedPresentBinding,
     Snapshot, AUTHORED_SURFACE_IDENTITY, EFFECTIVE_INTERFACE_WINNER,
@@ -24,8 +14,8 @@ use compact_contract::national_focus_presentation::{
 use core::ffi::c_void;
 use inline_detour::InlineDetourReleaseError;
 use minhook::{MinHook, MH_STATUS};
-use std::collections::{BTreeMap, BTreeSet};
 use std::cell::Cell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
@@ -43,16 +33,14 @@ pub const FRESH_ACQUISITION_JOB_ID: &str =
     "20260720T062545Z-w4-a31-owner-runnable-producer-e5090f36";
 pub const FRESH_ACQUISITION_MANIFEST_SHA256: &str =
     "510353dae716bccaaf37f988b0f7101e31552ecf687ecbd613bce1dd2efb784a";
-pub const SENTINEL_DUMP_JOB_ID: &str =
-    "20260720T062745Z-w4-a31-hook-entry-sentinels-284611de";
+pub const SENTINEL_DUMP_JOB_ID: &str = "20260720T062745Z-w4-a31-hook-entry-sentinels-284611de";
 pub const SENTINEL_DUMP_SHA256: &str =
     "498d09aa4161bedf4087983b47ee97626c4d78df9a4537026aff2ea1b4671429";
 pub const COUNTRY_CONTEXT_SENTINEL_JOB_ID: &str =
     "20260720T065515Z-w4-a31-country-context-hook-sentinel-44d091b1";
 pub const COUNTRY_CONTEXT_SENTINEL_DUMP_SHA256: &str =
     "4c85cfe84aee03808798f821e90f8ab5a7e019e990be67ee48b47d34c09d83b4";
-pub const FRAME_ORDER_JOB_ID: &str =
-    "20260720T103726Z-w5-a31-exact-frame-order-boundary-a49db01b";
+pub const FRAME_ORDER_JOB_ID: &str = "20260720T103726Z-w5-a31-exact-frame-order-boundary-a49db01b";
 pub const FRAME_ORDER_MANIFEST_SHA256: &str =
     "c3c2a38805153497ad3298893a1b101582aa0651604a742e78214108b7820745";
 pub const FRAME_ORDER_JOB_RECEIPT_SHA256: &str =
@@ -72,24 +60,13 @@ pub const FOCUS_GUI_ROOT_JOB_ID: &str =
 pub const FOCUS_GUI_ROOT_MANIFEST_SHA256: &str =
     "95e8555d6c6444f54acb03d9fa93f259c3cd75c9e5220ec155a79b9adb0d76b4";
 
-/// The exact passive observer is admitted by executable identity, sentinels,
-/// complete callback witnesses and a selected-Present frontier. A missing
-/// refresh remains typed unavailable; fixture transitions are regression-only.
 pub const PRODUCTION_ACTIVATION_AUTHORIZED: bool = true;
 pub const COMPACT_DOMAIN_89_SCHEDULED: bool = true;
 
 const MAX_ITEMS: usize = 131_072;
-/// `CNationalFocusView` installs its secondary graphical vtable at +0x30 in
-/// the exact-a729 constructor. This is the common GUI traversal owner; the
-/// enclosing focus controller at +0 is retained separately and is not
-/// registered as the drawable root.
 const FOCUS_GUI_SUBOBJECT_OFFSET: usize = 0x30;
-/// Runtime `CContainerWindow*` used by `0x141377E00`.
 const FOCUS_CANVAS_RUNTIME_ROOT_OFFSET: usize = 0x588;
-/// `CNationalFocusTreeItem` constructor `0x14136A5C0` stores the runtime GUI
-/// object used for every named child lookup in `param_1[2]`.
 const FOCUS_ITEM_RUNTIME_GUI_ROOT_OFFSET: usize = 0x10;
-/// Uniform focus-canvas scale consumed and clamped by `0x141377E00`.
 const FOCUS_CANVAS_SCALE_OFFSET: usize = 0x2118;
 const FOCUS_CANVAS_POSITION_WIDGET_OFFSET: usize = 0x590;
 const GRAPHICAL_POSITION_SUBOBJECT_OFFSET: usize = 0x30;
@@ -101,28 +78,22 @@ const SCROLLBAR_VALUE_SUBOBJECT_OFFSET: usize = 0x80;
 const SCROLLBAR_VALUE_VSLOT: usize = 0x20;
 const QUIESCE_TIMEOUT: Duration = Duration::from_secs(30);
 const VECTOR_PUBLISHER_SENTINEL: [u8; 16] = [
-    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10,
-    0x48,
+    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48,
 ];
 const DYNAMIC_REFRESH_SENTINEL: [u8; 16] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x48, 0x89, 0x68, 0x20, 0x56, 0x57, 0x41, 0x54,
-    0x41,
+    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x18, 0x48, 0x89, 0x68, 0x20, 0x56, 0x57, 0x41, 0x54, 0x41,
 ];
 const DETAIL_REFRESH_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18,
-    0x48,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x6c, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48,
 ];
 const ITEM_STATE_WRITER_SENTINEL: [u8; 16] = [
-    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48,
-    0x8d,
+    0x48, 0x89, 0x5c, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x18, 0x55, 0x57, 0x41, 0x56, 0x48, 0x8d,
 ];
 const ITEM_STATE_PRODUCER_SENTINEL: [u8; 16] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x44, 0x88, 0x40, 0x18, 0x55, 0x56, 0x57, 0x41,
-    0x54,
+    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x10, 0x44, 0x88, 0x40, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54,
 ];
 const HIGHLIGHT_SENTINEL: [u8; 16] = [
-    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10, 0x48, 0x89, 0x78, 0x20,
-    0x55,
+    0x48, 0x8b, 0xc4, 0x48, 0x89, 0x58, 0x08, 0x48, 0x89, 0x70, 0x10, 0x48, 0x89, 0x78, 0x20, 0x55,
 ];
 
 type VectorPublisherFn = unsafe extern "system" fn(usize, usize, usize, usize);
@@ -131,8 +102,7 @@ type DetailRefreshFn = unsafe extern "system" fn(usize);
 type ItemStateWriterFn = unsafe extern "system" fn(usize, u32);
 type ItemStateProducerFn = unsafe extern "system" fn(usize, usize, u8, f32, usize);
 type HighlightFn = unsafe extern "system" fn(usize, u32);
-type JointCountryRendererFn =
-    unsafe extern "system" fn(usize, usize, usize, usize, usize, usize);
+type JointCountryRendererFn = unsafe extern "system" fn(usize, usize, usize, usize, usize, usize);
 
 static ORIGINAL_VECTOR_PUBLISHER: AtomicUsize = AtomicUsize::new(0);
 static ORIGINAL_DYNAMIC_REFRESH: AtomicUsize = AtomicUsize::new(0);
@@ -171,16 +141,10 @@ pub struct SelectedPresentStamp {
     pub selected_present_global_order: u32,
     pub selected_present_qpc_ticks: u64,
     pub qpc_frequency_hz: u64,
-    /// Raw injected-render-hook selection receipt digest.
     pub selected_present_receipt_sha256: String,
-    /// Canonical portable-render-stream `SelectedPresentReceipt` digest.
     pub portable_selected_present_receipt_sha256: String,
 }
 
-/// Process-local owner registration consumed by the selected-Present GUI
-/// bridge. `focus_view_ptr` is the paired-refresh controller and
-/// `runtime_graphical_root_ptr` is its exact +0x30 graphical subobject; neither
-/// pointer can enter NFP1.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NationalFocusCanvasPresentRegistration {
     pub authored_surface_identity: &'static str,
@@ -193,9 +157,6 @@ pub struct NationalFocusCanvasPresentRegistration {
     pub runtime_graphical_root_ptr: usize,
 }
 
-/// Process-local identity for one visible focus and the runtime GUI subtree
-/// constructed for it. These pointers are join keys only and must be erased
-/// before NFP1 or the selected-Present UI pass is serialized.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NationalFocusGuiItemRegistration {
     pub focus_id: String,
@@ -203,7 +164,6 @@ pub struct NationalFocusGuiItemRegistration {
     pub runtime_gui_root_ptr: usize,
 }
 
-/// Complete process-local A31 side of the common-GUI join.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingNationalFocusGuiJoin {
     pub root: NationalFocusCanvasPresentRegistration,
@@ -228,9 +188,6 @@ pub struct FocusSelectedPresentOperations {
     pub selected_present_screen_rect: RectI32,
 }
 
-/// Exact values returned by the global selected-Present owner/GUI bridge.
-/// There are deliberately no defaults. The focus lane remains unavailable
-/// until the bridge supplies this complete record.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SelectedPresentCanvasBinding {
     pub selected_present_candidate_id: u64,
@@ -272,9 +229,6 @@ pub struct RawRefreshEpoch {
     pub joint_country_by_item: BTreeMap<usize, Option<String>>,
 }
 
-/// The collector supplies the exact process reader. This indirection is
-/// intentional: the lane owns hook lifecycle/order, while the collector owns
-/// its SEH-guarded reader and already-authenticated focus-token decoder.
 pub trait ExactA729FocusLiveDecoder: Send + Sync {
     fn decode_completed_refresh(
         &self,
@@ -399,9 +353,6 @@ impl ExactA729FocusObservationBoundary for Boundary<'_> {
 }
 
 thread_local! {
-    /// The exact `0x141379a50` invocation currently executing on this game
-    /// thread.  Its positive joint-country callsite has no item argument, so
-    /// the callsite detour joins through this bounded, nest-restoring slot.
     static CURRENT_JOINT_ITEM: Cell<usize> = const { Cell::new(0) };
 }
 
@@ -438,7 +389,9 @@ impl compact_contract::national_focus_presentation::ExactNationalFocusPresentati
             .as_ref()
             .ok_or("A31 has no selected-Present-admitted snapshot")?;
         if snapshot.country_tag != country_tag
-            || !snapshot.producer_record_identity.contains(&format!("a31:{frame_hour}:"))
+            || !snapshot
+                .producer_record_identity
+                .contains(&format!("a31:{frame_hour}:"))
         {
             return Err("A31 admitted snapshot does not match requested frame identity".into());
         }
@@ -480,8 +433,7 @@ pub fn arm_selected_present_epoch(
     {
         return Err("A31 fixture country tag is not canonical".into());
     }
-    let (arm_qpc_ticks, arm_qpc_frequency_hz) =
-        qpc_now().ok_or("A31 arm QPC read failed")?;
+    let (arm_qpc_ticks, arm_qpc_frequency_hz) = qpc_now().ok_or("A31 arm QPC read failed")?;
     let generation = NEXT_GENERATION.fetch_add(1, Ordering::AcqRel);
     if generation == 0 {
         return Err("A31 fixture generation overflowed".into());
@@ -521,8 +473,6 @@ pub fn arm_selected_present_epoch(
     Ok(generation)
 }
 
-/// Drop an unsealed epoch before re-arming for a new hour/country. No partial
-/// candidate is admitted, and no process-local identity escapes this reset.
 pub fn cancel_active_epoch() -> Result<(), String> {
     let mut state = state().lock().map_err(|_| "A31 hook state poisoned")?;
     state.active = None;
@@ -531,23 +481,14 @@ pub fn cancel_active_epoch() -> Result<(), String> {
     Ok(())
 }
 
-/// Return the exact process-local focus root that the global GUI owner registry
-/// must register before it can seal the selected Present. Absence of a complete
-/// refresh is a hard unavailable result; callers must not substitute the
-/// country tag, focus-tree id, or authored GUI file for this runtime owner.
 pub fn pending_canvas_present_registration(
     generation: u64,
 ) -> Result<NationalFocusCanvasPresentRegistration, String> {
     Ok(pending_focus_gui_join(generation)?.root)
 }
 
-/// Return the exact focus canvas root and every visible focus's runtime GUI
-/// subtree. The selected-Present owner bridge joins draws through the runtime
-/// parent link at +0x108; authored names and screen rectangles are never used
 /// as ownership keys.
-pub fn pending_focus_gui_join(
-    generation: u64,
-) -> Result<PendingNationalFocusGuiJoin, String> {
+pub fn pending_focus_gui_join(generation: u64) -> Result<PendingNationalFocusGuiJoin, String> {
     let state = state().lock().map_err(|_| "A31 hook state poisoned")?;
     if let Some(error) = &state.fatal_error {
         return Err(error.clone());
@@ -589,9 +530,6 @@ pub fn pending_focus_gui_join(
     })
 }
 
-/// Sample the exact focus ContainerWindow geometry through the same pure
-/// getters consumed by `0x141377E00`. The returned QPC bounds the observation;
-/// callers must reject it when it cannot be joined to their selected Present.
 pub fn sample_pending_focus_gui_geometry(
     generation: u64,
 ) -> Result<NationalFocusCanvasRuntimeGeometry, String> {
@@ -631,10 +569,7 @@ fn sample_focus_gui_geometry(
     let scale_bits =
         read_process_u32(scale_address).ok_or("A31 focus canvas scale was unreadable")?;
     let scale = f32::from_bits(scale_bits);
-    if content_extent_pixels.iter().any(|value| *value <= 0)
-        || !scale.is_finite()
-        || scale <= 0.0
-    {
+    if content_extent_pixels.iter().any(|value| *value <= 0) || !scale.is_finite() || scale <= 0.0 {
         return Err("A31 focus canvas runtime geometry is invalid".into());
     }
     let (sample_completed_qpc_ticks, completed_frequency_hz) =
@@ -657,17 +592,11 @@ fn sample_focus_gui_geometry(
                 .checked_mul(32)
                 .ok_or("A31 focus canvas origin Y fixed5 overflowed")?,
         ],
-        pan_pixels_fixed5: [
-            exact_fixed5(horizontal_pan)?,
-            exact_fixed5(vertical_pan)?,
-        ],
+        pan_pixels_fixed5: [exact_fixed5(horizontal_pan)?, exact_fixed5(vertical_pan)?],
         canvas_scale_bits: [scale_bits, scale_bits],
     })
 }
 
-/// Exact internal-callsite instrumentation owned by the custom harness feeds
-/// the final `ESI -> EDX` value from `0x141bb636e` through this bounded join.
-/// A function-entry observation alone is deliberately insufficient.
 pub fn record_display_percent_callsite(
     generation: u64,
     definition_address: usize,
@@ -680,7 +609,9 @@ pub fn record_display_percent_callsite(
     state.display_percent_callbacks = state.display_percent_callbacks.saturating_add(1);
     let active = active_generation(&mut state, generation)?;
     if !active.transient_cycle_active {
-        return Err("A31 display-percent callsite occurred outside the paired refresh cycle".into());
+        return Err(
+            "A31 display-percent callsite occurred outside the paired refresh cycle".into(),
+        );
     }
     if let Some(previous) = active
         .display_percent_by_definition
@@ -694,8 +625,6 @@ pub fn record_display_percent_callsite(
     Ok(())
 }
 
-/// Exact joint-view helper instrumentation records measured hidden as `None`;
-/// absence from the map remains an unobserved leaf and rejects materialization.
 pub fn record_joint_country_observation(
     generation: u64,
     item_address: usize,
@@ -716,15 +645,14 @@ pub fn record_joint_country_observation(
     state.joint_country_callbacks = state.joint_country_callbacks.saturating_add(1);
     let active = active_generation(&mut state, generation)?;
     if !active.transient_cycle_active {
-        return Err("A31 joint-country observation occurred outside the paired refresh cycle".into());
+        return Err(
+            "A31 joint-country observation occurred outside the paired refresh cycle".into(),
+        );
     }
     if let Some(previous) = active
         .joint_country_by_item
         .insert(item_address, value.clone())
     {
-        // The item-producer entry writes measured hidden first.  The exact
-        // positive callsite is allowed to refine that one provisional None to
-        // its authenticated tag; every other disagreement is fatal.
         if previous != value && !(previous.is_none() && value.is_some()) {
             state.fatal_error = Some("A31 conflicting same-epoch joint-country leaves".into());
             return Err(state.fatal_error.clone().unwrap());
@@ -733,11 +661,11 @@ pub fn record_joint_country_observation(
     Ok(())
 }
 
-fn active_generation(
-    state: &mut HookState,
-    generation: u64,
-) -> Result<&mut ActiveEpoch, String> {
-    let active = state.active.as_mut().ok_or("A31 no fixture epoch is active")?;
+fn active_generation(state: &mut HookState, generation: u64) -> Result<&mut ActiveEpoch, String> {
+    let active = state
+        .active
+        .as_mut()
+        .ok_or("A31 no fixture epoch is active")?;
     if active.generation != generation {
         return Err("A31 fixture generation does not match".into());
     }
@@ -748,10 +676,7 @@ pub fn seal_selected_present_epoch(
     _generation: u64,
     _selected: SelectedPresentStamp,
 ) -> Result<AcquisitionReceipt, String> {
-    Err(
-        "A31 selected Present omitted exact focus-canvas owner/geometry/operation binding"
-            .into(),
-    )
+    Err("A31 selected Present omitted exact focus-canvas owner/geometry/operation binding".into())
 }
 
 pub fn seal_selected_present_epoch_with_canvas(
@@ -778,13 +703,18 @@ pub fn seal_selected_present_epoch_with_canvas(
         || canvas.runtime_root_identity != RUNTIME_ROOT_IDENTITY
         || canvas.effective_interface_winner != EFFECTIVE_INTERFACE_WINNER
     {
-        return Err("A31 focus-canvas selected-Present owner binding is incomplete or foreign".into());
+        return Err(
+            "A31 focus-canvas selected-Present owner binding is incomplete or foreign".into(),
+        );
     }
     let mut state = state().lock().map_err(|_| "A31 hook state poisoned")?;
     if let Some(error) = &state.fatal_error {
         return Err(error.clone());
     }
-    let active = state.active.take().ok_or("A31 no fixture epoch is active")?;
+    let active = state
+        .active
+        .take()
+        .ok_or("A31 no fixture epoch is active")?;
     if active.generation != generation || active.frame_hour != selected.frame_hour {
         state.fatal_error = Some("A31 fixture and selected-Present identities differ".into());
         return Err(state.fatal_error.clone().unwrap());
@@ -822,12 +752,8 @@ pub fn seal_selected_present_epoch_with_canvas(
         selected_present_qpc_ticks: selected.selected_present_qpc_ticks,
         selected_present_cutoff_qpc_ticks: canvas.selected_present_cutoff_qpc_ticks,
         qpc_frequency_hz: selected.qpc_frequency_hz,
-        selected_present_receipt_sha256: selected
-            .portable_selected_present_receipt_sha256
-            .clone(),
-        selected_present_pass_identity_sha256: canvas
-            .selected_present_pass_identity_sha256
-            .clone(),
+        selected_present_receipt_sha256: selected.portable_selected_present_receipt_sha256.clone(),
+        selected_present_pass_identity_sha256: canvas.selected_present_pass_identity_sha256.clone(),
         selected_present_engine_instance_token: canvas.selected_present_engine_instance_token,
         authored_surface_identity: canvas.authored_surface_identity.clone(),
         runtime_root_identity: canvas.runtime_root_identity.clone(),
@@ -856,8 +782,7 @@ pub fn seal_selected_present_epoch_with_canvas(
         selected_present_qpc_ticks: selected.selected_present_qpc_ticks,
         qpc_frequency_hz: selected.qpc_frequency_hz,
         selected_present_receipt_sha256: selected.selected_present_receipt_sha256,
-        portable_selected_present_receipt_sha256:
-            selected.portable_selected_present_receipt_sha256,
+        portable_selected_present_receipt_sha256: selected.portable_selected_present_receipt_sha256,
         selected_present_binding,
         source_sequence: candidate.snapshot.source_sequence,
         visible_item_count: candidate.snapshot.visible_items.len() as u32,
@@ -895,8 +820,7 @@ fn bind_canvas_to_snapshot(
         || canvas.clip_rect.width <= 0
         || canvas.clip_rect.height <= 0
         || clip_right.is_none_or(|right| {
-            right > canvas.render_target_extent_pixels[0]
-                || right > canvas.client_extent_pixels[0]
+            right > canvas.render_target_extent_pixels[0] || right > canvas.client_extent_pixels[0]
         })
         || clip_bottom.is_none_or(|bottom| {
             bottom > canvas.render_target_extent_pixels[1]
@@ -915,7 +839,9 @@ fn bind_canvas_to_snapshot(
         || canvas.selected_present_ui_operation_order.len() > MAX_UI_PASS_OPERATIONS
         || canvas.canvas_operation_ordinals.len() > MAX_UI_PASS_OPERATIONS
     {
-        return Err("A31 focus-canvas operation ownership does not cover every visible focus".into());
+        return Err(
+            "A31 focus-canvas operation ownership does not cover every visible focus".into(),
+        );
     }
     let mut by_focus = BTreeMap::new();
     let mut mapped = BTreeSet::new();
@@ -933,7 +859,9 @@ fn bind_canvas_to_snapshot(
                 )
                 .is_some()
         {
-            return Err("A31 focus-canvas per-focus operation set is empty, duplicate, or unordered".into());
+            return Err(
+                "A31 focus-canvas per-focus operation set is empty, duplicate, or unordered".into(),
+            );
         }
         for ordinal in &operations.operation_ordinals {
             if !mapped.insert(*ordinal) {
@@ -982,21 +910,16 @@ fn bind_canvas_to_snapshot(
             .selected_present_ui_operation_order
             .windows(2)
             .any(|pair| pair[0] >= pair[1])
-        || canvas.selected_present_ui_operation_order
-            != mapped.iter().copied().collect::<Vec<_>>()
+        || canvas.selected_present_ui_operation_order != mapped.iter().copied().collect::<Vec<_>>()
     {
         return Err("A31 selected-Present operation union is not complete exact order".into());
     }
     snapshot.selected_present_ui_operation_order =
         canvas.selected_present_ui_operation_order.clone();
-    snapshot.selected_present_canvas_operation_ordinals =
-        canvas.canvas_operation_ordinals.clone();
+    snapshot.selected_present_canvas_operation_ordinals = canvas.canvas_operation_ordinals.clone();
     validate_snapshot(snapshot).map_err(|error| format!("{error:?}"))
 }
 
-/// Evidence-mode drain. It uses the same NFP1 validator and encoder but does
-/// not alter either production activation latch. The resulting record is for
-/// the root-owned fixture verifier, never the scheduled compact stream.
 pub fn drain_evidence_record(elapsed_wall_ms: u64) -> Result<EvidenceRecord, String> {
     let mut state = state().lock().map_err(|_| "A31 hook state poisoned")?;
     let (snapshot, receipt) = state
@@ -1020,11 +943,6 @@ pub fn drain_evidence_record(elapsed_wall_ms: u64) -> Result<EvidenceRecord, Str
     })
 }
 
-/// `install_for_fixture_capture`, which took an arbitrary decoder and skipped
-/// BOTH activation-latch checks below, is retired with the
-/// `a729-focus-fixture-hook` feature that gated it. Its one caller was the
-/// collector's `A31FixtureAcquisitionOwner`, deleted in the same change, so
-/// every install now runs the authorization gate.
 pub fn install() -> Result<InstalledAddresses, String> {
     if !PRODUCTION_ACTIVATION_AUTHORIZED || !COMPACT_DOMAIN_89_SCHEDULED {
         return Err("A31 production hook activation is not authorized".into());
@@ -1057,7 +975,9 @@ fn register_decoder(candidate: Arc<dyn ExactA729FocusLiveDecoder>) -> Result<(),
 }
 
 fn install_hook_set() -> Result<InstalledAddresses, String> {
-    let _guard = INSTALL_LOCK.lock().map_err(|_| "A31 install mutex poisoned")?;
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A31 install mutex poisoned")?;
     if INSTALLED.load(Ordering::Acquire) && LIFECYCLE_HEALTHY.load(Ordering::Acquire) {
         return Ok(addresses(MODULE_BASE.load(Ordering::Acquire)));
     }
@@ -1071,12 +991,36 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
     }
     let resolved = addresses(base);
     for (target, sentinel, label) in [
-        (resolved.vector_publisher, &VECTOR_PUBLISHER_SENTINEL[..], "vector publisher"),
-        (resolved.dynamic_refresh, &DYNAMIC_REFRESH_SENTINEL[..], "dynamic refresh"),
-        (resolved.detail_refresh, &DETAIL_REFRESH_SENTINEL[..], "detail refresh"),
-        (resolved.item_state_writer, &ITEM_STATE_WRITER_SENTINEL[..], "item state writer"),
-        (resolved.item_state_producer, &ITEM_STATE_PRODUCER_SENTINEL[..], "item state producer"),
-        (resolved.highlight_producer, &HIGHLIGHT_SENTINEL[..], "highlight producer"),
+        (
+            resolved.vector_publisher,
+            &VECTOR_PUBLISHER_SENTINEL[..],
+            "vector publisher",
+        ),
+        (
+            resolved.dynamic_refresh,
+            &DYNAMIC_REFRESH_SENTINEL[..],
+            "dynamic refresh",
+        ),
+        (
+            resolved.detail_refresh,
+            &DETAIL_REFRESH_SENTINEL[..],
+            "detail refresh",
+        ),
+        (
+            resolved.item_state_writer,
+            &ITEM_STATE_WRITER_SENTINEL[..],
+            "item state writer",
+        ),
+        (
+            resolved.item_state_producer,
+            &ITEM_STATE_PRODUCER_SENTINEL[..],
+            "item state producer",
+        ),
+        (
+            resolved.highlight_producer,
+            &HIGHLIGHT_SENTINEL[..],
+            "highlight producer",
+        ),
     ] {
         verify_sentinel(target, sentinel, label)?;
     }
@@ -1085,22 +1029,54 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
     LIFECYCLE_HEALTHY.store(false, Ordering::Release);
     HOOK_SET_PRESENT.store(true, Ordering::Release);
     let specs = [
-        (resolved.vector_publisher, hook_vector_publisher as *mut c_void, &ORIGINAL_VECTOR_PUBLISHER),
-        (resolved.dynamic_refresh, hook_dynamic_refresh as *mut c_void, &ORIGINAL_DYNAMIC_REFRESH),
-        (resolved.detail_refresh, hook_detail_refresh as *mut c_void, &ORIGINAL_DETAIL_REFRESH),
-        (resolved.item_state_writer, hook_item_state_writer as *mut c_void, &ORIGINAL_ITEM_STATE_WRITER),
-        (resolved.item_state_producer, hook_item_state_producer as *mut c_void, &ORIGINAL_ITEM_STATE_PRODUCER),
-        (resolved.highlight_producer, hook_highlight as *mut c_void, &ORIGINAL_HIGHLIGHT),
+        (
+            resolved.vector_publisher,
+            hook_vector_publisher as *mut c_void,
+            &ORIGINAL_VECTOR_PUBLISHER,
+        ),
+        (
+            resolved.dynamic_refresh,
+            hook_dynamic_refresh as *mut c_void,
+            &ORIGINAL_DYNAMIC_REFRESH,
+        ),
+        (
+            resolved.detail_refresh,
+            hook_detail_refresh as *mut c_void,
+            &ORIGINAL_DETAIL_REFRESH,
+        ),
+        (
+            resolved.item_state_writer,
+            hook_item_state_writer as *mut c_void,
+            &ORIGINAL_ITEM_STATE_WRITER,
+        ),
+        (
+            resolved.item_state_producer,
+            hook_item_state_producer as *mut c_void,
+            &ORIGINAL_ITEM_STATE_PRODUCER,
+        ),
+        (
+            resolved.highlight_producer,
+            hook_highlight as *mut c_void,
+            &ORIGINAL_HIGHLIGHT,
+        ),
     ];
     for (target, detour, original) in specs {
         match unsafe { MinHook::create_hook(target as *mut c_void, detour) } {
             Ok(trampoline) => original.store(trampoline as usize, Ordering::Release),
-            Err(status) => return rollback_install(resolved, format!("A31 hook create failed at {target:#x}: {status}")),
+            Err(status) => {
+                return rollback_install(
+                    resolved,
+                    format!("A31 hook create failed at {target:#x}: {status}"),
+                )
+            }
         }
     }
     for target in targets(resolved) {
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
-            return rollback_install(resolved, format!("A31 hook enable failed at {target:#x}: {status}"));
+            return rollback_install(
+                resolved,
+                format!("A31 hook enable failed at {target:#x}: {status}"),
+            );
         }
     }
     if let Err(error) = a729_focus_item_inline::install(
@@ -1120,7 +1096,10 @@ fn install_hook_set() -> Result<InstalledAddresses, String> {
     Ok(resolved)
 }
 
-fn rollback_install(resolved: InstalledAddresses, reason: String) -> Result<InstalledAddresses, String> {
+fn rollback_install(
+    resolved: InstalledAddresses,
+    reason: String,
+) -> Result<InstalledAddresses, String> {
     TEARDOWN_ACTIVE.store(true, Ordering::Release);
     HEALTH_EPOCH.fetch_add(1, Ordering::AcqRel);
     let removal = disable_and_remove(resolved);
@@ -1134,7 +1113,9 @@ fn rollback_install(resolved: InstalledAddresses, reason: String) -> Result<Inst
 }
 
 pub fn uninstall() -> Result<(), String> {
-    let _guard = INSTALL_LOCK.lock().map_err(|_| "A31 install mutex poisoned")?;
+    let _guard = INSTALL_LOCK
+        .lock()
+        .map_err(|_| "A31 install mutex poisoned")?;
     if !HOOK_SET_PRESENT.load(Ordering::Acquire) {
         return Ok(());
     }
@@ -1212,7 +1193,11 @@ fn disable_and_remove(resolved: InstalledAddresses) -> Result<(), String> {
             Err(status) => errors.push(format!("remove {target:#x}: {status}")),
         }
     }
-    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 fn addresses(base: usize) -> InstalledAddresses {
@@ -1228,8 +1213,6 @@ fn addresses(base: usize) -> InstalledAddresses {
     }
 }
 
-/// Authenticate one relocated process address and return its canonical
-/// image-base-0x140000000 evidence VA for the pointer-erasing validator.
 pub fn authenticate_and_normalize_image_address(
     runtime_address: usize,
     evidence_address: usize,
@@ -1248,17 +1231,28 @@ pub fn authenticate_and_normalize_image_address(
     Ok(evidence_address)
 }
 fn targets(value: InstalledAddresses) -> [usize; 6] {
-    [value.vector_publisher, value.dynamic_refresh, value.detail_refresh, value.item_state_writer, value.item_state_producer, value.highlight_producer]
+    [
+        value.vector_publisher,
+        value.dynamic_refresh,
+        value.detail_refresh,
+        value.item_state_writer,
+        value.item_state_producer,
+        value.highlight_producer,
+    ]
 }
 
 unsafe extern "system" fn hook_vector_publisher(a: usize, b: usize, c: usize, d: usize) {
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     let original = ORIGINAL_VECTOR_PUBLISHER.load(Ordering::Acquire);
-    if original == 0 { return; }
+    if original == 0 {
+        return;
+    }
     let original: VectorPublisherFn = unsafe { mem::transmute(original) };
     unsafe { original(a, b, c, d) };
-    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch { return; }
+    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Ok(mut state) = state().lock() {
             state.vector_publish_callbacks = state.vector_publish_callbacks.saturating_add(1);
@@ -1268,12 +1262,11 @@ unsafe extern "system" fn hook_vector_publisher(a: usize, b: usize, c: usize, d:
                 .and_then(|active| active.published_view_address)
                 .is_some_and(|published| published != a);
             if conflicting_owner {
-                state.fatal_error = Some(
-                    "A31 armed epoch observed more than one focus-view owner".into(),
-                );
+                state.fatal_error =
+                    Some("A31 armed epoch observed more than one focus-view owner".into());
             } else if let Some(active) = state.active.as_mut() {
-                    active.vector_publish_seen = true;
-                    active.published_view_address = Some(a);
+                active.vector_publish_seen = true;
+                active.published_view_address = Some(a);
             }
         }
     }));
@@ -1283,10 +1276,14 @@ unsafe extern "system" fn hook_item_state_writer(item: usize, code: u32) {
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     let original = ORIGINAL_ITEM_STATE_WRITER.load(Ordering::Acquire);
-    if original == 0 { return; }
+    if original == 0 {
+        return;
+    }
     let original: ItemStateWriterFn = unsafe { mem::transmute(original) };
     unsafe { original(item, code) };
-    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch { return; }
+    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Ok(mut state) = state().lock() {
             state.state_writer_callbacks = state.state_writer_callbacks.saturating_add(1);
@@ -1309,7 +1306,9 @@ unsafe extern "system" fn hook_item_state_producer(
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     let original = ORIGINAL_ITEM_STATE_PRODUCER.load(Ordering::Acquire);
-    if original == 0 { return; }
+    if original == 0 {
+        return;
+    }
     if capture_gate_open() {
         if let Ok(mut state) = state().lock() {
             let cycle_active = state
@@ -1318,9 +1317,6 @@ unsafe extern "system" fn hook_item_state_producer(
                 .is_some_and(|active| active.transient_cycle_active);
             if cycle_active && item != 0 {
                 if let Some(active) = state.active.as_mut() {
-                    // This is the exact measured-hidden default.  The positive
-                    // renderer callsite may refine it to Some(tag) before the
-                    // producer returns.
                     active.joint_country_by_item.insert(item, None);
                 }
             }
@@ -1329,23 +1325,21 @@ unsafe extern "system" fn hook_item_state_producer(
     let original: ItemStateProducerFn = unsafe { mem::transmute(original) };
     let _current_item = CurrentJointItemGuard::enter(item);
     unsafe { original(item, country_context, changed, delta, context) };
-    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch { return; }
+    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Ok(mut state) = state().lock() {
             state.state_producer_callbacks = state.state_producer_callbacks.saturating_add(1);
-            let conflicting = state
-                .active
-                .as_ref()
-                .is_some_and(|active| {
-                    active.expected_country_object_address != country_context
-                        || active
-                            .country_context_address
-                            .is_some_and(|prior| prior != country_context)
-                });
+            let conflicting = state.active.as_ref().is_some_and(|active| {
+                active.expected_country_object_address != country_context
+                    || active
+                        .country_context_address
+                        .is_some_and(|prior| prior != country_context)
+            });
             if item == 0 || country_context == 0 || conflicting {
                 state.fatal_error = Some(
-                    "A31 item producer country context differs from the authenticated owner"
-                        .into(),
+                    "A31 item producer country context differs from the authenticated owner".into(),
                 );
             } else if let Some(active) = state.active.as_mut() {
                 active.country_context_address = Some(country_context);
@@ -1358,15 +1352,20 @@ unsafe extern "system" fn hook_highlight(item: usize, state_code: u32) {
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     let original = ORIGINAL_HIGHLIGHT.load(Ordering::Acquire);
-    if original == 0 { return; }
+    if original == 0 {
+        return;
+    }
     let original: HighlightFn = unsafe { mem::transmute(original) };
     unsafe { original(item, state_code) };
-    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch { return; }
+    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Ok(mut state) = state().lock() {
             state.highlight_callbacks = state.highlight_callbacks.saturating_add(1);
             if state_code > 3 || item == 0 {
-                state.fatal_error = Some("A31 highlight writer emitted invalid identity/domain".into());
+                state.fatal_error =
+                    Some("A31 highlight writer emitted invalid identity/domain".into());
             } else if let Some(active) = state.active.as_mut() {
                 active.highlight_by_address.insert(item, state_code == 3);
             }
@@ -1378,7 +1377,9 @@ unsafe extern "system" fn hook_dynamic_refresh(view: usize, delta: f32, context:
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     let original = ORIGINAL_DYNAMIC_REFRESH.load(Ordering::Acquire);
-    if original == 0 { return; }
+    if original == 0 {
+        return;
+    }
     if capture_gate_open() {
         if let Ok(mut state) = state().lock() {
             if let Some(active) = state.active.as_mut() {
@@ -1394,7 +1395,9 @@ unsafe extern "system" fn hook_dynamic_refresh(view: usize, delta: f32, context:
     }
     let original: DynamicRefreshFn = unsafe { mem::transmute(original) };
     unsafe { original(view, delta, context) };
-    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch { return; }
+    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         if let Ok(mut state) = state().lock() {
             state.dynamic_refresh_callbacks = state.dynamic_refresh_callbacks.saturating_add(1);
@@ -1402,28 +1405,36 @@ unsafe extern "system" fn hook_dynamic_refresh(view: usize, delta: f32, context:
     }));
 }
 
-/// Exact frame callers update item state through `0x14137a780` and only then
-/// update national/joint detail nodes through `0x14137a600`. Materialization
-/// at the earlier return loses the display-percent and joint-country leaves.
-/// Admit only the paired dynamic -> detail sequence for the same view.
 unsafe extern "system" fn hook_detail_refresh(view: usize) {
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     let original = ORIGINAL_DETAIL_REFRESH.load(Ordering::Acquire);
-    if original == 0 { return; }
+    if original == 0 {
+        return;
+    }
     let original: DetailRefreshFn = unsafe { mem::transmute(original) };
     unsafe { original(view) };
-    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch { return; }
+    if !capture_gate_open() || HEALTH_EPOCH.load(Ordering::Acquire) != epoch {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| capture_completed_refresh(view)));
 }
 
 fn capture_completed_refresh(view: usize) {
     let sequence = NEXT_CALLBACK_SEQUENCE.fetch_add(1, Ordering::AcqRel);
-    let Some((ticks, frequency)) = qpc_now() else { poison("A31 QPC read failed"); return; };
+    let Some((ticks, frequency)) = qpc_now() else {
+        poison("A31 QPC read failed");
+        return;
+    };
     let raw = {
-        let mut state = match state().lock() { Ok(value) => value, Err(_) => return };
+        let mut state = match state().lock() {
+            Ok(value) => value,
+            Err(_) => return,
+        };
         state.detail_refresh_callbacks = state.detail_refresh_callbacks.saturating_add(1);
-        let Some(active) = state.active.as_mut() else { return };
+        let Some(active) = state.active.as_mut() else {
+            return;
+        };
         if !consume_pending_dynamic_view(&mut active.pending_dynamic_view_address, view) {
             return;
         }
@@ -1445,19 +1456,32 @@ fn capture_completed_refresh(view: usize) {
             joint_country_by_item: active.joint_country_by_item.clone(),
         }
     };
-    let decoder = match decoder() { Ok(value) => value, Err(error) => { poison(&error); return; } };
+    let decoder = match decoder() {
+        Ok(value) => value,
+        Err(error) => {
+            poison(&error);
+            return;
+        }
+    };
     let observation = match decoder.decode_completed_refresh(&raw) {
         Ok(value) => value,
-        Err(error) => { poison(&format!("A31 refresh decode failed: {error}")); return; }
+        Err(error) => {
+            poison(&format!("A31 refresh decode failed: {error}"));
+            return;
+        }
     };
     if observation.items.len() > MAX_ITEMS {
         poison("A31 refresh exceeded maximum item count");
         return;
     }
-    let snapshot = match materialize_pointer_free_snapshot(&observation, &Boundary(decoder.as_ref())) {
-        Ok(value) => value,
-        Err(error) => { poison(&format!("A31 pointer-free materialization failed: {error}")); return; }
-    };
+    let snapshot =
+        match materialize_pointer_free_snapshot(&observation, &Boundary(decoder.as_ref())) {
+            Ok(value) => value,
+            Err(error) => {
+                poison(&format!("A31 pointer-free materialization failed: {error}"));
+                return;
+            }
+        };
     let mut focus_gui_items = Vec::with_capacity(observation.items.len());
     for (item, visible) in observation.items.iter().zip(&snapshot.visible_items) {
         let Some(root_address) = item
@@ -1507,11 +1531,16 @@ fn capture_completed_refresh(view: usize) {
         match sample_focus_gui_geometry(observation.view_address, runtime_root_ptr) {
             Ok(value) => value,
             Err(error) => {
-                poison(&format!("A31 focus canvas geometry sampling failed: {error}"));
+                poison(&format!(
+                    "A31 focus canvas geometry sampling failed: {error}"
+                ));
                 return;
             }
         };
-    let mut state = match state().lock() { Ok(value) => value, Err(_) => return };
+    let mut state = match state().lock() {
+        Ok(value) => value,
+        Err(_) => return,
+    };
     if state
         .active
         .as_ref()
@@ -1536,14 +1565,7 @@ fn capture_completed_refresh(view: usize) {
     });
 }
 
-/// Called by the exact `0x141bb636e` relay before the displaced
-/// `mov edx,esi; mov rcx,rax` pair is replayed.  The relay supplies the
-/// authenticated detail definition pointer from `R14+0xf50` and the final
-/// percentage from ESI.
-unsafe extern "system" fn inline_record_display_percent(
-    definition_address: usize,
-    percent: u32,
-) {
+unsafe extern "system" fn inline_record_display_percent(definition_address: usize, percent: u32) {
     let _guard = CallbackGuard::enter();
     let epoch = HEALTH_EPOCH.load(Ordering::Acquire);
     if !capture_gate_open() || percent > 100 {
@@ -1568,8 +1590,6 @@ unsafe extern "system" fn inline_record_display_percent(
 }
 
 /// ABI-compatible replacement for the one joint-country renderer call inside
-/// `0x141379a50`.  R8 is a pointer to the exact tag DB id selected by the
-/// producer; the current item is joined through the nest-restoring TLS slot.
 unsafe extern "system" fn hook_joint_country_renderer(
     a: usize,
     b: usize,
@@ -1605,9 +1625,8 @@ unsafe extern "system" fn hook_joint_country_renderer(
     if base == 0 {
         return;
     }
-    let original: JointCountryRendererFn = unsafe {
-        mem::transmute(base + a729_focus_item_inline::JOINT_COUNTRY_RENDERER_RVA)
-    };
+    let original: JointCountryRendererFn =
+        unsafe { mem::transmute(base + a729_focus_item_inline::JOINT_COUNTRY_RENDERER_RVA) };
     unsafe { original(a, b, tag_db_id_address, d, e, f) };
 }
 
@@ -1688,10 +1707,7 @@ fn runtime_canvas_origin_pixels(focus_view: usize) -> Result<[i32; 2], String> {
     Ok(position)
 }
 
-fn runtime_scrollbar_value(
-    runtime_root: usize,
-    scrollbar_offset: usize,
-) -> Result<f32, String> {
+fn runtime_scrollbar_value(runtime_root: usize, scrollbar_offset: usize) -> Result<f32, String> {
     type ScrollbarValueFn = unsafe extern "system" fn(usize, u8) -> f32;
     let scrollbar = runtime_root
         .checked_add(scrollbar_offset)
@@ -1769,7 +1785,9 @@ fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), S
         )
     };
     if ok == 0 || read != actual.len() || actual != expected {
-        return Err(format!("A31 exact-a729 {label} sentinel mismatch at {address:#x}"));
+        return Err(format!(
+            "A31 exact-a729 {label} sentinel mismatch at {address:#x}"
+        ));
     }
     Ok(())
 }
@@ -1781,8 +1799,6 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// Helper for the collector's SEH reader: constructs the exact observation
-/// after it has independently double-read and authenticated every pointer.
 pub fn assemble_process_observation(
     raw: &RawRefreshEpoch,
     source_sequence: u64,
@@ -1803,10 +1819,7 @@ pub fn assemble_process_observation(
             .display_percent_by_definition
             .get(&item.definition_address)
             .copied();
-        item.joint_viewing_country_tag = raw
-            .joint_country_by_item
-            .get(&item.item_address)
-            .cloned();
+        item.joint_viewing_country_tag = raw.joint_country_by_item.get(&item.item_address).cloned();
     }
     Ok(ProcessLocalFrameObservation {
         source_sequence,

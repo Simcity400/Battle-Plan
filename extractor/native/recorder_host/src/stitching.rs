@@ -1,37 +1,3 @@
-//! Reload / relaunch **stitching**: the deterministic supersede algorithm,
-//! rollback-segment retention, and the stitched container/index model.
-//!
-//! This module implements segment formation, the fail-closed campaign-identity
-//! and play-order gate, and the container/index layout.
-//!
-//! # Supersede behavior
-//!
-//! When a session reloads an older save and replays a span, the *later-played*
-//! span **supersedes** the earlier one in the main continuity from the later
-//! branch's cutover hour onward. Superseded history is **never deleted**: it is
-//! retained as rollback data and remains addressable through the per-segment
-//! indexes. `main` / `rollback` is a *span* property, not a whole-segment label.
-//!
-//! # Enforced properties
-//!
-//! * **Zero silent data loss** — superseded coverage becomes [`SupersededSpan`]s;
-//!   no hour is ever dropped, only reclassified with a `superseded_by` owner.
-//! * **Fail closed** — any identity / ordering / epoch uncertainty yields
-//!   [`StitchOutcome::Separate`] (keep sessions apart, surface why); never a
-//!   guessed branch. Cross-session stitching is *disabled* while identity is
-//!   unbound.
-//! * **Determinism** — [`plan_stitch`] is a pure function of its ordered input;
-//!   [`StitchedPlan::to_container_files`] serializes canonically so folding the
-//!   same inputs twice yields byte-identical container payloads.
-//!
-//! # Campaign-identity seam
-//!
-//! [`CampaignIdentityResolution`] and [`AppendTicket`] are defined here locally.
-//! The actual identity derivation is supplied by `campaign_identity`.
-//! Stitching treats `campaign_key` as opaque bytes and never inspects save
-//! filenames, paths, timestamps, tags, mod/scenario names, or game dates. The
-//! provider type is reconciled against these definitions.
-
 use std::collections::BTreeMap;
 
 pub mod callsite;
@@ -45,28 +11,12 @@ use snapshot::canon::write_canonical;
 use snapshot::container::{canonical_stitch_input_digest, normalize_stitch_source_path};
 use snapshot::sha256::Sha256;
 
-/// The stitched container format version this module targets.
 pub const STITCH_CONTAINER_VERSION: u64 = 2;
-/// The required-feature flag a stitched container declares. Old
-/// readers that do not know it fail closed rather than hide the rollback graph.
 pub const STITCH_REQUIRED_FEATURE: &str = "timeline_segments_v1";
-/// `index.json` schema tag for the stitched main-playback index.
 pub const STITCH_INDEX_SCHEMA: &str = "stitched-main-v1";
-/// The only independently-verifiable v2 ZIP publication order.
 pub const STITCH_ENTRY_ORDER: &str = "lexicographic-path-manifest-last-v1";
-/// Selection rule serialized beside every repeated-hour observation set.
 pub const SAME_HOUR_SELECTION_RULE: &str = "greatest_record_sequence_v1";
 
-// ===========================================================================
-// Campaign identity and play-order interface (locally defined seam)
-// ===========================================================================
-
-/// One fail-closed identity result per verified save epoch.
-///
-/// `campaign_key` is opaque. Two epochs are candidates for one campaign **only**
-/// when both are `Verified`, their `scheme_major` matches, and their `campaign_key`
-/// bytes are equal. `evidence_digest` is retained for audit but is never the
-/// equality key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CampaignIdentityResolution {
     Verified {
@@ -86,12 +36,6 @@ pub enum CampaignIdentityResolution {
     },
 }
 
-/// Serialized-order token allocated per campaign participation.
-///
-/// `play_order` is a strictly-increasing campaign-local append ordinal committed
-/// under a campaign-local lock **before** the first campaign-bound byte is
-/// accepted. It encodes the order sessions were actually played/observed — never
-/// filesystem order, wall clock, zip order, or mtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppendTicket {
     pub campaign_key: Vec<u8>,
@@ -111,8 +55,6 @@ impl AppendTicket {
     }
 }
 
-/// Every byte-affecting non-segment input required to build a deterministic
-/// stitched publication. None of these values may be sampled by the stitcher.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StitchRequiredInputs {
     pub schema_version: String,
@@ -155,24 +97,18 @@ impl StitchRequiredInputs {
     }
 }
 
-/// Where the byte-for-byte source is retained. A source containing more than one
-/// campaign participation can only be standalone; embedding it under one campaign
-/// would silently transfer foreign bytes into that campaign ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RawSourceStorage {
     Standalone,
     EmbeddedCampaign { campaign_key: Vec<u8> },
 }
 
-/// One exact campaign participation extent inside a session raw source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceParticipation {
     pub ticket: AppendTicket,
     pub scheme_major: u16,
     pub identity_evidence_digest: [u8; 32],
-    /// Inclusive decoded record-sequence bounds.
     pub record_seq_bounds: (u64, u64),
-    /// Half-open decoded byte bounds.
     pub byte_bounds: (u64, u64),
 }
 
@@ -198,8 +134,6 @@ impl SourceParticipation {
     }
 }
 
-/// Campaign-independent identity and complete participation ledger for one exact
-/// session/process raw source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSourceDescriptor {
     pub session_nonce: String,
@@ -214,7 +148,6 @@ pub struct RawSourceDescriptor {
 }
 
 impl RawSourceDescriptor {
-    /// The source key is deliberately campaign-independent.
     pub fn source_key(&self) -> String {
         let mut bytes = Vec::new();
         for value in [
@@ -255,11 +188,6 @@ impl RawSourceDescriptor {
     }
 }
 
-/// Fail-closed decoder/build/modset/static-catalog compatibility result for one
-/// campaign participation. `compatibility_class` is the decoder-proven target
-/// class; source bindings may differ between segments, but every retained segment
-/// must carry a non-empty proof for the same class and the proof must repeat its
-/// exact source bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompatibilityResolution {
     Proven {
@@ -311,45 +239,27 @@ impl CompatibilityResolution {
     }
 }
 
-// ===========================================================================
-// Coverage dispositions and segment model
-// ===========================================================================
-
-/// The single coverage disposition of one complete observed hour within a segment
-/// Every complete observed hour has exactly one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoverageDisposition {
-    /// A published snapshot for the hour. `sha256` is the snapshot-body hash
-    /// (hex); the *canonical container filename is always derived* from the
-    /// segment's assigned global ordinal + hour via
-    /// [`PlannedSegment::snapshot_file`] — never stored here, so it cannot drift
-    /// from the ordinal the stitch actually assigns.
-    ///
-    /// `date` is the snapshot's own in-game date, carried from the source
-    /// index. It is REQUIRED on every visible main-timeline hour: the playback
-    /// index is the only authority a reader consults for date navigation
-    /// (reading a frame body to answer "what date is hour N" is not allowed at
-    /// that seam), so a stitched index without dates silently disables
-    /// jump-to-date. `Option` exists only so an imported/corrupt segment can
-    /// fail closed at `validate()` rather than be unrepresentable.
     Snapshot {
         sha256: String,
         date: Option<String>,
     },
-    /// The hour was observed complete but capture/fold failed. Carries a reason
-    /// and an evidence id so the failure is auditable, never invented.
-    CaptureFailed { reason: String, evidence_id: String },
-    /// The hour's requested slot was coalesced into another observation.
-    Coalesced { reason: String, evidence_id: String },
-    /// An explicit, reason-coded coverage gap (e.g. a forward time jump or a
-    /// cross-session gap). **Not** something the stitcher may invent — it must be
-    /// present in the segment coverage before the supersede algorithm runs.
-    Gap { reason: String, evidence_id: String },
+    CaptureFailed {
+        reason: String,
+        evidence_id: String,
+    },
+    Coalesced {
+        reason: String,
+        evidence_id: String,
+    },
+    Gap {
+        reason: String,
+        evidence_id: String,
+    },
 }
 
 impl CoverageDisposition {
-    /// The kind tag used in the serialized coverage/index (`snapshot`,
-    /// `capture_failed`, `coalesced`, `gap`).
     pub fn kind(&self) -> &'static str {
         match self {
             CoverageDisposition::Snapshot { .. } => "snapshot",
@@ -358,19 +268,12 @@ impl CoverageDisposition {
             CoverageDisposition::Gap { .. } => "gap",
         }
     }
-    /// A visible snapshot contributes a playback file; every other disposition is
-    /// an explicit main-timeline gap.
     pub fn is_snapshot(&self) -> bool {
         matches!(self, CoverageDisposition::Snapshot { .. })
     }
 
     fn to_value(&self) -> Value {
         match self {
-            // `date` is deliberately NOT emitted here: this projection feeds
-            // the per-segment index and the observation ledger, whose rows the
-            // container's graph/index cross-check compares field for field.
-            // The visible playback date belongs to the main index row
-            // (`main_index_value`), which is what a reader navigates by.
             CoverageDisposition::Snapshot { sha256, .. } => {
                 json!({ "kind": "snapshot", "sha256": sha256 })
             }
@@ -390,9 +293,6 @@ impl CoverageDisposition {
     }
 }
 
-/// Exact, stable owner of one complete observation. The owner repeats the
-/// authoritative ticket plus segment/epoch binding and is validated byte-for-byte;
-/// it is never inferred later from a vector position or assigned global ordinal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationOwner {
     pub ticket: AppendTicket,
@@ -413,15 +313,11 @@ impl ObservationOwner {
     }
 }
 
-/// One complete observation of one game hour, bound to exact decoded source
-/// sequence/byte evidence. Repeated observations are all retained.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HourObservation {
     pub observation_id: String,
     pub owner: ObservationOwner,
-    /// Inclusive decoded record-sequence bounds of the complete logical frame.
     pub record_seq_bounds: (u64, u64),
-    /// Half-open decoded byte bounds of the complete logical frame.
     pub byte_bounds: (u64, u64),
     pub disposition: CoverageDisposition,
 }
@@ -443,21 +339,13 @@ impl HourObservation {
     }
 }
 
-/// Why a segment started or stopped. Recorded as segment
-/// provenance and surfaced in `segments.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SegmentReason {
-    /// First complete frame of a new session / process-start identity.
     SessionStart,
-    /// A verified save-epoch token changed.
     EpochChange,
-    /// The collector reported reload may have begun (uncertainty seal).
     ReloadUncertain,
-    /// `frame.hour < current head` — a backward-time rollback cut.
     TimeRollback,
-    /// The session/stream ended cleanly.
     SessionEnd,
-    /// The segment is still open (used only pre-seal).
     Open,
 }
 
@@ -474,11 +362,6 @@ impl SegmentReason {
     }
 }
 
-/// Immutable provenance a segment carries into the stitch.
-///
-/// This is segment *provenance*, never a substitute for campaign identity: build /
-/// modset / schema / epoch bindings describe the bytes, they do not decide branch
-/// selection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SegmentProvenance {
     pub session_nonce: String,
@@ -489,72 +372,36 @@ pub struct SegmentProvenance {
     pub modset_id: Option<String>,
     pub schema_version: Option<String>,
     pub static_catalog_digest: Option<String>,
-    /// Byte-for-byte session source path; one entry per session.
     pub source_path: Option<String>,
-    /// SHA-256 of the *stored* (possibly compressed) session entry, hex.
     pub source_stored_digest: Option<String>,
-    /// SHA-256 of the *decoded* stream bytes, hex. Never a compressed offset.
     pub source_decoded_digest: Option<String>,
-    /// Decoded record-sequence bounds `[start, end]` of this segment in its source.
     pub record_seq_bounds: Option<(u64, u64)>,
-    /// Decoded byte bounds `[start, end)` of this segment in its source.
     pub byte_bounds: Option<(u64, u64)>,
     pub start_reason: Option<SegmentReason>,
     pub stop_reason: Option<SegmentReason>,
 }
 
-/// A sealed segment ready for stitching: a maximal nondecreasing-hour run within
-/// one session and one save epoch, with its coverage map and identity result.
-///
-/// Invariants enforced by [`SegmentInput::validate`]:
-/// * coverage keys are the complete observed hours;
-/// * `cutover` = min coverage hour, `head` = max coverage hour (both `None` for an
-///   empty recovery segment);
-/// * coverage is contiguous over `cutover..=head` (missing hour = corrupt input).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SegmentInput {
-    /// Strictly-increasing campaign-local order in which sessions were played.
-    /// Segments from one session share a `play_order`; `in_session_ordinal`
-    /// breaks the tie deterministically.
     pub play_order: u64,
-    /// Deterministic ordinal within one session (0-based, monotonic).
     pub in_session_ordinal: u32,
-    /// Fail-closed identity of this segment's save epoch.
     pub identity: CampaignIdentityResolution,
-    /// The append ticket bound to this segment's campaign participation. `None`
-    /// means the bytes were observed while identity was unresolved.
     pub ticket: Option<AppendTicket>,
-    /// Explicit fail-closed compatibility proof. Campaign identity is not a
-    /// substitute for decoder/build/modset/static-catalog compatibility.
     pub compatibility: CompatibilityResolution,
-    /// Coverage owned by this segment at a cross-session forward transition,
-    /// before its first observed hour. This ledger is distinct from observed-hour
-    /// coverage and must exactly cover any gap from the prior main head.
     pub transition_coverage: BTreeMap<i64, CoverageDisposition>,
-    /// Segment-local coverage: complete observed hour -> disposition.
     pub coverage: BTreeMap<i64, CoverageDisposition>,
-    /// Every complete observation for each hour, in decoded source-sequence
-    /// evidence order after normalization. The selected disposition in coverage
-    /// must equal the observation with the greatest record sequence.
     pub observations: BTreeMap<i64, Vec<HourObservation>>,
-    /// Complete campaign-independent raw-source identity/participation ledger.
-    /// None is representable only so corrupt/imported inputs can fail closed.
     pub raw_source: Option<RawSourceDescriptor>,
-    /// Immutable provenance.
     pub provenance: SegmentProvenance,
 }
 
 impl SegmentInput {
-    /// The first observed (owned) hour, or `None` for an empty recovery segment.
     pub fn cutover(&self) -> Option<i64> {
         self.coverage.keys().next().copied()
     }
-    /// The greatest observed hour, or `None` for an empty recovery segment.
     pub fn head(&self) -> Option<i64> {
         self.coverage.keys().next_back().copied()
     }
-    /// True for a segment with no complete frame — retained in the container but
-    /// excluded from the supersede calculation.
     pub fn is_empty_recovery(&self) -> bool {
         self.coverage.is_empty()
     }
@@ -614,7 +461,6 @@ impl SegmentInput {
         }
     }
 
-    /// Structural validation independent of stitching. Returns the first problem.
     pub fn validate(&self) -> Result<(), String> {
         for (hour, disposition) in &self.transition_coverage {
             if disposition.is_snapshot() {
@@ -643,7 +489,7 @@ impl SegmentInput {
                     self.play_order, self.in_session_ordinal
                 ));
             }
-            return Ok(()); // empty recovery segment is structurally legal
+            return Ok(());
         }
         if self.coverage.keys().copied().collect::<Vec<_>>()
             != self.observations.keys().copied().collect::<Vec<_>>()
@@ -655,9 +501,6 @@ impl SegmentInput {
         }
         let cutover = self.cutover().unwrap();
         let head = self.head().unwrap();
-        // Contiguity is checked over retained keys instead of iterating the
-        // attacker-controlled numeric span. This makes an i64::MIN..=i64::MAX
-        // corrupt input a bounded rejection rather than a validation hang.
         let coverage_hours: Vec<i64> = self.coverage.keys().copied().collect();
         for adjacent in coverage_hours.windows(2) {
             if adjacent[0].checked_add(1) != Some(adjacent[1]) {
@@ -758,9 +601,6 @@ fn validate_coverage_disposition(
             if !is_sha256_hex(sha256) {
                 return Err("snapshot digest is not canonical lowercase SHA-256".into());
             }
-            // A visible snapshot hour that carries no date publishes an index
-            // a reader cannot navigate by date. Refuse at plan validation
-            // rather than emit a dateless playback index.
             match date {
                 Some(date) if is_reason_text(date) => {}
                 Some(_) => {
@@ -995,35 +835,23 @@ fn validate_raw_source_for_segment(seg: &SegmentInput) -> Result<(), String> {
     Ok(())
 }
 
-// ===========================================================================
-// Exact supersede and visibility algorithm
-// ===========================================================================
-
 /// Ownership of one main-timeline hour: which global segment owns it and its
-/// disposition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainHour {
     pub segment_id: u32,
     pub disposition: CoverageDisposition,
     pub owner: ObservationOwner,
-    /// Present for an observed hour; transition-only coverage has no logical
-    /// frame observation but still carries the exact segment owner above.
     pub selected_observation: Option<HourObservation>,
 }
 
-/// A contiguous run of a segment's hours that a later segment removed from the
-/// main timeline. Retained, never deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupersededSpan {
-    /// The segment whose hours were superseded.
     pub segment_id: u32,
     pub start_hour: i64,
     pub end_hour: i64,
-    /// The later segment that first superseded this span.
     pub superseded_by: u32,
 }
 
-/// A contiguous run of a segment's hours that remain visible in the main timeline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VisibleSpan {
     pub segment_id: u32,
@@ -1031,7 +859,6 @@ pub struct VisibleSpan {
     pub end_hour: i64,
 }
 
-/// A main-branch slice attributed to one owning segment (ascending, coalesced).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MainSlice {
     pub segment_id: u32,
@@ -1039,39 +866,18 @@ pub struct MainSlice {
     pub end_hour: i64,
 }
 
-/// The deterministic result of the supersede algorithm.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupersedeResult {
-    /// The final main timeline, ascending by hour.
     pub main: BTreeMap<i64, MainHour>,
-    /// Greatest hour on the main timeline (`None` if no segment has any hour).
     pub main_head: Option<i64>,
-    /// Every superseded span, coalesced, in `(segment_id, start_hour)` order.
     pub superseded: Vec<SupersededSpan>,
-    /// Every visible span, coalesced, in `(segment_id, start_hour)` order.
     pub visible: Vec<VisibleSpan>,
-    /// Ordered main-branch slices by owning segment.
     pub main_slices: Vec<MainSlice>,
-    /// Exact parent captured immediately before each segment's cutover mutation.
     pub insertion_parents: BTreeMap<u32, Option<u32>>,
 }
 
-/// Run the supersede algorithm over segments that are
-/// **already ordered** by `(play_order, in_session_ordinal)` and carry global
-/// ordinals equal to their index in that order.
-///
-/// Empty recovery segments must be excluded by the caller (they are retained in the
-/// container but do not participate here).
-///
-/// Returns `Err` on corrupt input (a segment missing coverage for an owned hour) —
-/// the stitcher never invents a gap (self-refutation #3).
 fn run_supersede(ordered: &[(u32, &SegmentInput)]) -> Result<SupersedeResult, String> {
-    // main: hour -> (owner segment id, disposition). We also track, per hour, the
-    // owner so a later cutover can attribute the removed span to the superseding
-    // segment.
     let mut main: BTreeMap<i64, MainHour> = BTreeMap::new();
-    // superseded events recorded as (segment_id, hour, superseded_by); coalesced
-    // into spans after the loop for determinism and compactness.
     let mut superseded_events: Vec<(u32, i64, u32)> = Vec::new();
     let mut main_head: Option<i64> = None;
     let mut insertion_parents = BTreeMap::new();
@@ -1079,21 +885,16 @@ fn run_supersede(ordered: &[(u32, &SegmentInput)]) -> Result<SupersedeResult, St
     for (gid, seg) in ordered {
         let cutover = match seg.cutover() {
             Some(c) => c,
-            None => continue, // defensive: empty recovery excluded by caller
+            None => continue,
         };
         let head = seg.head().unwrap();
 
-        // Parentage is insertion evidence, not a graph inferred from the final
-        // branch. Capture it before transition insertion and cutover deletion.
         let parent = main
             .range(..cutover)
             .next_back()
             .map(|(_, main_hour)| main_hour.segment_id);
         insertion_parents.insert(*gid, parent);
 
-        // A forward transition beyond the previous main head must be represented
-        // exactly by the later segment's explicit transition ledger. Missing,
-        // extra, or misplaced rows are a fail-closed accounting error.
         let required_transition = main_head.and_then(|previous_head| {
             (cutover > previous_head.saturating_add(1))
                 .then_some((previous_head.saturating_add(1), cutover - 1))
@@ -1128,16 +929,12 @@ fn run_supersede(ordered: &[(u32, &SegmentInput)]) -> Result<SupersedeResult, St
             None => {}
         }
 
-        // delete from main every hour h >= cutover(S), attributing each removed
-        // hour to THIS segment as the first superseder.
         let removed: Vec<i64> = main.range(cutover..).map(|(h, _)| *h).collect();
         for h in removed {
             let owner = main.remove(&h).unwrap();
             superseded_events.push((owner.segment_id, h, *gid));
         }
 
-        // add this segment's coverage over cutover..=head. A missing hour is
-        // corrupt input.
         for h in cutover..=head {
             let disp = seg.coverage.get(&h).ok_or_else(|| {
                 format!("segment {gid}: missing coverage for owned hour {h} (corrupt input)")
@@ -1156,9 +953,6 @@ fn run_supersede(ordered: &[(u32, &SegmentInput)]) -> Result<SupersedeResult, St
         main_head = Some(head);
     }
 
-    // final truncation: delete every hour h > main_head. With valid segments
-    // (cutover <= head) the cutover-delete already removed these, so this is a
-    // defensive no-op; if it ever fires, attribute to the last segment.
     if let (Some(mh), Some((last_gid, _))) = (main_head, ordered.last()) {
         let tail: Vec<i64> = main.range((mh + 1)..).map(|(h, _)| *h).collect();
         for h in tail {
@@ -1181,11 +975,7 @@ fn run_supersede(ordered: &[(u32, &SegmentInput)]) -> Result<SupersedeResult, St
     })
 }
 
-/// Coalesce per-hour superseded events into contiguous spans, deterministically
-/// ordered by `(segment_id, start_hour)`. Adjacent hours coalesce only when the
-/// owner segment AND the `superseded_by` owner match.
 fn coalesce_superseded(events: &mut [(u32, i64, u32)]) -> Vec<SupersededSpan> {
-    // sort by (segment_id, hour) so runs are contiguous and order is canonical.
     events.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
     let mut out: Vec<SupersededSpan> = Vec::new();
     for &(seg, hour, by) in events.iter() {
@@ -1207,7 +997,6 @@ fn coalesce_superseded(events: &mut [(u32, i64, u32)]) -> Vec<SupersededSpan> {
 
 /// Coalesce the main map's visible ownership into per-segment contiguous spans.
 fn coalesce_visible(main: &BTreeMap<i64, MainHour>) -> Vec<VisibleSpan> {
-    // build owner runs in ascending hour, then re-sort by (segment_id, start_hour).
     let mut runs: Vec<VisibleSpan> = Vec::new();
     for (h, mh) in main.iter() {
         if let Some(last) = runs.last_mut() {
@@ -1226,7 +1015,6 @@ fn coalesce_visible(main: &BTreeMap<i64, MainHour>) -> Vec<VisibleSpan> {
     runs
 }
 
-/// Ordered (ascending-hour) main-branch slices by owning segment.
 fn coalesce_main_slices(main: &BTreeMap<i64, MainHour>) -> Vec<MainSlice> {
     let mut runs: Vec<MainSlice> = Vec::new();
     for (h, mh) in main.iter() {
@@ -1245,85 +1033,44 @@ fn coalesce_main_slices(main: &BTreeMap<i64, MainHour>) -> Vec<MainSlice> {
     runs
 }
 
-// ===========================================================================
-// Fail-closed identity and play-order gate plus plan
-// ===========================================================================
-
-/// The outcome of a stitch attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StitchOutcome {
-    /// The segments form one verified campaign with a proven play order: a single
-    /// stitched replay.
     Stitched(StitchedPlan),
-    /// Fail-closed refusal: keep sessions separate. `reason` names why (unbound /
-    /// missing / ambiguous / conflicting identity, unprovable order, mixed major).
     Separate { reason: String },
 }
 
-/// The immutable, deterministic stitch model: the main timeline plus the full
-/// retained segment graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StitchedPlan {
     pub game_id: String,
     pub required_inputs: StitchRequiredInputs,
     pub scheme_major: u16,
-    /// Exact opaque campaign-key bytes needed for independent digest replay.
     pub campaign_key: Vec<u8>,
     pub campaign_key_digest: String,
     pub stream_major: u16,
-    /// Digest binding every stitch input (play order + identity + coverage).
     pub stitch_input_digest: String,
-    /// Digest of the ordered play-order ledger.
     pub play_order_ledger_digest: String,
-    /// Segments in global-ordinal order (== `(play_order, in_session_ordinal)`),
-    /// including empty recovery segments (retained, no visible span).
     pub segments: Vec<PlannedSegment>,
     pub supersede: SupersedeResult,
 }
 
-/// One segment as placed in the stitched plan, with its global ordinal and its
-/// normalized visible / superseded spans.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedSegment {
     pub segment_id: u32,
     pub input: SegmentInput,
-    /// The segment that owns the greatest main-timeline hour below this segment's
-    /// cutover at insertion time. Explanatory only.
     pub parent_segment: Option<u32>,
     pub visible_spans: Vec<VisibleSpan>,
     pub superseded_spans: Vec<SupersededSpan>,
 }
 
 impl PlannedSegment {
-    /// Canonical segment-prefixed snapshot filename:
-    /// `s<segment_id:08>.<hour:012>.snapshot.json`.
     pub fn snapshot_file(segment_id: u32, hour_index: i64) -> String {
         format!("s{segment_id:08}.{hour_index:012}.snapshot.json")
     }
-    /// Per-segment index path.
     pub fn index_path(segment_id: u32) -> String {
         format!("segments/s{segment_id:08}.index.json")
     }
 }
 
-/// Attempt to stitch `segments` into one replay, fail-closed.
-///
-/// The caller supplies segments in any order; this function establishes the
-/// deterministic play order and assigns global ordinals. It refuses (returns
-/// [`StitchOutcome::Separate`]) when:
-///
-/// * any participating (non-empty) segment's identity is not `Verified`
-///   (unbound / missing / ambiguous / conflicting) — cross-session stitching is
-///   disabled while identity is unbound;
-/// * verified `scheme_major` values differ or `campaign_key` bytes differ;
-/// * any participating segment lacks an [`AppendTicket`], or a ticket's
-///   `campaign_key` disagrees with its identity;
-/// * play-order ordinals collide or cannot form a proven total order;
-/// * stream majors are mixed;
-/// * structural validation fails (a segment missing coverage for an owned hour).
-///
-/// `game_id` / `schema_version` are recorded on the plan; they are not identity
-/// heuristics.
 pub fn plan_stitch(
     game_id: &str,
     required_inputs: StitchRequiredInputs,
@@ -1371,7 +1118,6 @@ pub fn plan_stitch(
             }
         }
     }
-    // 0. structural validation (independent of identity).
     for seg in &segments {
         if let Err(e) = seg.validate() {
             return StitchOutcome::Separate {
@@ -1380,23 +1126,15 @@ pub fn plan_stitch(
         }
     }
 
-    // Participating segments are those with at least one complete frame. Empty
-    // recovery segments are retained and excluded only from visibility placement;
-    // identity, ticket, compatibility, stream-major and ordering validation below
-    // covers ALL retained segments.
     let participating: Vec<&SegmentInput> =
         segments.iter().filter(|s| !s.is_empty_recovery()).collect();
 
-    // If there is nothing to place, there is nothing to stitch.
     if participating.is_empty() {
         return StitchOutcome::Separate {
             reason: "no non-empty segment to place on a main timeline".into(),
         };
     }
 
-    // 1. every retained segment must be Verified with equal scheme/campaign,
-    // uniform stream major, an exact AppendTicket binding, and an explicit Proven
-    // compatibility result.
     let mut scheme_major: Option<u16> = None;
     let mut campaign_key: Option<Vec<u8>> = None;
     let mut stream_major: Option<u16> = None;
@@ -1460,7 +1198,6 @@ pub fn plan_stitch(
                 };
             }
         }
-        // Stream major must be uniform; mixed majors are not valid.
         let sm = seg.provenance.stream_major;
         if sm == 0 {
             return StitchOutcome::Separate {
@@ -1527,8 +1264,9 @@ pub fn plan_stitch(
                     || !is_sha256_hex(static_catalog_digest)
                 {
                     return StitchOutcome::Separate {
-                        reason: "compatibility Proven result has an empty/invalid mandatory binding"
-                            .into(),
+                        reason:
+                            "compatibility Proven result has an empty/invalid mandatory binding"
+                                .into(),
                     };
                 }
                 let exact = seg.provenance.build_exe_sha256.as_deref()
@@ -1578,9 +1316,6 @@ pub fn plan_stitch(
     let campaign_key = campaign_key.unwrap();
     let stream_major = stream_major.unwrap();
 
-    // 2. prove a strict total segment order. Multiple segments from one session
-    // may share one exact ticket/play_order, but their in-session ordinals must be
-    // unique. Distinct tickets may never claim the same play_order.
     let mut seen_ranks: BTreeMap<(u64, u32), ()> = BTreeMap::new();
     let mut order_to_ticket: BTreeMap<u64, AppendTicket> = BTreeMap::new();
     for seg in &segments {
@@ -1609,8 +1344,6 @@ pub fn plan_stitch(
     }
 
     // Source ownership is validated only after the ticket/order authority has
-    // rejected collisions, so a malformed nested source cannot obscure the
-    // primary ordering-corruption evidence.
     for seg in &segments {
         let ticket = seg.ticket.as_ref().expect("ticket validated above");
         if let Err(reason) = validate_raw_source_for_segment(seg) {
@@ -1665,9 +1398,6 @@ pub fn plan_stitch(
         }
     }
 
-    // 4. deterministic order: (play_order, in_session_ordinal). Global ordinals are
-    //    assigned by scanning THIS order from zero — including empty recovery
-    //    segments so their retained payloads get stable ids too.
     let mut ordered_all: Vec<SegmentInput> = segments;
     ordered_all.sort_by(|a, b| {
         let at = a.ticket.as_ref().expect("ticket validated above");
@@ -1675,7 +1405,6 @@ pub fn plan_stitch(
         (at.play_order, a.in_session_ordinal).cmp(&(bt.play_order, b.in_session_ordinal))
     });
 
-    // participating (non-empty) segments with their assigned global ordinal.
     let mut ordered_participating: Vec<(u32, &SegmentInput)> = Vec::new();
     for (gid, seg) in ordered_all.iter().enumerate() {
         if !seg.is_empty_recovery() {
@@ -1683,7 +1412,6 @@ pub fn plan_stitch(
         }
     }
 
-    // 5. run the supersede algorithm.
     let supersede = match run_supersede(&ordered_participating) {
         Ok(r) => r,
         Err(e) => {
@@ -1693,7 +1421,6 @@ pub fn plan_stitch(
         }
     };
 
-    // 6. build per-segment placement (parent, visible/superseded spans).
     let visible_by_seg = group_visible(&supersede.visible);
     let superseded_by_seg = group_superseded(&supersede.superseded);
     let mut planned: Vec<PlannedSegment> = Vec::with_capacity(ordered_all.len());
@@ -1709,7 +1436,6 @@ pub fn plan_stitch(
         });
     }
 
-    // 7. digests binding the deterministic input tuple.
     let campaign_key_digest = Sha256::hex(&campaign_key);
     let play_order_ledger_digest = compute_play_order_ledger_digest(&ordered_all);
 
@@ -1753,7 +1479,6 @@ fn group_superseded(spans: &[SupersededSpan]) -> BTreeMap<u32, Vec<SupersededSpa
     m
 }
 
-/// Digest over the ordered play-order ledger only.
 fn compute_play_order_ledger_digest(ordered: &[SegmentInput]) -> String {
     let rows: Vec<Value> = ordered
         .iter()
@@ -1780,25 +1505,15 @@ fn hex(bytes: &[u8]) -> String {
     s
 }
 
-/// SHA-256 (hex) over the canonical bytes of a JSON value.
 fn canon_hex(v: &Value) -> String {
     let mut s = String::new();
     write_canonical(v, &mut s);
     Sha256::hex(s.as_bytes())
 }
 
-// ===========================================================================
-// Container and index serialization (deterministic)
-// ===========================================================================
-
-/// One payload file the stitched container must contain: its container-relative
-/// path (already `payload/<game>/`-rooted by the builder) and canonical bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StitchedFile {
-    /// Path relative to `payload/<game_id>/` (e.g. `index.json`,
-    /// `segments.json`, `segments/s00000000.index.json`).
     pub rel_path: String,
-    /// The `role` used in the container manifest.
     pub role: &'static str,
     pub bytes: Vec<u8>,
 }
@@ -1851,9 +1566,6 @@ fn source_ref_value(segment: &SegmentInput) -> Value {
 }
 
 impl StitchedPlan {
-    /// The canonical `index.json` body (`stitched-main-v1`):
-    /// exactly one entry per visible `Snapshot` hour, ascending, plus the visible
-    /// coverage gaps. Never lists a superseded snapshot; never hides a main gap.
     pub fn main_index_value(&self) -> Value {
         let mut snapshots: Vec<Value> = Vec::new();
         let mut coverage: Vec<Value> = Vec::new();
@@ -1866,10 +1578,6 @@ impl StitchedPlan {
                     row.insert("file".into(), json!(file));
                     row.insert("kind".into(), json!("snapshot"));
                     row.insert("sha256".into(), json!(sha256));
-                    // The playback index dates every visible hour; a reader
-                    // answers jump-to-date from here and never from a body.
-                    // `validate_coverage_disposition` has already refused a
-                    // visible snapshot without one.
                     if let Some(date) = date {
                         row.insert("date".into(), json!(date));
                     }
@@ -1901,7 +1609,6 @@ impl StitchedPlan {
         })
     }
 
-    /// The canonical `segments.json` body (authoritative branch graph).
     pub fn segments_value(&self) -> Value {
         let segments: Vec<Value> = self
             .segments
@@ -2022,9 +1729,6 @@ impl StitchedPlan {
         })
     }
 
-    /// The canonical per-segment index body: every complete
-    /// observed hour + disposition, emitted snapshot file/hash, source bounds, and
-    /// explicit gaps. Immutable once sealed.
     pub fn segment_index_value(&self, p: &PlannedSegment) -> Value {
         let s = &p.input;
         let hours: Vec<Value> = s
@@ -2037,8 +1741,6 @@ impl StitchedPlan {
                     .selected_observation(*h)
                     .expect("observation selection validated before serialization");
                 if d.is_snapshot() {
-                    // the retained (possibly superseded) snapshot's canonical
-                    // container file, derived from this segment's global ordinal.
                     o.insert(
                         "file".into(),
                         json!(PlannedSegment::snapshot_file(p.segment_id, *h)),
@@ -2093,13 +1795,6 @@ impl StitchedPlan {
         })
     }
 
-    /// All non-snapshot container files (index.json, segments.json, per-segment
-    /// indexes) as canonical bytes, in deterministic path order. Snapshot payload
-    /// files are supplied by the fold (byte-copied) and joined by the packer using
-    /// [`PlannedSegment::snapshot_file`] names; they are not synthesized here.
-    ///
-    /// Determinism: canonical JSON + sorted paths ⇒ identical bytes for identical
-    /// plans.
     pub fn to_container_files(&self) -> Vec<StitchedFile> {
         let mut files: Vec<StitchedFile> = Vec::new();
         files.push(StitchedFile {
@@ -2123,9 +1818,6 @@ impl StitchedPlan {
         files
     }
 
-    /// The set of visible main-timeline snapshot files (segment-prefixed names) in
-    /// ascending hour order — the payloads the packer must include and the
-    /// playback index resolves.
     pub fn visible_snapshot_files(&self) -> Vec<(i64, String)> {
         self.supersede
             .main
@@ -2140,8 +1832,6 @@ impl StitchedPlan {
     }
 }
 
-/// Coalesce adjacent rows only when disposition, cause, evidence and owner all
-/// match. Range endpoints are the only ignored fields.
 fn coalesce_coverage_ranges(rows: Vec<Value>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::new();
     for row in rows {
@@ -2168,8 +1858,6 @@ fn coalesce_coverage_ranges(rows: Vec<Value>) -> Vec<Value> {
     out
 }
 
-/// Canonical bytes of a JSON value (RFC-8785-style; reuses the snapshot crate's
-/// manifest canonicalizer). Deterministic regardless of insertion order.
 fn canon_bytes(v: &Value) -> Vec<u8> {
     let mut s = String::new();
     write_canonical(v, &mut s);

@@ -165,13 +165,6 @@ impl WorldFold {
 """
 
 
-# --- the extraction scenario, as it actually happened ----------------------
-#
-# d20's wire module transcribes "row decode and object build". Both used to live
-# in `fold_divisions`; the build was lifted into a row method, the marker was
-# re-stamped over the residual, and the moved rendering left every digest while
-# the gate went on printing PASS. These three worlds are that sequence, reduced
-# to the parts a gate can see.
 
 INLINE_RENDER = """\
 impl WorldFold {
@@ -230,7 +223,6 @@ impl WorldFold {
 }
 """
 
-# The same extraction, but the helper left the file entirely.
 MOVED_OUT_OF_FILE = EXTRACTED_RENDER.replace(
     "        let document = Self::render_document(self.dig_in);",
     "        let document = rendering::render_document(self.dig_in);",
@@ -272,8 +264,6 @@ class AuthorityClosureTests(unittest.TestCase):
                 (1, 0, 0, 0),
             )
 
-            # Lift the render out, exactly as the d20 lane did, and re-stamp:
-            # the extraction itself is a legitimate refactor and must pass.
             fixture.set_world(EXTRACTED_RENDER)
             self.restamp(fixture)
             self.assertEqual(
@@ -289,15 +279,10 @@ class AuthorityClosureTests(unittest.TestCase):
                 )["domains"]["1"],
             )
 
-            # Now change what the MOVED code renders.
             mutated = EXTRACTED_RENDER.replace("dig_in.min(2)", "dig_in.min(1)")
             self.assertNotEqual(mutated, EXTRACTED_RENDER)
             fixture.set_world(mutated)
 
-            # THE OLD GATE'S CHECK STILL PASSES: the marker's line range covers
-            # `fold_render` only, and `fold_render` did not change. This is the
-            # exact assertion that makes this a regression test rather than a
-            # restatement of the digest check.
             marker = fixture.marker_of(1)
             envelope = VERIFY.Span(
                 int(marker.group("start")), int(marker.group("end"))
@@ -313,8 +298,6 @@ class AuthorityClosureTests(unittest.TestCase):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=())
 
     def test_mutating_a_function_outside_the_closure_still_passes(self) -> None:
-        # The other half of the claim: the closure must not turn every edit to
-        # world_fold.rs into a citation failure.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -324,11 +307,8 @@ class AuthorityClosureTests(unittest.TestCase):
             )
             marker = fixture.marker_of(1)
             for original, replacement in (
-                ("self.value += 7;", "self.value += 8;"),  # fold_other
-                ("self.value += 11;", "self.value += 12;"),  # unrelated_helper
-                # An INSERTION above everything, which shifts every line number
-                # in the file. The closure digest is keyed by name, not
-                # position, so it must be untouched by that.
+                ("self.value += 7;", "self.value += 8;"),
+                ("self.value += 11;", "self.value += 12;"),
                 (INLINE_RENDER[:0], ""),
             ):
                 world = EXTRACTED_RENDER.replace(original, replacement)
@@ -347,8 +327,6 @@ class AuthorityClosureTests(unittest.TestCase):
                     f"editing `{original}` must not fail d1's citation",
                 )
 
-            # The line-shift case separately: the closure digest must survive it
-            # even though the envelope's `lines=` does not.
             shifted = "// an insertion above everything\n" + EXTRACTED_RENDER
             fixture.set_world(shifted)
             self.assertEqual(
@@ -361,10 +339,6 @@ class AuthorityClosureTests(unittest.TestCase):
             )
 
     def test_a_helper_that_leaves_the_file_is_named_not_swallowed(self) -> None:
-        # The residual this design does NOT close: a helper moved to another
-        # file is outside the closure by construction. What it must not do is
-        # vanish quietly -- the membership record turns it into a failure whose
-        # message names the function, and the re-stamper refuses to launder it.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -381,9 +355,6 @@ class AuthorityClosureTests(unittest.TestCase):
             self.assertIn("SHRANK", str(exited.exception))
             self.assertIn("WorldFold::render_document", str(exited.exception))
 
-            # Acknowledged, it re-stamps -- and the gate then passes over the
-            # smaller closure, which is why the acknowledgement is the review
-            # surface rather than a formality.
             self.restamp(fixture, allow_closure_shrink=True)
             self.assertEqual(
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
@@ -541,10 +512,6 @@ impl Other {
             )
 
     def test_a_function_reached_as_a_value_is_covered(self) -> None:
-        # `fold_divisions` reaches `DivisionFoldRow::equipment_join_key` only as
-        # `.and_then(DivisionFoldRow::equipment_join_key)` -- no parentheses of
-        # its own. A scan that only looked for `name(` left that logic outside
-        # every digest while the gate passed.
         temporary, fixture = self.fixture(
             """\
 struct Row;
@@ -570,18 +537,12 @@ impl WorldFold {
 """
         )
         with temporary:
-            # `Row` itself is covered too: the fold names the type, and a
-            # type definition is executable input to what the fold reads.
             self.assertEqual(
                 fixture.closure_of(("fold_value_ref",)),
                 {"WorldFold::fold_value_ref", "Row::join_key", "Row"},
             )
 
     def test_a_field_access_is_not_read_as_a_method_call(self) -> None:
-        # The other side of that widening: `row.value` is a field, and Rust has
-        # no way to take a method by value through a receiver. Treating it as a
-        # call would fire the ambiguity refusal on every field that happens to
-        # share a method name.
         temporary, fixture = self.fixture(
             """\
 struct A;
@@ -644,8 +605,6 @@ impl WorldFold {
 """
         )
         with temporary:
-            # Transitive, not one hop: `deeper` is only reachable through
-            # `shape_row`, and a one-hop closure would leave it uncovered.
             self.assertEqual(
                 fixture.closure_of(("fold_free",)),
                 {"WorldFold::fold_free", "shape_row", "deeper"},
@@ -662,9 +621,6 @@ class ScannerRefusalTests(unittest.TestCase):
         return temporary, CitationFixture(Path(temporary.name), world)
 
     def test_a_locally_defined_macro_stops_the_gate(self) -> None:
-        # A macro body can call a function without naming it at the call site,
-        # so from the moment one exists the closure can no longer claim to cover
-        # what a cited fold runs. There are none today; this is the tripwire.
         temporary, fixture = self.fixture(
             "macro_rules! shape {\n    () => {};\n}\n" + INLINE_RENDER
         )
@@ -675,9 +631,6 @@ class ScannerRefusalTests(unittest.TestCase):
                 VERIFY.index_items(fixture.world)
 
     def test_an_unparsed_item_scope_stops_the_gate(self) -> None:
-        # A scope header this scanner cannot read would attribute the functions
-        # inside it to the wrong owner, and their `self.f()` callers would stop
-        # resolving -- silent under-coverage. It refuses instead.
         world = "impl Weird for {\n    fn helper() {}\n}\n" + INLINE_RENDER
         temporary, fixture = self.fixture(world)
         with temporary:
@@ -692,9 +645,6 @@ class ScannerRefusalTests(unittest.TestCase):
                 VERIFY.SCOPE_RE = broken
 
     def test_an_attribute_is_inside_the_function_it_selects(self) -> None:
-        # `world_fold.rs` carries two `injected_record_fault` bodies chosen by
-        # `#[cfg(..)]`. A span starting at `fn` leaves the selector outside every
-        # digest, so swapping which body ships changes nothing the gate sees.
         world = """\
 impl WorldFold {
     fn fold_domain_data(&mut self, domain: u16) {
@@ -726,9 +676,6 @@ impl WorldFold {
     def test_a_qualified_path_can_name_a_constant_not_only_a_function(
         self,
     ) -> None:
-        # `crate::FLAG` reaches the same refusal an unreadable receiver does,
-        # but that path consulted CALLABLE items only, so a constant behind an
-        # unreadable qualifier fell through and vanished from the closure.
         world = """\
 const FLAG: u32 = 1;
 const FLAG_OTHER: u32 = 2;
@@ -751,9 +698,6 @@ impl WorldFold {
             self.assertIn("FLAG", fixture.closure_of(("fold_x",)))
 
     def test_a_const_generic_default_does_not_truncate_a_struct(self) -> None:
-        # `_item_terminator` tracks `()` and `[]`; a braced const-generic
-        # DEFAULT put a `{` in the header, which was mistaken for the body and
-        # left the real fields outside the digest.
         world = """\
 struct Row<const N: usize = { 1 }> {
     width: u8,
@@ -788,11 +732,6 @@ impl WorldFold {
     def test_a_shift_in_a_const_generic_default_does_not_delete_the_struct(
         self,
     ) -> None:
-        # `{ 1 << 2 }` -- the angle-depth guard counted each `<` of the shift as
-        # a generic open, so the real body brace looked nested and the struct
-        # left the index. `>>` must still decrement twice or every
-        # `Vec<Vec<u32>>` in the file gets the wrong span, which is how the
-        # first version of this guard broke d52.
         world = """\
 struct Row<const N: usize = { 1 << 2 }> {
     width: u8,
@@ -819,12 +758,9 @@ impl WorldFold {
             span = index.items["Row"].span
             covered = "\n".join(world.splitlines()[span.start - 1 : span.end])
             self.assertIn("width: u8", covered, covered)
-            # The nested generic in the return type must not have shifted the
-            # function's own span either.
             self.assertEqual(index.items["WorldFold::fold_x"].span.end, 16)
 
     def test_an_attribute_survives_a_blank_line_above_its_item(self) -> None:
-        # Rust allows `#[cfg(..)]`, a blank line or comment, then the item.
         world = """\
 impl WorldFold {
     fn fold_domain_data(&mut self, domain: u16) {
@@ -850,8 +786,6 @@ impl WorldFold {
             self.assertIn("#[cfg(not(test))]", covered, covered)
 
     def test_a_second_item_on_one_line_stops_the_gate(self) -> None:
-        # Every item pattern is line-anchored, so the later item would be
-        # invisible rather than refused.
         world = INLINE_RENDER.replace(
             "    fn fold_other(&mut self) {\n        self.value += 7;\n    }",
             "    fn fold_other(&mut self) { self.value += 7; } fn extra() {}",
@@ -864,8 +798,6 @@ impl WorldFold {
                 VERIFY.index_items(world)
 
     def test_a_declaration_naming_a_constant_is_rejected(self) -> None:
-        # It would be accepted and would then suppress the real method's
-        # ambiguity, omitting the very body it claims to describe.
         world = AMBIGUOUS_RECEIVER.replace(
             "struct Row;",
             "struct Row;\n\nimpl Marker {\n}\n\nstruct Marker;",
@@ -911,7 +843,6 @@ impl WorldFold {
             self.assertIn("helper", members)
 
     def test_an_alias_through_a_module_path_names_the_type(self) -> None:
-        # `type Alias = m::Row;` aliases `Row`, not the module `m`.
         world = """\
 struct Row;
 
@@ -941,11 +872,6 @@ impl WorldFold {
             self.assertIn("Row::helper", fixture.closure_of(("fold_x",)))
 
     def test_a_wrapped_impl_header_still_owns_its_methods(self) -> None:
-        # `impl<'a> From<&'a Row>` / newline / `    for Projection<'a>` /
-        # newline / `{` is in world_fold.rs today. Demanding the brace on the
-        # header line skipped the scope and indexed `from` as a FREE function,
-        # so a caller's `self.from()` would stop resolving -- silent
-        # under-coverage. This fails if the brace requirement comes back.
         world = """\
 struct Projection;
 struct Row;
@@ -980,7 +906,6 @@ impl WorldFold {
             self.assertNotIn("from", index.items)
 
     def test_whitespace_does_not_smuggle_a_macro_past_the_tripwire(self) -> None:
-        # `macro_rules ! name` is valid Rust and was accepted by the scanner.
         temporary, fixture = self.fixture(
             "macro_rules ! shape {\n    () => {};\n}\n" + INLINE_RENDER
         )
@@ -1018,10 +943,6 @@ impl WorldFold {
             self.assertNotIn("helper", index.items)
 
     def test_a_wrapped_return_type_is_not_mistaken_for_a_scope(self) -> None:
-        # `) -> ` / newline / `impl Iterator<..> {` begins a line with `impl`
-        # but is a return type. Treating it as an item scope would mis-own every
-        # function after it, and the guard would not fire because the scanner
-        # "recognized" it.
         world = """\
 impl WorldFold {
     fn fold_domain_data(&mut self, domain: u16) {
@@ -1050,21 +971,10 @@ impl WorldFold {
             index = VERIFY.index_items(world)
             self.assertIn("WorldFold::fold_x", index.items)
             self.assertIn("WorldFold::rows", index.items)
-            # The assertion that observes the false scope: without the
-            # continuation check, `impl Iterator<..> {` is read as an item scope
-            # that owns `rows`' body, so the nested function is indexed as
-            # `Iterator::nested_helper` instead of a free one, and every caller
-            # spelling it bare stops resolving.
             self.assertIn("WorldFold::nested_helper", index.items)
             self.assertNotIn("Iterator::nested_helper", index.items)
 
     def test_an_array_type_in_a_signature_does_not_drop_the_function(self) -> None:
-        # `fn helper(values: [i32; 5]) { .. }` is a DEFINITION. Reading the
-        # array type's semicolon as the terminator classified it as a bodyless
-        # trait declaration and dropped it from the index entirely, so a cited
-        # fold could call it and the closure would contain only the fold.
-        # `validate_supply_logistics_tombstone` and `a38_hash_hex` in
-        # world_fold.rs were both missing for exactly this reason.
         world = """\
 impl WorldFold {
     fn fold_domain_data(&mut self, domain: u16) {
@@ -1090,14 +1000,6 @@ impl WorldFold {
             self.assertIn("WorldFold::helper", fixture.closure_of(("fold_x",)))
 
     def test_a_braced_initializer_does_not_truncate_a_constant(self) -> None:
-        # `const PICK: i32 = if c { A } else { B };` -- stopping at the first
-        # brace hashed the first branch and left the second outside the digest.
-        #
-        # The declaration is spread over SEVERAL LINES on purpose. Spans are
-        # converted to whole lines and hashing includes the complete ending
-        # line, so a one-line fixture hashes the omitted suffix anyway and the
-        # assertion passes with or without the fix -- which is exactly how the
-        # first version of this test managed to prove nothing.
         world = """\
 const A: i32 = 1;
 const B: i32 = 2;
@@ -1135,8 +1037,6 @@ impl WorldFold {
             )
 
     def test_an_array_type_does_not_truncate_a_static(self) -> None:
-        # The value is on its own lines so the truncation at the semicolon
-        # INSIDE `[u8; 4]` actually omits them -- see the note above.
         world = """\
 static MAGIC: [u8; 4] = [
     b'D', b'E', b'L', b'2',
@@ -1170,9 +1070,6 @@ impl WorldFold {
             )
 
     def test_a_local_type_alias_resolves_to_the_underlying_method(self) -> None:
-        # `type Alias = Row;` -- `Alias::helper()` executes `Row::helper`, but
-        # the index stores the method under `Row`, so the `(Alias, helper)`
-        # lookup missed and the method left the closure silently.
         world = """\
 struct Row;
 
@@ -1202,9 +1099,6 @@ impl WorldFold {
             self.assertIn("Row::helper", fixture.closure_of(("fold_x",)))
 
     def test_a_value_item_is_never_a_candidate_for_a_method_call(self) -> None:
-        # `by_name` carries constants and structs too. Treating them as callable
-        # made an unambiguous `row.render()` "ambiguous" against an unrelated
-        # constant of the same name -- a refusal no re-stamp can clear.
         world = """\
 struct Row;
 
@@ -1264,9 +1158,6 @@ impl WorldFold {
             )
 
     def test_an_annotation_inside_a_string_literal_is_not_authority(self) -> None:
-        # Declarations are read from the view where comments survive but string
-        # literals do not, so a diagnostic quoting the annotation cannot grant
-        # itself permission to omit a callee.
         temporary, fixture = self.fixture(
             AMBIGUOUS_RECEIVER.replace(
                 "        self.out = row.to_json();",
@@ -1279,8 +1170,6 @@ impl WorldFold {
                 fixture.closure_of(("fold_amb",))
 
     def test_a_field_read_is_not_a_call_even_with_a_brace_after_it(self) -> None:
-        # `if row.ready {` and `row.items[0]` are field reads. Reading them as
-        # calls fires the ambiguity refusal on every field sharing a method name.
         temporary, fixture = self.fixture(
             AMBIGUOUS_RECEIVER.replace(
                 "        self.out = row.to_json();",
@@ -1293,12 +1182,6 @@ impl WorldFold {
             )
 
     def test_a_declaration_does_not_absolve_a_second_call_elsewhere(self) -> None:
-        # The declaration used to be keyed by METHOD NAME for the whole
-        # function, so `@fold-callee-external as_str` written for two `String`
-        # receivers also silently absolved a local `DivisionUid::as_str()` added
-        # later. A declaration now governs its own line and the next one, so a
-        # second call somewhere else in the same function is undeclared and the
-        # gate refuses instead of quietly omitting the local method.
         world = AMBIGUOUS_RECEIVER.replace(
             "        self.out = row.to_json();",
             "        // @fold-callee Row::to_json\n"
@@ -1328,9 +1211,6 @@ impl WorldFold {
     def test_a_crate_qualified_call_is_not_resolved_to_a_scope_named_crate(
         self,
     ) -> None:
-        # `crate::f()` / `super::f()` name a module path this scanner does not
-        # model, so they reach the same refusal an unreadable receiver does
-        # instead of resolving to nothing.
         temporary, fixture = self.fixture(
             AMBIGUOUS_RECEIVER.replace(
                 "        self.out = row.to_json();",
@@ -1376,9 +1256,6 @@ impl WorldFold {
 """
 
     def test_a_constant_the_fold_reads_is_covered(self) -> None:
-        # `DIVISION_FLAG_SUPPLY_GAIN` is a `const`. Re-spelling it `1 << 9`
-        # changes which bit the division fold reads while every `fn` in the
-        # closure stays byte-identical, and every digest held.
         temporary, fixture = self.fixture(self.CONSTANT_WORLD)
         with temporary:
             index = VERIFY.index_items(fixture.world)
@@ -1406,9 +1283,6 @@ impl WorldFold {
             )
 
     def test_the_struct_a_method_belongs_to_is_covered(self) -> None:
-        # Every cited fold reads `WorldFold`'s fields directly, so widening one
-        # changes what the fold does while the method's own bytes are identical.
-        # The owner was a lookup key everywhere; here it is a dependency.
         world = """\
 struct WorldFold {
     value: u8,
@@ -1439,8 +1313,6 @@ impl WorldFold {
             )
 
     def test_a_use_binding_the_fold_executes_is_covered(self) -> None:
-        # `use a::f;` decides WHICH `f` a bare call reaches. Re-pointing it
-        # changes the executed implementation without changing any other byte.
         world = """\
 use compact_contract::calendar::{date_from_raw, hour_index_from_raw};
 
@@ -1469,8 +1341,6 @@ impl WorldFold {
             )
 
     def test_a_constant_built_from_constants_carries_them(self) -> None:
-        # `KNOWN_FLAGS = A | B` means nothing without A and B, and changing one
-        # changes what it admits while its own bytes stay identical.
         world = """\
 const A: u32 = 1 << 0;
 const B: u32 = 1 << 1;
@@ -1504,10 +1374,6 @@ impl WorldFold {
     def test_a_type_is_a_leaf_so_one_state_struct_does_not_drag_in_all(
         self,
     ) -> None:
-        # The other half of that decision: following the TYPES a struct's fields
-        # name made `WorldFold` pull all 138 state structs into all 45 closures,
-        # so every domain's digest moved whenever any other domain's state
-        # changed and the membership list stopped describing the domain.
         world = """\
 struct Unrelated {
     depth: u8,
@@ -1539,10 +1405,6 @@ impl WorldFold {
     def test_a_constant_inside_a_function_body_is_not_indexed_separately(
         self,
     ) -> None:
-        # It is already inside that function's span. Indexing it again would
-        # hash it twice and, because such names repeat freely across bodies,
-        # would key them `#2`..`#13` by source ORDER -- so inserting one earlier
-        # in the file renames the rest and churns membership that did not change.
         world = """\
 impl WorldFold {
     fn fold_domain_data(&mut self, domain: u16) {
@@ -1585,9 +1447,6 @@ class InventoryRecordTests(unittest.TestCase):
         return temporary, CitationFixture(Path(temporary.name), world)
 
     def test_an_inventory_domain_with_no_module_is_refused(self) -> None:
-        # A key no module reads is a coverage claim no run verifies -- the same
-        # shape as a grandfathered document outside every scanned root, which
-        # this gate already refuses.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1618,9 +1477,6 @@ class InventoryRecordTests(unittest.TestCase):
             )
 
     def test_a_wrong_shaped_inventory_says_so_instead_of_raising(self) -> None:
-        # Valid JSON, wrong shape. These reached `sorted()`/`set()` later and
-        # came out as an AttributeError or TypeError traceback rather than the
-        # controlled diagnostic the gate promises.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1715,16 +1571,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertEqual(source.count(citation), 1, source)
 
     def test_check_fails_on_inventory_only_drift(self) -> None:
-        # A tree whose markers are current but whose membership record is stale
-        # still fails the gate, so `--check` calling it clean would send a lane
-        # into exactly the wrong diagnosis.
-        #
-        # The empty LEAF registry is a statement about the FIXTURE, not a way
-        # around a failure: `main` now re-stamps the leaf authorities too, and
-        # this synthetic tree contains none of the crates the shipped registry
-        # names. Leaving the shipped registry in place would make this test
-        # assert that `d13_grammar` is missing, which is not its subject --
-        # `LeafSourceAuthorityTests` owns that half, over a tree that has one.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary, unittest.mock.patch.object(
             VERIFY, "REQUIRED_LEAF_AUTHORITIES", {}
@@ -1736,10 +1582,6 @@ class RestampFidelityTests(unittest.TestCase):
                 self.assertEqual(
                     RESTAMP.main(["--repo-root", str(fixture.root), "--check"]), 1
                 )
-            # The SUMMARY is asserted, not only the exit code: inventory drift is
-            # counted separately precisely so the line cannot say "1 of 0
-            # modules", and an exit-code-only test would not notice that coming
-            # back.
             self.assertIn("would re-stamp 0 of 1 modules", printed.getvalue())
             self.assertIn("closure inventory", printed.getvalue())
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1756,9 +1598,6 @@ class RestampFidelityTests(unittest.TestCase):
             )
 
     def test_a_damaged_citation_is_reported_not_passed_over(self) -> None:
-        # The marker needs no change, but the prose beside it does. Returning
-        # "0 modules re-stamped" here would report a clean run on a tree the
-        # gate rejects.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1796,8 +1635,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertEqual(raw.count(b"\r"), 0, raw)
 
     def test_a_mixed_ending_module_keeps_every_ending_it_had(self) -> None:
-        # Not normalized to a plurality: a re-stamp rewrites ONE line, and every
-        # other byte of the file goes back exactly as it came.
         temporary, fixture = self.fixture(INLINE_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1816,9 +1653,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertGreater(raw.count(b"\n") - raw.count(b"\r\n"), 0, raw)
 
     def test_a_crlf_module_is_re_stamped_as_crlf(self) -> None:
-        # The checkout is CRLF (`core.autocrlf=true`). Reading with universal
-        # newlines and writing back with `newline=""` rewrites the whole file to
-        # LF -- invisible in `git diff`, which normalizes, and wrong on disk.
         temporary, fixture = self.fixture(INLINE_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1838,9 +1672,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))
 
     def test_a_refused_shrink_leaves_the_tree_exactly_as_it_was(self) -> None:
-        # A refusal that had already rewritten half the markers would leave the
-        # tree failing its own gate for a reason nobody chose, and would tempt
-        # the next run into `--allow-closure-shrink` to clean up the mess.
         temporary, fixture = self.fixture(EXTRACTED_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1860,10 +1691,6 @@ class RestampFidelityTests(unittest.TestCase):
             )
 
     def test_a_pre_existing_copy_of_the_new_citation_stops_the_re_stamp(self) -> None:
-        # The module already carries prose equal to the citation the re-stamp is
-        # about to write. Rewriting leaves two copies, which the gate rejects, so
-        # the tool must refuse rather than report a clean run over a tree that
-        # then fails.
         temporary, fixture = self.fixture(INLINE_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1887,11 +1714,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertEqual(module.read_bytes(), before)
 
     def test_an_authority_that_is_not_the_dispatch_target_is_refused(self) -> None:
-        # The gate requires the FIRST cited function to be the one
-        # `fold_domain_data` dispatches to. Re-stamping such a marker produced
-        # valid-looking spans, digests and inventory over an authority the gate
-        # then rejected -- and because the closure GREW, the shrink refusal did
-        # not catch it either.
         world = INLINE_RENDER.replace(
             "    fn fold_other(&mut self) {",
             "    fn fold_wrapper(&mut self) {\n"
@@ -1921,9 +1743,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertIn("dispatch target", str(exited.exception))
 
     def test_a_marker_domain_that_contradicts_the_filename_is_refused(self) -> None:
-        # The inventory is keyed by FILENAME domain while the marker carries its
-        # own. Re-stamping over the mismatch would record membership under one
-        # domain from an authority declared for another.
         temporary, fixture = self.fixture(INLINE_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1945,7 +1764,6 @@ class RestampFidelityTests(unittest.TestCase):
             self.assertIn("does not match the filename domain", str(exited.exception))
 
     def test_the_re_stamper_never_repoints_an_authority(self) -> None:
-        # It re-derives WHERE an authority is, never WHICH function it is.
         temporary, fixture = self.fixture(INLINE_RENDER)
         with temporary:
             fixture.add_module(1, ("fold_render",))
@@ -1994,9 +1812,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 )
 
     def test_reports_every_drifted_module_not_only_the_first(self) -> None:
-        # A first-failure-only checker reported one stale citation and hid 31
-        # more, and because this check gates Cargo the whole central validation
-        # was unreachable while they accumulated. One run must name them all.
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
@@ -2015,10 +1830,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 self.assertIn(name, message)
 
     def test_lane_authority_is_still_collected_from_a_drifted_module(self) -> None:
-        # The lane marker pins a capture-lane decoder, not the fold envelope.
-        # Dropping it because the module's world-fold line range drifted would
-        # turn one stale range into a spurious "lane authority marker set
-        # drifted" and bury the real cause.
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(51, ("fold_lane",))
@@ -2126,7 +1937,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                     fixture.root, required_lane_authorities=(key,)
                 )
 
-    # --- the free-text line-number ratchet ---------------------------------
 
     def _append_comment(self, fixture: CitationFixture, domain: int, text: str) -> None:
         module = fixture.wire_dir / f"d{domain}.rs"
@@ -2178,7 +1988,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
                 (1, 0, 1, 0),
             )
-            # A second use of the same number is still a NEW reference.
             self._append_comment(fixture, 1, "// and again `world_fold.rs:123`\n")
             with self.assertRaisesRegex(
                 VERIFY.VerificationError, r"`world_fold\.rs:123` is a free-text"
@@ -2190,12 +1999,10 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
         with temporary:
             fixture.add_module(1, ("fold_one",))
             self._write_allowance(fixture, {"d1.rs": [123, 456]})
-            # Citing neither is fine: the ratchet only ever turns one way.
             self.assertEqual(
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
                 (1, 0, 0, 0),
             )
-            # Trading a listed number for an unlisted one is not shrinking.
             self._append_comment(fixture, 1, "// see `world_fold.rs:789`\n")
             with self.assertRaisesRegex(
                 VERIFY.VerificationError, r"`world_fold\.rs:789` is a free-text"
@@ -2206,8 +2013,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
-            # The fixture module carries only its gated `world_fold.rs:S`-`:E`
-            # citation, and no allowance file exists at all.
             self.assertEqual(
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
                 (1, 0, 0, 0),
@@ -2227,9 +2032,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
     def test_a_second_copy_of_the_gated_citation_is_not_a_second_exemption(
         self,
     ) -> None:
-        # Found by review: if every occurrence of the gated text counted as
-        # owned, pasting a second unpaired copy would smuggle two unchecked line
-        # numbers past the ratchet.  The digest backs one citation.
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
@@ -2245,7 +2047,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
             ):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=())
 
-            # And the extraction itself must see the copy's numbers as free text.
             marker = VERIFY.WORLD_MARKER_RE.search(
                 module.read_text(encoding="utf-8")
             )
@@ -2255,8 +2056,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
             self.assertEqual(len(found), 1, found)
 
     def test_rejects_a_new_document_line_number(self) -> None:
-        # Documents had NO coverage before this check: every `world_fold.rs:N`
-        # in `extractor/documents` was free text nothing read.
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
@@ -2283,7 +2082,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=()),
                 (1, 0, 0, 1),
             )
-            # A second citation of the same number is still a NEW reference.
             path = fixture.root / relative
             path.write_text(
                 "see `world_fold.rs:4242` and again `world_fold.rs:4242`.\n",
@@ -2296,8 +2094,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=())
 
     def test_a_document_budget_does_not_carry_across_documents(self) -> None:
-        # The budget is per (document, line), so one document's amnesty must not
-        # license the same number in another. Nested documents are reached too.
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
@@ -2328,10 +2124,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                 VERIFY.verify_repo(fixture.root, required_lane_authorities=())
 
     def test_every_document_root_is_scanned(self) -> None:
-        # Scanning one document tree and calling it "the documents" is how this
-        # gap existed in the first place: `replay_interface/documents` was
-        # citing world_fold.rs by line 28 times while only
-        # `extractor/documents` was read. Each configured root must be reached.
         for index in range(len(VERIFY.DOCUMENT_ROOTS)):
             temporary, fixture = self.fixture()
             with temporary:
@@ -2350,11 +2142,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
                     VERIFY.verify_repo(fixture.root, required_lane_authorities=())
 
     def test_a_grandfathered_document_outside_every_root_fails(self) -> None:
-        # Renaming a root, moving a document out of one, or changing its
-        # extension leaves the citations on disk and quietly shrinks the
-        # reported count. Absence is still fine -- deleting a document must not
-        # force an allowance edit in the same commit -- so the failure is
-        # specifically "exists, is grandfathered, was not scanned".
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
@@ -2383,7 +2170,6 @@ class VerifyWorldFoldCitationsTests(unittest.TestCase):
             )
 
     def test_a_named_item_citation_in_a_document_needs_no_amnesty(self) -> None:
-        # The whole point of the ratchet: the replacement form is free.
         temporary, fixture = self.fixture()
         with temporary:
             fixture.add_module(1, ("fold_one",))
@@ -2447,10 +2233,6 @@ class LeafFixture:
             "root=extractor/native/grammar_leaf files=0 sha256=0\n"
         )
         for consumer in self.CONSUMERS:
-            # Each consumer is a package that DEPENDS on the leaf by path,
-            # because that dependency edge is half of what the gate checks: a
-            # marker says "I execute this crate" and only Cargo decides which
-            # crate that is.
             package_dir = PurePosixPath(consumer).parent
             while package_dir.name in ("src", "tests", "benches") or (
                 package_dir.parent.name in ("src",)
@@ -2465,9 +2247,6 @@ class LeafFixture:
                 f'grammar_leaf = {{ path = "{to_leaf}" }}\n',
             )
             if (self.root / consumer).is_file():
-                # A file another fixture already wrote (a dNN wire module, which
-                # carries its own world-fold marker) gains the leaf marker
-                # beside it rather than being replaced.
                 existing = self.read(consumer)
                 self.write(consumer, existing + marker)
                 continue
@@ -2547,7 +2326,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             self.assertIn("2 leaf source authority failure(s)", message)
             for consumer in fixture.CONSUMERS:
                 self.assertIn(f"{consumer}: grammar_leaf leaf authority digest", message)
-            # Then the re-attestation, and only that, restores it.
             fixture.restamp()
             self.assertEqual(fixture.verify(), (1, 2))
 
@@ -2722,7 +2500,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             message = str(exited.exception)
             self.assertIn("SHRANK", message)
             self.assertIn("grammar_leaf/src/encode.rs", message)
-            # And with the flag, it re-stamps and records the smaller set.
             fixture.restamp(allow_leaf_shrink=True)
             self.assertEqual(fixture.verify(), (1, 2))
 
@@ -2803,16 +2580,10 @@ class LeafSourceAuthorityTests(unittest.TestCase):
         with temporary:
             fixture.stamped()
             raw = (fixture.root / fixture.CONSUMERS[0]).read_bytes()
-            # NON-VACUITY: a re-stamper that wrote nothing at all would satisfy
-            # the ending assertions below, because the fixture was authored
-            # CRLF. Demand that the placeholder is gone and that the tree the
-            # re-stamp produced is one the gate accepts.
             self.assertNotIn(b"files=0 sha256=0", raw)
             self.assertEqual(fixture.verify(), (1, 2))
             self.assertNotIn(b"\n", raw.replace(b"\r\n", b""))
             self.assertIn(b"\r\n", raw)
-            # And a mixed-ending file keeps every ending it had: the marker
-            # line is rewritten in place, nothing else is touched.
             path = fixture.root / fixture.CONSUMERS[1]
             with path.open(encoding="utf-8", newline="") as handle:
                 source = handle.read()
@@ -2927,9 +2698,7 @@ class LeafSourceAuthorityTests(unittest.TestCase):
                 exit_code = VERIFY.main(["--repo-root", str(fixture.root)])
             self.assertEqual(exit_code, 1)
             reported = stderr.getvalue()
-            # The world-fold half: this fixture carries no world_fold.rs.
             self.assertIn("world_fold.rs", reported)
-            # And the leaf half, in the same message rather than behind it.
             self.assertIn("leaf authority digest changed", reported)
 
     def test_every_attested_file_is_covered_not_only_the_walk(self) -> None:
@@ -3378,8 +3147,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
                 VERIFY.VerificationError, r"names \['walk'\]"
             ):
                 fixture.verify()
-            # And the alias route, which names no item at all: an
-            # identifier-only check reads this file as touching nothing.
             fixture.write(
                 "extractor/native/reader_three/src/lib.rs",
                 "use grammar_leaf as g;\n"
@@ -3419,7 +3186,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
                 ),
                 (2, 2, False),
             )
-            # --check wrote nothing.
             with self.assertRaises(VERIFY.VerificationError):
                 fixture.verify()
 
@@ -3436,10 +3202,8 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             leaf = LeafFixture(root)
             leaf.write(f"{leaf.ROOT}/src/encode.rs", "pub const W: u8 = 1;\n")
             leaf.stamped()
-            # A pending world re-stamp: the file moved, the marker did not.
             world.set_world("// an insertion above everything\n" + INLINE_RENDER)
             before = (world.wire_dir / "d1.rs").read_text(encoding="utf-8")
-            # And a leaf shrink, which must refuse.
             (root / leaf.ROOT / "src" / "encode.rs").unlink()
             with unittest.mock.patch.object(
                 VERIFY, "REQUIRED_LEAF_AUTHORITIES", leaf.registry
@@ -3489,8 +3253,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
                 VERIFY.VerificationError, "is not a registered consumer"
             ):
                 fixture.verify()
-            # Registered -- with the marker beside the code it attests, as
-            # adoption requires -- it is an ordinary consumer wherever it lives.
             fixture.write(
                 "replay_interface/native/reader/src/lib.rs",
                 "// @leaf-source-authority crate=grammar_leaf "
@@ -3699,7 +3461,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             self.assertEqual(VERIFY.verify_leaf_authorities(root, registry), (2, 3))
             source = first.read(shared)
             self.assertNotIn("files=0 sha256=0", source)
-            # And a change to BOTH leaves re-stamps both markers in that file.
             first.write(f"{first.ROOT}/src/lib.rs", first.WALK.replace("16", "20"))
             first.write(f"{second_root}/src/lib.rs", "pub fn other() -> usize { 9 }\n")
             RESTAMP.restamp_leaves(
@@ -3767,11 +3528,8 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             world.add_module(1, ("fold_render",))
             module = "extractor/native/wire_format/src/d1.rs"
             leaf = LeafFixture(root, consumers=(module,) + LeafFixture.CONSUMERS)
-            # `LeafFixture` appends the leaf marker beside the module's own
-            # world-fold marker, exactly as d13.rs carries both.
             leaf.stamped()
             self.assertEqual(leaf.verify(), (1, 3))
-            # BOTH halves now have work: world_fold.rs moved, and so did the leaf.
             world.set_world("// an insertion above everything\n" + INLINE_RENDER)
             leaf.write(f"{leaf.ROOT}/src/lib.rs", leaf.WALK.replace("16", "20"))
             with unittest.mock.patch.object(
@@ -3785,8 +3543,6 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             self.assertIsNotNone(
                 VERIFY.LEAF_MARKER_RE.search(source), "the leaf marker was erased"
             )
-            # And the tree the re-stamp produced is one the gate accepts, both
-            # halves at once.
             self.assertEqual(leaf.verify(), (1, 3))
             self.assertEqual(
                 VERIFY.verify_repo(root, required_lane_authorities=()), (1, 0, 0, 0)
@@ -3872,10 +3628,8 @@ class LeafSourceAuthorityTests(unittest.TestCase):
             world.add_module(1, ("fold_render",))
             leaf = LeafFixture(root)
             leaf.stamped()
-            # A pending LEAF write: the grammar moved, the markers did not.
             leaf.write(f"{leaf.ROOT}/src/lib.rs", leaf.WALK.replace("16", "20"))
             before = leaf.read(leaf.CONSUMERS[0])
-            # And a world closure shrink, which must refuse.
             world.set_world(MOVED_OUT_OF_FILE)
             with unittest.mock.patch.object(
                 VERIFY, "REQUIRED_LEAF_AUTHORITIES", leaf.registry

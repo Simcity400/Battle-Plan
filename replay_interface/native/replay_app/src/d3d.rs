@@ -1,9 +1,4 @@
-//! D3D11 device + DXGI swapchain plumbing. Raw winapi COM with explicit
 //! Release handling via [`ComPtr`], matching the map_viewer house style.
-//!
-//! Two backends behind one `Gfx` type: a windowed swapchain (the product
-//! window) and an offscreen render target (`create_offscreen`) used by the
-//! headless frame-dump path and the future visual-QA harness.
 
 use std::ptr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -45,7 +40,6 @@ use crate::Result;
 pub struct ComPtr<T>(*mut T);
 
 impl<T> ComPtr<T> {
-    /// Wrap a raw COM pointer, failing with the given role when null.
     pub unsafe fn from_raw(ptr: *mut T, role: &str) -> Result<Self> {
         if ptr.is_null() {
             Err(format!("replay_app D3D11: {role} returned null").into())
@@ -69,7 +63,6 @@ impl<T> Drop for ComPtr<T> {
     }
 }
 
-/// HRESULT check with an explicit action string.
 pub fn hr_ok(hr: i32, action: &str) -> Result<()> {
     if hr < 0 {
         if let Some(loss) = DeviceLoss::from_hresult(hr) {
@@ -85,9 +78,6 @@ pub fn hr_ok(hr: i32, action: &str) -> Result<()> {
     }
 }
 
-/// A device-loss HRESULT is not an ordinary feature-local draw omission. All
-/// cached shaders, buffers, views and swapchain objects belong to the lost
-/// device, so replay must stop before another frame can reuse any of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DeviceLoss {
     Removed,
@@ -114,10 +104,6 @@ impl DeviceLoss {
     }
 }
 
-/// Typed terminal device-loss error. Some renderer paths intentionally catch
-/// ordinary feature-local failures and omit only that feature; the type lets
-/// those boundaries distinguish a dead D3D device without matching text and
-/// unwind the whole app instead.
 #[derive(Debug)]
 pub struct DeviceLossError {
     action: String,
@@ -158,9 +144,6 @@ impl std::fmt::Display for DeviceLossError {
 
 impl std::error::Error for DeviceLossError {}
 
-/// Typed terminal error for a failed void D3D11 command when the device
-/// reports an HRESULT outside the three named DXGI loss reasons. Preserve the
-/// exact observation instead of guessing which device-loss category occurred.
 #[derive(Debug)]
 pub struct DeviceUnavailableError {
     action: String,
@@ -198,10 +181,6 @@ fn void_device_call_result(device_removed_reason: i32, action: &str) -> Result<(
     }))
 }
 
-/// True only for a typed terminal device failure, including an unclassified
-/// negative `GetDeviceRemovedReason` retained in an error source chain. This
-/// is the escape hatch from feature-local omission boundaries; it deliberately
-/// does not inspect diagnostic strings.
 pub fn is_device_loss_error(error: &(dyn std::error::Error + 'static)) -> bool {
     let mut current = Some(error);
     while let Some(candidate) = current {
@@ -215,30 +194,17 @@ pub fn is_device_loss_error(error: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
-/// What `Gfx::present` did. The render loop must keep pumping input on
-/// `Skipped`/`Occluded` (sleep briefly instead of blocking) — a vsync
-/// Present that blocks while the window is fully occluded freezes the
-/// whole app, which is exactly the liveness bug this replaces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PresentOutcome {
     Presented,
-    /// The present queue was full (`DXGI_ERROR_WAS_STILL_DRAWING`); the
-    /// frame was dropped. Retry next loop iteration.
     Skipped,
-    /// The window is fully occluded (`DXGI_STATUS_OCCLUDED`); rendering is
-    /// pointless until it becomes visible again.
     Occluded,
 }
 
-/// Device, immediate context, and either a windowed swapchain or an
-/// offscreen render target.
 pub struct Gfx {
     pub device: ComPtr<ID3D11Device>,
     pub context: ComPtr<ID3D11DeviceContext>,
     swapchain: Option<ComPtr<IDXGISwapChain>>,
-    /// The concrete texture behind the current product target. For a window
-    /// this is the current swapchain backbuffer; for headless it is the
-    /// retained offscreen texture.
     target_texture: Option<ComPtr<ID3D11Texture2D>>,
     rtv: Option<ComPtr<ID3D11RenderTargetView>>,
     target_allocation_generation: u64,
@@ -256,8 +222,6 @@ const REPLAY_PRESENTATION_RESOURCE_IDENTITY_GUID: GUID = GUID {
     Data4: [0xa1, 0x73, 0x24, 0x68, 0x91, 0xcf, 0x52, 0x0b],
 };
 
-/// Reusable EVENT query for a bounded GPU-completion observation. Construct it
-/// outside timed loops so query allocation is not charged to every frame.
 pub(crate) struct GpuCompletionQuery {
     query: ComPtr<ID3D11Query>,
 }
@@ -337,11 +301,6 @@ unsafe fn stamp_presentation_resource_identity(
     Ok(identity)
 }
 
-/// Pick the hardware adapter with the most dedicated video memory. This is a
-/// hybrid rig (RTX 5090 dGPU + Radeon iGPU); every capture was rendered by
-/// the game on the dGPU, and replaying captured passes on a different GPU
-/// changes rasterization/filtering subtly. Pin the high-memory adapter
-/// instead of trusting the D3D11 default.
 unsafe fn preferred_adapter() -> Option<ComPtr<winapi::shared::dxgi::IDXGIAdapter1>> {
     use winapi::shared::dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory1};
     use winapi::Interface;
@@ -383,10 +342,6 @@ unsafe fn preferred_adapter() -> Option<ComPtr<winapi::shared::dxgi::IDXGIAdapte
 }
 
 impl Gfx {
-    /// App-owned presentation/offscreen target format. Both constructors and
-    /// resize use this exact format; CAP6 uses it to reject the retained
-    /// R8G8B8A8 counter receipt on the current B8G8R8A8 product target rather
-    /// than treating the channel-layout difference as implicit parity.
     pub(crate) const fn target_format(&self) -> u32 {
         DXGI_FORMAT_B8G8R8A8_UNORM
     }
@@ -395,10 +350,6 @@ impl Gfx {
         self.target_allocation_generation
     }
 
-    /// Identity stamped onto the concrete ID3D11Texture2D allocation backing
-    /// the current presentation target. XMAP10 re-queries this private-data
-    /// tag from the RTV resource before drawing, so a descriptor-identical
-    /// substitute cannot inherit this allocation's receipt.
     pub(crate) fn target_resource_identity_sha256(&self) -> Result<&str> {
         if self.target_resource_identity_sha256.len() != 64 {
             return Err("presentation target has no concrete resource identity".into());
@@ -406,9 +357,6 @@ impl Gfx {
         Ok(&self.target_resource_identity_sha256)
     }
 
-    /// Identity of the exact DXGI adapter owning this D3D device. The weak-PC
-    /// receipt binds to this device rather than accepting any unrelated GPU
-    /// merely present in Windows inventory.
     pub(crate) fn adapter_identity(&self) -> Result<GpuAdapterIdentity> {
         unsafe {
             let mut dxgi_device: *mut IDXGIDevice = ptr::null_mut();
@@ -443,10 +391,6 @@ impl Gfx {
         }
     }
 
-    /// Check an HRESULT from an operation on this live device. Device removal,
-    /// reset, or hang is returned as an explicit terminal/fail-closed error;
-    /// callers must unwind and drop every device-bound cache rather than
-    /// attempting to continue with stale COM resources.
     fn runtime_hr(&self, hr: i32, action: &str) -> Result<()> {
         if hr >= 0 {
             return Ok(());
@@ -465,17 +409,11 @@ impl Gfx {
         hr_ok(hr, action)
     }
 
-    /// D3D11 immediate-context upload calls such as `UpdateSubresource` return
-    /// `void`. Query the owning device immediately after the command so a
-    /// removed, reset, hung, or otherwise unavailable device is propagated as
-    /// a typed terminal error instead of admitting the upload silently.
     pub(crate) fn check_void_device_call(&self, action: &str) -> Result<()> {
         let removed_reason = unsafe { (*self.device.as_raw()).GetDeviceRemovedReason() };
         void_device_call_result(removed_reason, action)
     }
 
-    /// Clear and bind the product target when no admitted non-UI pass is
-    /// available. This is a neutral compositor surface, not a fabricated map.
     pub fn clear_target(&self, color: [f32; 4]) -> Result<()> {
         unsafe {
             let rtv = self.rtv()?.as_raw();
@@ -485,9 +423,6 @@ impl Gfx {
         Ok(())
     }
 
-    /// Create a hardware device and a windowed BGRA8 swapchain. Prefers
-    /// flip-model (FLIP_DISCARD); falls back to blt-model (DISCARD) when
-    /// the OS/driver rejects it.
     pub fn create(hwnd: HWND, width: u32, height: u32) -> Result<Gfx> {
         unsafe {
             let feature_levels = [
@@ -552,9 +487,6 @@ impl Gfx {
         }
     }
 
-    /// Create a windowless device rendering into an offscreen BGRA8 target
-    /// (headless frame dumps / visual-QA renders). `present` is a no-op;
-    /// read pixels back with [`Gfx::read_target`].
     pub fn create_offscreen(width: u32, height: u32) -> Result<Gfx> {
         unsafe {
             let feature_levels = [
@@ -672,8 +604,6 @@ impl Gfx {
             .ok_or_else(|| "render-target view is not initialized".into())
     }
 
-    /// Resize the swapchain buffers (no-op for zero/unchanged sizes and for
-    /// offscreen targets).
     pub fn resize(&mut self, width: u32, height: u32) -> Result<()> {
         if self.swapchain.is_none() {
             return Ok(());
@@ -702,15 +632,9 @@ impl Gfx {
         }
     }
 
-    /// Present with vsync but WITHOUT blocking the loop:
-    /// `DXGI_PRESENT_DO_NOT_WAIT` turns a full present queue into
-    /// [`PresentOutcome::Skipped`] instead of an indefinite block, and a
-    /// fully-occluded window reports [`PresentOutcome::Occluded`]. The
-    /// caller throttles by sleeping on those outcomes; blocking here froze
-    /// the message pump (and all input) whenever the window was covered.
     pub fn present(&self) -> Result<PresentOutcome> {
         let Some(swapchain) = self.swapchain.as_ref() else {
-            return Ok(PresentOutcome::Presented); // offscreen: nothing to present
+            return Ok(PresentOutcome::Presented);
         };
         unsafe {
             let hr = (*swapchain.as_raw()).Present(1, DXGI_PRESENT_DO_NOT_WAIT);
@@ -725,11 +649,6 @@ impl Gfx {
         }
     }
 
-    /// Read the current product render target back as tightly-packed BGRA8
-    /// rows (top-down). Windowed callers observe the current swapchain
-    /// backbuffer before Present; offscreen callers observe their retained
-    /// texture. Both paths therefore hash the exact resource identified by
-    /// `target_resource_identity_sha256`.
     pub fn read_target(&self) -> Result<Vec<u8>> {
         unsafe {
             let source = self
@@ -779,9 +698,6 @@ impl Gfx {
         }
     }
 
-    /// Allocate the reusable EVENT query used by the headless performance
-    /// gate. Query creation happens before warmup and is never part of a timed
-    /// frame.
     pub(crate) fn create_gpu_completion_query(&self) -> Result<GpuCompletionQuery> {
         unsafe {
             let desc = D3D11_QUERY_DESC {
@@ -798,9 +714,6 @@ impl Gfx {
 }
 
 impl GpuCompletionQuery {
-    /// Block until all commands submitted before this call have completed on
-    /// the GPU. This prevents queued CPU-submit time from being reported as a
-    /// completed frame. Failure or a bounded timeout is a hard error.
     pub(crate) fn wait(&self, gfx: &Gfx) -> Result<()> {
         const GPU_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
         unsafe {

@@ -6,8 +6,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
-use std::{mem::MaybeUninit, ptr::null_mut};
 use std::process::Command;
+use std::{mem::MaybeUninit, ptr::null_mut};
 use windows_sys::Win32::Foundation::{GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, CreateSymbolicLinkW, FileAttributeTagInfo, FileIdInfo,
@@ -39,26 +39,7 @@ impl Drop for Temp {
     }
 }
 
-/// Creates a directory junction, retrying only when Windows failed to *start*
-/// `cmd.exe` at all.
-///
-/// Under a full `cargo test --workspace` run, 200+ test binaries spawn
-/// short-lived processes concurrently and process creation intermittently fails
-/// with `STATUS_DLL_INIT_FAILED` (`0xC000_0142`) — the child is created but its
-/// loader cannot initialise, so it dies before `mklink` ever runs. That is a
-/// harness resource stall, not a product signal. The identical helper in
-/// `recorder_host` was seen failing this way once in four full runs.
-///
-/// Only that exact code is retried. It is matched exactly rather than by the
-/// NTSTATUS range `>= 0xC000_0000`, because that range is not exclusive to the
-/// loader: a process may pass any 32-bit value to `ExitProcess`, `TerminateProcess`
-/// may impose one, and an unhandled exception surfaces as its own status code. A
-/// range test would therefore also retry an access violation or a fast-fail inside
 /// the child. `mklink` reports its own refusals with exit code 1, which stays a
-/// hard failure on the first attempt, so a genuinely broken junction still fails.
-/// The post-condition keeps the callers falsifiable: if junction creation ever
-/// silently produced a plain directory, this fires rather than letting the
-/// reparse-point tests pass over a normal directory.
 fn make_junction(link: &Path, target: &Path) {
     const MAX_ATTEMPTS: u32 = 5;
     const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
@@ -118,10 +99,7 @@ struct WindowsHandleIdentity {
     file_id_128: String,
 }
 
-fn windows_handle_identity(
-    path: &Path,
-    flags: u32,
-) -> Result<WindowsHandleIdentity, String> {
+fn windows_handle_identity(path: &Path, flags: u32) -> Result<WindowsHandleIdentity, String> {
     let path = wide(path);
     let raw = unsafe {
         CreateFileW(
@@ -174,7 +152,11 @@ fn windows_handle_identity(
     }
     let file_id = unsafe { file_id.assume_init() };
     if file_id.FileId.Identifier.iter().all(|byte| *byte == 0)
-        || file_id.FileId.Identifier.iter().all(|byte| *byte == u8::MAX)
+        || file_id
+            .FileId
+            .Identifier
+            .iter()
+            .all(|byte| *byte == u8::MAX)
     {
         return Err("FileIdInfo returned an unavailable 128-bit identifier sentinel".into());
     }
@@ -222,9 +204,6 @@ fn require_expected_identity(
     );
 }
 
-/// Metadata-only preflight. This never opens a file for data access, so it
-/// cannot accidentally hydrate the fixture merely while deciding whether the
-/// ignored integration gate is valid to run.
 fn dehydrated_replay_snapshot_candidates(
     root: &Path,
 ) -> Result<(usize, Vec<(String, String)>), String> {
@@ -251,8 +230,6 @@ fn dehydrated_replay_snapshot_candidates(
                 continue;
             }
             if file_type.is_dir() {
-                // The preflight does not resolve descendant reparse directories;
-                // the real anchored loader owns tag classification and refusal.
                 if attributes & FILE_ATTRIBUTE_REPARSE_POINT_RAW == 0 {
                     pending.push(entry.path());
                 }
@@ -269,9 +246,9 @@ fn dehydrated_replay_snapshot_candidates(
                 && attributes & FILE_ATTRIBUTE_REPARSE_POINT_RAW != 0
                 && name.ends_with(".snapshot.json")
             {
-                let relative = path.strip_prefix(root).map_err(|error| {
-                    format!("derive replay-relative placeholder path: {error}")
-                })?;
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|error| format!("derive replay-relative placeholder path: {error}"))?;
                 let components = relative
                     .components()
                     .map(|component| component.as_os_str().to_string_lossy().into_owned())
@@ -385,9 +362,6 @@ fn linked_root_is_permitted_and_descendants_remain_anchored() {
     assert_eq!(bytes, br#"{"legacy":true}"#);
 }
 
-/// Must run on the primary OneDrive dev rig before ship. Point the environment
-/// variable at a genuinely dehydrated directory replay store; this proves that
-/// the non-surrogate reopen hydrates and returns logical bytes.
 #[test]
 #[ignore = "requires a real dehydrated OneDrive Files-On-Demand store on the dev rig"]
 fn windows_onedrive_dehydrated_placeholder_store_must_pass_before_ship() {

@@ -1,9 +1,3 @@
-//! VFS-driven particle/entity definition interpreter for selected live draws.
-//!
-//! The interpreter sees only the authenticated effective-winner index and
-//! exact decompressed payloads admitted over H4CT. It has no install path,
-//! vanilla catalog, DLC assumption, filename fallback, or replay default.
-
 use crate::{
     AdmittedAuthorityPayloads, ExactAuthorityPayloadRequest, RawEffectiveVfsWinnerIndexBinding,
     RawVfsContentIdentity,

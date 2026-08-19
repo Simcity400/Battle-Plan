@@ -1,52 +1,5 @@
-//! Anti-drift sweep for the PRODUCER half of the accumulation registry.
-//!
-//! `diagnostic_channel::unit_accumulation` decides how a named diagnostic unit
-//! composes across frames. The registry inside it is a table of names, and a
-//! table of names is only safe if something checks it against the producers.
-//! This is that something.
-//!
-//! It enforces exactly one property:
-//!
-//! > No unit name that an in-tree producer can emit resolves to
-//! > `Accumulation::Undeclared`.
-//!
-//! `Undeclared` is what a name inside a stateful producer family
-//! (`diagnostic_channel::STATEFUL_UNIT_PREFIXES`) gets when nobody has said
-//! whether its value is this frame's quantity or the producer's running state.
-//! Those families are the ones where guessing "per-frame" is unsafe, because
-//! everything they have ever emitted has been retained state. A capture
-//! containing an undeclared unit is refused by the promotion gate, so without
-//! this test the first notice of an unclassified unit would be a blocked
-//! capture rather than a failed build.
-//!
-//! Direction matters. This test asserts producer-set SUBSET-OF registry. It
-//! never re-derives the registry from the sources, and it never asserts the
-//! converse, because a registry entry whose producer has been retired is
-//! harmless and deleting it would break comparability with retained telemetry.
-//!
 //! The sweep parses the sources rather than importing a generated table for the
-//! same reason `script_status_vocabulary_sweep.rs` does: the producers are
-//! spread across the collector and the host, they build their unit names from
-//! string literals at hundreds of sites, and there is no single list to import.
-//!
-//! # What a source sweep cannot see, and what catches it instead
-//!
-//! A name BUILT AT RUNTIME has no literal to find. Three families do this
-//! today — `format!("lw_l{lane}_wall_us")`, `format!("lw_d{tag}_crit_us")` and
-//! `format!("air_loss_{label}_raw_sum")` — and a fourth could be added
-//! tomorrow. This file will never see them.
-//!
-//! That is why `Accumulation::Undeclared` is a published, gated state rather
-//! than only a build error. A runtime-built name inside a stateful family
-//! resolves to `Undeclared`, the recorder counts it into
-//! `compact_stream.diagnostic_unit_accumulation.undeclared`, and
-//! `ProductionCapture.Promotion.ps1` refuses the capture. So the two mechanisms
-//! cover different halves: this test fails the BUILD for a literal, and the
-//! gate fails the CAPTURE for anything else. Neither alone is sufficient and
 //! the gap between them is one capture, not one release.
-//!
-//! The `air_loss_` family is matched by shape in `unit_accumulation` for
-//! exactly this reason: a runtime-built name still needs an answer.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -58,7 +11,6 @@ use compact_contract::diagnostic_channel::{
 };
 
 fn native_root() -> PathBuf {
-    // `CARGO_MANIFEST_DIR` is .../extractor/native/compact_contract
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("compact_contract sits inside extractor/native")
@@ -70,15 +22,6 @@ fn read(relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
-/// Every `"..."` literal in `text` that could be a diagnostic unit name.
-///
-/// Deliberately over-collects: it takes every lowercase-snake string literal in
-/// the file, not only the ones in a recognised construction. Over-collecting is
-/// the safe direction for this test — a non-unit string can only make the test
-/// demand a classification for a name that is never emitted, which is caught
-/// immediately and costs one table entry, whereas under-collecting would let a
-/// real producer unit escape the check, which is the failure mode this file
-/// exists to prevent.
 fn snake_case_literals(text: &str) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let bytes = text.as_bytes();
@@ -217,14 +160,22 @@ fn constructed_unit_names(text: &str) -> BTreeSet<String> {
         let mut rest = text;
         while let Some(at) = rest.find(keyword) {
             rest = &rest[at + keyword.len()..];
-            let Some(line_end) = rest.find('\n') else { break };
+            let Some(line_end) = rest.find('\n') else {
+                break;
+            };
             let line = &rest[..line_end];
             if !line.contains("&str") {
                 continue;
             }
-            let Some(colon) = line.find(':') else { continue };
+            let Some(colon) = line.find(':') else {
+                continue;
+            };
             let ident = line[..colon].trim();
-            if ident.is_empty() || !ident.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_') {
+            if ident.is_empty()
+                || !ident
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            {
                 continue;
             }
             let Some(open) = line.find('"') else { continue };
@@ -317,8 +268,6 @@ fn constructed_unit_names_everywhere() -> BTreeSet<String> {
     }
     out
 }
-
-
 
 /// The precise half must see the units the over-collecting half sees, or the
 /// exclusion proof would be checking against an empty set and approve anything.
@@ -591,11 +540,17 @@ fn every_call_site_uses_the_entry_point_matching_its_class() {
                 None => &rest[..rest.len().min(400)],
             };
             // The name is the first string literal in the argument list.
-            let Some(open) = window.find('"') else { continue };
+            let Some(open) = window.find('"') else {
+                continue;
+            };
             let body = &window[open + 1..];
             let Some(end) = body.find('"') else { continue };
             let name = &body[..end];
-            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+            if name.is_empty()
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            {
                 continue;
             }
             let class = unit_accumulation(name);

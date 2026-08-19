@@ -1,8 +1,3 @@
-//! XMAP20's typed joins to every production provider particles consume.
-//!
-//! These receipts carry identities, not replacement constants. XMAP20 never
-//! patches a neutral light/fog/entity value when an owner is unavailable.
-
 use serde::{Deserialize, Serialize};
 
 pub const XMAP20_PROVIDER_RECEIPTS_SCHEMA: &str = "hoi4.xmap20.provider-receipts.v1";
@@ -48,23 +43,12 @@ pub struct Xmap20DependencyReceipts {
     pub content_manifest_sha256: String,
     pub product_modset_sha256: String,
     pub effective_vfs_manifest_sha256: String,
-    /// Viewer camera/projection provider. Recorder camera state is forbidden.
-    /// Its descriptor digest is the exact 64-byte viewer projection CB1
-    /// payload digest bound during native execution.
     pub camera: Xmap20DependencyReceipt,
     pub lighting: Xmap20DependencyReceipt,
-    /// XMAP10's pre-particle SceneCB0/MainScene state. This receipt must not
-    /// include XMAP10's post-particle bright-pass/bloom/restore tail, which
-    /// consumes XMAP20 output and would create a dependency cycle.
     pub scene_compositor_pre_particles: Xmap20DependencyReceipt,
     pub entity_identity: Xmap20DependencyReceipt,
     pub weather_identity: Xmap20DependencyReceipt,
-    /// XMAP13-authenticated semantic source identities for the current hour.
-    /// XMAP20 joins authored entity-state events through these stable strings;
-    /// it never treats a process-local renderer pointer as semantic identity.
     pub ordered_entity_semantic_source_ids: Vec<String>,
-    /// XMAP19-authenticated world/weather source identities in its exact
-    /// producer order.
     pub ordered_weather_semantic_source_ids: Vec<String>,
 }
 
@@ -84,14 +68,8 @@ impl Xmap20DependencyReceipts {
             .validate(XMAP20_ENTITY_IDENTITY_OWNER)?;
         self.weather_identity
             .validate(XMAP20_WEATHER_IDENTITY_OWNER)?;
-        validate_semantic_source_census(
-            &self.ordered_entity_semantic_source_ids,
-            "XMAP13",
-        )?;
-        validate_semantic_source_census(
-            &self.ordered_weather_semantic_source_ids,
-            "XMAP19",
-        )?;
+        validate_semantic_source_census(&self.ordered_entity_semantic_source_ids, "XMAP13")?;
+        validate_semantic_source_census(&self.ordered_weather_semantic_source_ids, "XMAP19")?;
         Ok(())
     }
 
@@ -160,17 +138,16 @@ mod tests {
             entity_identity: receipt(XMAP20_ENTITY_IDENTITY_OWNER),
             weather_identity: receipt(XMAP20_WEATHER_IDENTITY_OWNER),
             ordered_entity_semantic_source_ids: vec!["division:1".into(), "division:2".into()],
-            ordered_weather_semantic_source_ids: vec![
-                "xmap19.weather:r1:e0:c2:p1:primary".into(),
-            ],
+            ordered_weather_semantic_source_ids: vec!["xmap19.weather:r1:e0:c2:p1:primary".into()],
         };
         receipts.validate().unwrap();
         assert!(receipts.admits_entity_semantic_source("division:2"));
-        assert!(receipts
-            .admits_weather_semantic_source("xmap19.weather:r1:e0:c2:p1:primary"));
+        assert!(receipts.admits_weather_semantic_source("xmap19.weather:r1:e0:c2:p1:primary"));
         receipts.ordered_entity_semantic_source_ids.swap(0, 1);
         receipts.validate().unwrap();
-        receipts.ordered_entity_semantic_source_ids.push("division:1".into());
+        receipts
+            .ordered_entity_semantic_source_ids
+            .push("division:1".into());
         assert!(receipts.validate().is_err());
     }
 }

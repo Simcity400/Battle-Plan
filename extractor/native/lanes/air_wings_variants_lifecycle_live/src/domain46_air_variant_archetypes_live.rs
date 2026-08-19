@@ -410,46 +410,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> AirVariantArchetypeGateS
         }
     }
     if cursor != payload.len() {
-        // Wave-4 ace lifecycle: bytes after the self-delimiting base payload
-        // are the domain-46 `ACE1` air-ace-roster trailer (MTD1 precedent).
-        // Anything else is a parse error, exactly as before.
-        //
-        // Which trailer status bits reach the record status, and why. The
-        // trailer contract's rule -- "never fed into the global compact status
-        // interpretation" -- was written for the whole word and collided with
-        // what the fold actually does: `WorldFold::apply_air_ace_roster` treats
-        // SOURCE_UNAVAILABLE and PARTIAL_DATA as DECISIVE. On either it RETAINS
-        // the previous hour's ace map and sidecars, does not full-replace, and
-        // does not set `air_aces_fresh_this_hour`. So the published hour serves
-        // an ace roster it did not measure, while the record status said the
-        // domain was clean and the hour certified. Two parts of the system
-        // disagreed about whether that status meant anything.
-        //
-        // The contract's own two reasons decide it, and they agree with each
-        // other. (1) "the record-level status stays the base archetype
-        // payload's" is about the WIRE word, which is unchanged here: this is
-        // the decoder's summary of everything the payload said about its own
-        // health, and WHICH slice failed is still named exactly, by the
-        // per-frame units below and by the fold's `ace_roster_*` domain
-        // problems. (2) "values are chosen to match the global semantics where
-        // one exists" is the admission test, and it selects precisely two bits:
-        // ACE_STATUS_SOURCE_UNAVAILABLE (1<<8) and ACE_STATUS_PARTIAL_DATA
-        // (1<<9) ARE the global COMPACT_STATUS_SOURCE_UNAVAILABLE and
-        // COMPACT_STATUS_PARTIAL_DATA, same bit, same meaning.
-        //
-        // ACE_STATUS_WING_ASSIGNMENT_BLOCKED (1<<13) stays lane-local, and the
-        // two rules agree on that too: globally 1<<13 is
-        // COMPACT_STATUS_WAR_SEGMENT_ABSENT, an unrelated fact, so it has no
-        // matching global semantics to borrow -- and it is exactly the bit the
-        // fold does NOT gate on, because identity is complete and the frame is
-        // still full-replaced. The bits the fold treats as decisive and the
-        // bits whose values already carry global meaning are the same two bits.
-        //
-        // This is not a new verdict on these frames. The d46 DomainContract in
-        // `compact_replay_verification_gates` already lists all three counters
-        // as `zero_units` -- the run gate has always failed on them. This moves
-        // the same verdict to the per-hour, per-domain granularity the fold and
-        // the certifier decide at.
         let ace_summary =
             crate::domain46_air_ace_roster_live::decode_trailer(offset, payload, cursor);
         summary.status_flags_or |= ace_summary.status_flags_or
@@ -460,7 +420,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> AirVariantArchetypeGateS
             let entry = summary.data_units_total.entry(key).or_default();
             *entry = entry.saturating_add(value);
         }
-        // Per-status frame counters (sums stay meaningful across records).
         if ace_summary.status_flags_or
             & crate::domain46_air_ace_roster_live::ACE_STATUS_SOURCE_UNAVAILABLE
             != 0
@@ -719,13 +678,6 @@ mod tests {
             .any(|error| error.contains("archetype string without flag")));
     }
 
-    // P0-1 contract: deleted (tombstone) rows carry no strings and no
-    // air-superiority-weight flag, so the decoder classifies them as
-    // UNRESOLVED. A record mixing classified + unresolved live rows with
-    // deleted rows must decode cleanly as long as the header partitions every
-    // wire row (classified + unresolved == row_count). The producer
-    // (collector) is responsible for counting deleted rows into
-    // `unresolved_rows`; this pins the consumer side of that contract.
     #[test]
     fn decodes_delta_with_deleted_rows() {
         let rows = vec![
@@ -784,7 +736,6 @@ mod tests {
             changed_rows: rows.len() as u32,
             observed_variant_rows: 91,
             classified_rows: 1,
-            // 1 unresolved live row + 2 deleted tombstones.
             unresolved_rows: 3,
             static_catalog_hash: 0,
         };
@@ -811,9 +762,6 @@ mod tests {
         );
     }
 
-    // Guards against a regression to the old producer behaviour: if a producer
-    // omits deleted rows from `unresolved_rows`, the header no longer partitions
-    // `row_count` and the decoder MUST reject the record (fail closed).
     #[test]
     fn rejects_deleted_rows_missing_from_unresolved_count() {
         let rows = vec![AirVariantArchetypeRow {
@@ -834,7 +782,6 @@ mod tests {
             changed_rows: 1,
             observed_variant_rows: 91,
             classified_rows: 0,
-            // BUG shape: deleted row omitted from the count => 0 != 1 row.
             unresolved_rows: 0,
             static_catalog_hash: 0,
         };

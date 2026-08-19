@@ -1,39 +1,13 @@
-//! Pointer-free country preferred-tactic snapshot (PTC1 / compact domain 92).
-//!
-//! The exact a729 producer reads `CCountry+0x15D0`.  The pointee is either the
-//! exact no-tactic sentinel class or an authenticated combat-tactic definition;
-//! process addresses never enter this payload. A null field is not an
-//! authenticated no-selection witness and must remain source-unavailable.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOMAIN_ID: u16 = 92;
 pub const MAGIC: [u8; 4] = *b"PTC1";
 pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 164;
-/// Fail-closed ceiling on the number of country rows PTC1 carries.
-///
-/// PTC1 is the country roster's own carrier — one row per country — so `1024`
-/// was a guess at the vanilla-plus-DLC country count (vanilla defines 439 tags)
-/// that refused the whole payload on any larger mod. A country count is
-/// content, so it is now the structural row width, exactly as its sibling
-/// `tactic_weight::MAX_COUNTRIES` (PTW1) is.
-///
-/// The bound that protects the allocation is [`max_rows_in`], not this: the
-/// count is stream-supplied and sizes a `Vec`, so it is checked against what
-/// the remaining payload can actually hold.
 pub const MAX_ROWS: usize = i32::MAX as usize;
 
-/// The fixed part of one PTC1 row: `tag_db_id` 4, `tactic_database_id` 4,
-/// `flags` 2, `token_len` 2. A variable-length token may follow, so a row is at
-/// least this many bytes. (`wire_format::d92::FIXED_ROW_LEN` mirrors it.)
 pub const FIXED_ROW_LEN: usize = 12;
 
-/// The largest number of rows `remaining` bytes of PTC1 payload can hold.
-///
-/// A FORMAT bound. Without it a four-byte stream word decides a
-/// `Vec::with_capacity`, which is what the old content-scale ceiling was
-/// incidentally preventing.
 #[inline]
 #[must_use]
 pub const fn max_rows_in(remaining: usize) -> usize {
@@ -50,22 +24,16 @@ pub const EXECUTABLE_SHA256: [u8; 32] = [
     0x1f, 0x0a, 0x53, 0x38, 0xf3, 0x06, 0x8c, 0x40, 0x95, 0x82, 0x09, 0xf5, 0xc4, 0x1c, 0x65, 0xad,
 ];
 
-/// Ghidra manifest `430665f0...`: country root/consumer and the explicit
-/// separation from the `CCountryLeader+0x10B0` army-leader field.
 pub const CONSUMER_EVIDENCE_SHA256: [u8; 32] = [
     0x43, 0x06, 0x65, 0xf0, 0x5f, 0xec, 0x12, 0x94, 0x79, 0x0c, 0xb7, 0xe6, 0x17, 0x34, 0x26, 0x48,
     0xb7, 0x47, 0x57, 0x31, 0xec, 0x5b, 0xd0, 0xc4, 0xa1, 0x9a, 0x40, 0x12, 0x3a, 0xf2, 0x4d, 0xb3,
 ];
 
-/// Ghidra manifest `d6327e0e...`: `CSetPreferredTacticCommand` validation and
-/// execute writer, including the exact `*(country+0x15D0)=selected_definition`.
 pub const WRITER_EVIDENCE_SHA256: [u8; 32] = [
     0xd6, 0x32, 0x7e, 0x0e, 0x86, 0x22, 0x9e, 0x5c, 0x1e, 0xc6, 0xbe, 0x0c, 0x13, 0x1b, 0xd9, 0x5d,
     0xcb, 0x31, 0x89, 0x71, 0x9d, 0x68, 0x26, 0x4e, 0x7b, 0xb5, 0x95, 0x99, 0x54, 0xd4, 0x3a, 0x49,
 ];
 
-/// Ghidra manifest `75d225d3...`: exact tactic registry population and stable
-/// definition-identity surface.
 pub const IDENTITY_EVIDENCE_SHA256: [u8; 32] = [
     0x75, 0xd2, 0x25, 0xd3, 0x08, 0x98, 0x5d, 0xad, 0x5e, 0xfe, 0x74, 0x33, 0xef, 0xad, 0x10, 0xff,
     0xae, 0xe1, 0xbc, 0x48, 0x43, 0x26, 0x74, 0x7a, 0x7c, 0x96, 0xb9, 0x6e, 0x3b, 0x49, 0xac, 0xa8,
@@ -158,9 +126,6 @@ pub fn decode_payload(payload: &[u8]) -> Result<PreferredTacticSnapshot, String>
     if row_count > MAX_ROWS || selected_count > row_count {
         return Err("PTC1 row count outside bounds".into());
     }
-    // The count is stream-supplied and sizes the allocation below, so it is
-    // bounded by what the remaining payload can hold and not only by the two
-    // header words the same crafted payload also supplies.
     if row_count > max_rows_in(payload.len() - at) {
         return Err("PTC1 row count exceeds the payload's capacity".into());
     }

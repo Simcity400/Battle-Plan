@@ -66,8 +66,8 @@ def survey(path):
     """Pass 1: per-domain record inventory (offset, payload_len, bucket, delta bit)."""
     gap_run = defaultdict(int)
     seen = defaultdict(bool)
-    steady = defaultdict(list)     # domain -> [(payload_len, payload_offset)]
-    postgap = defaultdict(list)    # domain -> [(record_offset, payload_len, gap_run, is_delta)]
+    steady = defaultdict(list)
+    postgap = defaultdict(list)
     with open(path, "rb") as handle:
         offset = 0
         while True:
@@ -222,7 +222,6 @@ def plan(steady, postgap):
         if is_bimodal([plen for plen, _o in pool]):
             cell["mode"] = "two_point"
             small_pool = [entry for entry in pool_sorted if entry[0] <= pool_sorted[0][0] * 2]
-            # p = probability nothing changed across the record's own gap run.
             scored = sorted(
                 ((1.0 - q) ** (gap_run + 1), record_offset, plen)
                 for record_offset, plen, gap_run, _d in candidates

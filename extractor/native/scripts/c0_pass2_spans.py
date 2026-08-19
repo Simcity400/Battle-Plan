@@ -43,8 +43,6 @@ class StatusSpec:
     failure_class: bool
 
 
-# Global record-header vocabulary from compact_contract/src/lib.rs. Marker and
-# accounting bits are named but are not failure classes.
 GLOBAL_STATUS_BITS: Mapping[int, StatusSpec] = {
     0: StatusSpec('STATE_UNAVAILABLE', True),
     1: StatusSpec('PROFILE_MISMATCH', True),
@@ -60,17 +58,9 @@ GLOBAL_STATUS_BITS: Mapping[int, StatusSpec] = {
     11: StatusSpec('TRANSITION_BASELINE_RESET', False),
     12: StatusSpec('CONTROL_INVALID', True),
     13: StatusSpec('WAR_SEGMENT_ABSENT', False),
-    # The read reached its source, the source answered, and the answer was
-    # empty. NOT a failure class: a measured zero is an ANSWER, and reconciling
-    # it as a failure would put this census back where it started -- unable to
-    # tell a domain whose reader is broken from a domain whose save has nothing
-    # to report. Without this entry the bit falls through to
-    # `UNKNOWN_BIT_14`, whose spec is failure-class `True`.
     14: StatusSpec('SOURCE_EMPTY', False),
 }
 
-# Domain-specific vocabulary. d49/d51 overlap global bits and therefore must
-# override them. d53/d60 extend the shared range. Unknown bits fail closed.
 DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
     49: {11: StatusSpec('LANE:LOCATION_CANDIDATE_UNVALIDATED', True)},
     51: {
@@ -89,10 +79,6 @@ DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
     },
     60: {
         16: StatusSpec('LANE:WAR_CASUALTIES_RUNNING_ACCUMULATOR', False),
-        # The v2 all-rows-carry-residuals frame shape. Without this entry the
-        # bit fell through to `UNKNOWN_BIT_17`, whose spec is failure-class
-        # True, so the majority of every d60 capture reconciled as an
-        # unexplained failure incidence and exited 1.
         17: StatusSpec('LANE:WAR_RESIDUALS_EXACT', False),
     },
     99: {
@@ -101,11 +87,6 @@ DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
         18: StatusSpec('LANE:INCOMPLETE_OBSERVATION', True),
     },
 }
-# Derived, never hand-maintained: two hand-written tables in one file that both
-# claim to be the lane-local registry is the drift this census exists to
-# detect. `DOMAIN_STATUS_BITS` above is the single declaration, and it is
-# itself pinned against `compact_contract::lane_local_status_mask` by
-# `compact_contract/tests/script_status_vocabulary_sweep.rs`.
 LANE_LOCAL_MASKS = {
     domain: sum(1 << bit for bit in bits)
     for domain, bits in DOMAIN_STATUS_BITS.items()
@@ -115,8 +96,6 @@ DEFAULT_RUN_NAMES = (
     'production_speed5_ShortSpeed5_20260711_142948',
 )
 
-# FIRST-INTRODUCTION units from compact_contract/status_origins.rs. Composite
-# helpers are listed for every status they explicitly introduce.
 ATTRIBUTION_UNITS: Mapping[Tuple[int, int], Tuple[str, ...]] = {
     (43, 8): ('so_d43_source_empty_warm_known', 'so_d43_source_empty_cold'),
     (45, 9): ('so_d45_partial_targeted_timed_structural',),
@@ -403,7 +382,7 @@ def open_decoded(path: Path, compression: str) -> Tuple[BinaryIO, BinaryIO]:
     if detected == 'raw':
         return stored, stored
     try:
-        import zstandard  # type: ignore
+        import zstandard
     except ImportError as exc:
         stored.close()
         raise CensusError(f'{path}: zstd requires the Python zstandard module') from exc
@@ -681,8 +660,6 @@ def status_spec(domain_id: int, bit: int) -> StatusSpec:
 
 
 def status_bits(domain_id: int, status: int) -> Iterable[Tuple[int, StatusSpec]]:
-    # d49/d51 badges collide with global meanings. Remove their mask before
-    # interpreting global flags, then yield the domain-local badges separately.
     local_mask = LANE_LOCAL_MASKS.get(domain_id, 0)
     domain_bits = DOMAIN_STATUS_BITS.get(domain_id, {})
     for bit in range(32):
@@ -721,9 +698,6 @@ def reconcile(
         if origin.first_hour is None or origin.last_hour is None:
             continue
         proven_hours.update((origin.first_hour, origin.last_hour))
-        # The aggregate ledger proves its observed endpoints only. Count plus
-        # endpoints cannot prove interior hours: multiple introductions in one
-        # frame could compensate for an unobserved interior frame.
         overlap |= any(
             origin.first_hour <= hour <= origin.last_hour for hour in status_hours
         )
@@ -940,7 +914,7 @@ def scan_fixture(run: Path) -> StreamScan:
 
 def expect_census_error(action: object, needle: str) -> None:
     try:
-        action()  # type: ignore[operator]
+        action()
     except CensusError as exc:
         assert needle in str(exc), (needle, str(exc))
     else:
@@ -1178,7 +1152,7 @@ def selftest() -> int:
         tests += 1
 
         try:
-            import zstandard  # type: ignore
+            import zstandard
         except ImportError:
             pass
         else:

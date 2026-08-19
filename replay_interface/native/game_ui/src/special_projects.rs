@@ -1,8 +1,3 @@
-//! Exact special-project progress admission for the replay UI.
-//!
-//! The engine counter and target stay raw. The UI may format their ratio, but
-//! this adapter never invents a scale or reconstructs progress from elapsed
-//! time. Rows are admitted only from the owner-joined D41 `PPGF` view.
 
 use replay_core::{
     Leaf, ProjectSpecializationExact, SpecialProjectBreakthroughExactView,
@@ -38,10 +33,6 @@ pub struct SpecialProjectBreakthroughPresentation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecialProjectBreakthroughRejection(pub String);
 
-/// Complete D65 facility row consumed by the special-project UI. Numeric
-/// program identity, exact province, and unread reward count are deliberately
-/// retained together so the UI cannot silently collapse D65 back to the
-/// topbar-only reward aggregate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecialProjectProgramPresentation {
     pub country: String,
@@ -54,9 +45,6 @@ pub struct SpecialProjectProgramPresentation {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecialProjectProgramRejection(pub String);
 
-/// Admit one selected country's complete D65 program roster. A measured empty
-/// slice is a valid zero-program roster; absent or unobtained input remains
-/// feature-local unavailable.
 pub fn admit_special_project_programs(
     rows: Leaf<&[SpecialProjectProgramRow]>,
 ) -> Result<Vec<SpecialProjectProgramPresentation>, SpecialProjectProgramRejection> {
@@ -130,9 +118,6 @@ fn admit_row(
     })
 }
 
-/// Admit the complete project-progress catalog, optionally filtered to the
-/// selected country. Measured-empty is valid. Any incomplete country walk or
-/// duplicate owner/local identity rejects the whole surface.
 pub fn admit_special_project_progress(
     view: &SpecialProjectProgressExactView,
     country: Option<&str>,
@@ -169,9 +154,6 @@ pub fn admit_special_project_progress(
     Ok(out)
 }
 
-/// Admit X9 breakthrough values only after the exact serializer-token census
-/// has joined the raw engine key to the closed portable enum. Raw numeric
-/// handles are intentionally absent from typed replay and UI identity.
 pub fn admit_special_project_breakthroughs(
     view: &SpecialProjectBreakthroughExactView,
     country: Option<&str>,

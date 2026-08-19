@@ -1,10 +1,3 @@
-//! Promotion boundary for exact O05 generic map-building observations.
-//!
-//! Hook code owns capture of the complete selected-Present runtime-record
-//! scope. This module removes every process-local identity by joining the
-//! stable hook object ID and selected entity ID to the already-promoted entity
-//! submissions. It does not interpret `map/buildings.txt` as live state.
-
 use crate::PromotionError;
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{
@@ -47,21 +40,11 @@ pub struct RawO05BuildingRecord {
     pub position_xyz_f32_bits: [u32; 3],
     pub yaw_f32_bits: u32,
     pub presentation_scale_f32_bits: u32,
-    /// Stable ID assigned by the existing entity-factory hook. `None` is the
-    /// exact no-instance/no-submit result from the building producer.
     pub selected_entity_instance_id: Option<u64>,
-    /// Matrix observed at the building transform setter. Promotion requires
-    /// byte identity with every referenced entity draw.
     pub world_transform_4x4_f32_bits: Option<[u32; 16]>,
 }
 
 impl RawO05BuildingRecord {
-    /// Decode one complete post-update a729 0x48-byte map-building record.
-    ///
-    /// The two embedded pointers are consumed only to prove whether a
-    /// definition/entity was selected. They are never copied into `Self`.
-    /// `selected_entity_instance_id` is the stable ID from the existing entity
-    /// factory hook for the exact pointer at record `+0x10`.
     pub fn decode_a729_post_update(
         event_sequence: u64,
         runtime_object_id: u64,
@@ -78,8 +61,7 @@ impl RawO05BuildingRecord {
         if runtime_object_id == 0
             || object_tag_u32 != A729_O05_RUNTIME_RECORD_TAG
             || (selected_entity_ptr == 0)
-                != (selected_entity_instance_id.is_none()
-                    && world_transform_4x4_f32_bits.is_none())
+                != (selected_entity_instance_id.is_none() && world_transform_4x4_f32_bits.is_none())
             || (selected_entity_ptr != 0
                 && (selected_definition_ptr == 0
                     || selected_entity_instance_id == Some(0)
@@ -309,19 +291,35 @@ fn invalid(message: impl Into<String>) -> PromotionError {
 }
 
 fn le_u16(bytes: &[u8], offset: usize) -> u16 {
-    u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("bounded O05 u16"))
+    u16::from_le_bytes(
+        bytes[offset..offset + 2]
+            .try_into()
+            .expect("bounded O05 u16"),
+    )
 }
 
 fn le_u32(bytes: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("bounded O05 u32"))
+    u32::from_le_bytes(
+        bytes[offset..offset + 4]
+            .try_into()
+            .expect("bounded O05 u32"),
+    )
 }
 
 fn le_i32(bytes: &[u8], offset: usize) -> i32 {
-    i32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("bounded O05 i32"))
+    i32::from_le_bytes(
+        bytes[offset..offset + 4]
+            .try_into()
+            .expect("bounded O05 i32"),
+    )
 }
 
 fn le_u64(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("bounded O05 u64"))
+    u64::from_le_bytes(
+        bytes[offset..offset + 8]
+            .try_into()
+            .expect("bounded O05 u64"),
+    )
 }
 
 #[cfg(test)]
@@ -341,8 +339,7 @@ mod tests {
     fn a729_decoder_consumes_the_complete_pointer_free_record_layout() {
         let record = base_record();
         let decoded =
-            RawO05BuildingRecord::decode_a729_post_update(9, 11, 0, &record, None, None)
-                .unwrap();
+            RawO05BuildingRecord::decode_a729_post_update(9, 11, 0, &record, None, None).unwrap();
         assert_eq!(decoded.event_sequence, 9);
         assert_eq!(decoded.runtime_object_id, 11);
         assert_eq!(decoded.building_type_id, 7);
@@ -358,9 +355,8 @@ mod tests {
         let mut record = base_record();
         record[0x08..0x10].copy_from_slice(&0x1111u64.to_le_bytes());
         record[0x10..0x18].copy_from_slice(&0x2222u64.to_le_bytes());
-        assert!(RawO05BuildingRecord::decode_a729_post_update(
-            9, 11, 0, &record, None, None,
-        )
-        .is_err());
+        assert!(
+            RawO05BuildingRecord::decode_a729_post_update(9, 11, 0, &record, None, None,).is_err()
+        );
     }
 }

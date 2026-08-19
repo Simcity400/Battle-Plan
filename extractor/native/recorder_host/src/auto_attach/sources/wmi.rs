@@ -1,40 +1,3 @@
-//! Real WMI `ProcessEventSource` with bounded reconciliation.
-//!
-//! This is the lower-latency half of the dual-order watcher. It subscribes to
-//! standard-user `__InstanceCreationEvent` and `__InstanceDeletionEvent` queries
-//! via `IWbemServices::ExecNotificationQuery`, each restricted to a
-//! `TargetInstance` that is a `Win32_Process`. Two enumerators deliver start and
-//! stop hints and the embedded target supplies the PID and executable name. The
-//! privileged `Win32_ProcessTrace` provider is deliberately not used because it
-//! returns `WBEM_E_ACCESS_DENIED` for a normal user on the supported host.
-//! Bounded process reconciliation remains authoritative.
-//!
-//! ## No new dependency
-//!
-//! Per this lane's fence and the machine-wide network ban, NO `windows`/
-//! `windows-sys`/`wmi` crate is added (none is in `Cargo.lock`). The COM binding
-//! is hand-written raw `extern "system"` FFI against the system `ole32` /
-//! `oleaut32` import libraries, exactly mirroring the established style in
-//! `modset.rs` and `sources.rs`. The build cannot fetch a new crate, so raw FFI
-//! is the available binding path, and it
-//! is functionally sufficient here.
-//!
-//! ## Testability seam
-//!
-//! Everything that touches COM lives behind the [`WmiEventPump`] trait. The pump
-//! loop ([`pump_iteration`]), health transitions, queueing, WMI-loss degradation,
-//! and recovery are driven by a fake pump in unit tests with zero live WMI. The
-//! real COM pump is exercised only by an `#[ignore]`d live smoke test.
-//!
-//! ## Fail-closed / honest degradation
-//!
-//! Health starts `Degraded` and only flips to `Healthy` after a subscription is
-//! proven established. If the provider is unavailable the source stays `Degraded`
-//! forever and the coordinator runs on the bounded 2 s snapshot reconcile. A
-//! lost enumerator degrades to `Degraded` and the
-//! loop attempts bounded-backoff re-subscription; recovery flips back to
-//! `Healthy`. A timeout is a timeout: no event is ever fabricated.
-
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{sync_channel, SyncSender};
@@ -45,16 +8,8 @@ use std::time::Duration;
 use super::{ProcessEventSource, RawProcessEvent};
 use crate::auto_attach::policy::WatcherHealth;
 
-/// Blocking poll timeout for the notification enumerator. Bounds both cancel
-/// responsiveness and CPU when idle (the real `Next` blocks for this long).
 const POLL_TIMEOUT_MS: u32 = 500;
-/// Bounded backoff between re-subscription attempts after a provider loss. Kept
-/// at the degraded reconcile cadence so the watcher's failure cost is bounded.
 const RESUBSCRIBE_BACKOFF_MS: u64 = 2_000;
-/// Upper bound on how long `new()` blocks for the first subscription attempt.
-/// On timeout the source returns with whatever health has been set so far
-/// (`Degraded` by default) — fail-closed; the thread keeps trying and may flip
-/// to `Healthy` later.
 const READY_TIMEOUT_MS: u64 = 5_000;
 
 const HEALTH_HEALTHY: u8 = 0;
@@ -75,9 +30,6 @@ fn decode_health(v: u8) -> WatcherHealth {
     }
 }
 
-/// One raw poll result from the WMI enumerator, before `hoi4.exe` filtering (the
-/// coordinator filters names). `Lost` means the subscription/connection is dead
-/// and the caller must degrade and re-subscribe.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WmiPoll {
     Event {
@@ -89,21 +41,11 @@ pub enum WmiPoll {
     Lost,
 }
 
-/// The COM-touching seam. The real implementation is the raw-FFI COM pump; tests
-/// inject a scripted fake. NOT `Send`: the real pump's COM pointers live entirely
-/// on the watcher thread (constructed, used, and dropped there), so a pump value
-/// never crosses a thread boundary — only the `Send` factory closure does.
 pub trait WmiEventPump {
-    /// Establish (or re-establish) the notification subscription. `true` means
-    /// the enumerator is live; `false` means the provider is currently
-    /// unavailable (the loop degrades and backs off).
     fn resubscribe(&mut self) -> bool;
-    /// Block up to `timeout_ms` for the next raw process-trace event.
     fn poll(&mut self, timeout_ms: u32) -> WmiPoll;
 }
 
-/// Map a raw WMI process event to a coordinator event by its `__CLASS`.
-/// Pure and cross-platform so it is unit-tested directly.
 pub(crate) fn classify_process_trace(class: &str, pid: u32, name: &str) -> Option<RawProcessEvent> {
     match class {
         "Win32_ProcessStartTrace" | "__InstanceCreationEvent" => Some(RawProcessEvent::Start {
@@ -118,16 +60,6 @@ pub(crate) fn classify_process_trace(class: &str, pid: u32, name: &str) -> Optio
     }
 }
 
-/// Build the [`WmiPoll`] for a delivered process-trace event, fail-closed on an
-/// unreadable PID. `Some(pid)` yields the classified `Event`; `None` (the
-/// embedded `TargetInstance.ProcessId` could not be read) is a malformed event
-/// envelope — the same class of corruption as the missing / wrong-typed
-/// `TargetInstance` cases in the COM pump — and degrades to `Lost` rather than
-/// fabricating a `pid = 0` event that would poison the coordinator queue with a
-/// bogus zero-pid Start/Stop. The `Lost` surfaces through the module's real
-/// diagnostic channel: the watcher re-subscribes and health drops to `Degraded`
-/// (read by the coordinator). Pure and cross-platform so it is unit-tested
-/// directly without COM.
 pub(crate) fn event_or_lost(class: String, pid: Option<u32>, name: String) -> WmiPoll {
     match pid {
         Some(pid) => WmiPoll::Event { class, pid, name },
@@ -137,15 +69,10 @@ pub(crate) fn event_or_lost(class: String, pid: Option<u32>, name: String) -> Wm
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IterOutcome {
-    /// Made progress or idled; loop again immediately (the pump's own poll
-    /// blocks, so this is not a busy loop with the real pump).
     Progressed,
-    /// Disconnected / lost; caller should back off before retrying.
     Backoff,
 }
 
-/// One watcher iteration over an injected pump. Synchronously testable: no
-/// threads, no sleeps, no COM.
 fn pump_iteration<P: WmiEventPump>(
     pump: &mut P,
     connected: &mut bool,
@@ -176,7 +103,6 @@ fn pump_iteration<P: WmiEventPump>(
     }
 }
 
-/// State shared between the watcher thread and the public source handle.
 struct SharedWmiState {
     queue: Mutex<VecDeque<RawProcessEvent>>,
     health: AtomicU8,
@@ -186,7 +112,6 @@ impl SharedWmiState {
     fn new() -> Self {
         Self {
             queue: Mutex::new(VecDeque::new()),
-            // Fail-closed: unknown until a subscription is proven established.
             health: AtomicU8::new(HEALTH_DEGRADED),
         }
     }
@@ -209,7 +134,6 @@ impl SharedWmiState {
     }
 }
 
-/// Sleep up to `total_ms`, waking early if cancellation is requested.
 fn interruptible_sleep(total_ms: u64, cancel: &AtomicBool) {
     const STEP_MS: u64 = 50;
     let mut slept = 0u64;
@@ -223,10 +147,6 @@ fn interruptible_sleep(total_ms: u64, cancel: &AtomicBool) {
     }
 }
 
-/// The watcher loop over a pump built by `factory` (run ON the watcher thread so
-/// a non-`Send` COM pump never crosses a boundary). Signals `ready` exactly once,
-/// after the first subscription attempt, so the constructor can block until the
-/// subscribe/enumerate race is closed.
 fn run_pump_loop<F, P>(
     factory: F,
     shared: Arc<SharedWmiState>,
@@ -259,13 +179,8 @@ fn run_pump_loop<F, P>(
             interruptible_sleep(RESUBSCRIBE_BACKOFF_MS, &cancel);
         }
     }
-    // `pump` drops here (releasing COM pointers) BEFORE any caller-side COM
-    // uninitialize on the same thread.
 }
 
-/// A resident WMI process-event watcher. Owns a dedicated thread that holds the
-/// blocking notification enumerator and pushes classified start/stop events into
-/// a shared queue drained by [`ProcessEventSource::drain_events`].
 pub struct WmiProcessEventSource {
     shared: Arc<SharedWmiState>,
     cancel: Arc<AtomicBool>,
@@ -273,10 +188,6 @@ pub struct WmiProcessEventSource {
 }
 
 impl WmiProcessEventSource {
-    /// Spawn the watcher thread with a caller-supplied thread body. The body runs
-    /// on the new thread and must (eventually) call `ready.try_send(())` so the
-    /// constructor can stop blocking. Bounded: the constructor waits at most
-    /// [`READY_TIMEOUT_MS`].
     fn spawn_thread<G>(body: G) -> Self
     where
         G: FnOnce(Arc<SharedWmiState>, Arc<AtomicBool>, SyncSender<()>) + Send + 'static,
@@ -292,10 +203,6 @@ impl WmiProcessEventSource {
                 .spawn(move || body(shared, cancel, tx))
                 .ok()
         };
-        // Block until the first subscription attempt reports in (Healthy or
-        // Degraded), closing the subscribe/enumerate race: once `new()`
-        // returns, any process that starts afterwards is caught by WMI and the
-        // coordinator's startup snapshot catches anything already running.
         let _ = rx.recv_timeout(Duration::from_millis(READY_TIMEOUT_MS));
         Self {
             shared,
@@ -304,8 +211,6 @@ impl WmiProcessEventSource {
         }
     }
 
-    /// Generic constructor for tests: drive the loop with an injected pump
-    /// factory (no COM). Also usable by any caller that provides its own pump.
     pub fn with_pump_factory<F, P>(factory: F) -> Self
     where
         F: FnOnce() -> Option<P> + Send + 'static,
@@ -316,7 +221,6 @@ impl WmiProcessEventSource {
         })
     }
 
-    /// Production constructor: the real standard-user COM process subscriptions.
     #[cfg(windows)]
     pub fn new() -> Self {
         Self::spawn_thread(|shared, cancel, ready| com::run_com_watcher(shared, cancel, ready))
@@ -341,12 +245,8 @@ impl Drop for WmiProcessEventSource {
     }
 }
 
-// =====================================================================
-// Real COM implementation (raw FFI; Windows only).
-// =====================================================================
-
 #[cfg(windows)]
-#[allow(dead_code)] // vtable/GUID/VARIANT fields exist for layout, not all read.
+#[allow(dead_code)]
 mod com {
     use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
@@ -359,7 +259,6 @@ mod com {
     type Hresult = i32;
     type Bstr = *mut u16;
 
-    // --- COINIT / CLSCTX / RPC / WBEM constants -----------------------
     const COINIT_MULTITHREADED: u32 = 0x0;
     const RPC_E_CHANGED_MODE: Hresult = 0x8001_0106u32 as i32;
     const CLSCTX_INPROC_SERVER: u32 = 0x1;
@@ -373,7 +272,6 @@ mod com {
     const WBEM_FLAG_FORWARD_ONLY: i32 = 0x20;
     const WBEM_S_TIMEDOUT: Hresult = 0x0004_0004;
 
-    // VARIANT type tags we read.
     const VT_I2: u16 = 2;
     const VT_I4: u16 = 3;
     const VT_BSTR: u16 = 8;
@@ -391,14 +289,12 @@ mod com {
         data4: [u8; 8],
     }
 
-    // CLSID_WbemLocator {4590F811-1D3A-11D0-891F-00AA004B2E24}
     const CLSID_WBEM_LOCATOR: Guid = Guid {
         data1: 0x4590_F811,
         data2: 0x1D3A,
         data3: 0x11D0,
         data4: [0x89, 0x1F, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24],
     };
-    // IID_IWbemLocator {DC12A687-737F-11CF-884D-00AA004B2E24}
     const IID_IWBEM_LOCATOR: Guid = Guid {
         data1: 0xDC12_A687,
         data2: 0x737F,
@@ -406,7 +302,6 @@ mod com {
         data4: [0x88, 0x4D, 0x00, 0xAA, 0x00, 0x4B, 0x2E, 0x24],
     };
 
-    /// VARIANT (x64: 24 bytes). We read only the tag and the first union word.
     #[repr(C)]
     struct Variant {
         vt: u16,
@@ -416,8 +311,6 @@ mod com {
         val0: u64,
         val1: u64,
     }
-
-    // --- Interface + vtable layouts (only the slots we call are typed) ---
 
     #[repr(C)]
     struct IWbemLocator {
@@ -477,8 +370,6 @@ mod com {
             *mut c_void,
             *mut *mut IEnumWbemClassObject,
         ) -> Hresult,
-        // exec_notification_query_async, exec_method, exec_method_async follow
-        // but are never called, so they are omitted from the layout tail.
     }
 
     #[repr(C)]
@@ -498,7 +389,6 @@ mod com {
             *mut *mut IWbemClassObject,
             *mut u32,
         ) -> Hresult,
-        // next_async, clone, skip follow but are never called.
     }
 
     #[repr(C)]
@@ -519,7 +409,6 @@ mod com {
             *mut i32,
             *mut i32,
         ) -> Hresult,
-        // put, delete, ... follow but are never called.
     }
 
     #[link(name = "ole32")]
@@ -624,8 +513,6 @@ mod com {
         out
     }
 
-    /// The real COM pump. All pointers are created, used, and dropped on the
-    /// watcher thread; this type is intentionally not `Send`.
     struct ComProcessTracePump {
         loc: *mut IWbemLocator,
         svc: *mut IWbemServices,
@@ -813,17 +700,11 @@ mod com {
                 let name = get_string(target_obj, "Name").unwrap_or_default();
                 VariantClear(&mut target);
                 ((*(*obj).vtbl).release)(obj);
-                // Never fabricate a pid: an unreadable ProcessId degrades to
-                // `Lost` (see `event_or_lost`) instead of emitting a bogus
-                // pid = 0 Start/Stop into the coordinator queue.
                 super::event_or_lost(class, pid, name)
             }
         }
     }
 
-    /// The COM watcher thread body: initialize COM (MTA) on this thread, run the
-    /// generic pump loop over a real COM pump, then uninitialize COM AFTER the
-    /// pump has dropped its interface pointers.
     pub fn run_com_watcher(
         shared: Arc<SharedWmiState>,
         cancel: Arc<AtomicBool>,
@@ -831,17 +712,12 @@ mod com {
     ) {
         unsafe {
             let hr = CoInitializeEx(std::ptr::null_mut(), COINIT_MULTITHREADED);
-            // S_OK(0)/S_FALSE(1) are success; a fresh thread will not hit
-            // RPC_E_CHANGED_MODE, but tolerate it (COM usable, don't uninit).
             if hr < 0 && hr != RPC_E_CHANGED_MODE {
                 shared.set_health(super::WatcherHealth::Degraded);
                 let _ = ready.try_send(());
                 return;
             }
             let uninit = hr != RPC_E_CHANGED_MODE;
-            // Best-effort process-wide security. If already set (RPC_E_TOO_LATE)
-            // or it fails, defaults/prior settings apply; the real gate is
-            // whether the query + Next below succeed (else we degrade honestly).
             let _ = CoInitializeSecurity(
                 std::ptr::null_mut(),
                 -1,
@@ -866,8 +742,6 @@ mod com {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- classify (pure) ---------------------------------------------
 
     #[test]
     fn classify_maps_start_and_stop() {
@@ -910,8 +784,6 @@ mod tests {
         assert_eq!(classify_process_trace("", 1, "x").as_ref(), None);
     }
 
-    // ---- event_or_lost (pure fail-closed PID gate) -------------------
-
     #[test]
     fn event_or_lost_builds_event_for_readable_pid() {
         assert_eq!(
@@ -930,9 +802,6 @@ mod tests {
 
     #[test]
     fn unreadable_pid_degrades_to_lost_never_fabricates_pid() {
-        // Regression: previously the COM poll did `get_u32(..).unwrap_or(0)` and
-        // emitted a bogus `pid = 0` Start/Stop. An unreadable ProcessId must now
-        // degrade to `Lost` (fail-closed) rather than fabricate an event.
         assert_eq!(
             event_or_lost("Win32_ProcessStopTrace".into(), None, "hoi4.exe".into()),
             WmiPoll::Lost
@@ -941,9 +810,6 @@ mod tests {
 
     #[test]
     fn unreadable_pid_emits_no_event_and_degrades_health() {
-        // Drive the `Lost` through a real watcher iteration: no event reaches the
-        // coordinator queue and health drops to `Degraded` — the module's real,
-        // consumed diagnostic channel.
         let shared = SharedWmiState::new();
         shared.set_health(WatcherHealth::Healthy);
         let poll = event_or_lost("Win32_ProcessStartTrace".into(), None, "hoi4.exe".into());
@@ -955,8 +821,6 @@ mod tests {
         assert_eq!(shared.health(), WatcherHealth::Degraded);
         assert!(!connected);
     }
-
-    // ---- fake WMI layer ----------------------------------------------
 
     struct FakePump {
         resubscribe_results: VecDeque<bool>,
@@ -1033,7 +897,6 @@ mod tests {
                 name: "hoi4.exe".into()
             }]
         );
-        // Health untouched by a plain event.
         assert_eq!(shared.health(), WatcherHealth::Healthy);
     }
 
@@ -1054,8 +917,6 @@ mod tests {
 
     #[test]
     fn iteration_lost_degrades_and_disconnects() {
-        // Models WMI provider loss: the source degrades so the
-        // coordinator falls back to the bounded 2 s snapshot reconcile.
         let shared = SharedWmiState::new();
         shared.set_health(WatcherHealth::Healthy);
         let mut pump = FakePump::new(vec![], vec![WmiPoll::Lost]);
@@ -1068,32 +929,26 @@ mod tests {
 
     #[test]
     fn iteration_recovers_after_loss() {
-        // Lost -> Degraded, then a successful resubscribe -> Healthy. No
-        // duplicate or fabricated events cross the gap.
         let shared = SharedWmiState::new();
         let mut pump = FakePump::new(vec![true, true], vec![WmiPoll::Lost, start(7)]);
         let mut connected = false;
-        // 1: subscribe -> Healthy
         assert_eq!(
             pump_iteration(&mut pump, &mut connected, &shared),
             IterOutcome::Progressed
         );
         assert_eq!(shared.health(), WatcherHealth::Healthy);
-        // 2: poll -> Lost -> Degraded, disconnected
         assert_eq!(
             pump_iteration(&mut pump, &mut connected, &shared),
             IterOutcome::Backoff
         );
         assert_eq!(shared.health(), WatcherHealth::Degraded);
         assert!(!connected);
-        // 3: re-subscribe -> Healthy again
         assert_eq!(
             pump_iteration(&mut pump, &mut connected, &shared),
             IterOutcome::Progressed
         );
         assert_eq!(shared.health(), WatcherHealth::Healthy);
         assert!(connected);
-        // 4: poll -> the recovered event
         assert_eq!(
             pump_iteration(&mut pump, &mut connected, &shared),
             IterOutcome::Progressed
@@ -1107,11 +962,8 @@ mod tests {
         );
     }
 
-    // ---- threaded source over the fake pump --------------------------
-
     #[test]
     fn threaded_source_drains_event_and_reports_healthy() {
-        // A fake pump that subscribes, emits one start, then idles forever.
         let mut polls = vec![start(555)];
         for _ in 0..64 {
             polls.push(WmiPoll::Timeout);
@@ -1119,7 +971,6 @@ mod tests {
         let factory = move || Some(FakePump::new(vec![true], polls));
         let mut source = WmiProcessEventSource::with_pump_factory(factory);
 
-        // Drain with a bounded deadline (no fixed sleep assumption).
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut got = Vec::new();
         while std::time::Instant::now() < deadline {
@@ -1137,7 +988,6 @@ mod tests {
             }]
         );
         assert_eq!(source.health(), WatcherHealth::Healthy);
-        // Drop joins the watcher thread (cancellation path).
     }
 
     #[test]
@@ -1148,11 +998,6 @@ mod tests {
         assert!(source.drain_events().is_empty());
     }
 
-    // ---- live smoke (manual only) ------------------------------------
-
-    /// Live COM gate: the standard-user subscriptions must become healthy and
-    /// deliver both sides of a real child-process lifecycle. Run manually with
-    /// `cargo test -p recorder_host wmi_live_smoke -- --ignored --nocapture`.
     #[cfg(windows)]
     #[test]
     #[ignore]

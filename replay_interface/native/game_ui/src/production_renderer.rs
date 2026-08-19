@@ -1,94 +1,5 @@
-//! Production replay UI composition.
-//!
-//! This is deliberately narrower than the evidence/probe compositor.  It is
-//! the product entry point and therefore admits only packet surfaces whose
-//! replay-owned laws are proven and their product surface authority is
-//! authenticated. Omitted families are not given chrome, placeholders, or
-//! partially populated rows here.
-//!
-//! # The routability contract
-//!
-//! A packet renders if and only if explicit composition code exists for it.
-//! Neither `PROMOTED_XUI_PACKETS` nor `OMITTED_AUTHORITY_BLOCKED_PACKETS` nor
-//! `OMITTED_PIXEL_CANVAS_ROUTES` gates a single pixel: these tables are report
-//! metadata that tests keep consistent with reality.  Deleting a packet from
-//! the omitted table renders nothing; adding one to the promoted table renders
-//! nothing.  Only a route renders.
-//!
-//! Every production route, whatever its shape, must satisfy four requirements.
-//! All currently promoted surfaces satisfy them; an unavailable external
-//! producer remains a feature-local carrier disposition rather than a missing
-//! Replay route:
-//!
-//! 1. **CARRIER AUTHORITY.**  A `replay_core` view that reaches
-//!    `ViewStatus::Present` only after the recording's own authority is
-//!    checked — the packet's authority string and producer identity, canonical
-//!    hour, content joins, and completeness seals. Selected-Present receipt
-//!    joins apply only to legacy oracle carriers that declare them; passive
 //!    all-country product carriers do not acquire that dependency. A type that
-//!    merely exists is not a carrier; the builder must be able to reject.
-//! 2. **SEMANTIC ROOT BINDING.**  Something in the recording must say WHICH
-//!    authored root the pixels belong to.  For the four always-on HUD roots
-//!    this is the `hud_role/v1/<surface>/gui/<root>/<sha256>` consumer closure
-//!    (see `admit_authenticated_product_hud_route` and `hud_role_index`);
-//!    for XUI05 it must be the reconstructed observer widget's effective-VFS
-//!    GUI identity and discovered `pdx_tooltip` ancestor. A route that
-//!    hard-codes the root instead is guessing on modded profiles.
-//!    Replay-owned observer panels use the manifest-bound dynamic role index
-//!    emitted from the effective VFS and admitted XUI01 catalog.
-//! 3. **AUTHORED SOURCE ADMISSION.**  Every `.gui`/`.gfx` source the route
-//!    reads must be used content of this replay's effective manifest.  The
-//!    always-on roots enforce this unconditionally through
-//!    `REQUIRED_AUTHORED_HUD_SOURCES` at `ProductionUiRenderer::new`;
-//!    conditional surfaces enforce it per-route with
-//!    `require_used_content`, so a recording that never showed the surface is
-//!    not refused for lacking its source.
-//! 4. **A DRAW PATH THAT INVENTS NOTHING, AND A COMPLETENESS GATE.**  Every
-//!    quantity is read from the carrier or from the authored file.  No
-//!    default, no fallback, no magic constant, no re-derivation of a value the
-//!    engine already computed.  The result then passes
-//!    `validate_complete_compose_report`, which turns a missing sprite, font,
-//!    glyph or unresolved string into a refusal instead of a hole.
-//!
-//! # Shipping boundary
-//!
-//! [`ProductionUiRenderer::prepare_observer_semantic_frame`] is the typed
-//! composition boundary. `replay_app::ui_runtime::ProductObserverUiRuntime`
-//! executes its authenticated manager transaction and publishes interaction
-//! authority only after the exact frame is Presented. Product composition uses
-//! typed replay state, viewer-owned interaction and playback-admitted effective
 //! content; recorder panel ownership, recorder cursor state and legacy
-//! selected-Present reconstruction are not product authority.
-//!
-//! Missing or mismatched external data suppresses only its owning feature and
-//! remains distinct from measured empty. The legacy d79, d72, MTRA and
-//! selected-Present helpers retained in this module are evidence/oracle routes;
-//! their local contracts forbid using them for shipping pixel or input
-//! authority.
-//!
-//! # Replicating this per packet
-//!
-//! XUI05 is the worked example; follow it in this order.
-//!
-//! 1. Find the carrier's `WorldFrame` accessor and read its builder.  If the
-//!    builder cannot reject, stop: there is no carrier yet, whatever the
-//!    domain registry says.
-//! 2. Find or write the `game_ui` admission function that turns the view into
-//!    an admitted semantic model.  Do not draw from the raw view.
-//! 3. Establish the semantic root binding, and prefer a carrier-supplied root
-//!    name over a constant.
-//! 4. Read the authored root out of the installed content and enumerate every
-//!    quantity the draw needs.  For each one ask: does the carrier supply it,
-//!    or does the authored file?  Anything that answers "neither" is either a
-//!    named residual or a reason not to build the route — it is never a
-//!    default.  This step is where XUI05's probe draw was found to be
-//!    inventing a border, a font, a line-height floor and a header colour.
-//! 5. Write the draw as a fail-closed function, and pull its placement law out
-//!    into a pure function so it can be tested without assets.
-//! 6. Test the refusals before the happy path: every absence must omit, and
-//!    every disagreement between carrier and authored file must refuse.
-//! 7. Only then move the packet between the report tables, and update both
-//!    partition assertions.
 
 use crate::assets::AssetResolver;
 use crate::binding::{
@@ -177,27 +88,11 @@ pub fn production_ui_variant_key() -> DisplayVariantKey {
     }
 }
 
-/// One always-on HUD surface this compositor has a draw for.
-///
-/// This is the extension table for the always-on route shape.  Every always-on
-/// surface the product can render is exactly one row here, and a row is only
-/// legal when all four of its columns exist: a producer-side `hud_role/v1`
-/// consumer token, a producer-side per-frame activation kind, the authored root
-/// the compositor draws, and the authored source that root is declared in.
-///
-/// The routability contract above applies to every row. Columns 1 and 2 are
-/// producer-owned wire identities, so a row cannot be invented replay-side.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProductHudSurface {
-    /// `hud_role/v1/<token>/` consumer prefix.  Must equal the producer's
-    /// `HudSurface::token()` for the same surface.
     pub consumer_token: &'static str,
-    /// The kind this surface has in the recording's own per-frame
-    /// `_r2_hud_surface_activation_live` carrier.
     pub activation_kind: replay_core::HudSurfaceActivationKind,
-    /// Authored root name this compositor resolves and draws.
     pub authored_root: &'static str,
-    /// Authored GUI source the root is declared in.
     pub authored_gui: &'static str,
 }
 
@@ -239,11 +134,6 @@ pub fn observer_authored_hud_sources() -> Vec<crate::hud::HudSourceWindow> {
         .collect()
 }
 
-/// Stable token for an activation kind carried by the recording.
-///
-/// These match the producer's `HudSurface::token()` strings so a reported
-/// unrouted surface names the same thing the wire schema does.  This is a
-/// report/diagnostic mapping only; nothing is drawn from it.
 pub fn hud_activation_kind_token(kind: replay_core::HudSurfaceActivationKind) -> &'static str {
     use replay_core::HudSurfaceActivationKind as Kind;
     match kind {
@@ -257,11 +147,6 @@ pub fn hud_activation_kind_token(kind: replay_core::HudSurfaceActivationKind) ->
     }
 }
 
-/// Legacy admission result for the retired d79 per-frame surface carrier.
-///
-/// d79 is not product authority: panel-open state is viewer-local under the
-/// observer model. This type exists only for the retained legacy
-/// evidence/oracle admission path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedHudSurfaceActivation {
     routed_surfaces: Vec<String>,
@@ -269,66 +154,15 @@ pub struct AdmittedHudSurfaceActivation {
 }
 
 impl AdmittedHudSurfaceActivation {
-    /// Surfaces the compositor draws AND the recording says were active, with
-    /// the carrier's runtime root name matching the authored root drawn.
     pub fn routed_surfaces(&self) -> &[String] {
         &self.routed_surfaces
     }
 
-    /// Legacy carrier rows for which this compositor has no draw. These remain diagnostic only;
-    /// they cannot establish designer availability because opening a designer is viewer state.
     pub fn unrouted_active_surfaces(&self) -> &[String] {
         &self.unrouted_active_surfaces
     }
 }
 
-/// Legacy admission for the retired d79 per-frame surface activation carrier.
-///
-/// d79 and its panel-open facts are outside product authority under the observer
-/// model. No product route may treat this function as designer activation
-/// authority. The contract below documents only the retained legacy carrier's
-/// fail-closed evidence behavior.
-///
-/// Contract:
-///
-/// * `DomainAbsent` returns `Ok(None)`.  The recording predates d79 entirely and
-///   the compositor keeps the manifest-closure binding it has always used.  This
-///   is the route's one deliberate hole: making a `Present` carrier a hard
-///   prerequisite would refuse every recording produced before d79 was
-///   scheduled.  It is NOT silent — the absence is reported as
-///   a named absence rather than invented activation. Product composition no
-///   longer calls or reports this legacy branch.
-/// * `DomainUnavailable` REFUSES.  It is not the same thing as absence: it means
-///   the key was recorded and then rejected — null, malformed, or failing
-///   replay_core's authority/hour/root partition.  That is affirmative evidence
-///   of a broken carrier, and treating it as "no carrier" would be exactly the
-///   "absence means OK" hole this route exists to close.
-/// * A nonzero `status_flags` REFUSES even at `Present`.  The producer's own
-///   `promote_activation_frame` rejects such a frame — "failed or badged HUD
-///   activation frame is not promotion-eligible" — but replay_core's
-///   `build_hud_surface_activation` does NOT check the field, so a badged frame
-///   reaches `Present`.  Without this check the compositor would draw four roots
-///   from an observation the producer declared failed.
-/// * `schema_version` and `authority` are re-checked HERE rather than trusted
-///   from replay_core.  Both validations existing is the point: the two drifting
-///   apart is the failure mode this project has been burned by.
-/// * A `Present` carrier that omits a surface this compositor DRAWS, or that
-///   names a different runtime root for it, is a disagreement between two
-///   authenticated bindings and fails closed.  A wrong root here is exactly the
-///   modded-profile case: the compositor would otherwise draw the vanilla root
-///   the constant names while the engine had a renamed one up.
-/// * Duplicate activation kinds and duplicate runtime root names REFUSE.  The
-///   first is re-checked locally because `find` would otherwise silently take
-///   the first of two contradictory rows.  The second is checked NOWHERE else in
-///   the tree: replay_core admits a carrier whose designer row claims the same
-///   runtime root object as the topbar, and two distinct surfaces cannot be one
-///   authored root.
-/// * A `Present` carrier naming a surface this compositor has no draw for is reported, never
-///   drawn. For designer rows this is only legacy diagnostics, not a product activation gate.
-///
-/// `expected_hour` is the hour being composed.  replay_core already binds the
-/// carrier to its frame hour; this re-asserts it locally so a carrier can never
-/// bind roots for a different hour than the one whose pixels are produced.
 pub fn admit_authenticated_hud_surface_activation(
     view: &replay_core::HudSurfaceActivationView,
     expected_hour: i64,
@@ -382,11 +216,6 @@ pub fn admit_authenticated_hud_surface_activation(
                 hud_activation_kind_token(row.surface)
             )));
         }
-        // Folded, because that is this tree's actual root-identity law rather
-        // than a convenience: `hud_role_index` keys every authored root by
-        // `to_ascii_lowercase` and looks activation roots up the same way. An
-        // exact-bytes set here would have let `TOPBAR` and `topbar` pass as two
-        // distinct roots while the resolver treats them as one.
         if !seen_roots.insert(row.runtime_root_name.to_ascii_lowercase()) {
             return Err(ProductionUiRejection::IncompleteComposition(format!(
                 "HUD surface activation gives runtime root {:?} to more than one surface, under \
@@ -407,9 +236,6 @@ pub fn admit_authenticated_hud_surface_activation(
                     surface.consumer_token
                 ))
             })?;
-        // Same law again: an exact comparison would refuse a carrier that
-        // `hud_role_index` would happily resolve, which is a refusal on valid
-        // data rather than a stricter check.
         if !active
             .runtime_root_name
             .eq_ignore_ascii_case(surface.authored_root)
@@ -438,9 +264,6 @@ pub fn admit_authenticated_hud_surface_activation(
     }))
 }
 
-/// Exact d79 carrier identity, re-asserted at the composition boundary.
-/// replay_core's `build_hud_surface_activation` checks the same two values
-/// before the view reaches `Present`; both checks existing is deliberate.
 pub const HUD_SURFACE_ACTIVATION_SCHEMA_VERSION: u32 = 1;
 pub const HUD_SURFACE_ACTIVATION_AUTHORITY: &str = "exact_a729_hud_controller_roots";
 
@@ -455,11 +278,6 @@ impl AuthenticatedProductHudRoute {
     }
 }
 
-/// Admit the current all-or-nothing HUD compositor only when the replay binds
-/// every always-on runtime surface to the exact GUI identity this compositor
-/// implements and records the compositor's full authored read-set beneath
-/// those semantic surface consumers. A replay with no complete route is a
-/// normal omission; a malformed claimed route is an error.
 pub fn admit_authenticated_product_hud_route(
     admission: &replay_core::ValidatedContentAdmission,
 ) -> Result<Option<AuthenticatedProductHudRoute>> {
@@ -537,9 +355,6 @@ pub fn admit_authenticated_product_hud_route(
     }))
 }
 
-/// Authored a729 source identities consumed by this exact HUD law. These are
-/// not resolver defaults: the replay must list every one as used content, and
-/// a profile whose controller namespace renamed or removed one is unsupported.
 pub const REQUIRED_AUTHORED_HUD_SOURCES: &[&str] = &[
     crate::topbar::TOPBAR_GUI,
     crate::hud::MINIMAP_GUI,
@@ -547,13 +362,6 @@ pub const REQUIRED_AUTHORED_HUD_SOURCES: &[&str] = &[
     crate::hud::OUTLINER_GUI,
 ];
 
-/// Admit a fully composed XUI05 tooltip only after every authored source named
-/// by its payload is present in the replay's authenticated content manifest.
-///
-/// The opaque `PreparedComposedTooltip` proves content composition, one TEXT1
-/// measure/draw plan, inline-sprite resolution, authored extent formation and
-/// viewer-cursor placement have already succeeded together. This boundary adds
-/// manifest admission; it never accepts a d72 blob or rectangle.
 pub fn admit_composed_xui05_tooltip_route(
     content_admission: &ValidatedContentAdmission,
     prepared: Option<PreparedComposedTooltip>,
@@ -674,21 +482,6 @@ pub fn admit_composed_xui05_tooltip_route(
     Ok(Some(prepared))
 }
 
-/// Historical d72 reconstruction/oracle adapter, independent of the four-root
-/// HUD renderer. It is not active product hover authority.
-///
-/// `ProductionUiRenderer::admit_xui05_tooltip_route` delegates here for legacy
-/// oracle comparison only. Keeping the free function independent from the
-/// four-root renderer preserves historical evidence without coupling XUI05 to
-/// unrelated HUD sources. Binding XUI05's historical availability to those roots would
-/// mean a recording that showed a tooltip but never admitted, say,
-/// `interface/topbar.gui` could not have its tooltip admitted at all — a
-/// coupling XUI05's own authority does not require.
-///
-/// The contract is unchanged and is documented on the method: absence at POV,
-/// viewport, domain, or measured-empty is `Ok(None)`; a carrier naming a root
-/// other than the one it declared, or a replay showing a tooltip without
-/// admitting the authored source it was drawn from, fails closed.
 pub fn admit_xui05_tooltip_route(
     content_admission: &ValidatedContentAdmission,
     frame: &WorldFrame,
@@ -700,11 +493,6 @@ pub fn admit_xui05_tooltip_route(
     else {
         return Ok(None);
     };
-    // The carrier's own root identity. replay_core already pins this to
-    // "ToolTip" while validating the instance, so a mismatch here means the
-    // two validations have drifted apart -- which is exactly the failure
-    // this project has been burned by before, and is why it is re-checked
-    // at the route boundary instead of assumed.
     if binding.owner_root_name != crate::hud::TOOLTIP_WINDOW_NAME {
         return Err(ProductionUiRejection::IncompleteComposition(format!(
             "XUI05 carrier names tooltip owner root {:?}, which is not the authored root \
@@ -719,65 +507,13 @@ pub fn admit_xui05_tooltip_route(
     Ok(Some(binding))
 }
 
-/// Only packets with an actual replay-app composition/input route are listed.
-/// Promotion-ready semantic/canvas laws remain internal when product surface
-/// activation or semantic root authority is absent.
-///
-/// The historical public name denotes route eligibility, not proof that every
-/// extractor-side authority producer is active. XUI01 is admitted through the
-/// complete manifest-bound authored namespace initialized by the product
-/// observer runtime. XUI02/XUI03/XUI04/XUI07/XUI12/XUI24 are one atomic authenticated
-/// viewer-state/content/composition transaction. The transaction is
-/// route-eligible independently of D98 scheduling: a missing, legacy, partial,
-/// content-mismatched, or otherwise incomplete THS2 v6 input makes only the
-/// theatre surface unavailable and can never become measured-empty UI. XUI06
-/// owns the shipping runtime-text carrier plus the
-/// engine-derived authored layout fallback. XUI25 is admitted exclusively from
-/// the playback-local profile and fixed replay product contract. XUI26
-/// classifies the exact 28-family effective-VFS census: two static and twelve
-/// typed replay-payload families ship. Five host-runtime and nine
-/// external-service families are nonshipping because Replay owns no verified
-/// producer or host injection seam for them. Its global certification is
-/// family-scoped, and missing dynamic carriers never become measured empty.
-/// XUI12 consumes a detached passive
-/// complete-D18 all-country carrier, selects the viewer country only after
-/// whole-frame admission, and uses variable-height manager composition,
 /// clipping, XUI05 tooltip ownership, and authenticated close/scroll/expansion
-/// input. Missing or rejected external input is feature-local unavailable.
-/// XUI03 supplies the shared effective-VFS collection placement law consumed
-/// by XUI13/XUI15 grids, the XUI16 garrison smooth list, and the XUI02 theatre
-/// overlap materializer. Membership and unavailable-vs-empty authority remain
-/// with each owning packet; legacy d71 recorder geometry is never admitted.
-/// XUI13 consumes only complete A27-v3 all-country designer-candidate
-/// authority and effective authored controller/window/template roots. Older
-/// or missing authority is a named feature-local unavailable surface; a
-/// complete empty family remains a drawable measured-empty panel.
-/// XUI16 owns the selected-country occupation/garrison semantic admission,
-/// effective-content compositor, authored input region, and D79 alert join.
-/// Recordings without its optional strict companion report a named
-/// feature-local unavailable surface; a complete empty controller remains a
-/// drawable measured-empty panel.
-/// XUI05 owns authenticated viewer hover/dwell/hide state and the effective
-/// authored unscoped tooltip route. Custom/scoped providers remain explicit
-/// feature-local refusals until their owning packet supplies a sealed semantic
-/// payload; the legacy d72 carrier is oracle-only.
-/// XUI17 owns selected-country D47/D28/D46 semantic admission and the complete
-/// authored Army, Navy, ace, and trait-tree compositor/input route. Its passive
-/// G8/G11 final-presentation carrier remains an explicit external dependency;
-/// absent components fail feature-locally and are never fabricated.
 pub const PROMOTED_XUI_PACKETS: &[&str] = &[
     "XUI01", "XUI02", "XUI03", "XUI04", "XUI05", "XUI06", "XUI07", "XUI08", "XUI09", "XUI10",
     "XUI11", "XUI12", "XUI13", "XUI14", "XUI15", "XUI16", "XUI17", "XUI18", "XUI19", "XUI20",
     "XUI21", "XUI22", "XUI23", "XUI24", "XUI25", "XUI26",
 ];
 
-/// Promoted Replay consumers whose canonical producer remains an explicit
-/// external dependency. These packets execute their admission decision on
-/// every shipping frame and expose feature-local unavailable until the named
-/// producer is present; they are not disconnected or silently omitted. XUI27
-/// mechanically checks this exact table against the canonical external
-/// producer ledger, whose rows also bind the shipping carrier, compositor,
-/// runtime and behavior-test sources.
 pub const PROMOTED_EXTERNAL_DEPENDENCY_PACKETS: &[(&str, &str)] = &[
     (
         "XUI07",
@@ -845,22 +581,12 @@ pub const PROMOTED_EXTERNAL_DEPENDENCY_PACKETS: &[(&str, &str)] = &[
     ),
 ];
 
-/// XUI27 is the state-first shipping observer integration over the promoted
-/// XUI02/XUI04/XUI07/XUI24 manager transaction and XMAP18 mapmode consumer.
 pub const PROMOTED_EXTENSION_PACKETS: &[&str] = &["XUI27"];
 
-/// Report-only census for a proven semantic packet whose pixel compositor is
-/// absent. The current production census is empty.
 pub const OMITTED_PIXEL_CANVAS_ROUTES: &[(&str, &str)] = &[];
 
-/// Successor packets outside the historical XUI01-XUI26 partition.
 pub const OMITTED_EXTENSION_PACKETS: &[(&str, &str)] = &[];
 
-/// Report-only census for packet surfaces absent because Replay-side carrier
-/// authority or semantic admission is unimplemented. External producer
-/// population is not classified here: a production-routed consumer with an
-/// external producer belongs in `PROMOTED_EXTERNAL_DEPENDENCY_PACKETS`. The
-/// current Replay-owned authority-blocked census is empty.
 pub const OMITTED_AUTHORITY_BLOCKED_PACKETS: &[(&str, &str)] = &[];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -896,16 +622,10 @@ pub struct ProductionUiOutput {
 pub struct ProductionXui16Output {
     pub image: RgbaImage,
     pub report: ProductionUiReport,
-    /// Authored root actually selected and composed by the XUI16 compositor.
     pub authored_root: String,
-    /// Exact supplement identity actually joined by the compositor.
     pub source_record_id: String,
-    /// Exact semantic rows that intersected the authored clip and were
-    /// materialized into the composed surface.
     pub materialized_row_ids: Vec<String>,
-    /// Logical row actually applied after authored-geometry clamping.
     pub applied_scroll_row: usize,
-    /// Exact authored client-space wheel target for the composed panel.
     pub input_region: crate::occupation_compositor::OccupationInputRegion,
 }
 
@@ -988,9 +708,6 @@ pub struct ProductionXui18Output {
     pub tooltip_targets: Vec<crate::power_balance_compositor::PowerBalanceTooltipHitTarget>,
 }
 
-/// Exact XUI19 category slot offered to XUI22 before decision cards are
-/// materialized. All geometry is authored and viewer-transformed; no recorder
-/// rectangle participates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverDecisionCategoryInsertion {
     pub category_id: String,
@@ -1017,10 +734,7 @@ pub struct ObserverDecisionCategoryExtent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverDecisionCategoryComposeRequest {
     pub category_id: String,
-    /// Effective FILE source which declared this exact category.
     pub category_source_file: String,
-    /// Effective FILE `scripted_gui` binding. The provider may not infer or
-    /// substitute this identity from its runtime rows.
     pub provider_id: Option<String>,
     pub category_ordinal: usize,
     pub stable_namespace: String,
@@ -1111,9 +825,6 @@ pub struct Xui19CustomIconHitTarget {
     pub tooltip_text: String,
 }
 
-/// A visible XUI22 descendant resolved from the exact final XUI19 composition.
-/// `authored_child_path` reauthenticates its declaration in the effective GUI
-/// file; `element_path` is its Presented, namespaced XUI19 owner identity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Xui22WidgetHitTarget {
     pub category_id: String,
@@ -1344,72 +1055,32 @@ fn xui11_tooltip_instance_token(
     effective_root_identity_sha256: &str,
 ) -> String {
     // TooltipOwner is the lifetime identity of the instantiated authored
-    // widget tree. Per-frame record/controller provenance belongs to the
-    // admitted payload and must not restart XUI05 dwell every replay hour.
     format!("xui11:{effective_root_identity_sha256}:{country_tag}:{tag_db_id}")
 }
 
-/// Viewer-owned UI state. None of these values is recorder presentation state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverViewerUiState {
-    /// Country whose semantic UI the observer requested. `None` is the
-    /// omniscient world view and intentionally leaves country fields absent.
     pub selected_country: Option<String>,
-    /// Viewer-owned global XUI08 panel, selections, expansions and scrolls.
     pub peace_conference: crate::peace_conference_ui::PeaceConferenceViewerState,
-    /// Viewer-owned XUI11 panel and authored ideas-scroll state.
     pub politics: crate::politics_state::PoliticsViewerState,
-    /// Viewer-owned XUI18 open/close lifecycle. No recorder panel-open state
-    /// participates in this value.
     pub power_balance: crate::power_balance_compositor::PowerBalanceViewerState,
-    /// Viewer-owned XUI14 country/surface/scroll state.
     pub intelligence: crate::intelligence_presentation::IntelligenceViewerState,
-    /// Viewer-owned XUI10 open/pan/selection state. Focus activation is never
-    /// emitted by Replay; selection is inspection-only.
     pub focus: crate::focus_observer::FocusViewerState,
-    /// Viewer-owned XUI09 authored-folder, pan and inspection selection.
-    /// Recorder presentation state never opens or navigates this panel.
     pub research: crate::research_compositor::ResearchViewerState,
-    /// Country-scoped XUI17 panel, order, and scroll state. This is reset by
-    /// the app whenever `selected_country` changes.
     pub character_selection: crate::character_ui::CharacterViewerSelection,
-    /// Whether the viewer opened the country-trade panel.
     pub trade_panel_open: bool,
-    /// Viewer-owned XUI12 lifecycle, scrolling, and row expansion. No value
-    /// originates in recorder presentation state.
     pub production_lines: crate::production_lines::Xui12ViewerState,
-    /// Viewer-owned XUI13 family, filters, selection, and scroll. `None`
-    /// means closed. An empty anchor requests the first exact engine-native
-    /// A27-v3 family anchor and never permits a guessed identity.
     pub designer: Option<crate::design_catalog::ObserverDesignerViewState>,
-    /// Viewer-owned XUI15 resource/filter/sort/scroll state. The recording
-    /// never decides which trade catalogue the observer opens.
     pub trade: crate::trade_layout::CountryTradeViewerState,
-    /// Whether the viewer opened the decisions panel. This is playback-local;
-    /// retired d87 recorder presentation never supplies it.
     pub decision_panel_open: bool,
-    /// Viewer-owned vertical scroll in authored decision-grid pixels.
     pub decision_scroll_px: i32,
-    /// Viewer-owned category-collapse state. Every id must exist in the
-    /// recorder-packaged effective decision catalog.
     pub collapsed_decision_categories: BTreeSet<String>,
-    /// Viewer-selected mapmode button. Zero is the fail-closed unselected form.
     pub mapmode: crate::hud::MapmodeBinding,
-    /// Viewer-owned theatre selector mode. `None` means no mode has been
-    /// selected; Replay never invents Land as a default.
     pub theatre_mode: Option<ObserverTheatreMode>,
-    /// Viewer-opened settings overlay for one exact LandTheatre identity.
     pub theatre_settings_land_id: Option<u32>,
-    /// Replay-owned XUI16 panel controls. The nested selected country must
-    /// agree with `selected_country` whenever the panel is open.
     pub occupation: crate::occupation_compositor::OccupationViewerState,
-    /// Viewer-owned XUI23 open/context/animation state. The recording never
-    /// supplies these interaction values.
     pub abilities: crate::active_abilities::ObserverAbilityViewerState,
-    /// Viewer-owned combat/loss window selection. Recorder window state is
-    /// never consulted and a seek invalidates the hour-bound selection.
     pub combat: Xui20ViewerState,
-    /// Viewer-local focus and dismiss state for passive d75 event popups.
     pub events: crate::event_chrome::EventPopupViewerState,
 }
 
@@ -1460,11 +1131,6 @@ pub enum ObserverTheatreMode {
     Air,
 }
 
-/// Playback-content profile selected before composition.
-///
-/// This is separate from viewer state: viewport/language/input belong to the
-/// admitted playback environment and cannot be inferred from the recorder's
-/// cursor or last selected Present.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ObserverPlaybackUiProfile {
     pub variant_key: DisplayVariantKey,
@@ -1533,8 +1199,6 @@ fn shipping_d98_predecessor_sequence(
             "replay frame hour cannot derive the required D98 source sequence",
         )
     })?;
-    // With producer sequence = frame hour + 1, the preceding frame's
-    // sequence is exactly this frame's hour.
     Ok(expected_hour)
 }
 
@@ -1575,10 +1239,6 @@ fn admit_observer_theatre_surface(
     let predecessor_sequence = shipping_d98_predecessor_sequence(expected_hour)?;
     let theatre = frame
         .theatre_selector()
-        // D98 defines sequence = frame hour + 1.  Therefore the immediately
-        // preceding hour's derived sequence is this frame's hour.  Supplying
-        // that predecessor is deterministic across redraws and timeline
-        // scrubs; no mutable "last rendered" state can corrupt admission.
         .authorize(&expectation, expected_hour, Some(predecessor_sequence));
     if theatre.status != replay_core::ViewStatus::Present {
         return Err(theatre_gap(
@@ -1612,13 +1272,7 @@ fn admit_observer_theatre_surface(
     })
 }
 
-/// Shipping XUI15 route. An opened panel is represented even when its strict
-/// frame-resident producer is unavailable; only a complete authenticated
-/// payload can populate `canvas` and reach the compositor.
 
-/// XUI19 state exposed by the shipping observer route. Dynamic rows come only
-/// from the strict passive all-country carrier; the retired POV-local panel,
-/// d16 stopped timed collection, and D45 fragments are not product inputs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverDecisionSurface {
     pub country_tag: String,
@@ -1633,10 +1287,6 @@ pub struct ObserverDecisionSurface {
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Semantic XUI20 route exposed during observer preflight. The transactional
-/// runtime composes this admitted route into the shipping framebuffer; this
-/// optional field is retained for compatibility with the common observer
-/// surface shape.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverCombatSurface {
     pub route: Xui20CanvasRoute,
@@ -1653,23 +1303,14 @@ pub struct ObserverTradeSurface {
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Shipping XUI12 observer route. An opened panel is never represented by
-/// `None`: it is either fully admitted for composition or explicitly
-/// unavailable with machine-readable producer/content gaps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverProductionLinesSurface {
     pub country_tag: Option<String>,
     pub route: Option<crate::production_lines::AdmittedXui12ProductionLineRoute>,
-    /// A complete strict adapter is the only form admitted to XUI02's
-    /// materialized compositor. The partial semantic route remains useful for
-    /// diagnostics but can never be relabelled as drawable input.
     pub canvas: Option<crate::production_lines::StrictXui12CanvasInput>,
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Shipping XUI13 state-first route. An opened designer is represented even
-/// when its canonical producer is unavailable; only a completely admitted
-/// A27-v3 view can populate `viewer` and reach the compositor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverDesignerRoute {
     pub country_tag: Option<String>,
@@ -1678,9 +1319,6 @@ pub struct ObserverDesignerRoute {
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Shipping XUI17 route. An opened panel remains represented when one of its
-/// named feature-local inputs is unavailable; only a complete model can reach
-/// the authored compositor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverCharacterSurface {
     pub country_tag: Option<String>,
@@ -1688,9 +1326,6 @@ pub struct ObserverCharacterSurface {
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Shipping XUI23 semantic decision. The route exists every frame. A missing
-/// external producer carrier is represented by `gaps`, while a complete
-/// measured-empty selected context has an admitted frame and zero matching rows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverAbilityRoute {
     pub country_tag: Option<String>,
@@ -1701,10 +1336,6 @@ pub struct ObserverAbilityRoute {
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Shipping XUI10 semantic decision. The route is evaluated on every frame.
-/// D12 plus the authenticated packaged focus definitions can be admitted even
-/// when the external evaluated-layout carrier is absent; drawable pixels are
-/// exposed only when both halves have joined exactly.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverFocusRoute {
     country_tag: Option<String>,
@@ -1739,8 +1370,6 @@ impl ObserverFocusRoute {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverEventRoute {
     pub country_tag: Option<String>,
-    /// Complete, ordered d75 history after FILE/A25 admission. None means the
-    /// carrier or effective content is explicitly unavailable.
     pub admitted_history: Option<Vec<crate::event_chrome::AdmittedFiredEvent>>,
     pub event_tick: Option<i64>,
     pub visible_sequences: Vec<i64>,
@@ -1749,26 +1378,11 @@ pub struct ObserverEventRoute {
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Pixel-free product semantics for the current viewer-owned observer UI.
-///
-/// XUI02/XUI07 consume this before any compositor runs. It contains no
-/// recorder presentation state, authored geometry, runtime instance token, or
-/// pixels.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObserverUiSemanticFrame {
     pub hud_binding: HudBinding,
-    /// Required viewer-owned transport state. The authored topbar contains
-    /// distinct playing/paused controls, so XUI07 must not infer either
-    /// visibility state from the recorded game clock.
     pub playback_playing: bool,
-    /// Zero-based viewer transport step. Retained explicitly for the semantic
-    /// provider even though the current topbar binding also carries its
-    /// one-based illuminated-button form.
     pub playback_speed_step: usize,
-    /// Independently content-authorized, all-country D98 hierarchy for the
-    /// viewer-selected country. `None` is valid only when no country is
-    /// selected; an unavailable selected-country surface is recorded in
-    /// `gaps` and never replaced with D3 flat outliner data.
     pub theatre: Option<ObserverTheatreSurface>,
     pub theatre_mode: Option<ObserverTheatreMode>,
     pub theatre_settings_land_id: Option<u32>,
@@ -1777,22 +1391,13 @@ pub struct ObserverUiSemanticFrame {
     pub designer: Option<ObserverDesignerRoute>,
     pub characters: Option<ObserverCharacterSurface>,
     pub decisions: Option<ObserverDecisionSurface>,
-    /// Always-present XUI10 admission decision. Old recordings remain
-    /// explicitly unavailable rather than being interpreted as an empty tree.
     pub focus: ObserverFocusRoute,
-    /// Always-present XUI23 admission decision, including explicit carrier
-    /// absence for ordinary recordings produced before EIR-NE-009 is solved.
     pub abilities: ObserverAbilityRoute,
     pub combat: Option<ObserverCombatSurface>,
-    /// Always-present XUI21 admission decision. It is independent of recorder
-    /// POV and popup-open state; selected country is viewer-owned.
     pub events: ObserverEventRoute,
     pub gaps: Vec<ObserverUiGap>,
 }
 
-/// Convert the authenticated d72 TTI2 carrier into the one global the game
-/// tooltip binding. Domain absence, measured-empty, POV mismatch, and display
-/// mismatch all deliberately produce no shell.
 pub fn tooltip_binding_from_frame(
     frame: &WorldFrame,
     pov_tag: Option<&str>,
@@ -1847,39 +1452,20 @@ pub struct ProductionUiRenderer {
     registry: SpriteRegistry,
     localisation: Localisation,
     playback_localisation_language: String,
-    /// Immutable effective character declarations parsed once with the
-    /// renderer's admitted VFS. A damaged corpus disables only XUI17.
     character_portraits: std::result::Result<crate::character_ui::CharacterPortraitCatalog, String>,
-    /// Effective mod-aware unit-leader definitions used only for XUI17 trait
-    /// identity, authored geometry, and exact icon/localisation joins.
     character_traits: std::result::Result<crate::character_ui::UnitLeaderTraitCatalog, String>,
-    /// Effective mod-aware leader-skill costs used to turn D47 fixed-point XP
-    /// into the exact current-level numerator/denominator pair.
     character_skill_costs: std::result::Result<crate::character_ui::LeaderSkillCostCatalog, String>,
-    /// Effective-VFS definition/GFX/localisation closure for XUI23. Failure is
-    /// feature-local and is reported only by the XUI23 shipping route.
     ability_catalog: std::result::Result<crate::active_abilities::AdmittedAbilityCatalog, String>,
-    /// Effective, mod-aware XUI18 definitions and decision inventory. Loader
-    /// failures remain feature-local until the viewer opens the panel.
     power_balance_catalog:
         std::result::Result<crate::power_balance::PowerBalanceDefinitionCatalog, String>,
     power_balance_decisions: std::result::Result<DecisionSet, String>,
-    /// Effective all-event registry. Any parse/decode loss disables only
-    /// XUI21, because an older shadowed definition must never become unique.
     event_definitions: std::result::Result<BTreeMap<String, crate::event_chrome::EventDef>, String>,
-    /// Effective interface registry used to discover the engine-named event
-    /// roots and shared option template across mod files.
     event_layout: std::result::Result<crate::gui::LayoutSet, String>,
     content_admission: ValidatedContentAdmission,
     playback_variant_key: Option<DisplayVariantKey>,
-    /// Decoded sprite/texture/font cache reused across composed frames. Owned
-    /// alongside its exact resolver + registry pair and interior-mutable so
-    /// the legacy oracle compositor keeps its `&self` signature.
     asset_cache: Mutex<UiAssetCache>,
 }
 
-/// Viewer-owned state for the production XUI05 lifecycle. It contains no
-/// recorder pointer or replay-carried presentation text.
 #[derive(Clone, Debug, Default)]
 pub struct ProductionXui05Controller {
     lifecycle: Option<TooltipLifecycle>,
@@ -1955,9 +1541,6 @@ fn resolve_xui21_authored_tooltip_text(
 }
 
 impl ProductionUiRenderer {
-    /// Build the production renderer from the exact effective asset resolver.
-    /// Any malformed GFX source fails construction; product rendering never
-    /// falls back to a probe/sample registry.
     pub fn new(
         resolver: AssetResolver,
         content_admission: &replay_core::ValidatedContentAdmission,
@@ -1965,9 +1548,6 @@ impl ProductionUiRenderer {
         Self::new_with_playback_profile(resolver, content_admission, None)
     }
 
-    /// Build the shipping observer renderer from the playback machine's
-    /// admitted UI profile. No presentation value is read from replay session
-    /// metadata.
     pub fn new_for_playback(
         resolver: AssetResolver,
         content_admission: &replay_core::ValidatedContentAdmission,
@@ -2070,16 +1650,12 @@ impl ProductionUiRenderer {
             .map_err(String::as_str)
     }
 
-    /// Exact effective event registry admitted from the externally asserted
-    /// complete event-definition namespace. Popup composition uses this same
-    /// stored registry; the accessor supports product diagnostics/evidence.
     pub fn event_definitions(
         &self,
     ) -> std::result::Result<&BTreeMap<String, crate::event_chrome::EventDef>, &str> {
         self.event_definitions.as_ref().map_err(String::as_str)
     }
 
-    /// Exact admitted manifest identity used by frame-owned semantic carriers.
     pub fn content_manifest_digest_sha256(&self) -> &str {
         self.content_admission.manifest_digest_sha256()
     }
@@ -2104,8 +1680,6 @@ impl ProductionUiRenderer {
             .map_err(|error| ProductionUiRejection::Asset(error.to_string()))
     }
 
-    /// Compose the viewer-owned XUI09 tree only after the complete D18
-    /// G4/X9S1 carrier and the packaged effective authored topology agree.
     pub fn compose_xui09_research_surface(
         &self,
         frame: &WorldFrame,
@@ -2196,8 +1770,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose the passive global XUI08 surface. Active semantics come only
-    /// from the strict PCS3 carrier; legacy header-only d97 remains unavailable.
     pub fn compose_xui08_peace_conference_surface(
         &self,
         frame: &WorldFrame,
@@ -2298,9 +1870,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose the passive state-first XUI11 politics surface. The carrier is
-    /// admitted from WorldFrame and is never joined to recorder POV or a
-    /// selected-Present pass.
     pub fn compose_xui11_politics_surface(
         &self,
         frame: &WorldFrame,
@@ -2407,8 +1976,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose the viewer-owned XUI18 panel from the admitted passive
-    /// all-country state/presentation contract and effective authored files.
     pub fn compose_xui18_power_balance_surface(
         &self,
         selected_country: &str,
@@ -2511,11 +2078,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose the replay-owned decisions and missions panel from the strict
-    /// passive all-country XUI19 carrier and the recording's effective files.
-    /// The callback is the sole XUI22 insertion seam. It is invoked only for
-    /// an expanded category and may not invent a binding absent from that
-    /// category's effective definition.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_xui19_decision_surface<F>(
         &self,
@@ -2896,11 +2458,6 @@ impl ProductionUiRenderer {
                         icon.value_text.clone(),
                     );
                     let binding = topbar_binding_from_frame(frame, &icon.flag_tag);
-                    // GP-F23: the binding's own `cosmetic_tag` is the rendering
-                    // spelling, which cannot tell a measured "no override" from
-                    // a cosmetic field D18 could not read. XUI19 may refuse, so
-                    // it reads the identity's admission rule instead of
-                    // painting the base-TAG flag over an unread override.
                     let cosmetic = crate::binding::admitted_flag_cosmetic(
                         frame.country_identity(&icon.flag_tag),
                     )
@@ -3148,9 +2705,6 @@ impl ProductionUiRenderer {
                 match card.target.as_ref() {
                     Some(replay_core::DecisionTargetExactV1::Country { flag_tag, .. }) => {
                         let binding = topbar_binding_from_frame(frame, flag_tag);
-                        // GP-F23, as above: an unread cosmetic identity must
-                        // refuse here rather than resolve down the base-TAG
-                        // flag ladder.
                         let cosmetic =
                             crate::binding::admitted_flag_cosmetic(frame.country_identity(flag_tag))
                                 .map_err(|detail| {
@@ -3514,8 +3068,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose one viewer-selected XUI20 panel from the strict passive-global
-    /// carrier and the exact effective-VFS root/template winners.
     pub fn compose_xui20_combat_surface(
         &self,
         frame: &WorldFrame,
@@ -3601,8 +3153,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose the passive all-country XUI14 intelligence surface. Recorder
-    /// UI state and selected-Present graphics are not consulted.
     pub fn compose_xui14_intelligence_surface(
         &self,
         frame: &WorldFrame,
@@ -3744,9 +3294,6 @@ impl ProductionUiRenderer {
         .map_err(|error| ProductionUiRejection::IncompleteComposition(error.to_string()))
     }
 
-    /// Compose XUI22 roots inside an already-admitted contextual parent.
-    /// Supplying dimensions cannot bypass the complete authenticated d84
-    /// census or effective-content admission gates.
     pub fn compose_xui22_scripted_gui_parent(
         &self,
         catalog: &crate::definition_admission::GuiDefinitionCatalog,
@@ -3774,9 +3321,6 @@ impl ProductionUiRenderer {
         .map_err(|error| ProductionUiRejection::IncompleteComposition(error.to_string()))
     }
 
-    /// Compose the shipping XUI15 overlay from an opaque same-frame,
-    /// same-viewer producer seal. The effective authored root and all four
-    /// collection templates are reloaded from this replay's admitted VFS.
     pub fn compose_xui15_trade_surface(
         &self,
         frame: &WorldFrame,
@@ -3817,10 +3361,6 @@ impl ProductionUiRenderer {
         Ok(output)
     }
 
-    /// Advance all three XUI15 authored smooth-scroll accumulators once for
-    /// the shipping viewer frame. The caller must invoke this before semantic
-    /// sealing so the strict panel identity and composed pixels bind the same
-    /// post-cadence viewer state.
     pub fn advance_xui15_trade_smooth_scroll(
         &self,
         viewer: &mut crate::trade_layout::CountryTradeViewerState,
@@ -3975,9 +3515,6 @@ impl ProductionUiRenderer {
             && point.1 < layout.root_rect.y().saturating_add(layout.root_rect.h()))
     }
 
-    /// Compose the complete XUI13 equipment-designer surface from the strict
-    /// current-hour A27-v3 consumer and the replay's admitted effective VFS.
-    /// No d78/d85/selected-Present/recorder-POV state is accepted.
     pub fn compose_xui13_designer_surface(
         &self,
         frame: &WorldFrame,
@@ -4049,9 +3586,6 @@ impl ProductionUiRenderer {
             })
     }
 
-    /// Diagnostic admission for the legacy selected-country `ProductionView`.
-    /// It has no pixel authority and is not used by the shipping XUI12 path,
-    /// which requires the detached passive all-country carrier.
     pub fn admit_xui12_production_line_route(
         &self,
         frame: &WorldFrame,
@@ -4077,16 +3611,6 @@ impl ProductionUiRenderer {
         })
     }
 
-    /// Admit UI09's real product render route.
-    ///
-    /// The returned route selects operations from the already-authenticated
-    /// selected-Present frontier. It is not a second compositor and never
-    /// reconstructs the technology tree from an authored or estimated pitch.
-    /// A recording with no current-hour TCV1 observation omits the surface;
-    /// a claimed TCV1 surface that does not join the exact a729 runtime root,
-    /// target, clip, and operation stream is rejected.
-    /// Compatibility/history-only TCV1 admission. Product XUI09 is built by
-    /// `research_observer` from selected-country d13 and effective definitions.
     pub fn admit_xui09_selected_present_route(
         &self,
         frame: &WorldFrame,
@@ -4111,33 +3635,6 @@ impl ProductionUiRenderer {
             })
     }
 
-    /// Historical d72 adapter retained for reconstruction/oracle review.
-    /// Active product hover composition does not call this method.
-    ///
-    /// This is the overlay-shaped production route.  Unlike XUI15 it composes
-    /// no screen of its own — it contributes an already-placed overlay to the
-    /// always-on HUD — but it satisfies the same four-part routability
-    /// contract the four HUD roots satisfy:
-    ///
-    ///   1. CARRIER AUTHORITY.  `frame.resolved_tooltip_exact()` is Present
-    ///      only after replay_core has checked the d72 authority string, the
-    ///      pinned producer manifest sha256, the selected-Present receipt join
-    ///      (candidate id, ordinal, QPC ticks and a recomputed receipt hash),
-    ///      the canonical hour, and the declared-vs-actual instance count.
-    ///   2. SEMANTIC ROOT BINDING.  The carrier names the authored root it
-    ///      belongs to per instance.  The route re-asserts that locally rather
-    ///      than trusting a distant invariant, and the chrome is then resolved
-    ///      from THAT name.
-    ///   3. AUTHORED SOURCE ADMISSION.  `interface/core.gui` must be used
-    ///      content of this replay's effective manifest, exactly as XUI15
-    ///      requires `interface/countrytradeview.gui`.
-    ///   4. CONTENT.  The blob and the rectangle are copied, never recomputed.
-    ///
-    /// Absence at any of POV, viewport, domain, or measured-empty is a normal
-    /// omission and returns `Ok(None)`.  A carrier that claims a root other
-    /// than the one it declared, or a replay that shows a tooltip without
-    /// admitting the authored source it was drawn from, is malformed and
-    /// fails closed.
     pub fn admit_xui05_tooltip_route(
         &self,
         frame: &WorldFrame,
@@ -4154,10 +3651,6 @@ impl ProductionUiRenderer {
         )
     }
 
-    /// Advance and compose the production XUI05 route from the authenticated
-    /// XUI02/XUI04 owner under the viewer cursor. Content is rediscovered from
-    /// the replay's admitted effective VFS; unsupported custom/scoped families
-    /// fail feature-locally and never consult d72.
     pub fn compose_authenticated_xui05_tooltip(
         &self,
         controller: &mut ProductionXui05Controller,
@@ -4207,9 +3700,6 @@ impl ProductionUiRenderer {
             .as_mut()
             .expect("XUI05 lifecycle initialized above");
         let Some(context) = context else {
-            // A semantic producer has no authenticated manager owner.  Its
-            // retained surface cannot legally cross into the manager route's
-            // hide-delay branch.
             if controller.retained.is_some() && controller.retained_authenticated_owner.is_none() {
                 lifecycle.clear();
                 controller.retained = None;
@@ -4370,9 +3860,6 @@ impl ProductionUiRenderer {
         Ok(output)
     }
 
-    /// Packet-owned exact semantic tooltip text crosses XUI05 without giving
-    /// the packet control over timing, shell/font/assets, TEXT1 layout, cursor
-    /// placement, clamping, or final pixels.
     pub fn compose_packet_xui05_tooltip(
         &self,
         controller: &mut ProductionXui05Controller,
@@ -4423,8 +3910,6 @@ impl ProductionUiRenderer {
             .as_mut()
             .expect("XUI05 lifecycle initialized above");
         let Some(payloads) = payloads else {
-            // Authenticated manager content cannot be relabelled as a packet
-            // semantic tooltip during the shared controller's hide delay.
             if controller.retained_authenticated_owner.is_some() {
                 lifecycle.clear();
                 controller.retained = None;
@@ -4546,9 +4031,6 @@ impl ProductionUiRenderer {
         Ok(output)
     }
 
-    /// XUI19 calls this only after a Presented decision-panel owner has won
-    /// hit testing. An empty exact tooltip is therefore measured-empty, not
-    /// the absence of a hovered owner.
     #[allow(clippy::too_many_arguments)]
     pub fn compose_xui19_xui05_tooltip(
         &self,
@@ -4580,10 +4062,6 @@ impl ProductionUiRenderer {
         )
     }
 
-    /// Adapt XUI20's exact controller-authored tooltip payload to the shared
-    /// XUI05 dwell/delay/shell compositor. The producer supplies text and
-    /// provenance only; placement, timing, fonts, assets and final pixels
-    /// remain owned by XUI05.
     pub fn compose_xui20_xui05_tooltip(
         &self,
         controller: &mut ProductionXui05Controller,
@@ -4614,10 +4092,6 @@ impl ProductionUiRenderer {
         )
     }
 
-    /// Bind one XUI09 node's exact effective localized name to the shared
-    /// XUI05 timing/shell compositor. Classifier enums and research timing
-    /// remain pixel-state inputs; Replay does not invent tooltip prose for
-    /// engine states whose final authored text was not carried.
     pub fn xui09_tooltip_payloads(
         &self,
         model: &crate::research_observer::ObserverResearchModel,
@@ -4868,9 +4342,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose the replay-owned XUI16 panel from the current WorldFrame, the
-    /// opaque product-admitted semantic surface, and viewer-only controls.
-    /// No caller-supplied presentation model is accepted.
     pub fn compose_xui16_frame(
         &self,
         frame: &WorldFrame,
@@ -4954,10 +4425,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Compose one of the four exact XUI17 selected-country surfaces: Army,
-    /// Navy, Aces, or TraitTree. A surface whose required passive carrier is
-    /// unavailable is refused as a named feature-local gap and never becomes
-    /// a misleading measured-empty panel.
     pub fn compose_xui17_character_surface(
         &self,
         model: &crate::character_ui::ObserverCharacterUi,
@@ -5080,10 +4547,6 @@ impl ProductionUiRenderer {
         }))
     }
 
-    /// Convert one exact G8 blocked-reason target into the shared XUI05
-    /// semantic tooltip route. XUI17 supplies only producer text and identity;
-    /// XUI05 retains dwell, delayed visibility, authored shell, font, clamp,
-    /// placement and final-pixel authority.
     pub fn xui17_tooltip_payloads(
         &self,
         target: &crate::character_ui::CharacterTooltipHitTarget,
@@ -5538,10 +5001,6 @@ impl ProductionUiRenderer {
         route
     }
 
-    /// Admit XUI10 from D12/FILE plus the strict passive EIR-NE-002 WorldFrame
-    /// carrier. The complete all-country carrier is authenticated before the
-    /// viewer country is selected; the retired selected-Present carrier is not
-    /// consulted.
     pub fn prepare_xui10_focus_route(
         &self,
         frame: &WorldFrame,
@@ -5666,21 +5125,6 @@ impl ProductionUiRenderer {
             Some(carrier) => carrier,
             None => {
                 route.semantic = Some(semantic);
-                // Lane IE proved EIR-NE-002's producer half cannot be written,
-                // and the owner routed the scene to a replay-side derivation
-                // instead. The status alone said only "no carrier", which reads
-                // as an unfinished recorder.
-                //
-                // These are the CONTENT-INDEPENDENT refusals, read off the
-                // derivation's inventory. They are the whole reason today, and
-                // they are free to report. Content-dependent refusals -- a node
-                // moved by a scripted offset, an edge to a node the layout did
-                // not place -- are decided by
-                // `focus_observer_derivation::derive_observer_focus_scene` when
-                // a scene is actually derived, and are deliberately not computed
-                // here: they would need the authored GUI layout parsed on a
-                // route that runs every frame, to add detail to a refusal the
-                // inventory has already settled.
                 route.gaps.push(ObserverUiGap {
                     surface: "XUI10/national_focus",
                     field: "evaluated_all_country_focus_scene",
@@ -5830,9 +5274,6 @@ impl ProductionUiRenderer {
         })
     }
 
-    /// Compose the XUI23 surface admitted by the shipping semantic path. The
-    /// method accepts no raw carrier or caller-selected pixels and refuses any
-    /// route which still carries a semantic/content gap.
     pub fn compose_xui23_ability_surface(
         &self,
         route: &ObserverAbilityRoute,
@@ -5887,11 +5328,6 @@ impl ProductionUiRenderer {
         Ok(composed)
     }
 
-    /// Prepare the product observer UI's complete pixel-free semantic input.
-    ///
-    /// This is XUI21's shipping state boundary. It performs exact selected-
-    /// country and producer/content admission without recorder POV state or
-    /// legacy selected-Present popup pixels.
     fn prepare_xui21_event_route(
         &self,
         frame: &WorldFrame,
@@ -5921,9 +5357,6 @@ impl ProductionUiRenderer {
                 return route;
             }
         };
-        // A25 is conditional authority: a complete measured-empty d75 history,
-        // hidden event, or AI/no-choice lifecycle must remain measured-empty
-        // even when no runtime textbox context was needed or collected.
         let (contexts, runtime_text_unavailable) = match frame.runtime_text() {
             Ok(Leaf::Measured(catalog)) if catalog.contexts_complete => (
                 catalog
@@ -6097,9 +5530,6 @@ impl ProductionUiRenderer {
         })
     }
 
-    /// Compose the visible XUI21 stack in authenticated producer order, with
-    /// the viewer-focused still-visible popup last. Gameplay option activation
-    /// is not exposed by this read-only replay surface.
     pub fn compose_xui21_event_stack(
         &self,
         route: &ObserverEventRoute,
@@ -6211,9 +5641,6 @@ impl ProductionUiRenderer {
         )
     }
 
-    /// Product semantic preparation with the frame-decoded XUI12 carrier.
-    /// Absence is a named external dependency and malformed input is retained
-    /// as a feature-local rejection; neither can become measured-empty.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_observer_semantic_frame_with_xui12_producer(
         &self,
@@ -6247,10 +5674,6 @@ impl ProductionUiRenderer {
         )
     }
 
-    /// Product semantic preparation with both independently authenticated
-    /// optional producers. XUI22's inputs are borrowed from the exact same
-    /// WorldFrame/effective-content transaction and can only enter pixels via
-    /// XUI19's typed category callback.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_observer_semantic_frame_with_xui12_and_xui22_producers(
         &self,
@@ -6340,14 +5763,8 @@ impl ProductionUiRenderer {
             &mut hud_binding.topbar,
             &clock_binding_from_frame(frame, playback_speed_step, &self.localisation),
         );
-        // Tooltip state is viewer-owned. TIP2 supplies a separate cursor/facts
-        // adapter; the recorded tooltip carrier is never consulted here.
         hud_binding.tooltip = None;
 
-        // XUI23 executes an admission decision on every shipping frame. The
-        // carrier is decoded only from the immutable WorldFrame; ordinary
-        // recordings without it land in one exact feature-local unavailable
-        // result and no caller can mint a supplemental payload.
         let abilities = self.prepare_xui23_ability_route(frame, viewer);
         gaps.extend(abilities.gaps.iter().cloned());
         let focus = self.prepare_xui10_focus_route(frame, viewer, static_focus_content);
@@ -6681,9 +6098,6 @@ impl ProductionUiRenderer {
             None
         };
 
-        // Admit the selected-country XUI17 model even while its panel is
-        // closed. The app may open a panel only from the last Presented model;
-        // preparing it here prevents a key event from bypassing admission.
         let characters = if viewer.selected_country.is_some()
             || viewer.character_selection.panel != crate::character_ui::CharacterPanel::Closed
         {
@@ -6854,9 +6268,6 @@ fn validate_xui17_leader_skill_effect_language(
     Ok(())
 }
 
-/// `false` denotes the authored description row and `true` the engine-formatted
-/// current-skill modifier row. Army and Navy handlers emit these in different
-/// exact orders; an empty modifier body is measured-empty and emits no row.
 fn xui17_leader_skill_body_order(
     kind: crate::character_ui::LeaderSkillKind,
     effect_text: &str,
@@ -7067,14 +6478,6 @@ mod tests {
             "card.tooltip_text.clone()",
             "card.interface_state",
             "custom_icon_definition_count",
-            // GP-F23: both flag sites in this route must key off the ADMITTING
-            // cosmetic spelling. `TopbarBinding::cosmetic_tag` is the rendering
-            // spelling and cannot separate a measured "no cosmetic override"
-            // from a cosmetic field D18 could not read; XUI19 returns `Result`,
-            // so keying off it makes an unread override resolve down the
-            // base-TAG flag ladder — which succeeds, because base flags ship —
-            // and paints the WRONG flag instead of refusing. The forbidden
-            // spelling below is the exact regression.
             "crate::binding::admitted_flag_cosmetic(",
         ] {
             assert!(
@@ -7875,20 +7278,7 @@ mod tests {
             assert!(!omitted.contains(packet));
             assert!(!omitted_canvas.contains(packet));
         }
-        // XUI05 is promoted through observer-owned widget geometry and the
-        // active viewer-clock compositor. XUI19 now promotes its complete
-        // strict consumer while retaining the passive carrier as an explicit
-        // feature-local external dependency. XUI23 now promotes its
-        // complete Replay consumer while retaining EIR-NE-009 as an explicit
-        // feature-local external dependency. XUI10 follows the same rule for
-        // EIR-NE-002 and never falls back to retired d89. XUI11 follows it for
-        // EIR-NE-003 and never falls back to selected Present or recorder POV.
-        //
-        // XUI22 is promoted through XUI19's exact category child stream,
         // including Presented descendant ownership and XUI05 tooltips. XUI12,
-        // XUI14, XUI16, XUI17, and XUI18 have shipping strict semantic/compositor routes;
-        // current producer omissions are emitted as named feature-local
-        // unavailable fields instead of partial canvases.
         assert!(omitted.is_empty());
         assert!(promoted.contains("XUI05"));
         assert!(promoted.contains("XUI23"));
@@ -8007,12 +7397,9 @@ mod tests {
         );
         let binding = tooltip_binding_from_exact_view(&view, Some("GER"), 1920, 1080)
             .expect("an authenticated instance for this POV and viewport binds");
-        // The engine's own rectangle and blob, copied, not recomputed.
         assert_eq!((binding.x, binding.y), (666, 871));
         assert_eq!((binding.width, binding.height), (400, 120));
         assert_eq!(binding.text, blob);
-        // The authored root comes from the RECORDING, so a renamed root in a
-        // modded profile cannot be silently served the vanilla one.
         assert_eq!(binding.owner_root_name, "ToolTip");
     }
 
@@ -8022,18 +7409,13 @@ mod tests {
             vec![tooltip_instance("GER", "ToolTip", "text")],
             replay_core::ViewStatus::Present,
         );
-        // Wrong POV, wrong viewport, and an omniscient observer with a
-        // country-scoped tooltip are all normal omissions, never a redraw at a
-        // guessed position.
         assert!(tooltip_binding_from_exact_view(&present, Some("FRA"), 1920, 1080).is_none());
         assert!(tooltip_binding_from_exact_view(&present, Some("GER"), 2560, 1440).is_none());
         assert!(tooltip_binding_from_exact_view(&present, None, 1920, 1080).is_none());
 
-        // Authenticated measured-empty: the recording proved no tooltip was up.
         let empty = tooltip_view(Vec::new(), replay_core::ViewStatus::Present);
         assert!(tooltip_binding_from_exact_view(&empty, Some("GER"), 1920, 1080).is_none());
 
-        // Domain absent and domain unavailable both draw nothing.
         for status in [
             replay_core::ViewStatus::DomainAbsent,
             replay_core::ViewStatus::DomainUnavailable,
@@ -8064,8 +7446,6 @@ mod tests {
 
     #[test]
     fn promoted_external_dependencies_name_the_exact_passive_authority() {
-        // Promoted consumers keep their still-external producers explicit and
-        // machine-readable. XUI19 must never regress to retired POV-local UI.
         let xui19 = PROMOTED_EXTERNAL_DEPENDENCY_PACKETS
             .iter()
             .find(|(packet, _)| *packet == "XUI19")
@@ -8087,8 +7467,6 @@ mod tests {
         let route = include_str!("production_renderer.rs");
         assert!(route.contains("pub fn compose_xui19_decision_surface"));
 
-        // XUI21 ships its strict Replay consumer while the exact passive
-        // producer remains an explicit feature-local dependency.
         let xui21 = PROMOTED_EXTERNAL_DEPENDENCY_PACKETS
             .iter()
             .find(|(packet, _)| *packet == "XUI21")
@@ -8128,8 +7506,6 @@ mod tests {
         assert!(body.contains("render_intelligence("));
         assert!(body.contains("require_used_content(source)"));
 
-        // XUI22's authenticated d84 manager snapshot and authored-root
-        // provider now ship only through XUI19's exact rendered parent.
         assert!(PROMOTED_XUI_PACKETS.contains(&"XUI22"));
         assert!(OMITTED_PIXEL_CANVAS_ROUTES.is_empty());
         assert!(!OMITTED_AUTHORITY_BLOCKED_PACKETS
@@ -8203,8 +7579,6 @@ mod tests {
 
     #[test]
     fn the_surface_table_is_the_single_extension_point_for_the_always_on_shape() {
-        // Every column of a row must be distinct across rows, or two surfaces
-        // would collide on a consumer prefix, an activation kind, or a root.
         let tokens = PRODUCT_HUD_SURFACES
             .iter()
             .map(|surface| surface.consumer_token)
@@ -8220,10 +7594,6 @@ mod tests {
         assert_eq!(tokens.len(), PRODUCT_HUD_SURFACES.len());
         assert_eq!(kinds.len(), PRODUCT_HUD_SURFACES.len());
         assert_eq!(roots.len(), PRODUCT_HUD_SURFACES.len());
-        // The table's authored sources and the unconditional required-source
-        // list are the same set. If a row is ever added without its source,
-        // `ProductionUiRenderer::new` would admit a replay that cannot supply
-        // the new root's authored file.
         assert_eq!(
             PRODUCT_HUD_SURFACES
                 .iter()
@@ -8234,34 +7604,20 @@ mod tests {
                 .copied()
                 .collect::<BTreeSet<_>>()
         );
-        // The consumer token must equal the producer's own surface token, or
-        // `hud_role/v1/<token>/` would never match a recorded consumer.
         for surface in PRODUCT_HUD_SURFACES {
             assert_eq!(
                 surface.consumer_token,
                 hud_activation_kind_token(surface.activation_kind)
             );
         }
-        // Four rows today. This is not a law, it is the current extent -- but
-        // the count is pinned so adding a fifth must update this assertion and
-        // satisfy the same carrier/root/source/draw contract.
         assert_eq!(PRODUCT_HUD_SURFACES.len(), 4);
     }
 
     #[test]
     fn an_absent_activation_carrier_binds_nothing_and_a_rejected_one_refuses() {
-        // DomainAbsent: the recording predates d79 entirely. The compositor
-        // keeps the manifest consumer closure it has always used, and the
-        // report records `None` rather than implying a per-frame binding it
-        // does not have. This is the route's one deliberate hole.
         let absent = activation_view(replay_core::ViewStatus::DomainAbsent, four_core_roots());
         assert_eq!(admit_activation(&absent), Ok(None));
 
-        // DomainUnavailable is NOT the same thing, and conflating the two is
-        // precisely the "absence means OK" hole. It means the key WAS recorded
-        // and replay_core then rejected it as null, malformed, or failing the
-        // authority/hour/root partition. That is affirmative evidence of a
-        // broken carrier and must fail closed.
         let rejected = activation_view(
             replay_core::ViewStatus::DomainUnavailable,
             four_core_roots(),
@@ -8273,12 +7629,6 @@ mod tests {
 
     #[test]
     fn a_badged_activation_frame_refuses_even_though_replay_core_admits_it() {
-        // THE ONE THAT MATTERS MOST HERE. The producer's own
-        // `promote_activation_frame` rejects a nonzero-status_flags frame as
-        // "failed or badged ... not promotion-eligible", but replay_core's
-        // `build_hud_surface_activation` never reads the field, so such a frame
-        // reaches Present. Without this check the compositor would bind and
-        // draw four roots from an observation the producer declared FAILED.
         let mut view = activation_view(replay_core::ViewStatus::Present, four_core_roots());
         view.activation
             .as_mut()
@@ -8287,8 +7637,6 @@ mod tests {
         let reason = activation_refusal(&view);
         assert!(reason.contains("badged"), "{reason}");
         assert!(reason.contains("status_flags"), "{reason}");
-        // And the same carrier with the badge cleared IS admitted, so the test
-        // is isolating the flag rather than some other malformation.
         view.activation
             .as_mut()
             .expect("fixture carries one")
@@ -8300,9 +7648,6 @@ mod tests {
 
     #[test]
     fn a_foreign_authority_schema_or_hour_refuses_at_the_route_boundary() {
-        // replay_core checks all three before Present. They are re-checked here
-        // because two validations drifting apart is this project's recurring
-        // failure, and because a distant invariant is not evidence.
         let mut view = activation_view(replay_core::ViewStatus::Present, four_core_roots());
         view.activation.as_mut().unwrap().authority = "exact_a729_something_else".into();
         assert!(activation_refusal(&view).contains("authority"));
@@ -8319,8 +7664,6 @@ mod tests {
 
     #[test]
     fn a_duplicated_surface_or_a_shared_runtime_root_refuses() {
-        // `find` would silently take the first of two contradictory rows, so
-        // duplicates are rejected locally rather than left to replay_core.
         let mut roots = four_core_roots();
         roots.push(activation_root(
             replay_core::HudSurfaceActivationKind::Minimap,
@@ -8331,9 +7674,6 @@ mod tests {
                 .contains("twice")
         );
 
-        // Two distinct surfaces cannot be one authored root object. Nothing
-        // else in the tree checks this: replay_core happily admits a designer
-        // row claiming the topbar's runtime root.
         let mut roots = four_core_roots();
         roots.push(activation_root(
             replay_core::HudSurfaceActivationKind::DesignerTank,
@@ -8342,10 +7682,6 @@ mod tests {
         let reason = activation_refusal(&activation_view(replay_core::ViewStatus::Present, roots));
         assert!(reason.contains("more than one surface"), "{reason}");
 
-        // And the collision is checked under the FOLDED identity, because that
-        // is the identity `hud_role_index` resolves roots by. An exact-bytes
-        // set would let `TOPBAR` through as a second, distinct root while the
-        // resolver treats it as the same one.
         let mut roots = four_core_roots();
         roots.push(activation_root(
             replay_core::HudSurfaceActivationKind::DesignerTank,
@@ -8358,11 +7694,6 @@ mod tests {
 
     #[test]
     fn a_case_differing_runtime_root_binds_rather_than_refusing() {
-        // The other half of the same law. `hud_role_index` keys authored roots
-        // by `to_ascii_lowercase`, so a carrier naming `MINIMAP_WINDOW` in a
-        // different case resolves to the same authored root. Refusing it would
-        // be a refusal on VALID data, which is the mirror-image failure of
-        // admitting invalid data and just as wrong.
         let mut roots = four_core_roots();
         let minimap = roots
             .iter_mut()
@@ -8393,9 +7724,6 @@ mod tests {
 
     #[test]
     fn a_renamed_runtime_root_refuses_instead_of_drawing_the_vanilla_one() {
-        // The modded-profile case. Without this check the compositor would
-        // resolve MINIMAP_WINDOW_NAME out of the authored file and draw it,
-        // while the recording says the engine had a differently named root up.
         let mut roots = four_core_roots();
         let minimap = roots
             .iter_mut()
@@ -8410,10 +7738,6 @@ mod tests {
 
     #[test]
     fn a_drawn_surface_the_carrier_omits_refuses() {
-        // replay_core's builder already requires the four core surfaces before
-        // the view reaches Present. This re-checks it at the route boundary
-        // anyway: the two validations drifting apart is the exact failure this
-        // project has been burned by, and a distant invariant is not evidence.
         let roots = four_core_roots()
             .into_iter()
             .filter(|root| root.surface != replay_core::HudSurfaceActivationKind::Mapmodes)
@@ -8424,9 +7748,6 @@ mod tests {
 
     #[test]
     fn retired_carrier_unrouted_row_is_reported_by_legacy_admission() {
-        // This pins only the retained legacy d79 admission behaviour. Designer
-        // panel-open state is now viewer state and this row is neither required
-        // nor accepted as product activation authority.
         let mut roots = four_core_roots();
         roots.push(activation_root(
             replay_core::HudSurfaceActivationKind::DesignerTank,
@@ -8438,7 +7759,6 @@ mod tests {
             .expect("a Present carrier binds");
         assert_eq!(admitted.routed_surfaces().len(), 4);
         assert_eq!(admitted.unrouted_active_surfaces(), ["designer/tank"]);
-        // And it is genuinely unrouted: no table row claims it.
         assert!(!PRODUCT_HUD_SURFACES
             .iter()
             .any(|surface| surface.activation_kind
@@ -8470,20 +7790,12 @@ mod tests {
             .into_iter()
             .map(hud_activation_kind_token)
             .collect::<BTreeSet<_>>();
-        // Seven kinds, seven distinct tokens. The producer's `HudSurface` has
-        // exactly these seven; extending it requires a matching producer-owned
-        // carrier identity and the generic routability contract.
         assert_eq!(tokens.len(), 7);
         assert!(tokens.contains("designer/country_equipment"));
     }
 
     #[test]
     fn legacy_tooltip_oracle_adapter_remains_reviewable_without_the_hud_renderer() {
-        // The historical adapter remains a free function so old evidence can
-        // be reviewed without constructing the four-root HUD renderer. It has
-        // no active replay_app caller and is not product hover authority.
-        // Checked-out line endings are CRLF here, so every multi-line needle is
-        // matched against a LF-normalised copy rather than the raw file.
         let source = include_str!("production_renderer.rs").replace("\r\n", "\n");
         let free_fn = source
             .find("pub fn admit_xui05_tooltip_route(\n    content_admission: &ValidatedContentAdmission,")
@@ -8492,11 +7804,6 @@ mod tests {
             .find("    pub fn admit_xui05_tooltip_route(\n        &self,")
             .expect("the renderer method still exists");
         assert!(free_fn < method);
-        // The method must DELEGATE, not carry a second copy of the law. Slice
-        // strictly AFTER the signature's opening brace: a body-start at the
-        // signature would let `contains("admit_xui05_tooltip_route(")` be
-        // satisfied by the method's own name, so a stubbed-out `Ok(None)` body
-        // would pass. The needle then genuinely means "the body calls it".
         let after_signature = method
             + source[method..]
                 .find("> {\n")
@@ -8635,32 +7942,7 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // Lane KH — coverage ported from the tests lane JL deleted with the
-    // legacy selected-Present renderer (owner ruling 2026-08-15).
-    //
-    // The originals lived in `game_ui/tests/production_renderer.rs` and drove
-    // `compose_legacy_reconstruction_hud_frame(_for_input)`, which no longer
-    // exists. They are re-aimed here at the shipping entry point that
-    // inherited their properties,
-    // `prepare_observer_semantic_frame_with_xui12_and_xui22_producers`, and
-    // they are in-crate rather than `gate_hoi4_install`-gated so the ported
-    // coverage RUNS in the central battery instead of being skipped: the
-    // guards under test all precede the first authored-asset read, so an
-    // installed corpus would add nothing to them.
-    // ------------------------------------------------------------------
 
-    /// This file with its own test module cut off.
-    ///
-    /// Two traps this closes, both of which lane JL found live in this tree:
-    /// a `!contains` assertion over the WHOLE file matches the needle written in
-    /// the test body itself and passes forever; and the checkout is CRLF, so a
-    /// needle written with `\n` silently matches nothing.
-    ///
-    /// A third: the module-attribute marker is assembled from two fragments and
-    /// is never spelled whole anywhere in this module, comments included —
-    /// `rfind` would otherwise cut at that occurrence and return most of the
-    /// test module as "production".
     fn production_source() -> String {
         let source = include_str!("production_renderer.rs").replace("\r\n", "\n");
         let marker = ["#[cfg(", "test)]"].concat();
@@ -8670,11 +7952,6 @@ mod tests {
         source[..cut].to_string()
     }
 
-    /// kills: any change that makes `production_source` return the whole file,
-    /// an empty slice, or a slice cut at a later occurrence of the marker, which
-    /// would leave the test module inside the "production" half and silently
-    /// disarm every `!contains` assertion built on it. The module-opening canary
-    /// is what catches the last one.
     #[test]
     fn the_production_renderer_source_slice_actually_excludes_the_tests() {
         let production = production_source();
@@ -8693,32 +7970,11 @@ mod tests {
         assert!(production.contains("pub fn prepare_observer_semantic_frame("));
     }
 
-    /// Ported from the half of the deleted
-    /// `authenticated_product_hud_reads_only_the_four_controller_bound_roots`
-    /// that still has a live subject.
-    ///
-    /// That test asserted the renderer used `compose_authenticated_hud` and NOT
-    /// `compose_hud`. The first function was deleted with the legacy whole-HUD
-    /// path, so the positive half is retired. The negative half is not:
-    /// `hud::compose_hud` survives as the PROBE compositor and is still called
-    /// from `hud.rs` and `probe.rs`. It draws controller-unbound authored
-    /// fragments and a sample binding, so a production route reaching for it
-    /// would put pixels on screen the recording never proved.
-    ///
-    /// kills: routing any production composition through the probe HUD
-    /// compositor or through any of the probe-only panel helpers it assembles.
-    ///
-    /// The needles are bare identifiers rather than call syntax, so an aliasing
-    /// `use crate::hud::compose_hud as ...;` is caught as well as a direct call.
     #[test]
     fn the_production_renderer_never_reaches_for_the_probe_hud_compositor() {
         let production = production_source();
         let hud = include_str!("hud.rs").replace("\r\n", "\n");
         let topbar = include_str!("topbar.rs").replace("\r\n", "\n");
-        // Each row is the forbidden needle plus the DECLARATION that needle is
-        // supposed to name. Checking the declaration rather than the bare name
-        // is what stops the second assertion from being satisfied by a comment
-        // that merely mentions the item after the item itself was renamed away.
         for (probe_only, declaration, haystack) in [
             ("compose_hud", "pub fn compose_hud(", &hud),
             (
@@ -8755,23 +8011,6 @@ mod tests {
         }
     }
 
-    /// The behavioural companion test below builds its renderer with a struct
-    /// literal, so it can prove what the OBSERVER ENTRY POINT does with an
-    /// absent key but not what the CONSTRUCTORS put there. This closes exactly
-    /// that gap over the production slice.
-    ///
-    /// kills, one assertion at a time:
-    ///
-    /// * Giving `ProductionUiRenderer::new` a playback profile of its own —
-    ///   the first slice requires it to forward `None` verbatim.
-    /// * Making `new_for_playback` drop the profile it was handed — the second
-    ///   slice requires it to forward `Some(profile)` verbatim. Without this,
-    ///   the test would say nothing about the constructor its own name names.
-    /// * Making `new_with_playback_profile` synthesise a key when it was handed
-    ///   `None`. The third assertion pins the WHOLE initialiser expression, not
-    ///   a substring of it, so an added `.or_else(|| Some(production_ui_variant_key()))`
-    ///   — which keeps every substring a `contains` check would look for —
-    ///   fails.
     #[test]
     fn only_the_playback_constructor_supplies_a_variant_key() {
         let production = production_source();
@@ -8797,30 +8036,11 @@ mod tests {
             "the playback constructor must forward the profile it was handed verbatim"
         );
 
-        // The field is written EXACTLY once, in that struct literal. A
-        // re-assignment after construction — `renderer.playback_variant_key =
-        // Some(production_ui_variant_key());` — would leave the initialiser line
-        // untouched and is invisible to the line collector below, so it is
-        // forbidden by shape instead.
-        //
-        // The needle carries the leading dot deliberately, so that it names a
-        // FIELD assignment through a receiver and nothing else. It is a
-        // prohibition on re-assignment, not on the word.
         assert!(
             !production.contains(".playback_variant_key ="),
             "the stored key must never be re-assigned after construction"
         );
 
-        // The whole initialiser, not a prefix of it: a fallback appended to the
-        // end of this expression would leave every substring intact.
-        //
-        // This is deliberately EXACT, and the cost is stated rather than hidden:
-        // a refactor that moves the expression off this line — hoisting it to a
-        // local and using field shorthand, say — has to update this assertion
-        // even though it changes no behaviour. That is the price of pinning the
-        // expression whole, and pinning it whole is the only form that survives
-        // an appended `.or_else(...)`. The reviewer that sees this fail should
-        // re-state the expression here, not loosen the assertion.
         let initialiser = production
             .lines()
             .map(str::trim)
@@ -8829,10 +8049,7 @@ mod tests {
         assert_eq!(
             initialiser,
             [
-                // The field declaration, pinned so the key cannot quietly stop
-                // being optional and start defaulting.
                 "playback_variant_key: Option<DisplayVariantKey>,",
-                // ...and its ONE assignment, whole.
                 "playback_variant_key: profile.map(|profile| profile.key().clone()),",
             ],
             "the stored key must be exactly the supplied profile's key, with no \
@@ -8840,12 +8057,6 @@ mod tests {
         );
     }
 
-    /// The shipping observer renderer with no authored corpus behind it at all.
-    ///
-    /// Every catalog is deliberately unavailable and the resolver has no roots,
-    /// so this renderer cannot resolve, decode or draw anything. That is the
-    /// point: a rejection returned by this renderer can only have come from a
-    /// guard that runs before the first asset is touched.
     fn observer_only_renderer(
         playback_variant_key: Option<DisplayVariantKey>,
     ) -> ProductionUiRenderer {
@@ -8868,10 +8079,6 @@ mod tests {
         }
     }
 
-    /// Decode one in-memory recording into a `WorldFrame`.
-    ///
-    /// Each call builds its own timeline, so two calls with the same `rest`
-    /// produce two independently decoded frames rather than two handles on one.
     fn observer_test_frame(
         rest: serde_json::Map<String, serde_json::Value>,
     ) -> std::sync::Arc<WorldFrame> {
@@ -8929,7 +8136,6 @@ mod tests {
         observer_test_frame(rest)
     }
 
-    /// Prepare one observer semantic frame through the shipping entry point.
     fn prepare_observer(
         renderer: &ProductionUiRenderer,
         frame: &WorldFrame,
@@ -8955,35 +8161,6 @@ mod tests {
         )
     }
 
-    /// Ported from the deleted
-    /// `unsupported_physical_viewport_rejects_before_any_pixel_resampling`.
-    ///
-    /// kills, one assertion at a time:
-    ///
-    /// * DELETING the guard, or widening it to accept a viewport the playback
-    ///   profile did not admit. With the guard gone this call runs to
-    ///   completion — the third assertion below shows the same renderer, same
-    ///   frame and same viewer preparing successfully at the admitted viewport —
-    ///   so `assert_eq!` would compare `Ok(..)` against the rejection and fail.
-    /// * MOVING the guard below the playback-carrier check. The second
-    ///   assertion drives a renderer that has no stored key AND a wrong
-    ///   viewport: whichever guard runs first names itself in the error, so the
-    ///   two orderings are distinguishable and only the shipping one passes.
-    /// * RE-POINTING the guard at the frozen `PRODUCTION_UI_WIDTH/HEIGHT`
-    ///   constants. The guard is an argument-versus-profile agreement check; the
-    ///   frozen 1920x1080 law is enforced one step later by
-    ///   `ExactKeyVariantContract`. The fourth assertion drives an internally
-    ///   consistent 1280x720 profile, which must be refused by the CONTRACT with
-    ///   the key in hand, not silently by the arithmetic above it.
-    ///
-    /// This is the behavioural coverage `only_the_frozen_xui25_viewport_is_admitted`
-    /// never had: that test builds a rejection value and matches it against its
-    /// own pattern, so no change to this renderer can make it fail.
-    ///
-    /// NOT claimed: that the guard precedes every authored-asset read. This
-    /// renderer resolves nothing, so no rejection it returns can have come from
-    /// asset work — but that is a property of the fixture, not a proof about
-    /// where the guard sits relative to the asset routes further down.
     #[test]
     fn an_unsupported_physical_viewport_is_refused_before_the_playback_carrier_is_consulted() {
         let frozen = production_ui_variant_key();
@@ -9012,9 +8189,6 @@ mod tests {
             "a viewport the playback profile did not admit must be refused"
         );
 
-        // Both guards would fire on this call. The viewport guard runs first, so
-        // it is the one that names itself; if the two were swapped this would be
-        // `MissingDisplayVariantCarrier` instead.
         assert_eq!(
             prepare_observer(
                 &observer_only_renderer(None),
@@ -9032,9 +8206,6 @@ mod tests {
             "the viewport must be settled before the playback carrier is consulted"
         );
 
-        // The control: everything above differs from this call only in the
-        // viewport, and this one succeeds. That is what makes the rejections
-        // above attributable to the guard rather than to the fixture.
         assert!(prepare_observer(
             &renderer,
             frame.as_ref(),
@@ -9074,37 +8245,6 @@ mod tests {
         );
     }
 
-    /// Ported from the deleted
-    /// `installed_a729_ui_rejects_without_the_portable_xui25_carrier`.
-    ///
-    /// The original passed `frame: None` and expected
-    /// `MissingDisplayVariantCarrier("WorldFrame")`. The shipping entry point
-    /// takes `frame: &WorldFrame`, so that absence is now impossible to
-    /// construct and the literal assertion has no analogue — writing one would
-    /// mean re-introducing an `Option` the product does not have. What DID
-    /// survive on the same entry point is the other carrier the composition
-    /// cannot proceed without: the playback-owned variant key.
-    ///
-    /// kills, one assertion at a time:
-    ///
-    /// * Replacing the `ok_or` on `self.playback_variant_key` with a fallback,
-    ///   so an absent key stops being a refusal. The first assertion drives a
-    ///   renderer with no stored key at the admitted viewport, where every other
-    ///   guard would pass — the previous test shows the identical call succeeds
-    ///   once the key is present.
-    /// * Dropping the expected-versus-supplied equality, so a caller could hand
-    ///   in any profile it liked. The second assertion is arranged so the
-    ///   downstream frozen contract CANNOT stand in for that guard: the profile
-    ///   it supplies is the frozen key, which the contract admits. Only the
-    ///   equality against the renderer's own (different) stored key refuses it,
-    ///   so deleting that guard turns this rejection into a successful
-    ///   preparation.
-    ///
-    /// It deliberately does NOT claim anything about which constructor leaves
-    /// the key absent: this renderer is built from a struct literal, so it
-    /// would still pass if `ProductionUiRenderer::new` later began supplying a
-    /// key of its own. That half is a separate property and is asserted over
-    /// the production source by `only_the_playback_constructor_supplies_a_variant_key`.
     #[test]
     fn observer_preparation_requires_the_playback_owned_variant_key_and_will_not_infer_one() {
         let frozen = production_ui_variant_key();
@@ -9115,9 +8255,6 @@ mod tests {
             variant_key: frozen.clone(),
         };
 
-        // A renderer built the `ProductionUiRenderer::new` way carries no
-        // playback profile at all. It must refuse, not fall back to the frozen
-        // key that happens to be correct for shipping playback.
         assert_eq!(
             prepare_observer(
                 &observer_only_renderer(None),
@@ -9133,11 +8270,6 @@ mod tests {
             )),
         );
 
-        // The renderer stores a FOREIGN key and is handed the frozen profile.
-        // That direction matters: the frozen profile is exactly what
-        // `ExactKeyVariantContract` admits, so the contract one line below
-        // cannot be what refuses this call. Only the playback-owned equality
-        // can, which is what makes deleting it observable here.
         let foreign = DisplayVariantKey {
             localisation_language: "l_french".to_string(),
             ..frozen.clone()
@@ -9158,36 +8290,6 @@ mod tests {
         );
     }
 
-    /// Ported from the deleted
-    /// `recorded_topbar_frame_reaches_the_production_compositor_without_raw_snapshot_access`,
-    /// which composed one frame twice and required identical image and report,
-    /// and required the report to carry the POV it was asked for.
-    ///
-    /// It also absorbs the still-testable residue of the deleted
-    /// `relocated_portable_replay_file_still_drives_the_same_production_pixels`.
-    /// That test moved the `.battleplan` file and required identical pixels; the
-    /// shipping entry point takes no path of any kind, so the file's location
-    /// cannot reach it and the relocation assertion has no analogue here. The
-    /// part of it that CAN still break is decode identity: two frames decoded
-    /// independently from the same recorded frame content must prepare to the same
-    /// semantic frame, so the two preparations below use two separate decodes
-    /// rather than one shared frame.
-    ///
-    /// kills, one assertion at a time:
-    ///
-    /// * Any nondeterminism entering the prepared frame — an unordered map
-    ///   reaching `gaps` or a surface list, a decode-instance identity or
-    ///   allocation address formatted into a gap reason, or the renderer's
-    ///   interior-mutable `asset_cache` letting the second preparation differ
-    ///   from the first. Two independently decoded frames are used rather than
-    ///   one shared handle so a per-decode identity would show up.
-    /// * Gating the country scope on the viewer but taking the TAG from the
-    ///   recording. The recording here names exactly one country, `GER`; the
-    ///   third preparation selects `FRA`, which the recording does not contain.
-    ///   A route that read the tag from the frame would produce the same
-    ///   `GER`-shaped result for both selections, and the inequality assertion
-    ///   fails.
-    /// * Running the country-scoped admission with no country selected at all.
     #[test]
     fn observer_preparation_is_decode_stable_and_country_scope_is_viewer_owned() {
         let frozen = production_ui_variant_key();
@@ -9220,14 +8322,6 @@ mod tests {
              to the same semantic frame"
         );
 
-        // `FRA` is NOT in the recording; `GER` is the only country it names. A
-        // route that took the tag from the frame rather than from the viewer
-        // would prepare the same thing for both.
-        //
-        // This is asserted on the topbar binding SPECIFICALLY, not on the whole
-        // semantic frame: several independent surfaces copy the viewer's tag
-        // straight through, so a whole-frame inequality would still hold if only
-        // the topbar/theatre branch regressed to reading the recording.
         let mut other_country = ObserverViewerUiState::default();
         other_country.selected_country = Some("FRA".into());
         let elsewhere = prepare(observer_country_frame().as_ref(), &other_country);

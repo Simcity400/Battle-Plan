@@ -1,8 +1,3 @@
-//! App-device handoff for XMAP07 water/ice resources.
-//!
-//! Every exposed SRV is a real resource on the caller's D3D11 device. DDS
-//! payloads retain their shipped DXGI format, mip chain, array/cube shape, and
-//! byte layout; no neutral texture or RGBA conversion is accepted.
 
 use crate::{
     GameFileResolver, PreparedWaterFrame, PreparedWaterSampler, ReadyWaterDrawContract, Result,
@@ -15,8 +10,6 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeXmap07ShaderResourceBinding {
     pub symbol: String,
-    /// XMAP07 surface register when the symbol is consumed by pdxwater.
-    /// `WaterColor` is XMAP08-only and therefore carries its river slot 0.
     pub shader_register: u32,
     pub resource_type: String,
     pub owner_packet: String,
@@ -29,8 +22,6 @@ pub struct NativeXmap07ShaderResourceBinding {
 pub struct NativeXmap07ResourceView<'a> {
     pub binding: NativeXmap07ShaderResourceBinding,
     pub replay_frame_identity_sha256: String,
-    /// Process-local identity of the live D3D11 device that owns this SRV.
-    /// This is a runtime compatibility guard, not a durable replay digest.
     pub device_identity: usize,
     raw_srv: *mut winapi::um::d3d11::ID3D11ShaderResourceView,
     _owner: std::marker::PhantomData<&'a NativeXmap07WaterHandoff>,
@@ -38,14 +29,10 @@ pub struct NativeXmap07ResourceView<'a> {
 
 #[cfg(windows)]
 impl NativeXmap07ResourceView<'_> {
-    /// The returned view remains owned by `NativeXmap07WaterHandoff`.
     pub fn as_raw(&self) -> *mut winapi::um::d3d11::ID3D11ShaderResourceView {
         self.raw_srv
     }
 
-    /// Borrow the same authenticated resource at a downstream program's
-    /// reflected register. This changes only the logical consuming slot; the
-    /// owner, resource/descriptor identities, replay frame, device, raw SRV,
     /// and handoff lifetime remain unchanged.
     pub fn at_shader_register(&self, shader_register: u32) -> Self {
         let mut view = self.clone();
@@ -54,8 +41,6 @@ impl NativeXmap07ResourceView<'_> {
     }
 }
 
-/// Borrowed, owner-authenticated dependency consumed by the XMAP07 surface
-/// draw. The owning packet retains the underlying SRV.
 #[cfg(windows)]
 #[derive(Clone, Debug)]
 pub struct NativeXmap07DependentResourceView<'a> {
@@ -94,9 +79,6 @@ impl<'a> NativeXmap07DependentResourceView<'a> {
         })
     }
 
-    /// Adapt an authenticated XMAP09/XMAP10 camera-owned resource. The unsafe
-    /// owner trait is the provenance seam; callers cannot submit free-form
-    /// metadata or a naked SRV.
     pub fn from_camera_owner<T>(owner: &'a T) -> Result<Self>
     where
         T: crate::NativeXmap04UnderwaterShaderResource + ?Sized,
@@ -114,7 +96,6 @@ impl<'a> NativeXmap07DependentResourceView<'a> {
         )
     }
 
-    /// Adapt an authenticated replay-epoch XMAP05 resource.
     pub fn from_xmap05(
         owner: crate::NativeXmap05ShaderResource<'a>,
         replay_frame_identity_sha256: impl Into<String>,
@@ -137,13 +118,6 @@ impl<'a> NativeXmap07DependentResourceView<'a> {
     }
 }
 
-/// Aggregate scene-CB0 view implemented by the owning compositor. XMAP07 owns
-/// this abstract consumer contract but never manufactures or patches CB0.
-///
-/// # Safety
-/// Implementors must retain `raw_buffer()` on the same D3D11 device for the
-/// complete draw and must make every returned identity describe those exact
-/// retained bytes.
 #[cfg(windows)]
 pub unsafe trait NativeXmap07SceneConstantBufferView {
     fn symbol(&self) -> &str;
@@ -167,8 +141,6 @@ pub unsafe trait NativeXmap07SceneConstantBufferView {
     fn raw_buffer(&self) -> *mut winapi::um::d3d11::ID3D11Buffer;
 }
 
-/// Borrowed XMAP09-owned point-light constant buffer. Scene CB0 deliberately
-/// uses the aggregate trait above.
 #[cfg(windows)]
 #[derive(Clone, Debug)]
 pub struct NativeXmap07PointLightsConstantBufferView<'a> {
@@ -219,8 +191,6 @@ impl<'a> NativeXmap07PointLightsConstantBufferView<'a> {
         Ok(result)
     }
 
-    /// Adapt the authenticated XMAP09 owner view. The returned borrow cannot
-    /// outlive the handoff that owns the actual buffer.
     pub fn from_xmap09(owner: &'a crate::NativeXmap09ConstantBufferView<'a>) -> Result<Self> {
         let binding = &owner.binding;
         if binding.owner_packet != "XMAP09"
@@ -248,29 +218,17 @@ impl<'a> NativeXmap07PointLightsConstantBufferView<'a> {
 pub struct NativeXmap07SurfaceDrawInputs<'a> {
     pub target: &'a crate::NativeProductionMainSceneTarget,
     pub foundation: &'a portable_render_stream::FoundationRenderEnvelope,
-    /// Exact XMAP04 terrain payload that produced the underwater pass. This
-    /// typed frame is mandatory for high-GFX water and forbidden for low-GFX
-    /// water; the completion receipt is checked against its frame, program,
-    /// camera, replay, and draw-count identities.
     pub underwater_terrain_frame: Option<&'a crate::PreparedTerrainFrame>,
     pub viewer: &'a crate::ViewerOwnedMapState,
     pub scene_cb0: &'a dyn NativeXmap07SceneConstantBufferView,
     pub point_lights_cb2: Option<&'a NativeXmap07PointLightsConstantBufferView<'a>>,
     pub dependent_resources: &'a [NativeXmap07DependentResourceView<'a>],
-    /// Typed upstream, engine-ordered XMAP04 map-copy receipt rows.
     pub map_copy_receipts: &'a [crate::Xmap04MapCopyReceiptRow],
-    /// Completion receipt from the current XMAP04 underwater pass. Mandatory
-    /// for high-GFX water and forbidden for low-GFX water.
     pub underwater_draw_receipt: Option<&'a crate::Xmap04UnderwaterDrawReceipt>,
-    /// Position of this actual draw in the water operation's map-copy set.
     pub draw_ordinal: u32,
-    /// Exact world-X offset of this center/west/east map copy.
     pub map_copy_offset_f32_bits: u32,
 }
 
-/// XMAP07-owned offscreen target handed to XMAP04's exact underwater-terrain
-/// producer. XMAP04 owns the terrain program/geometry and a matching depth
-/// target; XMAP07 owns this color target and its sampled SRV.
 #[cfg(windows)]
 #[derive(Clone, Debug)]
 pub struct NativeXmap07RefractionTargetView<'a> {
@@ -566,11 +524,6 @@ pub struct NativeXmap07WaterHandoff {
 
 #[cfg(windows)]
 impl NativeXmap07WaterHandoff {
-    /// Upload the complete XMAP07-owned resource set to the app's live device.
-    ///
-    /// # Safety
-    /// `device` must be a live D3D11 device for this call and every returned
-    /// resource must be consumed only through contexts from that same device.
     pub unsafe fn create_on_device(
         device: *mut winapi::um::d3d11::ID3D11Device,
         resolver: &GameFileResolver,
@@ -662,7 +615,6 @@ impl NativeXmap07WaterHandoff {
             .filter(|sampler| requires_static_upload(sampler))
             .map(|sampler| sampler.symbol.as_str())
             .collect::<Vec<_>>();
-        // XMAP08 consumes WaterColor although pdxwater itself does not.
         static_symbols.push("WaterColor");
         static_symbols.sort_unstable();
         static_symbols.dedup();
@@ -730,11 +682,6 @@ impl NativeXmap07WaterHandoff {
         })
     }
 
-    /// Refresh viewer-time CB3 and recording-fed SnowMud state while retaining
-    /// the admitted program, static DDS resources, quad, and refraction target.
-    ///
-    /// # Safety
-    /// `device` must be the same live device used by `create_on_device`.
     pub unsafe fn update_frame(
         &mut self,
         device: *mut winapi::um::d3d11::ID3D11Device,
@@ -811,7 +758,6 @@ impl NativeXmap07WaterHandoff {
     }
 
     /// Terrain calls this alias because pdxmap names the same generated
-    /// resource `SnowMudData`; water/river call it `SnowMudTexture`.
     pub fn terrain_snow_mud_view(&self) -> Result<NativeXmap07ResourceView<'_>> {
         let mut view = self.resource_view("SnowMudTexture")?;
         view.binding.symbol = "SnowMudData".into();
@@ -819,13 +765,6 @@ impl NativeXmap07WaterHandoff {
         Ok(view)
     }
 
-    /// Execute the exact four-vertex surface-water draw into the viewer-owned
-    /// MainScene target. Every cross-packet input is mandatory, typed, and
-    /// receipt-bound before any D3D state is changed.
-    ///
-    /// # Safety
-    /// The context, target, buffers, SRVs, and this handoff must all belong to
-    /// the same live D3D11 device.
     pub unsafe fn draw_surface(
         &self,
         context: *mut winapi::um::d3d11::ID3D11DeviceContext,
@@ -1166,7 +1105,6 @@ impl NativeXmap07WaterHandoff {
         .seal()
     }
 
-    /// RTV used by the XMAP04 underwater producer before the surface draw.
     /// The handoff retains ownership.
     pub fn refraction_render_target(
         &self,
@@ -1336,8 +1274,6 @@ unsafe fn create_sampler(
         ComparisonFunc: D3D11_COMPARISON_NEVER,
         BorderColor: [0.0, 0.0, 0.0, 0.0],
         MinLOD: parse_f32(&sampler.mip_map_min_lod, 0.0, "MinLOD")?,
-        // Captured exact-a729 sampler state uses 1024.0, including samplers
-        // whose effect block does not spell out MaxLOD.
         MaxLOD: parse_f32(&sampler.mip_map_max_lod, 1024.0, "MaxLOD")?,
     };
     let mut state = ptr::null_mut::<ID3D11SamplerState>();
@@ -1546,7 +1482,7 @@ unsafe fn create_height_texture(
         Height: height,
         MipLevels: 1,
         ArraySize: 1,
-        Format: 61, // DXGI_FORMAT_R8_UNORM
+        Format: 61,
         SampleDesc: winapi::shared::dxgitype::DXGI_SAMPLE_DESC {
             Count: 1,
             Quality: 0,
@@ -1611,8 +1547,8 @@ fn expected_refraction_texture_descriptor_sha256_for(
         0,
         1,
         1,
-        0,    // D3D11_USAGE_DEFAULT
-        0x28, // D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE
+        0,
+        0x28,
         0,
         0,
     )
@@ -1738,9 +1674,6 @@ unsafe fn create_dds_texture(
         ID3D11ShaderResourceView, ID3D11Texture2D, D3D11_SUBRESOURCE_DATA, D3D11_TEXTURE2D_DESC,
     };
     let mut parsed = parse_dds_upload(bytes)?;
-    // Legacy DDS headers cannot encode sRGB. The engine's typed texture
-    // registrations select these two sRGB views; live_PAN2 captured 78 for
-    // WaterColor and 91 for ReflectionCubeMap. The payload bytes are unchanged.
     parsed.dxgi_format = engine_registered_format(symbol, parsed.dxgi_format)?;
     if resource_type == "TextureCube" && !parsed.is_cube {
         return Err(format!("XMAP07 {symbol} requires a DDS cubemap").into());
@@ -1927,9 +1860,9 @@ fn legacy_dds_format(bytes: &[u8], fourcc: u32) -> Result<u32> {
         return Ok(*format);
     }
     match fourcc {
-        111 => return Ok(54), // D3DFMT_R16F
-        112 => return Ok(34), // D3DFMT_G16R16F
-        113 => return Ok(10), // D3DFMT_A16B16G16R16F
+        111 => return Ok(54),
+        112 => return Ok(34),
+        113 => return Ok(10),
         _ if fourcc != 0 => {
             return Err(format!("XMAP07 unsupported legacy DDS fourcc {fourcc:#010x}").into())
         }
@@ -1997,13 +1930,13 @@ fn engine_registered_format(symbol: &str, file_format: u32) -> Result<u32> {
         return Ok(file_format);
     }
     let srgb = match file_format {
-        27..=29 => 29,      // R8G8B8A8 typeless/UNORM/sRGB
-        70..=72 => 72,      // BC1 typeless/UNORM/sRGB
-        73..=75 => 75,      // BC2 typeless/UNORM/sRGB
-        76..=78 => 78,      // BC3 typeless/UNORM/sRGB
-        87 | 90 | 91 => 91, // B8G8R8A8 typeless/UNORM/sRGB
-        88 | 92 | 93 => 93, // B8G8R8X8 UNORM/typeless/sRGB
-        97..=99 => 99,      // BC7 typeless/UNORM/sRGB
+        27..=29 => 29,
+        70..=72 => 72,
+        73..=75 => 75,
+        76..=78 => 78,
+        87 | 90 | 91 => 91,
+        88 | 92 | 93 => 93,
+        97..=99 => 99,
         _ => {
             return Err(format!(
                 "XMAP07 {symbol} DDS format {file_format} has no compatible typed sRGB view"

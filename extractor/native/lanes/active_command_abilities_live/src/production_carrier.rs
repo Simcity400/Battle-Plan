@@ -1,12 +1,3 @@
-//! Receipt-bound production envelope for A36 compact domain 88.
-//!
-//! `ABL1` remains the pointer-free selected-context row codec. `ABA2` binds an
-//! admitted `ABL1` frame to the exact-a729 executable and exact20 evidence
-//! receipt, and gives the compact fold an explicit unavailable representation.
-//! Core rows are admitted from the exact refresh/state observer. Portable
-//! final text remains optional and is absent when no exact text transaction
-//! was observed.
-
 use crate::{
     decode_payload as decode_abl1, encode_payload as encode_abl1, validate_frame as validate_abl1,
     AbilityError, AbilityFrame, ExactA729AbilityControllerSource, COMPACT_DOMAIN_SCHEDULED,
@@ -88,8 +79,7 @@ fn valid_portable_identity(value: &str) -> bool {
     !value.is_empty()
         && !contains_pointer_literal(value)
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric()
-                || matches!(byte, b'_' | b'.' | b'-' | b':' | b'/' | b'@')
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-' | b':' | b'/' | b'@')
         })
 }
 
@@ -112,9 +102,7 @@ pub fn validate_frame(frame: &ProductionAbilityFrame) -> Result<(), CarrierError
         {
             Ok(())
         }
-        AuthorityState::Exact20Receipt
-            if frame.status_flags == 0 && frame.snapshot.is_some() =>
-        {
+        AuthorityState::Exact20Receipt if frame.status_flags == 0 && frame.snapshot.is_some() => {
             let snapshot = frame.snapshot.as_ref().expect("checked snapshot");
             if snapshot.elapsed_wall_ms != frame.elapsed_wall_ms
                 || snapshot.frame_hour != frame.frame_hour
@@ -165,11 +153,6 @@ pub fn validate_frame(frame: &ProductionAbilityFrame) -> Result<(), CarrierError
                 {
                     return invalid("ABA2 production row contains a nonportable identity");
                 }
-                // The authenticated refresh resolves CAbility+0x2A8 for an
-                // active row. 0x140FF44E0 and 0x140FF5B20 construct that key as
-                // the final ordinary icon plus `_animated`; admitting an
-                // ordinary icon here would contradict the exact UI law before
-                // the replay definition join can reject it.
                 if row.active && !row.icon.ends_with("_animated") {
                     return invalid("ABA2 active row lacks the exact animated icon key");
                 }
@@ -185,9 +168,7 @@ pub fn collect_and_encode<S: ExactA729AbilityControllerSource>(
     frame_hour: u64,
     elapsed_wall_ms: u64,
 ) -> Result<Vec<u8>, CarrierError> {
-    if !EXACT_A729_AUTHORITY_BOUND
-        || !LIVE_TRANSITION_PROMOTION_BOUND
-        || !COMPACT_DOMAIN_SCHEDULED
+    if !EXACT_A729_AUTHORITY_BOUND || !LIVE_TRANSITION_PROMOTION_BOUND || !COMPACT_DOMAIN_SCHEDULED
     {
         return Err(CarrierError::ActivationDisabled);
     }
@@ -322,7 +303,10 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8], CarrierError> {
-        let end = self.offset.checked_add(len).ok_or(CarrierError::Truncated)?;
+        let end = self
+            .offset
+            .checked_add(len)
+            .ok_or(CarrierError::Truncated)?;
         let bytes = self
             .payload
             .get(self.offset..end)
@@ -332,11 +316,15 @@ impl<'a> Reader<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, CarrierError> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("fixed width")))
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("fixed width"),
+        ))
     }
 
     fn u64(&mut self) -> Result<u64, CarrierError> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("fixed width")))
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("fixed width"),
+        ))
     }
 
     fn done(&self) -> bool {
@@ -410,12 +398,7 @@ mod tests {
     #[test]
     fn unavailable_rejects_unknown_or_informational_only_status() {
         assert!(encode_unavailable(901, 8, 1 << 31).is_err());
-        assert!(encode_unavailable(
-            901,
-            8,
-            compact_contract::COMPACT_STATUS_DELTA_DATA,
-        )
-        .is_err());
+        assert!(encode_unavailable(901, 8, compact_contract::COMPACT_STATUS_DELTA_DATA,).is_err());
     }
 
     #[test]
@@ -432,46 +415,34 @@ mod tests {
     #[test]
     fn runtime_pointer_shaped_identity_or_forged_record_id_rejects() {
         let mut pointer = frame();
-        pointer
-            .snapshot
-            .as_mut()
-            .expect("snapshot")
-            .rows[0]
-            .target_id = Some("leader:0x141D072F0".into());
+        pointer.snapshot.as_mut().expect("snapshot").rows[0].target_id =
+            Some("leader:0x141D072F0".into());
         assert!(encode_payload(&pointer).is_err());
 
         let mut forged = frame();
-        forged
-            .snapshot
-            .as_mut()
-            .expect("snapshot")
-            .source_record_id = "a729:a36:900:GER:1:leader:99".into();
+        forged.snapshot.as_mut().expect("snapshot").source_record_id =
+            "a729:a36:900:GER:1:leader:99".into();
         assert!(encode_payload(&forged).is_err());
     }
 
     #[test]
     fn active_row_with_ordinary_definition_icon_rejects() {
         let mut ordinary_icon = frame();
-        ordinary_icon
-            .snapshot
-            .as_mut()
-            .expect("snapshot")
-            .rows[0]
-            .icon = "GFX_ability_force_attack".into();
+        ordinary_icon.snapshot.as_mut().expect("snapshot").rows[0].icon =
+            "GFX_ability_force_attack".into();
         assert!(encode_payload(&ordinary_icon).is_err());
     }
 
     #[test]
     fn signed_effective_cost_round_trips_without_clamping() {
         let mut signed = frame();
-        signed
-            .snapshot
-            .as_mut()
-            .expect("snapshot")
-            .rows[0]
-            .cost_command_power_fixed = Some(-2_200_000);
+        signed.snapshot.as_mut().expect("snapshot").rows[0].cost_command_power_fixed =
+            Some(-2_200_000);
         let encoded = encode_payload(&signed).expect("encode signed effective cost");
-        assert_eq!(decode_payload(&encoded).expect("decode signed effective cost"), signed);
+        assert_eq!(
+            decode_payload(&encoded).expect("decode signed effective cost"),
+            signed
+        );
     }
 
     struct Fake;
@@ -488,8 +459,8 @@ mod tests {
 
     #[test]
     fn production_collection_encodes_authenticated_promoted_source() {
-        let encoded = collect_and_encode(&Fake, 900, 7)
-            .expect("encode authenticated promoted A36 source");
+        let encoded =
+            collect_and_encode(&Fake, 900, 7).expect("encode authenticated promoted A36 source");
         let decoded = decode_payload(&encoded).expect("decode promoted ABA2 frame");
         assert_eq!(decoded.authority, AuthorityState::Exact20Receipt);
         assert_eq!(decoded.snapshot, Some(snapshot()));

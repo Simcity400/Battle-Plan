@@ -1,9 +1,3 @@
-//! Neutral authenticated HUD dependency-closure emitter.
-//!
-//! The emitter understands pointer-free GUI/GFX/font/localisation contracts.
-//! Physical launcher and archive access is supplied by a product-owned VFS
-//! adapter, so neither the recorder nor the replayer depends on the other.
-
 use crate::authored_ui::{
     canonical_localisation_language, engine_recursive_path_cmp, safe_language_directory,
 };
@@ -29,7 +23,6 @@ pub struct ResolvedHudFile {
     pub bytes: Vec<u8>,
 }
 
-/// Minimal exact VFS surface required by the neutral HUD interpreter.
 pub trait HudContentVfs {
     fn list_recursive(&self, directory: &str, extension: &str) -> Result<Vec<String>, String>;
     fn resolve(&self, logical_path: &str) -> Result<Option<ResolvedHudFile>, String>;
@@ -63,9 +56,6 @@ pub fn emit_effective_vfs_hud_role_index(
     validate_sha256(source_inventory_sha256, "HUD source inventory authority")?;
     let gui_files = vfs.list_recursive("interface", "gui")?;
     let gfx_files = vfs.list_recursive("interface", "gfx")?;
-    // Byte-level decode damage, keyed by normalized game-relative path. This is
-    // a channel of its OWN, deliberately not folded into `Document.recoveries`:
-    // see `record_decode_damage`.
     let mut decode_damaged = BTreeMap::<String, String>::new();
     let localisation = localisation_sources(vfs, localisation_language, &mut decode_damaged)?;
 
@@ -498,15 +488,6 @@ fn collect_raw_refs(value: &Value, identity: &str, refs: &mut RootRefs) {
     }
 }
 
-/// Index the localisation keys of one language, recording byte-level decode
-/// damage into `damaged` as it goes.
-///
-/// Localisation is the surface where destroyed bytes are most consequential and
-/// least visible: a U+FFFD substituted into a key or a value becomes a
-/// user-visible string the replay cannot reproduce, and the Clausewitz parser
-/// never runs here at all, so `recoveries` could not have caught it under any
-/// wiring. Diagnosing at the same point the bytes are decoded is the only place
-/// this damage is observable.
 fn localisation_sources(
     vfs: &impl HudContentVfs,
     language: &str,
@@ -515,10 +496,6 @@ fn localisation_sources(
     let language_directory = safe_language_directory(language)?;
     let expected = canonical_localisation_language(language)?;
     let mut out = BTreeMap::new();
-    // Filter the selected language at the VFS listing boundary. Resolving and
-    // decoding every other language before checking its header materializes
-    // unauthorised bytes and lets unrelated decode damage suppress the
-    // selected-language HUD closure.
     for rel in vfs.list_recursive(&format!("localisation/{language_directory}"), "yml")? {
         let Some(file) = vfs.resolve(&rel)? else {
             continue;
@@ -580,9 +557,6 @@ pub(crate) struct AuthoredBitmapFontDescriptorDependencies {
     pub(crate) pages: Vec<String>,
 }
 
-/// Parse the ordered effective `.gfx` registry once and plan every requested
-/// font from that one bounded pass. Per-font semantic failures remain isolated
-/// results, while namespace decode/parse damage fails the whole registry.
 pub(crate) fn authored_bitmap_font_dependency_registry_paths(
     vfs: &impl HudContentVfs,
     symbolic_names: &BTreeSet<String>,
@@ -739,7 +713,6 @@ pub(crate) fn authored_bitmap_font_dependency_registry_paths(
 
 fn portable_exact_single_value<'a>(value: &'a Value, key: &str) -> Result<&'a Value, String> {
     // Do not inherit `Value::values_ci`'s shared input lifetime: the lookup
-    // token is only a predicate and never escapes with the returned value.
     let mut values = value.fields().iter().filter_map(|entry| {
         entry
             .key
@@ -878,18 +851,6 @@ fn portable_plan_descriptor(
     })
 }
 
-/// Resolve a bitmap font's descriptor and atlas pages.
-///
-/// The `.fnt` descriptor is TEXT the emitter decodes (`bmfont_page_files` reads
-/// its textual form), and it is subsequently BOUND, so it is diagnosed here for
-/// decode damage exactly like `.gui`/`.gfx`/`.yml`. Without this a destructively
-/// decoded descriptor could yield page paths and still leave the closure
-/// claiming completeness.
-///
-/// Only files the layer decodes AS TEXT are diagnosed. Atlas pages
-/// (`.dds`/`.tga`) are binary and are deliberately NOT run through the text
-/// decoder: a binary payload that happens to begin `FF FE` would be read as
-/// UTF-16 and could report a fabricated truncation.
 #[cfg(test)]
 fn bitmap_font_dependency_paths(
     vfs: &impl HudContentVfs,
@@ -902,9 +863,6 @@ fn bitmap_font_dependency_paths(
         return Err("blank bitmap-font identity".into());
     }
     let direct = format!("gfx/fonts/{symbolic_name}.fnt");
-    // Retain at most one large payload at a time. In particular, never keep
-    // `core.gfx` bytes live while materializing the descriptor: each payload
-    // can independently reach the VFS per-file ceiling.
     let direct_resolved = vfs.resolve(&direct)?;
     let (alias_source, resolved) = if let Some(resolved) = direct_resolved {
         (None, resolved)
@@ -951,10 +909,6 @@ fn bitmap_font_dependency_paths(
                 }
             }
         }
-        // The exact-a729 evidence proves first-match selection only within an
-        // already populated bitmap-font object's language variants. It does
-        // not prove how duplicate `.gfx` declarations populate that object.
-        // Refuse applicable overrides above and require one base path.
         let mut aliases = base;
         aliases.sort();
         aliases.dedup();
@@ -965,8 +919,6 @@ fn bitmap_font_dependency_paths(
             ));
         }
         let descriptor = aliases.remove(0);
-        // `core` and its parsed document leave scope before the descriptor is
-        // resolved, so their payload allocations are not concurrent.
         drop(document);
         drop(core);
         let resolved = vfs
@@ -997,7 +949,6 @@ fn bitmap_font_dependency_paths(
         );
     }
     let page_files = parsed.pages;
-    // The parsed page names and owned path strings are sufficient from here;
     // release descriptor bytes before any atlas candidate is materialized.
     drop(resolved);
     let mut pages = Vec::new();
@@ -1136,15 +1087,6 @@ fn first_resolved_font_page(
     Ok(None)
 }
 
-/// Page names extracted from a BMFont descriptor, plus how many of them were
-/// DESTROYED while being decoded.
-///
-/// A binary (`BMF`-magic) descriptor decodes its page-name field with its own
-/// `String::from_utf8_lossy`, which is invisible to `diagnose_text_decode`: the
-/// whole binary file has no BOM, so the file-level diagnosis classifies it as
-/// lossless Latin-1 and reports nothing, while the page-name decode can still
-/// substitute U+FFFD and produce a path that was never in the input. That path
-/// would then be bound. `lossy_page_names` closes that gap.
 #[derive(Debug, Default)]
 struct BmfontPages {
     pages: BTreeMap<u32, String>,
@@ -1176,8 +1118,6 @@ fn bmfont_page_files(bytes: &[u8]) -> Result<BmfontPages, String> {
                     .enumerate()
                 {
                     if std::str::from_utf8(page).is_err() {
-                        // from_utf8_lossy below will substitute U+FFFD, so the
-                        // bound path is not the path the descriptor named.
                         out.lossy_page_names += 1;
                     }
                     out.pages
@@ -1189,8 +1129,6 @@ fn bmfont_page_files(bytes: &[u8]) -> Result<BmfontPages, String> {
         }
         return Ok(BmfontPages::default());
     }
-    // The textual form is decoded by `decode_text`, so its damage is already
-    // covered by the file-level `diagnose_text_decode` on the same bytes.
     let mut pages = BTreeMap::new();
     for line in decode_text(bytes).lines().map(str::trim) {
         let Some(rest) = line.strip_prefix("page ") else {
@@ -1310,38 +1248,12 @@ fn validate_resolved(
     Ok(())
 }
 
-/// Record byte-level decode damage for one resolved file, on a channel that is
-/// deliberately separate from `Document.recoveries`.
-///
-/// WHY A SEPARATE CHANNEL (this question is settled; please do not re-fold it).
-/// A `Recovery` is produced only by the Clausewitz parser and means exactly one
-/// thing: the file's TOKEN STRUCTURE was ambiguous and the parse recovered
-/// (missing closing brace, stray `=`, depth limit, ...). Decode damage happens
-/// one layer earlier, at the byte-to-text boundary, and the two are independent
-/// in BOTH directions:
-///   * a file can decode destructively and still parse with ZERO recoveries —
-///     a U+FFFD is just an ordinary character inside an atom or quoted string,
-///     and the parser never notices;
-///   * the four brace-damaged vanilla `.gui` files decode perfectly and produce
-///     recoveries.
-/// Folding decode loss into `recoveries` would therefore widen that status from
-/// "the parse recovered" to "the parse recovered OR bytes were destroyed", and
-/// would silently change admission at every `recoveries.is_empty()` gate. The
-/// meaning of an existing status is not widened.
-///
-/// Only DESTRUCTIVE loss is recorded ([`destructive_losses`]). Lossless
-/// encoding attribution (`NonUtf8DecodedAsLatin1`) is not damage: Latin-1 is a
-/// Paradox encoding the shipped game itself uses for `§` colour codes, and no
-/// byte is lost.
 fn record_decode_damage(damaged: &mut BTreeMap<String, String>, file: &ResolvedHudFile) {
     let losses = diagnose_text_decode(&file.bytes);
     let destructive = destructive_losses(&losses);
     let Some(first) = destructive.first() else {
         return;
     };
-    // The EVENT count, not the entry count: past MAX_TEXT_DECODE_DIAGNOSTICS the
-    // per-site entries collapse into one `Suppressed { count }`, so entry count
-    // would understate the damage.
     record_decode_damage_summary(
         damaged,
         &file.content.normalized_game_relative_path,
@@ -1350,9 +1262,6 @@ fn record_decode_damage(damaged: &mut BTreeMap<String, String>, file: &ResolvedH
     );
 }
 
-/// Record `events` destructive decode events for `path`, accumulating rather
-/// than overwriting so a file damaged in two different decodes (e.g. a binary
-/// BMFont whose page names are separately lossy) reports both.
 fn record_decode_damage_summary(
     damaged: &mut BTreeMap<String, String>,
     path: &str,
@@ -1365,12 +1274,6 @@ fn record_decode_damage_summary(
     let fragment = neutral(&format!("destructive_events={events}:first={first}"));
     match damaged.get_mut(path) {
         Some(existing) => {
-            // Idempotent by fragment: `refs.fonts` is keyed by (element,
-            // font_id), so one descriptor shared by several elements is
-            // resolved once PER ELEMENT and would otherwise have its damage
-            // appended once per reference. Each fragment is a deterministic
-            // function of the file's bytes, so an identical fragment is a
-            // repeat observation, not additional damage.
             if !existing.contains(fragment.as_str()) {
                 existing.push('|');
                 existing.push_str(&fragment);
@@ -1382,21 +1285,6 @@ fn record_decode_damage_summary(
     }
 }
 
-/// Mark a HUD dependency closure incomplete for every file it actually BINDS
-/// whose bytes were destroyed at decode.
-///
-/// This does not remove content from admission — the binding stays, exactly as
-/// it is for a clean input — it records a typed reason on `missing_roles`, so
-/// `complete_dependency_closure` cannot claim completeness over a file the
-/// replay is unable to reproduce byte-for-byte. Destroyed bytes are precisely
-/// the case the doctrine forbids surfacing as a silent approximation: the U+FFFD
-/// substituted for them would otherwise flow into a layout name, a sprite id or
-/// a localisation string with nothing anywhere recording that input was lost.
-///
-/// For CLEAN inputs `damaged` is empty and this is a no-op, so admitted results
-/// and closure hashes for clean content are unchanged. Measured against the game
-/// 1.19.2: 8318 shipped files across all 10 localisation languages produce ZERO
-/// destructive decode events, so no shipped content is affected.
 fn append_decode_damage_blockers(
     damaged: &BTreeMap<String, String>,
     bindings: &[ResolvedHudRoleBinding],
@@ -1467,9 +1355,6 @@ mod tests {
         "a".repeat(64)
     }
 
-    /// Self-consistent resolved-file fixture: identity fields must satisfy
-    /// [`validate_resolved`] (normalized path, authority binding, byte length,
-    /// payload digest) or the emitter refuses everything.
     fn resolved_file(path: &str, bytes: &[u8]) -> ResolvedHudFile {
         let content = UsedContentKey {
             effective_vfs_manifest_sha256: authority(),
@@ -1558,8 +1443,6 @@ mod tests {
             closure.bindings[0].semantic_role,
             HudSemanticRole::GuiRoot { .. }
         ));
-        // Only Topbar of the four core surfaces is active, so the closure is
-        // incomplete with the other three surfaced as missing activations.
         assert!(!closure.complete_dependency_closure);
         assert_eq!(closure.missing_roles.len(), 3);
         assert!(closure
@@ -1647,17 +1530,8 @@ mod tests {
             .all(|content_identities| content_identities.len() == 1));
     }
 
-    /// A `.gui` file whose bytes were DESTROYED at decode still binds — the
-    /// content is admitted exactly as before — but the closure may no longer
-    /// claim completeness, and says why in typed form. This is the whole point
-    /// of the separate channel: the damage is neither silent nor destructive of
-    /// admission.
     #[test]
     fn destroyed_bytes_block_closure_completeness_without_dropping_the_binding() {
-        // A UTF-8 BOM followed by a lone 0xFF: invalid UTF-8, so the byte is
-        // replaced by U+FFFD and is genuinely gone. The root name itself is
-        // intact, so the parse succeeds with ZERO recoveries — proving the
-        // existing carrier could never have seen this damage.
         let mut bytes =
             b"\xef\xbb\xbfguiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t\ttext = \"".to_vec();
         bytes.push(0xff);
@@ -1678,12 +1552,9 @@ mod tests {
         .expect("emit");
         let closure = &document.closures[0];
 
-        // Admission is UNCHANGED: the binding is still there.
         assert_eq!(closure.bindings.len(), 1);
         assert_eq!(document.winning_content.len(), 1);
 
-        // ... but the damage is surfaced, typed, and blocks the completeness
-        // claim.
         assert!(!closure.complete_dependency_closure);
         let decode_roles = closure
             .missing_roles
@@ -1700,18 +1571,14 @@ mod tests {
         );
     }
 
-    /// Lossless Latin-1 is NOT damage and must not appear as a blocker. The
-    /// shipped game itself writes raw 0xA7 (the `§` colour-code marker) into
-    /// `.gui` files, so treating this as loss would refuse correct content.
     #[test]
     fn latin1_encoded_content_is_not_treated_as_decode_damage() {
         let mut bytes =
             b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t\ttext = \"Email"
                 .to_vec();
-        bytes.push(0xa7); // '§' in Latin-1, exactly as the game ships it
+        bytes.push(0xa7);
         bytes.extend_from_slice(b"R\"\n\t}\n}\n");
 
-        // The diagnosis does fire — but as a lossless attribution, not damage.
         let losses = diagnose_text_decode(&bytes);
         assert_eq!(losses.len(), 1);
         assert!(!losses[0].discards_input());
@@ -1737,15 +1604,8 @@ mod tests {
         );
     }
 
-    /// A BMFont `.fnt` descriptor is text the emitter decodes AND binds, so
-    /// destroyed bytes in one must block the closure exactly like a damaged
-    /// `.gui`. Without the descriptor being diagnosed, a damaged font could
-    /// still yield resolvable atlas pages and leave the closure claiming
-    /// completeness.
     #[test]
     fn destroyed_bytes_in_a_bound_bmfont_descriptor_block_the_closure() {
-        // A text BMFont descriptor with a UTF-8 BOM and one invalid byte: the
-        // page line still parses, so the font resolves and is bound.
         let mut fnt =
             b"\xef\xbb\xbfinfo face=\"f\" size=16\npage id=0 file=\"myfont_0.dds\"\n".to_vec();
         fnt.push(0xff);
@@ -1774,7 +1634,6 @@ mod tests {
         .expect("emit");
         let closure = &document.closures[0];
 
-        // The font descriptor really is bound (otherwise this proves nothing).
         assert!(
             closure
                 .bindings
@@ -1796,8 +1655,6 @@ mod tests {
             "{:?}",
             closure.missing_roles
         );
-        // The binary atlas page is NOT text-decoded, so it never appears here
-        // even though it is not valid UTF-8.
         assert!(
             !closure
                 .missing_roles
@@ -1941,10 +1798,6 @@ mod tests {
         assert_eq!(vfs.gfx_lists.get(), 1);
     }
 
-    /// One damaged font shared by several elements is resolved once per
-    /// element, so the damage record must be idempotent per observation —
-    /// otherwise the reported event count multiplies with the number of
-    /// references, which is not a property of the file.
     #[test]
     fn repeated_observations_of_one_damaged_file_do_not_multiply() {
         let mut damaged = BTreeMap::new();
@@ -1959,20 +1812,15 @@ mod tests {
             "{summary}"
         );
 
-        // A genuinely different observation of the same file still accumulates.
         record_decode_damage_summary(&mut damaged, "gfx/fonts/f.fnt", 1, "binary page name");
         let summary = &damaged["gfx/fonts/f.fnt"];
         assert!(summary.contains("destructive_events=2"), "{summary}");
         assert!(summary.contains("destructive_events=1"), "{summary}");
 
-        // Zero events is never recorded.
         record_decode_damage_summary(&mut damaged, "other.gui", 0, "unused");
         assert!(!damaged.contains_key("other.gui"));
     }
 
-    /// The regression that matters most: for CLEAN content the decode channel
-    /// is inert. Same fixture as `emitter_round_trip_binds_the_unique_gui_root`,
-    /// asserted field-for-field to be untouched by this lane's wiring.
     #[test]
     fn clean_content_admission_is_unchanged_by_the_decode_channel() {
         let vfs = MapVfs::new(&[(
@@ -1990,8 +1838,6 @@ mod tests {
         let closure = &document.closures[0];
         assert_eq!(closure.bindings.len(), 1);
         assert_eq!(document.winning_content.len(), 1);
-        // Exactly the three pre-existing activation reasons, and nothing from
-        // the decode channel.
         assert_eq!(closure.missing_roles.len(), 3);
         assert!(closure
             .missing_roles
@@ -2015,8 +1861,6 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("latest-clean"));
 
-        // A root with zero effective candidates yields an empty binding set
-        // and a typed missing role, never an invented binding.
         let activation = HudSurfaceActivationFrame {
             frame_hour: 40,
             status_flags: 0,
@@ -2050,7 +1894,6 @@ mod tests {
 
     #[test]
     fn binary_bmfont_pages_parse_and_truncations_fail_closed() {
-        // Valid: header + a type-3 pages block with NUL-separated names.
         let mut valid = b"BMF\x03".to_vec();
         let pages = b"page_0.dds\0page_1.dds\0";
         valid.push(3);
@@ -2061,17 +1904,14 @@ mod tests {
         assert_eq!(parsed.pages.get(&1).map(String::as_str), Some("page_1.dds"));
         assert_eq!(parsed.lossy_page_names, 0);
 
-        // Exactly b"BMF": recognized as binary but shorter than the header.
         assert_eq!(
             bmfont_page_files(b"BMF").unwrap_err(),
             "binary BMFont header is truncated"
         );
-        // Block header cut off (type byte without a size field).
         assert_eq!(
             bmfont_page_files(b"BMF\x03\x03").unwrap_err(),
             "binary BMFont block header is truncated"
         );
-        // Size field pointing past the end of the payload.
         let mut oversized = b"BMF\x03".to_vec();
         oversized.push(3);
         oversized.extend_from_slice(&64u32.to_le_bytes());
@@ -2080,7 +1920,6 @@ mod tests {
             bmfont_page_files(&oversized).unwrap_err(),
             "binary BMFont block is truncated"
         );
-        // No pages block at all is measured-empty, not an error.
         let mut no_pages = b"BMF\x03".to_vec();
         no_pages.push(1);
         no_pages.extend_from_slice(&1u32.to_le_bytes());
@@ -2088,10 +1927,6 @@ mod tests {
         assert!(bmfont_page_files(&no_pages).unwrap().pages.is_empty());
     }
 
-    /// A BINARY BMFont decodes its page names with its own `from_utf8_lossy`,
-    /// which the file-level diagnosis cannot see: the file has no BOM, so
-    /// `diagnose_text_decode` calls the whole thing lossless Latin-1 and reports
-    /// nothing, while the page name really does lose bytes.
     #[test]
     fn binary_bmfont_page_names_that_lose_bytes_are_counted() {
         let mut bytes = b"BMF\x03".to_vec();
@@ -2101,9 +1936,7 @@ mod tests {
         bytes.extend_from_slice(&(pages.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&pages);
 
-        // The file-level diagnosis reports NO destructive loss ...
         assert_eq!(destructive_event_count(&diagnose_text_decode(&bytes)), 0);
-        // ... but the page-name decode did lose a byte, and it is counted.
         let parsed = bmfont_page_files(&bytes).expect("binary BMFont");
         assert_eq!(parsed.lossy_page_names, 1);
         assert_eq!(parsed.pages.get(&0).map(String::as_str), Some("good_0.dds"));

@@ -1,13 +1,3 @@
-//! Production composition for reload/relaunch stitching.
-//!
-//! This is deliberately the only bridge from the activated CID1/rollover
-//! recorder into the generic stitch planner.  It allocates an append ticket
-//! before ordinary campaign bytes are admitted, records the ticket beside the
-//! run, registers only fully verified standalone packages, then reconstructs
-//! sealed [`SegmentInput`] values from those authenticated packages.  Directory
-//! enumeration discovers candidates only; ticket rank is the sole ordering
-//! authority.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -42,12 +32,6 @@ use crate::duplex_session::rollover_fs::{
 };
 
 const TICKET_SCHEMA: &str = "product-stitch-ticket-v1";
-/// v2 adds the member's decoded H4CR identity beside its storage identity.
-///
-/// The version moves rather than defaulting, because a v1 entry carries exactly
-/// one digest and there is no way to tell from it whether that digest was a
-/// storage digest that happens to equal the decoded one (raw) or a claim that
-/// cannot be checked. A v1 entry is refused with its schema named.
 const REGISTRY_SCHEMA: &str = "product-stitch-registry-entry-v2";
 const MACHINE_SCOPE_FILE: &str = "machine-scope-v1";
 const MAX_CONTROL_BYTES: usize = 16 * 1024 * 1024;
@@ -90,11 +74,7 @@ struct RegistryEntry {
     package_path: String,
     package_sha256: String,
     raw_path: String,
-    /// Digest of the file at `raw_path` as it sits on the volume.
     raw_sha256: String,
-    /// Canonical H4CR the same file decodes to. Equal to `raw_sha256` only when
-    /// the member is stored raw; the stitcher parses records, computes byte
-    /// offsets and embeds bytes in DECODED space, so it needs its own digest.
     raw_decoded_sha256: String,
     raw_decoded_bytes: u64,
     manifest_path: String,
@@ -103,17 +83,12 @@ struct RegistryEntry {
     stop_reason: String,
 }
 
-/// Successful stitched publications created while closing one rollover set.
-/// A campaign with fewer than two registered sealed segments is intentionally
-/// absent: its standalone package remains the complete product artifact.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ProductStitchReports {
     pub published: Vec<PublishReport>,
     pub kept_separate: Vec<String>,
 }
 
-/// Allocate and durably retain campaign append order before the first ordinary
-/// record of `logical_stream_id` may be accepted.
 pub fn allocate_product_append_ticket(
     product_root: &Path,
     run_dir: &Path,
@@ -142,10 +117,6 @@ pub fn allocate_product_append_ticket(
     write_immutable_json(&path, &receipt)
 }
 
-/// Register all verified standalone members from a completed rollover package
-/// set and publish each campaign whose local registry now has at least two
-/// authenticated segments.  Planner refusal is visible but does not invalidate
-/// the independently verified standalone replays.
 pub fn publish_registered_rollover_stitches(
     product_root: &Path,
     run_dir: &Path,
@@ -686,9 +657,6 @@ fn build_segment(
         let hour = indexed
             .hour_index
             .ok_or("standalone snapshot index entry has no hour")?;
-        // The source index is the only authority for an hour's date. Carry it
-        // into the stitch so the published playback index can date every
-        // visible hour; never re-derive it from a snapshot body later.
         let date = indexed
             .date
             .as_deref()
@@ -877,10 +845,6 @@ struct FrameExtent {
 struct RawInspection {
     file: File,
     compression: compact_stream::StreamCompression,
-    /// DECODED bytes and their digest. The stitched container's raw entry holds
-    /// canonical H4CR, so this is what that entry is written and checked
-    /// against; the storage file's own digest is checked against the registry
-    /// inside `inspect_registered_raw` and does not travel further.
     receipt: VerifiedPayloadReceipt,
     first_record: Vec<u8>,
     frames: BTreeMap<i64, FrameExtent>,
@@ -915,12 +879,6 @@ fn open_retained_raw(path: &Path) -> Result<File, String> {
     }
 }
 
-/// Storage encoding of an already-open, already-validated member handle.
-///
-/// Read from the handle rather than from the path: the caller opened this file
-/// under a share mode and checked it for reparse points precisely so that a
-/// second resolution of the name cannot be pointed elsewhere between the check
-/// and the read.
 fn retained_storage_compression(
     file: &mut File,
     path: &Path,
@@ -950,7 +908,6 @@ fn read_up_to(file: &mut File, buffer: &mut [u8]) -> std::io::Result<usize> {
     Ok(filled)
 }
 
-/// Hash the member's storage bytes, then rewind for the decoded scan.
 fn hash_retained_storage(file: &mut File, path: &Path) -> Result<(String, u64), String> {
     const HASH_CHUNK: usize = 1024 * 1024;
     let mut hasher = Sha256::new();
@@ -973,14 +930,6 @@ fn hash_retained_storage(file: &mut File, path: &Path) -> Result<(String, u64), 
     Ok((to_hex(&hasher.finalize()), bytes))
 }
 
-/// Re-admit one registered member in CANONICAL H4CR space.
-///
-/// Every number this produces — the record scan, the per-hour frame extents,
-/// the byte bounds, the receipt the stitched container's raw entry is written
-/// against — is in DECODED bytes, because that is what an H4CR consumer means
-/// by an offset. The storage file is verified separately against the registry's
-/// storage digest; conflating the two is only invisible while the member is
-/// stored raw.
 fn inspect_registered_raw(path: &Path, entry: &RegistryEntry) -> Result<RawInspection, String> {
     const SCAN_CHUNK: usize = 1024 * 1024;
 
@@ -997,10 +946,6 @@ fn inspect_registered_raw(path: &Path, entry: &RegistryEntry) -> Result<RawInspe
     if file_len < COMPACT_RECORD_HEADER_LEN as u64 {
         return Err("registered raw source decodes to less than one record".into());
     }
-    // A DUPLICATED handle, not a second open: `try_clone` refers to the same
-    // open file object, so the decoder reads exactly the bytes this function
-    // validated. Reopening by name would put the whole point of
-    // `open_retained_raw` — one resolution of the name, held — back at risk.
     let scan_handle = handle
         .try_clone()
         .map_err(|error| format!("duplicate registered raw handle failed: {error}"))?;
@@ -1099,10 +1044,6 @@ fn inspect_registered_raw(path: &Path, entry: &RegistryEntry) -> Result<RawInspe
     if open.is_some() || offset != file_len {
         return Err("registered raw stream ends outside a complete frame boundary".into());
     }
-    // Nothing may remain past the last complete record. On a compressed member
-    // the loop above is bounded by the registry's decoded length, so without
-    // this a member that decodes to MORE than it claims would be silently
-    // truncated to the claim instead of refused.
     if file
         .read(&mut header_bytes[..1])
         .map_err(|error| format!("drain registered raw source failed: {error}"))?
@@ -1350,11 +1291,6 @@ impl RetainedStitchedPayloadSource for RetainedProductPayloads {
             .file
             .lock()
             .map_err(|_| "registered raw source lock poisoned".to_string())?;
-        // The stitched container's raw entry holds canonical H4CR, exactly as a
-        // standalone member's does — the offsets in every segment descriptor
-        // point into decoded bytes, so copying storage bytes would publish an
-        // entry those offsets do not address. Decoded through a DUPLICATE of the
-        // retained handle, so the bytes copied are the bytes that were verified.
         let mut file = compact_stream::decode_open_file(
             file.try_clone()
                 .map_err(|error| format!("duplicate retained raw handle failed: {error}"))?,
@@ -1640,20 +1576,6 @@ fn required_relative(value: &Value, field: &str) -> Result<String, String> {
     Ok(path.to_string())
 }
 
-/// Exact shape of `logical-stream-package-set.json`, for BOTH ends of it.
-///
-/// The recorder writes this file and the stitcher refuses to read anything it
-/// does not recognise, and until this was one function those were two hand-kept
-/// lists of key names. They had already drifted apart: the writer emits
-/// `first_recording_logical_stream_id` at the top level and
-/// `pre_world_transient` / `recording_admitted` on every member, none of which
-/// the reader's lists named, so the reader refused every package set the
-/// recorder actually produces — and it does so with `?`, in every production
-/// rollover capture, after all the packaging work is done.
-///
-/// The writer now validates against this before publishing. A future field that
-/// only one side knows about fails at the write, naming the file, rather than
-/// silently at the stitch.
 pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), String> {
     require_exact_object_keys(
         package_set,
@@ -1668,12 +1590,11 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
         ],
         "rollover package set",
     )?;
-    let (carried_census, absent_census, release_census) =
-        validate_rollover_freeze_census_presence(
-            package_set
-                .get("freeze_census")
-                .ok_or("rollover package set has no freeze_census presence section")?,
-        )?;
+    let (carried_census, absent_census, release_census) = validate_rollover_freeze_census_presence(
+        package_set
+            .get("freeze_census")
+            .ok_or("rollover package set has no freeze_census presence section")?,
+    )?;
     let members = package_set
         .get("ordered_streams")
         .and_then(Value::as_array)
@@ -1721,20 +1642,6 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
         );
     }
 
-    // WHAT "LAST ADMITTED" MEANS, before anything is allowed to depend on it.
-    //
-    // The teardown check below rests entirely on `admitted.last()` being the
-    // member the recording actually ended on. That is only true if admission is
-    // a SUFFIX of the ordered set: a recording admits its first world member and
-    // every member after it, and the earlier CID1-only pre-world members are the
-    // ones that stay unadmitted. A non-admitted member sitting AFTER an admitted
-    // one is a set the builder cannot produce, and it would make `admitted.last()`
-    // name a member that is not last in the stream at all -- which is exactly how
-    // a set could claim a teardown and then carry on recording past it.
-    //
-    // A set with NO admitted member is refused for the same reason: it mints no
-    // packages, and it leaves "last admitted" undefined while the presence
-    // section is free to assert whatever it likes about it.
     let admission_flags = members
         .iter()
         .map(|member| {
@@ -1774,12 +1681,6 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
         ));
     }
 
-    // THE TEARDOWN CARRIER, cross-checked against the members this set actually
-    // has. The section's own `last_admitted_logical_stream` is a claim, not
-    // evidence: validating the carrier only against that claim lets a set name
-    // a teardown member that does not exist, or is not last, and still pass --
-    // while the builder treats exactly those shapes as fatal. `ordered_streams`
-    // is the authority for which member came last, so it decides here too.
     let last_admitted = admitted.last().copied();
     if release_census.last_admitted != last_admitted {
         return Err(format!(
@@ -1801,7 +1702,6 @@ pub fn validate_rollover_package_set_shape(package_set: &Value) -> Result<(), St
 }
 
 /// What the release half of a presence section CLAIMS. Every field is checked
-/// against the package's own `ordered_streams` by the caller.
 struct RolloverReleaseCensusPresence {
     carried: Vec<u64>,
     last_admitted: Option<u64>,
@@ -1872,11 +1772,6 @@ fn validate_rollover_freeze_census_presence(
     if value.get("status").and_then(Value::as_str) != Some(expected_status) {
         return Err("rollover freeze census presence status contradicts its member lists".into());
     }
-    // THE TEARDOWN HALF, re-derived here rather than trusted. The recorder
-    // detaches once, so the only shapes that may reach a published set are "no
-    // member carries it" and "exactly the last admitted member carries it".
-    // The builder makes the other two shapes fatal before publication, so this
-    // validator refuses them outright rather than restating them as a status.
     let release = value
         .get("release")
         .ok_or("rollover freeze census presence has no release section")?;
@@ -1900,8 +1795,6 @@ fn validate_rollover_freeze_census_presence(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let last_admitted = release.get("last_admitted_logical_stream");
-    // Self-consistency only. Whether the named member EXISTS, and whether it is
-    // genuinely the last one, is decided by the caller against `ordered_streams`.
     let expected_release_status = match release_carried.as_slice() {
         [] => "absent",
         [only] if last_admitted.and_then(Value::as_u64) == Some(*only) => "complete",
@@ -2374,16 +2267,6 @@ mod tests {
         );
     }
 
-    /// One member, two storage encodings, one inspection result.
-    ///
-    /// Everything this function produces is in canonical H4CR space — the
-    /// record scan, the per-hour extents, the byte bounds, the receipt the
-    /// stitched container's raw entry is written against. A member stored as
-    /// zstd starts with the zstd magic, so a physical read parses nothing at
-    /// all; and even a member that somehow parsed would put PHYSICAL offsets
-    /// into descriptors that address decoded bytes. Both are excluded by
-    /// requiring the compressed inspection to equal the raw one exactly, while
-    /// the registry's two digests are asserted to be genuinely different.
     #[test]
     fn a_compressed_member_inspects_identically_to_the_raw_member() {
         use compact_contract::campaign_identity::{
@@ -2418,8 +2301,6 @@ mod tests {
             .unwrap();
         let identity = validated.validated_cid1().unwrap().clone();
         let first_record = decoded.clone();
-        // Highly repetitive so the compressed member is genuinely smaller; a
-        // fixture that did not compress could not tell the digests apart.
         for hour_offset in 0..2i32 {
             for sequence in 0..8u64 {
                 decoded.extend(record(
@@ -2508,8 +2389,6 @@ mod tests {
             compact_stream::StreamCompression::Zstd
         );
 
-        // The retained payload is what the stitched container embeds. It must
-        // hand on decoded H4CR, not the storage bytes it was read from.
         let mut payloads = RetainedProductPayloads::default();
         payloads.raw.insert(
             "raw/member.h4cr".to_string(),
@@ -2529,12 +2408,6 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// The member manifest's `decoded_sha256` joins to the DECODED digest.
-    ///
-    /// Both digests are 64 hex characters and both are called "the member's
-    /// sha256" in conversation, so the wrong one type-checks, reads correctly,
-    /// and passes on every raw member. It is only wrong when the member is
-    /// compressed — at which point a correct manifest is rejected as a forgery.
     #[test]
     fn a_member_manifest_joins_on_the_decoded_digest_not_the_storage_digest() {
         let storage_sha256 = "33".repeat(32);
@@ -2582,20 +2455,6 @@ mod tests {
         );
     }
 
-    /// The shape the recorder writes is the shape the stitcher accepts.
-    ///
-    /// Both ends used to keep their own list of key names and they had drifted:
-    /// the reader named neither `first_recording_logical_stream_id` nor the two
-    /// per-member admission flags, so it rejected every package set the recorder
-    /// produces — fatally, at the end of a production rollover capture. This
-    /// fixture is the writer's literal output shape; the assertions below are
-    /// what makes a one-sided field a test failure instead of a capture failure.
-    ///
-    /// kills: removing the final set-wide freeze-census field, widening either
-    /// exact-key roster, or accepting a status/problems value that contradicts
-    /// the two member lists makes one of these direct production-validator
-    /// calls fail. No byte mutation loop is needed because each semantic class
-    /// is represented by one analytically chosen malformed value.
     #[test]
     fn the_package_set_shape_is_one_authority_shared_by_writer_and_reader() {
         let member = || {
@@ -2668,10 +2527,7 @@ mod tests {
         });
         assert!(validate_rollover_package_set_shape(&contradictory_presence).is_err());
 
-        // kills: validating the teardown carrier only against the section's own
-        // `last_admitted_logical_stream`. Both of these declare a self-consistent
         // release half naming a member that the package does not have, or that is
-        // not the last one, and both must be refused against `ordered_streams`.
         let mut phantom_release_carrier = package_set(serde_json::json!([member()]));
         phantom_release_carrier["freeze_census"]["release"] = serde_json::json!({
             "status": "complete",
@@ -2694,10 +2550,6 @@ mod tests {
             "a release section naming a last member the set does not have was accepted"
         );
 
-        // kills: deriving "the last admitted member" from a flag the set is free
-        // to scatter. A non-admitted member after an admitted one would make
-        // `admitted.last()` name a member that is not last in the stream, which
-        // is precisely a set claiming a teardown and then recording past it.
         let mut trailing_non_admitted = member();
         trailing_non_admitted["logical_stream_id"] = serde_json::json!(1);
         trailing_non_admitted["recording_admitted"] = serde_json::json!(false);
@@ -2719,8 +2571,6 @@ mod tests {
             "a non-admitted member after an admitted one was accepted"
         );
 
-        // kills: leaving "last admitted" undefined. A set that admits nothing
-        // mints no packages, so it must not validate at all.
         let mut none_admitted_member = member();
         none_admitted_member["recording_admitted"] = serde_json::json!(false);
         let mut zero_admitted = package_set(serde_json::json!([none_admitted_member]));
@@ -2743,8 +2593,6 @@ mod tests {
             "a set admitting no recording member was accepted"
         );
 
-        // kills: trusting the declared first-recording id. It must be the first
-        // member that is actually admitted.
         let mut wrong_first = package_set(serde_json::json!([member()]));
         wrong_first["first_recording_logical_stream_id"] = serde_json::json!(7);
         assert!(

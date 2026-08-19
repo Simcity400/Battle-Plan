@@ -1,23 +1,14 @@
-//! Passive exact-a729 observer for the quick-wing air-selection collection.
-//!
-//! upstream owner candidate universe to the selected/sorted 32-byte bucket,
-//! concrete row pool, standard list traversal, resolved geometry, and fixed
-//! scrollbar state.  The retained record is pointer-free.  Any unreadable
-//! field, unexpected vtable, predicate disagreement, resolver mismatch, or
-//! incomplete traversal poisons the owner; no measured-empty substitute is
-//! emitted.
-
 use crate::a729_air_mio_controller::{
     compute_identity_record_sha256, A729AirMioControllerSource, AirMioAuthorityReceipt,
-    AirMioControllerKind, AirMioControllerObservation, ControllerCandidate,
-    ControllerCandidateKey, ControllerSlot, ControllerSourceLane, PortableItemIdentity,
-    PortableObjectResolverRecord, RejectionEvidence, ResolvedListState, ResolverInputSource,
-    RuntimeRowTemplate, AIR_BUCKET_1_BYTE_5B4_RVA, AIR_BUCKET_2_BIT_20_RVA,
+    AirMioControllerKind, AirMioControllerObservation, ControllerCandidate, ControllerCandidateKey,
+    ControllerSlot, ControllerSourceLane, PortableItemIdentity, PortableObjectResolverRecord,
+    RejectionEvidence, ResolvedListState, ResolverInputSource, RuntimeRowTemplate, A729_BINARY_ID,
+    A729_EXECUTABLE_SHA256, AIR_BUCKET_1_BYTE_5B4_RVA, AIR_BUCKET_2_BIT_20_RVA,
     AIR_BUCKET_3_TYPE_3_VALUE_RVA, AIR_COMMON_ARCHETYPE_GATE_RVA, AIR_COMMON_BIT_33_RVA,
     AIR_COMMON_EXCLUDED_MASK_RVA, AIR_COMMON_MASK_ZERO_RVA, AIR_PASSIVE_HOOK_JOB_ID,
-    AIR_PASSIVE_HOOK_MANIFEST_SHA256, A729_BINARY_ID, A729_EXECUTABLE_SHA256,
-    PAIR_TO_OBJECT_RESOLVER_JOB_ID, PAIR_TO_OBJECT_RESOLVER_MANIFEST_SHA256,
-    PAIR_TO_OBJECT_RESOLVER_RVA, REFERENCE_TABLE_LOOKUP_RVA,
+    AIR_PASSIVE_HOOK_MANIFEST_SHA256, PAIR_TO_OBJECT_RESOLVER_JOB_ID,
+    PAIR_TO_OBJECT_RESOLVER_MANIFEST_SHA256, PAIR_TO_OBJECT_RESOLVER_RVA,
+    REFERENCE_TABLE_LOOKUP_RVA,
 };
 use crate::RectI32;
 use core::ffi::c_void;
@@ -161,7 +152,9 @@ impl A729AirSelectionHookOwner {
         verify_sentinel(target, &AIR_MATERIALIZE_SENTINEL, "air materializer")?;
         reset_state()?;
         let epoch = INSTALL_EPOCH
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| value.checked_add(1))
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
             .map_err(|_| "A28 air install epoch exhausted".to_string())?
             + 1;
         let original = unsafe {
@@ -174,23 +167,6 @@ impl A729AirSelectionHookOwner {
         CALLBACKS_OPEN.store(true, Ordering::Release);
         if let Err(status) = unsafe { inline_detour::enable(target as *mut c_void) } {
             CALLBACKS_OPEN.store(false, Ordering::Release);
-            // QUIESCED, AND *NOT* THE VACUOUS NEVER-ENABLED CASE.
-            //
-            // A FAILED `enable` DOES NOT MEAN THE TARGET WAS NEVER PATCHED in
-            // this product. Read `minhook_h4/vendor/src/hook.c`'s
-            // `EnableHookLL`: the fork deliberately writes the patch, then sets
-            // `isEnabled`/`queueEnable` and reports `MH_ERROR_MEMORY_PROTECT`
-            // when the protection restore or the instruction-cache flush did
-            // not complete -- "the bytes ARE written by the time these run, so
-            // the state is reported as it is". So this arm can be reached with
-            // a LIVE detour and a thread inside its body, which returns through
-            // the trampoline `remove` would free.
-            //
-            // Disable, drain, and only then free. A refusal RETAINS: the
-            // original pointer and module base are kept, because the detour may
-            // still dispatch into the callback and a zeroed original makes it
-            // skip the game's own function -- a mutated simulation, not a lost
-            // row.
             let _ = unsafe { inline_detour::disable(target as *mut c_void) };
             if let Err(quiescence) = wait_for_quiescence(Duration::from_secs(30)) {
                 return Err(format!(
@@ -208,7 +184,11 @@ impl A729AirSelectionHookOwner {
             return Err(format!("A28 air hook enable failed: {status}"));
         }
         INSTALLED.store(true, Ordering::Release);
-        Ok(Self { target, epoch, active: true })
+        Ok(Self {
+            target,
+            epoch,
+            active: true,
+        })
     }
 
     pub fn diagnostics(&self) -> Result<AirSelectionHookDiagnostics, String> {
@@ -227,8 +207,6 @@ impl A729AirSelectionHookOwner {
         Ok(state.observations.drain(..).collect())
     }
 
-    /// The carrier admits the latest collection observed during this exact raw
-    /// game hour. It never relabels an earlier-hour callback as current.
     pub fn drain_latest_source(
         &self,
         game_hour_raw: i32,
@@ -303,9 +281,6 @@ impl Drop for A729AirSelectionHookOwner {
 }
 
 unsafe extern "system" fn hook_air_materialize(controller: usize) {
-    // Count every detour entry, including an invocation that observes
-    // CALLBACKS_OPEN=false during uninstall. The original trampoline remains
-    // in use until this guard drops, so removal can wait for exact quiescence.
     let _in_flight = InFlight::enter();
     call_original(controller);
     if !CALLBACKS_OPEN.load(Ordering::Acquire) {
@@ -333,13 +308,13 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
         .ok_or("A28 air callback game clock unreadable")?;
     let wrapper = read_usize(controller + CONTROLLER_WRAPPER_OFFSET)
         .ok_or("air wrapper pointer unreadable")?;
-    let builder = read_usize(wrapper + WRAPPER_BUILDER_OFFSET)
-        .ok_or("air builder pointer unreadable")?;
+    let builder =
+        read_usize(wrapper + WRAPPER_BUILDER_OFFSET).ok_or("air builder pointer unreadable")?;
     let bucket = read_i32(wrapper + WRAPPER_BUCKET_OFFSET).ok_or("air bucket unreadable")?;
     let (lane, bucket_vector_offset) = bucket_law(bucket)?;
     let owner = read_usize(builder + BUILDER_OWNER_OFFSET).ok_or("air owner pointer unreadable")?;
-    let source = read_usize(owner + OWNER_CANDIDATES_OFFSET)
-        .ok_or("air candidate vector unreadable")?;
+    let source =
+        read_usize(owner + OWNER_CANDIDATES_OFFSET).ok_or("air candidate vector unreadable")?;
     let source_count = bounded_count(
         read_i32(owner + OWNER_CANDIDATE_COUNT_OFFSET).ok_or("air candidate count unreadable")?,
         "air candidate",
@@ -416,8 +391,8 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
         return Err("air selected bucket differs from authenticated source dispositions".into());
     }
 
-    let row_vector = read_usize(controller + CONTROLLER_ROW_VECTOR_OFFSET)
-        .ok_or("air row vector unreadable")?;
+    let row_vector =
+        read_usize(controller + CONTROLLER_ROW_VECTOR_OFFSET).ok_or("air row vector unreadable")?;
     let row_count = bounded_count(
         read_i32(controller + CONTROLLER_ROW_COUNT_OFFSET).ok_or("air row count unreadable")?,
         "air row",
@@ -426,8 +401,16 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
         return Err("air row count differs from selected bucket count".into());
     }
     let list = read_usize(controller + CONTROLLER_LIST_OFFSET).ok_or("air list unreadable")?;
-    gate_vtable(list, base + STANDARD_LIST_PRIMARY_VTABLE_RVA, "air list primary")?;
-    gate_vtable(list + 8, base + STANDARD_LIST_SECONDARY_VTABLE_RVA, "air list secondary")?;
+    gate_vtable(
+        list,
+        base + STANDARD_LIST_PRIMARY_VTABLE_RVA,
+        "air list primary",
+    )?;
+    gate_vtable(
+        list + 8,
+        base + STANDARD_LIST_SECONDARY_VTABLE_RVA,
+        "air list secondary",
+    )?;
     let list_count = bounded_count(
         read_i32(list + LIST_COUNT_OFFSET).ok_or("air list count unreadable")?,
         "air list",
@@ -451,7 +434,9 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
         let node_gui = read_usize(node + NODE_ITEM_OFFSET)
             .ok_or_else(|| format!("air list node {ordinal} item unreadable"))?;
         if node_gui != row_gui {
-            return Err(format!("air row/list traversal mismatch at ordinal {ordinal}"));
+            return Err(format!(
+                "air row/list traversal mismatch at ordinal {ordinal}"
+            ));
         }
         let row_option = read_usize(row + ROW_OPTION_OFFSET)
             .ok_or_else(|| format!("air row {ordinal} source option unreadable"))?;
@@ -462,9 +447,6 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
         if !matches!(key.identity, PortableItemIdentity::ReferencedObject { .. }) {
             return Err("air row carried a non-reference identity".into());
         }
-        // The controller destroys/rebuilds its row vector on every call. This
-        // is a frame-local one-based materialization ordinal, not a claim of
-        // cross-frame pool identity and never a transient process address.
         let stable_slot_id = u32::try_from(ordinal)
             .ok()
             .and_then(|value| value.checked_add(1))
@@ -501,7 +483,11 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
         return Err("air list content extent is negative".into());
     }
     let scrollbar = read_usize(list + LIST_SCROLLBAR_OFFSET).ok_or("air scrollbar unreadable")?;
-    gate_vtable(scrollbar, base + EXTENDED_SCROLLBAR_PRIMARY_VTABLE_RVA, "air scrollbar")?;
+    gate_vtable(
+        scrollbar,
+        base + EXTENDED_SCROLLBAR_PRIMARY_VTABLE_RVA,
+        "air scrollbar",
+    )?;
     gate_vtable(
         scrollbar + 0x80,
         base + EXTENDED_SCROLLBAR_PLUS_80_VTABLE_RVA,
@@ -533,7 +519,8 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
     validate_scroll(&list_state)?;
 
     let qpc_ticks = qpc()?;
-    let producer_record_sha256 = producer_digest(bucket, &candidates, &accepted_order, &slots, &list_state);
+    let producer_record_sha256 =
+        producer_digest(bucket, &candidates, &accepted_order, &slots, &list_state);
     let mut state = state_lock()?;
     state.controller_calls = state.controller_calls.saturating_add(1);
     state.transition_sequence = state
@@ -549,8 +536,14 @@ fn capture_post_return(controller: usize) -> Result<(), String> {
             function_job_id: AIR_PASSIVE_HOOK_JOB_ID.into(),
             function_manifest_sha256: AIR_PASSIVE_HOOK_MANIFEST_SHA256.into(),
             producer_rvas: vec![
-                0x01F4_A980, 0x01CD_B770, 0x0195_1BA0, 0x0195_1A10, 0x0195_2420,
-                0x00E5_05E0, 0x0100_5DD0, 0x01FC_49D0,
+                0x01F4_A980,
+                0x01CD_B770,
+                0x0195_1BA0,
+                0x0195_1A10,
+                0x0195_2420,
+                0x00E5_05E0,
+                0x0100_5DD0,
+                0x01FC_49D0,
             ],
             transition_sequence,
             observation_qpc_ticks: qpc_ticks,
@@ -584,14 +577,18 @@ fn bucket_law(bucket: i32) -> Result<(ControllerSourceLane, usize), String> {
     }
 }
 
-fn resolve_object(base: usize, object: usize) -> Result<((u32, u32), PortableObjectResolverRecord), String> {
+fn resolve_object(
+    base: usize,
+    object: usize,
+) -> Result<((u32, u32), PortableObjectResolverRecord), String> {
     let pair = read_pair(object + OBJECT_SELF_REFERENCE_OFFSET)
         .ok_or("air object self-reference unreadable")?;
     if pair.0 == 0 || pair.1 == 0 {
         return Err("air object self-reference contains zero".into());
     }
     let raw = [pair.0, pair.1];
-    let resolver: PairResolverFn = unsafe { mem::transmute(base + PAIR_TO_OBJECT_RESOLVER_RVA as usize) };
+    let resolver: PairResolverFn =
+        unsafe { mem::transmute(base + PAIR_TO_OBJECT_RESOLVER_RVA as usize) };
     let resolved = unsafe { resolver(raw.as_ptr()) };
     if resolved == 0 || resolved != object {
         return Err("air pair resolver did not return the source object".into());
@@ -601,19 +598,22 @@ fn resolve_object(base: usize, object: usize) -> Result<((u32, u32), PortableObj
     if resolved_pair != pair {
         return Err("air pair resolver round trip differs".into());
     }
-    Ok((pair, PortableObjectResolverRecord {
-        source: ResolverInputSource::AirOptionEquipmentSelfReference,
-        resolver_rva: PAIR_TO_OBJECT_RESOLVER_RVA,
-        lookup_rva: REFERENCE_TABLE_LOOKUP_RVA,
-        resolver_job_id: PAIR_TO_OBJECT_RESOLVER_JOB_ID.into(),
-        resolver_manifest_sha256: PAIR_TO_OBJECT_RESOLVER_MANIFEST_SHA256.into(),
-        raw_object_type: pair.0,
-        raw_stable_id: pair.1,
-        resolved_object_type: resolved_pair.0,
-        resolved_stable_id: resolved_pair.1,
-        resolved_non_null: true,
-        round_trip_self_reference_matches: true,
-    }))
+    Ok((
+        pair,
+        PortableObjectResolverRecord {
+            source: ResolverInputSource::AirOptionEquipmentSelfReference,
+            resolver_rva: PAIR_TO_OBJECT_RESOLVER_RVA,
+            lookup_rva: REFERENCE_TABLE_LOOKUP_RVA,
+            resolver_job_id: PAIR_TO_OBJECT_RESOLVER_JOB_ID.into(),
+            resolver_manifest_sha256: PAIR_TO_OBJECT_RESOLVER_MANIFEST_SHA256.into(),
+            raw_object_type: pair.0,
+            raw_stable_id: pair.1,
+            resolved_object_type: resolved_pair.0,
+            resolved_stable_id: resolved_pair.1,
+            resolved_non_null: true,
+            round_trip_self_reference_matches: true,
+        },
+    ))
 }
 
 fn classify_candidate(
@@ -629,28 +629,45 @@ fn classify_candidate(
     let (predicate_rva, reason, helper_value) = if flags & 0x1F00_37FC00 == 0 {
         (AIR_COMMON_MASK_ZERO_RVA, "common_air_mask_zero", 0)
     } else if flags & 0x1C00_010000 != 0 {
-        (AIR_COMMON_EXCLUDED_MASK_RVA, "common_excluded_mask_nonzero", 0)
+        (
+            AIR_COMMON_EXCLUDED_MASK_RVA,
+            "common_excluded_mask_nonzero",
+            0,
+        )
     } else if flags & (1u64 << 33) != 0 {
         (AIR_COMMON_BIT_33_RVA, "common_bit_33_set", 0)
     } else {
-        let gate: ArchetypeGateFn = unsafe { mem::transmute(base + AIR_COMMON_ARCHETYPE_GATE_RVA as usize) };
+        let gate: ArchetypeGateFn =
+            unsafe { mem::transmute(base + AIR_COMMON_ARCHETYPE_GATE_RVA as usize) };
         let gate_value = unsafe { gate(archetype_context, object + OBJECT_ARCHETYPE_INPUT_OFFSET) };
         if gate_value == 0 {
-            (AIR_COMMON_ARCHETYPE_GATE_RVA, "common_archetype_gate_false", gate_value as i32)
+            (
+                AIR_COMMON_ARCHETYPE_GATE_RVA,
+                "common_archetype_gate_false",
+                gate_value as i32,
+            )
         } else {
             match lane {
-                ControllerSourceLane::AirBucket1 if byte_5b4 == 0 => {
-                    (AIR_BUCKET_1_BYTE_5B4_RVA, "bucket_1_byte_5b4_zero", gate_value as i32)
-                }
-                ControllerSourceLane::AirBucket2 if flags & (1u64 << 20) != 0 => {
-                    (AIR_BUCKET_2_BIT_20_RVA, "bucket_2_bit_20_set", gate_value as i32)
-                }
+                ControllerSourceLane::AirBucket1 if byte_5b4 == 0 => (
+                    AIR_BUCKET_1_BYTE_5B4_RVA,
+                    "bucket_1_byte_5b4_zero",
+                    gate_value as i32,
+                ),
+                ControllerSourceLane::AirBucket2 if flags & (1u64 << 20) != 0 => (
+                    AIR_BUCKET_2_BIT_20_RVA,
+                    "bucket_2_bit_20_set",
+                    gate_value as i32,
+                ),
                 ControllerSourceLane::AirBucket3 => {
                     let predicate: TypeThreeValueFn =
                         unsafe { mem::transmute(base + AIR_BUCKET_3_TYPE_3_VALUE_RVA as usize) };
                     let value = unsafe { predicate(object, 3) };
                     if value <= 0 {
-                        (AIR_BUCKET_3_TYPE_3_VALUE_RVA, "bucket_3_type_3_value_nonpositive", value)
+                        (
+                            AIR_BUCKET_3_TYPE_3_VALUE_RVA,
+                            "bucket_3_type_3_value_nonpositive",
+                            value,
+                        )
                     } else {
                         return Ok(None);
                     }
@@ -781,21 +798,29 @@ fn poison(error: String) {
 
 fn invoke_geometry(object: usize, slot: usize, label: &str) -> Result<[i32; 2], String> {
     let vtable = read_usize(object).ok_or_else(|| format!("{label} vtable unreadable"))?;
-    let function = read_usize(vtable.checked_add(slot).ok_or_else(|| format!("{label} slot overflow"))?)
-        .ok_or_else(|| format!("{label} function unreadable"))?;
+    let function = read_usize(
+        vtable
+            .checked_add(slot)
+            .ok_or_else(|| format!("{label} slot overflow"))?,
+    )
+    .ok_or_else(|| format!("{label} function unreadable"))?;
     if function == 0 {
         return Err(format!("{label} function is null"));
     }
     let callback: GeometryFn = unsafe { mem::transmute(function) };
     let mut output = [0i32; 2];
-    unsafe { callback(object, output.as_mut_ptr()); }
+    unsafe {
+        callback(object, output.as_mut_ptr());
+    }
     Ok(output)
 }
 
 fn gate_vtable(object: usize, expected: usize, label: &str) -> Result<(), String> {
     let actual = read_usize(object).ok_or_else(|| format!("{label} vtable unreadable"))?;
     if actual != expected {
-        return Err(format!("{label} vtable mismatch: expected 0x{expected:X}, observed 0x{actual:X}"));
+        return Err(format!(
+            "{label} vtable mismatch: expected 0x{expected:X}, observed 0x{actual:X}"
+        ));
     }
     Ok(())
 }
@@ -825,7 +850,8 @@ fn bounded_count(value: i32, label: &str) -> Result<usize, String> {
 }
 
 fn verify_sentinel(address: usize, expected: &[u8], label: &str) -> Result<(), String> {
-    let actual = rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
+    let actual =
+        rpm(address, expected.len()).ok_or_else(|| format!("{label} sentinel unreadable"))?;
     if actual != expected {
         return Err(format!("{label} sentinel mismatch at 0x{address:X}"));
     }
@@ -839,17 +865,21 @@ fn verify_executable_sha256(module: *mut c_void) -> Result<(), String> {
         return Err("A28 air executable path is unavailable or truncated".into());
     }
     path.truncate(length as usize);
-    let path = std::path::PathBuf::from(String::from_utf16(&path).map_err(|_| {
-        "A28 air executable path is not valid UTF-16".to_string()
-    })?);
-    let mut file = File::open(path).map_err(|error| format!("A28 air executable open failed: {error}"))?;
+    let path = std::path::PathBuf::from(
+        String::from_utf16(&path)
+            .map_err(|_| "A28 air executable path is not valid UTF-16".to_string())?,
+    );
+    let mut file =
+        File::open(path).map_err(|error| format!("A28 air executable open failed: {error}"))?;
     let mut hasher = Sha256::new();
     let mut chunk = [0u8; 1024 * 1024];
     loop {
         let read = file
             .read(&mut chunk)
             .map_err(|error| format!("A28 air executable hash read failed: {error}"))?;
-        if read == 0 { break; }
+        if read == 0 {
+            break;
+        }
         hasher.update(&chunk[..read]);
     }
     if format!("{:x}", hasher.finalize()) != A729_EXECUTABLE_SHA256 {
@@ -881,17 +911,31 @@ fn read_pair(address: usize) -> Option<(u32, u32)> {
     Some((read_u32(address)?, read_u32(address + 4)?))
 }
 
-fn read_u8(address: usize) -> Option<u8> { Some(*rpm(address, 1)?.first()?) }
-fn read_u32(address: usize) -> Option<u32> { Some(u32::from_le_bytes(rpm(address, 4)?.try_into().ok()?)) }
-fn read_i32(address: usize) -> Option<i32> { Some(i32::from_le_bytes(rpm(address, 4)?.try_into().ok()?)) }
-fn read_u64(address: usize) -> Option<u64> { Some(u64::from_le_bytes(rpm(address, 8)?.try_into().ok()?)) }
-fn read_i64(address: usize) -> Option<i64> { Some(i64::from_le_bytes(rpm(address, 8)?.try_into().ok()?)) }
+fn read_u8(address: usize) -> Option<u8> {
+    Some(*rpm(address, 1)?.first()?)
+}
+fn read_u32(address: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(rpm(address, 4)?.try_into().ok()?))
+}
+fn read_i32(address: usize) -> Option<i32> {
+    Some(i32::from_le_bytes(rpm(address, 4)?.try_into().ok()?))
+}
+fn read_u64(address: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(rpm(address, 8)?.try_into().ok()?))
+}
+fn read_i64(address: usize) -> Option<i64> {
+    Some(i64::from_le_bytes(rpm(address, 8)?.try_into().ok()?))
+}
 fn read_usize(address: usize) -> Option<usize> {
-    Some(usize::from_le_bytes(rpm(address, mem::size_of::<usize>())?.try_into().ok()?))
+    Some(usize::from_le_bytes(
+        rpm(address, mem::size_of::<usize>())?.try_into().ok()?,
+    ))
 }
 
 fn rpm(address: usize, len: usize) -> Option<Vec<u8>> {
-    if address == 0 { return None; }
+    if address == 0 {
+        return None;
+    }
     let mut output = vec![0u8; len];
     let mut read = 0usize;
     let ok = unsafe {

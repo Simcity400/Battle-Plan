@@ -1,16 +1,3 @@
-//! Abstract seams plus the real Windows adapters. `ProcessEventSource`,
-//! `ProcessProbe`, `Clock`, `PayloadStager`, and `WorkerSpawner` support
-//! deterministic race, PID-reuse, and WMI-loss tests.
-//!
-//! Everything the coordinator depends on that touches the OS or another process
-//! is a trait here, so the coordinator's logic is driven by fakes in tests and
-//! by these adapters in production. The real adapters use the same raw
-//! `extern "system"` FFI style already established in `modset.rs`; this crate
-//! deliberately carries no `windows`/`windows-sys` dependency.
-
-/// Real standard-user WMI process-event source, selected by the
-/// production `run_supervisor`. [`SnapshotOnlyEventSource`] remains the explicit
-/// degraded/fake source used by tests and fallback compositions.
 pub mod wmi;
 
 use std::path::{Path, PathBuf};
@@ -18,25 +5,13 @@ use std::time::Instant;
 
 use super::identity::{ProcessIdentity, ProcessKey};
 
-/// Monotonic millisecond clock. Abstracted so tests advance time deterministically.
 pub trait Clock: Send {
     fn now_ms(&self) -> u64;
 }
 
-/// A live process enumeration + per-pid identity probe. Snapshot is the
-/// authoritative liveness source; identify resolves the full identity from the
-/// live handle.
 pub trait ProcessProbe: Send {
-    /// All currently-live processes as `(pid, image-name-or-path)`. Used to find
-    /// `hoi4.exe` candidates and to prove liveness during reconciliation.
     fn snapshot(&self) -> Result<ProcessSnapshot, String>;
-    /// Resolve the full identity of `pid` from its live OS handle. Fails closed
-    /// (Err) if any authority field (creation time, path, session, SID) cannot
-    /// be read — the coordinator then holds the candidate in `WaitingForIdentity`.
     fn identify(&self, pid: u32) -> Result<ProcessIdentity, String>;
-    /// Prove whether the exact staged collector from a completed attempt is
-    /// still mapped in the target. Unsupported or incomplete enumeration is an
-    /// error, never an inferred absence.
     fn collector_module_residency(
         &self,
         _pid: u32,
@@ -52,16 +27,10 @@ pub enum CollectorModuleResidency {
     Absent,
 }
 
-/// One Toolhelp enumeration together with the witness needed before absence may
-/// be interpreted as process exit. Positive entries from an incomplete snapshot
-/// remain useful for discovery, but an incomplete snapshot can never prove that
-/// an unlisted process exited.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessSnapshot {
     pub entries: Vec<SnapshotEntry>,
     pub complete: bool,
-    /// Present only when `complete == false`; retained for diagnostics instead
-    /// of silently presenting a truncated list as authoritative.
     pub incomplete_reason: Option<String>,
 }
 
@@ -86,57 +55,26 @@ impl ProcessSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SnapshotEntry {
     pub pid: u32,
-    /// Executable basename as reported by the enumeration (Toolhelp gives just
-    /// the basename; that is enough for the cheap `hoi4.exe` pre-filter).
     pub name: String,
 }
 
-/// Low-latency push source (WMI in production). Health drives the reconciliation
-/// cadence. `drain_events` is non-blocking.
 pub trait ProcessEventSource: Send {
     fn drain_events(&mut self) -> Vec<RawProcessEvent>;
     fn health(&self) -> super::policy::WatcherHealth;
 }
 
-/// A raw push event before identity resolution. Start events carry only the pid
-/// and name; the coordinator probes to get the FILETIME/identity. WMI SID and
-/// session fields are hints only.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RawProcessEvent {
     Start { pid: u32, name: String },
     Stop { pid: u32, name: String },
 }
 
-/// Window-readiness and modset resolution for a resolved identity.
 pub trait AttachEnvironment: Send {
-    /// The injector requires a visible PID-owned window; until then
-    /// the candidate stays in `WaitingForWindow`.
-    /// PID alone is not authority because Windows may reuse it while a
-    /// candidate waits or while its payload is staged.
     fn has_visible_window(&self, key: ProcessKey) -> bool;
-    /// Resolve the modset for this identity. `resolved == false` blocks
-    /// injection while preserving the resolution errors.
     fn resolve_modset(&self, identity: &ProcessIdentity) -> ModsetResolution;
-    /// Is this game a build the recorder's offsets were derived against?
-    ///
-    /// REFUSE-BEFORE-MUTATION (owner ruling 2026-08-18). The coordinator asks
-    /// this while the candidate is still only *detected* — before a payload is
-    /// staged, before a worker is spawned, and long before anything is written
-    /// into the game. Implementations must therefore answer from files on disk,
-    /// reached from the identity's own image path, and must never open the
-    /// target for write, allocate in it, or read its memory.
-    ///
-    /// Fail closed: anything other than a proven-supported executable is
-    /// [`GameBuildAdmission::Unsupported`], whose payload is the exact sentence
-    /// the host is shown.
     fn game_build_admission(&self, identity: &ProcessIdentity) -> GameBuildAdmission;
 }
 
-/// The coordinator's view of [`AttachEnvironment::game_build_admission`].
-///
-/// Deliberately carries the finished message rather than the observation: one
-/// function in `game_build` writes the host's sentence, and every surface —
-/// window, console, receipt, journal — repeats that one string.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GameBuildAdmission {
     Supported,
@@ -149,13 +87,7 @@ pub struct ModsetResolution {
     pub reasons: Vec<String>,
 }
 
-/// Stages a fresh, never-before-used collector DLL directory per attempt. A
-/// path hooked into a live game is never reused.
 pub trait PayloadStager: Send {
-    /// Retire the durable one-injection commitment only after the coordinator
-    /// has proved the exact prior staged DLL absent from the same live process
-    /// identity. Implementations must validate that the marker names that DLL
-    /// generation and make the operation idempotent across crashes.
     fn rearm_after_proven_unload(
         &self,
         key: ProcessKey,
@@ -176,23 +108,13 @@ pub struct StagedPayload {
     pub staging_dir: PathBuf,
     pub dll_path: PathBuf,
     pub control_path: PathBuf,
-    /// SHA-256 of the copied DLL; a mismatch vs the source hash fails closed.
     pub dll_sha256: String,
     pub source_sha256: String,
-    /// Coordinator-minted raw token actually written to the worker control file
-    /// and used in the data/control pipe names. It is never journalled.
     pub pipe_token: String,
-    /// Hash of that exact raw token. Only this derivative is journalled.
     pub pipe_token_hash: String,
-    /// A prior commitment for this exact PID+FILETIME was retired only after
-    /// the coordinator proved its exact DLL absent. This authorizes reopening
-    /// the kernel-retained named target job for the next generation.
     pub rearmed_after_proven_unload: bool,
 }
 
-/// Spawns and supervises one `collector_record` worker per game process. The
-/// worker performs the actual single hook injection; the
-/// coordinator never injects directly.
 pub trait WorkerSpawner: Send {
     fn spawn(&self, spec: &WorkerSpec) -> Result<Box<dyn WorkerHandle>, String>;
 }
@@ -204,62 +126,34 @@ pub struct WorkerSpec {
     pub payload: StagedPayload,
     pub out_dir: PathBuf,
     pub session_id: String,
-    /// Fresh challenge echoed by the worker's H4CT proof messages. Like the pipe
-    /// token, this is process-local authority and is never journalled raw.
     pub control_challenge: [u8; 16],
 }
 
-/// A running worker's reported status, polled by the coordinator. Hook success
-/// alone is NOT "attached"; the coordinator only advances on these
-/// worker-proven milestones.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkerStatus {
-    /// Hook installed; waiting for a session-matching heartbeat.
     Handshaking,
     /// Heartbeat matched (pid, pipe token, session, ABI, DLL hash). => WaitingForWorld.
     Attached,
-    /// A complete known-type H4CR record with its type's minimum payload arrived;
-    /// capture is live. Unknown/header-only envelopes never prove this state.
-    Recording { last_confirmed_hour: Option<i64> },
-    /// Folding/packing/verifying.
+    Recording {
+        last_confirmed_hour: Option<i64>,
+    },
     Finalizing,
-    /// Verified replay produced.
-    Complete { replay_path: String },
-    /// Hard failure; carries a reason for the red status card.
-    Failed { reason: String },
-    /// The worker refused because the game is a build this recorder does not
-    /// know, and it published the receipt that says so.
-    ///
-    /// A SEPARATE status from `Failed` because it is a different outcome with a
-    /// different audience. `Failed`'s reason is the worker's last stderr line
-    /// wrapped in "worker exited with …", which for this refusal would keep the
-    /// last line of a five-line sentence and throw away the sentence — and the
-    /// coordinator would journal it as `FinalizeVerifyFailed`, tell the host a
-    /// recording failed, and keep watching for a game that cannot arrive.
-    ///
-    /// `message` is the host-facing sentence. The EXIT CODE decides that this
-    /// variant applies; the wording is recovered, in order, from the worker's
-    /// `GAME_BUILD_UNSUPPORTED_V1.json`, else from the shape-checked trailing
-    /// block of its own log, else from a last-resort sentence that cannot name
-    /// the version. It is never re-derived from the game here.
-    UnsupportedGameBuild { message: String },
+    Complete {
+        replay_path: String,
+    },
+    Failed {
+        reason: String,
+    },
+    UnsupportedGameBuild {
+        message: String,
+    },
 }
 
 pub trait WorkerHandle: Send {
-    /// Non-blocking status poll.
     fn poll(&mut self) -> WorkerStatus;
-    /// Request stop (explicit app quit / process-exit finalize). Product
-    /// implementations must make this cooperative and report finalization;
-    /// legacy adapters that can only hard-kill must fail closed rather than
-    /// reporting a verified completion.
     fn request_stop(&mut self);
 }
 
-// =====================================================================
-// Real adapters
-// =====================================================================
-
-/// Monotonic clock from `Instant`.
 pub struct SystemClock {
     origin: Instant,
 }
@@ -284,10 +178,6 @@ impl Clock for SystemClock {
     }
 }
 
-/// A snapshot-only event source: reports `Degraded` health so the coordinator
-/// relies on reconciliation polling alone. This fallback supports both
-/// app-first and game-first startup with up to the degraded polling interval of
-/// discovery latency.
 #[derive(Default)]
 pub struct SnapshotOnlyEventSource;
 
@@ -296,14 +186,9 @@ impl ProcessEventSource for SnapshotOnlyEventSource {
         Vec::new()
     }
     fn health(&self) -> super::policy::WatcherHealth {
-        // No push channel => permanently in the bounded-poll fallback.
         super::policy::WatcherHealth::Degraded
     }
 }
-
-// ---------------------------------------------------------------------
-// Windows Toolhelp process probe (raw FFI, mirrors modset.rs style).
-// ---------------------------------------------------------------------
 
 #[cfg(windows)]
 mod ffi {
@@ -316,7 +201,7 @@ mod ffi {
     pub const TH32CS_SNAPMODULE32: u32 = 0x0000_0010;
     pub const ERROR_NO_MORE_FILES: u32 = 18;
     pub const TOKEN_QUERY: u32 = 0x0008;
-    pub const TOKEN_USER_CLASS: i32 = 1; // TOKEN_INFORMATION_CLASS::TokenUser
+    pub const TOKEN_USER_CLASS: i32 = 1;
     pub const MAX_PATH: usize = 260;
 
     #[repr(C)]
@@ -404,13 +289,11 @@ mod ffi {
         pub fn LocalFree(mem: *mut c_void) -> *mut c_void;
     }
 
-    /// INVALID_HANDLE_VALUE == (HANDLE)-1.
     pub fn invalid_handle() -> Handle {
         usize::MAX as Handle
     }
 }
 
-/// Real Windows process probe (Toolhelp snapshot + handle-authority identify).
 #[cfg(windows)]
 #[derive(Default)]
 pub struct ToolhelpProbe;
@@ -421,8 +304,6 @@ impl ToolhelpProbe {
         Self
     }
 
-    /// The coordinator's OWN (session_id, sid_hash), used to prove a candidate
-    /// is same-user/same-session. Read once at startup.
     pub fn current_session_and_sid_hash() -> Result<(u32, String), String> {
         unsafe {
             let pid = ffi::GetCurrentProcessId();
@@ -449,8 +330,6 @@ fn process_session_id(pid: u32) -> Result<u32, String> {
     }
 }
 
-/// SHA-256 hex of the process token's user SID string. Raw SID is never
-/// returned.
 #[cfg(windows)]
 unsafe fn process_sid_hash(handle: ffi::Handle) -> Result<String, String> {
     use snapshot::sha256::{to_hex, Sha256};
@@ -460,7 +339,6 @@ unsafe fn process_sid_hash(handle: ffi::Handle) -> Result<String, String> {
     }
     let result = (|| {
         let mut len = 0u32;
-        // First call sizes the buffer.
         ffi::GetTokenInformation(
             token,
             ffi::TOKEN_USER_CLASS,
@@ -488,7 +366,6 @@ unsafe fn process_sid_hash(handle: ffi::Handle) -> Result<String, String> {
         {
             return Err("ConvertSidToStringSidW failed".to_string());
         }
-        // Read the wide string.
         let mut n = 0usize;
         while *str_sid.add(n) != 0 {
             n += 1;
@@ -660,5 +537,4 @@ fn normalized_windows_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
 }

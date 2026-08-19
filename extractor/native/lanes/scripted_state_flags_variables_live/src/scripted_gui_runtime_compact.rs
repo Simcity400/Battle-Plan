@@ -1,15 +1,9 @@
-//! Pointer-free d84 compact carrier for authenticated A38 scripted-GUI frames.
-//!
-//! The codec deliberately stores engine order, effective-VFS winner identity,
-//! explicit unavailable reasons, and tombstones. It does not make d84
-//! schedulable: registry promotion is a separate exact20/live-source gate.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::scripted_gui_runtime_carrier::{
-    collect_and_validate_scripted_gui_runtime, validate_scripted_gui_runtime_frame, CarrierError,
-    portable_unavailable_diagnostic, EngineResult, ExactScriptedGuiRuntimeSource, ScriptedGuiDefinitionIdentity,
-    ScriptedGuiRuntimeFrame, ScriptedGuiRuntimeRow,
+    collect_and_validate_scripted_gui_runtime, portable_unavailable_diagnostic,
+    validate_scripted_gui_runtime_frame, CarrierError, EngineResult, ExactScriptedGuiRuntimeSource,
+    ScriptedGuiDefinitionIdentity, ScriptedGuiRuntimeFrame, ScriptedGuiRuntimeRow,
 };
 
 pub const DOMAIN_ID: u16 = 84;
@@ -25,7 +19,6 @@ pub struct ScriptedGuiRuntimeEnvelope {
     pub elapsed_wall_ms: u64,
     pub status_flags: u32,
     pub frame_hour: u64,
-    /// `None` is source-unavailable, never measured-empty.
     pub frame: Option<ScriptedGuiRuntimeFrame>,
     pub unavailable_reason: Option<String>,
 }

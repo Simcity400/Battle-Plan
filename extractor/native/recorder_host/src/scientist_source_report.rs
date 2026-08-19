@@ -1,5 +1,3 @@
-//! Durable recorder-owned provenance report for production domain 41 DLL scans.
-
 use serde_json::json;
 use snapshot::sha256::Sha256;
 use std::fs::{self, OpenOptions};

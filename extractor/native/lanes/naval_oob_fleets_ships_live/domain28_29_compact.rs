@@ -25,8 +25,6 @@ use compact_record_semantics::{
 
 pub const DOMAIN_OOB_COMMAND: u16 = 28;
 pub const DOMAIN_SHIPS: u16 = 29;
-/// Reserved instrumentation-only PERF domain. It participates in physical
-/// framing/sequence order but never in scheduled-domain coverage or counts.
 pub const RC_PROBE_DOMAIN_ID: u16 = 250;
 
 pub const COMPACT_RECORD_TYPE_DOMAIN_PERF: u16 = 1;
@@ -80,8 +78,6 @@ pub const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 pub const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
 pub const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
-/// Province id space STRUCTURAL width (lane IA, `claim_347234c20a542ca79032`).
-/// Was `1_000_000`, a guess.
 pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
 pub const COMPACT_OOB_MAX_LEADER_SKILL: u32 = 15;
@@ -169,9 +165,6 @@ impl NavalOobGateSummary {
     }
 }
 
-/// Validate a d28/d29 production stream for an explicitly requested number of
-/// game-hour advancements. Because both endpoints are closed frames, `N`
-/// advancements require at least `N + 1` consecutive healthy FRAME_ENDs.
 pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOobGateSummary {
     let required_closed_frame_count = minimum_game_hour_advancements
         .checked_add(1)
@@ -609,8 +602,6 @@ fn validate_frame_end_authority(
     owned: &OwnedFrameAuthority,
     errors: &mut Vec<String>,
 ) {
-    // Exact length is already enforced by canonical record semantics. Keep the
-    // guard so this helper remains panic-free if called independently later.
     if payload.len() != 32 {
         errors.push(format!(
             "offset {offset}: FRAME_END payload length {} is not 32",

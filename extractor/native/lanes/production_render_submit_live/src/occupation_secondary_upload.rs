@@ -6,8 +6,7 @@ use portable_render_stream::{
     SNOW_MUD_UPLOAD_TARGET_RVA,
 };
 
-pub const OCCUPATION_SECONDARY_TEXTURE_SCHEMA: &str =
-    "hoi4.a729.occupation_secondary_upload.v1";
+pub const OCCUPATION_SECONDARY_TEXTURE_SCHEMA: &str = "hoi4.a729.occupation_secondary_upload.v1";
 pub use portable_render_stream::{
     OCCUPATION_SECONDARY_ALPHA, OCCUPATION_SECONDARY_BYTES_PER_TEXEL,
     OCCUPATION_SECONDARY_BYTE_LENGTH, OCCUPATION_SECONDARY_COVERAGE_ALPHAS,
@@ -15,18 +14,10 @@ pub use portable_render_stream::{
     OCCUPATION_SECONDARY_TARGET_BINDING, OCCUPATION_SECONDARY_WIDTH,
 };
 
-/// Exact final CPU raster worker proven in
-/// `G3_OCCUPATION_PRODUCER_RE_20260720`. The live hook remains on the shared
-/// upload helper; this identity records the semantic producer law and is not a
-/// claim that the hook intercepted this function directly.
 pub const OCCUPATION_SECONDARY_RASTER_WORKER_RVA: u32 = 0x019c_8a10;
 pub const OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256: &str =
     "8915c1e7db348c9ed057dc2d1014ff472288c199f534ae7a9429625b895f996b";
 
-/// Pointer-bearing candidate copied at the already-authenticated generic
-/// texture upload helper immediately before UpdateSubresource. It remains
-/// extractor-local until a selected-submit resource snapshot and reflected
-/// `ProvinceSecondaryColorMap` consumer join both succeed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawOccupationSecondaryTextureObservation {
     pub schema: String,
@@ -41,7 +32,6 @@ pub struct RawOccupationSecondaryTextureObservation {
     pub producer_game_hour_raw: i32,
     pub producer_qpc_ticks: u64,
     pub producer_qpc_frequency_hz: u64,
-    /// Process-local join key. It is discarded before portable serialization.
     pub resource_ptr: usize,
     pub width: u32,
     pub height: u32,
@@ -54,7 +44,10 @@ pub struct RawOccupationSecondaryTextureObservation {
 impl RawOccupationSecondaryTextureObservation {
     pub fn has_exact_nontransparent_alpha_law(&self) -> bool {
         let mut nontransparent = false;
-        for texel in self.bytes.chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize) {
+        for texel in self
+            .bytes
+            .chunks_exact(OCCUPATION_SECONDARY_BYTES_PER_TEXEL as usize)
+        {
             if !OCCUPATION_SECONDARY_COVERAGE_ALPHAS.contains(&texel[3]) {
                 return false;
             }
@@ -72,8 +65,6 @@ impl RawOccupationSecondaryTextureObservation {
     }
 }
 
-/// Promote only after the collector has independently proven the exact
-/// resource bytes and the reflected terrain-t6/water-t3 consumer topology.
 pub fn promote_occupation_secondary_texture_observation(
     raw: &RawOccupationSecondaryTextureObservation,
     selected_present: &SelectedPresentReceipt,
@@ -86,8 +77,7 @@ pub fn promote_occupation_secondary_texture_observation(
     if raw.schema != OCCUPATION_SECONDARY_TEXTURE_SCHEMA
         || raw.executable_sha256 != A729_EXECUTABLE_SHA256
         || raw.raster_worker_rva != OCCUPATION_SECONDARY_RASTER_WORKER_RVA
-        || raw.raster_worker_decompile_sha256
-            != OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256
+        || raw.raster_worker_decompile_sha256 != OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256
         || raw.upload_target_rva != SNOW_MUD_UPLOAD_TARGET_RVA
         || raw.upload_instructions_sha256 != SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256
     {
@@ -186,8 +176,8 @@ mod tests {
             schema: OCCUPATION_SECONDARY_TEXTURE_SCHEMA.into(),
             executable_sha256: A729_EXECUTABLE_SHA256.into(),
             raster_worker_rva: OCCUPATION_SECONDARY_RASTER_WORKER_RVA,
-            raster_worker_decompile_sha256:
-                OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256.into(),
+            raster_worker_decompile_sha256: OCCUPATION_SECONDARY_RASTER_WORKER_DECOMPILE_SHA256
+                .into(),
             upload_target_rva: SNOW_MUD_UPLOAD_TARGET_RVA,
             upload_instructions_sha256: SNOW_MUD_UPLOAD_INSTRUCTIONS_SHA256.into(),
             process_start_nonce: 1,

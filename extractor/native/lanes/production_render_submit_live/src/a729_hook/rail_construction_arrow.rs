@@ -1,11 +1,3 @@
-//! Exact a729 railway-construction arrow producer observation.
-//!
-//! `CRailwayGfx` during the D80 map-scene pass. This module preserves only the
-//! pointer-free semantic key, the exact type-2/type-3 prototype selection, and
-//! the entity instance identity already assigned by the general entity hook.
-//! It never fabricates an entity for a late attach: an arrow is admitted only
-//! when the same hook epoch observed its entity factory result.
-
 use super::{read_u32, read_u8, read_usize, reject};
 use core::ffi::c_void;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -28,8 +20,6 @@ pub struct RawRailConstructionArrowVisualObservation {
     pub producer_rva: u32,
     pub province_lo: u32,
     pub province_hi: u32,
-    /// Exact edge byte accepted by the producer. Only values 2 and 3 select
-    /// construction-arrow entity prototypes in a729.
     pub edge_type_u8: u8,
     pub entity_instance_id: u64,
     pub entity_registration_token: Option<String>,
@@ -177,10 +167,6 @@ fn endpoint_hash(province_lo: u32, province_hi: u32) -> u32 {
         })
 }
 
-/// Traverse the exact `manager+0x90` chained bucket selected by 32-bit FNV-1a
-/// over the canonical little-endian endpoint pair. A signed marker of -1 at
-/// +0x04 is empty. On a collision, the next record is +0x30 and the byte at
-/// current+0x34 bounds the one-based chain ordinal.
 fn find_entity_ptr(
     manager: usize,
     province_lo: u32,
@@ -268,7 +254,6 @@ unsafe extern "system" fn hook_producer(
         return;
     };
     let Some(entity) = state.entities.get(&entity_ptr).cloned() else {
-        // Late attach or a missed entity factory is not promotable.
         drop(state);
         reject();
         return;

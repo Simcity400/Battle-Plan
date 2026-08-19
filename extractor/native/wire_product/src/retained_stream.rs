@@ -1,9 +1,7 @@
 use crate::model::ProductError;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use zstd::stream::raw::{
-    DParameter, Decoder as RawDecoder, InBuffer, Operation, OutBuffer,
-};
+use zstd::stream::raw::{DParameter, Decoder as RawDecoder, InBuffer, Operation, OutBuffer};
 
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
 const BUFFER_BYTES: usize = 1 << 20;

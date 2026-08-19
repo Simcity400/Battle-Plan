@@ -1,20 +1,6 @@
-//! XUI21 exact fired-event producer carrier (d75).
-//!
-//! Only the authenticated a729 inline-hook runtime may construct a production
-//! frame. Save ledgers and delayed-event polling deliberately cannot implement
-//! [`ExactFiredEventSource`].
-
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-/// THE TEST BINARY'S ALLOCATOR IS A COUNTER, so this crate's frozen windows can
-/// be proved allocation-free by measurement and not only by reading their text.
-///
-/// `#[cfg(test)]` and therefore present in no shipped build: the collector
-/// cdylib still declares no `#[global_allocator]` at all, which is exactly why
-/// an allocation inside a stopped window is a hang -- Rust's System allocator
-/// is `HeapAlloc` on the PROCESS DEFAULT HEAP, the same heap the game's own
-/// threads reach through ordinary Win32 calls.
 #[cfg(test)]
 #[global_allocator]
 static FROZEN_WINDOW_ALLOCATION_PROBE: freeze_window_audit::AllocationProbe =
@@ -30,10 +16,6 @@ pub mod a729_runtime;
 pub const DOMAIN_ID: u16 = 75;
 pub const DOMAIN_NAME: &str = "fired_event_popups_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"FEV1");
-/// v3 retains the independently authenticated runtime-text joins from v2 and
-/// makes semantic-only production explicit: completeness requires the three
-/// semantic hooks, while the legacy materialisation bit remains a literal UI
-/// hook observation and is false in canonical capture.
 pub const SCHEMA_VERSION: u32 = 3;
 pub const AUTHORITY_A729_INLINE_HOOKS: u32 = 1;
 pub const MAX_ROWS: usize = 1_000_000;
@@ -43,11 +25,6 @@ pub const PRODUCER_MANIFEST_SHA256: [u8; 32] = [
     0x24, 0x0d, 0x75, 0x00, 0xbc, 0xc9, 0x15, 0x14, 0xf5, 0x9d, 0x62, 0x73, 0x9d, 0xf0, 0x26, 0xa5,
     0xa7, 0x6c, 0xce, 0x41, 0xf8, 0x24, 0x92, 0x34, 0x22, 0xcb, 0xe2, 0x53, 0xe0, 0x5d, 0x1c, 0xec,
 ];
-/// Exact-a729 read-only Ghidra export manifest that certifies the common fire
-/// producer plus the player, AI, timeout-default, and timeout-no-choice hook
-/// routes shared by all five popup classes. Keeping this as a second pin makes
-/// producer-manifest drift fail closed instead of silently changing the static
-/// route authority.
 pub const CERTIFIED_ROUTE_MANIFEST_SHA256: [u8; 32] = [
     0x24, 0x0d, 0x75, 0x00, 0xbc, 0xc9, 0x15, 0x14, 0xf5, 0x9d, 0x62, 0x73, 0x9d, 0xf0, 0x26, 0xa5,
     0xa7, 0x6c, 0xce, 0x41, 0xf8, 0x24, 0x92, 0x34, 0x22, 0xcb, 0xe2, 0x53, 0xe0, 0x5d, 0x1c, 0xec,
@@ -74,9 +51,7 @@ pub enum ResolutionReason {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OptionRuntimeTextContext {
-    /// Definition-array ordinal, never the popup-visible position.
     pub definition_ordinal: u16,
-    /// Exact join key into A25. Process-local textbox owners never cross wire.
     pub context_id: String,
 }
 
@@ -97,8 +72,6 @@ pub struct FiredEventRow {
     pub timeout_tick: u64,
     pub resolved_tick: Option<u64>,
     pub resolution_reason: ResolutionReason,
-    /// Independent A25 joins are required because title, description, and each
-    /// visible option are distinct textbox owners with distinct source tokens.
     pub runtime_title_text_context_id: Option<String>,
     pub runtime_description_text_context_id: Option<String>,
     pub runtime_option_text_contexts: Vec<OptionRuntimeTextContext>,
@@ -108,17 +81,9 @@ pub struct FiredEventRow {
 pub struct HookTelemetry {
     pub fire_hook_validated: bool,
     pub option_hook_validated: bool,
-    /// Literal observation of the popup-materialisation/UI hook. This remains
-    /// false in production because the semantic-only roster does not install
-    /// or validate that UI detour. It may be true only in the explicitly
-    /// unshipped full-evidence profile.
     pub materialisation_hook_validated: bool,
     pub timeout_hook_validated: bool,
-    /// Wire-compatible name for exact-build popup-class route certification.
-    /// This does not claim every class occurred in the current capture.
     pub all_event_classes_covered: bool,
-    /// Wire-compatible name for exact-build terminal-route certification.
-    /// This does not claim all four paths occurred in the current capture.
     pub player_ai_timeout_no_choice_covered: bool,
     pub capture_start_baseline_complete: bool,
     pub queue_capacity: u32,
@@ -171,8 +136,6 @@ mod exact_source_seal {
     pub trait Sealed {}
 }
 
-/// Sealed producer boundary. Downstream crates may consume an installed source
-/// but cannot implement this trait for a save ledger or d64 delayed-event poll.
 pub trait ExactFiredEventSource: exact_source_seal::Sealed {
     fn is_authenticated_a729_hook_source(&self) -> bool;
     fn producer_manifest_sha256(&self) -> [u8; 32];
@@ -183,14 +146,6 @@ pub trait ExactFiredEventSource: exact_source_seal::Sealed {
     ) -> Result<(HookTelemetry, Vec<FiredEventRow>), String>;
 }
 
-/// Transactional ledger owned by the installed hook runtime. Callback writes
-/// wait for the short ledger critical section instead of treating the owner's
-/// cumulative snapshot clone as producer loss. The runtime epoch makes a
-/// snapshot retry if any callback overlaps it.
-/// Process-local callback ledger. This is deliberately crate-private: the only
-/// production [`ExactFiredEventSource`] is the installed hook runtime. A save
-/// ledger, delayed-event poller, or downstream crate cannot construct an
-/// authenticated d75 source by filling this buffer directly.
 pub(crate) struct A729EventLedger {
     state: Mutex<LedgerState>,
     capacity: usize,
@@ -250,12 +205,6 @@ impl A729EventLedger {
         }
     }
 
-    /// Drops every retained fired-event row and reports what was discarded.
-    ///
-    /// This exists only for the production install abort: a partially
-    /// installed hook roster can never assemble the terminal DATA frame these
-    /// rows would have been published into, so they are dropped explicitly and
-    /// counted rather than left as unresolved custody blocking hook removal.
     pub(crate) fn discard_retained_rows(&self) -> production_hook_receipt::InstallAbortDiscard {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let telemetry = state.telemetry.clone();
@@ -271,12 +220,7 @@ impl A729EventLedger {
             poisoned: !telemetry.zero_gap(),
         };
         state.rows.clear();
-        // The counters are discarded with the rows they describe. Leaving them
-        // set would make a second call -- which happens when the physical hook
         // release fails and the abort is retried -- report the same diagnostics
-        // again, multiplying the total by the number of attempts. The validated
-        // route/hook bits are deliberately left alone: they are not counters,
-        // and `poisoned` merges idempotently.
         state.telemetry.dropped_fire_rows = 0;
         state.telemetry.dropped_resolution_rows = 0;
         state.telemetry.correlation_failures = 0;
@@ -285,10 +229,6 @@ impl A729EventLedger {
         discard
     }
 
-    /// Marks the facts proved by successful atomic installation of the pinned
-    /// hook roster. `materialisation_hook_installed` is literal: canonical
-    /// semantic-only production passes false, while the explicitly unshipped
-    /// nine-site evidence profile passes true.
     pub(crate) fn record_installation_validation(&self, materialisation_hook_installed: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.fire_hook_validated = true;
@@ -304,16 +244,7 @@ impl A729EventLedger {
         }
     }
 
-    /// Records the separately pinned exact-build route certification. These
-    /// bits describe hook-route authority, not branches exercised again in
-    /// this capture. Per-capture completeness remains owned by the baseline,
-    /// bounded queue, correlation counters, definition joins, and fired-ledger
-    /// shadow below.
-    pub(crate) fn record_route_certification(
-        &self,
-        all_classes: bool,
-        all_resolution_paths: bool,
-    ) {
+    pub(crate) fn record_route_certification(&self, all_classes: bool, all_resolution_paths: bool) {
         if let Ok(mut state) = self.state.lock() {
             state.telemetry.all_event_classes_covered = all_classes;
             state.telemetry.player_ai_timeout_no_choice_covered = all_resolution_paths;
@@ -451,9 +382,6 @@ impl A729EventLedger {
     }
 }
 
-// Unit tests exercise the bounded ledger independently. Production builds do
-// not expose this trait implementation; only A729RuntimeSource can cross the
-// authenticated source boundary.
 #[cfg(test)]
 impl exact_source_seal::Sealed for A729EventLedger {}
 
@@ -531,9 +459,6 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
         {
             return invalid("visible option ordinals not strictly ordered");
         }
-        // AI and hidden firings have an exact selected definition ordinal but
-        // no popup materialisation list. Once any popup presentation has been
-        // observed, however, the chosen ordinal must belong to that exact list.
         let presentation_materialised = !row.visible_option_ordinals.is_empty()
             || row.selected_desc_key.is_some()
             || row.shown_picture_gfx.is_some();
@@ -579,10 +504,6 @@ pub fn validate_frame(frame: &FiredEventFrame) -> Result<(), CarrierError> {
                 if row.resolved_tick.is_none() && row.chosen_option_ordinal.is_none() => {}
             ResolutionReason::Selected
                 if row.resolved_tick.is_some() && row.chosen_option_ordinal.is_some() => {}
-            // The authenticated timeout producer has two distinct outcomes:
-            // it applies the first admitted definition option when one exists,
-            // or closes with no choice when none is admitted.  Preserve the
-            // former ordinal instead of collapsing both paths to `None`.
             ResolutionReason::Timeout if row.resolved_tick.is_some() => {}
             _ => return invalid("resolution fields disagree"),
         }
@@ -843,9 +764,6 @@ fn opt_nonempty(v: Option<&str>, l: &str) -> Result<(), CarrierError> {
     v.map_or(Ok(()), |v| nonempty(v, l))
 }
 fn tag(v: &str) -> Result<(), CarrierError> {
-    // A D75 recipient is a real country, so the no-country sentinel stays
-    // refused. Dynamic tags such as `D04` are ordinary countries; see
-    // `compact_contract::country_tag` for the engine rule and its evidence.
     if compact_contract::country_tag::is_engine_country_tag(v) {
         Ok(())
     } else {
@@ -1008,10 +926,7 @@ mod tests {
 
     #[test]
     fn a_retried_install_abort_discard_never_counts_the_same_ledger_twice() {
-        // The first abort clears the ledger and banks its count; if the
         // physical hook release then fails, the abort is retried. The retry
-        // must contribute nothing, or the reported discard grows with every
-        // attempt.
         let ledger = A729EventLedger::new(1);
         for sequence in [10, 11] {
             ledger.record_fire(FireInput {
@@ -1108,9 +1023,6 @@ mod tests {
     fn ledger_preserves_repeated_same_hour_ids_by_sequence_and_no_choice_timeout() {
         let ledger = A729EventLedger::new(8);
         ledger.authenticate_installation_and_route_certification(true, true, true);
-        // Hooked live dispatch can arrive before the post-install pending
-        // baseline enumeration. Engine sequence, not insertion order, owns the
-        // cumulative history order.
         for sequence in [11, 10] {
             ledger.record_fire(FireInput {
                 event_id: "germany.1".into(),
@@ -1264,49 +1176,9 @@ mod tests {
     }
 }
 
-/// EVERY HELD-FREEZE WINDOW IN THIS CRATE, READ.
-///
-/// This crate takes `inline_detour::freeze_process()` directly, which stops
-/// every other thread of the game. Until the guard drops, an allocation or a
-/// lock here is a HANG and not a slow path: the lock may be held by a thread
-/// that can no longer run, and the collector declares no `#[global_allocator]`,
-/// so Rust's allocator is `HeapAlloc` on the PROCESS DEFAULT HEAP -- the same
-/// heap the game's own threads reach through ordinary Win32 calls.
-///
-/// `inline_detour` has enforced this on its own windows for a long time. This
-/// crate did not, and the audit found real defects the first time it ran.
-///
-/// What production change would make this fail? Building an error string,
-/// collecting an iterator, taking a mutex, or growing a vector between the
-/// freeze and its drop -- at any call depth inside this crate, in any file
-/// under `src/`, including one added after this test was written.
 #[cfg(test)]
 mod frozen_window_audit_tests {
-    /// How many findings this crate still carries, and WHICH ones.
-    ///
-    /// THE COUNT ALONE IS NOT A RATCHET: fixing one finding while adding
-    /// another leaves it unchanged. The fingerprint is over the sorted
-    /// findings, so any change to which ones exist fails here even when there
-    /// are the same number of them. Both may only move when a human decides
-    /// they should, and only DOWNWARD.
-    ///
-    /// All remaining findings have one cause. `install_sites` does not
-    /// drop the freeze it takes: it moves the guard into the returned
     /// `InstalledHookSet` and `publish()` releases it, from `a729_runtime.rs`.
-    /// So the window is not bounded by the function that took it, and
-    /// everything the scan can still see in that function is reported inside
-    /// it -- the `Vec::new`, the `Box::new` and the `.lock(` on the recovery
-    /// custody path, and `InstalledHook::install`'s `to_vec` and receipt
-    /// message.
-    ///
-    /// THAT IS DELIBERATE AND CANNOT BE UNPICKED HERE. Holding one freeze from
-    /// the byte patching through to the admission gate opening is what buys
-    /// exactly-once observation: open the gate earlier and an event that fires
-    /// before the baseline is read is counted twice; read the baseline earlier
-    /// and one that fires after it is lost. Closing it needs the baseline to
-    /// become idempotent against the live detour on the game's own instance id,
-    /// and closing it requires a prepared-baseline/validate/commit protocol
-    /// that is idempotent against the live detour on the game's own instance id.
     const OPEN_FINDINGS: usize = 6;
     const OPEN_FINDINGS_FINGERPRINT: u64 = 14225969886152033195u64;
 

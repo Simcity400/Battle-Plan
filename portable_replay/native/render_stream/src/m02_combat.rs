@@ -1,10 +1,3 @@
-//! Portable M02 combat-indicator carrier.
-//!
-//! The extractor and renderer communicate only through this value.  The
-//! carrier intentionally contains the exact evaluated indicator inputs and
-//! exact draw packets.  It does not derive combat presentation from a save,
-//! a frozen vanilla catalog, screen pixels, or process-local pointers.
-
 use super::{
     check_sha256, decimal_u64, validate_static_map_draw, PreparedRenderTarget, StaticMapDraw,
     UsedContentKey,
@@ -24,15 +17,9 @@ pub struct M02CombatFrame {
     pub first_sequence: u64,
     #[serde(with = "decimal_u64")]
     pub last_sequence: u64,
-    /// Complete authenticated draw frontier of the containing UI pass. Every
-    /// M02 draw ordinal is global in that pass and must be below this count.
     pub ui_pass_draw_count: u32,
-    /// The five discriminating laws accepted for this carrier version.  This
-    /// must be the exact A-E set; it is not per-row gameplay state.
     pub validated_laws: Vec<M02LawState>,
     pub indicators: Vec<M02CombatIndicator>,
-    /// Exact cross-indicator draw order.  No consumer may sort by position,
-    /// combat handle, progress, or asset name.
     pub ordered_draws: Vec<M02CombatDrawRef>,
 }
 
@@ -100,8 +87,6 @@ impl<T> ExactM02Field<T> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct M02CombatIndicator {
-    /// Exact eight-byte engine combat handle in little-endian byte order.
-    /// Process-local semantic object pointers are forbidden.
     pub stable_combat_handle_le_hex: String,
     pub kind: M02CombatKind,
     #[serde(with = "decimal_u64")]
@@ -115,13 +100,9 @@ pub struct M02CombatIndicator {
     pub fog_of_war: ExactM02Field<M02FogState>,
     pub visible: ExactM02Field<bool>,
     pub overlap: ExactM02Field<M02OverlapState>,
-    /// Exact input to the `350.0f < scale` selector, not reconstructed camera
-    /// height.  `small_scale` is the authenticated comparator result.
     pub scale_f32_bits: ExactM02Field<u32>,
     pub small_scale: ExactM02Field<bool>,
     pub raw_widget_states: Vec<M02WidgetState>,
-    /// Content actually used by this indicator, resolved through the effective
-    /// playback VFS.  No vanilla asset path or payload is supplied by default.
     pub used_content: Vec<UsedContentKey>,
     pub draws: Vec<M02CombatDraw>,
 }
@@ -164,7 +145,6 @@ pub struct M02OverlapState {
 pub struct M02ResultState {
     pub winner_country_id: u32,
     pub observer_relation: M02ObserverRelation,
-    /// Exact producer byte copied from active +0x10C to result +0x128.
     pub port_strike_byte_0x128: u8,
     pub presentation: M02ResultPresentation,
 }
@@ -189,7 +169,6 @@ pub enum M02ResultPresentation {
 pub struct M02WidgetState {
     pub semantic_role: String,
     pub owner_offset: u32,
-    /// Pointer-free, canonical raw widget state actually consumed by the draw.
     pub canonical_bytes: Vec<u8>,
     pub canonical_sha256: String,
 }

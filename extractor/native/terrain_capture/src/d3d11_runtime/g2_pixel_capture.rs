@@ -1,11 +1,3 @@
-//! Legacy diagnostic-only G2 pre-first-observed-Draw readback.
-//!
-//! This module captures inside the standalone terrain diagnostic hook after two
-//! creation-cache shader observations and before that observed Draw executes.
-//! It does not prove the engine post-process boundary, does not use the
-//! production witness schema, and is never admissible to the G2 materializer or
-//! production replay package.
-
 use super::*;
 use snapshot::sha256::{to_hex, Sha256};
 
@@ -41,9 +33,15 @@ fn validate_control(control: &G2PixelCaptureControl) -> Result<(), String> {
         return Err("G2 pixel capture control has an empty identity field".to_string());
     }
     for (name, value) in [
-        ("authority_exe_sha256", control.authority_exe_sha256.as_str()),
+        (
+            "authority_exe_sha256",
+            control.authority_exe_sha256.as_str(),
+        ),
         ("launch_epoch_sha256", control.launch_epoch_sha256.as_str()),
-        ("capture_receipt_sha256", control.capture_receipt_sha256.as_str()),
+        (
+            "capture_receipt_sha256",
+            control.capture_receipt_sha256.as_str(),
+        ),
         (
             "effective_vfs_manifest_sha256",
             control.effective_vfs_manifest_sha256.as_str(),
@@ -52,11 +50,19 @@ fn validate_control(control: &G2PixelCaptureControl) -> Result<(), String> {
             "content_manifest_digest_sha256",
             control.content_manifest_digest_sha256.as_str(),
         ),
-        ("settings_file_sha256", control.settings_file_sha256.as_str()),
-        ("camera_payload_sha256", control.camera_payload_sha256.as_str()),
+        (
+            "settings_file_sha256",
+            control.settings_file_sha256.as_str(),
+        ),
+        (
+            "camera_payload_sha256",
+            control.camera_payload_sha256.as_str(),
+        ),
     ] {
         if !canonical_sha256(value) {
-            return Err(format!("G2 pixel capture control {name} is not canonical SHA-256"));
+            return Err(format!(
+                "G2 pixel capture control {name} is not canonical SHA-256"
+            ));
         }
     }
     if control.authority_exe_sha256
@@ -322,9 +328,8 @@ pub(super) unsafe fn capture_before_first_ui_draw(
             ));
         }
         let capture_context_sha256 = sha256_bytes(
-            &fs::read(&control.capture_context_path).map_err(|error| {
-                format!("G2 capture context became unreadable: {error}")
-            })?,
+            &fs::read(&control.capture_context_path)
+                .map_err(|error| format!("G2 capture context became unreadable: {error}"))?,
         );
         let (desc, pixels) = unsafe { backbuffer_bgra(context, backbuffer)? };
         let bmp = top_down_bgra_bmp(desc.Width, desc.Height, &pixels)?;

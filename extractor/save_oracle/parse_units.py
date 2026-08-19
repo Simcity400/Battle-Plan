@@ -47,8 +47,6 @@ import json
 import sys
 from pathlib import Path
 
-# Reuse the existing tolerant tokenizer + melt/discovery helpers. Do NOT
-# duplicate or modify them.
 import parse_save as ps
 from parse_save import (
     Tokenizer,
@@ -60,9 +58,6 @@ from parse_save import (
 )
 
 
-# ---------------------------------------------------------------------------
-# Small typed readers built on the shared tokenizer primitives
-# ---------------------------------------------------------------------------
 
 def _read_id_block(tz: Tokenizer):
     """Read an ``{ id=<n> type=<n> }`` block (LBRACE already consumed).
@@ -100,9 +95,6 @@ def _to_float(v):
         return None
 
 
-# ---------------------------------------------------------------------------
-# Top-level section parsers
-# ---------------------------------------------------------------------------
 
 def _parse_division_templates(tz: Tokenizer, templates: dict) -> None:
     """Parse ``division_templates={ division_template={...} ... }``.
@@ -130,9 +122,6 @@ def _parse_division_templates(tz: Tokenizer, templates: dict) -> None:
             if k == "name":
                 name = val
             elif k == "localization_key":
-                # Army-HQ templates carry no `name=`; they store a loc key
-                # (e.g. "ARMY_HQ_TEMPLATE_NAME"). Use it as a name fallback so
-                # such divisions still resolve to a human-meaningful label.
                 loc_key = val
             elif k == "country":
                 country = val
@@ -161,7 +150,6 @@ def _parse_equipments(tz: Tokenizer, equip_index: dict) -> None:
                 else:
                     _skip_block_body(tz)
                 continue
-            # other scalars (creator/origin/max_version) ignored
         if eid is not None:
             equip_index[(eid, etype)] = arch_name
 
@@ -177,14 +165,12 @@ def _parse_countries_units(tz: Tokenizer, raw_divisions: list) -> None:
     for tag, opener in iter_block_entries(tz):
         if opener is not LBRACE:
             continue
-        # Inside one country block.
         for k, op in iter_block_entries(tz):
             if op is LBRACE:
                 if k == "units":
                     _parse_units_block(tz, raw_divisions)
                 else:
                     _skip_block_body(tz)
-            # scalar country fields ignored
 
 
 def _parse_units_block(tz: Tokenizer, raw_divisions: list) -> None:
@@ -193,13 +179,10 @@ def _parse_units_block(tz: Tokenizer, raw_divisions: list) -> None:
         if op is LBRACE:
             if k == "division":
                 d = _parse_division_block(tz)
-                # Guard: a real division has logical_country (owner). Decoys
-                # (handle-refs) never reach here, but keep the guard anyway.
                 if d is not None and d.get("owner"):
                     raw_divisions.append(d)
             else:
                 _skip_block_body(tz)
-        # bare atoms inside units (none expected) ignored
 
 
 def _parse_division_block(tz: Tokenizer):
@@ -209,16 +192,14 @@ def _parse_division_block(tz: Tokenizer):
         "div_type": None,
         "owner": None,
         "location_province": None,
-        "template_id": None,   # (id,type) tuple, joined later
+        "template_id": None,
         "organisation": None,
         "strength": None,
-        "equipment": [],       # list of (id,type,amount)
+        "equipment": [],
     }
     for k, op in iter_block_entries(tz):
         if op is LBRACE:
             if k == "id":
-                # id={id,type} appears twice (verified identical); first wins,
-                # subsequent reads are harmless overwrites with the same value.
                 _id, _type = _read_id_block(tz)
                 if div["div_id"] is None:
                     div["div_id"] = _id
@@ -271,9 +252,6 @@ def _parse_equipment_list(tz: Tokenizer):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Driver: one streaming pass at depth 0, collect raw, then join
-# ---------------------------------------------------------------------------
 
 def parse_units_text(text: str) -> dict:
     """Parse a melted/plaintext save string into the units result dict.
@@ -282,9 +260,9 @@ def parse_units_text(text: str) -> dict:
     the equipment index in a single top-level pass, then joins afterward.
     """
     tz = Tokenizer(text)
-    templates: dict = {}        # (id,type) -> {name,country,role}
-    equip_index: dict = {}      # (id,type) -> archetype_name
-    raw_divisions: list = []    # pre-join division dicts
+    templates: dict = {}
+    equip_index: dict = {}
+    raw_divisions: list = []
     meta = {"date": None, "version": None, "player": None,
             "player_countries": []}
 
@@ -303,7 +281,7 @@ def parse_units_text(text: str) -> dict:
         nxt = tz.peek()
         if nxt is not ps.EQUALS:
             continue
-        tz.next()  # consume '='
+        tz.next()
         val = tz.next()
         if val is LBRACE:
             if key == "division_templates":
@@ -326,7 +304,6 @@ def parse_units_text(text: str) -> dict:
                 elif key == "player":
                     meta["player"] = sval
 
-    # --- Join phase --------------------------------------------------------
     unknown_template_ids = set()
     unknown_equipment_ids = set()
     divisions = []
@@ -351,7 +328,7 @@ def parse_units_text(text: str) -> dict:
             "div_type": d["div_type"],
             "owner": d["owner"],
             "location_province": d["location_province"],
-            "state_id": None,  # filled by caller (needs province_to_state map)
+            "state_id": None,
             "template_id": tkey[0] if tkey else None,
             "template_type": tkey[1] if tkey else None,
             "template_name": tinfo["name"] if tinfo else None,
@@ -371,9 +348,6 @@ def parse_units_text(text: str) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Province -> state join + aggregates + output
-# ---------------------------------------------------------------------------
 
 def _load_province_to_state(script_dir: Path):
     """Load map_pipeline/assets/province_to_state.json -> {int prov: int state}.
@@ -399,13 +373,11 @@ def build_division_outputs(parsed: dict, prov_to_state: dict,
                            source: Path, was_melted: bool) -> dict:
     divisions = parsed["divisions"]
 
-    # Join province -> state.
     for d in divisions:
         pid = d["location_province"]
         if pid is not None:
             d["state_id"] = prov_to_state.get(pid)
 
-    # Aggregates.
     by_country: dict = {}
     by_template: dict = {}
     for d in divisions:
@@ -416,8 +388,6 @@ def build_division_outputs(parsed: dict, prov_to_state: dict,
 
         tid = d["template_id"]
         ttype = d["template_type"]
-        # Key the aggregate by the FULL Clausewitz key "id:type" so two
-        # templates that share a bare id but differ by type don't collapse.
         tk = f"{tid}:{ttype}" if tid is not None else "??"
         tinfo = parsed["templates"].get((tid, ttype))
         t = by_template.setdefault(tk, {
@@ -428,15 +398,11 @@ def build_division_outputs(parsed: dict, prov_to_state: dict,
         t["count"] += 1
         t["total_strength"] += d["strength"] or 0.0
 
-    # Round aggregate strengths for tidy JSON.
     for c in by_country.values():
         c["total_strength"] = round(c["total_strength"], 2)
     for t in by_template.values():
         t["total_strength"] = round(t["total_strength"], 2)
 
-    # "resolved" = the division's template_id matched a template in the save
-    # (regardless of whether that template carries a name). unknown_template_ids
-    # already counts the genuinely-missing ones, so resolved = n - unknown.
     unknown_template_set = {tuple(t) for t in parsed["unknown_template_ids"]}
     templates_resolved = sum(
         1 for d in divisions
@@ -496,7 +462,6 @@ def validation_report(out: dict) -> str:
     lines.append(f"div w/ state   : {st['divisions_with_state']} "
                  f"(province->state joined)")
 
-    # Top owners by division count.
     bc = sorted(out["by_country"].items(),
                 key=lambda kv: kv[1]["count"], reverse=True)
     lines.append("top owners (count / total strength):")
@@ -504,7 +469,6 @@ def validation_report(out: dict) -> str:
         lines.append(f"   {tag}: {agg['count']:>4} divs, "
                      f"str={agg['total_strength']}")
 
-    # A few sample divisions.
     lines.append("sample divisions:")
     for d in out["divisions"][:6]:
         eq0 = d["equipment"][0]["archetype"] if d["equipment"] else None
@@ -516,9 +480,6 @@ def validation_report(out: dict) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(

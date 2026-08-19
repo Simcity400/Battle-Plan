@@ -26,16 +26,9 @@ pub const NAVAL_SUPREMACY_TRAILER_HEADER_LEN: usize = 12;
 pub const NAVAL_SUPREMACY_TRAILER_ROW_LEN: usize = 32;
 pub const MAX_OOB_ID: u32 = 4_000_000;
 pub const MAX_OWNER_TAG_DB_ID: u32 = compact_contract::build_profile::MAX_COMPACT_OWNER_TAG_DB_ID;
-/// The province id space's STRUCTURAL width (lane IA). Was a guess --
-/// `65_535` or `1_000_000`, depending on which copy you read; the tree carried
-/// four different ceilings for one id space. Proven from the engine's signed-int
-/// subscript law at `ai_area.cpp:0xcc` (`claim_347234c20a542ca79032`).
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_REGION_ID: u32 = 100_000;
-/// Exact build-870ebf ENavalMission maximum. Unknown values fail closed.
 pub const MAX_MISSION_ENUM: u32 = 9;
-/// Exact persisted `detached_activity` enum: 0 none, 1 repairing,
-/// 2 moving_to_refit, 3 refitting, 4 reinforcing.
 pub const MAX_MISSION_STATE: u32 = 4;
 pub const MAX_SUNK_CONVOYS: u32 = 1_000_000;
 pub const MAX_NAVAL_SUPREMACY_ROWS: usize = 20_000;
@@ -87,11 +80,6 @@ pub const KNOWN_ROW_FLAGS: u32 = FLAG_HAS_MISSION
     | FLAG_FIXTURE_REQUIRED
     | FLAG_ACTIVE_BATTLE_FIXTURE_REQUIRED
     | FLAG_FIELD_REJECTED;
-/// Schema-v1 positions retained for fixed-width decoding, but forbidden in
-/// production. Static a729 RE proved that these values have no D56 scalar
-/// producer, and route attribution belongs to the pre-collapse naval-combat
-/// carrier. Accepting any of these bits would turn reserved columns into an
-/// unauthenticated extension point.
 pub const RETIRED_ROW_FLAGS: u32 = FLAG_HAS_REPAIR_PROGRESS
     | FLAG_HAS_RETREAT_STATE
     | FLAG_HAS_CONVOY_ROUTE_CONTEXT
@@ -436,18 +424,6 @@ fn decode_naval_supremacy_trailer(
         return (Vec::new(), payload.len());
     }
 
-    // NSUP is a faithful occurrence list of the game's per-strategic-region
-    // naval-dominance array (CStrategicRegion naval_dominance). That array
-    // legitimately holds MULTIPLE entries for the same (region, controller):
-    // validated live at D04 1944, region 29 carries dominance tags [2,22,39,22]
-    // (tag 22 twice, distinct value payloads), and 5 (region, controller) pairs
-    // in the acceptance fixture repeat with differing supremacy values. There is
-    // no per-entry discriminator field in the 32-byte row beyond the value
-    // payload, so (region, controller) is NOT a uniqueness key. Do not reject on
-    // it — that would drop real data. Preserve array order (the collector emits
-    // in a stable order) and validate each row's field bounds. A byte-identical
-    // full-row repeat can legitimately occur for zero/steady-state entries, so it
-    // is not treated as corruption either.
     let mut rows = Vec::with_capacity(row_count);
     let mut cursor = NAVAL_SUPREMACY_TRAILER_HEADER_LEN;
     for index in 0..row_count {
@@ -696,8 +672,12 @@ fn compact_record_with_flags(
 
 pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
     let mut summary = Domain56GateSummary::default();
-    if let Err(error) = compact_contract::stream_validator::validate_freeze_census_stream_placement(raw) {
-        summary.parse_errors.push(format!("stateful stream placement: {error}"));
+    if let Err(error) =
+        compact_contract::stream_validator::validate_freeze_census_stream_placement(raw)
+    {
+        summary
+            .parse_errors
+            .push(format!("stateful stream placement: {error}"));
     }
     let mut offset = 0usize;
     let mut previous_sequence: Option<u64> = None;
@@ -870,14 +850,14 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
                 final_record_is_clean_world_boundary = true;
             }
             compact_contract::KnownRecordType::FreezeCensus => {
-                if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
+                if let Ok(census) =
+                    compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload)
+                {
                     final_record_is_clean_world_boundary = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);
-                    release_epilogue_seen |= census.phase() == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
+                    release_epilogue_seen |= census.phase()
+                        == compact_contract::freeze_census_record::FreezeCensusPhase::Release;
                 }
             }
-            // Session identity, not an hour: it names no domain and closes
-            // nothing, so a per-domain scanner passes over it exactly as it
-            // passes over the stream header.
             compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
@@ -887,7 +867,7 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
             | compact_contract::KnownRecordType::ClockUnreadableInterval
             | compact_contract::KnownRecordType::UntrustedClockRecovery => {
                 summary.parse_errors.push(format!(
-                "offset {offset}: unsupported record type {}",
+                    "offset {offset}: unsupported record type {}",
                     known_record_type.canonical_name()
                 ))
             }
@@ -968,9 +948,6 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
             row.flags & RETIRED_ROW_FLAGS
         ));
     }
-    // Mission enum 0 is a VALID value (the "hold/do-nothing" mission; the melt
-    // oracle carries all 7 distinct values 0,1,2,3,4,8,9). Presence is carried
-    // solely by FLAG_HAS_MISSION, so 0-when-present must NOT be rejected.
     validate_optional_enum(
         row.flags & FLAG_HAS_MISSION != 0,
         row.mission_enum,
@@ -978,8 +955,6 @@ fn validate_row(row: &NavalMissionStatusRow, index: usize) -> Result<(), String>
         "mission_enum",
         index,
     )?;
-    // mission_state zero is the exact present "no detached activity" value;
-    // presence is carried solely by FLAG_HAS_MISSION_STATE.
     validate_optional_enum(
         row.flags & FLAG_HAS_MISSION_STATE != 0,
         row.mission_state,
@@ -1101,9 +1076,6 @@ fn validate_optional_max(
     }
 }
 
-/// Like `validate_optional_max` but 0 is a VALID present value (for enum
-/// fields whose zero is a real member, e.g. the naval mission "hold" enum).
-/// Presence is carried by the flag, so an absent field must still be 0.
 fn validate_optional_enum(
     present: bool,
     value: u32,
@@ -1359,9 +1331,6 @@ mod tests {
             },
             &[row],
         );
-        // The production encoder is deliberately fail-closed and cannot mint
-        // a retired semantic slot. Corrupt an otherwise valid wire payload to
-        // exercise the decoder boundary independently.
         let flags_offset = HEADER_LEN + 12;
         let flags = read_u32(&payload, flags_offset) | FLAG_HAS_REPAIR_PROGRESS;
         payload[flags_offset..flags_offset + 4].copy_from_slice(&flags.to_le_bytes());
@@ -1986,11 +1955,6 @@ mod tests {
             compact_contract::COMPACT_STATUS_DELTA_DATA,
             compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET,
             compact_contract::COMPACT_STATUS_WAR_SEGMENT_ABSENT,
-            // A measured zero is an ANSWER, so this gate must admit it without
-            // a failure override. Production change that makes this fail:
-            // re-spelling this lane's known-status mask as an OR-list of the
-            // bits assigned at the time, which is what it was before and which
-            // rejected bit 14 as unknown.
             compact_contract::COMPACT_STATUS_SOURCE_EMPTY,
         ];
         for bit in informational_bits {
@@ -2097,18 +2061,10 @@ mod tests {
 
     #[test]
     fn naval_supremacy_trailer_accepts_repeated_region_controller_with_distinct_values() {
-        // The game's per-strategic-region naval-dominance array legitimately
-        // holds MULTIPLE entries for the same (region, controller) — validated
-        // live at D04 1944 (region 29 dominance tags [2,22,39,22]) and in the
-        // acceptance fixture (5 repeated pairs with differing supremacy values).
-        // Repeating (region, controller) while the six value fields differ must
-        // be accepted, and BOTH occurrences must survive the decode.
         let rows = sample_rows();
         let mut supremacy_rows = sample_supremacy_rows();
         supremacy_rows[1].region_id = supremacy_rows[0].region_id;
         supremacy_rows[1].controller_tag_db_id = supremacy_rows[0].controller_tag_db_id;
-        // The two rows share (region, controller) but differ in the value fields
-        // (sample_supremacy_rows already gives them distinct payloads).
         assert_ne!(supremacy_rows[0], supremacy_rows[1]);
         let payload = encode_payload_with_naval_supremacy(
             &NavalMissionStatusHeader {

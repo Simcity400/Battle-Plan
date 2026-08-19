@@ -12,7 +12,7 @@ DEFS = HERE.parent
 ASSETS = DEFS.parents[1] / "replay_interface" / "game_assets"
 sys.path[:0] = [str(DEFS), str(ASSETS)]
 
-import parse_focus_def as focus  # noqa: E402
+import parse_focus_def as focus
 
 
 def test_exact_trailing_root_closer_compatibility_is_byte_bound(

@@ -1,31 +1,3 @@
-//! Typed replay view for the exact-a729 all-country theatre selector
-//! (compact domain 98, `THS2`).
-//!
-//! # Why the view is shaped around countries, not theatres
-//!
-//! The replay observer selects the country; the panel then renders that
-//! country's land/navy/air hierarchy. The predecessor carrier walked only the
-//! recorder's own country, so selecting anyone else left the panel with no
-//! authority at all. This view therefore answers exactly one question per
-//! lookup: *for this `owner_tag_db_id`, what did the producer measure?* -- and
-//! it distinguishes three answers that must never be conflated:
-//!
-//! * **Present, non-empty** -- the country's measured hierarchy.
-//! * **Present, empty** -- the country genuinely has no theatres. A real
-//!   observation, and the correct thing to render as an empty selector.
-//! * **`DomainUnavailable`** -- the producer refused this country's section, or
-//!   replay refused the frame. The panel must show a refusal, not an empty
-//!   list.
-//!
-//! # Replay owns content admission
-//!
-//! The extractor owns the pointer-free hierarchy and the engine-materialized
-//! strings. Replay owns effective-VFS resolution: it resolves its own winning
-//! `interface/theatreselector.gui` and localization content and compares the
-//! ordered mod/DLC layers, language, and hashes against the producer-observed
-//! identity through [`TheatreSelectorView::authorize`]. A mismatch refuses.
-//! Replay never substitutes its own content for a mismatched producer identity,
-//! and the extractor never chooses replay geometry.
 
 use crate::{ViewStatus, WorldFrame};
 use serde_json::{Map, Value};
@@ -128,8 +100,6 @@ impl ObjectKind {
     }
 }
 
-/// Where a carried display string came from. A runtime string is *not* a
-/// localization key and must never be re-resolved as one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NameProvenance {
     EngineRuntimeString,
@@ -152,8 +122,6 @@ pub struct MemberRow {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TheatreRow {
     pub kind: ObjectKind,
-    /// Exact controller inclusion result. Land rows retain their raw engine
-    /// order in the carrier and are filtered only at this replay boundary.
     pub selector_included: bool,
     pub object_id: u32,
     pub owner_tag_db_id: u32,
@@ -208,9 +176,6 @@ pub struct StrategicRegionRow {
     pub background_frame: u32,
 }
 
-/// One country's answer. `status` is `Present` for both a measured hierarchy
-/// and a measured-empty country; it is `DomainUnavailable` when the producer
-/// refused the section, and `rejection` then names why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CountrySectionView {
     pub status: ViewStatus,
@@ -237,8 +202,6 @@ impl CountrySectionView {
         }
     }
 
-    /// True only for an admitted section the producer measured as empty.
-    /// Refused sections answer `false`, because they measured nothing at all.
     pub fn is_measured_empty(&self) -> bool {
         self.status == ViewStatus::Present
             && self.theatres.iter().all(|row| !row.selector_included)
@@ -253,11 +216,9 @@ impl CountrySectionView {
     }
 }
 
-/// One ordered content layer the producer observed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentLayer {
     pub ordinal: u32,
-    /// `base`, `integrated_dlc`, `dlc`, or `mod`.
     pub layer_kind: String,
     pub layer_id: String,
     pub content_sha256: String,
@@ -270,8 +231,6 @@ pub struct ContentIdentity {
     pub ordered_layers: Vec<ContentLayer>,
 }
 
-/// What replay independently resolved from its own winning effective VFS.
-/// Built by the replay side, never by the extractor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayContentExpectation {
     pub language: String,
@@ -285,13 +244,10 @@ pub struct TheatreSelectorView {
     pub authority: Option<String>,
     pub frame_hour: Option<u64>,
     pub source_sequence: Option<u64>,
-    /// True only when every census country produced an admitted section.
     pub producer_complete: bool,
     pub content_identity: Option<ContentIdentity>,
-    /// Complete selectable-country census, strictly ascending.
     pub census: Vec<u32>,
     sections: Vec<CountrySectionView>,
-    /// Exact controller branches proved inactive or absent in exact-a729.
     pub negative_controller_dispositions: Vec<String>,
     pub diagnostic: Option<String>,
 }
@@ -320,11 +276,6 @@ impl TheatreSelectorView {
         }
     }
 
-    /// The section for one selectable country.
-    ///
-    /// A country outside the census returns `DomainUnavailable` -- never
-    /// another country's section, and never a first-available fallback. That
-    /// refusal is the whole reason this carrier replaced the recorder-POV one.
     pub fn country(&self, owner_tag_db_id: u32) -> CountrySectionView {
         if self.status != ViewStatus::Present {
             return CountrySectionView::unavailable(
@@ -350,14 +301,6 @@ impl TheatreSelectorView {
         &self.sections
     }
 
-    /// Replay-side content admission.
-    ///
-    /// Compares replay's independently resolved effective-VFS identity against
-    /// the producer-observed one, and binds the frame to the expected replay
-    /// hour and a strictly increasing source sequence. Any mismatch downgrades
-    /// the whole view to `DomainUnavailable`: replay must not render a
-    /// producer's display strings under a different mod set, language, or
-    /// localization content than the producer saw.
     pub fn authorize(
         self,
         expectation: &ReplayContentExpectation,
@@ -457,9 +400,6 @@ pub enum MemberControllerState {
 }
 
 impl ReplayContentExpectation {
-    /// Build replay's independent D98 content expectation from XUI24's
-    /// validated playback capability. No producer-carried D98 field
-    /// participates in this derivation.
     pub fn from_content_admission(
         admission: &portable_content_manifest::ValidatedContentAdmission,
     ) -> Result<Self, String> {
@@ -519,11 +459,6 @@ impl ReplayContentExpectation {
 }
 
 impl WorldFrame {
-    /// All-country theatre-selector hierarchy for this replay hour.
-    ///
-    /// Structural admission only; call [`TheatreSelectorView::authorize`] with
-    /// replay's own resolved content identity before rendering any display
-    /// name.
     pub fn theatre_selector(&self) -> TheatreSelectorView {
         parse_theatre_selector(self.raw())
     }
@@ -834,9 +769,6 @@ fn parse_member(value: &Value) -> Result<MemberRow, String> {
     })
 }
 
-/// Parse one theatre. `section_member_ids` is the *section-wide* member
-/// identity set: scoping it per theatre would admit the same fleet or wing
-/// under two different parents.
 fn parse_theatre(
     value: &Value,
     owner_tag_db_id: u32,
@@ -919,9 +851,6 @@ fn parse_theatre(
     let mut land_standalones_started = false;
     let mut members = Vec::new();
     {
-        // Absent is not empty. A theatre whose member list simply vanished from
-        // the projection would otherwise render as a legitimately empty
-        // theatre -- a silent truncation of the hierarchy.
         let list = object
             .get("members")
             .ok_or_else(|| "theatre has no member list".to_string())?
@@ -931,8 +860,6 @@ fn parse_theatre(
             members.push(parse_member(entry)?);
         }
     }
-    // Parent existence, inside this theatre only. An orphan member would let
-    // the panel place a row under a group it never received.
     let group_ids = members
         .iter()
         .filter(|member| member.kind == ObjectKind::ArmyGroup)
@@ -1028,8 +955,6 @@ fn parse_theatre(
                 _ => return Err("land member phase/kind is invalid".into()),
             }
         }
-        // Contiguous from zero within each parent/kind/reserve bucket. Without
-        // this, a dropped member arrives as a plausible-looking gap.
         let slot = expected_member_order
             .entry((
                 member.kind,
@@ -1235,7 +1160,6 @@ fn parse_section(value: &Value) -> Result<CountrySectionView, String> {
             let reason = string_field(object, "reason")
                 .filter(|reason| !reason.is_empty() && reason.len() <= MAX_DISPLAY_NAME_BYTES)
                 .ok_or_else(|| "unavailable section carries no reason".to_string())?;
-            // A refused section must never smuggle rows through.
             if object.contains_key("theatres")
                 || object.contains_key("free_air_wings")
                 || object.contains_key("free_air_priority")
@@ -1270,7 +1194,6 @@ fn parse_section(value: &Value) -> Result<CountrySectionView, String> {
                     checked_section_member_total(section_member_count, theatre.members.len())?;
                 theatres.push(theatre);
             }
-            // Contiguous engine order per kind, and unique identity per kind.
             let mut expected: std::collections::BTreeMap<ObjectKind, u32> = Default::default();
             let mut seen = BTreeSet::new();
             for theatre in &theatres {
@@ -1306,7 +1229,6 @@ fn parse_section(value: &Value) -> Result<CountrySectionView, String> {
                     if engine_order != index as u32 || !seen_wings.insert(wing_id) {
                         return Err("free wing order is not contiguous or is duplicated".into());
                     }
-                    // A wing cannot be both ungrouped and inside a group.
                     if section_member_ids.contains(&(ObjectKind::AirWing, wing_id)) {
                         return Err("free wing is also carried as a grouped member".into());
                     }
@@ -1549,7 +1471,6 @@ fn parse_theatre_selector(raw: &Map<String, Value>) -> TheatreSelectorView {
         ));
     }
 
-    // These are exact negative dispositions, not missing controller fields.
     let Some(declared) = domain
         .get("negative_controller_dispositions")
         .and_then(Value::as_array)

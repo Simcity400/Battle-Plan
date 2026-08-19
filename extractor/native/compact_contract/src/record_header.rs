@@ -1,9 +1,3 @@
-//! Dependency-free H4CR record-header contract.
-//!
-//! This module is deliberately self-contained so documented direct-`rustc`
-//! validators can consume the canonical framing primitive through `#[path]`.
-//! Keep it free of crate-local imports and external dependencies.
-
 pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
 pub const COMPACT_RECORD_VERSION: u16 = 1;
 pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
@@ -56,7 +50,6 @@ impl core::fmt::Display for RecordFramingError {
     }
 }
 
-/// Parse the fixed H4CR header. Total over arbitrary byte slices.
 pub fn parse_compact_record_header(buf: &[u8]) -> Result<CompactRecordHeader, RecordFramingError> {
     if buf.len() < COMPACT_RECORD_HEADER_LEN {
         return Err(RecordFramingError::TruncatedHeader(buf.len()));

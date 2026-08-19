@@ -1,18 +1,3 @@
-//! Fail-closed framing and byte-I/O seam for the recorder/collector control pipe.
-//!
-//! This module deliberately owns no pipe names, Windows handles, injection hooks,
-//! reconnect policy, timer scheduling, or consumer state machines. Existing
-//! offline wiring can supply [`ControlIo`]; live wiring must supply
-//! [`DeadlineControlIo`], absolute deadlines, cancellation, and an unpredictable,
-//! per-attach [`SessionCapability`].
-//! Consequently, no decoded control message can call or request DLL injection.
-//!
-//! This codec is the single, shared H4CT v1 implementation consumed by both the
-//! recorder host (`recorder_host::control_transport` re-exports it transparently)
-//! and the injected collector DLL (`collector::duplex_client`). Any drift between
-//! the two consumers is a shared-crate compile/test failure, not two diverging
-//! local copies. The typed payload codecs live in the [`payloads`] submodule.
-
 pub mod payloads;
 
 use std::collections::BTreeSet;
@@ -30,10 +15,6 @@ pub const CONTROL_MAX_PAYLOAD_LEN: usize = 1 << 20;
 const CHECKSUM_OFFSET: usize = 40;
 const RESERVED_OFFSET: usize = 44;
 
-/// Unpredictable identifier minted once for a single attach attempt.
-///
-/// The transport does not generate this value: the product integration must use
-/// the operating-system CSPRNG and must never reuse an id after disconnect.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct SessionId([u8; 16]);
 
@@ -51,18 +32,10 @@ impl SessionId {
     }
 }
 
-/// Move-only authority to construct one endpoint for a control session.
-///
-/// Claims are process-global and permanent: dropping a capability or its
-/// channel never makes the session id claimable again. The two endpoints live
-/// in separate processes, so each process independently claims the same
-/// CSPRNG-minted id exactly once.
 pub struct SessionCapability {
     session_id: SessionId,
 }
 
-/// Absolute monotonic deadline shared by every partial transfer in one control
-/// operation.  A backend must not replace this with a fresh relative timeout.
 #[derive(Clone, Copy, Debug)]
 pub struct ControlDeadline(Instant);
 
@@ -91,9 +64,6 @@ impl ControlDeadline {
     }
 }
 
-/// Cooperative cancellation shared by the session driver and the exact
-/// operation adapter.  A Windows backend is expected to translate this into
-/// `CancelIoEx(handle, &overlapped)` and reap or quarantine that operation.
 #[derive(Clone, Debug, Default)]
 pub struct ControlCancellation(Arc<AtomicBool>);
 
@@ -111,8 +81,6 @@ impl ControlCancellation {
     }
 }
 
-/// Closed capability set admitted for H4CT v1 consumers.  These bits are a
-/// local handshake/admission fact; they do not change the v1 envelope.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ControlCapabilities(u32);
 
@@ -155,11 +123,6 @@ impl ControlCapabilities {
         self.0 & required == required
     }
 
-    /// The closed capability word of the v1 auto-attach duplex product:
-    /// heartbeat, first-compact-frame ack, transport status, and campaign
-    /// identity. Defined once in the shared codec so the recorder host's
-    /// admission requirement (`required_auto_attach_duplex_capabilities`) and
-    /// the collector client's advertised hello word can never drift.
     pub const AUTO_ATTACH_DUPLEX_V1: u32 = Self::HEARTBEAT
         | Self::FIRST_COMPACT_ACK
         | Self::TRANSPORT_STATUS
@@ -170,10 +133,6 @@ impl ControlCapabilities {
         Self::from_bits(Self::AUTO_ATTACH_DUPLEX_V1).expect("closed auto-attach capability set")
     }
 
-    /// Dormant next-step capability word used only by rollover-focused offline
-    /// composition. The active auto-attach client/host continue to advertise
-    /// [`Self::AUTO_ATTACH_DUPLEX_V1`] until the live drain/durable-close/new-CID1
-    /// lifecycle is proven.
     pub const AUTO_ATTACH_DUPLEX_ROLLOVER_V1: u32 = Self::AUTO_ATTACH_DUPLEX_V1 | Self::ROLLOVER;
 
     pub fn auto_attach_duplex_rollover_v1() -> Self {
@@ -189,15 +148,12 @@ impl ControlCapabilities {
     }
 }
 
-/// Process fact returned by the live pipe peer-validation adapter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ControlPeerIdentity {
     pub pid: u32,
     pub creation_filetime: u64,
 }
 
-/// Move-only admission token proving that process identity and the closed
-/// capability set were validated before channel construction.
 pub struct ValidatedSessionCapability {
     session: SessionCapability,
     peer: ControlPeerIdentity,
@@ -250,7 +206,6 @@ impl ValidatedSessionCapability {
 }
 
 impl SessionCapability {
-    /// Permanently claims a CSPRNG-minted id for one channel in this process.
     pub fn claim(session_id: [u8; 16]) -> Result<Self, ControlError> {
         if session_id == [0; 16] {
             return Err(ControlError::InvalidSessionId);
@@ -277,16 +232,6 @@ impl SessionCapability {
     }
 }
 
-/// Internal claim seam used by recorder-host composition.
-///
-/// Production preserves the public nonblocking `try_lock` behavior exactly.
-/// Unit tests share one process-global registry while running concurrently, so
-/// their composition paths receive a bounded retry instead of randomly
-/// interpreting another test's short critical section as an attach failure.
-// Widened from `pub(crate)` to `pub` when this codec moved into the shared
-// `compact_contract` crate: the recorder host consumes it through the
-// transparent re-export in `recorder_host::control_transport`, which a
-// glob re-export cannot carry across the crate boundary at `pub(crate)`.
 pub fn claim_session_capability(session_id: [u8; 16]) -> Result<SessionCapability, ControlError> {
     #[cfg(not(any(test, feature = "test-support")))]
     {
@@ -328,8 +273,6 @@ impl EndpointRole {
     }
 }
 
-/// Closed v1 control-message registry. There is intentionally no Inject or
-/// Attach variant; injection remains outside this transport's authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u16)]
 pub enum MessageKind {
@@ -411,9 +354,6 @@ impl MessageKind {
         }
     }
 
-    /// Capability required before this message may cross the typed transport
-    /// boundary. Hello is the admission exchange itself; every consumer kind
-    /// is closed over exactly one capability.
     pub const fn required_capability_bits(self) -> u32 {
         match self {
             Self::RecorderHello | Self::CollectorHello => 0,
@@ -502,20 +442,12 @@ pub struct ControlFrame {
     pub payload: Vec<u8>,
 }
 
-/// Minimal seam implemented later by a Windows named-pipe adapter and by tests.
-///
-/// `send_all` must either transfer the complete slice or return an error. A
-/// partial transfer followed by an error is still an error: [`ControlChannel`]
-/// poisons itself and permits no retry under the same session id.
 pub trait ControlIo {
     fn send_all(&mut self, bytes: &[u8]) -> io::Result<()>;
     fn recv_exact(&mut self, bytes: &mut [u8]) -> io::Result<()>;
 }
 
-/// Production-facing byte seam.  Implementations must use the same absolute
 /// deadline for every partial transfer and must give cancellation ownership of
-/// the exact in-flight operation.  Returning `Ok` after either condition has
-/// become observable is still rejected by [`DeadlineControlChannel`].
 pub trait DeadlineControlIo {
     fn send_all_until(
         &mut self,
@@ -532,10 +464,6 @@ pub trait DeadlineControlIo {
     ) -> io::Result<()>;
 }
 
-/// Read-only readiness seam for transports that can inspect their receive
-/// queue without consuming framing bytes.  Startup arbitration uses this to
-/// choose between H4CR and H4CT before beginning either exact read; it must not
-/// advance the transport, alter sequence state, or manufacture readiness.
 pub trait DeadlineControlInputReadiness {
     fn input_bytes_available(&self) -> io::Result<usize>;
 }
@@ -696,7 +624,6 @@ impl fmt::Display for ControlError {
 
 impl std::error::Error for ControlError {}
 
-/// Stateful, strictly ordered endpoint for one control-pipe connection.
 pub struct ControlChannel<I> {
     io: I,
     role: EndpointRole,
@@ -778,13 +705,6 @@ impl<I: ControlIo> ControlChannel<I> {
         self.poisoned
     }
 
-    /// Immutable accessor for the underlying byte transport.
-    ///
-    /// The channel owns its `ControlIo`, so a test that needs to inspect
-    /// transport-local state (the collector client reads its deadline bridge;
-    /// recorder-host tests read the fake pipe's written bytes) reaches it here.
-    /// Read-only: it cannot mutate framing, sequence, or poison state. Gated
-    /// behind `test-support` so it never widens the production API surface.
     #[cfg(any(test, feature = "test-support"))]
     pub fn io(&self) -> &I {
         &self.io
@@ -804,9 +724,6 @@ impl<I: ControlIo> ControlChannel<I> {
     }
 }
 
-/// Deadline-bearing H4CT endpoint for live adapters. Construction requires a
-/// move-only peer-admission token, so a raw pipe connection cannot dispatch a
-/// control frame before PID, creation time, and capabilities are checked.
 pub struct DeadlineControlChannel<I> {
     io: I,
     role: EndpointRole,
@@ -842,10 +759,6 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         self.capabilities
     }
 
-    /// Inspect queued receive bytes without consuming a partial control frame.
-    /// The same fixed deadline and cancellation authority used by the eventual
-    /// exact receive also bound this readiness probe. Any transport failure is
-    /// terminal for the channel.
     pub fn input_bytes_available_until(
         &mut self,
         deadline: ControlDeadline,
@@ -863,14 +776,6 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         Ok(available)
     }
 
-    /// Complete the capability half of peer admission from a decoded hello.
-    ///
-    /// The live H4CT accept path can prove PID and creation time before it reads
-    /// any bytes, but the collector's capability claim is inside its first
-    /// typed hello.  Such a channel is constructed with an empty capability
-    /// set, may receive only `CollectorHello`, and calls this method exactly
-    /// once after the hello codec has validated the complete payload.  No raw
-    /// or caller-invented capability tuple can be substituted later.
     pub fn admit_decoded_hello_capabilities(
         &mut self,
         required: ControlCapabilities,
@@ -933,22 +838,6 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         self.recv_frame_until(deadline, cancellation, false)
     }
 
-    /// Receive the collector's first handshake frame, permitting exactly the two
-    /// authoritative sink-failure kinds in addition to the capability-free
-    /// `CollectorHello`.
-    ///
-    /// A collector whose sink setup fails *before* it can answer with a hello
-    /// legitimately sends `SinkSetupFailure`/`SinkTerminalFailure` as its very
-    /// first control frame. Those two kinds require `TRANSPORT_STATUS`, which is
-    /// not admitted until after a valid hello, so the ordinary [`Self::recv_until`]
-    /// capability gate would poison the channel and discard the structured
-    /// failure report (a capability catch-22). This method opens a closed
-    /// pre-hello window for exactly those two kinds and only while the channel is
-    /// still in its empty-capability handshake state. Every other
-    /// capability-gated kind is still denied and permanently poisons, and the
-    /// window closes the instant any capability is admitted. The handshake still
-    /// fails terminally on such a frame; the fix is that the failure is
-    /// *structured and surfaced* rather than lost.
     pub fn recv_handshake_until(
         &mut self,
         deadline: ControlDeadline,
@@ -1002,9 +891,6 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         Ok(frame)
     }
 
-    /// The closed set of kinds receivable before any capability is admitted:
-    /// exactly the two authoritative sink-failure kinds, and only while the
-    /// channel is still in its empty-capability pre-hello handshake window.
     fn is_pre_hello_receivable_sink_failure(&self, kind: MessageKind) -> bool {
         !self.hello_capabilities_admitted
             && self.capabilities.bits() == 0
@@ -1018,14 +904,10 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         self.poisoned
     }
 
-    /// Consumer-level codec/state failures share the same terminal session
-    /// result as transport failures. There is no transparent reconnect.
     pub fn poison(&mut self) {
         self.poisoned = true;
     }
 
-    /// Assert the closed message-to-capability mapping before state-machine
-    /// mutation or wire dispatch. Failure permanently poisons the session.
     pub fn assert_capability(&mut self, kind: MessageKind) -> Result<(), ControlError> {
         let required = kind.required_capability_bits();
         if self.capabilities.permits(kind) {
@@ -1039,8 +921,6 @@ impl<I: DeadlineControlIo> DeadlineControlChannel<I> {
         }
     }
 
-    /// Immutable accessor for the underlying deadline-bearing transport; see
-    /// the matching note on `ControlChannel::io`.
     #[cfg(any(test, feature = "test-support"))]
     pub fn io(&self) -> &I {
         &self.io
@@ -1121,12 +1001,9 @@ pub fn encode_frame(
     wire[4..6].copy_from_slice(&CONTROL_VERSION.to_le_bytes());
     wire[6..8].copy_from_slice(&(CONTROL_HEADER_LEN as u16).to_le_bytes());
     wire[8..10].copy_from_slice(&(kind as u16).to_le_bytes());
-    // bytes 10..12 are flags; v1 requires zero.
     wire[12..16].copy_from_slice(&(payload.len() as u32).to_le_bytes());
     wire[16..32].copy_from_slice(&session_id.0);
     wire[32..40].copy_from_slice(&sequence.to_le_bytes());
-    // bytes 40..44 are zero while calculating the checksum.
-    // bytes 44..48 are reserved and zero in v1.
     wire[CONTROL_HEADER_LEN..].copy_from_slice(payload);
     let checksum = crc32(&wire);
     wire[CHECKSUM_OFFSET..RESERVED_OFFSET].copy_from_slice(&checksum.to_le_bytes());
@@ -1263,7 +1140,6 @@ fn read_u64(bytes: &[u8], offset: usize) -> u64 {
     ])
 }
 
-/// IEEE CRC-32, used as an integrity checksum rather than an authenticator.
 fn crc32(bytes: &[u8]) -> u32 {
     let mut crc = u32::MAX;
     for &byte in bytes {
@@ -2097,11 +1973,6 @@ mod tests {
     fn handshake_receive_admits_only_sink_failure_kinds_before_capabilities() {
         let cancellation = ControlCancellation::new();
 
-        // Both authoritative sink-failure kinds are receivable on an
-        // empty-capability channel through the handshake receive, even though
-        // they require TRANSPORT_STATUS. CollectorHello (capability-free) also
-        // passes. Every other capability-gated collector kind is still denied
-        // and permanently poisons.
         for (kind, permitted) in [
             (MessageKind::SinkSetupFailure, true),
             (MessageKind::SinkTerminalFailure, true),
@@ -2149,8 +2020,6 @@ mod tests {
 
     #[test]
     fn ordinary_receive_still_denies_sink_failure_without_transport_status() {
-        // The pre-hello allowance lives only in the handshake receive; the
-        // ordinary recv_until path must keep gating the sink-failure kinds.
         let cancellation = ControlCancellation::new();
         let (session, session_id) = fresh_session();
         let peer = ControlPeerIdentity {

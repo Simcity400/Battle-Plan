@@ -1,9 +1,3 @@
-//! Stateful, fail-closed validation for one complete H4CR stream.
-//!
-//! Identity-bearing and legacy streams are different protocols selected by an
-//! explicit constructor.  This module never sniffs the first payload and never
-//! falls back between those protocols.
-
 use std::collections::BTreeMap;
 
 use crate::campaign_identity::{parse_cid1_record, Cid1Error, ValidatedCid1};
@@ -12,33 +6,14 @@ use crate::freeze_census_record::{
     validate_freeze_census_placement_policy, validate_record_allowed_after_release_epilogue,
     FreezeCensusPlacement, FreezeCensusRecordV1,
 };
-use crate::record_header::{parse_compact_record_header, CompactRecordHeader, COMPACT_RECORD_HEADER_LEN};
+use crate::record_header::{
+    parse_compact_record_header, CompactRecordHeader, COMPACT_RECORD_HEADER_LEN,
+};
 use crate::record_semantics::{
     validate_compact_record_semantics, KnownRecordType, COMPACT_DOMAIN_FRAME,
     COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_STREAM_HEADER,
 };
 
-/// Validate the H4FC placement slice of one H4CR byte stream's stateful grammar.
-///
-/// This helper exists so secondary whole-stream scanners cannot accidentally
-/// validate only each record's stateless payload while accepting a late,
-/// duplicate, misplaced, or hour-bearing H4FC. Every such scanner calls it, so
-/// it is the shipped definition of the epilogue grammar for all of them.
-///
-/// It runs a DEDICATED placement scan rather than the full stateful validator.
-/// The full validator stops at the first rule any record breaks, and it used to
-/// return `Ok(())` when that rule was not an H4FC rule — on the assumption that
-/// the calling scanner independently refuses the stream for the other reason.
-/// That assumption does not hold in general: a scanner that tolerates something
-/// the stateful validator rejects (reserved domain zero, for instance) would
-/// then get a silent pass on the H4FC rules AND accept the stream, which is the
-/// loophole the owner ruling was written to avoid. This scan therefore never
-/// short-circuits on a semantic rule it does not own.
-///
-/// It stops only on a FRAMING failure — a header that will not parse, or a
-/// declared length that overruns the buffer. Past that point there are no
-/// further records to locate, and every caller reports its own framing error
-/// and refuses the stream, so stopping there cannot let a stream through.
 pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String> {
     if raw.is_empty() {
         return Ok(());
@@ -64,14 +39,11 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
         let payload = &raw[offset + COMPACT_RECORD_HEADER_LEN..offset + record_len];
 
         // The EOF half of the grammar: once a release epilogue was accepted,
-        // no further physical record may follow it, whatever its type.
         validate_record_allowed_after_release_epilogue(release_epilogue_seen)
             .map_err(|error| format!("offset {offset}: {error}"))?;
 
         let known = KnownRecordType::try_from(header.record_type).ok();
         if known == Some(KnownRecordType::FreezeCensus) {
-            // It closes no hour and claims no coverage, so its envelope must
-            // carry domain 1000 and the zero no-coverage sentinel.
             if header.domain_id != COMPACT_DOMAIN_FRAME {
                 return Err(format!(
                     "offset {offset}: FREEZE_CENSUS domain {} is not {COMPACT_DOMAIN_FRAME}",
@@ -91,8 +63,6 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
                     payload.len()
                 ));
             }
-            // Decoding enforces the fixed maximum payload size and every
-            // self-consistency rule the record makes about its own counters.
             let census = FreezeCensusRecordV1::decode(payload)
                 .map_err(|error| format!("offset {offset}: {error}"))?;
             let placement = validate_freeze_census_placement_policy(
@@ -132,9 +102,6 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
             content_identity_census_seen = true;
         }
 
-        // Sequence zero is the identity record and is not an ordinary record;
-        // it is also not a legal predecessor for anything but the install
-        // preamble, which the placement policy states directly.
         if !(identity_present && offset == 0) {
             ordinary_record_count = ordinary_record_count.saturating_add(1);
             previous_record_type = known;
@@ -144,16 +111,12 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
     Ok(())
 }
 
-/// Protocol selected before any bytes from a stream are accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamIdentityMode {
-    /// Sequence zero is the mandatory CID1 stream-header record.
     IdentityV1,
-    /// No identity record is present. Ordinary records still begin at sequence one.
     Legacy,
 }
 
-/// Classification of a successfully accepted record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcceptedRecordKind {
     CampaignIdentity,
@@ -162,19 +125,11 @@ pub enum AcceptedRecordKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamValidationError {
-    /// The validator previously failed. The original error is available through
-    /// [`StatefulStreamValidator::failure`].
     Terminal,
     InvalidCampaignIdentity(Cid1Error),
-    UnexpectedSequence {
-        expected: u64,
-        actual: u64,
-    },
+    UnexpectedSequence { expected: u64, actual: u64 },
     SequenceExhausted(u64),
-    PayloadLengthMismatch {
-        declared: usize,
-        actual: usize,
-    },
+    PayloadLengthMismatch { declared: usize, actual: usize },
     ReservedDomainZero,
     InvalidRecordSemantics(String),
 }
@@ -235,8 +190,6 @@ struct GapOutcomeState {
     last_range_end: i32,
 }
 
-/// Stateful authority for one stream. Any rejected record makes the instance
-/// permanently terminal; callers must construct a new instance for a new stream.
 #[derive(Debug)]
 pub struct StatefulStreamValidator {
     mode: StreamIdentityMode,
@@ -245,16 +198,12 @@ pub struct StatefulStreamValidator {
     ordinary_record_count: u64,
     last_ordinary_record_type: Option<KnownRecordType>,
     release_epilogue_seen: bool,
-    /// One per LOGICAL STREAM; a second says the session's content identity
-    /// changed mid-recording, which the engine's lexer cannot do.
     content_identity_census_seen: bool,
     gap_outcomes: BTreeMap<(u16, u16), GapOutcomeState>,
     failure: Option<StreamValidationError>,
 }
 
 impl StatefulStreamValidator {
-    /// Construct an identity-v1 validator. The first accepted record must be the
-    /// exact CID1 `(sequence, domain, type) = (0, 0, 4)` record.
     pub fn identity_v1() -> Self {
         Self {
             mode: StreamIdentityMode::IdentityV1,
@@ -269,8 +218,6 @@ impl StatefulStreamValidator {
         }
     }
 
-    /// Construct a legacy validator. There is no CID1 record and the first
-    /// ordinary record must have sequence one.
     pub fn legacy() -> Self {
         Self {
             mode: StreamIdentityMode::Legacy,
@@ -289,13 +236,10 @@ impl StatefulStreamValidator {
         self.mode
     }
 
-    /// Return placement-authoritative identity only. A merely syntax-parsed
-    /// CID1 can never enter this field.
     pub fn identity(&self) -> Option<&ValidatedCid1> {
         self.identity.as_ref()
     }
 
-    /// Number of accepted ordinary records. CID1 is deliberately excluded.
     pub fn ordinary_record_count(&self) -> u64 {
         self.ordinary_record_count
     }
@@ -311,15 +255,10 @@ impl StatefulStreamValidator {
         self.failure.is_some()
     }
 
-    /// The first failure is retained unchanged for diagnostics.
     pub fn failure(&self) -> Option<&StreamValidationError> {
         self.failure.as_ref()
     }
 
-    /// Validate and atomically commit one already-framed record.
-    ///
-    /// Validation failure commits no identity, sequence, or record-count change;
-    /// it only records the first error and makes this validator terminal.
     pub fn validate_record(
         &mut self,
         header: &CompactRecordHeader,
@@ -434,8 +373,7 @@ impl StatefulStreamValidator {
                 } else {
                     false
                 };
-                let content_identity_census =
-                    record_type == KnownRecordType::ContentIdentityCensus;
+                let content_identity_census = record_type == KnownRecordType::ContentIdentityCensus;
                 if content_identity_census {
                     if header.game_hour_raw != 0 {
                         return Err(StreamValidationError::InvalidRecordSemantics(format!(
@@ -630,9 +568,6 @@ mod tests {
         assert_eq!(validator.ordinary_record_count(), 1);
     }
 
-    /// kills: rejecting the defined CID1 -> install census -> first-frame
-    /// preamble, assigning the census an hour, or failing to advance sequence
-    /// only after the census is accepted.
     #[test]
     fn cid1_then_census_then_first_frame_is_the_canonical_preamble() {
         let cid1 = cid1_payload();
@@ -652,8 +587,6 @@ mod tests {
         );
     }
 
-    /// kills: making census presence mandatory and thereby rejecting an honest
-    /// capture that failed to publish optional telemetry.
     #[test]
     fn missing_census_is_legal() {
         let cid1 = cid1_payload();
@@ -668,8 +601,6 @@ mod tests {
         );
     }
 
-    /// kills: accepting install telemetry after world records or accepting a
-    /// second install census in one logical stream.
     #[test]
     fn late_and_duplicate_install_census_are_rejected() {
         let census = census_payload(FreezeCensusPhase::Install);
@@ -696,24 +627,6 @@ mod tests {
             .is_err());
     }
 
-    /// LEGACY MODE CARRIES AN INSTALL CENSUS, and this test used to assert the
-    /// opposite.
-    ///
-    /// The old rule was "type-11 install telemetry requires the CID1 that
-    /// defines the logical stream it must immediately follow". The recorder
-    /// refutes it: `capture_identity_mode` in recorder_host selects
-    /// `IdentityV1` only for auto-attach captures and `Legacy` -- no CID1 at
-    /// all -- for every capture that attaches to a game already running, and
-    /// those captures write the install census as their first physical record
-    /// at sequence 1. So the rule refused the recorder's own shipped output on
-    /// half of production, and the recorder_host fold accepted it anyway by
-    /// passing the identity flag as a hardcoded `true`. Identity presence is a
-    /// property of the stream MODE; the install census's placement is that it
-    /// is the first ORDINARY record of its logical stream, in both modes.
-    ///
-    /// kills: re-introducing any stream-identity condition on the install slot
-    /// (the first assertion fails), and dropping the slot rule itself so an
-    /// install census could float anywhere (the second and third fail).
     #[test]
     fn legacy_mode_carries_an_install_census_as_its_first_ordinary_record() {
         let census = census_payload(FreezeCensusPhase::Install);
@@ -722,13 +635,10 @@ mod tests {
             .validate_record(&census_header(1, &census), &census)
             .expect("a legacy stream's first ordinary record may be the install census");
 
-        // A second one is still refused, exactly as in identity mode.
         assert!(validator
             .validate_record(&census_header(2, &census), &census)
             .is_err());
 
-        // And a LATE one is still refused: the slot is the first ordinary
-        // record, not "anywhere in a legacy stream".
         let data = b"DATA";
         let mut late = StatefulStreamValidator::legacy();
         late.validate_record(&data_header(1, 18, data), data)
@@ -738,8 +648,6 @@ mod tests {
             .is_err());
     }
 
-    /// kills: generalising the type-8 sentinel rule incorrectly or accepting a
-    /// type-11 census whose own H4CR hour is not the explicit zero sentinel.
     #[test]
     fn freeze_census_has_its_own_zero_hour_rule() {
         let census = census_payload(FreezeCensusPhase::Install);
@@ -758,7 +666,6 @@ mod tests {
         )
     }
 
-    /// Validator that has just accepted a FRAME_END as ordinary sequence 1.
     fn validator_at_a_closed_boundary() -> StatefulStreamValidator {
         let boundary = [0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
         let mut validator = StatefulStreamValidator::legacy();
@@ -769,10 +676,6 @@ mod tests {
     }
 
     /// kills: refusing the shipped teardown epilogue. If the release branch is
-    /// removed, narrowed to install-only, or gated behind a flag again, the
-    /// recorder's own teardown record stops being readable and this fails.
-    ///
-    /// POSITIVE FIXTURE for the stream validator.
     #[test]
     fn one_release_census_after_a_boundary_is_accepted() {
         let release = census_payload(FreezeCensusPhase::Release);
@@ -783,12 +686,6 @@ mod tests {
         );
     }
 
-    /// kills: dropping the "exactly one, then EOF" half of the grammar. Two
-    /// records after the boundary -- a second census, or any other record type
-    /// -- must be refused, and the refusal must be the epilogue rule rather
-    /// than an incidental sequence error.
-    ///
-    /// NEGATIVE FIXTURE: two records after the end.
     #[test]
     fn nothing_may_follow_the_release_census() {
         let release = census_payload(FreezeCensusPhase::Release);
@@ -815,18 +712,10 @@ mod tests {
             .validate_record(&census_header(2, &release), &release)
             .unwrap();
         assert!(then_boundary
-            .validate_record(
-                &frame_end_header(3),
-                &[0u8; COMPACT_FRAME_END_PAYLOAD_LEN]
-            )
+            .validate_record(&frame_end_header(3), &[0u8; COMPACT_FRAME_END_PAYLOAD_LEN])
             .is_err());
     }
 
-    /// kills: admitting the epilogue behind a record that closes no hour, which
-    /// is what turns "one bounded record after the end" into "anything may
-    /// follow anything".
-    ///
-    /// NEGATIVE FIXTURE: a record after the end without a proper FRAME_END.
     #[test]
     fn a_release_census_needs_a_closed_hour_immediately_before_it() {
         let release = census_payload(FreezeCensusPhase::Release);
@@ -840,18 +729,12 @@ mod tests {
             .validate_record(&census_header(2, &release), &release)
             .is_err());
 
-        // No ordinary record at all before it.
         let mut first_record = StatefulStreamValidator::legacy();
         assert!(first_record
             .validate_record(&census_header(1, &release), &release)
             .is_err());
     }
 
-    /// kills: letting the epilogue open an hour. Its H4CR envelope must keep
-    /// the zero no-coverage sentinel exactly as the install record does, or it
-    /// would enter an hour's coverage span and swallow real bytes.
-    ///
-    /// NEGATIVE FIXTURE: the epilogue opens an hour.
     #[test]
     fn a_release_census_may_not_carry_a_game_hour() {
         let release = census_payload(FreezeCensusPhase::Release);
@@ -861,11 +744,6 @@ mod tests {
         assert!(validator.validate_record(&hour_bearing, &release).is_err());
     }
 
-    /// kills: raising or removing the fixed size ceiling on the epilogue. A
-    /// payload past `FREEZE_CENSUS_MAX_PAYLOAD_LEN` is refused before placement
-    /// is ever considered.
-    ///
-    /// NEGATIVE FIXTURE: oversize.
     #[test]
     fn an_oversize_release_census_is_refused() {
         use crate::freeze_census_record::FREEZE_CENSUS_MAX_PAYLOAD_LEN;
@@ -877,19 +755,12 @@ mod tests {
             .is_err());
     }
 
-    /// kills: letting the epilogue ride behind a FRAME_REFUSED without the
-    /// whole-stream helper agreeing, and letting that helper go quiet on a
-    /// malformed epilogue. `validate_freeze_census_stream_placement` is the one
-    /// entry point every secondary scanner uses, so its verdict is the rule
-    /// those scanners actually enforce.
     #[test]
     fn the_secondary_scanner_helper_agrees_with_the_stateful_validator() {
         let release = census_payload(FreezeCensusPhase::Release);
         let boundary = [0u8; COMPACT_FRAME_END_PAYLOAD_LEN];
         let data = b"DATA".to_vec();
 
-        // Serialize the exact H4CR framing `parse_compact_record_header` reads,
-        // so this test drives the helper over real bytes rather than a mock.
         let serialized = |records: &[(CompactRecordHeader, Vec<u8>)]| {
             let mut raw = Vec::new();
             for (header, payload) in records {
@@ -928,8 +799,6 @@ mod tests {
         ]);
         assert!(validate_freeze_census_stream_placement(&no_boundary).is_err());
 
-        // An epilogue whose envelope carries a game hour. It closes no hour and
-        // claims no coverage, so a nonzero hour is a lie about what it observed.
         let mut hour_bearing_header = census_header(2, &release);
         hour_bearing_header.game_hour_raw = game_hour();
         let hour_bearing = serialized(&[
@@ -938,15 +807,6 @@ mod tests {
         ]);
         assert!(validate_freeze_census_stream_placement(&hour_bearing).is_err());
 
-        // THE EARLY-BAIL REGRESSION. A record that breaks some OTHER stateful
-        // rule -- here reserved domain zero -- used to make this helper return
-        // success without ever looking at the H4FC that followed. A scanner
-        // that tolerates domain zero then accepted a malformed epilogue. The
-        // dedicated placement scan owns only the H4FC rules and never
-        // short-circuits on a rule it does not own.
-        //
-        // kills: restoring the "stop at the first non-FREEZE_CENSUS error"
-        // behaviour, which makes both of these pass silently.
         let mut reserved_domain = data_header(1, 18, &data);
         reserved_domain.domain_id = 0;
         let mut hour_bearing_after_reserved = census_header(3, &release);

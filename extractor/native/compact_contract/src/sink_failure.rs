@@ -1,22 +1,3 @@
-//! Dependency-neutral H4CT sink-failure payload contract shared by collector and
-//! recorder.
-//!
-//! The collector is the only producer of these terminal reports and the recorder
-//! is the only consumer, exactly like the CFA1 payload in [`crate::first_compact_ack`].
-//! Both endpoints therefore encode and decode this 64-byte payload through this
-//! single module so a producer in the collector crate and a consumer in the
-//! recorder-host crate can never drift into two silently divergent layouts.
-//!
-//! This module is deliberately MessageKind-neutral: the two control-transport
-//! envelope kinds (`SinkSetupFailure` / `SinkTerminalFailure`) belong to the
-//! recorder-host control transport, not to the payload. The intrinsic
-//! [`SinkFailureKind`] (`Setup` / `Terminal`) selects the codec branch, and the
-//! recorder-host `transport_status` shim maps its `MessageKind` onto it.
-//!
-//! These terminal reports are never appended to H4CR. When either authoritative
-//! sink fails, both stop together; the independent control pipe carries the
-//! requested/opened topology and final progress needed to explain the failure.
-
 use core::fmt;
 
 const PAYLOAD_SCHEMA: u16 = 1;
@@ -84,17 +65,12 @@ impl SinkErrorClass {
     }
 }
 
-/// Intrinsic failure branch. The recorder-host control transport maps its two
-/// `MessageKind` envelope kinds onto these; this module never names `MessageKind`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SinkFailureKind {
     Setup,
     Terminal,
 }
 
-/// Both failure messages are terminal by construction. The explicit wire byte
-/// prevents a future producer from silently treating the same schema as a
-/// recoverable warning.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub enum SinkTerminality {
@@ -118,15 +94,8 @@ pub struct SinkFailureReport {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SinkStatusError {
-    /// A payload was delivered under a control envelope kind that is not one of
-    /// the two authoritative sink-failure kinds. The wire kind is retained as a
-    /// dependency-neutral `u16`; the recorder-host shim owns the `MessageKind`
-    /// mapping that constructs this.
     WrongMessageKind(u16),
-    InvalidLength {
-        expected: usize,
-        actual: usize,
-    },
+    InvalidLength { expected: usize, actual: usize },
     UnsupportedSchema(u16),
     NonZeroReserved,
     UnknownTopologyBits(u8),
@@ -182,11 +151,6 @@ pub fn encode_sink_failure(
     Ok(payload)
 }
 
-/// Decode a sink-failure payload for the explicitly expected intrinsic branch.
-///
-/// The expected [`SinkFailureKind`] is a codec argument (mirroring
-/// [`crate::first_compact_ack::decode_first_compact_frame_ack`]'s explicit mode):
-/// the wire is never sniffed to choose Setup vs Terminal.
 pub fn decode_sink_failure(
     expected: SinkFailureKind,
     payload: &[u8],
@@ -278,10 +242,6 @@ fn validate_report(report: &SinkFailureReport) -> Result<(), SinkStatusError> {
                 .ok_or(SinkStatusError::TerminalMissingFailedSequence)?;
             match report.last_complete_sequence {
                 Some(last) if last.checked_add(1) == Some(failed) => {}
-                // IdentityV1 begins at sequence 0; the still-supported legacy
-                // compact stream begins at sequence 1. A failure before the
-                // first complete record therefore has exactly these two valid
-                // origins and no prior-completion witness.
                 None if failed <= 1 => {}
                 _ => return Err(SinkStatusError::InvalidSequenceProgress),
             }

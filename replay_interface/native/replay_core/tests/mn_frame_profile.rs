@@ -1,25 +1,3 @@
-//! Lane MN batch 2: price the TYPED frame, per builder, on a real recording.
-//!
-//! WHY. Batch 1 removed the JSON round trip from the draw path and measured
-//! what was left AT THE READER'S DOOR: 264 ms of a 13.9 MB t53 hour, all of it
-//! building the world as a `serde_json::Value` tree. The frame the viewer
-//! actually draws is built ABOVE that door, by
-//! `WorldFrame::from_raw_with_design_catalog`, which runs its whole typed-view
-//! battery for every hour — and nothing had ever priced it (Codex design
-//! review, batch 2, finding 4, BLOCKING). The owner's bar is that an hour cost
-//! O(changed paths). Which builders to make incremental first is a measurement,
-//! and this is it.
-//!
-//! It is NOT a gate: it asserts nothing about a budget, it is `#[ignore]`d, it
-//! only runs under the `mn_frame_profile` feature, and it reads an index/cache
-//! pair the caller points it at, because the real captures are far too large to
-//! commit. Run it as:
-//!
-//! ```text
-//! MN_FIXTURE=<dir with hour_index.h4ix + checkpoints.h4cp> \
-//!   cargo test -p replay_core --features mn_frame_profile \
-//!   --test mn_frame_profile -- --ignored --nocapture
-//! ```
 #![cfg(feature = "mn_frame_profile")]
 
 use std::collections::BTreeMap;
@@ -42,24 +20,6 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     }
 }
 
-/// Split the reader's stage into the three things it actually does: the
-/// cursored delta walk, the whole-world `canon_to_json::to_value` projection,
-/// and `Snapshot::from_world_value`. Those three have different fixes, and a
-/// performance investigation has to know which one holds the
-/// milliseconds before it commits to an in-place canonical JSON tree.
-///
-/// The split needs no new instrument inside the shipped reader. Asking the
-/// cache for the hour it is ALREADY standing on resumes the cursor at
-/// `position == target_position`, walks zero delta records, and does nothing
-/// but re-validate the world identity and re-run the projection — so
-///
-/// ```text
-///   projection      = the same-hour call
-///   walk + decode   = the forward call - the same-hour call
-/// ```
-///
-/// and `Snapshot::from_world_value` is timed on its own. It asserts no budget
-/// and is `#[ignore]`d for the same reason the two below it are.
 #[test]
 #[ignore = "measurement: needs MN_FIXTURE pointing at a real index/cache pair"]
 fn price_the_readers_three_stages() {
@@ -94,18 +54,11 @@ fn price_the_readers_three_stages() {
             .expect("reconstruct the hour");
         forward_ms.push(t0.elapsed().as_secs_f64() * 1e3);
         drop(world);
-        // The cursor now stands ON this hour: zero delta records, projection only.
         let t1 = Instant::now();
         let (world, _) = cache
             .reconstruct_value(hours[position])
             .expect("re-project the hour");
         same_hour_ms.push(t1.elapsed().as_secs_f64() * 1e3);
-        // What a DEEP COPY of the already-projected world costs. This is the
-        // price of the smallest correct alternative to rebuilding it: retain
-        // the projection, update it along the changed paths, and hand the
-        // consumer a clone. A clone allocates and copies; it does not decode a
-        // string body, parse a number token, or insert into a map one member at
-        // a time, which is what `canon_to_json::to_value` does.
         let t2 = Instant::now();
         let copy = world.clone();
         clone_ms.push(t2.elapsed().as_secs_f64() * 1e3);
@@ -169,8 +122,6 @@ fn price_the_typed_frame_per_builder() {
     )
     .expect("admit cache");
 
-    // The last hours of the recording, where the world is largest, one forward
-    // delta apiece — the shape ordinary playback has.
     let start = hours.len().saturating_sub(samples + 1);
     let mut world_ms: Vec<f64> = Vec::new();
     let mut frame_ms: Vec<f64> = Vec::new();
@@ -220,8 +171,6 @@ fn price_the_typed_frame_per_builder() {
     report("reader_world_tree", world_ms.clone());
     report("typed_frame_total", frame_ms.clone());
 
-    // Builders, dearest first: this is the ordering the incremental work
-    // follows, and the only reason this test exists.
     let mut ranked: Vec<(&'static str, f64, f64)> = per_builder
         .into_iter()
         .map(|(name, mut spans)| {
@@ -242,24 +191,6 @@ fn price_the_typed_frame_per_builder() {
     println!("{{\"builders\":{},\"builder_p50_sum_ms\":{total:.3}}}", ranked.len());
 }
 
-/// Lane MV: the differential a builder rewrite has to pass.
-///
-/// A faster builder is only a faster builder if the frame it produces is the
-/// same frame. This walks EVERY hour of the recording, builds the typed frame
-/// the shipped way, and prints a SHA-256 per hour over the `Debug` rendering of
-/// the views a rewrite can reach plus the frame's coverage warnings. `Debug` on
-/// these views is a total, ordered rendering of their contents (every container
-/// on the path is a `BTreeMap`/`Vec`, and `Leaf` distinguishes its three
-/// states), so two runs that agree digest-for-digest built the same views, in
-/// the same order, with the same warnings.
-///
-/// It is run BEFORE a rewrite and AFTER it, and the two files are compared. It
-/// asserts no budget and is `#[ignore]`d, for the same reason as the profile
-/// above: the real captures are far too large to commit.
-///
-/// kills: any change to a typed builder that alters a value, an ordering, a
-/// `Leaf` state, or a coverage warning on a real recording — the post-rewrite
-/// digest for that hour stops matching the pre-rewrite one.
 #[test]
 #[ignore = "measurement: needs MN_FIXTURE pointing at a real index/cache pair"]
 fn digest_the_typed_frame_every_hour() {
@@ -293,12 +224,6 @@ fn digest_the_typed_frame_every_hour() {
         };
         let _ = frame_profile::take();
         let frame = WorldFrame::profile_from_raw(raw, None);
-        // Diplomacy is rendered FIELD BY FIELD, and its pair matrix as an
-        // explicit dense enumeration, so that the digest is a statement about
-        // the pairs a consumer can observe rather than about the container
-        // they happen to be stored in. A rewrite that changes the storage and
-        // keeps every observable pair identical must keep this digest
-        // identical.
         let dip = frame.diplomacy();
         let mut pair_text = String::new();
         let mut at_war_from_matrix: Vec<(&str, &str)> = Vec::new();
@@ -307,25 +232,12 @@ fn digest_the_typed_frame_every_hour() {
             if matches!(pair.at_war, replay_core::world::Leaf::Measured(true)) {
                 at_war_from_matrix.push((a, b));
             }
-            // The enumeration and the single-pair lookup are two different
-            // routes to the same answer, and a consumer uses the second one.
-            //
-            // kills: an existence rule in the single-pair route that differs
-            // from the enumeration's -- e.g. one that answers "this hour says
-            // nothing" for a pair only a complete witness covers.
             assert_eq!(
                 dip.pair(a, b).as_ref(),
                 Some(&pair),
                 "hour {hour}: pair({a}, {b}) disagrees with the enumeration"
             );
         }
-        // The war overview does NOT walk the matrix -- it asks
-        // `at_war_pairs()`. The digest above cannot see that query, so the two
-        // are required to agree, on every hour of a real recording.
-        //
-        // kills: an `at_war_pairs()` that answers from the wrong witness
-        // universe, drops a source-measured war the complete witness does not
-        // cover, or keeps one it does.
         assert_eq!(
             dip.at_war_pairs(),
             at_war_from_matrix,

@@ -1,5 +1,3 @@
-//! Synthetic contract tests for M01 admission logic. These rows prove only the
-//! executable gate; they are not engine observations or replacement captures.
 
 use map_viewer::{
     admit_m01_runtime_rows, parse_and_admit_m01_runtime_rows, M01A14ControlState,

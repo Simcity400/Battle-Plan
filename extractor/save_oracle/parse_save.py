@@ -37,11 +37,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-# Encoding used for the game plaintext saves. latin1 (Windows-1252-ish) round-trips
-# every byte so the tokenizer never throws on odd bytes in names/flags.
 ENCODING = "latin1"
 
-# Building types whose `level` we sum per state into civ/mil/dockyard buckets.
 FACTORY_BUILDINGS = {
     "industrial_complex": "civ",
     "arms_factory": "mil",
@@ -49,11 +46,7 @@ FACTORY_BUILDINGS = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Tokenizer  (quote-aware; the only thing that ever interprets quotes/braces)
-# ---------------------------------------------------------------------------
 
-# Token kinds: '{', '}', '=', or a string atom (the raw text, quotes stripped).
 LBRACE = "{"
 RBRACE = "}"
 EQUALS = "="
@@ -82,7 +75,7 @@ class Tokenizer:
             c = s[i]
             if c in " \t\r\n":
                 i += 1
-            elif c == "#":  # comments are rare in saves but cheap to support
+            elif c == "#":
                 while i < n and s[i] != "\n":
                     i += 1
             else:
@@ -106,14 +99,12 @@ class Tokenizer:
             self.i = i + 1
             return EQUALS
         if c == '"':
-            # Quoted string: consume until the matching unescaped quote.
             i += 1
             buf = []
             while i < n:
                 ch = s[i]
                 if ch == "\\" and i + 1 < n:
                     nxt = s[i + 1]
-                    # Preserve known escapes; otherwise keep the char verbatim.
                     if nxt == '"':
                         buf.append('"')
                     elif nxt == "\\":
@@ -133,7 +124,6 @@ class Tokenizer:
                 i += 1
             self.i = i
             return ("atom", "".join(buf))
-        # Bare atom: run until whitespace or a structural char.
         start = i
         while i < n:
             ch = s[i]
@@ -163,9 +153,6 @@ def atom_value(tok):
     return None
 
 
-# ---------------------------------------------------------------------------
-# Block skipping  (balanced; consumes one value: an atom or a {...} block)
-# ---------------------------------------------------------------------------
 
 def skip_value(tz: Tokenizer) -> None:
     """Consume exactly one value: either a single atom or a balanced block.
@@ -179,7 +166,6 @@ def skip_value(tz: Tokenizer) -> None:
     if tok is LBRACE:
         _skip_block_body(tz)
         return
-    # An atom value (number/string/yes/no/date). Nothing more to consume.
 
 
 def _skip_block_body(tz: Tokenizer) -> None:
@@ -188,17 +174,13 @@ def _skip_block_body(tz: Tokenizer) -> None:
     while depth > 0:
         tok = tz.next()
         if tok is None:
-            return  # malformed/truncated; stop gracefully
+            return
         if tok is LBRACE:
             depth += 1
         elif tok is RBRACE:
             depth -= 1
-        # atoms and '=' are ignored inside skipped blocks
 
 
-# ---------------------------------------------------------------------------
-# Generic "iterate the key=value entries of a block" helper
-# ---------------------------------------------------------------------------
 
 def iter_block_entries(tz: Tokenizer):
     """Yield (key, opener) for each entry in the block whose '{' was just consumed.
@@ -217,50 +199,38 @@ def iter_block_entries(tz: Tokenizer):
         if tok is None or tok is RBRACE:
             return
         if tok is LBRACE:
-            # Anonymous nested block (list element). Skip it wholesale.
             _skip_block_body(tz)
             continue
         key = atom_value(tok)
         if key is None:
-            # Stray '=' or unexpected token; ignore and continue.
             continue
         nxt = tz.peek()
         if nxt is EQUALS:
-            tz.next()  # consume '='
-            # Peek the value so a malformed `key=}` does NOT swallow this
-            # block's closing brace (which would desync depth). Only consume
-            # the value token if it is a real value (atom or LBRACE).
+            tz.next()
             vpeek = tz.peek()
             if vpeek is RBRACE:
-                # `key=}` — no value before close. Consume the '}' to end the
-                # block cleanly and stop iterating.
                 tz.next()
                 return
             val = tz.next()
             if val is LBRACE:
                 yield key, LBRACE
             else:
-                yield key, val  # ('atom', v) or None on EOF
+                yield key, val
         else:
-            # Bare atom inside a list (e.g. ideas={ a b c } or {1 2 3}).
             yield key, None
 
 
-# ---------------------------------------------------------------------------
-# Section parsers
-# ---------------------------------------------------------------------------
 
 def parse_states_section(tz: Tokenizer, result: dict) -> None:
     """Parse states={ <id>={ owner=.. controller=.. buildings={..} .. } ... }."""
     states = result["states"]
     for state_id, opener in iter_block_entries(tz):
         if opener is not LBRACE:
-            continue  # scalar/list directly under states={} — not a state block
+            continue
         info = {"owner": None, "controller": None,
                 "victory_points": 0,
                 "factories": {"civ": 0, "mil": 0, "dockyard": 0}}
         _parse_state_block(tz, info)
-        # state_id keys are numeric; keep as string for JSON object keys.
         states[state_id] = info
 
 
@@ -269,14 +239,10 @@ def _parse_state_block(tz: Tokenizer, info: dict) -> None:
         if key == "owner" and opener not in (LBRACE, None):
             info["owner"] = atom_value(opener)
         elif key == "controller" and opener not in (LBRACE, None):
-            # Optional per-Codex: states usually have no controller, but grab
-            # it if the engine wrote one (occupied-state edge cases).
             info["controller"] = atom_value(opener)
         elif key == "buildings" and opener is LBRACE:
             _parse_state_buildings(tz, info["factories"])
         elif key == "victory_points" and opener not in (LBRACE, None):
-            # victory_points can appear as a scalar or list depending on engine
-            # version; only the scalar form is captured here.
             v = atom_value(opener)
             try:
                 info["victory_points"] = int(float(v)) if v is not None else 0
@@ -284,7 +250,6 @@ def _parse_state_block(tz: Tokenizer, info: dict) -> None:
                 pass
         elif opener is LBRACE:
             _skip_block_body(tz)
-        # scalar/None openers we don't care about are already fully consumed
 
 
 def _parse_state_buildings(tz: Tokenizer, factories: dict) -> None:
@@ -296,7 +261,6 @@ def _parse_state_buildings(tz: Tokenizer, factories: dict) -> None:
                 factories[bucket] += lvl
             else:
                 _skip_block_body(tz)
-        # scalar building entries (unusual) ignored
 
 
 def _read_building_level(tz: Tokenizer) -> int:
@@ -350,7 +314,7 @@ def parse_countries_section(tz: Tokenizer, result: dict) -> None:
             "capital": None,
             "original_capital": None,
             "major": False,
-            "manpower_ratio": None,   # available manpower pool (NOT total)
+            "manpower_ratio": None,
             "fuel": None,
             "max_fuel": None,
             "num_ships": None,
@@ -383,7 +347,6 @@ def _parse_country_block(tz: Tokenizer, snap: dict) -> None:
             else:
                 _skip_block_body(tz)
             continue
-        # scalar depth-2 fields
         val = atom_value(opener)
         if val is None:
             continue
@@ -442,11 +405,7 @@ def _read_scalar_field(tz: Tokenizer, field: str, conv):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Top-level driver:  depth-0 section recognition
-# ---------------------------------------------------------------------------
 
-# Top-level scalars we want before/around the section blocks.
 TOPLEVEL_SCALARS = {"date", "player", "ideology", "difficulty", "version"}
 
 
@@ -462,14 +421,11 @@ def parse_save_text(text: str) -> dict:
         "countries": {},
     }
 
-    # Optional header line "HOI4txt" appears as a lone atom; just skip it.
-    # We iterate the implicit top-level block at depth 0.
     while True:
         tok = tz.next()
         if tok is None:
             break
         if tok is RBRACE:
-            # Unbalanced at top level; ignore.
             continue
         if tok is LBRACE:
             _skip_block_body(tz)
@@ -479,12 +435,10 @@ def parse_save_text(text: str) -> dict:
             continue
         nxt = tz.peek()
         if nxt is not EQUALS:
-            # Bare atom at top level (e.g. the "HOI4txt" header). Ignore.
             continue
-        tz.next()  # consume '='
+        tz.next()
         val = tz.next()
         if val is LBRACE:
-            # Section block at depth 0.
             if key == "states":
                 parse_states_section(tz, result)
             elif key == "provinces":
@@ -519,9 +473,6 @@ def _read_atom_list(tz: Tokenizer):
     return out
 
 
-# ---------------------------------------------------------------------------
-# Save discovery + melting
-# ---------------------------------------------------------------------------
 
 def candidate_save_dirs() -> list[Path]:
     """Known the game save locations, discovered relative to the user's home.
@@ -535,12 +486,9 @@ def candidate_save_dirs() -> list[Path]:
         dirs.append(Path(env))
     home = Path.home()
     rel = Path("Paradox Interactive") / "Hearts of Iron IV" / "save games"
-    # OneDrive-redirected Documents and plain Documents both occur in the wild.
     for docs in ("OneDrive/Documents", "Documents"):
         dirs.append(home / docs / rel)
-    # Previously-melted plaintext saves often live in Downloads.
     dirs.append(home / "Downloads")
-    # De-dup, keep only existing.
     seen, out = set(), []
     for d in dirs:
         try:
@@ -616,10 +564,6 @@ def melt_if_needed(path: Path, rakaly: Path | None, out_dir: Path):
                 f"found. Install rakaly or pass --rakaly <path>, or supply an "
                 f"already-melted plaintext save."
             )
-        # Melt to a temp file. rakaly's `melt` writes to a NEW file by default;
-        # `-c/--to-stdout` makes it emit to stdout, which we capture. We also
-        # pass `-u stringify` so unknown binary keys are stringified rather than
-        # aborting the melt on an unfamiliar (modded) token.
         tmp = Path(tempfile.gettempdir()) / (path.stem + "_melted.txt")
         with open(tmp, "wb") as out_fh:
             proc = subprocess.run(
@@ -627,12 +571,6 @@ def melt_if_needed(path: Path, rakaly: Path | None, out_dir: Path):
                  "--to-stdout", "-u", "stringify", str(path)],
                 stdout=out_fh, stderr=subprocess.PIPE,
             )
-        # IMPORTANT: rakaly can exit non-zero while still producing a complete,
-        # valid melt — e.g. it prints a warning (unknown modded token bytes) to
-        # stderr and returns 1, but stdout is full "HOI4txt" plaintext. So we
-        # judge success by the OUTPUT, not the exit code: a real melt starts
-        # with the HOI4txt magic and is substantial. Only when the output is
-        # missing/empty/non-plaintext do we treat it as a hard failure.
         header = b""
         try:
             with open(tmp, "rb") as fh:
@@ -651,13 +589,9 @@ def melt_if_needed(path: Path, rakaly: Path | None, out_dir: Path):
             f"{size} bytes out): "
             f"{_scrub(proc.stderr.decode('utf-8', 'replace'))[:500]}"
         )
-    # Some saves/plaintext dumps may not have the magic; assume plaintext.
     return path.read_text(encoding=ENCODING, errors="replace"), False
 
 
-# ---------------------------------------------------------------------------
-# Output + validation
-# ---------------------------------------------------------------------------
 
 def build_outputs(result: dict, source: Path, was_melted: bool):
     states = result["states"]
@@ -671,7 +605,6 @@ def build_outputs(result: dict, source: Path, was_melted: bool):
             "controller": info.get("controller") or info.get("owner"),
         }
 
-    # Per-country factory totals, summed from owned states.
     factory_totals: dict[str, dict] = {}
     for sid, info in states.items():
         owner = info.get("owner")
@@ -691,8 +624,6 @@ def build_outputs(result: dict, source: Path, was_melted: bool):
             tag, {"civ": 0, "mil": 0, "dockyard": 0})
         merged["is_human"] = tag in result["meta"]["player_countries"]
         country_snapshot[tag] = merged
-    # Countries that own states but have no country block (rare) still get
-    # factory totals so the map's owner list is complete.
     for tag, totals in factory_totals.items():
         if tag not in country_snapshot:
             country_snapshot[tag] = {
@@ -764,9 +695,8 @@ def validation_report(state_ownership, country_snapshot, meta) -> str:
     lines.append(f"countries     : {st['countries_parsed']} parsed, "
                  f"{st['countries_in_snapshot']} in snapshot")
 
-    # Spot-check a handful of state -> owner/controller.
     sample_ids = []
-    for sid in ("64", "126", "1", "153", "270"):  # GER cap, ENG cap, etc.
+    for sid in ("64", "126", "1", "153", "270"):
         if sid in state_ownership:
             sample_ids.append(sid)
     if not sample_ids:
@@ -777,7 +707,6 @@ def validation_report(state_ownership, country_snapshot, meta) -> str:
         lines.append(f"   state {sid:>5} -> owner={so['owner']} "
                      f"controller={so['controller']}")
 
-    # A couple of country snapshots.
     lines.append("country snapshot sample:")
     for tag in list(country_snapshot.keys())[:4]:
         c = country_snapshot[tag]
@@ -789,9 +718,6 @@ def validation_report(state_ownership, country_snapshot, meta) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(

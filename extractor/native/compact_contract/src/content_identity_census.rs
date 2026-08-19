@@ -1,57 +1,12 @@
-//! Session content-identity census (`H4CI`): what the loaded game calls each
-//! building and each strategic resource, in THIS process.
-//!
-//! # Why this record exists
-//!
-//! A building's runtime id (`CBuilding + 0x08`) is a global Clausewitz lexer
-//! token ordinal, handed out in LOAD ORDER by `CPdxLexer::AddDynamicToken`.
-//! It is not a hash of the token text and not an index into any database, so
-//! the same building has a different id under a different content set - and
-//! strategic resources are interned into the SAME id space. Every table of
-//! `(id, token)` pairs pinned into this source tree was therefore only ever
-//! correct for the one load order it was taken from, which is the definition
-//! of hardcoded game content.
-//!
-//! The engine is the only authority for the mapping, and the recorder is the
-//! only process that can read it, so it is READ ONCE per session and published
-//! here. The recorder_host and replay then name a building or a resource with
-//! the recording's own census instead of a table shipped in the binary.
-//!
-//! # What this record is NOT
-//!
-//! It closes no game hour and claims no domain coverage: the enclosing H4CR
-//! envelope uses the frame control domain and the zero hour sentinel, exactly
-//! like the freeze census. It is emitted once per LOGICAL STREAM - a rolled or
-//! split stream can be opened without its predecessor, so each one carries the
-//! whole census or none of it.
-//!
-//! # Completeness is stated, never assumed
-//!
-//! Both databases are ENUMERATED. Resolving ids lazily as they are seen cannot
-//! prove that an id it never saw is invalid, and it can accept a lexer token
-//! from the wrong database - a resource token answering a building id. So each
-//! row states which database it came from, the header states how many
-//! definitions each database DECLARED, and [`ContentIdentityCensusV1::is_complete`]
-//! is the single gate: anything less is a census that names what it could and
-//! says so, and a consumer that needs completeness (the domain-58 factory
-//! derivation does) refuses BY NAME rather than under-counting.
-
-use std::collections::BTreeMap;
 use crate::record_semantics::KnownRecordType;
+use std::collections::BTreeMap;
 
 pub const CONTENT_IDENTITY_CENSUS_MAGIC: &[u8; 4] = b"H4CI";
 pub const CONTENT_IDENTITY_CENSUS_VERSION: u16 = 1;
 pub const CONTENT_IDENTITY_CENSUS_HEADER_LEN: usize = 40;
 pub const CONTENT_IDENTITY_CENSUS_ROW_LEN: usize = 12;
 
-/// Rows per namespace. Vanilla 1.19.2 loads 55 buildings and 8 strategic
-/// resources; a total-conversion mod may load far more, and 8,192 is a
-/// structural bound on ONE database's definitions, not a claim about how many
-/// buildings can exist. A database past it is a census this reader gives up on
-/// by name.
 pub const CONTENT_IDENTITY_CENSUS_MAX_ROWS_PER_NAMESPACE: usize = 8_192;
-/// One token's text. Clausewitz keys are identifiers; 256 bytes is far past
-/// anything the parser produces and bounds one copied string.
 pub const CONTENT_IDENTITY_CENSUS_MAX_TOKEN_LEN: usize = 256;
 pub const CONTENT_IDENTITY_CENSUS_MAX_BLOB_LEN: usize =
     2 * CONTENT_IDENTITY_CENSUS_MAX_ROWS_PER_NAMESPACE * CONTENT_IDENTITY_CENSUS_MAX_TOKEN_LEN;
@@ -59,29 +14,15 @@ pub const CONTENT_IDENTITY_CENSUS_MAX_PAYLOAD_LEN: usize = CONTENT_IDENTITY_CENS
     + 2 * CONTENT_IDENTITY_CENSUS_MAX_ROWS_PER_NAMESPACE * CONTENT_IDENTITY_CENSUS_ROW_LEN
     + CONTENT_IDENTITY_CENSUS_MAX_BLOB_LEN;
 
-/// The building-definition database could not be read at all.
 pub const CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE: u16 = 1 << 0;
-/// The strategic-resource database could not be read at all.
 pub const CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE: u16 = 1 << 1;
-/// A database declared more definitions than this record can carry, or one
-/// token was longer than the bound. The rows present are still true.
 pub const CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED: u16 = 1 << 2;
-/// At least one definition was dropped because its two independent copies of
-/// its own token text disagreed, or because two definitions claimed one id
-/// with different text. A dropped identity is never guessed.
 pub const CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED: u16 = 1 << 3;
 pub const CONTENT_IDENTITY_STATUS_KNOWN_MASK: u16 = CONTENT_IDENTITY_STATUS_BUILDINGS_UNREADABLE
     | CONTENT_IDENTITY_STATUS_RESOURCES_UNREADABLE
     | CONTENT_IDENTITY_STATUS_BOUND_TRUNCATED
     | CONTENT_IDENTITY_STATUS_CONFLICT_DROPPED;
 
-/// Which database a row's identity was enumerated from.
-///
-/// The lexer's id space is shared, so the text alone cannot say. A consumer
-/// asking "what building is `0x4E2D`?" must be answered out of the BUILDING
-/// rows: a resource token that happens to answer that id would otherwise be
-/// accepted, and a resource named `arms_factory` by a mod would collide with a
-/// spelling the factory derivation counts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u16)]
 pub enum ContentIdentityNamespace {
@@ -110,26 +51,14 @@ pub struct ContentIdentityRow {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContentIdentityCensusV1 {
-    /// Enumerated building definitions, strictly increasing by `token_id`.
     pub buildings: Vec<ContentIdentityRow>,
-    /// Enumerated strategic-resource definitions, strictly increasing by
-    /// `token_id`.
     pub resources: Vec<ContentIdentityRow>,
-    /// What the building database said it held, before admission. Carried so a
-    /// reader can see that rows were lost even when the loss is not one of the
-    /// named status bits.
     pub buildings_declared: u32,
     pub resources_declared: u32,
     pub status: u16,
 }
 
 impl ContentIdentityCensusV1 {
-    /// The single completeness gate.
-    ///
-    /// Complete means: nothing was unreadable, nothing was truncated, nothing
-    /// was dropped for a conflict, and each namespace carries exactly as many
-    /// rows as its database declared. A consumer that would otherwise
-    /// under-count must ask this and refuse by name when it is false.
     pub fn is_complete(&self) -> bool {
         self.status == 0
             && self.buildings.len() as u64 == u64::from(self.buildings_declared)
@@ -143,8 +72,6 @@ impl ContentIdentityCensusV1 {
         }
     }
 
-    /// Name one id WITHIN one database. There is deliberately no namespace-free
-    /// lookup: see [`ContentIdentityNamespace`].
     pub fn token(&self, namespace: ContentIdentityNamespace, token_id: u32) -> Option<&str> {
         self.rows(namespace)
             .binary_search_by_key(&token_id, |row| row.token_id)
@@ -169,13 +96,6 @@ impl ContentIdentityCensusV1 {
         names
     }
 
-    /// Encode, refusing anything the decoder would refuse.
-    ///
-    /// The encoder is TOTAL about bounds and STRICT about contradictions: rows
-    /// out of order, a repeated id, an id whose text differs between the two
-    /// namespaces, an empty or over-long token, or more rows than a namespace
-    /// may carry are all producer bugs, not bounded observations, and they are
-    /// refused here rather than shipped.
     pub fn encode(&self) -> Result<Vec<u8>, String> {
         if self.status & !CONTENT_IDENTITY_STATUS_KNOWN_MASK != 0 {
             return Err(format!(
@@ -254,11 +174,6 @@ impl ContentIdentityCensusV1 {
         Ok(out)
     }
 
-    /// Decode, refusing every shape the encoder cannot produce.
-    ///
-    /// A census that cannot be believed whole is not partially believed: a
-    /// consumer would otherwise name some buildings out of a table it could
-    /// not verify.
     pub fn decode(payload: &[u8]) -> Result<Self, String> {
         if payload.len() > CONTENT_IDENTITY_CENSUS_MAX_PAYLOAD_LEN {
             return Err(format!(
@@ -315,9 +230,6 @@ impl ContentIdentityCensusV1 {
                 ));
             }
         }
-        // A census may only ever say it kept FEWER definitions than the
-        // database declared. More rows than declarations is a contradiction,
-        // not a bounded reading.
         if building_count as u64 > u64::from(buildings_declared)
             || resource_count as u64 > u64::from(resources_declared)
         {
@@ -351,18 +263,14 @@ impl ContentIdentityCensusV1 {
             for _ in 0..count {
                 let token_id = read_u32(payload, cursor);
                 let offset = read_u32(payload, cursor + 4) as usize;
-                let len = usize::from(u16::from_le_bytes([payload[cursor + 8], payload[cursor + 9]]));
+                let len = usize::from(u16::from_le_bytes([
+                    payload[cursor + 8],
+                    payload[cursor + 9],
+                ]));
                 if u16::from_le_bytes([payload[cursor + 10], payload[cursor + 11]]) != 0 {
                     return Err("content identity census row reserved field is nonzero".to_string());
                 }
                 cursor += CONTENT_IDENTITY_CENSUS_ROW_LEN;
-                // CANONICAL, not merely in-bounds. The encoder lays the tokens
-                // out contiguously in row order, so each row's text starts
-                // exactly where the previous one ended. Accepting any other
-                // offset would accept aliases, overlaps, holes and SUBSTRINGS -
-                // a row whose offset is moved back by eight bytes decodes as a
-                // different, perfectly well-formed name, and every ordering and
-                // namespace check still passes.
                 if offset != *blob_cursor {
                     return Err(format!(
                         "content identity census {} row {token_id:#010x} starts at {offset} in its token blob, not at {}",
@@ -404,8 +312,6 @@ impl ContentIdentityCensusV1 {
         };
         let buildings = read_rows(building_count, ContentIdentityNamespace::Building)?;
         let resources = read_rows(resource_count, ContentIdentityNamespace::StrategicResource)?;
-        // Every byte of the blob must belong to exactly one row. A tail nobody
-        // names is a payload carrying something this record does not describe.
         if *blob_cursor != blob.len() {
             return Err(format!(
                 "content identity census token blob is {} bytes; its rows name {}",
@@ -425,25 +331,6 @@ impl ContentIdentityCensusV1 {
     }
 }
 
-/// WHERE THE CENSUS MAY SIT, in one place so every consumer states the same
-/// grammar.
-///
-/// * **At most once per LOGICAL STREAM.** A rolled or split stream may be
-///   opened without its predecessor, so a census in an earlier stream says
-///   nothing about this one; a second census inside one stream would mean the
-///   identity changed mid-recording, which the engine's lexer cannot do (ids
-///   are appended, never reassigned), so it is refused rather than merged.
-/// * **At a frame boundary, or first.** Either it is the first ordinary record
-///   of its stream - the shape a late attach produces, where the census is read
-///   before the first hour is published - or it immediately follows a record
-///   that CLOSED a game hour. `FRAME_END` and `FRAME_REFUSED` both close one,
-///   and a producer may legitimately have refused the hour it was reading, so
-///   both are accepted predecessors and nothing else is. Anything else would
-///   put session identity inside a half-assembled hour, where a consumer could
-///   not tell whether that hour was folded with the census or without it.
-/// * **It closes nothing.** It claims no hour and no domain coverage, so it can
-///   never be the record that ends a stream cleanly; the caller keeps whatever
-///   boundary state the record before it established.
 pub fn validate_content_identity_census_placement(
     ordinary_records_before: u64,
     previous_record_type: Option<KnownRecordType>,
@@ -456,15 +343,8 @@ pub fn validate_content_identity_census_placement(
         return Ok(());
     }
     match previous_record_type {
-        // The install freeze census is the stream's other preamble record and
-        // it is REQUIRED to be sequence 1, so when a capture carries one the
-        // identity census rides directly behind it - still ahead of every
         // world record, which is the property that matters. (A release
-        // epilogue cannot be the predecessor here: no record at all may follow
-        // one, and both authorities refuse that before they reach this.)
         Some(KnownRecordType::FreezeCensus)
-        // A record that CLOSED a game hour. Both of these end one, and a
-        // producer may legitimately have refused the hour it was reading.
         | Some(KnownRecordType::FrameEnd)
         | Some(KnownRecordType::FrameRefused) => Ok(()),
         _ => Err("content_identity_census_is_not_at_a_frame_boundary"),
@@ -472,15 +352,13 @@ pub fn validate_content_identity_census_placement(
 }
 
 fn read_u32(payload: &[u8], at: usize) -> u32 {
-    u32::from_le_bytes(payload[at..at + 4].try_into().expect("bounds checked by caller"))
+    u32::from_le_bytes(
+        payload[at..at + 4]
+            .try_into()
+            .expect("bounds checked by caller"),
+    )
 }
 
-/// One token's text, admitted the way the lexer's own tokens look.
-///
-/// A script token is what `CPdxLexer` interned, so control characters, spaces
-/// and empty text mean the reader was looking at something that is not a token
-/// table. Refusing them here keeps a misread object from becoming a building
-/// name that replay would then display.
 fn validate_token(token: &str, token_id: u32) -> Result<(), String> {
     if token_id == 0 {
         return Err("content identity census row has the zero token id".to_string());
@@ -674,9 +552,6 @@ mod tests {
         assert!(zero.encode().is_err(), "the zero id is not a token");
     }
 
-    // kills: a decoder that trusts the header's counts, tolerates trailing
-    // bytes, or reads a row's token from outside the blob the payload actually
-    // carries.
     #[test]
     fn the_decoder_refuses_a_payload_that_does_not_describe_itself() {
         let bytes = census().encode().expect("the census encodes");
@@ -706,30 +581,23 @@ mod tests {
         reserved[10] = 1;
         assert!(ContentIdentityCensusV1::decode(&reserved).is_err());
 
-        // More rows than the database declared is a contradiction the header
-        // states about itself.
         let mut over_declared = bytes.clone();
         over_declared[24..28].copy_from_slice(&2u32.to_le_bytes());
         assert!(ContentIdentityCensusV1::decode(&over_declared).is_err());
 
-        // A row that reaches past the blob must not read a neighbour's text.
         let mut span = bytes.clone();
         let first_row_len_at = CONTENT_IDENTITY_CENSUS_HEADER_LEN + 8;
         span[first_row_len_at..first_row_len_at + 2].copy_from_slice(&4_096u16.to_le_bytes());
         assert!(ContentIdentityCensusV1::decode(&span).is_err());
 
         assert!(ContentIdentityCensusV1::decode(&[]).is_err());
-        assert!(
-            ContentIdentityCensusV1::decode(&vec![0; CONTENT_IDENTITY_CENSUS_MAX_PAYLOAD_LEN + 1])
-                .is_err()
-        );
+        assert!(ContentIdentityCensusV1::decode(&vec![
+            0;
+            CONTENT_IDENTITY_CENSUS_MAX_PAYLOAD_LEN + 1
+        ])
+        .is_err());
     }
 
-    // kills: accepting a census that names one token twice under two ids. The
-    // engine's interner returns the EXISTING id for text it has already
-    // interned, so two ids for one string cannot come from a working read - and
-    // it is the direction that does damage, because a consumer counting
-    // factories by token would count both.
     #[test]
     fn one_token_may_not_carry_two_ids() {
         let mut twice = census();
@@ -738,15 +606,11 @@ mod tests {
         let error = twice.encode().expect_err("one text, two ids");
         assert!(error.contains("arms_factory"), "{error}");
 
-        // Across the two namespaces as well, where a resource named after a
-        // building is exactly the collision the namespaces exist to stop.
         let mut across = census();
         across.resources.push(row(0x9001, "dockyard"));
         across.resources_declared = 3;
         assert!(across.encode().is_err());
 
-        // And the legitimate case still passes: ONE id carrying one text that
-        // both databases enumerated.
         let mut shared = census();
         shared.resources.push(row(0x4BF6, "dockyard"));
         shared.resources_declared = 3;
@@ -754,19 +618,12 @@ mod tests {
         assert!(shared.encode().is_ok());
     }
 
-    // kills: reading a row's token from anywhere but the exact span the encoder
-    // wrote for it. In-bounds is not enough: moving a row's offset back over
-    // its neighbour decodes a DIFFERENT well-formed name, and every ordering,
-    // namespace and token check still passes - a confident wrong identity.
     #[test]
     fn a_row_must_name_the_exact_span_the_encoder_wrote() {
         let bytes = census().encode().expect("the census encodes");
-        let second_row_offset_at = CONTENT_IDENTITY_CENSUS_HEADER_LEN
-            + CONTENT_IDENTITY_CENSUS_ROW_LEN
-            + 4;
+        let second_row_offset_at =
+            CONTENT_IDENTITY_CENSUS_HEADER_LEN + CONTENT_IDENTITY_CENSUS_ROW_LEN + 4;
 
-        // The alias: point row 1 at row 0's text, which is a real span inside
-        // the blob and would decode as a valid token.
         let mut aliased = bytes.clone();
         aliased[second_row_offset_at..second_row_offset_at + 4]
             .copy_from_slice(&0u32.to_le_bytes());
@@ -774,7 +631,6 @@ mod tests {
             .expect_err("an aliased span is not this row's token");
         assert!(error.contains("token blob"), "{error}");
 
-        // A hole: a gap no row names.
         let mut hole = bytes.clone();
         let blob_len_at = 20;
         let blob_len = u32::from_le_bytes(hole[blob_len_at..blob_len_at + 4].try_into().unwrap());
@@ -783,31 +639,26 @@ mod tests {
         assert!(ContentIdentityCensusV1::decode(&hole).is_err());
     }
 
-    // kills: admitting a second census in one stream (an identity that changed
-    // mid-recording, which the lexer cannot do), or admitting one inside a
-    // half-assembled hour, where a consumer could not tell whether that hour
-    // was folded with the census or without it.
     #[test]
     fn the_census_sits_first_or_behind_a_closed_hour_and_only_once() {
-        // First ordinary record of a late-attach stream: nothing before it.
         assert_eq!(
             validate_content_identity_census_placement(0, None, false),
             Ok(())
         );
-        // Directly behind the install freeze census, which owns sequence 1.
         assert_eq!(
-            validate_content_identity_census_placement(1, Some(KnownRecordType::FreezeCensus), false),
+            validate_content_identity_census_placement(
+                1,
+                Some(KnownRecordType::FreezeCensus),
+                false
+            ),
             Ok(())
         );
-        // Immediately behind a record that closed an hour, published or refused.
         for closed in [KnownRecordType::FrameEnd, KnownRecordType::FrameRefused] {
             assert_eq!(
                 validate_content_identity_census_placement(400, Some(closed), false),
                 Ok(())
             );
         }
-        // Mid-hour, between a domain's own records - the shape that would leave
-        // a consumer unable to say whether that hour was folded with it.
         for open in [
             KnownRecordType::DomainData,
             KnownRecordType::DomainPerf,
@@ -820,7 +671,6 @@ mod tests {
                 "{open:?}"
             );
         }
-        // A second one, wherever it sits.
         assert_eq!(
             validate_content_identity_census_placement(400, Some(KnownRecordType::FrameEnd), true),
             Err("content_identity_census_already_seen_in_this_stream")
@@ -831,9 +681,6 @@ mod tests {
         );
     }
 
-    // kills: letting a namespace grow past what the record bounds, which is the
-    // one thing that would make this payload's size a function of a mod rather
-    // than of the format.
     #[test]
     fn a_namespace_past_its_bound_is_refused_by_the_encoder() {
         let mut huge = census();

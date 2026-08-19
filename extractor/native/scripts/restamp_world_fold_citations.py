@@ -44,36 +44,21 @@ from pathlib import Path
 from typing import Iterable
 
 
-# The gate's own marker pattern with `closure=` made optional.  A marker that is
-# missing the field, or carries a malformed one, is precisely the marker this
-# tool has to be able to REPAIR -- refusing to read it would leave hand-editing
-# as the only way out, which is what this tool exists to remove.
 TOLERANT_MARKER_RE = re.compile(
     r"^// @world-fold-authority "
     r"domain=(?P<domain>\d+) "
     r"functions=(?P<functions>fold_[A-Za-z0-9_]+(?:,fold_[A-Za-z0-9_]+)*) "
     r"lines=(?P<start>\d+)-(?P<end>\d+) "
     r"sha256=(?P<sha256>[0-9a-f]{64})"
-    # The module is read WITHOUT newline translation, so a CRLF checkout leaves
-    # the carriage return in the text.  It is matched by LOOKAHEAD so the span
-    # this tool replaces stops before it: consuming it would drop the `\r` from
-    # the one line the re-stamp rewrites and leave a lone LF in a CRLF file.
     r"(?: closure=(?P<closure>\S*))?(?=\r?$)",
     re.MULTILINE,
 )
 
-# The leaf marker, with the two DERIVED fields made tolerant for the same reason:
-# adopting a leaf means pasting the line beside the code it attests with a
-# placeholder (`files=0 sha256=0`) and letting this tool fill it in.  Placement
-# is the one decision this tool must not make -- a marker it inserted at the end
-# of a file would attest to a leaf from a place nobody reading the walk ever
-# looks -- so the human writes WHERE and the tool writes WHAT.
 TOLERANT_LEAF_MARKER_RE = re.compile(
     r"^(?P<indent>[ \t]*)// @leaf-source-authority "
     r"crate=(?P<crate>[A-Za-z_][A-Za-z0-9_]*) "
     r"root=(?P<root>[A-Za-z0-9_./-]+) "
     r"files=(?P<files>\S+) "
-    # Matched by LOOKAHEAD for the carriage return, exactly as above.
     r"sha256=(?P<sha256>\S+)(?=\r?$)",
     re.MULTILINE,
 )
@@ -87,12 +72,6 @@ def load_verifier():
     would stamp markers in a format that tree's gate does not accept.
     """
     path = Path(__file__).resolve().with_name("verify_world_fold_citations.py")
-    # An already-imported copy OF THAT FILE is the same authority, so it is
-    # reused rather than executed again.  Re-executing it minted a second module
-    # object with its own copy of every constant, which meant a caller holding
-    # the first one -- the gate's own test suite does -- could not see what this
-    # tool was reading.  The identity check is on the FILE, so the guarantee
-    # above is unchanged: a verifier from anywhere else is still not accepted.
     existing = sys.modules.get("verify_world_fold_citations")
     if existing is not None and getattr(existing, "__file__", None) == str(path):
         return existing
@@ -100,8 +79,6 @@ def load_verifier():
     if spec is None or spec.loader is None:
         raise SystemExit(f"cannot import the verifier from {path}")
     module = importlib.util.module_from_spec(spec)
-    # `@dataclass` resolves its own module out of `sys.modules`, so register
-    # before executing rather than after.
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
@@ -205,8 +182,6 @@ def commit_plan(writes: Iterable[PlannedWrite]) -> None:
     seen = [write.path for write in writes]
     duplicated = sorted({path for path in seen if seen.count(path) > 1})
     if duplicated:
-        # Composition is `plan_write`'s job; two entries reaching here means one
-        # of them is about to be erased.
         raise SystemExit(
             f"internal: {duplicated} planned more than once; the second write "
             f"would erase the first. Nothing was written."
@@ -240,9 +215,6 @@ def restamp(
     index = verifier.index_items(world_source)
 
     inventory_path = repo_root / verifier.CLOSURE_INVENTORY
-    # A corrupt or wrong-shaped inventory must not surface as a raw
-    # JSONDecodeError/AttributeError from inside a re-stamp: repairing that
-    # file is this tool's job, so it says what is wrong with it.
     recorded: dict = {}
     if inventory_path.is_file():
         try:
@@ -260,9 +232,6 @@ def restamp(
     previous = recorded.get("domains")
     if not isinstance(previous, dict):
         previous = {}
-    # A domain whose value is not a list of names reaches `set(...)` in the
-    # shrink comparison and raises a TypeError there instead of saying what
-    # is wrong with the file.
     previous = {
         key: members
         for key, members in previous.items()
@@ -272,50 +241,27 @@ def restamp(
 
     inventory: dict[str, list[str]] = {}
     shrunk: list[str] = []
-    # Nothing is written until every module has been planned and the shrink
-    # refusal has had its say.  Writing as it goes would leave a refused run
-    # half-stamped: markers updated, inventory stale, and a tree whose gate then
-    # fails for a reason nobody chose.
     planned: list[tuple[Path, str, str, str]] = []
     modules = module_paths(repo_root, verifier)
     if not modules:
-        # The verifier refuses an empty module set; writing an empty
-        # inventory over a real one and reporting success would be the
-        # worst possible answer to a mistyped --repo-root.
         raise SystemExit(
             f"no dNN modules found under {repo_root / verifier.WIRE_SRC}; refusing "
             f"to re-stamp nothing over an existing inventory"
         )
     for module in modules:
         domain = int(module.stem[1:])
-        # `newline=""` disables translation in BOTH directions, so a file goes
-        # back exactly as it came -- CRLF, LF, or the mixture a merge left
-        # behind.  Reading with universal newlines and writing back would
-        # rewrite the whole file to one convention: invisible in `git diff`,
-        # which normalizes, and wrong on disk.
         with module.open(encoding="utf-8", newline="") as handle:
             source = handle.read()
         marker = verifier._only_match(TOLERANT_MARKER_RE, source, module.name)
         if int(marker.group("domain")) != domain:
-            # The inventory is keyed by FILENAME domain while the marker
-            # carries its own; re-stamping over a mismatch would record
-            # membership under one domain from an authority declared for
-            # another.
             raise SystemExit(
                 f"{module.name}: marker domain {marker.group('domain')} "
                 f"does not match the filename domain {domain}; fix the "
                 f"marker by hand before re-stamping"
             )
         functions = marker.group("functions").split(",")
-        # The gate requires the FIRST cited function to be the one
-        # `fold_domain_data` dispatches this domain to.  Re-stamping a
-        # marker that fails that check produces valid-looking spans and
-        # digests over an authority the gate then rejects, and the closure
-        # GREW, so the shrink refusal does not catch it either.
         dispatched = dispatch.get(domain)
         if dispatched is None:
-            # The gate rejects a domain `fold_domain_data` does not
-            # dispatch. Re-stamping it produces a marker nothing accepts.
             raise SystemExit(
                 f"{module.name}: domain {domain} is absent from fold_domain_data; "
                 f"re-stamping would record an authority the gate rejects"
@@ -327,8 +273,6 @@ def restamp(
                 f"an authority the gate rejects"
             )
 
-        # The `functions=` list is READ, never chosen: this tool can re-derive
-        # where an authority is, never which function is the authority.
         try:
             ranges = [spans[name] for name in functions]
         except KeyError as error:
@@ -362,8 +306,6 @@ def restamp(
         new_citation = f"`world_fold.rs:{envelope.start}`-`:{envelope.end}`"
         updated = source[: marker.start()] + new_marker + source[marker.end() :]
         if old_citation != new_citation:
-            # The gate requires the human citation exactly once and paired with
-            # the marker, so it moves in lockstep or not at all.
             occurrences = updated.count(old_citation)
             if occurrences != 1:
                 raise SystemExit(
@@ -372,9 +314,6 @@ def restamp(
                 )
             updated = updated.replace(old_citation, new_citation)
             if updated.count(new_citation) != 1:
-                # The module already carried prose equal to the NEW
-                # citation, so the rewrite produced two.  Reporting
-                # success here hands back a tree the gate rejects.
                 raise SystemExit(
                     f"{module.name}: re-stamping would leave "
                     f"{updated.count(new_citation)} copies of "
@@ -383,10 +322,6 @@ def restamp(
                     f"guess at"
                 )
         elif updated.count(new_citation) != 1:
-            # The marker needed no change, but its paired citation is missing or
-            # duplicated -- the gate rejects that, and there is no correct text
-            # to guess from, so say which module and stop rather than report a
-            # clean run.
             raise SystemExit(
                 f"{module.name}: the marker is current but its human citation "
                 f"{new_citation} appears {updated.count(new_citation)} times, "
@@ -463,10 +398,6 @@ def restamp(
     elif not check:
         commit_plan(writes)
 
-    # Inventory drift IS drift: a tree whose markers are current but whose
-    # membership record is stale still fails the gate, so it is returned
-    # separately rather than folded into the module count -- `--check` must fail
-    # on it, and the summary line must not claim 46 of 45 modules changed.
     return changed, len(modules), inventory_changed
 
 
@@ -531,11 +462,6 @@ def restamp_leaves(
     inventory: dict[str, dict] = {}
     shrunk: list[str] = []
     planned: list[tuple[Path, str, str, str]] = []
-    # What each file will say after the leaves planned so far.  Two leaves can
-    # share a consumer -- a port that walks two shared grammars carries two
-    # markers -- and planning the second from the same text as the first made
-    # the second write erase the first.  This is the same composition
-    # `planned_text` does across the two HALVES, within the leaf half.
     staged: dict[Path, str] = {}
     sites = 0
     for crate, leaf in sorted(registry.items()):
@@ -557,11 +483,6 @@ def restamp_leaves(
                     f"present; re-stamping would record an authority the gate "
                     f"rejects"
                 )
-            # `newline=""` for the reason the modules use it: a CRLF checkout
-            # must go back exactly as it came.  A file the world-fold half has
-            # already planned is read from THAT plan rather than from disk:
-            # `d13.rs` carries both markers, and a write computed from the disk
-            # copy would erase the other half's edit.
             source = staged.get(path)
             if source is None:
                 source = planned_text(plan, path)
@@ -582,8 +503,6 @@ def restamp_leaves(
                 )
             marker = markers[0]
             if marker.group("root") != root:
-                # The root is READ, never chosen: a tool that rewrote it would
-                # silently re-point an attestation at another crate.
                 raise SystemExit(
                     f"{consumer}: {crate} marker attests root "
                     f"{marker.group('root')}, the registry says {root}; fix "
@@ -618,14 +537,6 @@ def restamp_leaves(
             "with --allow-leaf-shrink."
         )
 
-    # One write per PATH, carrying the last text staged for it: two leaves
-    # sharing a consumer produce two planned entries, and only the second --
-    # which was computed from the first's output -- is the whole edit.
-    #
-    # `_read_verbatim`, not the `source` a write was computed from: when
-    # another leaf or the world-fold half has already planned this file,
-    # `source` is that plan's OUTPUT, while the preimage `commit_plan`
-    # compares against is what is on disk.
     writes: list[PlannedWrite] = [
         PlannedWrite(path, staged[path], _read_verbatim(path), "")
         for path in dict.fromkeys(path for path, _u, _s, _line in planned)
@@ -697,14 +608,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        # BOTH HALVES ARE PLANNED BEFORE EITHER WRITES.  The two re-stamps
-        # refuse for different reasons -- a closure that shrank, a leaf that
-        # lost a file -- and writing the first half before asking the second
-        # leaves a tree with re-stamped world markers and a refused run nobody
-        # asked for.  Each half returns the writes it would make, with the
-        # bytes it planned them from; every refusal is raised while planning,
-        # and `commit_plan` re-checks those preimages before the first byte is
-        # written, so a run either lands whole or leaves the tree alone.
         plan: list[PlannedWrite] = []
         changed, total, inventory_changed = restamp(
             args.repo_root.resolve(),
@@ -721,13 +624,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.check:
             commit_plan(plan)
     except OSError as error:
-        # A mistyped --repo-root is a user error, not a stack trace.
         raise SystemExit(f"cannot re-stamp {args.repo_root}: {error}") from error
     except load_verifier().VerificationError as error:
-        # The closure walk refuses on some trees (an ambiguous receiver, a
-        # macro definition), and a leaf whose root is missing refuses too.
-        # That is a message for the author, not a traceback from inside the
-        # re-stamper.
         raise SystemExit(f"cannot re-stamp: {error}") from error
     verb = "would re-stamp" if args.check else "re-stamped"
     inventory = ", and the closure inventory" if inventory_changed else ""

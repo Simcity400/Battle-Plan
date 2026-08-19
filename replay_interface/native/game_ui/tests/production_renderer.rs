@@ -16,17 +16,6 @@ use replay_core::{
     WorldTimeline,
 };
 
-/// The vanilla install root for the tests below.
-///
-/// These tests used to read `BATTLE_PLAN_GAME_ROOT` directly and `return` when it was
-/// unset — a silent pass that reported "ok" while asserting nothing, and which
-/// concealed a real font defect. They are now gated by `gate_hoi4_install`
-/// (decided at build time, see `test_gates.rs`), so reaching this function
-/// means the install was found; its absence here is a failure, not a skip.
-///
-/// The product code under test deliberately has no default-install fallback
-/// (see `production_ui_callers_have_no_frozen_or_extractor_staging_fallback`);
-/// this is test-side path resolution only.
 fn installed_game_root() -> PathBuf {
     replay_test_gates::require_vanilla_game_root()
 }
@@ -54,11 +43,6 @@ fn production_renderer(root: PathBuf) -> ProductionUiRenderer {
     production_renderer_from_paths(resolver, paths)
 }
 
-/// Build the shipping renderer from the exact installed XUI21 dependency
-/// closure. The separate event-chrome Evidence owns the full installed corpus;
-/// this fixture records only the four mandatory HUD roots, event chrome/GFX,
-/// the textures and fonts those roots actually draw, and one externally
-/// asserted complete event namespace.
 fn xui21_production_renderer(root: PathBuf) -> ProductionUiRenderer {
     let resolver = map_viewer::GameFileResolver::vanilla(root).unwrap();
     let paths = BTreeSet::from([
@@ -100,9 +84,6 @@ fn xui21_production_renderer(root: PathBuf) -> ProductionUiRenderer {
     production_renderer_from_paths(resolver, paths)
 }
 
-/// Build the actual shipping renderer for the XUI23 invariant without binding
-/// unrelated multi-gigabyte font and general-purpose texture trees. Every
-/// admitted byte is still resolved from the effective installed-game VFS.
 fn xui23_production_renderer(root: PathBuf) -> ProductionUiRenderer {
     let resolver = map_viewer::GameFileResolver::vanilla(root).unwrap();
     let mut paths = BTreeSet::from([
@@ -389,8 +370,6 @@ fn minimal_hud_route_admission(
     admission
 }
 
-/// XUI23's Replay consumer is promoted while its producer remains a named
-/// external dependency. It must never fall back to selected-context d88.
 #[test]
 fn xui23_consumer_is_promoted_with_exact_external_dependency() {
     let dependency = PROMOTED_EXTERNAL_DEPENDENCY_PACKETS
@@ -439,10 +418,6 @@ fn xui23_consumer_is_promoted_with_exact_external_dependency() {
     assert!(runtime.contains("self.xui23_pending = Some(Xui23PresentedFrame"));
 }
 
-/// d88 is retired as a capture domain, but its admission path still has
-/// product callers. This pins the legacy A36 envelope contract so exact
-/// identity, authenticated empty and engine-impossible-row refusals cannot rot
-/// before those callers are removed.
 #[test]
 fn legacy_a36_envelope_contract_still_refuses_engine_impossible_rows() {
     const CANONICAL: &str = include_str!(
@@ -464,8 +439,6 @@ fn legacy_a36_envelope_contract_still_refuses_engine_impossible_rows() {
     assert!(empty.snapshot.complete);
     assert!(empty.validates_exact_authority());
 
-    // 0x1406EF9A0 retains a finite record as active only while elapsed is
-    // below duration; 0x141D04000 reports at least one remaining hour.
     let mut impossible = envelope;
     assert!(impossible.snapshot.rows[0].active);
     assert_eq!(
@@ -486,19 +459,6 @@ fn product_packet_partition_is_exact_and_authority_blocked_surfaces_have_no_rend
             "XUI19", "XUI20", "XUI21", "XUI22", "XUI23", "XUI24", "XUI25", "XUI26"
         ]
     );
-    // XUI05 now ships from observer-owned authored widget geometry;
-    // selected-Present tooltip pixels remain oracle/history only. XUI10 ships
-    // its strict observer consumer and names EIR-NE-002 until the carrier is
-    // present. XUI11 likewise ships its strict observer consumer and names
-    // EIR-NE-003 until its passive all-country politics carrier is present.
-    // XUI12 ships a strict-canvas manager/compositor route and remains named
-    // unavailable until its canonical producer ports are present. XUI14 ships
-    // its passive all-country intelligence consumer and names EIR-NE-004 until
-    // the carrier is populated. XUI16 follows the same production rule for its
-    // optional strict occupation companion. XUI17 ships all four character
-    // surfaces and keeps unavailable external G8/G11 leaves feature-local.
-    // XUI18 ships its
-    // all-country exact consumer and keeps its canonical producer dependency.
     assert!(OMITTED_AUTHORITY_BLOCKED_PACKETS.is_empty());
     assert!(OMITTED_PIXEL_CANVAS_ROUTES.is_empty());
     assert_eq!(PROMOTED_EXTENSION_PACKETS, ["XUI27"]);
@@ -693,11 +653,6 @@ fn product_packet_partition_is_exact_and_authority_blocked_surfaces_have_no_rend
 #[test]
 fn retired_ui_carriers_have_no_replay_app_product_callers() {
     let app_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../replay_app/src");
-    // Lane JL: the three `selected_pov` assertions that used to live here read
-    // `selected_pov_runtime.rs`. That whole module was deleted with the legacy
-    // selected-Present path that owned its only instance, so the retired carriers
-    // it was checked against can no longer have a caller there at all - the
-    // strongest form of the property this test asserts.
     let ui_runtime = std::fs::read_to_string(app_root.join("ui_runtime.rs")).unwrap();
     let character_runtime = std::fs::read_to_string(app_root.join("character_runtime.rs")).unwrap();
     assert!(!app_root.join("selected_pov_runtime.rs").exists());
@@ -706,9 +661,6 @@ fn retired_ui_carriers_have_no_replay_app_product_callers() {
     assert!(character_runtime.contains("admit_country_observer_character_ui("));
 }
 
-/// The strict Replay route is promoted while carrier population remains an
-/// explicit passive all-country producer dependency. Retired d87 presentation
-/// is neither a product input nor a promotion-table substitute.
 #[test]
 fn xui19_is_promoted_with_only_the_exact_passive_producer_dependency() {
     let dependency = PROMOTED_EXTERNAL_DEPENDENCY_PACKETS
@@ -864,11 +816,6 @@ fn production_app_routes_observer_state_and_quarantines_selected_present() {
 
 #[test]
 fn authenticated_product_hud_reads_only_the_four_controller_bound_roots() {
-    // Lane JL: this test used to slice `compose_authenticated_hud` out of hud.rs and
-    // assert what that body did NOT read. That compositor was the legacy whole-HUD
-    // reconstruction entry point, it lost its last caller with the rest of that path,
-    // and it is deleted. What survives here is the part whose subject still exists:
-    // the always-on authored-root closure `ProductionUiRenderer::new` enforces.
     assert_eq!(
         REQUIRED_AUTHORED_HUD_SOURCES,
         [
@@ -878,11 +825,6 @@ fn authenticated_product_hud_reads_only_the_four_controller_bound_roots() {
             "interface/theatreselector.gui",
         ]
     );
-    // `interface/core.gui` is deliberately NOT here. These four are required
-    // unconditionally at `ProductionUiRenderer::new`, so a recording missing
-    // any of them cannot build a renderer at all. The tooltip root is not part
-    // of this always-on closure: XUI05 admits its own tooltip-shell dependency
-    // from the replay-owned authenticated surface.
     assert!(!REQUIRED_AUTHORED_HUD_SOURCES.contains(&"interface/core.gui"));
 }
 

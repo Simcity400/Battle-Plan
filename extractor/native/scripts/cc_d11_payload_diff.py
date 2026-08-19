@@ -101,7 +101,7 @@ def main():
     ap.add_argument("--domain", type=int, default=11)
     args = ap.parse_args()
 
-    pin_blocks = None           # {tag: bytes} last put on the wire
+    pin_blocks = None
     pin_trailer = None
     total_payload = 0
     total_base = 0
@@ -182,10 +182,6 @@ def main():
         "roster_sizes": sorted(roster_sizes),
         "repeated_key_records": repeated_key_records,
     }
-    # The arm this measures: every record after the first carries only the
-    # countries whose base block moved, plus the 40-byte base header, plus the
-    # whole trailer region (unattributed). The base header is re-sent every
-    # record either way, so it is charged to both arms.
     header_bytes = records * D11_BASE_HEADER_LEN
     out["arm_today_payload_bytes"] = total_payload
     out["arm_base_diff_payload_bytes"] = (
@@ -196,8 +192,6 @@ def main():
         round(total_payload / out["arm_base_diff_payload_bytes"], 4)
         if out["arm_base_diff_payload_bytes"] else None
     )
-    # The optimistic bound that also assumes a byte-identical trailer region
-    # costs nothing.
     out["arm_base_diff_plus_trailer_elision_bytes"] = (
         out["arm_base_diff_payload_bytes"] - trailer_identical_bytes
     )

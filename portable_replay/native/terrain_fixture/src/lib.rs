@@ -1,40 +1,8 @@
-//! A neutral, deterministic `map_frame_bundle.json` fixture.
-//!
-//! # Why this crate exists
-//!
-//! `extractor/native/terrain_capture` is the PRODUCER of map-frame bundles: an
-//! injected D3D11 DLL that patches live game code. `replay_interface/native/
-//! map_viewer` is the CONSUMER: `validate_terrain_d3d11_bundle` decides whether
-//! a captured bundle is renderable. The two live in separate cargo workspaces
-//! that take no dependency on each other, and the replay side is not allowed to
-//! reach into `extractor/` at all — not by crate dependency (which
-//! `replay_interface/native/game_ui/tests/replay_dependency_boundary.rs`
-//! catches) and not by opening files under it (which nothing catches
-//! automatically).
-//!
-//! terrain_capture used to dev-depend on `map_viewer` so one test could build a
-//! bundle with stale constant-buffer names and run the REAL consumer over it.
-//! That dependency was the boundary violation, and removing it removed the only
-//! test that ran the production validation chain over a producer-shaped bundle.
-//! The bundle itself is neither producer nor consumer code, so it lives here,
-//! on neutral ground, and either side may build it.
-//!
-//! # Determinism
-//!
-//! Everything written is a fixed constant: byte payloads are constant fills or
-//! fixed little-endian integer sequences, the shader/lua sources are string
-//! literals in this file (rustc normalises CRLF in string literals to LF, so a
-//! CRLF checkout does not change a byte), and every `byte_len`/`fnv1a64` in the
-//! JSON is computed from the bytes just written rather than hard-coded. Nothing
-//! binary is committed; the whole fixture is ~1.6 KB of payload materialised
-//! from this source file.
 
 use serde_json::{json, Map, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Names the producer writes into a map-frame bundle for the two constant
-/// buffers the renderer must be able to identify.
 pub const TERRAIN_CAPTURE_MOMENT: &str = "terrain_active_pass";
 pub const TERRAIN_SCENE_CB0_SYMBOL: &str = "TerrainSceneCB0";
 pub const TERRAIN_SCENE_CB0_BIND_POINT: u32 = 0;
@@ -53,23 +21,14 @@ const D3D11_BIND_SHADER_RESOURCE: u32 = 0x8;
 const D3D11_INPUT_PER_VERTEX_DATA: u32 = 0;
 const D3D_REGISTER_COMPONENT_SINT32: u32 = 2;
 
-/// One captured constant-buffer binding, identified the way the renderer
-/// identifies it: by draw, shader stage and slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BindingSite {
-    /// `0` or `1`. The fixture carries two draws; `active_draw` is a separate
-    /// copy of draw 1 and is staled with it.
     pub draw_index: u32,
-    /// `"PS"` or `"VS"`.
     pub stage: &'static str,
     pub slot: u32,
 }
 
 impl BindingSite {
-    /// Every binding the renderer's naming contract governs. A test that stales
-    /// each of these in turn proves the check runs at each one, which an
-    /// all-stale fixture cannot: with every site wrong at once, a validator
-    /// that checked only one of them would still reject.
     pub const ALL: [BindingSite; 6] = [
         BindingSite { draw_index: 0, stage: "PS", slot: TERRAIN_SCENE_CB0_BIND_POINT },
         BindingSite { draw_index: 0, stage: "VS", slot: TERRAIN_SCENE_CB0_BIND_POINT },
@@ -79,7 +38,6 @@ impl BindingSite {
         BindingSite { draw_index: 1, stage: "VS", slot: TERRAIN_DRAW_CB1_BIND_POINT },
     ];
 
-    /// The canonical name the renderer requires at this site.
     pub fn canonical_name(&self) -> &'static str {
         if self.slot == TERRAIN_SCENE_CB0_BIND_POINT {
             TERRAIN_SCENE_CB0_SYMBOL
@@ -88,7 +46,6 @@ impl BindingSite {
         }
     }
 
-    /// The raw reflection name an uncanonicalised capture leaves there.
     pub fn stale_name(&self) -> &'static str {
         if self.slot == TERRAIN_SCENE_CB0_BIND_POINT {
             "dx11_cb0"
@@ -98,26 +55,14 @@ impl BindingSite {
     }
 }
 
-/// Which constant-buffer names the fixture is written with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ConstantBufferNames {
-    /// What an uncanonicalised capture looks like: the D3D reflection's raw
-    /// `dx11_cbN` slot names, on every binding and in both shader reflection
-    /// maps. The renderer must reject this.
     Stale,
-    /// What the producer's canonicaliser is required to establish: the PS/VS
-    /// slot-0 camera buffer named `TerrainSceneCB0`, and the VS slot-1 draw
-    /// buffer named by its declaring source citation.
     Canonical,
-    /// Canonical everywhere EXCEPT one binding, whose `declared_name` keeps the
-    /// raw reflection name. The shader reflection maps stay canonical, so the
-    /// single disagreement is exactly at this site — the smallest capture defect
-    /// the renderer has to catch.
     CanonicalExcept(BindingSite),
 }
 
 impl ConstantBufferNames {
-    /// The `declared_name` written on the binding at `site`.
     fn binding_name(self, site: BindingSite) -> &'static str {
         match self {
             Self::Stale => site.stale_name(),
@@ -132,7 +77,6 @@ impl ConstantBufferNames {
         }
     }
 
-    /// The PS shader's reflected constant-buffer map.
     fn ps_reflection(self) -> Value {
         match self {
             Self::Stale => json!({ "dx11_cb0": TERRAIN_SCENE_CB0_BIND_POINT }),
@@ -140,13 +84,6 @@ impl ConstantBufferNames {
         }
     }
 
-    /// The VS shader's reflected constant-buffer map.
-    ///
-    /// The stale form carries BOTH the raw `dx11_cb1` name and the layout
-    /// source citation at slot 1, which is what an uncanonicalised capture
-    /// really looks like: reflection names and the source-derived name have not
-    /// been reconciled yet. The renderer requires one name per bound slot, so
-    /// every other form keeps only the citation.
     fn vs_reflection(self) -> Value {
         match self {
             Self::Stale => json!({
@@ -162,12 +99,6 @@ impl ConstantBufferNames {
     }
 }
 
-/// Materialises the whole bundle directory under `root` and returns the path of
-/// `map_frame_bundle.json`.
-///
-/// `root` must already exist. Everything else — payload files, `vanilla/`
-/// sources, the capture-session manifest and the bundle itself — is created
-/// here.
 pub fn write_map_frame_bundle_fixture(root: &Path, names: ConstantBufferNames) -> PathBuf {
     let scene_cb0 = vec![0u8; 416];
     let draw_cb1 = vec![0u8; 112];
@@ -245,11 +176,6 @@ pub fn write_map_frame_bundle_fixture(root: &Path, names: ConstantBufferNames) -
 
     let draw0 = contract_draw(root, 0, names);
     let draw1 = contract_draw(root, 1, names);
-    // `active_draw` is a SECOND serialization of draw 1. Under `Stale` and
-    // `Canonical` both copies say the same thing, but a single-site variant that
-    // staled draw 1 would show up in two places at once and stop being a
-    // single-site variant. The renderer walks `draws`, so the copy stays
-    // canonical and `CanonicalExcept` means what it says.
     let active_draw = match names {
         ConstantBufferNames::CanonicalExcept(_) => {
             contract_draw(root, 1, ConstantBufferNames::Canonical)
@@ -559,7 +485,6 @@ fn file_hash(root: &Path, file: &str) -> String {
     fnv1a64_bytes(&fs::read(root.join(file)).expect("read fixture file"))
 }
 
-/// The same FNV-1a-64 spelling the producer writes into the bundle.
 pub fn fnv1a64_bytes(bytes: &[u8]) -> String {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in bytes {
@@ -672,15 +597,6 @@ mod tests {
         path
     }
 
-    /// The whole point of the two variants is that they DIFFER in the declared
-    /// names and NOWHERE else. If a future edit changes a payload byte or a
-    /// draw field in one variant only, the consumer-side test could pass for a
-    /// reason that has nothing to do with naming.
-    ///
-    /// What production change would make this fail? Any edit to
-    /// `ConstantBufferNames` or `contract_draw` that makes the variants differ
-    /// outside the binding `declared_name` fields and the two shader reflection
-    /// maps.
     #[test]
     fn the_two_variants_differ_only_in_constant_buffer_names() {
         let stale_root = temp_root("stale");
@@ -738,17 +654,6 @@ mod tests {
         draws
     }
 
-    /// `CanonicalExcept(site)` must differ from `Canonical` at exactly ONE
-    /// serialized location, or the consumer-side per-site test is not testing
-    /// one site.
-    ///
-    /// This caught a real defect: `active_draw` is a second copy of draw 1, so
-    /// before it was pinned canonical a draw-1 variant changed two locations.
-    ///
-    /// What production change would make this fail? Any edit that makes a
-    /// single-site variant touch a second field — another duplicated draw, a
-    /// reflection map that follows the binding name, or `active_draw` tracking
-    /// `draws[1]` again.
     #[test]
     fn each_single_site_variant_differs_from_canonical_in_exactly_one_place() {
         let canonical_root = temp_root("one_place_canonical");
@@ -790,8 +695,6 @@ mod tests {
         let _ = fs::remove_dir_all(canonical_root);
     }
 
-    /// The index of `site` in a draw's serialized `constant_buffers` array,
-    /// which `contract_draw` writes in the order VS0, VS1, PS0.
     fn binding_position(site: BindingSite) -> usize {
         match (site.stage, site.slot) {
             ("VS", 0) => 0,
@@ -801,7 +704,6 @@ mod tests {
         }
     }
 
-    /// Every JSON pointer at which two documents disagree.
     fn json_differences(pointer: &str, left: &Value, right: &Value) -> Vec<String> {
         match (left, right) {
             (Value::Object(a), Value::Object(b)) => {
@@ -829,9 +731,6 @@ mod tests {
         }
     }
 
-    /// What production change would make this fail? Anything that makes the
-    /// fixture non-deterministic — a timestamp, a nonce, a HashMap iteration
-    /// order leaking into the JSON, or a payload derived from the environment.
     #[test]
     fn the_fixture_is_byte_identical_across_roots() {
         let first_root = temp_root("determinism_a");

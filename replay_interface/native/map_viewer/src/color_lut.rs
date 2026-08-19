@@ -1,37 +1,8 @@
-//! Colorcorrection LUT decode + lut_blender CPU port (OFF-5).
-//!
-//! Measured facts (2026-07-04, all 25 `gfx/world/*colorcorrection*.tga`):
-//! every cube ships as an uncompressed bottom-up 24bpp TGA (type 2),
-//! 1024x32 — a strip of 32 slices of 32x32. Orientation law verified
-//! texel-exact against `colorcorrection_neutral.tga` (a true identity
-//! cube): `texel(x = blue_index*32 + red_index, y_topdown = green_index)
-//! = round(index * 255 / 31)` per channel.
-//!
-//! `gfx/FX/lut_blender.shader` blend math (Point/Clamp sampling, so the
-//! fullscreen pass is a pure per-texel operation — the CPU port below is
-//! exact, not approximate):
-//!
-//! ```text
-//! LutBlend1:  out = lerp(BaseLUT1, BlendLUT1, vBlendFactor2)
-//! LutBlend2 (DOUBLE_BLEND):
-//!   base  = lerp(BaseLUT1, BaseLUT2, vBlendFactor1)
-//!   blend = lerp(BlendLUT1, BlendLUT2, vBlendFactor1)
-//!   out   = lerp(base, blend, vBlendFactor2)
-//! ```
-//!
-//! WHICH cubes the engine selects per region/season/night (and the blend
-//! factors over time) remains an acknowledged [ENGINE-LAW] gap — this
-//! module makes every ingredient ready for the census evidence.
-//!
-//! Mod compatibility: reads go through [`GameFileResolver`] (the `PROJECT.md`
-//! heading "Content and mod contract").
 
 use crate::*;
 
 pub const COLOR_CORRECTION_DIR: &str = "gfx/world";
 
-/// One decoded colour cube: `slice_size` = cube edge (vanilla 32),
-/// texels stored top-down as RGB f32 in [0, 1].
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorCorrectionLut {
     pub width: usize,
@@ -41,22 +12,17 @@ pub struct ColorCorrectionLut {
 }
 
 impl ColorCorrectionLut {
-    /// Texel for integer cube indices (red, green, blue) in
-    /// `0..slice_size`, per the verified orientation law.
     pub fn texel(&self, red: usize, green: usize, blue: usize) -> [f32; 3] {
         let x = blue * self.slice_size + red;
         self.texels[green * self.width + x]
     }
 
-    /// Nearest-texel lookup for an RGB colour in [0, 1] (the shader
-    /// samples with Point/Clamp).
     pub fn sample_nearest(&self, rgb: [f32; 3]) -> [f32; 3] {
         let max_index = (self.slice_size - 1) as f32;
         let index = |v: f32| (v.clamp(0.0, 1.0) * max_index).round() as usize;
         self.texel(index(rgb[0]), index(rgb[1]), index(rgb[2]))
     }
 
-    /// Max absolute deviation (0..255 scale) from the identity cube.
     pub fn identity_deviation(&self) -> f32 {
         let max_index = (self.slice_size - 1) as f32;
         let mut worst = 0f32;
@@ -75,9 +41,6 @@ impl ColorCorrectionLut {
     }
 }
 
-/// Strict TGA decode for the colorcorrection cubes: uncompressed 24/32bpp
-/// (type 2), any origin. Fails closed on anything else — all 25 shipped
-/// files are type-2 24bpp bottom-up.
 pub fn parse_color_correction_tga(bytes: &[u8], label: &str) -> Result<ColorCorrectionLut> {
     if bytes.len() < 18 {
         return Err(format!("{label}: TGA shorter than its header").into());
@@ -122,7 +85,6 @@ pub fn parse_color_correction_tga(bytes: &[u8], label: &str) -> Result<ColorCorr
         let row_offset = pixel_offset + source_row * width * bytes_per_pixel;
         for x in 0..width {
             let offset = row_offset + x * bytes_per_pixel;
-            // TGA stores BGR(A).
             texels[row * width + x] = [
                 bytes[offset + 2] as f32 / 255.0,
                 bytes[offset + 1] as f32 / 255.0,
@@ -166,7 +128,6 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
     ]
 }
 
-/// CPU port of `Effect LutBlend1`: `lerp(base, blend, blend_factor2)`.
 pub fn lut_blend1(
     base: &ColorCorrectionLut,
     blend: &ColorCorrectionLut,
@@ -187,7 +148,6 @@ pub fn lut_blend1(
     })
 }
 
-/// CPU port of `Effect LutBlend2` (DOUBLE_BLEND).
 pub fn lut_blend2(
     base1: &ColorCorrectionLut,
     base2: &ColorCorrectionLut,
@@ -224,8 +184,6 @@ pub struct ColorLutProbeRow {
     pub identity_deviation: f32,
 }
 
-/// Inventory every `*colorcorrection*.tga` under gfx/world through the
-/// resolver: dimensions, hash, and deviation from the identity cube.
 pub fn scan_color_correction_luts_from_resolver(
     resolver: &GameFileResolver,
 ) -> Result<Vec<ColorLutProbeRow>> {
@@ -257,7 +215,6 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    /// Build an identity cube TGA (bottom-up, 24bpp) with edge `size`.
     fn identity_tga(size: usize) -> Vec<u8> {
         let width = size * size;
         let mut bytes = vec![0u8; 18];
@@ -293,16 +250,12 @@ mod tests {
         assert_eq!(lut.slice_size, 8);
         assert_eq!(lut.identity_deviation(), 0.0);
         let sampled = lut.sample_nearest([0.5, 0.25, 1.0]);
-        // Nearest index of 0.5*7 = 4 -> 4/7 etc.
         assert!((sampled[0] - (4.0f32 * 255.0 / 7.0).round() / 255.0).abs() < 1e-6);
         assert!((sampled[2] - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn non_cube_strip_is_a_typed_refusal_not_a_panic() {
-        // 64x32 passes the old `width % height == 0` check but is not a
-        // LUT strip (width must equal height*height = 1024); texel()
-        // would index out of bounds. Must fail closed at parse time.
         let mut bytes = vec![0u8; 18];
         bytes[2] = 2;
         bytes[12..14].copy_from_slice(&64u16.to_le_bytes());
@@ -341,14 +294,11 @@ mod tests {
         let base2 = constant_lut(4, [1.0, 1.0, 1.0]);
         let blend1 = constant_lut(4, [1.0, 0.0, 0.0]);
         let blend2 = constant_lut(4, [0.0, 1.0, 0.0]);
-        // f1=0.5: base=(0.5,0.5,0.5), blend=(0.5,0.5,0); f2=0.5 ->
-        // (0.5, 0.5, 0.25).
         let out = lut_blend2(&base1, &base2, &blend1, &blend2, 0.5, 0.5).expect("blend2");
         let texel = out.texels[0];
         assert!((texel[0] - 0.5).abs() < 1e-6);
         assert!((texel[1] - 0.5).abs() < 1e-6);
         assert!((texel[2] - 0.25).abs() < 1e-6);
-        // Blending identical cubes is a no-op regardless of factors.
         let same = lut_blend2(&base1, &base1, &base1, &base1, 0.3, 0.7).expect("no-op");
         assert_eq!(same.texels[0], [0.0, 0.0, 0.0]);
     }
@@ -375,7 +325,6 @@ mod tests {
             fs::write(path, bytes).unwrap();
         };
         write(&vanilla, &identity_tga(8));
-        // Mod cube: identity with red channel forced to full.
         let mut modded = identity_tga(8);
         let width = 64usize;
         for row in 0..8 {

@@ -1,10 +1,3 @@
-//! Post-capture emitted-token inventory for the static catalogue join.
-//!
-//! The stream is decoded again from the durable capture file, admitted through
-//! the stateful H4CR validator, and each DATA payload is first accepted by the
-//! shared domain-data authority. Only explicitly approved string fields can
-//! become inventory rows; numeric runtime ids never enter this module.
-
 use crate::domain_data_authority::{
     collect_static_join_tokens, DomainDataContext, StaticJoinToken,
 };

@@ -1,58 +1,10 @@
-//! What d81 stopped doing inside its clock bracket, and what must not have
-//! changed because of it.
-//!
-//! `rail_replay_state_live` held the frame's critical lane in 342 of t32's 583
-//! frames at ~38.6 ms p50, while the bulk copies its reads perform measured
-//! 0.2-0.4 ms hot: the span was compute, not bandwidth. Lane EK split the
-//! bracket so that only observation happens inside it — the pointer-chasing
-//! discovery, the bulk copies, and the witnesses — and every phase that reads
-//! nothing runs afterwards on an owned, hour-stamped copy.
-//!
-//! THE PROOF OBLIGATIONS THAT COMES WITH, and each has a test below:
-//!
-//!  * the wire cannot tell. Same rows, same order, same probe counters, over
-//!    one observation both halves see identically.
-//!  * FIRST-FAILURE ORDER survives. Reads and emissions used to interleave per
-//!    POV; they no longer do, so the order has to be reconstructed rather than
-//!    inherited.
-//!  * the refusal vocabulary survives. The gate's verdict and the sort's
-//!    strictness check now sit on opposite sides of the bracket close and must
-//!    still refuse together, under the same name.
-//!  * a refused bracket is never computed on.
-//!  * the copy is BOUNDED, and exhausting the bound refuses under a reason of
-//!    its own rather than one borrowed from an engine-supplied count.
-//!  * NOTHING THE POST-BRACKET HALF RUNS CAN OBSERVE. This is the one that no
-//!    behavioural test can see: a stray guarded read there publishes plausible
-//!    values taken outside the span the witnesses vouch for.
-//!
-//! WHAT THESE TESTS DO NOT PROVE. d81 has no end-to-end fixture — see the head
-//! of `d81_frame_cost.rs` for why — so the byte-identity comparison is made at
-//! the seam the split introduced, over a hub observation rather than over a
-//! staged `CGameState`. That is exactly the boundary the split moved, and it is
-//! the boundary at which "identical observed bytes" can be made exact instead of
-//! approximate: both sides are handed the same observation.
-
 use super::d81_frame_cost::{d81_hub_foreign_source_for, percentiles_us, t31, T31Frame};
 use super::*;
 
-/// A hub observation at a small, fully hand-specified shape.
-///
-/// Every value here is a decode of bytes the bracket would have observed, and
-/// nothing in it is an address anything dereferences — which is the property the
-/// split rests on and the reason this fixture needs no staged memory at all.
 fn ek_observation() -> D81HubObservation {
     ek_observation_with_overlap(false)
 }
 
-/// The same shape, optionally with a province that carries a route in BOTH
-/// subtype lists.
-///
-/// `overlap` is what makes the cross-subtype query memo reachable (lane FG,
-/// 2026-08-08): with it false no province is queried twice and the memo can
-/// never hit, so a differential run on that fixture alone would say nothing
-/// about the memo at all. Province 11 is the one duplicated, because it is held
-/// by both related tables and so its answer is a real maximum rather than a
-/// zero an incorrect memo could also produce.
 fn ek_observation_with_overlap(overlap: bool) -> D81HubObservation {
     let table = |rows: &[(u32, i64)]| D81HashTableSnapshot {
         rows: rows.iter().copied().collect(),
@@ -90,13 +42,6 @@ fn ek_observation_with_overlap(overlap: bool) -> D81HubObservation {
     }
 }
 
-/// THE PRE-SPLIT EMISSION LOOP, transcribed, as a reference implementation.
-///
-/// This is the code that used to run inside the reader's clock bracket at the
-/// end of each POV iteration, with one change: it reads a POV's inputs out of a
-/// plan instead of out of the surrounding scope's locals. It is a SEPARATE
-/// transcription and not a call into production on purpose — a golden test whose
-/// two sides are the same function proves nothing.
 fn ek_reference_emission(
     observation: &D81HubObservation,
     phases: &D81PhaseAccum,
@@ -159,58 +104,8 @@ fn ek_reference_emission(
     Ok(rows)
 }
 
-/// The rows the split publishes are the rows the undivided reader published —
-/// same values, same order — and so are the probe counters underneath them.
-///
-/// THIS IS THE SPLIT'S WHOLE OBLIGATION. Moving work across the bracket close is
-/// only admissible if the wire cannot tell.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL:
-///  * reordering the two subtype passes, or swapping `route_class` 2 and 1
-///    between them;
-///  * taking the fallback branch's owner from the controller instead of the POV;
-///  * dropping the sort, or sorting on a different key;
-///  * building the probe list in any order but the plan's — the published answer
-///    is a maximum and so order-independent, but `hub_probe_hits` is not;
-///  * charging the probe counters anywhere but inside the query.
-///
-/// MUTATION RUN: `subtype1_routes` given `route_class` 2 instead of 1 in
-/// `d81_compute_rail_hub_rows`. Observed:
-///
-/// ```text
-/// assertion `left == right` failed: the deferred emission must publish the
-/// pre-split rows exactly
-/// ```
-///
-/// Restored.
-///
-/// TWO MORE, ON THE MEMO (lane FG, 2026-08-08):
-///
-///  * the memo's gate `pass == 1` changed to `pass == 9`, i.e. the memo never
-///    consulted — the shape a lane that quietly dropped the dedup would leave:
-///
-/// ```text
-/// a province routed under both subtypes must be answered from the memo, and
-/// that must show up as probes never walked
-/// ```
-///
-///  * the memo made to answer `answered[at].1 + 1` — a memo that hits but
-///    lies, which the counter assertions alone cannot see:
-///
-/// ```text
-/// assertion `left == right` failed: the deferred emission must publish the
-/// pre-split rows exactly (overlap true)
-/// ... foreign_max_raw: 401 ... vs ... foreign_max_raw: 400 ...
-/// ```
-///
-/// Both restored. The first fires only on the `overlap` fixture, which is why
-/// that fixture exists.
 #[test]
 fn the_deferred_hub_emission_is_byte_identical_to_the_in_bracket_one() {
-    // BOTH SHAPES (lane FG, 2026-08-08): without a province in both subtype
-    // lists, where the cross-subtype memo cannot hit and every counter must
-    // still equal the reference's; and with one, where it hits and the
-    // accounting identity is what has to hold instead.
     for overlap in [false, true] {
         let observation = ek_observation_with_overlap(overlap);
 
@@ -235,10 +130,6 @@ fn the_deferred_hub_emission_is_byte_identical_to_the_in_bracket_one() {
 
         let reference_snapshot = reference_phases.snapshot();
         let split_snapshot = split_phases.snapshot();
-        // THE ACCOUNTING IDENTITY, which is what survived the memo. The
-        // reference performs one query per emitted row and never memoises, so
-        // its call count IS the row count; production's calls plus its memo
-        // hits must be that same number.
         assert_eq!(
             reference_snapshot.hub_query_calls,
             split.len() as u64,
@@ -288,34 +179,12 @@ fn the_deferred_hub_emission_is_byte_identical_to_the_in_bracket_one() {
     }
 }
 
-/// A read that refused at POV k publishes that refusal AFTER every POV before k
-/// has emitted, and BEFORE the closing gate — exactly where it was published
-/// when the loop returned early.
-///
-/// WHY THIS IS THE HARD PART OF THE SPLIT. Before it, a POV's reads and that
-/// POV's emission were adjacent, so "first failure" was just "first statement to
-/// return". After it, every read happens before every emission, and an emission
-/// failure in POV k-1 that used to precede POV k's read failure would otherwise
-/// be published second — or not at all.
-///
-/// MUTATION RUN: the `if let Some(read_failure)` block hoisted above the `for
-/// plan in &observation.povs` loop in `d81_compute_rail_hub_rows`. Observed:
-///
-/// ```text
-/// assertion `left == right` failed: an emission failure in a POV BEFORE the
-/// refusing one happened first and must be published
-///   left: Unreadable
-///  right: OutOfBounds
-/// ```
-///
-/// Restored.
 #[test]
 fn a_read_refusal_is_published_after_the_povs_that_completed_before_it() {
     let phases = D81PhaseAccum::default();
     let refusal = D81FirstFailure::new(D81FailureStage::HubObject, D81FailureReason::Unreadable)
         .subject(4_242);
 
-    // A read that refused at the POV after the two that completed.
     let mut observation = ek_observation();
     observation.read_failure = Some(refusal);
     observation.reread_refused = None;
@@ -332,8 +201,6 @@ fn a_read_refusal_is_published_after_the_povs_that_completed_before_it() {
          emitted cleanly"
     );
 
-    // Now break the FIRST POV's emission. It happened before the refusing POV's
-    // reads, so it is the failure the undivided reader would have published.
     let mut earlier = ek_observation();
     earlier.read_failure = Some(refusal);
     earlier.reread_refused = None;
@@ -348,9 +215,6 @@ fn a_read_refusal_is_published_after_the_povs_that_completed_before_it() {
     );
 }
 
-/// The closing gate's verdict and the sort's strictness check still refuse
-/// together, and under the same name, though they now sit on opposite sides of
-/// the bracket close.
 #[test]
 fn the_gate_verdict_and_the_sort_check_still_refuse_under_one_name() {
     let phases = D81PhaseAccum::default();
@@ -365,8 +229,6 @@ fn the_gate_verdict_and_the_sort_check_still_refuse_under_one_name() {
         "the verdict must refuse with the name the one `||` chain refused with"
     );
 
-    // The same name from the other disjunct: two POVs sharing an id make the
-    // sort non-strict, which is what the strictness check exists to catch.
     let mut duplicated = ek_observation();
     duplicated.povs[1].pov_country_id = duplicated.povs[0].pov_country_id;
     let outcome = d81_compute_rail_hub_rows(&duplicated, &phases)
@@ -378,12 +240,6 @@ fn the_gate_verdict_and_the_sort_check_still_refuse_under_one_name() {
     );
 }
 
-/// A refused bracket never reaches the compute, and its copy is dropped unread.
-///
-/// `D81ObserveOutcome::Complete` is how the in-bracket half says "this hour is
-/// already decided". `d81_finish_rail_replay_state` must hand it straight back:
-/// a finish that ran the deferred phases over a refused read would be computing
-/// on a snapshot the bracket declined to vouch for.
 #[test]
 fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
     let refusal =
@@ -426,47 +282,8 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
     );
 }
 
-/// A REJECTED CLOCK BRACKET NEVER REACHES THE DEFERRED COMPUTE.
-///
-/// FOUND BY REVIEW, NOT BY A TEST (Codex 019fdc30-62fb-7643-a49f-5834726132eb).
-/// The first version of `spawn_gated_split` called `compute(observed)`
-/// unconditionally: a bracket whose two clock observations straddled an hour
-/// boundary, or whose clock could not be read at all, still ran d81's whole
-/// post-bracket compute before reconciliation replaced its record with a gap. No
-/// wrong bytes were published — the gap replaces the record either way — but the
-/// worker and its reader permit were spent on an answer nothing could publish,
-/// and the copy-then-compute contract says a refused hour's copy is dropped
-/// unread. `a_refused_observation_is_returned_untouched_and_never_computed_on`
-/// above did not catch it: that covers an IN-READER refusal, which is a
-/// different thing from the BRACKET refusing.
-///
-/// Driven through the real guard: the two halves are recorded and the verdict
-/// is what the guard published, so this exercises the production wiring rather
-/// than a transcription of it.
-///
-/// MUTATION RUN: the verdict check in `spawn_gated_split` replaced by an
-/// unconditional `compute(observed)` — the shape the review found. Observed:
-///
-/// ```text
-/// assertion failed: !computed.get()
-/// a bracket the guard refused must not reach the deferred compute
-/// ```
-///
-/// Restored.
-///
-/// LANE FG (2026-08-08) LOOKED AT THE RESIDUAL THIS TEST PINS AND FOUND ITS
-/// STATED CAUSE WRONG, and the residual real anyway. The frame's label IS
-/// available to a worker; what blocks the skip is the gap-precedence rule. The
-/// assertions below keep the correct half of lane EK's claim, and
-/// `a_label_mismatched_bracket_cannot_yet_skip_its_compute` pins the part that
-/// actually blocks it.
 #[test]
 fn a_rejected_bracket_never_reaches_the_compute() {
-    // The two locally-decidable rejections a worker can see for itself. A
-    // straddled pair needs a moving clock, which no fixture has; an unreadable
-    // clock is what the fixture-less lane tracker produces, and it travels the
-    // identical code path -- `LocalBracketVerdict` is one value and the branch
-    // reads it, not its cause.
     let unreadable = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         opening: None,
@@ -477,10 +294,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         local_bracket_verdict(&unreadable),
         LocalBracketVerdict::ClockUnreadable
     );
-    // Real raw hours, because `frame_label_is_a_real_hour` fails closed on a
-    // value outside the plausible calendar window: a bracket labelled 10 takes
-    // the "no real label" arm and never reaches the mismatch arm at all, which
-    // would make the residual below look closed when it is not.
     let hour = super::state_fixture::fixture_game_hour_raw();
     let next_hour = hour + 1;
     let straddled = DomainClockBracket {
@@ -509,8 +322,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         local_bracket_verdict(&coherent),
         LocalBracketVerdict::CoherentHour
     );
-    // The local half and the full verdict cannot drift: the full one is written
-    // in terms of the local one, and these are the three it must inherit.
     assert_eq!(
         bracket_hour_verdict(&unreadable, hour),
         BracketHourVerdict::ClockUnreadable
@@ -523,10 +334,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         bracket_hour_verdict(&coherent, hour),
         BracketHourVerdict::InFrameHour
     );
-    // THE LABEL MISMATCH IS NOT LOCAL, and since lane FJ the split refuses it
-    // too -- under its own name, with the observed hour attached. The local
-    // verdict still cannot see it, which is why the sink carries the FULL
-    // verdict and the guard is handed the frame's label.
     assert_eq!(
         local_bracket_verdict(&coherent),
         LocalBracketVerdict::CoherentHour,
@@ -559,9 +366,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
          on the SourceUnavailable path lane FG refused"
     );
 
-    // Now the production seam, through a real guard on a real tracker. The
-    // fixture-less tracker cannot read a clock, so the guard publishes
-    // `BracketIncoherent` and the compute must be skipped.
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let verdict: Cell<BracketGuardOutcome> = Cell::new(BracketGuardOutcome::default());
     let observed_ran = Cell::new(false);
@@ -590,11 +394,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
          hour it observed, and seeding one would put a fabricated witness on \
          d81's gap record -- which is the whole defect the stamp closes"
     );
-    // AND THE REASON STILL REACHES THE WIRE. Skipping the compute must not
-    // skip the RECORD of the bracket: the gap and its reason are minted at
-    // reconciliation from `take_clock_brackets`, so a guard that published a
-    // refusal to the worker and recorded nothing would silently turn a
-    // refused domain-hour into a missing one.
     let recorded = lanes.take_clock_brackets();
     assert_eq!(
         recorded
@@ -612,9 +411,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
         "reconciliation must name the same cause the worker refused for"
     );
 
-    // The branch `spawn_gated_split` takes on that verdict, asserted against
-    // the source: reaching the real one needs a live game process, and the
-    // defect is exactly a missing branch.
     let source = collector_source_lf();
     let split = source
         .split_once("fn spawn_gated_split<")
@@ -658,11 +454,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
          anywhere else is a second predicate that can drift"
     );
 
-    // The rejected arm's own outcome refuses the hour rather than publishing an
-    // empty one, and it does no work. The measurement it is handed is the empty
-    // one here: what this arm asserts is the REFUSAL, and the preservation of a
-    // non-empty block is asserted in
-    // `a_refused_frames_measurements_survive_both_discard_sites`.
     let refused = compact_rail_replay_bracket_refused_read(
         0,
         SplitBracketRefusal::BracketIncoherent,
@@ -686,35 +477,6 @@ fn a_rejected_bracket_never_reaches_the_compute() {
     );
 }
 
-/// THE SKIP, AND THE THREE LINKS THAT MAKE IT TRUTHFUL (lane FJ, 2026-08-08).
-///
-/// t37 turned 211 of d81's 621 frames into `HourLabelMismatch` gaps, and every
-/// one of them ran the whole post-bracket compute first — `lw_d81_post_us`
-/// averages 6.4 ms a frame. Lane EK did not skip them because it believed the
-/// frame's label was unavailable to a worker; that was false. Lane FG found the
-/// real blocker and REVERTED its own skip for it, leaving
-/// `a_label_mismatched_bracket_cannot_yet_skip_its_compute` — a guard test
-/// asserting a chain that made the skip publish a lie:
-///
-///  1. skipping means returning `compact_rail_replay_bracket_refused_read`,
-///     which carries no `hub_simulation`, so d81's record is a DOMAIN_GAP;
-///  2. that gap's reason was `SourceUnavailable` — a claim that the ENGINE could
-///     not be read, which on a label-mismatched frame is simply false;
-///  3. `replace_rejected_domain_records_with_gaps` DROPS a `HourLabelMismatch`
-///     rejection when the domain already carries a gap, so the false reason is
-///     the one that ships.
-///
-/// The chain is unchanged. What changed is link 2: the refused read now names
-/// [`D81FailureReason::HourLabelMismatch`] and carries the hour it observed, so
-/// the gap link 3 preserves is the SAME gap reconciliation would have minted.
-/// This test asserts each link individually, so a regression on any one of them
-/// fails here rather than silently restoring the swallowed reason.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: pointing the label-mismatch refusal
-/// back at `D81FailureReason::Torn` (link 2 fails — that reason maps to
-/// `SourceUnavailable`); dropping the observed hour from the refusal (link 2's
-/// witness assertion fails); or making the yield rule replace the domain's own
-/// mismatch gap (link 3 fails, with the ordinal spent twice).
 #[test]
 fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
     use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
@@ -723,8 +485,6 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
     let observed_hour = hour + 1;
     let observed = u64::try_from(observed_hour).expect("fixture hour fits u64");
 
-    // LINK 1 -- unchanged. The placeholder read cannot produce a payload, so
-    // d81's record for that frame is a gap and not data.
     let mut refused = compact_rail_replay_bracket_refused_read(
         0,
         SplitBracketRefusal::LabelMismatch {
@@ -738,8 +498,6 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
          frame is a DOMAIN_GAP"
     );
 
-    // LINK 2 -- CLOSED. The reason is the mismatch's own, not a borrowed
-    // `Torn`, and it carries the observed hour as its witness.
     assert_eq!(
         refused.first_failure.map(|failure| failure.reason),
         Some(D81FailureReason::HourLabelMismatch),
@@ -769,15 +527,12 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
          why the mismatch needed a reason of its own"
     );
     assert!(
-        source.contains("Some(D81FailureReason::HourLabelMismatch) => match d81_mismatch_witness {")
+        source
+            .contains("Some(D81FailureReason::HourLabelMismatch) => match d81_mismatch_witness {")
             && source.contains("Some(_) => DomainGapReason::HourLabelMismatch,"),
         "and the new reason must reach the wire as the mismatch, gated on its \
          witness being present"
     );
-    // The payload that pairing produces is one the wire's self-proving grammar
-    // ACCEPTS. Asserted by encoding it, not by reading the grammar: a witness
-    // that cannot prove the claim fails `encode`, and at the production site
-    // that is an `expect` on the publication path.
     let staged = DomainGapRecordV1 {
         part: DomainGapPart::State,
         reason: DomainGapReason::HourLabelMismatch,
@@ -795,10 +550,6 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
         .encode()
         .expect("the skip's own payload must be one the wire can carry");
 
-    // LINK 3 -- the yield rule still yields, and that is now the RIGHT answer.
-    // The bracket rejection and the domain's own record are the same claim over
-    // the same observation, so the record that ships is the one already in the
-    // buffer, with its staged ordinal intact.
     let mismatched = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         opening: Some(clock_obs(observed_hour, 1)),
@@ -821,7 +572,6 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
         "reconciliation names the mismatch and witnesses the same hour the \
          worker did -- one predicate, two callers"
     );
-    // And the whole seam, over a real frame buffer.
     let mut records = Vec::new();
     append_compact_record(
         &mut records,
@@ -863,16 +613,6 @@ fn a_label_mismatched_bracket_skips_its_compute_under_its_own_reason() {
     );
 }
 
-/// The skipped frame publishes no `source_unavailable` claim about the engine.
-///
-/// The gap reason is the load-bearing statement, but it is not the only one a
-/// consumer reads: `COMPACT_STATUS_SOURCE_UNAVAILABLE` drives
-/// `compact_source_unavailable` in the host's problem list and its own row in
-/// `report_raw_capture.py`. A mismatch shape that set it would put the same
-/// false claim on a second channel.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: giving both refusal shapes the same
-/// status word again.
 #[test]
 fn the_skipped_frame_publishes_no_source_unavailable_claim() {
     let mismatch = compact_rail_replay_bracket_refused_read(
@@ -896,24 +636,9 @@ fn the_skipped_frame_publishes_no_source_unavailable_claim() {
         COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
         "a bracket that could not vouch for its observation is unchanged"
     );
-    // Neither reaches the wire today -- both have `hub_simulation: None`, so the
-    // gap branch publishes status 0 on probe 250 and never d81's own word. That
-    // is a property of today's encode site, which is why the values above are
-    // written truthfully rather than left inert.
     assert!(mismatch.hub_simulation.is_none() && incoherent.hub_simulation.is_none());
 }
 
-/// A mismatch gap and the bracket behind it must witness the SAME hour.
-///
-/// The yield rule keeps the domain's own record and discards the rejection, so
-/// the rejection's witnesses never reach the wire — which means a skip that
-/// published a different observed hour than reconciliation computed would ship
-/// unchallenged, and nothing downstream could tell. Hour misattribution is the
-/// project's stop condition, so the disagreement is a frame error.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: deleting the equality check from the
-/// yield rule, or letting the skip's witness come from anywhere other than the
-/// bracket the guard closed.
 #[test]
 fn a_mismatch_gap_and_its_bracket_must_witness_the_same_hour() {
     use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
@@ -927,10 +652,6 @@ fn a_mismatch_gap_and_its_bracket_must_witness_the_same_hour() {
         closing: Some(clock_obs(observed_hour, 2)),
         worker_panicked: false,
     };
-    // A gap claiming a DIFFERENT observed hour than the bracket recorded. Still
-    // a well-formed payload -- the grammar checks the witness against the target
-    // hour, and this one is nonzero and not the label -- so nothing but this
-    // rule can see it.
     let lying = DomainGapRecordV1 {
         part: DomainGapPart::State,
         reason: DomainGapReason::HourLabelMismatch,
@@ -978,17 +699,6 @@ fn a_mismatch_gap_and_its_bracket_must_witness_the_same_hour() {
     );
 }
 
-/// Every OTHER existing gap still outranks a label mismatch, exactly as before.
-///
-/// The yield rule was made reason-aware; it was not made reason-selective. A
-/// domain whose own record says the READ failed keeps saying that — the mismatch
-/// names only the attribution, and a read failure is the more specific fact.
-/// Symmetrically, a torn or unreadable bracket still REPLACES whatever the
-/// domain published, because those say the read itself was invalid.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: making a mismatch rejection overwrite
-/// an existing gap, or making the new mismatch handling swallow the tear
-/// precedence on its way past.
 #[test]
 fn a_read_failure_still_outranks_a_label_mismatch() {
     use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
@@ -999,14 +709,6 @@ fn a_read_failure_still_outranks_a_label_mismatch() {
         COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         DomainGapPart::State.code(),
     );
-    // THE TICK PAIR IS THE HOUR THE READ HAPPENED IN, which on a mismatched
-    // frame is the OBSERVED hour and not the label. Written that way here on
-    // purpose: d81's encode site currently fills a `SourceUnavailable` tick pair
-    // from `game_hour_raw`, which is right on every in-hour frame and wrong on
-    // this one, and a fixture that copied the label would quietly enshrine that
-    // as the expected shape. What this test asserts is PRECEDENCE -- which
-    // record survives -- and it must not double as an endorsement of the
-    // witnesses that record carries.
     let source_unavailable = DomainGapRecordV1 {
         part: DomainGapPart::State,
         reason: DomainGapReason::SourceUnavailable,
@@ -1045,7 +747,6 @@ fn a_read_failure_still_outranks_a_label_mismatch() {
         .reason
     };
 
-    // A MISMATCHED bracket over a genuine read failure: the read failure stands.
     let mismatched = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         opening: Some(clock_obs(observed_hour, 1)),
@@ -1071,7 +772,6 @@ fn a_read_failure_still_outranks_a_label_mismatch() {
          overwrite that"
     );
 
-    // A TORN bracket over a mismatch gap: the tear replaces it.
     let torn = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         opening: Some(clock_obs(hour, 1)),
@@ -1116,31 +816,11 @@ fn a_read_failure_still_outranks_a_label_mismatch() {
     );
 }
 
-/// A bracket whose observed hour cannot serve as a wire witness refuses the
-/// domain-hour WITHOUT killing the frame.
-///
-/// `HourLabelMismatch` is the wire's one self-proving reason: its grammar
-/// demands two equal, NONZERO ticks that differ from the target hour, because
-/// the observed hour is the reason's entire content. `clock_tick_witness`
-/// collapses every hour it cannot fit in a `u64` to 0, the wire's "no witness"
-/// value — so a negative clock reading used to build a payload `encode` REFUSES,
-/// which returned `Err` from reconciliation and took the whole frame, including
-/// every genuine tear in it, down with it.
-///
-/// The domain-hour is still refused; the owner's ruling that a mismatched sweep
-/// loses its hour visibly is untouched. It is refused under `ClockUnreadable`,
-/// whose required zero ticks say exactly what such a reading supports.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: minting `HourLabelMismatch` from a
-/// bracket whose witness `hour_label_mismatch_witness` rejects — the frame then
-/// fails to reconcile at all, and the assertion below is an `expect`.
 #[test]
 fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
     use compact_contract::domain_gap::{DomainGapPart, DomainGapReason, DomainGapRecordV1};
 
     let hour = super::state_fixture::fixture_game_hour_raw();
-    // A negative engine reading: a real hour label, an observation that is not
-    // one. `LabelMismatch` by verdict, unusable as a witness.
     let unusable = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         opening: Some(clock_obs(-5, 1)),
@@ -1153,12 +833,6 @@ fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
         "the verdict is unchanged -- it is the WITNESS that cannot be built"
     );
     assert_eq!(hour_label_mismatch_witness(&unusable, hour), None);
-    // THE CAUSE STAYS THE MISMATCH IN THE REJECTION MAP. That map is what the
-    // precedence rule reads, and the cause has not changed just because the wire
-    // cannot carry its witness. Downgrading here would make this rejection
-    // outrank a genuine read failure the domain had already published, which is
-    // the inversion `a_mismatch_without_a_witness_still_yields_to_a_read_failure`
-    // exercises end to end.
     assert_eq!(
         rejected_bracket_domains(
             std::slice::from_ref(&unusable),
@@ -1177,9 +851,6 @@ fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
          6.4 ms and lies about nothing"
     );
 
-    // THE RECORD is what gives, at the mint site. d81 published DATA, so there
-    // is no read failure to preserve and the rejection really does replace it --
-    // under `ClockUnreadable`, whose grammar requires the same two zeros.
     let mut records = Vec::new();
     append_compact_record(
         &mut records,
@@ -1221,16 +892,14 @@ fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
         std::collections::BTreeSet::from([COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE]),
         "the domain-hour is still refused -- the owner's ruling is untouched"
     );
-    // Walk the frame: the healthy domain keeps its DATA, and d81's replacement
-    // is an encodable gap. Before the mint-site downgrade the call above
-    // returned `Err` and this whole frame -- healthy domain included -- was lost.
     let mut offset = 0usize;
     let mut seen = Vec::new();
     while offset < records.len() {
         let header = compact_contract::parse_compact_record_header(&records[offset..]).unwrap();
         if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP {
             let gap = DomainGapRecordV1::decode(
-                &records[offset + compact_contract::COMPACT_RECORD_HEADER_LEN..offset + header.record_len()],
+                &records[offset + compact_contract::COMPACT_RECORD_HEADER_LEN
+                    ..offset + header.record_len()],
             )
             .expect("the replacement must satisfy the H4DG grammar");
             assert_eq!(gap.reason, DomainGapReason::ClockUnreadable);
@@ -1251,14 +920,6 @@ fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
         "and d81's DATA is replaced by a gap: {seen:?}"
     );
 
-    // AND THE PRECEDENCE HOLDS WITHOUT A WITNESS. The same unusable bracket over
-    // a domain that already published a genuine read failure leaves that failure
-    // alone: the cause is an attribution failure either way, and a read failure
-    // is the more specific fact.
-    // Witnesses that are NOT a copy of the label, for the reason given in
-    // `a_read_failure_still_outranks_a_label_mismatch`: this test is about which
-    // record survives, and must not also stand as an expectation about the
-    // witnesses that record carries. -5 is what this bracket observed.
     let source_unavailable = DomainGapRecordV1 {
         part: DomainGapPart::State,
         reason: DomainGapReason::SourceUnavailable,
@@ -1309,33 +970,11 @@ fn an_unusable_observed_hour_refuses_without_killing_the_frame() {
     );
 }
 
-/// A READ FAILURE PRODUCED INSIDE THE BRACKET SURVIVES THE SKIP.
-///
-/// Found by review, not by a test (Codex 019fdeb9-2ff3-7700-b799-737eff4c4302,
-/// finding 1). The first version of the skip dropped the observe half's outcome
-/// unconditionally and returned the placeholder, exactly as the incoherent-
-/// bracket arm does. That arm is right to: reconciliation replaces its record
-/// whatever it says. The MISMATCH arm is not, because its record is the one that
-/// ships — so a d81 whose reader had already failed inside the bracket
-/// (`EmptySnapshot`, `InvalidPointer`, any of the nineteen) would have published
-/// `HourLabelMismatch`: "the engine read fine, only the hour was wrong", about a
-/// frame where the engine did not read at all. That is this lane's own defect
-/// pointed the other way, and it is the same precedence
-/// `replace_rejected_domain_records_with_gaps` states.
-///
-/// There is also nothing to save: `D81ObserveOutcome::Complete` is terminal, and
-/// `d81_finish_rail_replay_state` returns it untouched, so no deferred compute
-/// runs on it in the first place.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: returning the placeholder for a
-/// `Complete` observation on the mismatch arm, or handing the observation to the
-/// incoherent arm (whose copy must still be dropped unread).
 #[test]
 fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
     let observed_hour_raw = 42u64;
     let mismatch = SplitBracketRefusal::LabelMismatch { observed_hour_raw };
 
-    // The observe half's own terminal answer, with a reason of its own.
     let already_failed = CompactRailReplayRead {
         plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
         equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
@@ -1377,28 +1016,11 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         ),
         (5, 6)
     );
-    // AND ITS PROVENANCE IS `Measured` ON A REFUSED FRAME, which is the shape
-    // that makes the word a statement about the NUMBERS and not about the
-    // outcome (lane GM, 2026-08-11): nothing was discarded here, so nothing was
-    // preserved, and a reader must not take `Measured` for "this frame
-    // delivered".
-    // kills: mapping this arm through the placeholder constructor instead of
-    //   returning the read untouched (the record would read
-    //   `PreservedAfterRefusal` and would lose the read's own reason with it)
     assert_eq!(
         kept.diagnostics_provenance,
         D81DiagnosticsProvenance::Measured,
     );
 
-    // A DEFERRED observation on the same refusal IS the skip: nothing terminal
-    // exists yet, so the copy is dropped UNCOMPUTED and the mismatch is named.
-    // Driven through a real `Deferred`, not through `None`, because those are
-    // different arms of the handler and only this one can prove the copy went
-    // unread.
-    // A three-province ring, so every directed edge has its reciprocal and the
-    // deferred fold runs to completion rather than refusing part-way. An empty
-    // province list would refuse `EmptySnapshot`, and then "the compute did not
-    // run" and "the compute ran and refused" would look identical.
     let ring: Vec<RailProvinceState> = (1..=3u32)
         .map(|province_id| RailProvinceState {
             province_id,
@@ -1418,18 +1040,9 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         .iter()
         .map(|province| province.neighbors.len())
         .sum::<usize>();
-    // SINCE THE CONVERSION THE COPY IS WHAT CROSSES THE BRACKET, not the rows.
-    // The compute half decodes the plan's snapshot, so a fixture that handed it a
-    // ready-made row list would be a fixture for a design that no longer exists —
-    // and, worse, one that could not tell "the compute did not run" from "there
-    // was nothing left to compute". `staged_deferred` carries a REAL copy of a
-    // staged world whose neighbours are reciprocal, so the control below
-    // genuinely publishes.
     let _ = (&ring, observed_neighbors);
     let deferred_copy =
         || D81ObserveOutcome::Deferred(Box::new(super::d81_authoritative::staged_deferred()));
-    // THE CONTROL, and what makes the assertion below mean anything: this exact
-    // copy DOES compute to a published snapshot when it is not refused.
     let computed = d81_finish_rail_replay_state(deferred_copy());
     assert!(
         computed.hub_simulation.is_some() && computed.first_failure.is_none(),
@@ -1438,11 +1051,8 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
          run'"
     );
 
-    let deferred = d81_bracket_refused_outcome(
-        mismatch,
-        RefusedObservation::Whole(deferred_copy()),
-        0,
-    );
+    let deferred =
+        d81_bracket_refused_outcome(mismatch, RefusedObservation::Whole(deferred_copy()), 0);
     assert!(
         deferred.hub_simulation.is_none(),
         "the deferred copy must be dropped UNREAD -- a hub snapshot here is the \
@@ -1457,9 +1067,6 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         Some(observed_hour_raw)
     );
 
-    // And the incoherent arm is untouched: it never receives an OBSERVATION at
-    // all, because `spawn_gated_split` has already dropped its copy unread and
-    // hands on only what that copy had measured.
     let incoherent = d81_bracket_refused_outcome(
         SplitBracketRefusal::BracketIncoherent,
         RefusedObservation::MeasurementOnly(D81PreservedMeasurement::default()),
@@ -1470,8 +1077,6 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
         Some(D81FailureReason::Torn)
     );
 
-    // The wiring, asserted against the source: reaching the real branch needs a
-    // live game process, and the defect is exactly which arm gets the copy.
     let source = collector_source_lf();
     let split = source
         .split_once("fn spawn_gated_split<")
@@ -1497,7 +1102,6 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
     );
 }
 
-/// A distinctive plan block, so a substituted default cannot be mistaken for it.
 fn measured_plan_counters() -> crate::attach_log::d81_copy_bracket::D81PlanCounters {
     crate::attach_log::d81_copy_bracket::D81PlanCounters {
         ran: true,
@@ -1509,8 +1113,6 @@ fn measured_plan_counters() -> crate::attach_log::d81_copy_bracket::D81PlanCount
     }
 }
 
-/// The same for the phase block. No field is zero, so a `D81PhaseTimes::default()`
-/// substituted in its place differs in every one of them.
 fn measured_phase_times() -> D81PhaseTimes {
     D81PhaseTimes {
         topology_us: 9_001,
@@ -1522,49 +1124,8 @@ fn measured_phase_times() -> D81PhaseTimes {
     }
 }
 
-/// A REFUSED FRAME'S MEASUREMENTS SURVIVE BOTH DISCARD SITES (lane GM,
-/// 2026-08-11, closing lane GJ's residual R3).
-///
-/// WHAT WENT WRONG. A refused d81 frame published the whole diagnostic block —
-/// plan counters, phase timings, its own `read_time_us` — with SUBSTITUTED ZEROS
-/// in place of the values the bracket had already measured, because the
-/// observation holding them was discarded before anything read it. In t49 that
-/// was 317 of 334 frames, and the capture was diagnosable at all only because 17
-/// of them happened to keep their bracket: a capture whose brackets all refused
-/// would have shipped an all-zero block and reported a 67 ms regression as free.
-///
-/// TWO SITES, ONE PER ARM, and this test drives one arm each because a fix to
-/// either alone leaves most of a capture dark:
-///
-///  1. THE WORKER, on a TORN bracket (`BracketIncoherent`, 277 of t49's 317).
-///     Driven through the real `spawn_gated_split` rather than pinned to its
-///     source: a fixture-less `FrameLaneTracker` has no readable clock, so the
-///     guard genuinely publishes `BracketIncoherent` and the arm this test cares
-///     about is the arm that runs.
-///  2. THE HANDLER, on a LABEL MISMATCH (40 of the 317), whose deferred outcome
-///     is handed over and then dropped. Driven at
-///     `d81_bracket_refused_outcome`, since the mismatch verdict needs a clock a
-///     fixture cannot supply.
-///
-/// WHAT IS STILL REFUSED IS ASSERTED IN BOTH ARMS, because a "preservation" that
-/// leaked a row would be a far worse defect than the one it fixes: no
-/// `hub_simulation`, no provinces, the refusal's own typed reason, and the
-/// refusal's own status word.
-///
-/// kills: `spawn_gated_split`'s `BracketIncoherent` arm -> back to discarding
-///   the observation unmeasured (`drop(observed); rejected(refusal,
-///   RefusedObservation::MeasurementOnly(D81PreservedMeasurement::default()))`)
-///   — arm 1 then reads a default plan and phase block where the observation
-///   measured `measured_plan_counters()` / `measured_phase_times()`
-/// kills: `d81_bracket_refused_outcome`'s `Whole(Deferred(..))` arm -> back to
-///   `drop(deferred); compact_rail_replay_bracket_refused_read(status_flags,
-///   refusal, D81PreservedMeasurement::default())` — arm 2 then reads a zero
-///   `d81_plan_copies_issued` where the deferred copy measured one
-/// kills: either arm's `diagnostics_provenance` -> `Measured` (the wire would
-///   claim a refused frame's preserved block was measured by a frame that ran)
 #[test]
 fn a_refused_frames_measurements_survive_both_discard_sites() {
-    // ---- ARM 1: THE WORKER'S TORN BRACKET ---------------------------------
     let hour = super::state_fixture::fixture_game_hour_raw();
     let lanes = FrameLaneTracker::new(Instant::now(), Instant::now(), 0, 0);
     let observed_read = CompactRailReplayRead {
@@ -1598,17 +1159,12 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
         .join()
         .expect("the worker must not panic")
     });
-    // THE CONTROL ON THE ARM: the bracket really did refuse, and refused TORN.
-    // Without this the assertions below could be passing on a frame that was
-    // never refused at all.
     assert_eq!(
         torn.first_failure.map(|failure| failure.reason),
         Some(D81FailureReason::Torn),
         "a fixture-less tracker has no clock, so this arm must be the \
          incoherent one",
     );
-    // REFUSAL SEMANTICS, UNCHANGED. The observed read carried a hub snapshot;
-    // the torn arm drops it, and nothing derived from the copy survives.
     assert!(
         torn.hub_simulation.is_none() && torn.provinces.is_empty(),
         "a torn bracket publishes no rows and no hub snapshot -- preservation \
@@ -1618,7 +1174,6 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
         torn.status_flags,
         COMPACT_STATUS_SOURCE_UNAVAILABLE | COMPACT_STATUS_PARTIAL_DATA,
     );
-    // AND THE MEASUREMENTS ARE THE OBSERVATION'S OWN.
     assert_eq!(torn.plan, measured_plan_counters());
     assert_eq!(torn.phase_times, measured_phase_times());
     assert_eq!(torn.read_time_us, 97_700);
@@ -1631,7 +1186,6 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
          ran to a published outcome",
     );
 
-    // ---- ARM 2: THE HANDLER'S DEFERRED DROP -------------------------------
     let mut deferred = super::d81_authoritative::staged_deferred();
     deferred.plan = measured_plan_counters();
     deferred.snapshot_bytes = 9_004;
@@ -1647,9 +1201,6 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
         RefusedObservation::Whole(D81ObserveOutcome::Deferred(Box::new(deferred))),
         0,
     );
-    // REFUSAL SEMANTICS, UNCHANGED. The deferred compute did not run -- a hub
-    // snapshot here would be the walk having run on an hour the bracket refuses
-    // -- and the reason is the mismatch's own.
     assert!(
         handled.hub_simulation.is_none() && handled.provinces.is_empty(),
         "the deferred copy must still be dropped unread",
@@ -1659,7 +1210,6 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
         Some(D81FailureReason::HourLabelMismatch),
     );
     assert_eq!(handled.status_flags, COMPACT_STATUS_PARTIAL_DATA);
-    // AND THE MEASUREMENTS ARE THE DEFERRED COPY'S OWN.
     assert_eq!(handled.plan, measured_plan_counters());
     assert_eq!(handled.phase_times, measured_phase_times());
     assert!(
@@ -1672,10 +1222,6 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
         D81DiagnosticsProvenance::PreservedAfterRefusal,
     );
 
-    // ---- AND THE ONE SHAPE THAT REALLY IS A SUBSTITUTION ------------------
-    // A read built after the join holds no outcome to measure, so its zeros are
-    // substitutions and say so. This is what makes the word above a
-    // DISTINCTION rather than a label everything wears.
     let panicked = compact_rail_replay_worker_panic_read(0);
     assert_eq!(
         panicked.diagnostics_provenance,
@@ -1684,18 +1230,6 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
     assert_eq!(panicked.phase_times, D81PhaseTimes::default());
 }
 
-/// THE THREE PROVENANCE WORDS REACH THE WIRE, ONE PER RECORD.
-///
-/// The block above is only a distinction if a consumer can read it, and it is
-/// read as three NAMED counters rather than as one ordinal: a summed ordinal
-/// names nothing, while three counts divide into `d81_plan_frames` and answer
-/// "how many of this capture's d81 frames measured the numbers they published".
-///
-/// kills: mapping two `D81DiagnosticsProvenance` variants onto one unit name
-///   (the distinctness assertion fails)
-/// kills: emitting more or fewer than one unit per record (the per-record count
-///   assertion fails, and the three counts would stop summing to
-///   `d81_plan_frames`)
 #[test]
 fn each_d81_record_publishes_exactly_one_provenance_word() {
     let base = compact_rail_replay_bracket_refused_read(
@@ -1741,26 +1275,12 @@ fn each_d81_record_publishes_exactly_one_provenance_word() {
         "two provenances sharing a name would make a preserved block \
          indistinguishable from a measured one on the wire: {names:?}",
     );
-    // And the base refused read -- the one production actually builds -- carries
-    // the preserved word, not a measured one.
     assert_eq!(
         d81_diagnostics_provenance_units(&base)[0].name,
         "d81_diagnostics_preserved_frames",
     );
 }
 
-/// `CountOnly` never skips the compute.
-///
-/// The policy switch's standing claim is that it changes only WHETHER a
-/// mismatched domain is refused. Under `CountOnly` a mismatched bracket is
-/// counted and its domain still publishes its rows — so a split that skipped
-/// regardless would DELETE data the policy says to keep, which is a change of a
-/// different kind entirely.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: dropping the policy gate from
-/// `split_bracket_refusal`, or reading `HOUR_LABEL_MISMATCH_POLICY` inside it
-/// instead of taking it as an argument (the second makes this test impossible to
-/// write, which is why the argument exists).
 #[test]
 fn the_count_only_policy_never_skips_the_compute() {
     let hour = super::state_fixture::fixture_game_hour_raw();
@@ -1779,8 +1299,6 @@ fn the_count_only_policy_never_skips_the_compute() {
         split_bracket_refusal(&mismatched, hour, HourLabelMismatchPolicy::Refuse).is_some(),
         "and under Refuse it must not"
     );
-    // The two locally-decidable refusals are policy-INDEPENDENT: the bracket
-    // could not vouch for its observation, which no mismatch policy makes true.
     let unreadable = DomainClockBracket {
         tag: COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
         opening: None,
@@ -1799,13 +1317,14 @@ fn the_count_only_policy_never_skips_the_compute() {
     }
 }
 
-/// The owned copy is bounded, and exhausting the bound refuses the domain-hour
-/// under its own assigned reason rather than under a borrowed one.
 #[test]
 fn the_snapshot_budget_refuses_under_its_own_assigned_reason() {
     let mut budget = D81SnapshotBudget::new(100);
     assert!(budget.charge(60).is_ok());
-    assert!(budget.charge(40).is_ok(), "exactly at the limit is admitted");
+    assert!(
+        budget.charge(40).is_ok(),
+        "exactly at the limit is admitted"
+    );
     assert_eq!(
         budget.charge(1),
         Err(101),
@@ -1825,9 +1344,6 @@ fn the_snapshot_budget_refuses_under_its_own_assigned_reason() {
         d81_failure_reason_unit_name(D81FailureReason::OutOfBounds),
     );
 
-    // The budget is charged where the copy grows, and both growth sites are
-    // charged. Asserted against the source: reaching either from a fixture needs
-    // a 64 MiB staged tree.
     let source = collector_source_lf();
     let read = source
         .split_once("fn d81_read_foreign_source(")
@@ -1859,29 +1375,6 @@ fn the_snapshot_budget_refuses_under_its_own_assigned_reason() {
     );
 }
 
-/// NOTHING THE POST-BRACKET HALF RUNS CAN OBSERVE.
-///
-/// The snapshot-law amendment legalises computing on a bounded, hour-stamped
-/// copy after the bracket closes. It does not legalise reading the engine there,
-/// and the difference is invisible to every behavioural test: a stray
-/// `read_u64_stable` in the compute would publish plausible values taken outside
-/// the span the witnesses vouch for and outside the hour label the record
-/// carries.
-///
-/// So it is asserted against the source, over the whole post-bracket surface.
-/// The primitive list is the one d81's reader actually uses; anything not on it
-/// is reachable only through something that is.
-///
-/// MUTATION RUN: `read_u64_stable(0x1000);` inserted at the top of
-/// `d81_compute_rail_hub_rows`. Observed:
-///
-/// ```text
-/// the post-bracket half must not call `read_u64_stable`: it runs after the
-/// clock bracket has closed, so anything it reads is outside the span the
-/// witnesses vouch for (fn d81_compute_rail_hub_rows()
-/// ```
-///
-/// Restored.
 #[test]
 fn the_post_bracket_half_performs_no_guarded_read() {
     const PRIMITIVES: [&str; 8] = [
@@ -1899,12 +1392,7 @@ fn the_post_bracket_half_performs_no_guarded_read() {
         "fn d81_compute_rail_hub_rows(",
         "fn d81_finish_rail_replay_state(",
         "fn d81_hub_foreign_source_into<",
-        // Its only remaining caller in production is the compute, so the probe
-        // that answers from a table is on the post-bracket surface too.
         "fn maximum_excluding_controller(",
-        // And the table the probe reads: `D81RowTable::get` runs entirely after
-        // the bracket closes, so a guarded read reintroduced there would be
-        // exactly the defect this test exists for.
         "impl D81RowTable {",
     ] {
         let body = source
@@ -1914,8 +1402,6 @@ fn the_post_bracket_half_performs_no_guarded_read() {
             .split_once("\nfn ")
             .unwrap_or_else(|| panic!("the end of {name}"))
             .0;
-        // Doc comments and prose name these primitives; only CODE matters, so
-        // the comment lines are stripped rather than the search weakened.
         let code = body
             .lines()
             .filter(|line| !line.trim_start().starts_with("//"))
@@ -1933,15 +1419,6 @@ fn the_post_bracket_half_performs_no_guarded_read() {
     }
 }
 
-/// The owned copy records the bracket opening it was observed under, the guard
-/// is scoped to the OBSERVE half alone, and the copy is handed to the compute by
-/// MOVE — so there is nothing left behind to be used in another hour.
-///
-/// `hour_stamp` is `None` only where the pre-split reader also had no hour to
-/// place itself in (a read taken with no bracket at all — the serial and fixture
-/// paths). It is deliberately NOT a refusal input: making it one would refuse
-/// hours the undivided reader published, which is a completeness regression
-/// dressed as a safety check.
 #[test]
 fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
     let source = collector_source_lf();
@@ -1982,11 +1459,6 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
         .split_once("\nfn ")
         .expect("the end of the split spawn")
         .0;
-    // The BRACKET SCOPE, read out of the source rather than matched as one
-    // literal line. It used to be pinned as an exact one-line string, which made
-    // the assertion hostage to `rustfmt` -- the guard grew a third argument and
-    // the same correct code stopped matching. What matters is the SHAPE: the
-    // guard and the observation are inside the scope, and the compute is not.
     let observed_scope = split
         .split_once("let observed = {")
         .expect("the observe scope")
@@ -2024,52 +1496,23 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
     );
 }
 
-/// The two appended lane-wall units decompose the split reader's lane span and
-/// displace nothing.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: emitting the split units in place of
-/// `lw_d{tag}_crit_us` rather than beside it, or naming them something an
-/// existing offline formula already reads.
 #[test]
 fn the_split_units_are_appended_beside_the_existing_lane_wall_units() {
     let names = lw_domain_split_unit_names(81);
     assert_eq!(names, &["lw_d81_inb_us", "lw_d81_post_us"]);
     assert_ne!(names[0], lw_domain_crit_unit_name(81));
     assert_ne!(names[1], lw_domain_crit_unit_name(81));
-    // Leaked once per tag, like every other lazily-built unit name beside it.
     assert_eq!(
         lw_domain_split_unit_names(81).as_ptr(),
         names.as_ptr(),
         "a name rebuilt per frame leaks per frame"
     );
 
-    // A frame with no split reader emits neither unit, which is what makes the
-    // pair additive rather than a schema change.
     let summary = summarize_lane_spans(&[]);
     assert!(summary.bracket_splits.is_empty());
 }
 
-/// Price the emission that left the bracket, at t31's measured shape.
-///
-/// WHY A BENCH AND NOT AN ASSERTION. `#[ignore]` on purpose, for the reason
-/// `d81_foreign_fold_cost_model` gives: this is a measurement, and a wall-clock
-/// gate in this tree flakes under lane load. Run it deliberately:
-///
-/// ```text
 /// cargo test -p collector --release d81_bracket_split_cost_model -- --ignored --nocapture
-/// ```
-///
-/// WHAT THE ARM IS, and what it is not. It runs the production emission over an
-/// observation at t31's shape and reports its wall. That number is what the
-/// pre-split reader billed to its clock bracket for this work and what the split
-/// reader now bills to the compute half instead: the saving is a RELOCATION, not
-/// a speedup, which is the only kind available when the output has to be
-/// byte-identical. Reporting it as a speedup would be a lie the fixture cannot
-/// support.
-///
-/// WHAT IS NOT IN THE ARM: the guarded reads, the witnesses, the hash-table
-/// decode. Those are unchanged by the split and stay inside the bracket; the
-/// fixture exists to isolate the part that moved.
 #[test]
 #[ignore]
 fn d81_bracket_split_cost_model() {
@@ -2097,8 +1540,6 @@ fn d81_bracket_split_cost_model() {
         node_states.insert(0u32, (1u32, 0u8, 5i64, 6i64));
         for &province_id in &frame.queries[pov] {
             let (raw_handle, equivalence_id) = T31Frame::controller(province_id);
-            // The emission refuses a zero controller on the direct route, and a
-            // refusal would cut the arm short instead of measuring it.
             let raw_handle = raw_handle.max(1);
             let equivalence_id = equivalence_id.max(1);
             controller_by_province.insert(province_id, (raw_handle, equivalence_id));
@@ -2132,7 +1573,6 @@ fn d81_bracket_split_cost_model() {
         reread_refused: Some(false),
     };
 
-    // THE FIXTURE IS T31's, OR THIS BENCH MEANS NOTHING.
     let close_to = |realised: u64, measured: u64, name: &str| {
         let error = (realised as f64 - measured as f64).abs() / measured as f64;
         assert!(
@@ -2180,17 +1620,6 @@ fn d81_bracket_split_cost_model() {
     println!("  wall that WAS in-bracket and is now post-bracket:");
     println!("  {}", percentiles_us(samples));
 
-    // ARM A2 -- THE CONTAINER, PRICED AGAINST THE ONE IT REPLACED (lane FG,
-    // 2026-08-08).
-    //
-    // The probe loop is unchanged; what changed is the lookup inside it. This
-    // arm walks the SAME per-POV probe sequence the emission above walks, over
-    // the same tables held both ways, and reports each container's wall. It is
-    // a container measurement and not a claim about the frame: what it prices
-    // is `hub_emit_us`, which t37 put at 9.87 ms of d81's 26.05 ms `hub_us`.
-    //
-    // The checksums are printed and compared: two containers that disagree
-    // about an answer are not comparable on speed.
     let map_tables: Vec<BTreeMap<u32, i64>> = frame
         .tables
         .iter()
@@ -2235,27 +1664,18 @@ fn d81_bracket_split_cost_model() {
         "the two containers must answer identically, or the timings compare \
          different computations"
     );
-    println!(
-        "  the same probe sequence, per container (checksum {map_checksum}):"
-    );
+    println!("  the same probe sequence, per container (checksum {map_checksum}):");
     println!("    BTreeMap (deleted):  {}", percentiles_us(map_samples));
-    println!("    D81RowTable (shipped): {}", percentiles_us(table_samples));
+    println!(
+        "    D81RowTable (shipped): {}",
+        percentiles_us(table_samples)
+    );
 
-    // ARM B -- the second deferred phase. The neighbour-reciprocity fold plus
     // the empty/bounds checks, driven through the REAL post-bracket half with an
-    // empty hub observation so that the hub's contribution is ~0 and what is
-    // reported is the fold.
-    //
-    // THE SHAPE IS t26's `d81_phase_provinces_railed` (3,510), because that is
-    // the railed count the phase block published; t31's constants above carry
-    // `provinces_visited` and not `provinces_railed`. The fold runs over the
-    // RAILED provinces, which are the only ones the walk pushes.
     const RAILED: u32 = 3_510;
     const NEIGHBOURS: u32 = 4;
     let mutual: Vec<RailProvinceState> = (0..RAILED)
         .map(|index| {
-            // A ring, so every directed edge has its reciprocal and the fold
-            // runs to completion instead of refusing part-way.
             let province_id = index + 1;
             let neighbors = (1..=NEIGHBOURS)
                 .flat_map(|step| {
@@ -2285,18 +1705,7 @@ fn d81_bracket_split_cost_model() {
         .iter()
         .map(|province| province.neighbors.len())
         .sum::<usize>();
-    // Built up front, one per trial, because the finish CONSUMES its copy --
     // which is the ownership rule the split rests on, so the bench has to obey
-    // it rather than work around it.
-    // THE SHAPE IS THE CONVERSION GATE'S WORLD, not t26's 3,510 railed
-    // provinces, and the substitution is forced rather than chosen (lane GI,
-    // 2026-08-10). The post-bracket half no longer receives rows: it receives the
-    // hour's COPY and walks it, so a bench that fed it a synthetic row list would
-    // be timing a function signature that does not exist. Staging 3,510 provinces
-    // into a `SyntheticMemory` — whose lookup is a linear scan over regions —
-    // would spend its whole wall inside the fixture rather than inside the code
-    // under test, so the shape is the gate's own and the number below is
-    // "the post-bracket half at that shape", walk included.
     let _ = (&mutual, observed_neighbors);
     let mut pending: Vec<D81ObserveOutcome> = (0..TRIALS)
         .map(|_| D81ObserveOutcome::Deferred(Box::new(super::d81_authoritative::staged_deferred())))
@@ -2321,34 +1730,6 @@ fn d81_bracket_split_cost_model() {
     println!("  {}", percentiles_us(fold_samples));
 }
 
-// ---- Witness provenance (lane FQ, 2026-08-08) ------------------------------
-//
-// THE DEFECT. d81's gap record used to fill both tick witnesses from
-// `game_hour_raw` -- the FRAME'S LABEL -- for every reason but the mismatch. On
-// an in-hour frame that is right by coincidence; on a label-mismatched one it
-// published `SourceUnavailable(target=H, ticks=H/H)` about a read that ran
-// wholly in H+1, which contradicts that reason's own documented witness and
-// forced `hour_label_audit` to exclude the whole reason as a tautology it could
-// not tell from an observation.
-//
-// THE FIX has three seams and each is exercised below: the bracket publishes
-// what it observed, the worker carries that observation out on EVERY outcome,
-// and the emit site mints its witnesses from it and states on the wire where
-// they came from.
-
-/// What a bracket may claim to have observed, and the four shapes that may not
-/// claim anything.
-///
-/// The refusals are the whole safety property: a witness fabricated from a
-/// bracket that tore, panicked, or could not read its clock is worse than no
-/// witness, because the wire's grammar cannot tell it from a real one.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: reading the opening observation
-/// without consulting `local_bracket_verdict` (the panic, unreadable and
-/// straddle cases start reporting an hour); dropping the nonzero filter (the
-/// negative case starts claiming it observed hour 0, which is the wire's
-/// no-witness value); or deriving the answer from `game_hour_raw` (the in-hour
-/// and mismatched cases stop differing).
 #[test]
 fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
     let hour = super::state_fixture::fixture_game_hour_raw();
@@ -2362,9 +1743,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
         worker_panicked,
     };
 
-    // COHERENT, IN THE FRAME'S OWN HOUR. The observation exists and equals the
-    // label -- and that equality is now EVIDENCE rather than arithmetic,
-    // because the next case proves the two can differ.
     assert_eq!(
         bracket_observed_hour_raw(&bracket(
             Some(clock_obs(hour, 1)),
@@ -2374,8 +1752,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
         Some(observed)
     );
 
-    // COHERENT, IN ANOTHER HOUR. THE CASE THE WHOLE LANE EXISTS FOR: the read
-    // ran entirely in hour+1 and the frame will publish under `hour`.
     assert_eq!(
         bracket_observed_hour_raw(&bracket(
             Some(clock_obs(hour + 1, 1)),
@@ -2387,8 +1763,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
          frame will publish under"
     );
 
-    // STRADDLED. Two different hours, and every reason d81 mints requires the
-    // two ticks to be equal, so there is no admissible pair to publish.
     assert_eq!(
         bracket_observed_hour_raw(&bracket(
             Some(clock_obs(hour, 1)),
@@ -2397,7 +1771,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
         )),
         None
     );
-    // UNREADABLE CLOCK, on either end. "Could not observe" is never "observed".
     assert_eq!(
         bracket_observed_hour_raw(&bracket(None, Some(clock_obs(hour, 2)), false)),
         None
@@ -2406,8 +1779,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
         bracket_observed_hour_raw(&bracket(Some(clock_obs(hour, 1)), None, false)),
         None
     );
-    // PANICKED WORKER. Nothing the bracket says is trustworthy, even though
-    // both reads succeeded and agree.
     assert_eq!(
         bracket_observed_hour_raw(&bracket(
             Some(clock_obs(hour, 1)),
@@ -2416,9 +1787,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
         )),
         None
     );
-    // A NEGATIVE READING. `clock_tick_witness` collapses it to 0, which is the
-    // wire's no-witness value; publishing it would claim an observation of
-    // hour zero.
     assert_eq!(
         bracket_observed_hour_raw(&bracket(
             Some(clock_obs(-5, 1)),
@@ -2429,19 +1797,6 @@ fn a_bracket_reports_only_the_hour_it_can_prove_it_observed() {
     );
 }
 
-/// The guard publishes the observation and the refusal TOGETHER, off one closed
-/// bracket.
-///
-/// The two are not the same fact and come apart in both directions: an ADMITTED
-/// bracket still has an observation its outcome must carry, and a refused one
-/// may have none. A guard that wrote only the refusal would leave every
-/// successful d81 hour with no witness at all.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: writing the sink from a second pair
-/// of clock reads instead of the recorded bracket (the observation stops
-/// matching the bracket the tracker holds), or seeding the outcome with anything
-/// but `None` (the no-clock fixture below starts reporting an hour it never
-/// read).
 #[test]
 fn a_guard_publishes_its_observation_beside_its_refusal() {
     let hour = super::state_fixture::fixture_game_hour_raw();
@@ -2484,18 +1839,6 @@ fn a_guard_publishes_its_observation_beside_its_refusal() {
     );
 }
 
-/// The refusal's own witness and the bracket's stamp are ONE observation.
-///
-/// Lane FJ's `LabelMismatch` refusal carries the observed hour on
-/// `first_failure.raw_value`, and lane FQ's stamp carries it on the read. Both
-/// are minted from the same closed bracket, and the emit site now takes the
-/// witness from the STAMP -- so if the two could disagree, the diagnostic unit a
-/// capture reads (`d81_failure_reason_24_hour_label_mismatch`'s raw value) and
-/// the witness on the wire would name different hours.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: stamping the refused outcome from
-/// anything but the guard that decided the refusal -- for instance from the
-/// frame label, or from a bracket re-read after the close.
 #[test]
 fn the_refusals_own_witness_and_the_brackets_stamp_are_one_observation() {
     let hour = super::state_fixture::fixture_game_hour_raw();
@@ -2519,9 +1862,6 @@ fn the_refusals_own_witness_and_the_brackets_stamp_are_one_observation() {
          reading and must not drift"
     );
 
-    // And the placeholder read the refusal builds, once stamped, agrees with
-    // itself: the emit site reads the reason from `first_failure` and the hour
-    // from the stamp, so those two are what must not contradict.
     let refused = d81_stamp_bracket_observation(
         compact_rail_replay_bracket_refused_read(0, refusal, D81PreservedMeasurement::default()),
         stamp,
@@ -2536,23 +1876,6 @@ fn the_refusals_own_witness_and_the_brackets_stamp_are_one_observation() {
     );
 }
 
-/// EVERY outcome leaves the worker carrying its bracket's observation.
-///
-/// Three shapes reach the join -- the computed one, the observe half's own
-/// terminal answer kept across a label mismatch, and the placeholder for a
-/// refused bracket -- and an unstamped one is a gap record whose witnesses fall
-/// back to nothing. Each is built here through the SAME handler
-/// `spawn_gated_split` calls, then through the same stamp, because the split's
-/// own branch cannot be driven without a live game process.
-///
-/// The stamp must OVERWRITE: every constructor seeds the field absent (the
-/// observe half's answers are built before the guard closes and therefore
-/// before the observation exists), so a stamp that preserved a seed would drop
-/// the observation on exactly the paths that need it most.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: applying the stamp on one branch of
-/// `spawn_gated_split` instead of to the branch result; seeding a constructor
-/// with a value of its own; or making the stamp merge instead of overwrite.
 #[test]
 fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     let hour = super::state_fixture::fixture_game_hour_raw();
@@ -2561,7 +1884,6 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
         observed_hour_raw: observed,
     };
 
-    // 1. THE OBSERVE HALF'S OWN TERMINAL ANSWER, kept across a mismatch.
     let already_failed = CompactRailReplayRead {
         plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
         equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
@@ -2600,7 +1922,6 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
         "and the stamp must not disturb the outcome it stamps"
     );
 
-    // 2. THE PLACEHOLDER for a refused bracket, on both refusal shapes.
     for refusal in [mismatch, SplitBracketRefusal::BracketIncoherent] {
         let placeholder = d81_stamp_bracket_observation(
             d81_bracket_refused_outcome(
@@ -2617,14 +1938,10 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
         );
     }
 
-    // 3. THE COMPUTED OUTCOME. `d81_finish_rail_replay_state` returns a
-    // `Complete` observation untouched, so the stamp is the only thing that can
-    // fill it -- and it must, since this is the ordinary in-hour path that
-    // supplies every honest `SourceUnavailable` witness in a capture.
     let computed = d81_stamp_bracket_observation(
         d81_finish_rail_replay_state(D81ObserveOutcome::Complete(CompactRailReplayRead {
-        plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
-        equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
+            plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
+            equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
             provinces: Vec::new(),
             hub_simulation: None,
             observed_neighbors: 0,
@@ -2641,8 +1958,6 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     );
     assert_eq!(computed.bracket_observed_hour_raw, Some(observed));
 
-    // 4. AND AN ABSENT OBSERVATION STAYS ABSENT. A stamp that filled in a
-    // default here would be the fabricated witness this lane removes.
     let unobserved = d81_stamp_bracket_observation(
         d81_bracket_refused_outcome(
             SplitBracketRefusal::BracketIncoherent,
@@ -2653,8 +1968,6 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     );
     assert_eq!(unobserved.bracket_observed_hour_raw, None);
 
-    // The worker-panic substitute is built at `join()`, outside the bracket, so
-    // it never reaches the stamp at all and must carry no observation.
     assert_eq!(
         compact_rail_replay_worker_panic_read(0).bracket_observed_hour_raw,
         None,
@@ -2663,25 +1976,6 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     );
 }
 
-/// THE WITNESSES d81 PUBLISHES COME FROM ITS BRACKET, AND NEVER FROM THE LABEL.
-///
-/// Swept over every wire reason under three observations -- an hour equal to the
-/// label, an hour that is NOT (the mismatched-bracket case), and none -- because
-/// the defect was invisible in exactly the first of the three.
-///
-/// The check is made against `game_hour_raw` explicitly: for every reason that
-/// carries a witness at all, a bracket that observed `label + 1` must publish
-/// `label + 1`. Before this lane every one of them published `label`.
-///
-/// Each result is then ENCODED, so the payload grammar -- including the rule
-/// that a provenance may not contradict its witnesses -- is what accepts it,
-/// rather than this test's own opinion of the shape.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: restoring `_ => (tick, tick)` at the
-/// emit site or passing `game_hour_raw` into the rule (the mismatched column
-/// collapses onto the label); stamping `Unstated` instead of `Unobserved` on the
-/// no-observation path (the provenance assertion fails); or claiming
-/// `BracketObserved` on a zero witness (the encode fails).
 #[test]
 fn the_witnesses_a_d81_gap_publishes_come_from_its_bracket() {
     use compact_contract::domain_gap::{
@@ -2693,16 +1987,10 @@ fn the_witnesses_a_d81_gap_publishes_come_from_its_bracket() {
     let elsewhere = label_hour + 1;
 
     for reason in DomainGapReason::ALL {
-        // The two reasons the wire requires zeros for state the absence
-        // regardless of what the bracket saw; every other reason carries the
-        // observation.
         let zero_witness_reason = matches!(
             reason,
             DomainGapReason::ReaderSilent | DomainGapReason::ClockUnreadable
         );
-        // `HourLabelMismatch` takes its witness from the mismatch channel, and
-        // its grammar forbids the label, so its "in-hour" column is not a
-        // reachable state and is exercised only at `elsewhere`.
         let mismatch_reason = reason == DomainGapReason::HourLabelMismatch;
 
         for observation in [Some(label_hour), Some(elsewhere), None] {
@@ -2740,7 +2028,6 @@ fn the_witnesses_a_d81_gap_publishes_come_from_its_bracket() {
                     );
                 }
             }
-            // THE CLAIM THIS TEST EXISTS FOR.
             if observation == Some(elsewhere) && !zero_witness_reason {
                 assert_ne!(
                     tick_before, label_hour,
@@ -2749,10 +2036,6 @@ fn the_witnesses_a_d81_gap_publishes_come_from_its_bracket() {
                 );
             }
 
-            // Only the single-hour reasons can be encoded at this shape;
-            // `Overrun`/`Backpressure` carry a coalesced range and a queue
-            // witness this emit site never builds, and `Torn` requires two
-            // DIFFERENT ticks. d81 mints none of the three.
             if matches!(
                 reason,
                 DomainGapReason::Overrun | DomainGapReason::Backpressure | DomainGapReason::Torn
@@ -2785,18 +2068,6 @@ fn the_witnesses_a_d81_gap_publishes_come_from_its_bracket() {
     }
 }
 
-/// The emit site mints its witnesses through the rule above, and holds no second
-/// source for them.
-///
-/// A source pin, because `build_compact_extraction_gate_records` needs an
-/// injected `hoi4.exe`. It is narrow on purpose: the BEHAVIOUR is
-/// `the_witnesses_a_d81_gap_publishes_come_from_its_bracket`, and all this adds
-/// is that the production block calls it with the bracket's stamp rather than
-/// keeping a copy of the old label arithmetic.
-///
-/// WHAT PRODUCTION CHANGE MAKES THIS FAIL: reintroducing a
-/// `u64::try_from(game_hour_raw)` witness in the gap branch, or encoding the
-/// payload without stating its provenance.
 #[test]
 fn the_d81_emit_site_has_no_witness_source_but_its_bracket() {
     let source = collector_source_lf();
