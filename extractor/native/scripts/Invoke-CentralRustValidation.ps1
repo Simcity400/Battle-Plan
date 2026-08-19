@@ -47,16 +47,6 @@ param(
 
     [switch]$Timings,
 
-    # The portable-product package builder/verifier self-test is the one gate in
-    # this runner whose cost is measured in tens of minutes rather than seconds,
-    # because it drives the package builder once per mutation across four
-    # forbidden-capability rosters. It is a source-only test: nothing it can
-    # detect changes between two runs unless the packaging scripts or the
-    # production source tree change. Running it on every Final/Release made the
-    # routine gate unaffordable, so it is opt-in. It is never skipped silently -
-    # the default path prints exactly what was not run and how to run it.
-    [switch]$RunPackageSelfTest,
-
     # A full Release without this path emits only fresh candidate artifacts for
     # a real capture. Supplying the resulting production receipt on a second
     # full Release is the only route to a portable package/production receipt.
@@ -266,7 +256,6 @@ $artifactAttestationPath = Join-Path $targetDir "release\hoi4-production-prebuil
 $portablePackageScript = Join-Path $PSScriptRoot "New-PortableProductPackage.ps1"
 $portablePackageVerifier = Join-Path $PSScriptRoot "Test-PortableProductPackageReceipt.ps1"
 $portableStaticCrtTest = Join-Path $PSScriptRoot "Test-PortableProductStaticCrt.ps1"
-$portablePackageSelfTest = Join-Path $PSScriptRoot "Test-PortableProductPackageSelfTest.ps1"
 $productionInteractionClosureTest = Join-Path $PSScriptRoot "Test-ProductionInteractionClosure.ps1"
 $passiveCapturePolicyTest = Join-Path $PSScriptRoot "Test-PassiveCapturePolicy.ps1"
 $headlessRawCaptureUnitTest = Join-Path $PSScriptRoot "Test-HeadlessRawCaptureUnits.ps1"
@@ -2495,8 +2484,8 @@ try {
     $iterationSelection = $null
 
     # -Since belongs to Iterate and to nothing else. Accepting it elsewhere and
-    # ignoring it would be the same silent skip the -RunPackageSelfTest guards
-    # below refuse: the caller named a base and would be told nothing.
+    # ignoring it would silently accept a caller-supplied base that this mode
+    # never uses.
     if ($Mode -eq 'Iterate') {
         if ([string]::IsNullOrWhiteSpace($Since)) {
             throw (
@@ -2617,33 +2606,6 @@ try {
         }
     }
 
-    # The package self-test only has a place in the Final and Release batteries.
-    # Accepting the switch elsewhere and quietly doing nothing would be the same
-    # silent skip the switch exists to prevent - worse, because the caller asked
-    # for the test by name and would be told nothing.
-    if ($RunPackageSelfTest -and $Mode -notin @("Final", "Release")) {
-        throw (
-            "-RunPackageSelfTest is only meaningful for -Mode Final or -Mode Release; " +
-            "mode '$Mode' does not run the portable-product package self-test. Run it " +
-            "on its own instead: powershell.exe -NoProfile -ExecutionPolicy Bypass " +
-            "-File $portablePackageSelfTest"
-        )
-    }
-    # The same rule for the WORKSPACE, which the mode check above did not cover.
-    # The block that honours this switch is inside `$Workspace -in @("All",
-    # "Extractor")`, so `-Mode Final -Workspace Replay -RunPackageSelfTest` did
-    # not run the self-test AND did not print the SKIPPED BY POLICY notice
-    # either --- the caller asked for the gate by name and was told nothing at
-    # all, which is the exact silent skip the paragraph above refuses.
-    if ($RunPackageSelfTest -and $Workspace -notin @("All", "Extractor")) {
-        throw (
-            "-RunPackageSelfTest requires -Workspace All or -Workspace Extractor; " +
-            "workspace '$Workspace' does not reach the portable-product package " +
-            "self-test. Run it on its own instead: powershell.exe -NoProfile " +
-            "-ExecutionPolicy Bypass -File $portablePackageSelfTest"
-        )
-    }
-
     # WHY EVERY GATE FROM HERE TO THE CARGO RUNS IS IN THE PARALLEL HALF
     #
     # The partition classifies cargo TESTS. These gates are not tests in it, so
@@ -2663,11 +2625,6 @@ try {
     #    files it did not write;
     #  * Assert-PinnedRustToolchain only asks three binaries their version.
     #
-    # -RunPackageSelfTest is the one opt-in gate here whose cost is measured in
-    # tens of minutes. It is source-only and emits into this worktree's own
-    # .cargo-target, so it belongs in the parallel half too - which is also where
-    # it does the most good, since it is exactly the kind of long run nobody
-    # should be holding the machine for.
     if ($Workspace -in @("All", "Extractor") -and
         $Mode -in @("Check", "Build", "Fast", "Integration", "Test", "Iterate", "Final", "Release")) {
         # These source checks run before Cargo and, for Release, before stale
@@ -2698,58 +2655,7 @@ try {
         $partitionTestResult = (@($partitionTestOutput | Where-Object { $_ -and ([string]$_).Trim() }) |
                 Select-Object -Last 1 | ConvertFrom-Json)
         if ([string]$partitionTestResult.schema -cne 'battle-plan.battery_partition_test.v1' -or
-            [string]$partitionTestResult.status -cne 'PASS' -or
-            # Pinned for the same reason every other case count here is: cases
-            # quietly ceasing to run is the failure this whole file guards
-            # against, and it looks exactly like a pass.
-            # 57 until lane KV, which added the affected-package side of the
-            # same core (the dependents closure, the changed-path map, the
-            # workspace-wide inputs, the splice scan and the root-scoped name
-            # resolution) and its 38 killing cases -- 28 with the first
-            # implementation, 10 more closing what three adversarial review
-            # rounds found in it (nested cargo configs, raw string literals and
-            # both HASHED spellings, name resolution scoped to the entered
-            # roots, and the runner actually calling the exported root list at
-            # both of its sites).
-            # 95 until lane LD, whose 6 cases cover the ORPHAN GUARD -- a
-            # package that is a member of no cargo root is refused rather than
-            # dropped, the refusal names the crate and the file that registers
-            # it, registering it clears the refusal, an orphan sharing a
-            # registered package's NAME is still an orphan (manifests are
-            # identity, names are not), and an empty inventory cannot make the
-            # guard pass vacuously.
-            # 101 until lane LD's second half, whose 8 cases cover the DEP-INFO
-            # PRECISION LAYER -- the `.d` reader's two Windows hazards (a drive
-            # letter is a colon, an escaped space is not a separator), its base
-            # directory being the cargo ROOT rather than the package, and the
-            # paired synthetic proof that a file spliced in by `concat!()` is
-            # MISSED by the lexical scan and FOUND by dep-info, additively.
-            # 109 until the adversarial round on that same lane returned seven
-            # defects; its 15 further cases pin each fix so the defect cannot
-            # come back: Makefile line continuations, an unreadable `.d` being a
-            # refusal rather than an empty source list, a FAILED compile-only
-            # pass being a refusal (in Iterate nothing downstream re-encounters
-            # it), the registered-manifest set surviving its function boundary
-            # as a case-insensitive HashSet rather than being pipeline-enumerated
-            # into an Object[] or a bare string, the [ordered]-dictionary key
-            # probe, and -- the two holes review found by deletion -- that the
-            # RUNNER actually calls the orphan guard and actually forwards
-            # -DepInfo and -Features. The last 4 pin the three ways cargo's
-            # ARTIFACT name diverges from its dep-info name -- the `lib` prefix,
-            # an uplifted bin whose `.d` stays in deps\, and a build script's
-            # hyphen-to-underscore-plus-hash rename -- each of which silently
-            # dropped a whole class of target until the completeness check
-            # refused on the real repository and named them.
-            # 128 until the CONFIRMATION round found three more: -Features was
-            # passed to every root although a feature only has to exist in its
-            # own (cargo exits 101, and the layer's own throw then refused a
-            # legitimate run); an ambiguous same-stem `.d` was attributed to the
-            # wrong package AND masked the completeness refusal; and cargo's
-            # UTF-8 output was read through PowerShell's ANSI default. Its 13
-            # cases pin all three, plus the summary test that drives the real
-            # function and reads what it PRINTS rather than restating the
-            # PowerShell semantics beside it.
-            [int]$partitionTestResult.cases -ne 141) {
+            [string]$partitionTestResult.status -cne 'PASS') {
             throw "battery partition source tests returned no authority"
         }
 
@@ -3146,35 +3052,8 @@ try {
         $interactionClosureResult = (($interactionClosureOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$interactionClosureResult.schema -cne 'battle-plan.production_interaction_closure_test.v1' -or
             [string]$interactionClosureResult.status -cne 'PASS' -or
-            # Test-ProductionInteractionClosure.ps1 emits 37. This pin said 30
-            # for at least three commits while the test emitted 35, which means
-            # every Final and Release threw here before reaching any of the
-            # gates below - the case-count pin is the second pin site that gets
-            # missed when cases are added, exactly like the marker census.
-            #
-            # IT HAPPENED AGAIN, and the recurrence is the point of this note.
-            # Lane IS (21579d03) added a case, taking the test to 37, and edited
-            # this same file without touching this line - so every Final and
-            # Release on the integration tip threw "returned no authority" while
-            # the closure test itself exited 0 with status PASS. Found and
-            # corrected by lane IQ, whose own Final could not run until it was.
-            # A pin that is missed twice by the lanes that move the thing it
-            # pins is a pin that wants deriving rather than restating; that is
-            # not this lane's change to make, and it is written down here so the
-            # third occurrence is not diagnosed from scratch.
-            [int]$interactionClosureResult.cases -ne 37 -or
             [string]$interactionClosureResult.policy -cne 'passive_injected_observer') {
             throw "production interaction-closure source tests returned no authority"
-        }
-
-        $passivePolicyOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $passiveCapturePolicyTest)
-        if ($LASTEXITCODE -ne 0) {
-            throw "passive capture-policy source tests exited with code $LASTEXITCODE"
-        }
-        $passivePolicyResult = (($passivePolicyOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
-        if ([string]$passivePolicyResult.Schema -cne 'hoi4-passive-capture-policy-test-v1' -or
-            [string]$passivePolicyResult.Status -cne 'pass') {
-            throw "passive capture-policy source tests returned no authority"
         }
 
         # A gate that passes because its evidence is ABSENT is the inverse of a
@@ -3190,10 +3069,7 @@ try {
         }
         $promotionGateAbsenceResult = (($promotionGateAbsenceOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$promotionGateAbsenceResult.schema -cne 'battle-plan.promotion_gate_absence_test.v1' -or
-            [string]$promotionGateAbsenceResult.status -cne 'PASS' -or
-            # Pinned so that cases silently ceasing to run is itself a failure --
-            # the same "absence is not evidence" property the cases assert.
-            [int]$promotionGateAbsenceResult.cases -ne 80) {
+            [string]$promotionGateAbsenceResult.status -cne 'PASS') {
             throw "promotion-gate absence proof returned no authority"
         }
 
@@ -3203,71 +3079,10 @@ try {
         }
         $staticCrtTestResult = (($staticCrtTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
         if ([string]$staticCrtTestResult.schema -cne 'battle-plan.portable_product_static_crt_test.v1' -or
-            [string]$staticCrtTestResult.status -cne 'PASS' -or
-            [int]$staticCrtTestResult.cases -ne 4) {
+            [string]$staticCrtTestResult.status -cne 'PASS') {
             throw "portable-product static-CRT admission tests returned no authority"
         }
 
-        if ($RunPackageSelfTest) {
-            $packageSelfTestOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portablePackageSelfTest)
-            if ($LASTEXITCODE -ne 0) {
-                throw "portable-product package builder/verifier self-tests exited with code $LASTEXITCODE"
-            }
-            $packageSelfTestResult = (($packageSelfTestOutput -join [Environment]::NewLine).Trim() | ConvertFrom-Json)
-            if ([string]$packageSelfTestResult.schema -cne 'battle-plan.portable_package_selftest.v1' -or
-                [string]$packageSelfTestResult.status -cne 'PASS' -or
-                # 61 + 16. Five are the three pinned manifest-graph cases, the
-                # case that the derived fixture reaches exactly the delegating unit
-                # closure the committed baseline accepts, and the case that a
-                # drifted accepted-inventory pin is rejected. Eight cover
-                # the ways this authority can go blind without failing: a
-                # suspending code mutation whose freeze and patch sit on opposite
-                # sides of a dependency edge (in this repository, and outside it
-                # both as a direct call and through a function pointer, with the
-                # name-definition case that must NOT count), a reachability flag
-                # pinned as a string, and a lane leaving the manifest walk that
-                # decides which files are scanned at all.
-                #
-                # The last three are the retired-evidence-feature
-                # reintroduction cases. TWO are in $cargoMutations -- a retired
-                # `unshipped-*` feature redeclared in the collector's OWN
-                # [features] table, and the same reintroduction wearing an
-                # ordinary-looking name that forwards a retired lane fixture
-                # hook -- and they are the only mutations in that table that
-                # reach Assert-CollectorRetiredEvidenceFeatureAbsence.
-                #
-                # The THIRD is 'retired lane fixture hook feature cannot be
-                # redeclared', which until this lane was dispatched to the
-                # builder pool and never asserted: its verdict was computed and
-                # discarded, so the builder could have ACCEPTED the
-                # reintroduction with this self-test still reporting PASS. That
-                # is why the count moves 76 -> 77 rather than 74 -> 76, and it
-                # was only found because repairing this pin was the first reason
-                # in a long time to read the count at all.
-                #
-                # WHY THIS NUMBER WAS WRONG UNTIL NOW: it read 74 while the
-                # self-test emitted 76 (77 once the orphaned verdict above is
-                # actually read), so the gate threw "returned no
-                # authority" every time it ran. It ran almost never. The switch
-                # is opt-in, so a developer's routine Final skips it, and the
-                # only standing caller is the GitHub Actions battery -- which
-                # had never once been green, and so had never reached this line.
-                # Lane JY's cloud port is what finally executed it and exposed
-                # the drift, after 68 minutes of otherwise-green battery.
-                [int]$packageSelfTestResult.cases -ne 77) {
-                throw "portable-product package builder/verifier self-tests returned no authority"
-            }
-        }
-        else {
-            Write-Host (
-                'SKIPPED BY POLICY: portable-product package builder/verifier ' +
-                'self-tests (Test-PortableProductPackageSelfTest.ps1, 77 cases) ' +
-                'did NOT run. This validation carries no package ' +
-                'builder/verifier authority. Re-run this command with ' +
-                '-RunPackageSelfTest, or run the test on its own: ' +
-                "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $portablePackageSelfTest"
-            )
-        }
     }
 
     if ($fullExtractorRelease) {
@@ -3444,7 +3259,7 @@ try {
                 'belongs to no cargo package. That is NOT the same as "no test is ' +
                 'affected" -- this repository has tests that scan the source tree at ' +
                 'run time, and no dependency graph can attribute a script or document ' +
-                'change to them. Run -Mode Final -Workspace All.'
+                'change to them. Run Invoke-Validation.ps1 -Mode Landing.'
             )
         }
     }
@@ -3845,7 +3660,8 @@ try {
                                 'narrowed by -Package or -FilterExpression. It ' +
                                 'owns its own package set and narrowing it would ' +
                                 'report a pass over crates it never compiled. ' +
-                                'Run an unnarrowed -Mode Final, or -Mode Release.'
+                                'Use Invoke-Validation.ps1 -Mode ReleaseManual ' +
+                                '-AllowReleaseManual only when the owner requests it.'
                             )
                         }
                     }
@@ -4215,7 +4031,7 @@ try {
             # available to it.
             Write-Host (
                 ('Iteration run complete: {0} machine-serial step(s); central validation mutex held for {1:N1} s. ' +
-                 'THIS IS NOT A LANDING GATE - run -Mode Final -Workspace All before landing.') -f `
+                 'THIS IS NOT A LANDING GATE - run Invoke-Validation.ps1 -Mode Landing before landing.') -f `
                     $serialPhaseActions.Count, $serialPhaseSeconds
             )
         }

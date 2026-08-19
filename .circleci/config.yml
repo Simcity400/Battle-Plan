@@ -1,0 +1,180 @@
+version: 2.1
+
+# Hosted execution remains unverified until this project is connected and run.
+jobs:
+  validate:
+    machine:
+      image: windows-server-2022-gui:2026.05.1
+    resource_class: windows.medium
+    shell: powershell.exe -NoProfile -ExecutionPolicy Bypass
+    retention:
+      caches: 3d
+    environment:
+      CARGO_HOME: C:\cargo-home
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: always
+      NEXTEST_STATUS_LEVEL: skip
+      RUSTC_WRAPPER: C:\validation-tools\bin\sccache.exe
+      SCCACHE_CACHE_SIZE: 512M
+      SCCACHE_DIR: C:\sccache
+    steps:
+      - run:
+          name: Pin checkout line endings
+          command: git config --global core.autocrlf true
+
+      - checkout
+
+      - restore_cache:
+          keys:
+            - validation-tools-v1-windows-rust1.96.0-nextest0.9.140-sccache0.16.0-python3.13.14
+
+      - restore_cache:
+          keys:
+            - rust-compile-v2-windows-1.96.0-{{ checksum "extractor/native/Cargo.lock" }}-{{ checksum "replay_interface/native/Cargo.lock" }}
+            - rust-compile-v2-windows-1.96.0-{{ checksum "extractor/native/Cargo.lock" }}-
+            - rust-compile-v2-windows-1.96.0-
+
+      - run:
+          name: Install pinned validation tools
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $toolRoot = 'C:\validation-tools'
+            $binRoot = Join-Path $toolRoot 'bin'
+            $downloadRoot = Join-Path $env:TEMP 'hoi4-ci-tools'
+            New-Item -ItemType Directory -Path $binRoot -Force | Out-Null
+            New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+
+            function Install-ReleaseZip {
+              param(
+                [Parameter(Mandatory = $true)][string]$Url,
+                [Parameter(Mandatory = $true)][string]$ChecksumUrl,
+                [Parameter(Mandatory = $true)][string]$Executable
+              )
+              $destination = Join-Path $binRoot $Executable
+              if (Test-Path -LiteralPath $destination -PathType Leaf) { return }
+              $archive = Join-Path $downloadRoot ([IO.Path]::GetFileName($Url))
+              $checksum = "$archive.sha256"
+              Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $archive
+              Invoke-WebRequest -UseBasicParsing -Uri $ChecksumUrl -OutFile $checksum
+              $archiveName = [IO.Path]::GetFileName($archive)
+              $checksumText = [IO.File]::ReadAllText($checksum).Trim()
+              $matchingLine = @($checksumText -split "`r?`n" | Where-Object {
+                $_ -match ('\*?' + [regex]::Escape($archiveName) + '$')
+              })
+              if ($matchingLine.Count -eq 1) {
+                $expected = ($matchingLine[0] -split '\s+')[0].Trim().ToLowerInvariant()
+              }
+              elseif ($checksumText -match '^[0-9a-fA-F]{64}$') {
+                $expected = $checksumText.ToLowerInvariant()
+              }
+              else {
+                throw "checksum manifest does not identify $archiveName"
+              }
+              $observed = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+              if ($expected -notmatch '^[0-9a-f]{64}$' -or $observed -cne $expected) {
+                throw "checksum mismatch for $Url"
+              }
+              $expanded = Join-Path $downloadRoot ([IO.Path]::GetFileNameWithoutExtension($archive))
+              Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
+              $source = Get-ChildItem -LiteralPath $expanded -Recurse -File -Filter $Executable |
+                Select-Object -First 1
+              if ($null -eq $source) { throw "$Executable was absent from $Url" }
+              Copy-Item -LiteralPath $source.FullName -Destination $destination -Force
+            }
+
+            & rustup toolchain install 1.96.0-x86_64-pc-windows-msvc --profile minimal
+            if ($LASTEXITCODE -ne 0) { throw "rustup install failed with exit $LASTEXITCODE" }
+            & rustup override set 1.96.0-x86_64-pc-windows-msvc
+            if ($LASTEXITCODE -ne 0) { throw "rustup override failed with exit $LASTEXITCODE" }
+
+            Install-ReleaseZip `
+              -Url 'https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-pc-windows-msvc.zip' `
+              -ChecksumUrl 'https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.140/cargo-nextest-0.9.140-x86_64-pc-windows-msvc.sha256' `
+              -Executable 'cargo-nextest.exe'
+            Install-ReleaseZip `
+              -Url 'https://github.com/mozilla/sccache/releases/download/v0.16.0/sccache-v0.16.0-x86_64-pc-windows-msvc.zip' `
+              -ChecksumUrl 'https://github.com/mozilla/sccache/releases/download/v0.16.0/sccache-v0.16.0-x86_64-pc-windows-msvc.zip.sha256' `
+              -Executable 'sccache.exe'
+
+            $pythonRoot = Join-Path $toolRoot 'python'
+            $pythonExe = Join-Path $pythonRoot 'python.exe'
+            if (-not (Test-Path -LiteralPath $pythonExe -PathType Leaf)) {
+              $pythonInstaller = Join-Path $downloadRoot 'python-3.13.14-amd64.exe'
+              Invoke-WebRequest -UseBasicParsing `
+                -Uri 'https://www.python.org/ftp/python/3.13.14/python-3.13.14-amd64.exe' `
+                -OutFile $pythonInstaller
+              $pythonHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pythonInstaller).Hash.ToLowerInvariant()
+              if ($pythonHash -cne 'c54d9b9bbb8a36e6489363ddd01139707fd781d72f1f9e90c7ec65d0061368e0') {
+                throw 'checksum mismatch for the Python 3.13.14 installer'
+              }
+              $process = Start-Process -FilePath $pythonInstaller -Wait -PassThru `
+                -ArgumentList @('/quiet', 'InstallAllUsers=0', "TargetDir=$pythonRoot", 'Include_pip=0', 'Include_launcher=0')
+              if ($process.ExitCode -ne 0) { throw "Python installer failed with exit $($process.ExitCode)" }
+            }
+            [IO.File]::WriteAllText(
+              (Join-Path $binRoot 'python.cmd'),
+              "@`"$pythonExe`" %*`r`n",
+              [Text.Encoding]::ASCII
+            )
+
+            $env:PATH = "$binRoot;$env:PATH"
+            & python --version
+            if ($LASTEXITCODE -ne 0) { throw 'Python verification failed' }
+            & cargo nextest --version
+            if ($LASTEXITCODE -ne 0) { throw 'cargo-nextest verification failed' }
+            & sccache --version
+            if ($LASTEXITCODE -ne 0) { throw 'sccache verification failed' }
+
+      - save_cache:
+          key: validation-tools-v1-windows-rust1.96.0-nextest0.9.140-sccache0.16.0-python3.13.14
+          paths:
+            - C:\validation-tools
+
+      - run:
+          name: Run unified validation
+          no_output_timeout: 60m
+          command: |
+            $ErrorActionPreference = 'Stop'
+            $env:PATH = "C:\validation-tools\bin;$env:PATH"
+            $artifactRoot = 'C:\circleci-artifacts'
+            $log = Join-Path $artifactRoot 'validation.log'
+            New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+            $script = Join-Path $PWD.Path 'extractor\native\scripts\Invoke-Validation.ps1'
+            if ($env:CIRCLE_BRANCH -ceq 'master') {
+              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                -File $script -Mode Landing -AllValidators *> $log
+            }
+            else {
+              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                -File $script *> $log
+            }
+            $validationExit = $LASTEXITCODE
+            if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log }
+            if ($validationExit -ne 0) {
+              throw "validation failed with exit code $validationExit"
+            }
+
+      - run:
+          name: Flush compiler cache
+          when: always
+          command: |
+            $env:PATH = "C:\validation-tools\bin;$env:PATH"
+            & sccache --show-stats
+            & sccache --stop-server
+
+      - save_cache:
+          key: rust-compile-v2-windows-1.96.0-{{ checksum "extractor/native/Cargo.lock" }}-{{ checksum "replay_interface/native/Cargo.lock" }}
+          paths:
+            - C:\sccache
+            - C:\cargo-home\registry\index
+            - C:\cargo-home\registry\cache
+            - C:\cargo-home\git\db
+
+      - store_artifacts:
+          path: C:\circleci-artifacts
+          destination: validation
+
+workflows:
+  validation:
+    jobs:
+      - validate

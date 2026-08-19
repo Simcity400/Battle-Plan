@@ -70,9 +70,12 @@ default-filter = '''
 not (
   binary(soak)
   | binary(soak_f2)
-  | binary(/^(alerts_binding|decision_chrome|event_chrome|flag_precedence|markup_law|topbar_binding|topbar_quads|unitview_binding|waroverview_binding|widget_layout|xui01_definition_admission|xui02_window_manager|xui17_characters)$/)
   | test(/(?x)(^|::)(
       admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
+      | alerts_feed_window_resolves_via_shared_parser
+      | achievements_gridbox_slots_follow_declared_slot_size
+      | absent_world_frame_data_is_omitted_by_topbar_composition
+      | backend_listbox_declares_vertical_rows_from_file_template_size
       | captured_pixel_shader_prefilter_covers_full_family_classifiers
       | corpus_.*_when_session_available
       | fx_naval_air_activity_region_statuses
@@ -100,6 +103,11 @@ not (
       | resolver_decode_byte_equals_captured_payload_from_assets
       | session_20260702b_draw0_ps_cb0_matches_terrain_scene_cb0_evidence
       | shipped_border_textures_match_documented_profiles
+      | scrollbar_declared_parts_are_resolved_but_thumb_travel_fails_closed
+      | topbar_alert_badges_resolve_via_shared_parser
+      | unobtained_world_frame_leaf_is_selectively_omitted_by_topbar_composition
+      | unitview_detail_panels_have_all_file_field_slots
+      | waroverview_layout_resolves_from_files
       | terrain_id_map_.*_when_available
       | terrain_id_map_orphan_palette_set_is_narrow
       | terrain_texture_table_matches_vanilla_atlas_order_when_available

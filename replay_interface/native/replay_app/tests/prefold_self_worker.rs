@@ -1,6 +1,6 @@
 // The prefold worker moved to the packaged recorder executable so the replay
 // workspace remains extractor-independent. Process coverage now lives with
-// the extractor worker and the centralized Release package self-test.
+// the extractor worker and the explicit package receipt validation.
 #![cfg(any())]
 
 use std::fs::File;

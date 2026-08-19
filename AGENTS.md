@@ -30,8 +30,12 @@ A bad hour costs that hour, with a named reason — never the recording.
 
 ## Tools
 
-- Validation: your own checkout's
-  `extractor\native\scripts\Invoke-CentralRustValidation.ps1`; capture the exit code.
+- Default: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1`; capture the exit code.
+- Default mode runs affected shipping-product tests and validators only when their inputs changed; tools manage execution with no repository concurrency cap.
+- `-Mode Landing` is required immediately before landing and runs all shipping-product tests.
+- `-Mode ReleaseManual -AllowReleaseManual` is allowed only when the owner explicitly requests it.
+- Unknown change impact falls back to all shipping-product tests.
+- Never run the legacy/full battery or release/manual mode by default.
 - Ghidra and `hoi4_re` are read-only authorities (READMEs under `replay_interface/tools/`).
 - Evidence: `extractor/native/runs/<run>/`, append-only.
 

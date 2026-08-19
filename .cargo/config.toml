@@ -1,6 +1,5 @@
 # Shared local build policy for the extractor and replay workspaces.
-# Keep one Cargo invocation active at a time; use the centralized validation
-# script under extractor/native/scripts for normal checks and final batteries.
+# Cargo and the selected test runner manage their own execution.
 
 [build]
 target-dir = ".cargo-target"

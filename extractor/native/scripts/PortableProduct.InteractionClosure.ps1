@@ -4,9 +4,8 @@
 #
 # The authorities in this file are whole-tree: changing one production source
 # file re-derives every other file's comment-stripped code and capability
-# evidence from scratch. That is fine for one Release; it is not fine for the
-# package self-test, which mutates one file and re-runs the whole gate several
-# hundred times in a row.
+# evidence from scratch. The cache keeps repeated derivations inside one
+# packaging or receipt evaluation from reopening and rescanning the same bytes.
 #
 # Every key below is the SHA256 of the exact text the answer was derived from,
 # never a path and never a timestamp. That matters: this file is dot-sourced
@@ -1743,8 +1742,8 @@ function Get-ProductionPassiveSourceAdmissionClosure {
     # domain that is still scheduled (the key marks the exception, not the rule), and `$_.capture_scheduled` on
     # an object that does not have it is a terminating PropertyNotFoundStrict
     # under the Set-StrictMode -Version Latest that every caller of this
-    # function runs with. The package builder, the receipt verifier and the
-    # package self-test all reach this line and all three died on it; the
+    # function runs with. The package builder and receipt verifier both reach
+    # this line and both died on it; the
     # interaction-closure gate never calls this function, which is why it went
     # unnoticed. Reproduced on the unmodified helper at aa602182.
     $productionIds = @(
@@ -2938,12 +2937,9 @@ function Get-ProductionUnitDependencyClosure {
     # dependency it declares - path dependencies inside the repository and
     # registry crates in the cargo source cache alike.
     #
-    # It is a closure, not a scan: it says which roots the authority will read,
-    # and callers decide what to do with them. Get-ProductionDependencyCode-
-    # MutationClassification scans them for capabilities; the package self-test
-    # materialises them into its fixture. Both walk the same edges because they
-    # call this, so a fixture can no longer be built from a stale hand-written
-    # list of the paths someone believed the authority followed.
+    # It is a closure, not a scan: it says which roots the authority will read.
+    # Get-ProductionDependencyCodeMutationClassification scans those same roots
+    # for capabilities, so the graph traversal has one implementation.
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
 
     $repo = [IO.Path]::GetFullPath($RepoRoot)
@@ -4461,9 +4457,7 @@ function Get-ProductionInteractionPresentSymbols {
     # identifiers, in the order the roster names them. The three whole-tree
     # symbol loops in Assert-ProductionInteractionSourceTreeClosure each ran
     # their own regex per symbol per file - about fifty thousand matches per
-    # evaluation over the same 362 files - and the self-test drives that gate
-    # once per forbidden symbol per role, so the same file's answer was
-    # recomputed several hundred times.
+    # evaluation over the same source files.
     #
     # The answer is a pure function of the two arguments and the key is both of
     # them: the digest of the exact code text that was matched, and the exact
@@ -4675,8 +4669,7 @@ function Assert-ProductionInteractionSourceTreeClosure {
     $handleEntryPoints = @(Get-ProductionThreadFreezeHandleEntryPoints)
 
     # The three symbol rules below used to open, read and strip every authority
-    # file each - three reads of the same 362 files per evaluation, and the
-    # package self-test drives this gate once per forbidden symbol per role.
+    # file each - three reads of the same source files per evaluation.
     # They read the file for exactly the same thing (the comment- and
     # string-stripped code, with the early-render evidence region excised), so
     # the read happens once here and the three rules run over what it produced.

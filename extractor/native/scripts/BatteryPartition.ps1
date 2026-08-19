@@ -681,7 +681,7 @@ function Get-BatteryChangedPaths {
             "git diff against '$Since' exited with code $diffExit. The iteration " +
             'selection has no diff to derive itself from, and an empty selection ' +
             'would run no tests at all. Pass -Since with a commit this worktree ' +
-            'contains, or run the full battery.'
+            'contains; the unified validator will otherwise fall back to all shipping tests.'
         )
     }
     foreach ($path in (Split-BatteryNulSeparatedOutput -Raw $diffRaw)) {
@@ -2001,8 +2001,8 @@ function Write-BatteryAffectedSelectionSummary {
     }
     Write-Host (
         ('  NOT A LANDING GATE. This selection cannot see: {0}. It also does not run DOCTESTS, ' +
-         'the release detour-identity gate, or the portable package self-test. Run -Mode Final ' +
-         '-Workspace All before landing.') -f ($limits -join '; ')
+         'the release detour-identity gate, packaging, receipt, or live validation. Run ' +
+         'Invoke-Validation.ps1 -Mode Landing before landing.') -f ($limits -join '; ')
     )
     if ($depInfoUsed) {
         Write-Host (
