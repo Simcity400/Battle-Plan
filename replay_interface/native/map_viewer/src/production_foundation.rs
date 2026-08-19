@@ -725,12 +725,19 @@ pub fn product_feature_adapters_with_assigned_stage_schedule(
     adapters.register(Box::new(
         crate::production_features::xmap06::Xmap06ThinBorderAdapter::new(resolver, admission)?,
     ))?;
+    // EXCLUDE AND NAME, never a blank frame (owner ruling): if this install's
+    // authored content cannot build the combat-indicator layer, the layer is
+    // registered as typed-unavailable with the refusal carried verbatim, and
+    // the rest of the map still draws. Propagating that refusal here destroyed
+    // the whole adapter graph, so one vanilla sprite that omits an optional key
+    // cost the entire picture -- measured on t83, which reached D3D11 and the
+    // localisation corpus and then produced no pixel at all.
     adapters.register(Box::new(
-        crate::production_features::xmap14::Xmap14Adapter::new(
+        crate::production_features::xmap14::Xmap14Adapter::new_or_unavailable(
             resolver,
             admission,
             localisation_language,
-        )?,
+        ),
     ))?;
     adapters.register_xmap17(crate::production_features::xmap17::Xmap17LabelAdapter::new(
         resolver,

@@ -369,6 +369,43 @@ impl PackCompression {
     }
 }
 
+/// How the container's OWN `manifest.json` is written.
+///
+/// It used to be hard-coded `Store` at every one of the four write sites while
+/// every payload entry went through [`PackCompression::ZstdLarge`]. On a real
+/// recording the portable content manifest lives in this entry, so on the
+/// measured t82 capture that one stored entry was **46,185,877 B — 76.1% of a
+/// 60.7 MB container** — and the same bytes at this project's own zstd level
+/// are 4,303,238 B (10.73x). Compressing it the way everything around it is
+/// already compressed takes the container to 18.8 MB, **−69.0%**, without
+/// changing one recorded value.
+///
+/// The SAME size gate as the payload entries, not a second rule: below
+/// [`ZSTD_MIN_ENTRY_BYTES`] a compressed frame is larger than the bytes it
+/// replaces, and the small fixture manifests every container test builds are
+/// far below it — so those keep the exact stored layout they had, and only a
+/// manifest big enough to be worth it moves.
+///
+/// The reader needs no change and gets none: `container.rs` reads this entry
+/// with the same generic `read_entry` every zstd payload entry goes through,
+/// and the recovery-only case is the ABSENCE of the entry from the ZIP index,
+/// never a scan of raw bytes.
+///
+/// EXCEPT ON A STITCHED v2 PUBLICATION, which is STORE-only by contract: v2
+/// open can independently re-verify only the `{level:none}` profile, and
+/// `container.rs` refuses a v2 archive in which ANY entry's method is not
+/// `ZIP_METHOD_STORE`. Compressing the manifest there would have made a large
+/// stitched recording fail its own mandatory reopen -- invisible to the
+/// fixtures, whose manifests all sit below the size gate (Codex review of
+/// batch 3). The declared container version decides, so the rule is read off
+/// the same value the manifest publishes rather than guessed from the caller.
+fn manifest_zip_compression(len: u64, container_version: u64) -> ZipCompression {
+    if container_version != 1 {
+        return ZipCompression::Store;
+    }
+    PackCompression::ZstdLarge.method_for_entry(len)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ZipCompression {
     Store,
@@ -573,7 +610,7 @@ pub fn pack_mixed_to_writer<W: Write>(
         &mut zip64_used,
         "manifest.json",
         &manifest_bytes,
-        ZipCompression::Store,
+        manifest_zip_compression(manifest_bytes.len() as u64, 1),
         CompressionProfile::default(),
     )?;
     file_count += 1;
@@ -855,7 +892,7 @@ where
             &mut zip64_used,
             "manifest.json",
             &manifest_bytes,
-            ZipCompression::Store,
+            manifest_zip_compression(manifest_bytes.len() as u64, opts.container_version.unwrap_or(1)),
             compression_profile,
         )?;
         file_count += 1;
@@ -1080,7 +1117,7 @@ fn pack_streaming_to_writer_with_compression<W: Write>(
         &mut zip64_used,
         "manifest.json",
         &manifest_bytes,
-        ZipCompression::Store,
+        manifest_zip_compression(manifest_bytes.len() as u64, 1),
         compression_profile,
     )?;
     file_count += 1;
@@ -1261,7 +1298,7 @@ pub fn pack_borrowed_with_writer<W: Write>(
             &mut zip64_used,
             "manifest.json",
             &manifest_bytes,
-            ZipCompression::Store,
+            manifest_zip_compression(manifest_bytes.len() as u64, container_version),
             CompressionProfile::default(),
         )?;
         file_count += 1;
@@ -2892,5 +2929,205 @@ mod tests {
                 "manifest.json"
             ]
         );
+    }
+
+    /// THE CONTAINER'S OWN MANIFEST IS 76% OF A REAL RECORDING, and it was the
+    /// one entry written uncompressed.
+    ///
+    /// Measured on two sealed captures made by this repository's recorder
+    /// (`extractor/native/runs/mw_replay_e2e3/manifest_price.json`, read-only):
+    /// t82's `manifest.json` is 46,185,877 stored bytes, 76.1% of a 60,671,579 B
+    /// container, and 4,304,445 B at this project's own zstd level -- 10.73x.
+    /// The container goes to 18,790,147 B, -69.0%. On t83 the same entry is
+    /// 58.4% of the container and the saving is -53.0%. No recorded value
+    /// changes; the reader already inflates this entry with the same call every
+    /// zstd payload entry goes through.
+    ///
+    /// The gate is the payload entries' own `ZSTD_MIN_ENTRY_BYTES`, so a small
+    /// manifest -- every container fixture in this file -- stays STORED, where
+    /// a compressed frame would be bigger than the bytes it replaced.
+    ///
+    /// kills: writing `manifest.json` with `ZipCompression::Store` again (the
+    /// large case is stored); compressing unconditionally (the small case is
+    /// no longer stored); breaking the round trip either way (the reopen and
+    /// the manifest comparison fail).
+    #[test]
+    fn a_large_container_manifest_is_compressed_and_a_small_one_is_not() {
+        fn pack_with_snapshot_count(count: usize) -> Vec<u8> {
+            pack_with_snapshot_count_and_version(count, None)
+        }
+
+        fn pack_with_snapshot_count_and_version(
+            count: usize,
+            container_version: Option<u64>,
+        ) -> Vec<u8> {
+            let snapshots = (0..count)
+                .map(|hour| {
+                    format!(
+                        r#"{{"hour_index":{hour},"date":"1936.1.1.0","file":"snapshots/{hour:012}.snapshot.json"}}"#
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            let index =
+                format!(r#"{{"game_id":"g","schema_version":"1","snapshots":[{snapshots}]}}"#)
+                    .into_bytes();
+            let bodies = (0..count)
+                .map(|hour| {
+                    format!(r#"{{"schema_version":"1","game_id":"g","hour_index":{hour}}}"#)
+                        .into_bytes()
+                })
+                .collect::<Vec<_>>();
+            let mut entries = vec![PackEntry {
+                path: "payload/g/index.json".into(),
+                bytes: index,
+                role: "index",
+                hour_index: None,
+            }];
+            for (hour, body) in bodies.into_iter().enumerate() {
+                entries.push(PackEntry {
+                    path: format!("payload/g/snapshots/{hour:012}.snapshot.json"),
+                    bytes: body,
+                    role: "snapshot",
+                    hour_index: Some(hour as i64),
+                });
+            }
+            pack_with(
+                "g",
+                &entries,
+                &PackIdentity {
+                    schema_version: Some("1".into()),
+                    ..PackIdentity::default()
+                },
+                false,
+                &PackOptions {
+                    container_version,
+                    required_features: container_version
+                        .map(|_| vec!["timeline_segments_v1".to_string()]),
+                    ..PackOptions::default()
+                },
+            )
+            .unwrap()
+        }
+
+        // One row per snapshot in the manifest, so the manifest crosses the
+        // gate while every payload entry stays tiny.
+        let big = pack_with_snapshot_count(400);
+        let small = pack_with_snapshot_count(1);
+        // The SAME large manifest, declared as a stitched v2 publication, which
+        // is STORE-only by contract.
+        let big_v2 = pack_with_snapshot_count_and_version(400, Some(2));
+
+        let dir = TmpDir::new("manifest_compression");
+        for (tag, bytes, expected_method) in [
+            ("big", &big, ZIP_METHOD_ZSTD),
+            ("small", &small, ZIP_METHOD_STORE),
+            ("big_v2", &big_v2, ZIP_METHOD_STORE),
+        ] {
+            let entry = read_local_entry(bytes, "manifest.json");
+            assert_eq!(
+                entry.method, expected_method,
+                "{tag} manifest.json method (raw {} bytes)",
+                entry.uncompressed_len
+            );
+            if expected_method == ZIP_METHOD_ZSTD {
+                assert!(
+                    entry.uncompressed_len >= ZSTD_MIN_ENTRY_BYTES,
+                    "the big fixture must actually cross the gate, got {}",
+                    entry.uncompressed_len
+                );
+                assert!(
+                    entry.compressed_len < entry.uncompressed_len,
+                    "a compressed manifest must be smaller: {} vs {}",
+                    entry.compressed_len,
+                    entry.uncompressed_len
+                );
+            }
+            if tag == "big_v2" {
+                // The exemption has to be DOING WORK: this manifest is large
+                // enough that the ordinary rule would have compressed it, and
+                // "big" above proves the ordinary rule does exactly that.
+                assert!(
+                    entry.uncompressed_len >= ZSTD_MIN_ENTRY_BYTES,
+                    "the v2 fixture must be past the gate for the exemption to mean anything"
+                );
+                assert_eq!(
+                    entry.compressed_len, entry.uncompressed_len,
+                    "a stitched v2 entry is stored, byte for byte"
+                );
+                // (Not byte-identical to the v1 manifest: a v2 publication must
+                // also declare its stitched required feature. Both are far past
+                // the gate, which is the only property this case turns on.)
+            }
+            let path = dir.join(&format!("{tag}.battleplan"));
+            fs::write(&path, bytes).unwrap();
+            let opened = crate::Container::open(&path, &crate::ExpectedIdentity::default());
+            if tag == "big_v2" {
+                // A REAL stitched publication also needs a stitched index and
+                // segment graph, which this compression fixture is not, so it
+                // cannot reopen. The STORE claim is therefore carried entirely
+                // by the LOCAL HEADER assertions above, which is a direct
+                // reading of what was written.
+                //
+                // An earlier version of this test also asserted WHICH refusal
+                // the reopen gives, on the theory that the archive-wide
+                // compression check runs before the index check and so an
+                // index-schema refusal would prove the manifest cleared the
+                // STORE-only gate. It does not: `validate_stitched_v2` parses
+                // the index first (Codex review of batch 3, round 3). The
+                // claim was removed rather than left standing as theatre.
+                assert!(
+                    opened.is_err(),
+                    "a bare v2 fixture is not a stitched publication and must refuse"
+                );
+            } else {
+                // The reader needs no change for either v1 case.
+                let opened = opened.unwrap();
+                assert_eq!(
+                    opened.manifest().get("format").and_then(Value::as_str),
+                    Some("hoi4replay"),
+                    "{tag} container reopens and its manifest parses"
+                );
+            }
+        }
+    }
+
+    struct LocalEntry {
+        method: u16,
+        compressed_len: u64,
+        uncompressed_len: u64,
+    }
+
+    /// Read one entry's LOCAL header straight out of the container bytes, so
+    /// the assertion is about what was written rather than about what the
+    /// packer says it wrote.
+    fn read_local_entry(container: &[u8], name: &str) -> LocalEntry {
+        let needle = name.as_bytes();
+        let mut offset = 0usize;
+        while offset + 30 <= container.len() {
+            if container[offset..offset + 4] == 0x0403_4b50u32.to_le_bytes() {
+                let name_len =
+                    u16::from_le_bytes([container[offset + 26], container[offset + 27]]) as usize;
+                let start = offset + 30;
+                if start + name_len <= container.len()
+                    && &container[start..start + name_len] == needle
+                {
+                    return LocalEntry {
+                        method: u16::from_le_bytes([
+                            container[offset + 8],
+                            container[offset + 9],
+                        ]),
+                        compressed_len: u32::from_le_bytes(
+                            container[offset + 18..offset + 22].try_into().unwrap(),
+                        ) as u64,
+                        uncompressed_len: u32::from_le_bytes(
+                            container[offset + 22..offset + 26].try_into().unwrap(),
+                        ) as u64,
+                    };
+                }
+            }
+            offset += 1;
+        }
+        panic!("{name} has no local file header in the container");
     }
 }
