@@ -1217,9 +1217,16 @@ impl ProductionMapFeatureAdapter for Xmap13Adapter {
         // domain, but it must not overstate what has been solved either: this
         // adapter still requires and consumes the recorded grouping census, so
         // the census is not something the viewer supplies today. The law for it
-        // exists in `xmap13_counter_grouping_law.rs` and is waiting on two
-        // identity residuals; until they close, the recorded bytes are still
-        // load-bearing and their absence is still a real gap.
+        // exists in `xmap13_counter_grouping_law.rs`; its two identity offsets
+        // are now proven (`CProvince+0xc0` is the state, `+0xc8` the strategic
+        // region), but its anchor and cross-country reads still refuse, so the
+        // recorded bytes are still load-bearing and their absence is still a
+        // real gap.
+        //
+        // The world transform stays named here. Its STATIONARY half is settled
+        // as authored `map/unitstacks.txt` locator content, but a moving unit is
+        // placed from cached live coordinates with no proved writer, so the
+        // field as a whole is still unrecorded.
         const MISSING_RESIDUE: &str = "this adapter still requires the recorded counter-grouping \
                                        census, whose viewer-side law is implemented but not yet \
                                        wired; and the engine's per-unit model and pose selection \
