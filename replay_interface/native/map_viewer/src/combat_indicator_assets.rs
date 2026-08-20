@@ -76,6 +76,7 @@ impl CombatIndicatorAssetManifest {
         self.land_combat_sprites.len() + self.naval_combat_sprites.len()
     }
 
+    /// Distinct resolved combat sprite texture files.
     pub fn unique_sprite_texture_count(&self) -> usize {
         self.land_combat_sprites
             .values()

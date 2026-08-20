@@ -732,6 +732,9 @@ pub fn resolve_building_material_textures(
         .iter()
         .map(|binding| (binding.name.as_str(), binding))
         .collect::<BTreeMap<_, _>>();
+    // Filename -> resolver-relative path index across gfx/models: the engine's
+    // texture manager is filename-keyed, so the same basename resolves wherever
+    // it lives under the models root.
     let mut by_basename: BTreeMap<String, String> = BTreeMap::new();
     for (rel, _) in resolver.resolve_dir_files_recursive(PDX_MODELS_ROOT, Some("dds"))? {
         if let Some(base) = rel.rsplit('/').next() {

@@ -438,6 +438,175 @@ fn write_absence_unavailable_store(root: &Path) {
     fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
 }
 
+fn write_unit_census_problem_store(root: &Path) {
+    let game = "unit_census_problems";
+    let dir = root.join(game);
+    fs::create_dir_all(&dir).unwrap();
+    let units = |extra: Value| {
+        let mut base = json!({
+            "divisions": [
+                {"div_id": 5, "div_type": 29, "owner": "GER", "location_province": 42}
+            ],
+            "order_of_battle": {
+                "fleets": [{
+                    "id": 3,
+                    "owner": "ENG",
+                    "task_forces": [{"id": 71, "location_province": 118}]
+                }],
+                "air_wings": [
+                    {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}
+                ]
+            }
+        });
+        let object = base.as_object_mut().unwrap();
+        for (key, value) in extra.as_object().unwrap() {
+            object.insert(key.clone(), value.clone());
+        }
+        base
+    };
+
+    // Hour 30: a fleet with zero task forces, which the fold spells by simply
+    // not inserting the key.
+    let mut absent_task_forces = units(json!({}));
+    absent_task_forces["order_of_battle"]["fleets"] = json!([{"id": 3, "owner": "ENG"}]);
+    let mut hour_30 = json!({
+        "schema_version": "1",
+        "game_id": game,
+        "date": "1936.1.2.6",
+        "hour_index": 30
+    });
+    for (key, value) in absent_task_forces.as_object().unwrap() {
+        hour_30[key] = value.clone();
+    }
+
+    // Hour 31: complete unit arrays, but the collector declared a problem on
+    // the two unit CENSUS domains (20 divisions_live, 30 air_wings_live) AND on
+    // 29 ships_live, which owns ship composition rather than the task-force
+    // enumeration and must therefore leave the fleet view alone.
+    let mut hour_31 = json!({
+        "schema_version": "1",
+        "game_id": game,
+        "date": "1936.1.2.7",
+        "hour_index": 31,
+        "provenance": {
+            "collector": {
+                "domain_problems": [
+                    {"domain_id": 20, "problem": "sweep_incomplete"},
+                    {"domain_id": 29, "problem": "sweep_incomplete"},
+                    {"domain_id": 30, "problem": "sweep_incomplete"}
+                ]
+            }
+        }
+    });
+    for (key, value) in units(json!({})).as_object().unwrap() {
+        hour_31[key] = value.clone();
+    }
+
+    // Hour 32: the same complete arrays with NO declared problem, so the
+    // downgrades above are attributable to the problems and not to the rows.
+    let mut hour_32 = json!({
+        "schema_version": "1",
+        "game_id": game,
+        "date": "1936.1.2.8",
+        "hour_index": 32
+    });
+    for (key, value) in units(json!({})).as_object().unwrap() {
+        hour_32[key] = value.clone();
+    }
+
+    for (hour, snapshot) in [(30, &hour_30), (31, &hour_31), (32, &hour_32)] {
+        fs::write(
+            dir.join(format!("{hour:012}.snapshot.json")),
+            serde_json::to_vec(snapshot).unwrap(),
+        )
+        .unwrap();
+    }
+    let index = json!({
+        "game_id": game,
+        "schema_version": "1",
+        "snapshots": [
+            { "hour_index": 30, "date": "1936.1.2.6", "file": "000000000030.snapshot.json" },
+            { "hour_index": 31, "date": "1936.1.2.7", "file": "000000000031.snapshot.json" },
+            { "hour_index": 32, "date": "1936.1.2.8", "file": "000000000032.snapshot.json" }
+        ]
+    });
+    fs::write(dir.join("index.json"), serde_json::to_vec(&index).unwrap()).unwrap();
+}
+
+/// kills, in both directions:
+///
+/// * dropping (20, DivisionUnits) or (30, Wings) from `DOMAIN_PROBLEM_VIEW_MAP`
+///   — a collector problem on a unit census domain must downgrade its typed
+///   view rather than leave retained rows presenting as measured. mu_t83
+///   declares problems for 20 and 30 at two of its three sampled hours.
+/// * ADDING (29, Fleets) — D29 is one row per live ship, not the task-force
+///   enumeration D28 owns, so a ships problem must leave the fleet view Present.
+/// * refusing an absent `task_forces` key — the fold spells a childless fleet by
+///   omitting it, so absence is a complete census of zero, not an unknown one.
+#[test]
+fn a_declared_problem_on_a_unit_census_domain_downgrades_its_typed_view() {
+    let root = unique_temp_dir("unit_census_problems");
+    write_unit_census_problem_store(&root);
+    let timeline = open_timeline(&root);
+
+    let clean = timeline.frame(32).unwrap();
+    assert_eq!(clean.division_units_status(), ViewStatus::Present);
+    assert_eq!(clean.fleets_status(), ViewStatus::Present);
+    assert_eq!(clean.wings_status(), ViewStatus::Present);
+    assert_eq!(clean.division_units().len(), 1);
+    assert_eq!(clean.fleets().len(), 1);
+    assert_eq!(clean.wings().len(), 1);
+
+    let problems = timeline.frame(31).unwrap();
+    assert_eq!(
+        problems.division_units_status(),
+        ViewStatus::DomainUnavailable,
+        "domain 20 declared a problem"
+    );
+    assert_eq!(
+        problems.wings_status(),
+        ViewStatus::DomainUnavailable,
+        "domain 30 declared a problem"
+    );
+    // kills: mapping 29 ships_live to the whole Fleets view. D28 owns the
+    // fleet/task-force enumeration; a ships problem leaves task-force identity,
+    // owner and location authoritative, and poisoning the aggregate would
+    // disable consumers whose rows are intact.
+    assert_eq!(
+        problems.fleets_status(),
+        ViewStatus::Present,
+        "a ships-domain problem must not invalidate the task-force enumeration"
+    );
+    assert!(
+        !problems.coverage_warnings().iter().any(|warning| {
+            warning.contains("no typed view is mapped to it")
+                && (warning.contains("domain 20") || warning.contains("domain 30"))
+        }),
+        "the unit census domains must no longer report as unmapped: {:?}",
+        problems.coverage_warnings()
+    );
+
+    // kills: treating an absent task_forces key as an unknown census. The fold
+    // creates a fleet object for every OOB_KIND_FLEET row and only inserts the
+    // key for fleets that have children, so absent means zero task forces.
+    // Refusing it made 25 fleets on a healthy mu_t83 hour report unavailable.
+    let empty_fleet = timeline.frame(30).unwrap();
+    assert_eq!(
+        empty_fleet.fleets_status(),
+        ViewStatus::Present,
+        "a fleet with no task-force children is complete, not unknown"
+    );
+    assert!(empty_fleet.fleets().is_empty());
+    assert!(
+        !empty_fleet
+            .coverage_warnings()
+            .iter()
+            .any(|warning| warning.contains("task_forces")),
+        "no task-force warning is owed for a childless fleet: {:?}",
+        empty_fleet.coverage_warnings()
+    );
+}
+
 fn write_faction_roster_status_store(root: &Path) {
     let game = "faction_roster_status";
     let dir = root.join(game);

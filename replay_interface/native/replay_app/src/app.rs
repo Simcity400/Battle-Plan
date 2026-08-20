@@ -7600,6 +7600,7 @@ pub fn run(
     let mut scrub = crate::scrub::ScrubEngine::start(Arc::clone(&provider), hours[0])?;
     let mut last_reported_scrub_refusal: Option<i64> = None;
     let mut pov_picker = provider.pov_picker()?;
+    // XMAP00_VIEWER_VISUAL_INPUT: viewer.observer_pov
     let mut pov = PovState::new();
     match &pov_picker {
         PovPicker::Available(choices) => eprintln!(
@@ -7619,6 +7620,7 @@ pub fn run(
         &game_resolver,
         crate::win32::actual_client_input_variant(),
     )?;
+    // XMAP00_VIEWER_VISUAL_INPUT: viewer.viewport_aspect_resize
     let playback_viewport = playback_ui_profile.physical_viewport();
     let window_width = i32::try_from(playback_viewport.width)
         .map_err(|_| "playback physical width exceeds the Win32 client extent")?;
@@ -7723,6 +7725,7 @@ pub fn run(
     let mut character_hit_targets = Vec::new();
     let mut character_semantic_state = None;
     let mut occupation_expand_all = true;
+    // XMAP00_VIEWER_VISUAL_INPUT: viewer.camera_3d
     let mut camera = initial_viewer_camera.or_else(|| {
         bundle.as_ref().map(|bundle| {
             Camera::fit(
@@ -7750,6 +7753,7 @@ pub fn run(
     let mut drag: Option<DragState> = None;
     let mut scrub_drag = false;
     let mut wheel_remainder_units = 0_i32;
+    // XMAP00_VIEWER_VISUAL_INPUT: viewer.hover_selection_toggles_input_history
     let mut cursor: Option<(i32, i32)> = None;
     let mut closing = false;
     let mut frame_timing = PresentedFrameTiming::new(Instant::now());

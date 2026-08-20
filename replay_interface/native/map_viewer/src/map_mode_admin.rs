@@ -1,3 +1,4 @@
+//! XMAP00_VIEWER_VISUAL_INPUT: viewer.map_mode_selection
 
 use crate::mod_resolver::GameFileResolver;
 use crate::Result;

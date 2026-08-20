@@ -114,6 +114,7 @@ members = [
     # exclusive lane, because this member list is a single contiguous region:
     # five concurrent new-producer lanes would collide here even though their
     # own sources never overlap.
+    "lanes/map_unit_presentation",
     "lanes/xmap17_labels",
     "lanes/xmap06_border",
     "lanes/xui26_frontend",

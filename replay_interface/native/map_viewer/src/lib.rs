@@ -289,7 +289,7 @@ pub use m01_runtime_admission::{
     M01VisibilityOrIntelState, M01_RUNTIME_INPUT_SCHEMA,
 };
 pub use map_authority::{
-    admit_map_authority_json, admit_map_authority_projection,
+    account_owned_map_authority_inputs, admit_map_authority_json, admit_map_authority_projection,
     map_authority_observed_status_label, map_authority_owner_proven_admission,
     map_authority_projection_from_world_frame,
     map_authority_requirement_metadata, refuse_missing_xmap00_authority,

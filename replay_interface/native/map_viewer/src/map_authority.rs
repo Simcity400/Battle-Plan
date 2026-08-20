@@ -177,6 +177,46 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status: calendar_time_status,
         can_report_absent: false,
     },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "units.divisions",
+        owner_packet: "XMAP13",
+        payload_schema: "WorldFrame.division_units",
+        status_accessor: "division_units_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "recorder census order; each row a unique nonzero raw_division_id with a unique nonblank div_uid, a measured nonzero raw_division_type, a measured nonblank owner, a measured nonzero location_province, no dropped source row, and no unaccounted collector problem on the D18 owner-identity domain",
+        status: divisions_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "units.taskforces_fleets",
+        owner_packet: "XMAP13",
+        payload_schema: "WorldFrame.fleets",
+        status_accessor: "fleets_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "recorder census order; each row a unique nonblank task_force_uid, a unique nonzero raw_task_force_id, a measured nonzero raw_fleet_id, a measured nonblank owner, a measured nonzero location_province, no dropped source row, and no unaccounted collector problem on the D18 owner-identity or D56 naval-missions-status domains",
+        status: taskforces_fleets_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "units.wings",
+        owner_packet: "XMAP13",
+        payload_schema: "WorldFrame.wings",
+        status_accessor: "wings_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "recorder census order; each row a unique nonblank wing_uid with a measured nonblank owner, zero unreadable rows, no dropped source row, and no unaccounted collector problem on the D18 owner-identity domain",
+        status: wings_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "units.air_base_location",
+        owner_packet: "XMAP13",
+        payload_schema: "WorldFrame.wings.air_base_province;WorldFrame.wings.state_id",
+        status_accessor: "wings_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "every air-wing row decoded, each carrying a measured nonzero air_base_province and a measured nonzero state_id, with no unaccounted collector problem on the D32 air-wing-loadout or D34 air-base-status domains; the owner tag is units.wings' claim, not this row's",
+        status: air_base_location_status,
+        can_report_absent: true,
+    },
 ];
 
 pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
@@ -188,6 +228,10 @@ pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
         "world.calendar_time" => "derived hour_index;date pair",
         "country.d18_complete_roster" => "d18_country_roster.status",
         "diplomacy.faction_roster" => "faction_roster_status",
+        "units.divisions" => "certified division_units_status",
+        "units.taskforces_fleets" => "certified fleets_status",
+        "units.wings" => "certified wings_status",
+        "units.air_base_location" => "certified wings_status air-base join",
         _ => "root status",
     }
 }
@@ -355,6 +399,149 @@ fn engine_calendar_hour_index(date: &str) -> Option<i64> {
 
 fn land_active_epoch_status(frame: &WorldFrame) -> ViewStatus {
     frame.combats_status()
+}
+
+/// `ViewStatus::Present` alone is NOT completeness for the three unit
+/// collections. `build_division_units`, `build_fleets` and `build_wings`
+/// (`replay_core/src/world.rs`) each `continue` past a malformed source row,
+/// push a `... row skipped` coverage warning, and leave the collection status
+/// untouched. A census short by a division is exactly what XMAP13's
+/// `validate_census` refuses, so admitting the row on the bare accessor would
+/// promise a complete all-country census the frame does not carry. This is the
+/// same defect `land_terminal_detail_status` already guards for
+/// `ended_combats`, applied to the source prefixes those three builders emit.
+fn dropped_source_rows(frame: &WorldFrame, prefix: &str) -> bool {
+    frame
+        .coverage_warnings()
+        .iter()
+        .any(|warning| warning.starts_with(prefix) && warning.contains("row skipped"))
+}
+
+/// Collector domains that CONTRIBUTE a field these rows claim without owning
+/// the census that carries the rows.
+///
+/// `replay_core`'s reconciliation table maps a problem to a typed view and
+/// downgrades it. A domain outside that table gets only a warning saying its
+/// "views are NOT downgraded and may still present retained state as measured" —
+/// so the field is still there, still `Measured`, and possibly carried over from
+/// an earlier hour. A predicate that only reads the value cannot tell.
+///
+/// These three cannot simply be added to the table: each backs one field rather
+/// than a collection, so mapping them would invalidate the whole view and take
+/// down the census claims that are still sound.
+const UNIT_OWNER_IDENTITY_DOMAIN: i64 = 18;
+const NAVAL_MISSIONS_STATUS_DOMAIN: i64 = 56;
+const AIR_WING_LOADOUT_DOMAIN: i64 = 32;
+const AIR_BASE_STATUS_DOMAIN: i64 = 34;
+
+/// The owner tag on every unit row resolves through D18 `country_identity`,
+/// which retains its previous map when current-hour identity is unavailable.
+const UNIT_OWNER_CONTRIBUTORS: [i64; 1] = [UNIT_OWNER_IDENTITY_DOMAIN];
+
+/// Task forces additionally take their raw identity from the D56 overlay:
+/// `exact_overlay_u32_identity` prefers `naval_missions_status_live`'s
+/// `task_force_id` / `fleet_id` over the D28 `id`, so a row whose base id is
+/// unobtained can still present a `Measured` raw identity sourced entirely from
+/// D56.
+const TASK_FORCE_CONTRIBUTORS: [i64; 2] =
+    [UNIT_OWNER_IDENTITY_DOMAIN, NAVAL_MISSIONS_STATUS_DOMAIN];
+
+/// The air-base join reads D32 `air_wing_loadouts_live` for the wing's base
+/// placement and D34 `air_base_status_live` for the base itself. D18 is
+/// deliberately NOT here: this row promises `air_base_province` and `state_id`,
+/// not the owner tag, and the wing census that carries the rows is D30. Adding
+/// D18 would refuse a base join that is fully proved.
+const AIR_BASE_CONTRIBUTORS: [i64; 2] = [AIR_WING_LOADOUT_DOMAIN, AIR_BASE_STATUS_DOMAIN];
+
+fn unmapped_problem_on_contributor(frame: &WorldFrame, domains: &[i64]) -> bool {
+    frame.coverage_warnings().iter().any(|warning| {
+        warning.contains("no typed view is mapped to it")
+            && domains.iter().any(|domain| {
+                warning.contains(&format!("domain_problems: domain {domain} declared"))
+            })
+    })
+}
+
+fn divisions_status(frame: &WorldFrame) -> ViewStatus {
+    let rows = frame.division_units();
+    let mut identities = BTreeSet::new();
+    let mut uids = BTreeSet::new();
+    let complete = !dropped_source_rows(frame, "divisions[")
+        && !unmapped_problem_on_contributor(frame, &UNIT_OWNER_CONTRIBUTORS)
+        && rows.iter().all(|row| {
+            row.raw_division_id != 0
+                && !row.div_uid.trim().is_empty()
+                && identities.insert(row.raw_division_id)
+                && uids.insert(row.div_uid.as_str())
+                && row.raw_division_type.measured().is_some_and(|id| *id != 0)
+                && row.owner.measured().is_some_and(|tag| !tag.trim().is_empty())
+                && row.location_province.measured().is_some_and(|id| *id != 0)
+        });
+    certified_census_status(frame.division_units_status(), complete)
+}
+
+/// The ledger row is "taskforce and fleet enumeration", so the numeric engine
+/// identities are part of what it promises, not only the semantic uid string.
+/// XMAP13's task-force join checks neither (`xmap13.rs::validate_typed_join`
+/// matches on the uid, owner and anchor alone), so nothing downstream would
+/// notice a row whose raw task-force or fleet id never resolved.
+fn taskforces_fleets_status(frame: &WorldFrame) -> ViewStatus {
+    let rows = frame.fleets();
+    let mut uids = BTreeSet::new();
+    let mut task_force_ids = BTreeSet::new();
+    let complete = !dropped_source_rows(frame, "order_of_battle.fleets[")
+        && !unmapped_problem_on_contributor(frame, &TASK_FORCE_CONTRIBUTORS)
+        && rows.iter().all(|row| {
+            !row.task_force_uid.trim().is_empty()
+                && uids.insert(row.task_force_uid.as_str())
+                && row
+                    .raw_task_force_id
+                    .measured()
+                    .is_some_and(|id| *id != 0 && task_force_ids.insert(*id))
+                && row.raw_fleet_id.measured().is_some_and(|id| *id != 0)
+                && row.owner.measured().is_some_and(|tag| !tag.trim().is_empty())
+                && row.location_province.measured().is_some_and(|id| *id != 0)
+        });
+    certified_census_status(frame.fleets_status(), complete)
+}
+
+/// Every source air-wing row became a `WingUnitRow`.
+///
+/// Shared by both wing-backed ledger rows because a dropped wing makes the
+/// census short for either claim. What is NOT shared is what each row asserts
+/// ON TOP of that: `units.wings` owns wing identity, `units.air_base_location`
+/// owns the base join. Keeping those separate is what lets one be false while
+/// the other is true.
+fn wings_rows_all_decoded(frame: &WorldFrame) -> bool {
+    frame.wings_unreadable_rows() == 0
+        && !dropped_source_rows(frame, "order_of_battle.air_wings[")
+}
+
+fn wings_status(frame: &WorldFrame) -> ViewStatus {
+    let mut uids = BTreeSet::new();
+    let complete = wings_rows_all_decoded(frame)
+        && !unmapped_problem_on_contributor(frame, &UNIT_OWNER_CONTRIBUTORS)
+        && frame.wings().iter().all(|row| {
+            !row.wing_uid.trim().is_empty()
+                && uids.insert(row.wing_uid.as_str())
+                && row.owner.measured().is_some_and(|tag| !tag.trim().is_empty())
+        });
+    certified_census_status(frame.wings_status(), complete)
+}
+
+/// XMAP13 anchors an air-wing row at `air_base_province`
+/// (`xmap13.rs::validate_typed_join`), so a wing whose base province never
+/// resolved cannot be placed at all.
+fn air_base_location_status(frame: &WorldFrame) -> ViewStatus {
+    let complete = wings_rows_all_decoded(frame)
+        && !unmapped_problem_on_contributor(frame, &AIR_BASE_CONTRIBUTORS)
+        && frame.wings().iter().all(|row| {
+            row.air_base_province.measured().is_some_and(|id| *id != 0)
+                // Zero is not a state. XMAP13 never re-checks `state_id`, so a
+                // zero here would travel as a usable state identity.
+                && row.state_id.measured().is_some_and(|id| *id != 0)
+        });
+    certified_census_status(frame.wings_status(), complete)
 }
 
 fn building_state_damage_status(frame: &WorldFrame) -> ViewStatus {
@@ -541,6 +728,46 @@ pub struct MapAuthorityAdmittedInput {
     pub payload_schema: String,
     pub cadence: String,
     pub identity_order: String,
+}
+
+/// Account for the map-authority inputs one packet owns, in either state.
+///
+/// A packet owes the same accounting whether its inputs are still gaps or have
+/// been proved and admitted: the receipt has to name what the layer consumed
+/// either way. Returns the subset that is still gapped, which is what a typed
+/// unavailable output carries as its `consumed_gap_ids`.
+///
+/// Refuses if the projection omits an owned input entirely (the projection is
+/// no longer the complete census the packet was written against) or reports one
+/// as both admitted and gapped (two contradictory dispositions for one input).
+pub fn account_owned_map_authority_inputs(
+    packet: &str,
+    owned: &[&str],
+    gaps: &[MapAuthorityGap],
+    admitted: &[MapAuthorityAdmittedInput],
+) -> Result<Vec<String>, String> {
+    let mut consumed_gap_ids = Vec::new();
+    for input in owned {
+        let is_gap = gaps.iter().any(|candidate| candidate.input_id == *input);
+        let is_admitted = admitted
+            .iter()
+            .any(|candidate| candidate.input_id == *input);
+        match (is_gap, is_admitted) {
+            (true, true) => {
+                return Err(format!(
+                    "{packet} authority projection both admitted and gapped owned input {input}"
+                ))
+            }
+            (true, false) => consumed_gap_ids.push((*input).to_string()),
+            (false, true) => {}
+            (false, false) => {
+                return Err(format!(
+                    "{packet} authority projection omitted owned input {input}"
+                ))
+            }
+        }
+    }
+    Ok(consumed_gap_ids)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -785,8 +785,12 @@ impl ProductionMapFeatureAdapter for Xmap14Adapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        let consumed_gap_ids =
-            require_owned_inputs(context.map_authority_gaps, context.map_authority_admitted)?;
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP14",
+            &OWNED_GAPS,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
+        )?;
         // The owned-input accounting happens FIRST and identically in both
         // states: a layer that is unavailable still consumed the same map
         // authority inputs, and a receipt that said otherwise would be a
@@ -3460,31 +3464,6 @@ pub fn prepared_identity_sha256(frame: &PreparedXmap14Frame) -> String {
 /// input. The returned list is the gap subset only: the foundation rejects a
 /// `consumed_gap_ids` entry that is not an outstanding gap, and an admitted
 /// input is not a gap to consume.
-fn require_owned_inputs(
-    gaps: &[crate::MapAuthorityGap],
-    admitted: &[crate::MapAuthorityAdmittedInput],
-) -> Result<Vec<String>> {
-    let mut consumed_gap_ids = Vec::new();
-    for owned in OWNED_GAPS {
-        let is_gap = gaps.iter().any(|candidate| candidate.input_id == owned);
-        let is_admitted = admitted
-            .iter()
-            .any(|candidate| candidate.input_id == owned);
-        if is_gap && is_admitted {
-            return Err(format!(
-                "XMAP14 authority projection both admitted and gapped owned input {owned}"
-            )
-            .into());
-        }
-        if is_gap {
-            consumed_gap_ids.push(owned.to_string());
-        } else if !is_admitted {
-            return Err(format!("XMAP14 authority projection omitted owned gap {owned}").into());
-        }
-    }
-    Ok(consumed_gap_ids)
-}
-
 fn unavailable_output(
     hour: i64,
     consumed_gap_ids: Vec<String>,
@@ -4167,6 +4146,21 @@ mod tests {
         }
     }
 
+    /// XMAP14's owned set, bound to the shared accounting helper exactly as
+    /// `prepare` binds it, so these assertions still exercise the production
+    /// path rather than a copy of it.
+    fn require_owned_inputs(
+        gaps: &[crate::MapAuthorityGap],
+        admitted: &[crate::MapAuthorityAdmittedInput],
+    ) -> Result<Vec<String>> {
+        Ok(crate::account_owned_map_authority_inputs(
+            "XMAP14",
+            &OWNED_GAPS,
+            gaps,
+            admitted,
+        )?)
+    }
+
     #[test]
     fn owned_inputs_must_be_admitted_xor_gapped_and_only_gaps_are_consumed() {
         let all_gaps: Vec<_> = OWNED_GAPS.iter().map(|id| gap(id)).collect();
@@ -4193,7 +4187,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("omitted owned gap combat.naval_air_epoch"));
+        .contains("omitted owned input combat.naval_air_epoch"));
 
         assert!(require_owned_inputs(&all_gaps, &all_admitted)
             .unwrap_err()

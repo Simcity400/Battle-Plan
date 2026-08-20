@@ -218,6 +218,37 @@ fn occupation_census_fixture() -> Value {
     })
 }
 
+fn division_census_fixture() -> Value {
+    json!({
+        "divisions": [
+            {"div_id": 5, "div_type": 29, "owner": "GER", "location_province": 42},
+            {"div_id": 6, "div_type": 29, "owner": "GER", "location_province": 43}
+        ]
+    })
+}
+
+fn taskforce_census_fixture() -> Value {
+    json!({
+        "order_of_battle": {
+            "fleets": [{
+                "id": 3,
+                "owner": "ENG",
+                "task_forces": [{"id": 71, "location_province": 118}]
+            }]
+        }
+    })
+}
+
+fn air_wing_census_fixture() -> Value {
+    json!({
+        "order_of_battle": {
+            "air_wings": [
+                {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}
+            ]
+        }
+    })
+}
+
 fn occupation_state_digest(ids: &[u32]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -327,6 +358,34 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
             NamedSnapshotFixture {
                 name: "authenticated D24 province-snow row",
                 rest: province_snow_fixture(),
+            },
+        ),
+        (
+            "units.divisions",
+            NamedSnapshotFixture {
+                name: "complete division census with identified owners and anchors",
+                rest: division_census_fixture(),
+            },
+        ),
+        (
+            "units.taskforces_fleets",
+            NamedSnapshotFixture {
+                name: "complete task-force census under its fleet owner",
+                rest: taskforce_census_fixture(),
+            },
+        ),
+        (
+            "units.wings",
+            NamedSnapshotFixture {
+                name: "complete air-wing census with unique identified wings",
+                rest: air_wing_census_fixture(),
+            },
+        ),
+        (
+            "units.air_base_location",
+            NamedSnapshotFixture {
+                name: "complete air-wing census whose every wing resolves its air base",
+                rest: air_wing_census_fixture(),
             },
         ),
         (
@@ -473,6 +532,74 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             );
             true
         }
+        // Each unit case leaves its own root accessor Present on purpose:
+        // `build_division_units`, `build_fleets` and `build_wings` all return a
+        // hardcoded `ViewStatus::Present` and only push a coverage warning when
+        // they drop a source row, so a bare-accessor admission would promise a
+        // complete all-country census that the frame does not carry.
+        "units.divisions" => {
+            // A source row the decoder could not parse: dropped with a
+            // `divisions[1]: ... row skipped` warning, census silently short.
+            object.insert(
+                "divisions".into(),
+                json!([
+                    {"div_id": 5, "div_type": 29, "owner": "GER", "location_province": 42},
+                    7
+                ]),
+            );
+            true
+        }
+        "units.taskforces_fleets" => {
+            // The task force decodes (its id is a usable uid string) and no row
+            // is dropped, so the dropped-row guard does NOT fire; only the
+            // raw-identity requirement does. A non-numeric id leaves
+            // raw_task_force_id unobtained.
+            object.insert(
+                "order_of_battle".into(),
+                json!({
+                    "fleets": [{
+                        "id": 3,
+                        "owner": "ENG",
+                        "task_forces": [{"id": "opaque", "location_province": 118}]
+                    }],
+                    "air_wings": air_wing_census_fixture()["order_of_battle"]["air_wings"]
+                }),
+            );
+            true
+        }
+        "units.wings" => {
+            // Two wings sharing one engine id: both rows decode, so nothing is
+            // dropped and the air-base join still holds — but wing identity is
+            // no longer unique, which is what `units.wings` alone asserts.
+            object
+                .get_mut("order_of_battle")
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries an order of battle")
+                .insert(
+                    "air_wings".into(),
+                    json!([
+                        {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219},
+                        {"id": 12, "owner": "SOV", "air_base_province": 908, "state_id": 220}
+                    ]),
+                );
+            true
+        }
+        "units.air_base_location" => {
+            // The wing census stays complete and uniquely identified, and the
+            // base province resolves; only the state half of the join is
+            // invalid, so this kills the `state_id != 0` requirement on its own.
+            object
+                .get_mut("order_of_battle")
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries an order of battle")
+                .insert(
+                    "air_wings".into(),
+                    json!([
+                        {"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 0}
+                    ]),
+                );
+            true
+        }
         "objects.building_state_damage" => {
             // The recorder marker is the D48 sidecar's own authenticity field: without the exact
             // "C" marker parse_d48_building_sidecar refuses the whole per-state map, so the
@@ -522,6 +649,9 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
             | replay_core::world::FactionRosterStatus::MeasuredNonEmpty => ViewStatus::Present,
         },
         "mapmode.occupation_resistance_compliance" => frame.occupation_status(),
+        "units.divisions" => frame.division_units_status(),
+        "units.taskforces_fleets" => frame.fleets_status(),
+        "units.wings" | "units.air_base_location" => frame.wings_status(),
         "objects.building_state_damage" => frame.d48_buildings_status(),
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
         "world.calendar_time" => match frame.date() {
@@ -878,6 +1008,8 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "countries": Value::Null,
             "diplomacy_live": Value::Null,
             "states": Value::Null,
+            "divisions": Value::Null,
+            "order_of_battle": Value::Null,
             }),
             None,
         ),
@@ -1537,6 +1669,184 @@ fn a_province_snow_member_the_decoder_discarded_is_not_admitted() {
     assert_owner_proven_unavailable(&frame, "weather.province_snow_accumulator");
 }
 
+/// kills: dropping the contributor guard from any of the four unit predicates.
+///
+/// D18 `country_identity` resolves the owner tag on every unit row and retains
+/// its previous map when current-hour identity is unavailable; D32
+/// `air_wing_loadouts_live` and D34 `air_base_status_live` back the air-base
+/// join. None owns a unit census, so none can be mapped in
+/// `DOMAIN_PROBLEM_VIEW_MAP` without invalidating census claims that are still
+/// sound — the reconciliation pass leaves them under a warning that says the
+/// views "are NOT downgraded and may still present retained state as measured".
+/// A predicate that only reads the retained value cannot tell, so it has to
+/// read the warning.
+#[test]
+fn a_problem_on_an_unmapped_contributor_domain_refuses_the_rows_it_feeds() {
+    let with_problem = |domain: i64| {
+        let mut snapshot = fully_measured_snapshot();
+        snapshot.as_object_mut().unwrap().insert(
+            "provenance".into(),
+            json!({"collector": {"domain_problems": [
+                {"domain_id": domain, "problem": "sweep_incomplete"}
+            ]}}),
+        );
+        world_frame_with(snapshot)
+    };
+
+    let admitted = |frame: &WorldFrame, input_id: &str| {
+        let projection =
+            map_authority_projection_from_world_frame(frame, &fixture_manifest()).unwrap();
+        requirement(&projection, input_id).disposition
+            == MapAuthorityRequirementDisposition::Admitted
+    };
+
+    // D18 feeds the owner tag the three enumeration rows claim — but NOT
+    // units.air_base_location, whose ledger row promises the base province and
+    // state, not the owner. Over-guarding it would refuse a fully proved join.
+    let owner = with_problem(18);
+    assert_eq!(owner.division_units_status(), ViewStatus::Present);
+    assert_eq!(owner.fleets_status(), ViewStatus::Present);
+    assert_eq!(owner.wings_status(), ViewStatus::Present);
+    for input_id in ["units.divisions", "units.taskforces_fleets", "units.wings"] {
+        assert_owner_proven_unavailable(&owner, input_id);
+    }
+    assert!(
+        admitted(&owner, "units.air_base_location"),
+        "the air-base join does not claim the owner tag"
+    );
+
+    // D56 overlays the raw task-force and fleet identities that
+    // units.taskforces_fleets claims, and nothing else these rows read.
+    let naval = with_problem(56);
+    assert_eq!(naval.fleets_status(), ViewStatus::Present);
+    assert_owner_proven_unavailable(&naval, "units.taskforces_fleets");
+    for still_admitted in [
+        "units.divisions",
+        "units.wings",
+        "units.air_base_location",
+    ] {
+        assert!(
+            admitted(&naval, still_admitted),
+            "D56 must not reach {still_admitted}"
+        );
+    }
+
+    // D32 and D34 feed only the air-base join, so the enumeration rows stand.
+    for domain in [32, 34] {
+        let frame = with_problem(domain);
+        assert_eq!(frame.wings_status(), ViewStatus::Present, "domain {domain}");
+        assert_owner_proven_unavailable(&frame, "units.air_base_location");
+        for still_admitted in ["units.divisions", "units.taskforces_fleets", "units.wings"] {
+            assert!(
+                admitted(&frame, still_admitted),
+                "domain {domain} must not reach {still_admitted}"
+            );
+        }
+    }
+
+    // A problem on a domain none of these rows read changes nothing.
+    let unrelated = with_problem(86);
+    for input_id in [
+        "units.divisions",
+        "units.taskforces_fleets",
+        "units.wings",
+        "units.air_base_location",
+    ] {
+        assert!(
+            admitted(&unrelated, input_id),
+            "{input_id} must not read an unrelated domain's problem"
+        );
+    }
+}
+
+/// One negative fixture per row can only kill one requirement, so the rest of
+/// each unit predicate is killed here. Every case leaves the row's raw
+/// `ViewStatus` accessor `Present`, which is exactly what makes the certified
+/// layer above it load-bearing.
+#[test]
+fn each_unit_requirement_refuses_on_its_own() {
+    let with = |patch: Value| {
+        let mut snapshot = fully_measured_snapshot();
+        let object = snapshot.as_object_mut().unwrap();
+        for (key, value) in patch.as_object().unwrap() {
+            object.insert(key.clone(), value.clone());
+        }
+        world_frame_with(snapshot)
+    };
+    let oob = |fleets: Value, wings: Value| {
+        json!({"order_of_battle": {"fleets": fleets, "air_wings": wings}})
+    };
+    let one_fleet = json!([{
+        "id": 3, "owner": "ENG",
+        "task_forces": [{"id": 71, "location_province": 118}]
+    }]);
+    let one_wing = json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}]);
+
+    // units.divisions: a dropped source row, and each identity/join field.
+    for divisions in [
+        json!([{"div_id": 5, "div_type": 29, "owner": "GER", "location_province": 42}, 7]),
+        // Duplicate raw_division_id with DISTINCT div_uids ("5:29" vs "5:31"),
+        // so this isolates the raw-id uniqueness guard. The uid-uniqueness
+        // guard beside it cannot be isolated by any input, because
+        // `division_uid_from_obj` derives the uid from div_id and div_type: a
+        // duplicate uid implies a duplicate div_id. It is kept as
+        // defence-in-depth against a future uid source, not claimed as killed.
+        json!([{"div_id": 5, "div_type": 29, "owner": "GER", "location_province": 42},
+               {"div_id": 5, "div_type": 31, "owner": "GER", "location_province": 43}]),
+        json!([{"div_id": 5, "div_type": 29, "owner": null, "location_province": 42}]),
+        json!([{"div_id": 5, "div_type": 29, "owner": "GER", "location_province": null}]),
+        json!([{"div_id": 5, "div_type": null, "owner": "GER", "location_province": 42}]),
+    ] {
+        let frame = with(json!({"divisions": divisions.clone()}));
+        assert_eq!(frame.division_units_status(), ViewStatus::Present, "{divisions}");
+        assert_owner_proven_unavailable(&frame, "units.divisions");
+    }
+
+    // units.taskforces_fleets: a dropped row, a duplicate raw id, an absent
+    // fleet id, and each join field.
+    for fleets in [
+        json!([{"id": 3, "owner": "ENG",
+                "task_forces": [{"id": 71, "location_province": 118}, 9]}]),
+        // Duplicate task-force id. Both the uid and raw_task_force_id derive
+        // from the same `id` field, so this case cannot separate the two
+        // uniqueness guards; it proves the pair refuses a duplicated task force,
+        // which is the claim the ledger row actually makes.
+        json!([{"id": 3, "owner": "ENG",
+                "task_forces": [{"id": 71, "location_province": 118},
+                                {"id": 71, "location_province": 119}]}]),
+        json!([{"owner": "ENG", "task_forces": [{"id": 71, "location_province": 118}]}]),
+        json!([{"id": 3, "task_forces": [{"id": 71, "location_province": 118}]}]),
+        json!([{"id": 3, "owner": "ENG", "task_forces": [{"id": 71}]}]),
+    ] {
+        let frame = with(oob(fleets.clone(), one_wing.clone()));
+        assert_eq!(frame.fleets_status(), ViewStatus::Present, "{fleets}");
+        assert_owner_proven_unavailable(&frame, "units.taskforces_fleets");
+    }
+
+    // units.wings: an unreadable row, a duplicate wing id, an absent owner.
+    for wings in [
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219}, 4]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 907, "state_id": 219},
+               {"id": 12, "owner": "SOV", "air_base_province": 908, "state_id": 220}]),
+        json!([{"id": 12, "air_base_province": 907, "state_id": 219}]),
+    ] {
+        let frame = with(oob(one_fleet.clone(), wings.clone()));
+        assert_eq!(frame.wings_status(), ViewStatus::Present, "{wings}");
+        assert_owner_proven_unavailable(&frame, "units.wings");
+    }
+
+    // units.air_base_location: the province half of the join, in both of its
+    // invalid spellings.
+    for wings in [
+        json!([{"id": 12, "owner": "SOV", "air_base_province": null, "state_id": 219}]),
+        json!([{"id": 12, "owner": "SOV", "air_base_province": 0, "state_id": 219}]),
+    ] {
+        let frame = with(oob(one_fleet.clone(), wings.clone()));
+        assert_eq!(frame.wings_status(), ViewStatus::Present, "{wings}");
+        assert_owner_proven_unavailable(&frame, "units.air_base_location");
+    }
+}
+
 #[test]
 fn no_proven_predicate_is_more_permissive_than_its_ledger_accessor() {
     let manifest = fixture_manifest();
@@ -1606,7 +1916,7 @@ fn a_proven_input_refuses_when_its_own_payload_is_unmeasured() {
             .is_admitted(proven.input_id));
     }
     assert_eq!(
-        composites_covered, 4,
+        composites_covered, 8,
         "the composite-accessor cases are the ones this test exists for"
     );
 }

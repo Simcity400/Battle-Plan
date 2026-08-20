@@ -1198,8 +1198,18 @@ impl ProductionMapFeatureAdapter for Xmap13Adapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        require_owned_gaps(context)?;
-        let consumed_gap_ids = OWNED_GAPS.iter().map(|value| (*value).into()).collect();
+        // Owned-input accounting first, and identically in both states: the four
+        // `units.*` rows are owner-proven map-authority inputs, so a frame that
+        // carries the complete typed censuses reports them ADMITTED rather than
+        // gapped. Treating "not a gap" as a hard error — as the previous
+        // gap-only form did — would have turned proving them into an abort of
+        // the whole foundation graph.
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP13",
+            &OWNED_GAPS,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
+        )?;
         let Some(raw) = context.world_frame.domain(XMAP13_DOMAIN) else {
             return Ok(unavailable_output(
                 context.world_frame.hour_index(),
@@ -3342,21 +3352,6 @@ fn row_content(row: &Xmap13SemanticRow) -> Vec<&UsedContentKey> {
     out
 }
 
-fn require_owned_gaps(context: &FoundationFeatureContext<'_>) -> Result<()> {
-    for input in OWNED_GAPS {
-        if !context
-            .map_authority_gaps
-            .iter()
-            .any(|gap| gap.input_id == input)
-        {
-            return Err(
-                format!("XMAP13 map-authority projection omitted owned gap {input}").into(),
-            );
-        }
-    }
-    Ok(())
-}
-
 fn unavailable_output(
     hour: i64,
     consumed_gap_ids: Vec<String>,
@@ -4425,6 +4420,87 @@ mod tests {
             payload_sha256: fill.to_string().repeat(64),
             payload_bytes: 64,
         }
+    }
+
+    fn gap(input_id: &str) -> crate::MapAuthorityGap {
+        crate::MapAuthorityGap {
+            input_id: input_id.into(),
+            disposition: crate::MapAuthorityRequirementDisposition::Unavailable,
+            reason: "fixture blocker".into(),
+        }
+    }
+
+    fn admitted(input_id: &str) -> crate::MapAuthorityAdmittedInput {
+        let proven = crate::map_authority_owner_proven_admission(input_id)
+            .unwrap_or_else(|| panic!("{input_id} is not an owner-proven map-authority input"));
+        crate::MapAuthorityAdmittedInput {
+            input_id: input_id.into(),
+            owner_packet: proven.owner_packet.into(),
+            payload_schema: proven.payload_schema.into(),
+            cadence: proven.cadence.into(),
+            identity_order: proven.identity_order.into(),
+        }
+    }
+
+    /// kills: reverting XMAP13 to the gap-only accounting it used before the
+    /// four `units.*` rows became owner-proven. That form returned `Err` for any
+    /// owned input that was not a gap, so proving the rows would have aborted
+    /// the whole foundation graph instead of leaving XMAP13 typed-unavailable.
+    #[test]
+    fn the_four_proven_unit_rows_are_accepted_as_admitted_not_only_as_gaps() {
+        let hierarchy = "orders.theatre_army_hierarchy";
+        let proven = ["units.divisions", "units.taskforces_fleets", "units.wings", "units.air_base_location"];
+        for input_id in proven {
+            assert!(
+                crate::map_authority_owner_proven_admission(input_id).is_some(),
+                "{input_id} must be owner-proven for this packet's accounting to hold"
+            );
+        }
+
+        // The configuration this change actually creates: the four typed unit
+        // rows admitted, the hierarchy row still a gap.
+        let admitted_rows: Vec<_> = proven.iter().map(|id| admitted(id)).collect();
+        assert_eq!(
+            crate::account_owned_map_authority_inputs(
+                "XMAP13",
+                &OWNED_GAPS,
+                &[gap(hierarchy)],
+                &admitted_rows,
+            )
+            .unwrap(),
+            vec![hierarchy.to_string()],
+            "only the still-gapped input may be reported as consumed"
+        );
+
+        // All five gapped: every one is consumed, as before this change.
+        let all_gaps: Vec<_> = OWNED_GAPS.iter().map(|id| gap(id)).collect();
+        assert_eq!(
+            crate::account_owned_map_authority_inputs("XMAP13", &OWNED_GAPS, &all_gaps, &[])
+                .unwrap(),
+            OWNED_GAPS.iter().map(|id| id.to_string()).collect::<Vec<_>>()
+        );
+
+        // An owned input the projection never mentioned is still a refusal.
+        assert!(
+            crate::account_owned_map_authority_inputs(
+                "XMAP13",
+                &OWNED_GAPS,
+                &[],
+                &admitted_rows,
+            )
+            .unwrap_err()
+            .contains("omitted owned input orders.theatre_army_hierarchy")
+        );
+
+        // And one reported in both states is a contradiction, not a preference.
+        assert!(crate::account_owned_map_authority_inputs(
+            "XMAP13",
+            &OWNED_GAPS,
+            &[gap("units.divisions"), gap(hierarchy)],
+            &admitted_rows,
+        )
+        .unwrap_err()
+        .contains("both admitted and gapped owned input units.divisions"));
     }
 
     #[test]

@@ -15,6 +15,8 @@ pub const FOG_CONSTANTS_SOURCE: &str = "gfx/FX/constants.fxh";
 
 pub const TO_LINEAR_GAMMA: f32 = 2.2;
 
+/// The weather *type* keys used by `map/strategicregions/*.txt` weather periods
+/// and keyed by `common/weather.txt` `weather_effects`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub enum WeatherType {
     NoPhenomenon,

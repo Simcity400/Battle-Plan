@@ -1,0 +1,11 @@
+[package]
+name = "map_unit_presentation"
+version = "0.1.0"
+edition = "2021"
+description = "Lane OK producer skeleton: XMAP13 map unit presentation (on-map unit entities and counters)"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }
