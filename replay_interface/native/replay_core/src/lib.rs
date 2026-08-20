@@ -89,6 +89,7 @@ pub use portable_render_stream::{
     WeatherEntityContentJoin, WeatherEntityRole, WeatherEntityVisibility, WeatherInstance,
     WeatherMembership, WeatherPosition, WeatherPositionClass, WeatherResolution,
     WeatherVariantContentJoin, WeatherVisibilityPhase, Xmap07PassiveSnowMudCarrier,
+    Xmap07TileLayout,
     Xmap20ActiveEffect, Xmap20DependencyReceipt, Xmap20DependencyReceipts, Xmap20EffectAdmission,
     Xmap20EffectFrame, Xmap20LifecycleEvent, Xmap20ParticleSubmissionRef, A729_CAMERA_ENVELOPE_RVA,
     A729_CAMERA_EXECUTABLE_SHA256, A729_CAMERA_MAP_PICK_RVA, A729_CAMERA_RENDER_VIEW_BYTES,
@@ -124,10 +125,13 @@ pub use portable_render_stream::{
     XMAP07_PASSIVE_SNOW_MUD_KEY, XMAP07_PASSIVE_SNOW_MUD_SCHEMA, XMAP07_PASSIVE_SNOW_MUD_SCOPE,
     XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256, XMAP07_SNOW_MUD_FADE_UPDATER_RVA,
     XMAP07_SNOW_MUD_FORMAT, XMAP07_SNOW_MUD_SCENE_COPY_INSTRUCTIONS_SHA256,
-    XMAP07_SNOW_MUD_SCENE_COPY_RVA, XMAP20_CAMERA_OWNER, XMAP20_ENTITY_IDENTITY_OWNER,
+    XMAP07_SNOW_MUD_SCENE_COPY_RVA, XMAP07_SNOW_MUD_TILE_EDGE, XMAP20_CAMERA_OWNER,
+    XMAP20_ENTITY_IDENTITY_OWNER,
     XMAP20_LIGHTING_OWNER, XMAP20_PRE_PARTICLE_COMPOSITOR_OWNER, XMAP20_PROVIDER_RECEIPTS_SCHEMA,
     XMAP20_WEATHER_IDENTITY_OWNER,
 };
+
+pub use portable_render_stream::{grid_from_tiles, tiles_from_grid};
 
 pub use army_battleplans::{
     ArmyBattleplanGeometry, ArmyBattleplanOrderExact, ArmyBattleplanOrderKey,

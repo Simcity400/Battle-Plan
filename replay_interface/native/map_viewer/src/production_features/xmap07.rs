@@ -1150,22 +1150,89 @@ fn compile_water_stages(_vertex_hlsl: &str, _pixel_hlsl: &str) -> Result<(Vec<u8
     Err("XMAP07 executable water-program handoff requires Windows D3DCompile".into())
 }
 
+std::thread_local! {
+    /// Last prepared SnowMud texture, keyed by the payload digest and the target size.
+    ///
+    /// `prepare` runs EVERY FRAME while the hour does not change, and building this texture is
+    /// whole-grid work: reassembling 2,816 base64 tiles into 2.88 MB, and then a SHA-256 over all
+    /// of it inside `generated_snow_mud_parts`. THE SECOND HALF OF THAT WAS ALREADY PER-FRAME
+    /// before the grid was tiled -- `packet_payload_sha256 != Sha256::hex(packet_bytes)` re-hashed
+    /// the same 2.88 MB on every frame of every hour -- so this memo removes more per-frame work
+    /// than tiling added.
+    ///
+    /// KEYING ON THE DIGEST IS WHAT MAKES IT SOUND. `payload_sha256` is verified against the
+    /// bytes when the entry is built, and again at ingress when the carrier is decoded, so a hit
+    /// means the very same grid. Re-deriving it every frame from unchanged memory re-checks RAM,
+    /// not authenticity, and the hour boundary is exactly where the key changes.
+    ///
+    /// THE KEY CARRIES THE CARRIER'S OWN SHAPE, NOT JUST THE DIGEST AND THE TARGET SIZE. The
+    /// digest is over the LINEAR bytes, so two carriers that are each internally consistent can
+    /// share it while declaring different equal-area dimensions -- 8x4 and 4x8 over the same
+    /// bytes, reachable with no hash collision at all on a uniform grid. `generated_snow_mud_parts`
+    /// rejects a carrier whose dimensions do not match the active map, and a key without those
+    /// fields would let the second carrier hit the first one's entry and skip that rejection. So
+    /// every field that function tests is part of the key.
+    static PREPARED_SNOW_MUD: std::cell::RefCell<
+        Option<(SnowMudMemoKey, PreparedWaterGeneratedTexture)>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Everything `generated_snow_mud_parts` checks or reports, so a memo hit is only ever the exact
+/// case that would have been rebuilt.
+#[derive(Clone, PartialEq, Eq)]
+struct SnowMudMemoKey {
+    payload_sha256: String,
+    packet_width: u32,
+    packet_height: u32,
+    packet_row_pitch: u32,
+    packet_bytes_per_texel: u32,
+    packet_format: String,
+    expected_width: usize,
+    expected_height: usize,
+}
+
 fn generated_snow_mud(
     packet: &Xmap07PassiveSnowMudCarrier,
     expected_width: usize,
     expected_height: usize,
 ) -> Result<PreparedWaterGeneratedTexture> {
-    generated_snow_mud_parts(
+    let key = SnowMudMemoKey {
+        payload_sha256: packet.payload_sha256.clone(),
+        packet_width: packet.width,
+        packet_height: packet.height,
+        packet_row_pitch: packet.row_pitch,
+        packet_bytes_per_texel: packet.bytes_per_texel,
+        packet_format: packet.format.clone(),
+        expected_width,
+        expected_height,
+    };
+    let hit = PREPARED_SNOW_MUD.with(|memo| {
+        memo.borrow()
+            .as_ref()
+            .filter(|(cached, _)| cached == &key)
+            .map(|(_, prepared)| prepared.clone())
+    });
+    if let Some(prepared) = hit {
+        return Ok(prepared);
+    }
+    let grid = packet
+        .grid_bytes()
+        .map_err(|error| format!("XMAP07 exact SnowMud tiled grid refused: {error}"))?;
+    let prepared = generated_snow_mud_parts(
         packet.width,
         packet.height,
         packet.row_pitch,
         packet.bytes_per_texel,
         &packet.format,
-        &packet.bytes,
+        &grid,
         &packet.payload_sha256,
         expected_width,
         expected_height,
-    )
+    )?;
+    PREPARED_SNOW_MUD.with(|memo| {
+        *memo.borrow_mut() = Some((key, prepared.clone()));
+    });
+    Ok(prepared)
 }
 
 #[allow(clippy::too_many_arguments)]

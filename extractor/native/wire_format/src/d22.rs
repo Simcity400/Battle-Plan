@@ -1,8 +1,8 @@
 //! d22 `map_control_live` — who owns and who controls every state and province.
 //!
-//! Derived from `world_fold.rs:29509`-`:29633`
+//! Derived from `world_fold.rs:29553`-`:29677`
 //! (`fold_map_control`), its row-length constants at `:386`-`:387`, the projection
-// @world-fold-authority domain=22 functions=fold_map_control lines=29509-29633 sha256=78a9bbbfbd40b1faf44e6d45b3a3e9bf164c22d85fecfa8be226543976794ad9 closure=b538a312e6503e6206e1d20c7dfd86d0ab9f9bffb534fab92f1ded1640405b93
+// @world-fold-authority domain=22 functions=fold_map_control lines=29553-29677 sha256=78a9bbbfbd40b1faf44e6d45b3a3e9bf164c22d85fecfa8be226543976794ad9 closure=b538a312e6503e6206e1d20c7dfd86d0ab9f9bffb534fab92f1ded1640405b93
 //! that merges its output into the shared state/province objects (`world_fold.rs::build_snapshot`),
 //! and the collector read and payload writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:59480`-`:59538`,

@@ -10447,6 +10447,13 @@ mod product_production_d3d_tests {
 
     fn xmap07_ingress_test_carrier(hour: i64) -> replay_core::Xmap07PassiveSnowMudCarrier {
         let bytes = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let layout = replay_core::Xmap07TileLayout::new(
+            2,
+            1,
+            replay_core::XMAP07_SNOW_MUD_TILE_EDGE,
+        )
+        .unwrap();
+        let tiles = replay_core::tiles_from_grid(&bytes, &layout).unwrap();
         let mut carrier = replay_core::Xmap07PassiveSnowMudCarrier {
             schema: replay_core::XMAP07_PASSIVE_SNOW_MUD_SCHEMA.into(),
             scope: replay_core::XMAP07_PASSIVE_SNOW_MUD_SCOPE.into(),
@@ -10483,11 +10490,12 @@ mod product_production_d3d_tests {
             row_pitch: 8,
             bytes_per_texel: 4,
             format: replay_core::XMAP07_SNOW_MUD_FORMAT.into(),
+            tile_edge: replay_core::XMAP07_SNOW_MUD_TILE_EDGE,
+            tiles: tiles.clone(),
             payload_sha256: snapshot::sha256::Sha256::hex(&bytes),
             payload_blob_sha256: replay_core::Xmap07PassiveSnowMudCarrier::payload_blob_sha256(
-                &bytes,
+                &tiles,
             ),
-            bytes,
             fade_f32_bits: 0.5f32.to_bits(),
             authority_sha256: String::new(),
         };
