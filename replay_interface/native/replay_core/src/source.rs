@@ -7390,6 +7390,10 @@ mod tests {
                     | "let handle = OpenOptions::new()"
                     | ".open(&current)?;"
                     | "if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {"
+                    // The debloat reformat moved the opening brace of the
+                    // ancestor no-follow check onto its own line; the
+                    // brace-free spelling is the same guard.
+                    | "if !metadata.is_dir() || metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0"
                     | "let temp = guard.parent.join(temp_name);"
                     | "use std::os::windows::fs::OpenOptionsExt;"
                     | "OpenOptions::new()"
@@ -7463,9 +7467,16 @@ mod tests {
                     | "let tpath = gdir.join(\"timeline.json\");"
                     | "if let Ok(tb) = fs::read(&tpath) {"
                     | "fs::create_dir_all(parent)"
+                    // Debloat-reformat spelling of the same output-directory
+                    // creation, wrapped with its map_err on one line.
+                    | "fs::create_dir_all(parent).map_err(|error| format!(\"create output directory: {error}\"))?;"
                     | "let canonical_parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(\".\")))"
                     | "let anchored_out = canonical_parent.join(file_name);"
                     | "let published = fs::read(&anchored_out)"
+                    // The debloat reformat wrapped the published-container
+                    // re-read (the packer's byte-identity check on its own
+                    // just-written output) onto a continuation line.
+                    | "fs::read(&anchored_out).map_err(|error| format!(\"read published container: {error}\"))?;"
                     | "fn create_unique_temp(out: &Path) -> Result<(PathBuf, fs::File), String> {"
                     | "let parent = out.parent().unwrap_or_else(|| Path::new(\".\"));"
                     | "let temp = parent.join(format!(\".{name}.pack-tmp-{nonce}.{attempt}\"));"
@@ -7672,12 +7683,15 @@ mod tests {
                     cursor += 1;
                 }
                 State::BlockComment(comment_depth) => {
-                    if bytes[cursor..].starts_with(b"") {
+                    if bytes[cursor..].starts_with(b"*/") {
                         if comment_depth == 1 {
                             state = State::Code;
                         } else {
                             state = State::BlockComment(comment_depth - 1);
                         }
+                        cursor += 2;
+                    } else if bytes[cursor..].starts_with(b"/*") {
+                        state = State::BlockComment(comment_depth + 1);
                         cursor += 2;
                     } else {
                         cursor += 1;
@@ -7789,6 +7803,28 @@ mod tests {
         loader_pathname_audit(module, source)
             .expect("pathname audit source must be structurally unambiguous")
             .1
+    }
+
+    #[test]
+    fn cfg_test_masking_survives_brace_bearing_nested_block_comments() {
+        // Kills: a block-comment scanner that closes on the wrong token (the
+        // debloat-corrupted `starts_with(b"")` was always true, ending every
+        // comment after two bytes) or that lacks the nested `/*` arm (the
+        // first `*/` would then drop to Code). Either way the UNBALANCED
+        // stray `}` below leaks out of the comment and ends the cfg(test)
+        // item inside it, leaving `MASKED_BODY` unmasked — the fixture
+        // deliberately carries no `{` in the comment, so the leak cannot
+        // re-balance (Codex 01a00f9e b2 R5 finding 1).
+        let source = "#[cfg(test)]\nfn masked() {\n    /* outer /* inner */ } popped-early */\n    let secret = \"MASKED_BODY\";\n}\nfn production() { let keep = \"KEPT_PRODUCTION\"; }\n";
+        let masked = mask_cfg_test_items(source).expect("scanner must close the cfg(test) item");
+        assert!(
+            !masked.contains("MASKED_BODY"),
+            "cfg(test) body escaped masking: {masked}"
+        );
+        assert!(
+            masked.contains("KEPT_PRODUCTION"),
+            "production code after the cfg(test) item was masked: {masked}"
+        );
     }
 
     #[test]

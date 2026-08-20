@@ -86,7 +86,6 @@
       "attach_log.rs:69180-69184": 1,
       "collector/src/attach_log.rs:69010-69040": 1,
       "collector/src/attach_log.rs:69168-69177": 1,
-      "compact_contract/src/tactic_weight.rs:294": 2,
       "domain_data_authority.rs:12121-12131": 1,
       "domain_data_authority.rs:3286": 1,
       "lanes/country_army_upgrade_requests_live/src/lib.rs:351": 1,
@@ -111,7 +110,6 @@
       "attach_log.rs:60815-60824": 1,
       "attach_log.rs:61009-61022": 2,
       "collector/src/attach_log.rs:69168-69185": 1,
-      "compact_contract/src/tactic_weight.rs:294": 1,
       "g8.rs:130-150": 1,
       "g8.rs:179-181": 1,
       "g8.rs:182-188": 1,
@@ -1229,13 +1227,6 @@
       "world_fold.rs:21566-21788": 1
     },
     "extractor/native/wire_format/src/d48.rs": {
-      "build_profile.rs:365": 1,
-      "build_profile.rs:367": 1,
-      "build_profile.rs:378": 1,
-      "build_profile.rs:380": 1,
-      "build_profile.rs:404": 1,
-      "build_profile.rs:407": 1,
-      "build_profile.rs:409-410": 1,
       "collector_module.rs:164-206": 1,
       "collector_module.rs:190": 1,
       "compact_contract/src/lib.rs:136-158": 1,
@@ -1894,7 +1885,6 @@
       "attach_log.rs:33075-33081": 1,
       "attach_log.rs:33335": 3,
       "calendar.rs:22-26": 1,
-      "compact_contract/src/tactic_weight.rs:349": 1,
       "d29.rs:205": 1,
       "d68.rs:130-146": 1,
       "d68.rs:255-259": 1,
@@ -2080,7 +2070,6 @@
       "tactic_weight.rs:8-11": 1,
       "tactic_weight.rs:82-85": 1,
       "tactic_weight.rs:89-92": 1,
-      "tactic_weight_fold.rs:128": 1,
       "tactic_weight_fold.rs:22-25": 1,
       "tactic_weight_fold.rs:27-30": 1,
       "tactic_weight_fold.rs:32-80": 1,
@@ -2551,6 +2540,9 @@
   "items": {
     "extractor/native/scripts/test_verify_world_fold_citations.py": {
       "world_fold.rs::fold_one": "synthetic fixture text: this test builds a throwaway tree whose world_fold.rs defines `fold_one`, and writes a document citing it. It is not a citation of the shipping world_fold.rs and must not be re-pointed at one."
+    },
+    "extractor/native/snapshot/Cargo.toml": {
+      "replay_interface/native/replay_core/src/source.rs::production_sources_have_no_descendant_pathname_read": "the audit test exists in replay_interface/native/replay_core/src/source.rs (mod tests, #[cfg(test)], line ~7971); the scope indexer does not index that file's test-module declarations, so the item resolves to nothing it can see. The pointer is correct; re-check when the audit test is renamed or the indexer learns test modules."
     }
   }
 }

@@ -195,6 +195,12 @@ impl NativeScheduledObservation {
     pub fn reused_walk_families(&self) -> u32 {
         self.cached.as_ref().map_or(0, |c| c.families)
     }
+
+    /// Lane MX: unit-leader trait pointers this walk could not resolve to a
+    /// definition token (`AdapterBuildStats::missing_trait_tokens`).
+    pub fn missing_trait_tokens(&self) -> u32 {
+        self.stats.missing_trait_tokens
+    }
 }
 
 pub fn observe_native_scheduled_frame<M: LaneMemory>(

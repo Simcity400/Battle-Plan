@@ -1523,4 +1523,57 @@ mod tests {
         }];
         assert!(appointed_advisors_from_country_active_ideas(&roster, &countries).is_empty());
     }
+
+    /// Lane MX (Codex 01a00f9e b2 R2, finding 1's empty-map arm): with an
+    /// EMPTY trait-token map the adapter does NOT read a leader's trait
+    /// vector, so a live vector holding a trait publishes `trait_count = 0`
+    /// with no `missing_trait_tokens`. This is the long-standing k5 shape
+    /// (trait family unobserved) and it is exactly why the collector's
+    /// sweep-only skip must never LEAVE the map empty: a pass that skipped
+    /// hits down to an empty map is discarded and rerun without the skip
+    /// (`trait_skip_left_empty_map` in attach_log.rs).
+    ///
+    /// kills: making the adapter read vectors under an empty map (a lawful
+    /// alternative fix) — this test then fails to remind whoever does it to
+    /// remove the collector's empty-map retry arm in the same change.
+    #[test]
+    fn an_empty_trait_token_map_skips_the_vector_read() {
+        let mut mem = FakeMemory::default();
+        let leader = 0x2000u64;
+        let skill_source = 0x2900u64;
+        let trait_data = 0x2A00u64;
+        let trait_def = 0x2B00u64;
+        mem.write_u64(leader, ARMY_VT);
+        mem.write_u32(leader + CUNIT_LEADER_TYPE_OFF, CUNIT_LEADER_TYPE_ID);
+        mem.write_u32(leader + CUNIT_LEADER_ID_OFF, 500);
+        mem.write_u32(leader + CUNIT_LEADER_CHARACTER_ID_COPY_OFF, 100);
+        mem.write_i32(leader + CUNIT_LEADER_EXPERIENCE_RAW_OFF, 42_000);
+        mem.write_u64(leader + CUNIT_LEADER_SKILL_SOURCE_PTR_OFF, skill_source);
+        mem.write_u32(skill_source + CUNIT_LEADER_SKILL_VALUE_OFF, 4);
+        // The live vector HOLDS one trait.
+        mem.write_u64(leader + CUNIT_LEADER_TRAIT_DATA_OFF, trait_data);
+        mem.write_u32(leader + CUNIT_LEADER_TRAIT_CAPACITY_OFF, 1);
+        mem.write_u32(leader + CUNIT_LEADER_TRAIT_SIZE_OFF, 1);
+        mem.write_u64(trait_data, trait_def);
+        mem.write_u64(trait_def, TRAIT_VT);
+        let root = UnitLeaderRoot {
+            leader_addr: leader,
+            country_tag_db_id: 2,
+            leader_kind: UNIT_LEADER_ARMY,
+            name: None,
+            token: None,
+        };
+        let empty: BTreeMap<u64, &str> = BTreeMap::new();
+        let (leader_row, trait_rows, missing) =
+            read_unit_leader(&mem, &roots(), &root, &empty).expect("leader reads");
+        assert_eq!(trait_rows.len(), 0);
+        assert_eq!(missing, 0, "an empty map reports nothing missing: the vector is never read");
+        assert_eq!(leader_row.trait_count, 0);
+        // CONTROL: a non-empty map over the same bytes decodes the trait.
+        let mut tokens: BTreeMap<u64, &str> = BTreeMap::new();
+        tokens.insert(trait_def, "old_guard");
+        let (leader_row, trait_rows, missing) =
+            read_unit_leader(&mem, &roots(), &root, &tokens).expect("leader reads");
+        assert_eq!((trait_rows.len(), missing, leader_row.trait_count), (1, 0, 1));
+    }
 }

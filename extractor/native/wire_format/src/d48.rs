@@ -350,7 +350,7 @@ pub const BUILDING_ROW_KNOWN_FLAGS: u32 =
 /// `lib.rs:153` — deletion rides in the identity word's top bit, not a flag word.
 pub const ROW_ID_DELETED: u32 = 1 << 31;
 
-/// `build_profile.rs:409`-`:410`, restated per the note above.
+/// `build_profile.rs::SCOPE_STATE` / `::SCOPE_PROVINCE`, restated per the note above.
 pub const SCOPE_STATE: u32 = 1;
 pub const SCOPE_PROVINCE: u32 = 2;
 /// `build_profile::MAX_STATE_ID` / `::MAX_PROVINCE_ID`. Both were `65_535`, a
@@ -369,17 +369,17 @@ pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
 /// is the widest id any loadable database can hold.
 pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
-/// `build_profile.rs:380`.
+/// `build_profile.rs::BUILDING_LEVEL_SANE_MAX`.
 pub const BUILDING_LEVEL_SANE_MAX: u32 = 1_000;
-/// `build_profile.rs:404`.
+/// `build_profile.rs::MAX_CONSTRUCTION_TEMPLATE_ID`.
 pub const MAX_CONSTRUCTION_TEMPLATE_ID: u32 = 10_000_000;
-/// `build_profile.rs:407`.
+/// `build_profile.rs::MAX_ACTIVE_FACTORIES`.
 pub const MAX_ACTIVE_FACTORIES: i32 = 100_000;
-/// `build_profile.rs:367`.
+/// `build_profile.rs::STATE_RESOURCE_MAX_ABS_RAW`.
 pub const STATE_RESOURCE_MAX_ABS_RAW: i32 = 100_000_000;
-/// `build_profile.rs:365`.
+/// `build_profile.rs::STATE_RESOURCE_NO_ID`.
 pub const STATE_RESOURCE_NO_ID: u32 = u32::MAX;
-/// `build_profile.rs:378`.
+/// `build_profile.rs::CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL`.
 pub const CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL: u64 = 10_000_000;
 // These last two are the lane's own constants rather than `build_profile`'s, so
 // the measurement bin's drift guard cannot machine-check them: `wire_format`
