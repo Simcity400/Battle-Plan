@@ -335,7 +335,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         manifest: &ContentManifest,
         map_admission: &MapAuthorityAdmission,
         content_receipt: &FoundationContentExecutionReceipt,
-        building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
+        previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
         fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
     ) -> Result<PreparedFoundationFrame> {
         let selection = crate::production_features::xmap15::Xmap15ViewerSelection::default();
@@ -346,7 +346,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             map_admission,
             content_receipt,
             self,
-            building_visual,
+            previous_building_visual,
             fixed_runtime,
             &selection,
         )
@@ -359,7 +359,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
         manifest: &ContentManifest,
         map_admission: &MapAuthorityAdmission,
         content_receipt: &FoundationContentExecutionReceipt,
-        building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
+        previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
         fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
         selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
     ) -> Result<PreparedFoundationFrame> {
@@ -370,7 +370,7 @@ impl<'a> ProductionMapFeatureAdapters<'a> {
             map_admission,
             content_receipt,
             self,
-            building_visual,
+            previous_building_visual,
             fixed_runtime,
             selection,
         )
@@ -639,6 +639,10 @@ pub struct PreparedFoundationFrame {
     pub lighting: Option<crate::PreparedXmap09LightingFrame>,
     pub trees: Option<crate::PreparedTreeFrame>,
     pub xmap12: Option<crate::PreparedXmap12RenderFrame>,
+    /// This frame's derived per-placement building presentation. Feed it back as the next
+    /// frame's `previous_building_visual`: it is the destroyed-mesh selector's previous-frame
+    /// memory, the engine's `slot+0x3a`.
+    pub xmap12_building_visual: Option<crate::Xmap12BuildingVisualFrame>,
     pub weather: Option<crate::PreparedXmap19WeatherFrame>,
     pub rivers_straits: Option<crate::PreparedRiversStraitsFrame>,
     pub water: crate::PreparedWaterFrame,
@@ -897,7 +901,7 @@ fn prepare_foundation_frame_inner(
     map_admission: &MapAuthorityAdmission,
     content_receipt: &FoundationContentExecutionReceipt,
     adapters: &ProductionMapFeatureAdapters<'_>,
-    xmap12_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
+    xmap12_previous_building_visual: Option<&crate::Xmap12BuildingVisualFrame>,
     xmap12_fixed_runtime: Option<&crate::Xmap12FixedRuntimeState>,
     xmap15_selection: &crate::production_features::xmap15::Xmap15ViewerSelection,
 ) -> Result<PreparedFoundationFrame> {
@@ -924,6 +928,7 @@ fn prepare_foundation_frame_inner(
     let mut prepared_lighting = None;
     let mut prepared_trees = None;
     let mut prepared_xmap12 = None;
+    let mut prepared_xmap12_building_visual = None;
     let mut prepared_weather = None;
     let mut prepared_water = None;
     let mut prepared_effects = None;
@@ -958,7 +963,7 @@ fn prepare_foundation_frame_inner(
                 .xmap12
                 .as_ref()
                 .map(|adapter| {
-                    adapter.prepare(&context, xmap12_building_visual, xmap12_fixed_runtime)
+                    adapter.prepare(&context, xmap12_previous_building_visual, xmap12_fixed_runtime)
                 })
                 .transpose()?
         } else {
@@ -1023,6 +1028,7 @@ fn prepare_foundation_frame_inner(
         } else {
             match (xmap12_preparation, adapters.get(family)) {
                 (Some(xmap12), _) => {
+                    prepared_xmap12_building_visual = xmap12.building_visual;
                     if let Some(payload) = xmap12.prepared {
                         if prepared_xmap12.replace(payload).is_some() {
                             return Err("foundation produced duplicate XMAP12 payload".into());
@@ -1641,6 +1647,7 @@ fn prepare_foundation_frame_inner(
         lighting: prepared_lighting,
         trees: prepared_trees,
         xmap12: prepared_xmap12,
+        xmap12_building_visual: prepared_xmap12_building_visual,
         weather: prepared_weather,
         rivers_straits: prepared_rivers_straits,
         water,

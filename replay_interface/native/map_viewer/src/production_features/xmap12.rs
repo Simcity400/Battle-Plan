@@ -16,6 +16,10 @@ pub(crate) const XMAP12_EXACT_INPUT_GAP_ID: &str = "XMAP12.exact_per_frame_input
 pub(crate) struct Xmap12FeaturePreparation {
     pub output: FoundationFeatureOutput,
     pub prepared: Option<PreparedXmap12RenderFrame>,
+    /// This frame's derived per-placement building presentation. The caller carries it into
+    /// the next frame: it is the destroyed-mesh selector's previous-frame memory, the engine's
+    /// `slot+0x3a`.
+    pub building_visual: Option<Xmap12BuildingVisualFrame>,
 }
 
 pub(crate) struct Xmap12CitiesBuildingsMapObjectsAdapter {
@@ -45,10 +49,16 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
         })
     }
 
+    /// Prepare this hour's cities/buildings/map objects.
+    ///
+    /// `previous_building_visual` is the frame this adapter produced for the previous hour.
+    /// It carries nothing but presentation the engine also remembers frame to frame - the
+    /// destroyed-mesh selector's `slot+0x3a` - and `None` is the engine's own cold start,
+    /// where a freshly created render slot has never selected a destroyed mesh.
     pub(crate) fn prepare(
         &self,
         context: &FoundationFeatureContext<'_>,
-        building_visual: Option<&Xmap12BuildingVisualFrame>,
+        previous_building_visual: Option<&Xmap12BuildingVisualFrame>,
         fixed_runtime: Option<&Xmap12FixedRuntimeState>,
     ) -> Result<Xmap12FeaturePreparation> {
         let consumed_gap_ids = owned_gap_ids(context);
@@ -59,15 +69,12 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
         if context.world_frame.d48_buildings_status() != ViewStatus::Present {
             missing.push("the present D48 building domain");
         }
-        if building_visual.is_none() {
-            missing.push("the authenticated per-placement building visual carrier");
-        }
         if fixed_runtime.is_none() {
             missing.push("the authenticated ambient/fixed lifecycle carrier");
         }
         if !missing.is_empty() {
             let reason = format!(
-                "XMAP12 cannot prepare cities/buildings/map objects because {} is unavailable; Replay will not infer presentation from logical D48 state, reuse a prior hour, or synthesize ambient lifecycle",
+                "XMAP12 cannot prepare cities/buildings/map objects because {} is unavailable; Replay will not reuse a prior hour or synthesize ambient lifecycle",
                 missing.join(", ")
             );
             return Ok(Xmap12FeaturePreparation {
@@ -78,6 +85,7 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
                     consumed_gap_ids,
                 ),
                 prepared: None,
+                building_visual: None,
             });
         }
 
@@ -86,27 +94,19 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
             .camera
             .as_ref()
             .ok_or("XMAP12 exact input admission lost the XMAP03 viewer camera")?;
-        let building_visual = building_visual
-            .ok_or("XMAP12 exact input admission lost the building visual carrier")?;
         let fixed_runtime =
             fixed_runtime.ok_or("XMAP12 exact input admission lost the fixed runtime carrier")?;
-        building_visual.validate()?;
         let replay_frame_identity_sha256 =
             crate::xmap04_replay_frame_identity_sha256(context.world_frame)?;
-        if building_visual.replay_frame_identity_sha256 != replay_frame_identity_sha256 {
-            return Err(
-                "XMAP12 building visual carrier belongs to a different replay frame".into(),
-            );
-        }
         fixed_runtime.validate_for_replay(&replay_frame_identity_sha256)?;
 
         let cities = prepare_xmap12_cities(&self.resolver, &self.admission, camera)?;
-        let buildings = prepare_xmap12_buildings(
+        let (buildings, building_visual) = prepare_xmap12_buildings(
             &self.resolver,
             &self.admission,
             context.world_frame,
             camera,
-            building_visual,
+            previous_building_visual,
         )?;
         let fixed =
             prepare_xmap12_fixed_objects(&self.resolver, &self.admission, camera, fixed_runtime)?;
@@ -160,6 +160,7 @@ impl Xmap12CitiesBuildingsMapObjectsAdapter {
                 consumed_gap_ids,
             ),
             prepared: Some(prepared),
+            building_visual: Some(building_visual),
         })
     }
 }

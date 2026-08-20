@@ -233,6 +233,155 @@ pub fn show_on_map_buildings_from_resolver(
     )
 }
 
+/// Everything one `common/buildings/*.txt` file contributes to the XMAP12 slot catalogue,
+/// in authored order.
+///
+/// Kept separate from [`show_on_map_buildings_from_source`], which reads only
+/// `show_on_map`/`show_on_map_meshes` out of `00_buildings.txt`. The slot laws need the whole
+/// effective set - vanilla's 22 landmarks live in `01_landmark_buildings.txt` - plus the
+/// `spawn_point` binding and the `level_cap` scope that decides whether `show_on_map` counts
+/// per province or per state.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BuildingSlotSourceRows {
+    pub buildings: Vec<crate::xmap12_building_law::Xmap12BuildingTypeRow>,
+    pub declared_spawn_points: Vec<crate::xmap12_building_law::Xmap12SpawnPointDecl>,
+}
+
+/// Read one `common/buildings/*.txt` through a resolver, honouring mod overrides.
+pub fn building_slot_rows_from_resolver(
+    resolver: &GameFileResolver,
+    source: &str,
+) -> Result<BuildingSlotSourceRows> {
+    parse_resolved_game_file(resolver, source, |text| {
+        building_slot_rows_from_source(text, source)
+    })
+}
+
+pub fn building_slot_rows_from_source(
+    source: &str,
+    source_path: &str,
+) -> Result<BuildingSlotSourceRows> {
+    use crate::xmap12_building_law::{
+        Xmap12BuildingScope, Xmap12BuildingTypeRow, Xmap12SpawnPointDecl,
+    };
+
+    let text = strip_comments(source);
+    let mut out = BuildingSlotSourceRows::default();
+
+    if let Some(spawn_points) = one_named_block(&text, 0, text.len(), "spawn_points")? {
+        for block in top_level_blocks(&text, spawn_points.body_start, spawn_points.body_end)? {
+            let declared = top_level_scalar_assignments(&text, block.body_start, block.body_end)?;
+            let scope = match declared
+                .iter()
+                .find(|row| row.key == "type")
+                .map(|row| row.value.as_str())
+            {
+                Some("province") => Some(Xmap12BuildingScope::Province),
+                Some("state") => Some(Xmap12BuildingScope::State),
+                Some(other) => {
+                    return Err(format!(
+                        "{source_path}: spawn point {} declares unknown type {other:?}",
+                        block.name
+                    )
+                    .into())
+                }
+                None => None,
+            };
+            out.declared_spawn_points.push(Xmap12SpawnPointDecl {
+                name: block.name,
+                scope,
+            });
+        }
+    }
+
+    let Some(buildings) = one_named_block(&text, 0, text.len(), "buildings")? else {
+        return Ok(out);
+    };
+    for building in top_level_blocks(&text, buildings.body_start, buildings.body_end)? {
+        let assignments =
+            top_level_scalar_assignments(&text, building.body_start, building.body_end)?;
+        let mut show_on_map = None;
+        let mut show_on_map_meshes = None;
+        let mut spawn_point = None;
+        for assignment in &assignments {
+            let parse = |label: &str| -> Result<u32> {
+                parse_u32_field(&assignment.value, source_path, assignment.line, label)
+            };
+            match assignment.key.as_str() {
+                "show_on_map" => {
+                    if show_on_map.replace(parse("show_on_map")?).is_some() {
+                        return Err(format!(
+                            "{source_path} line {}: {} defines show_on_map more than once",
+                            assignment.line, building.name
+                        )
+                        .into());
+                    }
+                }
+                "show_on_map_meshes" => {
+                    if show_on_map_meshes
+                        .replace(parse("show_on_map_meshes")?)
+                        .is_some()
+                    {
+                        return Err(format!(
+                            "{source_path} line {}: {} defines show_on_map_meshes more than once",
+                            assignment.line, building.name
+                        )
+                        .into());
+                    }
+                }
+                "spawn_point" => {
+                    if spawn_point.replace(assignment.value.clone()).is_some() {
+                        return Err(format!(
+                            "{source_path} line {}: {} defines spawn_point more than once",
+                            assignment.line, building.name
+                        )
+                        .into());
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(show_on_map) = show_on_map else {
+            continue;
+        };
+        if show_on_map == 0 {
+            continue;
+        }
+        // 00_buildings.txt states the rule in its own header: a provincial building's
+        // show_on_map is an amount per province, a state building's an amount per state.
+        // A `province_max` cap is what makes a building provincial; a `state_max` alongside
+        // it is an extra ceiling on the same provincial building (vanilla's naval_facility
+        // and the three special-project facilities all declare both), not a second scope.
+        // The header names exactly two kinds, so the rule is total: a `province_max` cap is
+        // what makes a building provincial, and everything else counts per state - including
+        // vanilla's fuel_silo, whose level_cap carries only `shares_slots`.
+        let province_capped =
+            match one_named_block(&text, building.body_start, building.body_end, "level_cap")? {
+                Some(level_cap) => top_level_scalar_assignments(
+                    &text,
+                    level_cap.body_start,
+                    level_cap.body_end,
+                )?
+                .iter()
+                .any(|row| row.key == "province_max"),
+                None => false,
+            };
+        let scope = if province_capped {
+            Xmap12BuildingScope::Province
+        } else {
+            Xmap12BuildingScope::State
+        };
+        out.buildings.push(Xmap12BuildingTypeRow {
+            name: building.name,
+            show_on_map,
+            show_on_map_meshes,
+            spawn_point,
+            scope,
+        });
+    }
+    Ok(out)
+}
+
 pub fn show_on_map_buildings_from_source(source: &str) -> Result<Vec<ShowOnMapBuilding>> {
     let text = strip_comments(source);
     let buildings_block = one_named_block(&text, 0, text.len(), "buildings")?

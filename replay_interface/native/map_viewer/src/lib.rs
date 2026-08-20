@@ -112,6 +112,7 @@ mod xmap09_lighting_law;
 mod xmap10_d3d_handoff;
 mod xmap10_scene_cb0;
 mod xmap11_d3d_handoff;
+pub mod xmap12_building_law;
 mod xmap12_d3d_handoff;
 mod xmap12_pdxmesh;
 mod xmap12_population;
@@ -392,6 +393,8 @@ pub use map_mode_terrain_resource::{
     TERRAIN_DEFINITION_CSV_SOURCE, VANILLA_RESOURCE_DEFINITIONS, VANILLA_TERRAIN_CATEGORY_COLORS,
 };
 pub use map_static_data::{
+    building_slot_rows_from_resolver, building_slot_rows_from_source,
+    BuildingSlotSourceRows,
     map_building_placements_from_game_dir, map_building_placements_from_resolver,
     map_building_placements_from_source, railway_segments_from_game_dir,
     railway_segments_from_resolver, railway_segments_from_source,
@@ -652,6 +655,7 @@ pub use shadow_pass_plan::{
     ShadowScreenTarget, SHADOW_SCREEN_BIND_FLAGS, SHADOW_SCREEN_DXGI_FORMAT,
     SHADOW_SCREEN_MIP_LEVELS,
 };
+pub use xmap12_building_law::*;
 pub use xmap12_d3d_handoff::*;
 pub use xmap12_pdxmesh::*;
 pub use xmap12_population::*;

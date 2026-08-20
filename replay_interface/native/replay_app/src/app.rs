@@ -4958,6 +4958,16 @@ pub(crate) struct ProductMapCompositionSession {
     viewport_height: u32,
     target_device_identity: Option<usize>,
     gpu_completion_query: Option<crate::d3d::GpuCompletionQuery>,
+    /// The XMAP12 building presentation this session derived for the previous frame, with the
+    /// hour it was derived for. It is the destroyed-mesh selector's previous-frame memory
+    /// (the engine's `slot+0x3a`), so it lives for as long as the map view does, exactly like
+    /// the engine's render slots.
+    ///
+    /// The engine cannot seek, so it has no rule for one. Replay can: the memory is only
+    /// carried forward in time. A seek backwards cold-starts the selector instead of leaking
+    /// a later hour's damage into an earlier one, which is the same state a viewer who opened
+    /// the map at that hour would see.
+    xmap12_previous_building_visual: Option<(i64, map_viewer::Xmap12BuildingVisualFrame)>,
     foundation: crate::validate::ProductMapFoundationSession,
     terrain: ProductTerrainHandoffRuntime,
     political: ProductPoliticalHandoffRuntime,
@@ -5913,6 +5923,7 @@ impl ProductMapCompositionSession {
             viewport_height,
             target_device_identity: None,
             gpu_completion_query: None,
+            xmap12_previous_building_visual: None,
             terrain: ProductTerrainHandoffRuntime::default(),
             political: ProductPoliticalHandoffRuntime::default(),
             lighting: ProductLightingHandoffRuntime::default(),
@@ -6095,11 +6106,25 @@ impl ProductMapCompositionSession {
         let xmap12_inputs = crate::validate::authenticated_xmap12_frame_inputs(world)?;
         let xmap15_viewer_selection_sha256 =
             snapshot::sha256::Sha256::hex(&serde_json::to_vec(xmap15_selection)?);
+        let hour_index = world.hour_index();
+        // The destroyed-mesh trigger is the one XMAP12 reading that depends on the previous
+        // frame, so it is only meaningful across a continuously played hour boundary. Any
+        // transport discontinuity - a seek, a jump, a reload - means the frames in between
+        // were never derived, and either threshold could have been crossed inside the gap, so
+        // there is nothing to carry and the family cold-starts. A backward step is a
+        // discontinuity too, but the hour guard is kept as an independent check because it
+        // also covers a re-derived earlier hour that reports no discontinuity.
+        let carried = self
+            .xmap12_previous_building_visual
+            .as_ref()
+            .filter(|_| !transport_discontinuity)
+            .filter(|(previous_hour, _)| *previous_hour <= hour_index)
+            .map(|(_, frame)| frame);
         let prepared = self.foundation.prepare_with_xmap12_and_xmap15_inputs(
             world,
             viewer,
             manifest,
-            xmap12_inputs.building_visual.as_ref(),
+            carried,
             xmap12_inputs.fixed_runtime.as_ref(),
             xmap15_selection,
         )?;
@@ -6132,6 +6157,19 @@ impl ProductMapCompositionSession {
         require_current_units_foundation(&prepared)?;
         require_current_orders_foundation(&prepared)?;
         require_current_combat_foundation(&prepared)?;
+        // Advance the XMAP12 destroyed-mesh memory only once this frame's foundation has been
+        // accepted, so a frame rejected above cannot leave a selection behind. A frame that
+        // is accepted here but whose present is later skipped still advances it, which is the
+        // engine's own behaviour: it writes slot+0x3a when it builds the entity instance, not
+        // when the frame reaches the screen.
+        match &prepared.xmap12_building_visual {
+            Some(derived) => {
+                self.xmap12_previous_building_visual = Some((hour_index, derived.clone()));
+            }
+            // The family was unavailable this frame, so it selected nothing. Keeping a stale
+            // memory would let it resurface across the gap; drop it and cold-start after.
+            None => self.xmap12_previous_building_visual = None,
+        }
 
         self.terrain.retain_frame(gfx, resolver, &prepared)?;
         self.political.retain_frame(gfx, &prepared)?;
@@ -11043,6 +11081,8 @@ mod product_production_d3d_tests {
         let mut completed_receipts = Vec::new();
         let mut present_xmap20_frames = 0usize;
         let mut last_recurrence_step = None;
+        let mut xmap12_previous_building_visual: Option<(i64, map_viewer::Xmap12BuildingVisualFrame)> =
+            None;
         const SENTINEL_BGRA: [u8; 4] = [255, 0, 255, 255];
 
         for ordinal in [0usize, 1] {
@@ -11056,15 +11096,24 @@ mod product_production_d3d_tests {
                 .unwrap_or_else(|error| {
                     panic!("admit native-proof XMAP12 inputs for frame {ordinal}: {error}")
                 });
+            let hour_index = world.hour_index();
+            let carried = xmap12_previous_building_visual
+                .as_ref()
+                .filter(|(previous_hour, _)| *previous_hour <= hour_index)
+                .map(|(_, frame)| frame);
             let prepared = foundation
                 .prepare_with_xmap12_inputs(
                     &world,
                     &viewer,
                     &manifest,
-                    xmap12_inputs.building_visual.as_ref(),
+                    carried,
                     xmap12_inputs.fixed_runtime.as_ref(),
                 )
                 .unwrap_or_else(|error| panic!("prepare native-proof frame {ordinal}: {error}"));
+            xmap12_previous_building_visual = prepared
+                .xmap12_building_visual
+                .as_ref()
+                .map(|derived| (hour_index, derived.clone()));
             require_current_camera_foundation(&product_camera, &prepared.envelope)
                 .expect("native-proof camera join");
             require_current_terrain_foundation(&prepared).expect("native-proof XMAP04 payload");
