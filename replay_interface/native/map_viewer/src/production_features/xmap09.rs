@@ -9,7 +9,8 @@ use crate::{
     L03_LIGHT_DEPTH_MIP_LEVELS, L03_LIGHT_DEPTH_WIDTH, SHADOW_SCREEN_BIND_FLAGS,
     SHADOW_SCREEN_DXGI_FORMAT, SHADOW_SCREEN_MIP_LEVELS,
 };
-use portable_render_stream::{FamilyDisposition, FoundationGap, MapVisualFamily};
+use portable_content_manifest::UsedContentKey;
+use portable_render_stream::{FamilyDisposition, MapVisualFamily};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::BTreeSet;
@@ -23,7 +24,6 @@ pub const XMAP09_SCENE_LIGHT_WRITER_RVA: u32 = 0x0126_7270;
 pub const XMAP09_SHADOW_FIT_RVA: u32 = 0x022c_4f30;
 pub const XMAP09_SHADOW_CHAIN_RVA: u32 = 0x022c_5d30;
 pub const XMAP09_SHADOW_BLUR_FACTOR_RVA: u32 = 0x022c_6bc0;
-pub const XMAP09_WORLD_INPUT_KEY: &str = "xmap09_lighting";
 pub const XMAP09_SCENE_CB0_PATCH_SCHEMA: &str = "hoi4.xmap09.scene-cb0-field-patch.a729.v1";
 pub const XMAP09_SCENE_CB0_APPLY_SCHEMA: &str = "hoi4.xmap09.scene-cb0-field-apply.a729.v1";
 pub const XMAP09_SCENE_CB0_BYTE_LEN: u32 = 416;
@@ -958,7 +958,134 @@ fn xmap09_scene_cb0_field_contract(symbol: &str) -> Option<(u32, u32)> {
     }
 }
 
-pub(crate) struct Xmap09LightingAdapter;
+pub(crate) struct Xmap09LightingAdapter {
+    defines: crate::Xmap09LightingDefines,
+    ordered_used_content: Vec<UsedContentKey>,
+    defines_source_sha256: String,
+}
+
+impl Xmap09LightingAdapter {
+    pub(crate) fn new(resolver: &crate::GameFileResolver) -> Result<Self> {
+        // The effective value of a lighting define is a property of the WHOLE
+        // common/defines corpus, because any later-loading file may override it.
+        // Enumerating only what happens to be admitted would let a mod's
+        // override be absent from the recording while XMAP09 silently derived
+        // vanilla lighting and still reported Present. require_complete_admitted_dir
+        // compares the admission's entries against its effective-VFS census for
+        // this directory and fails closed on any difference, so an incomplete
+        // corpus is named instead of quietly ignored.
+        let contents = resolver.require_complete_admitted_dir(
+            crate::XMAP09_GRAPHICS_DEFINES_DIR,
+            Some("lua"),
+            true,
+            "XMAP09 lighting defines",
+        )?;
+        if contents.is_empty() {
+            return Err(format!(
+                "XMAP09 lighting requires admitted {} lua content",
+                crate::XMAP09_GRAPHICS_DEFINES_DIR
+            )
+            .into());
+        }
+        let mut sources = Vec::with_capacity(contents.len());
+        let mut ordered_used_content = Vec::with_capacity(contents.len());
+        let mut digest_bytes = Vec::new();
+        for content in contents {
+            let logical_path = content.normalized_game_relative_path.clone();
+            let bytes = resolver.read_admitted_used_content(&content)?;
+            digest_bytes.extend_from_slice(logical_path.as_bytes());
+            digest_bytes.push(0);
+            digest_bytes.extend_from_slice(content.payload_sha256.as_bytes());
+            digest_bytes.push(0);
+            sources.push((logical_path, crate::latin1_bytes_to_string(&bytes)));
+            ordered_used_content.push(content);
+        }
+        let defines = crate::Xmap09LightingDefines::from_effective_sources(&sources)?;
+        Ok(Self {
+            defines,
+            ordered_used_content,
+            defines_source_sha256: Sha256::hex(&digest_bytes),
+        })
+    }
+
+    fn derive_lighting_input(
+        &self,
+        hour_index: i64,
+        product_modset_sha256: &str,
+        effective_vfs_manifest_sha256: &str,
+        camera: &crate::ViewerMapCameraState,
+    ) -> Result<Xmap09LightingInput> {
+        let game_hour_raw = hour_index
+            .checked_add(GAME_HOUR_RAW_EPOCH)
+            .and_then(|raw| i32::try_from(raw).ok())
+            .ok_or("XMAP09 replay hour does not fit the engine game-hour stamp")?;
+        let hour_fraction = crate::engine_hour_of_day_fraction(game_hour_raw)?;
+        let map_width = camera.map_width as f32;
+        let map_height = camera.map_height as f32;
+        let rig = crate::virtual_rig(
+            hour_fraction,
+            crate::XMAP09_REPLAY_DAY_NIGHT_FACTOR,
+            map_width,
+            map_height,
+            &self.defines,
+        )?;
+        let sun_direction = xmap09_sun_direction(camera, &rig)?;
+        let bits4 = |lanes: [f32; 4]| -> [u32; 4] { std::array::from_fn(|i| lanes[i].to_bits()) };
+        let camera_height = camera.current_eye()[1];
+        let shadow_pass_active = crate::xmap09_shadow_fade_factor(
+            camera_height,
+            self.defines.draw_shadows_cutoff,
+            self.defines.draw_shadows_fade_length,
+        )? > 0.0;
+        let ambient = self.defines.ambient_rig();
+        let input = Xmap09LightingInput {
+            schema: XMAP09_INPUT_SCHEMA.into(),
+            executable_sha256: XMAP09_A729_EXECUTABLE_SHA256.into(),
+            scene_light_writer_rva: XMAP09_SCENE_LIGHT_WRITER_RVA,
+            product_modset_sha256: product_modset_sha256.to_string(),
+            effective_vfs_manifest_sha256: effective_vfs_manifest_sha256.to_string(),
+            game_hour_raw,
+            virtual_sun_position_f32_bits: bits4(rig.virtual_sun),
+            virtual_moon_position_f32_bits: bits4(rig.virtual_moon),
+            second_virtual_sun_position_f32_bits: bits4(rig.second_virtual_sun),
+            second_virtual_moon_position_f32_bits: bits4(rig.second_virtual_moon),
+            day_night_hour_sun_dir_f32_bits: bits4([
+                hour_fraction,
+                sun_direction[0],
+                sun_direction[1],
+                sun_direction[2],
+            ]),
+            sun_diffuse_intensity_f32_bits: bits4(self.defines.sun_diffuse_intensity()),
+            moon_diffuse_intensity_f32_bits: bits4(self.defines.moon_diffuse_intensity()),
+            ambient_rig_f32_bits: std::array::from_fn(|row| {
+                std::array::from_fn(|lane| ambient[row][lane].to_bits())
+            }),
+            sun_specular_intensity_f32_bits: self.defines.sun_specular_intensity.to_bits(),
+            cubemap_intensity_f32_bits: self.defines.cubemap_intensity.to_bits(),
+            draw_shadows_cutoff_f32_bits: self.defines.draw_shadows_cutoff.to_bits(),
+            draw_shadows_fade_length_f32_bits: self.defines.draw_shadows_fade_length.to_bits(),
+            shadow_pass_active,
+            point_light_grid_start_inv_cell_size_f32_bits: bits4(
+                crate::whole_map_point_light_grid(map_width, map_height)?,
+            ),
+            point_lights: Vec::new(),
+            point_light_cell_indices: vec![[u8::MAX; 4]; LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT],
+            point_light_census_sha256: String::new(),
+            source_observation_sha256: Sha256::hex(
+                format!(
+                    "{XMAP09_INPUT_SCHEMA}\0{}\0{}\0{}\0{}",
+                    self.defines_source_sha256,
+                    camera.deterministic_sha256,
+                    effective_vfs_manifest_sha256,
+                    hour_index
+                )
+                .as_bytes(),
+            ),
+            payload_sha256: String::new(),
+        };
+        input.seal()
+    }
+}
 
 impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
     fn family(&self) -> MapVisualFamily {
@@ -967,61 +1094,18 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
         let consumed_gap_ids = xmap09_gap_ids(context);
-        let Some(value) = context.world_frame.domain(XMAP09_WORLD_INPUT_KEY) else {
-            let reason = format!(
-                "{XMAP09_WORLD_INPUT_KEY} semantic lighting/calendar payload is absent; Replay will not synthesize point lights, seasonal sun direction, or a neutral shadow"
-            );
-            let gap_id = "XMAP09.semantic_lighting_input_unavailable".to_string();
-            let witness_sha256 = Sha256::hex(
-                format!(
-                    "{gap_id}\n{}\n{}\n{reason}",
-                    context.world_frame.hour_index(),
-                    context.world_frame.hour_index()
-                )
-                .as_bytes(),
-            );
-            return Ok(FoundationFeatureOutput {
-                disposition: FamilyDisposition::Unavailable {
-                    gap: FoundationGap {
-                        gap_id,
-                        first_unavailable_hour: context.world_frame.hour_index(),
-                        last_unavailable_hour: context.world_frame.hour_index(),
-                        witness_sha256,
-                        reason,
-                    },
-                },
-                prepared_terrain: None,
-                prepared_political: None,
-                prepared_thin_borders: None,
-                prepared_rivers_straits: None,
-                prepared_water: None,
-                prepared_lighting: None,
-                prepared_rail_supply: None,
-                prepared_weather: None,
-                prepared_effects: None,
-                prepared_units: None,
-                prepared_combat: None,
-                prepared_orders: None,
-                prepared_map_modes: None,
-                consumed_gap_ids,
-            });
-        };
-        let input: Xmap09LightingInput = serde_json::from_value(value.clone())
-            .map_err(|error| format!("XMAP09 semantic lighting JSON: {error}"))?;
-        input.validate_for_hour(context.world_frame.hour_index())?;
-        if input.product_modset_sha256 != context.product_modset_sha256
-            || input.effective_vfs_manifest_sha256 != context.effective_vfs_manifest_sha256
-        {
-            return Err(
-                "XMAP09 semantic lighting belongs to different effective replay content".into(),
-            );
-        }
         let camera = context
             .viewer
             .camera
             .as_ref()
             .ok_or("XMAP09 lighting/shadows require the XMAP03 viewer camera")?;
         camera.validate()?;
+        let input = self.derive_lighting_input(
+            context.world_frame.hour_index(),
+            context.product_modset_sha256,
+            context.effective_vfs_manifest_sha256,
+            camera,
+        )?;
         let prepare_stage = context
             .require_assigned_stage(XMAP09_PREPARE_STAGE_NAME, XMAP09_PREPARE_OPERATION_NAME)?;
         let shadow_execute_stage = context
@@ -1088,7 +1172,7 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
                 producer_registration_sha256: registration,
                 payload_sha256: prepared.deterministic_sha256.clone(),
                 ordered_operations: operations,
-                ordered_used_content: Vec::new(),
+                ordered_used_content: self.ordered_used_content.clone(),
             },
             prepared_terrain: None,
             prepared_political: None,
@@ -1106,6 +1190,31 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             consumed_gap_ids,
         })
     }
+}
+
+fn xmap09_sun_direction(
+    camera: &crate::ViewerMapCameraState,
+    rig: &crate::Xmap09VirtualRig,
+) -> Result<[f32; 3]> {
+    let look = camera.current_look_at();
+    let selected = crate::select_shadow_light(&ShadowFrameInput {
+        map_focus: [look[0], look[2]],
+        camera_x: camera.current_eye()[0],
+        map_width: camera.map_width as f32,
+        primary_sun: [
+            rig.virtual_sun[0],
+            rig.virtual_sun[1],
+            rig.virtual_sun[2],
+        ],
+        primary_moon: [
+            rig.virtual_moon[0],
+            rig.virtual_moon[1],
+            rig.virtual_moon[2],
+        ],
+        fit_center: [look[0], 0.0, look[2]],
+        fit_points: [[look[0], 0.0, look[2]]; 4],
+    })?;
+    Ok(selected.direction)
 }
 
 fn xmap09_gap_ids(context: &FoundationFeatureContext<'_>) -> Vec<String> {
@@ -1536,6 +1645,158 @@ mod tests {
             50.0,
         )
         .unwrap()
+    }
+
+    fn file_derived_adapter() -> Xmap09LightingAdapter {
+        adapter_from_defines_corpus(&[])
+    }
+
+    /// Build the adapter through the SAME parse the production constructor runs,
+    /// from a vanilla base plus any extra `common/defines` files, so a test can
+    /// exercise cross-file override resolution rather than poking the struct.
+    fn adapter_from_defines_corpus(extra: &[(&str, &str)]) -> Xmap09LightingAdapter {
+        let mut sources = vec![(
+            "common/defines/00_graphics.lua".to_string(),
+            crate::xmap09_lighting_law::XMAP09_VANILLA_TEST_DEFINES.to_string(),
+        )];
+        for (path, body) in extra {
+            sources.push(((*path).to_string(), (*body).to_string()));
+        }
+        Xmap09LightingAdapter {
+            defines: crate::Xmap09LightingDefines::from_effective_sources(&sources).unwrap(),
+            ordered_used_content: sources
+                .iter()
+                .map(|(path, _)| UsedContentKey {
+                    effective_vfs_manifest_sha256: "b".repeat(64),
+                    normalized_game_relative_path: path.clone(),
+                    winning_layer_ordinal: 0,
+                    layer_kind: ContentLayerKind::Base,
+                    layer_id: "base".into(),
+                    source_sha256: "c".repeat(64),
+                    payload_sha256: "d".repeat(64),
+                    payload_bytes: 1,
+                })
+                .collect(),
+            defines_source_sha256: "e".repeat(64),
+        }
+    }
+
+    // kills: the derivation the adapter's prepare() delegates to. Before this
+    // lane XMAP09 read a `xmap09_lighting` WorldFrame domain that no extractor
+    // has ever written (lane OF's five history sweeps; lane IW's landing
+    // a85e96b3), so this family refused on every recording; there was no
+    // derivation to call at all. The derived input must satisfy the SAME
+    // Xmap09LightingInput::validate_for_hour the wire payload had to satisfy,
+    // and be accepted by the real prepare_lighting consumer, so emitting any
+    // lane the validator rejects fails here.
+    //
+    // Scope, honestly: this calls derive_lighting_input directly rather than
+    // ProductionMapFeatureAdapter::prepare, because prepare needs a whole
+    // FoundationFeatureContext (WorldFrame + ViewerOwnedMapState). It therefore
+    // does NOT catch someone rewiring prepare() to stop calling the derivation -
+    // prepare() could keep the struct and compile fine. Nothing in this crate
+    // catches that today; the gap is named in the lane dossier rather than
+    // papered over with a guard that does not exist.
+    #[test]
+    fn file_derived_input_seals_and_the_real_consumer_prepares_it() {
+        let adapter = file_derived_adapter();
+        let camera = camera();
+        let hour_index = 17_000_000i64;
+        let input = adapter
+            .derive_lighting_input(hour_index, &"1".repeat(64), &"2".repeat(64), &camera)
+            .expect("file-derived lighting input");
+        input.validate_for_hour(hour_index).expect("seals for hour");
+        assert_eq!(input.schema, XMAP09_INPUT_SCHEMA);
+        assert_eq!(input.executable_sha256, XMAP09_A729_EXECUTABLE_SHA256);
+        assert_eq!(
+            input.game_hour_raw,
+            (GAME_HOUR_RAW_EPOCH + hour_index) as i32
+        );
+
+        // The rig lanes are the engine law, not a stored payload: hour-of-day
+        // comes from the engine epoch, the sun longitude from the loaded map
+        // width, the moon latitude from map_height - SUN_HEIGHT.
+        let hour_fraction = crate::engine_hour_of_day_fraction(input.game_hour_raw).unwrap();
+        let expected = crate::virtual_rig(
+            hour_fraction,
+            crate::XMAP09_REPLAY_DAY_NIGHT_FACTOR,
+            camera.map_width as f32,
+            camera.map_height as f32,
+            &adapter.defines,
+        )
+        .unwrap();
+        let lanes = |bits: [u32; 4]| bits.map(f32::from_bits);
+        assert_eq!(lanes(input.virtual_sun_position_f32_bits), expected.virtual_sun);
+        assert_eq!(lanes(input.virtual_moon_position_f32_bits), expected.virtual_moon);
+        assert_eq!(input.virtual_moon_position_f32_bits[2], 1448.0f32.to_bits());
+        assert_eq!(
+            f32::from_bits(input.day_night_hour_sun_dir_f32_bits[0]),
+            hour_fraction
+        );
+
+        // The point-light census is excluded and named, never fabricated.
+        assert!(input.point_lights.is_empty());
+        assert_eq!(
+            input.point_light_cell_indices.len(),
+            LIGHT_INDEX_WIDTH * LIGHT_INDEX_HEIGHT
+        );
+        assert!(input
+            .point_light_cell_indices
+            .iter()
+            .all(|cell| *cell == [u8::MAX; 4]));
+
+        let (prepare_stage, execute_stage) = assigned_stages();
+        let prepared = prepare_lighting(
+            &input,
+            &camera,
+            "f".repeat(64),
+            prepare_stage,
+            execute_stage,
+        )
+        .expect("real consumer prepares the derived input");
+        prepared.validate().expect("prepared frame validates");
+        assert_eq!(
+            prepared.scene_constants.virtual_sun_position_f32_bits,
+            input.virtual_sun_position_f32_bits
+        );
+    }
+
+    // kills: the layered define resolution the production constructor feeds, and
+    // its effect on the drawn rig. A later-loading common/defines file that moves
+    // SUN_LATITUDE must move the rig; a producer that fell back to built-in
+    // vanilla constants, or whose parser ignored every source but the first,
+    // emits identical bits for both adapters and fails here.
+    //
+    // Scope, honestly: this hands both sources to the same from_effective_sources
+    // that Xmap09LightingAdapter::new calls, but it does not run new() itself,
+    // which needs a real GameFileResolver plus a ValidatedContentAdmission. So it
+    // does NOT prove new() ENUMERATES sibling files. What covers that is
+    // require_complete_admitted_dir, which fails closed when the admission's
+    // entries differ from its effective-VFS census for common/defines - a
+    // resolver-owned contract with its own tests, not something this test
+    // re-proves.
+    #[test]
+    fn modded_defines_change_the_derived_rig() {
+        let vanilla = file_derived_adapter();
+        let modded = adapter_from_defines_corpus(&[(
+            "common/defines/zz_mod_overrides.lua",
+            "SUN_LATITUDE = 1200
+",
+        )]);
+        assert_eq!(vanilla.defines.sun_latitude, 848.0);
+        assert_eq!(modded.defines.sun_latitude, 1200.0);
+        let camera = camera();
+        let base = vanilla
+            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera)
+            .unwrap();
+        let other = modded
+            .derive_lighting_input(17_000_000, &"1".repeat(64), &"2".repeat(64), &camera)
+            .unwrap();
+        assert_ne!(
+            base.virtual_sun_position_f32_bits[2],
+            other.virtual_sun_position_f32_bits[2]
+        );
+        assert_ne!(base.payload_sha256, other.payload_sha256);
     }
 
     fn fixture_caster() -> L03SemanticInputRow {

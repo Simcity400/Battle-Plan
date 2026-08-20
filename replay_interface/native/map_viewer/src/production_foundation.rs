@@ -412,7 +412,7 @@ fn foundation_feature_adapter_core(
     adapters.register(Box::new(political))?;
     adapters.register(Box::new(fow))?;
     adapters.register(Box::new(
-        crate::production_features::xmap09::Xmap09LightingAdapter,
+        crate::production_features::xmap09::Xmap09LightingAdapter::new(resolver)?,
     ))?;
     adapters.register_xmap11(crate::production_features::xmap11::Xmap11TreesAdapter::new(
         resolver,

@@ -108,6 +108,7 @@ mod xmap06_d3d_handoff;
 mod xmap07_d3d_handoff;
 mod xmap08_d3d_handoff;
 mod xmap09_d3d_handoff;
+mod xmap09_lighting_law;
 mod xmap10_d3d_handoff;
 mod xmap10_scene_cb0;
 mod xmap11_d3d_handoff;
@@ -265,6 +266,12 @@ pub use light_law::{defines as light_defines, offsets as light_offsets};
 pub use light_law::{
     diffuse_color_rgb_from_hsv_define, night_yzw_residual, render_sun_dir_yzw,
     validate_lighting_law_against_cb0, LightingLawResidual, SceneLighting,
+};
+pub use xmap09_lighting_law::{
+    engine_hour_of_day, engine_hour_of_day_fraction, virtual_rig, xmap09_shadow_fade_factor,
+    whole_map_point_light_grid, Xmap09LightingDefines, Xmap09VirtualRig,
+    XMAP09_ENGINE_HOUR_EPOCH, XMAP09_GRAPHICS_DEFINES_DIR,
+    XMAP09_REPLAY_DAY_NIGHT_FACTOR,
 };
 pub use luminance_law::{
     adapt_luminance_temporal, f16_bits_to_f32 as luminance_f16_bits_to_f32,
@@ -721,7 +728,7 @@ pub use production_features::xmap09::{
     XMAP09_PREPARE_OPERATION_NAME, XMAP09_PREPARE_STAGE_NAME, XMAP09_SCENE_CB0_APPLY_SCHEMA,
     XMAP09_SCENE_CB0_BYTE_LEN, XMAP09_SCENE_CB0_PATCH_SCHEMA, XMAP09_SCENE_LIGHT_WRITER_RVA,
     XMAP09_SHADOW_BLUR_FACTOR_RVA, XMAP09_SHADOW_CHAIN_RVA, XMAP09_SHADOW_FIT_RVA,
-    XMAP09_SHADOW_MAP_SYMBOL, XMAP09_WORLD_INPUT_KEY,
+    XMAP09_SHADOW_MAP_SYMBOL,
 };
 pub use production_features::xmap10::{
     PreparedXmap10Frame, ReadyXmap10Frame, Xmap10ActiveEffectVariant,

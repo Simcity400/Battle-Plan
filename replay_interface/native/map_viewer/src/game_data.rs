@@ -1142,6 +1142,23 @@ pub(crate) fn generated_runtime_material_inputs() -> BTreeMap<String, GeneratedR
             reason: "TerrainIDMap RGBA packing is derived from resolver-read map/terrain.bmp plus common/terrain texture IDs and byte-validates against the bound captured resource; exact shader point/clamp sampling and four-ID material blending are implemented.".to_string(),
         },
     );
+    inputs.insert(
+        "scene_virtual_light_rig".to_string(),
+        GeneratedRuntimeInput {
+            shader_symbols: vec![
+                "vVirtualSunPos".to_string(),
+                "vVirtualMoonPos".to_string(),
+                "vSecondVirtualSunPos".to_string(),
+                "vSecondVirtualMoonPos".to_string(),
+            ],
+            consumers: vec![
+                "gfx/FX/standardfuncsgfx.fxh".to_string(),
+                "gfx/FX/pdxmap.shader".to_string(),
+                "gfx/FX/pdxwater.shader".to_string(),
+            ],
+            status: "resolver_derived_capture_validated_input".to_string(),
+        },
+    );
     for (name, symbols, consumers, reason) in [
         (
             "river_data",
