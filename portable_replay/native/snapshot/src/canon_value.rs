@@ -1,5 +1,7 @@
 use std::cmp::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+use crate::canon_to_json::ProjectionMemo;
 
 pub(crate) const MAX_RECURSION_DEPTH: usize = 256;
 
@@ -9,17 +11,146 @@ pub enum CanonValue {
     Bool(bool),
     Number(String),
     String(String),
-    Array(Arc<Vec<CanonValue>>),
-    Object(Arc<Vec<(String, CanonValue)>>),
+    Array(Arc<ArrayNode>),
+    Object(Arc<ObjectNode>),
+}
+
+/// One shared container allocation: the canonical contents plus the node's own
+/// projection, memoised ON the node rather than in any side table. A table
+/// keyed by address is unsound — `Arc::make_mut` on a uniquely held container
+/// mutates in place at the same address, so the table would answer with
+/// yesterday's projection for today's contents — and a `Weak`-keyed table costs
+/// an allocation, a lookup and eviction machinery per touched container. Here
+/// identity IS the node, lifetime IS the node's, and invalidation is one rule
+/// at one place: [`ArrayNode::contents_mut`].
+///
+/// THE CELL IS INVISIBLE TO VALUE SEMANTICS. Equality compares canonical
+/// contents only, `Clone` starts the copy's cell empty, and `Debug` omits the
+/// cell — get any of those wrong and reader-side cache state changes patch
+/// spelling and the cache SHA. The cell is boxed so the canonical allocation
+/// grows by one pointer-sized inline slot whether or not projection ever
+/// happens: canonical accounting stays independent of fill state, and the
+/// filled projection is charged by the separate identity-aware
+/// [`crate::canon_to_json::projected_cache_bytes`] instead.
+pub struct ArrayNode {
+    items: Vec<CanonValue>,
+    memo: OnceLock<Box<ProjectionMemo>>,
+}
+
+impl ArrayNode {
+    fn new(items: Vec<CanonValue>) -> Self {
+        Self {
+            items,
+            memo: OnceLock::new(),
+        }
+    }
+
+    /// THE ONE DOOR to mutable contents. The memo is cleared BEFORE the
+    /// contents are handed out, so no code path can change what this node says
+    /// while it still says what it used to project to. All three patch arms
+    /// and every test-side mutation come through here; the fields are private,
+    /// so bypassing the door does not compile.
+    pub fn contents_mut(&mut self) -> &mut Vec<CanonValue> {
+        self.memo.take();
+        &mut self.items
+    }
+
+    pub(crate) fn projection_cell(&self) -> &OnceLock<Box<ProjectionMemo>> {
+        &self.memo
+    }
+}
+
+impl std::ops::Deref for ArrayNode {
+    type Target = Vec<CanonValue>;
+    fn deref(&self) -> &Vec<CanonValue> {
+        &self.items
+    }
+}
+
+impl Clone for ArrayNode {
+    /// The copy's cell starts EMPTY: a clone is taken exactly when
+    /// `Arc::make_mut` is about to mutate it, and the old node — still held by
+    /// an earlier hour — keeps its own valid cell.
+    fn clone(&self) -> Self {
+        Self::new(self.items.clone())
+    }
+}
+
+impl PartialEq for ArrayNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.items == other.items
+    }
+}
+impl Eq for ArrayNode {}
+
+impl std::fmt::Debug for ArrayNode {
+    /// Canonical contents only, exactly what the pre-cell derive printed, so
+    /// no diagnostic depends on whether projection happened.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.items.fmt(f)
+    }
+}
+
+/// See [`ArrayNode`]; the same node, for objects.
+pub struct ObjectNode {
+    members: Vec<(String, CanonValue)>,
+    memo: OnceLock<Box<ProjectionMemo>>,
+}
+
+impl ObjectNode {
+    fn new(members: Vec<(String, CanonValue)>) -> Self {
+        Self {
+            members,
+            memo: OnceLock::new(),
+        }
+    }
+
+    /// See [`ArrayNode::contents_mut`]: the one door, memo cleared first.
+    pub fn contents_mut(&mut self) -> &mut Vec<(String, CanonValue)> {
+        self.memo.take();
+        &mut self.members
+    }
+
+    pub(crate) fn projection_cell(&self) -> &OnceLock<Box<ProjectionMemo>> {
+        &self.memo
+    }
+}
+
+impl std::ops::Deref for ObjectNode {
+    type Target = Vec<(String, CanonValue)>;
+    fn deref(&self) -> &Vec<(String, CanonValue)> {
+        &self.members
+    }
+}
+
+impl Clone for ObjectNode {
+    /// See [`ArrayNode::clone`]: the copy's cell starts EMPTY.
+    fn clone(&self) -> Self {
+        Self::new(self.members.clone())
+    }
+}
+
+impl PartialEq for ObjectNode {
+    fn eq(&self, other: &Self) -> bool {
+        self.members == other.members
+    }
+}
+impl Eq for ObjectNode {}
+
+impl std::fmt::Debug for ObjectNode {
+    /// See [`ArrayNode`]'s `Debug`: contents only, the cell omitted.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.members.fmt(f)
+    }
 }
 
 impl CanonValue {
     pub fn array(items: Vec<CanonValue>) -> CanonValue {
-        CanonValue::Array(Arc::new(items))
+        CanonValue::Array(Arc::new(ArrayNode::new(items)))
     }
 
     pub fn object(members: Vec<(String, CanonValue)>) -> CanonValue {
-        CanonValue::Object(Arc::new(members))
+        CanonValue::Object(Arc::new(ObjectNode::new(members)))
     }
 
     /// An ABI number, deliberately, like the rest of `heap_bytes`: this asks
@@ -124,7 +255,7 @@ impl CanonValue {
                 Self::Array(items) => {
                     stack.extend(items.iter());
                     ((items.capacity() * std::mem::size_of::<CanonValue>()) as u64)
-                        .saturating_add(Self::shared_container_bytes::<Vec<CanonValue>>())
+                        .saturating_add(Self::shared_container_bytes::<ArrayNode>())
                 }
                 Self::Object(members) => {
                     let mut names = 0u64;
@@ -137,7 +268,7 @@ impl CanonValue {
                             (members.capacity() * std::mem::size_of::<(String, CanonValue)>())
                                 as u64,
                         )
-                        .saturating_add(Self::shared_container_bytes::<Vec<(String, CanonValue)>>())
+                        .saturating_add(Self::shared_container_bytes::<ObjectNode>())
                 }
             });
         }
@@ -533,7 +664,7 @@ impl<'a> Parser<'a> {
             self.heap_bytes = self
                 .heap_bytes
                 .saturating_add((values.capacity() * std::mem::size_of::<CanonValue>()) as u64)
-                .saturating_add(CanonValue::shared_container_bytes::<Vec<CanonValue>>());
+                .saturating_add(CanonValue::shared_container_bytes::<ArrayNode>());
             return Ok(CanonValue::array(values));
         }
         loop {
@@ -549,7 +680,7 @@ impl<'a> Parser<'a> {
                         .saturating_add(
                             (values.capacity() * std::mem::size_of::<CanonValue>()) as u64,
                         )
-                        .saturating_add(CanonValue::shared_container_bytes::<Vec<CanonValue>>());
+                        .saturating_add(CanonValue::shared_container_bytes::<ArrayNode>());
                     return Ok(CanonValue::array(values));
                 }
                 _ => return self.error("canonical world JSON array is malformed"),
@@ -568,9 +699,7 @@ impl<'a> Parser<'a> {
                 .saturating_add(
                     (members.capacity() * std::mem::size_of::<(String, CanonValue)>()) as u64,
                 )
-                .saturating_add(CanonValue::shared_container_bytes::<
-                    Vec<(String, CanonValue)>,
-                >());
+                .saturating_add(CanonValue::shared_container_bytes::<ObjectNode>());
             return Ok(CanonValue::object(members));
         }
         loop {
@@ -614,9 +743,7 @@ impl<'a> Parser<'a> {
                             (members.capacity() * std::mem::size_of::<(String, CanonValue)>())
                                 as u64,
                         )
-                        .saturating_add(CanonValue::shared_container_bytes::<
-                            Vec<(String, CanonValue)>,
-                        >());
+                        .saturating_add(CanonValue::shared_container_bytes::<ObjectNode>());
                     return Ok(CanonValue::object(members));
                 }
                 _ => return self.error("canonical world JSON object is malformed"),
@@ -642,11 +769,11 @@ mod heap_bytes_tests {
 
         let member = std::mem::size_of::<(String, CanonValue)>() as u64;
         let element = std::mem::size_of::<CanonValue>() as u64;
-        let expected = CanonValue::shared_container_bytes::<Vec<(String, CanonValue)>>()
+        let expected = CanonValue::shared_container_bytes::<ObjectNode>()
             + 2 * member
             + 1
             + 2
-            + CanonValue::shared_container_bytes::<Vec<CanonValue>>()
+            + CanonValue::shared_container_bytes::<ArrayNode>()
             + 2 * element
             + 1
             + 1
@@ -662,7 +789,7 @@ mod heap_bytes_tests {
         assert_eq!(
             value.heap_bytes(),
             64 * std::mem::size_of::<CanonValue>() as u64
-                + CanonValue::shared_container_bytes::<Vec<CanonValue>>()
+                + CanonValue::shared_container_bytes::<ArrayNode>()
         );
     }
 
@@ -696,17 +823,17 @@ mod heap_bytes_tests {
         assert_eq!(CanonValue::Bool(true).heap_bytes(), 0);
         assert_eq!(
             CanonValue::array(Vec::new()).heap_bytes(),
-            CanonValue::shared_container_bytes::<Vec<CanonValue>>(),
+            CanonValue::shared_container_bytes::<ArrayNode>(),
             "an empty array still owns the allocation that makes it shareable"
         );
         assert_eq!(
             CanonValue::object(Vec::new()).heap_bytes(),
-            CanonValue::shared_container_bytes::<Vec<(String, CanonValue)>>(),
+            CanonValue::shared_container_bytes::<ObjectNode>(),
             "an empty object still owns the allocation that makes it shareable"
         );
         assert_eq!(
             CanonValue::array(vec![CanonValue::array(Vec::new())]).heap_bytes(),
-            CanonValue::shared_container_bytes::<Vec<CanonValue>>() * 2
+            CanonValue::shared_container_bytes::<ArrayNode>() * 2
                 + std::mem::size_of::<CanonValue>() as u64,
             "a nested container is charged its own allocation"
         );
@@ -720,13 +847,15 @@ mod heap_bytes_tests {
             value = CanonValue::array(vec![value]);
         }
         let element = std::mem::size_of::<CanonValue>() as u64;
-        let container = CanonValue::shared_container_bytes::<Vec<CanonValue>>();
+        let container = CanonValue::shared_container_bytes::<ArrayNode>();
         assert_eq!(value.heap_bytes(), DEPTH as u64 * (element + container) + 4);
 
         let mut unwind = value;
         loop {
             let next = match &mut unwind {
-                CanonValue::Array(items) if !items.is_empty() => Arc::make_mut(items).pop(),
+                CanonValue::Array(items) if !items.is_empty() => {
+                    Arc::make_mut(items).contents_mut().pop()
+                }
                 _ => None,
             };
             match next {
@@ -844,6 +973,111 @@ mod tests {
         assert_eq!(value.member("absent"), None);
         let odd = CanonValue::parse(br#"{"hour_index":1.0}"#).unwrap();
         assert_eq!(odd.member("hour_index").unwrap().as_i64(), None);
+    }
+
+    /// THE CELL IS INVISIBLE TO VALUE SEMANTICS (batch-B design point 2), and
+    /// MINOR (b) is pinned here: equality, the JSON spelling, both accountings
+    /// and `Debug` must be identical whether or not a node's projection cell
+    /// is filled. Get this wrong and reader-side cache state changes patch
+    /// spelling and the cache SHA.
+    ///
+    /// kills: deriving `PartialEq`/`Debug` on `ArrayNode`/`ObjectNode` (the
+    /// cell would enter both); charging the FILLED cell in `heap_bytes`.
+    #[test]
+    fn a_filled_projection_cell_is_invisible_to_value_semantics() {
+        let document = br#"{"a":[1,2,{"deep":"x"}],"bb":"xyz"}"#;
+        let cold = CanonValue::parse(document).unwrap();
+        let warmed = CanonValue::parse(document).unwrap();
+        let heap_before = warmed.heap_bytes();
+        let debug_before = format!("{warmed:?}");
+        crate::canon_to_json::project(&warmed).expect("projects");
+
+        assert_eq!(warmed, cold, "equality must compare canonical contents only");
+        assert_eq!(cold, warmed, "…in both directions");
+        assert_eq!(
+            warmed.to_json_bytes(),
+            cold.to_json_bytes(),
+            "the spelling must not see the cell"
+        );
+        assert_eq!(
+            warmed.content_bytes(),
+            cold.content_bytes(),
+            "the document price must not see the cell"
+        );
+        assert_eq!(
+            warmed.heap_bytes(),
+            heap_before,
+            "canonical accounting must be independent of fill state"
+        );
+        assert_eq!(
+            format!("{warmed:?}"),
+            debug_before,
+            "Debug must omit the cell rather than print a cached projection"
+        );
+        assert_eq!(
+            format!("{warmed:?}"),
+            format!("{cold:?}"),
+            "two equal values must render identically whatever their cells hold"
+        );
+    }
+
+    /// The mutation-invalidation halves of the cell contract, at the node
+    /// level: the ONE DOOR clears a filled cell, an outer clone preserves it
+    /// (same node), and the copy `Arc::make_mut` takes when the node is shared
+    /// starts EMPTY while the retained original keeps its cell.
+    #[test]
+    fn the_door_clears_the_cell_and_a_copied_node_starts_empty() {
+        fn cell_filled(value: &CanonValue) -> bool {
+            match value {
+                CanonValue::Array(node) => node.projection_cell().get().is_some(),
+                CanonValue::Object(node) => node.projection_cell().get().is_some(),
+                _ => panic!("only containers carry cells"),
+            }
+        }
+
+        // UNIQUE: the door clears the cell in place.
+        let mut unique = CanonValue::parse(br#"[1,2]"#).unwrap();
+        crate::canon_to_json::project(&unique).expect("projects");
+        assert!(cell_filled(&unique), "projection fills the cell");
+        if let CanonValue::Array(node) = &mut unique {
+            Arc::make_mut(node).contents_mut().push(CanonValue::Null);
+        }
+        assert!(
+            !cell_filled(&unique),
+            "the door must clear the cell before the contents can change"
+        );
+        assert_eq!(
+            crate::canon_to_json::to_value(&unique).unwrap(),
+            crate::canon_to_json::projected_to_value(
+                &crate::canon_to_json::project(&unique).unwrap()
+            ),
+            "re-projection after the door sees the new contents"
+        );
+
+        // SHARED: the retained handle keeps its filled cell; the copy taken
+        // for mutation starts empty and only fills when projected again.
+        let retained = CanonValue::parse(br#"[1,2]"#).unwrap();
+        crate::canon_to_json::project(&retained).expect("projects");
+        let mut mutated = retained.clone();
+        assert!(
+            retained.shares_storage_with(&mutated),
+            "an outer clone is the same node"
+        );
+        if let CanonValue::Array(node) = &mut mutated {
+            Arc::make_mut(node).contents_mut().push(CanonValue::Null);
+        }
+        assert!(
+            cell_filled(&retained),
+            "the retained hour keeps its valid projection"
+        );
+        assert!(
+            !cell_filled(&mutated),
+            "the mutated copy's cell starts empty"
+        );
+        assert!(
+            !retained.shares_storage_with(&mutated),
+            "the write forced the path copy"
+        );
     }
 
     #[test]

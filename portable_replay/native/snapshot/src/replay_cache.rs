@@ -2044,6 +2044,23 @@ pub enum FrameOutcome {
     },
 }
 
+/// [`FrameOutcome`] for the SHARED projected world: the hour as a
+/// [`ProjectedValue`], whose unchanged subtrees are pointer-shared with every
+/// other hour's projection instead of privately owned. This is the boundary
+/// the domain consumers migrate onto; until they do, [`FrameOutcome`] is this
+/// followed by a whole-world materialisation.
+#[derive(Debug)]
+pub enum ProjectedOutcome {
+    Reconstructed {
+        world: crate::canon_to_json::ProjectedValue,
+        receipt: ReplaySeekReceipt,
+    },
+    Abandoned {
+        reached_hour: i64,
+        walked_deltas: u32,
+    },
+}
+
 /// Where a certified cache's bytes live.
 ///
 /// Everything this module does with a cache reduces to two questions: what does
@@ -2645,6 +2662,46 @@ impl CertifiedReplayCache {
         })
     }
 
+    /// The world for one hour as the SHARED projected tree
+    /// ([`crate::canon_to_json::ProjectedValue`]): unchanged subtrees are the
+    /// same allocations as every other hour's projection, so holding several
+    /// hours costs their divergence, not their size. This is the boundary the
+    /// domain consumers migrate onto; [`Self::reconstruct_value`] is this
+    /// followed by a whole-world materialisation into a private
+    /// `serde_json::Value`, which is the cost migration removes.
+    pub fn reconstruct_projected(
+        &self,
+        hour_index: i64,
+    ) -> Result<(crate::canon_to_json::ProjectedValue, ReplaySeekReceipt), ReplayCacheError> {
+        match self.reconstruct_projected_interruptible(hour_index, self.keep_going().as_ref())? {
+            ProjectedOutcome::Reconstructed { world, receipt } => Ok((world, receipt)),
+            ProjectedOutcome::Abandoned { reached_hour, .. } => {
+                Err(ReplayCacheError::new(format!(
+                    "the reconstruction of hour {hour_index} was abandoned at hour {reached_hour} \
+                     because the caller's stop switch asked it to stop"
+                )))
+            }
+        }
+    }
+
+    /// [`Self::reconstruct_projected`] with the caller holding a stop switch.
+    /// See [`Self::reconstruct_json_interruptible`] for why a seek must be
+    /// abandonable and what an abandoned one keeps.
+    pub fn reconstruct_projected_interruptible(
+        &self,
+        hour_index: i64,
+        keep_going: &dyn Fn() -> bool,
+    ) -> Result<ProjectedOutcome, ReplayCacheError> {
+        refuse_confined_hour(&self.confined, hour_index)?;
+        let mut cursor = self
+            .cursor
+            .lock()
+            .map_err(|_| ReplayCacheError::new("replay scrub cursor lock poisoned"))?;
+        self.cache.with_records(|records| {
+            reconstruct_projected_cursored(&self.index, records, hour_index, &mut cursor, keep_going)
+        })
+    }
+
     /// The installed stop switch as a predicate, or one that never says stop.
     fn keep_going(&self) -> Box<dyn Fn() -> bool + '_> {
         let installed = self.interrupt.lock().ok().and_then(|held| held.clone());
@@ -3022,13 +3079,21 @@ fn reconstruct_value_cursored(
     cursor: &mut Option<ScrubCursor>,
     keep_going: &dyn Fn() -> bool,
 ) -> Result<FrameOutcome, ReplayCacheError> {
+    // The MEMOISED projection: unchanged subtrees are pointer-identical
+    // across hours after batch A's path copying, so `project` reuses their
+    // cached projections and only visits what changed. The materialisation
+    // into a private `serde_json::Value` is still paid in full here — it goes
+    // away domain by domain as the boundary migrates onto
+    // [`ProjectedValue`], and until then this route claims no latency.
     match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
-        crate::canon_to_json::to_value(value).map_err(|error| {
-            ReplayCacheError::new(format!(
-                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
-                target.hour_index
-            ))
-        })
+        crate::canon_to_json::project(value)
+            .map(|projected| crate::canon_to_json::projected_to_value(&projected))
+            .map_err(|error| {
+                ReplayCacheError::new(format!(
+                    "reconstructed hour {} is not a world a JSON reader accepts: {error}",
+                    target.hour_index
+                ))
+            })
     })? {
         CursoredOutcome::Produced { produced, receipt } => Ok(FrameOutcome::Reconstructed {
             world: produced,
@@ -3038,6 +3103,38 @@ fn reconstruct_value_cursored(
             reached_hour,
             walked_deltas,
         } => Ok(FrameOutcome::Abandoned {
+            reached_hour,
+            walked_deltas,
+        }),
+    }
+}
+
+/// The same walk, finishing with the SHARED projected world — no
+/// materialisation, no private copy. See [`reconstruct_value_cursored`] for
+/// why no per-hour digest is taken on the cursored value route.
+fn reconstruct_projected_cursored(
+    index: &ReplayHourIndex,
+    cache: &dyn CacheRecords,
+    hour_index: i64,
+    cursor: &mut Option<ScrubCursor>,
+    keep_going: &dyn Fn() -> bool,
+) -> Result<ProjectedOutcome, ReplayCacheError> {
+    match reconstruct_cursored(index, cache, hour_index, cursor, keep_going, &|value, target| {
+        crate::canon_to_json::project(value).map_err(|error| {
+            ReplayCacheError::new(format!(
+                "reconstructed hour {} is not a world a JSON reader accepts: {error}",
+                target.hour_index
+            ))
+        })
+    })? {
+        CursoredOutcome::Produced { produced, receipt } => Ok(ProjectedOutcome::Reconstructed {
+            world: produced,
+            receipt,
+        }),
+        CursoredOutcome::Abandoned {
+            reached_hour,
+            walked_deltas,
+        } => Ok(ProjectedOutcome::Abandoned {
             reached_hour,
             walked_deltas,
         }),
@@ -3468,6 +3565,21 @@ impl ShadowBudget {
 }
 
 impl Shadow {
+    /// Every subtree this shadow remembers, at any depth. Measurement only:
+    /// a remembered subtree keeps whatever projection cells its nodes had, so
+    /// an accounting that walks the cursor's world alone reports a lower bound
+    /// and omits exactly the retention a fold-heavy recording makes largest
+    /// (Codex batch-B review, round 1, finding 2).
+    #[cfg(test)]
+    fn remembered_roots<'a>(&'a self, out: &mut Vec<&'a CanonValue>) {
+        if let Some(value) = &self.remembered {
+            out.push(value);
+        }
+        for child in self.members.values().chain(self.elements.values()) {
+            child.remembered_roots(out);
+        }
+    }
+
     fn member(&self, key: &str) -> Option<&Shadow> {
         self.members.get(key)
     }
@@ -4241,7 +4353,10 @@ fn apply_patch(
             if Arc::strong_count(members) > 1 {
                 cow_census::note_object_copy(members.len());
             }
-            let members = Arc::make_mut(members);
+            // `contents_mut` is THE door: it clears the node's projection memo
+            // before handing the vector out, so a mutated container can never
+            // go on answering with its pre-mutation projection.
+            let members = Arc::make_mut(members).contents_mut();
             // Removals first, then changes, both by merge walk over the
             // strictly increasing member list — the result stays sorted, so a
             // later delta in the same run still sees a canonical object.
@@ -4337,7 +4452,9 @@ fn apply_patch(
             if Arc::strong_count(array) > 1 {
                 cow_census::note_array_copy(array.len());
             }
-            let old = std::mem::take(Arc::make_mut(array));
+            // `mem::take` receives the vector only through `contents_mut`, the
+            // memo-clearing door — see the object arm.
+            let old = std::mem::take(Arc::make_mut(array).contents_mut());
             // THE MEMORIES MOVE WITH THEIR ROWS. An element shadow is keyed by
             // INDEX, and this is the one patch that changes what index a row
             // sits at, so a copied or patched row carries its memory to the
@@ -4447,7 +4564,8 @@ fn apply_patch(
             if Arc::strong_count(array) > 1 {
                 cow_census::note_array_copy(array.len());
             }
-            let array = Arc::make_mut(array);
+            // Through the memo-clearing door — see the object arm.
+            let array = Arc::make_mut(array).contents_mut();
             let mut previous = None;
             for (slot, change) in changes {
                 let index = *slot as usize;
@@ -7429,6 +7547,60 @@ mod tests {
         );
     }
 
+    /// THE PROJECTED ROUTE'S OWN COPY of the equality above: the shared
+    /// projected world `reconstruct_projected` serves must materialise to
+    /// exactly the world the digest-checked byte route serves, for every hour,
+    /// in every request order a scrub produces — forward, backward, scattered
+    /// and repeated, because each exercises the cursor's resume condition
+    /// differently and the memo cells' invalidation rides on the patch arms
+    /// that walk runs.
+    ///
+    /// kills: `contents_mut` not clearing the cell (a resumed cursor would
+    /// serve a stale projection for a patched hour); `project` reusing a cell
+    /// across the `forget_scrub_cursor`-forced rebuilds in a way that survives
+    /// mutation; the projected closure walking different records than the
+    /// byte route.
+    #[test]
+    fn the_cursored_projected_route_equals_the_cold_text_route() {
+        let (cache, index, source_sha) = scrub_fixture(240, true);
+        let index_bytes = index.to_bytes().unwrap();
+        let source_len = 240 * 100;
+        let bytes_route =
+            CertifiedReplayCache::open(&index_bytes, cache.clone(), source_len, &source_sha)
+                .unwrap();
+        let projected_route =
+            CertifiedReplayCache::open(&index_bytes, cache, source_len, &source_sha).unwrap();
+
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index).collect();
+        let descending: Vec<i64> = hours.iter().rev().copied().collect();
+        let scattered: Vec<i64> = (0..hours.len())
+            .map(|step| hours[(step * 97) % hours.len()])
+            .collect();
+        let repeated: Vec<i64> = hours.iter().take(4).flat_map(|h| [*h, *h, *h]).collect();
+        let mut resumed = 0usize;
+        for order in [&hours, &descending, &scattered, &repeated] {
+            for hour in order.iter() {
+                bytes_route.forget_scrub_cursor();
+                let (json, _) = bytes_route.reconstruct_json(*hour).unwrap();
+                let want = crate::parse_json_strict(&json).unwrap();
+                let (projected, receipt) = projected_route.reconstruct_projected(*hour).unwrap();
+                if receipt.walked_deltas < receipt.applied_deltas {
+                    resumed += 1;
+                }
+                assert_eq!(
+                    crate::canon_to_json::projected_to_value(&projected),
+                    want,
+                    "hour {hour} differs between the projected and byte routes"
+                );
+            }
+        }
+        assert!(
+            resumed > hours.len(),
+            "only {resumed} lookups resumed a cursor; the equality above would hold with the \
+             cursor deleted, so this test must see it working"
+        );
+    }
+
     /// A cache file rewritten UNDER THE OPEN HANDLE, in place and at the same
     /// length, must be refused — by name, at the record that changed — and it
     /// must be refused whether or not this reader had already read that record.
@@ -10240,6 +10412,285 @@ mod tests {
         }
     }
 
+    /// Whether a container's projection cell is filled, for the invalidation
+    /// differential below.
+    fn cell_filled(value: &CanonValue) -> bool {
+        match value {
+            CanonValue::Array(node) => node.projection_cell().get().is_some(),
+            CanonValue::Object(node) => node.projection_cell().get().is_some(),
+            _ => panic!("only containers carry projection cells"),
+        }
+    }
+
+    /// BATCH B's INVALIDATION DIFFERENTIAL, at the patch arms: a patch clears
+    /// the cells of exactly the containers on its changed paths — on the
+    /// RUNNING hour — while the retained hour keeps every filled cell, and the
+    /// next projection reuses the untouched subtree's projection BY POINTER
+    /// from the retained hour's fill.
+    ///
+    /// That last claim is the one the whole batch exists for: without it the
+    /// test passes with a memo that is cleared everywhere (correct but never
+    /// faster) or never consulted.
+    ///
+    /// kills: `contents_mut` forgetting to clear the cell (the running hour
+    /// would answer with the pre-patch projection and the parity assert here
+    /// fails); `ArrayNode::clone`/`ObjectNode::clone` copying a filled cell
+    /// into the make_mut copy (the running root would claim a stale fill);
+    /// the projection not reusing filled cells (the pointer assert fails).
+    #[test]
+    fn a_patch_clears_exactly_the_cells_on_its_changed_paths() {
+        let before = CanonValue::parse(
+            br#"{"scalar":7,"touched":{"a":[1,2,3]},"untouched":{"b":[4,5,6]}}"#,
+        )
+        .expect("the before document parses");
+        let after_expected = CanonValue::parse(
+            br#"{"scalar":7,"touched":{"a":[1,2,9]},"untouched":{"b":[4,5,6]}}"#,
+        )
+        .expect("the after document parses");
+        let patch = diff_value(&before, &after_expected, None, 0).expect("the two hours diff");
+
+        // Hour h is drawn: its whole projection is filled.
+        let retained = before.clone();
+        let retained_projection =
+            crate::canon_to_json::project(&retained).expect("hour h projects");
+
+        let mut running = before;
+        apply_patch(
+            &mut running,
+            &patch,
+            &mut Shadow::default(),
+            &mut ShadowBudget::default(),
+            0,
+        )
+        .expect("the patch applies");
+
+        // The retained hour keeps every filled cell...
+        assert!(cell_filled(&retained), "the retained root keeps its cell");
+        assert!(
+            cell_filled(retained.member("touched").expect("touched")),
+            "the retained hour's touched subtree keeps its cell"
+        );
+        // ...the running hour's changed path is cleared root-to-leaf...
+        assert!(
+            !cell_filled(&running),
+            "the running root was mutated and must not keep a stale cell"
+        );
+        assert!(
+            !cell_filled(running.member("touched").expect("touched")),
+            "the changed subtree's cell must be cleared"
+        );
+        // ...and the untouched subtree is the SAME node, cell intact.
+        assert!(
+            running
+                .member("untouched")
+                .expect("untouched")
+                .shares_storage_with(retained.member("untouched").expect("untouched")),
+            "the untouched subtree is shared, which is what makes its cell reusable"
+        );
+        assert!(
+            cell_filled(running.member("untouched").expect("untouched")),
+            "the untouched subtree keeps its filled cell"
+        );
+
+        // Hour h+1 projects correctly AND reuses hour h's untouched
+        // projection by pointer.
+        let running_projection =
+            crate::canon_to_json::project(&running).expect("hour h+1 projects");
+        assert_eq!(
+            crate::canon_to_json::projected_to_value(&running_projection),
+            crate::canon_to_json::to_value(&running).expect("hour h+1 converts"),
+            "the memoised projection must equal the depth-first conversion"
+        );
+        let untouched_of = |projection: &crate::canon_to_json::ProjectedValue| {
+            let crate::canon_to_json::ProjectedValue::Object(members) = projection else {
+                panic!("the root projects as an object");
+            };
+            members
+                .iter()
+                .find(|(key, _)| key == "untouched")
+                .map(|(_, member)| member.clone())
+                .expect("untouched member")
+        };
+        let (
+            crate::canon_to_json::ProjectedValue::Object(left),
+            crate::canon_to_json::ProjectedValue::Object(right),
+        ) = (
+            untouched_of(&retained_projection),
+            untouched_of(&running_projection),
+        )
+        else {
+            panic!("untouched projects as an object");
+        };
+        assert!(
+            Arc::ptr_eq(&left, &right),
+            "hour h+1's projection must reuse hour h's untouched subtree by pointer"
+        );
+
+        // And the retained hour still projects as itself, from its own cells.
+        assert_eq!(
+            crate::canon_to_json::projected_to_value(
+                &crate::canon_to_json::project(&retained).expect("hour h re-projects")
+            ),
+            crate::canon_to_json::to_value(&retained).expect("hour h converts"),
+            "the retained hour's projection must survive the patch untouched"
+        );
+    }
+
+    /// SHADOW MOVEMENT IS NOT MUTATION (design point 3): `ReviveSame` moves a
+    /// remembered subtree back with its filled cell intact, and a
+    /// `Revive(inner)` clears exactly the cells its inner patch mutates while
+    /// untouched descendants keep theirs.
+    #[test]
+    fn revive_preserves_cells_the_way_the_design_says() {
+        // ReviveSame: the member goes null, comes back identical, and its
+        // container subtree keeps the projection cell it was filled with.
+        let mut world = CanonValue::parse(br#"{"m":{"k":[1,2]}}"#).unwrap();
+        crate::canon_to_json::project(&world).expect("projects");
+        let mut shadow = Shadow::default();
+        let mut budget = ShadowBudget::default();
+        let null_patch = Patch::Object {
+            removals: vec![],
+            changes: vec![("m".to_string(), Patch::Replace(CanonValue::Null))],
+        };
+        apply_patch(&mut world, &null_patch, &mut shadow, &mut budget, 0)
+            .expect("the null applies");
+        let revive = Patch::Object {
+            removals: vec![],
+            changes: vec![("m".to_string(), Patch::ReviveSame)],
+        };
+        apply_patch(&mut world, &revive, &mut shadow, &mut budget, 0)
+            .expect("the revive applies");
+        assert_eq!(
+            world,
+            CanonValue::parse(br#"{"m":{"k":[1,2]}}"#).unwrap(),
+            "ReviveSame restores the remembered subtree"
+        );
+        assert!(
+            cell_filled(world.member("m").expect("m")),
+            "ReviveSame must move the subtree back WITH its valid cell"
+        );
+
+        // Revive(inner): the revived subtree's mutated container is cleared,
+        // its untouched sibling subtree keeps its cell.
+        let mut world = CanonValue::parse(br#"{"m":{"a":["one","two"],"b":[3,4]}}"#).unwrap();
+        crate::canon_to_json::project(&world).expect("projects");
+        let mut shadow = Shadow::default();
+        let mut budget = ShadowBudget::default();
+        let null_patch = Patch::Object {
+            removals: vec![],
+            changes: vec![("m".to_string(), Patch::Replace(CanonValue::Null))],
+        };
+        apply_patch(&mut world, &null_patch, &mut shadow, &mut budget, 0)
+            .expect("the null applies");
+        let revive = Patch::Object {
+            removals: vec![],
+            changes: vec![(
+                "m".to_string(),
+                Patch::Revive(Box::new(Patch::Object {
+                    removals: vec![],
+                    changes: vec![(
+                        "a".to_string(),
+                        Patch::Array(vec![(
+                            0,
+                            Patch::Replace(CanonValue::String("nine".to_string())),
+                        )]),
+                    )],
+                })),
+            )],
+        };
+        apply_patch(&mut world, &revive, &mut shadow, &mut budget, 0)
+            .expect("the revive applies");
+        assert_eq!(
+            world,
+            CanonValue::parse(br#"{"m":{"a":["nine","two"],"b":[3,4]}}"#).unwrap(),
+            "Revive(inner) restores the base and applies the inner patch"
+        );
+        let m = world.member("m").expect("m");
+        assert!(
+            !cell_filled(m),
+            "the revived container was mutated by the inner patch: cell cleared"
+        );
+        assert!(
+            !cell_filled(m.member("a").expect("a")),
+            "the inner patch's target keeps no stale cell"
+        );
+        assert!(
+            cell_filled(m.member("b").expect("b")),
+            "the untouched sibling keeps the cell it was remembered with"
+        );
+        assert_eq!(
+            crate::canon_to_json::projected_to_value(
+                &crate::canon_to_json::project(&world).expect("projects")
+            ),
+            crate::canon_to_json::to_value(&world).expect("converts"),
+            "the revived world projects as itself"
+        );
+    }
+
+    /// THE CELLS ARE INVISIBLE TO THE ENCODER: patch choice, encoded bytes,
+    /// the whole-cache SHA, `content_bytes` and shadow admission are identical
+    /// whether or not the worlds' projections were filled first.
+    ///
+    /// kills: any content-derived computation (diff, grammar cost, encoding,
+    /// `content_bytes`) reading the cell; equality on the node types seeing it
+    /// (patch selection compares subtrees for equality when choosing
+    /// spellings).
+    #[test]
+    fn a_filled_cell_never_changes_what_the_encoder_writes() {
+        let bodies: Vec<(i64, String)> = (0..24)
+            .map(|hour| (hour, scrub_body(hour, true)))
+            .collect();
+        let borrowed: Vec<(i64, &str)> = bodies
+            .iter()
+            .map(|(hour, body)| (*hour, body.as_str()))
+            .collect();
+
+        // COLD: encode the recording with no projection anywhere.
+        let (cold_cache, cold_index, _) = build_revive(8, &borrowed);
+
+        // WARM: identical hours, but every world is PROJECTED before it is
+        // handed to the encoder, so every cell the encoder could wrongly read
+        // is filled — including the delta base's, since each pushed hour
+        // becomes the base the next one is diffed against.
+        let (warm_cache, warm_index) = {
+            let source_sha = "ab".repeat(32);
+            let mut encoder = ReplayCacheEncoder::new(Vec::new(), &source_sha, 8).unwrap();
+            for (hour, body) in &borrowed {
+                let CacheBuildHour {
+                    hour_index,
+                    date,
+                    h4cr_start_offset,
+                    h4cr_end_offset,
+                    world_json,
+                } = world(*hour, body);
+                let meta = CacheBuildHourMeta {
+                    hour_index,
+                    date,
+                    h4cr_start_offset,
+                    h4cr_end_offset,
+                };
+                let prepared =
+                    CanonicalWorldHour::parse(world_json, meta.hour_index).expect("hour parses");
+                crate::canon_to_json::project(prepared.value()).expect("hour projects");
+                encoder.push_prepared(meta, prepared).expect("hour pushes");
+            }
+            let source_len = (borrowed.last().unwrap().0 as u64 + 1) * 100;
+            encoder
+                .finish("g", "1", CacheIdentityMode::IdentityV1, source_len)
+                .expect("finish")
+        };
+
+        assert_eq!(
+            cold_cache, warm_cache,
+            "the encoded cache must be byte-identical whatever the cells hold"
+        );
+        assert_eq!(
+            cold_index.cache_sha256(),
+            warm_index.cache_sha256(),
+            "and so must the sealed SHA"
+        );
+    }
+
     /// LANE MY, BATCH B GATE: what does the shallow copy of a WIDE shared
     /// container actually cost?
     ///
@@ -10609,6 +11060,432 @@ mod tests {
         let mean_bytes =
             record_bytes.iter().sum::<u64>() as f64 / record_bytes.len().max(1) as f64;
         println!("{{\"mean_delta_record_payload_bytes\":{mean_bytes:.0}}}");
+    }
+
+
+    /// LANE MY, BATCH B PROOF ON A REAL RECORDING: at every hour of the
+    /// fixture, the shared projected world materialises to exactly the world
+    /// the digest-checked byte route serves. The byte route hashes each hour
+    /// against the sealed `world_json_sha256`, so this is equality against the
+    /// recording's own authority, not against a second copy of the same walk —
+    /// it is the "projected == to_value(canon) at every cursor position"
+    /// requirement of the batch-B differential, on the real artifact.
+    ///
+    /// Needs `MY_FIXTURE`; `#[ignore]`d because it needs a recording, but it
+    /// ASSERTS — it is a proof, not a measurement.
+    #[test]
+    #[ignore = "proof: needs MY_FIXTURE pointing at a real index/cache pair"]
+    fn prove_the_projected_route_on_a_real_recording() {
+        let dir = std::env::var("MY_FIXTURE")
+            .expect("MY_FIXTURE names a directory holding hour_index.h4ix and checkpoints.h4cp");
+        let index_bytes = std::fs::read(format!("{dir}/hour_index.h4ix")).expect("read index");
+        let index = crate::ReplayHourIndex::from_bytes(&index_bytes).expect("parse index");
+        let source_len = index.source_len();
+        let source_sha = index.source_sha256().to_string();
+        let open = |tag: &str| {
+            let file = std::fs::File::open(format!("{dir}/checkpoints.h4cp"))
+                .unwrap_or_else(|error| panic!("open cache for the {tag} route: {error}"));
+            CertifiedReplayCache::open_file(&index_bytes, file, source_len, &source_sha)
+                .unwrap_or_else(|error| panic!("admit cache for the {tag} route: {error}"))
+        };
+        let bytes_route = open("byte");
+        let projected_route = open("projected");
+        let hours: Vec<i64> = index.hours().iter().map(|h| h.hour_index()).collect();
+        for hour in &hours {
+            let (json, _) = bytes_route.reconstruct_json(*hour).expect("byte route");
+            let want = crate::parse_json_strict(&json).expect("sealed world parses");
+            let (projected, _) = projected_route
+                .reconstruct_projected(*hour)
+                .expect("projected route");
+            assert_eq!(
+                crate::canon_to_json::projected_to_value(&projected),
+                want,
+                "hour {hour}: the projected world differs from the sealed world"
+            );
+        }
+        println!(
+            "{{\"proof\":\"projected_equals_sealed_world\",\"artifact\":\"{}\",\"hours\":{}}}",
+            dir.replace(std::path::MAIN_SEPARATOR, "/"),
+            hours.len()
+        );
+    }
+
+    /// Current and peak working-set bytes of this process, straight from
+    /// kernel32 so the measurement needs no new dependency. BOTH are reported
+    /// because peak alone cannot show decay: it never falls, so a run whose
+    /// live set is flat and a run whose live set grows without bound have the
+    /// same peak once the first has touched its high-water mark. Test-only.
+    #[cfg(windows)]
+    fn working_set_bytes() -> (u64, u64) {
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+        extern "system" {
+            fn GetCurrentProcess() -> isize;
+            fn K32GetProcessMemoryInfo(
+                process: isize,
+                counters: *mut ProcessMemoryCounters,
+                cb: u32,
+            ) -> i32;
+        }
+        let mut counters = ProcessMemoryCounters {
+            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota_peak_paged_pool_usage: 0,
+            quota_paged_pool_usage: 0,
+            quota_peak_non_paged_pool_usage: 0,
+            quota_non_paged_pool_usage: 0,
+            pagefile_usage: 0,
+            peak_pagefile_usage: 0,
+        };
+        let ok = unsafe {
+            K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb)
+        };
+        assert_ne!(ok, 0, "K32GetProcessMemoryInfo failed");
+        (
+            counters.working_set_size as u64,
+            counters.peak_working_set_size as u64,
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn working_set_bytes() -> (u64, u64) {
+        (0, 0)
+    }
+
+    /// LANE MY, BATCH B MEASUREMENT: what one forward step of the timeline
+    /// costs, on the PUBLIC cursored route, over EVERY hour of a real
+    /// recording.
+    ///
+    /// WHY THE PUBLIC ROUTE. A hand-rolled walk prices the parts the author
+    /// chose to time. `reconstruct_*` is what a viewer actually calls, so it
+    /// includes record fetch, authentication, decode, patch application,
+    /// projection and — on the `value` route — the whole-world materialisation,
+    /// and it re-seeds from the checkpoint exactly where the shipping reader
+    /// re-seeds. Nothing can be quietly left outside the timer.
+    ///
+    /// WHY THE WHOLE RECORDING, IN BUCKETS. One window is not an answer when
+    /// state accumulates: filled memo cells, retained projections and the
+    /// canonical tree all grow as the scrub advances, so a tail sample and a
+    /// head sample can differ for reasons the p50 hides. Every hour is timed
+    /// and the run is reported as `MY_BUCKETS` contiguous buckets with their
+    /// own p50/p95/max, so TIME DECAY IS VISIBLE — a flat bucket series is the
+    /// claim, and a rising one refutes it.
+    ///
+    /// MEMORY DECAY IS NOT COVERED BY THE BUCKETS, and this instrument does not
+    /// pretend otherwise: RSS is read once before the walk and once after, not
+    /// per bucket, because a memory syscall between hours would land inside the
+    /// very interval being timed. So a run that accumulates during an early
+    /// window and releases before the end is indistinguishable here from one
+    /// that never accumulated (Codex batch-B review, round 1, finding 4). What
+    /// the pair of readings does support is the end state: live RSS says what
+    /// is still held, peak says the high-water mark, and the identity-aware
+    /// projected-storage total says how much of it is filled cells. A per-hour
+    /// memory series needs its own instrument and an untimed walk.
+    ///
+    /// Checkpoint hours are reported SEPARATELY from delta hours: a checkpoint
+    /// re-seed decodes a whole world and projects it with every cell empty, so
+    /// mixing the two would let a 168:1 minority set the tail of the
+    /// distribution and would flatter or slander whichever route is measured.
+    ///
+    /// `MY_ROUTE` selects `projected` (batch B's shared tree, the default),
+    /// `value` (that tree materialised into a private `serde_json::Value` —
+    /// today's draw path, and the difference between the two is exactly what
+    /// migrating the `raw()`/`domain()` boundary banks), or `json` (the sealed
+    /// bytes, for scale). ONE route per process, because peak RSS is a
+    /// process-wide number that a second route in the same process would
+    /// poison.
+    ///
+    /// The previous hour's result is held while the next is produced, which is
+    /// the viewer's situation — hour h is on screen while h+1 is prepared —
+    /// and is what makes the projected tree's structural sharing load-bearing
+    /// rather than trivially unique.
+    ///
+    /// `#[ignore]`d measurement, asserts no budget; needs `MY_FIXTURE`.
+    #[test]
+    #[ignore = "measurement: needs MY_FIXTURE pointing at a real index/cache pair"]
+    fn price_the_incremental_projection() {
+        // The produced hour is kept alive but never inspected — its retention
+        // is the point, not its contents — so the three routes' results are
+        // erased to one type rather than modelled by an enum whose fields
+        // nothing reads.
+        type Held = Box<dyn std::any::Any>;
+
+        let dir = std::env::var("MY_FIXTURE")
+            .expect("MY_FIXTURE names a directory holding hour_index.h4ix and checkpoints.h4cp");
+        let route = std::env::var("MY_ROUTE").unwrap_or_else(|_| "projected".to_string());
+        assert!(
+            matches!(route.as_str(), "projected" | "value" | "json"),
+            "MY_ROUTE must be projected, value or json; got {route:?}"
+        );
+        let buckets: usize = std::env::var("MY_BUCKETS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(10);
+        assert!(buckets > 0, "MY_BUCKETS must be at least 1");
+
+        let index_bytes = std::fs::read(format!("{dir}/hour_index.h4ix")).expect("read index");
+        let index = crate::ReplayHourIndex::from_bytes(&index_bytes).expect("parse index");
+        let source_len = index.source_len();
+        let source_sha = index.source_sha256().to_string();
+        let file = std::fs::File::open(format!("{dir}/checkpoints.h4cp")).expect("open cache");
+        let cache = CertifiedReplayCache::open_file(&index_bytes, file, source_len, &source_sha)
+            .expect("admit cache");
+
+        // A checkpoint hour is its own checkpoint; every other hour walks
+        // deltas from one. The index already says which, so the split costs
+        // nothing and needs no heuristic.
+        let plan: Vec<(i64, bool)> = index
+            .hours()
+            .iter()
+            .enumerate()
+            .map(|(position, entry)| {
+                (
+                    entry.hour_index(),
+                    entry.checkpoint_position as usize == position,
+                )
+            })
+            .collect();
+        assert!(!plan.is_empty(), "the fixture indexes no hours");
+
+        let (live_before, peak_before) = working_set_bytes();
+        let started_run = std::time::Instant::now();
+        // (hour, milliseconds, is_checkpoint, memo hits, memo misses)
+        let mut samples: Vec<(i64, f64, bool, u64, u64)> = Vec::with_capacity(plan.len());
+        let mut held: Option<Held> = None;
+        for (hour, is_checkpoint) in &plan {
+            #[cfg(feature = "my-projection-census")]
+            let _ = crate::canon_to_json::projection_census::take();
+            let started = std::time::Instant::now();
+            let produced: Held = match route.as_str() {
+                "projected" => Box::new(
+                    cache
+                        .reconstruct_projected(*hour)
+                        .unwrap_or_else(|error| panic!("hour {hour}: {error}"))
+                        .0,
+                ),
+                "value" => Box::new(
+                    cache
+                        .reconstruct_value(*hour)
+                        .unwrap_or_else(|error| panic!("hour {hour}: {error}"))
+                        .0,
+                ),
+                _ => Box::new(
+                    cache
+                        .reconstruct_json(*hour)
+                        .unwrap_or_else(|error| panic!("hour {hour}: {error}"))
+                        .0,
+                ),
+            };
+            let elapsed = started.elapsed().as_secs_f64() * 1e3;
+            #[cfg(feature = "my-projection-census")]
+            let (hits, misses) = crate::canon_to_json::projection_census::take();
+            #[cfg(not(feature = "my-projection-census"))]
+            let (hits, misses) = (0u64, 0u64);
+            // Hour h stays reachable until h+1 has been produced, then is
+            // released — the viewer holding one drawn frame.
+            held = Some(produced);
+            std::hint::black_box(&held);
+            samples.push((*hour, elapsed, *is_checkpoint, hits, misses));
+        }
+        let wall_s = started_run.elapsed().as_secs_f64();
+        drop(held);
+        let (live_after, peak_after) = working_set_bytes();
+
+        let summarise = |label: &str, rows: &[&(i64, f64, bool, u64, u64)]| {
+            if rows.is_empty() {
+                println!("{{\"group\":\"{label}\",\"n\":0}}");
+                return;
+            }
+            let mut times: Vec<f64> = rows.iter().map(|row| row.1).collect();
+            times.sort_by(|a, b| a.partial_cmp(b).expect("no NaN timings"));
+            let pick = |q: f64| times[((times.len() as f64 - 1.0) * q).round() as usize];
+            let sum: f64 = times.iter().sum();
+            let worst = rows
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(&b.1).expect("no NaN timings"))
+                .expect("non-empty");
+            let over_frame = times.iter().filter(|ms| **ms > 16.0).count();
+            let hits: u64 = rows.iter().map(|row| row.3).sum();
+            let misses: u64 = rows.iter().map(|row| row.4).sum();
+            println!(
+                "{{\"group\":\"{label}\",\"n\":{},\"p50_ms\":{:.3},\"p95_ms\":{:.3},\"max_ms\":{:.3},\
+                 \"mean_ms\":{:.3},\"worst_hour\":{},\"over_16ms\":{over_frame},\
+                 \"memo_hits\":{hits},\"memo_misses\":{misses}}}",
+                times.len(),
+                pick(0.50),
+                pick(0.95),
+                times[times.len() - 1],
+                sum / times.len() as f64,
+                worst.0,
+            );
+        };
+
+        println!(
+            "{{\"measurement\":\"timeline_forward_scrub\",\"artifact\":\"{}\",\"route\":\"{route}\",\
+             \"hours\":{},\"wall_s\":{wall_s:.1},\"census_compiled\":{}}}",
+            dir.replace(std::path::MAIN_SEPARATOR, "/"),
+            plan.len(),
+            cfg!(feature = "my-projection-census"),
+        );
+        let deltas: Vec<&(i64, f64, bool, u64, u64)> =
+            samples.iter().filter(|row| !row.2).collect();
+        let checkpoints: Vec<&(i64, f64, bool, u64, u64)> =
+            samples.iter().filter(|row| row.2).collect();
+        summarise("delta_hours_whole_run", &deltas);
+        summarise("checkpoint_hours_whole_run", &checkpoints);
+
+        // DECAY: the delta hours IN ORDER, cut into contiguous buckets. The
+        // buckets carry timings only — sampling RSS between hours would land
+        // a syscall inside the very interval being timed — so memory is
+        // reported for the run as a whole, below.
+        let width = deltas.len().div_ceil(buckets.max(1)).max(1);
+        for (ordinal, chunk) in deltas.chunks(width).enumerate() {
+            summarise(&format!("delta_bucket_{ordinal}"), chunk);
+        }
+
+        // The second of the design's two accountings, once the walk is over:
+        // every filled projection reachable from the cursor, each allocation
+        // charged ONCE however many cells share it. The cursor's world is NOT
+        // the only holder — `Shadow` remembers whole subtrees so a revived
+        // member can be restored without re-emitting it, and those keep their
+        // cells too — so the shadow's remembered roots are counted in the SAME
+        // identity set rather than left out or double-counted. The `json` route
+        // fills no cells and correctly reports zero.
+        let projected_storage_bytes = cache
+            .cursor
+            .lock()
+            .expect("the scrub cursor lock is not poisoned")
+            .as_ref()
+            .map(|cursor| {
+                let mut roots = vec![&cursor.value];
+                cursor.shadow.remembered_roots(&mut roots);
+                crate::canon_to_json::projected_cache_bytes_over(roots)
+            })
+            .unwrap_or(0);
+        println!(
+            "{{\"projected_storage_bytes_at_run_end\":{projected_storage_bytes},\
+             \"live_rss_before\":{live_before},\"live_rss_after\":{live_after},\
+             \"peak_rss_before\":{peak_before},\"peak_rss_after\":{peak_after}}}"
+        );
+    }
+
+    /// LANE MY: an ARRAY slot and an OBJECT slot do not cost the same to copy.
+    /// Which, and by how much, is what decides the 20.5 ms lever.
+    ///
+    /// The A/B in `AB_SHARING_COST_RAW.txt` measured what structural sharing
+    /// costs on a real busy hour: 20.5 ms per t53 record. The census says that
+    /// hour copies 13,068 array slots and 172,561 object slots. What NOBODY had
+    /// measured -- and what the evidence was wrongly inferring from the counts
+    /// -- is the price of each KIND, and therefore whether shared member-name
+    /// storage (`Arc<str>` keys) or chunked arrays is the lever worth building.
+    ///
+    /// An array slot is one `CanonValue`: a shallow copy moves it, and any
+    /// container under it is an `Arc` bump. An object slot is a `CanonValue`
+    /// AND an owned member-name `String`, whose buffer is allocated and copied
+    /// every time the member vector is copied. So this sweeps both kinds at the
+    /// same width, and sweeps the NAME LENGTH too, because if the names are
+    /// what costs then the cost has to move with their size and an `Arc<str>`
+    /// key -- one pointer, copied by refcount -- is what removes it.
+    ///
+    /// Measurement, not a budget: `#[ignore]`d, asserts no time.
+    #[test]
+    #[ignore = "measurement: prices an array slot against an object slot"]
+    fn price_the_fan_out_by_slot_kind() {
+        fn array_world(width: usize, seed: usize) -> CanonValue {
+            let mut items: Vec<CanonValue> =
+                (0..width).map(|i| CanonValue::Number(format!("{i}"))).collect();
+            items[0] = CanonValue::Number(format!("{seed}"));
+            CanonValue::object(vec![("w".to_string(), CanonValue::array(items))])
+        }
+        fn object_world(width: usize, name_len: usize, seed: usize) -> CanonValue {
+            let pad = "n".repeat(name_len.saturating_sub(8));
+            let mut members: Vec<(String, CanonValue)> = (0..width)
+                .map(|i| (format!("{pad}{i:07}"), CanonValue::Number(format!("{i}"))))
+                .collect();
+            members[0].1 = CanonValue::Number(format!("{seed}"));
+            CanonValue::object(vec![("w".to_string(), CanonValue::object(members))])
+        }
+
+        // The shared-minus-unique difference, exactly as the array sweep does
+        // it, so the two kinds are priced by the same method.
+        fn fan_out_ns_per_slot(
+            build: &dyn Fn(usize) -> CanonValue,
+            width: usize,
+            iterations: usize,
+        ) -> f64 {
+            let a = build(0);
+            let b = build(999_999);
+            let forward = diff_value(&a, &b, None, 0).expect("forward patch");
+            let backward = diff_value(&b, &a, None, 0).expect("backward patch");
+
+            let mut unique = build(0);
+            let started = std::time::Instant::now();
+            for index in 0..iterations {
+                let patch = if index % 2 == 0 { &forward } else { &backward };
+                apply_patch(
+                    &mut unique,
+                    patch,
+                    &mut Shadow::default(),
+                    &mut ShadowBudget::default(),
+                    0,
+                )
+                .expect("applies to a uniquely held tree");
+            }
+            let unique_us = started.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+            std::hint::black_box(&unique);
+
+            let retained = build(0);
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                let mut running = retained.clone();
+                apply_patch(
+                    &mut running,
+                    &forward,
+                    &mut Shadow::default(),
+                    &mut ShadowBudget::default(),
+                    0,
+                )
+                .expect("applies to a shared tree");
+                std::hint::black_box(&running);
+            }
+            let shared_us = started.elapsed().as_secs_f64() * 1e6 / iterations as f64;
+            std::hint::black_box(&retained);
+
+            (shared_us - unique_us) * 1e3 / width as f64
+        }
+
+        println!("{{\"measurement\":\"fan_out_by_slot_kind\"}}");
+        for width in [1_000usize, 13_000] {
+            let iterations = 2_000;
+            let array_ns = fan_out_ns_per_slot(&|seed| array_world(width, seed), width, iterations);
+            println!(
+                "{{\"kind\":\"array\",\"width\":{width},\"ns_per_slot\":{array_ns:.2}}}"
+            );
+            for name_len in [8usize, 24, 64] {
+                let object_ns = fan_out_ns_per_slot(
+                    &|seed| object_world(width, name_len, seed),
+                    width,
+                    iterations,
+                );
+                println!(
+                    "{{\"kind\":\"object\",\"width\":{width},\"name_len\":{name_len},\"ns_per_slot\":{object_ns:.2},\"vs_array\":{:.2}}}",
+                    if array_ns > 0.0 { object_ns / array_ns } else { f64::NAN }
+                );
+            }
+        }
     }
 
 }

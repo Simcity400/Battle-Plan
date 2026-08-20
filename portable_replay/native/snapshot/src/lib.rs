@@ -22,7 +22,12 @@ pub mod stream_verify;
 pub mod strict_json;
 pub mod zip;
 
-pub use canon_to_json::{to_value as canon_to_value, CanonToValueError};
+pub use canon_to_json::{
+    project as canon_project, projected_cache_bytes, projected_to_value,
+    to_value as canon_to_value, CanonToValueError, ProjectedValue,
+};
+#[cfg(feature = "my-projection-census")]
+pub use canon_to_json::projection_census;
 pub use container::{Container, ContainerError, ExpectedIdentity, SpoolEntryReceipt};
 pub use pack::{
     pack, pack_borrowed, pack_borrowed_to_writer, pack_borrowed_with, pack_borrowed_with_writer,
@@ -49,7 +54,8 @@ pub use recording_composition::{
 pub use replay_cache::{
     validate_checkpoint_cache_header, CacheAudit, CacheAuditVerdict, CacheBuildHour,
     CacheBuildHourMeta, CacheIdentityMode, CacheTruncation, CanonicalWorldHour, CertifiedCacheFile,
-    CertifiedReplayCache, ConfinedHour, FrameOutcome, ReplayCacheEncoder, ReplayCacheError,
+    CertifiedReplayCache, ConfinedHour, FrameOutcome, ProjectedOutcome, ReplayCacheEncoder,
+    ReplayCacheError,
     ReplayCacheReader, ReplayExcludedHour, ReplayHourEntry, ReplayHourIndex, ReplaySeekReceipt,
     ScrubOutcome, CHECKPOINT_CACHE_FILE, CHECKPOINT_CACHE_HEADER_LEN, CHECKPOINT_CACHE_ROLE,
     DEFAULT_CHECKPOINT_INTERVAL_HOURS, HOUR_INDEX_FILE, HOUR_INDEX_ROLE, MAX_CACHE_RECORD_BYTES,
