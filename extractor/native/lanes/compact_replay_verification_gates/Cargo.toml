@@ -21,3 +21,8 @@ path = "src/main.rs"
 # Waits out the Windows sharing violation a real-time scanner causes on a
 # freshly written file. Test-only: nothing this package ships calls it.
 portable_test_fs_retry = { path = "../../../../portable_replay/native/test_fs_retry" }
+# d57's payload encoder, so the scan test can build a REAL record whose payload
+# hour must agree with its H4CR header hour. That agreement is what proves the
+# scanner hands the true header to payload validation rather than a placeholder;
+# a hand-rolled byte blob could not exercise the cross-check.
+session_multiplayer_metadata_live = { path = "../session_multiplayer_metadata_live" }

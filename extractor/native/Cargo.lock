@@ -221,6 +221,7 @@ dependencies = [
  "portable_test_fs_retry",
  "recorder_host",
  "serde_json",
+ "session_multiplayer_metadata_live",
  "snapshot",
 ]
 

@@ -351,6 +351,8 @@ impl CompletenessAudit {
         domain_id: u16,
         record_type: u16,
         record_flags: u32,
+        sequence: u64,
+        stream_offset: u64,
         payload: &[u8],
     ) -> Result<(), String> {
         validate_compact_record_semantics(domain_id, record_type, record_flags, payload)?;
@@ -358,9 +360,15 @@ impl CompletenessAudit {
             .map_err(|unknown| format!("unknown compact record type {}", unknown.0))?;
         match record_type {
             compact_contract::KnownRecordType::DomainData => {
-                let payload_status =
-                    replay_decoder::domain_data_payload_status(domain_id, payload, record_flags)
-                        .unwrap_or(None);
+                let payload_status = replay_decoder::domain_data_payload_status_at(
+                    domain_id,
+                    payload,
+                    record_flags,
+                    sequence,
+                    game_hour_raw,
+                    stream_offset,
+                )
+                .unwrap_or(None);
                 let residual = payload_status.map_or(0, |status_flags| {
                     compact_status_failure_flags_after_expected_partial_tolerance(
                         domain_id,
@@ -743,6 +751,8 @@ fn audit_compact_reader_with_identity_mode(
                     header.domain_id,
                     header.record_type,
                     header.record_flags,
+                    header.sequence,
+                    offset + cursor as u64,
                     payload,
                 )
                 .map_err(|e| {

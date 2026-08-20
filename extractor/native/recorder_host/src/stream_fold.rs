@@ -1908,15 +1908,25 @@ fn sha256_file(path: &Path) -> io::Result<String> {
     Ok(to_hex(&hasher.finalize()))
 }
 
-pub fn validate_domain_data_payload(
-    domain_id: u16,
-    payload: &[u8],
-    record_flags: u32,
-) -> Result<(), String> {
-    validate_domain_data_payload_at(domain_id, payload, record_flags, 0, 0, 0)
-}
-
-fn validate_domain_data_payload_at(
+/// Validate one DOMAIN_DATA payload against the H4CR header that carries it.
+///
+/// The header identity is a PARAMETER and never a default. Two domains
+/// cross-check their payload against the enclosing record —
+/// `session_multiplayer_metadata_live` (d57) compares its payload hour and
+/// every event row's hour against `header_hour_raw`, and
+/// `xmap07_snow_mud_live` (d100) compares its source sequence and hour — so a
+/// caller that passes a placeholder does not "skip" those checks, it runs them
+/// against the placeholder and fails every record.
+///
+/// That is not hypothetical: the seal gate and the replay decoder both used to
+/// call a three-argument wrapper that substituted `0`, which made every d57
+/// record in a real capture report
+/// `d57 payload hour <hour> != H4CR hour 0`. On lane OB's 393-hour capture that
+/// excluded all 366 d57 records as "malformed" and failed the seal gate with
+/// `d57_record_count_per_closed_frame_invalid`, downgrading a good recording to
+/// a recovery-only replay the viewer refuses to open. The wrapper is gone; pass
+/// the real header.
+pub fn validate_domain_data_payload_at(
     domain_id: u16,
     payload: &[u8],
     record_flags: u32,
@@ -1935,15 +1945,15 @@ fn validate_domain_data_payload_at(
     .map(|_| ())
 }
 
-pub fn domain_data_payload_status(
-    domain_id: u16,
-    payload: &[u8],
-    record_flags: u32,
-) -> Result<Option<u32>, String> {
-    domain_data_payload_status_at(domain_id, payload, record_flags, 0, 0, 0)
-}
-
-fn domain_data_payload_status_at(
+/// The status flags one DOMAIN_DATA payload declares, validated against the
+/// H4CR header that carries it.
+///
+/// Same rule as [`validate_domain_data_payload_at`]: the header identity is a
+/// parameter, never a default. A placeholder here is worse than a wrong error
+/// message, because the only caller maps `Err` to `None` — so a d57 record
+/// rejected against a placeholder hour does not merely mis-report, it drops the
+/// domain's declared status flags out of the completeness audit entirely.
+pub fn domain_data_payload_status_at(
     domain_id: u16,
     payload: &[u8],
     record_flags: u32,
@@ -4369,7 +4379,10 @@ mod tests {
             ..Default::default()
         });
 
-        validate_domain_data_payload(53, &delta, 0)
+        // d53 does not cross-check the enclosing header, so the identity
+        // arguments are free here; they are spelled out rather than defaulted
+        // so no caller can inherit a placeholder by accident.
+        validate_domain_data_payload_at(53, &delta, 0, 0, 0, 0)
             .expect("a structurally valid d53 DELTA|PARTIAL must pass boundary validation");
 
         let mut stream = Vec::new();
@@ -5638,5 +5651,47 @@ mod tests {
             );
         }
         assert!(!boundary_eof_policy(None, true));
+    }
+
+    /// The enclosing H4CR header identity must reach the payload validator.
+    ///
+    /// d57 cross-checks its payload hour against the record header's hour, so a
+    /// caller that substitutes a placeholder does not skip the check — it runs
+    /// it against the placeholder and rejects a perfectly good record. Lane OB's
+    /// live capture hit exactly that: all 366 d57 records were reported
+    /// `d57 payload hour <hour> != H4CR hour 0`, which failed the seal gate with
+    /// `d57_record_count_per_closed_frame_invalid` and downgraded the recording
+    /// to a recovery-only replay the viewer refuses to open.
+    ///
+    /// kills: reintroducing a header-less wrapper that defaults the hour to 0,
+    /// or any caller passing a placeholder instead of `header.game_hour_raw`.
+    #[test]
+    fn domain_data_validation_uses_the_real_header_hour_not_a_placeholder() {
+        use session_multiplayer_metadata_live as session57;
+
+        let hour = 60_832_056i32;
+        let frame = session57::SessionMetadataFrame {
+            game_hour_raw: hour,
+            status_flags: 0,
+            source_flags: 0,
+            schema_flags: 0,
+            root_evidence_mask: 0,
+            world_tension_fixed5: None,
+            world_tension_details: None,
+            player_country_rows: Vec::new(),
+            event_rows: Vec::new(),
+        };
+        let payload = session57::encode_payload(&frame);
+
+        validate_domain_data_payload_at(session57::DOMAIN_ID, &payload, 0, 7, hour, 4_096).expect(
+            "a d57 payload whose hour equals its record header hour must pass validation",
+        );
+
+        let error = validate_domain_data_payload_at(session57::DOMAIN_ID, &payload, 0, 7, 0, 4_096)
+            .expect_err("a placeholder header hour must not silently validate");
+        assert!(
+            error.contains(&format!("d57 payload hour {hour} != H4CR hour 0")),
+            "the placeholder must be reported as the mismatch it is, got: {error}"
+        );
     }
 }

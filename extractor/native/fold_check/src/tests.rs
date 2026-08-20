@@ -1501,7 +1501,7 @@ fn the_audit_accounts_every_record_type_the_contract_admits() {
             }
             admitted.push(record_type);
             let mut audit = CompletenessAudit::default();
-            let outcome = audit.observe(raw_for(HOUR_A), domain_id, record_type, 0, &payload);
+            let outcome = audit.observe(raw_for(HOUR_A), domain_id, record_type, 0, 1, 0, &payload);
             if let Err(err) = outcome {
                 assert!(
                     !err.contains("not accounted by the completeness audit"),
@@ -1557,6 +1557,8 @@ fn an_hour_is_published_or_refused_but_never_both() {
                 ordered[0].0,
                 ordered[0].1,
                 0,
+                1,
+                0,
                 &ordered[0].2,
             )
             .expect("the first close of the hour is legitimate");
@@ -1565,6 +1567,8 @@ fn an_hour_is_published_or_refused_but_never_both() {
                 raw_for(HOUR_A),
                 ordered[1].0,
                 ordered[1].1,
+                0,
+                2,
                 0,
                 &ordered[1].2,
             )

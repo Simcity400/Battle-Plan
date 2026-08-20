@@ -6145,10 +6145,13 @@ fn scan_compact_stream_with_identity_mode(
                     .or_default()
                     .entry(domain_id)
                     .or_default() += 1;
-                let data_valid = match recorder_host::stream_fold::validate_domain_data_payload(
+                let data_valid = match recorder_host::stream_fold::validate_domain_data_payload_at(
                     domain_id,
                     payload,
                     header.record_flags,
+                    sequence,
+                    game_hour_raw,
+                    offset as u64,
                 ) {
                     Ok(()) => true,
                     Err(reason) => {
@@ -6911,6 +6914,81 @@ mod tests {
             &frame_payload(0),
         );
         raw
+    }
+
+    /// The scanner must hand each DOMAIN_DATA payload the header it arrived
+    /// under, not a placeholder.
+    ///
+    /// d57 cross-checks its payload hour against the enclosing H4CR hour, so a
+    /// call site that substitutes `0` rejects every well-formed d57 record and
+    /// then never decodes it into `domain57_frames`. That is not theoretical:
+    /// lane OB's live capture had all 366 of its d57 records excluded as
+    /// `d57 payload hour <hour> != H4CR hour 0`, which emptied `domain57_frames`
+    /// and failed the seal gate with `d57_record_count_per_closed_frame_invalid`,
+    /// producing a recovery-only replay the viewer refuses to open.
+    ///
+    /// This pins the CALL SITE rather than the validator: the record below is
+    /// well formed, so the only way to fail is for the scan to validate it
+    /// against something other than its own header.
+    ///
+    /// kills: passing a literal `0` (or any placeholder) for `game_hour_raw` at
+    /// the `validate_domain_data_payload_at` call in `scan_compact_stream`.
+    #[test]
+    fn the_scan_validates_a_domain_data_payload_against_its_own_header_hour() {
+        use session_multiplayer_metadata_live as session57;
+
+        let hour = 100i32;
+        let payload = session57::encode_payload(&session57::SessionMetadataFrame {
+            game_hour_raw: hour,
+            status_flags: 0,
+            source_flags: 0,
+            schema_flags: 0,
+            root_evidence_mask: 0,
+            world_tension_fixed5: None,
+            world_tension_details: None,
+            player_country_rows: Vec::new(),
+            event_rows: Vec::new(),
+        });
+
+        let mut raw = Vec::new();
+        append_record(
+            &mut raw,
+            1,
+            hour,
+            session57::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_PERF,
+            &perf_payload(0),
+        );
+        append_record(
+            &mut raw,
+            2,
+            hour,
+            session57::DOMAIN_ID,
+            RECORD_TYPE_DOMAIN_DATA,
+            &payload,
+        );
+        append_record(
+            &mut raw,
+            3,
+            hour,
+            DOMAIN_FRAME,
+            RECORD_TYPE_FRAME_END,
+            &frame_payload(0),
+        );
+
+        let summary = scan_compact_stream(&raw);
+        assert!(
+            summary.parse_errors.is_empty(),
+            "a d57 record whose payload hour equals its header hour must scan clean, got: {:?}",
+            summary.parse_errors
+        );
+        assert_eq!(
+            summary.domain57_frames.len(),
+            1,
+            "the scan must decode the d57 record it just accepted"
+        );
+        assert_eq!(summary.domain57_frames[0].header_hour_raw, hour);
+        assert_eq!(summary.domain57_frames[0].payload_hour_raw, hour);
     }
 
     /// release census behind the final FRAME_END, and EOF.
@@ -11696,8 +11774,14 @@ mod tests {
     #[test]
     fn every_production_domain_routes_to_a_canonical_structural_decoder() {
         for descriptor in compact_contract::production_profile_domains() {
-            let result =
-                recorder_host::stream_fold::validate_domain_data_payload(descriptor.id, &[], 0);
+            let result = recorder_host::stream_fold::validate_domain_data_payload_at(
+                descriptor.id,
+                &[],
+                0,
+                0,
+                0,
+                0,
+            );
             assert!(
                 !matches!(result, Err(ref error) if error.contains("no exact structural decoder")),
                 "domain {} ({}): {result:?}",

@@ -21,10 +21,10 @@ use compact_contract::{
     COMPACT_RECORD_TYPE_FRAME_REFUSED,
 };
 pub use recorder_host::stream_fold::{
-    domain_data_payload_status, excluded_domain_data_json, ExcludedDomainDataRecord,
+    domain_data_payload_status_at, excluded_domain_data_json, ExcludedDomainDataRecord,
 };
 use recorder_host::stream_fold::{
-    strict_stream_certification_verdict, validate_domain_data_payload,
+    strict_stream_certification_verdict, validate_domain_data_payload_at,
     validate_excluded_domain_data_accounting, BoundaryTracker, FoldStreamStats,
 };
 use recorder_host::world_fold::{schema_version, FoldedSnapshotFile, WorldFold};
@@ -1644,9 +1644,14 @@ fn fold_compact_stream_file_identity_aware(
             tracker.observe(&header, payload, record_at);
 
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                if let Err(reason) =
-                    validate_domain_data_payload(header.domain_id, payload, header.record_flags)
-                {
+                if let Err(reason) = validate_domain_data_payload_at(
+                    header.domain_id,
+                    payload,
+                    header.record_flags,
+                    header.sequence,
+                    header.game_hour_raw,
+                    record_at,
+                ) {
                     stats.malformed_payload_records += 1;
                     stats
                         .excluded_domain_data_records
@@ -2524,10 +2529,15 @@ impl HourCursor {
                     self.strict_validation_error = envelope_error.clone();
                 }
                 let exact_payload_error = match (header.record_type, envelope_error.as_ref()) {
-                    (COMPACT_RECORD_TYPE_DOMAIN_DATA, None) => {
-                        validate_domain_data_payload(header.domain_id, payload, header.record_flags)
-                            .err()
-                    }
+                    (COMPACT_RECORD_TYPE_DOMAIN_DATA, None) => validate_domain_data_payload_at(
+                        header.domain_id,
+                        payload,
+                        header.record_flags,
+                        header.sequence,
+                        header.game_hour_raw,
+                        record_start_abs,
+                    )
+                    .err(),
                     _ => None,
                 };
                 let malformed_reason = (header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA)
