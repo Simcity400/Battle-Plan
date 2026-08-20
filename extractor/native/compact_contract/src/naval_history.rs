@@ -234,6 +234,44 @@ fn encode_v3(
     Ok(payload)
 }
 
+/// Byte offset of `source_sequence` inside an SCH1/v3 header.
+///
+/// Derived from [`encode_v3`]'s own write order: magic (4) + version (2) + header_len (2) +
+/// row_len (2) + authority (2) + status_flags (4) + elapsed_wall_ms (8) + row_count (4) +
+/// observed_rows (4) + frame_hour (8) = 40.
+pub const SOURCE_SEQUENCE_OFFSET: usize = 40;
+
+/// Write the record's FINAL H4CR sequence into an already-encoded SCH1 payload.
+///
+/// The producer bakes this field during the frame build, but the build's numbering is not the
+/// numbering the stream ships: `resequence_compact_records` renumbers a frame's survivors by
+/// POSITION after the post-build passes drop the records of rejected or unresolved-hour domains.
+/// Every payload sitting after a dropped record therefore ends up carrying a sequence that is
+/// too high by exactly the number of records dropped ahead of it, and
+/// `world_fold::fold_sunk_convoy_history` refuses the payload on
+/// `source_sequence != record.sequence`. Measured on capture `ob_first_bmp`: 58 of 367 D70 data
+/// records, by +2 (x47), +4 (x2), +6 (x8) and +22 (x1).
+///
+/// Stamping from the resequencer makes the two the same value by construction.
+///
+/// A payload whose shape does not carry the field -- a legacy v1/v2 header, or anything too
+/// short -- is left untouched and reported as not stamped, never treated as an error: those
+/// spellings have no `source_sequence` to correct.
+pub fn stamp_source_sequence(payload: &mut [u8], source_sequence: u64) -> bool {
+    if payload.len() < HEADER_LEN {
+        return false;
+    }
+    if u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]) != PAYLOAD_MAGIC {
+        return false;
+    }
+    if u16::from_le_bytes([payload[4], payload[5]]) != PAYLOAD_VERSION {
+        return false;
+    }
+    payload[SOURCE_SEQUENCE_OFFSET..SOURCE_SEQUENCE_OFFSET + 8]
+        .copy_from_slice(&source_sequence.to_le_bytes());
+    true
+}
+
 pub fn decode_payload(payload: &[u8]) -> Result<DecodedSunkConvoyHistoryPayload, String> {
     if payload.len() < LEGACY_HEADER_LEN {
         return Err("sunk-convoy history payload truncated before header".to_string());
