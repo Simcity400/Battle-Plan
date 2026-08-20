@@ -166,7 +166,8 @@ pub use border_classification::{
     BorderClassification, BorderClassificationResidual, BorderSelectionPalette,
     BorderSelectorReason, BorderWorldFacts, ClassifiedBorderChain, TutorialBorderHighlight,
     ViewerBorderOverlays, XMAP06_CLASSIFICATION_RESIDUALS, XMAP06_CUSTOM_HIGHLIGHTS_DEFINE,
-    XMAP06_FIRST_CUSTOM_HIGHLIGHT_REASON, XMAP06_NAMED_PALETTE_DEFINES,
+    XMAP06_FIRST_CUSTOM_HIGHLIGHT_REASON, XMAP06_HIDDEN_ROW_RESIDUAL,
+    XMAP06_NAMED_PALETTE_DEFINES,
 };
 pub use border_law::{
     border_diffuse_source, border_fade_windows_from_graphics_defines,

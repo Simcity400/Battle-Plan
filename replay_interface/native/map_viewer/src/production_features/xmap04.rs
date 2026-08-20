@@ -1621,6 +1621,7 @@ impl ProductionMapFeatureAdapter for Xmap04TerrainAdapter {
             prepared_orders: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: Vec::new(),
         })
     }

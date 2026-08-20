@@ -565,6 +565,7 @@ impl ProductionMapFeatureAdapter for Xmap19WeatherAdapter {
                 prepared_orders: None,
                 prepared_map_modes: None,
                 prepared_map_furniture: None,
+                element_diagnostics: Vec::new(),
                 consumed_gap_ids: owned_gaps(context),
             });
         }
@@ -613,6 +614,7 @@ impl ProductionMapFeatureAdapter for Xmap19WeatherAdapter {
             prepared_orders: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: Vec::new(),
         })
     }

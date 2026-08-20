@@ -142,6 +142,7 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             prepared_rail_supply: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         };
 
@@ -218,6 +219,7 @@ impl ProductionMapFeatureAdapter for Xmap15OrdersAdapter {
             prepared_rail_supply: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: vec![XMAP15_AUTHORITY_GAP_ID.into()],
         })
     }

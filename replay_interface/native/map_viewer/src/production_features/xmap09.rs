@@ -1189,6 +1189,7 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             prepared_map_modes: None,
             prepared_map_furniture: None,
             consumed_gap_ids,
+            element_diagnostics: Vec::new(),
         })
     }
 }

@@ -1368,6 +1368,7 @@ impl ProductionMapFeatureAdapter for Xmap13Adapter {
             prepared_map_modes: None,
             prepared_map_furniture: None,
             consumed_gap_ids,
+            element_diagnostics: Vec::new(),
         })
     }
 }
@@ -3508,6 +3509,7 @@ fn unavailable_output_with_gap(
         prepared_map_modes: None,
         prepared_map_furniture: None,
         consumed_gap_ids,
+        element_diagnostics: Vec::new(),
     }
 }
 

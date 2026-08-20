@@ -377,6 +377,7 @@ pub fn building_slot_rows_from_source(
             show_on_map_meshes,
             spawn_point,
             scope,
+            source_path: source_path.to_string(),
         });
     }
     Ok(out)

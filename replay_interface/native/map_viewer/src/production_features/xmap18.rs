@@ -645,6 +645,7 @@ impl ProductionMapFeatureAdapter for Xmap18MapModeAdapter {
             prepared_rail_supply: None,
             prepared_map_modes: Some(prepared),
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: OWNED_AUTHORITY_GAPS
                 .iter()
                 .map(|input| (*input).to_string())

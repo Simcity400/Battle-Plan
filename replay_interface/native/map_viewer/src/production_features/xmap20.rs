@@ -301,6 +301,7 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             prepared_rail_supply: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: vec![gap_id.into()],
         })
     }

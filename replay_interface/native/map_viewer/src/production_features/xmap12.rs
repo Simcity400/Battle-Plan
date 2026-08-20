@@ -213,6 +213,7 @@ fn empty_output(
         prepared_map_modes: None,
         prepared_map_furniture: None,
         consumed_gap_ids,
+        element_diagnostics: Vec::new(),
     }
 }
 

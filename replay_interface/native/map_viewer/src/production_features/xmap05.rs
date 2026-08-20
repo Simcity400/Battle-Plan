@@ -936,6 +936,7 @@ impl ProductionMapFeatureAdapter for Xmap05PoliticalAdapter {
             prepared_orders: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: POLITICAL_AUTHORITY_GAPS
                 .iter()
                 .map(|gap| (*gap).to_string())
@@ -993,6 +994,7 @@ impl ProductionMapFeatureAdapter for Xmap05FowAdapter {
             prepared_orders: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids: FOW_AUTHORITY_GAPS
                 .iter()
                 .map(|gap| (*gap).to_string())
@@ -1048,6 +1050,31 @@ pub(crate) fn admitted_epoch_keying(
         )
         .into());
     }
+    // One country's unobtained cosmetic identity refuses the WHOLE political fill, and that
+    // is the correct grain here rather than a per-country exclusion on the element channel.
+    //
+    // The tempting fix is to drop the country, name it, and fill the rest of the map. It does
+    // not work, because a cosmetic identity is not a per-country visual this layer draws: it
+    // is one term of `mapc1_presentation_digest`, a single hash over the SORTED WHOLE ROSTER
+    // that `validate_mapc1_payload` compares against the recorder's own
+    // `presentation_identity_sha256`. Leaving a country out changes the derived digest, so the
+    // cross-check either fails anyway - the same refusal, reached later and less clearly - or,
+    // if the comparison were relaxed to match, silently stops checking the very thing it
+    // exists to check. There is no honest partial of an equality between two whole-roster
+    // hashes.
+    //
+    // The refusal is also not a permanent limit: the recording either carries every country's
+    // cosmetic identity or it declares the hole, and D18's roster is the same census the
+    // digest is taken over. So this fails closed with the country named, and stays that way.
+    //
+    // OWNER QUESTION, recorded here rather than decided: the cosmetic identity IS per country
+    // in the recording (`keying.rs` keeps `cosmetic_by_tag`), and only the AUTHORITY FORMAT -
+    // one whole-roster `presentation_identity_sha256` - forces the all-or-nothing check. If
+    // the recorder emitted a per-country presentation digest instead, one country's missing
+    // cosmetic tag could be excluded at country grain and the rest of the map would fill.
+    // That is a wire-format change to what the recorder produces, so it is the owner's call,
+    // not a viewer-side fix; until it is made, the whole-frame refusal is the only honest
+    // reading of the format that exists.
     for entry in &roster.entries {
         if let Err(detail) = admitted_cosmetic_identity(
             frame

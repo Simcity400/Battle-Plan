@@ -9,7 +9,9 @@ use crate::{
     LabelTextMetrics, MapnameVertex, ProvinceKind, Result,
 };
 use portable_content_manifest::UsedContentKey;
-use portable_render_stream::FamilyDisposition;
+use portable_render_stream::{
+    ElementDiagnostic, ElementOutcome, FamilyDisposition, MapVisualFamily,
+};
 use replay_core::{Leaf, ValidatedContentAdmission, ViewStatus, WorldFrame};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
@@ -843,10 +845,10 @@ impl Xmap17LabelAdapter {
             &country_metrics,
         );
 
-        let state_names =
+        let (state_names, unlocalized_states) =
             state_display_names(&self.content.state_name_keys, &self.content.localization)?;
         let state_metrics = label_metrics(&self.content.font, &state_names)?;
-        let state_placements = compute_explicit_area_label_placements_with_text(
+        let mut state_placements = compute_explicit_area_label_placements_with_text(
             &ExplicitAreaLabelLawInputs {
                 province_ids: &self.content.province_ids,
                 width: self.content.width,
@@ -859,6 +861,13 @@ impl Xmap17LabelAdapter {
             },
             &state_metrics,
         );
+        // The placement law is grid-driven: it lays out a placement for every state the map
+        // files describe, and a state whose text is missing simply falls back to a
+        // curve-less anchor rather than disappearing. `build_label_set` then refuses any
+        // placement with no localized text - so without this filter an unlocalised state
+        // would blank every label all over again, one function further down. Drop the
+        // excluded states' placements here, where the reason is known.
+        state_placements.retain(|placement| state_names.contains_key(&placement.tag));
 
         let country = build_label_set(
             0,
@@ -988,6 +997,24 @@ impl Xmap17LabelAdapter {
                 prepared_rail_supply: None,
                 prepared_map_modes: None,
                 prepared_map_furniture: None,
+                element_diagnostics: unlocalized_states
+                    .into_iter()
+                    .map(|(state_id, key)| ElementDiagnostic {
+                        family: MapVisualFamily::LabelsMapText,
+                        owner_packet: MapVisualFamily::LabelsMapText.owner_packet().into(),
+                        element_id: format!("xmap17:state-label:{state_id}"),
+                        source_ordinal: None,
+                        outcome: ElementOutcome::UnknownContentToken,
+                        part: String::new(),
+                        element_count: 1,
+                        detail: format!(
+                            "state {state_id} names localisation key {key}, which the effective \
+                             localisation set for the selected language does not define, so this \
+                             state's map label is excluded; every other state's label is \
+                             unaffected"
+                        ),
+                    })
+                    .collect(),
                 consumed_gap_ids: Vec::new(),
             },
             prepared,
@@ -1320,21 +1347,46 @@ fn parse_province_adjacencies(bytes: &[u8]) -> Result<BTreeSet<(u32, u32)>> {
     Ok(pairs)
 }
 
+/// Resolve every state's map-name text, excluding and naming the states the selected
+/// language does not localise.
+///
+/// This used to refuse outright, which blanked EVERY map label on the planet because one
+/// state's name key was missing from the effective localisation set - a content-compatibility
+/// condition (a mod adding states without localising them for the selected language is the
+/// ordinary case) destroying a layer that is correct for every other state.
+///
+/// Excluding at state grain is faithful because the placement law is per state: each label's
+/// position comes from that state's own provinces through
+/// `compute_explicit_area_label_placements_with_text`, so dropping one state moves no other
+/// label and changes no other text. The engine draws the rest, and so does this.
+///
+/// Dropping the NAME is only half of it, and the other half is easy to miss. The placement
+/// law is grid-driven and still lays out a placement for a state whose text is missing (with
+/// a curve-less fallback anchor), and `build_label_set` refuses any placement whose tag has
+/// no localized text - so the caller MUST also drop those placements or the whole-frame
+/// refusal simply moves one function down. See the `state_placements.retain(...)` in the
+/// producer, and the test that asserts the trap before asserting the filter closes it.
+///
+/// The excluded states are returned so the caller can put an
+/// [`ElementOutcome::UnknownContentToken`] row on the receipt for each: authored content
+/// names a key the effective content set does not describe.
 fn state_display_names(
     keys: &BTreeMap<u32, String>,
     localization: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>> {
+) -> Result<(BTreeMap<String, String>, Vec<(u32, String)>)> {
     let mut names = BTreeMap::new();
+    let mut unlocalized = Vec::new();
     for (&state_id, key) in keys {
         if !localization.contains_key(key) {
-            return Err(format!("XMAP17 state {state_id} has no localization key {key}").into());
+            unlocalized.push((state_id, key.clone()));
+            continue;
         }
         names.insert(
             format!("STATE:{state_id}"),
             resolve_static_mapname_text(localization, key)?,
         );
     }
-    Ok(names)
+    Ok((names, unlocalized))
 }
 
 fn resolve_static_mapname_text(
@@ -1989,6 +2041,125 @@ mod tests {
         state.update(200.0, 260.0, 2.0).unwrap();
         assert_eq!(state.near_alpha, 1.0);
         assert_eq!(state.far_alpha, 0.0);
+    }
+
+    /// One state the selected language does not localise must cost exactly one label.
+    ///
+    /// This refused outright before, which blanked EVERY map label on the planet - a
+    /// content-compatibility condition (a mod adding states without localising them is the
+    /// ordinary case) deleting a layer that is correct for every other state.
+    ///
+    /// kills: restoring the whole-frame refusal; silently dropping the state without naming
+    /// it, which is the "silent approximation" the product law forbids; and dropping a state
+    /// whose key IS localised, which would delete labels the engine draws.
+    #[test]
+    fn an_unlocalized_state_costs_its_own_label_and_no_other() {
+        let keys = BTreeMap::from([
+            (12u32, "STATE_12".to_string()),
+            (13, "STATE_13".to_string()),
+            (14, "STATE_14".to_string()),
+        ]);
+        let localization = BTreeMap::from([
+            ("STATE_12".to_string(), "Alsace".to_string()),
+            ("STATE_14".to_string(), "Bavaria".to_string()),
+        ]);
+        let (names, unlocalized) = state_display_names(&keys, &localization).unwrap();
+        assert_eq!(
+            names.keys().collect::<Vec<_>>(),
+            vec!["STATE:12", "STATE:14"]
+        );
+        assert_eq!(names["STATE:12"], "ALSACE");
+        assert_eq!(names["STATE:14"], "BAVARIA");
+        assert_eq!(unlocalized, vec![(13u32, "STATE_13".to_string())]);
+
+        // Nothing missing means nothing to name, and the common case stays free.
+        let complete = BTreeMap::from([("STATE_12".to_string(), "Alsace".to_string())]);
+        let (names, unlocalized) =
+            state_display_names(&BTreeMap::from([(12u32, "STATE_12".to_string())]), &complete)
+                .unwrap();
+        assert_eq!(names.len(), 1);
+        assert!(unlocalized.is_empty());
+    }
+
+    /// Excluding an unlocalised state has to hold all the way to the built label set.
+    ///
+    /// The first cut of this fix only dropped the state from `state_display_names`, which was
+    /// not enough and is exactly the trap this test exists for: the placement law is
+    /// grid-driven, so it still emits a placement for that state (with a curve-less fallback
+    /// anchor), and `build_label_set` then refuses any placement whose tag has no localized
+    /// text - blanking every label all over again, one function further down. The producer
+    /// must drop those placements too.
+    ///
+    /// kills: removing the `state_placements.retain(...)` filter in the producer, which puts
+    /// the whole-frame refusal straight back.
+    #[test]
+    fn excluding_an_unlocalized_state_survives_all_the_way_into_the_label_set() {
+        let mut content = grouping_content();
+        content.state_name_keys = BTreeMap::from([
+            (1u32, "STATE_1".to_string()),
+            (2, "STATE_2".to_string()),
+        ]);
+        content.area_by_province =
+            BTreeMap::from([(1u32, "STATE:1".to_string()), (2, "STATE:2".to_string())]);
+        // Only state 1 is localised; state 2 is the mod-added state nobody translated.
+        content.localization = BTreeMap::from([("STATE_1".to_string(), "AAA".to_string())]);
+
+        let (state_names, unlocalized) =
+            state_display_names(&content.state_name_keys, &content.localization).unwrap();
+        assert_eq!(unlocalized, vec![(2u32, "STATE_2".to_string())]);
+        let state_metrics = label_metrics(&content.font, &state_names).unwrap();
+        let mut placements = compute_explicit_area_label_placements_with_text(
+            &ExplicitAreaLabelLawInputs {
+                province_ids: &content.province_ids,
+                width: content.width,
+                height: content.height,
+                area_by_province: &content.area_by_province,
+                province_to_state: &content.province_to_state,
+                impassable_states: &content.impassable_states,
+                province_importance: &content.province_importance,
+                province_type: &content.province_type,
+            },
+            &state_metrics,
+        );
+
+        // The trap: the law lays out the unlocalised state anyway, so the unfiltered list
+        // still refuses.
+        assert!(
+            placements.iter().any(|p| p.tag == "STATE:2"),
+            "the placement law must still produce the unlocalised state, or this test proves nothing"
+        );
+        let refused = build_label_set(
+            2,
+            &placements,
+            &state_names,
+            &state_metrics,
+            &content.font,
+            &content.heightmap,
+            content.height as f32,
+        )
+        .expect_err("an unlocalised placement must refuse without the filter");
+        assert!(
+            refused.to_string().contains("no localized text"),
+            "{refused}"
+        );
+
+        // With the producer's filter, the localised state's label survives intact.
+        placements.retain(|placement| state_names.contains_key(&placement.tag));
+        let set = build_label_set(
+            2,
+            &placements,
+            &state_names,
+            &state_metrics,
+            &content.font,
+            &content.heightmap,
+            content.height as f32,
+        )
+        .expect("the localised state still gets its label");
+        assert!(
+            set.rows.iter().any(|row| row.key == "STATE:1"),
+            "the localised state's label must survive"
+        );
+        assert!(set.rows.iter().all(|row| row.key != "STATE:2"));
     }
 
     #[test]

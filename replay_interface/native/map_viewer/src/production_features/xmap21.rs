@@ -125,6 +125,9 @@ impl ProductionMapFeatureAdapter for Xmap21MapFurnitureAdapter {
                 .map(|input| (*input).to_string())
                 .collect(),
         );
+        // The packet's own exclusions ride the envelope's per-element channel: one province's
+        // unvouched controller keeps its icon off the map without refusing the family.
+        output.element_diagnostics = prepared.element_diagnostics.clone();
         output.prepared_map_furniture = Some(prepared.as_ref().clone());
         Ok(output)
     }

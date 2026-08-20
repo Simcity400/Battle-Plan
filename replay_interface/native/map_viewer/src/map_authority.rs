@@ -196,6 +196,23 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status: divisions_status,
         can_report_absent: true,
     },
+    // NO POSITIVE WITNESS YET (lane OW, checked 2026-08-21).
+    //
+    // This row and `units.air_base_location` were promoted to owner-proven without one real
+    // recorded hour where they are positively Admitted, and a wider check did not find one.
+    // Over ALL 533 hours of captures/mu_t83_settings_partition - 177x lane OK's three-hour
+    // sample - both rows refuse in every single hour, each for the same one reason
+    // ("WorldFrame certified fleets_status is DomainUnavailable" /
+    // "... certified wings_status air-base join is DomainUnavailable"). The other candidate
+    // recording, captures/ob_first_bmp, cannot be opened at all: its only artifact is
+    // native_session.failed.battleplan, which the reader refuses as recovery-only.
+    //
+    // The predicates are NOT vacuous and this is NOT a defect in them: on the same 533 hours
+    // units.divisions admits in 364 and units.wings in 366, so the machinery demonstrably
+    // says yes when the data is there. What is missing is a recording that carries the fleets
+    // domain and the wings air-base join at all - which needs a live game, so it is left
+    // annotated rather than demoted. Census:
+    // extractor/native/runs/ow_viewer_sweep/POSITIVE_WITNESS_mu_t83.json
     MapAuthorityOwnerProvenAdmission {
         input_id: "units.taskforces_fleets",
         owner_packet: "XMAP13",
@@ -216,6 +233,23 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status: wings_status,
         can_report_absent: true,
     },
+    // NO POSITIVE WITNESS YET (lane OW, checked 2026-08-21).
+    //
+    // This row and `units.air_base_location` were promoted to owner-proven without one real
+    // recorded hour where they are positively Admitted, and a wider check did not find one.
+    // Over ALL 533 hours of captures/mu_t83_settings_partition - 177x lane OK's three-hour
+    // sample - both rows refuse in every single hour, each for the same one reason
+    // ("WorldFrame certified fleets_status is DomainUnavailable" /
+    // "... certified wings_status air-base join is DomainUnavailable"). The other candidate
+    // recording, captures/ob_first_bmp, cannot be opened at all: its only artifact is
+    // native_session.failed.battleplan, which the reader refuses as recovery-only.
+    //
+    // The predicates are NOT vacuous and this is NOT a defect in them: on the same 533 hours
+    // units.divisions admits in 364 and units.wings in 366, so the machinery demonstrably
+    // says yes when the data is there. What is missing is a recording that carries the fleets
+    // domain and the wings air-base join at all - which needs a live game, so it is left
+    // annotated rather than demoted. Census:
+    // extractor/native/runs/ow_viewer_sweep/POSITIVE_WITNESS_mu_t83.json
     MapAuthorityOwnerProvenAdmission {
         input_id: "units.air_base_location",
         owner_packet: "XMAP13",

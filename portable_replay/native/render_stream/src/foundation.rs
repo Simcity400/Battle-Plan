@@ -895,7 +895,7 @@ mod tests {
             outcome,
             part: part.into(),
             element_count: 1,
-            detail: "the candidate bucket order is not decoded".into(),
+            detail: "an engine law this build has not decoded".into(),
         }
     }
 

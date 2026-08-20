@@ -245,6 +245,20 @@ pub struct FoundationFeatureOutput {
     pub prepared_rail_supply: Option<crate::PreparedXmap16Frame>,
     pub prepared_map_modes: Option<crate::PreparedMapModeFrame>,
     pub prepared_map_furniture: Option<crate::PreparedMapFurniturePacket>,
+    /// Per-element doubts this family raised while preparing, at element grain.
+    ///
+    /// This is the additive counterpart of `consumed_gap_ids`. A gap says the RECORDING
+    /// declared a hole; these rows say this producer could not vouch one element of an
+    /// otherwise complete layer, and they let it exclude that element instead of refusing the
+    /// whole family. A family that has nothing to except leaves the list empty, which is
+    /// exactly the "absent rows = fully vouched" reading the envelope already has.
+    ///
+    /// Two producers deliberately do not use this field. XMAP12's rows travel on its prepared
+    /// frame, because they are validated against the placement population that frame carries.
+    /// XMAP06's standing exceptions are derived from its prepared partition in
+    /// [`collect_element_diagnostics`], because they are a function of what that partition
+    /// classified rather than something the adapter decides.
+    pub element_diagnostics: Vec<portable_render_stream::ElementDiagnostic>,
     pub consumed_gap_ids: Vec<String>,
 }
 
@@ -269,6 +283,7 @@ impl FoundationFeatureOutput {
             prepared_rail_supply: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
+            element_diagnostics: Vec::new(),
             consumed_gap_ids,
         }
     }
@@ -965,6 +980,8 @@ fn prepare_foundation_frame_inner(
     let viewer_state_sha256 = Sha256::hex(&serde_json::to_vec(viewer)?);
 
     let mut consumed = BTreeSet::new();
+    let mut adapter_element_diagnostics: Vec<portable_render_stream::ElementDiagnostic> =
+        Vec::new();
     let mut families = Vec::with_capacity(MapVisualFamily::ALL.len());
     let mut prepared_terrain = None;
     let mut prepared_political = None;
@@ -1038,6 +1055,7 @@ fn prepare_foundation_frame_inner(
                 return Err("foundation produced duplicate XMAP11 tree payload".into());
             }
             let output = xmap11.output;
+            adapter_element_diagnostics.extend(output.element_diagnostics);
             for gap_id in output.consumed_gap_ids {
                 if !map_admission
                     .gaps()
@@ -1057,6 +1075,7 @@ fn prepare_foundation_frame_inner(
                 return Err("foundation produced duplicate XMAP17 label payload".into());
             }
             let output = xmap17.output;
+            adapter_element_diagnostics.extend(output.element_diagnostics);
             for gap_id in output.consumed_gap_ids {
                 if !map_admission
                     .gaps()
@@ -1089,6 +1108,7 @@ fn prepare_foundation_frame_inner(
                     );
                     }
                     let output = xmap12.output;
+                    adapter_element_diagnostics.extend(output.element_diagnostics);
                     for gap_id in output.consumed_gap_ids {
                         if !map_admission
                             .gaps()
@@ -1346,6 +1366,7 @@ fn prepare_foundation_frame_inner(
                                 .into(),
                         );
                     }
+                    adapter_element_diagnostics.extend(output.element_diagnostics);
                     for gap_id in output.consumed_gap_ids {
                         if !map_admission
                             .gaps()
@@ -1396,7 +1417,12 @@ fn prepare_foundation_frame_inner(
     // channel. Rows under a family that refused wholesale are dropped - that family already
     // said everything through its gap, and a row underneath it would claim an element that
     // was never composed.
-    let element_diagnostics = collect_element_diagnostics(prepared_xmap12.as_ref(), &families)?;
+    let element_diagnostics = collect_element_diagnostics(
+        prepared_xmap12.as_ref(),
+        prepared_thin_borders.as_ref(),
+        adapter_element_diagnostics,
+        &families,
+    )?;
     let envelope = FoundationRenderEnvelope {
         schema: FOUNDATION_RENDER_SCHEMA.into(),
         hour_index: world_frame.hour_index(),
@@ -1754,16 +1780,25 @@ fn unimplemented_adapter_gap(family: MapVisualFamily, hour: i64) -> FoundationGa
 
 /// Gather every family's per-element diagnostics into the envelope's single list.
 ///
-/// This is the one place the channel is assembled. A family that gains an unvouched element
-/// adds its prepared payload's list here; nothing else in the foundation changes, and no
-/// family is refused because one of its elements is doubtful.
+/// This is the one place the channel is assembled, from three sources: the rows any adapter
+/// put on its `FoundationFeatureOutput`, XMAP12's rows on its prepared frame, and XMAP06's
+/// standing exceptions derived from its prepared partition. A family that gains an unvouched
+/// element adds its list here; nothing else in the foundation changes, and no family is
+/// refused because one of its elements is doubtful.
 fn collect_element_diagnostics(
     xmap12: Option<&crate::PreparedXmap12RenderFrame>,
+    thin_borders: Option<&crate::PreparedThinBorderFrame>,
+    adapter_rows: Vec<portable_render_stream::ElementDiagnostic>,
     families: &[FamilyCoverageRow],
 ) -> Result<Vec<portable_render_stream::ElementDiagnostic>> {
-    let mut rows = Vec::new();
+    let mut rows = adapter_rows;
     if let Some(xmap12) = xmap12 {
         rows.extend(xmap12.element_diagnostics.iter().cloned());
+    }
+    if let Some(thin_borders) = thin_borders {
+        rows.extend(crate::production_features::xmap06::xmap06_family_exceptions(
+            thin_borders,
+        )?);
     }
     rows.retain(|row| {
         families.iter().any(|family_row| {
