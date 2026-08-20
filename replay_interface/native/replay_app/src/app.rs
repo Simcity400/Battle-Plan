@@ -7297,13 +7297,9 @@ fn require_current_thin_borders_foundation(
             frame.validate()?;
             Ok(Some(frame))
         }
-        (map_viewer::FamilyDisposition::Unavailable { gap }, Some(frame))
-            if gap.gap_id == map_viewer::XMAP06_RUNTIME_BUCKET_GAP_ID
-                && frame.runtime_partition.is_none() =>
-        {
-            frame.validate()?;
-            Ok(None)
-        }
+        // XMAP06 derives its border classification replay-side (owner ruling
+        // 2026-08-21), so a partition is always present and the old
+        // carrier-unavailable arm is gone with the carrier it waited on.
         _ => Err(
             "XMAP06 foundation disposition/payload/runtime/map identity is not current and exact"
                 .into(),
@@ -11195,7 +11191,7 @@ mod product_production_d3d_tests {
     #[test]
     #[cfg_attr(
         not(all(gate_hoi4_install, gate_xmap_native_evidence_replay)),
-        ignore = "requires the matching the game install/user directory and an external-producer-certified replay carrying same-hour MAPC1/D18/FOW1, the XMAP06 runtime border-partition carrier, the passive global _xmap07_snow_mud_runtime texture/fade carrier, XMAP19 weather identity, and nonempty XMAP20 lifecycle authority; set XMAP_NATIVE_EVIDENCE_REPLAY to the replay and BATTLE_PLAN_USER_DIR when needed"
+        ignore = "requires the matching the game install/user directory and an external-producer-certified replay carrying same-hour MAPC1/D18/FOW1, the passive global _xmap07_snow_mud_runtime texture/fade carrier, XMAP19 weather identity, and nonempty XMAP20 lifecycle authority; set XMAP_NATIVE_EVIDENCE_REPLAY to the replay and BATTLE_PLAN_USER_DIR when needed"
     )]
     fn gate_vanilla_native_xmap04_xmap07_xmap20_xmap10_chain_and_seek_refusal() {
         let game_root = replay_test_gates::require_vanilla_game_root();
@@ -11205,7 +11201,7 @@ mod product_production_d3d_tests {
             .filter(|path| path.is_file())
             .unwrap_or_else(|| {
                 panic!(
-                    "XMAP_NATIVE_EVIDENCE_REPLAY must name an external-producer-certified replay carrying same-hour MAPC1/D18/FOW1, the XMAP06 runtime border-partition carrier, the passive global _xmap07_snow_mud_runtime texture/fade carrier, XMAP19 weather identity, and nonempty XMAP20 lifecycle authority"
+                    "XMAP_NATIVE_EVIDENCE_REPLAY must name an external-producer-certified replay carrying same-hour MAPC1/D18/FOW1, the passive global _xmap07_snow_mud_runtime texture/fade carrier, XMAP19 weather identity, and nonempty XMAP20 lifecycle authority"
                 )
             });
         let source = replay_core::open_recording(&fixture).unwrap_or_else(|error| {

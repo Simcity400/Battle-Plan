@@ -1492,15 +1492,14 @@ fn prepare_foundation_frame_inner(
             .find(|row| row.family == MapVisualFamily::ThinBorders)
             .ok_or("foundation envelope omitted ThinBorders")?;
         match &thin_border_row.disposition {
+            // XMAP06 derives its border classification in the replay layer
+            // (owner ruling 2026-08-21), so it has no unavailable disposition
+            // any more: there is no recorded carrier that an hour can be missing.
             FamilyDisposition::Present { payload_sha256, .. }
                 if payload_sha256 == &thin_borders.deterministic_sha256 => {}
-            FamilyDisposition::Unavailable { gap }
-                if gap.gap_id
-                    == crate::production_features::xmap06::XMAP06_RUNTIME_BUCKET_GAP_ID => {}
             _ => {
                 return Err(
-                    "foundation XMAP06 family row disagrees with its prepared geometry/blocker"
-                        .into(),
+                    "foundation XMAP06 family row disagrees with its prepared geometry".into(),
                 )
             }
         }

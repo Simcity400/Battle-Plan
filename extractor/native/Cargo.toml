@@ -116,7 +116,6 @@ members = [
     # own sources never overlap.
     "lanes/map_unit_presentation",
     "lanes/xmap17_labels",
-    "lanes/xmap06_border",
     "lanes/xui26_frontend",
     "lanes/victory_points",
     "lanes/postfx_exposure",

@@ -78,7 +78,6 @@ focus_research_decisions_depth_live = { path = "../lanes/focus_research_decision
 # here fails the collector's build rather than silently becoming unreachable.
 # This block is a single contiguous region, which is why all five land at once.
 xmap17_labels = { path = "../lanes/xmap17_labels" }
-xmap06_border = { path = "../lanes/xmap06_border" }
 xui26_frontend = { path = "../lanes/xui26_frontend" }
 victory_points = { path = "../lanes/victory_points" }
 postfx_exposure = { path = "../lanes/postfx_exposure" }

@@ -195,7 +195,6 @@ dependencies = [
  "theatre_selector_live_lane",
  "victory_points",
  "windows-sys",
- "xmap06_border",
  "xmap17_labels",
  "xui26_frontend",
 ]
@@ -1307,13 +1306,6 @@ dependencies = [
  "sha2",
  "wire_format",
  "zstd",
-]
-
-[[package]]
-name = "xmap06_border"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
 ]
 
 [[package]]

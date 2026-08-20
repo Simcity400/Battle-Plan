@@ -28,7 +28,7 @@ pub const GATES: &[replay_test_gates::Gate] = &[
     },
     replay_test_gates::Gate {
         cfg: "gate_xmap_native_evidence_replay",
-        reason: "an external-producer-certified replay carrying same-hour MAPC1/D18/FOW1, the XMAP06 runtime border-partition carrier, the passive global _xmap07_snow_mud_runtime texture/fade carrier, XMAP19 weather identity, and nonempty XMAP20 lifecycle authority, plus the matching the game user directory (set XMAP_NATIVE_EVIDENCE_REPLAY and, when needed, BATTLE_PLAN_USER_DIR)",
+        reason: "an external-producer-certified replay carrying same-hour MAPC1/D18/FOW1, the passive global _xmap07_snow_mud_runtime texture/fade carrier, XMAP19 weather identity, and nonempty XMAP20 lifecycle authority, plus the matching the game user directory (set XMAP_NATIVE_EVIDENCE_REPLAY and, when needed, BATTLE_PLAN_USER_DIR)",
         env_vars: &["XMAP_NATIVE_EVIDENCE_REPLAY", replay_test_gates::USER_DIR_ENV],
         probe: || {
             std::env::var_os("XMAP_NATIVE_EVIDENCE_REPLAY")

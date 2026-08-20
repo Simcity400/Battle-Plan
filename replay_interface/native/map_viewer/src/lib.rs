@@ -14,6 +14,7 @@ pub use portable_render_stream::{
 
 mod bloom;
 mod border_capture_evidence;
+mod border_classification;
 mod border_law;
 mod border_pass;
 mod border_texture_law;
@@ -157,6 +158,13 @@ pub use border_capture_evidence::{
     classify_captured_border_geometry, CapturedBorderGeometryKind, CapturedBorderIaLayout,
     DIAG23B_BORDERS_PASS_LAYOUT, SYNTHESIZED_BORDER_LAYOUT_POSITION_FORMAT,
     SYNTHESIZED_BORDER_LAYOUT_TEXCOORD_FORMAT, SYNTHESIZED_BORDER_VERTEX_STRIDE,
+};
+pub use border_classification::{
+    border_selection_palette_from_graphics_defines, classify_border_chain, partition_border_chains,
+    BorderClassification, BorderClassificationResidual, BorderSelectionPalette,
+    BorderSelectorReason, BorderWorldFacts, ClassifiedBorderChain, TutorialBorderHighlight,
+    ViewerBorderOverlays, XMAP06_CLASSIFICATION_RESIDUALS, XMAP06_CUSTOM_HIGHLIGHTS_DEFINE,
+    XMAP06_FIRST_CUSTOM_HIGHLIGHT_REASON, XMAP06_NAMED_PALETTE_DEFINES,
 };
 pub use border_law::{
     border_diffuse_source, border_fade_windows_from_graphics_defines,
@@ -700,7 +708,7 @@ pub use production_features::xmap06::{
     PreparedThinBorderFadeWindow, PreparedThinBorderFadeWindows, PreparedThinBorderFrame,
     PreparedThinBorderRuntimePartition, XMAP06_BORDER_CB2_BYTES, XMAP06_EARLY_OPERATION_NAME,
     XMAP06_EARLY_STAGE_NAME, XMAP06_LATE_OPERATION_NAME, XMAP06_LATE_STAGE_NAME,
-    XMAP06_RUNTIME_BUCKET_GAP_ID, XMAP06_THIN_BORDER_SCHEMA,
+    XMAP06_THIN_BORDER_SCHEMA,
 };
 pub use production_features::xmap07::{
     PreparedWaterFrame, PreparedWaterGeneratedTexture, PreparedWaterProgram, PreparedWaterSampler,
