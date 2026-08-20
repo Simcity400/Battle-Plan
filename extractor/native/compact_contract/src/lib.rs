@@ -728,7 +728,10 @@ pub fn passive_production_roster() -> Vec<CompactDomainDescriptor> {
         .collect()
 }
 
-pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[57];
+// Domain 100 rides every capture by owner ruling 2026-08-21: snow/mud is
+// recorded always at its tile-delta cost (~40 KB/h) so the map picture never
+// needs a special capture setting.
+pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[57, 100];
 
 pub fn passive_capture_roster() -> Vec<CompactDomainDescriptor> {
     let mut roster = passive_production_roster();
