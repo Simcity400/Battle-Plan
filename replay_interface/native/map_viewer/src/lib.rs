@@ -4,13 +4,14 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 pub use portable_render_stream::{
     AssignedStage, AssignedStageEdge, AssignedStageIdentity, AssignedStageSchedule,
-    AssignedStageTopology, FamilyCoverageRow, FamilyDisposition, FoundationGap,
-    FoundationOperationIdentity, FoundationRenderEnvelope, MapObjectDrawArguments,
-    MapObjectMaterialFamily, MapObjectMeshGroupContent, MapObjectRenderContent,
-    MapObjectSubmeshContent, MapVisualFamily, PreparedMapObjectDraw,
+    AssignedStageTopology, ElementDiagnostic, ElementOutcome, FamilyCoverageRow,
+    FamilyDisposition, FoundationGap, FoundationOperationIdentity, FoundationRenderEnvelope,
+    MapObjectDrawArguments, MapObjectMaterialFamily, MapObjectMeshGroupContent,
+    MapObjectRenderContent, MapObjectSubmeshContent, MapVisualFamily, PreparedMapObjectDraw,
     ASSIGNED_STAGE_SCHEDULE_SCHEMA, ASSIGNED_STAGE_SCHEMA, ASSIGNED_STAGE_TOPOLOGY_SCHEMA,
-    FOUNDATION_RENDER_SCHEMA,
+    FOUNDATION_RENDER_SCHEMA, MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY,
 };
+pub use portable_render_stream::collapse_element_diagnostics;
 
 mod bloom;
 mod border_capture_evidence;

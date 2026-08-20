@@ -65,8 +65,9 @@ pub use m02_combat::{
 
 mod foundation;
 pub use foundation::{
-    FamilyCoverageRow, FamilyDisposition, FoundationGap, FoundationOperationIdentity,
-    FoundationRenderEnvelope, MapVisualFamily, FOUNDATION_RENDER_SCHEMA,
+    collapse_element_diagnostics, ElementDiagnostic, ElementOutcome, FamilyCoverageRow,
+    FamilyDisposition, FoundationGap, FoundationOperationIdentity, FoundationRenderEnvelope,
+    MapVisualFamily, FOUNDATION_RENDER_SCHEMA, MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY,
 };
 
 mod xmap07_snow_mud;

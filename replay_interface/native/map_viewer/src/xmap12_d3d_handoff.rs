@@ -37,6 +37,10 @@ pub fn xmap13_native_bridge_frame(
         city_frame_sha256: prepared.semantic_input_sha256.clone(),
         building_frame_sha256: prepared.unit_entity_assignment.assignment_sha256.clone(),
         fixed_frame_sha256: prepared.counter_quad_assignment.assignment_sha256.clone(),
+        // This bridge carries another family's draws through the XMAP12 handoff; the rows
+        // each name their own family, so when that family gains an unvouched element they
+        // are extended in here rather than needing a channel of their own.
+        element_diagnostics: Vec::new(),
         fow_noise_content,
         fow_height_content,
         environment_map_content,

@@ -1391,6 +1391,12 @@ fn prepare_foundation_frame_inner(
         }
     }
 
+    // Per-element diagnostics ride the envelope alongside the family rows: one collection
+    // point, so a family that gains an unvouched element adds its list here and needs no new
+    // channel. Rows under a family that refused wholesale are dropped - that family already
+    // said everything through its gap, and a row underneath it would claim an element that
+    // was never composed.
+    let element_diagnostics = collect_element_diagnostics(prepared_xmap12.as_ref(), &families)?;
     let envelope = FoundationRenderEnvelope {
         schema: FOUNDATION_RENDER_SCHEMA.into(),
         hour_index: world_frame.hour_index(),
@@ -1399,6 +1405,7 @@ fn prepare_foundation_frame_inner(
         effective_vfs_manifest_sha256: manifest.effective_vfs_manifest_sha256.clone(),
         foundation_content_operation_sha256: content_receipt.deterministic_sha256.clone(),
         families,
+        element_diagnostics,
     };
     envelope.validate()?;
     let envelope = FoundationRenderEnvelope::decode_json(&envelope.encode_json()?)
@@ -1743,6 +1750,28 @@ fn unimplemented_adapter_gap(family: MapVisualFamily, hour: i64) -> FoundationGa
         witness_sha256,
         reason,
     }
+}
+
+/// Gather every family's per-element diagnostics into the envelope's single list.
+///
+/// This is the one place the channel is assembled. A family that gains an unvouched element
+/// adds its prepared payload's list here; nothing else in the foundation changes, and no
+/// family is refused because one of its elements is doubtful.
+fn collect_element_diagnostics(
+    xmap12: Option<&crate::PreparedXmap12RenderFrame>,
+    families: &[FamilyCoverageRow],
+) -> Result<Vec<portable_render_stream::ElementDiagnostic>> {
+    let mut rows = Vec::new();
+    if let Some(xmap12) = xmap12 {
+        rows.extend(xmap12.element_diagnostics.iter().cloned());
+    }
+    rows.retain(|row| {
+        families.iter().any(|family_row| {
+            family_row.family == row.family
+                && !matches!(family_row.disposition, FamilyDisposition::Unavailable { .. })
+        })
+    });
+    portable_render_stream::collapse_element_diagnostics(rows).map_err(Into::into)
 }
 
 fn owner_packet_for_authority_gap(input_id: &str) -> Option<&'static str> {
@@ -2523,6 +2552,7 @@ pub fn ")
                     },
                 })
                 .collect(),
+            element_diagnostics: Vec::new(),
         };
         let deferred = crate::production_features::xmap10::Xmap10GradingPostFxAdapter::deferred_disposition();
         envelope.families[8].disposition = deferred;
@@ -2585,6 +2615,7 @@ pub fn ")
             effective_vfs_manifest_sha256: "d".repeat(64),
             foundation_content_operation_sha256: "e".repeat(64),
             families: family_rows(hour, unavailable_family),
+            element_diagnostics: Vec::new(),
         };
         let mut state = FoundationPlaybackState::default();
         assert!(matches!(
@@ -2645,6 +2676,7 @@ pub fn ")
                     },
                 })
                 .collect(),
+            element_diagnostics: Vec::new(),
         };
 
         let mut state = FoundationPlaybackState::default();

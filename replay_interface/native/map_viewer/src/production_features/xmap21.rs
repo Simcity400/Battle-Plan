@@ -171,6 +171,7 @@ mod tests {
                     },
                 })
                 .collect(),
+            element_diagnostics: Vec::new(),
         };
         assert!(envelope.has_refusing_family());
         let error = envelope

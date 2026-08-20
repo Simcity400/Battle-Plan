@@ -1,9 +1,9 @@
 use portable_content_manifest::UsedContentKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-pub const FOUNDATION_RENDER_SCHEMA: &str = "hoi4.viewer-map-foundation.v1";
+pub const FOUNDATION_RENDER_SCHEMA: &str = "hoi4.viewer-map-foundation.v2";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -99,6 +99,325 @@ pub struct FoundationGap {
     pub reason: String,
 }
 
+/// What a single drawn element's local uncertainty is, at the grain of one element rather
+/// than one family.
+///
+/// [`FoundationGap`] is family-wide: using it for a doubt about one building would refuse
+/// every building, city and ambient object on the map. This enum is the finer grain the
+/// recorder's own domains already have - a per-record outcome that composition carries
+/// instead of destroying the frame.
+///
+/// An element with nothing to report carries no row at all; absence of a row IS the
+/// "fully vouched" state, which keeps the common case free.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ElementOutcome {
+    /// Not drawn, because an engine law this build has not decoded would have had to choose
+    /// between admissible alternatives.
+    ///
+    /// Drawing one of them and reporting the doubt was tried and does not hold up: a mesh
+    /// drawn for the wrong alternative is an invented element, and no amount of reporting
+    /// makes those pixels true. The row names the law and the alternatives, so decoding the
+    /// law later restores every element it excluded.
+    ExcludedUndecodedLaw,
+    /// Not drawn at all, because an input the whole element needs is unknown.
+    ExcludedUnknownInput,
+    /// Authored content names something the effective content set does not describe, so no
+    /// element could be resolved from it. A content-compatibility condition, not a defect in
+    /// the recording.
+    UnknownContentToken,
+    /// The producer produced its output and vouches it, EXCEPT for one named branch that
+    /// renders as its documented honest fallback.
+    ///
+    /// This is the family-scope counterpart of the per-element outcomes above, for a
+    /// permanent, structural exception rather than an hour's missing data: a branch of an
+    /// engine law this build cannot derive, where the layer is still correct everywhere else
+    /// and the exceptional case degrades to something honest rather than invented.
+    /// `FamilyDisposition::Unavailable` is the wrong tool for it - that would delete the
+    /// whole layer from every replay forever over a branch that may never occur - and
+    /// `Present` alone cannot say the exception exists. A row with this outcome, built by
+    /// [`ElementDiagnostic::family_exception`], says both.
+    ExactExceptNamedBranch,
+}
+
+impl ElementOutcome {
+    /// The wire spelling, used to key an aggregate row.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ExcludedUndecodedLaw => "excluded_undecoded_law",
+            Self::ExcludedUnknownInput => "excluded_unknown_input",
+            Self::UnknownContentToken => "unknown_content_token",
+            Self::ExactExceptNamedBranch => "exact_except_named_branch",
+        }
+    }
+
+    /// Whether the element still reaches the frame. `false` means it was excluded whole.
+    pub const fn draws(self) -> bool {
+        match self {
+            Self::ExactExceptNamedBranch => true,
+            Self::ExcludedUndecodedLaw
+            | Self::ExcludedUnknownInput
+            | Self::UnknownContentToken => false,
+        }
+    }
+
+    /// Whether this outcome describes a permanent structural exception rather than one
+    /// hour's missing or undecidable data. Permanent rows recur every hour by design and
+    /// say nothing about the recording's completeness.
+    pub const fn is_structural(self) -> bool {
+        matches!(self, Self::ExactExceptNamedBranch)
+    }
+}
+
+/// One accounted local uncertainty inside an otherwise available family.
+///
+/// A row accounts for `element_count` elements: 1 for the ordinary per-element row, more
+/// when identical outcomes were collapsed (see
+/// [`MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY`]) or when the condition's own grain is a
+/// content token rather than an element.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ElementDiagnostic {
+    pub family: MapVisualFamily,
+    pub owner_packet: String,
+    /// The element's stable id, or - when the condition is about authored content rather
+    /// than one element - a stable id for the content it names.
+    pub element_id: String,
+    /// Where the element sits in its authored population. `None` for a row whose grain is
+    /// not one element: a content token, a collapsed aggregate, or a family-scope named
+    /// exception.
+    pub source_ordinal: Option<u32>,
+    pub outcome: ElementOutcome,
+    /// The named part the outcome applies to, or empty for the whole element.
+    pub part: String,
+    /// How many elements this row accounts for.
+    ///
+    /// Zero is legal ONLY for a structural family-scope exception, which is a standing
+    /// property of the layer and may affect no element at all in a given hour - reporting it
+    /// as one affected element would fabricate an element in every receipt. For every other
+    /// outcome a row that accounts for nothing is noise and is refused.
+    ///
+    /// Wide enough to sum every element of every family without saturating, because an
+    /// aggregate that silently clamps its count would under-report exactly when the channel
+    /// matters most.
+    pub element_count: u64,
+    /// Plain statement of what could not be vouched and why.
+    pub detail: String,
+}
+
+/// Rows one family carries before identical outcomes collapse into accounted aggregates.
+///
+/// The per-element row is the useful grain for a handful of doubtful elements. An hour
+/// where thousands of elements share one cause is a family-wide condition wearing a
+/// per-element costume, and repeating it thousands of times would inflate every frame's
+/// receipt without telling anyone more. Collapsing keeps the accounting exact - the
+/// aggregate carries the full count - while bounding the channel.
+pub const MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY: usize = 256;
+
+impl ElementDiagnostic {
+    /// The id prefix a collapsed aggregate row carries for a family.
+    pub fn aggregate_id_prefix(family: MapVisualFamily) -> String {
+        format!("{}:aggregate:", family.owner_packet())
+    }
+
+    /// The id prefix a family-scope named exception carries.
+    pub fn family_exception_id_prefix(family: MapVisualFamily) -> String {
+        format!("{}:family-exception:", family.owner_packet())
+    }
+
+    /// A family-scope named exception: the layer is produced and vouched EXCEPT for this
+    /// named branch, which renders as its honest fallback.
+    ///
+    /// `branch_id` names the branch in the producer's own vocabulary (a reason code, a law
+    /// name); `element_count` is how many elements took the fallback this hour, and ZERO is
+    /// the right answer when the branch was not exercised - the exception still stands and is
+    /// still worth naming, but claiming one affected element would fabricate one.
+    pub fn family_exception(
+        family: MapVisualFamily,
+        branch_id: &str,
+        element_count: u64,
+        detail: String,
+    ) -> Self {
+        Self {
+            family,
+            owner_packet: family.owner_packet().into(),
+            element_id: format!("{}{branch_id}", Self::family_exception_id_prefix(family)),
+            source_ordinal: None,
+            outcome: ElementOutcome::ExactExceptNamedBranch,
+            part: branch_id.into(),
+            element_count,
+            detail,
+        }
+    }
+
+    /// True when this row is about the family as a whole rather than about one element.
+    pub fn is_family_scope(&self) -> bool {
+        self.element_id
+            .starts_with(&Self::family_exception_id_prefix(self.family))
+    }
+
+    /// True when this row is a collapsed aggregate rather than a single element.
+    pub fn is_aggregate(&self) -> bool {
+        self.element_id
+            .starts_with(&Self::aggregate_id_prefix(self.family))
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.owner_packet != self.family.owner_packet() {
+            return Err(format!(
+                "element diagnostic for {:?} names owner packet {:?}",
+                self.family, self.owner_packet
+            ));
+        }
+        if self.element_id.trim().is_empty() || self.detail.trim().is_empty() {
+            return Err(format!(
+                "element diagnostic {:?} has a blank element id or detail",
+                self.element_id
+            ));
+        }
+        if self.element_count == 0 && !self.outcome.is_structural() {
+            return Err(format!(
+                "element diagnostic {} accounts for no elements",
+                self.element_id
+            ));
+        }
+        let names_part = !self.part.trim().is_empty();
+        let outcome_names_a_part = matches!(self.outcome, ElementOutcome::ExactExceptNamedBranch);
+        if names_part != outcome_names_a_part {
+            return Err(format!(
+                "element diagnostic {} must name a part exactly when its outcome has one",
+                self.element_id
+            ));
+        }
+        if self.is_family_scope() != self.outcome.is_structural() {
+            return Err(format!(
+                "element diagnostic {} must use the family-exception id exactly for a \
+                 structural family-scope outcome",
+                self.element_id
+            ));
+        }
+        let about_one_element = !self.is_family_scope()
+            && !self.is_aggregate()
+            && self.outcome != ElementOutcome::UnknownContentToken;
+        if !about_one_element && self.source_ordinal.is_some() {
+            return Err(format!(
+                "element diagnostic {} is not about one element but carries a source ordinal",
+                self.element_id
+            ));
+        }
+        Ok(())
+    }
+
+    fn order_key(&self) -> (MapVisualFamily, &str, &str, ElementOutcome) {
+        (self.family, &self.element_id, &self.part, self.outcome)
+    }
+}
+
+/// Collapse a family's rows when there are more of them than the channel carries.
+///
+/// The group key has to be something a producer cannot vary per row, or the "bound" bounds
+/// nothing: keying on the row's `part` would produce as many groups as there were parts. Only
+/// a standing family exception names a part, and those are never collapsed, so the key is the
+/// `outcome` alone and the number of groups cannot exceed the number of outcomes. A
+/// collapsible row that carries a part is refused rather than silently defeating the bound.
+/// Families under the bound are returned untouched, so the ordinary case stays per-element.
+///
+/// Counts are summed in `u64` with `checked_add` and the collapse REFUSES on overflow rather
+/// than clamping: an aggregate whose count is a lie is worse than no aggregate.
+pub fn collapse_element_diagnostics(
+    mut rows: Vec<ElementDiagnostic>,
+) -> Result<Vec<ElementDiagnostic>, String> {
+    rows.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
+    let mut per_family: BTreeMap<MapVisualFamily, Vec<ElementDiagnostic>> = BTreeMap::new();
+    for row in rows {
+        per_family.entry(row.family).or_default().push(row);
+    }
+    let mut collapsed = Vec::new();
+    for (family, family_rows) in per_family {
+        // Family-scope exceptions are never collapsed. They are a handful of standing,
+        // individually meaningful branches; folding them into an aggregate would rewrite
+        // their ids into the aggregate form that validation - rightly - refuses for a
+        // structural outcome, and would turn a legitimate frame into a failing one.
+        let (structural, per_element): (Vec<_>, Vec<_>) = family_rows
+            .into_iter()
+            .partition(|row| row.outcome.is_structural());
+        if structural.len() > MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY {
+            return Err(format!(
+                "{family:?} names more than {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY} standing \
+                 exceptions, which is a producer defect, not an hour's data"
+            ));
+        }
+        if structural.len() + per_element.len() <= MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY {
+            collapsed.extend(structural);
+            collapsed.extend(per_element);
+            continue;
+        }
+        let staged = collapse_family(family, per_element)?;
+        // The bound covers everything the family carries, retained structural rows included -
+        // checking only the collapsed part would let the total exceed the stated bound while
+        // each half looked fine. Grouping by outcome cannot produce more groups than there
+        // are outcomes, so exceeding this means a producer named a pathological number of
+        // standing exceptions: refuse loudly rather than quietly break the contract.
+        if structural.len() + staged.len() > MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY {
+            return Err(format!(
+                "{family:?} element diagnostics did not collapse below the \
+                 {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY}-row bound"
+            ));
+        }
+        collapsed.extend(structural);
+        collapsed.extend(staged);
+    }
+    collapsed.sort_by(|left, right| left.order_key().cmp(&right.order_key()));
+    Ok(collapsed)
+}
+
+/// Group a family's per-element rows by outcome into accounted aggregates.
+///
+/// Only structural family-scope outcomes carry a `part`, and those never reach here, so the
+/// group key is the outcome alone and the number of groups is bounded by the number of
+/// outcomes.
+fn collapse_family(
+    family: MapVisualFamily,
+    rows: Vec<ElementDiagnostic>,
+) -> Result<Vec<ElementDiagnostic>, String> {
+    let mut groups: BTreeMap<ElementOutcome, (u64, u64)> = BTreeMap::new();
+    for row in rows {
+        if !row.part.trim().is_empty() {
+            return Err(format!(
+                "{family:?} cannot aggregate {}: only a standing family exception names a \
+                 part, and those are never collapsed",
+                row.element_id
+            ));
+        }
+        let entry = groups.entry(row.outcome).or_insert((0, 0));
+        entry.0 = entry.0.checked_add(row.element_count).ok_or_else(|| {
+            format!("{family:?} element diagnostic counts overflow a u64 when aggregated")
+        })?;
+        entry.1 += 1;
+    }
+    let mut aggregated = Vec::with_capacity(groups.len());
+    for (outcome, (element_count, row_count)) in groups {
+        aggregated.push(ElementDiagnostic {
+            family,
+            owner_packet: family.owner_packet().into(),
+            element_id: format!(
+                "{}{}",
+                ElementDiagnostic::aggregate_id_prefix(family),
+                outcome.as_str()
+            ),
+            source_ordinal: None,
+            outcome,
+            part: String::new(),
+            element_count,
+            detail: format!(
+                "{row_count} rows share this outcome; collapsed at the \
+                 {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY}-row per-family bound, count kept exact"
+            ),
+        });
+    }
+    Ok(aggregated)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub enum FamilyDisposition {
@@ -151,6 +470,12 @@ pub struct FoundationRenderEnvelope {
     pub effective_vfs_manifest_sha256: String,
     pub foundation_content_operation_sha256: String,
     pub families: Vec<FamilyCoverageRow>,
+    /// Local uncertainties inside families that are otherwise available.
+    ///
+    /// Empty is the ordinary case and means every element the frame drew is vouched. A row
+    /// here never refuses anything: the family still composes, and the row says which
+    /// element could not be vouched and why - the exclude-and-account law at element grain.
+    pub element_diagnostics: Vec<ElementDiagnostic>,
 }
 
 impl FoundationRenderEnvelope {
@@ -217,6 +542,54 @@ impl FoundationRenderEnvelope {
                 ));
             }
             validate_disposition(row)?;
+        }
+        self.validate_element_diagnostics()?;
+        Ok(())
+    }
+
+    fn validate_element_diagnostics(&self) -> Result<(), String> {
+        let mut previous: Option<(MapVisualFamily, &str, &str, ElementOutcome)> = None;
+        // The per-family bound is a property of the FORMAT, not a producer convention: only
+        // producers call `collapse_element_diagnostics`, so an envelope decoded from bytes -
+        // or a composition receipt's reconstruction of one - would otherwise be free to
+        // carry any number of rows and the stated bound would mean nothing here.
+        let mut rows_per_family: BTreeMap<MapVisualFamily, usize> = BTreeMap::new();
+        for row in &self.element_diagnostics {
+            let carried = rows_per_family.entry(row.family).or_insert(0);
+            *carried += 1;
+            if *carried > MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY {
+                return Err(format!(
+                    "{:?} carries more than {MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY} element \
+                     diagnostics",
+                    row.family
+                ));
+            }
+            row.validate()?;
+            let key = row.order_key();
+            if previous.is_some_and(|prior| prior >= key) {
+                return Err(
+                    "element diagnostics are not strictly ordered or repeat a row".to_string(),
+                );
+            }
+            previous = Some(key);
+            let family_row = self
+                .families
+                .iter()
+                .find(|family_row| family_row.family == row.family)
+                .ok_or_else(|| {
+                    format!("element diagnostic names absent family {:?}", row.family)
+                })?;
+            // A family that refused wholesale already said everything through its gap; a
+            // per-element row underneath it would claim elements that were never composed.
+            // A family that DEFERRED to draw time may carry rows: it still composes once its
+            // contract is discharged, and if it never is, `seal_readiness` stops the frame
+            // before anyone reads these.
+            if matches!(family_row.disposition, FamilyDisposition::Unavailable { .. }) {
+                return Err(format!(
+                    "element diagnostic sits under unavailable family {:?}",
+                    row.family
+                ));
+            }
         }
         Ok(())
     }
@@ -313,6 +686,37 @@ impl FoundationRenderEnvelope {
             ));
         }
         Ok(())
+    }
+
+    /// No family refused AND every element they composed is vouched.
+    ///
+    /// This never gates a frame. Sealing is [`Self::seal_readiness`]'s job, and element
+    /// diagnostics deliberately do not enter it: a frame shows what is vouched, and an
+    /// excluded element is simply not among it. This is the stricter question - "was
+    /// anything, at any grain, left out" - for a reader who wants to know rather than a
+    /// gate that wants to refuse.
+    pub fn is_fully_vouched(&self) -> bool {
+        !self.has_refusing_family() && self.element_diagnostics.is_empty()
+    }
+
+    pub fn element_diagnostics_for(
+        &self,
+        family: MapVisualFamily,
+    ) -> impl Iterator<Item = &ElementDiagnostic> {
+        self.element_diagnostics
+            .iter()
+            .filter(move |row| row.family == family)
+    }
+
+    /// How many elements each family could not fully vouch this hour, per family that has
+    /// any. The per-hour, per-family shape the recorder's own gap ledger is read in.
+    pub fn element_diagnostic_counts(&self) -> BTreeMap<MapVisualFamily, u64> {
+        let mut counts = BTreeMap::new();
+        for row in &self.element_diagnostics {
+            let total = counts.entry(row.family).or_insert(0u64);
+            *total = total.saturating_add(row.element_count);
+        }
+        counts
     }
 }
 
@@ -465,6 +869,33 @@ mod tests {
                     },
                 })
                 .collect(),
+            element_diagnostics: Vec::new(),
+        }
+    }
+
+    fn present_envelope() -> FoundationRenderEnvelope {
+        let mut envelope = envelope();
+        for row in &mut envelope.families {
+            row.disposition = FamilyDisposition::AuthenticatedEmpty {
+                producer_registration_sha256: "b".repeat(64),
+                enumerator_witness_sha256: "c".repeat(64),
+            };
+        }
+        envelope
+    }
+
+    fn diagnostic(element_id: &str, outcome: ElementOutcome, part: &str) -> ElementDiagnostic {
+        ElementDiagnostic {
+            family: MapVisualFamily::CitiesBuildingsMapObjects,
+            owner_packet: MapVisualFamily::CitiesBuildingsMapObjects
+                .owner_packet()
+                .into(),
+            element_id: element_id.into(),
+            source_ordinal: Some(3),
+            outcome,
+            part: part.into(),
+            element_count: 1,
+            detail: "the candidate bucket order is not decoded".into(),
         }
     }
 
@@ -654,5 +1085,413 @@ mod tests {
             .unwrap()
             .insert("selected_present".into(), serde_json::json!({}));
         assert!(serde_json::from_value::<FoundationRenderEnvelope>(value).is_err());
+    }
+
+    #[test]
+    fn a_local_uncertainty_rides_an_available_family_instead_of_refusing_it() {
+        // The whole point of the channel: one doubtful element leaves every other element
+        // of its family composed, and the frame must still SEAL - element diagnostics are
+        // not a gate, or every frame carrying one doubtful building would stop showing.
+        // kills: routing an element diagnostic through FamilyDisposition::Unavailable, and
+        // folding element diagnostics into seal_readiness.
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = vec![diagnostic(
+            "xmap12:building:12:4711:naval_base_spawn:0",
+            ElementOutcome::ExcludedUndecodedLaw,
+            "",
+        )];
+        envelope.validate().unwrap();
+        assert!(!envelope.has_refusing_family());
+        assert!(envelope.seal_readiness(&BTreeSet::new()).is_ok());
+        assert!(!envelope.is_fully_vouched());
+        assert_eq!(
+            envelope.element_diagnostic_counts(),
+            BTreeMap::from([(MapVisualFamily::CitiesBuildingsMapObjects, 1)])
+        );
+        assert_eq!(
+            envelope
+                .element_diagnostics_for(MapVisualFamily::CitiesBuildingsMapObjects)
+                .count(),
+            1
+        );
+        assert_eq!(
+            envelope.element_diagnostics_for(MapVisualFamily::Terrain).count(),
+            0
+        );
+        let decoded = FoundationRenderEnvelope::decode_json(&envelope.encode_json().unwrap())
+            .unwrap();
+        assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn element_diagnostics_are_refused_when_they_cannot_mean_what_they_say() {
+        // kills: accepting a row under a refused family (it would claim an element that was
+        // never composed), accepting unordered/duplicate rows (non-deterministic receipts),
+        // a zero count, a mismatched owner packet, and a part named by an outcome that
+        // excludes nothing.
+        let mut refused = envelope();
+        refused.element_diagnostics = vec![diagnostic("a", ElementOutcome::ExcludedUndecodedLaw, "")];
+        assert!(refused
+            .validate()
+            .unwrap_err()
+            .contains("unavailable family"));
+
+        let mut unordered = present_envelope();
+        unordered.element_diagnostics = vec![
+            diagnostic("b", ElementOutcome::ExcludedUndecodedLaw, ""),
+            diagnostic("a", ElementOutcome::ExcludedUndecodedLaw, ""),
+        ];
+        assert!(unordered.validate().unwrap_err().contains("strictly ordered"));
+
+        let mut duplicated = present_envelope();
+        duplicated.element_diagnostics = vec![
+            diagnostic("a", ElementOutcome::ExcludedUndecodedLaw, ""),
+            diagnostic("a", ElementOutcome::ExcludedUndecodedLaw, ""),
+        ];
+        assert!(duplicated.validate().unwrap_err().contains("strictly ordered"));
+
+        let mut empty_count = present_envelope();
+        let mut row = diagnostic("a", ElementOutcome::ExcludedUndecodedLaw, "");
+        row.element_count = 0;
+        empty_count.element_diagnostics = vec![row];
+        assert!(empty_count
+            .validate()
+            .unwrap_err()
+            .contains("accounts for no elements"));
+
+        let mut wrong_owner = present_envelope();
+        let mut row = diagnostic("a", ElementOutcome::ExcludedUndecodedLaw, "");
+        row.owner_packet = "XMAP04".into();
+        wrong_owner.element_diagnostics = vec![row];
+        assert!(wrong_owner.validate().unwrap_err().contains("owner packet"));
+
+        let mut stray_part = present_envelope();
+        stray_part.element_diagnostics = vec![diagnostic(
+            "a",
+            ElementOutcome::ExcludedUndecodedLaw,
+            "some_branch",
+        )];
+        assert!(stray_part.validate().unwrap_err().contains("name a part"));
+
+        let mut missing_part = present_envelope();
+        let mut row = ElementDiagnostic::family_exception(
+            MapVisualFamily::CitiesBuildingsMapObjects,
+            "branch",
+            1,
+            "detail".into(),
+        );
+        row.part = String::new();
+        missing_part.element_diagnostics = vec![row];
+        assert!(missing_part.validate().unwrap_err().contains("name a part"));
+    }
+
+    #[test]
+    fn collapsing_bounds_the_channel_without_losing_a_single_element() {
+        // kills: truncating the tail instead of aggregating it (elements would go
+        // unaccounted), and collapsing a family that is under the bound (the per-element
+        // grain is the useful one).
+        let under: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUndecodedLaw,
+                    "",
+                )
+            })
+            .collect();
+        let kept = collapse_element_diagnostics(under.clone()).unwrap();
+        assert_eq!(kept.len(), MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY);
+
+        let mut over = under;
+        over.push(diagnostic(
+            "xmap12:building:9999",
+            ElementOutcome::ExcludedUndecodedLaw,
+            "",
+        ));
+        over.push(diagnostic(
+            "xmap12:building:9998",
+            ElementOutcome::UnknownContentToken,
+            "",
+        ));
+        let total: u64 = over.iter().map(|row| row.element_count).sum();
+        let collapsed = collapse_element_diagnostics(over).unwrap();
+        assert_eq!(collapsed.len(), 2, "one aggregate per outcome");
+        assert_eq!(
+            collapsed.iter().map(|row| row.element_count).sum::<u64>(),
+            total
+        );
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = collapsed;
+        envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn the_row_bound_holds_because_the_group_key_is_bounded() {
+        // The bound is only a bound if the group key cannot take as many values as there are
+        // rows. Only a standing family exception names a part, and those never collapse, so
+        // the key is the outcome alone - and a part on a collapsible row is refused rather
+        // than silently producing one group per row.
+        // kills: grouping collapsible rows by a key a producer can vary per row.
+        let mut rows: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUnknownInput,
+                    "",
+                )
+            })
+            .collect();
+        rows.push(diagnostic(
+            "xmap12:slot-token:floating_harbor",
+            ElementOutcome::UnknownContentToken,
+            "",
+        ));
+        let total: u64 = rows.iter().map(|row| row.element_count).sum();
+        let collapsed = collapse_element_diagnostics(rows).unwrap();
+        assert_eq!(collapsed.len(), 2, "one aggregate per outcome");
+        assert!(collapsed.len() <= MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY);
+        assert_eq!(
+            collapsed.iter().map(|row| row.element_count).sum::<u64>(),
+            total
+        );
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = collapsed;
+        envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn an_aggregate_refuses_rather_than_report_a_count_it_cannot_hold() {
+        // An aggregate whose count silently clamps under-reports exactly when the channel
+        // matters most, so overflow is a refusal, not a saturation.
+        // kills: saturating_add in the aggregation.
+        let mut rows: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUndecodedLaw,
+                    "",
+                )
+            })
+            .collect();
+        rows[0].element_count = u64::MAX;
+        let error = collapse_element_diagnostics(rows).unwrap_err();
+        assert!(error.contains("overflow"), "{error}");
+    }
+
+    #[test]
+    fn a_family_can_vouch_what_it_produced_and_still_name_a_permanent_exception() {
+        // The family-scope counterpart: a layer that is exact except for a named branch must
+        // not have to choose between claiming exactness and deleting itself from every
+        // replay through `Unavailable`.
+        // kills: forcing a permanent named exception through FamilyDisposition::Unavailable,
+        // and letting a family-scope row masquerade as a per-element one.
+        let exception = ElementDiagnostic::family_exception(
+            MapVisualFamily::ThinBorders,
+            "reason_code_7",
+            3,
+            "chains carrying this reason code draw as ordinary borders".into(),
+        );
+        exception.validate().unwrap();
+        assert!(exception.is_family_scope());
+        assert!(!exception.is_aggregate());
+        assert!(exception.outcome.is_structural());
+        assert!(exception.outcome.draws());
+        assert_eq!(exception.source_ordinal, None);
+
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = vec![exception];
+        envelope.validate().unwrap();
+        assert!(!envelope.has_refusing_family(), "the layer still composes");
+        assert!(
+            envelope.seal_readiness(&BTreeSet::new()).is_ok(),
+            "a standing exception never stops the frame from sealing"
+        );
+        assert!(!envelope.is_fully_vouched());
+        assert_eq!(
+            envelope.element_diagnostic_counts(),
+            BTreeMap::from([(MapVisualFamily::ThinBorders, 3)])
+        );
+
+        // A structural outcome must use the family-exception id, and a per-element outcome
+        // must not.
+        let mut mislabelled = present_envelope();
+        let mut row = diagnostic("xmap12:building:0", ElementOutcome::ExactExceptNamedBranch, "b");
+        mislabelled.element_diagnostics = vec![row.clone()];
+        assert!(mislabelled
+            .validate()
+            .unwrap_err()
+            .contains("family-exception id"));
+
+        row = ElementDiagnostic::family_exception(
+            MapVisualFamily::CitiesBuildingsMapObjects,
+            "branch",
+            1,
+            "detail".into(),
+        );
+        row.outcome = ElementOutcome::ExcludedUnknownInput;
+        row.part = String::new();
+        let mut wrong_outcome = present_envelope();
+        wrong_outcome.element_diagnostics = vec![row];
+        assert!(wrong_outcome
+            .validate()
+            .unwrap_err()
+            .contains("family-exception id"));
+    }
+
+    #[test]
+    fn a_standing_exception_that_affected_nothing_this_hour_counts_nothing() {
+        // A permanent branch that was not exercised must not invent an affected element in
+        // every receipt. Zero is the honest count, and it is legal only here - for any other
+        // outcome a row that accounts for nothing is noise.
+        // kills: clamping a family exception's count up to 1, and allowing a zero count on a
+        // per-element row.
+        let unexercised = ElementDiagnostic::family_exception(
+            MapVisualFamily::ThinBorders,
+            "reason_code_9",
+            0,
+            "no chain carried this reason code this hour".into(),
+        );
+        unexercised.validate().unwrap();
+        assert_eq!(unexercised.element_count, 0);
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = vec![unexercised];
+        envelope.validate().unwrap();
+        assert!(
+            envelope.element_diagnostic_counts()[&MapVisualFamily::ThinBorders] == 0,
+            "an unexercised branch affected no elements"
+        );
+        assert!(!envelope.is_fully_vouched(), "the exception still stands");
+
+        let mut zero_element_row = present_envelope();
+        let mut row = diagnostic("xmap12:building:0", ElementOutcome::ExcludedUnknownInput, "");
+        row.element_count = 0;
+        zero_element_row.element_diagnostics = vec![row];
+        assert!(zero_element_row
+            .validate()
+            .unwrap_err()
+            .contains("accounts for no elements"));
+    }
+
+    #[test]
+    fn collapsing_never_rewrites_a_standing_exception_into_an_aggregate() {
+        // A family-scope exception folded into an aggregate would take the aggregate id
+        // form, which validation refuses for a structural outcome - turning a legitimate
+        // frame into a failing one, the exact escalation this channel exists to prevent.
+        // kills: collapsing structural rows along with per-element ones.
+        let mut rows: Vec<_> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 1)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUndecodedLaw,
+                    "",
+                )
+            })
+            .collect();
+        rows.push(ElementDiagnostic::family_exception(
+            MapVisualFamily::CitiesBuildingsMapObjects,
+            "some_branch",
+            2,
+            "a standing exception".into(),
+        ));
+        let collapsed = collapse_element_diagnostics(rows).unwrap();
+        assert!(collapsed.len() <= MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY);
+        let structural: Vec<_> = collapsed
+            .iter()
+            .filter(|row| row.outcome.is_structural())
+            .collect();
+        assert_eq!(structural.len(), 1);
+        assert!(structural[0].is_family_scope());
+        assert_eq!(structural[0].element_count, 2);
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = collapsed;
+        envelope.validate().expect("a collapsed frame must still validate");
+    }
+
+    #[test]
+    fn the_bound_counts_the_rows_the_family_actually_carries() {
+        // Checking only the collapsed half lets the total exceed the stated bound while each
+        // half looks fine, and the envelope has no bound check of its own to catch it.
+        // kills: bounding `staged.len()` instead of everything the family carries.
+        let mut rows: Vec<_> = (0..=MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUnknownInput,
+                    "",
+                )
+            })
+            .collect();
+        rows.extend((0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY).map(|index| {
+            ElementDiagnostic::family_exception(
+                MapVisualFamily::CitiesBuildingsMapObjects,
+                &format!("branch_{index:04}"),
+                1,
+                "a standing exception".into(),
+            )
+        }));
+        let error = collapse_element_diagnostics(rows).unwrap_err();
+        assert!(error.contains("did not collapse below"), "{error}");
+    }
+
+    #[test]
+    fn the_row_bound_is_a_format_invariant_not_a_producer_convention() {
+        // Only producers call the collapse, so an envelope decoded from bytes - or a
+        // composition receipt's reconstruction of one - could otherwise carry any number of
+        // rows and the stated bound would mean nothing at the format boundary.
+        // kills: enforcing the bound only inside collapse_element_diagnostics.
+        let mut envelope = present_envelope();
+        envelope.element_diagnostics = (0..=MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY)
+            .map(|index| {
+                diagnostic(
+                    &format!("xmap12:building:{index:04}"),
+                    ElementOutcome::ExcludedUnknownInput,
+                    "",
+                )
+            })
+            .collect();
+        let error = envelope.validate().unwrap_err();
+        assert!(error.contains("more than"), "{error}");
+        assert!(FoundationRenderEnvelope::decode_json(
+            &serde_json::to_vec(&envelope).unwrap()
+        )
+        .is_err());
+
+        envelope.element_diagnostics.pop();
+        envelope.validate().expect("exactly the bound is legal");
+    }
+
+    #[test]
+    fn a_content_token_row_carries_no_single_placement_position() {
+        // The row stands for every placement naming the token, so pointing at one ordinal
+        // would be a claim about a placement the row is not about.
+        // kills: letting a token-grain row carry a source ordinal.
+        let mut envelope = present_envelope();
+        let mut row = diagnostic(
+            "xmap12:slot-token:floating_harbor",
+            ElementOutcome::UnknownContentToken,
+            "",
+        );
+        row.element_count = 2_334;
+        envelope.element_diagnostics = vec![row.clone()];
+        assert!(envelope
+            .validate()
+            .unwrap_err()
+            .contains("carries a source ordinal"));
+        row.source_ordinal = None;
+        envelope.element_diagnostics = vec![row];
+        envelope.validate().unwrap();
+    }
+
+    #[test]
+    fn an_undecoded_law_excludes_its_element_rather_than_drawing_a_guess() {
+        // Drawing one admissible alternative and reporting the doubt puts an invented
+        // element on screen; no amount of reporting makes those pixels true.
+        // kills: an outcome vocabulary where an undecoded law still draws.
+        assert!(!ElementOutcome::ExcludedUndecodedLaw.draws());
+        assert!(!ElementOutcome::ExcludedUnknownInput.draws());
+        assert!(!ElementOutcome::UnknownContentToken.draws());
+        assert!(ElementOutcome::ExactExceptNamedBranch.draws());
+        assert!(!ElementOutcome::ExcludedUndecodedLaw.is_structural());
+        assert!(ElementOutcome::ExactExceptNamedBranch.is_structural());
     }
 }

@@ -2333,6 +2333,7 @@ mod tests {
                     },
                 })
                 .collect(),
+            element_diagnostics: Vec::new(),
         };
 
         unsafe {
