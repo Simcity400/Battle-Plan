@@ -717,7 +717,7 @@ pub fn normalize_rel_path(value: &str) -> String {
         .trim_matches('"')
         .trim_start_matches("./")
         .to_string();
-    while out.contains("
+    while out.contains("//") {
         out = out.replace("//", "/");
     }
     out.trim_matches('/')

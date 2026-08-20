@@ -35,12 +35,6 @@
       "recorder_host/src/world_fold.rs:14223-14234": 1,
       "wire_format/src/d27.rs:517": 1
     },
-    "extractor/native/collector/src/attach_log/d41_delta_engine_tests.rs": {
-      "collector/src/attach_log.rs:79558": 1
-    },
-    "extractor/native/collector/src/attach_log/frame_refusal_sequence_tests.rs": {
-      "attach_log.rs:3013": 1
-    },
     "extractor/native/collector/src/attach_log/tests.rs": {
       "a729_hook.rs:673": 1,
       "land_combat_detail_events_live/src/lib.rs:1591": 1,
@@ -48,13 +42,6 @@
       "recorder_host/src/world_fold.rs:14223-14234": 1,
       "recorder_host/src/world_fold.rs:6695-6699": 1,
       "wire_format/src/d27.rs:517": 1
-    },
-    "extractor/native/collector/src/attach_log/tests/d81_batched_tables.rs": {
-      "collector\\src\\attach_log\\tests\\d81_batched_tables.rs:585": 1,
-      "collector\\src\\attach_log\\tests\\d81_batched_tables.rs:842": 1
-    },
-    "extractor/native/collector/src/attach_log/tests/d81_copy_bracket.rs": {
-      "collector\\src\\attach_log\\tests\\d81_copy_bracket.rs:477": 1
     },
     "extractor/native/compact_contract/src/lib.rs": {
       "attach_log.rs:24773-24775": 1,
@@ -65,68 +52,27 @@
       "attach_log.rs:24839-24842": 1,
       "attach_log.rs:24839-24844": 1,
       "attach_log.rs:24855-24857": 1,
-      "attach_log.rs:24908-24917": 1,
       "attach_log.rs:24962-24969": 1,
       "attach_log.rs:24970-24973": 1,
       "attach_log.rs:25027-25030": 1,
-      "attach_log.rs:29836": 1,
-      "attach_log.rs:31358-31362": 1,
-      "collector/src/attach_log.rs:24801-24816": 1
+      "attach_log.rs:31358-31362": 1
     },
     "extractor/native/compact_contract/src/pending_producer.rs": {
-      "map_viewer/src/production_features/xmap06.rs:32": 1,
       "replay_core/src/world.rs:1": 2
     },
-    "extractor/native/fold_check/src/tests.rs": {
-      "fold_check\\src\\tests.rs:2208": 1,
-      "fold_check\\src\\tests.rs:2385": 1,
-      "fold_check\\src\\tests.rs:2507": 1,
-      "fold_check\\src\\tests.rs:2566": 1,
-      "world_fold.rs:4852-4853": 1
-    },
-    "extractor/native/lanes/decision_panel_live/src/a729_hook.rs": {
-      "lanes/decision_panel_live/src/lib.rs:275": 2
-    },
     "extractor/native/lanes/postfx_exposure/src/lib.rs": {
-      "map_authority.rs:483-485": 1,
-      "map_viewer/src/map_authority.rs:79": 2
-    },
-    "extractor/native/lanes/sunk_ship_history_live/src/a729_hook.rs": {
-      "a729_hook.rs:3960": 1,
-      "a729_hook.rs:4030": 1,
-      "a729_hook.rs:4041": 1,
-      "a729_hook.rs:4049": 1,
-      "a729_hook.rs:4076": 1,
-      "a729_hook.rs:4103": 1
+      "map_viewer/src/map_authority.rs:79": 1
     },
     "extractor/native/lanes/xmap06_border/src/lib.rs": {
-      "map_viewer/src/production_features/xmap06.rs:1531": 1,
-      "map_viewer/src/production_features/xmap06.rs:32": 1,
       "map_viewer/src/production_features/xmap06.rs:926": 1,
-      "xmap06.rs:1531": 1,
-      "xmap06.rs:18": 1,
-      "xmap06.rs:32": 1,
-      "xmap06.rs:921": 1,
-      "xmap06.rs:926": 2
+      "xmap06.rs:1531": 1
     },
     "extractor/native/lanes/xmap17_labels/src/lib.rs": {
       "replay_core/src/xmap17_player_labels.rs:13": 1,
-      "replay_core/src/xmap17_player_labels.rs:23": 1,
-      "replay_interface/native/replay_core/src/xmap17_player_labels.rs:22": 1,
-      "xmap17_player_labels.rs:213": 1,
-      "xmap17_player_labels.rs:309": 1
+      "replay_core/src/xmap17_player_labels.rs:23": 1
     },
     "extractor/native/lanes/xui26_frontend/src/lib.rs": {
-      "replay_core/src/xui26_frontend.rs:14": 1,
-      "replay_core/src/xui26_frontend.rs:16": 1,
-      "xui26_frontend.rs:462": 1
-    },
-    "extractor/native/recorder_host/src/main.rs": {
-      "collector/src/attach_log.rs:1062": 1
-    },
-    "extractor/native/recorder_host/src/tactic_weight_fold.rs": {
-      "attach_log.rs:30886": 1,
-      "compact_contract/src/tactic_weight.rs:355": 1
+      "replay_core/src/xui26_frontend.rs:14": 1
     },
     "extractor/native/recorder_host/src/world_fold.rs": {
       "attach_log.rs:30886-30891": 1,
@@ -140,7 +86,7 @@
       "attach_log.rs:69180-69184": 1,
       "collector/src/attach_log.rs:69010-69040": 1,
       "collector/src/attach_log.rs:69168-69177": 1,
-      "compact_contract/src/tactic_weight.rs:355": 2,
+      "compact_contract/src/tactic_weight.rs:294": 2,
       "domain_data_authority.rs:12121-12131": 1,
       "domain_data_authority.rs:3286": 1,
       "lanes/country_army_upgrade_requests_live/src/lib.rs:351": 1,
@@ -165,7 +111,7 @@
       "attach_log.rs:60815-60824": 1,
       "attach_log.rs:61009-61022": 2,
       "collector/src/attach_log.rs:69168-69185": 1,
-      "compact_contract/src/tactic_weight.rs:355": 1,
+      "compact_contract/src/tactic_weight.rs:294": 1,
       "g8.rs:130-150": 1,
       "g8.rs:179-181": 1,
       "g8.rs:182-188": 1,
@@ -250,9 +196,6 @@
       "game_ui/src/active_abilities.rs:2681": 1,
       "game_ui/tests/production_renderer.rs:429-431": 1
     },
-    "extractor/native/scripts/c0_domain_census.py": {
-      "lib.rs:132-226": 1
-    },
     "extractor/native/scripts/compress_arms.py": {
       "bench_real_d10.rs:604": 1,
       "bench_real_d22.rs:722": 1,
@@ -265,10 +208,6 @@
       "world_fold.rs:123": 4,
       "world_fold.rs:4242": 9,
       "world_fold.rs:789": 1
-    },
-    "extractor/native/terrain_capture/src/lib.rs": {
-      "frame_bundle.rs:6094": 1,
-      "frame_bundle.rs:6444": 1
     },
     "extractor/native/wire_format/src/bin/bench_real_d10.rs": {
       "attach_log.rs:83493": 1,
@@ -1290,13 +1229,13 @@
       "world_fold.rs:21566-21788": 1
     },
     "extractor/native/wire_format/src/d48.rs": {
-      "build_profile.rs:1118": 1,
-      "build_profile.rs:1120": 1,
-      "build_profile.rs:1135": 1,
-      "build_profile.rs:1137": 1,
-      "build_profile.rs:1170": 1,
-      "build_profile.rs:1173": 1,
-      "build_profile.rs:1175-1176": 1,
+      "build_profile.rs:365": 1,
+      "build_profile.rs:367": 1,
+      "build_profile.rs:378": 1,
+      "build_profile.rs:380": 1,
+      "build_profile.rs:404": 1,
+      "build_profile.rs:407": 1,
+      "build_profile.rs:409-410": 1,
       "collector_module.rs:164-206": 1,
       "collector_module.rs:190": 1,
       "compact_contract/src/lib.rs:136-158": 1,
@@ -1955,7 +1894,7 @@
       "attach_log.rs:33075-33081": 1,
       "attach_log.rs:33335": 3,
       "calendar.rs:22-26": 1,
-      "compact_contract/src/tactic_weight.rs:355": 1,
+      "compact_contract/src/tactic_weight.rs:349": 1,
       "d29.rs:205": 1,
       "d68.rs:130-146": 1,
       "d68.rs:255-259": 1,
@@ -2141,7 +2080,7 @@
       "tactic_weight.rs:8-11": 1,
       "tactic_weight.rs:82-85": 1,
       "tactic_weight.rs:89-92": 1,
-      "tactic_weight_fold.rs:141": 1,
+      "tactic_weight_fold.rs:128": 1,
       "tactic_weight_fold.rs:22-25": 1,
       "tactic_weight_fold.rs:27-30": 1,
       "tactic_weight_fold.rs:32-80": 1,
@@ -2223,39 +2162,14 @@
       "replay_core\\src\\world.rs:33586": 1,
       "replay_core\\src\\world.rs:33715": 1
     },
-    "replay_interface/native/game_ui/src/production_lines.rs": {
-      "extractor/native/collector/src/attach_log.rs:85263-85275": 1,
-      "hud_role_index.rs:148-168": 1,
-      "portable_replay/native/snapshot/src/design_catalog.rs:265-280": 1
-    },
-    "replay_interface/native/map_viewer/src/map_authority.rs": {
-      "extractor/native/wire_format/src/d24.rs:541": 1
-    },
-    "replay_interface/native/map_viewer/src/weather_law.rs": {
-      "color_lut.rs:128-130": 1
-    },
     "replay_interface/native/replay_core/src/decisions_live.rs": {
-      "extractor/native/wire_format/src/d16.rs:11": 1,
-      "recorder_host/src/world_fold.rs:25563": 1,
-      "replay_fixture_gen/src/main.rs:2125": 2,
-      "replay_fixture_gen/src/main.rs:850": 1,
-      "wire_format/src/d16.rs:11": 2,
-      "world.rs:15690": 1,
-      "world_fold.rs:13816-13824": 2
+      "wire_format/src/d16.rs:11": 2
     }
   },
   "unresolved": {
     "extractor/native/collector/src/attach_log/tests.rs": {
       "a729_hook.rs:673": "deferred: extractor/native/collector/src/attach_log/tests.rs is held by live lane worktree agent-a21bf0f24aef76e43,agent-a4905069fd642fb49,agent-a56ed2c3fd2c7fa89,agent-ab72f391a9e252b13; a comment edit here would land the conflict on that lane. Re-check when it merges.",
       "lib.rs:152-161": "deferred: extractor/native/collector/src/attach_log/tests.rs is held by live lane worktree agent-a21bf0f24aef76e43,agent-a4905069fd642fb49,agent-a56ed2c3fd2c7fa89,agent-ab72f391a9e252b13; a comment edit here would land the conflict on that lane. Re-check when it merges."
-    },
-    "extractor/native/lanes/sunk_ship_history_live/src/a729_hook.rs": {
-      "a729_hook.rs:3960": "quoted runtime output, not a citation (see the 4030 entry).",
-      "a729_hook.rs:4030": "quoted runtime output, not a citation: the comment records an observed `panicked at a729_hook.rs:4030: ...` message from a test run. The panic's file:line is the text the runtime printed; qualifying or re-pointing it would falsify the observation.",
-      "a729_hook.rs:4041": "quoted runtime output, not a citation (see the 4030 entry).",
-      "a729_hook.rs:4049": "quoted runtime output, not a citation (see the 4030 entry).",
-      "a729_hook.rs:4076": "quoted runtime output, not a citation (see the 4030 entry).",
-      "a729_hook.rs:4103": "quoted runtime output, not a citation (see the 4030 entry)."
     },
     "extractor/native/recorder_host/src/world_fold.rs": {
       "lib.rs:991-994": "deferred: extractor/native/recorder_host/src/world_fold.rs is held by live lane worktree agent-a4905069fd642fb49,agent-a56ed2c3fd2c7fa89; a comment edit here would land the conflict on that lane. Re-check when it merges.",
@@ -2274,9 +2188,6 @@
       "theatre_selector.rs:1462-1466": "deferred: extractor/native/recorder_host/src/world_fold/tests.rs is held by live lane worktree agent-a21bf0f24aef76e43,agent-a4905069fd642fb49,agent-a56ed2c3fd2c7fa89; a comment edit here would land the conflict on that lane. Re-check when it merges.",
       "theatre_selector.rs:1467-1481": "deferred: extractor/native/recorder_host/src/world_fold/tests.rs is held by live lane worktree agent-a21bf0f24aef76e43,agent-a4905069fd642fb49,agent-a56ed2c3fd2c7fa89; a comment edit here would land the conflict on that lane. Re-check when it merges.",
       "theatre_selector.rs:46-78": "deferred: extractor/native/recorder_host/src/world_fold/tests.rs is held by live lane worktree agent-a21bf0f24aef76e43,agent-a4905069fd642fb49,agent-a56ed2c3fd2c7fa89; a comment edit here would land the conflict on that lane. Re-check when it merges."
-    },
-    "extractor/native/scripts/c0_domain_census.py": {
-      "lib.rs:132-226": "deferred: extractor/native/scripts/c0_domain_census.py is held by live lane worktree agent-a4905069fd642fb49; a comment edit here would land the conflict on that lane. Re-check when it merges."
     },
     "extractor/native/wire_format/src/bin/bench_real_d22.rs": {
       "stream_fold.rs:593": "deferred: extractor/native/wire_format/src/bin/bench_real_d22.rs is held by live lane worktree agent-a4905069fd642fb49; a comment edit here would land the conflict on that lane. Re-check when it merges."

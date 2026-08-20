@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:14154`-`:14192`
 //! (`fold_country_preferred_tactic_weights`, dispatched at `:4763`) together with
-// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=14154-14192 sha256=17f387e1fca03b7d7b389c122b989b579a6f8f2b0b3de733f573c9551c36793c closure=6cfc5f9ea4e1ac2213c31a48e3a7efd0e1042c2a8a28ad05e77f2cf3a9ed8849
+// @world-fold-authority domain=96 functions=fold_country_preferred_tactic_weights lines=14154-14192 sha256=6d4f87ff07ec83a9ba855ed45308b5010f9d06d7a2013d99c5962fa95493e612 closure=0d30794e10df5d092505171aee49a8f2ee33436b980e84db164551ada84c4f03
 //! the deferred fold it delegates to,
 //! `extractor/native/recorder_host/src/tactic_weight_fold.rs:32`-`:80`
 //! (`TacticWeightFoldState::fold_payload`); its payload codec
@@ -132,7 +132,7 @@
 //!   keep consistent.
 //! - **`multiplier_numerator_raw` = `FIXED_SCALE + effective_bonus_raw`**
 //!   (`:118`-`:122`), derived from a derived value. The fold's projection emits it
-//!   (`tactic_weight_fold.rs:141`); it is arithmetic, not measurement.
+//!   (`tactic_weight_fold.rs:128`); it is arithmetic, not measurement.
 //! - **`modifier_metadata_gate`**, which is **constant 0** on every payload that
 //!   decodes: `validate_snapshot` refuses any other value (`:321`-`:325`) and so
 //!   does the collector before it ever builds a row (`attach_log.rs:32992`-`:32996`).

@@ -7,7 +7,7 @@
 // @world-fold-authority domain=48 functions=fold_construction_buildings_state_damage lines=26871-27208 sha256=9d8154f0e46b7fe29b1894a2a39c562b69563431d16b20dbdb6161fc3d5e869b closure=76ba3177c9770bcc49582188d75839f57fe92d43fdf21dd117b8d41da9211b97
 //! `:2123`-`:2131` and its key helpers at `:25681`-`:25696`; the row grammar is
 //! the lane crate `extractor/native/lanes/construction_buildings_state_damage_live/src/lib.rs`
-//! (`decode_lane_frame` at `:1118`, `gate_decoded_frame` at `:1413`, the row
+//! (`decode_lane_frame` at `:365`, `gate_decoded_frame` at `:1413`, the row
 //! readers at `:1583`-`:1633` and the row validators at `:1635`-`:1839`); the
 //! collector read that decides every gate is
 //! `lanes/construction_buildings_state_damage_live/src/collector_module.rs` and
@@ -18,7 +18,7 @@
 //!
 //! # Payload grammar
 //!
-//! `CBSD` v2, a 64-byte header (`lib.rs:12`-`:19`, decoded at `:1118`-`:1168`)
+//! `CBSD` v2, a 64-byte header (`lib.rs:12`-`:19`, decoded at `:365`-`:1168`)
 //! followed by three fixed-length row tables and an optional `RLC1` trailer:
 //!
 //! | offset | width | header word | check |
@@ -27,7 +27,7 @@
 //! | `+4`  | u16  | version `2`          | `:1125` |
 //! | `+6`  | u16  | header_len `64`      | `:1128` |
 //! | `+8`  | u16  | domain_id `48`       | `:1132` |
-//! | `+10` | u16  | reserved, must be 0  | `:1135` |
+//! | `+10` | u16  | reserved, must be 0  | `:378` |
 //! | `+12` | u32  | `status_flags`       | the frame mode and the failure class |
 //! | `+16` | i32  | `game_hour_raw`      | read, never used by the fold (`:20374` overwrites it with 0) |
 //! | `+20` | u32  | `construction_count` | `:1140` |
@@ -309,7 +309,7 @@ pub const SOURCE_FLAG_DLL_NATIVE: u32 = 1;
 pub const SOURCE_FLAG_CONSTRUCTION_TARGET_STATE_UNAVAILABLE: u32 = 1 << 4;
 
 /// `lib.rs:129`-`:147`. An unknown bit in a construction row's flag word is a
-/// forward-incompatible payload and fails closed (`:1176`).
+/// forward-incompatible payload and fails closed (`:410`).
 pub const CONSTRUCTION_FLAG_TEMPLATE_PRESENT: u32 = 1;
 pub const CONSTRUCTION_FLAG_TARGET_STATE_PRESENT: u32 = 1 << 1;
 pub const CONSTRUCTION_FLAG_CREATED_DATE_PRESENT: u32 = 1 << 2;
@@ -333,7 +333,7 @@ pub const BUILDING_ROW_KNOWN_FLAGS: u32 =
 /// `lib.rs:153` — deletion rides in the identity word's top bit, not a flag word.
 pub const ROW_ID_DELETED: u32 = 1 << 31;
 
-/// `build_profile.rs:1175`-`:1176`, restated per the note above.
+/// `build_profile.rs:409`-`:410`, restated per the note above.
 pub const SCOPE_STATE: u32 = 1;
 pub const SCOPE_PROVINCE: u32 = 2;
 /// `build_profile::MAX_STATE_ID` / `::MAX_PROVINCE_ID`. Both were `65_535`, a
@@ -352,17 +352,17 @@ pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `id < *(int32*)(db + 0x0C)` and that size is a signed `int`, so `i32::MAX - 1`
 /// is the widest id any loadable database can hold.
 pub const MAX_COMPACT_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
-/// `build_profile.rs:1137`.
+/// `build_profile.rs:380`.
 pub const BUILDING_LEVEL_SANE_MAX: u32 = 1_000;
-/// `build_profile.rs:1170`.
+/// `build_profile.rs:404`.
 pub const MAX_CONSTRUCTION_TEMPLATE_ID: u32 = 10_000_000;
-/// `build_profile.rs:1173`.
+/// `build_profile.rs:407`.
 pub const MAX_ACTIVE_FACTORIES: i32 = 100_000;
-/// `build_profile.rs:1120`.
+/// `build_profile.rs:367`.
 pub const STATE_RESOURCE_MAX_ABS_RAW: i32 = 100_000_000;
-/// `build_profile.rs:1118`.
+/// `build_profile.rs:365`.
 pub const STATE_RESOURCE_NO_ID: u32 = u32::MAX;
-/// `build_profile.rs:1135`.
+/// `build_profile.rs:378`.
 pub const CBUILDING_PARTIAL_HEALTH_RAW_PER_LEVEL: u64 = 10_000_000;
 // These last two are the lane's own constants rather than `build_profile`'s, so
 // the measurement bin's drift guard cannot machine-check them: `wire_format`

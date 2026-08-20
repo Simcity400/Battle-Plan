@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:14089`-`:14152`
 //! (`fold_country_preferred_tactics`, dispatched at `:4747`), its payload codec
-// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=14089-14152 sha256=e4436fb8ebaf47d966fe6c3de1a84dd93092909f34ef8d462e9a4b6c15746d2a closure=cd8c2959534b7e666737292db0a632aea457297bbb21798d14425b14512b7614
+// @world-fold-authority domain=92 functions=fold_country_preferred_tactics lines=14089-14152 sha256=1e3228d11badca77a5d803c5fa9ed8dd2590a8447af1eb4aaa8f6a7f494406a6 closure=d6b040ea06cabb5bab4c9d445e0872d3f83139c8676a0b2ab3e325dee00bddeb
 //! `extractor/native/compact_contract/src/preferred_tactic.rs`, and the collector
 //! read that produces every row
 //! (`extractor/native/collector/src/attach_log.rs:32490`-`:32557`,
@@ -142,7 +142,7 @@
 //! keeps it (`:10360`-`:10367`): the projection is D18-keyed and never reads it
 //! (`:6329`), but the D96 join validates against the whole d92 row set, which is
 //! the set the collector itself validated before encoding
-//! (`compact_contract/src/tactic_weight.rs:355`).
+//! (`compact_contract/src/tactic_weight.rs:349`).
 //!
 //! That makes D18 a modelled dependency, so [`fold_payload`] takes the roster and
 //! the freshness flag as typed inputs (recipe step 7) rather than re-deriving or

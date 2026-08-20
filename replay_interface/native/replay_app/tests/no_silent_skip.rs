@@ -570,7 +570,7 @@ fn scanner_rules_are_sound() {
         "}\n",
         "#[test]\n",
         "fn commented_and_quoted_returns_are_not_code() {\n",
-        "
+        "    // return;\n",
         "    let s = \"return;\";\n",
         "    assert_eq!(s.len(), 7);\n",
         "}\n",

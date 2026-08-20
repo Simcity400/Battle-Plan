@@ -7615,7 +7615,7 @@ mod tests {
         while cursor < bytes.len() {
             match state {
                 State::Code => {
-                    if bytes[cursor..].starts_with(b"
+                    if bytes[cursor..].starts_with(b"//") {
                         state = State::LineComment;
                         cursor += 2;
                         continue;
@@ -7752,7 +7752,7 @@ mod tests {
         let mut violations = Vec::new();
         for (index, line) in source.lines().enumerate() {
             let line = line.trim();
-            if line.starts_with("
+            if line.starts_with("//")
                 || (!import_lines[index]
                     && !loader_pathname_candidate(
                         line,
