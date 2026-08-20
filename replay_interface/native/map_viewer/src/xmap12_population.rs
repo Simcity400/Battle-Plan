@@ -2308,6 +2308,19 @@ fn y_rotation_translation_matrix(yaw: f32, position: [f32; 3], scale: f32) -> Re
     .map(f32::to_bits))
 }
 
+pub fn xmap12_unjoined_placement_tokens(
+    placements: &[MapBuildingPlacement],
+    known_building_tokens: &BTreeMap<String, usize>,
+) -> BTreeMap<String, usize> {
+    let mut unjoined = BTreeMap::new();
+    for placement in placements {
+        if !known_building_tokens.contains_key(placement.building.as_str()) {
+            *unjoined.entry(placement.building.clone()).or_default() += 1;
+        }
+    }
+    unjoined
+}
+
 fn validate_sha256(value: &str, label: &str) -> Result<()> {
     if value.len() != 64
         || !value
@@ -2328,6 +2341,60 @@ mod tests {
         assert!(xmap12_building_slot_visible(0, 6, 1.0, 15).unwrap());
         assert!(!xmap12_building_slot_visible(1, 6, 1.0, 15).unwrap());
         assert!(xmap12_building_slot_visible(5, 6, 15.0, 15).unwrap());
+    }
+
+    #[test]
+    #[cfg_attr(
+        not(gate_hoi4_install),
+        ignore = "the game install: set BATTLE_PLAN_GAME_ROOT (or BATTLE_PLAN_GAME_DIR / BATTLE_PLAN_VANILLA) to it, or install it at the default Steam path"
+    )]
+    fn gate_vanilla_shared_spawn_slots_defeat_the_building_placement_join() {
+        // PINS A PRE-EXISTING DEFECT, measured against the pinned install: map/buildings.txt
+        // column 2 is a SPAWN-POINT name, not always a common/buildings token. 17,095 of 66,664
+        // vanilla placements (25.6%) name a slot that several building types share via
+        // `spawn_point = <name>`; symmetrically, the 15 show_on_map buildings that never appear in
+        // map/buildings.txt are exactly those declaring a spawn_point. a729 0x141663e70 indexes
+        // the entity table by that spawn-point handle (type_obj+0x58).
+        //
+        // prepare_xmap12_buildings joins placement.building straight against show_on_map and
+        // errors per placement, so the XMAP12 building population cannot be built for vanilla
+        // content at all - with or without a recorded Xmap12BuildingVisualFrame. Closing it needs
+        // the shared-slot occupant law plus separate laws for landmark_spawn and floating_harbor;
+        // this test must then be inverted to assert an EMPTY unjoined set.
+        //
+        // kills: "fixing" the join by inventing a show_on_map row for a spawn slot, which would
+        // name an occupant Replay has no recorded basis to choose; and any silent narrowing of the
+        // slot set that would hide part of the gap.
+        let game_dir = replay_test_gates::require_vanilla_game_root();
+        let resolver = crate::GameFileResolver::vanilla(game_dir).expect("vanilla resolver");
+        let placements =
+            crate::map_building_placements_from_resolver(&resolver).expect("map/buildings.txt");
+        let show_on_map =
+            crate::show_on_map_buildings_from_resolver(&resolver).expect("common/buildings");
+        let known = show_on_map
+            .iter()
+            .enumerate()
+            .map(|(index, row)| (row.name.clone(), index))
+            .collect::<BTreeMap<_, _>>();
+        let unjoined = xmap12_unjoined_placement_tokens(&placements, &known);
+        assert_eq!(
+            unjoined.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec![
+                "dam_spawn",
+                "floating_harbor",
+                "landmark_spawn",
+                "locks_spawn",
+                "naval_base_spawn",
+                "nuclear_reactor_spawn",
+                "rocket_site_spawn",
+                "special_project_facility_spawn",
+            ],
+            "the unjoined placement-token set drifted"
+        );
+        assert!(
+            unjoined.values().sum::<usize>() * 4 > placements.len(),
+            "the unjoined share collapsed; re-measure before trusting the census"
+        );
     }
 
     #[test]

@@ -266,6 +266,26 @@ fn assert_owner_proven_unavailable(frame: &WorldFrame, input_id: &str) {
         .is_admitted(input_id));
 }
 
+fn d48_building_census_fixture(source_marker: &str) -> Value {
+    json!({
+        "states": {
+            "1": {
+                "construction_buildings_state_damage_live": {
+                    "source": source_marker,
+                    "state_buildings": {
+                        "type_0x0000000b": {
+                            "level": 3,
+                            "healthy_level": 3,
+                            "damaged": false,
+                            "token": "arms_factory"
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
 fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> {
     BTreeMap::from([
         (
@@ -321,6 +341,13 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
             NamedSnapshotFixture {
                 name: "complete D18 country roster",
                 rest: json!({"countries": measured_countries()}),
+            },
+        ),
+        (
+            "objects.building_state_damage",
+            NamedSnapshotFixture {
+                name: "exact D48 per-state building census under its own recorder marker",
+                rest: d48_building_census_fixture("C"),
             },
         ),
         (
@@ -446,6 +473,24 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             );
             true
         }
+        "objects.building_state_damage" => {
+            // The recorder marker is the D48 sidecar's own authenticity field: without the exact
+            // "C" marker parse_d48_building_sidecar refuses the whole per-state map, so the
+            // ledger accessor itself stops being Present.
+            let states = object
+                .get_mut("states")
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries the D48 per-state census");
+            for state in states.values_mut() {
+                if let Some(sidecar) = state
+                    .get_mut("construction_buildings_state_damage_live")
+                    .and_then(Value::as_object_mut)
+                {
+                    sidecar.insert("source".into(), json!("not-the-recorder-marker"));
+                }
+            }
+            false
+        }
         "world.calendar_time" => false,
         other => panic!("no unmeasured fixture for {other}"),
     };
@@ -477,6 +522,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
             | replay_core::world::FactionRosterStatus::MeasuredNonEmpty => ViewStatus::Present,
         },
         "mapmode.occupation_resistance_compliance" => frame.occupation_status(),
+        "objects.building_state_damage" => frame.d48_buildings_status(),
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
         "world.calendar_time" => match frame.date() {
             Some(_) => ViewStatus::Present,

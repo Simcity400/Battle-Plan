@@ -158,6 +158,16 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         can_report_absent: true,
     },
     MapAuthorityOwnerProvenAdmission {
+        input_id: "objects.building_state_damage",
+        owner_packet: "XMAP12",
+        payload_schema: "WorldFrame.buildings_by_state",
+        status_accessor: "d48_buildings_status",
+        cadence: "one decoded D48 building view per canonical recorded hour",
+        identity_order: "(state_id, province_id, building_token) per row, in recorder census order",
+        status: building_state_damage_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
         input_id: "world.calendar_time",
         owner_packet: "XMAP09",
         payload_schema: "WorldFrame.hour_index;WorldFrame.date",
@@ -345,6 +355,10 @@ fn engine_calendar_hour_index(date: &str) -> Option<i64> {
 
 fn land_active_epoch_status(frame: &WorldFrame) -> ViewStatus {
     frame.combats_status()
+}
+
+fn building_state_damage_status(frame: &WorldFrame) -> ViewStatus {
+    frame.d48_buildings_status()
 }
 
 fn naval_air_epoch_status(frame: &WorldFrame) -> ViewStatus {
@@ -636,10 +650,11 @@ pub fn map_authority_requirement_metadata(
         "postfx.temporal_exposure_state" => {
             "XMAP10 must prove the presentation-independent temporal exposure state, cadence, and authenticated producer contract"
         }
-        "objects.city_population"
-        | "objects.building_state_damage"
-        | "objects.generic_population_lifecycle" => {
-            "XMAP12 must prove the unconditional object identity/state/lifecycle census and authenticated producer/content joins"
+        "objects.building_state_damage" => {
+            "the recording carries no measured D48 building state/damage census for this hour"
+        }
+        "objects.city_population" | "objects.generic_population_lifecycle" => {
+            "XMAP12 regenerates these populations from admitted effective content, so no recorded semantic carrier is owed; the row stays unproven because there is nothing on the wire to admit"
         }
         "units.air_base_location"
         | "units.divisions"
