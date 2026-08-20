@@ -9,3 +9,4 @@ path = "src/lib.rs"
 
 [dependencies]
 compact_contract = { path = "../../compact_contract" }
+map_passive_carriers_live_lane = { path = "../map_passive_carriers_live" }
