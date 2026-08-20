@@ -137,6 +137,16 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         can_report_absent: false,
     },
     MapAuthorityOwnerProvenAdmission {
+        input_id: "map_furniture.current_victory_points",
+        owner_packet: "XMAP21",
+        payload_schema: "WorldFrame.map_furniture.victory_points",
+        status_accessor: "map_furniture_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "strictly ascending province id, every value positive",
+        status: map_furniture_current_victory_points_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
         input_id: "weather.province_snow_accumulator",
         owner_packet: "XMAP07",
         payload_schema: "WorldFrame.weather_province_snow",
@@ -398,6 +408,30 @@ fn engine_calendar_hour_index(date: &str) -> Option<i64> {
 
 fn land_active_epoch_status(frame: &WorldFrame) -> ViewStatus {
     frame.combats_status()
+}
+
+/// XMAP00 row #20, the per-province victory-point value census.
+///
+/// `MapFurnitureFrame::validate` is the admission and it has already run inside
+/// `build_map_furniture`: it pins the exact-a729 executable identity, the v4
+/// schema token, `update_index == displayed hour`, the producer's own
+/// `complete` attestation, strictly ascending province ids and a positive value
+/// on every row. A frame that failed any of those is `DomainUnavailable` with
+/// the reason in the frame's coverage warnings, so `Present` here means the
+/// whole contract held.
+///
+/// The extra check this adds is the one the decoder cannot make: that the frame
+/// really carries the census rather than merely reporting `Present`. The two
+/// cannot disagree today — `Present` is set only on the `Ok` arm — and the guard
+/// stays because this function is what a future accessor change would have to
+/// keep true, and a status divorced from its payload is exactly what would
+/// admit an empty XMAP21 draw.
+fn map_furniture_current_victory_points_status(frame: &WorldFrame) -> ViewStatus {
+    let status = frame.map_furniture_status();
+    if status == ViewStatus::Present && frame.map_furniture().is_none() {
+        return ViewStatus::DomainUnavailable;
+    }
+    status
 }
 
 /// `ViewStatus::Present` alone is NOT completeness for the three unit
@@ -901,8 +935,14 @@ pub fn map_authority_requirement_metadata(
         "logistics.rail_hub_frames" | "logistics.rail_topology_state" | "mapmode.supply_state" => {
             "XMAP16 must prove exact topology/hub/state identities, order, completeness, and authenticated producer/content joins"
         }
-        "country.current_capital_state" | "map_furniture.current_victory_points" => {
+        "country.current_capital_state" => {
             "XMAP21 must prove the exact live furniture value, identity, cadence, completeness, and authenticated producer/content joins"
+        }
+        // Row #20 is owner-proven, so this text is reached only when the proven
+        // status is not `Present` — i.e. the recording genuinely has no census
+        // for this hour — and it says that instead of naming work that is done.
+        "map_furniture.current_victory_points" => {
+            "the recording carries no complete measured victory-point census for this hour"
         }
         "diplomacy.faction_roster" => {
             "the recording carries no measured faction-membership roster for this hour"
@@ -1050,7 +1090,10 @@ pub fn map_authority_projection_from_world_frame(
             "logistics.rail_topology_state",
             Some(frame.rail_replay().status),
         ),
-        projector.derive_requirement("map_furniture.current_victory_points", None),
+        projector.derive_requirement(
+            "map_furniture.current_victory_points",
+            Some(frame.map_furniture_status()),
+        ),
         projector.derive_requirement("mapmode.air_superiority", Some(frame.air_superiority_status())),
         projector.derive_requirement("mapmode.infrastructure_state", Some(frame.buildings_status())),
         projector.derive_requirement("mapmode.intelligence", Some(frame.diplomacy().status)),

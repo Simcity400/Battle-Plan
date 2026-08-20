@@ -119,6 +119,17 @@ fn reader_call_spans(body: &str) -> Vec<ReaderCallSpan> {
     let mut spans = Vec::new();
     for (name, tag_arg) in [
         ("spawn_gated(", 3usize),
+        // THE SPLIT READER IS A READER CALL TOO. It was missing here, and the
+        // gap was invisible while no domain-scoped tracker used it: d47's and
+        // d81's trackers are carried outside this table, so nothing forced the
+        // scanner to know the spelling. Domain 101 is the first domain-scoped
+        // tracker to take the copy-then-compute seam, and without this entry its
+        // perfectly ordinary borrow reads as `OUTSIDE-EVERY-READER-CALL`.
+        //
+        // The tag sits at the same argument index as `spawn_gated`'s
+        // (`scope, gate, lanes, tag, ...`), which is what makes one index right
+        // for both.
+        ("spawn_gated_split(", 3usize),
         ("spawn_gated_lane_only(", 3usize),
         ("lane_time_main(", 1usize),
     ] {
@@ -423,6 +434,155 @@ fn matching_paren(source: &str, open: usize) -> Option<usize> {
         }
     }
     None
+}
+
+
+/// The victory-point delta pin, over the sequence that has no other witness:
+/// a successful observe, a record that then refuses, and the next hour's delta.
+///
+/// kills: writing d101's advance straight through instead of staging it. Without
+/// the rollback the producer holds census B while the fold still holds A, so the
+/// next delta patches A with B's changes; the census digest stops that from being
+/// published as complete, but the carrier is then unavailable until the next
+/// keyframe -- up to a game week -- and if the refused record was the FIRST one,
+/// every later delta is refused as `delta_without_baseline` for the rest of the
+/// recording. One partial-data refusal must not cost later readable hours.
+///
+/// (Adversarial review round 3. `finalize_compact_map_furniture_victory_points_read`
+/// can turn a clean read into a refusal after `observe` has already advanced, and
+/// so can a panic in the compute half.)
+#[test]
+fn a_refused_victory_point_record_restores_the_census_the_frame_found() {
+    use compact_contract::map_furniture_victory_points::VictoryPointRow;
+
+    fn row(province_id: u32, current_value: i32) -> VictoryPointRow {
+        VictoryPointRow {
+            province_id,
+            current_value,
+        }
+    }
+
+    // Hour 1 published a two-province census.
+    let mut tracker = CompactMapFurnitureVictoryPointTracker {
+        previous: vec![row(1, 5), row(2, 10)],
+        baselined: true,
+        last_full_census_hour_raw: 100,
+        uncommitted_pin: None,
+        topology: None,
+    };
+
+    // Hour 2 reads a different census and stages it as a keyframe.
+    //
+    // THE RETURN VALUE IS CHECKED, and that is the point of taking it: it is the
+    // census the delta will be diffed against, and an earlier version of this
+    // reader took it out of the tracker BEFORE staging, which left the pin
+    // capturing an empty census and every rollback restoring one. Asserting the
+    // displaced value here is what makes the pin and the delta provably the same
+    // census. (Adversarial review round 4.)
+    let displaced = tracker.stage_advance(vec![row(1, 7), row(3, 2)], Some(268));
+    assert_eq!(
+        displaced,
+        vec![row(1, 5), row(2, 10)],
+        "staging must hand back the census the frame found"
+    );
+    assert_eq!(tracker.previous, vec![row(1, 7), row(3, 2)]);
+    assert_eq!(tracker.last_full_census_hour_raw, 268);
+
+    // ...and hour 2's record then refuses, so the frame settles it back.
+    tracker.roll_back_uncommitted_pin();
+    assert_eq!(
+        tracker.previous,
+        vec![row(1, 5), row(2, 10)],
+        "a refused record must leave the producer diffing against the census the \
+         fold still holds"
+    );
+    assert!(tracker.baselined);
+    assert_eq!(
+        tracker.last_full_census_hour_raw, 100,
+        "a refused record is not a keyframe and must not restart the cadence"
+    );
+
+    // A second rollback is harmless: nothing is staged.
+    tracker.roll_back_uncommitted_pin();
+    assert_eq!(tracker.previous, vec![row(1, 5), row(2, 10)]);
+
+    // Hour 3 publishes, and its commit seals the advance against a LATER frame's
+    // rollback.
+    let displaced = tracker.stage_advance(vec![row(1, 6)], None);
+    assert_eq!(displaced, vec![row(1, 5), row(2, 10)]);
+    tracker.commit_pin();
+    tracker.roll_back_uncommitted_pin();
+    assert_eq!(
+        tracker.previous,
+        vec![row(1, 6)],
+        "a committed advance is beyond a later frame's reach"
+    );
+    assert_eq!(tracker.last_full_census_hour_raw, 100);
+}
+
+/// kills: staging the pin twice in one frame and rolling back only to the
+/// SECOND stage, which would restore a census the fold never saw either.
+#[test]
+fn staging_a_victory_point_advance_twice_still_rolls_back_to_the_frames_entry() {
+    use compact_contract::map_furniture_victory_points::VictoryPointRow;
+    let entry = vec![VictoryPointRow {
+        province_id: 1,
+        current_value: 5,
+    }];
+    let mut tracker = CompactMapFurnitureVictoryPointTracker {
+        previous: entry.clone(),
+        baselined: true,
+        last_full_census_hour_raw: 100,
+        uncommitted_pin: None,
+        topology: None,
+    };
+    let first = tracker.stage_advance(
+        vec![VictoryPointRow {
+            province_id: 2,
+            current_value: 6,
+        }],
+        Some(200),
+    );
+    assert_eq!(first, entry);
+    tracker.stage_advance(
+        vec![VictoryPointRow {
+            province_id: 3,
+            current_value: 7,
+        }],
+        Some(300),
+    );
+    tracker.roll_back_uncommitted_pin();
+    assert_eq!(tracker.previous, entry);
+    assert_eq!(tracker.last_full_census_hour_raw, 100);
+}
+
+/// kills: letting a never-baselined tracker come back from a refusal claiming a
+/// baseline. The first record is the one whose loss is worst -- every later delta
+/// would be refused as `delta_without_baseline` -- so the flag has to roll back
+/// with the census.
+#[test]
+fn a_refused_first_victory_point_record_leaves_the_tracker_unbaselined() {
+    use compact_contract::map_furniture_victory_points::VictoryPointRow;
+    let mut tracker = CompactMapFurnitureVictoryPointTracker::default();
+    assert!(!tracker.baselined);
+    let displaced = tracker.stage_advance(
+        vec![VictoryPointRow {
+            province_id: 1,
+            current_value: 5,
+        }],
+        Some(100),
+    );
+    assert!(
+        displaced.is_empty(),
+        "a tracker with no baseline displaces nothing"
+    );
+    assert!(tracker.baselined);
+    tracker.roll_back_uncommitted_pin();
+    assert!(
+        !tracker.baselined,
+        "the next record must be a full census, not a delta against nothing"
+    );
+    assert!(tracker.previous.is_empty());
 }
 
 #[test]

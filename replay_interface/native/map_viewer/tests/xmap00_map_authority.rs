@@ -199,6 +199,31 @@ fn province_snow_fixture() -> Value {
     })
 }
 
+/// A complete victory-point census for the fixture hour (XMAP00 row #20).
+///
+/// `update_index` is derived from the same calendar stamp every fixture frame is
+/// built at rather than written as a literal: `MapFurnitureFrame::validate`
+/// refuses a carrier whose `update_index` is not the displayed hour, so a
+/// hard-coded number would make this fixture silently stop admitting the moment
+/// the shared stamp moved -- and a fixture that no longer admits proves the
+/// opposite of what it is here for.
+fn map_furniture_victory_point_fixture() -> Value {
+    json!({
+        "map_furniture": {
+            "schema": "hoi4.map-furniture-state.a729.v4",
+            "executable_sha256":
+                "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+            "update_index": schema_hour_index(MEASURED_CALENDAR_STAMP)
+                .expect("the shared calendar stamp is a valid hour"),
+            "complete": true,
+            "victory_points": [
+                {"province_id": 42, "current_value": 5},
+                {"province_id": 1337, "current_value": 10}
+            ]
+        }
+    })
+}
+
 fn occupation_census_fixture() -> Value {
     json!({
         "_r2_occupation_census_live": {
@@ -430,6 +455,13 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
                 rest: json!({}),
             },
         ),
+        (
+            "map_furniture.current_victory_points",
+            NamedSnapshotFixture {
+                name: "complete ascending victory-point value census for this hour",
+                rest: map_furniture_victory_point_fixture(),
+            },
+        ),
     ])
 }
 
@@ -618,6 +650,22 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             }
             false
         }
+        "map_furniture.current_victory_points" => {
+            // The census is intact and ascending; only its `update_index` names
+            // a different hour. That is the hour-misattribution shape this
+            // project treats as a stop condition, and it is the one an
+            // otherwise-perfect carrier can still have.
+            let furniture = object
+                .get_mut("map_furniture")
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries a victory-point census");
+            let stamped = furniture
+                .get("update_index")
+                .and_then(Value::as_i64)
+                .expect("the fixture stamps an hour");
+            furniture.insert("update_index".into(), json!(stamped + 1));
+            false
+        }
         "world.calendar_time" => false,
         other => panic!("no unmeasured fixture for {other}"),
     };
@@ -634,7 +682,18 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
 
 fn unmeasured_frame(input_id: &str) -> std::sync::Arc<WorldFrame> {
     let fixture = unmeasured_fixture(input_id);
-    world_frame_with_date(fixture.snapshot, fixture.date)
+    // The hour is pinned to the shared stamp for every case, including the one
+    // that drops the stamp. `world_frame_with_date` falls back to hour 7 when
+    // there is no date, which would MOVE the frame's hour as well as remove the
+    // date — and a carrier that binds its payload to the displayed hour (row
+    // #20) then refuses for the moved hour instead of for the unmeasured input
+    // this fixture is about. One change per fixture is the whole point of the
+    // sibling test below.
+    world_frame_with_date_at(
+        fixture.snapshot,
+        fixture.date,
+        schema_hour_index(MEASURED_CALENDAR_STAMP).expect("the shared stamp is a valid hour"),
+    )
 }
 
 fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
@@ -654,6 +713,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "units.wings" | "units.air_base_location" => frame.wings_status(),
         "objects.building_state_damage" => frame.d48_buildings_status(),
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
+        "map_furniture.current_victory_points" => frame.map_furniture_status(),
         "world.calendar_time" => match frame.date() {
             Some(_) => ViewStatus::Present,
             None => ViewStatus::DomainUnavailable,
@@ -1010,6 +1070,7 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "states": Value::Null,
             "divisions": Value::Null,
             "order_of_battle": Value::Null,
+            "map_furniture": Value::Null,
             }),
             None,
         ),
@@ -1502,9 +1563,17 @@ fn an_unmeasured_calendar_stamp_is_always_unavailable_never_absent() {
 fn a_missing_calendar_stamp_moves_no_other_row() {
     let manifest = fixture_manifest();
     let snapshot = all_owner_proven_fixtures_merged(&owner_proven_fixture_table());
-    let projection =
-        map_authority_projection_from_world_frame(&world_frame_with_date(snapshot, None), &manifest)
-            .unwrap();
+    // ONLY the stamp is dropped. `world_frame_with_date(.., None)` also falls
+    // back to hour 7, which is a second change and not the one this test is
+    // about: a carrier that binds its payload to the displayed hour (row #20)
+    // would refuse for the moved hour rather than for the missing date, and the
+    // test would then be proving the wrong thing.
+    let hour_index = schema_hour_index(MEASURED_CALENDAR_STAMP).expect("the shared stamp is valid");
+    let projection = map_authority_projection_from_world_frame(
+        &world_frame_with_date_at(snapshot, None, hour_index),
+        &manifest,
+    )
+    .unwrap();
     for proven in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
         let expected = if proven.input_id == "world.calendar_time" {
             MapAuthorityRequirementDisposition::Unavailable

@@ -471,6 +471,8 @@ pub const COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE: u16 = compact_contract::rail_re
 pub const COMPACT_DOMAIN_RAID_INSTANCES_LIVE: u16 = compact_contract::raid_instances::DOMAIN_ID;
 pub const COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE: u16 =
     compact_contract::xmap07_snow_mud::DOMAIN_ID;
+pub const COMPACT_DOMAIN_MAP_FURNITURE_VICTORY_POINTS_LIVE: u16 =
+    compact_contract::map_furniture_victory_points::DOMAIN_ID;
 pub const COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE: u16 = preferred92::DOMAIN_ID;
 pub const COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE: u16 = army_upgrades93::DOMAIN_ID;
 pub const COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE: u16 = weight96::DOMAIN_ID;
@@ -13343,6 +13345,62 @@ fn decode_compact_xmap07_snow_mud_data_payload(
     );
 }
 
+fn decode_compact_map_furniture_victory_points_data_payload(
+    offset: usize,
+    sequence: u64,
+    header_hour_raw: i32,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 12 {
+        add_decoder_status(summary, read_u32_le(payload, 8));
+    }
+    let decoded = match compact_contract::map_furniture_victory_points::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: map_furniture_victory_points MFV1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    if sequence != 0 && decoded.source_sequence != sequence {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map_furniture_victory_points MFV1 source sequence {} != H4CR sequence {sequence}",
+            decoded.source_sequence
+        ));
+        return;
+    }
+    if sequence != 0 && decoded.game_hour_raw != header_hour_raw {
+        summary.parse_errors.push(format!(
+            "offset {offset}: map_furniture_victory_points MFV1 hour {} != H4CR hour {header_hour_raw}",
+            decoded.game_hour_raw
+        ));
+        return;
+    }
+    // `data_rows_total` is the CENSUS this hour describes, not the delta that
+    // describes it: the census is what the recording holds for the hour, and a
+    // per-hour row count that fell to zero whenever nothing changed would read
+    // as a domain that stopped producing.
+    let census_rows = usize::from(!decoded.is_refusal()) * decoded.census_row_count as usize;
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_MAP_FURNITURE_VICTORY_POINTS_LIVE)
+    {
+        domain.data_rows_total = domain.data_rows_total.saturating_add(census_rows as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(decoded.rows.len() as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_MAP_FURNITURE_VICTORY_POINTS_LIVE,
+        "map_furniture_victory_point_rows",
+        decoded.rows.len(),
+    );
+}
+
 fn decode_compact_fired_event_popups_data_payload(
     offset: usize,
     payload: &[u8],
@@ -17020,6 +17078,15 @@ pub fn summarize_domain_data_payload(
         }
         COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE => {
             decode_compact_xmap07_snow_mud_data_payload(
+                offset,
+                context.sequence,
+                context.header_hour_raw,
+                payload,
+                &mut summary,
+            )
+        }
+        COMPACT_DOMAIN_MAP_FURNITURE_VICTORY_POINTS_LIVE => {
+            decode_compact_map_furniture_victory_points_data_payload(
                 offset,
                 context.sequence,
                 context.header_hour_raw,

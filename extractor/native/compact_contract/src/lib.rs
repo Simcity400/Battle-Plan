@@ -49,6 +49,7 @@ pub mod tactic_weight;
 pub mod tech_sharing_groups;
 pub mod untrusted_clock_recovery;
 pub mod worker_error_record;
+pub mod map_furniture_victory_points;
 pub mod xmap07_snow_mud;
 
 pub use domain_gap::{
@@ -399,7 +400,7 @@ pub const PRODUCTION_PROFILE_RULE: &str =
     "mandatory schedulable compact domains must have status Existing, ProductionComplete, or ProductionCompleteBase; validated/partial/open-gap domains are never admitted to the mandatory production profile";
 
 pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] =
-    &[57, 74, 78, 84, 98, 99, 100];
+    &[57, 74, 78, 84, 98, 99, 100, 101];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactDomainStatus {
@@ -731,7 +732,12 @@ pub fn passive_production_roster() -> Vec<CompactDomainDescriptor> {
 // Domain 100 rides every capture by owner ruling 2026-08-21: snow/mud is
 // recorded always at its tile-delta cost (~40 KB/h) so the map picture never
 // needs a special capture setting.
-pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[57, 100];
+// Domain 101 rides every capture for the same reason domain 100 does, and at a
+// far smaller price: the victory-point census is DELTA-emitted, so after the
+// first hour it costs only the provinces a scripted effect actually changed.
+// The map picture must not need a special capture setting to show its victory
+// points.
+pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[57, 100, 101];
 
 pub fn passive_capture_roster() -> Vec<CompactDomainDescriptor> {
     let mut roster = passive_production_roster();
@@ -1770,6 +1776,15 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         &[],
     ),
     domain(
+        101,
+        "map_furniture_victory_points_live",
+        "map_furniture_victory_points_live",
+        CompactDomainStatus::ActiveIntegration,
+        true,
+        true,
+        &[],
+    ),
+    domain(
         1000,
         "frame",
         "frame",
@@ -2086,7 +2101,7 @@ mod tests {
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 77, 78,
             79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
-            100, 1000,
+            100, 101, 1000,
         ];
         for id in expected {
             assert!(

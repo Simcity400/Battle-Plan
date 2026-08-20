@@ -4,12 +4,28 @@ use crate::{
 use portable_render_stream::{FamilyDisposition, FoundationGap, MapVisualFamily};
 use snapshot::sha256::Sha256;
 
-/// The map-authority inputs XMAP21 needs before it can prepare furniture. Both
-/// are required-but-unproven today, so the family refuses and says so.
+/// The map-authority inputs XMAP21 needs before it can prepare furniture.
+///
+/// `map_furniture.current_victory_points` is owner-proven since lane OV built
+/// its producer (compact domain 101, `map_furniture_victory_points_live`).
+/// `country.current_capital_state` is not, and the family needs BOTH, so it
+/// still refuses — see [`XMAP21_UNPROVEN_AUTHORITY_INPUTS`].
 pub const XMAP21_REQUIRED_AUTHORITY_INPUTS: [&str; 2] = [
     "country.current_capital_state",
     "map_furniture.current_victory_points",
 ];
+
+/// The required inputs XMAP00 does NOT yet call owner-proven.
+///
+/// Derived rather than written down: a second lane proving the capital state
+/// must not have to remember to edit a refusal string here, and a refusal that
+/// names a proven input as missing is a false statement about the recording.
+pub fn xmap21_unproven_authority_inputs() -> Vec<&'static str> {
+    XMAP21_REQUIRED_AUTHORITY_INPUTS
+        .into_iter()
+        .filter(|input| crate::map_authority::map_authority_owner_proven_admission(input).is_none())
+        .collect()
+}
 
 pub const XMAP21_FURNITURE_ABSENT_GAP_ID: &str = "XMAP21.map_furniture_authority_absent";
 
@@ -49,9 +65,16 @@ impl Xmap21MapFurnitureAdapter {
     }
 
     pub(crate) fn authority_absent_output(hour: i64) -> FoundationFeatureOutput {
+        let unproven = xmap21_unproven_authority_inputs();
         let reason = format!(
-            "no admitted map-furniture authority for this hour: {} are required and neither is owner-proven",
-            XMAP21_REQUIRED_AUTHORITY_INPUTS.join(", ")
+            "no admitted map-furniture authority for this hour: {} are required and {} is not \
+             owner-proven",
+            XMAP21_REQUIRED_AUTHORITY_INPUTS.join(", "),
+            if unproven.is_empty() {
+                "none of them".to_string()
+            } else {
+                unproven.join(", ")
+            }
         );
         let witness_sha256 = Sha256::hex(
             format!("{XMAP21_FURNITURE_ABSENT_GAP_ID}\n{hour}\n{hour}\n{reason}").as_bytes(),
@@ -125,6 +148,24 @@ mod tests {
         for input in XMAP21_REQUIRED_AUTHORITY_INPUTS {
             assert!(gap.reason.contains(input), "reason omitted {input}");
         }
+        // kills: a refusal that goes on calling a proven input unproven. Row
+        // #20's producer landed; row #7's has not, and the reason has to say
+        // which one is actually missing.
+        assert_eq!(
+            xmap21_unproven_authority_inputs(),
+            vec!["country.current_capital_state"],
+            "row #20 is owner-proven and row #7 is not"
+        );
+        assert!(
+            !gap.reason.contains("neither is owner-proven"),
+            "{}",
+            gap.reason
+        );
+        assert!(
+            gap.reason.contains("country.current_capital_state is not owner-proven"),
+            "{}",
+            gap.reason
+        );
         assert_eq!(gap.first_unavailable_hour, 7);
         assert_eq!(gap.last_unavailable_hour, 7);
         assert!(output.prepared_map_furniture.is_none());
