@@ -1,4 +1,5 @@
 // @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=90163b1113daafaecdc9cc42ae06237f3488d7f85c71ccf20eff120f40f2cccd
+// @d43-payload-reader-region begin
 use super::*;
 
 pub(super) const LANE_DECODE_CONTEXT: d43_grammar::decode::DecodeContext =
@@ -1467,6 +1468,7 @@ fn format_structural(finding: &d43_grammar::decode::Finding) -> String {
         }
     }
 }
+// @d43-payload-reader-region end
 
 fn preview_shape(finding: &d43_grammar::decode::Finding) -> Option<String> {
     use d43_grammar::HeaderPreview;

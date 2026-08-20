@@ -1766,6 +1766,19 @@ fn clear_hook_custody() {
 }
 
 fn cleanup_created_hooks(base: usize, targets: &[usize]) -> Result<(), String> {
+    // NEVER-ENABLED: on the create loop, and DRAINED-BY-CALLER: on the other
+    // route. Both are true of the same body:
+    //
+    // * the `MH_CreateHook` failure arms pass only the prefix this activation
+    //   has CREATED, and `inline_detour::enable_batch` does not run until every
+    //   create has succeeded -- nothing was patched, so no body exists;
+    // * `cleanup_after_failed_install` is the arm that can be reached with the
+    //   detours live, and it `disable_batch`es the whole prefix and calls
+    //   `wait_for_callbacks()?` before delegating here.
+    //
+    // The drain is not restated here because the batch is disabled as a unit:
+    // draining per target would read a count the still-admitting siblings keep
+    // refilling.
     let mut failures = Vec::new();
     let mut batch = hook_batch(targets);
     batch.reverse();

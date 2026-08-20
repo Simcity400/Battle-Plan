@@ -1281,11 +1281,13 @@ pub fn encode_market_stockpile_trailer(
     payload
 }
 
+// @d43-payload-reader-region begin
 // @leaf-source-authority crate=d43_grammar root=extractor/native/d43_grammar files=7 sha256=90163b1113daafaecdc9cc42ae06237f3488d7f85c71ccf20eff120f40f2cccd
 pub fn decode_payload(offset: usize, payload: &[u8]) -> MarketTradePayloadSummary {
     let report = d43_grammar::decode::decode_record(payload, leaf_decode::LANE_DECODE_CONTEXT);
     leaf_decode::project_decoded_payload(offset, &report)
 }
+// @d43-payload-reader-region end
 
 pub fn append_compact_record(
     out: &mut Vec<u8>,

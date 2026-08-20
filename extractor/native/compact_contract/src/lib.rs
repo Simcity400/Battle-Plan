@@ -49,6 +49,7 @@ pub mod tactic_weight;
 pub mod tech_sharing_groups;
 pub mod untrusted_clock_recovery;
 pub mod worker_error_record;
+pub mod xmap07_snow_mud;
 
 pub use domain_gap::{
     DomainGapError, DomainGapPart, DomainGapReason, DomainGapRecordV1, DomainGapWitnessProvenance,
@@ -397,7 +398,8 @@ pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
 pub const PRODUCTION_PROFILE_RULE: &str =
     "mandatory schedulable compact domains must have status Existing, ProductionComplete, or ProductionCompleteBase; validated/partial/open-gap domains are never admitted to the mandatory production profile";
 
-pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] = &[57, 74, 78, 84, 98, 99];
+pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] =
+    &[57, 74, 78, 84, 98, 99, 100];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactDomainStatus {
@@ -1756,6 +1758,15 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         &[],
     ),
     domain(
+        100,
+        "xmap07_snow_mud_live",
+        "xmap07_snow_mud_live",
+        CompactDomainStatus::ActiveIntegration,
+        true,
+        true,
+        &[],
+    ),
+    domain(
         1000,
         "frame",
         "frame",
@@ -2072,7 +2083,7 @@ mod tests {
             33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54,
             55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 74, 75, 77, 78,
             79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96, 97, 98, 99,
-            1000,
+            100, 1000,
         ];
         for id in expected {
             assert!(

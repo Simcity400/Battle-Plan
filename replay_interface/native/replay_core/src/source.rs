@@ -7683,15 +7683,15 @@ mod tests {
                     cursor += 1;
                 }
                 State::BlockComment(comment_depth) => {
-                    if bytes[cursor..].starts_with(b"*/") {
+                    if bytes[cursor..].starts_with(b"/*") {
+                        state = State::BlockComment(comment_depth + 1);
+                        cursor += 2;
+                    } else if bytes[cursor..].starts_with(b"*/") {
                         if comment_depth == 1 {
                             state = State::Code;
                         } else {
                             state = State::BlockComment(comment_depth - 1);
                         }
-                        cursor += 2;
-                    } else if bytes[cursor..].starts_with(b"/*") {
-                        state = State::BlockComment(comment_depth + 1);
                         cursor += 2;
                     } else {
                         cursor += 1;

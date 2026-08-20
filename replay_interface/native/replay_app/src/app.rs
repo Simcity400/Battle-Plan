@@ -4925,8 +4925,14 @@ fn product_xmap07_shipping_ingress(
 ) -> Result<ProductXmap07ShippingIngress> {
     let carrier = world.xmap07_snow_mud_runtime().ok_or_else(|| {
         format!(
-            "XMAP07 {:?} shipping route requires the passive global SnowMud carrier",
-            route
+            "XMAP07 {:?} shipping route requires the passive global SnowMud carrier \
+             `{}`, which this recording does not carry (world-frame status {:?}). \
+             The carrier is the only admitted source of the SnowMudFade byte every \
+             shared XMAP10 SceneCB0 must supply, so no map draw can be assembled \
+             without it.",
+            route,
+            replay_core::XMAP07_PASSIVE_SNOW_MUD_KEY,
+            world.xmap07_snow_mud_runtime_status(),
         )
     })?;
     carrier
@@ -10571,8 +10577,30 @@ mod product_production_d3d_tests {
         .unwrap()
         .frame(42)
         .unwrap();
+        // The refusal has to be actionable from a log line alone. A reader who
+        // sees only "requires the passive global SnowMud carrier" cannot tell
+        // whether the recording is damaged, whether a different hour would
+        // work, or which wire key to look for -- and finding out costs a
+        // ~20-minute frame dump. So it names the exact wire key, states the
+        // decoded status that produced the absence, and says what the carrier
+        // gates.
+        //
+        // kills: dropping XMAP07_PASSIVE_SNOW_MUD_KEY from the message, or
+        // reporting a fixed status instead of the frame's own, fails this.
+        let error = product_xmap07_shipping_ingress(ProductMapShippingRoute::Headless, &missing)
+            .expect_err("a frame with no passive SnowMud carrier must refuse");
+        let error = error.to_string();
         assert!(
-            product_xmap07_shipping_ingress(ProductMapShippingRoute::Headless, &missing).is_err()
+            error.contains(replay_core::XMAP07_PASSIVE_SNOW_MUD_KEY),
+            "the refusal must name the wire key: {error}"
+        );
+        assert!(
+            error.contains("DomainAbsent"),
+            "the refusal must carry the decoded status that produced the absence: {error}"
+        );
+        assert!(
+            error.contains("SceneCB0"),
+            "the refusal must say what the carrier gates: {error}"
         );
     }
 

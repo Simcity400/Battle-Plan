@@ -1010,6 +1010,13 @@ fn clear_hook_trampoline_addresses() {
 fn release_hook_receipts(
     sites: InstalledHookAddresses,
 ) -> Result<[ReleasedRvaHookReceipt; 3], String> {
+    // DRAINED-BY-CALLER: the seal above this call disables both writers,
+    // `wait_for_writer_quiescence()?`, disables the allocator, and
+    // `wait_for_allocator_quiescence()?` -- each with `?`, so a refused disable
+    // or a drain that did not reach zero returns BEFORE reaching here rather
+    // than being recorded and freed over. The two groups are drained
+    // separately because the allocator admits on its own schedule, which is
+    // why this cannot be restated as one wait in here.
     let installed = {
         let state = HOOK_RECEIPTS
             .get_or_init(|| Mutex::new(HookReceiptState::default()))

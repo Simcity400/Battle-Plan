@@ -653,6 +653,11 @@ fn poison(error: String) {
 
 #[must_use = "a retained target is still owed a teardown and must reach the caller's error"]
 fn cleanup_created_hooks(targets: &[usize]) -> bool {
+    // DRAINED-BY-CALLER: every caller is an install failure arm that first
+    // closes both admission gates, disables all three targets and refuses on a
+    // failed `wait_for_quiescence(30s)` before reaching here. That matters
+    // because the later arms run AFTER a successful `enable`, so a body can be
+    // in flight -- this is not the vacuous never-enabled case despite the name.
     OWNER_CALLBACKS_OPEN.store(false, Ordering::Release);
     COMMIT_CALLBACKS_OPEN.store(false, Ordering::Release);
     let mut removed = true;

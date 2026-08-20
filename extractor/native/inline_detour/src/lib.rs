@@ -232,6 +232,7 @@ mod windows_impl {
     pub unsafe fn enable(target: *mut c_void) -> Result<(), InlineDetourEnableError> {
         run_pinned(pin_containing_module, || {
             let mut frozen = freeze_other_threads()?;
+            // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
             frozen.note_entry(FreezeEntryPoint::Enable, "", 1);
             let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), false) {
                 Ok(()) => frozen
@@ -266,6 +267,7 @@ mod windows_impl {
     fn apply_queued_without_counting() -> Result<(), InlineDetourEnableError> {
         run_pinned(pin_containing_module, || {
             let mut frozen = freeze_other_threads()?;
+            // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
             frozen.note_entry(FreezeEntryPoint::ApplyQueued, "", 0);
             let outcome = match frozen.refuse_if_a_thread_is_in_a_queued_patch() {
                 Ok(()) => frozen
@@ -530,6 +532,7 @@ mod windows_impl {
         let mut attempted_rollback = false;
         match freeze_other_threads() {
             Ok(mut frozen) => {
+                // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
                 frozen.note_entry(
                     FreezeEntryPoint::EnableBatch,
                     targets[0].0,
@@ -712,6 +715,7 @@ mod windows_impl {
                 };
             }
         };
+        // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(
             FreezeEntryPoint::DisableBatch,
             targets[0].0,
@@ -925,6 +929,7 @@ mod windows_impl {
                 };
             }
         };
+        // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(
             FreezeEntryPoint::RemoveBatch,
             targets[0].0,
@@ -1030,6 +1035,7 @@ mod windows_impl {
                 );
             }
         };
+        // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(FreezeEntryPoint::Disable, "", 1);
         let outcome = match frozen.refuse_if_a_thread_is_in(core::iter::once(target), false) {
             Ok(()) => frozen
@@ -1065,6 +1071,7 @@ mod windows_impl {
                 );
             }
         };
+        // FROZEN WINDOW: nothing below this line until `drop(frozen)` may allocate or block.
         frozen.note_entry(FreezeEntryPoint::Remove, "", 1);
         // go stale (`MH_HookIsEnabled` checks lock ownership, walks the
         // idempotent release depends on it. Any other status is one

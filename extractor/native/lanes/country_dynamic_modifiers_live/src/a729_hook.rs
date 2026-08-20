@@ -1147,6 +1147,12 @@ fn begin_release_pending() -> Result<(), String> {
 
 fn remove_release_targets(sites: InstalledHookAddresses) -> Result<(), String> {
     // latches `RELEASE_CALLBACKS_QUIESCED` and only then calls this. The drain
+    // DRAINED-BY-CALLER: `seal_reserve_and_uninstall` disables the daily-update
+    // site, waits for callbacks, disables the entry-erase site, waits again,
+    // latches `RELEASE_CALLBACKS_QUIESCED` and only then calls this. The drain
+    // is per site and interleaved with the disables on purpose -- each site's
+    // bodies are drained while the other is still admitting -- so it cannot be
+    // restated here as one wait over both.
     let mut failures = Vec::new();
     // Both release targets are removed under one freeze instead of two, in the
     let removed = unsafe { inline_detour::remove_batch(&hook_batch(sites)) };

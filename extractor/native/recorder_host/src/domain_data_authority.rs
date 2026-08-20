@@ -469,6 +469,8 @@ pub const COMPACT_TECH_SHARING_GROUP_MAX_MEMBER_TAG_DB_ID: u32 = COMPACT_MAX_OWN
 pub const COMPACT_DOMAIN_SUNK_CONVOY_HISTORY_LIVE: u16 = compact_contract::naval_history::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE: u16 = compact_contract::rail_replay::DOMAIN_ID;
 pub const COMPACT_DOMAIN_RAID_INSTANCES_LIVE: u16 = compact_contract::raid_instances::DOMAIN_ID;
+pub const COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE: u16 =
+    compact_contract::xmap07_snow_mud::DOMAIN_ID;
 pub const COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_LIVE: u16 = preferred92::DOMAIN_ID;
 pub const COMPACT_DOMAIN_COUNTRY_ARMY_UPGRADE_REQUESTS_LIVE: u16 = army_upgrades93::DOMAIN_ID;
 pub const COMPACT_DOMAIN_COUNTRY_PREFERRED_TACTIC_WEIGHT_LIVE: u16 = weight96::DOMAIN_ID;
@@ -13287,6 +13289,60 @@ fn decode_compact_rail_replay_state_data_payload(
     );
 }
 
+fn decode_compact_xmap07_snow_mud_data_payload(
+    offset: usize,
+    sequence: u64,
+    header_hour_raw: i32,
+    payload: &[u8],
+    summary: &mut DomainDataDecodeSummary,
+) {
+    if payload.len() >= 12 {
+        add_decoder_status(summary, read_u32_le(payload, 8));
+    }
+    let decoded = match compact_contract::xmap07_snow_mud::decode_payload(payload) {
+        Ok(decoded) => decoded,
+        Err(error) => {
+            summary.parse_errors.push(format!(
+                "offset {offset}: xmap07_snow_mud XSM1 payload invalid: {error}"
+            ));
+            return;
+        }
+    };
+    if sequence != 0 && decoded.source_sequence != sequence {
+        summary.parse_errors.push(format!(
+            "offset {offset}: xmap07_snow_mud XSM1 source sequence {} != H4CR sequence {sequence}",
+            decoded.source_sequence
+        ));
+        return;
+    }
+    if sequence != 0 && decoded.game_hour_raw != header_hour_raw {
+        summary.parse_errors.push(format!(
+            "offset {offset}: xmap07_snow_mud XSM1 hour {} != H4CR hour {header_hour_raw}",
+            decoded.game_hour_raw
+        ));
+        return;
+    }
+    let admitted_rows = usize::from(!decoded.is_refusal());
+    if let Some(domain) = summary
+        .per_domain
+        .get_mut(&COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE)
+    {
+        domain.data_rows_total = domain
+            .data_rows_total
+            .saturating_add(admitted_rows as u64);
+        domain.data_changed_rows_total = domain
+            .data_changed_rows_total
+            .saturating_add(admitted_rows as u64);
+        domain.status_flags_or |= decoded.status_flags;
+    }
+    add_compact_domain_data_unit(
+        summary,
+        COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE,
+        "xmap07_snow_mud_grid_bytes",
+        decoded.grid.len(),
+    );
+}
+
 fn decode_compact_fired_event_popups_data_payload(
     offset: usize,
     payload: &[u8],
@@ -16961,6 +17017,15 @@ pub fn summarize_domain_data_payload(
         }
         COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE => {
             decode_compact_rail_replay_state_data_payload(offset, payload, &mut summary)
+        }
+        COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE => {
+            decode_compact_xmap07_snow_mud_data_payload(
+                offset,
+                context.sequence,
+                context.header_hour_raw,
+                payload,
+                &mut summary,
+            )
         }
         dynamic71::DOMAIN_ID => {
             decode_compact_dynamic_collection_trace_live_data_payload(offset, payload, &mut summary)

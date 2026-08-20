@@ -814,6 +814,19 @@ struct ArtifactScan {
     claims: BTreeMap<String, ContentClaim>,
     absent_claims: Vec<String>,
     localisation_source_sha256: Option<String>,
+    /// `{source_file, source_sha256}` rows: RESTATEMENTS of a claim the artifact
+    /// makes elsewhere, never a claim of their own. See
+    /// [`reconcile_restated_claims`].
+    restated_claims: Vec<RestatedClaim>,
+}
+
+/// One `{source_file, source_sha256}` row, held until the whole document has
+/// been walked.
+#[derive(Debug)]
+struct RestatedClaim {
+    normalized_path: String,
+    sha256: String,
+    breadcrumb: String,
 }
 
 fn read_and_scan_artifact(request: &ArtifactRequest) -> Result<ArtifactScan, String> {
@@ -836,6 +849,7 @@ fn scan_artifact_document(
         claims: BTreeMap::new(),
         absent_claims: Vec::new(),
         localisation_source_sha256: None,
+        restated_claims: Vec::new(),
     };
     let root = document
         .as_object()
@@ -859,6 +873,33 @@ fn scan_artifact_document(
             .and_then(Value::as_str)
             .ok_or_else(|| "localisation_source names no sha256".to_string())?;
         require_sha256(sha256, "localisation_source.sha256")?;
+        // Removing the whole object exempts everything inside it, so what is
+        // inside it is pinned: a CLOSED, NAMED set of build-provenance digests
+        // and nothing else. A future `localisation_source` that grew a digest
+        // outside that set is still refused (Codex review round 1, finding 3).
+        //
+        // The set is three, not one. `technology_sharing_static` records which
+        // effective layers and which localisation source files its catalog was
+        // built from, and digests each of those two canonical-JSON structures:
+        //
+        //   layer_binding_sha256                  the ordered mounted layers
+        //   localisation_source_inventory_sha256  the localisation file inventory
+        //
+        // Neither is the digest of any single file at any VFS path, so neither
+        // can be a content claim and neither can be resolved through the
+        // effective VFS. They are pinned by name and required to be well-formed
+        // digests; refusing them made the artifact uncertifiable while proving
+        // nothing (`focus_defs_static`/`technology_sharing_static` were both
+        // refused for this, lane MU's ledger item 9).
+        for name in LOCALISATION_SOURCE_PROVENANCE_DIGESTS {
+            let Some(value) = object.get(name) else {
+                continue;
+            };
+            let text = value
+                .as_str()
+                .ok_or_else(|| format!("localisation_source.{name} is not a string"))?;
+            require_sha256(text, &format!("localisation_source.{name}"))?;
+        }
         let mut other = Vec::new();
         let mut discarded = ArtifactScan {
             role: String::new(),
@@ -866,6 +907,7 @@ fn scan_artifact_document(
             claims: BTreeMap::new(),
             absent_claims: Vec::new(),
             localisation_source_sha256: None,
+            restated_claims: Vec::new(),
         };
         collect_claims(
             &source,
@@ -874,16 +916,31 @@ fn scan_artifact_document(
             &mut discarded,
             &mut other,
         )?;
-        other.retain(|site| site != "localisation_source.sha256");
+        other.retain(|site| {
+            !LOCALISATION_SOURCE_PROVENANCE_DIGESTS
+                .iter()
+                .any(|name| *site == format!("localisation_source.{name}"))
+        });
         other.extend(
             discarded
                 .claims
                 .into_keys()
                 .map(|path| format!("localisation_source declares a content claim for {path}")),
         );
+        // A RESTATEMENT inside the removed object would reach neither the sweep
+        // (its digest is marked consumed) nor `reconcile_restated_claims` (it
+        // lands in this discarded scan), so it would be the one shape that
+        // could carry an unaccounted digest through the pin.
+        other.extend(discarded.restated_claims.into_iter().map(|row| {
+            format!(
+                "localisation_source restates a content claim for {}",
+                row.normalized_path
+            )
+        }));
         if !other.is_empty() {
             return Err(format!(
-                "localisation_source carries {} digest site(s) beyond the catalog digest, \n                 which the walk cannot account for: {}",
+                "localisation_source carries {} digest site(s) beyond its named build-provenance \
+                 digests, which the walk cannot account for: {}",
                 other.len(),
                 other.join("; ")
             ));
@@ -931,6 +988,7 @@ fn scan_artifact_document(
                 .join("; ")
         ));
     }
+    reconcile_restated_claims(&mut scan)?;
     if scan.claims.is_empty() {
         return Err("the artifact makes no content claims at all".to_string());
     }
@@ -943,6 +1001,18 @@ fn scan_artifact_document(
     Ok(scan)
 }
 
+/// The digests `localisation_source` may carry. Each states the provenance of
+/// the localisation catalog the artifact was BUILT against — never the bytes of
+/// a game file — so none of them is a content claim and none is resolvable
+/// through the effective VFS. Closed by construction: any other digest inside
+/// `localisation_source` still refuses the artifact by name.
+const LOCALISATION_SOURCE_PROVENANCE_DIGESTS: [&str; 3] = [
+    "sha256",
+    "layer_binding_sha256",
+    "localisation_source_inventory_sha256",
+];
+
+/// One recognized `(path key, digest key, byte key)` triple.
 const CLAIM_SHAPES: [(&str, &str, Option<&str>); 3] = [
     ("relpath", "sha256", Some("bytes")),
     (
@@ -952,6 +1022,55 @@ const CLAIM_SHAPES: [(&str, &str, Option<&str>); 3] = [
     ),
     ("source", "source_sha256", None),
 ];
+
+/// The RESTATEMENT shape: `{source_file, source_sha256}`.
+///
+/// `focus_defs_static`'s `meta.source_compatibility[]` rows spell a
+/// game-relative content path and its digest with a different path key than the
+/// `source_files[]` row that states the SAME path with the SAME digest. Before
+/// this was recognized the digest reached the fail-closed sweep and refused the
+/// whole artifact.
+///
+/// It is deliberately NOT a claim shape. A claim shape puts a NEW path into the
+/// proved corpus, and this one would then admit any path the row happens to
+/// carry — including a repo-relative build input, which
+/// `normalize_game_relative_path` accepts and which a layer could then satisfy.
+/// A restatement can only ever REPEAT a claim the artifact already makes: it is
+/// held until the whole document has been walked and then required to match an
+/// existing claim exactly. A row naming a path no other shape claimed, or the
+/// same path with a different digest, refuses the artifact by name. So it can
+/// never widen the corpus, only contradict it.
+const RESTATED_CLAIM_PATH_KEY: &str = "source_file";
+const RESTATED_CLAIM_DIGEST_KEY: &str = "source_sha256";
+
+/// Require every restatement to repeat a claim the artifact already makes.
+///
+/// Run after the WHOLE document has been walked, because a restatement can sit
+/// anywhere relative to the claim it repeats — `focus_defs_static` puts them
+/// under `meta`, which serializes before `source_files`. Nothing here inserts
+/// into `scan.claims`, so a restatement can never widen the proved corpus.
+fn reconcile_restated_claims(scan: &mut ArtifactScan) -> Result<(), String> {
+    let restated = std::mem::take(&mut scan.restated_claims);
+    for row in restated {
+        match scan.claims.get(&row.normalized_path) {
+            Some(claim) if claim.sha256 == row.sha256 => {}
+            Some(_) => {
+                return Err(format!(
+                    "the artifact claims two different contents for {}",
+                    row.normalized_path
+                ))
+            }
+            None => {
+                return Err(format!(
+                    "the restatement at {} names {}, which no content claim in this artifact \
+                     covers, so it is a digest site the walk cannot account for",
+                    row.breadcrumb, row.normalized_path
+                ))
+            }
+        }
+    }
+    Ok(())
+}
 
 fn collect_claims(
     node: &Value,
@@ -985,6 +1104,50 @@ fn collect_claims(
                     }
                 }
             }
+            // The restatement shape. It is checked AFTER the claim shapes so a
+            // row carrying both a claim path key and `source_file` beside one
+            // digest is caught rather than quietly resolved twice.
+            if let (Some(path), Some(digest)) = (
+                object.get(RESTATED_CLAIM_PATH_KEY),
+                object.get(RESTATED_CLAIM_DIGEST_KEY),
+            ) {
+                if consumed.contains(&RESTATED_CLAIM_DIGEST_KEY) {
+                    return Err(format!(
+                        "row at {} spells one {RESTATED_CLAIM_DIGEST_KEY} for two different \
+                         paths",
+                        breadcrumb_text(breadcrumb)
+                    ));
+                }
+                consumed.push(RESTATED_CLAIM_DIGEST_KEY);
+                let (Value::String(path), Value::String(digest)) = (path, digest) else {
+                    return Err(format!(
+                        "restatement row at {} pairs {RESTATED_CLAIM_PATH_KEY}/\
+                         {RESTATED_CLAIM_DIGEST_KEY} inconsistently",
+                        breadcrumb_text(breadcrumb)
+                    ));
+                };
+                require_sha256(digest, &breadcrumb_text(breadcrumb))?;
+                let normalized_path = portable_content_manifest::normalize_game_relative_path(path)
+                    .map_err(|error| {
+                        format!("restatement at {}: {error}", breadcrumb_text(breadcrumb))
+                    })?;
+                scan.restated_claims.push(RestatedClaim {
+                    normalized_path,
+                    sha256: digest.clone(),
+                    breadcrumb: breadcrumb_text(breadcrumb),
+                });
+            }
+            // The map-keyed shape: the object carries a digest and a length but
+            // names no path, so its own key in the parent map is the path.
+            //
+            // The key must LOOK like a content path — it has to carry a
+            // directory separator or an extension — or the shape does not
+            // apply and the digest falls through to the fail-closed sweep
+            // below. Without that guard, any object anywhere that grew a
+            // `sha256` beside a `bytes` would have its parent key read as a
+            // path, and a build-input digest under a name like
+            // `localisation_source` could become a bogus content "claim"
+            // (Codex review round 1, finding 3).
             if !consumed.contains(&"sha256") {
                 if let (Some(Value::String(digest)), Some(bytes), Some(key)) = (
                     object.get("sha256"),
@@ -1208,6 +1371,197 @@ mod tests {
         assert_eq!(scanned.localisation_source_sha256, Some("6".repeat(64)));
     }
 
+    /// `focus_defs_static` states one file twice, under two path keys.
+    ///
+    /// `meta.source_compatibility[]` names a game-relative path as
+    /// `source_file` with the file's digest as `source_sha256`, while
+    /// `source_files[]` names the SAME path as `relpath` with the same digest.
+    /// The second spelling used to reach the fail-closed sweep and refuse the
+    /// whole artifact for carrying "a digest site that is not a content claim".
+    ///
+    /// It is admitted as a RESTATEMENT, never as a claim: it must repeat a claim
+    /// the artifact already makes, so it can never put a new path into the
+    /// proved corpus. That matters because `normalize_game_relative_path`
+    /// accepts a repo-relative build-input path perfectly well, and a claim
+    /// shape would then let a build-input digest become content a layer could
+    /// satisfy.
+    ///
+    /// kills: deleting the `RESTATED_CLAIM_*` branch in `collect_claims` makes
+    /// case 1 refuse with `meta.source_compatibility.[0].source_sha256`, and the
+    /// artifact uncertifiable. Making it call `insert_claim` instead of
+    /// `scan.restated_claims.push` makes case 3 pass — a build input silently
+    /// entering the corpus. Dropping the `consumed.contains` guard makes case 4
+    /// resolve one digest against two paths. Deleting the
+    /// `discarded.restated_claims` extension in the `localisation_source` pin
+    /// makes case 3b pass, which is the one route a restatement could take
+    /// without ever being reconciled.
+    #[test]
+    fn a_source_file_row_restates_an_existing_claim_and_can_never_widen_the_corpus() {
+        // 1. agrees with source_files -> exactly one claim, and the claim keeps
+        //    the length the real claim shape supplied.
+        let scanned = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "meta": {
+                "source_compatibility": [{
+                    "compatibility": "a729_exact_trailing_root_closer",
+                    "source_file": "common/national_focus/joint.txt",
+                    "source_sha256": "4".repeat(64)
+                }]
+            },
+            "source_files": [
+                { "relpath": "common/national_focus/joint.txt", "sha256": "4".repeat(64), "bytes": 7360 }
+            ]
+        }))
+        .expect("a compatibility row that agrees with source_files is one claim");
+        assert_eq!(
+            scanned.claims.keys().collect::<Vec<_>>(),
+            vec!["common/national_focus/joint.txt"]
+        );
+        assert_eq!(
+            scanned.claims["common/national_focus/joint.txt"].bytes,
+            Some(7360)
+        );
+
+        // 2. same path, different digest -> the artifact contradicts itself.
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "meta": {
+                "source_compatibility": [{
+                    "source_file": "common/national_focus/joint.txt",
+                    "source_sha256": "5".repeat(64)
+                }]
+            },
+            "source_files": [
+                { "relpath": "common/national_focus/joint.txt", "sha256": "4".repeat(64) }
+            ]
+        }))
+        .expect_err("a compatibility row that disagrees must refuse the artifact");
+        assert!(
+            error.contains("two different contents for common/national_focus/joint.txt"),
+            "{error}"
+        );
+
+        // 3. a path NO claim covers -- here a repo-relative build input, which
+        //    path normalization accepts. It must refuse, not be proved.
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "meta": {
+                "source_compatibility": [{
+                    "source_file": "extractor/game_defs/out/build_input.json",
+                    "source_sha256": "9".repeat(64)
+                }]
+            },
+            "source_files": [
+                { "relpath": "common/national_focus/joint.txt", "sha256": "4".repeat(64) }
+            ]
+        }))
+        .expect_err("a restatement of a path nothing claims must refuse");
+        assert!(
+            error.contains("extractor/game_defs/out/build_input.json")
+                && error.contains("no content claim in this artifact covers"),
+            "{error}"
+        );
+
+        // 3b. the same shape INSIDE localisation_source, which is removed from
+        //     the walked document. Its digest is marked consumed by the
+        //     restatement branch and the row lands in a discarded scan, so
+        //     without the explicit check it would reach neither the sweep nor
+        //     reconcile_restated_claims.
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "localisation_source": {
+                "path": "x/localisation_catalog.json",
+                "sha256": "6".repeat(64),
+                "source_file": "common/national_focus/joint.txt",
+                "source_sha256": "9".repeat(64)
+            },
+            "source_files": [
+                { "relpath": "common/national_focus/joint.txt", "sha256": "4".repeat(64) }
+            ]
+        }))
+        .expect_err("a restatement inside localisation_source must refuse");
+        assert!(
+            error.contains("localisation_source restates a content claim for"),
+            "{error}"
+        );
+
+        // 4. one digest, two competing path siblings.
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "meta": {
+                "source_compatibility": [{
+                    "source": "common/national_focus/a.txt",
+                    "source_file": "common/national_focus/b.txt",
+                    "source_sha256": "4".repeat(64)
+                }]
+            },
+            "source_files": [
+                { "relpath": "common/national_focus/joint.txt", "sha256": "4".repeat(64) }
+            ]
+        }))
+        .expect_err("one digest for two paths must refuse");
+        assert!(
+            error.contains("one source_sha256 for two different paths"),
+            "{error}"
+        );
+    }
+
+    /// `technology_sharing_static` records WHICH effective layers and WHICH
+    /// localisation files its catalog was built from, and digests each of those
+    /// two canonical-JSON structures. Neither is any file's bytes at any VFS
+    /// path, so neither can be resolved or claimed — but refusing them made the
+    /// artifact uncertifiable while proving nothing.
+    ///
+    /// kills: dropping `layer_binding_sha256` /
+    /// `localisation_source_inventory_sha256` from
+    /// `LOCALISATION_SOURCE_PROVENANCE_DIGESTS` makes the first case refuse
+    /// again. Replacing the named set with a blanket exemption of everything
+    /// inside `localisation_source` makes the second and third cases pass.
+    #[test]
+    fn localisation_source_carries_named_build_provenance_digests_and_nothing_else() {
+        let scanned = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "localisation_source": {
+                "source": "static_localisation_join_r3",
+                "path": "extractor/game_defs/out/localisation_gate/x/localisation_catalog.json",
+                "sha256": "6".repeat(64),
+                "compatibility": "verified_current_effective_layers_and_files",
+                "layer_binding_sha256": "7".repeat(64),
+                "localisation_source_inventory_sha256": "8".repeat(64),
+                "localisation_source_file_count": 206,
+                "key_count": 129087
+            },
+            "source_files": [{ "relpath": "a.txt", "sha256": "1".repeat(64) }]
+        }))
+        .expect("the three named provenance digests are accounted for");
+        assert_eq!(scanned.claims.keys().collect::<Vec<_>>(), vec!["a.txt"]);
+        assert_eq!(scanned.localisation_source_sha256, Some("6".repeat(64)));
+
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "localisation_source": {
+                "path": "x/localisation_catalog.json",
+                "sha256": "6".repeat(64),
+                "some_future_sha256": "9".repeat(64)
+            },
+            "source_files": [{ "relpath": "a.txt", "sha256": "1".repeat(64) }]
+        }))
+        .expect_err("an unnamed digest inside localisation_source must still refuse");
+        assert!(error.contains("localisation_source.some_future_sha256"), "{error}");
+
+        let error = scan(json!({
+            "artifact_sha256": "0".repeat(64),
+            "localisation_source": {
+                "path": "x/localisation_catalog.json",
+                "sha256": "6".repeat(64),
+                "layer_binding_sha256": "not-a-digest"
+            },
+            "source_files": [{ "relpath": "a.txt", "sha256": "1".repeat(64) }]
+        }))
+        .expect_err("a named provenance digest must still be a well-formed digest");
+        assert!(error.contains("localisation_source.layer_binding_sha256"), "{error}");
+    }
+
     #[test]
     fn an_artifact_without_a_self_digest_is_refused() {
         let error = scan(json!({
@@ -1402,6 +1756,7 @@ mod tests {
             claims: BTreeMap::new(),
             absent_claims: Vec::new(),
             localisation_source_sha256: Some("b".repeat(64)),
+            restated_claims: Vec::new(),
         }];
         let mut refused = Vec::new();
         reconcile_localisation_sources(&scans, &mut refused);
@@ -1422,6 +1777,7 @@ mod tests {
                 claims: BTreeMap::new(),
                 absent_claims: Vec::new(),
                 localisation_source_sha256: None,
+                restated_claims: Vec::new(),
             },
             ArtifactScan {
                 role: "ship_definitions_static".into(),
@@ -1429,6 +1785,7 @@ mod tests {
                 claims: BTreeMap::new(),
                 absent_claims: Vec::new(),
                 localisation_source_sha256: Some("b".repeat(64)),
+                restated_claims: Vec::new(),
             },
         ];
         let mut refused = Vec::new();

@@ -509,6 +509,12 @@ fn disable_targets(resolved: InstalledAddresses) -> Result<(), String> {
 }
 
 fn remove_targets(resolved: InstalledAddresses) -> Result<(), String> {
+    // DRAINED-BY-CALLER: both callers -- the teardown and `rollback_install` --
+    // call `disable_targets` and then spin on `IN_FLIGHT` until it reads zero,
+    // refusing if it does not, before reaching here. This helper is the free
+    // and nothing else, and the drain belongs where the whole set is disabled:
+    // draining per target would measure a count the other targets keep
+    // refilling.
     let mut errors = Vec::new();
     for target in targets(resolved) {
         match unsafe { inline_detour::remove(target as *mut c_void) } {

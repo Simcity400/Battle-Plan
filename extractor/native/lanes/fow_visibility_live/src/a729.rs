@@ -552,6 +552,17 @@ impl HookOps for MinHookOps {
     }
 
     fn remove_and_free(&self, target: usize) -> Result<(), InlineDetourReleaseError> {
+        // NEVER-CALLED: and deliberately so -- see the trait declaration above.
+        // This lane RETAINS its trampoline for the life of the process;
+        // `uninstall_with_ops` closes admission, `disable`s (which frees
+        // nothing) and quiesces, and never reaches this. The operation is named
+        // and implemented precisely so that "the trampoline is never freed"
+        // becomes assertable: the teardown tests read back the performed
+        // sequence and FAIL if this ever appears in it.
+        //
+        // So there is no caller to drain, and a `DRAINED-BY-CALLER:` marker
+        // here would have named one that does not exist -- worse than no marker
+        // at all, because it reads as audited.
         unsafe { inline_detour::remove(target as *mut c_void) }
     }
 }

@@ -54,6 +54,7 @@ resolved_tooltip_instances_live_lane = { path = "../lanes/resolved_tooltip_insta
 fired_event_popups_live_lane = { path = "../lanes/fired_event_popups_live" }
 runtime_text_inputs_live_lane = { path = "../lanes/runtime_text_inputs_live" }
 production_render_submit_live_lane = { path = "../lanes/production_render_submit_live" }
+map_passive_carriers_live_lane = { path = "../lanes/map_passive_carriers_live" }
 production_hook_receipt = { path = "../lanes/production_hook_receipt" }
 production_render_catalog_live = { package = "production_render_catalog_live_lane", path = "../lanes/production_render_catalog_live" }
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }

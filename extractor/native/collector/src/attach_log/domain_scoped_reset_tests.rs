@@ -39,6 +39,11 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
         "session-local one-shot, not a per-domain read product",
     ),
     (
+        "xmap07_snow_mud",
+        "d100 epoch continuity is invalid after any rejected bracket; the blanket reset forces \
+         the next successful sample to open a fresh generation",
+    ),
+    (
         "focus_research_decisions_depth_live",
         "d45 takes PRE-FRAME RESTORATION, not the blanket reset and not the allowlist. Its pin \
          is staged inside the bracket and committed only where the late custody status is \
@@ -571,6 +576,24 @@ fn the_two_late_failure_domains_are_not_domain_scoped() {
             "`{field}` must carry its exclusion reason in BLANKET_RESET_TRACKER_FIELDS"
         );
     }
+}
+
+#[test]
+fn xmap07_snow_mud_epoch_state_is_blanket_reset_not_retained() {
+    // kills: adding d100's epoch tracker to DOMAIN_SCOPED_TRACKER_RETENTION.
+    let field = "xmap07_snow_mud";
+    assert!(
+        !DOMAIN_SCOPED_TRACKER_RETENTION
+            .iter()
+            .any(|(name, _)| *name == field),
+        "a rejected bracket must never preserve d100 continuity"
+    );
+    assert!(
+        BLANKET_RESET_TRACKER_FIELDS
+            .iter()
+            .any(|(name, reason)| *name == field && reason.contains("fresh generation")),
+        "d100 must state why the blanket reset is required"
+    );
 }
 
 #[test]
