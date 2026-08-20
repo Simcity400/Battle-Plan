@@ -356,9 +356,15 @@ function Invoke-ShippingTests {
         }
         if (-not $hasLibrary -and $tests.Count -eq 0 -and $bins.Count -eq 0) { continue }
 
+        # The base config's binary() clauses (soak, soak_f2, the game_ui evidence
+        # binaries) all name replay_interface test targets; nextest validates every
+        # profile's filter against the running workspace and hard-fails on a
+        # binary() that matches nothing, so every other workspace gets the
+        # derived config with those clauses removed.
+        $configName = if ($root.Relative -eq 'replay_interface/native') { 'nextest.toml' } else { 'nextest.no-ui.toml' }
         $arguments = @(
             'nextest', 'run', '--manifest-path', (Join-Path $root.Absolute 'Cargo.toml'),
-            '--config-file', (Join-Path $script:RepoRoot '.config\nextest.toml'),
+            '--config-file', (Join-Path $script:RepoRoot ('.config\' + $configName)),
             '--profile', 'ci', '--no-fail-fast'
         )
         if (Test-Path -LiteralPath (Join-Path $root.Absolute 'Cargo.lock') -PathType Leaf) { $arguments += '--locked' }
