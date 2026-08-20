@@ -178,10 +178,8 @@ pub use intelligence_presentation::{
     XUI14_PRODUCER_CONTRACT_MANIFEST_SHA256, XUI14_SCHEMA,
 };
 pub use map_furniture::{
-    CapitalAnchorSource, CapitalFurnitureRow, CapitalLabelSource, MapFurnitureFrame,
-    MapFurnitureWorldPoint, RaidFurnitureIdentity, RaidFurniturePresentation, RaidFurnitureRow,
-    RaidMapIconVariant, ResourceFurnitureEntry, ResourceFurnitureRow, ResourceViewerAmount,
-    VictoryPointFurnitureRow, MAP_FURNITURE_A729_EXECUTABLE_SHA256, MAP_FURNITURE_SCHEMA,
+    MapFurnitureFrame, VictoryPointFurnitureRow, MAP_FURNITURE_A729_EXECUTABLE_SHA256,
+    MAP_FURNITURE_SCHEMA,
 };
 pub use orders_group_manager::{
     ArmyCohesionMode, ArmyExecutionMode, ArmyOrdersGroupManagerView, ArmyOrdersGroupScalarExact,
