@@ -34,12 +34,13 @@ TOOLS = [
     },
     {
         "name": "re_run",
-        "description": "Run one durable RE job. Operations cover build registration/inventory/diff, Ghidra evidence ingestion, registered live reads, bounded call tracing, leaf emulation, save correlation, and claims.",
+        "description": "Run one durable RE job. Operations cover build inspection/census/cross-analysis, inventory/diff, Ghidra evidence, bounded live observation, emulation, save correlation, and claims.",
         "inputSchema": {
             "type": "object", "required": ["operation", "inputs"],
             "properties": {
                 "operation": {"type": "string", "enum": [
-                    "register_build", "ingest_ghidra_jobs", "inventory_build", "diff_builds", "migrate_build",
+                    "register_build", "inspect_build", "candidate_census", "cross_analyze_function",
+                    "ingest_ghidra_jobs", "inventory_build", "diff_builds", "migrate_build",
                     "register_memory_path", "observe_runtime", "trace_calls", "emulate_function",
                     "correlate_save_memory", "record_claim",
                 ]},
@@ -81,10 +82,11 @@ def dispatch(broker: Broker, method: str, params: dict[str, Any]) -> dict[str, A
         return {
             "protocolVersion": params.get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "hoi4-re", "version": "0.1.0"},
+            "serverInfo": {"name": "hoi4-re", "version": "0.2.0"},
             "instructions": (
                 "Run re_status first. Use build IDs, symbol IDs, path IDs, and job IDs instead of raw paths or addresses. "
-                "The existing exact-a729 Ghidra broker remains the static authority. New-build analysis is isolated. "
+                "Use candidate_census for accounting and cross_analyze_function for isolated angr/Rizin second opinions. "
+                "The exact-a729 Ghidra broker remains the static authority. New-build analysis is isolated. "
                 "Live reads are SHA-gated; Frida calls are hook-based, exclusive, bounded, and never imply promotion."
             ),
         }

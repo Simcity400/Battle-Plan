@@ -16,6 +16,64 @@ The default is `<local-path>`; override it with
 `BATTLE_PLAN_RE_STATE_ROOT`. The SQLite registry uses WAL mode, permits concurrent
 readers, and serializes writes. Agents never edit the database directly.
 
+## Lean whole-game toolchain
+
+Agents use this MCP service rather than coordinating separate GUI projects.
+The installed stack is deliberately limited to tools with distinct jobs:
+
+- Ghidra 12.1.2: shared exact-build static authority (20 serialized shards).
+- angr 9.3.2: an independent decompiler and symbolic-analysis second opinion.
+- Rizin 0.8.2: fast independent disassembly and basic-block recovery.
+- Frida 17.15.3: bounded call observation through `trace_calls`.
+- Unicorn 2.1.4: leaf-function emulation through `emulate_function`.
+- DynamoRIO 11.91 with drcov: coverage capture for a dedicated live lane.
+- WinDbg with TTD: last-resort time-travel investigation in that live lane.
+
+There is no Cutter, Triton, capa, second registry, or second MCP service. Four
+offline `cross_analyze_function` jobs may run at once; further jobs wait for a
+slot in one fixed machine-wide lock namespace; state-root overrides cannot add
+capacity. Live work remains one-at-a-time because multiple instrumenters on one game
+process corrupt the observation rather than increasing throughput. `re_status`
+reports every installed path and readiness check, so agents do not need to know
+machine-specific install directories.
+
+`candidate_census` accounts for compiler-described x64 functions against the
+shared Ghidra index and emits a compact missing-RVA queue. It refuses an index
+without a published generation and matching executable SHA-256/image base. It is a work queue,
+not a claim that every entry is a unique gameplay routine or understood.
+`cross_analyze_function` accepts either a stable symbol ID or a raw RVA and
+writes isolated angr and Rizin artifacts from a content-addressed executable
+snapshot. It never replaces Ghidra evidence or
+automatically promotes a reconstruction claim.
+
+```json
+{"operation":"candidate_census","inputs":{"build_id":"hoi4-exe-1-19-2-0-a729-870ebf1f6152"}}
+```
+
+```json
+{
+  "operation":"cross_analyze_function",
+  "inputs":{
+    "build_id":"hoi4-exe-1-19-2-0-a729-870ebf1f6152",
+    "rva":"0x24de600",
+    "engines":["angr","rizin"],
+    "timeout_s":180
+  }
+}
+```
+
+The current machine uses Python 3.12 at
+`<local-path>`. To recreate only that isolated component:
+
+```powershell
+py -3.12 -m venv <local-path>
+<local-path> -m pip install --requirement replay_interface\tools\hoi4_re\requirements-angr.txt
+```
+
+Tool and evidence paths have `BATTLE_PLAN_RE_*` overrides in `Config.from_env`; the
+four-slot machine lock intentionally does not. The default service configuration
+needs no per-agent setup.
+
 The exact-a729 Ghidra broker also reads function-relevant claims from this same
 registry. `ghidra_get_function` and `ghidra_coverage` surface claims whose subject
 or value names the exact VA, RVA, native logical symbol, or function name.

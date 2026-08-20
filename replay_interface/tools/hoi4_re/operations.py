@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import traceback
 import uuid
@@ -16,6 +17,9 @@ from correlation import correlate
 from diffing import diff_builds
 from emulation import emulate_function
 from evidence import ingest_ghidra_jobs, seed_manifest_receipts
+from offline_analysis import (
+    candidate_census, cross_analyze, inspect_pe, published_index_status, toolchain_status,
+)
 from registry import Registry
 from runtime_ops import observe_runtime, runtime_status, trace_calls
 from save_ops import load_hoi4_save
@@ -35,6 +39,15 @@ class Config:
     save_root: Path = Path(
         r"C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games"
     )
+    angr_python: Path = Path(r"C:\hoi4_evidence\toolchain\py312\Scripts\python.exe")
+    rizin_path: Path = Path(r"C:\Program Files\Rizin\bin\rizin.exe")
+    dynamorio_root: Path = Path(
+        r"C:\Users\Example\AppData\Local\Microsoft\WinGet\Packages\DynamoRIO.DynamoRIO_Microsoft.Winget.Source_8wekyb3d8bbwe\DynamoRIO-Windows-11.91.20536"
+    )
+    windbg_ttd_path: Path = Path(
+        r"C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\ttd\TTD.exe"
+    )
+    function_index_path: Path = Path(r"C:\hoi4_evidence\agent_re\function_index.sqlite3")
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -63,6 +76,23 @@ class Config:
                 "BATTLE_PLAN_RE_SAVE_ROOT",
                 r"C:\Users\Example\OneDrive\Documents\Paradox Interactive\Hearts of Iron IV\save games",
             )),
+            angr_python=Path(os.environ.get(
+                "BATTLE_PLAN_RE_ANGR_PYTHON", r"C:\hoi4_evidence\toolchain\py312\Scripts\python.exe",
+            )),
+            rizin_path=Path(os.environ.get(
+                "BATTLE_PLAN_RE_RIZIN_PATH", r"C:\Program Files\Rizin\bin\rizin.exe",
+            )),
+            dynamorio_root=Path(os.environ.get(
+                "BATTLE_PLAN_RE_DYNAMORIO_ROOT",
+                r"C:\Users\Example\AppData\Local\Microsoft\WinGet\Packages\DynamoRIO.DynamoRIO_Microsoft.Winget.Source_8wekyb3d8bbwe\DynamoRIO-Windows-11.91.20536",
+            )),
+            windbg_ttd_path=Path(os.environ.get(
+                "BATTLE_PLAN_RE_WINDBG_TTD_PATH",
+                r"C:\Program Files\WindowsApps\Microsoft.WinDbg_1.2606.22001.0_x64__8wekyb3d8bbwe\amd64\ttd\TTD.exe",
+            )),
+            function_index_path=Path(os.environ.get(
+                "BATTLE_PLAN_RE_FUNCTION_INDEX", r"C:\hoi4_evidence\agent_re\function_index.sqlite3",
+            )),
         )
 
     @property
@@ -81,6 +111,14 @@ class Config:
     def analyze_headless(self) -> Path:
         return self.ghidra_install_dir / "support" / "analyzeHeadless.bat"
 
+    @property
+    def drrun_path(self) -> Path:
+        return self.dynamorio_root / "bin64" / "drrun.exe"
+
+    @property
+    def drcov_path(self) -> Path:
+        return self.dynamorio_root / "tools" / "lib64" / "release" / "drcov.dll"
+
 
 def _pe_identity(path: Path) -> tuple[str, str]:
     import pefile
@@ -95,6 +133,7 @@ def _pe_identity(path: Path) -> tuple[str, str]:
             info.FileVersionMS >> 16, info.FileVersionMS & 0xFFFF,
             info.FileVersionLS >> 16, info.FileVersionLS & 0xFFFF,
         ))
+    pe.close()
     return (f"{path.name} {version}" if version else path.name, image_base)
 
 
@@ -142,6 +181,10 @@ class Broker:
             name: importlib.util.find_spec(name) is not None
             for name in ("pefile", "frida", "unicorn")
         }
+        builds = self.registry.query("builds", {"limit": 500})
+        index_publication = published_index_status(
+            self.config.function_index_path, self.config.ghidra_output_root, builds,
+        )
         checks = {
             "workspace": self.config.workspace.is_dir(),
             "state_root": self.config.state_root.is_dir(),
@@ -150,12 +193,16 @@ class Broker:
             "build_inventory_script": (self.config.ghidra_script_dir / "BuildInventory.java").is_file(),
             "rakaly": self.config.rakaly_path.is_file(),
             "save_root": self.config.save_root.is_dir(),
+            "function_index": index_publication["available"],
             **{f"python_{name}": present for name, present in packages.items()},
         }
         coverage = self.registry.query("coverage", {"limit": 500})
+        toolchain = toolchain_status(self.config)
         return {
-            "ready": all(checks.values()),
+            "ready": all(checks.values()) and toolchain["ready"],
             "checks": checks,
+            "toolchain": toolchain,
+            "function_index": index_publication,
             "mode": "agent-native durable jobs; static offline by default; live operations explicit",
             "paths": {
                 "workspace": str(self.config.workspace),
@@ -164,11 +211,13 @@ class Broker:
                 "jobs": str(self.config.jobs_root),
                 "ghidra_output_root": str(self.config.ghidra_output_root),
                 "save_root": str(self.config.save_root),
+                "function_index": str(self.config.function_index_path),
             },
             "build_coverage": coverage,
             "runtime": runtime_status(self.config.workspace),
             "operations": [
-                "register_build", "ingest_ghidra_jobs", "inventory_build", "diff_builds", "migrate_build",
+                "register_build", "inspect_build", "candidate_census", "cross_analyze_function",
+                "ingest_ghidra_jobs", "inventory_build", "diff_builds", "migrate_build",
                 "register_memory_path", "observe_runtime", "trace_calls", "emulate_function",
                 "correlate_save_memory", "record_claim",
             ],
@@ -221,6 +270,9 @@ class Broker:
             raise ValueError("inputs must be an object")
         handlers: dict[str, Callable[[dict[str, Any], str, Path], dict[str, Any]]] = {
             "register_build": self._register_build,
+            "inspect_build": self._inspect_build,
+            "candidate_census": self._candidate_census,
+            "cross_analyze_function": self._cross_analyze_function,
             "ingest_ghidra_jobs": self._ingest_ghidra_jobs,
             "inventory_build": self._inventory_build,
             "diff_builds": self._diff_builds,
@@ -247,9 +299,16 @@ class Broker:
         except Exception as error:
             message = f"{type(error).__name__}: {error}"
             self.registry.fail_job(job_id, message)
-            record.update(status="failed", completed_utc=utc_now(), error=message)
-            atomic_json(job_dir / "job.json", record)
             (job_dir / "failure.traceback.log").write_text(traceback.format_exc(), encoding="utf-8")
+            try:
+                artifacts = self._index_job_artifacts(job_id, job_dir)
+            except Exception as artifact_error:
+                artifacts = []
+                record["artifact_index_error"] = f"{type(artifact_error).__name__}: {artifact_error}"
+            record.update(
+                status="failed", completed_utc=utc_now(), error=message, artifacts=artifacts,
+            )
+            atomic_json(job_dir / "job.json", record)
             raise
 
     def _register_build(self, inputs: dict[str, Any], _job_id: str, _job_dir: Path) -> dict[str, Any]:
@@ -257,17 +316,116 @@ class Broker:
         if not path.is_file() or path.name.lower() != "hoi4.exe":
             raise ValueError("exe_path must identify an existing hoi4.exe")
         digest = sha256_file(path)
-        binary_id, image_base = _pe_identity(path)
-        binary_id = str(inputs.get("binary_id") or binary_id)
+        snapshot = self._materialize_snapshot(path, digest)
+        if sha256_file(path) != digest:
+            raise RuntimeError("executable changed while it was being registered")
+        derived_binary_id, image_base = _pe_identity(snapshot)
+        try:
+            existing = self.registry.get_build(digest)
+        except ValueError:
+            existing = None
+        version_label = inputs.get("version_label") or (existing or {}).get("version_label")
+        if inputs.get("binary_id"):
+            binary_id = str(inputs["binary_id"])
+        elif existing and existing.get("binary_id") != path.name:
+            binary_id = str(existing["binary_id"])
+        elif version_label and derived_binary_id == path.name:
+            binary_id = f"{path.name} {version_label}"
+        else:
+            binary_id = derived_binary_id
         build_id = self.registry.upsert_build(
-            binary_id, digest, image_base, str(path), inputs.get("version_label")
+            binary_id, digest, image_base, str(path), version_label
         )
         build = self.registry.get_build(build_id)
         return {
             "schema": "hoi4-re-build-registration-v1", "build_id": build_id,
             "binary_id": binary_id, "sha256": digest, "image_base": image_base,
-            "exe_path": str(path), "inventory_status": build["inventory_status"],
+            "exe_path": str(path), "snapshot_path": str(snapshot),
+            "inventory_status": build["inventory_status"],
         }
+
+    def _materialize_snapshot(self, source: Path | None, expected_sha256: str) -> Path:
+        snapshot = self.config.state_root / "build_snapshots" / expected_sha256 / "hoi4.exe"
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        if snapshot.exists():
+            if snapshot.is_symlink() or not snapshot.is_file():
+                raise RuntimeError("content-addressed executable snapshot is not a regular file")
+            if sha256_file(snapshot) != expected_sha256:
+                raise RuntimeError("content-addressed executable snapshot has the wrong SHA-256")
+            return snapshot
+        if source is None or not source.is_file():
+            raise RuntimeError("registered executable is missing and no exact snapshot exists")
+        temporary = snapshot.with_name(f"hoi4.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copyfile(source, temporary)
+            if sha256_file(temporary) != expected_sha256:
+                raise RuntimeError("executable changed while the exact snapshot was being created")
+            if snapshot.exists():
+                if sha256_file(snapshot) != expected_sha256:
+                    raise RuntimeError("a concurrent executable snapshot has the wrong SHA-256")
+            else:
+                os.replace(temporary, snapshot)
+            if sha256_file(snapshot) != expected_sha256:
+                raise RuntimeError("published executable snapshot has the wrong SHA-256")
+            return snapshot
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _verified_exe(self, build_id: str) -> tuple[dict[str, Any], Path]:
+        build = self.registry.get_build(build_id)
+        source = Path(build["exe_path"]) if build.get("exe_path") else None
+        return build, self._materialize_snapshot(source, build["sha256"])
+
+    def _inspect_build(self, inputs: dict[str, Any], _job_id: str, _job_dir: Path) -> dict[str, Any]:
+        build, exe = self._verified_exe(inputs["build_id"])
+        result = inspect_pe(exe)
+        result["build_id"] = build["build_id"]
+        return result
+
+    def _candidate_census(self, inputs: dict[str, Any], _job_id: str, job_dir: Path) -> dict[str, Any]:
+        build, exe = self._verified_exe(inputs["build_id"])
+        result = candidate_census(
+            exe, self.config.function_index_path, job_dir / "candidate_census.json",
+            self.config.ghidra_output_root,
+        )
+        result["build_id"] = build["build_id"]
+        return result
+
+    def _cross_analyze_function(self, inputs: dict[str, Any], _job_id: str, job_dir: Path) -> dict[str, Any]:
+        build, exe = self._verified_exe(inputs["build_id"])
+        if inputs.get("symbol_id"):
+            instance = self.registry.resolve_symbol(inputs["symbol_id"], build["build_id"])
+            rva = int(instance["rva"])
+        elif "rva" in inputs:
+            rva = parse_int(inputs["rva"], "rva")
+        else:
+            raise ValueError("cross_analyze_function requires symbol_id or rva")
+        identity = inspect_pe(exe)
+        if rva < 0 or rva >= int(identity["size_of_image"]):
+            raise ValueError("rva is outside the registered image")
+        timeout_s = int(inputs.get("timeout_s", 180))
+        max_bytes = int(inputs.get("max_bytes", 4096))
+        if not 10 <= timeout_s <= 900:
+            raise ValueError("timeout_s must be from 10 through 900")
+        if not 16 <= max_bytes <= 65536:
+            raise ValueError("max_bytes must be from 16 through 65536")
+        window_end = rva + max_bytes
+        if not any(
+            int(section["rva_start"]) <= rva
+            and window_end <= int(section["rva_end"])
+            for section in identity["executable_ranges"]
+        ):
+            raise ValueError("the requested byte window is not inside one executable section")
+        result = cross_analyze(
+            exe, int(build["image_base"], 16) + rva, job_dir, self.config,
+            list(inputs.get("engines", ["angr", "rizin"])), timeout_s, max_bytes,
+            build["sha256"],
+        )
+        result.update(build_id=build["build_id"], rva=hex(rva), exe_sha256=build["sha256"])
+        return result
 
     def _ingest_ghidra_jobs(self, inputs: dict[str, Any], _job_id: str, _job_dir: Path) -> dict[str, Any]:
         if inputs.get("seed_receipts_from_job"):
@@ -283,12 +441,7 @@ class Broker:
         return ingest_ghidra_jobs(self.registry, self.config.ghidra_output_root)
 
     def _inventory_build(self, inputs: dict[str, Any], job_id: str, job_dir: Path) -> dict[str, Any]:
-        build = self.registry.get_build(inputs["build_id"])
-        if not build.get("exe_path"):
-            raise ValueError("build has no registered executable path")
-        exe = Path(build["exe_path"])
-        if not exe.is_file() or sha256_file(exe) != build["sha256"]:
-            raise RuntimeError("registered executable is missing or its SHA-256 changed")
+        build, exe = self._verified_exe(inputs["build_id"])
         projects = self.config.state_root / "ghidra_projects"
         projects.mkdir(parents=True, exist_ok=True)
         project_name = "build_" + build["sha256"][:12]
@@ -308,6 +461,7 @@ class Broker:
             command, cwd=str(job_dir), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace",
             timeout=self.config.ghidra_timeout_seconds + 300, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         (job_dir / "ghidra.console.log").write_text(completed.stdout, encoding="utf-8")
         if completed.returncode != 0 or not inventory.is_file():
@@ -406,13 +560,8 @@ class Broker:
         )
 
     def _emulate_function(self, inputs: dict[str, Any], _job_id: str, _job_dir: Path) -> dict[str, Any]:
-        build = self.registry.get_build(inputs["build_id"])
-        if not build.get("exe_path"):
-            raise ValueError("build has no registered executable path")
+        build, exe = self._verified_exe(inputs["build_id"])
         instance = self.registry.resolve_symbol(inputs["symbol_id"], build["build_id"])
-        exe = Path(build["exe_path"])
-        if not exe.is_file() or sha256_file(exe) != build["sha256"]:
-            raise RuntimeError("registered executable is missing or changed")
         result = emulate_function(
             exe, int(build["image_base"], 16), int(instance["rva"]), int(instance["call_count"]),
             inputs.get("fixture", {}),
