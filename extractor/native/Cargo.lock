@@ -177,7 +177,6 @@ dependencies = [
  "portable_content_manifest",
  "portable_render_stream",
  "portable_test_fs_retry",
- "postfx_exposure",
  "production_hook_receipt",
  "production_render_catalog_live_lane",
  "production_render_submit_live_lane",
@@ -812,13 +811,6 @@ dependencies = [
 [[package]]
 name = "portable_test_fs_retry"
 version = "0.1.0"
-
-[[package]]
-name = "postfx_exposure"
-version = "0.1.0"
-dependencies = [
- "compact_contract",
-]
 
 [[package]]
 name = "proc-macro2"

@@ -850,7 +850,7 @@ fn the_owner_proven_admission_table_is_exactly_the_ledgers_disposition_column() 
         .iter()
         .filter(|row| row["class"] == "semantic")
         .collect();
-    assert_eq!(semantic.len(), 45, "XMAP00 semantic census drifted");
+    assert_eq!(semantic.len(), 44, "XMAP00 semantic census drifted");
 
     let mut ledger_ids: Vec<&str> = semantic.iter().map(|row| row["id"].as_str()).collect();
     ledger_ids.sort_unstable();

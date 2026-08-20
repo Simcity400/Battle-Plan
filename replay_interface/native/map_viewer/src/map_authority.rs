@@ -43,7 +43,6 @@ pub const MAP_AUTHORITY_REQUIRED_INPUTS: &[&str] = &[
     "objects.generic_population_lifecycle",
     "orders.army_battleplans_semantic",
     "orders.theatre_army_hierarchy",
-    "postfx.temporal_exposure_state",
     "session.player_country_set",
     "terrain.snow_mud_semantic",
     "units.air_base_location",
@@ -874,9 +873,6 @@ pub fn map_authority_requirement_metadata(
         "world.calendar_time" => {
             "the recording carries no engine calendar stamp for this hour that agrees with its own hour index"
         }
-        "postfx.temporal_exposure_state" => {
-            "XMAP10 must prove the presentation-independent temporal exposure state, cadence, and authenticated producer contract"
-        }
         "objects.building_state_damage" => {
             "the recording carries no measured D48 building state/damage census for this hour"
         }
@@ -1078,7 +1074,6 @@ pub fn map_authority_projection_from_world_frame(
             Some(frame.army_battleplans().status),
         ),
         projector.derive_requirement("orders.theatre_army_hierarchy", None),
-        projector.derive_requirement("postfx.temporal_exposure_state", None),
         projector.derive_requirement(
             "session.player_country_set",
             Some(frame.session_metadata().status),

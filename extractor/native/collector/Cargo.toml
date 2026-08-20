@@ -80,7 +80,6 @@ focus_research_decisions_depth_live = { path = "../lanes/focus_research_decision
 xmap17_labels = { path = "../lanes/xmap17_labels" }
 xui26_frontend = { path = "../lanes/xui26_frontend" }
 victory_points = { path = "../lanes/victory_points" }
-postfx_exposure = { path = "../lanes/postfx_exposure" }
 portable_render_stream = { path = "../../../portable_replay/native/render_stream" }
 serde = "1"
 serde_json = "1"

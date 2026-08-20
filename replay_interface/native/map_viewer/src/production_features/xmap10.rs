@@ -1951,21 +1951,6 @@ fn ready_frame_digest(frame: &ReadyXmap10Frame) -> String {
 /// nothing else may discharge it.
 pub const XMAP10_POSTFX_DRAW_CONTRACT: &str = "XMAP10.postfx_frame_receipt";
 
-/// The required map-authority input XMAP10 does not possess. The recording
-/// carries no presentation-independent temporal exposure state; the viewer
-/// drives the exposure chain from the engine resource-reset lifecycle and the
-/// prior frame's receipt instead.
-///
-/// That reconstruction is NOT allowed to vouch. PROJECT.md: "Derived
-/// presentation is allowed only when the owning implementation proves the exact
-/// engine/game-file law and possesses every required input." XMAP10 possesses
-/// the law but not this input, and on a scrub there is no prior frame at all,
-/// so the chain restarts and the exposure cannot be shown equal to the game's.
-/// Until a producer lands this input, the family refuses -- fail closed.
-pub const XMAP10_TEMPORAL_EXPOSURE_GAP_ID: &str = "postfx.temporal_exposure_state";
-
-pub const XMAP10_EXPOSURE_AUTHORITY_GAP_ID: &str = "XMAP10.temporal_exposure_authority_absent";
-
 /// GradingPostFx cannot answer at foundation time. Its grade resolves against
 /// the live per-frame D3D scene identities and the PRIOR frame's temporal
 /// adaptation receipt (see the replay app's post-FX preparation), and neither
@@ -1992,72 +1977,31 @@ impl crate::ProductionMapFeatureAdapter for Xmap10GradingPostFxAdapter {
 
     fn prepare(
         &self,
-        context: &crate::FoundationFeatureContext<'_>,
+        _context: &crate::FoundationFeatureContext<'_>,
     ) -> Result<crate::FoundationFeatureOutput> {
-        // TWO INDEPENDENT QUESTIONS, answered separately.
+        // TIMING, and only timing. Can this family answer at foundation time?
+        // No -- never. Its grade needs live per-frame D3D identities and the
+        // prior frame's temporal receipt. That is what DeferredToDraw records.
         //
-        // 1. TIMING: can this family answer at foundation time? No -- never.
-        //    Its grade needs live per-frame D3D identities and the prior frame's
-        //    temporal receipt. That is what DeferredToDraw records.
-        // 2. AUTHORITY: does it possess every required input? Today, no. The
-        //    temporal exposure state is a required map-authority input that no
-        //    producer supplies.
-        //
-        // Answering (1) does not answer (2), and a deferral must never smuggle
-        // (2) past the seal. So while the exposure input is missing the family
-        // REFUSES, naming that input; it defers only once the input exists.
-        // Consuming the gap and vouching anyway would have certified a
-        // viewer-synthesised exposure chain as indistinguishable from the game,
-        // which PROJECT.md forbids and nobody has proven (Codex review, r1).
+        // AUTHORITY was the old second question, and it has been answered:
+        // exposure is not an input the RECORDING owes. The engine's exposure is
+        // a pure function of the frames a client draws for itself -- the
+        // adaptation state lives on the post-FX render targets, never in world
+        // state, and is written by the client's own luminance chain (a729
+        // exactly the same inputs a real client holds, because they ARE its own
+        // frames, so it computes the identical law rather than reconstructing a
+        // missing recording row. See `crate::luminance_law` for the proof and
+        // its citations. `postfx.temporal_exposure_state` was accordingly
+        // retired as a map-authority requirement -- there was never a producer
+        // to owe.
         Ok(crate::FoundationFeatureOutput::without_payload(
-            Self::disposition_for(
-                context.map_authority_gaps,
-                context.world_frame.hour_index(),
-            ),
+            Self::deferred_disposition(),
             Vec::new(),
         ))
     }
 }
 
 impl Xmap10GradingPostFxAdapter {
-    /// THE production branch, as a plain function of the inputs it actually
-    /// depends on, so a test can exercise both sides of it. Inlined in
-    /// `prepare` this branch was untestable without a live WorldFrame, and
-    /// flipping it to defer unconditionally left the whole suite green (Codex
-    /// review, round 2).
-    pub(crate) fn disposition_for(
-        map_authority_gaps: &[crate::MapAuthorityGap],
-        hour: i64,
-    ) -> portable_render_stream::FamilyDisposition {
-        if map_authority_gaps
-            .iter()
-            .any(|gap| gap.input_id == XMAP10_TEMPORAL_EXPOSURE_GAP_ID)
-        {
-            return Self::exposure_authority_absent(hour);
-        }
-        Self::deferred_disposition()
-    }
-
-    pub(crate) fn exposure_authority_absent(
-        hour: i64,
-    ) -> portable_render_stream::FamilyDisposition {
-        let reason = format!(
-            "no admitted temporal exposure authority for this hour: {XMAP10_TEMPORAL_EXPOSURE_GAP_ID} is a required map-authority input and no producer supplies it, so the post-FX exposure chain can only be reconstructed, never shown equal to the game's"
-        );
-        let witness_sha256 = Sha256::hex(
-            format!("{XMAP10_EXPOSURE_AUTHORITY_GAP_ID}\n{hour}\n{hour}\n{reason}").as_bytes(),
-        );
-        portable_render_stream::FamilyDisposition::Unavailable {
-            gap: portable_render_stream::FoundationGap {
-                gap_id: XMAP10_EXPOSURE_AUTHORITY_GAP_ID.into(),
-                first_unavailable_hour: hour,
-                last_unavailable_hour: hour,
-                witness_sha256,
-                reason,
-            },
-        }
-    }
-
     pub(crate) fn deferred_disposition() -> portable_render_stream::FamilyDisposition {
         portable_render_stream::FamilyDisposition::DeferredToDraw {
             producer_registration_sha256: Self::producer_registration_sha256(),

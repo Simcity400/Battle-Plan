@@ -2436,23 +2436,19 @@ pub fn ")
         assert!(registry.get(MapVisualFamily::GradingPostFx).is_some());
     }
 
-    // The three real dispositions, from the real adapters -- and none of them
-    // may still read as "no adapter", which is the false statement this lane
+    // The real dispositions, from the real adapters -- and none of them may
+    // still read as "no adapter", which is the false statement this lane
     // deleted.
     //
-    // kills: reverting any of the three to the generic unimplemented gap, and
-    // letting XMAP10 vouch while its required exposure input is missing.
+    // kills: reverting either of the two remaining blockers to the generic
+    // unimplemented gap.
     #[test]
-    fn the_three_late_families_report_their_real_blocker_not_a_missing_adapter() {
+    fn the_late_families_report_their_real_blocker_not_a_missing_adapter() {
         let hour = 5;
         let unimplemented = unimplemented_adapter_gap(MapVisualFamily::GradingPostFx, hour);
         assert!(unimplemented.gap_id.contains("adapter_unimplemented"));
 
         let dispositions = [
-            (
-                MapVisualFamily::GradingPostFx,
-                crate::production_features::xmap10::Xmap10GradingPostFxAdapter::exposure_authority_absent(hour),
-            ),
             (
                 MapVisualFamily::ParticlesEffects,
                 crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(hour)
@@ -2480,42 +2476,17 @@ pub fn ")
             assert!(!gap.reason.trim().is_empty());
         }
 
-        // XMAP10 defers ONLY once its required exposure input exists; the
-        // timing answer never smuggles the authority answer past the seal.
-        // This drives the SAME branch production takes, so flipping it to defer
-        // unconditionally fails here (Codex review, round 2).
-        use crate::production_features::xmap10::{
-            Xmap10GradingPostFxAdapter, XMAP10_TEMPORAL_EXPOSURE_GAP_ID,
-        };
-        let exposure_gap = crate::MapAuthorityGap {
-            input_id: XMAP10_TEMPORAL_EXPOSURE_GAP_ID.into(),
-            disposition: crate::MapAuthorityRequirementDisposition::Unavailable,
-            reason: "no producer supplies the temporal exposure state".into(),
-        };
-        let unrelated_gap = crate::MapAuthorityGap {
-            input_id: "effects.semantic_lifecycle".into(),
-            disposition: crate::MapAuthorityRequirementDisposition::Unavailable,
-            reason: "unrelated".into(),
-        };
-        // Gap open (today) -> refuses, naming the missing input.
-        let gated = Xmap10GradingPostFxAdapter::disposition_for(
-            std::slice::from_ref(&exposure_gap),
-            hour,
-        );
-        let FamilyDisposition::Unavailable { gap } = &gated else {
-            panic!("XMAP10 must refuse while its required exposure input is missing");
-        };
-        assert!(gap.reason.contains(XMAP10_TEMPORAL_EXPOSURE_GAP_ID));
-        // Another family's gap must not gate XMAP10.
-        assert!(matches!(
-            Xmap10GradingPostFxAdapter::disposition_for(
-                std::slice::from_ref(&unrelated_gap),
-                hour
-            ),
-            FamilyDisposition::DeferredToDraw { .. }
-        ));
-        // Gap closed -> defers, because the TIMING problem is permanent.
-        let deferred = Xmap10GradingPostFxAdapter::disposition_for(&[], hour);
+        // XMAP10 defers, because its TIMING problem is permanent: the grade
+        // needs live per-frame D3D identities and the prior frame's temporal
+        // receipt. It no longer ALSO refuses on a missing exposure authority --
+        // that row was retired once the exposure law was proved to be a pure
+        // function of the frames the viewer draws for itself, exactly as it is
+        // for a real client (see `crate::luminance_law`).
+        //
+        // kills: reintroducing an authority gate here, which would put the
+        // family back to refusing every frame.
+        use crate::production_features::xmap10::Xmap10GradingPostFxAdapter;
+        let deferred = Xmap10GradingPostFxAdapter::deferred_disposition();
         let FamilyDisposition::DeferredToDraw {
             draw_contract_id,
             reason,

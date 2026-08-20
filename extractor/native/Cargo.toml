@@ -118,7 +118,6 @@ members = [
     "lanes/xmap17_labels",
     "lanes/xui26_frontend",
     "lanes/victory_points",
-    "lanes/postfx_exposure",
     "lanes/map_passive_carriers_live",
 ]
 
