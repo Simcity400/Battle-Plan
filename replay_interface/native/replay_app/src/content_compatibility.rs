@@ -202,6 +202,7 @@ pub fn bind_provider_content(
                 subject: "manifest.content_manifest".into(),
                 message: "recording has no portable used-content manifest".into(),
             }],
+            excluded_engine_written_sinks: Vec::new(),
         })
     })?;
     let resolver = resolver_for_manifest(paths, manifest)?;
@@ -273,6 +274,7 @@ pub fn validate_timeline_content(
                 subject: "manifest.content_manifest".into(),
                 message: "recording has no portable used-content manifest".into(),
             }],
+            excluded_engine_written_sinks: Vec::new(),
         })
     })?;
     let resolver = resolver_for_manifest(paths, manifest)?;
@@ -294,6 +296,14 @@ pub fn validate_timeline_content(
                 compatible: true,
                 verified_required_content: admission.required_paths().count(),
                 issues: Vec::new(),
+                // From the ADMISSION, never an empty placeholder: the success
+                // path has no validation report of its own (a compatible one is
+                // consumed by `admit_playback`), and synthesizing one with an
+                // empty list silently un-named every exclusion in the only case
+                // where playback actually proceeds.
+                excluded_engine_written_sinks: admission
+                    .excluded_engine_written_sinks()
+                    .to_vec(),
             }
         )
     );
@@ -315,10 +325,23 @@ pub fn compatibility_summary(
         .filter(|row| !row.required_for_playback)
         .count();
     if report.compatible {
-        return format!(
+        let mut text = format!(
             "CONTENT COMPATIBLE: verified {} required content item(s) and {} required DLC selection(s). {} selected but unused/optional DLC item(s) are recorded for provenance and are not required.",
             report.verified_required_content, required_dlcs, optional_dlcs
         );
+        // "Compatible" must never quietly mean "compatible except for some
+        // files nobody mentioned". These rows were recorded by an older
+        // capture, before the content census stopped collecting the engine's
+        // own scratch files; the reader is told which ones went uncompared and
+        // why, rather than the difference disappearing into the verified count.
+        if !report.excluded_engine_written_sinks.is_empty() {
+            text.push_str(&format!(
+                "\n{} recorded item(s) were NOT compared because the game writes them itself and never reads them as content ({}). They are not part of this replay's content identity.",
+                report.excluded_engine_written_sinks.len(),
+                report.excluded_engine_written_sinks.join(", ")
+            ));
+        }
+        return text;
     }
 
     let mut text = format!(
@@ -628,6 +651,7 @@ mod tests {
                 compatible: true,
                 verified_required_content: 0,
                 issues: Vec::new(),
+                excluded_engine_written_sinks: Vec::new(),
             },
         );
         assert!(text.contains("1 required DLC"), "{text}");
@@ -671,6 +695,7 @@ mod tests {
                     message: "exact shared-validator detail".into(),
                 })
                 .collect(),
+            excluded_engine_written_sinks: Vec::new(),
         };
         let text = compatibility_summary(&manifest(), &report);
         for needle in [
@@ -711,6 +736,7 @@ mod tests {
                 subject: "manifest".into(),
                 message: "content manifest digest mismatch".into(),
             }],
+            excluded_engine_written_sinks: Vec::new(),
         };
         let text = compatibility_summary(&manifest(), &report);
         assert!(text.contains("invalid replay content manifest"), "{text}");
@@ -735,9 +761,52 @@ mod tests {
                     message: "required enabled state is true".into(),
                 },
             ],
+            excluded_engine_written_sinks: Vec::new(),
         };
         let text = compatibility_summary(&manifest(), &mixed);
         assert!(text.contains("--configure"), "{text}");
+    }
+
+    /// A recording made before the content census stopped collecting the
+    /// engine's own write sinks still carries rows for them, and the validator
+    /// no longer compares those rows — otherwise the game touching its own
+    /// `console_history.txt` refuses the replay over a file nothing reads.
+    ///
+    /// The person opening the replay is told. "CONTENT COMPATIBLE" must not
+    /// quietly mean "compatible except for two files nobody mentioned", so the
+    /// summary names the uncompared items and says why.
+    ///
+    /// kills: printing the compatible summary from `verified_required_content`
+    /// alone and dropping `excluded_engine_written_sinks` on the floor.
+    #[test]
+    fn a_compatible_summary_names_the_content_it_did_not_compare() {
+        let clean = ContentValidationReport {
+            compatible: true,
+            verified_required_content: 7,
+            issues: Vec::new(),
+            excluded_engine_written_sinks: Vec::new(),
+        };
+        let text = compatibility_summary(&manifest(), &clean);
+        assert!(text.contains("CONTENT COMPATIBLE"), "{text}");
+        assert!(
+            !text.contains("NOT compared"),
+            "a recording with nothing excluded must not claim an exclusion: {text}"
+        );
+
+        let with_sinks = ContentValidationReport {
+            compatible: true,
+            verified_required_content: 7,
+            issues: Vec::new(),
+            excluded_engine_written_sinks: vec![
+                "console_history.txt".into(),
+                "imgui.ini".into(),
+            ],
+        };
+        let text = compatibility_summary(&manifest(), &with_sinks);
+        assert!(text.contains("CONTENT COMPATIBLE"), "{text}");
+        assert!(text.contains("2 recorded item(s) were NOT compared"), "{text}");
+        assert!(text.contains("console_history.txt"), "{text}");
+        assert!(text.contains("imgui.ini"), "{text}");
     }
 
     #[test]

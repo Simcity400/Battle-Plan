@@ -322,6 +322,7 @@ pub trait OwnerProvider: Send + Sync {
                 subject: "timeline".into(),
                 message: "static timeline has no portable content manifest".into(),
             }],
+            excluded_engine_written_sinks: Vec::new(),
         })
     }
 }

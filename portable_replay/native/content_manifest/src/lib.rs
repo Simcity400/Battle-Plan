@@ -212,6 +212,58 @@ pub enum LayerStorageKind {
     ZipArchive,
 }
 
+/// The engine's OWN write sinks in the install root, by bare filename.
+///
+/// Class `engine_written_install_root_sink`, defined and proved in
+/// `extractor/game_defs/engine_runtime_artifacts.json`: each of these is a bare
+/// working-directory-relative filename the a729 image names and binds to a
+/// runtime OUTPUT sink, and a COMPLETE reference census of the string literal
+/// shows every reference is raw stream I/O or a sink-field binding. No
+/// content-resolution path in the image names them, so the engine never asks
+/// the layered VFS for them: they are the game's scratch, not anyone's content.
+///
+/// `console_history.txt` is appended to on every accepted console command,
+/// `imgui.ini` is rewritten by the debug UI, and `imgui_log.txt` appears the
+/// first time that UI logs. Owner ruling 2026-08-15 put this class out of the
+/// product-modset key domain for exactly that reason — the same player, same
+/// DLC, same mods, got a different product key for having typed into the
+/// console. The Python resolver has honoured it since; this is the same class,
+/// applied to the content-identity census on both ends.
+///
+/// The list is a MIRROR, never an authority. `engine_runtime_artifacts.json` is
+/// the authority, and `recorder_host` pins this array against it on every test
+/// run, so a row added there and not here fails the build's tests rather than
+/// silently narrowing the class. This crate ships standalone with the replay
+/// and cannot reach into `extractor/`, which is why the mirror exists at all.
+pub const ENGINE_WRITTEN_INSTALL_ROOT_SINKS: [&str; 3] =
+    ["console_history.txt", "imgui.ini", "imgui_log.txt"];
+
+/// Is this resolved path the engine's own write sink rather than content?
+///
+/// Two conditions, both fail-closed:
+///
+/// * the path is one of [`ENGINE_WRITTEN_INSTALL_ROOT_SINKS`] as a BARE name.
+///   A file of the same name inside a directory — `common/console_history.txt`
+///   — sits in a namespace the VFS really does resolve, where "runtime
+///   artifact" and "shipped content" stop being distinguishable from outside,
+///   so it stays content.
+/// * the winner is the BASE layer. A mod that ships a file of this name at its
+///   own root is that mod's content and stays in the identity.
+///
+/// An unrecognized file is content. That is the safe direction: over-collecting
+/// costs a false mismatch, under-collecting silently drops real content drift
+/// out of the identity.
+pub fn is_engine_written_install_root_sink(
+    normalized_game_relative_path: &str,
+    layer_kind: ContentLayerKind,
+) -> bool {
+    layer_kind == ContentLayerKind::Base
+        && !normalized_game_relative_path.contains('/')
+        && ENGINE_WRITTEN_INSTALL_ROOT_SINKS
+            .iter()
+            .any(|sink| normalized_game_relative_path.eq_ignore_ascii_case(sink))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DlcSelection {
@@ -351,6 +403,16 @@ pub struct ContentValidationReport {
     pub compatible: bool,
     pub verified_required_content: usize,
     pub issues: Vec<ContentIssue>,
+    /// Required-content rows this validation did NOT compare, because they name
+    /// the engine's own install-root write sinks rather than content
+    /// ([`is_engine_written_install_root_sink`]). Empty for a recording made
+    /// after the census stopped collecting them.
+    ///
+    /// They are listed rather than dropped: a reader must be able to see WHICH
+    /// rows went uncompared and decide for itself, and "compatible" must never
+    /// quietly mean "compatible except for some files nobody mentioned".
+    #[serde(default)]
+    pub excluded_engine_written_sinks: Vec<String>,
 }
 
 /// Capability issued only after the complete standalone compatibility gate
@@ -363,6 +425,7 @@ pub struct ValidatedContentAdmission {
     localisation_language: String,
     required_by_path: BTreeMap<String, UsedContentKey>,
     required_by_consumer: BTreeMap<String, Vec<UsedContentKey>>,
+    excluded_engine_written_sinks: Vec<String>,
 }
 
 impl ValidatedContentAdmission {
@@ -380,6 +443,19 @@ impl ValidatedContentAdmission {
 
     pub fn localisation_language(&self) -> &str {
         &self.localisation_language
+    }
+
+    /// Rows the validation deliberately did not compare because they name the
+    /// engine's own install-root write sinks
+    /// ([`is_engine_written_install_root_sink`]).
+    ///
+    /// It rides on the ADMISSION, not only on the discarded success report,
+    /// because the success path had no report to read: an admission was granted
+    /// and the summary printed from the admission alone, so the exclusions went
+    /// unmentioned exactly in the case where playback proceeds. Anything that
+    /// tells a person what was verified can now also tell them what was not.
+    pub fn excluded_engine_written_sinks(&self) -> &[String] {
+        &self.excluded_engine_written_sinks
     }
 
     pub fn used_content(&self, game_relative_path: &str) -> Option<&UsedContentKey> {
@@ -690,6 +766,7 @@ impl ContentManifest {
                     "manifest",
                     message,
                 )],
+                excluded_engine_written_sinks: Vec::new(),
             };
         }
         let mut issues = Vec::new();
@@ -1234,8 +1311,26 @@ impl ContentManifest {
             }
         }
         let mut verified = 0usize;
+        let mut excluded_engine_written_sinks = Vec::new();
         for required in &self.required_content {
             let expected = &required.content;
+            // The engine's own write sinks are not content identity, and a
+            // recording made before they were excluded from the census still
+            // carries rows for them. Comparing those rows compares the game's
+            // scratch: playing one console command rewrites
+            // `console_history.txt`, and the recording would refuse to open on
+            // a payload-hash mismatch against a file nothing in the replay
+            // reads. They are skipped here BY NAME rather than by dropping them
+            // from the manifest, so the row stays visible and the exclusion
+            // stays inspectable.
+            if is_engine_written_install_root_sink(
+                &expected.normalized_game_relative_path,
+                expected.layer_kind,
+            ) {
+                excluded_engine_written_sinks
+                    .push(expected.normalized_game_relative_path.clone());
+                continue;
+            }
             let subject = expected.normalized_game_relative_path.clone();
             let Some(actual) = resolved.get(subject.as_str()) else {
                 if refused_rows.contains(subject.as_str()) {
@@ -1380,6 +1475,7 @@ impl ContentManifest {
             compatible: issues.is_empty(),
             verified_required_content: verified,
             issues,
+            excluded_engine_written_sinks,
         }
     }
 
@@ -1403,10 +1499,28 @@ impl ContentManifest {
                         "manifest",
                         message,
                     )],
+                    excluded_engine_written_sinks: Vec::new(),
                 })?,
         };
+        // An admission is a capability: every row it hands out was VERIFIED
+        // against this install. The engine's own write sinks were deliberately
+        // not compared above, so they must not be reachable through the
+        // admission either -- otherwise `require_used_content` would answer
+        // with a recorded identity nothing checked, which is exactly the
+        // unrecorded-lookup hole the admission exists to close. Nothing in the
+        // replay resolves these paths; they were over-collected by an older
+        // census walk and are dropped here for the same reason they are not
+        // compared.
+        let admitted = || {
+            self.required_content.iter().filter(|required| {
+                !is_engine_written_install_root_sink(
+                    &required.content.normalized_game_relative_path,
+                    required.content.layer_kind,
+                )
+            })
+        };
         let mut required_by_consumer: BTreeMap<String, Vec<UsedContentKey>> = BTreeMap::new();
-        for required in &self.required_content {
+        for required in admitted() {
             for consumer in &required.consumers {
                 required_by_consumer
                     .entry(consumer.clone())
@@ -1419,13 +1533,12 @@ impl ContentManifest {
             content.dedup();
         }
         Ok(ValidatedContentAdmission {
+            excluded_engine_written_sinks: report.excluded_engine_written_sinks.clone(),
             manifest_digest_sha256,
             product_modset_sha256: self.product_modset_sha256.clone(),
             ordered_layers: self.ordered_layers.clone(),
             localisation_language: self.localisation_language.clone(),
-            required_by_path: self
-                .required_content
-                .iter()
+            required_by_path: admitted()
                 .map(|required| {
                     (
                         required.content.normalized_game_relative_path.clone(),
@@ -3690,6 +3803,156 @@ mod tests {
         let json = String::from_utf8(manifest.encode_json().unwrap()).unwrap();
         assert!(!json.contains("C:\\"));
         assert!(!json.contains("F:\\"));
+    }
+
+    /// Add the recording of an engine-written install-root sink to a manifest,
+    /// at the base layer, the way the attach-time census used to collect it.
+    fn manifest_recording_console_history() -> ContentManifest {
+        let mut manifest = manifest();
+        manifest.required_content.push(required(
+            "console_history.txt",
+            "console_history.txt",
+            0,
+            ContentLayerKind::Base,
+            "base",
+            'd',
+        ));
+        manifest.manifest_digest_sha256 = None;
+        manifest.with_computed_digest().unwrap()
+    }
+
+    /// The engine appends to `console_history.txt` on every accepted console
+    /// command, so a recording made yesterday and played back today sees
+    /// different bytes for it — and before this exclusion that alone refused
+    /// the recording on a payload-hash mismatch, over a file no replay reads.
+    /// Lane OB hit exactly this probing an older capture.
+    ///
+    /// The rows are skipped, and NAMED in the report: "compatible" must never
+    /// quietly mean "compatible except for some files nobody mentioned".
+    ///
+    /// kills: dropping the `is_engine_written_install_root_sink` skip in
+    /// `validate_playback`, or skipping the rows without listing them.
+    #[test]
+    fn an_engine_rewritten_install_root_sink_does_not_refuse_playback() {
+        let manifest = manifest_recording_console_history();
+        let mut inventory = inventory(&manifest);
+        let row = inventory
+            .resolved_content
+            .iter_mut()
+            .find(|row| row.normalized_game_relative_path == "console_history.txt")
+            .expect("the sink row is in the inventory");
+        row.payload_sha256 = h('e');
+        row.source_sha256 = h('e');
+        row.payload_bytes = 99;
+        let report = manifest.validate_playback(&inventory);
+        assert!(report.compatible, "{:?}", report.issues);
+        assert_eq!(
+            report.excluded_engine_written_sinks,
+            vec!["console_history.txt".to_string()]
+        );
+        assert_eq!(report.verified_required_content, 2);
+    }
+
+    /// An admission is a capability: every path it will answer for was verified
+    /// against this install. A row the validator refused to compare must not be
+    /// reachable through it, or `require_used_content` would hand a renderer a
+    /// recorded identity nothing checked.
+    ///
+    /// kills: skipping the class in `validate_playback` while still building
+    /// `required_by_path` / `required_by_consumer` from every required row.
+    #[test]
+    fn an_excluded_sink_is_not_admissible_used_content() {
+        let manifest = manifest_recording_console_history();
+        let inventory = inventory(&manifest);
+        let admission = manifest.admit_playback(&inventory).unwrap();
+        assert!(admission.require_used_content("console_history.txt").is_err());
+        assert_eq!(
+            admission
+                .require_used_content_for_consumer("test-renderer")
+                .unwrap()
+                .len(),
+            2,
+            "the two real content rows, and not the sink"
+        );
+    }
+
+    /// The success path prints its summary from the ADMISSION, because a
+    /// compatible validation report is consumed by `admit_playback` and never
+    /// returned. So the admission has to carry the exclusions, or the only case
+    /// where playback actually proceeds is the one case that names none.
+    ///
+    /// This walks the real path — manifest, real inventory, admit — instead of
+    /// handing a formatter a synthetic report, which is what made the earlier
+    /// formatter test unable to see this defect.
+    ///
+    /// kills: populating `ValidatedContentAdmission::excluded_engine_written_sinks`
+    /// with an empty vec, or dropping it from `admit_playback`.
+    #[test]
+    fn the_admission_carries_the_exclusions_the_success_path_must_report() {
+        let plain = manifest();
+        let with_sink = manifest_recording_console_history();
+        let admission = with_sink
+            .admit_playback(&inventory(&with_sink))
+            .unwrap();
+        assert_eq!(
+            admission.excluded_engine_written_sinks(),
+            ["console_history.txt".to_string()]
+        );
+
+        let plain_admission = plain.admit_playback(&inventory(&plain)).unwrap();
+        assert!(
+            plain_admission.excluded_engine_written_sinks().is_empty(),
+            "a manifest with no sink rows must name no exclusions"
+        );
+    }
+
+    /// The class is not a filename list. The same name one directory down sits
+    /// in a namespace the VFS really resolves, so it is content and its drift
+    /// still refuses.
+    ///
+    /// kills: matching the class on a basename or a suffix instead of the whole
+    /// normalized path.
+    #[test]
+    fn a_nested_file_of_the_same_name_is_content_and_still_refuses() {
+        let mut manifest = manifest();
+        manifest.required_content.push(required(
+            "common/console_history.txt",
+            "common/console_history.txt",
+            0,
+            ContentLayerKind::Base,
+            "base",
+            'd',
+        ));
+        manifest.manifest_digest_sha256 = None;
+        let manifest = manifest.with_computed_digest().unwrap();
+        let mut inventory = inventory(&manifest);
+        let row = inventory
+            .resolved_content
+            .iter_mut()
+            .find(|row| row.normalized_game_relative_path == "common/console_history.txt")
+            .expect("the nested row is in the inventory");
+        row.payload_sha256 = h('e');
+        let report = manifest.validate_playback(&inventory);
+        assert!(!report.compatible);
+        assert!(report.excluded_engine_written_sinks.is_empty());
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == ContentIssueCode::PayloadHashMismatch));
+    }
+
+    /// A recording that never collected the class — every recording made after
+    /// the census stopped walking it into the manifest — names no exclusions at
+    /// all. The field is a statement about THIS manifest, not a constant.
+    ///
+    /// kills: populating `excluded_engine_written_sinks` from the class list
+    /// rather than from the rows actually skipped.
+    #[test]
+    fn a_manifest_without_sink_rows_names_no_exclusions() {
+        let manifest = manifest();
+        let report = manifest.validate_playback(&inventory(&manifest));
+        assert!(report.compatible, "{:?}", report.issues);
+        assert!(report.excluded_engine_written_sinks.is_empty());
     }
 
     #[test]

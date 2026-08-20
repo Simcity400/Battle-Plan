@@ -2253,11 +2253,17 @@ fn verify_live_resolution_report(
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachCorpusCensusStats {
     pub files: u64,
     pub payload_bytes: u64,
     pub elapsed_ms: u64,
+    /// Paths the walk SAW and the census deliberately did not record, because
+    /// they name the engine's own install-root write sinks rather than content
+    /// (class `engine_written_install_root_sink`). Named, never silent: the
+    /// manifest publishes this list so a reader can see exactly what the
+    /// recording chose not to bind replay to.
+    pub excluded_engine_written_sinks: Vec<String>,
 }
 
 const MAX_ATTACH_CORPUS_ROWS: usize = 400_000;
@@ -2267,6 +2273,7 @@ pub fn census_effective_vfs_corpus(
 ) -> Result<(Vec<RequiredContent>, AttachCorpusCensusStats), String> {
     let started = std::time::Instant::now();
     let mut rows: BTreeMap<String, RequiredContent> = BTreeMap::new();
+    let mut excluded_engine_written_sinks: Vec<String> = Vec::new();
     let stats = vfs.walk_content_keys(|logical_path, content| {
         if rows.len() >= MAX_ATTACH_CORPUS_ROWS {
             return Err(format!(
@@ -2280,6 +2287,20 @@ pub fn census_effective_vfs_corpus(
             ));
         }
         content.validate()?;
+        // The engine writes these itself and never resolves them through the
+        // VFS, so they are its scratch and not this install's content. Binding
+        // replay to them makes every later session a content mismatch: playing
+        // one console command rewrites `console_history.txt`, and the recording
+        // that captured yesterday's copy refuses to open today. Owner ruling
+        // 2026-08-15 already put the class out of the product-modset key; the
+        // effective-VFS census was the remaining place still collecting it.
+        if portable_content_manifest::is_engine_written_install_root_sink(
+            &normalized,
+            content.layer_kind,
+        ) {
+            excluded_engine_written_sinks.push(normalized);
+            return Ok(());
+        }
         if rows
             .insert(
                 normalized.clone(),
@@ -2308,6 +2329,7 @@ pub fn census_effective_vfs_corpus(
             files: stats.files,
             payload_bytes: stats.payload_bytes,
             elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+            excluded_engine_written_sinks,
         },
     ))
 }
@@ -2863,6 +2885,112 @@ mod tests {
         assert_eq!(winner.normalized_game_relative_path, "interface/ä.gui");
         assert_eq!(winner.winning_layer_ordinal, 1);
         assert_eq!(winner.payload_sha256, sha('2'));
+    }
+
+    /// The attach-time census walks the effective VFS and records what it
+    /// finds as this recording's content identity. Three of the files in that
+    /// walk are the ENGINE'S OWN write sinks, which it opens by bare name with
+    /// raw stream I/O and never resolves through the VFS. Recording them binds
+    /// replay to the game's scratch: `console_history.txt` is appended to on
+    /// every accepted console command, so a later session refuses the recording
+    /// on a payload mismatch over a file no replay reads. Owner ruling
+    /// 2026-08-15 put this class out of the product-modset key for the same
+    /// reason; this is the census catching up.
+    ///
+    /// The census keeps counting them in `files` (the walk saw them) and names
+    /// each one it dropped, so the difference between what was seen and what
+    /// was recorded is never unexplained.
+    ///
+    /// kills: removing the exclusion from `census_effective_vfs_corpus`;
+    /// dropping the rows without listing them; excluding a nested file of the
+    /// same name; or excluding a mod layer's own file of that name.
+    #[test]
+    fn the_attach_census_excludes_the_engine_written_install_root_sinks_by_name() {
+        use portable_content_manifest::effective_vfs::{EffectiveVfs, EffectiveVfsLayerMount};
+
+        let root = std::env::temp_dir().join(format!(
+            "hoi4_attach_census_sinks_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _cleanup = TempFixtureCleanup(root.clone());
+        let write = |layer: &str, relative: &str, bytes: &[u8]| {
+            let path = root.join(layer).join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, bytes).unwrap();
+        };
+        write("game", "common/units/infantry.txt", b"content");
+        // The engine's own sinks, at the install root.
+        write("game", "console_history.txt", b"tag fra\n");
+        write("game", "imgui.ini", b"[Window][Debug]\n");
+        write("game", "imgui_log.txt", b"log\n");
+        // Same NAME, one directory down: content the VFS really resolves.
+        write("game", "common/console_history.txt", b"authored content");
+        // Same name at a MOD's own root: that mod's content.
+        write("mod", "console_history.txt", b"mod payload");
+
+        let vfs = EffectiveVfs::new(
+            "a".repeat(64),
+            vec![
+                EffectiveVfsLayerMount {
+                    ordinal: 0,
+                    layer_kind: ContentLayerKind::Base,
+                    layer_id: "base".into(),
+                    storage_kind: LayerStorageKind::Directory,
+                    local_source: root.join("game"),
+                    source_container_sha256: None,
+                    replace_paths: Vec::new(),
+                },
+                EffectiveVfsLayerMount {
+                    ordinal: 1,
+                    layer_kind: ContentLayerKind::Mod,
+                    layer_id: "mod/active.mod".into(),
+                    storage_kind: LayerStorageKind::Directory,
+                    local_source: root.join("mod"),
+                    source_container_sha256: None,
+                    replace_paths: Vec::new(),
+                },
+            ],
+        )
+        .unwrap();
+
+        let (rows, stats) = census_effective_vfs_corpus(&vfs).unwrap();
+        let recorded: Vec<&str> = rows
+            .iter()
+            .map(|row| row.content.normalized_game_relative_path.as_str())
+            .collect();
+        // The mod wins `console_history.txt`, so it stays as that mod's
+        // content; only the base-layer sinks the mod did not shadow are
+        // dropped.
+        assert_eq!(
+            recorded,
+            vec![
+                "common/console_history.txt",
+                "common/units/infantry.txt",
+                "console_history.txt",
+            ]
+        );
+        assert_eq!(
+            rows.iter()
+                .find(|row| row.content.normalized_game_relative_path == "console_history.txt")
+                .unwrap()
+                .content
+                .layer_kind,
+            ContentLayerKind::Mod
+        );
+        assert_eq!(
+            stats.excluded_engine_written_sinks,
+            vec!["imgui.ini".to_string(), "imgui_log.txt".to_string()]
+        );
+        // `files` counts the walk; `rows` counts what was kept. The gap is
+        // exactly the named exclusions.
+        assert_eq!(
+            stats.files as usize,
+            rows.len() + stats.excluded_engine_written_sinks.len()
+        );
     }
 
     struct TempFixtureCleanup(PathBuf);

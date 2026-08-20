@@ -483,6 +483,67 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// `engine_runtime_artifacts.json` is the ONE authority for the
+    /// `engine_written_install_root_sink` class, and its membership is decided
+    /// by a complete reference census in the a729 image — never by a filename
+    /// convention. The replay crate ships standalone with the replay and cannot
+    /// reach into `extractor/`, so it carries a mirror of the relpaths; this is
+    /// the join that keeps the mirror honest.
+    ///
+    /// A row added to the authority and not to the mirror would leave the
+    /// content-identity census still collecting a file the engine rewrites,
+    /// which is the exact defect this class exists to close (an older capture
+    /// refusing to open because the game touched its own scratch file). A row
+    /// in the mirror and not in the authority would silently widen the class,
+    /// dropping real content out of the identity.
+    ///
+    /// kills: editing `ENGINE_WRITTEN_INSTALL_ROOT_SINKS` without the RE
+    /// evidence, or adding an artifact to the authority without extending the
+    /// census exclusion.
+    #[test]
+    fn the_replay_crate_mirrors_the_engine_runtime_artifact_authority_exactly() {
+        let authority = engine_runtime_artifacts().expect("the pinned authority loads");
+        let authority_paths: BTreeSet<&str> =
+            authority.keys().map(String::as_str).collect();
+        let mirrored: BTreeSet<&str> = portable_content_manifest::
+            ENGINE_WRITTEN_INSTALL_ROOT_SINKS
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            mirrored, authority_paths,
+            "the replay crate's engine-written-sink mirror and \
+             extractor/game_defs/engine_runtime_artifacts.json name different files"
+        );
+    }
+
+    /// The authority's own rule: membership is "opened relative to the working
+    /// directory", so every relpath is a single bare filename. The exclusion
+    /// predicate leans on that — it refuses any path with a directory
+    /// component, because inside a namespace the VFS really resolves, "runtime
+    /// artifact" and "shipped content" stop being distinguishable.
+    ///
+    /// kills: relaxing the bare-name check in
+    /// `is_engine_written_install_root_sink` to a suffix or basename match.
+    #[test]
+    fn every_mirrored_sink_is_a_bare_name_and_only_matches_as_one() {
+        for sink in portable_content_manifest::ENGINE_WRITTEN_INSTALL_ROOT_SINKS {
+            assert!(!sink.contains('/'), "{sink} is not a bare name");
+            assert!(portable_content_manifest::is_engine_written_install_root_sink(
+                sink,
+                portable_content_manifest::ContentLayerKind::Base,
+            ));
+            let nested = format!("common/{sink}");
+            assert!(
+                !portable_content_manifest::is_engine_written_install_root_sink(
+                    &nested,
+                    portable_content_manifest::ContentLayerKind::Base,
+                ),
+                "{nested} is content the VFS resolves and must stay in the identity"
+            );
+        }
+    }
+
     struct TestRoot(std::path::PathBuf);
 
     impl TestRoot {
