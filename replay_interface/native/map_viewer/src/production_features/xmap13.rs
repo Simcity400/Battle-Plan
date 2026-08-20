@@ -29,7 +29,6 @@ pub const XMAP13_UNIT_ENTITY_OPERATION_NAME: &str = "units.entities.draw";
 pub const XMAP13_COUNTER_QUAD_STAGE_NAME: &str = "xmap13.counter_quads.execute";
 pub const XMAP13_COUNTER_QUAD_OPERATION_NAME: &str = "units.counter-quads.draw";
 const GRAPHICS_DEFINES: &str = "common/defines/00_graphics.lua";
-const MAP_ICON_GROUPING_NORMALIZATION_F32: f32 = 100_000.0;
 
 const OWNED_GAPS: [&str; 5] = [
     "orders.theatre_army_hierarchy",
@@ -834,9 +833,13 @@ impl PreparedXmap13Frame {
                 .iter()
                 .find(|unit| unit.identity.canonical_id() == draw.stable_typed_id)
                 .ok_or("XMAP13 native entity materialization has no disclosed unit")?;
+            // `draw.selected_lod` is NOT compared with `unit.selected_lod_index`
+            // here. The draw's LOD is the one this viewer's camera selected;
+            // the unit's is the one the recorder's camera selected and is kept
+            // as provenance of what the recording declared. Two cameras
+            // disagreeing is the normal case and must not fail a frame.
             if draw.stable_typed_id != unit.identity.canonical_id()
                 || draw.owner != L03TypedOwner::M01Unit
-                || draw.selected_lod != unit.selected_lod_index
                 || draw.partition_mask != unit.partition_mask
                 || draw.world_matrix_f32_bits != unit.world_matrix_f32_bits
                 || draw.object_draw.visible_order as usize != order
@@ -1178,8 +1181,8 @@ impl Xmap13Adapter {
         {
             return Err("XMAP13 map-icon grouping thresholds are invalid".into());
         }
-        let normalized_grouping_thresholds =
-            raw_grouping_thresholds.map(|value| value / MAP_ICON_GROUPING_NORMALIZATION_F32);
+        let normalized_grouping_thresholds = raw_grouping_thresholds
+            .map(|value| value / crate::xmap13_counter_grouping_law::GROUPING_NORMALIZATION_F32);
         Ok(Self {
             content: Xmap13Content {
                 resolver: resolver.clone(),
@@ -1210,18 +1213,35 @@ impl ProductionMapFeatureAdapter for Xmap13Adapter {
             context.map_authority_gaps,
             context.map_authority_admitted,
         )?;
+        // The refusal names what is actually missing rather than the whole
+        // domain, but it must not overstate what has been solved either: this
+        // adapter still requires and consumes the recorded grouping census, so
+        // the census is not something the viewer supplies today. The law for it
+        // exists in `xmap13_counter_grouping_law.rs` and is waiting on two
+        // identity residuals; until they close, the recorded bytes are still
+        // load-bearing and their absence is still a real gap.
+        const MISSING_RESIDUE: &str = "this adapter still requires the recorded counter-grouping \
+                                       census, whose viewer-side law is implemented but not yet \
+                                       wired; and the engine's per-unit model and pose selection \
+                                       - world transform, animation phase, and the 3,200-byte \
+                                       bone palette - has no recorded source at all";
         let Some(raw) = context.world_frame.domain(XMAP13_DOMAIN) else {
             return Ok(unavailable_output(
                 context.world_frame.hour_index(),
                 consumed_gap_ids,
-                "recording has no complete map_unit_presentation semantic census",
+                &format!(
+                    "recording has no map_unit_presentation semantic census; {MISSING_RESIDUE}"
+                ),
             ));
         };
         if raw.is_null() {
             return Ok(unavailable_output(
                 context.world_frame.hour_index(),
                 consumed_gap_ids,
-                "map_unit_presentation is explicitly unavailable at this hour",
+                &format!(
+                    "map_unit_presentation is explicitly unavailable at this hour; \
+                     {MISSING_RESIDUE}"
+                ),
             ));
         }
         let envelope: Xmap13SemanticEnvelope = serde_json::from_value(raw.clone())
@@ -1370,10 +1390,13 @@ impl Xmap13Content {
         let Some(camera) = context.viewer.camera.as_ref() else {
             return Ok(None);
         };
-        Ok(Some(grouping_tier_from_engine_scalar(
-            camera.current_eye()[1],
-            self.normalized_grouping_thresholds,
-        )?))
+        Ok(Some(
+            crate::xmap13_counter_grouping_law::grouping_tier(
+                camera.current_eye()[1],
+                self.normalized_grouping_thresholds,
+            )
+            .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?,
+        ))
     }
 
     fn prepare_effect_identity(
@@ -1514,6 +1537,13 @@ impl Xmap13Content {
             self.graphics_defines.clone(),
         );
         let mut units = Vec::with_capacity(envelope.rows.len());
+        // Per unit, what the admitted mesh proves about its LODs. The LOD count
+        // bounds the LOD the viewer's camera selects during materialization, and
+        // it is the only thing that legitimately bounds it: the producer's own
+        // declared LOD came from the RECORDER's camera and says nothing about
+        // ours. The per-LOD bounds are what the hit target is rebuilt from once
+        // the viewer's camera has chosen.
+        let mut mesh_selections = BTreeMap::<String, Xmap13MeshSelection>::new();
         let mut seen_identity = BTreeSet::new();
         let mut seen_source = BTreeSet::new();
         let mut seen_entity_instance = BTreeSet::new();
@@ -1571,10 +1601,12 @@ impl Xmap13Content {
             self.validate_task_force_member_content(row)?;
             self.validate_entity_model_binding(row)?;
             self.validate_animation_asset(row)?;
-            let (aabb_min, aabb_max) = self.validate_mesh_selection(row)?;
+            let mesh_selection = self.validate_mesh_selection(row)?;
+            let (aabb_min, aabb_max) = (mesh_selection.aabb_min, mesh_selection.aabb_max);
             validate_typed_join(context.world_frame, row)?;
             let (disclosure, visibility_reason) = disclosure(political, context, row)?;
             let canonical = row.identity.canonical_id();
+            mesh_selections.insert(canonical.clone(), mesh_selection);
             let selected = context
                 .viewer
                 .selected_object_ids
@@ -1635,6 +1667,45 @@ impl Xmap13Content {
             )
             .as_bytes(),
         );
+        // The frustum partition is draw-derived, so it is written back onto the
+        // ONE unit census before anything is cloned out of it. Writing it only
+        // onto a clone left `PreparedXmap13Frame::validate`'s
+        // visible-units-versus-provider comparison failing on any frame that
+        // actually materialized a unit, because the provider had been cloned
+        // while every mask was still zero.
+        let visible_indices = units
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                matches!(
+                    row.disclosure,
+                    ExactUnitDisclosure::MapVisible | ExactUnitDisclosure::ExactDetails
+                )
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        let mut native_entity_draws = Vec::new();
+        for index in visible_indices.iter().copied() {
+            let order = u32::try_from(native_entity_draws.len())?;
+            let selection = mesh_selections
+                .get(&units[index].identity.canonical_id())
+                .ok_or("XMAP13 unit has no admitted mesh LOD table")?;
+            if let Some(draw) =
+                self.materialize_native_entity(camera, order, &units[index], selection.lod_count)?
+            {
+                units[index].partition_mask = draw.partition_mask;
+                // The hit target is projected from these bounds, so they follow
+                // the LOD the viewer's camera actually drew rather than the one
+                // the recorder declared.
+                if let Some(Some((min, max))) =
+                    selection.lod_bounds.get(draw.selected_lod as usize)
+                {
+                    units[index].local_aabb_min_f32_bits = min.map(f32::to_bits);
+                    units[index].local_aabb_max_f32_bits = max.map(f32::to_bits);
+                }
+                native_entity_draws.push(draw);
+            }
+        }
         let provider = Xmap13IdentityProvider {
             hour_index: envelope.hour_index,
             ordered_units: units.clone(),
@@ -1643,24 +1714,10 @@ impl Xmap13Content {
             formation_census_sha256,
             admission_sha256,
         };
-        let mut visible_units = units
+        let visible_units = visible_indices
             .iter()
-            .filter(|row| {
-                matches!(
-                    row.disclosure,
-                    ExactUnitDisclosure::MapVisible | ExactUnitDisclosure::ExactDetails
-                )
-            })
-            .cloned()
+            .map(|index| units[*index].clone())
             .collect::<Vec<_>>();
-        let mut native_entity_draws = Vec::new();
-        for unit in &mut visible_units {
-            let order = u32::try_from(native_entity_draws.len())?;
-            if let Some(draw) = self.materialize_native_entity(camera, order, unit)? {
-                unit.partition_mask = draw.partition_mask;
-                native_entity_draws.push(draw);
-            }
-        }
         let native_ids = native_entity_draws
             .iter()
             .map(|draw| draw.stable_typed_id.as_str())
@@ -1712,11 +1769,31 @@ impl Xmap13Content {
         Ok(prepared)
     }
 
+    /// Materialize one unit's entity through the shared PdxMesh backend.
+    ///
+    /// THE LOD IS THE VIEWER'S, NOT THE RECORDER'S.  `selected_lod_override` is
+    /// deliberately `None` so `xmap12_pdxmesh.rs::select_pdxmesh_lod` runs
+    /// against this viewer's camera. Passing the row's `selected_lod_index`
+    /// here -- as this did -- meant the camera path never executed and the
+    /// check below compared the override with itself. Under the replay-layer
+    /// precedent a per-frame, camera-distance LOD is client presentation: the
+    /// recorded index is the RECORDER's camera answering a question only the
+    /// viewer's camera may answer, so it cannot be imposed and it cannot be
+    /// compared for equality either -- two different cameras disagreeing is the
+    /// normal case, not a corruption. `selected_shape_indices` follows for the
+    /// same reason: the shape set is exactly the mesh's shapes at the selected
+    /// LOD, so pinning it to the recorder's LOD would empty the draw whenever
+    /// the two cameras disagreed.
+    ///
+    /// What IS checked is the pair of facts that do not depend on a camera: the
+    /// world transform must survive materialization unchanged, and the derived
+    /// LOD must be one the admitted mesh actually declares.
     fn materialize_native_entity(
         &self,
         camera: &crate::ViewerMapCameraState,
         visible_order: u32,
         unit: &PreparedXmap13Unit,
+        mesh_lod_count: usize,
     ) -> Result<Option<crate::Xmap12PdxMeshMaterialization>> {
         let entity_source = latin1(
             &self
@@ -1782,8 +1859,8 @@ impl Xmap13Content {
             entity_scale_f32_bits: 1.0f32.to_bits(),
             pdxmesh_scale_f32_bits: 1.0f32.to_bits(),
             material_family: crate::Xmap12PdxMeshMaterialFamily::Standard,
-            selected_lod_override: Some(unit.selected_lod_index),
-            selected_shape_indices: Some(unit.selected_shape_indices.clone()),
+            selected_lod_override: None,
+            selected_shape_indices: None,
             skin_palette_3200_bytes: unit.skin_palette_3200_bytes.clone(),
         };
         let Some(draw) =
@@ -1791,10 +1868,19 @@ impl Xmap13Content {
         else {
             return Ok(None);
         };
-        if draw.selected_lod != unit.selected_lod_index
-            || draw.world_matrix_f32_bits != unit.world_matrix_f32_bits
-        {
-            return Err("XMAP13 native PdxMesh selection differs from semantic producer".into());
+        if draw.world_matrix_f32_bits != unit.world_matrix_f32_bits {
+            return Err("XMAP13 native PdxMesh world transform differs from semantic producer".into());
+        }
+        // The bound is `>`, not `>=`, and deliberately matches what
+        // `Xmap13Content::validate_mesh_selection` already admits of the
+        // producer's own declared index. `xmap12_pdxmesh.rs::select_pdxmesh_lod`
+        // initialises its result to exactly `lod_distances.len()` and lowers it
+        // only when some LOD distance is within range, so the terminal value IS
+        // a legitimate selector result and must not be rejected here.
+        if draw.selected_lod as usize > mesh_lod_count {
+            return Err(
+                "XMAP13 viewer-camera LOD selection is outside the admitted mesh LOD table".into(),
+            );
         }
         Ok(Some(draw))
     }
@@ -2096,7 +2182,7 @@ impl Xmap13Content {
         Ok(())
     }
 
-    fn validate_mesh_selection(&self, row: &Xmap13SemanticRow) -> Result<([f32; 3], [f32; 3])> {
+    fn validate_mesh_selection(&self, row: &Xmap13SemanticRow) -> Result<Xmap13MeshSelection> {
         let bytes = self.resolver.read_admitted_used_content(&row.mesh)?;
         let tree = crate::pdx_mesh::parse_pdx_asset(&bytes)?;
         let model = crate::pdx_mesh::extract_pdx_model(&tree)?;
@@ -2218,8 +2304,49 @@ impl Xmap13Content {
             row.skin_palette_sha256.as_deref(),
             row.skin_palette_3200_bytes.as_deref(),
         )?;
-        Ok((min, max))
+        // The hit-test AABB has to follow the LOD the VIEWER's camera selects,
+        // not the one the recorder's camera did, so bounds are collected for
+        // every LOD the mesh declares and the caller indexes them with the LOD
+        // that was actually drawn.
+        let mut lod_bounds = vec![None; model.lod_distances.len().saturating_add(1)];
+        for shape in &model.shapes {
+            let lod = shape.lod.unwrap_or(0).max(0) as usize;
+            let Some(slot) = lod_bounds.get_mut(lod) else {
+                continue;
+            };
+            for mesh in &shape.meshes {
+                // The same three categories `xmap12_pdxmesh.rs` skips when it
+                // materializes. Bounds that include geometry the renderer never
+                // draws are a hit target larger than the thing on screen.
+                if mesh.material.is_collision() || mesh.verts.is_empty() || mesh.indices.is_empty()
+                {
+                    continue;
+                }
+                let entry = slot.get_or_insert(([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]));
+                for axis in 0..3 {
+                    entry.0[axis] = entry.0[axis].min(mesh.aabb_min[axis]);
+                    entry.1[axis] = entry.1[axis].max(mesh.aabb_max[axis]);
+                }
+            }
+        }
+        Ok(Xmap13MeshSelection {
+            aabb_min: min,
+            aabb_max: max,
+            lod_count: model.lod_distances.len(),
+            lod_bounds,
+        })
     }
+}
+
+/// What `Xmap13Content::validate_mesh_selection` proves about one row's mesh.
+struct Xmap13MeshSelection {
+    /// Bounds of the shapes the PRODUCER declared, kept as the fallback for a
+    /// unit the viewer's camera never materializes.
+    aabb_min: [f32; 3],
+    aabb_max: [f32; 3],
+    /// Bounds per LOD, indexed by LOD, for the LOD the viewer's camera picks.
+    lod_bounds: Vec<Option<([f32; 3], [f32; 3])>>,
+    lod_count: usize,
 }
 
 fn validate_skin_palette(
@@ -2493,30 +2620,6 @@ fn counter_allegiance_unavailable(
         }
     }
     Ok(None)
-}
-
-fn grouping_tier_from_engine_scalar(
-    camera_grouping_scalar: f32,
-    normalized_thresholds: [f32; 3],
-) -> Result<u8> {
-    if !camera_grouping_scalar.is_finite()
-        || normalized_thresholds
-            .into_iter()
-            .any(|value| !value.is_finite() || value <= 0.0)
-        || !(normalized_thresholds[0] < normalized_thresholds[1]
-            && normalized_thresholds[1] < normalized_thresholds[2])
-    {
-        return Err("XMAP13 exact grouping scalar/normalized thresholds are invalid".into());
-    }
-    Ok(if camera_grouping_scalar < normalized_thresholds[0] {
-        0
-    } else if camera_grouping_scalar < normalized_thresholds[1] {
-        1
-    } else if camera_grouping_scalar < normalized_thresholds[2] {
-        2
-    } else {
-        3
-    })
 }
 
 fn build_counter_groups(
@@ -4503,34 +4606,20 @@ mod tests {
         .contains("both admitted and gapped owned input units.divisions"));
     }
 
+    /// kills: XMAP13 growing a second copy of the tier law. There is one
+    /// implementation, in `xmap13_counter_grouping_law.rs::grouping_tier`, and
+    /// this pins the boundaries the packet depends on through it.
     #[test]
     fn grouping_tier_uses_exact_current_eye_scalar_boundaries() {
+        use crate::xmap13_counter_grouping_law::grouping_tier;
         let thresholds = [0.0009, 0.0018, 0.0035];
-        assert_eq!(
-            grouping_tier_from_engine_scalar(0.000899, thresholds).unwrap(),
-            0
-        );
-        assert_eq!(
-            grouping_tier_from_engine_scalar(0.0009, thresholds).unwrap(),
-            1
-        );
-        assert_eq!(
-            grouping_tier_from_engine_scalar(0.001799, thresholds).unwrap(),
-            1
-        );
-        assert_eq!(
-            grouping_tier_from_engine_scalar(0.0018, thresholds).unwrap(),
-            2
-        );
-        assert_eq!(
-            grouping_tier_from_engine_scalar(0.003499, thresholds).unwrap(),
-            2
-        );
-        assert_eq!(
-            grouping_tier_from_engine_scalar(0.0035, thresholds).unwrap(),
-            3
-        );
-        assert!(grouping_tier_from_engine_scalar(f32::NAN, thresholds).is_err());
+        assert_eq!(grouping_tier(0.000899, thresholds).unwrap(), 0);
+        assert_eq!(grouping_tier(0.0009, thresholds).unwrap(), 1);
+        assert_eq!(grouping_tier(0.001799, thresholds).unwrap(), 1);
+        assert_eq!(grouping_tier(0.0018, thresholds).unwrap(), 2);
+        assert_eq!(grouping_tier(0.003499, thresholds).unwrap(), 2);
+        assert_eq!(grouping_tier(0.0035, thresholds).unwrap(), 3);
+        assert!(grouping_tier(f32::NAN, thresholds).is_err());
     }
 
     #[test]
