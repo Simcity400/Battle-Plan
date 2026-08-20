@@ -5155,6 +5155,22 @@ fn validate_xmap22_foundation_disposition(
                 return Err(format!("XMAP22 {family:?} has a blank not-applicable reason").into());
             }
         }
+        map_viewer::FamilyDisposition::DeferredToDraw {
+            producer_registration_sha256,
+            draw_contract_id,
+            reason,
+        } => {
+            require_xmap22_sha256(
+                producer_registration_sha256,
+                "draw-deferred family producer registration",
+            )?;
+            if draw_contract_id.trim().is_empty() || reason.trim().is_empty() {
+                return Err(format!(
+                    "XMAP22 {family:?} defers to draw time without a named contract and reason"
+                )
+                .into());
+            }
+        }
         map_viewer::FamilyDisposition::Unavailable { gap } => {
             require_xmap22_sha256(&gap.witness_sha256, "unavailable-family witness")?;
             if gap.gap_id.trim().is_empty() || gap.reason.trim().is_empty() {
@@ -5179,6 +5195,13 @@ pub(crate) enum Xmap22FamilyExecutionDisposition {
     },
     NotApplicable {
         applicability_witness_sha256: String,
+    },
+    /// The family deferred its answer to draw time and the draw path made good
+    /// on it: `execution_sha256` is the receipt that discharged
+    /// `draw_contract_id`. This is a vouch, just a later one.
+    DrawTimeVouched {
+        execution_sha256: String,
+        draw_contract_id: String,
     },
     Unavailable {
         gap_id: String,
@@ -5260,6 +5283,30 @@ pub(crate) struct ProductMapCompositionReceipt {
 }
 
 impl ProductMapCompositionReceipt {
+    /// STRICT ADMISSION, the only way a receipt may be read from bytes.
+    ///
+    /// `deny_unknown_fields` on this struct does not reach inside the
+    /// `FamilyDisposition` nested in its census, because serde cannot apply it
+    /// to the variants of an internally tagged enum. Its own hashes do not close
+    /// that: a stray field inside `foundation_disposition` is dropped at decode,
+    /// and every hash is then recomputed over the normalised object and still
+    /// matches -- so two different byte strings verified as the same
+    /// authenticated receipt (Codex review, round 2). Comparing the submitted
+    /// tree against the re-encoded admitted value refuses anything the decode
+    /// dropped, at any depth.
+    pub(crate) fn decode_json(bytes: &[u8], what: &str) -> Result<Self> {
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| format!("decode {what}: {error}"))?;
+        let submitted: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|error| format!("decode {what}: {error}"))?;
+        if submitted != serde_json::to_value(&value)? {
+            return Err(
+                format!("{what} carries fields outside its admitted schema").into(),
+            );
+        }
+        Ok(value)
+    }
+
     fn seal(mut self) -> Result<Self> {
         self.deterministic_sha256.clear();
         self.deterministic_sha256 = snapshot::sha256::Sha256::hex(&serde_json::to_vec(&self)?);
@@ -5349,6 +5396,25 @@ impl ProductMapCompositionReceipt {
                     && &gap.witness_sha256 == witness_sha256 =>
                 {
                     require_xmap22_sha256(witness_sha256, "unavailable-family witness")?;
+                }
+                // VOUCHED LATE, still vouched. A family that deferred at
+                // foundation time appears here paired with the receipt that
+                // discharged it, and the two halves must name the SAME contract
+                // -- otherwise a receipt could claim a draw-time vouch for a
+                // contract the foundation never deferred. Omitting this arm made
+                // the wildcard below reject every valid deferred frame, so the
+                // XMAP10 success path could never produce a composition receipt
+                // at all (Codex review, round 1).
+                (
+                    map_viewer::FamilyDisposition::DeferredToDraw {
+                        draw_contract_id, ..
+                    },
+                    Xmap22FamilyExecutionDisposition::DrawTimeVouched {
+                        execution_sha256,
+                        draw_contract_id: discharged_contract,
+                    },
+                ) if draw_contract_id == discharged_contract => {
+                    require_xmap22_sha256(execution_sha256, "draw-time family execution")?;
                 }
                 _ => {
                     return Err(
@@ -5457,6 +5523,12 @@ impl ProductMapCompositionReceipt {
             match &row.execution {
                 Xmap22FamilyExecutionDisposition::Executed { execution_sha256 }
                 | Xmap22FamilyExecutionDisposition::MeasuredEmpty {
+                    execution_sha256, ..
+                } if execution_sha256 == expected => {}
+                // A draw-time vouch is bound to the SAME independently derived
+                // packet receipt as any other execution: deferring WHEN a family
+                // vouches must not loosen WHAT its witness has to equal.
+                Xmap22FamilyExecutionDisposition::DrawTimeVouched {
                     execution_sha256, ..
                 } if execution_sha256 == expected => {}
                 Xmap22FamilyExecutionDisposition::NotApplicable { .. } => {}
@@ -5776,6 +5848,12 @@ fn build_xmap22_family_execution_census(
                     ..
                 } => Xmap22FamilyExecutionDisposition::NotApplicable {
                     applicability_witness_sha256: applicability_witness_sha256.clone(),
+                },
+                map_viewer::FamilyDisposition::DeferredToDraw {
+                    draw_contract_id, ..
+                } => Xmap22FamilyExecutionDisposition::DrawTimeVouched {
+                    execution_sha256,
+                    draw_contract_id: draw_contract_id.clone(),
                 },
                 map_viewer::FamilyDisposition::Unavailable { gap } => {
                     require_xmap22_sha256(&gap.witness_sha256, "unavailable-family witness")?;
@@ -6499,9 +6577,28 @@ impl ProductMapCompositionSession {
             .envelope
             .deterministic_sha256()
             .map_err(|error| format!("XMAP22 foundation digest: {error}"))?;
-        if !prepared.envelope.is_complete() {
-            return Err("XMAP22 cannot seal a composition with an incomplete foundation".into());
-        }
+        // The frame-may-show law. Every family must vouch before a pixel is
+        // sealed; some vouch at foundation time and some at draw time, but none
+        // may be skipped. `completed_postfx` above is XMAP10's draw-time vouch:
+        // it was already required to exist, and now it is what actually
+        // discharges XMAP10's deferral instead of the graph never hearing about
+        // it. A family that refuses still refuses -- `seal_readiness` will not
+        // let a discharged contract rescue it.
+        // Keyed by FAMILY as well as contract: an owner packet can own more than
+        // one family, so a bare contract string would have let one receipt vouch
+        // for two rows (Codex review, round 1).
+        let discharged_draw_contracts = BTreeSet::from([
+            map_viewer::FoundationRenderEnvelope::draw_contract_key(
+                map_viewer::MapVisualFamily::GradingPostFx,
+                map_viewer::XMAP10_POSTFX_DRAW_CONTRACT,
+            ),
+        ]);
+        prepared
+            .envelope
+            .seal_readiness(&discharged_draw_contracts)
+            .map_err(|error| {
+                format!("XMAP22 cannot seal a composition with an incomplete foundation: {error}")
+            })?;
         let xmap04_terrain_execution_sha256 = self
             .xmap10
             .terrain_draw
@@ -9934,8 +10031,85 @@ mod product_production_d3d_tests {
         assert!((next_presented_delta - 0.010).abs() < f64::EPSILON);
     }
 
+    // kills: BOTH wildcard arms that used to reject a draw-time vouch. The
+    // census builder emits DrawTimeVouched, but neither receipt validator had a
+    // matching arm, so every deferred frame fell into `_ =>` and no composition
+    // receipt could ever seal -- masked today only because XMAP20/XMAP21 refuse
+    // earlier (Codex review, round 1). Also kills unbinding the draw-time
+    // witness from the independently derived packet receipt, and kills dropping
+    // the contract-agreement guard between the two halves.
     #[test]
-    fn xmap22_composition_receipt_is_content_bound_and_deny_unknown() {
+    fn a_draw_time_vouch_seals_and_stays_bound_to_its_contract_and_receipt() {
+        let hash = || "a".repeat(64);
+        let deferred = map_viewer::FamilyDisposition::DeferredToDraw {
+            producer_registration_sha256: hash(),
+            draw_contract_id: map_viewer::XMAP10_POSTFX_DRAW_CONTRACT.into(),
+            reason: "resolves against live per-frame draw state".into(),
+        };
+        let mut receipt = xmap22_all_present_receipt_fixture();
+        for row in &mut receipt.mandatory_family_execution_census {
+            if row.family == map_viewer::MapVisualFamily::GradingPostFx {
+                row.foundation_disposition = deferred.clone();
+            }
+        }
+        let expected = xmap22_expected_family_execution_witnesses(&receipt).unwrap();
+        for row in &mut receipt.mandatory_family_execution_census {
+            row.execution = if row.family == map_viewer::MapVisualFamily::GradingPostFx {
+                Xmap22FamilyExecutionDisposition::DrawTimeVouched {
+                    execution_sha256: expected[&row.family].clone(),
+                    draw_contract_id: map_viewer::XMAP10_POSTFX_DRAW_CONTRACT.into(),
+                }
+            } else {
+                Xmap22FamilyExecutionDisposition::Executed {
+                    execution_sha256: expected[&row.family].clone(),
+                }
+            };
+        }
+        let reseal = |mut value: ProductMapCompositionReceipt| {
+            value.mandatory_family_execution_census_sha256 = snapshot::sha256::Sha256::hex(
+                &serde_json::to_vec(&value.mandatory_family_execution_census).unwrap(),
+            );
+            value.foundation_envelope_sha256 = xmap22_reconstructed_foundation_envelope(&value)
+                .unwrap()
+                .deterministic_sha256()
+                .unwrap();
+            value.deterministic_sha256.clear();
+            value.seal()
+        };
+        let sealed = reseal(receipt).expect("a discharged draw-time vouch must seal");
+        sealed.validate().expect("and must validate");
+
+        // The two halves must name the SAME contract.
+        let mut mismatched = sealed.clone();
+        for row in &mut mismatched.mandatory_family_execution_census {
+            if let Xmap22FamilyExecutionDisposition::DrawTimeVouched {
+                draw_contract_id, ..
+            } = &mut row.execution
+            {
+                *draw_contract_id = "XMAP10.some_other_contract".into();
+            }
+        }
+        assert!(reseal(mismatched).is_err_and(|error| error
+            .to_string()
+            .contains("does not match its foundation disposition")));
+
+        // The draw-time witness stays bound to the derived packet receipt.
+        let mut unbound = sealed.clone();
+        for row in &mut unbound.mandatory_family_execution_census {
+            if let Xmap22FamilyExecutionDisposition::DrawTimeVouched {
+                execution_sha256, ..
+            } = &mut row.execution
+            {
+                *execution_sha256 = "b".repeat(64);
+            }
+        }
+        assert!(reseal(unbound).is_err_and(|error| error
+            .to_string()
+            .contains("contradicts its packet receipts")));
+    }
+
+    /// The all-Present receipt fixture, shared by the receipt tests.
+    fn xmap22_all_present_receipt_fixture() -> ProductMapCompositionReceipt {
         let hash = || "a".repeat(64);
         let mandatory_family_execution_census = map_viewer::MapVisualFamily::ALL
             .into_iter()
@@ -9957,7 +10131,7 @@ mod product_production_d3d_tests {
         let mandatory_family_execution_census_sha256 = snapshot::sha256::Sha256::hex(
             &serde_json::to_vec(&mandatory_family_execution_census).unwrap(),
         );
-        let mut receipt = ProductMapCompositionReceipt {
+        ProductMapCompositionReceipt {
             schema: "hoi4.replay-map-composition.xmap22.v4".into(),
             hour_index: 42,
             viewport_width: 320,
@@ -10010,7 +10184,62 @@ mod product_production_d3d_tests {
             final_target_sha256: hash(),
             final_pixels_sha256: hash(),
             deterministic_sha256: String::new(),
+        }
+    }
+
+    // kills: reading a receipt with plain serde_json::from_slice instead of the
+    // strict decoder. deny_unknown_fields cannot reach into the FamilyDisposition
+    // nested in the census, and the receipt's own hashes cannot catch it: the
+    // stray field is dropped at decode and every hash then recomputes over the
+    // normalised object and matches, so two different byte strings verified as
+    // the same authenticated receipt (Codex review, round 2).
+    #[test]
+    fn a_receipt_with_a_field_hidden_inside_a_nested_disposition_is_refused() {
+        let receipt = {
+            let mut value = xmap22_all_present_receipt_fixture();
+            let expected = xmap22_expected_family_execution_witnesses(&value).unwrap();
+            for row in &mut value.mandatory_family_execution_census {
+                row.execution = Xmap22FamilyExecutionDisposition::Executed {
+                    execution_sha256: expected[&row.family].clone(),
+                };
+            }
+            value.mandatory_family_execution_census_sha256 = snapshot::sha256::Sha256::hex(
+                &serde_json::to_vec(&value.mandatory_family_execution_census).unwrap(),
+            );
+            value.foundation_envelope_sha256 = xmap22_reconstructed_foundation_envelope(&value)
+                .unwrap()
+                .deterministic_sha256()
+                .unwrap();
+            value.seal().unwrap()
         };
+        let clean = serde_json::to_vec(&receipt).unwrap();
+        ProductMapCompositionReceipt::decode_json(&clean, "receipt").expect("clean bytes admit");
+
+        let mut tree: serde_json::Value = serde_json::from_slice(&clean).unwrap();
+        tree["mandatory_family_execution_census"][0]["foundation_disposition"]["smuggled"] =
+            serde_json::json!("payload");
+        let smuggled = serde_json::to_vec(&tree).unwrap();
+
+        // The old path accepted it, and every hash still matched afterwards --
+        // which is exactly why the hashes are not the defence here.
+        let permissive: ProductMapCompositionReceipt =
+            serde_json::from_slice(&smuggled).expect("serde alone still drops it");
+        permissive
+            .validate()
+            .expect("and every hash still matches after the drop");
+
+        let error = ProductMapCompositionReceipt::decode_json(&smuggled, "receipt")
+            .expect_err("the strict decoder must refuse it");
+        assert!(
+            error.to_string().contains("outside its admitted schema"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn xmap22_composition_receipt_is_content_bound_and_deny_unknown() {
+        let hash = || "a".repeat(64);
+        let mut receipt = xmap22_all_present_receipt_fixture();
         let expected_witnesses = xmap22_expected_family_execution_witnesses(&receipt).unwrap();
         for row in &mut receipt.mandatory_family_execution_census {
             row.execution = Xmap22FamilyExecutionDisposition::Executed {

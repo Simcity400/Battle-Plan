@@ -211,6 +211,7 @@ fn empty_output(
         prepared_orders: None,
         prepared_rail_supply: None,
         prepared_map_modes: None,
+        prepared_map_furniture: None,
         consumed_gap_ids,
     }
 }

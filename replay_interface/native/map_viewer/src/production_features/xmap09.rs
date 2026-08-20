@@ -1187,6 +1187,7 @@ impl ProductionMapFeatureAdapter for Xmap09LightingAdapter {
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
+            prepared_map_furniture: None,
             consumed_gap_ids,
         })
     }

@@ -644,6 +644,7 @@ impl ProductionMapFeatureAdapter for Xmap18MapModeAdapter {
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: Some(prepared),
+            prepared_map_furniture: None,
             consumed_gap_ids: OWNED_AUTHORITY_GAPS
                 .iter()
                 .map(|input| (*input).to_string())

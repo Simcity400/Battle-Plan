@@ -843,6 +843,12 @@ impl NativeXmap07WaterHandoff {
             portable_render_stream::FamilyDisposition::NotApplicable { .. } => {
                 return Err("XMAP07 cannot draw a not-applicable WaterIce family".into())
             }
+            portable_render_stream::FamilyDisposition::DeferredToDraw { .. } => {
+                return Err(
+                    "XMAP07 water is a foundation-time family and can never defer to draw time"
+                        .into(),
+                )
+            }
         };
         let expected_resources_sha256 =
             crate::production_features::xmap07::ordered_resources_digest(frame);

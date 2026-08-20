@@ -244,7 +244,34 @@ pub struct FoundationFeatureOutput {
     pub prepared_orders: Option<crate::production_features::xmap15::PreparedXmap15Frame>,
     pub prepared_rail_supply: Option<crate::PreparedXmap16Frame>,
     pub prepared_map_modes: Option<crate::PreparedMapModeFrame>,
+    pub prepared_map_furniture: Option<crate::PreparedMapFurniturePacket>,
     pub consumed_gap_ids: Vec<String>,
+}
+
+impl FoundationFeatureOutput {
+    /// A family that carries no executable payload of its own -- it is either
+    /// refusing, not applicable, or waiting on draw time. Adapters that do
+    /// produce a payload fill the matching field in afterwards.
+    pub fn without_payload(disposition: FamilyDisposition, consumed_gap_ids: Vec<String>) -> Self {
+        Self {
+            disposition,
+            prepared_terrain: None,
+            prepared_political: None,
+            prepared_thin_borders: None,
+            prepared_lighting: None,
+            prepared_weather: None,
+            prepared_rivers_straits: None,
+            prepared_water: None,
+            prepared_effects: None,
+            prepared_units: None,
+            prepared_combat: None,
+            prepared_orders: None,
+            prepared_rail_supply: None,
+            prepared_map_modes: None,
+            prepared_map_furniture: None,
+            consumed_gap_ids,
+        }
+    }
 }
 
 pub trait ProductionMapFeatureAdapter {
@@ -447,6 +474,21 @@ fn foundation_feature_adapter_core(
     ))?;
     adapters.register(Box::new(
         crate::production_features::xmap18::Xmap18MapModeAdapter::new(resolver, admission)?,
+    ))?;
+    // The last three families used to have no adapter at all, so the readiness
+    // graph reported them as "the packet never promoted an adapter" -- which was
+    // false for all three: each one executes at draw time and already produces a
+    // draw receipt. Registering them makes the graph report the REAL state:
+    // XMAP10 defers its answer to draw time, and XMAP20/XMAP21 name the exact
+    // blocker that keeps them from vouching at all.
+    adapters.register(Box::new(
+        crate::production_features::xmap10::Xmap10GradingPostFxAdapter,
+    ))?;
+    adapters.register(Box::new(
+        crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent(),
+    ))?;
+    adapters.register(Box::new(
+        crate::production_features::xmap21::Xmap21MapFurnitureAdapter::authority_absent(),
     ))?;
     Ok(adapters)
 }
@@ -653,6 +695,7 @@ pub struct PreparedFoundationFrame {
     pub rail_supply: Option<crate::PreparedXmap16Frame>,
     pub map_modes: crate::PreparedMapModeFrame,
     pub labels: Option<crate::PreparedMapLabelFrame>,
+    pub map_furniture: Option<crate::PreparedMapFurniturePacket>,
 }
 
 pub enum Xmap16FoundationState<'a> {
@@ -885,7 +928,9 @@ fn validate_xmap15_foundation_disposition(
                 );
             }
         }
-        FamilyDisposition::Unavailable { .. } | FamilyDisposition::NotApplicable { .. } => {
+        FamilyDisposition::Unavailable { .. }
+        | FamilyDisposition::NotApplicable { .. }
+        | FamilyDisposition::DeferredToDraw { .. } => {
             return Err(
                 "XMAP15 executable payload was paired with a non-executable disposition".into(),
             )
@@ -938,6 +983,7 @@ fn prepare_foundation_frame_inner(
     let mut prepared_rail_supply = None;
     let mut prepared_labels = None;
     let mut prepared_map_modes = None;
+    let mut prepared_map_furniture = None;
     for family in MapVisualFamily::ALL {
         let context = FoundationFeatureContext {
             world_frame,
@@ -1278,6 +1324,27 @@ fn prepare_foundation_frame_inner(
                         && matches!(&output.disposition, FamilyDisposition::Present { .. })
                     {
                         return Err("present MapModes family omitted its executable payload".into());
+                    }
+                    if let Some(map_furniture) = output.prepared_map_furniture {
+                        if family != MapVisualFamily::MapFurnitureIcons
+                            || prepared_map_furniture.replace(map_furniture).is_some()
+                        {
+                            return Err(
+                                "foundation adapter produced duplicate or non-XMAP21 furniture payload"
+                                    .into(),
+                            );
+                        }
+                    } else if family == MapVisualFamily::MapFurnitureIcons
+                        && matches!(
+                            &output.disposition,
+                            FamilyDisposition::Present { .. }
+                                | FamilyDisposition::AuthenticatedEmpty { .. }
+                        )
+                    {
+                        return Err(
+                            "present/authenticated-empty MapFurnitureIcons family omitted its executable payload"
+                                .into(),
+                        );
                     }
                     for gap_id in output.consumed_gap_ids {
                         if !map_admission
@@ -1658,6 +1725,7 @@ fn prepare_foundation_frame_inner(
         rail_supply: prepared_rail_supply,
         labels,
         map_modes,
+        map_furniture: prepared_map_furniture,
     })
 }
 
@@ -1772,7 +1840,14 @@ impl FoundationPlaybackState {
             .map(|(_, gap)| gap.clone())
             .collect::<Vec<_>>();
         if gaps.is_empty() {
-            if candidate.is_complete() {
+            // The fallback cache wants "no family refuses", NOT "every family
+            // has already vouched". A family that defers to draw time has not
+            // refused: it is answered per-frame when the frame is actually
+            // drawn, and the seal still makes it prove that. Caching on
+            // Gating on "already vouched" here would mean a permanently-deferred family kept
+            // the cache empty forever and silently turned every later stale
+            // frame into an outright refusal.
+            if !candidate.has_refusing_family() {
                 self.last_complete = Some(candidate.clone());
             }
             return Ok(FoundationPlaybackOutcome::Fresh(candidate));
@@ -2298,6 +2373,217 @@ mod tests {
                 assert!(adapters.get(family).is_none(), "{family:?} promoted early");
             }
         }
+    }
+
+    // The regression this lane exists for. Before it, XMAP10/20/21 had NO
+    // registered adapter, so prepare_foundation_frame_inner fell to its
+    // (None, None) arm and told the readiness graph all three had "not promoted
+    // the viewer-owned production adapter". That was false: all three execute at
+    // draw time.
+    //
+    // kills: DELETING ANY OF THE THREE REGISTRATIONS. The earlier version of
+    // this test hand-built dispositions and stayed green with all three
+    // registration lines removed (Codex review, round 1), so it now reads the
+    // production registration site itself -- the same source-guard idiom
+    // xmap00_map_authority.rs uses for this function.
+    #[test]
+    fn the_production_adapter_set_registers_all_three_late_families() {
+        let source = include_str!("production_foundation.rs");
+        let core = source
+            .split_once("fn foundation_feature_adapter_core(")
+            .expect("the production adapter set must exist")
+            .1
+            .split_once("
+pub fn ")
+            .expect("adapter core must end")
+            .0;
+        for registration in [
+            "xmap10::Xmap10GradingPostFxAdapter",
+            "xmap20::Xmap20EffectsAdapter::carrier_absent()",
+            "xmap21::Xmap21MapFurnitureAdapter::authority_absent()",
+        ] {
+            assert!(
+                core.contains(registration),
+                "the production adapter set no longer registers {registration}"
+            );
+        }
+
+        // ...and each adapter claims exactly the family it is registered for,
+        // so a registration cannot be silently pointed at the wrong row.
+        let adapters: [(&dyn ProductionMapFeatureAdapter, MapVisualFamily); 3] = [
+            (
+                &crate::production_features::xmap10::Xmap10GradingPostFxAdapter,
+                MapVisualFamily::GradingPostFx,
+            ),
+            (
+                &crate::production_features::xmap20::Xmap20EffectsAdapter::CarrierAbsent,
+                MapVisualFamily::ParticlesEffects,
+            ),
+            (
+                &crate::production_features::xmap21::Xmap21MapFurnitureAdapter::AuthorityAbsent,
+                MapVisualFamily::MapFurnitureIcons,
+            ),
+        ];
+        let mut registry = ProductionMapFeatureAdapters::default();
+        for (adapter, family) in adapters {
+            assert_eq!(adapter.family(), family);
+            assert!(registry.get(family).is_none(), "{family:?} promoted early");
+        }
+        registry
+            .register(Box::new(
+                crate::production_features::xmap10::Xmap10GradingPostFxAdapter,
+            ))
+            .unwrap();
+        assert!(registry.get(MapVisualFamily::GradingPostFx).is_some());
+    }
+
+    // The three real dispositions, from the real adapters -- and none of them
+    // may still read as "no adapter", which is the false statement this lane
+    // deleted.
+    //
+    // kills: reverting any of the three to the generic unimplemented gap, and
+    // letting XMAP10 vouch while its required exposure input is missing.
+    #[test]
+    fn the_three_late_families_report_their_real_blocker_not_a_missing_adapter() {
+        let hour = 5;
+        let unimplemented = unimplemented_adapter_gap(MapVisualFamily::GradingPostFx, hour);
+        assert!(unimplemented.gap_id.contains("adapter_unimplemented"));
+
+        let dispositions = [
+            (
+                MapVisualFamily::GradingPostFx,
+                crate::production_features::xmap10::Xmap10GradingPostFxAdapter::exposure_authority_absent(hour),
+            ),
+            (
+                MapVisualFamily::ParticlesEffects,
+                crate::production_features::xmap20::Xmap20EffectsAdapter::carrier_absent_output(hour)
+                    .disposition,
+            ),
+            (
+                MapVisualFamily::MapFurnitureIcons,
+                crate::production_features::xmap21::Xmap21MapFurnitureAdapter::authority_absent_output(hour)
+                    .disposition,
+            ),
+        ];
+        for (family, disposition) in dispositions {
+            let FamilyDisposition::Unavailable { gap } = &disposition else {
+                panic!("{family:?} must name a real blocker while it cannot vouch");
+            };
+            assert!(
+                !gap.gap_id.contains("adapter_unimplemented"),
+                "{family:?} still reports a missing adapter"
+            );
+            assert!(
+                gap.gap_id.starts_with(family.owner_packet()),
+                "{family:?} gap {} is not owner-scoped",
+                gap.gap_id
+            );
+            assert!(!gap.reason.trim().is_empty());
+        }
+
+        // XMAP10 defers ONLY once its required exposure input exists; the
+        // timing answer never smuggles the authority answer past the seal.
+        // This drives the SAME branch production takes, so flipping it to defer
+        // unconditionally fails here (Codex review, round 2).
+        use crate::production_features::xmap10::{
+            Xmap10GradingPostFxAdapter, XMAP10_TEMPORAL_EXPOSURE_GAP_ID,
+        };
+        let exposure_gap = crate::MapAuthorityGap {
+            input_id: XMAP10_TEMPORAL_EXPOSURE_GAP_ID.into(),
+            disposition: crate::MapAuthorityRequirementDisposition::Unavailable,
+            reason: "no producer supplies the temporal exposure state".into(),
+        };
+        let unrelated_gap = crate::MapAuthorityGap {
+            input_id: "effects.semantic_lifecycle".into(),
+            disposition: crate::MapAuthorityRequirementDisposition::Unavailable,
+            reason: "unrelated".into(),
+        };
+        // Gap open (today) -> refuses, naming the missing input.
+        let gated = Xmap10GradingPostFxAdapter::disposition_for(
+            std::slice::from_ref(&exposure_gap),
+            hour,
+        );
+        let FamilyDisposition::Unavailable { gap } = &gated else {
+            panic!("XMAP10 must refuse while its required exposure input is missing");
+        };
+        assert!(gap.reason.contains(XMAP10_TEMPORAL_EXPOSURE_GAP_ID));
+        // Another family's gap must not gate XMAP10.
+        assert!(matches!(
+            Xmap10GradingPostFxAdapter::disposition_for(
+                std::slice::from_ref(&unrelated_gap),
+                hour
+            ),
+            FamilyDisposition::DeferredToDraw { .. }
+        ));
+        // Gap closed -> defers, because the TIMING problem is permanent.
+        let deferred = Xmap10GradingPostFxAdapter::disposition_for(&[], hour);
+        let FamilyDisposition::DeferredToDraw {
+            draw_contract_id,
+            reason,
+            ..
+        } = &deferred
+        else {
+            panic!("XMAP10 answers at draw time, never at foundation time");
+        };
+        assert_eq!(
+            draw_contract_id,
+            crate::production_features::xmap10::XMAP10_POSTFX_DRAW_CONTRACT
+        );
+        assert!(reason.contains("temporal-adaptation receipt"), "{reason}");
+    }
+
+    #[test]
+    fn a_frame_still_refuses_while_xmap20_and_xmap21_have_nothing_to_vouch_with() {
+        let hour = 5;
+        let mut envelope = FoundationRenderEnvelope {
+            schema: FOUNDATION_RENDER_SCHEMA.into(),
+            hour_index: hour,
+            content_manifest_sha256: "1".repeat(64),
+            product_modset_sha256: "2".repeat(64),
+            effective_vfs_manifest_sha256: "3".repeat(64),
+            foundation_content_operation_sha256: "4".repeat(64),
+            families: MapVisualFamily::ALL
+                .into_iter()
+                .map(|family| FamilyCoverageRow {
+                    family,
+                    owner_packet: family.owner_packet().into(),
+                    disposition: FamilyDisposition::AuthenticatedEmpty {
+                        producer_registration_sha256: "5".repeat(64),
+                        enumerator_witness_sha256: "6".repeat(64),
+                    },
+                })
+                .collect(),
+        };
+        let deferred = crate::production_features::xmap10::Xmap10GradingPostFxAdapter::deferred_disposition();
+        envelope.families[8].disposition = deferred;
+        let discharged = std::collections::BTreeSet::from([
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::GradingPostFx,
+                crate::production_features::xmap10::XMAP10_POSTFX_DRAW_CONTRACT,
+            ),
+        ]);
+        // XMAP10 alone is satisfiable at draw time.
+        envelope.seal_readiness(&discharged).unwrap();
+        // ...and a deferral is not a vouch: with nothing discharged the same
+        // envelope refuses.
+        assert!(envelope
+            .seal_readiness(&std::collections::BTreeSet::new())
+            .is_err());
+        assert!(!envelope.has_refusing_family(), "nothing refused yet");
+
+        // ...but the two refusing families still stop the frame, and no amount
+        // of draw-time discharging changes that.
+        envelope.families[18].disposition = FamilyDisposition::Unavailable {
+            gap: FoundationGap {
+                gap_id: crate::XMAP20_CARRIER_ABSENT_GAP_ID.into(),
+                first_unavailable_hour: hour,
+                last_unavailable_hour: hour,
+                witness_sha256: "a".repeat(64),
+                reason: "no effect-lifecycle carrier exists on the wire".into(),
+            },
+        };
+        let refusal = envelope.seal_readiness(&discharged).unwrap_err();
+        assert!(refusal.contains("refuses this frame"), "{refusal}");
     }
 
     #[test]

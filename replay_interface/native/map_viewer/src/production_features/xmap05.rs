@@ -935,6 +935,7 @@ impl ProductionMapFeatureAdapter for Xmap05PoliticalAdapter {
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
+            prepared_map_furniture: None,
             consumed_gap_ids: POLITICAL_AUTHORITY_GAPS
                 .iter()
                 .map(|gap| (*gap).to_string())
@@ -991,6 +992,7 @@ impl ProductionMapFeatureAdapter for Xmap05FowAdapter {
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
+            prepared_map_furniture: None,
             consumed_gap_ids: FOW_AUTHORITY_GAPS
                 .iter()
                 .map(|gap| (*gap).to_string())

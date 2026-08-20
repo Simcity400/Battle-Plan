@@ -117,6 +117,17 @@ pub enum FamilyDisposition {
         applicability_witness_sha256: String,
         reason: String,
     },
+    /// The family's answer is not computable at once-per-hour foundation time:
+    /// it depends on live per-frame draw state (D3D resource identities, the
+    /// prior frame's temporal receipt) that does not exist yet. The readiness
+    /// graph records WHERE the answer will come from, not that the answer is
+    /// yes. The frame still refuses to show until the draw path discharges
+    /// `draw_contract_id` -- see `FoundationRenderEnvelope::seal_readiness`.
+    DeferredToDraw {
+        producer_registration_sha256: String,
+        draw_contract_id: String,
+        reason: String,
+    },
     Unavailable {
         gap: FoundationGap,
     },
@@ -152,6 +163,24 @@ impl FoundationRenderEnvelope {
         let value: Self = serde_json::from_slice(bytes)
             .map_err(|error| format!("foundation render envelope JSON: {error}"))?;
         value.validate()?;
+        // STRICT ADMISSION. `deny_unknown_fields` on the outer types does not
+        // reach inside an internally tagged enum's variants, and serde rejects
+        // the attribute on those variants outright, so a stray field inside a
+        // disposition used to be accepted and silently dropped: two different
+        // inputs normalised to one admitted envelope and one
+        // deterministic_sha256. Comparing the input tree against the re-encoded
+        // decoded value closes that for the whole envelope at once, nested
+        // fields included -- anything the decode dropped shows up as a
+        // difference here (Codex review, round 1).
+        let submitted: serde_json::Value = serde_json::from_slice(bytes)
+            .map_err(|error| format!("foundation render envelope JSON: {error}"))?;
+        let admitted = serde_json::to_value(&value)
+            .map_err(|error| format!("foundation render envelope re-encode: {error}"))?;
+        if submitted != admitted {
+            return Err(
+                "foundation render envelope carries fields outside its admitted schema".into(),
+            );
+        }
         Ok(value)
     }
 
@@ -201,10 +230,89 @@ impl FoundationRenderEnvelope {
             })
     }
 
-    pub fn is_complete(&self) -> bool {
+    /// True when some family outright refuses this hour. A family that defers
+    /// to draw time is NOT refusing -- it is answered per-frame, and
+    /// `seal_readiness` is what makes it prove that. Sealing a frame is
+    /// `seal_readiness`'s job and never this predicate's: this only answers
+    /// "did anything refuse", which is what the stale-frame fallback cache and
+    /// the gap reporting want.
+    pub fn has_refusing_family(&self) -> bool {
         self.families
             .iter()
-            .all(|row| !matches!(row.disposition, FamilyDisposition::Unavailable { .. }))
+            .any(|row| matches!(row.disposition, FamilyDisposition::Unavailable { .. }))
+    }
+
+    /// Every family that deferred its answer to draw time, in family order.
+    pub fn deferred_draw_contracts(&self) -> impl Iterator<Item = (&MapVisualFamily, &str)> {
+        self.families
+            .iter()
+            .filter_map(|row| match &row.disposition {
+                FamilyDisposition::DeferredToDraw {
+                    draw_contract_id, ..
+                } => Some((&row.family, draw_contract_id.as_str())),
+                _ => None,
+            })
+    }
+
+    /// A discharge is keyed by the FAMILY that deferred as well as the contract
+    /// it named. Keying on the contract string alone was not enough: an owner
+    /// packet can own more than one family (XMAP05 owns both
+    /// PoliticalFillGradients and FogOfWar), so two rows could defer the same
+    /// owner-scoped id and a single receipt would have vouched for both.
+    pub fn draw_contract_key(
+        family: MapVisualFamily,
+        draw_contract_id: &str,
+    ) -> (MapVisualFamily, String) {
+        (family, draw_contract_id.to_string())
+    }
+
+    /// The frame-may-show law. A frame seals only when EVERY family vouches:
+    /// families that vouched at foundation time must not be unavailable, and
+    /// families that deferred must have had their exact draw contract
+    /// discharged by the draw path. This moves WHEN a family vouches, never
+    /// WHETHER it has to.
+    ///
+    /// `discharged_draw_contracts` is the set of contract ids the draw path
+    /// actually completed this frame. An id it does not recognise is a refusal,
+    /// not a pass: a draw path that claims contracts nobody deferred is out of
+    /// step with the foundation it is drawing.
+    pub fn seal_readiness(
+        &self,
+        discharged_draw_contracts: &BTreeSet<(MapVisualFamily, String)>,
+    ) -> Result<(), String> {
+        self.validate()?;
+        let mut deferred = BTreeSet::new();
+        for row in &self.families {
+            match &row.disposition {
+                FamilyDisposition::Unavailable { gap } => {
+                    return Err(format!(
+                        "{:?} refuses this frame: {} ({})",
+                        row.family, gap.reason, gap.gap_id
+                    ));
+                }
+                FamilyDisposition::DeferredToDraw {
+                    draw_contract_id, ..
+                } => {
+                    let key = Self::draw_contract_key(row.family, draw_contract_id);
+                    if !discharged_draw_contracts.contains(&key) {
+                        return Err(format!(
+                            "{:?} deferred to draw time and its contract {draw_contract_id} was never discharged",
+                            row.family
+                        ));
+                    }
+                    deferred.insert(key);
+                }
+                _ => {}
+            }
+        }
+        if let Some((family, contract)) =
+            discharged_draw_contracts.difference(&deferred).next()
+        {
+            return Err(format!(
+                "the draw path discharged {contract} for {family:?}, which did not defer it"
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -275,6 +383,36 @@ fn validate_disposition(row: &FamilyCoverageRow) -> Result<(), String> {
                 ));
             }
         }
+        FamilyDisposition::DeferredToDraw {
+            producer_registration_sha256,
+            draw_contract_id,
+            reason,
+        } => {
+            validate_sha256(
+                producer_registration_sha256,
+                "draw-deferred family producer registration",
+            )?;
+            // The contract id is what the draw path must name to discharge the
+            // deferral. A blank or non-owner-scoped id would let any receipt
+            // satisfy any family, so it is required to be exactly
+            // "<OWNER>.<contract>".
+            let owner_prefix = format!("{}.", row.family.owner_packet());
+            if !draw_contract_id.starts_with(&owner_prefix)
+                || draw_contract_id.len() <= owner_prefix.len()
+                || draw_contract_id.trim() != draw_contract_id
+            {
+                return Err(format!(
+                    "{:?} draw contract {draw_contract_id:?} is not scoped to its owner packet",
+                    row.family
+                ));
+            }
+            if reason.trim().is_empty() {
+                return Err(format!(
+                    "{:?} defers to draw time without saying why",
+                    row.family
+                ));
+            }
+        }
         FamilyDisposition::Unavailable { gap } => {
             if gap.gap_id.trim().is_empty()
                 || gap.reason.trim().is_empty()
@@ -338,6 +476,168 @@ mod tests {
         assert_eq!(decoded.encode_json().unwrap(), first);
         assert_eq!(decoded, expected);
         assert_eq!(decoded.gaps().count(), MapVisualFamily::ALL.len());
+    }
+
+    fn deferred(family: MapVisualFamily, contract: &str) -> FamilyDisposition {
+        FamilyDisposition::DeferredToDraw {
+            producer_registration_sha256: "f".repeat(64),
+            draw_contract_id: format!("{}.{contract}", family.owner_packet()),
+            reason: "resolves against live per-frame draw state".into(),
+        }
+    }
+
+    fn all_vouched_envelope() -> FoundationRenderEnvelope {
+        let mut value = envelope();
+        for row in &mut value.families {
+            row.disposition = FamilyDisposition::AuthenticatedEmpty {
+                producer_registration_sha256: "a".repeat(64),
+                enumerator_witness_sha256: "b".repeat(64),
+            };
+        }
+        value
+    }
+
+    // kills: making DeferredToDraw satisfy the seal on its own (i.e. treating a
+    // deferral as a vouch) -- the first assert would pass with an empty
+    // discharge set.
+    #[test]
+    fn a_deferred_family_seals_only_once_its_draw_contract_is_discharged() {
+        let mut value = all_vouched_envelope();
+        value.families[8].disposition = deferred(MapVisualFamily::GradingPostFx, "postfx_receipt");
+        value.validate().unwrap();
+        assert!(!value.has_refusing_family(), "a deferral is not a refusal");
+
+        let empty = BTreeSet::new();
+        let refusal = value.seal_readiness(&empty).unwrap_err();
+        assert!(refusal.contains("never discharged"), "{refusal}");
+
+        let discharged = BTreeSet::from([FoundationRenderEnvelope::draw_contract_key(
+            MapVisualFamily::GradingPostFx,
+            "XMAP10.postfx_receipt",
+        )]);
+        value.seal_readiness(&discharged).unwrap();
+
+        // A discharge nobody deferred is a refusal, not a pass.
+        let foreign = BTreeSet::from([
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::GradingPostFx,
+                "XMAP10.postfx_receipt",
+            ),
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::ParticlesEffects,
+                "XMAP20.effects",
+            ),
+        ]);
+        assert!(value
+            .seal_readiness(&foreign)
+            .unwrap_err()
+            .contains("did not defer it"));
+    }
+
+    // kills: letting the draw path discharge an unavailable family. Moving WHEN
+    // a family vouches must never move WHETHER it does.
+    #[test]
+    fn discharging_draw_contracts_can_never_rescue_an_unavailable_family() {
+        let mut value = all_vouched_envelope();
+        value.families[18].disposition = FamilyDisposition::Unavailable {
+            gap: FoundationGap {
+                gap_id: "XMAP20.carrier_absent".into(),
+                first_unavailable_hour: 42,
+                last_unavailable_hour: 42,
+                witness_sha256: "a".repeat(64),
+                reason: "the effect lifecycle carrier does not exist".into(),
+            },
+        };
+        let everything = BTreeSet::from([
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::ParticlesEffects,
+                "XMAP20.effects",
+            ),
+        ]);
+        assert!(value
+            .seal_readiness(&everything)
+            .unwrap_err()
+            .contains("refuses this frame"));
+    }
+
+    // kills: accepting a blank/foreign-scoped contract id, which would let one
+    // family's receipt discharge another family's deferral.
+    #[test]
+    fn a_draw_contract_must_be_scoped_to_the_family_that_deferred_it() {
+        for bad in ["", "XMAP20.effects", "XMAP10.", " XMAP10.x"] {
+            let mut value = all_vouched_envelope();
+            value.families[8].disposition = FamilyDisposition::DeferredToDraw {
+                producer_registration_sha256: "f".repeat(64),
+                draw_contract_id: bad.into(),
+                reason: "live per-frame state".into(),
+            };
+            assert!(value.validate().is_err(), "accepted contract id {bad:?}");
+        }
+        let mut blank_reason = all_vouched_envelope();
+        blank_reason.families[8].disposition = FamilyDisposition::DeferredToDraw {
+            producer_registration_sha256: "f".repeat(64),
+            draw_contract_id: "XMAP10.postfx_receipt".into(),
+            reason: "   ".into(),
+        };
+        assert!(blank_reason.validate().is_err());
+    }
+
+    // kills: dropping the strict round-trip admission in decode_json. Without
+    // it a stray field inside a disposition is silently discarded, so two
+    // different byte inputs admit to one envelope and one deterministic hash.
+    #[test]
+    fn a_field_outside_the_admitted_schema_is_refused_not_normalised_away() {
+        let mut value = all_vouched_envelope();
+        value.families[8].disposition = deferred(MapVisualFamily::GradingPostFx, "postfx_receipt");
+        let clean = value.encode_json().unwrap();
+        assert_eq!(FoundationRenderEnvelope::decode_json(&clean).unwrap(), value);
+
+        let mut tree: serde_json::Value = serde_json::from_slice(&clean).unwrap();
+        // INSIDE the disposition object: that is the hole. The row and the
+        // envelope already carry deny_unknown_fields, but it cannot reach into
+        // an internally tagged enum's variant.
+        tree["families"][8]["disposition"]["smuggled"] = serde_json::json!("payload");
+        let smuggled = serde_json::to_vec(&tree).unwrap();
+        let error = FoundationRenderEnvelope::decode_json(&smuggled).unwrap_err();
+        assert!(error.contains("outside its admitted schema"), "{error}");
+    }
+
+    // kills: keying discharges on the contract string alone. XMAP05 owns TWO
+    // families, so both can legally defer the same owner-scoped contract id;
+    // with a bare-string set one receipt vouched for both of them.
+    #[test]
+    fn one_receipt_cannot_vouch_for_two_families_that_share_an_owner_packet() {
+        let mut value = all_vouched_envelope();
+        for index in [2, 3] {
+            value.families[index].disposition = FamilyDisposition::DeferredToDraw {
+                producer_registration_sha256: "f".repeat(64),
+                draw_contract_id: "XMAP05.fill_receipt".into(),
+                reason: "resolves against live per-frame draw state".into(),
+            };
+        }
+        value.validate().unwrap();
+        assert_eq!(value.families[2].family, MapVisualFamily::PoliticalFillGradients);
+        assert_eq!(value.families[3].family, MapVisualFamily::FogOfWar);
+
+        // Discharging it for ONE family must not seal the other.
+        let one = BTreeSet::from([FoundationRenderEnvelope::draw_contract_key(
+            MapVisualFamily::PoliticalFillGradients,
+            "XMAP05.fill_receipt",
+        )]);
+        let error = value.seal_readiness(&one).unwrap_err();
+        assert!(error.contains("FogOfWar"), "{error}");
+
+        let both = BTreeSet::from([
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::PoliticalFillGradients,
+                "XMAP05.fill_receipt",
+            ),
+            FoundationRenderEnvelope::draw_contract_key(
+                MapVisualFamily::FogOfWar,
+                "XMAP05.fill_receipt",
+            ),
+        ]);
+        value.seal_readiness(&both).unwrap();
     }
 
     #[test]

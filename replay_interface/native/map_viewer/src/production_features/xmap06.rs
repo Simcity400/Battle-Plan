@@ -763,6 +763,7 @@ impl ProductionMapFeatureAdapter for Xmap06ThinBorderAdapter {
             prepared_combat: None,
             prepared_orders: None,
             prepared_map_modes: None,
+            prepared_map_furniture: None,
             consumed_gap_ids: Vec::new(),
         })
     }

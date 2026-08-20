@@ -37,13 +37,10 @@ pub(crate) fn verify_xmap22_dump(path: &Path) -> Result<()> {
             receipt_path.display()
         )
     })?;
-    let receipt: crate::app::ProductMapCompositionReceipt = serde_json::from_slice(&receipt_bytes)
-        .map_err(|error| {
-            format!(
-                "decode XMAP22 composition receipt {}: {error}",
-                receipt_path.display()
-            )
-        })?;
+    let receipt = crate::app::ProductMapCompositionReceipt::decode_json(
+        &receipt_bytes,
+        &format!("XMAP22 composition receipt {}", receipt_path.display()),
+    )?;
     receipt.validate()?;
     let (width, height, pixels) = read_xmap22_bmp(path)?;
     if width != receipt.viewport_width || height != receipt.viewport_height {

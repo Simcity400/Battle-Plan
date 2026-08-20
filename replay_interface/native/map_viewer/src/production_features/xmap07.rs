@@ -957,6 +957,7 @@ impl ProductionMapFeatureAdapter for Xmap07WaterAdapter {
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: None,
+            prepared_map_furniture: None,
             consumed_gap_ids: XMAP07_AUTHORITY_GAPS
                 .iter()
                 .map(|gap| (*gap).to_string())

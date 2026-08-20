@@ -158,14 +158,61 @@ impl Xmap20TriggerProvider for Xmap20ProductionTriggerProvider<'_> {
     }
 }
 
-pub struct Xmap20EffectsAdapter {
-    prepared: PreparedXmap20Frame,
+/// The gates that stop an effect-lifecycle carrier from existing at all. Lane
+/// OI proved the engine read path but landed no producer: five named gates are
+/// open, so there is nothing for this family to prepare.
+pub const XMAP20_OPEN_CARRIER_GATES: [&str; 5] = [
+    "XMAP20-G1-xmap13-join",
+    "XMAP20-G2-lifecycle-sequencing",
+    "XMAP20-G3-live-confirmation",
+    "XMAP20-G4-initial-versus-current-prng-state",
+    "XMAP20-G5-census-completeness-and-snapshot-safety",
+];
+
+pub const XMAP20_CARRIER_ABSENT_GAP_ID: &str = "XMAP20.effect_lifecycle_carrier_absent";
+
+/// Registration sites build their adapter set once, before any frame exists,
+/// so this adapter cannot demand an already-prepared frame at construction.
+/// `CarrierAbsent` is what production registers today: it makes the family
+/// report its real blocker to the readiness graph instead of being invisible
+/// to it.
+pub enum Xmap20EffectsAdapter {
+    Prepared(Box<PreparedXmap20Frame>),
+    CarrierAbsent,
 }
 
 impl Xmap20EffectsAdapter {
     pub fn new(prepared: PreparedXmap20Frame) -> Result<Self> {
         prepared.validate()?;
-        Ok(Self { prepared })
+        Ok(Self::Prepared(Box::new(prepared)))
+    }
+
+    /// No effect-lifecycle carrier exists on the wire, so the family refuses
+    /// and says exactly which gates hold it shut.
+    pub fn carrier_absent() -> Self {
+        Self::CarrierAbsent
+    }
+
+    pub(crate) fn carrier_absent_output(hour: i64) -> FoundationFeatureOutput {
+        let reason = format!(
+            "no effect-lifecycle carrier exists on the wire: the XMAP20 producer is held by {}",
+            XMAP20_OPEN_CARRIER_GATES.join(", ")
+        );
+        let witness_sha256 = Sha256::hex(
+            format!("{XMAP20_CARRIER_ABSENT_GAP_ID}\n{hour}\n{hour}\n{reason}").as_bytes(),
+        );
+        FoundationFeatureOutput::without_payload(
+            FamilyDisposition::Unavailable {
+                gap: portable_render_stream::FoundationGap {
+                    gap_id: XMAP20_CARRIER_ABSENT_GAP_ID.into(),
+                    first_unavailable_hour: hour,
+                    last_unavailable_hour: hour,
+                    witness_sha256,
+                    reason,
+                },
+            },
+            Vec::new(),
+        )
     }
 }
 
@@ -175,8 +222,14 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        self.prepared.validate()?;
-        if context.world_frame.hour_index() != self.prepared.admission.hour_index {
+        let Self::Prepared(prepared) = self else {
+            return Ok(Self::carrier_absent_output(
+                context.world_frame.hour_index(),
+            ));
+        };
+        let prepared = prepared.as_ref();
+        prepared.validate()?;
+        if context.world_frame.hour_index() != prepared.admission.hour_index {
             return Err("XMAP20 prepared effects belong to a different game hour".into());
         }
         let gap_id = "effects.semantic_lifecycle";
@@ -195,43 +248,41 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             )
             .as_bytes(),
         );
-        let disposition = if self.prepared.admission.active_effects.is_empty()
-            && self.prepared.ordered_particles.is_empty()
+        let disposition = if prepared.admission.active_effects.is_empty()
+            && prepared.ordered_particles.is_empty()
         {
             FamilyDisposition::AuthenticatedEmpty {
                 producer_registration_sha256,
-                enumerator_witness_sha256: self
-                    .prepared
+                enumerator_witness_sha256: prepared
                     .admission
                     .complete_enumeration_sha256
                     .clone(),
             }
         } else {
             let program_sha256 = Sha256::hex(&serde_json::to_vec(
-                &self
-                    .prepared
+                &prepared
                     .ordered_particles
                     .iter()
                     .map(|packet| &packet.shader_program)
                     .collect::<Vec<_>>(),
             )?);
             let ordered_resources_sha256 = Sha256::hex(&serde_json::to_vec(&(
-                &self.prepared.trigger_receipts,
-                &self.prepared.ordered_used_content,
-                &self.prepared.admission.ordered_particle_submissions,
-                &self.prepared.ordered_particles,
+                &prepared.trigger_receipts,
+                &prepared.ordered_used_content,
+                &prepared.admission.ordered_particle_submissions,
+                &prepared.ordered_particles,
             ))?);
             let operation = assigned.foundation_operation_identity(
                 program_sha256,
                 ordered_resources_sha256,
-                self.prepared.admission.provider_receipts_sha256.clone(),
+                prepared.admission.provider_receipts_sha256.clone(),
             )?;
             FamilyDisposition::Present {
                 payload_schema: XMAP20_PREPARED_FRAME_SCHEMA.into(),
                 producer_registration_sha256,
-                payload_sha256: self.prepared.deterministic_sha256.clone(),
+                payload_sha256: prepared.deterministic_sha256.clone(),
                 ordered_operations: vec![operation],
-                ordered_used_content: self.prepared.ordered_used_content.clone(),
+                ordered_used_content: prepared.ordered_used_content.clone(),
             }
         };
         Ok(FoundationFeatureOutput {
@@ -243,12 +294,13 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
             prepared_water: None,
             prepared_lighting: None,
             prepared_weather: None,
-            prepared_effects: Some(self.prepared.clone()),
+            prepared_effects: Some(prepared.clone()),
             prepared_units: None,
             prepared_combat: None,
             prepared_orders: None,
             prepared_rail_supply: None,
             prepared_map_modes: None,
+            prepared_map_furniture: None,
             consumed_gap_ids: vec![gap_id.into()],
         })
     }
@@ -603,5 +655,33 @@ mod tests {
         .seal()
         .unwrap();
         validate_trigger_join(&weather_effect, &weather_trigger).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod carrier_tests {
+    use super::*;
+
+    // kills: reporting XMAP20 as a generic unpromoted adapter instead of naming
+    // the five gates that actually hold the producer shut, and silently dropping
+    // a gate from the list as gates are closed.
+    #[test]
+    fn the_refusal_names_every_open_carrier_gate() {
+        let output = Xmap20EffectsAdapter::carrier_absent_output(11);
+        let FamilyDisposition::Unavailable { gap } = &output.disposition else {
+            panic!("XMAP20 must refuse while no carrier exists");
+        };
+        assert_eq!(gap.gap_id, XMAP20_CARRIER_ABSENT_GAP_ID);
+        assert!(!gap.gap_id.contains("adapter_unimplemented"));
+        for gate in XMAP20_OPEN_CARRIER_GATES {
+            assert!(gap.reason.contains(gate), "reason omitted {gate}");
+        }
+        assert!(output.prepared_effects.is_none());
+        assert!(output.consumed_gap_ids.is_empty());
+        let other = Xmap20EffectsAdapter::carrier_absent_output(12);
+        let FamilyDisposition::Unavailable { gap: other_gap } = &other.disposition else {
+            unreachable!()
+        };
+        assert_ne!(gap.witness_sha256, other_gap.witness_sha256);
     }
 }
