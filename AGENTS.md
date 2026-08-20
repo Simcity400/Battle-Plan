@@ -21,7 +21,11 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 
 ## Tools
 
-- Validation: your own checkout's `extractor\native\scripts\Invoke-CentralRustValidation.ps1`; capture the exit code.
+- Default: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1`; capture the exit code.
+- Default mode runs affected shipping-product tests; unknown impact runs all shipping-product tests.
+- Run `-Mode Landing` immediately before landing.
+- Run `-Mode ReleaseManual -AllowReleaseManual` only when the owner explicitly requests release/manual validation.
+- Never run a full battery or release/manual validation by default.
 - `hoi4_re` is the single agent-facing RE facade; run `re_status` first, never edit its registry directly, and use its four-job offline queue.
 - `candidate_census` and `cross_analyze_function` are discovery or second-opinion outputs, not proof or automatic promotion; the exact-build Ghidra broker remains the static authority. See the tool READMEs for details.
 - Live instrumentation requires explicit owner authorization and an already-running matching game; one job at a time.

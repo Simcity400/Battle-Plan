@@ -3951,8 +3951,19 @@ function Get-ProductionSuspendingCodeMutationBaselineDefects {
                 }
             }
             $count = $entry.PSObject.Properties['count']
-            if ($null -eq $count -or -not ($count.Value -is [int]) -or
-                [int]$count.Value -lt 1) {
+            $countValue = 0L
+            $countIsPositiveInteger = (
+                $null -ne $count -and
+                $count.Value -is [ValueType] -and
+                [long]::TryParse(
+                    [string]$count.Value,
+                    [Globalization.NumberStyles]::Integer,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [ref]$countValue
+                ) -and
+                $countValue -ge 1
+            )
+            if (-not $countIsPositiveInteger) {
                 $defects.Add("$unitName : evidence entry has a non-positive count")
                 $missing = $true
             }

@@ -6,17 +6,11 @@ $script:ProductionArtifactReceiptSchema = "battle-plan.central_rust_prebuilt_art
 $script:ProductionArtifactRoles = [ordered]@{
     collector_dll = "collector.dll"
     recorder_host = "collector_record.exe"
-    fold_check = "fold_check.exe"
-    compact_replay_gate = "compact_replay_gate.exe"
-    container_verify = "pack_replay.exe"
     replay_app = "replay_app.exe"
 }
 $script:ProductionArtifactPackages = @(
     "collector",
     "recorder_host",
-    "fold_check",
-    "compact_replay_verification_gates",
-    "snapshot"
     "replay_app"
 )
 $script:PortableProductArtifactRoles = @('collector_dll', 'recorder_host', 'replay_app')
@@ -425,7 +419,7 @@ function Write-ProductionArtifactAttestation {
     )
 
     if ($RequestedWorkspace -ne "All") {
-        throw "production artifact attestation requires centralized Release for All workspaces"
+        throw "production artifact attestation requires explicit ReleaseManual validation for all shipping products"
     }
     Test-ProductionBuildEnvironmentRecord -Record $BuildEnvironment
     $repo = [System.IO.Path]::GetFullPath($RepoRoot)
@@ -438,15 +432,15 @@ function Write-ProductionArtifactAttestation {
         throw 'production artifact freshness record is missing or does not cover every canonical output'
     }
     $driver = Get-ProductionCaptureDriverPath -RepoRoot $repo
-    $runner = Join-Path $repo "extractor\native\scripts\Invoke-CentralRustValidation.ps1"
+    $runner = Join-Path $repo "extractor\native\scripts\Invoke-ReleaseManual.ps1"
     $artifacts = @()
     foreach ($entry in $script:ProductionArtifactRoles.GetEnumerator()) {
         $path = Join-Path $releaseRoot $entry.Value
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "centralized Release produced no required production artifact: $path"
+            throw "ReleaseManual produced no required production artifact: $path"
         }
         $item = Get-Item -LiteralPath $path
-        if ($item.Length -le 0) { throw "centralized Release produced an empty artifact: $path" }
+        if ($item.Length -le 0) { throw "ReleaseManual produced an empty artifact: $path" }
         $artifact = [ordered]@{
             role = [string]$entry.Key
             package = [string]$script:ProductionArtifactPackages[$artifacts.Count]
@@ -470,7 +464,7 @@ function Write-ProductionArtifactAttestation {
             mode = "Release"
             requested_workspace = $RequestedWorkspace
             validated_workspaces = $validatedWorkspaces
-            workspace_package_selection = @("--workspace")
+            workspace_package_selection = @("shipping-product-tests")
             production_artifact_packages = @($script:ProductionArtifactPackages)
             release_runtime_linkage = $ReleaseRuntimeLinkage
             runner_path = [System.IO.Path]::GetFullPath($runner)
@@ -508,7 +502,7 @@ function Test-ProductionArtifactAttestation {
         # have to spell that path to check the receipt.
         [string]$ExpectedDriverPath = $null,
         $ExpectedBuildEnvironment = $null,
-        # Only the centralized Release run itself may pass this, with the
+        # Only the explicit ReleaseManual run itself may pass this, with the
         # digest it computed after its builds; every external verifier must
         # omit it so the source-input comparison stays independent.
         $CurrentSourceDigest = $null
@@ -531,9 +525,9 @@ function Test-ProductionArtifactAttestation {
         [string]$receipt.central_validation.requested_workspace -cne "All" -or
         (@($receipt.central_validation.validated_workspaces) -notcontains "Extractor") -or
         (@($receipt.central_validation.validated_workspaces) -notcontains "Replay") -or
-        (@($receipt.central_validation.workspace_package_selection) -join ',') -cne "--workspace" -or
+        (@($receipt.central_validation.workspace_package_selection) -join ',') -cne "shipping-product-tests" -or
         (@($receipt.central_validation.production_artifact_packages) -join ',') -cne ($script:ProductionArtifactPackages -join ',')) {
-        throw "prebuilt artifact attestation was not emitted by a full centralized All-workspace Release"
+        throw "prebuilt artifact attestation was not emitted by explicit all-product ReleaseManual validation"
     }
     if ([string]$receipt.central_validation.release_runtime_linkage.target -cne 'x86_64-pc-windows-msvc' -or
         [string]$receipt.central_validation.release_runtime_linkage.rust_target_feature -cne '+crt-static' -or
@@ -556,10 +550,10 @@ function Test-ProductionArtifactAttestation {
         (@($receipt.artifact_freshness.artifact_paths | ForEach-Object { [IO.Path]::GetFullPath([string]$_) }) -join '|') -ine ($expectedPaths -join '|')) {
         throw 'prebuilt artifact attestation has no complete Release output-freshness authority'
     }
-    $runner = Join-Path $repo "extractor\native\scripts\Invoke-CentralRustValidation.ps1"
+    $runner = Join-Path $repo "extractor\native\scripts\Invoke-ReleaseManual.ps1"
     if ([System.IO.Path]::GetFullPath([string]$receipt.central_validation.runner_path) -ine [System.IO.Path]::GetFullPath($runner) -or
         [string]$receipt.central_validation.runner_sha256 -cne (Get-FileHash -LiteralPath $runner -Algorithm SHA256).Hash.ToLowerInvariant()) {
-        throw "centralized runner differs from the prebuilt artifact attestation"
+        throw "ReleaseManual runner differs from the prebuilt artifact attestation"
     }
     if ([System.IO.Path]::GetFullPath([string]$receipt.capture_driver.path) -ine [System.IO.Path]::GetFullPath($ExpectedDriverPath) -or
         [string]$receipt.capture_driver.sha256 -cne (Get-FileHash -LiteralPath $ExpectedDriverPath -Algorithm SHA256).Hash.ToLowerInvariant()) {

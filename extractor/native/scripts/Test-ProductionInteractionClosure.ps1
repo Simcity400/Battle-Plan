@@ -2,7 +2,7 @@
 param(
     # Regenerates the accepted thread-suspending code-mutation inventory from
     # what this tree currently measures, and does nothing else. Never passed by
-    # Invoke-CentralRustValidation.ps1: this is a human operation, it prints
+    # Invoke-Validation.ps1: this is a human operation, it prints
     # every difference it accepts, and it refuses while any other closure case
     # is failing so it cannot be used to paper over unrelated breakage. The
     # drift message names it, because the drift it answers is otherwise a dead
@@ -21,10 +21,10 @@ $packagePath = Join-Path $scriptDir 'New-PortableProductPackage.ps1'
 $packageVerifierPath = Join-Path $scriptDir 'Test-PortableProductPackageReceipt.ps1'
 $interactionClosureHelperPath = Join-Path $scriptDir 'PortableProduct.InteractionClosure.ps1'
 $promotionHelperPath = Join-Path $scriptDir 'ProductionCapture.Promotion.ps1'
-$runnerPath = Join-Path $scriptDir 'Invoke-CentralRustValidation.ps1'
+$runnerPath = Join-Path $scriptDir 'Invoke-ReleaseManual.ps1'
 $validationPath = Join-Path $scriptDir 'ProductionCapture.Validation.ps1'
 $sinkReconciliationPath = Join-Path $scriptDir 'verify_sink_reconciliation.py'
-# Neutral, shared build machinery; see Invoke-CentralRustValidation.ps1.
+# Neutral, shared build machinery; see Invoke-ReleaseManual.ps1.
 $attestationPath = Join-Path $repoRoot 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
 $projectPath = Join-Path $repoRoot 'PROJECT.md'
 $lifecyclePath = Join-Path $scriptDir 'PassiveCapture.Lifecycle.ps1'
@@ -507,10 +507,8 @@ catch {
     $suspendingMeasurementFailure = [string]$_.Exception.Message
 }
 # On stderr, not stdout. This script's stdout is a single JSON document and
-# Invoke-CentralRustValidation.ps1 pipes the whole captured transcript into
-# ConvertFrom-Json; printing the roster to stdout put 131 lines of prose in
-# front of it, so every -Mode Final and -Mode Release failed with "Invalid JSON
-# primitive: production" before reaching any later gate. The roster is still
+# Release validation consumes this script's JSON result; printing the roster to
+# stdout would put prose in front of it. The roster is still
 # printed - that is the point of the comment above - and a caller that wants it
 # in a log redirects 2>&1, which is what the deployment-acceptance wrapper
 # already does.
@@ -793,15 +791,14 @@ Assert-ClosureCase 'package rechecks interaction closure on ZIP entry bytes' (
 )
 $cases++
 
-Assert-ClosureCase 'central Final and Release run source closure tests' (
-    $runner.Contains('$productionInteractionClosureTest') -and
-    $runner.Contains('battle-plan.production_interaction_closure_test.v1')
+Assert-ClosureCase 'ReleaseManual runs the landing source validators' (
+    $runner.Contains('& $validation -Mode Landing -AllValidators')
 )
 $cases++
 
-Assert-ClosureCase 'central Release attests package interaction closure' (
-    $runner.Contains('packageResult.interaction_closure') -and
-    $runner.Contains('passive_injected_observer')
+Assert-ClosureCase 'ReleaseManual attests the package interaction closure' (
+    $runner.Contains('$package.interaction_closure.source_capability') -and
+    $runner.Contains('package = $package')
 )
 $cases++
 
@@ -831,21 +828,21 @@ Assert-ClosureCase 'production promotion requires real-source completeness for e
 )
 $cases++
 
-Assert-ClosureCase 'central Release emits no package until a bound speed-five capture is supplied' (
+Assert-ClosureCase 'ReleaseManual emits no package until a bound speed-five capture is supplied' (
     $runner.Contains('[string]$ProductionCaptureReceiptPath') -and
-    $runner.Contains('No portable package was emitted') -and
-    $runner.Contains('Get-ProductionCapturePromotionEvidence') -and
+    $runner.Contains('No package was emitted because no production capture receipt was supplied.') -and
+    $runner.Contains('-ProductionCaptureReceiptPath $ProductionCaptureReceiptPath') -and
+    $package.Contains('Get-ProductionCapturePromotionEvidence') -and
     $package.Contains('admissible_for_production = ($null -ne $productionCaptureEvidence)') -and
     $packageVerifier.Contains('all-domain zero-loss speed-five promotion evidence')
 )
 $cases++
 
-Assert-ClosureCase 'central Release rebuilds canonical injection artifacts with empty production features' (
-    $runner.Contains('"--package", "recorder_host"') -and
-    $runner.Contains('"--bin", "collector_record"') -and
-    $runner.Contains('"--package", "collector"') -and
-    $runner.Contains('"--lib"') -and
-    $runner.Contains('"--no-default-features"') -and
+Assert-ClosureCase 'ReleaseManual rebuilds canonical injection artifacts with empty production features' (
+    $runner.Contains("'-p', 'recorder_host'") -and
+    $runner.Contains("'--bin', 'collector_record'") -and
+    $runner.Contains("'-p', 'collector'") -and
+    $runner.Contains("'--lib', '--no-default-features'") -and
     $runner.Contains("rebuild_order = @('recorder_host', 'collector_dll')") -and
     $runner.Contains("forbidden_features = @(") -and
     $runner.Contains("'test-support'") -and
@@ -853,25 +850,27 @@ Assert-ClosureCase 'central Release rebuilds canonical injection artifacts with 
     # with the fixture hooks they gated, so the roster must NOT name them and
     # the collector must not declare them. `Assert-CollectorRetiredEvidence
     # FeatureAbsence` refuses the prefix in the manifest; this refuses it in the
-    # central Release contract that pins what the artifact was built without.
+    # ReleaseManual contract that pins what the artifact was built without.
     -not $runner.Contains("'unshipped-") -and
     -not $collectorCargo.Contains('unshipped-')
 )
 $cases++
 
-Assert-ClosureCase 'central publication is canonically reverified and removed on failure' (
-    $runner.Contains('$canonicalVerificationStdout') -and
+Assert-ClosureCase 'release publication is verified before and after publication' (
+    $runner.Contains("-ReceiptPath', `$candidate, '-AllowStagedReceipt'") -and
     $runner.Contains('PASS_CENTRAL_RELEASE_PORTABLE_PACKAGE') -and
-    $runner.Contains('$finalPublishedSourceDigest') -and
-    $runner.Contains('published portable package promotion inputs changed during canonical re-verification') -and
-    $runner.Contains('-Paths @($artifactAttestationPath, $portablePackageReceiptPath, $portablePackagePath)')
+    $runner.Contains('[IO.File]::Move($candidate, $packageReceiptPath)') -and
+    $runner.Contains("-ReceiptPath', `$packageReceiptPath") -and
+    $runner.Contains('$releaseOutputs = @($attestationPath, $packageReceiptPath, $packagePath)') -and
+    $runner.Contains('Remove-ExactFiles -Paths $releaseOutputs')
 )
 $cases++
 
 Assert-ClosureCase 'evidence client-driving is isolated from canonical package naming' (
-    $runner.Contains('collector_record_evidence') -and
-    $runner.Contains('evidence-client-driving') -and
-    $runner.Contains('Evidence')
+    -not $runner.Contains('collector_record_evidence') -and
+    -not $runner.Contains('evidence-client-driving') -and
+    $hostCargo.Contains('collector_record_evidence') -and
+    $hostCargo.Contains('evidence-client-driving')
 )
 $cases++
 
@@ -928,7 +927,7 @@ if ($AcceptMeasuredSuspendingBaseline) {
         driver = [IO.Path]::GetFullPath($driverPath)
         policy = 'passive_injected_observer'
     } | ConvertTo-Json -Depth 4
-    # REPINNED is not PASS, and Invoke-CentralRustValidation.ps1 admits only
+    # REPINNED is not PASS, and Invoke-Validation.ps1 admits only
     # PASS. Re-run the gate without this switch: the accepted inventory is a
     # review decision, and the run that certifies the tree must be one that
     # could still have failed.

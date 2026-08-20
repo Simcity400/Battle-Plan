@@ -252,7 +252,7 @@ Assert-True -Condition ($requiredEffective.Count -ge 1) `
 
 # ---------------------------------------------------------------------------
 # Emits the same JSON receipt shape the other source self-tests use, so
-# Invoke-CentralRustValidation.ps1 can pin the case count and refuse a run in
+# Invoke-ReleaseManual.ps1 consumes this gate's verdict during explicit release
 # which these cases silently stopped executing.
 $receipt = [ordered]@{
     schema = 'battle-plan.promotion_gate_absence_test.v1'

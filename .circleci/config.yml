@@ -141,8 +141,16 @@ jobs:
             New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
             $script = Join-Path $PWD.Path 'extractor\native\scripts\Invoke-Validation.ps1'
             if ($env:CIRCLE_BRANCH -ceq 'master') {
-              & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-                -File $script -Mode Landing -AllValidators *> $log
+              $base = '<< pipeline.git.base_revision >>'
+              & git rev-parse --verify --quiet "$base^{commit}" *> $null
+              if ($LASTEXITCODE -eq 0) {
+                & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                  -File $script -Mode Landing -Since $base *> $log
+              }
+              else {
+                & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+                  -File $script -Mode Landing -AllValidators *> $log
+              }
             }
             else {
               & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass `

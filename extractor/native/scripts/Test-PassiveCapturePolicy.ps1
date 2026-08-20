@@ -1865,7 +1865,7 @@ Assert-Policy `
 
 # EMITTED AS JSON, NOT AS AN OBJECT, AND THAT IS LOAD-BEARING. Every consumer
 # runs this file in a CHILD `powershell.exe -File` and pipes the child's stdout
-# through `ConvertFrom-Json` (Invoke-CentralRustValidation.ps1, both the
+# through `ConvertFrom-Json` (Invoke-ReleaseManual.ps1 and the package verifier
 # every-mode gate and the Final/Release gate). A bare `[pscustomobject]` reaching
 # a child process's stdout is rendered by the default FORMATTER -- `Schema     :
 # hoi4-passive-capture-policy-test-v1` and so on -- which `ConvertFrom-Json`

@@ -77,7 +77,7 @@ $expectedSpeedEvidenceProbeSha = "7302d6981b74b5eba149a58b30e359c9e519e7b7e27527
 $expectedSpeedEvidenceSchemaSha = "84ff925213ada78f2302fc2115350067dd4975f3ccc6fc295a7ff86c49d22f59"
 $expectedHoi4ExeSha = "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad"
 . (Join-Path $scriptDir "ProductionCapture.Validation.ps1")
-# Neutral, shared build machinery; see Invoke-CentralRustValidation.ps1.
+# Neutral, shared build machinery; see Invoke-ReleaseManual.ps1.
 . (Join-Path $repoRoot "portable_replay\native\scripts\ProductionArtifact.Attestation.ps1")
 . (Join-Path $scriptDir "WindowsPath.Identity.ps1")
 . (Join-Path $scriptDir "PassiveCapture.Lifecycle.ps1")

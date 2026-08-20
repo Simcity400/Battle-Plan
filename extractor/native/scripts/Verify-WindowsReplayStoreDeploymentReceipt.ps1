@@ -152,7 +152,7 @@ function Read-And-VerifyReceipt {
         Assert-Sha256 ([string]$property.Value) "tooling.$($property.Name)"
     }
     $requiredTools = @(
-        'acceptance_runner_sha256','capability_probe_sha256','path_identity_helper_sha256','central_rust_runner_sha256',
+        'acceptance_runner_sha256','capability_probe_sha256','path_identity_helper_sha256',
         'extractor_test_source_sha256','replay_test_source_sha256','receipt_verifier_sha256',
         'receipt_schema_sha256','capability_receipt_sha256'
     )
@@ -163,7 +163,6 @@ function Read-And-VerifyReceipt {
         acceptance_runner_sha256 = Join-Path $PSScriptRoot 'Invoke-WindowsReplayStoreDeploymentAcceptance.ps1'
         capability_probe_sha256 = Join-Path $PSScriptRoot 'Test-WindowsReplayStoreCapabilities.ps1'
         path_identity_helper_sha256 = Join-Path $PSScriptRoot 'WindowsPath.Identity.ps1'
-        central_rust_runner_sha256 = Join-Path $PSScriptRoot 'Invoke-CentralRustValidation.ps1'
         extractor_test_source_sha256 = Join-Path $repoRoot 'extractor\native\snapshot\tests\dir_store_namespace.rs'
         replay_test_source_sha256 = Join-Path $repoRoot 'replay_interface\native\replay_core\tests\world_timeline.rs'
         receipt_verifier_sha256 = $PSCommandPath

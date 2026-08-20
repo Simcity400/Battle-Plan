@@ -7,6 +7,10 @@ param(
 
     [switch]$AllowReleaseManual,
 
+    [string]$ProductionCaptureReceiptPath = '',
+
+    [string]$C07GameRoot = '',
+
     [switch]$Plan,
 
     [switch]$AllValidators
@@ -296,46 +300,6 @@ function Get-ShippingPackageIds {
     })
 }
 
-function Test-ProductionInteractionInput {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$Topology,
-        [Parameter(Mandatory = $true)][string[]]$ProductionPackageIds
-    )
-
-    if ($Path -in @(
-        'extractor/native/scripts/Test-ProductionInteractionClosure.ps1',
-        'extractor/native/scripts/PortableProduct.InteractionClosure.ps1',
-        'extractor/native/scripts/Start-Hoi4ProductionCaptureSafe.ps1',
-        'extractor/native/scripts/Read-Hoi4GameState.ps1',
-        'extractor/native/scripts/New-PortableProductPackage.ps1',
-        'extractor/native/scripts/Test-PortableProductPackageReceipt.ps1',
-        'extractor/native/scripts/ProductionCapture.Promotion.ps1',
-        'extractor/native/scripts/Invoke-CentralRustValidation.ps1',
-        'extractor/native/scripts/ProductionCapture.Validation.ps1',
-        'extractor/native/scripts/verify_sink_reconciliation.py',
-        'extractor/native/scripts/PassiveCapture.Lifecycle.ps1',
-        'portable_replay/native/scripts/ProductionArtifact.Attestation.ps1',
-        'extractor/native/Cargo.toml',
-        'extractor/native/Cargo.lock',
-        'replay_interface/native/Cargo.toml',
-        'replay_interface/native/Cargo.lock'
-    ) -or $Path -match '^extractor/native/scripts/production_.*(?:interaction|suspend).*(?:json|txt)$') {
-        return $true
-    }
-
-    $absolute = [IO.Path]::GetFullPath((Join-Path $script:RepoRoot ($Path.Replace('/', '\'))))
-    foreach ($id in $ProductionPackageIds) {
-        if (-not $Topology.PackagesById.ContainsKey($id)) { continue }
-        foreach ($sourceRoot in (Get-PackageSourceRoots -Package $Topology.PackagesById[$id])) {
-            if ($absolute -ieq $sourceRoot -or $absolute.StartsWith($sourceRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-                return $true
-            }
-        }
-    }
-    return $false
-}
-
 function Test-ShippingTestTarget {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -433,12 +397,17 @@ try {
         if (-not $AllowReleaseManual) {
             throw 'ReleaseManual is blocked. Re-run with -Mode ReleaseManual -AllowReleaseManual only when the owner explicitly requests release/manual validation.'
         }
-        if ($Plan) {
-            Write-Host 'PLAN> Invoke-CentralRustValidation.ps1 -Mode Release -Workspace All'
-            $global:LASTEXITCODE = 0
-            return
+        $releaseArguments = @{
+            AllowReleaseManual = $true
+            Plan = $Plan.IsPresent
         }
-        & (Join-Path $PSScriptRoot 'Invoke-CentralRustValidation.ps1') -Mode Release -Workspace All
+        if (-not [string]::IsNullOrWhiteSpace($ProductionCaptureReceiptPath)) {
+            $releaseArguments.ProductionCaptureReceiptPath = $ProductionCaptureReceiptPath
+        }
+        if (-not [string]::IsNullOrWhiteSpace($C07GameRoot)) {
+            $releaseArguments.C07GameRoot = $C07GameRoot
+        }
+        & (Join-Path $PSScriptRoot 'Invoke-ReleaseManual.ps1') @releaseArguments
         if ($LASTEXITCODE -ne 0) {
             throw "release/manual validation failed with exit code $LASTEXITCODE"
         }
@@ -464,10 +433,6 @@ try {
     }).Count -gt 0
     $peaceOracleChanged = $Mode -eq 'Landing' -or @($changes.Paths | Where-Object {
         $_ -like 'extractor/save_oracle/*'
-    }).Count -gt 0
-    $productionPackageIds = $shippingPackageIds
-    $interactionChanged = $AllValidators -or @($changes.Paths | Where-Object {
-        Test-ProductionInteractionInput -Path $_ -Topology $topology -ProductionPackageIds $productionPackageIds
     }).Count -gt 0
     if (($citationChanged -or $worldFoldChanged -or $productModsetChanged -or $peaceOracleChanged) -and
         [string]::IsNullOrWhiteSpace($python)) {
@@ -497,12 +462,6 @@ try {
         $extraPlans += [pscustomobject]@{
             Name = 'peace save oracle'; Program = $python
             Arguments = @((Join-Path $script:RepoRoot 'extractor\save_oracle\test_parse_intel_peace.py'))
-        }
-    }
-    if ($interactionChanged) {
-        $extraPlans += [pscustomobject]@{
-            Name = 'production interaction closure'; Program = 'powershell.exe'
-            Arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Test-ProductionInteractionClosure.ps1'))
         }
     }
 

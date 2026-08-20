@@ -523,7 +523,7 @@ fn replay_t26(path: &std::path::Path) -> ReplayOutcome {
 }
 
 #[test]
-#[ignore = "capture evidence, Evidence tier only:             scripts/Invoke-CentralRustValidation.ps1 -Mode Evidence             -Workspace Extractor -Package collector -Lib             -FilterExpression 'test(t26_replayed)'             (set BATTLE_PLAN_T26_STREAM if runs/ is not beside the crate)"]
+#[ignore = "capture evidence, manual only: cargo nextest run --profile evidence --run-ignored all -p collector --lib -E 'test(t26_replayed)' (set BATTLE_PLAN_T26_STREAM if runs/ is not beside the crate)"]
 fn t26_replayed_through_the_repaired_emit_path_stops_resending_the_whole_payload() {
     let outcome = replay_t26(&t26_stream());
     assert_eq!(

@@ -68,7 +68,6 @@ $outParent = [string]$outputAnchor.parent_final_path
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..')).Path
 $capabilityScript = Join-Path $PSScriptRoot 'Test-WindowsReplayStoreCapabilities.ps1'
 $pathIdentityHelper = Join-Path $PSScriptRoot 'WindowsPath.Identity.ps1'
-$centralRunner = Join-Path $PSScriptRoot 'Invoke-CentralRustValidation.ps1'
 $receiptVerifier = Join-Path $PSScriptRoot 'Verify-WindowsReplayStoreDeploymentReceipt.ps1'
 $receiptSchema = Join-Path $repoRoot 'extractor\re_evidence\BUNDLE_ONEDRIVE\ONEDRIVE_DEPLOYMENT_RECEIPT.schema.json'
 $extractorTestSource = Join-Path $repoRoot 'extractor\native\snapshot\tests\dir_store_namespace.rs'
@@ -168,9 +167,8 @@ $env:BATTLE_PLAN_ONEDRIVE_DEHYDRATED_REPLAY_STORE = [System.IO.Path]::GetFullPat
 $env:BATTLE_PLAN_ONEDRIVE_SYNC_PROVIDER_STATE = $ProviderState.ToLowerInvariant()
 $filter = 'test(windows_onedrive_dehydrated)'
 
-function Invoke-CentralEvidence {
+function Invoke-DirectEvidence {
     param(
-        [Parameter(Mandatory = $true)] [string]$Workspace,
         [Parameter(Mandatory = $true)] [string]$Package,
         [Parameter(Mandatory = $true)] [string]$TestTarget,
         [Parameter(Mandatory = $true)] [string]$SelectedPlaceholder,
@@ -186,10 +184,25 @@ function Invoke-CentralEvidence {
     $env:BATTLE_PLAN_ONEDRIVE_SELECTED_FILE_ID_128 = $ExpectedFileId128
     $env:BATTLE_PLAN_ONEDRIVE_STORE_VOLUME_SERIAL_NUMBER = $storeVolume
     $env:BATTLE_PLAN_ONEDRIVE_STORE_FILE_ID_128 = $storeFileId
-    $transcript = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $centralRunner `
-        -Mode Evidence -Workspace $Workspace -Package $Package `
-        -TestTarget $TestTarget -FilterExpression $filter 2>&1)
-    $exitCode = $LASTEXITCODE
+    $workspaceRoot = if ($Package -ceq 'snapshot') {
+        Join-Path $repoRoot 'extractor\native'
+    }
+    else {
+        Join-Path $repoRoot 'replay_interface\native'
+    }
+    $arguments = @(
+        'nextest', 'run', '--locked', '--no-fail-fast', '--run-ignored', 'all',
+        '--profile', 'evidence', '--package', $Package, '--test', $TestTarget, '-E', $filter
+    )
+    if ($Package -ne 'snapshot') {
+        $arguments += @('--config-file', (Join-Path $repoRoot '.config\nextest.toml'))
+    }
+    Push-Location $workspaceRoot
+    try {
+        $transcript = @(& cargo @arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally { Pop-Location }
     $utf8 = New-Object System.Text.UTF8Encoding($false)
     $text = ([string]::Join(
         [Environment]::NewLine,
@@ -205,15 +218,15 @@ function Invoke-CentralEvidence {
     }
 }
 
-$extractorObservation = Invoke-CentralEvidence `
-    -Workspace Extractor -Package snapshot -TestTarget dir_store_namespace `
+$extractorObservation = Invoke-DirectEvidence `
+    -Package snapshot -TestTarget dir_store_namespace `
     -SelectedPlaceholder ([string]$selectedPlaceholders[0].relative_path) `
     -ExpectedReparseTag ([string]$selectedPlaceholders[0].reparse_tag) `
     -ExpectedVolumeSerialNumber ([string]$selectedPlaceholders[0].volume_serial_number) `
     -ExpectedFileId128 ([string]$selectedPlaceholders[0].file_id_128) `
     -LogPath $extractorLog
-$replayObservation = Invoke-CentralEvidence `
-    -Workspace Replay -Package replay_core -TestTarget world_timeline `
+$replayObservation = Invoke-DirectEvidence `
+    -Package replay_core -TestTarget world_timeline `
     -SelectedPlaceholder ([string]$selectedPlaceholders[1].relative_path) `
     -ExpectedReparseTag ([string]$selectedPlaceholders[1].reparse_tag) `
     -ExpectedVolumeSerialNumber ([string]$selectedPlaceholders[1].volume_serial_number) `
@@ -257,7 +270,6 @@ $receipt = [ordered]@{
         acceptance_runner_sha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash.ToLowerInvariant()
         capability_probe_sha256 = (Get-FileHash -LiteralPath $capabilityScript -Algorithm SHA256).Hash.ToLowerInvariant()
         path_identity_helper_sha256 = (Get-FileHash -LiteralPath $pathIdentityHelper -Algorithm SHA256).Hash.ToLowerInvariant()
-        central_rust_runner_sha256 = (Get-FileHash -LiteralPath $centralRunner -Algorithm SHA256).Hash.ToLowerInvariant()
         extractor_test_source_sha256 = (Get-FileHash -LiteralPath $extractorTestSource -Algorithm SHA256).Hash.ToLowerInvariant()
         replay_test_source_sha256 = (Get-FileHash -LiteralPath $replayTestSource -Algorithm SHA256).Hash.ToLowerInvariant()
         receipt_verifier_sha256 = (Get-FileHash -LiteralPath $receiptVerifier -Algorithm SHA256).Hash.ToLowerInvariant()

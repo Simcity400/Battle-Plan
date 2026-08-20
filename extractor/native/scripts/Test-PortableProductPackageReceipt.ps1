@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $repo = [IO.Path]::GetFullPath($RepoRoot)
 $receiptFull = [IO.Path]::GetFullPath($ReceiptPath)
-# Neutral, shared build machinery; see Invoke-CentralRustValidation.ps1.
+# Neutral, shared build machinery; see Invoke-ReleaseManual.ps1.
 $attestationHelper = Join-Path $repo 'portable_replay\native\scripts\ProductionArtifact.Attestation.ps1'
 $builder = Join-Path $repo 'extractor\native\scripts\New-PortableProductPackage.ps1'
 $driver = Join-Path $repo 'extractor\native\scripts\Start-Hoi4ProductionCaptureSafe.ps1'
@@ -407,7 +407,7 @@ if ([string]$receipt.schema -cne 'battle-plan.central_portable_package.v1' -or
     $receipt.successful_exit -isnot [bool] -or -not $receipt.successful_exit -or
     [string]$receipt.central_validation.mode -cne 'Release' -or
     [string]$receipt.central_validation.requested_workspace -cne 'All') {
-    throw 'portable package receipt has no full centralized Release authority'
+    throw 'portable package receipt has no explicit ReleaseManual authority'
 }
 if ([string]$receipt.central_validation.release_runtime_linkage.target -cne 'x86_64-pc-windows-msvc' -or
     [string]$receipt.central_validation.release_runtime_linkage.rust_target_feature -cne '+crt-static' -or
