@@ -787,6 +787,67 @@ mod tests {
         }
     }
 
+    /// A VALUE TOO DEEP TO RECURSE REFUSES; IT DOES NOT CRASH (Codex batch-B
+    /// review, round 1, finding 1). The memo is filled by recursion over the
+    /// subtree and the absolute-depth check happens at the use site
+    /// AFTERWARDS, so without the build's own budget this exhausts the thread
+    /// stack where the depth-first converter — which counts on the way DOWN
+    /// and stops at container 128 — returns a refusal. The canonical decoder
+    /// caps nesting, but `CanonValue::array` is a plain constructor and caps
+    /// nothing, so a programmatically built value reaches this.
+    ///
+    /// Both routes must refuse, because the projected route's contract is
+    /// equality of OUTCOME with `to_value` (the message is not contractual;
+    /// see the test above).
+    ///
+    /// kills: reverting `project_intrinsic` to an unbudgeted recursion — every
+    /// other projection test stays inside 128 containers and passes, while
+    /// this one terminates the process instead of failing. It is a depth the
+    /// existing 200,000-deep `heap_bytes` value in `canon_value` already
+    /// builds, and that test never projects it.
+    #[test]
+    fn a_value_deeper_than_the_stack_refuses_instead_of_overflowing() {
+        const DEPTH: usize = 200_000;
+        let mut value = CanonValue::String("leaf".to_string());
+        for _ in 0..DEPTH {
+            value = CanonValue::array(vec![value]);
+        }
+
+        assert!(
+            project(&value).is_err(),
+            "the projected route must refuse a value it cannot recurse"
+        );
+        assert!(
+            project_at(&value, 0).is_err(),
+            "the refusal holds at every absolute depth: a height past the \
+             limit cannot be placed anywhere"
+        );
+        assert!(
+            to_value(&value).is_err(),
+            "the depth-first route refuses it too, which is the outcome the \
+             projected route has to match"
+        );
+
+        // Take the tree apart iteratively: `CanonValue`'s own `Drop` is
+        // recursive, so leaving 200,000 containers to fall out of scope would
+        // overflow the stack in the harness and say nothing about the code
+        // under test. Same wind-down as
+        // `canon_value::heap_bytes_survives_a_value_too_deep_to_recurse`.
+        let mut unwind = value;
+        loop {
+            let next = match &mut unwind {
+                CanonValue::Array(items) if !items.is_empty() => {
+                    Arc::make_mut(items).contents_mut().pop()
+                }
+                _ => None,
+            };
+            match next {
+                Some(inner) => unwind = inner,
+                None => break,
+            }
+        }
+    }
+
     /// The projected accounting is IDENTITY-AWARE: a subtree shared by two
     /// paths is charged once, so the shared tree accounts strictly less than
     /// the same document built without sharing.

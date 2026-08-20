@@ -10414,6 +10414,20 @@ mod tests {
 
     /// Whether a container's projection cell is filled, for the invalidation
     /// differential below.
+    /// The run-end projected-storage total: everything the cursor's world
+    /// holds PLUS everything its shadow remembers, through ONE identity set so
+    /// a node reachable from more than one root is charged once.
+    ///
+    /// It is one function rather than three lines at the measurement, so the
+    /// instrument and the test that pins it cannot drift apart — reverting
+    /// this to the cursor's world alone (the lower bound Codex's round-1
+    /// finding 2 named) fails `projected_storage_counts_the_cells_the_shadow_holds`.
+    fn projected_storage_bytes(world: &CanonValue, shadow: &Shadow) -> u64 {
+        let mut roots = vec![world];
+        shadow.remembered_roots(&mut roots);
+        crate::canon_to_json::projected_cache_bytes_over(roots)
+    }
+
     fn cell_filled(value: &CanonValue) -> bool {
         match value {
             CanonValue::Array(node) => node.projection_cell().get().is_some(),
@@ -10625,6 +10639,186 @@ mod tests {
             crate::canon_to_json::to_value(&world).expect("converts"),
             "the revived world projects as itself"
         );
+    }
+
+    /// THE STORAGE ACCOUNTING MUST SEE WHAT SHADOW HOLDS (Codex batch-B
+    /// review, round 1, finding 2). A member that folds out leaves its filled
+    /// projection with the shadow, not with the cursor's world, so a counter
+    /// that walks the cursor's root alone reports a LOWER BOUND — and omits
+    /// exactly the retention a fold-heavy recording makes largest.
+    ///
+    /// The two roots are disjoint here (the subtree was MOVED into the
+    /// shadow), so the identity-aware total over both is exactly their sum;
+    /// that equality is what says the shared identity set neither
+    /// double-charges nor drops a root.
+    ///
+    /// kills: reverting the run-end counter to
+    /// `projected_cache_bytes(&cursor.value)`, and any `remembered_roots` that
+    /// fails to reach a remembered subtree.
+    #[test]
+    fn projected_storage_counts_the_cells_the_shadow_holds() {
+        // Canonical objects are strictly increasing by member name, so "kept"
+        // sits before "m".
+        let mut world = CanonValue::parse(br#"{"kept":[3,4],"m":{"k":[1,2]}}"#).unwrap();
+        crate::canon_to_json::project(&world).expect("projects");
+        let mut shadow = Shadow::default();
+        let mut budget = ShadowBudget::default();
+        let null_patch = Patch::Object {
+            removals: vec![],
+            changes: vec![("m".to_string(), Patch::Replace(CanonValue::Null))],
+        };
+        apply_patch(&mut world, &null_patch, &mut shadow, &mut budget, 0)
+            .expect("the null applies");
+
+        let mut roots = vec![&world];
+        shadow.remembered_roots(&mut roots);
+        assert_eq!(
+            roots.len(),
+            2,
+            "the shadow remembers exactly the folded-out member"
+        );
+        assert!(
+            cell_filled(roots[1]),
+            "the remembered subtree keeps the cell it was filled with"
+        );
+        assert!(
+            matches!(world.member("m").expect("m"), CanonValue::Null),
+            "the cursor's world can no longer reach that subtree"
+        );
+
+        let cursor_only = crate::canon_to_json::projected_cache_bytes(&world);
+        let shadow_only = crate::canon_to_json::projected_cache_bytes(roots[1]);
+        drop(roots);
+        // EXACTLY what the run-end measurement reports, through the same
+        // function it calls.
+        let together = projected_storage_bytes(&world, &shadow);
+        assert!(
+            shadow_only > 0,
+            "the remembered subtree really is holding filled cells"
+        );
+        assert!(
+            together > cursor_only,
+            "shadow-held projection must be charged: cursor-only {cursor_only}, \
+             together {together}"
+        );
+        assert_eq!(
+            together,
+            cursor_only + shadow_only,
+            "one identity set over disjoint roots charges each allocation once"
+        );
+    }
+
+    /// THE MEASUREMENT'S WIRING, PINNED STRUCTURALLY (Codex batch-B review,
+    /// round 3). The test above pins `projected_storage_bytes` itself, but the
+    /// run-end measurement still CHOOSES to call it: reverting that one line to
+    /// the cursor's world alone restores the lower bound while the helper and
+    /// its test pass untouched. `price_the_incremental_projection` is
+    /// `#[ignore]`d and needs a real recording, so no ordinary test can execute
+    /// it — its wiring is read from the source instead.
+    ///
+    /// EVERY needle is assembled at run time, and the one that locates the
+    /// function is anchored to a DEFINITION (`\n    fn NAME()`), never a bare
+    /// name. The first cut of this test searched for the plain signature text
+    /// and matched ITS OWN string literal, which sits earlier in the file, so
+    /// it inspected itself and passed under the very revert it was written to
+    /// kill (Codex round 4). Hence: assembled needles, an anchored definition,
+    /// a uniqueness check on the anchor, and comment lines stripped before the
+    /// body is inspected, so a mention in prose can neither satisfy nor
+    /// violate either assertion.
+    ///
+    /// kills: taking the run-end total over `cursor.value` alone (verified by
+    /// applying exactly that revert: this test fails, and only this test);
+    /// also renaming or deleting the measurement, which fails the anchor.
+    #[test]
+    fn the_run_end_storage_total_is_wired_to_the_shadow_aware_helper() {
+        let source = include_str!("replay_cache.rs");
+        let measurement = format!("{}{}", "price_the_incremental_", "projection");
+        let anchor = format!("\n    fn {measurement}()");
+        assert_eq!(
+            source.matches(anchor.as_str()).count(),
+            1,
+            "the measurement must be locatable by exactly one definition"
+        );
+        let after = source
+            .split_once(anchor.as_str())
+            .expect("the measurement is defined in this file")
+            .1;
+        // Just that function: stop at the next item in the test module.
+        let body = match after.find("\n    #[test]") {
+            Some(end) => &after[..end],
+            None => after,
+        };
+        assert!(
+            !body.is_empty() && body.len() < after.len(),
+            "the body slice must be a bounded piece of the file, not all of it"
+        );
+        // CODE ONLY. A comment naming either spelling must not decide this —
+        // neither a line comment nor a nested block comment. Stripping errs
+        // towards removing too much (a `//` inside a string literal truncates
+        // the line), which can only ever cause a conservative FAILURE, never a
+        // false pass.
+        let code = strip_rust_comments(body);
+        let wanted = format!(
+            "{}(&cursor.value, &cursor.shadow)",
+            "projected_storage_bytes"
+        );
+        assert!(
+            code.contains(&wanted),
+            "the run-end total must go through the shadow-aware helper"
+        );
+        // The single-root counter must not be NAMED here at all, not merely not
+        // called in one spelling: binding it to a local and calling that is the
+        // same regression wearing a different hat.
+        let banned = format!("{}{}", "projected_cache", "_bytes");
+        assert!(
+            !code.contains(&banned),
+            "the run-end total must not reach the single-root counter"
+        );
+        // RESIDUAL, stated rather than papered over: this is a text gate. It
+        // kills the plausible regression — the one-line revert to the
+        // cursor's world, in any spelling, including one hidden behind a
+        // comment or a local binding. It cannot stop a deliberate rewrite that
+        // reaches the single-root counter under a different NAME (a
+        // re-export, a trait method). Only executing the measurement can, and
+        // that needs a multi-GB recording.
+    }
+
+    /// Blank out Rust comments so a structural gate reads CODE. Handles nested
+    /// `/* /* */ */` and line comments. Deliberately naive about string
+    /// literals: a `//` inside one truncates the rest of that line, which can
+    /// only remove text a gate is looking FOR (a conservative failure), never
+    /// hide text a gate is looking AGAINST. Distinguishing literals properly
+    /// needs a lexer, and the residual it leaves is stated where it is used.
+    fn strip_rust_comments(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut depth = 0usize;
+        let mut index = 0usize;
+        while index < chars.len() {
+            let pair = (chars[index], chars.get(index + 1).copied());
+            match pair {
+                ('/', Some('*')) => {
+                    depth += 1;
+                    index += 2;
+                }
+                ('*', Some('/')) if depth > 0 => {
+                    depth -= 1;
+                    index += 2;
+                }
+                ('/', Some('/')) if depth == 0 => {
+                    while index < chars.len() && chars[index] != '\n' {
+                        index += 1;
+                    }
+                }
+                (character, _) => {
+                    if depth == 0 {
+                        out.push(character);
+                    }
+                    index += 1;
+                }
+            }
+        }
+        out
     }
 
     /// THE CELLS ARE INVISIBLE TO THE ENCODER: patch choice, encoded bytes,
@@ -11369,11 +11563,7 @@ mod tests {
             .lock()
             .expect("the scrub cursor lock is not poisoned")
             .as_ref()
-            .map(|cursor| {
-                let mut roots = vec![&cursor.value];
-                cursor.shadow.remembered_roots(&mut roots);
-                crate::canon_to_json::projected_cache_bytes_over(roots)
-            })
+            .map(|cursor| projected_storage_bytes(&cursor.value, &cursor.shadow))
             .unwrap_or(0);
         println!(
             "{{\"projected_storage_bytes_at_run_end\":{projected_storage_bytes},\

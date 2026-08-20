@@ -302,5 +302,17 @@ fn digest_the_typed_frame_every_hour() {
             whole.finalize(),
             frame.coverage_warnings().len()
         );
+        // GATE INPUT: `MN_DUMP_WARNINGS=<hour>` prints that hour's coverage warnings verbatim,
+        // one per line, so two builds can be compared by warning KIND and not only by count.
+        // Off unless the variable names exactly this hour, so the digest run is unchanged.
+        if std::env::var("MN_DUMP_WARNINGS")
+            .ok()
+            .and_then(|v| v.trim().parse::<i64>().ok())
+            == Some(*hour)
+        {
+            for warning in frame.coverage_warnings() {
+                println!("WARNING\t{hour}\t{warning}");
+            }
+        }
     }
 }
