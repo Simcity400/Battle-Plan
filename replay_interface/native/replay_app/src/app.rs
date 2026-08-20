@@ -8069,6 +8069,14 @@ pub fn run(
                             ),
                         }
                     }
+                    // Viewer-owned XUI17 lifecycle. Transitions away from the
+                    // closed state consume only the exact model belonging to
+                    // the last Presented panel.
+                    //
+                    // GATE INPUT: `xui17_four_surface_route_owns_pointer_wheel
+                    // _tooltips_and_seek_reset` slices this file at the first
+                    // line above to delimit the lifecycle region; do not
+                    // delete it without re-anchoring that test.
                     VK_Y if pov.selected_ui_country().is_some() => {
                         use game_ui::character_ui::{CharacterPanel, CharacterUiAction};
                         let action = match &observer_viewer_ui.character_selection.panel {

@@ -1,3 +1,14 @@
+//! A product recording dump executes the same XMAP22 packet-native composition used by windowed playback.
+//! It selects one timeline hour before publishing the final BMP and its
+//! content-bound composition receipt.
+//!
+//! Retained bundle-based and explicit evidence helpers remain non-product
+//! screen-free tooling; they may render/read back evidence without authorizing
+//! product-map output.
+//!
+//! GATE INPUT: xmap00's shipping_help foundation-gate test requires the first
+//! line of this header verbatim in the file's prelude; do not delete it
+//! without re-anchoring that test.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

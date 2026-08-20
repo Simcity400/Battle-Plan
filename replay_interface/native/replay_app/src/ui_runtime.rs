@@ -6270,6 +6270,12 @@ impl ProductObserverUiRuntime {
         Ok(true)
     }
 
+    /// Toggle the state-first politics panel only from the last Presented
+    /// passive carrier. Pending or withdrawn state cannot open a panel.
+    ///
+    /// This doc comment is a GATE INPUT, not decoration: the ui_runtime
+    /// boundary tests slice this file at its first line to delimit the seek
+    /// reset region. Do not delete it without re-anchoring those tests.
     pub fn toggle_xui11(
         &self,
         viewer: &mut game_ui::production_renderer::ObserverViewerUiState,
@@ -6895,6 +6901,15 @@ impl ProductObserverUiRuntime {
 }
 
 
+/// Performance-only selected-Present stress adapter.
+///
+/// This deliberately owns no semantic UI state and is never a replay or RE
+/// authority. It reuses the exact production `ImageRenderer` upload/draw path
+/// for a contract-pinned number of selected-Present-equivalent GPU operations.
+/// The F1 receipt labels the result non-semantic and non-promotional.
+///
+/// GATE INPUT: the observer-runtime boundary test slices this file at this
+/// block's first line; do not delete it without re-anchoring that test.
 pub(crate) struct ProductSelectedPresentPerformanceRuntime {
     image: ImageRenderer,
 }
