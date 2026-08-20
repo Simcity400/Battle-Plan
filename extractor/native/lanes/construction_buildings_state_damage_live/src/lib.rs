@@ -5,10 +5,27 @@ use std::collections::{BTreeMap, BTreeSet};
 pub mod collector_module;
 pub mod decoder_gate;
 
+/// The D48V coverage trailer's byte grammar, shared with `wire_format`'s
+/// independent d48 port so the two cannot drift (owner ruling 2026-08-15, ONE
+/// shared decoder). This lane keeps its semantics, its gate and its
+/// diagnostics; only the byte boundaries and refusals are shared.
+///
+/// MANDATORY on every frame since `COMPACT_VERSION` 3 — a tail without a D48V
+/// is a decode error, because a frame that cannot say what it scanned cannot be
+/// trusted to say what exists.
+pub use d48_grammar::{
+    decode_coverage_trailer, encode_coverage_trailer, railway_trailer_extent, split_frame_tail,
+    CoverageCensus, CENSUS_FLAG_PROVINCE_FAILURES_AUTHORITATIVE,
+    CENSUS_FLAG_STATE_ROOTS_AUTHORITATIVE, CENSUS_KNOWN_FLAGS, COVERAGE_TRAILER_HEADER_LEN,
+    COVERAGE_TRAILER_MAGIC, COVERAGE_TRAILER_VERSION,
+};
+
 pub const DOMAIN_ID: u16 = 48;
 pub const DOMAIN_NAME: &str = "construction_buildings_state_damage_live";
 pub const COMPACT_MAGIC: [u8; 4] = *b"CBSD";
-pub const COMPACT_VERSION: u16 = 2;
+/// The payload version, from the shared grammar so this producer and
+/// `wire_format`'s independent port cannot declare different numbers.
+pub const COMPACT_VERSION: u16 = d48_grammar::COMPACT_VERSION;
 pub const HEADER_LEN: usize = 64;
 pub const CONSTRUCTION_ROW_LEN: usize = 52;
 pub const BUILDING_ROW_LEN: usize = 40;
@@ -299,6 +316,9 @@ pub struct LaneFrame {
     pub railway_construction_rows: Option<Vec<RailwayConstructionRow>>,
     pub building_rows: Vec<BuildingRow>,
     pub resource_rows: Vec<StateResourceRow>,
+    /// The walk's coverage census. Describes THIS frame's scan even on delta
+    /// frames, whose rows are compressed but whose walk was complete.
+    pub coverage: CoverageCensus,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1030,7 +1050,34 @@ pub fn encode_lane_frame(frame: &LaneFrame) -> Vec<u8> {
     if let Some(rows) = &frame.railway_construction_rows {
         write_railway_trailer(&mut out, rows);
     }
+    write_coverage_trailer(&mut out, &frame.coverage);
     out
+}
+
+/// Append the D48V trailer, or — if this census is one the grammar refuses —
+/// append a trailer that is DELIBERATELY UNDECODABLE.
+///
+/// `encode_lane_frame` is infallible by design: its callers are the collector's
+/// hot path and forty test sites, and threading a `Result` through them would
+/// buy nothing, because the only way to reach the error is a producer bug (the
+/// census is built from `BTreeSet`s, and each incomplete set only ever receives
+/// an id already admitted to `scanned_states`).
+///
+/// But "cannot happen" is not a reason to emit something wrong if it does. So
+/// the refusal turns into a bare header with a zero-length payload: the first
+/// `decode_set_block` then runs past the end and the frame is REFUSED by the
+/// gate, which excludes and names the hour. A producer bug therefore costs one
+/// visibly excluded hour rather than a frame whose census quietly disagrees
+/// with its own rows. A test pins exactly that.
+fn write_coverage_trailer(out: &mut Vec<u8>, coverage: &CoverageCensus) {
+    if encode_coverage_trailer(out, coverage).is_err() {
+        out.extend_from_slice(&COVERAGE_TRAILER_MAGIC);
+        out.extend_from_slice(&COVERAGE_TRAILER_VERSION.to_le_bytes());
+        out.extend_from_slice(&(COVERAGE_TRAILER_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u64.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+    }
 }
 
 fn write_railway_trailer(out: &mut Vec<u8>, rows: &[RailwayConstructionRow]) {
@@ -1213,7 +1260,11 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
         cursor += RESOURCE_ROW_LEN;
     }
     debug_assert_eq!(cursor, base_len);
-    let railway_construction_rows = decode_railway_trailer(&bytes[cursor..])?;
+    let (railway_construction_rows, coverage) = decode_frame_tail(
+        &bytes[cursor..],
+        observed_state_roots,
+        observed_province_roots,
+    )?;
 
     Ok(LaneFrame {
         game_hour_raw,
@@ -1226,15 +1277,49 @@ pub fn decode_lane_frame(bytes: &[u8]) -> Result<LaneFrame, String> {
         railway_construction_rows,
         building_rows,
         resource_rows,
+        coverage,
     })
 }
 
-pub fn decode_railway_trailer(
+/// The tail after the three row tables: an optional `RLC1` trailer followed by
+/// the MANDATORY `D48V` coverage trailer.
+///
+/// The split, the RLC1 extent arithmetic and every D48V refusal live in
+/// `d48_grammar`, shared byte-for-byte with `wire_format`'s independent d48
+/// port. What stays here is this lane's own railway ROW grammar, which the
+/// wire port deliberately reads more strictly than the producer writes it.
+pub fn decode_frame_tail(
+    tail: &[u8],
+    observed_state_roots: u32,
+    observed_province_roots: u32,
+) -> Result<(Option<Vec<RailwayConstructionRow>>, CoverageCensus), String> {
+    let (railway_bytes, coverage_bytes) = split_frame_tail(tail)?;
+    let railway_construction_rows = match railway_bytes {
+        Some(bytes) => Some(decode_railway_trailer_rows(bytes)?),
+        None => None,
+    };
+    let coverage = decode_coverage_trailer(
+        coverage_bytes,
+        observed_state_roots,
+        observed_province_roots,
+        MAX_STATE_ID,
+        MAX_PROVINCE_ID,
+    )?;
+    Ok((railway_construction_rows, coverage))
+}
+
+
+/// Decode the ROWS of an `RLC1` trailer whose extent `d48_grammar` has already
+/// computed, so `trailer` is exactly the railway trailer and nothing else.
+///
+/// The exact-length rule therefore stays — it just moved. It used to mean "the
+/// RLC1 trailer is the whole rest of the payload", which is what made appending
+/// D48V impossible; it now means "the bytes the shared tail split assigned to
+/// RLC1 are entirely consumed by RLC1", and D48V enforces the same rule on its
+/// own slice. Nothing can hide between the two.
+pub fn decode_railway_trailer_rows(
     trailer: &[u8],
-) -> Result<Option<Vec<RailwayConstructionRow>>, String> {
-    if trailer.is_empty() {
-        return Ok(None);
-    }
+) -> Result<Vec<RailwayConstructionRow>, String> {
     if trailer.len() < RAILWAY_TRAILER_HEADER_LEN {
         return Err("RLC1 trailer truncated".to_string());
     }
@@ -1345,7 +1430,7 @@ pub fn decode_railway_trailer(
     if expected_route_start != route_count {
         return Err("RLC1 unreferenced route tail".to_string());
     }
-    Ok(Some(rows))
+    Ok(rows)
 }
 
 pub fn gate_lane_frame(bytes: &[u8]) -> GateReport {
@@ -1443,6 +1528,25 @@ pub fn gate_decoded_frame(frame: &LaneFrame) -> GateReport {
     for (index, row) in frame.resource_rows.iter().enumerate() {
         if !seen_resources.insert((row.state_id, row.resource_id & !ROW_ID_DELETED)) {
             errors.push(format!("resource row {index} duplicates state/resource"));
+        }
+    }
+    // Every row must name a state the census says was scanned — tombstones
+    // included, because a state-census change resets the delta baseline and
+    // re-emits a full frame, so a tombstone can only ever name a state that is
+    // still in the scanned set. `scanned_states` is sorted by construction.
+    let scanned = &frame.coverage.scanned_states;
+    for (index, row) in frame.building_rows.iter().enumerate() {
+        if scanned.binary_search(&row.state_id).is_err() {
+            errors.push(format!(
+                "building row {index} names a state outside scanned_states"
+            ));
+        }
+    }
+    for (index, row) in frame.resource_rows.iter().enumerate() {
+        if scanned.binary_search(&row.state_id).is_err() {
+            errors.push(format!(
+                "resource row {index} names a state outside scanned_states"
+            ));
         }
     }
     GateReport {
@@ -1974,6 +2078,36 @@ fn read_u64_le(bytes: &[u8], offset: usize) -> u64 {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    // kills: letting a census the grammar refuses reach the wire as something
+    // that DECODES. `encode_lane_frame` is infallible on purpose, so the only
+    // question is what it writes when the census is malformed - and the answer
+    // has to be bytes the gate refuses, never bytes whose census quietly
+    // disagrees with the frame's own rows. Make `write_coverage_trailer` fall
+    // back to writing the census anyway and this test decodes a frame whose
+    // failure list names a state that was never scanned.
+    #[test]
+    fn a_census_the_grammar_refuses_produces_a_frame_the_decoder_refuses() {
+        let mut frame = sample_frame();
+        // A failure list naming a state outside the scanned set: exactly the
+        // shape the encoder refuses and the decoder must never accept.
+        frame.coverage.building_incomplete_states = vec![999_999];
+        let bytes = encode_lane_frame(&frame);
+        let error = decode_lane_frame(&bytes)
+            .expect_err("a refused census must not produce a decodable frame");
+        assert!(
+            error.contains("D48V"),
+            "the refusal must name the coverage trailer, got: {error}"
+        );
+
+        // And the ordinary census still round-trips, so the fallback is not
+        // firing on the healthy path.
+        let healthy = sample_frame();
+        assert_eq!(
+            decode_lane_frame(&encode_lane_frame(&healthy)).expect("decodes"),
+            healthy
+        );
+    }
 
     #[derive(Default)]
     struct FakeMemory {
@@ -3006,6 +3140,16 @@ mod tests {
                 resource_id: 0x3E03,
                 amount_raw: 2_500_000,
             }],
+            coverage: CoverageCensus {
+                census_flags: CENSUS_FLAG_STATE_ROOTS_AUTHORITATIVE
+                    | CENSUS_FLAG_PROVINCE_FAILURES_AUTHORITATIVE,
+                // Exactly `observed_state_roots` unique ids, containing every
+                // state the rows above name.
+                scanned_states: (1..=1081).collect(),
+                building_incomplete_states: Vec::new(),
+                resource_incomplete_states: Vec::new(),
+                building_incomplete_provinces: Vec::new(),
+            },
         }
     }
 }

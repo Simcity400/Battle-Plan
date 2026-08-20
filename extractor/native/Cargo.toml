@@ -40,6 +40,20 @@ members = [
     # compile-error win: ten additive trailer families and five shipping sites
     # already shared constants but did not share one structural walk/encoder.
     "d11_grammar",
+    # The canonical id-set block (lane NA, d48 B2). Same ruling, same leaf shape,
+    # but domain-NEUTRAL rather than per-domain, because the thing shared is a
+    # generic set codec and its three consumers sit in three different domains'
+    # worlds: `d48_grammar`'s coverage trailer, `compact_contract`'s session
+    # state-topology census (a frame-control record, not a domain payload), and
+    # `wire_format`'s independent d48 port. Being dependency-free is what lets
+    # `wire_format` share the decoder without widening its `compact_contract`
+    # allow-list.
+    "id_set_codec",
+    # D48's coverage-trailer grammar (lane NA, d48 B2). The D48V header, the
+    # four-block order, the cardinality and subset rules, and the RLC1/D48V tail
+    # split -- shared so the recorder and the independent wire port cannot drift
+    # on byte boundaries while keeping their separate semantic projections.
+    "d48_grammar",
     "snapshot",
     "collector",
     "recorder_host",

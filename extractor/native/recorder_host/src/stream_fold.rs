@@ -260,6 +260,7 @@ pub struct BoundaryTracker {
     last_record_kind: Option<u16>,
     release_freeze_census_seen: bool,
     content_identity_census_seen: bool,
+    state_topology_census_seen: bool,
     terminal_outcome_domains: BTreeSet<u16>,
     gap_domains: BTreeSet<u16>,
     data_domains: BTreeSet<u16>,
@@ -1311,6 +1312,38 @@ impl BoundaryTracker {
                     }
                 }
             }
+            KnownRecordType::StateTopologyCensus => {
+                if header.game_hour_raw != 0 {
+                    self.violation = Some(format!(
+                        "STATE_TOPOLOGY_CENSUS at byte {at_byte} is framed for hour {}, not the zero no-coverage sentinel",
+                        header.game_hour_raw
+                    ));
+                    return;
+                }
+                if let Err(reason) =
+                    compact_contract::state_topology_census::StateTopologyCensusV1::decode(payload)
+                {
+                    self.violation = Some(format!(
+                        "STATE_TOPOLOGY_CENSUS payload at byte {at_byte} is unreadable: {reason}"
+                    ));
+                    return;
+                }
+                let ordinary_before = header.sequence.saturating_sub(1);
+                match compact_contract::state_topology_census::
+                    validate_state_topology_census_placement(
+                        ordinary_before,
+                        previous_record_type,
+                        self.state_topology_census_seen,
+                    )
+                {
+                    Ok(()) => self.state_topology_census_seen = true,
+                    Err(reason) => {
+                        self.violation = Some(format!(
+                            "STATE_TOPOLOGY_CENSUS placement at byte {at_byte} is invalid: {reason}"
+                        ));
+                    }
+                }
+            }
             KnownRecordType::StreamHeader => {}
         }
     }
@@ -2151,6 +2184,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 Ok(
                     KnownRecordType::StreamHeader
                     | KnownRecordType::ContentIdentityCensus
+                    | KnownRecordType::StateTopologyCensus
                     | KnownRecordType::DomainGap
                     | KnownRecordType::FrameRefused
                     | KnownRecordType::FrameDegraded

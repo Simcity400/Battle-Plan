@@ -24,7 +24,7 @@
 //! | offset | width | header word | check |
 //! |---|---|---|---|
 //! | `+0`  | 4×u8 | magic `CBSD`         | `lib.rs:1122` |
-//! | `+4`  | u16  | version `2`          | `:1125` |
+//! | `+4`  | u16  | version `3`          | `:1125` |
 //! | `+6`  | u16  | header_len `64`      | `:1128` |
 //! | `+8`  | u16  | domain_id `48`       | `:1132` |
 //! | `+10` | u16  | reserved, must be 0  | `:378` |
@@ -90,6 +90,21 @@
 //! `current_segment_index i32 +36`, `remaining_hours_raw i64 +40` (**fixed-5,
 //! carried raw**), `route_start u32 +48`, `route_len u32 +52`, `flags u32 +56`
 //! (bit 0 = completion), reserved u32 `+60`.
+//!
+//! `D48V` coverage trailer, MANDATORY since v3. Its byte grammar is NOT
+//! transcribed here: it comes from the shared `d48_grammar` leaf, which the
+//! shipping producer uses too, under the owner's 2026-08-15 "ONE shared
+//! decoder" ruling. The transcription this port used to do is exactly what
+//! went stale — this file declared `CBSD` v2 while the producer had moved to
+//! v3 — and a transcribed `RLC1` "the trailer is the rest of the tail" rule
+//! would reject every frame carrying a census. What remains this port's own is
+//! the semantic projection below and its stricter railway-identity refusal.
+//!
+//! The census answers a question the rows cannot: a state with no rows is
+//! ambiguous four ways (scanned and empty, scanned and failed, scanned and
+//! partly skipped, never in the root list). `scanned_states` separates them,
+//! which is what lets the replay show a definite "0 buildings" for an empty
+//! state instead of a "no data" label (owner ruling 2026-08-20).
 //!
 //! # Frame relation: baseline + delta, with a THREE-WAY accumulator seed
 //!
@@ -292,7 +307,9 @@ pub mod scope_code {
 
 /// `lib.rs:10`-`:11`.
 pub const MAGIC: [u8; 4] = *b"CBSD";
-pub const VERSION: u16 = 2;
+/// From the shared `d48_grammar` leaf, NOT declared here. This port carried
+/// its own `2` while the producer wrote `3`; a shared constant cannot drift.
+pub const VERSION: u16 = d48_grammar::COMPACT_VERSION;
 /// `lib.rs:12`-`:15`.
 pub const HEADER_LEN: usize = 64;
 pub const CONSTRUCTION_ROW_LEN: usize = 52;
@@ -1080,10 +1097,12 @@ pub struct RailwayRow {
 ///   (`lib.rs:688`-`:761`); a duplicate would need the engine to hold one line
 ///   id in two vector slots. Measured: zero duplicates over the whole capture.
 /// * A test pins the refusal.
-pub fn decode_railway_trailer(trailer: &[u8]) -> Result<Option<Vec<RailwayRow>>, String> {
-    if trailer.is_empty() {
-        return Ok(None);
-    }
+/// `trailer` is EXACTLY the `RLC1` bytes, as `d48_grammar::split_frame_tail`
+/// measured them from the trailer's own header — never "the rest of the tail",
+/// which is what made appending `D48V` impossible. The exact-length rule below
+/// therefore still holds; it just applies to the split's slice now, and `D48V`
+/// enforces the same rule on its own, so nothing can hide between the two.
+pub fn decode_railway_trailer(trailer: &[u8]) -> Result<Vec<RailwayRow>, String> {
     if trailer.len() < RAILWAY_TRAILER_HEADER_LEN {
         return Err("RLC1 trailer truncated".into());
     }
@@ -1203,7 +1222,7 @@ pub fn decode_railway_trailer(trailer: &[u8]) -> Result<Option<Vec<RailwayRow>>,
     if expected_route_start != route_count {
         return Err("RLC1 unreferenced route tail".into());
     }
-    Ok(Some(rows))
+    Ok(rows)
 }
 
 /// One decoded d48 payload, the shape `decode_domain48_compact` returns
@@ -1214,10 +1233,13 @@ pub struct Frame {
     pub construction: Vec<ConstructionRow>,
     pub buildings: Vec<BuildingRow>,
     pub resources: Vec<ResourceRow>,
-    /// `None` is a legacy payload without an `RLC1` trailer; `Some(empty)` is an
+    /// `None` is a payload without an `RLC1` trailer; `Some(empty)` is an
     /// authoritative complete snapshot proving there are no live rail lines
     /// (`lib.rs:365`-`:367`).
     pub railway: Option<Vec<RailwayRow>>,
+    /// The `D48V` coverage census. MANDATORY since `CBSD` v3 — a frame that
+    /// cannot say what it scanned cannot be trusted to say what exists.
+    pub coverage: d48_grammar::CoverageCensus,
 }
 
 /// Decode a whole d48 payload, exactly as `decode_lane_frame` does.
@@ -1248,13 +1270,29 @@ pub fn decode_frame(payload: &[u8]) -> Result<Frame, String> {
     for (index, row) in resource_bytes.chunks_exact(RESOURCE_ROW_LEN).enumerate() {
         resources.push(parse_resource_row(row).map_err(|e| format!("row {index}: {e}"))?);
     }
-    let railway = decode_railway_trailer(trailer)?;
+    // The tail split comes from the shared grammar: `RLC1`'s extent is computed
+    // from its own header and `D48V` owns everything after it. Transcribing
+    // "the trailer is the rest of the tail" here is what would reject every
+    // frame the shipping producer now writes.
+    let (railway_bytes, coverage_bytes) = d48_grammar::split_frame_tail(trailer)?;
+    let railway = match railway_bytes {
+        Some(bytes) => Some(decode_railway_trailer(bytes)?),
+        None => None,
+    };
+    let coverage = d48_grammar::decode_coverage_trailer(
+        coverage_bytes,
+        header.observed_state_roots,
+        header.observed_province_roots,
+        MAX_STATE_ID,
+        MAX_PROVINCE_ID,
+    )?;
     Ok(Frame {
         header,
         construction,
         buildings,
         resources,
         railway,
+        coverage,
     })
 }
 
@@ -2304,6 +2342,19 @@ mod tests {
         buildings: Vec<Vec<u8>>,
         resources: Vec<Vec<u8>>,
         railway: Option<Vec<Railway>>,
+        /// The MANDATORY D48V census. Defaults to a well-formed one whose
+        /// cardinality matches the `observed_state_roots` this builder writes
+        /// and which contains state 42, the id these payloads' rows name.
+        coverage: d48_grammar::CoverageCensus,
+    }
+
+    /// Exactly `observed_state_roots` (22) ids, containing 42.
+    fn default_coverage() -> d48_grammar::CoverageCensus {
+        d48_grammar::CoverageCensus {
+            census_flags: d48_grammar::CENSUS_KNOWN_FLAGS,
+            scanned_states: (1..=21).chain(std::iter::once(42)).collect(),
+            ..Default::default()
+        }
     }
 
     /// `COMPACT_STATUS_PARTIAL_DATA` / `COMPACT_STATUS_DELTA_DATA`,
@@ -2322,6 +2373,7 @@ mod tests {
                 buildings: vec![full_building_row()],
                 resources: vec![resource_row(42, 9, 1_234)],
                 railway: Some(vec![railway(7, 99, 1)]),
+                coverage: default_coverage(),
             }
         }
 
@@ -2360,6 +2412,8 @@ mod tests {
             if let Some(lines) = &self.railway {
                 out.extend_from_slice(&railway_trailer(lines));
             }
+            d48_grammar::encode_coverage_trailer(&mut out, &self.coverage)
+                .expect("the test census is well formed");
             out
         }
     }
@@ -3866,10 +3920,48 @@ mod tests {
         assert_eq!(sentinel.resource_id, STATE_RESOURCE_NO_ID & !ROW_ID_DELETED);
     }
 
+    // kills: this port drifting from the shipping producer again. It declared
+    // `CBSD` v2 while the producer had already moved to v3 — the exact staleness
+    // the 2026-08-15 shared-decoder ruling exists to prevent, and the reason the
+    // D48V grammar is a shared leaf rather than a transcription here.
+    //
+    // It also kills the shape that made the drift matter: a mandatory census
+    // that this parser does not require, and an `RLC1` extent taken to be "the
+    // rest of the tail" (which rejects every frame the producer now writes).
+    #[test]
+    fn this_port_reads_the_version_and_the_tail_the_producer_actually_writes() {
+        // Not an assertion that two numbers match: they are ONE number now,
+        // taken from the grammar both sides share, so they cannot differ.
+        assert_eq!(VERSION, d48_grammar::COMPACT_VERSION);
+        assert_eq!(VERSION, 3, "v3 is v2 plus the mandatory D48V trailer");
+
+        let ok = Payload::clean().bytes();
+        let frame = decode_frame(&ok).expect("the producer's shape decodes");
+        assert_eq!(frame.coverage.scanned_states.len(), 22);
+        assert!(frame.coverage.scanned_states.contains(&42));
+        assert!(frame.railway.is_some(), "RLC1 still parses before the census");
+
+        // Drop the census and the frame must be REFUSED, not read as a v2 frame.
+        let mut census_bytes = Vec::new();
+        d48_grammar::encode_coverage_trailer(&mut census_bytes, &default_coverage())
+            .expect("the test census is well formed");
+        let without = &ok[..ok.len() - census_bytes.len()];
+        assert!(
+            decode_frame(without).is_err(),
+            "a payload with no D48V census must be refused, not silently accepted"
+        );
+    }
+
     #[test]
     fn the_railway_trailer_rejects_what_the_lane_rejects() {
         let ok = Payload::clean().bytes();
-        let base = ok.len() - railway_trailer(&[railway(7, 99, 1)]).len();
+        // The RLC1 trailer is no longer last: the mandatory D48V census follows
+        // it, so its offset is measured back past BOTH trailers.
+        let mut census_bytes = Vec::new();
+        d48_grammar::encode_coverage_trailer(&mut census_bytes, &default_coverage())
+            .expect("the test census is well formed");
+        let base =
+            ok.len() - census_bytes.len() - railway_trailer(&[railway(7, 99, 1)]).len();
         for (offset, bytes) in [
             (0usize, vec![b'X']),                    // magic
             (4, 2u16.to_le_bytes().to_vec()),        // version
@@ -4059,7 +4151,13 @@ mod tests {
         }
         // ...and an RLC1 trailer whose counts overflow.
         let ok = Payload::clean().bytes();
-        let base = ok.len() - railway_trailer(&[railway(7, 99, 1)]).len();
+        // The RLC1 trailer is no longer last: the mandatory D48V census follows
+        // it, so its offset is measured back past BOTH trailers.
+        let mut census_bytes = Vec::new();
+        d48_grammar::encode_coverage_trailer(&mut census_bytes, &default_coverage())
+            .expect("the test census is well formed");
+        let base =
+            ok.len() - census_bytes.len() - railway_trailer(&[railway(7, 99, 1)]).len();
         for offset in [8usize, 12] {
             let mut hostile = ok.clone();
             hostile[base + offset..base + offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());

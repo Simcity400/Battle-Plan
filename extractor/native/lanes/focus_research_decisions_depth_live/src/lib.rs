@@ -1337,6 +1337,7 @@ fn validate_authoritative_stream(
                 }
             }
             KnownRecordType::ContentIdentityCensus
+            | KnownRecordType::StateTopologyCensus
             | KnownRecordType::StreamHeader
             | KnownRecordType::DomainGap
             | KnownRecordType::FrameRefused

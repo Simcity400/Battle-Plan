@@ -55,6 +55,7 @@ ClockUnreadableInterval => COMPACT_RECORD_TYPE_CLOCK_UNREADABLE_INTERVAL = 9, "c
 UntrustedClockRecovery => COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY = 10, "untrusted_clock_recovery";
 FreezeCensus => COMPACT_RECORD_TYPE_FREEZE_CENSUS = 11, "freeze_census";
 ContentIdentityCensus => COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS = 12, "content_identity_census";
+StateTopologyCensus => COMPACT_RECORD_TYPE_STATE_TOPOLOGY_CENSUS = 13, "state_topology_census";
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -214,6 +215,14 @@ pub fn validate_compact_record_semantics(
                 ));
             }
             crate::content_identity_census::ContentIdentityCensusV1::decode(payload).map(|_| ())
+        }
+        KnownRecordType::StateTopologyCensus => {
+            if domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "STATE_TOPOLOGY_CENSUS domain {domain_id} is not {COMPACT_DOMAIN_FRAME}"
+                ));
+            }
+            crate::state_topology_census::StateTopologyCensusV1::decode(payload).map(|_| ())
         }
         KnownRecordType::DomainGap => {
             if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {
@@ -894,10 +903,26 @@ mod tests {
     }
 
     #[test]
-    fn raw_unknown_record_type_thirteen_rejects() {
-        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 13, 0, &[])
-            .expect_err("raw type 13 is not assigned");
-        assert_eq!(error, "unknown compact record type 13");
+    fn raw_unknown_record_type_fourteen_rejects() {
+        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 14, 0, &[])
+            .expect_err("raw type 14 is not assigned");
+        assert_eq!(error, "unknown compact record type 14");
+
+        let topology_error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 13, 0, &[])
+            .expect_err("an empty payload is not a state topology census");
+        assert!(
+            topology_error.contains("state topology census"),
+            "type 13 is assigned and validated by its own grammar: {topology_error}"
+        );
+        let topology = crate::state_topology_census::StateTopologyCensusV1 {
+            state_ids: (1..=1_081).collect(),
+        }
+        .encode()
+        .expect("the topology census encodes");
+        validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 13, 0, &topology)
+            .expect("a well-formed topology census is admitted on the frame control domain");
+        validate_compact_record_semantics(48, 13, 0, &topology)
+            .expect_err("a topology census may not claim a domain");
 
         let assigned = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 12, 0, &[])
             .expect_err("an empty payload is not a census");

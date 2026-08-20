@@ -14,6 +14,7 @@ const fn consumer_action(record_type: KnownRecordType) -> &'static str {
         KnownRecordType::UntrustedClockRecovery => "clock annotation",
         KnownRecordType::FreezeCensus => "no coverage",
         KnownRecordType::ContentIdentityCensus => "session identity",
+        KnownRecordType::StateTopologyCensus => "session identity",
     }
 }
 

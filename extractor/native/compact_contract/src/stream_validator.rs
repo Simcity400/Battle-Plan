@@ -25,6 +25,7 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
     let mut offset = 0usize;
     let mut ordinary_record_count = 0u64;
     let mut content_identity_census_seen = false;
+    let mut state_topology_census_seen = false;
     let mut previous_record_type: Option<KnownRecordType> = None;
     let mut release_epilogue_seen = false;
     while offset < raw.len() {
@@ -100,6 +101,30 @@ pub fn validate_freeze_census_stream_placement(raw: &[u8]) -> Result<(), String>
             )
             .map_err(|error| format!("offset {offset}: {error}"))?;
             content_identity_census_seen = true;
+        }
+
+        if known == Some(KnownRecordType::StateTopologyCensus) {
+            if header.domain_id != COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "offset {offset}: STATE_TOPOLOGY_CENSUS domain {} is not {COMPACT_DOMAIN_FRAME}",
+                    header.domain_id
+                ));
+            }
+            if header.game_hour_raw != 0 {
+                return Err(format!(
+                    "offset {offset}: STATE_TOPOLOGY_CENSUS hour {} is not the zero no-coverage sentinel",
+                    header.game_hour_raw
+                ));
+            }
+            crate::state_topology_census::StateTopologyCensusV1::decode(payload)
+                .map_err(|error| format!("offset {offset}: {error}"))?;
+            crate::state_topology_census::validate_state_topology_census_placement(
+                ordinary_record_count,
+                previous_record_type,
+                state_topology_census_seen,
+            )
+            .map_err(|error| format!("offset {offset}: {error}"))?;
+            state_topology_census_seen = true;
         }
 
         if !(identity_present && offset == 0) {
@@ -181,6 +206,7 @@ enum PendingCommit {
         record_type: KnownRecordType,
         release_epilogue: bool,
         content_identity_census: bool,
+        state_topology_census: bool,
     },
 }
 
@@ -199,6 +225,7 @@ pub struct StatefulStreamValidator {
     last_ordinary_record_type: Option<KnownRecordType>,
     release_epilogue_seen: bool,
     content_identity_census_seen: bool,
+    state_topology_census_seen: bool,
     gap_outcomes: BTreeMap<(u16, u16), GapOutcomeState>,
     failure: Option<StreamValidationError>,
 }
@@ -213,6 +240,7 @@ impl StatefulStreamValidator {
             last_ordinary_record_type: None,
             release_epilogue_seen: false,
             content_identity_census_seen: false,
+            state_topology_census_seen: false,
             gap_outcomes: BTreeMap::new(),
             failure: None,
         }
@@ -227,6 +255,7 @@ impl StatefulStreamValidator {
             last_ordinary_record_type: None,
             release_epilogue_seen: false,
             content_identity_census_seen: false,
+            state_topology_census_seen: false,
             gap_outcomes: BTreeMap::new(),
             failure: None,
         }
@@ -288,12 +317,14 @@ impl StatefulStreamValidator {
                 record_type,
                 release_epilogue,
                 content_identity_census,
+                state_topology_census,
             } => {
                 self.phase = StreamPhase::AwaitingOrdinary { next_sequence };
                 self.ordinary_record_count += 1;
                 self.last_ordinary_record_type = Some(record_type);
                 self.release_epilogue_seen = release_epilogue;
                 self.content_identity_census_seen |= content_identity_census;
+                self.state_topology_census_seen |= state_topology_census;
                 if let Some((key, state)) = gap_outcome {
                     self.gap_outcomes.insert(key, state);
                 }
@@ -390,6 +421,23 @@ impl StatefulStreamValidator {
                         StreamValidationError::InvalidRecordSemantics(reason.to_string())
                     })?;
                 }
+                let state_topology_census = record_type == KnownRecordType::StateTopologyCensus;
+                if state_topology_census {
+                    if header.game_hour_raw != 0 {
+                        return Err(StreamValidationError::InvalidRecordSemantics(format!(
+                            "STATE_TOPOLOGY_CENSUS H4CR hour {} is not the zero no-coverage sentinel",
+                            header.game_hour_raw
+                        )));
+                    }
+                    crate::state_topology_census::validate_state_topology_census_placement(
+                        self.ordinary_record_count,
+                        self.last_ordinary_record_type,
+                        self.state_topology_census_seen,
+                    )
+                    .map_err(|reason| {
+                        StreamValidationError::InvalidRecordSemantics(reason.to_string())
+                    })?;
+                }
                 let gap_outcome = if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_GAP {
                     let gap = DomainGapRecordV1::decode(payload).map_err(|error| {
                         StreamValidationError::InvalidRecordSemantics(error.to_string())
@@ -443,6 +491,7 @@ impl StatefulStreamValidator {
                     record_type,
                     release_epilogue,
                     content_identity_census,
+                    state_topology_census,
                 })
             }
         }
@@ -979,6 +1028,7 @@ mod tests {
             last_ordinary_record_type: Some(KnownRecordType::DomainData),
             release_epilogue_seen: false,
             content_identity_census_seen: false,
+            state_topology_census_seen: false,
             gap_outcomes: BTreeMap::new(),
             failure: None,
         };

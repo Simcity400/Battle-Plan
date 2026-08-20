@@ -91,6 +91,15 @@ pub const STATUS_OK: u32 = 0;
 pub const STATUS_SOURCE_UNAVAILABLE: u32 = 1 << 0;
 pub const STATUS_BINDING_UNVERIFIED: u32 = 1 << 1;
 pub const STATUS_PARTIAL: u32 = 1 << 2;
+/// Legacy lane-local status from the pre-promotion packet. Production emission
+/// no longer sets this after D04 1944 value validation.
+///
+/// This wording is a GATE INPUT, not decoration: `compact_contract`'s
+/// `lane_status_bit_sweep` allow-lists domain 61 bits 0..=3 as provably
+/// never-emitted and reads this exact sentence back as the retirement proof
+/// (`compact_contract/tests/lane_status_bit_sweep.rs` `NEVER_EMITTED`). An
+/// external comment-strip removed it and the sweep failed; do not delete it
+/// without re-triaging the bits there.
 pub const STATUS_VALUE_VALIDATION_FIXTURE_REQUIRED: u32 = 1 << 3;
 
 pub const ROW_FLAG_BINDING_VERIFIED: u32 = 1 << 0;

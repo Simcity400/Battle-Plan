@@ -598,6 +598,7 @@ impl FirstCompactRecordGate {
             }
             compact_contract::KnownRecordType::FreezeCensus
             | compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader => Ok(false),
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused

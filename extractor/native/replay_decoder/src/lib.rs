@@ -1630,6 +1630,7 @@ fn fold_compact_stream_file_identity_aware(
                 }
                 Ok(
                     compact_contract::KnownRecordType::ContentIdentityCensus
+                    | compact_contract::KnownRecordType::StateTopologyCensus
                     | compact_contract::KnownRecordType::StreamHeader
                     | compact_contract::KnownRecordType::DomainGap
                     | compact_contract::KnownRecordType::FrameRefused
@@ -2558,6 +2559,7 @@ impl HourCursor {
                     }
                     Ok(
                         compact_contract::KnownRecordType::ContentIdentityCensus
+                        | compact_contract::KnownRecordType::StateTopologyCensus
                         | compact_contract::KnownRecordType::StreamHeader
                         | compact_contract::KnownRecordType::DomainGap
                         | compact_contract::KnownRecordType::FrameRefused
@@ -2738,6 +2740,7 @@ impl HourCursor {
             }
             compact_contract::KnownRecordType::FreezeCensus
             | compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader
             | compact_contract::KnownRecordType::FrameDegraded
             | compact_contract::KnownRecordType::CaptureTerminated

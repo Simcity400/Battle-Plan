@@ -653,6 +653,7 @@ impl CompletenessAudit {
             }
             compact_contract::KnownRecordType::FreezeCensus
             | compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
         }
         Ok(())

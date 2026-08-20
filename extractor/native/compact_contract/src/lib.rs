@@ -41,6 +41,7 @@ pub mod record_header;
 pub mod record_semantics;
 pub mod sink_failure;
 pub mod spotted_units;
+pub mod state_topology_census;
 pub mod status_flags_base;
 pub mod status_origins;
 pub mod stream_validator;

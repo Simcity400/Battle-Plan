@@ -518,6 +518,7 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
                 }
             }
             compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused

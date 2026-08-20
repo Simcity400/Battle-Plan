@@ -116,11 +116,18 @@ fn a_terminated_successor_stream_carries_both_preamble_records_before_the_notice
     )
     .unwrap();
 
+    let topology = compact_contract::state_topology_census::StateTopologyCensusV1 {
+        state_ids: (1..=1_081).collect(),
+    }
+    .encode()
+    .unwrap();
+
     publish_capture_termination_record(
         &mut transport,
         &mut sequence,
         Some(&freeze),
         Some(&census),
+        Some(&topology),
         reasons,
         1900,
         "capture loop aborted",
@@ -148,10 +155,15 @@ fn a_terminated_successor_stream_carries_both_preamble_records_before_the_notice
             ),
             (
                 3,
+                compact_contract::COMPACT_RECORD_TYPE_STATE_TOPOLOGY_CENSUS,
+                0
+            ),
+            (
+                4,
                 compact_contract::COMPACT_RECORD_TYPE_CAPTURE_TERMINATED,
                 0
             ),
         ],
-        "the successor stream carries both preamble records, in order, before the notice"
+        "the successor stream carries every preamble record, in order, before the notice"
     );
 }

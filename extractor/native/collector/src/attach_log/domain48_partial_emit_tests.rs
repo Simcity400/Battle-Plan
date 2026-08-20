@@ -7,8 +7,15 @@ fn domain48_lane_partial_causes_match_partial_predicate_per_cause() {
     assert!(domain48_lane_partial_causes(&clean)
         .iter()
         .all(|(_, count)| *count == 0));
+    // The two duplicate-root causes joined this list with the D48V census: a
+    // repeated root id is attempted ONCE (a second attempt appends identical
+    // rows, which the gate rejects as duplicate keys), and the duplicate marks
+    // the frame PARTIAL and clears the matching authority flag. They sit where
+    // `domain48_lane_partial_causes` puts them, and this array is positional.
     let expected_ids = [
         so::SO_D48_LANE_FAILED_COUNTRY_ROOTS,
+        so::SO_D48_LANE_DUPLICATE_STATE_ROOTS,
+        so::SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS,
         so::SO_D48_LANE_FAILED_STATE_BUILDING_ROOTS,
         so::SO_D48_LANE_FAILED_STATE_RESOURCE_ROOTS,
         so::SO_D48_LANE_FAILED_PROVINCE_BUILDING_ROOTS,
@@ -19,6 +26,8 @@ fn domain48_lane_partial_causes_match_partial_predicate_per_cause() {
     for (slot, build) in [
         ((|s: &mut domain48::collector_module::CollectorStats| s.failed_country_roots = 7)
             as fn(&mut domain48::collector_module::CollectorStats)),
+        |s| s.duplicate_state_roots = 7,
+        |s| s.duplicate_province_roots = 7,
         |s| s.failed_state_building_roots = 7,
         |s| s.failed_state_resource_roots = 7,
         |s| s.failed_province_building_roots = 7,
@@ -172,6 +181,12 @@ fn make_read(
         railway_construction_rows: None,
         building_rows,
         resource_rows,
+        coverage: domain48::CoverageCensus {
+            census_flags: domain48::CENSUS_FLAG_STATE_ROOTS_AUTHORITATIVE
+                | domain48::CENSUS_FLAG_PROVINCE_FAILURES_AUTHORITATIVE,
+            scanned_states: vec![42],
+            ..Default::default()
+        },
     };
     let emitted_rows = domain48_emitted_rows(&frame);
     CompactConstructionBuildingsStateDamageRead {

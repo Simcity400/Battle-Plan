@@ -1,0 +1,13 @@
+[package]
+name = "id_set_codec"
+version = "0.1.0"
+edition = "2021"
+description = "The canonical id-set block: one sorted set of u32 ids, one legal byte string. A dependency-free grammar leaf shared by the recorder, the shipping contract and the independent wire reference."
+
+# NO DEPENDENCIES, deliberately. This is a grammar leaf in the family the owner's
+# 2026-08-15 "ONE shared decoder" ruling created (`d11_grammar`, `d13_grammar`,
+# `d24_grammar`, `d43_grammar`, `d68_grammar`, `d74_grammar`). Being a leaf is
+# what lets `wire_format` share this decoder without reversing any crate
+# direction and without widening its `compact_contract` allow-list: there is no
+# recorder or capture-lane policy in here to leak.
+[dependencies]

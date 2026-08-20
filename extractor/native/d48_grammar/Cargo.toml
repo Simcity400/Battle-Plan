@@ -1,0 +1,10 @@
+[package]
+name = "d48_grammar"
+version = "0.1.0"
+edition = "2021"
+description = "D48's coverage-trailer byte grammar: the D48V header, its four id-set blocks, and the RLC1/D48V tail split. Shared by the recorder lane and the independent wire reference so they cannot drift on byte boundaries."
+
+# Only the grammar leaf below. No recorder, capture-lane or contract policy: this
+# crate decides byte boundaries and refusals, never what a frame MEANS.
+[dependencies]
+id_set_codec = { path = "../id_set_codec" }

@@ -6392,6 +6392,7 @@ fn scan_compact_stream_with_identity_mode(
             }
             compact_contract::KnownRecordType::FreezeCensus
             | compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::FrameDegraded
             | compact_contract::KnownRecordType::CaptureTerminated

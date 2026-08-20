@@ -50,7 +50,9 @@ pub const SO_D65_PARTIAL_WALK_FAILURE: usize = 42;
 pub const SO_D55_TERMINAL_RECORD_UNPUBLISHABLE: usize = 43;
 pub const SO_D65_PARTIAL_PROFILE_MISMATCH: usize = 44;
 pub const SO_D66_PARTIAL_PROFILE_MISMATCH: usize = 45;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 46;
+pub const SO_D48_LANE_DUPLICATE_STATE_ROOTS: usize = 46;
+pub const SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS: usize = 47;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 48;
 
 pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d45_partial_targeted_timed_structural",
@@ -99,6 +101,8 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d55_terminal_record_unpublishable",
     "so_d65_partial_profile_mismatch",
     "so_d66_partial_profile_mismatch",
+    "so_d48_lane_duplicate_state_roots",
+    "so_d48_lane_duplicate_province_roots",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -729,6 +733,14 @@ mod tests {
             (
                 SO_D66_PARTIAL_PROFILE_MISMATCH,
                 "so_d66_partial_profile_mismatch",
+            ),
+            (
+                SO_D48_LANE_DUPLICATE_STATE_ROOTS,
+                "so_d48_lane_duplicate_state_roots",
+            ),
+            (
+                SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS,
+                "so_d48_lane_duplicate_province_roots",
             ),
         ];
         for (id, name) in expected {

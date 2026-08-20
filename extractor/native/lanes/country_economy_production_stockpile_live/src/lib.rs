@@ -1079,6 +1079,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                 }
             }
             compact_contract::KnownRecordType::ContentIdentityCensus
+            | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused

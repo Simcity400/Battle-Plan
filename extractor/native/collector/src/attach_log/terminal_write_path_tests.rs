@@ -54,8 +54,8 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
         production
             .matches("publish_successor_install_census_after_rollover(")
             .count(),
-        4,
-        "campaign reset, the initial-H4CI rollover retry, the function definition          and the required-wrapper delegation are required"
+        5,
+        "campaign reset, the initial-H4CI rollover retry, the initial-H4SC rollover retry,          the function definition and the required-wrapper delegation are required"
     );
     let freeze_arguments = production
         .matches("freeze_census_payload.as_deref(),")
@@ -63,10 +63,18 @@ fn every_production_rollover_exit_routes_through_successor_census_recovery() {
     let identity_arguments = production
         .matches("content_identity_payload.as_deref(),")
         .count();
+    let topology_arguments = production
+        .matches("state_topology_payload.as_deref(),")
+        .count();
     assert_eq!(
         identity_arguments,
         freeze_arguments - 1,
         "every rollover site that passes the install freeze census must pass the retained          content identity census with it; the one exception is the initial H4CI publication,          which IS the census and carries only the freeze payload"
+    );
+    assert_eq!(
+        topology_arguments,
+        identity_arguments - 1,
+        "and the retained state-topology census rides with them, with the same one          exception one step further along: the initial H4SC publication IS that census,          so it carries the freeze and identity payloads but not itself"
     );
     assert!(
         freeze_arguments >= 9,

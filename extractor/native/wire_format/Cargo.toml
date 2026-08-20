@@ -13,9 +13,12 @@ blake3 = "1"
 # admitted without updating this allow-list under adversarial review. It is enforced by
 # tests/compact_contract_dependency_policy.rs.
 # production-compact-authority-allow=d81:rail_replay,compact_status_unknown_flags_v1,compact_status_is_failure
-# `compact_contract` has no normal dependencies, so the
-# production exception cannot pull recorder or capture-lane policy into this
-# reference implementation. It does not replace capture, measurement, packed
+# `compact_contract`'s only normal dependencies are `sha2` and the
+# dependency-free `id_set_codec` grammar leaf, so the production exception
+# cannot pull recorder or capture-lane policy into this reference
+# implementation. (The claim here used to be "no normal dependencies", which was
+# already untrue of `sha2`; the security argument is the absence of POLICY, not
+# the absence of edges.) It does not replace capture, measurement, packed
 # reopen, or source-parity gates.
 compact_contract = { path = "../compact_contract" }
 # D11's payload grammar (lane KX). Same dependency-free leaf shape as D13:
@@ -35,6 +38,13 @@ d13_grammar = { path = "../d13_grammar" }
 d68_grammar = { path = "../d68_grammar" }
 # D24's payload grammar (lane KO).
 d24_grammar = { path = "../d24_grammar" }
+# D48's coverage-trailer grammar (lane NA). Same ruling, same leaf shape. It is
+# what lets this port share the D48V byte boundaries with the shipping producer
+# WITHOUT widening the `compact_contract` allow-list above: `d48_grammar` and
+# its own `id_set_codec` leaf are dependency-free and carry no recorder or
+# capture-lane policy. This port keeps its semantic projection, its schema and
+# its deliberately stricter railway-identity refusal.
+d48_grammar = { path = "../d48_grammar" }
 portable_content_manifest = { path = "../../../portable_replay/native/content_manifest" }
 portable_admission = { path = "../../../portable_replay/native/admission" }
 serde_json = "1"

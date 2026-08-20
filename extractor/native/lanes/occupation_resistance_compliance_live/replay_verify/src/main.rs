@@ -1019,6 +1019,7 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
                     }
                 }
                 compact_contract::KnownRecordType::ContentIdentityCensus
+                | compact_contract::KnownRecordType::StateTopologyCensus
             | compact_contract::KnownRecordType::StreamHeader => {}
                 compact_contract::KnownRecordType::DomainGap
                 | compact_contract::KnownRecordType::FrameRefused

@@ -203,6 +203,7 @@ dependencies = [
 name = "compact_contract"
 version = "0.1.0"
 dependencies = [
+ "id_set_codec",
  "serde_json",
  "sha2",
 ]
@@ -240,6 +241,7 @@ name = "construction_buildings_state_damage_live"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
+ "d48_grammar",
 ]
 
 [[package]]
@@ -323,6 +325,13 @@ version = "0.1.0"
 [[package]]
 name = "d43_grammar"
 version = "0.1.0"
+
+[[package]]
+name = "d48_grammar"
+version = "0.1.0"
+dependencies = [
+ "id_set_codec",
+]
 
 [[package]]
 name = "d68_grammar"
@@ -561,6 +570,10 @@ dependencies = [
  "serde_json",
  "windows-sys",
 ]
+
+[[package]]
+name = "id_set_codec"
+version = "0.1.0"
 
 [[package]]
 name = "indexmap"
@@ -1264,6 +1277,7 @@ dependencies = [
  "d11_grammar",
  "d13_grammar",
  "d24_grammar",
+ "d48_grammar",
  "d68_grammar",
  "portable_admission",
  "portable_content_manifest",
