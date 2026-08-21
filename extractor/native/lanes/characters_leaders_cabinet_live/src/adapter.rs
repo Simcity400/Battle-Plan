@@ -159,6 +159,13 @@ pub struct AdapterBuildStats {
     pub walk_advisors_us: u32,
     pub walk_appointed_advisors_us: u32,
     pub walk_portraits_us: u32,
+    /// Lane PH: how many active-idea tokens this frame's country rows carried
+    /// in total. It is the ONE knob that decides how the appointed-advisor
+    /// join behaves — the membership test is per country slice, so its cost
+    /// per roster row turns on the slice length — and no capture recorded it
+    /// before, which left the join's price a guess. Sums per frame; divide by
+    /// `country_roots_seen` for tokens per country.
+    pub active_idea_tokens_seen: u32,
 }
 
 fn walk_phase_us(since: std::time::Instant) -> u32 {
@@ -210,6 +217,39 @@ pub struct CachedWalk {
     pub known_keys: Vec<(u32, u32)>,
     pub character_identity: Vec<((u32, u32), u32)>,
     pub stats: AdapterBuildStats,
+    /// Lane PH: the portrait phase's answer, precomputed once at adoption.
+    ///
+    /// The phase reads NO engine memory (`mem.walk_family` is a witness-tap
+    /// mark, not a read), so nothing about it is licensed by the witness — the
+    /// witness "covers" it only because the record range between its mark and
+    /// the end of the log is EMPTY. What it is really a function of is
+    /// `input.portraits` (a root-cache list), `known_keys` (this cache), and
+    /// `known_characters` (this frame's active rulers). Only the last varies
+    /// between the adopting frame and the frames that reuse it, because the
+    /// root cache cannot be refreshed while this cache is alive: every arm of
+    /// a full discovery either seals a NEW witness or sets `cache.witness =
+    /// None`, and this walk is dropped with the witness that carries it. So
+    /// the two portrait-dependent quantities are fixed at adoption:
+    ///
+    /// * `portrait_unknown_keys` — the deduplicated, sorted keys of input
+    ///   portraits this cache does NOT know. `live_only_admitted` is exactly
+    ///   "one of these is in `known_characters`".
+    /// * `portrait_unknown_rows` — how many input ROWS carried such a key
+    ///   (a key repeats across roles and sizes), which is what those rows
+    ///   contribute to `rejected_roots` when `live_only_admitted` is false.
+    ///
+    /// `portrait_input_rows` records the list length the precompute was taken
+    /// over. It is belt-and-braces on top of the frozen-roots argument above:
+    /// a reuse against a list of some other length falls back to the scan.
+    pub portrait_index: Option<CachedPortraitIndex>,
+}
+
+/// Lane PH: see [`CachedWalk::portrait_index`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CachedPortraitIndex {
+    pub portrait_input_rows: u32,
+    pub portrait_unknown_keys: Vec<(u32, u32)>,
+    pub portrait_unknown_rows: u32,
 }
 
 impl CachedWalk {
@@ -433,6 +473,19 @@ fn build_lane_frame_inner<M: LaneMemory>(
 
     stats.country_roots_seen = input.countries.len().min(u32::MAX as usize) as u32;
     let phase_started = std::time::Instant::now();
+    // Lane PH: NOT SERVED FROM THE CACHE, and the reason is a production
+    // counter rather than a judgement. This phase does read engine memory —
+    // the CCountry -> political status -> ruling party -> country-leader vector
+    // -> CCountryLeader -> CCharacter chain, about ten guarded reads per
+    // country — so unlike portraits and appointed advisors it WOULD need the
+    // witness to vouch for it. The witness does not: over the whole oz_tip
+    // capture `domain47_walk_covered_family_mask` is 225
+    // (CHARACTER | ADVISOR_ROSTER | APPOINTED_ADVISOR | CHARACTER_PORTRAIT) and
+    // FAMILY_ACTIVE_RULER (16) is clear in every one of the 35 seals, because
+    // discovery never reads the country-politics chain and so never sealed a
+    // byte of it. Nothing weaker would do either: the record also carries
+    // `ruling_party`, `ruler_name` and `ruler_token` straight off this frame's
+    // country row, which is the live half of d47 by design.
     mem.walk_family(compact::FAMILY_ACTIVE_RULER);
     let cached_characters = cached.filter(|c| c.serves(compact::FAMILY_CHARACTER));
     for root in input.countries {
@@ -525,6 +578,12 @@ fn build_lane_frame_inner<M: LaneMemory>(
         Some(cached) => &cached.advisor_roster,
         None => &frame.advisor_roster,
     };
+    stats.active_idea_tokens_seen = input
+        .countries
+        .iter()
+        .map(|country| country.active_idea_tokens.len())
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
     frame.appointed_advisors =
         appointed_advisors_from_country_active_ideas(roster, input.countries);
     stats.appointed_advisor_rows = frame.appointed_advisors.len().min(u32::MAX as usize) as u32;
@@ -533,34 +592,13 @@ fn build_lane_frame_inner<M: LaneMemory>(
     stats.portrait_inputs_seen = input.portraits.len().min(u32::MAX as usize) as u32;
     let phase_started = std::time::Instant::now();
     mem.walk_family(compact::FAMILY_CHARACTER_PORTRAIT);
-    let live_only_admitted = cached.map_or(false, |c| {
-        input.portraits.iter().any(|portrait| {
-            let key = (portrait.country_tag_db_id, portrait.char_id);
-            !c.knows(&key) && known_characters.contains(&key)
-        })
-    });
-    let admit = |key: &(u32, u32)| -> bool {
-        known_characters.contains(key) || cached.map_or(false, |c| c.knows(key))
-    };
-    for portrait in input.portraits {
-        let key = (portrait.country_tag_db_id, portrait.char_id);
-        let cached_key = cached.map_or(false, |c| c.knows(&key));
-        if cached_key && !live_only_admitted {
-            continue;
-        }
-        if admit(&key) {
-            frame.character_portraits.push(CharacterPortraitRecord {
-                country_tag_db_id: portrait.country_tag_db_id,
-                char_id: portrait.char_id,
-                role: portrait.role.clone(),
-                size: portrait.size.clone(),
-                gfx: portrait.gfx.clone(),
-                gfx_encoding: portrait.gfx_encoding,
-            });
-        } else {
-            stats.rejected_roots = stats.rejected_roots.saturating_add(1);
-        }
-    }
+    let (portrait_rejections, _portrait_arm) = portrait_phase(
+        input.portraits,
+        cached,
+        &known_characters,
+        &mut frame.character_portraits,
+    );
+    stats.rejected_roots = stats.rejected_roots.saturating_add(portrait_rejections);
     stats.portrait_rows = if frame.character_portraits.is_empty() {
         cached.map_or(0, |c| c.character_portraits.len())
     } else {
@@ -593,33 +631,145 @@ fn build_lane_frame_inner<M: LaneMemory>(
     AdapterBuildResult { frame, stats }
 }
 
+/// Lane PH: the whole `character_portraits` walk phase, admitting into `out`
+/// and returning what it contributes to `rejected_roots`.
+///
+/// It reads no engine memory, so — like the appointed-advisor join below — it
+/// is not a candidate for the witness-licensed walk cache. What makes it
+/// cheap instead is that the only per-frame input is `known_characters`: see
+/// [`CachedWalk::portrait_index`] for why the portrait list and the cache's
+/// known keys are both fixed for as long as a cached walk is alive, and for
+/// what the precomputed index therefore stands in for.
+/// Which arm [`portrait_phase`] took. Returned so a test can require the O(1)
+/// arm to have RUN rather than infer it from the fixture: the two arms agree on
+/// every output by construction, so without this a mutation that deleted the
+/// fast return and always scanned would keep every equivalence assertion green
+/// while restoring the whole per-row cost (Codex round 1, finding 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PortraitPhaseArm {
+    /// Answered from `CachedWalk::portrait_index` without touching a row.
+    Index,
+    /// Walked every input row.
+    Scan,
+}
+
+fn portrait_phase(
+    portraits: &[CharacterPortraitInput],
+    cached: Option<&CachedWalk>,
+    known_characters: &BTreeSet<(u32, u32)>,
+    out: &mut Vec<CharacterPortraitRecord>,
+) -> (u32, PortraitPhaseArm) {
+    // The index answers `live_only_admitted` from the unknown-key set alone —
+    // in the steady state that set is EMPTY, so the whole question costs
+    // nothing instead of a `knows` binary search over every input row. The
+    // length test is the belt-and-braces half of the licence.
+    let index = cached
+        .and_then(|c| c.portrait_index.as_ref())
+        .filter(|index| index.portrait_input_rows as usize == portraits.len());
+    let live_only_admitted = match index {
+        Some(index) => index
+            .portrait_unknown_keys
+            .iter()
+            .any(|key| known_characters.contains(key)),
+        None => cached.map_or(false, |c| {
+            portraits.iter().any(|portrait| {
+                let key = (portrait.country_tag_db_id, portrait.char_id);
+                !c.knows(&key) && known_characters.contains(&key)
+            })
+        }),
+    };
+    // Every input row splits into one of two cases, and BOTH are settled
+    // without touching the row. A row whose key this cache knows would take
+    // the `continue` below, because `live_only_admitted` is false. A row whose
+    // key it does not know is in `portrait_unknown_keys`, and
+    // `live_only_admitted == false` says no key in that set is in
+    // `known_characters` — so `admit` is false for it and it is rejected.
+    // Nothing is pushed, which is what leaves `stats.portrait_rows` reading
+    // the cached count exactly as the scan leaves it.
+    if let Some(index) = index.filter(|_| !live_only_admitted) {
+        return (index.portrait_unknown_rows, PortraitPhaseArm::Index);
+    }
+    let mut rejected = 0u32;
+    let admit = |key: &(u32, u32)| -> bool {
+        known_characters.contains(key) || cached.map_or(false, |c| c.knows(key))
+    };
+    for portrait in portraits {
+        let key = (portrait.country_tag_db_id, portrait.char_id);
+        let cached_key = cached.map_or(false, |c| c.knows(&key));
+        if cached_key && !live_only_admitted {
+            continue;
+        }
+        if admit(&key) {
+            out.push(CharacterPortraitRecord {
+                country_tag_db_id: portrait.country_tag_db_id,
+                char_id: portrait.char_id,
+                role: portrait.role.clone(),
+                size: portrait.size.clone(),
+                gfx: portrait.gfx.clone(),
+                gfx_encoding: portrait.gfx_encoding,
+            });
+        } else {
+            rejected = rejected.saturating_add(1);
+        }
+    }
+    (rejected, PortraitPhaseArm::Scan)
+}
+
+/// Lane PH: this is the whole `appointed_advisors` walk phase — it reads no
+/// engine memory, so it is not a candidate for the witness-licensed walk cache.
+/// It is a pure function of the roster and of THIS frame's country rows, and
+/// the country rows are the live half of d47 (a coup or an election has to be
+/// caught the frame it happens), so it is recomputed every frame by design and
+/// only its cost is negotiable.
+///
+/// The membership test is a LINEAR SCAN of the country's own token slice
+/// instead of a `BTreeSet<&str>` built per country. The old form paid one heap
+/// node per active idea per country per frame to answer at most one `contains`
+/// per roster row, and that construction — not the lookup — was the phase's
+/// cost: at oz_tip's 439 countries and 8,615 roster rows the arena form is
+/// 74% cheaper at 16 active ideas per country and 68% cheaper at 63
+/// (`runs/ph_d47cache/ph_profile_appointed_sweep.log`).
+///
+/// Bisecting a sorted arena was measured and NOT taken: sorting each country's
+/// slice costs more than every scan it saves, and the bisect arm only reached
+/// PARITY with the old form (+0.5% at 64 ideas per country, +0.4% at 192)
+/// where the scan was three times faster at 63. A scan and a `BTreeSet` are
+/// the same membership question over the same tokens, so nothing about the
+/// join's answer turns on which is used.
+///
+/// `seen` borrows `idea_token` instead of cloning it; `String` orders exactly
+/// as `str`, so the deduplication is unchanged.
 pub fn appointed_advisors_from_country_active_ideas(
     roster: &[AdvisorRecord],
     countries: &[CountryPoliticsRoot],
 ) -> Vec<AdvisorRecord> {
-    let active_by_country = countries
-        .iter()
-        .map(|country| {
-            (
-                country.country_tag_db_id,
-                country
-                    .active_idea_tokens
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut arena: Vec<&str> = Vec::with_capacity(
+        countries
+            .iter()
+            .map(|country| country.active_idea_tokens.len())
+            .sum(),
+    );
+    // Insertion order, so a repeated tag resolves to its LAST row exactly as
+    // collecting into a `BTreeMap` did.
+    let mut active_by_country = BTreeMap::<u32, (usize, usize)>::new();
+    for country in countries {
+        let start = arena.len();
+        arena.extend(country.active_idea_tokens.iter().map(String::as_str));
+        active_by_country.insert(country.country_tag_db_id, (start, arena.len()));
+    }
     let mut seen = BTreeSet::new();
     roster
         .iter()
         .filter(|row| {
             active_by_country
                 .get(&row.country_tag_db_id)
-                .map(|tokens| tokens.contains(row.idea_token.as_str()))
+                .map(|&(start, end)| {
+                    let token = row.idea_token.as_str();
+                    arena[start..end].iter().any(|held| *held == token)
+                })
                 .unwrap_or(false)
         })
-        .filter(|row| seen.insert((row.country_tag_db_id, row.char_id, row.idea_token.clone())))
+        .filter(|row| seen.insert((row.country_tag_db_id, row.char_id, row.idea_token.as_str())))
         .cloned()
         .collect()
 }
@@ -838,6 +988,10 @@ fn read_u32<M: LaneMemory>(
     mem.read_u32_le(addr)
         .ok_or(ExtractError::MissingRead { addr, field })
 }
+
+#[cfg(test)]
+#[path = "walk_phase_ph_tests.rs"]
+mod walk_phase_ph_tests;
 
 #[cfg(test)]
 mod tests {

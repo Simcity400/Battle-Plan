@@ -3,9 +3,9 @@ use std::time::{Duration, Instant};
 
 use crate::adapter::{
     build_lane_frame_from_adapter_input_ref, build_lane_frame_reusing_walk, AdapterBuildStats,
-    AdapterInput, AdapterInputRef, AdvisorRoot, CachedWalk, CharacterPortraitInput, CharacterRoot,
-    CountryLeaderRoleRoot, CountryPoliticsRoot, TraitDefinitionRoot, UnitLeaderRoot,
-    CACHEABLE_WALK_FAMILIES,
+    AdapterInput, AdapterInputRef, AdvisorRoot, CachedPortraitIndex, CachedWalk,
+    CharacterPortraitInput, CharacterRoot, CountryLeaderRoleRoot, CountryPoliticsRoot,
+    TraitDefinitionRoot, UnitLeaderRoot, CACHEABLE_WALK_FAMILIES,
 };
 use crate::domain47_characters_leaders_cabinet_live as compact;
 use crate::extractor::{
@@ -176,6 +176,24 @@ impl NativeScheduledObservation {
         let cached_key = |p: &crate::extractor::CharacterPortraitRecord| {
             cached.knows(&(p.country_tag_db_id, p.char_id))
         };
+        // Lane PH: the portrait phase's precomputed answer (see
+        // `CachedWalk::portrait_index`). It is taken HERE, before the rows
+        // move, and it is taken over `self.frame.character_portraits` because
+        // on an adopting frame that list IS the input list: this method
+        // refuses a walk with `has_rejections()`, an input portrait that was
+        // not admitted increments `rejected_roots`, and an adopting frame is
+        // always a FULL frame (no cache to skip a row), so every input row was
+        // pushed. `stats.portrait_inputs_seen` is that input length.
+        let mut portrait_unknown_keys: Vec<(u32, u32)> = self
+            .frame
+            .character_portraits
+            .iter()
+            .filter(|p| !cached_key(p))
+            .map(|p| (p.country_tag_db_id, p.char_id))
+            .collect();
+        let portrait_unknown_rows = portrait_unknown_keys.len().min(u32::MAX as usize) as u32;
+        portrait_unknown_keys.sort_unstable();
+        portrait_unknown_keys.dedup();
         if self.frame.character_portraits.iter().all(cached_key) {
             cached.character_portraits = std::mem::take(&mut self.frame.character_portraits);
         } else {
@@ -187,6 +205,11 @@ impl NativeScheduledObservation {
                 .cloned()
                 .collect();
         }
+        cached.portrait_index = Some(CachedPortraitIndex {
+            portrait_input_rows: self.stats.portrait_inputs_seen,
+            portrait_unknown_keys,
+            portrait_unknown_rows,
+        });
         let cached = Arc::new(cached);
         self.cached = Some(cached.clone());
         Some(cached)
@@ -1151,6 +1174,163 @@ mod tests {
             .expect("characters alone cache");
         assert_eq!(half.families, compact::FAMILY_CHARACTER);
         assert!(half.unit_leaders.is_empty());
+    }
+
+    /// Lane PH: the portrait index counts input ROWS, not distinct keys.
+    ///
+    /// A portrait key repeats across roles and sizes, so the row count and the
+    /// distinct-key count differ, and only the row count reproduces what the
+    /// row walk contributes to `rejected_roots` — the number reported on the
+    /// wire as `domain47_adapter_rejected_roots`.
+    /// `both_portrait_forms_agree_on_every_shape` cannot reach this: it stages
+    /// its index directly, so the PRODUCTION precompute in `adopt_cached_walk`
+    /// went untested until this existed, and the swap survived (Codex round 1,
+    /// finding 2).
+    ///
+    /// THIS IS A DEFENSIVE UNIT TEST, NOT A PRODUCTION SHAPE, and the
+    /// distinction is worth stating because the second review round caught the
+    /// earlier comment claiming otherwise. Two things make the input below
+    /// unproducible by today's collector:
+    ///
+    ///  * it gives a character a portrait without giving it a character root.
+    ///    `attach_log.rs` builds the portrait list while enumerating character
+    ///    roots and filters the two together, so every portrait key really is
+    ///    a character-root key; adopt `FAMILY_CHARACTER` and that key is in
+    ///    `known_keys`, and do not adopt it and the character walk re-admits
+    ///    the key on the reusing frame. Either way `portrait_unknown_rows`
+    ///    cannot currently do any work.
+    ///  * the reusing frame has no countries at all, and an empty country
+    ///    authority makes the collector return rowless before it reaches this
+    ///    adapter.
+    ///
+    /// It is kept anyway, because BOTH of those invariants live in
+    /// `attach_log.rs` — a different crate — and neither is enforced here.
+    /// This crate's contract is "the index answers what the row walk would
+    /// have answered", and that has to hold whatever list the collector hands
+    /// over. The fixture uses the active ruler because it is the one family
+    /// that feeds `known_characters` and can never feed `known_keys` (it is
+    /// absent from `CACHEABLE_WALK_FAMILIES`), which is the cheapest way to
+    /// construct the row/key gap at this seam.
+    ///
+    /// kills: counting `portrait_unknown_keys.len()` after the dedup instead of
+    /// before it reports 1 rejection where the row walk reports 3.
+    #[test]
+    fn the_portrait_index_counts_rows_and_not_distinct_keys() {
+        let mut mem = FakeMemory::default();
+        let ruler_character = 0x1000;
+        let advisor_character = 0x6000;
+        let advisor = 0x7000;
+        let country = 0x4000;
+        let status = 0x4100;
+        let party = 0x4200;
+        let leader_vec = 0x4300;
+        let country_leader = 0x4400;
+
+        write_character(&mut mem, ruler_character, 1458, 2);
+        write_character(&mut mem, advisor_character, 7, 7);
+        mem.write_u64(advisor, ADVISOR_VT);
+        mem.write_u64(advisor + CADVISOR_CHARACTER_PTR_OFF, advisor_character);
+        mem.write_u64(country_leader, COUNTRY_LEADER_VT);
+        mem.write_u64(
+            country_leader + CCOUNTRY_LEADER_CHARACTER_PTR_OFF,
+            ruler_character,
+        );
+        mem.write_u64(country + CCOUNTRY_POLITICAL_STATUS_OFF, status);
+        mem.write_u64(status + CPOLITICAL_STATUS_RULING_PARTY_OFF, party);
+        mem.write_u64(party + CPOLITICAL_PARTY_LEADER_VEC_OFF, leader_vec);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_SIZE_OFF, 1);
+        mem.write_u32(party + CPOLITICAL_PARTY_LEADER_VEC_CAP_OFF, 1);
+        mem.write_u64(leader_vec, country_leader);
+
+        let portrait = |tag: u32, id: u32, role: &str| CharacterPortraitInput {
+            country_tag_db_id: tag,
+            char_id: id,
+            role: role.to_string(),
+            size: "large".to_string(),
+            gfx: format!("GFX_portrait_{tag}_{id}_{role}"),
+            gfx_encoding: compact::PortraitIdentityEncoding::Utf8,
+        };
+        let cache = NativeRootCache {
+            roots: Some(roots()),
+            roots_validated: true,
+            known_families: compact::FAMILY_ALL,
+            // The RULER's character is not here on purpose.
+            characters: vec![CharacterRoot {
+                character_addr: advisor_character,
+                char_id: 7,
+                name: None,
+                token: None,
+            }],
+            advisors: vec![AdvisorRoot {
+                advisor_addr: advisor,
+                idea_token: "OTHER_theorist".to_string(),
+                slot: Some("theorist".to_string()),
+                ledger: None,
+            }],
+            // THREE rows share the ruler's key; one names the advisor's.
+            portraits: vec![
+                portrait(2, 1458, "civilian"),
+                portrait(2, 1458, "army"),
+                portrait(2, 1458, "navy"),
+                portrait(7, 7, "civilian"),
+            ],
+            ..NativeRootCache::default()
+        };
+        let with_country = || NativeFrameInput {
+            countries: vec![CountryPoliticsRoot {
+                country_addr: country,
+                country_tag_db_id: 2,
+                ruling_party: Some("democratic".to_string()),
+                ruler_name: None,
+                ruler_token: None,
+                active_idea_tokens: vec![],
+            }],
+            ..NativeFrameInput::default()
+        };
+
+        let mut adopting = observe_native_scheduled_frame(&mem, &cache, with_country());
+        assert_eq!(
+            adopting.stats.rejected_roots, 0,
+            "the adopting frame must admit every portrait, or the walk cannot cache"
+        );
+        assert_eq!(
+            adopting.stats.active_ruler_rows, 1,
+            "the ruler is what admits the three rows"
+        );
+        let cached = adopting
+            .adopt_cached_walk(compact::FAMILY_CHARACTER | compact::FAMILY_ADVISOR_ROSTER)
+            .expect("a clean walk caches");
+        assert!(
+            !cached.knows(&(2, 1458)),
+            "the ruler's key can never enter `known_keys`"
+        );
+        let index = cached
+            .portrait_index
+            .as_ref()
+            .expect("adoption builds the index");
+        assert_eq!(index.portrait_input_rows, 4);
+        assert_eq!(
+            index.portrait_unknown_keys,
+            vec![(2, 1458)],
+            "one distinct key the cache does not know"
+        );
+        assert_eq!(
+            index.portrait_unknown_rows, 3,
+            "but THREE input rows carry it — this is the number the walk rejects"
+        );
+
+        // No country now, so `known_characters` is empty and the three rows
+        // have nothing to admit them.
+        let reused = observe_native_scheduled_frame_reusing(
+            &mem,
+            &cache,
+            NativeFrameInput::default(),
+            Some(cached.clone()),
+        );
+        assert_eq!(
+            reused.stats.rejected_roots, 3,
+            "the fast path must report one rejection per ROW, not per key"
+        );
     }
 
     #[test]
