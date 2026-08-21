@@ -141,18 +141,52 @@
 //! Two things this domain captures have **no representable target** among the
 //! seven wire kinds: `Unsigned`, `Signed`, `Monotone`,
 //! `Enum`, `Boolean`, `ContentId`, `Continuous` — no string, no bytes. Both are
-//! reported rather than dropped quietly, and neither occurs in the measured
-//! capture (0 of 364,487 active rows carry either tail).
+//! reported rather than dropped quietly.
 //!
 //! 1. **`tech_name`** (`world_fold.rs::fold_tech`). The string bytes have no
 //!    kind. What survives is everything except the bytes: the numeric identity is
 //!    carried by `tech_handle_raw`/`tech_def_index_raw`, and the *capture fact* by
-//!    the `tech_name_captured` `Boolean`. The name is not independent state — the
-//!    collector resolves it as `tech_def_filter[handle]` (`attach_log.rs:81024`),
-//!    a content-table rendering of the handle, exactly the argument d23 makes for
-//!    its `type_id` names. A codec-measurement contract manifest that resolves `tech_handle_raw` restores
-//!    it; the Boolean records the one thing the handle does not, namely whether
-//!    that table resolved this handle at capture time.
+//!    the `tech_name_captured` `Boolean`.
+//!
+//!    **WHAT THIS FIELD IS CHANGED (lane PT).** It used to be resolved as
+//!    `tech_def_filter[handle]` — an operator-supplied content table — and this
+//!    stop-report used to justify dropping the bytes on the grounds that a
+//!    codec-measurement contract manifest resolving `tech_handle_raw` restores
+//!    them, exactly the argument d23 makes for its `type_id` names. That
+//!    justification is dead, twice over: nothing in this repository ever wrote
+//!    `tech_def_filter`, so the field was empty in every capture ever taken
+//!    (`runs/pt_d13/MEASUREMENT.md` — 0 of 461,230 active rows across three
+//!    sealed captures carried the tail); and the collector now resolves it from
+//!    the ENGINE's own technology id, read off the technology template
+//!    (`collector/src/attach_log.rs`, `TechnologyIdDictionary::admit`). That
+//!    mapping is assigned by the engine as it loads the effective content set
+//!    and **no packaged artifact carries it**, so no manifest can restore these
+//!    bytes.
+//!
+//!    Dropping them here is still correct, because this crate has no bytes kind
+//!    and inventing one for a single field is not the trade. What changes is
+//!    the accounting: the bytes are not reconstructible from content, they are
+//!    **carried in the payload itself** — the `TechName` tail on the active row,
+//!    which is where a consumer that needs the string reads it.
+//!
+//!    The XUI09 dictionary is a WEAKER second route, and it is not a fallback a
+//!    consumer may rely on. Two conditions bound it (Codex reviews e797aeb2 and
+//!    d9562175):
+//!
+//!    * it is the session's **accumulated** dictionary, never a single record's
+//!      — a whole payload carries an entry for every index its witnesses
+//!      reference, while a PATCH carries only indices never sent before, so a
+//!      stateless decoder cannot resolve ids from one patch in isolation;
+//!    * an index reaches the dictionary only when some country's witness was
+//!      **admitted** and referenced it. A refused country's active rows still
+//!      ship, and nothing puts their indices in the dictionary, so a technology
+//!      only ever researched by refused countries has no entry at all.
+//!
+//!    The `TechName` tail on the row is therefore the authoritative route and
+//!    the dictionary is an opportunistic one.
+//!
+//!    The Boolean still records the one thing the handle does not, namely
+//!    whether the id resolved at capture time.
 //!
 //! 2. **The 176-byte A29 provenance block** (`:13452`-`:13544`), except its
 //!    `localization_branch`. Three independent reasons, each sufficient:
