@@ -166,6 +166,76 @@ pub struct AdapterBuildStats {
     /// before, which left the join's price a guess. Sums per frame; divide by
     /// `country_roots_seen` for tokens per country.
     pub active_idea_tokens_seen: u32,
+    /// Lane PR: how many roster rows the appointed-advisor join found a
+    /// COUNTRY for. It splits the two ways that join can return nothing.
+    ///
+    /// `appointed_advisor_rows` was 0 across every frame of two independent
+    /// captures while `active_idea_tokens_seen` measured 2,891 tokens a frame,
+    /// so the join was answering "no" to every row and nothing recorded WHICH
+    /// half of the key missed. This counts the rows that got past the
+    /// `country_tag_db_id` lookup and reached the token test: 0 means the two
+    /// sides do not agree on the country key at all; `advisor_roster_rows`
+    /// means every row found its country and the token is what did not meet.
+    pub appointed_join_country_tag_hits: u32,
+    /// Lane PR: the first country whose active ruler this frame could not
+    /// resolve, and the reader decision that refused it
+    /// ([`extract_error_reason`]). `active_ruler_unresolved_roots` counted
+    /// those refusals without naming one, and a refusal that costs the whole
+    /// ACTIVE_RULER family its frame has to say what it was — the same
+    /// "degraded outcomes name the cause" rule the rest of the lane follows.
+    /// Both are 0 when no root was refused; `..._reason` is 0 only then,
+    /// because [`extract_error_reason`] never returns 0.
+    pub active_ruler_unresolved_first_tag: u32,
+    pub active_ruler_unresolved_first_reason: u32,
+    /// Lane PR: the two scalars the refusing comparison held, when it had two
+    /// ([`extract_error_operands`]). The reason code says the SHAPE of the
+    /// refusal and there are three places on the active-ruler chain that raise
+    /// the same shape; these say WHICH, because each compares against a
+    /// different constant. Both 0 when the refusal carried no operands.
+    pub active_ruler_unresolved_first_expected: u32,
+    pub active_ruler_unresolved_first_observed: u32,
+}
+
+/// Lane PR: the `(expected, observed)` pair of a refusal that compared two
+/// 32-bit scalars, or `(0, 0)` when it compared none.
+///
+/// kills: collapsing this to `(0, 0)` would leave
+/// `..._first_reason` = 6 (`BadTypeId`) unable to say whether the active-ruler
+/// chain refused at `CCharacter.type` or at the country-tag echo, which are a
+/// broken object and a leader owned by another country — different faults with
+/// different fixes.
+pub fn extract_error_operands(error: &ExtractError) -> (u32, u32) {
+    match error {
+        ExtractError::BadTypeId {
+            expected, observed, ..
+        }
+        | ExtractError::IdentityMismatch {
+            expected, observed, ..
+        } => (*expected, *observed),
+        _ => (0, 0),
+    }
+}
+
+/// Lane PR: a small stable code per [`ExtractError`] shape, for counters that
+/// have to name a refusal in one number. Never 0, so a counter pair can use 0
+/// for "nothing was refused".
+///
+/// kills: returning a constant would make
+/// `domain47_adapter_active_ruler_unresolved_first_reason` unable to tell a
+/// null political-status pointer from an ownership-echo mismatch, which is
+/// the whole reason the word exists.
+pub fn extract_error_reason(error: &ExtractError) -> u32 {
+    match error {
+        ExtractError::RegistryMismatch(_) => 1,
+        ExtractError::AddressOverflow(_) => 2,
+        ExtractError::NullPointer(_) => 3,
+        ExtractError::MissingRead { .. } => 4,
+        ExtractError::BadVtable { .. } => 5,
+        ExtractError::BadTypeId { .. } => 6,
+        ExtractError::BadVector { .. } => 7,
+        ExtractError::IdentityMismatch { .. } => 8,
+        ExtractError::EmptyLeaderVector => 9,
+    }
 }
 
 fn walk_phase_us(since: std::time::Instant) -> u32 {
@@ -520,7 +590,19 @@ fn build_lane_frame_inner<M: LaneMemory>(
             Err(ExtractError::EmptyLeaderVector) => {
                 stats.active_ruler_absent_roots = stats.active_ruler_absent_roots.saturating_add(1)
             }
-            Err(_) => {
+            Err(error) => {
+                // Lane PR: NAME the first one. This refusal costs the whole
+                // ACTIVE_RULER family its frame (the caller clears the rows and
+                // declares the family absent), and until now the only trace it
+                // left was a count, which cannot tell a torn read from a
+                // structural mismatch that will refuse again every frame.
+                if stats.active_ruler_unresolved_roots == 0 {
+                    let (expected, observed) = extract_error_operands(&error);
+                    stats.active_ruler_unresolved_first_tag = root.country_tag_db_id;
+                    stats.active_ruler_unresolved_first_reason = extract_error_reason(&error);
+                    stats.active_ruler_unresolved_first_expected = expected;
+                    stats.active_ruler_unresolved_first_observed = observed;
+                }
                 stats.active_ruler_unresolved_roots =
                     stats.active_ruler_unresolved_roots.saturating_add(1)
             }
@@ -584,8 +666,9 @@ fn build_lane_frame_inner<M: LaneMemory>(
         .map(|country| country.active_idea_tokens.len())
         .sum::<usize>()
         .min(u32::MAX as usize) as u32;
-    frame.appointed_advisors =
-        appointed_advisors_from_country_active_ideas(roster, input.countries);
+    let join = appointed_advisors_from_country_active_ideas_counted(roster, input.countries);
+    frame.appointed_advisors = join.rows;
+    stats.appointed_join_country_tag_hits = join.country_tag_hits;
     stats.appointed_advisor_rows = frame.appointed_advisors.len().min(u32::MAX as usize) as u32;
     stats.walk_appointed_advisors_us = walk_phase_us(phase_started);
 
@@ -743,6 +826,22 @@ pub fn appointed_advisors_from_country_active_ideas(
     roster: &[AdvisorRecord],
     countries: &[CountryPoliticsRoot],
 ) -> Vec<AdvisorRecord> {
+    appointed_advisors_from_country_active_ideas_counted(roster, countries).rows
+}
+
+/// The join's rows plus the ONE number that says which half of its key met.
+pub struct AppointedAdvisorJoin {
+    pub rows: Vec<AdvisorRecord>,
+    /// Roster rows whose `country_tag_db_id` named a country in this frame's
+    /// country rows — i.e. rows that got as far as the token test. See
+    /// [`AdapterBuildStats::appointed_join_country_tag_hits`].
+    pub country_tag_hits: u32,
+}
+
+pub fn appointed_advisors_from_country_active_ideas_counted(
+    roster: &[AdvisorRecord],
+    countries: &[CountryPoliticsRoot],
+) -> AppointedAdvisorJoin {
     let mut arena: Vec<&str> = Vec::with_capacity(
         countries
             .iter()
@@ -758,12 +857,14 @@ pub fn appointed_advisors_from_country_active_ideas(
         active_by_country.insert(country.country_tag_db_id, (start, arena.len()));
     }
     let mut seen = BTreeSet::new();
-    roster
+    let mut country_tag_hits = 0u32;
+    let rows = roster
         .iter()
         .filter(|row| {
             active_by_country
                 .get(&row.country_tag_db_id)
                 .map(|&(start, end)| {
+                    country_tag_hits = country_tag_hits.saturating_add(1);
                     let token = row.idea_token.as_str();
                     arena[start..end].iter().any(|held| *held == token)
                 })
@@ -771,7 +872,11 @@ pub fn appointed_advisors_from_country_active_ideas(
         })
         .filter(|row| seen.insert((row.country_tag_db_id, row.char_id, row.idea_token.as_str())))
         .cloned()
-        .collect()
+        .collect();
+    AppointedAdvisorJoin {
+        rows,
+        country_tag_hits,
+    }
 }
 
 fn read_country_leader_role<M: LaneMemory>(
@@ -1192,6 +1297,15 @@ mod tests {
         // ruler fails the tag-echo ownership guard; country 4 has no memory.
         assert_eq!(result.stats.active_ruler_rows, 1);
         assert_eq!(result.stats.active_ruler_unresolved_roots, 2);
+        // Lane PR: the FIRST of those two refusals, NAMED. Country 3's ruler
+        // resolves to character 100, whose CCharacter says country 2, so the
+        // tag-echo guard raises `BadTypeId` with expected 3 / observed 2 - the
+        // same shape lane PR measured live (reason 6, exactly one country per
+        // frame, every frame of two independent captures).
+        assert_eq!(result.stats.active_ruler_unresolved_first_tag, 3);
+        assert_eq!(result.stats.active_ruler_unresolved_first_reason, 6);
+        assert_eq!(result.stats.active_ruler_unresolved_first_expected, 3);
+        assert_eq!(result.stats.active_ruler_unresolved_first_observed, 2);
         assert_eq!(result.stats.rejected_roots, 0);
         assert!(!result.stats.has_rejections());
         assert_eq!(result.stats.advisor_roster_rows, 1);
@@ -1676,6 +1790,195 @@ mod tests {
             active_idea_tokens: vec!["shared_token".to_string()],
         }];
         assert!(appointed_advisors_from_country_active_ideas(&roster, &countries).is_empty());
+    }
+
+    /// Lane PR: `appointed_join_country_tag_hits` counts the roster rows that
+    /// found a country, so a zero join says WHICH half of its key missed.
+    ///
+    /// kills: wiring the counter to `roster.len()` (it would report 3 for the
+    /// shape below, where only 2 rows name a country this frame carries) or to
+    /// the result length (it would report 1, and a country-key failure and a
+    /// token failure would again be indistinguishable).
+    #[test]
+    fn pr_the_join_counts_the_rows_that_found_a_country() {
+        let roster = vec![
+            AdvisorRecord {
+                country_tag_db_id: 2,
+                char_id: 100,
+                slot: None,
+                ledger: None,
+                idea_token: "held".to_string(),
+            },
+            AdvisorRecord {
+                country_tag_db_id: 2,
+                char_id: 101,
+                slot: None,
+                ledger: None,
+                idea_token: "not_held".to_string(),
+            },
+            AdvisorRecord {
+                country_tag_db_id: 9,
+                char_id: 102,
+                slot: None,
+                ledger: None,
+                idea_token: "held".to_string(),
+            },
+        ];
+        let countries = vec![CountryPoliticsRoot {
+            country_addr: 0x1000,
+            country_tag_db_id: 2,
+            ruling_party: None,
+            ruler_name: None,
+            ruler_token: None,
+            active_idea_tokens: vec!["held".to_string()],
+        }];
+
+        let join = appointed_advisors_from_country_active_ideas_counted(&roster, &countries);
+        // Two rows named country 2 and reached the token test; one named
+        // country 9, which this frame does not carry.
+        assert_eq!(join.country_tag_hits, 2);
+        // ... and only one of those two held the token.
+        assert_eq!(join.rows.len(), 1);
+        assert_eq!(join.rows[0].char_id, 100);
+
+        // THE LIVE SHAPE lane PR measured: every row finds its country and
+        // none holds its token. Hits are then the whole roster while the
+        // result is empty, which is the reading that says the fault is the
+        // token namespace and not the country key.
+        let no_tokens = vec![CountryPoliticsRoot {
+            country_addr: 0x1000,
+            country_tag_db_id: 2,
+            ruling_party: None,
+            ruler_name: None,
+            ruler_token: None,
+            active_idea_tokens: vec!["a_law".to_string(), "a_spirit".to_string()],
+        }];
+        let join = appointed_advisors_from_country_active_ideas_counted(&roster[..2], &no_tokens);
+        assert_eq!(join.country_tag_hits, 2);
+        assert!(join.rows.is_empty());
+    }
+
+    /// Lane PR: the counted join and the plain one are the same join.
+    ///
+    /// kills: any divergence between `appointed_advisors_from_country_active_ideas`
+    /// and the counted form it now delegates to - the counter must be an
+    /// observation of the join, never a second implementation of it.
+    #[test]
+    fn pr_the_counted_join_returns_what_the_plain_join_returns() {
+        let roster = vec![
+            AdvisorRecord {
+                country_tag_db_id: 2,
+                char_id: 100,
+                slot: Some("political_advisor".to_string()),
+                ledger: None,
+                idea_token: "held".to_string(),
+            },
+            AdvisorRecord {
+                country_tag_db_id: 2,
+                char_id: 100,
+                slot: Some("political_advisor".to_string()),
+                ledger: None,
+                idea_token: "held".to_string(),
+            },
+            AdvisorRecord {
+                country_tag_db_id: 3,
+                char_id: 101,
+                slot: None,
+                ledger: None,
+                idea_token: "also_held".to_string(),
+            },
+        ];
+        let countries = vec![
+            CountryPoliticsRoot {
+                country_addr: 0x1000,
+                country_tag_db_id: 2,
+                ruling_party: None,
+                ruler_name: None,
+                ruler_token: None,
+                active_idea_tokens: vec!["held".to_string()],
+            },
+            CountryPoliticsRoot {
+                country_addr: 0x2000,
+                country_tag_db_id: 3,
+                ruling_party: None,
+                ruler_name: None,
+                ruler_token: None,
+                active_idea_tokens: vec!["also_held".to_string(), "held".to_string()],
+            },
+        ];
+        assert_eq!(
+            appointed_advisors_from_country_active_ideas(&roster, &countries),
+            appointed_advisors_from_country_active_ideas_counted(&roster, &countries).rows
+        );
+        // The dedup still runs: the repeated (country, char, token) triple
+        // collapses, so two rows come out of three.
+        assert_eq!(
+            appointed_advisors_from_country_active_ideas(&roster, &countries).len(),
+            2
+        );
+    }
+
+    /// Lane PR: every `ExtractError` shape gets its own reason code, and none
+    /// of them is 0.
+    ///
+    /// kills: a reason function that returned one constant, which would leave
+    /// `domain47_adapter_active_ruler_unresolved_first_reason` unable to
+    /// separate a torn read from a structural refusal; and a 0 code, which the
+    /// counter reserves for "nothing was refused".
+    #[test]
+    fn pr_every_refusal_shape_has_its_own_nonzero_reason_code() {
+        let errors = [
+            ExtractError::RegistryMismatch(String::new()),
+            ExtractError::AddressOverflow("f"),
+            ExtractError::NullPointer("f"),
+            ExtractError::MissingRead { addr: 1, field: "f" },
+            ExtractError::BadVtable {
+                addr: 1,
+                field: "f",
+                expected: 2,
+                observed: 3,
+            },
+            ExtractError::BadTypeId {
+                addr: 1,
+                field: "f",
+                expected: 2,
+                observed: 3,
+            },
+            ExtractError::BadVector {
+                field: "f",
+                begin: 1,
+                end: 2,
+                size: 3,
+            },
+            ExtractError::IdentityMismatch {
+                addr: 1,
+                field: "f",
+                expected: 2,
+                observed: 3,
+            },
+            ExtractError::EmptyLeaderVector,
+        ];
+        let codes: BTreeSet<u32> = errors.iter().map(extract_error_reason).collect();
+        assert_eq!(codes.len(), errors.len(), "every shape has its own code");
+        assert!(!codes.contains(&0), "0 means nothing was refused");
+        // Only the two shapes that COMPARE two scalars carry operands; the
+        // rest report none rather than a misleading pair.
+        assert_eq!(
+            errors
+                .iter()
+                .filter(|error| extract_error_operands(error) != (0, 0))
+                .count(),
+            2
+        );
+        assert_eq!(
+            extract_error_operands(&ExtractError::BadTypeId {
+                addr: 1,
+                field: "f",
+                expected: 2,
+                observed: 3,
+            }),
+            (2, 3)
+        );
     }
 
     /// Lane MX (Codex 01a00f9e b2 R2, finding 1's empty-map arm): with an
