@@ -21,9 +21,8 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 
 ## Tools
 
-- Default: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1`; capture the exit code.
-- Default mode runs affected shipping-product tests; unknown impact runs all shipping-product tests.
-- `-Mode Landing` is the orchestrator's gate, run once on the merged tree at landing time; lanes run only the default Affected mode on what they changed.
+- Agents run ONLY the specific tests they created or altered (targeted `cargo nextest run` on exact test names/files) - never `Invoke-Validation.ps1`, the battery, or any broad suite (owner directive 2026-08-23).
+- `-Mode Landing` (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`) is the orchestrator's gate, run once on the merged tree at landing time; capture the exit code.
 - Run `-Mode ReleaseManual -AllowReleaseManual` only when the owner explicitly requests release/manual validation.
 - Never run a full battery or release/manual validation by default.
 - `hoi4_re` is the single agent-facing RE facade; run `re_status` first, never edit its registry directly, and use its four-job offline queue.
