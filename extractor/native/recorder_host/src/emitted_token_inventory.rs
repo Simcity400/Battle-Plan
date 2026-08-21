@@ -144,6 +144,8 @@ fn scan_stream(
                             sequence: header.sequence,
                             header_hour_raw: header.game_hour_raw,
                             session_header_identity: None,
+                            // Token collection only; no changed-row count is read.
+                            xmap07_snow_mud_previous_grid_sha256: None,
                         },
                     )
                     .map_err(|error| {

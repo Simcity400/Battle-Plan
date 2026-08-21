@@ -5849,6 +5849,11 @@ fn scan_compact_stream_with_identity_mode(
     let mut framing_complete = true;
     let mut session_header_identity =
         recorder_host::campaign_identity::SessionHeaderIdentityObservation::default();
+    // STREAM-SCOPED, like the recorder host's own walk. This gate consumes
+    // `decoded.changed_rows`, so it needs the same d100 keyframe carry the
+    // production summarizer needs; without it every keyframe would read as a
+    // first observation here too.
+    let mut xmap07_snow_mud_previous_grid_sha256: Option<[u8; 32]> = None;
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
         let header = match parse_compact_record_header(&raw[offset..]) {
@@ -6173,6 +6178,9 @@ fn scan_compact_stream_with_identity_mode(
                                 header_hour_raw: game_hour_raw,
                                 session_header_identity: (domain_id == 68)
                                     .then_some(&mut session_header_identity),
+                                xmap07_snow_mud_previous_grid_sha256: (domain_id
+                                    == compact_contract::xmap07_snow_mud::DOMAIN_ID)
+                                    .then_some(&mut xmap07_snow_mud_previous_grid_sha256),
                             },
                         );
                     match result {

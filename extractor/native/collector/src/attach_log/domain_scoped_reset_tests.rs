@@ -44,6 +44,28 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          the next successful sample to open a fresh generation",
     ),
     (
+        "xmap07_snow_mud_wire_baseline",
+        "d100's WIRE baseline takes a roll-back, never the blanket reset and never a plain \
+         retention (lane PB). It is not a continuity claim: it names the grid the FOLD holds, \
+         and every delta or no-change record names it by SHA-256, so a consumer holding \
+         anything else refuses the hour by name rather than decoding a grid nobody observed. \
+         Wiping it alongside the epoch tracker would cost 233 MB per capture -- on \
+         captures/oz_tip the epoch tracker was blanket-reset 86 times in 470 hours, and each \
+         of those hours would have re-sent the whole 2.88 MB grid. The staged half IS dropped \
+         when d100's own record became a gap, which is what keeps `committed` equal to what \
+         the fold received",
+    ),
+    (
+        "xmap07_snow_mud_generation_counter",
+        "d100's monotonic anchor-generation ordinal, carried across the reset unconditionally \
+         (lane PB). Holding it INSIDE the epoch tracker is what made the field useless: the \
+         reset zeroed it, `saturating_add(1).max(1)` resolved to 1 again, and all 470 records \
+         on captures/oz_tip claimed generation 1 across 86 real resets -- so the fold's \
+         `hook_epoch` declared one epoch containing 428 duplicate `capture_frontier_ordinal` \
+         values and 85 backwards steps. A counter is not continuity state; the continuity \
+         fields beside it still take the blanket reset",
+    ),
+    (
         "focus_research_decisions_depth_live",
         "d45 takes PRE-FRAME RESTORATION, not the blanket reset and not the allowlist. Its pin \
          is staged inside the bracket and committed only where the late custody status is \

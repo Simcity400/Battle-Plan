@@ -1,8 +1,8 @@
 //! d26 `division_equipment_live` — per-division equipment inventories.
 //!
-//! Derived from `world_fold.rs:24079`-`:24385`
+//! Derived from `world_fold.rs:24129`-`:24435`
 //! (`fold_division_equipment`), its payload constants at `:810`-`:816`, the
-// @world-fold-authority domain=26 functions=fold_division_equipment lines=24079-24385 sha256=0725f8cae2fdd737e1b5c288762be80cc2e5d6b031d776f22a36881ef44323a0 closure=48e26916d66a80fbaef1b62dcacf5c45bbce39fd416d6539e0d1f727e1759288
+// @world-fold-authority domain=26 functions=fold_division_equipment lines=24129-24435 sha256=0725f8cae2fdd737e1b5c288762be80cc2e5d6b031d776f22a36881ef44323a0 closure=e8b889b7e81e2a307ab7153beb0906b9c5f8431cbc328430ff17a690dbd19c3c
 //! accumulator's own JSON projection (`:24160`-`:24176`), and the collector read
 //! that produces the row flags and the entry rows
 //! (`extractor/native/collector/src/attach_log.rs:45789`-`:46005`,

@@ -869,6 +869,20 @@ pub struct DomainDataContext<'a> {
     pub sequence: u64,
     pub header_hour_raw: i32,
     pub session_header_identity: Option<&'a mut SessionHeaderIdentityObservation>,
+    /// Caller-owned carry of the previous admitted d100 record's `grid_sha256`.
+    ///
+    /// STREAM-SCOPED, BECAUSE THE SUMMARY IS NOT (Codex review round 3, finding
+    /// 1). `summarize_domain_data_payload` builds a fresh
+    /// `DomainDataDecodeSummary` per RECORD and the caller merges what it
+    /// returns, so a digest parked on the summary is discarded the instant the
+    /// function returns. Every keyframe then looks like a first observation and
+    /// counts as changed -- which is exactly the miscount this carry exists to
+    /// remove, restored in full. It has to live where `session_header_identity`
+    /// already lives: owned by the caller, borrowed in, written back out.
+    ///
+    /// `None` means the caller is not tracking it (single-record callers and
+    /// tests); `Some(&mut None)` means "tracking, nothing admitted yet".
+    pub xmap07_snow_mud_previous_grid_sha256: Option<&'a mut Option<[u8; 32]>>,
 }
 
 impl Default for DomainDataContext<'_> {
@@ -879,6 +893,7 @@ impl Default for DomainDataContext<'_> {
             sequence: 0,
             header_hour_raw: 0,
             session_header_identity: None,
+            xmap07_snow_mud_previous_grid_sha256: None,
         }
     }
 }
@@ -915,6 +930,15 @@ struct DomainDataDecodeSummary {
     per_domain: BTreeMap<u16, DomainDataCounts>,
     domain57_frames: Vec<Domain57FrameEvidence>,
     session_header_identity: SessionHeaderIdentityObservation,
+    /// `grid_sha256` of the last admitted d100 record, so a KEYFRAME can be
+    /// classified as changed or unchanged exactly rather than conservatively.
+    ///
+    /// THIRTY-TWO BYTES, NOT A GRID. This validator is stateless by design and
+    /// must not start reconstructing 2.88 MB grids to count rows; but the exact
+    /// answer needs nothing more than the previous record's digest, which every
+    /// XSM2 record carries in its header. See
+    /// `decode_compact_xmap07_snow_mud_data_payload`.
+    xmap07_snow_mud_previous_grid_sha256: Option<[u8; 32]>,
 }
 
 fn add_decoder_status(summary: &mut DomainDataDecodeSummary, status_flags: u32) {
@@ -13305,26 +13329,69 @@ fn decode_compact_xmap07_snow_mud_data_payload(
         Ok(decoded) => decoded,
         Err(error) => {
             summary.parse_errors.push(format!(
-                "offset {offset}: xmap07_snow_mud XSM1 payload invalid: {error}"
+                "offset {offset}: xmap07_snow_mud XSM2 payload invalid: {error}"
             ));
             return;
         }
     };
     if sequence != 0 && decoded.source_sequence != sequence {
         summary.parse_errors.push(format!(
-            "offset {offset}: xmap07_snow_mud XSM1 source sequence {} != H4CR sequence {sequence}",
+            "offset {offset}: xmap07_snow_mud XSM2 source sequence {} != H4CR sequence {sequence}",
             decoded.source_sequence
         ));
         return;
     }
     if sequence != 0 && decoded.game_hour_raw != header_hour_raw {
         summary.parse_errors.push(format!(
-            "offset {offset}: xmap07_snow_mud XSM1 hour {} != H4CR hour {header_hour_raw}",
+            "offset {offset}: xmap07_snow_mud XSM2 hour {} != H4CR hour {header_hour_raw}",
             decoded.game_hour_raw
         ));
         return;
     }
     let admitted_rows = usize::from(!decoded.is_refusal());
+    // A NO-CHANGE HOUR IS AN UNCHANGED ROW (Codex review round 1, finding 4).
+    // Under XSM1 every admitted record was counted as changed because every
+    // record carried a whole fresh grid, and there was nothing else it could
+    // mean. XSM2 records say which they are, so counting a `NoChange` body -- a
+    // record whose entire content is "identical to the baseline" -- as a changed
+    // row contradicts the wire it was decoded from. The sealed `captures/pb_perf`
+    // showed the contradiction plainly: 361 data rows, 328 of them NoChange, and
+    // `data_changed_rows_total = 361`.
+    //
+    // A KEYFRAME IS CLASSIFIED BY DIGEST, NOT ASSUMED CHANGED (Codex review
+    // round 2, finding 2). The first fix left keyframes conservatively counted as
+    // changed, and that is wrong in the one case the cadence makes common: a
+    // keyframe sent because 64 hours elapsed carries a grid identical to the
+    // hour before, the producer correctly reports `grid_unchanged`, and a
+    // validator counting it as changed publishes a second official number that
+    // contradicts the first. "Cannot prove equality" is not evidence of change.
+    //
+    // The exact answer costs 32 bytes: compare this record's `grid_sha256` with
+    // the previous admitted record's. That is the same comparison the producer
+    // makes against its committed baseline, and the two agree by construction -
+    // a record replaced by a gap never reaches this decoder, and the producer
+    // rolls its baseline back over exactly that case.
+    let changed_rows = if admitted_rows == 0 {
+        0
+    } else {
+        match decoded.body {
+            // The record itself asserts equality with its baseline.
+            compact_contract::xmap07_snow_mud::Xmap07SnowMudWireBody::NoChange { .. } => 0,
+            // A delta only exists because tiles differ; `validate_record` already
+            // refuses one whose base digest equals its own.
+            compact_contract::xmap07_snow_mud::Xmap07SnowMudWireBody::Delta { .. } => 1,
+            compact_contract::xmap07_snow_mud::Xmap07SnowMudWireBody::Keyframe => {
+                match summary.xmap07_snow_mud_previous_grid_sha256 {
+                    // A first observation is a change: nothing preceded it.
+                    None => 1,
+                    Some(previous) => usize::from(previous != decoded.grid_sha256),
+                }
+            }
+        }
+    };
+    if admitted_rows != 0 {
+        summary.xmap07_snow_mud_previous_grid_sha256 = Some(decoded.grid_sha256);
+    }
     if let Some(domain) = summary
         .per_domain
         .get_mut(&COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE)
@@ -13334,15 +13401,41 @@ fn decode_compact_xmap07_snow_mud_data_payload(
             .saturating_add(admitted_rows as u64);
         domain.data_changed_rows_total = domain
             .data_changed_rows_total
-            .saturating_add(admitted_rows as u64);
+            .saturating_add(changed_rows as u64);
         domain.status_flags_or |= decoded.status_flags;
     }
+    // THE GRID THE HOUR REPRESENTS, not the bytes the record carried.
+    //
+    // Since XSM2 the two differ: a no-change hour puts zero grid bytes on the
+    // wire and a delta puts only its changed tiles there, while the hour still
+    // represents a whole `width * height * 4` grid. This unit has always meant
+    // the former — it is what `unit_count` on the domain's perf record reports —
+    // so it is computed from the dimensions rather than from the body, and it
+    // stays comparable across captures either side of the format bump.
+    //
+    // The bytes the record actually cost are already on the wire, in the H4CR
+    // header's `payload_len`, and the manifest's `record_bytes_total` sums them.
+    let represented_grid_bytes = (decoded.width as usize)
+        .saturating_mul(decoded.height as usize)
+        .saturating_mul(compact_contract::xmap07_snow_mud::GRID_BYTES_PER_CELL as usize);
     add_compact_domain_data_unit(
         summary,
         COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE,
         "xmap07_snow_mud_grid_bytes",
-        decoded.grid.len(),
+        represented_grid_bytes,
     );
+    // NO BODY-KIND UNIT HERE. The producer already publishes
+    // `xmap07_snow_mud_wire_{keyframe,delta,no_change}` on the domain's perf
+    // record, and both families land in the SAME `data_units_total` bucket, so a
+    // decoder-side copy under the same names does not cross-check anything -- it
+    // just doubles the count. The live capture `captures/pb_perf` shipped with
+    // exactly that defect and reported 722 body-kind units for 361 records
+    // (656 no-change + 54 delta + 12 keyframe, every one twice), which reads as
+    // a producer emitting two bodies per hour. One name, one writer.
+    //
+    // Nothing is lost by dropping it: `decode_payload` already refuses a record
+    // whose header and body kind disagree, so a body kind that reached this
+    // point is the one the bytes carry.
 }
 
 fn decode_compact_map_furniture_victory_points_data_payload(
@@ -16925,6 +17018,9 @@ pub fn summarize_domain_data_payload(
     if let Some(existing) = context.session_header_identity.as_deref() {
         summary.session_header_identity = existing.clone();
     }
+    if let Some(existing) = context.xmap07_snow_mud_previous_grid_sha256.as_deref() {
+        summary.xmap07_snow_mud_previous_grid_sha256 = *existing;
+    }
 
     let offset = context.stream_offset;
     match domain_id {
@@ -17174,6 +17270,15 @@ pub fn summarize_domain_data_payload(
         if let Some(target) = context.session_header_identity.as_deref_mut() {
             *target = summary.session_header_identity.clone();
         }
+    }
+    // OUTSIDE THE d68 GUARD, deliberately. This carry belongs to domain 100, and
+    // the caller only ever lends it for a domain-100 record; nesting it under the
+    // session-header condition (as the first attempt did) meant it was never
+    // written back at all, and
+    // `the_changed_row_count_survives_the_per_record_public_summarizer` caught
+    // exactly that.
+    if let Some(target) = context.xmap07_snow_mud_previous_grid_sha256.as_deref_mut() {
+        *target = summary.xmap07_snow_mud_previous_grid_sha256;
     }
 
     let domain = summary.per_domain.remove(&domain_id).unwrap_or_default();
@@ -17461,6 +17566,162 @@ fn push_static_join_token(out: &mut Vec<StaticJoinToken>, kind: &'static str, to
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One XSM2 payload plus the summary state a stream of them would carry.
+    fn xsm2_summary() -> DomainDataDecodeSummary {
+        let mut summary = DomainDataDecodeSummary {
+            domain_id: COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE,
+            ..Default::default()
+        };
+        summary
+            .per_domain
+            .insert(COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE, DomainDataCounts::default());
+        summary
+    }
+
+    fn xsm2_snapshot(grid: &[u8], hour: i32, sequence: u64) -> compact_contract::xmap07_snow_mud::Xmap07SnowMudSnapshot {
+        use sha2::{Digest, Sha256};
+        compact_contract::xmap07_snow_mud::Xmap07SnowMudSnapshot {
+            read_time_us: 10,
+            status_flags: 0,
+            source_sequence: sequence,
+            anchor_generation: 1,
+            capture_ordinal: 1,
+            first_capture_hour_raw: hour,
+            game_hour_raw: hour,
+            source_present: true,
+            width: 32,
+            height: 32,
+            fade_f32_bits: 0.25f32.to_bits(),
+            grid_sha256: Sha256::digest(grid).into(),
+            grid: grid.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_cadence_keyframe_of_an_unchanged_grid_is_not_an_authoritative_changed_row() {
+        // Codex review round 2, finding 2. `data_changed_rows_total` is exposed
+        // directly as `DomainDataAuthority.changed_rows`, so counting a cadence
+        // keyframe -- a whole grid re-sent because 64 hours elapsed, not because
+        // anything moved -- as changed publishes an official number that
+        // contradicts the producer's own `grid_unchanged`. "Cannot prove
+        // equality" is not evidence of change.
+        //
+        // kills: counting every admitted record as a changed row, and kills
+        // counting every Keyframe as changed.
+        use compact_contract::xmap07_snow_mud::Xmap07SnowMudWireBody;
+        let grid = vec![3u8; 32 * 32 * 4];
+        let mut summary = xsm2_summary();
+
+        // Hour 1: first observation, a keyframe. Nothing preceded it -> changed.
+        let first = xsm2_snapshot(&grid, 44_000_000, 1);
+        let payload =
+            compact_contract::xmap07_snow_mud::encode_payload(&first, &Xmap07SnowMudWireBody::Keyframe)
+                .unwrap();
+        decode_compact_xmap07_snow_mud_data_payload(0, 1, 44_000_000, &payload, &mut summary);
+
+        // Hour 2: an unchanged grid, spelled NoChange.
+        let second = xsm2_snapshot(&grid, 44_000_001, 2);
+        let payload = compact_contract::xmap07_snow_mud::encode_payload(
+            &second,
+            &Xmap07SnowMudWireBody::NoChange { base_grid_sha256: first.grid_sha256 },
+        )
+        .unwrap();
+        decode_compact_xmap07_snow_mud_data_payload(0, 2, 44_000_001, &payload, &mut summary);
+
+        // Hour 3: the CADENCE forces a keyframe, but the grid is identical.
+        let third = xsm2_snapshot(&grid, 44_000_002, 3);
+        let payload =
+            compact_contract::xmap07_snow_mud::encode_payload(&third, &Xmap07SnowMudWireBody::Keyframe)
+                .unwrap();
+        decode_compact_xmap07_snow_mud_data_payload(0, 3, 44_000_002, &payload, &mut summary);
+
+        let counts = &summary.per_domain[&COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE];
+        assert_eq!(counts.data_rows_total, 3, "three admitted records");
+        assert_eq!(
+            counts.data_changed_rows_total, 1,
+            "only the first observation changed anything"
+        );
+        assert!(summary.parse_errors.is_empty(), "{:?}", summary.parse_errors);
+    }
+
+    #[test]
+    fn the_changed_row_count_survives_the_per_record_public_summarizer() {
+        // THE DEFECT THIS PINS (Codex review round 3, finding 1). The first
+        // version of this carry lived on `DomainDataDecodeSummary`, which
+        // `summarize_domain_data_payload` constructs FRESH for every record and
+        // drops on return. Production calls it once per record and merges the
+        // results, so the digest was always None, every keyframe looked like a
+        // first observation, and the miscount came straight back. The earlier
+        // test missed it entirely by calling the private decoder three times with
+        // one hand-reused summary -- it exercised a path production never takes.
+        //
+        // kills: moving the carry back onto the per-record summary, or dropping
+        // the seed/write-back through DomainDataContext.
+        use compact_contract::xmap07_snow_mud::Xmap07SnowMudWireBody;
+        let grid = vec![3u8; 32 * 32 * 4];
+        let first = xsm2_snapshot(&grid, 44_000_000, 1);
+
+        // The caller owns the carry, exactly as main.rs does.
+        let mut carry: Option<[u8; 32]> = None;
+        let mut changed_total = 0u64;
+        for (index, sequence) in [1u64, 2u64].into_iter().enumerate() {
+            // The SAME grid, re-sent as a keyframe. Each record carries its own
+            // source sequence, which the decoder joins against the H4CR header.
+            let snapshot = xsm2_snapshot(&grid, 44_000_000 + index as i32, sequence);
+            let keyframe = compact_contract::xmap07_snow_mud::encode_payload(
+                &snapshot,
+                &Xmap07SnowMudWireBody::Keyframe,
+            )
+            .unwrap();
+            let authority = summarize_domain_data_payload(
+                COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE,
+                &keyframe,
+                DomainDataContext {
+                    stream_offset: index,
+                    record_flags: 0,
+                    sequence,
+                    header_hour_raw: 44_000_000 + index as i32,
+                    session_header_identity: None,
+                    xmap07_snow_mud_previous_grid_sha256: Some(&mut carry),
+                },
+            )
+            .expect("XSM2 keyframe summarizes");
+            changed_total += authority.changed_rows;
+        }
+
+        // The SAME grid sent twice as a keyframe (a cadence re-send) is one
+        // change, not two.
+        assert_eq!(
+            changed_total, 1,
+            "the second keyframe carries the grid the first already delivered"
+        );
+        assert_eq!(carry, Some(first.grid_sha256), "the carry was written back");
+    }
+
+    #[test]
+    fn a_keyframe_carrying_a_different_grid_is_an_authoritative_changed_row() {
+        // kills: making the keyframe arm always report unchanged, which would be
+        // the mirror-image error of the one above.
+        use compact_contract::xmap07_snow_mud::Xmap07SnowMudWireBody;
+        let mut summary = xsm2_summary();
+
+        let first = xsm2_snapshot(&vec![3u8; 32 * 32 * 4], 44_000_000, 1);
+        let payload =
+            compact_contract::xmap07_snow_mud::encode_payload(&first, &Xmap07SnowMudWireBody::Keyframe)
+                .unwrap();
+        decode_compact_xmap07_snow_mud_data_payload(0, 1, 44_000_000, &payload, &mut summary);
+
+        let second = xsm2_snapshot(&vec![9u8; 32 * 32 * 4], 44_000_001, 2);
+        let payload =
+            compact_contract::xmap07_snow_mud::encode_payload(&second, &Xmap07SnowMudWireBody::Keyframe)
+                .unwrap();
+        decode_compact_xmap07_snow_mud_data_payload(0, 2, 44_000_001, &payload, &mut summary);
+
+        let counts = &summary.per_domain[&COMPACT_DOMAIN_XMAP07_SNOW_MUD_LIVE];
+        assert_eq!(counts.data_rows_total, 2);
+        assert_eq!(counts.data_changed_rows_total, 2, "both grids differ");
+    }
 
     fn push_u32(out: &mut Vec<u8>, value: u32) {
         out.extend_from_slice(&value.to_le_bytes());

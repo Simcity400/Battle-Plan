@@ -1129,6 +1129,8 @@ fn validate_authoritative_stream(
                                 sequence: record.sequence,
                                 header_hour_raw: record.game_hour_raw,
                                 session_header_identity: None,
+                                // d45 reads only its own domain's rows; no d100 carry.
+                                xmap07_snow_mud_previous_grid_sha256: None,
                             },
                             ) {
                                 Ok(authority) => {
@@ -4228,6 +4230,8 @@ mod tests {
                     sequence: 1,
                     header_hour_raw: 400,
                     session_header_identity: None,
+                    // d45 reads only its own domain's rows; no d100 carry.
+                    xmap07_snow_mud_previous_grid_sha256: None,
                 },
             )
             .expect("FRD2 v3 shared authority");

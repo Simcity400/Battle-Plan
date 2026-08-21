@@ -1970,6 +1970,9 @@ pub fn domain_data_payload_status_at(
             sequence,
             header_hour_raw,
             session_header_identity: None,
+            // This caller wants only `status_flags`; it never reads a changed-row
+            // count, so it does not track the d100 digest.
+            xmap07_snow_mud_previous_grid_sha256: None,
         },
     )
     .map(|authority| authority.status_flags)

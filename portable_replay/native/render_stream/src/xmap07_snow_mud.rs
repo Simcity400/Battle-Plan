@@ -13,9 +13,9 @@ pub const XMAP07_PASSIVE_SNOW_MUD_SCOPE: &str = "world_global";
 /// dirty, tiling costs only the per-tile framing overhead over the former single payload replace;
 /// retune it only by measurement on a recording that actually schedules domain 100.
 pub const XMAP07_SNOW_MUD_TILE_EDGE: u32 = 16;
-/// Matches the XSM1 producer contract's maximum admitted grid axis.
+/// Matches the XSM2 producer contract's maximum admitted grid axis.
 const XMAP07_SNOW_MUD_MAX_GRID_AXIS: u32 = 16_384;
-/// Matches the XSM1 producer contract's maximum admitted decoded grid size.
+/// Matches the XSM2 producer contract's maximum admitted decoded grid size.
 const XMAP07_SNOW_MUD_MAX_GRID_BYTES: usize = 64 * 1024 * 1024;
 pub const XMAP07_SNOW_MUD_FADE_UPDATER_RVA: u32 = 0x0126_7270;
 pub const XMAP07_SNOW_MUD_FADE_UPDATER_INSTRUCTIONS_SHA256: &str =
