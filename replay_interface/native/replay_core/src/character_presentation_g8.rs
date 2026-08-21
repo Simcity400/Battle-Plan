@@ -249,16 +249,30 @@ pub(crate) fn build_character_presentation_g8_exact(
     ) {
         reject_aces(&mut presentation, "component header", warnings);
     }
-    if presentation.traits.as_ref().is_some_and(|batch| {
-        !traits_valid(
-            expected_hour,
-            batch,
-            d18_country_roster,
-            rosters,
-            roster_status,
-        )
-    }) {
-        reject_traits(&mut presentation, "identity/order/content join", warnings);
+    if presentation.traits.is_some() {
+        // The roster refusal is raised BY NAME and separately from the join
+        // verdict: "the recording could not name country 367" and "these trees
+        // do not join their leaders" are different facts, and collapsing the
+        // first into the second is how a recorder gap gets read as a producer
+        // defect.
+        let roster_detail = d18_country_roster.complete().err().map(|refusal| refusal.detail);
+        if let Some(detail) = roster_detail {
+            reject_traits(
+                &mut presentation,
+                &format!("complete current-hour D18 country roster: {detail}"),
+                warnings,
+            );
+        } else if presentation.traits.as_ref().is_some_and(|batch| {
+            !traits_valid(
+                expected_hour,
+                batch,
+                d18_country_roster,
+                rosters,
+                roster_status,
+            )
+        }) {
+            reject_traits(&mut presentation, "identity/order/content join", warnings);
+        }
     }
     if presentation
         .aces
@@ -331,14 +345,24 @@ fn traits_valid(
     rosters: &BTreeMap<String, CharacterRosterExactView>,
     roster_status: ViewStatus,
 ) -> bool {
+    // COMPLETE, not partial: `identity_complete` below is literally a
+    // completeness claim — every country in the roster has a Present D47
+    // roster, and `rosters.len() == d18_country_ids.len()` says there is
+    // nothing outside it. A roster that cannot name one of the frame's
+    // countries cannot back that, and admitting it here would let the G8 trait
+    // batch be certified against a census that is short by exactly the country
+    // nobody could name.
     let d18_country_ids = d18_country_roster
-        .entries
-        .iter()
-        .map(|entry| (entry.tag.as_str(), entry.tag_db_id))
-        .collect::<BTreeMap<_, _>>();
+        .complete()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| (entry.tag.as_str(), entry.tag_db_id))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_default();
     let mut current_leaders = BTreeSet::new();
-    let mut identity_complete = d18_country_roster.status == ViewStatus::Present
-        && !d18_country_ids.is_empty()
+    let mut identity_complete = !d18_country_ids.is_empty()
         && roster_status == ViewStatus::Present
         && rosters.len() == d18_country_ids.len()
         && d18_country_ids.keys().all(|tag| rosters.contains_key(*tag));
@@ -717,17 +741,16 @@ mod tests {
     }
 
     fn d18_roster(entries: &[(&str, u32)]) -> D18CountryRosterView {
-        D18CountryRosterView {
-            status: ViewStatus::Present,
-            entries: entries
+        D18CountryRosterView::present(
+            entries
                 .iter()
                 .map(|(tag, tag_db_id)| D18CountryRosterEntry {
                     tag: (*tag).into(),
                     tag_db_id: *tag_db_id,
                 })
                 .collect(),
-            diagnostic: None,
-        }
+            Vec::new(),
+        )
     }
 
     fn components() -> (CharacterG8TraitBatch, CharacterG11AceBatch) {
@@ -937,11 +960,8 @@ mod tests {
         let (traits, aces) = components();
         let value = frame_value(&traits, &aces);
         let rest = value.as_object().unwrap();
-        let unavailable_d18 = D18CountryRosterView {
-            status: ViewStatus::DomainUnavailable,
-            entries: Vec::new(),
-            diagnostic: Some("test D18 gap".into()),
-        };
+        let unavailable_d18 =
+            D18CountryRosterView::refused(ViewStatus::DomainUnavailable, "test D18 gap");
         let leaders = BTreeMap::from([("GER".into(), leader_roster())]);
         let ace_rosters = BTreeMap::from([("GER".into(), ace_roster())]);
         let view = build_character_presentation_g8_exact(
@@ -957,6 +977,35 @@ mod tests {
         let presentation = view.presentation.unwrap();
         assert!(presentation.traits.is_none());
         assert!(presentation.aces.is_some());
+
+        // kills: admitting the G8 trait batch against a roster that is Present
+        // but INCOMPLETE. `identity_complete` is a coverage claim - every
+        // country in the roster has a Present D47 roster and there is nothing
+        // outside it - so a roster that could not name one of the frame's
+        // countries must reject the component exactly as an unavailable one
+        // does. Reading `partial()` here instead of `complete()` would make this
+        // pass while certifying a census short by the unnameable country.
+        let incomplete_d18 = D18CountryRosterView::present(
+            vec![D18CountryRosterEntry {
+                tag: "GER".into(),
+                tag_db_id: 47,
+            }],
+            vec!["367".into()],
+        );
+        let incomplete = build_character_presentation_g8_exact(
+            rest,
+            FRAME_HOUR as i64,
+            &incomplete_d18,
+            &leaders,
+            ViewStatus::Present,
+            &ace_rosters,
+            ViewStatus::Present,
+            &mut Vec::new(),
+        );
+        assert!(
+            incomplete.presentation.unwrap().traits.is_none(),
+            "a Present-but-incomplete roster must not certify the trait batch"
+        );
 
         let mut cross_hour_traits = traits;
         cross_hour_traits.observed_game_hour_raw += 1;

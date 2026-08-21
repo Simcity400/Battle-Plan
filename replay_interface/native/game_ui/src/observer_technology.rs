@@ -61,22 +61,43 @@ pub fn observer_technology_coloring(
         );
     }
 
+    // PARTIAL: the only question asked of the roster here is whether the
+    // SELECTED country is in it, which is a presence claim about one country.
+    // Whether some other country could be named this hour cannot change the
+    // answer, and refusing this country's technology colouring over it would be
+    // the all-or-nothing this split removes.
     let d18 = frame.d18_country_roster();
-    if d18.status != ViewStatus::Present {
+    let partial = match d18.partial() {
+        Ok(partial) => partial,
+        Err(refusal) => {
+            return ObserverTechnologyColoring::unavailable(
+                country,
+                authored_order,
+                ObserverTechnologyGap::D18RosterUnavailable(refusal.detail),
+            )
+        }
+    };
+    if !partial.resolved.iter().any(|entry| entry.tag == country) {
+        // NAMED, and deliberately NOT by trying to match the selection against
+        // the excluded list. `excluded` holds raw emitted keys -- for a country
+        // this hour could not name, the numeric tag_db_id -- while `country` is
+        // a TAG, so the two can never be equal and a gap that only spoke when
+        // they matched would never speak. What is true is that the selection is
+        // not among the countries this hour could name, and that the recording
+        // carries N keys it could not name at all; both go in the gap.
         return ObserverTechnologyColoring::unavailable(
             country,
             authored_order,
-            ObserverTechnologyGap::D18RosterUnavailable(
-                d18.diagnostic
-                    .unwrap_or_else(|| "complete d18 roster unavailable".into()),
-            ),
-        );
-    }
-    if !d18.entries.iter().any(|entry| entry.tag == country) {
-        return ObserverTechnologyColoring::unavailable(
-            country,
-            authored_order,
-            ObserverTechnologyGap::CountryNotInD18Roster(country.to_string()),
+            if partial.excluded.is_empty() {
+                ObserverTechnologyGap::CountryNotInD18Roster(country.to_string())
+            } else {
+                ObserverTechnologyGap::D18RosterUnavailable(format!(
+                    "country {country} is not among the countries this hour's D18 read could \
+                     name; {} emitted country key(s) carry no D18 identity this hour ({})",
+                    partial.excluded.len(),
+                    partial.excluded.join(",")
+                ))
+            },
         );
     }
     if frame.research_status() != ViewStatus::Present {

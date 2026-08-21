@@ -49,21 +49,32 @@ impl Xmap16HubViewerSelectionProvider for D18Xmap16HubViewerSelectionProvider<'_
             .observer_country_id
             .as_deref()
             .ok_or("XMAP16 hub GUI requires a viewer-selected country")?;
+        // PARTIAL: the viewer-selected country's own identity, which is one
+        // country's PRESENCE. Nothing here is a census, so a country the
+        // recorder could not name this hour does not make the selected one any
+        // less named. The excluded keys ride the refusal so "absent from D18"
+        // and "in the frame but unnameable" stay distinguishable.
         let roster = self.world_frame.d18_country_roster();
-        if roster.status != replay_core::ViewStatus::Present {
-            return Err(format!(
-                "XMAP16 viewer-country D18 roster is {:?}: {}",
-                roster.status,
-                roster.diagnostic.as_deref().unwrap_or("no diagnostic")
-            )
-            .into());
-        }
-        let perspective_country_id = roster
-            .entries
+        let partial = roster.partial().map_err(|refusal| {
+            format!("XMAP16 viewer-country D18 roster is unusable: {refusal}")
+        })?;
+        let perspective_country_id = partial
+            .resolved
             .iter()
             .find(|entry| entry.tag == tag)
             .map(|entry| entry.tag_db_id)
-            .ok_or_else(|| format!("XMAP16 viewer country {tag} is absent from the D18 roster"))?;
+            .ok_or_else(|| {
+                let unnamed = if partial.excluded.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " ({} emitted country key(s) carry no D18 identity this hour: {})",
+                        partial.excluded.len(),
+                        partial.excluded.join(",")
+                    )
+                };
+                format!("XMAP16 viewer country {tag} is absent from the D18 roster{unnamed}")
+            })?;
         let Some(mode) = self.mode_provider.presentation_mode(viewer)? else {
             return Ok(None);
         };

@@ -15,21 +15,35 @@ pub fn admit_country_observer_character_ui(
     sprites: &SpriteRegistry,
     selection: &CharacterViewerSelection,
 ) -> std::result::Result<ObserverCharacterUi, String> {
+    // PARTIAL: this builds ONE country's character UI and needs only that
+    // country's tag_db_id. The all-country D47 coverage claim is made separately
+    // by `character_rosters_exact_status`, which `build_xui17_exact_rosters`
+    // already derives from the COMPLETE roster - so the census question is
+    // still asked, once, where it belongs.
     let d18 = frame.d18_country_roster();
-    if d18.status != ViewStatus::Present {
-        return Err(d18
-            .diagnostic
-            .unwrap_or_else(|| "XUI17 complete D18 identity roster unavailable".into()));
-    }
+    let partial = d18
+        .partial()
+        .map_err(|refusal| format!("XUI17 D18 identity roster is unusable: {refusal}"))?;
     if frame.character_rosters_exact_status() != ViewStatus::Present {
         return Err("XUI17 complete same-hour D47 roster is unavailable for the D18 census".into());
     }
-    let owner_tag_db_id = d18
-        .entries
+    let owner_tag_db_id = partial
+        .resolved
         .iter()
         .find(|entry| entry.tag == country_tag)
         .map(|entry| entry.tag_db_id)
-        .ok_or_else(|| format!("XUI17 {country_tag}: selected country absent from D18"))?;
+        .ok_or_else(|| {
+            let unnamed = if partial.excluded.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({} emitted country key(s) carry no D18 identity this hour: {})",
+                    partial.excluded.len(),
+                    partial.excluded.join(",")
+                )
+            };
+            format!("XUI17 {country_tag}: selected country absent from D18{unnamed}")
+        })?;
     let roster = frame
         .character_roster_exact(country_tag)
         .ok_or_else(|| format!("XUI17 {country_tag}: exact character roster absent"))?;

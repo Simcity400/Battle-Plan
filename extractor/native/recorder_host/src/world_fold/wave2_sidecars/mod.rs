@@ -121,6 +121,8 @@
 //! same-hour identity check, exactly as the existing carriers do with their
 //! `frame_hour` comparisons.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Map, Value};
 
 use compact_contract::pending_producer::PendingProducerSlot;
@@ -235,6 +237,13 @@ pub(crate) struct Wave2Feed {
     /// static string. A `fill` that pushes here is saying something only this
     /// hour knows.
     pub(crate) dynamic_refusals: Vec<String>,
+    /// The identity witness of every country key the snapshot EMITS, keyed
+    /// exactly as it is emitted.
+    ///
+    /// Filled before any `fill` runs. A producer that certifies anything about
+    /// the country census must read this rather than `WorldFold::countries`,
+    /// which is only the pre-projection copy.
+    pub(crate) emitted_country_identities: BTreeMap<String, EmittedCountryIdentity>,
 }
 
 impl Wave2Feed {
@@ -244,14 +253,63 @@ impl Wave2Feed {
     }
 }
 
+/// What one emitted `countries` key carries as its D18 replay-join witness,
+/// in the three states the consumer's `exact_d18_country_roster` distinguishes.
+///
+/// This exists because `WorldFold::countries` is NOT the object the snapshot
+/// emits: `build_snapshot` copies it and then a dozen projections add to and
+/// edit the copy. A producer that certified a census of `fold.countries` would
+/// be describing a different object from the one replay reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EmittedCountryIdentity {
+    /// `_r2_tag_db_id` is present and usable. The consumer builds a roster row
+    /// `(key, id)` from exactly this.
+    Resolved(u32),
+    /// No `_r2_tag_db_id` key at all: this hour could not name the country.
+    /// EXCLUDABLE at country grain on both sides.
+    Absent,
+    /// `_r2_tag_db_id` is present and cannot be an identity (null, wrong-typed,
+    /// zero, out of u32 range), or the country value is not an object. The
+    /// consumer refuses the whole roster on this and so must the producer.
+    Malformed,
+}
+
+fn emitted_country_identity(country: &Value) -> EmittedCountryIdentity {
+    let Some(country) = country.as_object() else {
+        return EmittedCountryIdentity::Malformed;
+    };
+    let Some(raw) = country.get("_r2_tag_db_id") else {
+        return EmittedCountryIdentity::Absent;
+    };
+    match raw
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value != 0)
+    {
+        Some(id) => EmittedCountryIdentity::Resolved(id),
+        None => EmittedCountryIdentity::Malformed,
+    }
+}
+
+/// `emitted_countries` is the snapshot's OWN `countries` object, mid-build and
+/// after every projection has run. Only the identity witness is indexed, not
+/// the objects: this runs once per hour inside the 48 ms fold budget and the
+/// full object is tens of megabytes.
 /// Collect every carrier's producer state off the fold.
 ///
 /// This is the call `build_snapshot` makes, and it never changes: the loop is
 /// over the frozen carrier list, and each carrier contributes through its own
 /// `fill`. Landing a producer therefore edits one carrier file and nothing
 /// else — the property the whole wave exists to create.
-pub(crate) fn collect_feed(fold: &super::WorldFold) -> Wave2Feed {
+pub(crate) fn collect_feed(
+    fold: &super::WorldFold,
+    emitted_countries: &Map<String, Value>,
+) -> Wave2Feed {
     let mut feed = Wave2Feed::unfed();
+    feed.emitted_country_identities = emitted_countries
+        .iter()
+        .map(|(key, country)| (key.clone(), emitted_country_identity(country)))
+        .collect();
     for carrier in carriers() {
         (carrier.fill)(fold, &mut feed);
     }
@@ -880,7 +938,8 @@ mod tests {
     /// to MAPC1 v2 and the shared assertion happily kept passing while the
     /// carrier declared a contract its own consumer refuses. Each carrier is now
     /// pinned to its own version, so a producer that bumps `SCHEMA_VERSION`
-    /// without telling this table fails here.
+    /// without telling this table fails here -- which is exactly what it did
+    /// when XMAP05 went from MAPC1 v2 to v3.
     #[test]
     fn the_map_carriers_record_the_schema_token_their_integer_version_does_not_carry() {
         assert_eq!(xmap05_control_authority::REQUIRED_SCHEMA_TOKEN, "MAPC1");
@@ -889,7 +948,7 @@ mod tests {
             "hoi4.weather-visual-lifecycle.a729.v1"
         );
         let expected_version = |wire_key: &str| match wire_key {
-            "_r2_xmap05_control_authority" => Some(2),
+            "_r2_xmap05_control_authority" => Some(3),
             _ => Some(1),
         };
         let mut map_carriers = 0;

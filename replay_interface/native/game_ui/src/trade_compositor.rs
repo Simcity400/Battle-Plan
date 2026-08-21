@@ -142,6 +142,11 @@ pub enum Xui15ProducerRejection {
     IncompleteSelectedCountryTrade,
     IncompleteFilterCatalogue,
     IncompleteCountryCatalogue,
+    /// The D18 country roster is not COMPLETE, naming the countries the
+    /// recording could not name. Distinct from the two `Incomplete*` variants
+    /// above, which are the producer's payload disagreeing with a complete
+    /// roster: a recorder gap and a carrier defect are different findings.
+    IncompleteD18Roster(String),
     MissingEffectiveLocalisation,
     MissingEffectiveFlag,
 }
@@ -591,14 +596,17 @@ fn validate_complete_catalogue_roster(
     payload: &Xui15ProducerPayload,
     frame: &WorldFrame,
 ) -> std::result::Result<(), Xui15ProducerRejection> {
+    // COMPLETE, not partial: the supplied catalogue set is compared for
+    // EQUALITY against the roster and every catalogue's evaluated-country list
+    // must equal it too. Those are absence claims over the whole country set.
     let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present {
-        return Err(Xui15ProducerRejection::IncompleteCountryCatalogue);
-    }
-    let expected = roster
-        .entries
-        .into_iter()
-        .map(|entry| entry.tag)
+    let roster_entries = match roster.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => return Err(Xui15ProducerRejection::IncompleteD18Roster(refusal.detail)),
+    };
+    let expected = roster_entries
+        .iter()
+        .map(|entry| entry.tag.clone())
         .collect::<BTreeSet<_>>();
     let supplied = payload
         .catalogues
@@ -631,11 +639,18 @@ fn validate_complete_catalogue_roster(
 fn validate_complete_trade_presentation_roster(
     frame: &WorldFrame,
 ) -> std::result::Result<(), Xui15ProducerRejection> {
+    // COMPLETE, not partial: this sweeps EVERY country and requires each one's
+    // trade screen to be visible and complete, which is a claim about the whole
+    // set rather than about the countries this hour could name.
     let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present || frame.trade_status() != ViewStatus::Present {
+    let roster_entries = match roster.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => return Err(Xui15ProducerRejection::IncompleteD18Roster(refusal.detail)),
+    };
+    if frame.trade_status() != ViewStatus::Present {
         return Err(Xui15ProducerRejection::IncompleteSelectedCountryTrade);
     }
-    for entry in roster.entries {
+    for entry in roster_entries {
         let crate::trade_state::AdmittedTradeScreen::Visible(presentation) =
             crate::trade_state::admit_trade_screen(
                 frame.trade_status(),

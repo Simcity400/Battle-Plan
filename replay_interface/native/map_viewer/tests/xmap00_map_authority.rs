@@ -1272,7 +1272,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "combat.land_active_epoch" => frame.combats_status(),
         "combat.land_terminal_detail" => frame.ended_combats_status(),
         "combat.naval_air_epoch" => frame.naval_air_combat_status(),
-        "country.d18_complete_roster" => frame.d18_country_roster().status,
+        "country.d18_complete_roster" => frame.d18_country_roster().complete_status(),
         "diplomacy.faction_roster" => match frame.diplomacy().faction_roster_status() {
             replay_core::world::FactionRosterStatus::Unavailable => ViewStatus::DomainUnavailable,
             replay_core::world::FactionRosterStatus::MeasuredEmpty
@@ -2820,7 +2820,7 @@ fn a_faction_roster_without_a_country_census_is_a_gap_not_a_rejected_projection(
         "fixture no longer decodes as a measured nonempty roster"
     );
     assert_eq!(
-        frame.d18_country_roster().status,
+        frame.d18_country_roster().complete_status(),
         ViewStatus::DomainAbsent,
         "fixture must have no country census for this test to mean anything"
     );

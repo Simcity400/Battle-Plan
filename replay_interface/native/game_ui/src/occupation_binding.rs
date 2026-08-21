@@ -464,19 +464,22 @@ fn validate_occupation_controller_census(
     frame: &WorldFrame,
     supplement: &OccupationD66UiSupplement,
 ) -> std::result::Result<(), OccupationAssemblyGap> {
-    let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present {
-        return Err(OccupationAssemblyGap {
-            code: "XUI16_D18_ROSTER_UNAVAILABLE",
-            detail: roster
-                .diagnostic
-                .unwrap_or_else(|| format!("D18 roster status is {:?}", roster.status)),
-        });
-    }
-    let roster = roster
-        .entries
-        .into_iter()
-        .map(|entry| (entry.tag, entry.tag_db_id))
+    // PARTIAL: every use of this map in `validate_occupation_controller_identities`
+    // is a per-state PRESENCE join - "this state's controller/occupied TAG and
+    // tag_db_id are a country this hour resolved". Nothing here says the roster
+    // is all of the countries. A state naming an unresolvable country fails the
+    // join and refuses, which is the fail-closed direction, and the refusal
+    // carries the excluded keys so it can say which country nobody could name.
+    let view = frame.d18_country_roster();
+    let partial = view.partial().map_err(|refusal| OccupationAssemblyGap {
+        code: "XUI16_D18_ROSTER_UNAVAILABLE",
+        detail: refusal.detail,
+    })?;
+    let roster_excluded = partial.excluded.to_vec();
+    let roster = partial
+        .resolved
+        .iter()
+        .map(|entry| (entry.tag.clone(), entry.tag_db_id))
         .collect::<BTreeMap<_, _>>();
     validate_occupation_controller_identities(
         frame.occupation_by_state().iter().map(|(&state_id, row)| {
@@ -497,6 +500,32 @@ fn validate_occupation_controller_census(
         supplement,
         &roster,
     )
+    .map_err(|gap| name_unresolved_countries(gap, &roster_excluded))
+}
+
+/// Append the countries nobody could name to a join refusal.
+///
+/// A state whose controller is exactly the country this hour's D18 read could
+/// not resolve fails `roster.get(tag)` like any other unknown TAG, and the
+/// generic "does not join the typed D18 roster" would leave the reader hunting
+/// for a carrier defect that is not there. The recorder's own gap belongs in
+/// the sentence.
+fn name_unresolved_countries(
+    gap: OccupationAssemblyGap,
+    excluded: &[String],
+) -> OccupationAssemblyGap {
+    if excluded.is_empty() {
+        return gap;
+    }
+    OccupationAssemblyGap {
+        code: gap.code,
+        detail: format!(
+            "{} (note: {} emitted country key(s) carry no D18 identity this hour: {})",
+            gap.detail,
+            excluded.len(),
+            excluded.join(",")
+        ),
+    }
 }
 
 fn validate_occupation_controller_identities<'a>(

@@ -673,15 +673,24 @@ fn validate_xui12_complete_country_roster(
     payload: &Xui12ProducerFramePayload,
     frame: &replay_core::WorldFrame,
 ) -> Result<(), Xui12CanvasLayoutRejection> {
+    // COMPLETE, not partial, and the function is named for it: XUI12's canvas
+    // lays out EVERY country and the payload is compared to the roster row for
+    // row, so a roster short by a country the frame carries is exactly an
+    // incomplete country census.
     let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present
-        || roster.entries.is_empty()
-        || roster.entries.len() != payload.countries.len()
-    {
+    let roster_entries = match roster.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => {
+            return Err(Xui12CanvasLayoutRejection::IncompleteD18Roster(
+                refusal.detail,
+            ))
+        }
+    };
+    if roster_entries.len() != payload.countries.len() {
         return Err(Xui12CanvasLayoutRejection::IncompleteCountryCensus);
     }
     for (expected_ordinal, (expected, actual)) in
-        roster.entries.iter().zip(&payload.countries).enumerate()
+        roster_entries.iter().zip(&payload.countries).enumerate()
     {
         let expected_ordinal = u32::try_from(expected_ordinal)
             .map_err(|_| Xui12CanvasLayoutRejection::PixelOverflow)?;
@@ -1315,6 +1324,13 @@ pub enum Xui12CanvasLayoutRejection {
     IncompleteTypedAdapter,
     InvalidProducerAuthority,
     IncompleteCountryCensus,
+    /// The D18 country roster is not COMPLETE, and this says which countries the
+    /// recording could not name. Distinct from `IncompleteCountryCensus`, which
+    /// is the producer's payload disagreeing with a roster that IS complete:
+    /// one is a recorder gap and the other is a carrier defect, and a canvas
+    /// that reported them identically would send every reader hunting for the
+    /// wrong one.
+    IncompleteD18Roster(String),
     StaleReplayFrame,
     StaleViewerState,
 }

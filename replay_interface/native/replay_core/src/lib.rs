@@ -6,6 +6,7 @@ pub mod army_battleplans;
 pub mod character_presentation_g8;
 pub mod cipher_controller;
 pub mod combat_presentation;
+pub mod d18_roster;
 pub mod decision_evaluation;
 pub mod decisions_live;
 pub mod design_catalog;
@@ -282,6 +283,7 @@ pub use world::{
     CountryArmyUpgradeExact, CountryArmyUpgradeExactView, CountryCore, CountryDiplomacy,
     CountryDisruptedSupplyExactRow, CountryDisruptedSupplyExactView, CountryIdentity,
     CountryLeaderRoleExactRow, CountryPreferredTactic, D18CountryRosterEntry, D18CountryRosterView,
+    D18PartialRoster, D18RosterRefusal,
     D48ConstructionQueueRow, D48ConstructionResourceView, DecisionAvailabilityExact,
     DecisionCostExact, DecisionLifecycleExact, DecisionPanelChildExact,
     DecisionPanelChildKindExact, DecisionPanelExact, DecisionPanelExactView,

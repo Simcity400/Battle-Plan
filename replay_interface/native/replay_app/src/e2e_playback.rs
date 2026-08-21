@@ -234,7 +234,7 @@ fn e2e_pov_visibility_open_play_scrub_pov_toggle() {
         PovPicker::Unavailable(reason) => {
             assert!(reason.contains("d18"), "typed gap names d18: {reason}");
         }
-        PovPicker::Available(choices) => {
+        PovPicker::Available { choices, .. } => {
             panic!("session-player subset must not become a country picker: {choices:?}")
         }
     }

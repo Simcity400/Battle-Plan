@@ -828,18 +828,22 @@ pub fn admit_observer_ability_frame(
         ));
     }
 
+    // COMPLETE, not partial: the payload's snapshots are compared as an
+    // ORDERED EQUALITY against the whole roster and its `country_count` is
+    // asserted equal to the roster size. Both are claims about the entire
+    // country set, so a roster short by a country the frame carries cannot back
+    // them; the refusal names the countries.
     let d18 = frame.d18_country_roster();
-    if d18.status != replay_core::ViewStatus::Present {
-        return Err(ActiveAbilityRejection(format!(
-            "XUI23 passive carrier requires the complete current-hour D18 roster: {}",
-            d18.diagnostic
-                .as_deref()
-                .unwrap_or("D18 roster is unavailable")
-        )));
-    }
-    if d18.entries.len() != payload.authority.country_count
-        || d18
-            .entries
+    let d18_entries = match d18.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => {
+            return Err(ActiveAbilityRejection(format!(
+                "XUI23 passive carrier requires the complete current-hour D18 roster: {refusal}"
+            )))
+        }
+    };
+    if d18_entries.len() != payload.authority.country_count
+        || d18_entries
             .iter()
             .map(|entry| entry.tag.as_str())
             .ne(payload.snapshots.iter().map(|snapshot| snapshot.country_tag.as_str()))

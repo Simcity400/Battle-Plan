@@ -1167,12 +1167,15 @@ fn theatre_gap(field: &'static str, reason: impl Into<String>) -> ObserverUiGap 
     }
 }
 
+/// COMPLETE, and it takes the entries rather than the view so the completeness
+/// decision is made once, at the call site that also needs the selected
+/// country's identity.
 fn require_exact_d18_d98_country_census(
-    roster: &replay_core::D18CountryRosterView,
+    roster: &[replay_core::D18CountryRosterEntry],
     d98_census: &[u32],
 ) -> std::result::Result<(), ObserverUiGap> {
     let mut d18 = std::collections::BTreeSet::new();
-    for entry in &roster.entries {
+    for entry in roster {
         if entry.tag_db_id == 0 || !d18.insert(entry.tag_db_id) {
             return Err(theatre_gap(
                 "all_country_controller_authority",
@@ -1207,17 +1210,21 @@ fn admit_observer_theatre_surface(
     content_admission: &ValidatedContentAdmission,
     country_tag: &str,
 ) -> std::result::Result<ObserverTheatreSurface, ObserverUiGap> {
+    // COMPLETE, not partial: the selected country's identity is only half of
+    // what this surface needs - `require_exact_d18_d98_country_census` below
+    // asserts the D98 all-country census EQUALS this roster, which no partial
+    // roster can back.
     let roster = frame.d18_country_roster();
-    if roster.status != replay_core::ViewStatus::Present {
-        return Err(theatre_gap(
-            "selected_country_identity",
-            roster
-                .diagnostic
-                .unwrap_or_else(|| "D18 country roster is unavailable".into()),
-        ));
-    }
-    let entry = roster
-        .entries
+    let roster_entries = match roster.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => {
+            return Err(theatre_gap(
+                "selected_country_identity",
+                format!("D18 country roster is not complete: {refusal}"),
+            ))
+        }
+    };
+    let entry = roster_entries
         .iter()
         .find(|entry| entry.tag == country_tag)
         .cloned()
@@ -1254,7 +1261,7 @@ fn admit_observer_theatre_surface(
             "D98 producer did not admit every country in its complete census",
         ));
     }
-    require_exact_d18_d98_country_census(&roster, &theatre.census)?;
+    require_exact_d18_d98_country_census(roster_entries, &theatre.census)?;
     let section = theatre.country(entry.tag_db_id);
     if section.status != replay_core::ViewStatus::Present {
         return Err(theatre_gap(
@@ -4868,19 +4875,31 @@ impl ProductionUiRenderer {
         country_tag: &str,
         selection: &crate::character_ui::CharacterViewerSelection,
     ) -> std::result::Result<crate::character_ui::ObserverCharacterUi, String> {
+        // PARTIAL: all this needs is the SELECTED country's own tag_db_id, a
+        // presence claim about one country. The character UI it builds is
+        // per-country and says nothing about any other.
         let d18 = frame.d18_country_roster();
-        if d18.status != replay_core::ViewStatus::Present {
-            return Err(d18
-                .diagnostic
-                .unwrap_or_else(|| "complete D18 country identity roster is unavailable".into()));
-        }
-        let owner_tag_db_id = d18
-            .entries
+        let partial = d18
+            .partial()
+            .map_err(|refusal| format!("D18 country identity roster is unusable: {refusal}"))?;
+        let owner_tag_db_id = partial
+            .resolved
             .iter()
             .find(|entry| entry.tag == country_tag)
             .map(|entry| entry.tag_db_id)
             .ok_or_else(|| {
-                format!("selected country {country_tag:?} is absent from the complete D18 roster")
+                let unnamed = if partial.excluded.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " ({} emitted country key(s) carry no D18 identity this hour: {})",
+                        partial.excluded.len(),
+                        partial.excluded.join(",")
+                    )
+                };
+                format!(
+                    "selected country {country_tag:?} is absent from the D18 roster{unnamed}"
+                )
             })?;
         let roster = frame
             .character_roster_exact(country_tag)
@@ -7177,20 +7196,16 @@ mod tests {
             .expect_err("an underivable shipping sequence must refuse");
         assert_eq!(sequence_gap.field, "source_sequence");
 
-        let roster = replay_core::D18CountryRosterView {
-            status: replay_core::ViewStatus::Present,
-            entries: vec![
-                replay_core::D18CountryRosterEntry {
-                    tag: "EMPTY".into(),
-                    tag_db_id: 91,
-                },
-                replay_core::D18CountryRosterEntry {
-                    tag: "GER".into(),
-                    tag_db_id: 23,
-                },
-            ],
-            diagnostic: None,
-        };
+        let roster = vec![
+            replay_core::D18CountryRosterEntry {
+                tag: "EMPTY".into(),
+                tag_db_id: 91,
+            },
+            replay_core::D18CountryRosterEntry {
+                tag: "GER".into(),
+                tag_db_id: 23,
+            },
+        ];
         assert_eq!(
             require_exact_d18_d98_country_census(&roster, &[23, 91]),
             Ok(())
@@ -7202,20 +7217,65 @@ mod tests {
             assert!(gap.reason.contains("exactly equal"));
         }
 
-        let duplicate = replay_core::D18CountryRosterView {
-            entries: vec![
-                replay_core::D18CountryRosterEntry {
-                    tag: "GER".into(),
-                    tag_db_id: 23,
-                },
-                replay_core::D18CountryRosterEntry {
-                    tag: "GER_ALIAS".into(),
-                    tag_db_id: 23,
-                },
-            ],
-            ..roster
-        };
+        let duplicate = vec![
+            replay_core::D18CountryRosterEntry {
+                tag: "GER".into(),
+                tag_db_id: 23,
+            },
+            replay_core::D18CountryRosterEntry {
+                tag: "GER_ALIAS".into(),
+                tag_db_id: 23,
+            },
+        ];
         assert!(require_exact_d18_d98_country_census(&duplicate, &[23]).is_err());
+
+        // kills: `admit_observer_theatre_surface` taking the RESOLVED half of a
+        // roster that could not name one of the frame's countries. The surface
+        // asserts D98's all-country census EQUALS the roster, so a roster short
+        // by an unnameable country would make a D98 census that is equally
+        // short look exact.
+        //
+        // Driven through the PRODUCTION FUNCTION, not through
+        // `D18CountryRosterView::complete` directly: a test that calls
+        // `complete()` itself only proves the view refuses, which
+        // `replay_core`'s own tests already prove, and would stay green if this
+        // call site were switched to `partial()?.resolved`.
+        let unnameable_frame = {
+            let mut rest = serde_json::Map::new();
+            rest.insert(
+                "countries".into(),
+                serde_json::json!({"GER": {"_r2_tag_db_id": 23}, "367": {}}),
+            );
+            observer_test_frame(rest)
+        };
+        let gap = admit_observer_theatre_surface(&unnameable_frame, &content_admission(&[]), "GER")
+            .expect_err("an incomplete D18 roster must refuse this surface");
+        assert_eq!(gap.field, "selected_country_identity");
+        assert!(
+            gap.reason.contains("367") && gap.reason.contains("not complete"),
+            "the refusal must name the country the recording could not name: {}",
+            gap.reason
+        );
+
+        // ... and the refusal is the ROSTER's, not something this frame would
+        // have refused anyway: drop the unnameable key and the same call gets
+        // past the roster and fails on a later authority instead. Without this
+        // arm the assertion above would also hold for a frame that never
+        // reached the roster check.
+        let nameable_frame = {
+            let mut rest = serde_json::Map::new();
+            rest.insert(
+                "countries".into(),
+                serde_json::json!({"GER": {"_r2_tag_db_id": 23}}),
+            );
+            observer_test_frame(rest)
+        };
+        let later = admit_observer_theatre_surface(&nameable_frame, &content_admission(&[]), "GER")
+            .expect_err("this fixture carries no D98 selector, so it still refuses");
+        assert_ne!(
+            later.field, "selected_country_identity",
+            "a complete roster must not refuse at the roster: {later:?}"
+        );
     }
 
     #[test]

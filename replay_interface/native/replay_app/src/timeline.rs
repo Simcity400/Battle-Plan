@@ -1014,7 +1014,7 @@ mod tests {
             crate::observer::PovPicker::Unavailable(reason) => {
                 assert!(!reason.is_empty(), "carries the fail-closed reason");
             }
-            crate::observer::PovPicker::Available(choices) => {
+            crate::observer::PovPicker::Available { choices, .. } => {
                 panic!("sessionless frame cannot offer POVs: {choices:?}")
             }
         }

@@ -27,8 +27,39 @@ pub struct CountryChoice {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PovPicker {
-    Available(Vec<CountryChoice>),
+    /// The countries this frame can be watched as, PLUS the country keys it
+    /// carries that this hour's D18 read could not name.
+    ///
+    /// Both halves, always. An unnameable country is not a point of view this
+    /// recording offers — it has no TAG to select and no per-country view to
+    /// show — but the picker must not therefore present its list as the whole
+    /// country set. Callers describe the list to the user and clear a selection
+    /// that is absent from it, and both of those become false statements if
+    /// "not offered" and "does not exist" are allowed to look the same.
+    Available {
+        choices: Vec<CountryChoice>,
+        unnameable: Vec<String>,
+    },
     Unavailable(String),
+}
+
+impl PovPicker {
+    /// The offered choices, or an empty slice.
+    pub fn choices(&self) -> &[CountryChoice] {
+        match self {
+            PovPicker::Available { choices, .. } => choices,
+            PovPicker::Unavailable(_) => &[],
+        }
+    }
+
+    /// The country keys this frame carries that it cannot offer as a point of
+    /// view, because this hour's D18 read could not name them.
+    pub fn unnameable(&self) -> &[String] {
+        match self {
+            PovPicker::Available { unnameable, .. } => unnameable,
+            PovPicker::Unavailable(_) => &[],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,7 +282,12 @@ pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
                     "session player-country list present but no measured TAGs".to_string(),
                 )
             } else {
-                PovPicker::Available(choices)
+                // The session player-country list is not the D18 roster and
+                // says nothing about unnameable countries.
+                PovPicker::Available {
+                    choices,
+                    unnameable: Vec::new(),
+                }
             }
         }
         Leaf::Unobtained => PovPicker::Unavailable(
@@ -262,27 +298,38 @@ pub fn povs_from_session(session: &SessionMetadataView) -> PovPicker {
 }
 
 pub fn povs_from_frame(frame: &WorldFrame) -> PovPicker {
-    let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present {
-        return PovPicker::Unavailable(
-            roster
-                .diagnostic
-                .unwrap_or_else(|| "complete d18 country roster unavailable".into()),
-        );
-    }
-    if roster.entries.is_empty() {
-        return PovPicker::Unavailable("complete d18 country roster is empty".into());
-    }
-    PovPicker::Available(
-        roster
-            .entries
-            .into_iter()
+    povs_from_roster(&frame.d18_country_roster())
+}
+
+/// Split out from [`povs_from_frame`] so the roster half can be tested
+/// directly: `WorldFrame` cannot be constructed outside `replay_core`, and the
+/// property that matters here — that the countries this recording could not
+/// name are CARRIED rather than dropped — is entirely a property of the roster.
+fn povs_from_roster(roster: &replay_core::D18CountryRosterView) -> PovPicker {
+    // PARTIAL: this is the list of countries a viewer may select as a point of
+    // view. A country the recording could not name has no TAG to select and no
+    // per-country view to show, so it is not a POV this recording offers -
+    // while every country that WAS named still is. Refusing the whole picker
+    // over it would leave the viewer with no point of view at all.
+    //
+    // What makes that honest rather than a shorter list pretending to be whole:
+    // the unnameable keys ride the picker, and the caller both says so and uses
+    // them to explain a cleared selection.
+    let partial = match roster.partial() {
+        Ok(partial) => partial,
+        Err(refusal) => return PovPicker::Unavailable(refusal.detail),
+    };
+    PovPicker::Available {
+        choices: partial
+            .resolved
+            .iter()
             .map(|country| CountryChoice {
-                tag: country.tag,
+                tag: country.tag.clone(),
                 label: None,
             })
             .collect(),
-    )
+        unnameable: partial.excluded.to_vec(),
+    }
 }
 
 #[cfg(test)]
@@ -296,7 +343,7 @@ fn povs_from_session_and_header(
         &session_picker,
         &header.player,
     ) {
-        (_, PovPicker::Available(choices), Leaf::Measured(player))
+        (_, PovPicker::Available { choices, .. }, Leaf::Measured(player))
             if !choices.iter().any(|choice| choice.tag == player.country_tag) =>
         {
             PovPicker::Unavailable(format!(
@@ -304,12 +351,15 @@ fn povs_from_session_and_header(
                 player.country_tag
             ))
         }
-        (_, PovPicker::Available(_), _) => session_picker,
+        (_, PovPicker::Available { .. }, _) => session_picker,
         (Leaf::Absent, PovPicker::Unavailable(_), Leaf::Measured(player)) => {
-            PovPicker::Available(vec![CountryChoice {
-                tag: player.country_tag.clone(),
-                label: None,
-            }])
+            PovPicker::Available {
+                choices: vec![CountryChoice {
+                    tag: player.country_tag.clone(),
+                    label: None,
+                }],
+                unnameable: Vec::new(),
+            }
         }
         (_, PovPicker::Unavailable(_), _) => session_picker,
     }
@@ -331,6 +381,66 @@ mod tests {
             active_dlcs: Leaf::Absent,
             localisation_language: Leaf::Absent,
             display_variant: Leaf::Absent,
+        }
+    }
+
+    /// kills: dropping the unnameable countries from the POV picker, which is
+    /// what would let its caller keep describing the list as "all countries"
+    /// and keep treating absence from it as "this country does not exist".
+    ///
+    /// The list of OFFERED points of view is correctly the resolved set — an
+    /// unnameable country has no TAG to select — so the defect this guards
+    /// against is not the list's contents but the silence about what is missing
+    /// from it.
+    ///
+    /// What production change would make this fail: building the picker from
+    /// `partial.resolved` alone and discarding `partial.excluded`, or switching
+    /// the whole picker back to `complete()` (the first assertion's picker would
+    /// become Unavailable and the viewer would lose all 2 points of view over
+    /// one country).
+    #[test]
+    fn the_pov_picker_offers_the_named_countries_and_carries_the_rest() {
+        let entry = |tag: &str, id: u32| replay_core::D18CountryRosterEntry {
+            tag: tag.into(),
+            tag_db_id: id,
+        };
+
+        let complete = replay_core::D18CountryRosterView::present(
+            vec![entry("ENG", 1), entry("GER", 2)],
+            Vec::new(),
+        );
+        let picker = povs_from_roster(&complete);
+        assert_eq!(picker.choices().len(), 2);
+        assert!(picker.unnameable().is_empty());
+
+        let partial = replay_core::D18CountryRosterView::present(
+            vec![entry("ENG", 1), entry("GER", 2)],
+            vec!["367".into()],
+        );
+        let picker = povs_from_roster(&partial);
+        assert_eq!(
+            picker
+                .choices()
+                .iter()
+                .map(|choice| choice.tag.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ENG", "GER"],
+            "every country this hour could name is still offered"
+        );
+        assert_eq!(
+            picker.unnameable(),
+            ["367".to_string()],
+            "the country it could not name must be carried, not dropped"
+        );
+
+        // A roster that resolved nothing offers nothing, and says why.
+        let nothing = replay_core::D18CountryRosterView::refused(
+            ViewStatus::DomainUnavailable,
+            "no emitted country key carries a d18 identity this hour",
+        );
+        match povs_from_roster(&nothing) {
+            PovPicker::Unavailable(reason) => assert!(reason.contains("d18 identity")),
+            PovPicker::Available { .. } => panic!("an empty roster must not offer a point of view"),
         }
     }
 
@@ -519,7 +629,7 @@ mod tests {
             },
         ];
         match povs_from_session(&session(Leaf::Measured(list))) {
-            PovPicker::Available(choices) => {
+            PovPicker::Available { choices, .. } => {
                 assert_eq!(choices.len(), 2);
                 assert_eq!(choices[0].tag, "GER");
                 assert_eq!(choices[0].label.as_deref(), Some("Alice"));
@@ -553,7 +663,7 @@ mod tests {
             country_tag: "D04".into(),
         }));
         match povs_from_session_and_header(&session(Leaf::Absent), &header) {
-            PovPicker::Available(choices) => {
+            PovPicker::Available { choices, .. } => {
                 assert_eq!(choices.len(), 1);
                 assert_eq!(choices[0].tag, "D04");
                 assert_eq!(choices[0].label, None);

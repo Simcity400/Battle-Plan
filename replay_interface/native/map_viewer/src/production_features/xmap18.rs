@@ -1739,13 +1739,23 @@ fn raw_runtime_layers(
     if runtime.effective_vfs_manifest_sha256 != context.effective_vfs_manifest_sha256 {
         return Err("XMAP18 raw map-mode matrix belongs to a different effective VFS".into());
     }
-    let expected_observers = context
-        .world_frame
-        .d18_country_roster()
-        .entries
-        .iter()
-        .map(|entry| entry.tag.clone())
-        .collect::<Vec<_>>();
+    // COMPLETE, not partial: the runtime's observer census is compared for
+    // EQUALITY against this list, which is an absence claim about the country
+    // set ("no observer outside these"). A roster short by a country the frame
+    // carries cannot back it, and the refusal names the countries.
+    let roster = context.world_frame.d18_country_roster();
+    let expected_observers = match roster.complete() {
+        Ok(entries) => entries
+            .iter()
+            .map(|entry| entry.tag.clone())
+            .collect::<Vec<_>>(),
+        Err(refusal) => {
+            return Err(format!(
+                "XMAP18 requires the complete current-hour D18 country roster: {refusal}"
+            )
+            .into())
+        }
+    };
     if expected_observers.is_empty()
         || runtime.observer_country_ids != expected_observers
         || !runtime
@@ -1998,13 +2008,23 @@ fn validate_scripted_runtime(
     {
         return Err("XMAP18 scripted runtime belongs to a different hour or effective VFS".into());
     }
-    let expected_observers = context
-        .world_frame
-        .d18_country_roster()
-        .entries
-        .iter()
-        .map(|entry| entry.tag.clone())
-        .collect::<Vec<_>>();
+    // COMPLETE, not partial: the runtime's observer census is compared for
+    // EQUALITY against this list, which is an absence claim about the country
+    // set ("no observer outside these"). A roster short by a country the frame
+    // carries cannot back it, and the refusal names the countries.
+    let roster = context.world_frame.d18_country_roster();
+    let expected_observers = match roster.complete() {
+        Ok(entries) => entries
+            .iter()
+            .map(|entry| entry.tag.clone())
+            .collect::<Vec<_>>(),
+        Err(refusal) => {
+            return Err(format!(
+                "XMAP18 requires the complete current-hour D18 country roster: {refusal}"
+            )
+            .into())
+        }
+    };
     if expected_observers.is_empty()
         || runtime.observer_country_ids != expected_observers
         || !runtime
@@ -2745,14 +2765,28 @@ fn require_observer(context: &FoundationFeatureContext<'_>, mode: &str) -> Resul
         .observer_country_id
         .as_deref()
         .ok_or_else(|| format!("XMAP18 {mode} map mode requires a viewer country"))?;
-    if !context
-        .world_frame
-        .d18_country_roster()
-        .entries
-        .iter()
-        .any(|entry| entry.tag == observer)
-    {
-        return Err(format!("XMAP18 viewer country {observer} is absent from D18").into());
+    // PARTIAL: this is one country's PRESENCE, not a census. A resolved entry
+    // for the viewer's country is proof enough that the country exists and is
+    // named, whatever happened to any other country this hour. The excluded
+    // keys still ride the refusal, because "absent from D18" and "in the frame
+    // but unnameable" are different facts and only the second is the recorder's.
+    let roster = context.world_frame.d18_country_roster();
+    let partial = roster
+        .partial()
+        .map_err(|refusal| format!("XMAP18 viewer country {observer}: {refusal}"))?;
+    if !partial.resolved.iter().any(|entry| entry.tag == observer) {
+        let unnamed = if partial.excluded.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} emitted country key(s) carry no D18 identity this hour: {})",
+                partial.excluded.len(),
+                partial.excluded.join(",")
+            )
+        };
+        return Err(
+            format!("XMAP18 viewer country {observer} is absent from D18{unnamed}").into(),
+        );
     }
     Ok(())
 }

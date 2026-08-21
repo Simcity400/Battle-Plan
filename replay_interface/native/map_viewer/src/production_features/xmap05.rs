@@ -756,11 +756,15 @@ impl Xmap05Shared {
         require_owned_authority_gaps(context)?;
         let (keying, province_controllers, presentation) =
             admitted_epoch_keying(context.world_frame)?;
-        let roster = context.world_frame.d18_country_roster();
-        let country_roster = roster
-            .entries
-            .iter()
-            .map(|entry| entry.tag.clone())
+        // The RESOLVED roster, and that is the safe set to hand the raster:
+        // `validate_xmap05_state_authority` requires every state owner, state
+        // controller and province controller TAG to be in it, so a control row
+        // naming a country this hour could not name refuses the frame instead of
+        // colouring an unnamed country's land.
+        let country_roster = xmap05_roster(context.world_frame)?
+            .resolved
+            .into_iter()
+            .map(|entry| entry.tag)
             .collect::<BTreeSet<_>>();
         let cache_key = xmap05_semantic_cache_key(context, &keying, &province_controllers)?;
         let mut runtime = self
@@ -1068,6 +1072,9 @@ pub struct Xmap05AdmissionVerdict {
     /// is the frame-pure precondition of the four `fog.*` rows. `None` when the
     /// visibility root is not Present at all.
     pub visibility_povs_match_roster: Option<bool>,
+    /// The emitted `countries` keys this hour's D18 read could not name. Empty
+    /// on an ordinary hour; on `captures/oz_tip` it is `["367"]` for 469 hours.
+    pub roster_unresolved_countries: Vec<String>,
 }
 
 /// Run XMAP05's frame-pure admission and report what it found, or why it refused.
@@ -1076,10 +1083,14 @@ pub fn xmap05_admission_verdict(
 ) -> std::result::Result<Xmap05AdmissionVerdict, String> {
     let (_, province_controllers, presentation) =
         admitted_epoch_keying(frame).map_err(|error| error.to_string())?;
+    let split = xmap05_roster(frame).map_err(|error| error.to_string())?;
     let visibility_povs_match_roster = if frame.visibility_status() == ViewStatus::Present {
-        let roster = frame
-            .d18_country_roster()
-            .entries
+        // Against the RESOLVED roster AND with no unresolved key outstanding: a
+        // POV set that equals the countries this hour could name is still not
+        // all-country visibility while a country the frame carries has no name,
+        // so reporting `true` there would overstate what the recording holds.
+        let roster = split
+            .resolved
             .iter()
             .map(|entry| entry.tag.clone())
             .collect::<BTreeSet<_>>();
@@ -1087,13 +1098,14 @@ pub fn xmap05_admission_verdict(
             .visibility_povs()
             .map(str::to_string)
             .collect::<BTreeSet<_>>();
-        Some(povs == roster)
+        Some(povs == roster && split.excluded.is_empty())
     } else {
         None
     };
     Ok(Xmap05AdmissionVerdict {
         certified_countries: presentation.certified.len(),
         excluded_countries: presentation.excluded.clone(),
+        roster_unresolved_countries: split.excluded.clone(),
         states: frame.owner_by_state().len(),
         in_state_provinces: province_controllers.len(),
         visibility_povs_match_roster,
@@ -1118,17 +1130,10 @@ pub(crate) fn admitted_epoch_keying(
         }
     }
 
-    let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present || roster.entries.is_empty() {
-        return Err(format!(
-            "XMAP05 complete D18 country roster is unavailable: {}",
-            roster
-                .diagnostic
-                .as_deref()
-                .unwrap_or("empty or non-Present roster")
-        )
-        .into());
-    }
+    let Xmap05RosterSplit {
+        resolved: roster_entries,
+        excluded: roster_excluded,
+    } = xmap05_roster(frame)?;
     // One country's unmeasured cosmetic identity used to refuse the WHOLE political fill.
     //
     // The old comment here argued that was the only honest reading, because the cosmetic
@@ -1153,7 +1158,19 @@ pub(crate) fn admitted_epoch_keying(
     // excluded country accounts for the identity that did not draw. A malformed measurement -
     // a blank override, an unobtained leaf - is still a whole-frame refusal; only a missing
     // measurement is excludable.
-    let presentation = mapc1_presentation_census(frame, &roster.entries)?;
+    //
+    // MAPC1 v3 does the same thing one level up, for the same reason. A country
+    // the recorder could not NAME — no `_r2_tag_db_id`, so the fold kept its
+    // numeric key — used to take the whole D18 roster to `DomainUnavailable`,
+    // and with it this entire family. On `captures/oz_tip` that was 469 of 535
+    // hours over one country that owns 0 of 1,081 states and controls 0 of
+    // 10,272 provinces. It is now excluded at country grain, named in
+    // `roster_identity_excluded`, and inside the roster digest preimage. What
+    // makes that safe rather than a widened blind spot is
+    // `validate_xmap05_state_authority`: every state owner, state controller
+    // and province controller TAG must be in the RESOLVED roster, so a control
+    // row naming an excluded country still refuses the frame by name.
+    let presentation = mapc1_presentation_census(frame, &roster_entries)?;
 
     fn measured_tags(
         label: &str,
@@ -1191,7 +1208,8 @@ pub(crate) fn admitted_epoch_keying(
         &owners,
         &controllers,
         &province_controllers,
-        &roster.entries,
+        &roster_entries,
+        &roster_excluded,
         &presentation,
     )?;
     Ok((
@@ -1263,6 +1281,41 @@ fn excluded_presentation_identities(census: &PresentationCensus) -> Vec<ElementD
         .collect()
 }
 
+/// The D18 roster split this family works from.
+///
+/// Owned rather than borrowed because `d18_country_roster()` builds a fresh view
+/// per call and the split has to outlive it.
+pub(crate) struct Xmap05RosterSplit {
+    pub(crate) resolved: Vec<replay_core::D18CountryRosterEntry>,
+    /// The emitted `countries` keys with no D18 identity this hour, ascending.
+    /// Carried, never dropped: they ride `roster_identity_excluded` on the
+    /// envelope and sit inside the roster digest preimage.
+    pub(crate) excluded: Vec<String>,
+}
+
+/// PARTIAL, not complete, and this is the whole point of MAPC1 v3.
+///
+/// XMAP05 is honest per country: the political fill, the three control tables
+/// and the presentation identity are all per-country facts, and
+/// `validate_xmap05_state_authority` independently requires every control TAG to
+/// be a RESOLVED roster country. So a country the recorder could not name costs
+/// exactly itself — it draws nothing, colours nothing, and is named on the
+/// wire — instead of costing the map.
+///
+/// `Err` only when the read produced no usable roster at all.
+fn xmap05_roster(frame: &WorldFrame) -> Result<Xmap05RosterSplit> {
+    let roster = frame.d18_country_roster();
+    match roster.partial() {
+        Ok(partial) => Ok(Xmap05RosterSplit {
+            resolved: partial.resolved.to_vec(),
+            excluded: partial.excluded.to_vec(),
+        }),
+        Err(refusal) => {
+            Err(format!("XMAP05 D18 country roster is unusable: {refusal}").into())
+        }
+    }
+}
+
 fn validate_mapc1_authority(frame: &WorldFrame) -> Result<()> {
     let authority = mapc1_authority(frame)?;
     validate_mapc1_authority_object(authority, frame.hour_index())
@@ -1285,15 +1338,16 @@ fn validate_mapc1_authority_object(
         authority.get(key).and_then(serde_json::Value::as_str) == Some(expected)
     };
     if !exact("schema", "MAPC1")
-        // v2, and v1 is not accepted: the two spell `presentation_identity_sha256`
-        // over different preimages, so a v1 envelope read as v2 would compare a
-        // whole-roster digest against a certified-subset one and refuse every
-        // frame with a digest mismatch instead of naming the version. Pinning the
-        // integer makes the refusal say what is actually wrong.
+        // v3, and no earlier version is accepted: each spells its digests over a
+        // different preimage, so an older envelope read as v3 would compare
+        // digests taken over different sets and refuse every frame with a digest
+        // mismatch instead of naming the version. Pinning the integer makes the
+        // refusal say what is actually wrong. v3 adds `roster_identity_excluded`
+        // and puts it inside `country_roster_sha256`'s preimage.
         || authority
             .get("schema_version")
             .and_then(serde_json::Value::as_u64)
-            != Some(2)
+            != Some(3)
         || !exact(
             "producer",
             "presentation-independent owner/controller epoch",
@@ -1340,6 +1394,7 @@ fn validate_mapc1_payload(
     controllers: &BTreeMap<u32, String>,
     province_controllers: &BTreeMap<u32, String>,
     roster: &[replay_core::D18CountryRosterEntry],
+    roster_excluded: &[String],
     census: &PresentationCensus,
 ) -> Result<()> {
     let authority = mapc1_authority(frame)?;
@@ -1349,6 +1404,7 @@ fn validate_mapc1_payload(
         controllers,
         province_controllers,
         roster,
+        roster_excluded,
         census,
     )
 }
@@ -1359,6 +1415,7 @@ fn validate_mapc1_payload_tables(
     controllers: &BTreeMap<u32, String>,
     province_controllers: &BTreeMap<u32, String>,
     roster: &[replay_core::D18CountryRosterEntry],
+    roster_excluded: &[String],
     census: &PresentationCensus,
 ) -> Result<()> {
     // The producer's declared exclusion list against the viewer's own. This is
@@ -1401,6 +1458,36 @@ fn validate_mapc1_payload_tables(
         )
         .into());
     }
+    // The producer's declared ROSTER exclusions against the viewer's own, in the
+    // same shape and for the same reason as the presentation split above: this
+    // is "the two sides disagree about which countries could be named at all",
+    // which the digest also binds but cannot say legibly. REQUIRED and strictly
+    // typed - an absent-tolerant read of it would let the field be deleted on an
+    // ordinary frame and nothing would notice, which is the finding the v2
+    // review made against `presentation_identity_excluded`.
+    let Some(declared_roster_rows) = authority
+        .get("roster_identity_excluded")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Err("XMAP05 MAPC1 envelope has no roster_identity_excluded array".into());
+    };
+    let mut declared_roster_excluded: Vec<String> = Vec::with_capacity(declared_roster_rows.len());
+    for row in declared_roster_rows {
+        let Some(key) = row.as_str() else {
+            return Err(
+                "XMAP05 MAPC1 roster_identity_excluded carries a non-string member".into(),
+            );
+        };
+        declared_roster_excluded.push(key.to_string());
+    }
+    if declared_roster_excluded != roster_excluded {
+        return Err(format!(
+            "XMAP05 MAPC1 roster-identity exclusions disagree: the recorder declared {:?} and \
+             this frame carries {:?}",
+            declared_roster_excluded, roster_excluded
+        )
+        .into());
+    }
     let presentation_identity_sha256 = mapc1_presentation_digest(census);
     let exact_count = |key: &str, expected: usize| {
         authority
@@ -1413,10 +1500,14 @@ fn validate_mapc1_payload_tables(
     let state_controller_sha256 = mapc1_tag_table_digest("state_controller", controllers);
     let province_controller_sha256 =
         mapc1_tag_table_digest("province_controller", province_controllers);
-    let country_roster_sha256 = mapc1_roster_digest(roster);
+    let country_roster_sha256 = mapc1_roster_digest(roster, roster_excluded);
     if !exact_count("state_count", owners.len())
         || !exact_count("province_count", province_controllers.len())
-        || !exact_count("country_count", roster.len())
+        // The WHOLE roster, resolved and unresolved alike: `country_count` has
+        // always meant "how many countries this frame carries", and dropping the
+        // unnameable ones from it would hide them from the one field that counts
+        // them.
+        || !exact_count("country_count", roster.len() + roster_excluded.len())
         || authority
             .get("state_owner_sha256")
             .and_then(serde_json::Value::as_str)
@@ -1455,7 +1546,30 @@ fn mapc1_tag_table_digest(label: &str, rows: &BTreeMap<u32, String>) -> String {
     Sha256::hex(&bytes)
 }
 
-fn mapc1_roster_digest(rows: &[replay_core::D18CountryRosterEntry]) -> String {
+/// The roster digest, over the resolved rows AND the keys that could not be
+/// resolved to a country identity.
+///
+/// The excluded keys are in the preimage for exactly the reason the
+/// presentation exclusions are: without them a producer could move a country
+/// out of the resolved set to make a mismatch disappear and the digest would
+/// not notice. They are LENGTH-PREFIXED rather than delimited - the
+/// adversarial review of MAPC1 v2 built a real collision against a
+/// NUL-delimited preimage, and a roster key is under no more constraint here
+/// than a cosmetic tag was there.
+///
+/// The u32 length prefixes are sound because both sides bound the keys before
+/// they reach here: the viewer refuses the WHOLE roster on a key outside
+/// [A-Z0-9_] or longer than 32 bytes (`is_contract_valid_country_tag`), and the
+/// recorder applies the identical rule in `roster()` before excluding one. A
+/// key that could overflow a u32 length is a key neither side admits.
+///
+/// The resolved rows keep their v2 spelling so an hour with no exclusions
+/// differs from v2 only by the trailing section, which is what makes the
+/// ordinary case reviewable against the version it replaces.
+fn mapc1_roster_digest(
+    rows: &[replay_core::D18CountryRosterEntry],
+    excluded: &[String],
+) -> String {
     let mut ordered = rows.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| left.tag.cmp(&right.tag));
     let mut bytes = b"country_roster\0".to_vec();
@@ -1463,6 +1577,13 @@ fn mapc1_roster_digest(rows: &[replay_core::D18CountryRosterEntry]) -> String {
         bytes.extend_from_slice(row.tag.as_bytes());
         bytes.push(0);
         bytes.extend_from_slice(&row.tag_db_id.to_le_bytes());
+    }
+    let mut ordered_excluded = excluded.to_vec();
+    ordered_excluded.sort();
+    bytes.extend_from_slice(b"country_roster_unresolved\0");
+    bytes.extend_from_slice(&(ordered_excluded.len() as u32).to_le_bytes());
+    for key in &ordered_excluded {
+        push_sized(&mut bytes, key);
     }
     Sha256::hex(&bytes)
 }
@@ -1627,12 +1748,21 @@ fn validate_all_country_visibility(frame: &WorldFrame, province_slots: usize) ->
     if frame.visibility_status() != ViewStatus::Present {
         return Err("XMAP05 all-country visibility root is not Present".into());
     }
+    // COMPLETE, not partial, and it is the one XMAP05 gate that must stay that
+    // way: the claim is that this recording carries EVERY country's visibility.
+    // A country the recorder could not name is a country whose visibility this
+    // recording cannot carry, so the census is not all-country while one exists.
     let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present || roster.entries.is_empty() {
-        return Err("XMAP05 all-country visibility requires the complete D18 roster".into());
-    }
-    let expected = roster
-        .entries
+    let roster_entries = match roster.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => {
+            return Err(format!(
+                "XMAP05 all-country visibility requires the complete D18 roster: {refusal}"
+            )
+            .into())
+        }
+    };
+    let expected = roster_entries
         .iter()
         .map(|entry| entry.tag.as_str())
         .collect::<BTreeSet<_>>();
@@ -1645,7 +1775,7 @@ fn validate_all_country_visibility(frame: &WorldFrame, province_slots: usize) ->
         )
         .into());
     }
-    for entry in &roster.entries {
+    for entry in roster_entries {
         prepare_country_visibility(frame, &entry.tag, entry.tag_db_id, province_slots)?;
     }
     Ok(())
@@ -1805,13 +1935,26 @@ fn prepare_visibility(
     }
 
     let country = context.viewer.observer_country_id.as_deref().unwrap();
-    let roster = context.world_frame.d18_country_roster();
-    let expected_country_id = roster
-        .entries
+    // PARTIAL: one country's PRESENCE, not a census. Whether some other country
+    // could be named this hour says nothing about whether this one was.
+    let split = xmap05_roster(context.world_frame)?;
+    let expected_country_id = split
+        .resolved
         .iter()
         .find(|entry| entry.tag == country)
         .map(|entry| entry.tag_db_id)
-        .ok_or_else(|| format!("XMAP05 viewer POV {country} is absent from the D18 roster"))?;
+        .ok_or_else(|| {
+            let unnamed = if split.excluded.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " ({} emitted country key(s) carry no D18 identity this hour: {})",
+                    split.excluded.len(),
+                    split.excluded.join(",")
+                )
+            };
+            format!("XMAP05 viewer POV {country} is absent from the D18 roster{unnamed}")
+        })?;
     prepare_country_visibility(
         context.world_frame,
         country,
@@ -2302,12 +2445,12 @@ fn xmap05_map_mode_derivative_impl(
     }
     let (keying, province_controllers, _presentation) =
         admitted_epoch_keying(context.world_frame)?;
-    let country_roster = context
-        .world_frame
-        .d18_country_roster()
-        .entries
-        .iter()
-        .map(|entry| entry.tag.clone())
+    // RESOLVED, for the same reason as `Xmap05Shared::prepare`: this is the set
+    // the state-authority validator checks every control TAG against.
+    let country_roster = xmap05_roster(context.world_frame)?
+        .resolved
+        .into_iter()
+        .map(|entry| entry.tag)
         .collect::<BTreeSet<_>>();
     let raster = xmap05_raster_inputs_with_keying(
         resolver,
@@ -2590,12 +2733,12 @@ pub(crate) fn xmap05_terrain_map_mode_derivative(
     }
     let (keying, province_controllers, _presentation) =
         admitted_epoch_keying(context.world_frame)?;
-    let country_roster = context
-        .world_frame
-        .d18_country_roster()
-        .entries
-        .iter()
-        .map(|entry| entry.tag.clone())
+    // RESOLVED, for the same reason as `Xmap05Shared::prepare`: this is the set
+    // the state-authority validator checks every control TAG against.
+    let country_roster = xmap05_roster(context.world_frame)?
+        .resolved
+        .into_iter()
+        .map(|entry| entry.tag)
         .collect::<BTreeSet<_>>();
     let raster = xmap05_raster_inputs_with_keying(
         resolver,
@@ -3978,7 +4121,7 @@ mod tests {
     fn mapc1_requires_exact_same_hour_complete_authority() {
         let authority = serde_json::json!({
             "schema": "MAPC1",
-            "schema_version": 2,
+            "schema_version": 3,
             "producer": "presentation-independent owner/controller epoch",
             "executable_sha256": MAPC1_EXECUTABLE_SHA256,
             "province_controller_field_offset": "0x188",
@@ -4072,12 +4215,20 @@ mod tests {
         assert_ne!(land_digest, visibility_digest(&visibility));
     }
 
-    const MAPC1_PRODUCER_FIXTURE_V2: &str = r#"{
+    /// The producer/consumer contract fixture. Byte-identical to the constant of
+    /// the same name in
+    /// `replay_interface/native/map_viewer/src/production_features/xmap05.rs`;
+    /// `runs/jc_gpu15_mapc1/mapc1_identity_agreement.py` fails if the two drift.
+    ///
+    /// `country_roster_unresolved` is the frame fact the consumer reconstructs the
+    /// roster exclusions from: an emitted `countries` key that carries no
+    /// `_r2_tag_db_id`. Empty here, and empty on an ordinary hour.
+    const MAPC1_PRODUCER_FIXTURE_V3: &str = r#"{
   "authority": {
     "capture_sequence": 1,
     "country_count": 3,
     "country_remap_rva": "0x00ba6240",
-    "country_roster_sha256": "7a266f5ac7bb922069f63f6926e310e78acffd6b89ef125cd140b4a1ca1aa5d9",
+    "country_roster_sha256": "0f627ad7b70505da583453178e6930e79cced4057a2737cdb3c163fa98566aba",
     "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     "frame_hour": 16959360,
     "ghidra_manifest_sha256": "a69a7b300422c486ee2b76901a5f39e8e8d2cfe8c2baca38e3b353e4892b1990",
@@ -4091,8 +4242,9 @@ mod tests {
     "province_count": 3,
     "province_identity_order": "province_id_ascending",
     "provinces_outside_state": 2,
+    "roster_identity_excluded": [],
     "schema": "MAPC1",
-    "schema_version": 2,
+    "schema_version": 3,
     "state_controller_complete": true,
     "state_controller_sha256": "fec78f4253a15ebe82ba8d16c64285dacf275542bfdf457b3acc81d4368011b8",
     "state_count": 3,
@@ -4108,6 +4260,7 @@ mod tests {
     { "tag": "GER", "tag_db_id": 2 },
     { "tag": "ITA", "tag_db_id": 7 }
   ],
+  "country_roster_unresolved": [],
   "presentation_identity": { "FRA": null, "GER": "GER_REICH", "ITA": null }
 }"#;
 
@@ -4121,12 +4274,12 @@ mod tests {
     /// base colour. Note `presentation_identity` has NO key for ITA at all: a
     /// missing key is the unread state (`Leaf::Absent`), which is exactly what a
     /// JSON null is NOT.
-    const MAPC1_EXCLUDED_FIXTURE_V2: &str = r#"{
+    const MAPC1_EXCLUDED_FIXTURE_V3: &str = r#"{
   "authority": {
     "capture_sequence": 1,
     "country_count": 3,
     "country_remap_rva": "0x00ba6240",
-    "country_roster_sha256": "7a266f5ac7bb922069f63f6926e310e78acffd6b89ef125cd140b4a1ca1aa5d9",
+    "country_roster_sha256": "0f627ad7b70505da583453178e6930e79cced4057a2737cdb3c163fa98566aba",
     "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     "frame_hour": 16959360,
     "ghidra_manifest_sha256": "a69a7b300422c486ee2b76901a5f39e8e8d2cfe8c2baca38e3b353e4892b1990",
@@ -4140,8 +4293,9 @@ mod tests {
     "province_count": 3,
     "province_identity_order": "province_id_ascending",
     "provinces_outside_state": 2,
+    "roster_identity_excluded": [],
     "schema": "MAPC1",
-    "schema_version": 2,
+    "schema_version": 3,
     "state_controller_complete": true,
     "state_controller_sha256": "fec78f4253a15ebe82ba8d16c64285dacf275542bfdf457b3acc81d4368011b8",
     "state_count": 3,
@@ -4157,8 +4311,68 @@ mod tests {
     { "tag": "GER", "tag_db_id": 2 },
     { "tag": "ITA", "tag_db_id": 7 }
   ],
+  "country_roster_unresolved": [],
   "presentation_identity": { "FRA": null, "GER": "GER_REICH" },
   "presentation_identity_excluded": [ "ITA" ]
+}"#;
+
+    /// The same contract, for an hour in which one emitted country key carries NO
+    /// D18 identity at all (`367` - exactly the shape `captures/oz_tip` holds for
+    /// 533 of its 535 hours).
+    ///
+    /// This is the case MAPC1 v3 exists for. Under v2 the producer withheld the
+    /// whole envelope here (`roster()` returned the `unresolved tag_db_ids` error),
+    /// so replay's every XMAP05 input went Unavailable over one country that owns
+    /// and controls nothing. Under v3 the envelope is minted, `367` is named in
+    /// `roster_identity_excluded`, and the three countries the hour COULD name are
+    /// certified exactly as in the clean fixture.
+    ///
+    /// What must move and what must not: `country_count` counts the WHOLE roster
+    /// and goes to 4, `country_roster_sha256` moves because the excluded key is
+    /// inside its preimage, and `presentation_identity_sha256` does NOT move -
+    /// the unnameable country never had a presentation identity to certify or to
+    /// exclude. The three control digests do not move either: an unresolvable
+    /// country cannot appear in a certified control table, which `control_census`
+    /// enforces one step earlier by refusing the hour outright.
+    const MAPC1_ROSTER_EXCLUDED_FIXTURE_V3: &str = r#"{
+  "authority": {
+    "capture_sequence": 1,
+    "country_count": 4,
+    "country_remap_rva": "0x00ba6240",
+    "country_roster_sha256": "97e9f979b2d31ce55465659cb9782dd44cbbc67cc70c819a0bf06142d09a04aa",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "frame_hour": 16959360,
+    "ghidra_manifest_sha256": "a69a7b300422c486ee2b76901a5f39e8e8d2cfe8c2baca38e3b353e4892b1990",
+    "presentation_identity_excluded": [],
+    "presentation_identity_sha256": "8dfa8a63e9d9c57748f62b336dd9e8b6d565a4c4e028c84cd60482c3571d0818",
+    "presentation_independent": true,
+    "producer": "presentation-independent owner/controller epoch",
+    "province_controller_complete": true,
+    "province_controller_field_offset": "0x188",
+    "province_controller_sha256": "60addcb31d1fd462d5edb5ecc45df91d564358ffcf0d867075c9bf57d22fda07",
+    "province_count": 3,
+    "province_identity_order": "province_id_ascending",
+    "provinces_outside_state": 2,
+    "roster_identity_excluded": [ "367" ],
+    "schema": "MAPC1",
+    "schema_version": 3,
+    "state_controller_complete": true,
+    "state_controller_sha256": "fec78f4253a15ebe82ba8d16c64285dacf275542bfdf457b3acc81d4368011b8",
+    "state_count": 3,
+    "state_identity_order": "state_id_ascending",
+    "state_owner_complete": true,
+    "state_owner_sha256": "d1a66bc71abb2fb008c008e1036721b5f208c0fb0cfbfaeadda2754392ed85fc"
+  },
+  "owner_by_state": { "10": "GER", "11": "FRA", "12": "ITA" },
+  "control_by_state": { "10": "GER", "11": "GER", "12": "ITA" },
+  "control_by_province": { "100": "GER", "101": "GER", "102": "ITA" },
+  "country_roster": [
+    { "tag": "FRA", "tag_db_id": 9 },
+    { "tag": "GER", "tag_db_id": 2 },
+    { "tag": "ITA", "tag_db_id": 7 }
+  ],
+  "country_roster_unresolved": [ "367" ],
+  "presentation_identity": { "FRA": null, "GER": "GER_REICH", "ITA": null }
 }"#;
 
     struct Mapc1Fixture {
@@ -4167,16 +4381,24 @@ mod tests {
         controllers: BTreeMap<u32, String>,
         province_controllers: BTreeMap<u32, String>,
         roster: Vec<replay_core::D18CountryRosterEntry>,
+        /// The emitted `countries` keys with no `_r2_tag_db_id`, which is what
+        /// `replay_core::d18_roster` hands the consumer as the roster's
+        /// excluded half.
+        roster_excluded: Vec<String>,
         cosmetic: BTreeMap<String, Leaf<Option<String>>>,
     }
 
     impl Mapc1Fixture {
         fn load() -> Self {
-            Self::parse(MAPC1_PRODUCER_FIXTURE_V2)
+            Self::parse(MAPC1_PRODUCER_FIXTURE_V3)
         }
 
         fn load_excluded() -> Self {
-            Self::parse(MAPC1_EXCLUDED_FIXTURE_V2)
+            Self::parse(MAPC1_EXCLUDED_FIXTURE_V3)
+        }
+
+        fn load_roster_excluded() -> Self {
+            Self::parse(MAPC1_ROSTER_EXCLUDED_FIXTURE_V3)
         }
 
         fn parse(text: &str) -> Self {
@@ -4204,6 +4426,12 @@ mod tests {
                     tag_db_id: row["tag_db_id"].as_u64().expect("roster id") as u32,
                 })
                 .collect();
+            let roster_excluded: Vec<String> = parsed["country_roster_unresolved"]
+                .as_array()
+                .expect("unresolved roster key array")
+                .iter()
+                .map(|row| row.as_str().expect("unresolved key").to_string())
+                .collect();
             let overrides = parsed["presentation_identity"]
                 .as_object()
                 .expect("presentation identity object");
@@ -4229,6 +4457,7 @@ mod tests {
                 controllers: table("control_by_state"),
                 province_controllers: table("control_by_province"),
                 roster,
+                roster_excluded,
                 cosmetic,
             }
         }
@@ -4249,6 +4478,7 @@ mod tests {
                 &self.controllers,
                 &self.province_controllers,
                 &self.roster,
+                &self.roster_excluded,
                 &self.presentation_census()?,
             )
         }
@@ -4263,6 +4493,99 @@ mod tests {
         assert_eq!(fixture.owners.keys().collect::<Vec<_>>(), fixture.controllers.keys().collect::<Vec<_>>());
         assert_eq!(fixture.owners[&11], "FRA");
         assert_eq!(fixture.controllers[&11], "GER");
+    }
+
+    /// kills: a viewer that cannot ADMIT an hour whose roster could not name one
+    /// country - the case v2 had no envelope for at all, and which cost
+    /// `captures/oz_tip` 469 of 535 hours of the whole XMAP05 family.
+    ///
+    /// Scope, stated exactly because an earlier version of this comment
+    /// overclaimed it: this test supplies the roster split DIRECTLY to
+    /// `validate_mapc1_payload_tables`, so it exercises the envelope contract
+    /// and not `exact_d18_country_roster`. Reverting the roster read would NOT
+    /// fail this test; `a_numeric_country_key_is_excluded_and_named_not_fatal`
+    /// and `a_present_but_unusable_country_identity_is_still_fatal` in
+    /// `replay_core` are what cover the read.
+    ///
+    /// What production change would make THIS fail: dropping
+    /// `roster_identity_excluded` from the digest preimage (the two digests
+    /// below become equal), reading the declared list leniently or
+    /// absent-tolerantly (the mutation arms stop refusing), counting only the
+    /// resolved countries in `country_count`, or letting the declared and
+    /// derived splits differ without refusing.
+    #[test]
+    fn mapc1_admits_an_hour_whose_roster_could_not_name_one_country() {
+        let fixture = Mapc1Fixture::load_roster_excluded();
+        fixture
+            .admit()
+            .expect("v3 admits an hour with one unnameable country");
+        assert_eq!(fixture.roster.len(), 3, "the three named countries stand");
+        assert_eq!(fixture.roster_excluded, vec!["367".to_string()]);
+        assert_eq!(
+            fixture.authority["country_count"].as_u64(),
+            Some(4),
+            "country_count is the WHOLE roster, named and unnamed alike"
+        );
+
+        // The roster digest is what binds the exclusion. Same three resolved
+        // rows, different digest, because the excluded key is in the preimage.
+        let clean = Mapc1Fixture::load();
+        assert_eq!(clean.roster, fixture.roster);
+        assert_ne!(
+            clean.authority["country_roster_sha256"],
+            fixture.authority["country_roster_sha256"],
+            "the excluded key must be inside the roster digest preimage"
+        );
+        // ... and the presentation identity is untouched: a country nobody could
+        // name never had one to certify or to exclude.
+        assert_eq!(
+            clean.authority["presentation_identity_sha256"],
+            fixture.authority["presentation_identity_sha256"]
+        );
+        assert_eq!(
+            clean.authority["presentation_identity_excluded"],
+            fixture.authority["presentation_identity_excluded"]
+        );
+
+        // Declaring a different exclusion set is refused BY NAME, in both
+        // directions. This is the check that stops the envelope from choosing
+        // which countries the viewer compares.
+        let mut under = Mapc1Fixture::load_roster_excluded();
+        under
+            .authority
+            .insert("roster_identity_excluded".into(), serde_json::json!([]));
+        let error = under.admit().expect_err("an under-declared list refuses");
+        assert!(
+            error.to_string().contains("roster-identity exclusions disagree")
+                && error.to_string().contains("367"),
+            "the refusal must name the country: {error}"
+        );
+
+        let mut over = Mapc1Fixture::load();
+        over.authority
+            .insert("roster_identity_excluded".into(), serde_json::json!(["367"]));
+        over.admit()
+            .expect_err("an over-declared list refuses too");
+
+        // REQUIRED and strictly typed, exactly like `presentation_identity_excluded`.
+        for broken in [
+            serde_json::Value::Null,
+            serde_json::json!("367"),
+            serde_json::json!([1]),
+        ] {
+            let mut mutated = Mapc1Fixture::load_roster_excluded();
+            mutated
+                .authority
+                .insert("roster_identity_excluded".into(), broken.clone());
+            mutated
+                .admit()
+                .expect_err("a malformed roster_identity_excluded refuses");
+        }
+        let mut deleted = Mapc1Fixture::load_roster_excluded();
+        deleted.authority.remove("roster_identity_excluded");
+        deleted
+            .admit()
+            .expect_err("a missing roster_identity_excluded refuses");
     }
 
     #[test]

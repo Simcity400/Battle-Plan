@@ -119,7 +119,7 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         input_id: "country.d18_complete_roster",
         owner_packet: "XMAP05",
         payload_schema: "WorldFrame.countries._r2_tag_db_id",
-        status_accessor: "d18_country_roster.status",
+        status_accessor: "d18_country_roster.complete_status",
         cadence: "one decoded view per canonical recorded hour",
         identity_order: "TAG-ascending, each with a unique nonzero tag_db_id; no partial prefix",
         status: d18_complete_roster_status,
@@ -291,7 +291,7 @@ pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
         "mapmode.occupation_resistance_compliance" => "certified occupation_status",
         "weather.province_snow_accumulator" => "certified weather_province_snow_status",
         "world.calendar_time" => "derived hour_index;date pair",
-        "country.d18_complete_roster" => "d18_country_roster.status",
+        "country.d18_complete_roster" => "d18_country_roster.complete_status",
         "diplomacy.faction_roster" => "faction_roster_status",
         "units.divisions" => "certified division_units_status",
         "units.taskforces_fleets" => "certified fleets_status",
@@ -916,19 +916,22 @@ fn ended_combats_dropped_rows(frame: &WorldFrame) -> bool {
     })
 }
 
+/// COMPLETE, not partial, and the ledger row is named for it.
+///
+/// `country.d18_complete_roster` promises replay a census in which every
+/// country the frame carries is named. Since the roster read became per-entry
+/// (`replay_core::d18_roster`), a `Present` READ can still be short by the
+/// countries it could not name — so this asks
+/// [`D18CountryRosterView::complete`] rather than the read's status. A ledger
+/// row that stopped distinguishing the two would be claiming completeness it no
+/// longer has, which is the exact "silently stops checking" failure the split
+/// exists to avoid.
 fn complete_d18_roster(frame: &WorldFrame) -> Result<BTreeSet<String>, ViewStatus> {
     let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present {
-        return Err(roster.status);
+    match roster.complete() {
+        Ok(entries) => Ok(entries.iter().map(|entry| entry.tag.clone()).collect()),
+        Err(refusal) => Err(refusal.status),
     }
-    if roster.entries.is_empty() {
-        return Err(ViewStatus::DomainUnavailable);
-    }
-    Ok(roster
-        .entries
-        .iter()
-        .map(|entry| entry.tag.clone())
-        .collect())
 }
 
 /// The resolved `(tag, tag_db_id)` identity map. Same availability rules as
@@ -1517,7 +1520,7 @@ pub fn map_authority_projection_from_world_frame(
         projector.derive_requirement("country.current_capital_state", Some(frame.diplomacy().status)),
         projector.derive_requirement(
             "country.d18_complete_roster",
-            Some(frame.d18_country_roster().status),
+            Some(frame.d18_country_roster().complete_status()),
         ),
         projector.derive_requirement(
             "country.presentation_identity",

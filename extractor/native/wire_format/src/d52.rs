@@ -2,9 +2,9 @@
 //! and compliance, plus the `GAR1` garrison-alert and `COL1` collaboration
 //! trailers.
 //!
-//! Derived from `world_fold.rs:23409`-`:23415`
+//! Derived from `world_fold.rs:23449`-`:23455`
 //! (`fold_occupation_resistance_compliance`, dispatched `:4714`), its payload
-// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=23409-23415 sha256=3264eb66c9def2ec9621972f8ec726bae49e6c181c3bdea79c7f28437185d962 closure=43379752556d1630c326c694ba6db0760028d5ed9a1a3b87404aba7a88bdd9ff
+// @world-fold-authority domain=52 functions=fold_occupation_resistance_compliance lines=23449-23455 sha256=3264eb66c9def2ec9621972f8ec726bae49e6c181c3bdea79c7f28437185d962 closure=43379752556d1630c326c694ba6db0760028d5ed9a1a3b87404aba7a88bdd9ff
 // @lane-payload-authority domain=52 path=extractor/native/lanes/occupation_resistance_compliance_live/domain44_compact.rs function=decode_payload lines=264-661 sha256=974013e723937ae796d4f566b1b702b266e152ddf2e990ba2f3409d31994eff5
 //! constants at `:388`-`:399` and `:435`-`:466`, its two trailer decoders
 //! (`occupation_garrison_alert_len` `:30271`, `decode_occupation_collaboration`

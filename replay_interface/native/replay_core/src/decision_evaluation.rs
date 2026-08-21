@@ -245,12 +245,17 @@ pub fn carrier_record_sha256(carrier: &DecisionEvaluationExactV1) -> Option<Stri
     canonical_sha256(carrier, |value| value.record_sha256.clear())
 }
 
+/// The whole-roster digest XUI19 and XMAP17 producers bind their census to.
+///
+/// COMPLETE, not partial, and there is no honest partial form of it: the
+/// producer computes this over the census it enumerated in-engine, so a viewer
+/// that digested a SHORTER list would either mismatch (no gain) or, if the
+/// comparison were relaxed to match, stop checking the thing the digest exists
+/// to check. `None` is the fail-closed answer and the callers name the roster
+/// refusal separately.
 pub fn d18_roster_sha256(roster: &D18CountryRosterView) -> Option<String> {
-    if roster.status != ViewStatus::Present {
-        return None;
-    }
-    let canonical: Vec<(&str, u32)> = roster
-        .entries
+    let entries = roster.complete().ok()?;
+    let canonical: Vec<(&str, u32)> = entries
         .iter()
         .map(|entry| (entry.tag.as_str(), entry.tag_db_id))
         .collect();
@@ -365,6 +370,18 @@ pub fn admit_decision_evaluation(
             ))
         }
     };
+    // COMPLETE, not partial: the carrier is an all-country census whose rows are
+    // zipped against the roster in order AND bound to `d18_roster_sha256`, a
+    // digest over the whole roster. Neither can be backed by a roster missing a
+    // country the frame carries; the refusal names the countries.
+    let roster_entries = match roster.complete() {
+        Ok(entries) => entries,
+        Err(refusal) => {
+            return DecisionEvaluationExactView::unavailable(format!(
+                "XUI19 requires the complete current-hour D18 country roster: {refusal}"
+            ))
+        }
+    };
     if carrier.schema != XUI19_SCHEMA
         || carrier.authority != XUI19_AUTHORITY
         || carrier.executable_sha256 != XUI19_EXECUTABLE_SHA256
@@ -384,12 +401,11 @@ pub fn admit_decision_evaluation(
         || carrier.previous_record_sha256.as_deref().is_some_and(|hash| !lower_sha256(hash))
         || !lower_sha256(&carrier.record_sha256)
         || carrier_record_sha256(&carrier).as_deref() != Some(carrier.record_sha256.as_str())
-        || roster.status != ViewStatus::Present
         || d18_roster_sha256(roster).as_deref() != Some(carrier.d18_roster_sha256.as_str())
         || carrier.countries.is_empty()
         || carrier.countries.len() > MAX_COUNTRIES
         || carrier.expected_country_count as usize != carrier.countries.len()
-        || carrier.countries.len() != roster.entries.len()
+        || carrier.countries.len() != roster_entries.len()
     {
         return DecisionEvaluationExactView::unavailable(
             "XUI19 passive authority, hour, completeness, D18 census, or record hash rejected",
@@ -400,7 +416,7 @@ pub fn admit_decision_evaluation(
     for (country_ordinal, (country, identity)) in carrier
         .countries
         .iter()
-        .zip(roster.entries.iter())
+        .zip(roster_entries.iter())
         .enumerate()
     {
         if country.source_ordinal as usize != country_ordinal
@@ -523,14 +539,13 @@ mod tests {
     use serde_json::json;
 
     fn roster() -> D18CountryRosterView {
-        D18CountryRosterView {
-            status: ViewStatus::Present,
-            entries: vec![D18CountryRosterEntry {
+        D18CountryRosterView::present(
+            vec![D18CountryRosterEntry {
                 tag: "GER".into(),
                 tag_db_id: 7,
             }],
-            diagnostic: None,
-        }
+            Vec::new(),
+        )
     }
 
     fn carrier() -> DecisionEvaluationExactV1 {
@@ -644,14 +659,44 @@ mod tests {
             admit_decision_evaluation(&raw(&carrier()), 901, &roster()).status,
             ViewStatus::DomainUnavailable
         );
-        let mut partial = roster();
-        partial.entries.push(D18CountryRosterEntry {
-            tag: "FRA".into(),
-            tag_db_id: 8,
-        });
+        let bigger = D18CountryRosterView::present(
+            vec![
+                D18CountryRosterEntry {
+                    tag: "FRA".into(),
+                    tag_db_id: 8,
+                },
+                D18CountryRosterEntry {
+                    tag: "GER".into(),
+                    tag_db_id: 7,
+                },
+            ],
+            Vec::new(),
+        );
         assert_eq!(
-            admit_decision_evaluation(&raw(&carrier()), 900, &partial).status,
+            admit_decision_evaluation(&raw(&carrier()), 900, &bigger).status,
             ViewStatus::DomainUnavailable
+        );
+
+        // kills: admitting XUI19 against a roster that is Present but could not
+        // name one of the frame's countries. The carrier is an all-country
+        // census bound to a whole-roster digest, so a partial roster cannot back
+        // it - and the refusal must NAME the country rather than report a
+        // generic census mismatch.
+        let incomplete = D18CountryRosterView::present(
+            vec![D18CountryRosterEntry {
+                tag: "GER".into(),
+                tag_db_id: 7,
+            }],
+            vec!["367".into()],
+        );
+        let view = admit_decision_evaluation(&raw(&carrier()), 900, &incomplete);
+        assert_eq!(view.status, ViewStatus::DomainUnavailable);
+        assert!(
+            view.diagnostic
+                .as_deref()
+                .is_some_and(|detail| detail.contains("367")),
+            "the refusal must name the country: {:?}",
+            view.diagnostic
         );
         let mut forged = carrier();
         forged.countries[0].categories[0].cards[0].name_text = "forged".into();

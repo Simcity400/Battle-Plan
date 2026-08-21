@@ -237,13 +237,24 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
         // country is the whole question for this family.
         Observation {
             label: "d18_country_roster",
-            status: Some(frame.d18_country_roster().status),
+            // The COMPLETENESS status, which is what the XMAP00 ledger row
+            // `country.d18_complete_roster` claims. The read's own status and
+            // the countries it could not name are both printed beside it, so a
+            // reader can tell the two apart rather than inferring one from the
+            // other.
+            status: Some(frame.d18_country_roster().complete_status()),
             completeness: Some({
                 let roster = frame.d18_country_roster();
+                let (resolved, excluded) = match roster.partial() {
+                    Ok(partial) => (partial.resolved.len(), partial.excluded.join(",")),
+                    Err(_) => (0, String::new()),
+                };
                 format!(
-                    "entries={} diagnostic={}",
-                    roster.entries.len(),
-                    roster.diagnostic.as_deref().unwrap_or("none")
+                    "read={:?} resolved={} unresolved=[{}] diagnostic={}",
+                    roster.read_status(),
+                    resolved,
+                    excluded,
+                    roster.diagnostic().unwrap_or("none")
                 )
             }),
         },
@@ -395,7 +406,11 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
             completeness: Some(format!(
                 "povs={} roster={}",
                 frame.visibility_povs().count(),
-                frame.d18_country_roster().entries.len()
+                frame
+                    .d18_country_roster()
+                    .partial()
+                    .map(|partial| partial.resolved.len())
+                    .unwrap_or(0)
             )),
         },
     ]
