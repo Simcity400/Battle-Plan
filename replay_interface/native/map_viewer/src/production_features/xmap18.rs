@@ -558,6 +558,24 @@ impl Xmap18MapModeAdapter {
     }
 }
 
+#[cfg(test)]
+impl Xmap18MapModeAdapter {
+    /// Test-only constructor: a resolver over an arbitrary existing directory
+    /// and empty content, enough to reach `prepare()`'s owned-input accounting
+    /// and selection stages, which touch neither field.
+    fn new_for_owned_accounting_tests() -> Self {
+        Self {
+            resolver: GameFileResolver::with_mod_paths(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")),
+                Vec::new(),
+            )
+            .expect("test resolver over the crate directory"),
+            ordered_used_content: Vec::new(),
+            effective_scripted_mode_ids: Vec::new(),
+        }
+    }
+}
+
 impl ProductionMapFeatureAdapter for Xmap18MapModeAdapter {
     fn family(&self) -> MapVisualFamily {
         MapVisualFamily::MapModes
@@ -3581,5 +3599,188 @@ mod tests {
         let mut invalid_naval = runtime;
         invalid_naval.naval_cells[0].control_code_raw = 127;
         assert!(validate_sparse_runtime(&invalid_naval).is_err());
+    }
+
+    /// kills: restoring the gap-only owned-input loop that aborted `prepare()`
+    /// whenever an owned authority row was ADMITTED instead of gapped (the
+    /// pre-PL production abort: two owned rows are owner-proven and occupation
+    /// admits on live hours, so the whole map-mode family died).
+    ///
+    /// This drives `prepare()`'s exact accounting call with XMAP18's exact
+    /// owned list: admitted owned rows must be accepted silently, gapped owned
+    /// rows must come back as consumed gap ids, and nothing may error.
+    #[test]
+    fn owned_input_accounting_accepts_admitted_rows_and_consumes_gaps() {
+        use crate::map_authority::{MapAuthorityGap, MapAuthorityAdmittedInput};
+        use crate::map_authority::MapAuthorityRequirementDisposition;
+
+        let admitted_ids = ["mapmode.raids", "session.player_country_set"];
+        let admitted: Vec<MapAuthorityAdmittedInput> = admitted_ids
+            .iter()
+            .map(|id| MapAuthorityAdmittedInput {
+                input_id: (*id).to_string(),
+                owner_packet: "XMAP18".to_string(),
+                payload_schema: "test".to_string(),
+                cadence: "hourly".to_string(),
+                identity_order: "test".to_string(),
+            })
+            .collect();
+        let gaps: Vec<MapAuthorityGap> = OWNED_AUTHORITY_INPUTS
+            .iter()
+            .filter(|id| !admitted_ids.contains(id))
+            .map(|id| MapAuthorityGap {
+                input_id: (*id).to_string(),
+                disposition: MapAuthorityRequirementDisposition::Unavailable,
+                reason: "test gap".to_string(),
+            })
+            .collect();
+
+        let consumed = crate::account_owned_map_authority_inputs(
+            "XMAP18",
+            &OWNED_AUTHORITY_INPUTS,
+            &gaps,
+            &admitted,
+        )
+        .expect("admitted owned rows must not abort the family");
+        let expected: Vec<String> = OWNED_AUTHORITY_INPUTS
+            .iter()
+            .filter(|id| !admitted_ids.contains(id))
+            .map(|id| (*id).to_string())
+            .collect();
+        assert_eq!(consumed, expected);
+
+        // The two defended failure shapes stay errors: an owned row that is
+        // both admitted and gapped, and an owned row missing from both sides.
+        let mut both = gaps.clone();
+        both.push(MapAuthorityGap {
+            input_id: "mapmode.raids".to_string(),
+            disposition: MapAuthorityRequirementDisposition::Unavailable,
+            reason: "test gap".to_string(),
+        });
+        assert!(crate::account_owned_map_authority_inputs(
+            "XMAP18",
+            &OWNED_AUTHORITY_INPUTS,
+            &both,
+            &admitted,
+        )
+        .is_err());
+        assert!(crate::account_owned_map_authority_inputs(
+            "XMAP18",
+            &OWNED_AUTHORITY_INPUTS,
+            &gaps,
+            &admitted[..1],
+        )
+        .is_err());
+    }
+
+    /// kills: reverting `Xmap18MapModeAdapter::prepare` to the old gap-only
+    /// owned-input loop. That loop aborted the whole map-mode family whenever
+    /// an owned authority row was ADMITTED instead of gapped (the pre-PL
+    /// production abort), and it could not detect a row that was both admitted
+    /// and gapped. Both arms here drive `prepare()` itself, so a revert of the
+    /// wiring — not just of the shared helper — flips them.
+    #[test]
+    fn prepare_owned_accounting_accepts_admitted_rows_and_rejects_double_booking() {
+        use crate::map_authority::{
+            MapAuthorityAdmittedInput, MapAuthorityGap, MapAuthorityRequirementDisposition,
+        };
+        use crate::production_features::xmap15::Xmap15ViewerSelection;
+        use crate::production_foundation::{FoundationFeatureContext, ViewerOwnedMapState};
+        use replay_core::{RawFrame, ReplaySource, SourceError, WorldTimeline};
+
+        struct EmptySource;
+        impl ReplaySource for EmptySource {
+            fn game_id(&self) -> &str {
+                "xmap18-owned-accounting-seam"
+            }
+            fn hours(&self) -> &[i64] {
+                &[7]
+            }
+            fn warnings(&self) -> &[String] {
+                &[]
+            }
+            fn frame(&self, hour_index: i64) -> std::result::Result<RawFrame, SourceError> {
+                Ok(RawFrame {
+                    hour_index,
+                    date: None,
+                    save_version: None,
+                    schema_version: None,
+                    rest: serde_json::Map::new(),
+                })
+            }
+        }
+
+        let timeline = WorldTimeline::open(Box::new(EmptySource)).expect("timeline");
+        let frame = timeline.frame(7).expect("frame");
+        let viewer = ViewerOwnedMapState {
+            viewport_width: 16,
+            viewport_height: 16,
+            camera: None,
+            observer_country_id: None,
+            // Deliberately NOT a valid selection: both arms must resolve
+            // before any real map-mode work is reachable.
+            map_mode_id: "not_a_mode".to_string(),
+            map_mode_selection_epoch: 0,
+            selected_object_ids: Vec::new(),
+            input_revision: 0,
+            animation_time_f32_bits: 0,
+            frame_delta_seconds_f32_bits: 0,
+        };
+        let selection = Xmap15ViewerSelection {
+            selected_plan: None,
+        };
+        let adapter = Xmap18MapModeAdapter::new_for_owned_accounting_tests();
+
+        let admitted = vec![MapAuthorityAdmittedInput {
+            input_id: "mapmode.raids".to_string(),
+            owner_packet: "XMAP18".to_string(),
+            payload_schema: "test".to_string(),
+            cadence: "hourly".to_string(),
+            identity_order: "test".to_string(),
+        }];
+        let gaps: Vec<MapAuthorityGap> = OWNED_AUTHORITY_INPUTS
+            .iter()
+            .filter(|id| **id != "mapmode.raids")
+            .map(|id| MapAuthorityGap {
+                input_id: (*id).to_string(),
+                disposition: MapAuthorityRequirementDisposition::Unavailable,
+                reason: "test gap".to_string(),
+            })
+            .collect();
+
+        // Arm 1: an admitted owned row must pass accounting; the first error
+        // `prepare()` may report is the (deliberately bogus) selection.
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame, &viewer, &gaps, &admitted, &selection,
+        );
+        let error = match adapter.prepare(&context) {
+            Ok(_) => panic!("the bogus selection must fail"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("unknown viewer map-mode token"),
+            "prepare() failed BEFORE selection parsing — the owned-input \
+             accounting rejected an admitted row again: {error}"
+        );
+
+        // Arm 2: a row that is both admitted and gapped must abort in
+        // accounting, before selection parsing is ever reached.
+        let mut double_booked = gaps.clone();
+        double_booked.push(MapAuthorityGap {
+            input_id: "mapmode.raids".to_string(),
+            disposition: MapAuthorityRequirementDisposition::Unavailable,
+            reason: "test gap".to_string(),
+        });
+        let context = FoundationFeatureContext::new_for_owned_accounting_tests(
+            &frame, &viewer, &double_booked, &admitted, &selection,
+        );
+        let error = match adapter.prepare(&context) {
+            Ok(_) => panic!("double booking must abort"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("both admitted and gapped"),
+            "expected the accounting abort, got: {error}"
+        );
     }
 }

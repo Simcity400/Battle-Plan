@@ -565,6 +565,177 @@ fn a_raid_census_without_the_engines_untagged_parent_is_not_complete() {
     );
 }
 
+/// kills: admitting a raid census whose parent tag is an unresolved numeric id.
+///
+/// `world_fold` renders an unresolved country id as its decimal string, and
+/// `"123".len() == 3`, so the old shape-only check admitted it. Every non-dummy
+/// identity must join the resolved D18 roster.
+#[test]
+fn a_raid_parent_with_an_unresolved_numeric_tag_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["country_statuses"][1]["tag"] = json!("123");
+    let frame = world_frame_with(snapshot);
+    assert_eq!(
+        frame.raids_status(),
+        ViewStatus::Present,
+        "the census still replays structurally, which is why this test exists"
+    );
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: refusing the producer's valid raid-free hour.
+///
+/// The producer's both-empty population returns Ok before its dummy refusal
+/// ever runs (`extractor/native/compact_contract/src/raid_instances.rs`), so an
+/// hour with no raids and `instances_complete: true` is a MEASURED empty
+/// census, not a failed claim, and it must admit. The producer derives the
+/// priority list from the same parent vector, so the empty hour carries an
+/// empty `countries` too.
+#[test]
+fn a_measured_empty_raid_census_admits() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["countries"] = json!([]);
+    snapshot["raids"]["country_statuses"] = json!([]);
+    snapshot["raids"]["instances"] = json!([]);
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Admitted,
+    );
+}
+
+/// kills: certifying a contradictory empty census. `world_fold` derives the
+/// priority list and the parent census from the same engine vector, so empty
+/// parents with a NON-empty priority list is a shape the producer cannot emit.
+#[test]
+fn an_empty_raid_census_with_a_nonempty_priority_list_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["country_statuses"] = json!([]);
+    snapshot["raids"]["instances"] = json!([]);
+    // `countries` keeps the fixture's GER priority row — the contradiction.
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: reading a MISSING or null `raids.countries` as a measured empty
+/// priority list. The view's `priorities` map is a lossy projection — the
+/// producer always emits the array, so its absence is an unmeasured shape,
+/// not an empty measurement.
+#[test]
+fn an_empty_raid_census_with_a_null_priority_list_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["countries"] = Value::Null;
+    snapshot["raids"]["country_statuses"] = json!([]);
+    snapshot["raids"]["instances"] = json!([]);
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: admitting a non-empty parent census whose priority list disagrees.
+/// Both are derived from the same engine vector, so real parents with an
+/// empty `countries` is a shape the producer cannot emit.
+#[test]
+fn a_raid_census_whose_priority_list_disagrees_with_its_parents_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["countries"] = json!([]);
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: comparing the priority list to its parents by TAG SET alone. Both
+/// come from the same producer rows, so a right-name wrong-value entry (or a
+/// collapsed duplicate) is producer-impossible and must refuse.
+#[test]
+fn a_raid_priority_list_with_the_wrong_value_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["countries"] = json!([{"tag": "GER", "priority": 999}]);
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: letting duplicate priority rows collapse silently in the view map.
+#[test]
+fn a_raid_priority_list_with_duplicate_rows_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["countries"] =
+        json!([{"tag": "GER", "priority": 1}, {"tag": "GER", "priority": 1}]);
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: leaving the victim and raid-source identity pairs outside the
+/// roster join — `world_fold` renders unresolved ids the same way there.
+#[test]
+fn a_raid_victim_with_an_unresolved_identity_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["instances"][0]["victim_country"] = json!("123");
+    snapshot["raids"]["instances"][0]["victim_country_tag_db_id"] = json!(123);
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: authenticating a raid identity by roster MEMBERSHIP alone. A real
+/// roster tag paired with another country's db id would resolve to the wrong
+/// country downstream; the join must hold on the exact `(tag, tag_db_id)`
+/// pair.
+#[test]
+fn a_raid_parent_with_anothers_tag_db_id_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    // Parent and owner AGREE on the wrong id, so the census replays
+    // structurally and only the roster identity join can refuse it.
+    snapshot["raids"]["country_statuses"][1]["tag_db_id"] = json!(2);
+    snapshot["raids"]["instances"][0]["owner_tag_db_id"] = json!(2);
+    let frame = world_frame_with(snapshot);
+    assert_eq!(
+        frame.raids_status(),
+        ViewStatus::Present,
+        "the census still replays structurally, which is why this test exists"
+    );
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
 /// kills: letting the LEGACY player-country keys establish this admission.
 ///
 /// `build_session_metadata` still falls back to `session.player_countries` and
@@ -644,8 +815,14 @@ fn a_d57_player_set_that_breaks_its_producer_contract_does_not_decode() {
 /// Row 0 is the engine's own `missing_tag_dummy` — tag null, tag_db_id 0, no
 /// children — which `captures/oz_tip` carries on every hour. It is measured
 /// absence, not a defect, and the fixture pins that it admits.
+///
+/// The fixture also carries the D18 country roster: raid identity joins the
+/// resolved roster (an unresolved numeric id renders as a 3-char decimal
+/// string, so shape alone cannot authenticate a tag), and a row's own
+/// admitting fixture must carry every measured view its predicate consumes.
 fn raid_census_fixture() -> Value {
     json!({
+        "countries": measured_countries(),
         "raids": {
             "instances_complete": true,
             "ordering": "engine_parent_then_child_producer_order",
@@ -2404,6 +2581,26 @@ fn unmeasuring_one_proven_input_leaves_its_siblings_admitted() {
         .unwrap();
         for other in MAP_AUTHORITY_OWNER_PROVEN_INPUTS {
             if other.input_id == proven.input_id {
+                continue;
+            }
+            // Documented DATA dependencies, not plumbing wobble: these rows'
+            // predicates consume the unmeasured input's own measured view, so
+            // fail-closed law REQUIRES them to move. `mapmode.raids` joins
+            // every raid identity against the resolved D18 roster (an
+            // unresolved numeric id renders as a 3-char decimal string, so
+            // shape alone cannot authenticate a tag).
+            let consumes_unmeasured_input = matches!(
+                (proven.input_id, other.input_id),
+                ("country.d18_complete_roster", "mapmode.raids")
+            );
+            if consumes_unmeasured_input {
+                assert_eq!(
+                    requirement(&projection, other.input_id).disposition,
+                    MapAuthorityRequirementDisposition::Unavailable,
+                    "{} consumes {} and must refuse without it",
+                    other.input_id,
+                    proven.input_id
+                );
                 continue;
             }
             assert_eq!(

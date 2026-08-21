@@ -1,5 +1,5 @@
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use replay_core::{ContentManifest, Leaf, ViewStatus, WorldFrame};
 use serde::{Deserialize, Serialize};
@@ -410,6 +410,39 @@ fn raids_status(frame: &WorldFrame) -> ViewStatus {
     // replays structurally and would otherwise be admitted as complete. That is
     // a population the producer cannot emit, and admitting it would mean
     // admitting a raid census short by the engine's untagged parent slot.
+    // `world_fold` derives the priority list and the parent census from the
+    // same engine vector, so the two must agree: a MEASURED list (present
+    // array, every element parsed — `priorities` alone reads missing/null/
+    // malformed as empty) whose tag set is exactly the non-dummy parent tag
+    // set. Anything else is a shape the producer cannot emit.
+    if !raids.priorities_measured {
+        return certified_census_status(raids.status, false);
+    }
+    // The producer's both-empty population (no parents, no children) returns
+    // Ok before its dummy refusal ever runs, so a raid-free hour is a valid
+    // measured-empty census, not a failed claim.
+    if statuses.is_empty() && instances.is_empty() {
+        return certified_census_status(
+            raids.status,
+            raids.instances_complete && raids.priorities.is_empty(),
+        );
+    }
+    // Row-for-row agreement, values included: each non-dummy parent's
+    // (tag, priority) pair must be the priority list's entry, and the list
+    // must carry nothing else. Tag-set equality alone would admit a
+    // producer-impossible list with the right names and the wrong values.
+    let non_dummy_parents = statuses
+        .iter()
+        .filter(|row| row.tag.is_some())
+        .count();
+    let priorities_agree = raids.priorities.len() == non_dummy_parents
+        && statuses.iter().all(|row| match row.tag.as_deref() {
+            None => true,
+            Some(tag) => raids.priorities.get(tag) == Some(&row.priority),
+        });
+    if !priorities_agree {
+        return certified_census_status(raids.status, false);
+    }
     let dummy_population_is_exact = statuses
         .iter()
         .filter(|row| row.classification == "missing_tag_dummy")
@@ -418,20 +451,37 @@ fn raids_status(frame: &WorldFrame) -> ViewStatus {
         && statuses.first().is_some_and(|row| {
             row.classification == "missing_tag_dummy" && row.tag.is_none() && row.tag_db_id == 0
         });
+    // EVERY country identity in the census must join the resolved roster on
+    // the exact (tag, tag_db_id) pair: `world_fold` renders an unresolved
+    // numeric id as its decimal string ("123".len() == 3, so shape alone
+    // admits it), and a roster tag paired with ANOTHER country's db id would
+    // resolve to the wrong country downstream. That covers parents, instance
+    // owners, victims, and raid sources alike. A census that exists but
+    // cannot be authenticated (no usable roster) is UNAVAILABLE, never
+    // measured absence.
+    let identity_map = match resolved_d18_identity_map(frame) {
+        Ok(map) => map,
+        Err(_) => return ViewStatus::DomainUnavailable,
+    };
+    let resolved_pair = |tag: Option<&str>, id: u32| match tag {
+        // An absent optional identity carries id 0; anything else is a claim.
+        None => id == 0,
+        Some(tag) => identity_map.get(tag) == Some(&id),
+    };
     let mut identities = BTreeSet::new();
     let complete = raids.instances_complete
         && dummy_population_is_exact
         && instances.iter().all(|row| {
             identities.insert((row.id, row.id_type))
                 && !row.phase.trim().is_empty()
-                && row
-                    .owner_tag
-                    .as_deref()
-                    .is_some_and(|tag| tag.len() == 3)
+                && row.owner_tag.is_some()
+                && resolved_pair(row.owner_tag.as_deref(), row.owner_tag_db_id)
+                && resolved_pair(row.victim_country.as_deref(), row.victim_country_tag_db_id)
+                && resolved_pair(row.raid_source.tag.as_deref(), row.raid_source.tag_db_id)
         })
         && statuses.iter().all(|row| match row.tag.as_deref() {
             None => row.classification == "missing_tag_dummy" && row.tag_db_id == 0,
-            Some(tag) => tag.len() == 3 && row.tag_db_id != 0,
+            Some(tag) => identity_map.get(tag) == Some(&row.tag_db_id),
         });
     certified_census_status(raids.status, complete)
 }
@@ -881,6 +931,26 @@ fn complete_d18_roster(frame: &WorldFrame) -> Result<BTreeSet<String>, ViewStatu
         .collect())
 }
 
+/// The resolved `(tag, tag_db_id)` identity map. Same availability rules as
+/// [`complete_d18_roster`]; consumers that must authenticate an id pair (not
+/// just membership) join through this.
+fn resolved_d18_identity_map(
+    frame: &WorldFrame,
+) -> Result<BTreeMap<String, u32>, ViewStatus> {
+    let roster = frame.d18_country_roster();
+    if roster.status != ViewStatus::Present {
+        return Err(roster.status);
+    }
+    if roster.entries.is_empty() {
+        return Err(ViewStatus::DomainUnavailable);
+    }
+    Ok(roster
+        .entries
+        .iter()
+        .map(|entry| (entry.tag.clone(), entry.tag_db_id))
+        .collect())
+}
+
 fn d18_complete_roster_status(frame: &WorldFrame) -> ViewStatus {
     match complete_d18_roster(frame) {
         Ok(_) => ViewStatus::Present,
@@ -1223,8 +1293,14 @@ pub fn map_authority_requirement_metadata(
         // naming work that is already done.
         // ---- XMAP18's seven remaining refusals, and why each is refused ----
         //
-        // Lane PL measured all of them on `captures/oz_tip` (2026-08-21, all 534
-        // hours; extractor/native/runs/pl_xmap18/). These blocker STRINGS say
+        // Lane PL measured these on `captures/oz_tip` (2026-08-21;
+        // extractor/native/runs/pl_xmap18/). The COMMITTED evidence is the
+        // authority-disposition witness over all 534 hours
+        // (witness_oz_tip_all.json) plus a detailed raw-carrier census of 14
+        // hours at stride 40 (census_oz_tip_stride40.json); raw-carrier
+        // hour-counts below beyond that sample come from the lane's full scan,
+        // whose detail was not committed, and carry that caveat.
+        // These blocker STRINGS say
         // ONLY which contract is unmet. A blocker is rendered on every refusing
         // hour, including hours nobody has measured, so a string that said "the
         // census IS on the wire" or "the scopes ARE measured" would be false on
@@ -1233,12 +1309,14 @@ pub fn map_authority_requirement_metadata(
         // comments, where it is dated and attached to its evidence, and none of
         // it lives in a string that gets printed about an unmeasured frame.
 
-        // MEASURED PRESENT, RENDERER CANNOT USE IT YET. `captures/oz_tip`
-        // carries the exact D31 census at `naval_air._r2_air_superiority_inputs`
-        // on 469 of 534 hours (173-248 rows over 16-22 strategic regions and
-        // 27-32 owners) and the exact D56 ordered occurrence list at
-        // `naval_air._r2_naval_supremacy` on 475, under its own `row_count`
-        // witness and the `C` recorder marker.
+        // MEASURED PRESENT, RENDERER CANNOT USE IT YET. On the committed
+        // 14-hour stride-40 sample, `captures/oz_tip` carries the exact D31
+        // census at `naval_air._r2_air_superiority_inputs` (173-248 rows over
+        // 16-22 strategic regions and 27-32 owners) and the exact D56 ordered
+        // occurrence list at `naval_air._r2_naval_supremacy`, under its own
+        // `row_count` witness and the `C` recorder marker. (The lane's full
+        // scan put the carriers at 469 and 475 of 534 hours respectively;
+        // uncommitted, see the caveat above.)
         //
         // Neither is admissible yet, and the reason is NOT the carrier. The
         // recorder deliberately spells the two COLLAPSED views
@@ -1283,11 +1361,12 @@ pub fn map_authority_requirement_metadata(
         }
 
         // MEASURED PRESENT, SCOPE UNIVERSE NEVER ENUMERATED. On every healthy
-        // hour of `captures/oz_tip` the scripted variable/flag surface carries
-        // no unobtained scope at all: 104 measured country scopes and 336
-        // measured-absent ones, 308 measured state scopes and 773
-        // measured-absent. On the one injured hour in the sample every measured
-        // scope flips to unobtained, so the distinction is real.
+        // hour of the committed 14-hour stride-40 sample of `captures/oz_tip`
+        // the scripted variable/flag surface carries no unobtained scope at
+        // all: 104 measured country scopes and 336 measured-absent ones, 308
+        // measured state scopes and 773 measured-absent. On the one injured
+        // hour in the sample every measured scope flips to unobtained, so the
+        // distinction is real.
         //
         // It is still not completeness. A scope map that is simply EMPTY also
         // has no unobtained entry, so "no scope failed" cannot tell a fully
@@ -1326,11 +1405,12 @@ pub fn map_authority_requirement_metadata(
             "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins; the D53 war-edge and faction-membership carriers that give a country pair its content are not proven"
         }
 
-        // NOTHING ON THE WIRE. Over all 534 hours of `captures/oz_tip`,
-        // including its healthiest, `intel_levels`, `intel_network_graphs`,
-        // `operation_instances` and `air_disclosure` are every one of them
-        // `Leaf::Unobtained` -- so no predicate written here could admit this
-        // row on that recording. The string still states the contract rather
+        // NOTHING ON THE WIRE. Over the committed 14-hour stride-40 sample of
+        // `captures/oz_tip`, including its healthiest hour, `intel_levels`,
+        // `intel_network_graphs`, `operation_instances` and `air_disclosure`
+        // are every one of them `Leaf::Unobtained` -- so no predicate written
+        // here could admit this row on those hours. (The lane's full scan saw
+        // the same on all 534 hours; uncommitted, see the caveat above.) The string still states the contract rather
         // than that measurement, because it is rendered on hours nobody has
         // measured.
         "mapmode.intelligence" => {

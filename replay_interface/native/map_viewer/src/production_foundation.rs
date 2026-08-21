@@ -212,6 +212,38 @@ pub struct FoundationFeatureContext<'a> {
     pub xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
 }
 
+#[cfg(test)]
+impl<'a> FoundationFeatureContext<'a> {
+    /// Test-only constructor for driving a feature adapter's owned-input
+    /// accounting through its real `prepare()` entry: the private schedule
+    /// field stays `None` and every hash is blank, which is exactly the shape
+    /// where only the accounting and selection stages are reachable.
+    pub(crate) fn new_for_owned_accounting_tests(
+        world_frame: &'a WorldFrame,
+        viewer: &'a ViewerOwnedMapState,
+        map_authority_gaps: &'a [MapAuthorityGap],
+        map_authority_admitted: &'a [MapAuthorityAdmittedInput],
+        xmap15_selection: &'a crate::production_features::xmap15::Xmap15ViewerSelection,
+    ) -> Self {
+        Self {
+            world_frame,
+            viewer,
+            map_authority_gaps,
+            map_authority_admitted,
+            assigned_stage_schedule: None,
+            product_modset_sha256: "",
+            effective_vfs_manifest_sha256: "",
+            foundation_content_operation_sha256: "",
+            viewer_state_sha256: "",
+            prepared_terrain: None,
+            prepared_political: None,
+            prepared_units: None,
+            xmap15_units: None,
+            xmap15_selection,
+        }
+    }
+}
+
 impl FoundationFeatureContext<'_> {
     pub fn require_assigned_stage(
         &self,
