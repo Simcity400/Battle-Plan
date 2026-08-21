@@ -802,6 +802,21 @@ fn walk_with(
     source: &D81ReadSource<'_>,
     phases: &D81PhaseAccum,
 ) -> Result<D81WalkRows, D81FirstFailure> {
+    walk_with_layout(world, &Layout::DEFAULT, source, phases)
+}
+
+/// [`walk_with`] against a world staged at some OTHER layout.
+///
+/// `walk_with` reads the default layout's table addresses out of module
+/// constants, so pointing it at a `Layout::sized` world walks tables that world
+/// never staged and refuses at its first province. Every profile that varies
+/// the province count therefore has to go through here.
+pub(super) fn walk_with_layout(
+    world: &StagedWorld,
+    layout: &Layout,
+    source: &D81ReadSource<'_>,
+    phases: &D81PhaseAccum,
+) -> Result<D81WalkRows, D81FirstFailure> {
     let record = Cell::new(0u32);
     let key = Cell::new(0u32);
     d81_walk_provinces(
@@ -810,10 +825,10 @@ fn walk_with(
         &world.topology,
         &world.valid_ids,
         &world.container,
-        RAIL_TABLE as usize,
-        ACTIVE_TABLE as usize,
-        SELECTOR_TABLE as usize,
-        SELECTOR_MASK,
+        layout.rail_table as usize,
+        layout.active_table as usize,
+        layout.selector_table as usize,
+        layout.selector_mask,
         SELECTOR_MAX_DISTANCE,
         None,
         None,
