@@ -154,19 +154,63 @@ impl Xmap20TriggerProvider for Xmap20ProductionTriggerProvider<'_> {
                 }
                 .seal()
             }
+            // An unattributed scene-node effect has no owner packet to ASK,
+            // because its producer reported obtaining no join to XMAP13 or
+            // XMAP19 — a statement about the lookup, not about who owns it. A receipt still needs a
+            // resolved `source_content` key, and the only path to one is the
+            // effect's own particle packets, which this per-effect signature
+            // does not receive. Refusing names that gap instead of minting a
+            // receipt over invented content.
+            ParentAnchor::SceneNode { .. } => Err(XMAP20_UNATTRIBUTED_TRIGGER_GAP.into()),
         }
     }
 }
 
-/// The gates that stop an effect-lifecycle carrier from existing at all. Lane
-/// OI proved the engine read path but landed no producer: five named gates are
-/// open, so there is nothing for this family to prepare.
-pub const XMAP20_OPEN_CARRIER_GATES: [&str; 5] = [
-    "XMAP20-G1-xmap13-join",
+/// Why an unattributed scene-node effect cannot yet be given a trigger receipt.
+///
+/// This is the one open item the scene-node anchor leaves for the producer
+/// lane: the receipt's `source_content` must be a resolved `UsedContentKey`,
+/// and an effect whose producer obtained no semantic join can only get one from its own
+/// particle packets. `Xmap20TriggerProvider::trigger_for_effect` takes an
+/// effect without its packets, so closing this is a producer-side signature
+/// decision, not a further reverse-engineering task.
+pub const XMAP20_UNATTRIBUTED_TRIGGER_GAP: &str =
+    "XMAP20 unattributed scene-node effects have no authored-trigger provider: their producer \
+     reported obtaining no semantic join, so there is no owner packet to ask for a receipt, and \
+     their resolved content key must come from their own particle packets, which the per-effect \
+     trigger signature does not carry";
+
+/// The gates that stop an effect-lifecycle carrier from existing at all.
+///
+/// Lane OI proved the engine read path, PJ mapped the owner chain, and PO
+/// closed the live gate and amended the schema. Three of the original five are
+/// gone and one is new, so what remains is genuinely producer-side work:
+///
+/// * `G1-xmap13-join` is ANSWERED, not closed by building XMAP13. The census
+///   cannot name a semantic owner, and PJ's weather-side shortcut does not open
+///   either, so the carrier records the engine's own scene-node identity
+///   instead (`ParentAnchor::SceneNode` with `producer_kind` `"unattributed"`)
+///   and no longer needs the entity census to exist. That name is deliberate:
+///   it records that no join was OBTAINED, and does not assert the engine owns
+///   the effect. The carrier cannot verify that a producer genuinely attempted
+///   the join before falling back here, so G1 stays open on that obligation.
+/// * `G3-live-confirmation` is CLOSED: one bounded read against a matching
+///   running build walked manager to census to instance to node to descriptor
+///   to authored type, and every self-check passed.
+/// * `G4-initial-versus-current-prng-state` is RESOLVED by the owner's ruling
+///   that effect randomness is viewer-local. The carrier records no RNG state,
+///   so there is nothing left to satisfy.
+///
+/// The four below are what a producer still has to answer. G7 in particular is
+/// why "the carrier is no longer blocked" would be the wrong reading of the
+/// amendment: three required wire fields are still unsourced, and the validator
+/// accepts a zero for each, so a producer landing today would invent them. See
+/// `replay_interface/re_evidence/rendering_laws/XMAP20/effect_census_authority.json`.
+pub const XMAP20_OPEN_CARRIER_GATES: [&str; 4] = [
     "XMAP20-G2-lifecycle-sequencing",
-    "XMAP20-G3-live-confirmation",
-    "XMAP20-G4-initial-versus-current-prng-state",
     "XMAP20-G5-census-completeness-and-snapshot-safety",
+    "XMAP20-G6-unattributed-trigger-receipt",
+    "XMAP20-G7-unsourced-required-wire-fields",
 ];
 
 pub const XMAP20_CARRIER_ABSENT_GAP_ID: &str = "XMAP20.effect_lifecycle_carrier_absent";
@@ -462,6 +506,22 @@ fn validate_trigger_join(
                 );
             }
         }
+        // The unattributed scene-node case. The trigger is XMAP20's own: it names no
+        // semantic owner packet other than XMAP20, claims no entity, and its
+        // node token must be the same engine-synthesised token the anchor
+        // carries, so the receipt cannot drift from the anchor it describes.
+        ParentAnchor::SceneNode { node_token, .. } => {
+            if effect.producer_kind != portable_render_stream::XMAP20_PRODUCER_KIND_UNATTRIBUTED
+                || trigger.semantic_owner_packet != "XMAP20"
+                || trigger.entity_instance_id.is_some()
+                || trigger.node_token.as_deref() != Some(node_token.as_str())
+            {
+                return Err(
+                    "XMAP20 scene-node trigger must be unattributed and carry its exact node token"
+                        .into(),
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -564,8 +624,6 @@ mod tests {
                 entity_instance_id: 12,
                 node_token: "muzzle".into(),
             },
-            initial_rng_seed_u32: 2,
-            initial_rng_counter_u32: 3,
             elapsed_f32_bits: 1.0f32.to_bits(),
             time_scale_f32_bits: 1.0f32.to_bits(),
             active_flags_u32: 1,
@@ -664,8 +722,10 @@ mod carrier_tests {
     use super::*;
 
     // kills: reporting XMAP20 as a generic unpromoted adapter instead of naming
-    // the five gates that actually hold the producer shut, and silently dropping
-    // a gate from the list as gates are closed.
+    // the gates that actually hold the producer shut, and silently dropping a
+    // gate from the list as gates are closed. The count is deliberately not
+    // written here — it has changed once already (five to four) and a number in
+    // a comment is a second place for it to go stale.
     #[test]
     fn the_refusal_names_every_open_carrier_gate() {
         let output = Xmap20EffectsAdapter::carrier_absent_output(11);

@@ -97,6 +97,8 @@ mod xmap20_effects;
 pub use xmap20_effects::{
     admit_xmap20_effects, validate_xmap20_admitted_particles, Xmap20ActiveEffect,
     Xmap20EffectAdmission, Xmap20EffectFrame, Xmap20LifecycleEvent, Xmap20ParticleSubmissionRef,
+    XMAP20_ACTIVE_FLAGS_ASSIGNED_MASK, XMAP20_ACTIVE_FLAG_ENABLED,
+    XMAP20_PRODUCER_KIND_UNATTRIBUTED, XMAP20_PRODUCER_KIND_UNIT, XMAP20_PRODUCER_KIND_WEATHER,
     XMAP20_EFFECT_ADMISSION_SCHEMA, XMAP20_EFFECT_FRAME_SCHEMA, XMAP20_EXECUTABLE_SHA256,
     XMAP20_PARTICLE_DEFINITION_LOOKUP_RVA, XMAP20_PARTICLE_REGISTRY_RVA,
     XMAP20_PARTICLE_SUBMIT_BOUNDARY_RVA,
@@ -2384,8 +2386,6 @@ pub struct EffectLifecycleEvent {
     pub producer_instance_id: String,
     pub authored_event_index: u32,
     pub parent_anchor: ParentAnchor,
-    pub initial_rng_seed_u32: u32,
-    pub initial_rng_counter_u32: u32,
     pub elapsed_f32_bits: u32,
     pub time_scale_f32_bits: u32,
     pub active_flags_u32: u32,
@@ -2412,6 +2412,30 @@ pub enum ParentAnchor {
     },
     World {
         world_transform_4x4_f32_bits: [u32; 16],
+    },
+    /// The engine's own scene-node anchor, recorded when the producer reported
+    /// that no semantic join was obtained.
+    ///
+    /// Say it that way and not "no semantic owner packet claims the effect":
+    /// the carrier verifies only that the identity is absent from the two
+    /// censuses the provider receipts carry, which is a lookup against a known
+    /// set, not a statement about ownership. Whether the producer genuinely
+    /// attempted the join is a producer obligation (gate XMAP20-G1).
+    ///
+    /// `node_token` is the attachment name the engine SYNTHESISES for every
+    /// particle descriptor (descriptor+0x10, built at 0x14208f200 from a fixed
+    /// literal plus a process-global counter). It is unique within one process
+    /// run and is NOT authored content, so it identifies the attachment inside
+    /// a recording and must never be used as a cross-recording identity.
+    ///
+    /// `node_transform_4x4_f32_bits` is the scene node's own transform block at
+    /// node+0x10, reached as `instance+0x40 - 0x10 + 0x10`. It is recorded as
+    /// what the node holds. This variant deliberately makes NO claim that the
+    /// transform is world-resolved; that is the difference from `World`, which
+    /// additionally asserts equality with the particle packet matrix.
+    SceneNode {
+        node_token: String,
+        node_transform_4x4_f32_bits: [u32; 16],
     },
 }
 
