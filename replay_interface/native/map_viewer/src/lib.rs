@@ -118,6 +118,7 @@ pub mod xmap12_building_law;
 mod xmap12_d3d_handoff;
 mod xmap12_pdxmesh;
 mod xmap12_population;
+pub mod xmap13_counter_control_law;
 pub mod xmap13_counter_grouping_law;
 mod xmap15_d3d_handoff;
 mod xmap16_d3d_handoff;
