@@ -940,18 +940,18 @@ fn complete_d18_roster(frame: &WorldFrame) -> Result<BTreeSet<String>, ViewStatu
 fn resolved_d18_identity_map(
     frame: &WorldFrame,
 ) -> Result<BTreeMap<String, u32>, ViewStatus> {
-    let roster = frame.d18_country_roster();
-    if roster.status != ViewStatus::Present {
-        return Err(roster.status);
+    // `partial()` on purpose: the join authenticates each (tag, tag_db_id)
+    // pair individually, so resolved countries can vouch for their own rows
+    // while a pair naming an EXCLUDED country simply fails its lookup and the
+    // census refuses — fail-closed without demanding whole-roster coverage.
+    match frame.d18_country_roster().partial() {
+        Ok(partial) => Ok(partial
+            .resolved
+            .iter()
+            .map(|entry| (entry.tag.clone(), entry.tag_db_id))
+            .collect()),
+        Err(refusal) => Err(refusal.status),
     }
-    if roster.entries.is_empty() {
-        return Err(ViewStatus::DomainUnavailable);
-    }
-    Ok(roster
-        .entries
-        .iter()
-        .map(|entry| (entry.tag.clone(), entry.tag_db_id))
-        .collect())
 }
 
 fn d18_complete_roster_status(frame: &WorldFrame) -> ViewStatus {
