@@ -155,6 +155,7 @@ fn one_controller_read_serves_every_pov_that_asks_for_that_province() {
     let mut frame_map = BTreeMap::new();
     let mut witnesses = Vec::new();
     let mut answers = Vec::new();
+    let phases = D81PhaseAccum::default();
     for _pov in 0..3 {
         for province_id in [3u32, 5] {
             answers.push(
@@ -164,6 +165,7 @@ fn one_controller_read_serves_every_pov_that_asks_for_that_province() {
                     &authority,
                     &mut frame_map,
                     &mut witnesses,
+                    &phases,
                 )
                 .expect("the staged controller slot is readable"),
             );
@@ -174,6 +176,16 @@ fn one_controller_read_serves_every_pov_that_asks_for_that_province() {
         witnesses.len(),
         2,
         "three POVs over the same two provinces must produce TWO reads, not six"
+    );
+    // THE WIRE UNIT MAKES THE SAME CLAIM, and it is the one a capture can
+    // check. `hub_controller_reads` is bumped past the cache hit, so a
+    // regression that re-read per POV would report six here while
+    // `witnesses.len()` still reported two -- the witness vector is
+    // deduplicated by the map, the counter by the control flow.
+    assert_eq!(
+        phases.snapshot().hub_controller_reads,
+        2,
+        "and the unit that reports this on the wire must count the READS,          not the six askings"
     );
     assert_eq!(
         answers,
@@ -209,6 +221,7 @@ fn the_deduplicated_controller_still_carries_a_witness_that_can_refuse() {
     let mut heap = controller_heap();
     heap.write_u32(controller_slot(3) + 0x188, 7);
     let authority = controller_authority();
+    let phases = D81PhaseAccum::default();
 
     let mut frame_map = BTreeMap::new();
     let mut witnesses = Vec::new();
@@ -218,6 +231,7 @@ fn the_deduplicated_controller_still_carries_a_witness_that_can_refuse() {
         &authority,
         &mut frame_map,
         &mut witnesses,
+        &phases,
     )
     .expect("the staged controller slot is readable");
     assert!(
@@ -239,6 +253,7 @@ fn a_controller_resolved_in_one_frame_is_never_reused_in_the_next() {
     let mut heap = controller_heap();
     heap.write_u32(controller_slot(3) + 0x188, 7);
     let authority = controller_authority();
+    let phases = D81PhaseAccum::default();
 
     let mut first_frame_map = BTreeMap::new();
     let mut first_frame_witnesses = Vec::new();
@@ -248,6 +263,7 @@ fn a_controller_resolved_in_one_frame_is_never_reused_in_the_next() {
         &authority,
         &mut first_frame_map,
         &mut first_frame_witnesses,
+        &phases,
     )
     .expect("the staged controller slot is readable");
     assert_eq!(first, (7, 1007));
@@ -262,6 +278,7 @@ fn a_controller_resolved_in_one_frame_is_never_reused_in_the_next() {
         &authority,
         &mut second_frame_map,
         &mut second_frame_witnesses,
+        &phases,
     )
     .expect("the staged controller slot is readable");
     assert_eq!(
@@ -283,6 +300,7 @@ fn a_controller_handle_the_authority_does_not_admit_refuses_the_frame() {
     let mut heap = controller_heap();
     heap.write_u32(controller_slot(3) + 0x188, 63_000);
     let authority = controller_authority();
+    let phases = D81PhaseAccum::default();
 
     let mut frame_map = BTreeMap::new();
     let mut witnesses = Vec::new();
@@ -292,6 +310,7 @@ fn a_controller_handle_the_authority_does_not_admit_refuses_the_frame() {
         &authority,
         &mut frame_map,
         &mut witnesses,
+        &phases,
     )
     .expect_err("63000 is not an admitted handle");
     assert_eq!(failure.stage, D81FailureStage::HubRoot);
@@ -513,12 +532,21 @@ fn the_controller_witnesses_are_the_last_thing_the_hub_closing_gate_re_reads() {
              witnesses; without that disjunct the dedup has no closing check \
              at all",
     );
+    // The re-read predicate is `d81_witness_changed` since lane PD — that is
+    // `!witness.unchanged()` with the `hub_witnesses` bump in front of it. The
+    // ORDER is what this test is about, and the order is what is asserted: the
+    // `final_witnesses` disjunct must still sit on the left of the
+    // `controller_witnesses` one.
     assert!(
-        gate.0
-            .contains("|| final_witnesses.iter().any(|witness| !witness.unchanged())"),
+        gate.0.contains("|| final_witnesses"),
         "the controller witnesses must be re-read AFTER `final_witnesses`, or \
          the one check lands earlier than the per-POV checks it replaces and \
          catches strictly fewer engine writes"
+    );
+    assert!(
+        gate.0.contains("d81_witness_changed(witness, phases)"),
+        "and `final_witnesses` must be re-read through the counting predicate, \
+         or `hub_witnesses` under-reports what the gate paid for"
     );
     assert!(
         gate.0.contains("|| final_fallback_gates"),
