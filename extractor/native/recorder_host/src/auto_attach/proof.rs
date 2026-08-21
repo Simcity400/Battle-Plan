@@ -474,9 +474,15 @@ impl FirstCompactRecordGate {
     }
 
     pub fn observe(&mut self, chunk: &[u8]) -> Result<Option<ValidatedCompactRecordProof>, String> {
+        // One maximal record plus ONE read chunk. The headroom term was a bare
+        // `65_536` while the capture drain read 64 KiB at a time; it is the
+        // drain's chunk size and nothing else, so it now names it (lane PN).
+        // Spelling it as a literal made the bound silently wrong the moment the
+        // read size moved: the gate would refuse a capture whose first record
+        // merely arrived inside a larger chunk.
         let buffer_limit = compact_contract::COMPACT_MAX_PAYLOAD_LEN as usize
             + compact_contract::COMPACT_RECORD_HEADER_LEN
-            + 65_536;
+            + crate::CAPTURE_READ_BUFFER_BYTES;
         if self.buffered.len().saturating_add(chunk.len()) > buffer_limit {
             return Err(format!(
                 "first world-record proof exceeded the bounded {}-byte buffer",

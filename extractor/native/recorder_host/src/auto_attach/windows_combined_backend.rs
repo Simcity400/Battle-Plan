@@ -289,6 +289,22 @@ struct PendingOperation {
     overlapped: Overlapped,
     event: OwnedHandle,
     buffer: Vec<u8>,
+    /// Accounting that TRAVELS WITH `buffer` (lane PN, Codex r3 #1).
+    ///
+    /// Keeping the `Charge` on the reader instead was wrong at one edge: an
+    /// overlapped read that is cancelled while still pending has its whole
+    /// operation — this buffer included — moved into a `QuarantinedOperation`
+    /// and `Box::leak`ed, because the kernel may still write into it. The
+    /// megabyte stays resident forever, so releasing the charge when the
+    /// reader dropped would under-report memory the process really holds.
+    /// Riding here, the charge is leaked with the buffer it describes and the
+    /// account keeps telling the truth. It also removes the reallocation
+    /// double-count: there is no longer a charge on the reader that a second
+    /// allocation could overwrite.
+    ///
+    /// `None` for every operation that carries no accounted buffer — the
+    /// connect and control operations, which pass `Vec::new()`.
+    charge: Option<crate::mem_account::Charge>,
 }
 
 // SAFETY: the OVERLAPPED, event, and buffer are heap-stable and move only as
@@ -296,7 +312,29 @@ unsafe impl Send for PendingOperation {}
 
 impl PendingOperation {
     fn new(buffer: Vec<u8>) -> io::Result<Box<Self>> {
-        let event = OwnedHandle::new(unsafe { CreateEventW(ptr::null_mut(), 1, 0, ptr::null()) })?;
+        Self::new_accounted(buffer, None)
+    }
+
+    fn new_accounted(
+        buffer: Vec<u8>,
+        charge: Option<crate::mem_account::Charge>,
+    ) -> io::Result<Box<Self>> {
+        // RELEASE AFTER THE DROP, explicitly (Codex r4 #1). On the `?` path the
+        // two parameters would drop in reverse declaration order — the charge
+        // before the buffer it accounts for — leaving the account reading zero
+        // while the megabyte was still resident. Ordering it by hand costs
+        // nothing and makes the invariant local instead of a fact about
+        // parameter order.
+        let event = match OwnedHandle::new(unsafe {
+            CreateEventW(ptr::null_mut(), 1, 0, ptr::null())
+        }) {
+            Ok(event) => event,
+            Err(error) => {
+                drop(buffer);
+                drop(charge);
+                return Err(error);
+            }
+        };
         let mut operation = Box::new(Self {
             overlapped: Overlapped {
                 internal: 0,
@@ -308,6 +346,7 @@ impl PendingOperation {
             },
             event,
             buffer,
+            charge,
         });
         operation.overlapped.event = operation.event.raw();
         Ok(operation)
@@ -1226,7 +1265,12 @@ impl DeadlineControlIo for WindowsControlIo {
 }
 
 /// Largest length the process-lifetime H4CR read submits to a single
-const H4CR_READ_CHUNK_BYTES: usize = 1024 * 1024;
+///
+/// ONE constant with the legacy capture drain (lane PN, 2026-08-21). This path
+/// already read the capture pipe a mebibyte at a time while
+/// `main.rs`'s drain read 64 KiB; they are the same job on the same pipe name
+/// family and a second literal here would let them drift apart again.
+const H4CR_READ_CHUNK_BYTES: usize = crate::CAPTURE_READ_BUFFER_BYTES;
 
 struct WindowsOverlappedPipe {
     handle: Option<OwnedHandle>,
@@ -1234,6 +1278,18 @@ struct WindowsOverlappedPipe {
     shared_cancellation: ControlCancellation,
     /// Reusable landing buffer for the process-lifetime H4CR read.
     read_scratch: Option<Vec<u8>>,
+    /// Accounting for `read_scratch` (lane PN, Codex r2 #1). The legacy drain
+    /// in `main.rs` charges its own 1 MiB landing buffer; this path retains an
+    /// identically-sized one for the life of the pipe, so a shipping
+    /// combined-auto-attach manifest would otherwise report zero for a
+    /// megabyte it is really holding.
+    ///
+    /// `Some` exactly when `read_scratch` is — the two move together, into
+    /// `PendingOperation` for the duration of a read and back again after it,
+    /// so a read that is cancelled and quarantined carries its accounting into
+    /// the leak instead of releasing it (Codex r3 #1). A pipe that never reads
+    /// allocates nothing and charges nothing.
+    read_scratch_charge: Option<crate::mem_account::Charge>,
 }
 
 impl WindowsOverlappedPipe {
@@ -1247,6 +1303,7 @@ impl WindowsOverlappedPipe {
             peer_process,
             shared_cancellation,
             read_scratch: None,
+            read_scratch_charge: None,
         }
     }
 
@@ -1355,11 +1412,24 @@ impl WindowsOverlappedPipe {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "pipe cancelled"));
         }
         let submit_len = dest.len().min(H4CR_READ_CHUNK_BYTES);
-        let scratch = self
-            .read_scratch
-            .take()
-            .unwrap_or_else(|| vec![0; H4CR_READ_CHUNK_BYTES]);
-        let mut operation = PendingOperation::new(scratch)?;
+        // The buffer and its accounting move together, always. See
+        // `PendingOperation::charge`.
+        let (scratch, charge) = match self.read_scratch.take() {
+            Some(scratch) => (scratch, self.read_scratch_charge.take()),
+            None => {
+                // CHARGE FIRST, ALLOCATE SECOND (Codex r4 #1). Tuple operands
+                // evaluate left to right, so building `(vec![..], Charge::new)`
+                // left the megabyte resident and unaccounted for the width of
+                // the allocation. The house rule is charge-before-allocate and
+                // this is now a statement sequence that obeys it.
+                let charge = crate::mem_account::Charge::new(
+                    crate::mem_account::Component::CapturePipeReadBuffer,
+                    H4CR_READ_CHUNK_BYTES as u64,
+                );
+                (vec![0; H4CR_READ_CHUNK_BYTES], Some(charge))
+            }
+        };
+        let mut operation = PendingOperation::new_accounted(scratch, charge)?;
         let handle = self
             .handle
             .as_ref()
@@ -1395,6 +1465,7 @@ impl WindowsOverlappedPipe {
         // The operation completed, so the kernel has released the buffer and
         let transferred = (transferred as usize).min(submit_len);
         dest[..transferred].copy_from_slice(&operation.buffer[..transferred]);
+        self.read_scratch_charge = operation.charge.take();
         self.read_scratch = Some(operation.buffer);
         Ok(transferred)
     }
@@ -1525,6 +1596,19 @@ fn create_pipe(
         "H4CT" => r"\\.\pipe\battle-plan_control_",
         _ => return Err(WindowsCombinedBackendError::InvalidPipeName(kind)),
     };
+    // THE DATA PIPE IS SIZED, THE CONTROL PIPE IS NOT (lane PN, 2026-08-21).
+    // H4CR carries a whole frame of records per game hour — 8.9 MB/hour on
+    // `captures/oz_tip` — and a 64 KiB kernel buffer made the collector hand
+    // that over in ~136 blocking round trips; see `CAPTURE_PIPE_BUFFER_BYTES`
+    // for the measurement. H4CT is a low-rate control channel whose messages
+    // are far below 64 KiB, so widening it would buy nothing and cost kernel
+    // pipe storage for nothing. (These figures are advisory quota, not a
+    // ceiling: Windows may round them and may expand storage for a write that
+    // exceeds the quota — Codex r1 #2.)
+    let buffer_bytes: Dword = match kind {
+        "H4CR" => crate::CAPTURE_PIPE_BUFFER_BYTES,
+        _ => 64 * 1024,
+    };
     if !name.starts_with(prefix)
         || name.len() <= prefix.len()
         || name.contains('\0')
@@ -1542,8 +1626,8 @@ fn create_pipe(
             access | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
             1,
-            64 * 1024,
-            64 * 1024,
+            buffer_bytes,
+            buffer_bytes,
             0,
             &mut attributes,
         )

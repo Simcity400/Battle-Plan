@@ -21,6 +21,11 @@ pub enum Component {
     ManifestGapLedger = 6,
     ManifestDocument = 7,
     H4dgIndex = 8,
+    /// The capture drain's single read buffer, allocated once for the whole
+    /// capture window (`CAPTURE_READ_BUFFER_BYTES`). It was a stack array while
+    /// it was 64 KiB and went unaccounted; at a mebibyte it is a real fixed
+    /// cost and the manifest may not understate it (lane PN, Codex r1 #3).
+    CapturePipeReadBuffer = 9,
 }
 
 impl Component {
@@ -34,6 +39,7 @@ impl Component {
         Component::ManifestGapLedger,
         Component::ManifestDocument,
         Component::H4dgIndex,
+        Component::CapturePipeReadBuffer,
     ];
 
     pub const fn key(self) -> &'static str {
@@ -47,6 +53,7 @@ impl Component {
             Component::ManifestGapLedger => "manifest_gap_ledger",
             Component::ManifestDocument => "manifest_document",
             Component::H4dgIndex => "h4dg_index",
+            Component::CapturePipeReadBuffer => "capture_pipe_read_buffer",
         }
     }
 
@@ -61,6 +68,7 @@ impl Component {
             Component::ManifestGapLedger => Scaling::SessionLength,
             Component::ManifestDocument => Scaling::SessionLength,
             Component::H4dgIndex => Scaling::SessionLength,
+            Component::CapturePipeReadBuffer => Scaling::Fixed,
         }
     }
 }
@@ -82,7 +90,7 @@ impl Scaling {
     }
 }
 
-pub const COMPONENT_COUNT: usize = 9;
+pub const COMPONENT_COUNT: usize = 10;
 
 #[allow(clippy::declare_interior_mutable_const)]
 const ZERO: AtomicU64 = AtomicU64::new(0);
