@@ -66,8 +66,9 @@ $ReviewExitCode = $LASTEXITCODE
   sleep-poll in a shell loop, never detach with `&`, and never end your turn
   while your work is unfinished — you end your turn exactly once, with the
   final report.
-- One fix round per review; if the re-review still finds defects, fix the rest
-  yourself. Any commit after an APPROVE needs one more confirmation round.
+- Review loop: run the review, fix the findings, re-review. Keep looping until
+  Codex approves clean - no round limit. Any commit after an APPROVE needs one
+  more confirmation round.
 
 ## Orchestration - Only relevant if you are given the role of orchestrator by the owner
 
