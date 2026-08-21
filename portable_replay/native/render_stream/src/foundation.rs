@@ -3,7 +3,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const FOUNDATION_RENDER_SCHEMA: &str = "hoi4.viewer-map-foundation.v2";
+/// The foundation render-stream grammar this build emits and accepts.
+///
+/// v2 -> v3 because [`ElementOutcome`] gained
+/// `DrawnFromDocumentedSubstitute`. That variant serializes into receipts, so a
+/// v2 reader meeting one fails with an unknown-enum error rather than naming an
+/// unsupported schema — one identifier describing two grammars that cannot read
+/// each other. Pre-production, formats change cleanly: the version moves and no
+/// compatibility arm is added.
+pub const FOUNDATION_RENDER_SCHEMA: &str = "hoi4.viewer-map-foundation.v3";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -138,6 +146,29 @@ pub enum ElementOutcome {
     /// `Present` alone cannot say the exception exists. A row with this outcome, built by
     /// [`ElementDiagnostic::family_exception`], says both.
     ExactExceptNamedBranch,
+    /// The element WAS drawn, but one input it needed was not in this hour's recording, so
+    /// part of it came from a documented substitute instead of a measurement — and the
+    /// substitute may differ from what the engine drew.
+    ///
+    /// This exists because the four outcomes above could not describe an honest, common
+    /// situation, and forcing it into one of them was a lie in one direction or the other.
+    /// `ExcludedUnknownInput` says the element did not reach the frame; claiming it for an
+    /// element the viewer visibly draws would make `draws()` false about pixels that exist.
+    /// `ExactExceptNamedBranch` fits the shape but declares itself STRUCTURAL — permanent,
+    /// recurring by design, and explicitly saying nothing about the recording's
+    /// completeness — which is the opposite of one hour's missing measurement.
+    ///
+    /// The first use is XMAP05's presentation identity: a country whose cosmetic tag D18
+    /// could not read still gets its political fill, in its base colour, because deleting a
+    /// country's territory from the map over a naming field is a worse answer than drawing
+    /// it. But base is what the engine draws for a country with NO override, and this
+    /// country may have had one — so the pixels are a substitute, not a measurement, and the
+    /// row has to say exactly that rather than implying either that nothing was drawn or
+    /// that everything was vouched.
+    ///
+    /// It DRAWS and it is NOT structural: it counts against the hour's completeness, and it
+    /// disappears from a recording that carried the input.
+    DrawnFromDocumentedSubstitute,
 }
 
 impl ElementOutcome {
@@ -148,13 +179,14 @@ impl ElementOutcome {
             Self::ExcludedUnknownInput => "excluded_unknown_input",
             Self::UnknownContentToken => "unknown_content_token",
             Self::ExactExceptNamedBranch => "exact_except_named_branch",
+            Self::DrawnFromDocumentedSubstitute => "drawn_from_documented_substitute",
         }
     }
 
     /// Whether the element still reaches the frame. `false` means it was excluded whole.
     pub const fn draws(self) -> bool {
         match self {
-            Self::ExactExceptNamedBranch => true,
+            Self::ExactExceptNamedBranch | Self::DrawnFromDocumentedSubstitute => true,
             Self::ExcludedUndecodedLaw
             | Self::ExcludedUnknownInput
             | Self::UnknownContentToken => false,
@@ -1493,5 +1525,58 @@ mod tests {
         assert!(ElementOutcome::ExactExceptNamedBranch.draws());
         assert!(!ElementOutcome::ExcludedUndecodedLaw.is_structural());
         assert!(ElementOutcome::ExactExceptNamedBranch.is_structural());
+    }
+
+    /// kills: collapsing the substituted-part outcome onto either neighbour.
+    ///
+    /// It exists because neither neighbour can describe "drawn, but one input
+    /// came from a documented substitute because this hour's recording lacked
+    /// it". Folded onto `ExcludedUnknownInput` it would report pixels that exist
+    /// as absent; folded onto `ExactExceptNamedBranch` it would declare an
+    /// hour's missing measurement to be a permanent structural property and stop
+    /// counting against completeness. Both mistakes are silent, so the contract
+    /// is pinned rather than assumed.
+    #[test]
+    fn a_substituted_part_draws_and_still_counts_against_completeness() {
+        let outcome = ElementOutcome::DrawnFromDocumentedSubstitute;
+        assert!(outcome.draws(), "the element reached the frame");
+        assert!(
+            !outcome.is_structural(),
+            "an hour's missing input is not a standing property of the layer"
+        );
+        assert_eq!(outcome.as_str(), "drawn_from_documented_substitute");
+
+        // It must be a legal PER-ELEMENT row: not family-scope, naming no part,
+        // and accounting for at least one element.
+        let row = ElementDiagnostic {
+            family: MapVisualFamily::PoliticalFillGradients,
+            owner_packet: MapVisualFamily::PoliticalFillGradients.owner_packet().into(),
+            element_id: "XMAP05:presentation-identity:ICE".into(),
+            source_ordinal: None,
+            outcome,
+            part: String::new(),
+            element_count: 1,
+            detail: "base colour substituted for an unread cosmetic identity".into(),
+        };
+        row.validate().expect("a legal per-element row");
+        assert!(!row.is_family_scope());
+
+        // And it must COLLAPSE. `collapse_family` refuses to aggregate any row
+        // that names a part, so an hour that excluded hundreds of countries
+        // would fail the bound outright if these rows named one.
+        let many: Vec<ElementDiagnostic> = (0..MAX_ELEMENT_DIAGNOSTIC_ROWS_PER_FAMILY + 10)
+            .map(|index| ElementDiagnostic {
+                element_id: format!("XMAP05:presentation-identity:X{index:03}"),
+                ..row.clone()
+            })
+            .collect();
+        let expected = many.len() as u64;
+        let collapsed = collapse_element_diagnostics(many).expect("rows collapse at the bound");
+        assert_eq!(collapsed.len(), 1, "one aggregate for one outcome");
+        assert_eq!(
+            collapsed[0].element_count, expected,
+            "the count stays exact through the collapse"
+        );
+        assert_eq!(collapsed[0].outcome, outcome);
     }
 }

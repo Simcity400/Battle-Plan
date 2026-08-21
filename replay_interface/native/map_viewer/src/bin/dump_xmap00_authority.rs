@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use map_viewer::{
-    map_authority_projection_from_world_frame, MapAuthorityRequirementDisposition,
-    MAP_AUTHORITY_REQUIRED_INPUTS,
+    map_authority_projection_from_world_frame, xmap05_admission_verdict,
+    MapAuthorityRequirementDisposition, MAP_AUTHORITY_REQUIRED_INPUTS,
 };
 use replay_core::{open_recording, open_recording_game, Leaf, ViewStatus, WorldFrame, WorldTimeline};
 
@@ -229,6 +229,173 @@ fn observations(frame: &WorldFrame) -> Vec<Observation> {
                 "hour_index={} date={}",
                 frame.hour_index(),
                 frame.date().unwrap_or("null(unobtained)")
+            )),
+        },
+        // The XMAP05 family's own inputs, at the grain the family refuses on.
+        // Kept separate from the statuses above because a roll-up of
+        // `unavailable=N` never says WHICH country sank the roster, and that one
+        // country is the whole question for this family.
+        Observation {
+            label: "d18_country_roster",
+            status: Some(frame.d18_country_roster().status),
+            completeness: Some({
+                let roster = frame.d18_country_roster();
+                format!(
+                    "entries={} diagnostic={}",
+                    roster.entries.len(),
+                    roster.diagnostic.as_deref().unwrap_or("none")
+                )
+            }),
+        },
+        Observation {
+            label: "country_identities_status",
+            status: Some(frame.country_identities_status()),
+            completeness: Some({
+                let mut measured_override = 0usize;
+                let mut measured_none = 0usize;
+                let mut absent = 0usize;
+                let mut unobtained = 0usize;
+                for (_, identity) in frame.country_identities() {
+                    match &identity.cosmetic_tag {
+                        Leaf::Measured(Some(_)) => measured_override += 1,
+                        Leaf::Measured(None) => measured_none += 1,
+                        Leaf::Absent => absent += 1,
+                        Leaf::Unobtained => unobtained += 1,
+                    }
+                }
+                format!(
+                    "cosmetic override={measured_override} no-override={measured_none} \
+                     absent={absent} unobtained={unobtained}"
+                )
+            }),
+        },
+        Observation {
+            label: "mapc1_envelope",
+            status: None,
+            completeness: Some({
+                match frame
+                    .domain("map")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|map| map.get("_r2_xmap05_control_authority"))
+                    .and_then(serde_json::Value::as_object)
+                {
+                    None => "absent".to_string(),
+                    Some(envelope) => format!(
+                        "present schema={:?} schema_version={:?} country_count={:?} \
+                         presentation_identity_excluded={:?}",
+                        envelope.get("schema").and_then(serde_json::Value::as_str),
+                        envelope
+                            .get("schema_version")
+                            .and_then(serde_json::Value::as_u64),
+                        envelope
+                            .get("country_count")
+                            .and_then(serde_json::Value::as_u64),
+                        envelope
+                            .get("presentation_identity_excluded")
+                            .and_then(serde_json::Value::as_array)
+                            .map(Vec::len),
+                    ),
+                }
+            }),
+        },
+        // Sizing input for the division movement-route carrier: how many rows
+        // would carry a route at all, and how many already carry the one hop
+        // `DivisionUnitRow` has today.
+        Observation {
+            label: "division movement census",
+            status: None,
+            completeness: Some({
+                let rows = frame.division_units();
+                let moving = rows
+                    .iter()
+                    .filter(|row| matches!(row.moving, Leaf::Measured(true)))
+                    .count();
+                let with_target = rows
+                    .iter()
+                    .filter(|row| matches!(row.move_target_province, Leaf::Measured(id) if id != 0))
+                    .count();
+                format!(
+                    "rows={} moving={moving} with_move_target={with_target}",
+                    rows.len()
+                )
+            }),
+        },
+        // When the D18 roster refuses, WHICH country keys are not TAGs, and do
+        // they hold any territory? The answer decides whether an unresolved
+        // country can be excluded at country grain the way an unmeasured cosmetic
+        // identity now is, or whether excluding it would delete land from the map.
+        Observation {
+            label: "non-TAG country keys",
+            status: None,
+            completeness: Some({
+                let non_tag: Vec<String> = frame
+                    .domain("countries")
+                    .and_then(serde_json::Value::as_object)
+                    .map(|countries| {
+                        countries
+                            .keys()
+                            // PURELY numeric keys only. `D01`..`D75` are legal dynamic-country
+                            // TAGs (the charset admits digits), and counting those as
+                            // unresolved would drown the one key that actually is.
+                            .filter(|key| key.parse::<u32>().is_ok())
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if non_tag.is_empty() {
+                    "none".to_string()
+                } else {
+                    let owned = frame
+                        .owner_by_state()
+                        .values()
+                        .chain(frame.control_by_state().values())
+                        .filter_map(|leaf| match leaf {
+                            Leaf::Measured(tag) => Some(tag.as_str()),
+                            _ => None,
+                        })
+                        .filter(|tag| non_tag.iter().any(|key| key == tag))
+                        .count();
+                    let provinces = frame
+                        .control_by_province()
+                        .values()
+                        .filter_map(|leaf| match leaf {
+                            Leaf::Measured(tag) => Some(tag.as_str()),
+                            _ => None,
+                        })
+                        .filter(|tag| non_tag.iter().any(|key| key == tag))
+                        .count();
+                    format!(
+                        "{:?} state_rows_naming_them={owned} province_rows_naming_them={provinces}",
+                        non_tag
+                    )
+                }
+            }),
+        },
+        // What the eight XMAP05 rows WOULD do if the XMAP00 ledger promoted them
+        // from `unavailable_until_owner_proves`. That promotion is the owner's
+        // call; this is the evidence it needs.
+        Observation {
+            label: "xmap05 admission verdict",
+            status: None,
+            completeness: Some(match xmap05_admission_verdict(frame) {
+                Ok(verdict) => format!(
+                    "ADMITS certified={} excluded={:?} states={} in_state_provinces={}                      povs_match_roster={:?}",
+                    verdict.certified_countries,
+                    verdict.excluded_countries,
+                    verdict.states,
+                    verdict.in_state_provinces,
+                    verdict.visibility_povs_match_roster
+                ),
+                Err(reason) => format!("REFUSES {reason}"),
+            }),
+        },
+        Observation {
+            label: "visibility POV census",
+            status: Some(frame.visibility_status()),
+            completeness: Some(format!(
+                "povs={} roster={}",
+                frame.visibility_povs().count(),
+                frame.d18_country_roster().entries.len()
             )),
         },
     ]

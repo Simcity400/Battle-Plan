@@ -12,7 +12,8 @@ use crate::{
 };
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{
-    FamilyDisposition, FoundationOperationIdentity, MapVisualFamily,
+    ElementDiagnostic, ElementOutcome, FamilyDisposition, FoundationOperationIdentity,
+    MapVisualFamily,
 };
 use replay_core::{ExactSpottedUnit, Leaf, ValidatedContentAdmission, ViewStatus, WorldFrame};
 use snapshot::sha256::Sha256;
@@ -492,6 +493,14 @@ pub struct PreparedPoliticalFrame {
     pub political_family_sha256: String,
     pub fow_family_sha256: String,
     pub deterministic_sha256: String,
+    /// One row per roster country whose cosmetic identity this hour did not
+    /// carry. Empty in the ordinary case, which is what keeps the receipt free.
+    ///
+    /// Cached alongside the textures because it is derived from the same frame:
+    /// `xmap05_semantic_cache_digest` already folds the whole `countries` object
+    /// into the cache key, so a frame whose cosmetic identities differ cannot
+    /// reuse another frame's rows.
+    pub excluded_presentation_identities: Vec<ElementDiagnostic>,
     scene_cb0_law: Xmap05SceneCb0Law,
 }
 
@@ -745,7 +754,8 @@ struct Xmap05Shared {
 impl Xmap05Shared {
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<PreparedPoliticalFrame> {
         require_owned_authority_gaps(context)?;
-        let (keying, province_controllers) = admitted_epoch_keying(context.world_frame)?;
+        let (keying, province_controllers, presentation) =
+            admitted_epoch_keying(context.world_frame)?;
         let roster = context.world_frame.d18_country_roster();
         let country_roster = roster
             .entries
@@ -799,6 +809,7 @@ impl Xmap05Shared {
             intel_height,
             intel_bytes,
             visibility,
+            excluded_presentation_identities(&presentation),
         )?;
         prepared.political_family_sha256 = political_family_digest(&prepared);
         prepared.fow_family_sha256 = fow_family_digest(&prepared);
@@ -899,6 +910,7 @@ impl ProductionMapFeatureAdapter for Xmap05PoliticalAdapter {
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
         let prepared = self.shared.prepare(context)?;
+        let element_diagnostics = prepared.excluded_presentation_identities.clone();
         Ok(FoundationFeatureOutput {
             disposition: FamilyDisposition::Present {
                 payload_schema: XMAP05_POLITICAL_SCHEMA.into(),
@@ -936,7 +948,7 @@ impl ProductionMapFeatureAdapter for Xmap05PoliticalAdapter {
             prepared_orders: None,
             prepared_map_modes: None,
             prepared_map_furniture: None,
-            element_diagnostics: Vec::new(),
+            element_diagnostics,
             consumed_gap_ids: POLITICAL_AUTHORITY_GAPS
                 .iter()
                 .map(|gap| (*gap).to_string())
@@ -1021,9 +1033,76 @@ fn require_owned_authority_gaps(context: &FoundationFeatureContext<'_>) -> Resul
     Ok(())
 }
 
+/// What XMAP05's frame-pure admission found this hour.
+///
+/// # Why this is public API and not a probe
+///
+/// All eight XMAP05 rows in the XMAP00 ledger
+/// (`non_ui_visual_input_ledger_20260730.tsv`) carry the disposition
+/// `unavailable_until_owner_proves`, so promoting them to owner-proven is the
+/// owner's decision, not a lane's. What a lane owes that decision is the
+/// evidence: on a real recording, how many hours would actually admit, and for
+/// the ones that would not, what is missing.
+///
+/// This is that predicate. It is exactly the half of [`admitted_epoch_keying`]
+/// that reads only the `WorldFrame` - which is the half a
+/// `MapAuthorityOwnerProvenAdmission::status` function is allowed to use, since
+/// `RequirementProjector` holds nothing else. If the rows are promoted, the
+/// status functions call this; until then it is what measures whether they
+/// could be.
+///
+/// It does NOT cover the fog-of-war half of the family: that needs the province
+/// count from `map/provinces.bmp` (`validate_all_country_visibility` takes
+/// `province_slots`), so it is not derivable from a frame alone. The
+/// POV-census half that IS frame-pure is reported separately.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Xmap05AdmissionVerdict {
+    /// Roster countries whose presentation identity this hour certified.
+    pub certified_countries: usize,
+    /// Roster countries excluded at country grain, named. Empty is the ordinary
+    /// case; a short list is the case MAPC1 v2 exists for.
+    pub excluded_countries: Vec<String>,
+    pub states: usize,
+    pub in_state_provinces: usize,
+    /// Whether the visibility POV census equals the complete D18 roster, which
+    /// is the frame-pure precondition of the four `fog.*` rows. `None` when the
+    /// visibility root is not Present at all.
+    pub visibility_povs_match_roster: Option<bool>,
+}
+
+/// Run XMAP05's frame-pure admission and report what it found, or why it refused.
+pub fn xmap05_admission_verdict(
+    frame: &WorldFrame,
+) -> std::result::Result<Xmap05AdmissionVerdict, String> {
+    let (_, province_controllers, presentation) =
+        admitted_epoch_keying(frame).map_err(|error| error.to_string())?;
+    let visibility_povs_match_roster = if frame.visibility_status() == ViewStatus::Present {
+        let roster = frame
+            .d18_country_roster()
+            .entries
+            .iter()
+            .map(|entry| entry.tag.clone())
+            .collect::<BTreeSet<_>>();
+        let povs = frame
+            .visibility_povs()
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>();
+        Some(povs == roster)
+    } else {
+        None
+    };
+    Ok(Xmap05AdmissionVerdict {
+        certified_countries: presentation.certified.len(),
+        excluded_countries: presentation.excluded.clone(),
+        states: frame.owner_by_state().len(),
+        in_state_provinces: province_controllers.len(),
+        visibility_povs_match_roster,
+    })
+}
+
 pub(crate) fn admitted_epoch_keying(
     frame: &WorldFrame,
-) -> Result<(KeyingTables, BTreeMap<u32, String>)> {
+) -> Result<(KeyingTables, BTreeMap<u32, String>, PresentationCensus)> {
     validate_mapc1_authority(frame)?;
     for (label, status) in [
         ("owner_by_state", frame.owner_by_state_status()),
@@ -1050,44 +1129,31 @@ pub(crate) fn admitted_epoch_keying(
         )
         .into());
     }
-    // One country's unobtained cosmetic identity refuses the WHOLE political fill, and that
-    // is the correct grain here rather than a per-country exclusion on the element channel.
+    // One country's unmeasured cosmetic identity used to refuse the WHOLE political fill.
     //
-    // The tempting fix is to drop the country, name it, and fill the rest of the map. It does
-    // not work, because a cosmetic identity is not a per-country visual this layer draws: it
-    // is one term of `mapc1_presentation_digest`, a single hash over the SORTED WHOLE ROSTER
-    // that `validate_mapc1_payload` compares against the recorder's own
-    // `presentation_identity_sha256`. Leaving a country out changes the derived digest, so the
-    // cross-check either fails anyway - the same refusal, reached later and less clearly - or,
-    // if the comparison were relaxed to match, silently stops checking the very thing it
-    // exists to check. There is no honest partial of an equality between two whole-roster
-    // hashes.
+    // The old comment here argued that was the only honest reading, because the cosmetic
+    // identity was one term of a single hash over the SORTED WHOLE ROSTER: leaving a country
+    // out changed the derived digest, so a partial either failed anyway or, if the comparison
+    // were relaxed to match, stopped checking the thing it existed to check. That argument was
+    // correct ABOUT THE V1 FORMAT, and it named its own fix - "if the recorder emitted a
+    // per-country presentation digest instead, one country's missing cosmetic tag could be
+    // excluded at country grain and the rest of the map would fill".
     //
-    // The refusal is also not a permanent limit: the recording either carries every country's
-    // cosmetic identity or it declares the hole, and D18's roster is the same census the
-    // digest is taken over. So this fails closed with the country named, and stays that way.
+    // MAPC1 v2 is that format, and this is that fix. The recorder now certifies the countries
+    // whose cosmetic identity it measured and NAMES the ones it could not, with the excluded
+    // census inside the digest preimage - so shrinking the certified set is not a way to make
+    // a mismatch pass, and the equality still covers every country. The viewer derives its own
+    // split from its own frame (`mapc1_presentation_census`) and the two are compared, so the
+    // producer does not get to choose which countries are checked.
     //
-    // OWNER QUESTION, recorded here rather than decided: the cosmetic identity IS per country
-    // in the recording (`keying.rs` keeps `cosmetic_by_tag`), and only the AUTHORITY FORMAT -
-    // one whole-roster `presentation_identity_sha256` - forces the all-or-nothing check. If
-    // the recorder emitted a per-country presentation digest instead, one country's missing
-    // cosmetic tag could be excluded at country grain and the rest of the map would fill.
-    // That is a wire-format change to what the recorder produces, so it is the owner's call,
-    // not a viewer-side fix; until it is made, the whole-frame refusal is the only honest
-    // reading of the format that exists.
-    for entry in &roster.entries {
-        if let Err(detail) = admitted_cosmetic_identity(
-            frame
-                .country_identity(&entry.tag)
-                .map(|identity| &identity.cosmetic_tag),
-        ) {
-            return Err(format!(
-                "XMAP05 presentation identity for roster country {}: {detail}",
-                entry.tag
-            )
-            .into());
-        }
-    }
+    // What draws: every certified country in its measured colour, and each excluded country in
+    // its BASE colour - which is exactly what the engine draws for a country with no cosmetic
+    // override, and what `KeyingTables::cosmetic_by_tag` already produced for it, since that
+    // table only ever carried `Leaf::Measured(Some(..))`. One `ElementDiagnostic` row per
+    // excluded country accounts for the identity that did not draw. A malformed measurement -
+    // a blank override, an unobtained leaf - is still a whole-frame refusal; only a missing
+    // measurement is excludable.
+    let presentation = mapc1_presentation_census(frame, &roster.entries)?;
 
     fn measured_tags(
         label: &str,
@@ -1126,8 +1192,75 @@ pub(crate) fn admitted_epoch_keying(
         &controllers,
         &province_controllers,
         &roster.entries,
+        &presentation,
     )?;
-    Ok((KeyingTables::from_world_frame(frame), province_controllers))
+    Ok((
+        KeyingTables::from_world_frame(frame),
+        province_controllers,
+        presentation,
+    ))
+}
+
+/// One accounted row per country whose presentation identity this hour did not
+/// carry.
+///
+/// # Why the outcome is `DrawnFromDocumentedSubstitute` and not an exclusion
+///
+/// The first draft of this used `ExcludedUnknownInput` and called the excluded
+/// element "the country's cosmetic identity", on the reasoning that the identity
+/// genuinely did not reach the frame while the fill did. The adversarial review
+/// refuted it, and the refutation is recorded here rather than edited away:
+/// `ExcludedUnknownInput` means the element was NOT DRAWN, and this country's
+/// political fill IS drawn — `KeyingTables::cosmetic_by_tag` simply has no entry
+/// for it, so `apply_cosmetic_color_overrides` leaves the base colour in place
+/// and `render_political_texels` paints it.
+///
+/// That base colour is not a measurement. It is what the engine draws for a
+/// country with NO cosmetic override, and this country may have had one — D18
+/// could not read the field, so the recording does not say. Those pixels may
+/// therefore differ from the game's, and a row claiming the element was excluded
+/// would be false about pixels that exist while a row claiming it was vouched
+/// would be false about where they came from.
+///
+/// So the outcome says the true thing: the element drew, from a documented
+/// substitute, because this hour's recording lacked the input. It counts against
+/// completeness (it is not structural) and it vanishes from an hour that carried
+/// the field.
+///
+/// The alternative — excluding the country's territory from the fill — was
+/// considered and rejected: it would delete a country's land from the map over a
+/// naming field, which is further from the engine's behaviour, not closer.
+fn excluded_presentation_identities(census: &PresentationCensus) -> Vec<ElementDiagnostic> {
+    census
+        .excluded
+        .iter()
+        .map(|tag| ElementDiagnostic {
+            family: MapVisualFamily::PoliticalFillGradients,
+            owner_packet: MapVisualFamily::PoliticalFillGradients
+                .owner_packet()
+                .into(),
+            element_id: format!("XMAP05:presentation-identity:{tag}"),
+            source_ordinal: None,
+            outcome: ElementOutcome::DrawnFromDocumentedSubstitute,
+            // Deliberately empty. `part` is reserved for the structural
+            // family-exception outcome, and it is also the collapse bound's
+            // blind spot: `collapse_family` refuses to aggregate any row that
+            // names a part. With hundreds of excluded countries these rows MUST
+            // be collapsible, so what was substituted is named in the element id
+            // and spelled out in the detail instead.
+            part: String::new(),
+            element_count: 1,
+            detail: format!(
+                "country {tag} has no measured cosmetic identity this hour (D18 could not read \
+                 the field, so the recording carries no cosmetic_tag for it). Its political \
+                 fill IS drawn, in its base country colour — the documented substitute, and \
+                 what the engine itself draws for a country with no cosmetic override. If this \
+                 country did hold an override this hour, its fill differs from the game's; the \
+                 recording cannot say which, so these pixels are substituted rather than \
+                 measured"
+            ),
+        })
+        .collect()
 }
 
 fn validate_mapc1_authority(frame: &WorldFrame) -> Result<()> {
@@ -1152,10 +1285,15 @@ fn validate_mapc1_authority_object(
         authority.get(key).and_then(serde_json::Value::as_str) == Some(expected)
     };
     if !exact("schema", "MAPC1")
+        // v2, and v1 is not accepted: the two spell `presentation_identity_sha256`
+        // over different preimages, so a v1 envelope read as v2 would compare a
+        // whole-roster digest against a certified-subset one and refuse every
+        // frame with a digest mismatch instead of naming the version. Pinning the
+        // integer makes the refusal say what is actually wrong.
         || authority
             .get("schema_version")
             .and_then(serde_json::Value::as_u64)
-            != Some(1)
+            != Some(2)
         || !exact(
             "producer",
             "presentation-independent owner/controller epoch",
@@ -1202,16 +1340,16 @@ fn validate_mapc1_payload(
     controllers: &BTreeMap<u32, String>,
     province_controllers: &BTreeMap<u32, String>,
     roster: &[replay_core::D18CountryRosterEntry],
+    census: &PresentationCensus,
 ) -> Result<()> {
     let authority = mapc1_authority(frame)?;
-    let presentation_identity_sha256 = mapc1_presentation_digest(frame, roster)?;
     validate_mapc1_payload_tables(
         authority,
         owners,
         controllers,
         province_controllers,
         roster,
-        &presentation_identity_sha256,
+        census,
     )
 }
 
@@ -1221,8 +1359,49 @@ fn validate_mapc1_payload_tables(
     controllers: &BTreeMap<u32, String>,
     province_controllers: &BTreeMap<u32, String>,
     roster: &[replay_core::D18CountryRosterEntry],
-    presentation_identity_sha256: &str,
+    census: &PresentationCensus,
 ) -> Result<()> {
+    // The producer's declared exclusion list against the viewer's own. This is
+    // checked BEFORE the digests and reported separately, because the two say
+    // different things: a digest mismatch is "the values disagree", while this is
+    // "the two sides disagree about which countries were measured at all", and
+    // only the second can name the countries usefully. The digest binds the same
+    // list, so this check is not what makes the split tamper-evident - it is what
+    // makes the failure legible.
+    //
+    // REQUIRED and strictly typed. The first draft read this with
+    // `filter_map(as_str).unwrap_or_default()`, which meant a missing key, a key
+    // of the wrong type, and `["ICE", null, "URG"]` all produced a list that
+    // could still match — so on an ordinary frame (no exclusions) the field
+    // could be deleted outright and nothing noticed. A field the certificate
+    // depends on has to be absent-intolerant, or it is not part of the
+    // certificate.
+    let Some(declared_rows) = authority
+        .get("presentation_identity_excluded")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Err(
+            "XMAP05 MAPC1 envelope has no presentation_identity_excluded array".into(),
+        );
+    };
+    let mut declared_excluded: Vec<String> = Vec::with_capacity(declared_rows.len());
+    for row in declared_rows {
+        let Some(tag) = row.as_str() else {
+            return Err(
+                "XMAP05 MAPC1 presentation_identity_excluded carries a non-string member".into(),
+            );
+        };
+        declared_excluded.push(tag.to_string());
+    }
+    if declared_excluded != census.excluded {
+        return Err(format!(
+            "XMAP05 MAPC1 presentation-identity exclusions disagree: the recorder declared {:?} \
+             and this frame carries {:?}",
+            declared_excluded, census.excluded
+        )
+        .into());
+    }
+    let presentation_identity_sha256 = mapc1_presentation_digest(census);
     let exact_count = |key: &str, expected: usize| {
         authority
             .get(key)
@@ -1257,7 +1436,7 @@ fn validate_mapc1_payload_tables(
         || authority
             .get("presentation_identity_sha256")
             .and_then(serde_json::Value::as_str)
-            != Some(presentation_identity_sha256)
+            != Some(presentation_identity_sha256.as_str())
     {
         return Err("XMAP05 MAPC1 counts or payload digests mismatch".into());
     }
@@ -1288,48 +1467,96 @@ fn mapc1_roster_digest(rows: &[replay_core::D18CountryRosterEntry]) -> String {
     Sha256::hex(&bytes)
 }
 
-fn mapc1_presentation_digest(
+/// The viewer's own certified/excluded split of the roster's presentation
+/// identity, TAG-ascending.
+///
+/// Derived from the frame alone. The MAPC1 envelope's
+/// `presentation_identity_excluded` is then compared against
+/// [`PresentationCensus::excluded`] rather than trusted as the source: if the
+/// producer's split and the viewer's disagree, the two sides are not looking at
+/// the same measurement and the frame refuses, naming the countries.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct PresentationCensus {
+    /// TAG -> the certified cosmetic override, or `None` for a measured
+    /// "no override".
+    certified: BTreeMap<String, Option<String>>,
+    /// TAGs whose cosmetic identity this recording did not carry.
+    excluded: Vec<String>,
+}
+
+fn mapc1_presentation_census(
     frame: &WorldFrame,
     roster: &[replay_core::D18CountryRosterEntry],
-) -> Result<String> {
-    mapc1_presentation_digest_from(roster, |tag| {
+) -> Result<PresentationCensus> {
+    mapc1_presentation_census_from(roster, |tag| {
         frame
             .country_identity(tag)
             .map(|identity| &identity.cosmetic_tag)
     })
 }
 
+/// What this frame carries for one country's presentation identity.
+///
+/// Three states, because the recorder's MAPC1 v2 envelope certifies at country
+/// grain and the viewer has to derive the SAME split from the SAME frame fact.
+/// The split is never taken from the envelope — that would let the producer
+/// choose which countries get checked — it is derived here and then compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CosmeticAdmission<'a> {
+    /// A measured cosmetic override; the country draws in its cosmetic colour.
+    Override(&'a str),
+    /// Measured, and the engine holds no override; the country draws in its base
+    /// colour and that is exact.
+    NoOverride,
+    /// The recording never carried this country's cosmetic identity — D18 could
+    /// not read the field, so the snapshot emits no `cosmetic_tag` key.
+    ///
+    /// EXCLUDABLE AT COUNTRY GRAIN. It is not an error: the country's identity
+    /// and its control rows are separate measurements this hole says nothing
+    /// about, so the fill still draws it in its base colour and one
+    /// `ElementDiagnostic` row accounts for the cosmetic identity that did not.
+    Unmeasured,
+}
+
+/// Classify one country's cosmetic identity, or refuse the frame.
+///
+/// The two `Err` arms are MALFORMED measurements, not missing ones, and stay
+/// whole-frame refusals: a blank override means the read produced something that
+/// cannot be a cosmetic tag (marker 1 already spells "no override" as null), and
+/// an unobtained leaf means the decode itself failed. Excluding either at
+/// country grain would dress a broken read as absent data.
 pub(crate) fn admitted_cosmetic_identity<'a>(
     leaf: Option<&'a Leaf<Option<String>>>,
-) -> std::result::Result<Option<&'a str>, String> {
+) -> std::result::Result<CosmeticAdmission<'a>, String> {
     match leaf {
-        Some(Leaf::Measured(Some(tag))) if !tag.trim().is_empty() => Ok(Some(tag.as_str())),
-        Some(Leaf::Measured(Some(_))) => Err("measured cosmetic override is blank".into()),
-        Some(Leaf::Measured(None)) => Ok(None),
-        Some(Leaf::Absent) => {
-            Err("cosmetic identity was never carried for this country (unreadable field)".into())
+        Some(Leaf::Measured(Some(tag))) if !tag.trim().is_empty() => {
+            Ok(CosmeticAdmission::Override(tag.as_str()))
         }
+        Some(Leaf::Measured(Some(_))) => Err("measured cosmetic override is blank".into()),
+        Some(Leaf::Measured(None)) => Ok(CosmeticAdmission::NoOverride),
+        Some(Leaf::Absent) | None => Ok(CosmeticAdmission::Unmeasured),
         Some(Leaf::Unobtained) => Err("cosmetic identity is unobtained".into()),
-        None => Err("the country has no identity in this frame".into()),
     }
 }
 
-fn mapc1_presentation_digest_from<'a>(
+fn mapc1_presentation_census_from<'a>(
     roster: &'a [replay_core::D18CountryRosterEntry],
     cosmetic_tag: impl Fn(&str) -> Option<&'a Leaf<Option<String>>>,
-) -> Result<String> {
+) -> Result<PresentationCensus> {
     let mut ordered = roster.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| left.tag.cmp(&right.tag));
-    let mut bytes = b"presentation_identity\0".to_vec();
+    let mut census = PresentationCensus::default();
     for row in ordered {
-        bytes.extend_from_slice(row.tag.as_bytes());
-        bytes.push(0);
         match admitted_cosmetic_identity(cosmetic_tag(&row.tag)) {
-            Ok(Some(tag)) => {
-                bytes.push(1);
-                bytes.extend_from_slice(tag.as_bytes());
+            Ok(CosmeticAdmission::Override(tag)) => {
+                census
+                    .certified
+                    .insert(row.tag.clone(), Some(tag.to_string()));
             }
-            Ok(None) => bytes.push(0),
+            Ok(CosmeticAdmission::NoOverride) => {
+                census.certified.insert(row.tag.clone(), None);
+            }
+            Ok(CosmeticAdmission::Unmeasured) => census.excluded.push(row.tag.clone()),
             Err(detail) => {
                 return Err(format!(
                     "XMAP05 presentation identity for {}: {detail}",
@@ -1338,9 +1565,62 @@ fn mapc1_presentation_digest_from<'a>(
                 .into());
             }
         }
-        bytes.push(0);
     }
-    Ok(Sha256::hex(&bytes))
+    if census.certified.is_empty() {
+        return Err(format!(
+            "XMAP05 presentation identity: no roster country has a measured cosmetic identity \
+             (all {} excluded)",
+            census.excluded.len()
+        )
+        .into());
+    }
+    Ok(census)
+}
+
+/// Transcription of the producer's `presentation_digest`
+/// (`recorder_host/.../xmap05_control_authority.rs`), v2 layout.
+///
+/// The excluded census is inside the preimage, so the equality is over BOTH
+/// halves of the split: a producer cannot make a mismatch disappear by moving a
+/// country out of the certified set, because that move changes the digest and
+/// the viewer derived its own split independently.
+/// Append one length-prefixed field. See [`mapc1_presentation_digest`].
+///
+/// The `as u32` cannot truncate: TAGs are charset- and length-validated by the
+/// roster, and every D18 string reaching a frame was u16-length-prefixed on the
+/// wire, so 65,535 bytes is the structural ceiling for a cosmetic tag. A
+/// truncating cast would silently reintroduce the collision class this framing
+/// exists to remove.
+fn push_sized(bytes: &mut Vec<u8>, field: &str) {
+    bytes.extend_from_slice(&(field.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(field.as_bytes());
+}
+
+fn mapc1_presentation_digest(census: &PresentationCensus) -> String {
+    // Length-prefixed, no delimiters. A cosmetic tag is NOT a TAG: nothing
+    // constrains its bytes, so a NUL-delimited preimage let one arrangement of
+    // cosmetic values impersonate another's framing, and the adversarial review
+    // exhibited two different certified censuses with identical digests. Fixing
+    // the extent of every string before its bytes are read removes the class.
+    let mut bytes = b"presentation_identity_v2".to_vec();
+    bytes.extend_from_slice(&(census.certified.len() as u32).to_le_bytes());
+    // `certified` is a BTreeMap, so this is TAG-ascending, matching the
+    // producer's sorted rows.
+    for (tag, cosmetic) in &census.certified {
+        push_sized(&mut bytes, tag);
+        match cosmetic {
+            Some(cosmetic) => {
+                bytes.push(1);
+                push_sized(&mut bytes, cosmetic);
+            }
+            None => bytes.push(0),
+        }
+    }
+    bytes.extend_from_slice(&(census.excluded.len() as u32).to_le_bytes());
+    for tag in &census.excluded {
+        push_sized(&mut bytes, tag);
+    }
+    Sha256::hex(&bytes)
 }
 
 fn validate_all_country_visibility(frame: &WorldFrame, province_slots: usize) -> Result<()> {
@@ -1407,6 +1687,7 @@ fn build_prepared_frame(
     intel_height: usize,
     intel_bytes: Vec<u8>,
     visibility: PreparedXmap05Visibility,
+    excluded_presentation_identities: Vec<ElementDiagnostic>,
 ) -> Result<PreparedPoliticalFrame> {
     let width = political.width;
     let height = political.height;
@@ -1470,6 +1751,7 @@ fn build_prepared_frame(
         political_family_sha256: String::new(),
         fow_family_sha256: String::new(),
         deterministic_sha256: String::new(),
+        excluded_presentation_identities,
         scene_cb0_law: Xmap05SceneCb0Law {
             outline_cutoff_strategic_bits: defines.outline_cutoff_strategic.to_bits(),
             outline_cutoff_country_bits: defines.outline_cutoff_country.to_bits(),
@@ -2018,7 +2300,8 @@ fn xmap05_map_mode_derivative_impl(
     if base.hour_index != context.world_frame.hour_index() {
         return Err("XMAP18 derivative and XMAP05 base have different hours".into());
     }
-    let (keying, province_controllers) = admitted_epoch_keying(context.world_frame)?;
+    let (keying, province_controllers, _presentation) =
+        admitted_epoch_keying(context.world_frame)?;
     let country_roster = context
         .world_frame
         .d18_country_roster()
@@ -2305,7 +2588,8 @@ pub(crate) fn xmap05_terrain_map_mode_derivative(
     if base.hour_index != context.world_frame.hour_index() {
         return Err("XMAP18 terrain derivative and XMAP05 base have different hours".into());
     }
-    let (keying, province_controllers) = admitted_epoch_keying(context.world_frame)?;
+    let (keying, province_controllers, _presentation) =
+        admitted_epoch_keying(context.world_frame)?;
     let country_roster = context
         .world_frame
         .d18_country_roster()
@@ -3034,6 +3318,7 @@ mod tests {
             political_family_sha256: String::new(),
             fow_family_sha256: String::new(),
             deterministic_sha256: String::new(),
+            excluded_presentation_identities: Vec::new(),
             scene_cb0_law: Xmap05SceneCb0Law {
                 outline_cutoff_strategic_bits: 0.98f32.to_bits(),
                 outline_cutoff_country_bits: 0.973f32.to_bits(),
@@ -3693,7 +3978,7 @@ mod tests {
     fn mapc1_requires_exact_same_hour_complete_authority() {
         let authority = serde_json::json!({
             "schema": "MAPC1",
-            "schema_version": 1,
+            "schema_version": 2,
             "producer": "presentation-independent owner/controller epoch",
             "executable_sha256": MAPC1_EXECUTABLE_SHA256,
             "province_controller_field_offset": "0x188",
@@ -3787,7 +4072,7 @@ mod tests {
         assert_ne!(land_digest, visibility_digest(&visibility));
     }
 
-    const MAPC1_PRODUCER_FIXTURE_V1: &str = r#"{
+    const MAPC1_PRODUCER_FIXTURE_V2: &str = r#"{
   "authority": {
     "capture_sequence": 1,
     "country_count": 3,
@@ -3796,7 +4081,8 @@ mod tests {
     "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
     "frame_hour": 16959360,
     "ghidra_manifest_sha256": "a69a7b300422c486ee2b76901a5f39e8e8d2cfe8c2baca38e3b353e4892b1990",
-    "presentation_identity_sha256": "311fc905ed65b790c1419234199d95bec64cbd7a95e23143804d87b3e89d4c3a",
+    "presentation_identity_excluded": [],
+    "presentation_identity_sha256": "8dfa8a63e9d9c57748f62b336dd9e8b6d565a4c4e028c84cd60482c3571d0818",
     "presentation_independent": true,
     "producer": "presentation-independent owner/controller epoch",
     "province_controller_complete": true,
@@ -3806,7 +4092,7 @@ mod tests {
     "province_identity_order": "province_id_ascending",
     "provinces_outside_state": 2,
     "schema": "MAPC1",
-    "schema_version": 1,
+    "schema_version": 2,
     "state_controller_complete": true,
     "state_controller_sha256": "fec78f4253a15ebe82ba8d16c64285dacf275542bfdf457b3acc81d4368011b8",
     "state_count": 3,
@@ -3825,6 +4111,56 @@ mod tests {
   "presentation_identity": { "FRA": null, "GER": "GER_REICH", "ITA": null }
 }"#;
 
+    /// The same contract, for an hour in which ONE country's cosmetic identity
+    /// was not measured (D18 marker 0 for ITA).
+    ///
+    /// This is the case MAPC1 v2 exists for. Under v1 the producer withheld the
+    /// whole envelope here and every XMAP05 input refused; under v2 the envelope is
+    /// minted, ITA is named in `presentation_identity_excluded`, the other two
+    /// countries are certified, and the political fill draws all three - ITA in its
+    /// base colour. Note `presentation_identity` has NO key for ITA at all: a
+    /// missing key is the unread state (`Leaf::Absent`), which is exactly what a
+    /// JSON null is NOT.
+    const MAPC1_EXCLUDED_FIXTURE_V2: &str = r#"{
+  "authority": {
+    "capture_sequence": 1,
+    "country_count": 3,
+    "country_remap_rva": "0x00ba6240",
+    "country_roster_sha256": "7a266f5ac7bb922069f63f6926e310e78acffd6b89ef125cd140b4a1ca1aa5d9",
+    "executable_sha256": "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad",
+    "frame_hour": 16959360,
+    "ghidra_manifest_sha256": "a69a7b300422c486ee2b76901a5f39e8e8d2cfe8c2baca38e3b353e4892b1990",
+    "presentation_identity_excluded": [ "ITA" ],
+    "presentation_identity_sha256": "dda72a91706f310b66c758e33dababc4b217d33a75842ac29ae3f3240847b52e",
+    "presentation_independent": true,
+    "producer": "presentation-independent owner/controller epoch",
+    "province_controller_complete": true,
+    "province_controller_field_offset": "0x188",
+    "province_controller_sha256": "60addcb31d1fd462d5edb5ecc45df91d564358ffcf0d867075c9bf57d22fda07",
+    "province_count": 3,
+    "province_identity_order": "province_id_ascending",
+    "provinces_outside_state": 2,
+    "schema": "MAPC1",
+    "schema_version": 2,
+    "state_controller_complete": true,
+    "state_controller_sha256": "fec78f4253a15ebe82ba8d16c64285dacf275542bfdf457b3acc81d4368011b8",
+    "state_count": 3,
+    "state_identity_order": "state_id_ascending",
+    "state_owner_complete": true,
+    "state_owner_sha256": "d1a66bc71abb2fb008c008e1036721b5f208c0fb0cfbfaeadda2754392ed85fc"
+  },
+  "owner_by_state": { "10": "GER", "11": "FRA", "12": "ITA" },
+  "control_by_state": { "10": "GER", "11": "GER", "12": "ITA" },
+  "control_by_province": { "100": "GER", "101": "GER", "102": "ITA" },
+  "country_roster": [
+    { "tag": "FRA", "tag_db_id": 9 },
+    { "tag": "GER", "tag_db_id": 2 },
+    { "tag": "ITA", "tag_db_id": 7 }
+  ],
+  "presentation_identity": { "FRA": null, "GER": "GER_REICH" },
+  "presentation_identity_excluded": [ "ITA" ]
+}"#;
+
     struct Mapc1Fixture {
         authority: serde_json::Map<String, serde_json::Value>,
         owners: BTreeMap<u32, String>,
@@ -3836,8 +4172,16 @@ mod tests {
 
     impl Mapc1Fixture {
         fn load() -> Self {
+            Self::parse(MAPC1_PRODUCER_FIXTURE_V2)
+        }
+
+        fn load_excluded() -> Self {
+            Self::parse(MAPC1_EXCLUDED_FIXTURE_V2)
+        }
+
+        fn parse(text: &str) -> Self {
             let parsed: serde_json::Value =
-                serde_json::from_str(MAPC1_PRODUCER_FIXTURE_V1).expect("fixture is json");
+                serde_json::from_str(text).expect("fixture is json");
             let table = |key: &str| -> BTreeMap<u32, String> {
                 parsed[key]
                     .as_object()
@@ -3893,8 +4237,8 @@ mod tests {
             self.authority["frame_hour"].as_i64().expect("frame hour")
         }
 
-        fn presentation_digest(&self) -> Result<String> {
-            mapc1_presentation_digest_from(&self.roster, |tag| self.cosmetic.get(tag))
+        fn presentation_census(&self) -> Result<PresentationCensus> {
+            mapc1_presentation_census_from(&self.roster, |tag| self.cosmetic.get(tag))
         }
 
         fn admit(&self) -> Result<()> {
@@ -3905,7 +4249,7 @@ mod tests {
                 &self.controllers,
                 &self.province_controllers,
                 &self.roster,
-                &self.presentation_digest()?,
+                &self.presentation_census()?,
             )
         }
     }
@@ -3928,7 +4272,10 @@ mod tests {
 
         let authority_fields = [
             ("schema", serde_json::json!("MAPC2")),
-            ("schema_version", serde_json::json!(2)),
+            // 1 is the RETIRED version, which is the mutation that matters: a
+            // recording sealed by the old recorder must be refused by name, not
+            // read as v2 and rejected later on a digest it never computed.
+            ("schema_version", serde_json::json!(1)),
             ("producer", serde_json::json!("something else")),
             ("executable_sha256", serde_json::json!("0".repeat(64))),
             ("province_controller_field_offset", serde_json::json!("0x190")),
@@ -4051,23 +4398,23 @@ mod tests {
             "stale frame_hour"
         );
 
+        // MALFORMED measurements stay whole-frame refusals. Only a MISSING one
+        // is excludable at country grain, and that case has its own test below.
         for (label, leaf) in [
             ("unobtained", Leaf::Unobtained),
-            ("never carried", Leaf::Absent),
             ("blank override", Leaf::Measured(Some("   ".to_string()))),
         ] {
             let mut broken = Mapc1Fixture::load();
             broken.cosmetic.insert("FRA".to_string(), leaf);
             assert!(
-                mapc1_presentation_digest_from(&broken.roster, |tag| broken.cosmetic.get(tag))
-                    .is_err(),
+                broken.presentation_census().is_err(),
                 "{label} cosmetic identity must not be certified"
             );
         }
     }
 
     #[test]
-    fn mapc1_certifies_a_measured_absence_of_cosmetic_override_and_refuses_an_unread_one() {
+    fn mapc1_certifies_a_measured_absence_of_cosmetic_override_and_excludes_an_unread_one() {
         let fixture = Mapc1Fixture::load();
         assert_eq!(fixture.cosmetic["FRA"], Leaf::Measured(None));
         assert_eq!(fixture.cosmetic["ITA"], Leaf::Measured(None));
@@ -4080,28 +4427,165 @@ mod tests {
             .expect("a measured 'no cosmetic override' is a certifiable identity");
 
         assert_eq!(
-            fixture.presentation_digest().expect("digest"),
+            mapc1_presentation_digest(&fixture.presentation_census().expect("census")),
             fixture.authority["presentation_identity_sha256"]
                 .as_str()
                 .expect("digest string"),
             "the consumer's digest is the value the producer minted"
         );
 
-        assert!(
-            admitted_cosmetic_identity(Some(&Leaf::Absent)).is_err(),
-            "an unreadable cosmetic field is not a measured presentation identity"
+        assert_eq!(
+            admitted_cosmetic_identity(Some(&Leaf::Absent)),
+            Ok(CosmeticAdmission::Unmeasured),
+            "an unreadable cosmetic field is excludable, not a refusal"
         );
         assert_eq!(
             admitted_cosmetic_identity(Some(&Leaf::Measured(None))),
-            Ok(None),
+            Ok(CosmeticAdmission::NoOverride),
             "a measured 'no override' is a presentation identity: the base TAG"
         );
+
+        // The v1 behaviour, and why it is gone: a roster country whose cosmetic
+        // field was never carried used to refuse the WHOLE frame, which took the
+        // three control tables and all four fog-of-war POV rows down with it.
         let mut unread = Mapc1Fixture::load();
         unread.cosmetic.insert("FRA".to_string(), Leaf::Absent);
         assert!(
             unread.admit().is_err(),
-            "a frame in which a roster country's cosmetic field was never carried \
-             must not be certified"
+            "the fully-measured envelope must not admit a frame that excludes a country:              its declared exclusion list is empty and its digest says so"
+        );
+        let census = unread.presentation_census().expect("the census is derivable");
+        assert_eq!(census.excluded, vec!["FRA".to_string()]);
+        assert_eq!(census.certified.len(), 2);
+    }
+
+    /// kills: reverting the consumer to the whole-roster presentation identity.
+    ///
+    /// This fixture is the producer's own minted output for an hour in which
+    /// ITA's cosmetic field was unreadable - the case that refused the entire
+    /// XMAP05 family under v1. The assertion is that it ADMITS, that the viewer
+    /// derived the same split the recorder declared, and that one accounted row
+    /// comes out of it.
+    #[test]
+    fn mapc1_admits_a_frame_with_one_excluded_presentation_identity() {
+        let fixture = Mapc1Fixture::load_excluded();
+        assert_eq!(fixture.cosmetic["ITA"], Leaf::Absent);
+        fixture
+            .admit()
+            .expect("one unread cosmetic identity does not refuse the family");
+
+        let census = fixture.presentation_census().expect("census");
+        assert_eq!(census.excluded, vec!["ITA".to_string()]);
+        assert_eq!(census.certified.len(), 2, "FRA and GER stay certified");
+
+        let rows = excluded_presentation_identities(&census);
+        assert_eq!(rows.len(), 1, "one accounted row per excluded country");
+        rows[0].validate().expect("the row is a legal diagnostic");
+        assert_eq!(rows[0].element_id, "XMAP05:presentation-identity:ITA");
+        assert_eq!(rows[0].element_count, 1);
+        assert_eq!(rows[0].family, MapVisualFamily::PoliticalFillGradients);
+
+        // The row must say the fill DREW, from a substitute. An earlier draft
+        // used `ExcludedUnknownInput`, which says the element never reached the
+        // frame - false, because `KeyingTables::cosmetic_by_tag` simply has no
+        // entry for ITA and the base colour is painted. It must also not be
+        // structural, or the hour would stop counting this against its own
+        // completeness.
+        assert_eq!(
+            rows[0].outcome,
+            ElementOutcome::DrawnFromDocumentedSubstitute
+        );
+        assert!(rows[0].outcome.draws(), "ITA's political fill is drawn");
+        assert!(!rows[0].outcome.is_structural());
+
+        // And the substitute really is what the keying table produces: an
+        // excluded country contributes no cosmetic override, so the colour
+        // lookup falls through to its base colour.
+        let keying_source: BTreeMap<String, Leaf<Option<String>>> = fixture.cosmetic.clone();
+        let cosmetic_by_tag: BTreeMap<String, String> = keying_source
+            .iter()
+            .filter_map(|(tag, leaf)| match leaf {
+                Leaf::Measured(Some(cosmetic)) => Some((tag.clone(), cosmetic.clone())),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !cosmetic_by_tag.contains_key("ITA"),
+            "an excluded country must apply no cosmetic override"
+        );
+        assert_eq!(cosmetic_by_tag.get("GER").map(String::as_str), Some("GER_REICH"));
+
+        // The control tables are untouched: ITA still owns and controls state 12
+        // and province 102. The hole is the cosmetic identity, and only that.
+        assert_eq!(fixture.owners[&12], "ITA");
+        assert_eq!(fixture.province_controllers[&102], "ITA");
+    }
+
+    /// kills: reading `presentation_identity_excluded` leniently.
+    ///
+    /// The first draft used `filter_map(as_str).unwrap_or_default()`, so on an
+    /// ordinary frame - the common case, with no exclusions - the field could be
+    /// DELETED, or replaced with a number, and the envelope still admitted; and
+    /// on a frame with exclusions a null member was silently dropped, so
+    /// `["ICE", null, "URG"]` read as `["ICE","URG"]`. A field the certificate
+    /// depends on has to be absent-intolerant and strictly typed, or it is not
+    /// part of the certificate.
+    #[test]
+    fn mapc1_refuses_a_missing_or_malformed_exclusion_list() {
+        for (label, value) in [
+            ("deleted", None),
+            ("not an array", Some(serde_json::json!("ITA"))),
+            ("null", Some(serde_json::json!(null))),
+            (
+                "a non-string member",
+                Some(serde_json::json!(["ITA", serde_json::Value::Null])),
+            ),
+            ("a numeric member", Some(serde_json::json!([7]))),
+        ] {
+            let mut broken = Mapc1Fixture::load_excluded();
+            match value {
+                None => {
+                    broken.authority.remove("presentation_identity_excluded");
+                }
+                Some(value) => {
+                    broken
+                        .authority
+                        .insert("presentation_identity_excluded".into(), value);
+                }
+            }
+            assert!(
+                broken.admit().is_err(),
+                "{label} presentation_identity_excluded must be refused"
+            );
+        }
+
+        // The same, on the ORDINARY frame whose list is empty - the case a
+        // lenient reader could not tell from a deleted field at all.
+        let mut deleted = Mapc1Fixture::load();
+        deleted.authority.remove("presentation_identity_excluded");
+        assert!(
+            deleted.admit().is_err(),
+            "an empty exclusion list still has to be present"
+        );
+    }
+
+    /// kills: relaxing the exclusion comparison to "whatever the recorder said".
+    ///
+    /// A recorder that declared ITA excluded while the frame still carried ITA's
+    /// cosmetic identity would be describing a different measurement than the one
+    /// on the wire. The digest alone already catches it; this asserts the frame
+    /// is refused with the countries NAMED, which the digest mismatch cannot do.
+    #[test]
+    fn mapc1_refuses_when_the_declared_and_derived_exclusions_disagree() {
+        let mut fixture = Mapc1Fixture::load_excluded();
+        fixture
+            .cosmetic
+            .insert("ITA".to_string(), Leaf::Measured(None));
+        let error = fixture.admit().expect_err("the two splits disagree");
+        let text = error.to_string();
+        assert!(
+            text.contains("exclusions disagree") && text.contains("ITA"),
+            "the refusal must name the country: {text}"
         );
     }
 }

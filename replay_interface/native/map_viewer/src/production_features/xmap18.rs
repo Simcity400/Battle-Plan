@@ -838,7 +838,7 @@ fn materialize_scripted_scope_payload(
 
     let state_paths = resolver.resolve_dir_files_recursive("history/states", Some("txt"))?;
     let (_, province_to_state, _) = crate::load_states(&state_paths)?;
-    let (_, controllers) =
+    let (_, controllers, _) =
         crate::production_features::xmap05::admitted_epoch_keying(context.world_frame)?;
     let mut fills = province_to_state
         .keys()

@@ -870,10 +870,17 @@ mod tests {
     }
 
     /// kills: dropping either map-scoped carrier's second required identity
-    /// (the `schema` token it must carry ALONGSIDE `schema_version == 1`) --
+    /// (the `schema` token it must carry ALONGSIDE its integer version) --
     /// `RequiredSchema` holds one spelling, both consumers check two, and a
     /// producer satisfying only the integer is refused
     /// (`xmap05.rs:1162`–`:1166`, `world.rs:9303`–`:9305`).
+    ///
+    /// It also kills a STALE declared version. The two map carriers used to
+    /// share one version and this test asserted `Some(1)` for both; XMAP05 went
+    /// to MAPC1 v2 and the shared assertion happily kept passing while the
+    /// carrier declared a contract its own consumer refuses. Each carrier is now
+    /// pinned to its own version, so a producer that bumps `SCHEMA_VERSION`
+    /// without telling this table fails here.
     #[test]
     fn the_map_carriers_record_the_schema_token_their_integer_version_does_not_carry() {
         assert_eq!(xmap05_control_authority::REQUIRED_SCHEMA_TOKEN, "MAPC1");
@@ -881,16 +888,23 @@ mod tests {
             weather_visual_lifecycle::REQUIRED_SCHEMA_TOKEN,
             "hoi4.weather-visual-lifecycle.a729.v1"
         );
+        let expected_version = |wire_key: &str| match wire_key {
+            "_r2_xmap05_control_authority" => Some(2),
+            _ => Some(1),
+        };
+        let mut map_carriers = 0;
         for carrier in carriers() {
             if carrier.scope == SidecarScope::Map {
+                map_carriers += 1;
                 assert_eq!(
                     carrier.slot.required_schema.version(),
-                    Some(1),
-                    "{} pins schema_version 1",
+                    expected_version(carrier.slot.wire_key),
+                    "{} declares the wrong schema_version",
                     carrier.slot.wire_key
                 );
             }
         }
+        assert_eq!(map_carriers, 2, "the map-scoped carrier census drifted");
     }
 
     /// kills: letting a pair be fed one-sided through `Wave2Feed` -- the type

@@ -822,7 +822,7 @@ impl Xmap17LabelAdapter {
         }
         let map_copy_receipt_set_sha256 = terrain.map_copy_receipt_set_sha256()?;
 
-        let (_, controllers) =
+        let (_, controllers, _) =
             crate::production_features::xmap05::admitted_epoch_keying(context.world_frame)?;
         let country_names = country_display_names(
             context.world_frame,
@@ -1202,10 +1202,28 @@ fn country_display_names<'a>(
                 )
             }
         };
-        let cosmetic = super::xmap05::admitted_cosmetic_identity(Some(&identity.cosmetic_tag))
-            .map_err(|detail| {
-                format!("XMAP17 controller {tag} has incomplete cosmetic identity: {detail}")
-            })?;
+        // XMAP05's helper gained a third state when MAPC1 went to v2 (a country
+        // whose cosmetic identity the recording did not carry is excludable
+        // there, at country grain). THIS layer's behaviour is deliberately
+        // unchanged: an unmeasured cosmetic identity is the same refusal it has
+        // always been here. Whether a country label may fall back to its TAG
+        // chain when the cosmetic tag was never read is XMAP17's own question,
+        // and answering it is not this change.
+        let cosmetic = match super::xmap05::admitted_cosmetic_identity(Some(
+            &identity.cosmetic_tag,
+        ))
+        .map_err(|detail| {
+            format!("XMAP17 controller {tag} has incomplete cosmetic identity: {detail}")
+        })? {
+            super::xmap05::CosmeticAdmission::Override(cosmetic) => Some(cosmetic),
+            super::xmap05::CosmeticAdmission::NoOverride => None,
+            super::xmap05::CosmeticAdmission::Unmeasured => {
+                return Err(format!(
+                    "XMAP17 controller {tag} has incomplete cosmetic identity: cosmetic                      identity was never carried for this country (unreadable field)"
+                )
+                .into())
+            }
+        };
         let mut candidates = Vec::new();
         if let Some(cosmetic) = cosmetic {
             candidates.push(format!("{cosmetic}_{ideology}"));
