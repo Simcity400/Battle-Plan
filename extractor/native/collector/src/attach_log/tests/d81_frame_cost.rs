@@ -2603,3 +2603,781 @@ fn stage_single_table(keys: &[u32]) -> SingleTableFixture {
         buckets_off,
     }
 }
+
+// ---------------------------------------------------------------------------
+// THE NODE ARRAY, COPIED ONCE INSTEAD OF READ PER NODE (lane PD, 2026-08-21)
+// ---------------------------------------------------------------------------
+//
+// `pd_hub_before` puts the per-node reads at 18,904 of the hub's 51,305
+// in-bracket guarded calls -- 36.8%, at 97 ns apiece -- against a node array
+// the frame reads 89.3% of. These tests pin the three properties the
+// replacement has to have: it decodes the same bytes, its one witness refuses
+// exactly what the many witnesses refused, and it declines rather than
+// publishes when it cannot serve.
+
+/// Stage `count` nodes at the 0xE8 stride, each carrying a distinct decodable
+/// state at the consumed window and distinct junk everywhere else.
+fn node_array_fixture(count: u32) -> FixtureRegion {
+    let mut region = FixtureRegion::new(count as usize * D81_NODE_STRIDE + 0x100);
+    for index in 0..count {
+        let node = index as usize * D81_NODE_STRIDE;
+        let window = node + D81_NODE_WINDOW_OFF;
+        // The four fields the hub decodes out of the 0x40 window.
+        region.write_u32(window, 1_000 + index);
+        region.write_u8(window + 0x04, (index % 251) as u8);
+        region.write_i64(window + 0x30, 5_000 + i64::from(index));
+        region.write_i64(window + 0x38, 9_000 + i64::from(index));
+        // Bytes inside the stride that the hub never reads: before the window,
+        // and after it out to the next node.
+        region.write_u32(node, 0xDEAD_0000 + index);
+        region.write_u32(window + D81_NODE_WINDOW_LEN, 0xBEEF_0000 + index);
+    }
+    region
+}
+
+/// The decoded four-tuple, off whichever image the caller hands in.
+fn decode_node(window: &[u8]) -> (u32, u8, i64, i64) {
+    (
+        read_u32_from_slice(window, 0).expect("marker"),
+        *window.get(0x04).expect("flag"),
+        read_i64_from_slice(window, 0x30).expect("available"),
+        read_i64_from_slice(window, 0x38).expect("consumed"),
+    )
+}
+
+/// EVERY NODE, BOTH WAYS, ASSERTED EQUAL.
+///
+/// The differential this conversion rests on: the window the array copy serves
+/// must be byte-identical to the window the per-node stable read returns, for
+/// every node, or the rows change.
+#[test]
+fn the_node_array_copy_serves_the_bytes_the_per_node_read_returns() {
+    const COUNT: u32 = 37;
+    let region = node_array_fixture(COUNT);
+    let base = region.addr();
+    let array =
+        d81_copy_node_array(base, COUNT, &mut Vec::new()).expect("the staged array is copyable");
+    assert_eq!(array.len(), COUNT as usize * D81_NODE_STRIDE);
+
+    let mut scratch = Vec::new();
+    for index in 0..COUNT {
+        let offset = index as usize * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF;
+        let served = &array[offset..offset + D81_NODE_WINDOW_LEN];
+        let live = d81_read_stable_bytes(
+            base + offset,
+            D81_NODE_WINDOW_LEN,
+            D81FailureStage::HubObject,
+            &mut scratch,
+        )
+        .expect("the staged node is readable");
+        assert_eq!(
+            served,
+            live.as_slice(),
+            "node {index} must copy the same bytes the live read returns"
+        );
+        assert_eq!(
+            decode_node(served),
+            decode_node(&live),
+            "and therefore decode to the same state"
+        );
+        assert_eq!(
+            decode_node(served),
+            (
+                1_000 + index,
+                (index % 251) as u8,
+                5_000 + i64::from(index),
+                9_000 + i64::from(index)
+            ),
+            "and that state is the one staged, not a neighbouring node's"
+        );
+    }
+}
+
+/// A CHANGE THE OLD FORM CAUGHT IS STILL CAUGHT.
+#[test]
+fn the_array_witness_refuses_a_change_inside_a_window_it_served() {
+    const COUNT: u32 = 12;
+    let mut region = node_array_fixture(COUNT);
+    let base = region.addr();
+    let array = d81_copy_node_array(base, COUNT, &mut Vec::new()).expect("copyable");
+    // Two of the twelve nodes were decoded, as a sparse selection would be.
+    let consumed: Vec<u32> = [3u32, 9]
+        .into_iter()
+        .map(|index| (index as usize * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF) as u32)
+        .collect();
+    let witness = D81NodeArrayWitness {
+        base,
+        bytes: array,
+        consumed,
+    };
+    assert!(witness.unchanged(), "nothing has moved yet");
+
+    // A field inside node 9's consumed window.
+    region.write_i64(9 * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF + 0x30, -1);
+    assert!(
+        !witness.unchanged(),
+        "a node that changed after the frame read it must still refuse the frame"
+    );
+}
+
+/// A CHANGE THE OLD FORM DID NOT CATCH IS STILL NOT CAUGHT.
+///
+/// THIS IS THE TEST THAT MAKES THE CONVERSION LEGAL. One witness now spans
+/// bytes that N witnesses never covered: the 0xA8 bytes of every node outside
+/// the consumed window, and every node the frame did not decode at all.
+/// Comparing the whole extent would refuse frames the per-node form published,
+/// which the owner's d81 closing-sequence ruling (2026-08-11) forbids -- the
+/// converted reader must render the verdict the live reader would.
+///
+/// A whole-extent comparison passes every other test in this file and fails
+/// this one.
+#[test]
+fn the_array_witness_ignores_the_bytes_the_hub_never_read() {
+    const COUNT: u32 = 12;
+    let mut region = node_array_fixture(COUNT);
+    let base = region.addr();
+    let array = d81_copy_node_array(base, COUNT, &mut Vec::new()).expect("copyable");
+    let consumed: Vec<u32> = [3u32, 9]
+        .into_iter()
+        .map(|index| (index as usize * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF) as u32)
+        .collect();
+    let witness = D81NodeArrayWitness {
+        base,
+        bytes: array,
+        consumed,
+    };
+
+    // 1. The header bytes of a node that WAS decoded, before its window.
+    region.write_u32(9 * D81_NODE_STRIDE, 0x0BAD_0BAD);
+    // 2. The tail of a node that WAS decoded, past its window.
+    region.write_u32(
+        3 * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF + D81_NODE_WINDOW_LEN,
+        0x0BAD_0BAD,
+    );
+    // 3. Every byte of a node the frame never decoded, window included.
+    region.write_i64(7 * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF + 0x30, -777);
+    region.write_u32(7 * D81_NODE_STRIDE, 0x0BAD_0BAD);
+
+    assert!(
+        witness.unchanged(),
+        "engine writes outside the windows the hub decoded must NOT refuse the \
+         frame: the per-node witnesses they replace never saw those bytes, and \
+         a stricter closing gate is a behaviour change the closing-sequence \
+         ruling does not allow"
+    );
+}
+
+/// AN EXTENT THE COPY WILL NOT TAKE DECLINES, AND DECLINING PUBLISHES NOTHING.
+#[test]
+fn an_unservable_node_array_declines_instead_of_refusing() {
+    let region = node_array_fixture(4);
+    let base = region.addr();
+    // Past the transient-extent ceiling: a count whose array cannot be taken in
+    // one piece must fall back, not fail.
+    let absurd = (D81_BATCH_MAX_EXTENT_BYTES / D81_NODE_STRIDE + 2) as u32;
+    assert!(
+        d81_copy_node_array(base, absurd, &mut Vec::new()).is_none(),
+        "an extent over the ceiling declines"
+    );
+    assert!(
+        d81_copy_node_array(base, 0, &mut Vec::new()).is_none(),
+        "and so does an empty one"
+    );
+    // The reader's own path is unaffected: the same nodes still read live.
+    let mut scratch = Vec::new();
+    let live = d81_read_stable_bytes(
+        base + D81_NODE_WINDOW_OFF,
+        D81_NODE_WINDOW_LEN,
+        D81FailureStage::HubObject,
+        &mut scratch,
+    )
+    .expect("the staged node is still readable through the live path");
+    assert_eq!(decode_node(&live), (1_000, 0, 5_000, 9_000));
+}
+
+/// The gate's ORDER, which is what makes one check a superset of the many.
+#[test]
+fn the_node_array_witnesses_are_re_read_after_the_per_witness_vector() {
+    let source = collector_source_lf();
+    let hub = source
+        .split_once("fn read_compact_rail_hub_simulation(")
+        .expect("the d81 hub read")
+        .1
+        .split_once("\nfn ")
+        .expect("the end of the d81 hub read")
+        .0;
+    let gate = hub
+        .rsplit_once("|| controller_witnesses")
+        .expect("the controller disjunct closes the gate")
+        .0;
+    let arrays = gate
+        .find("|| final_node_arrays")
+        .expect("the node arrays must be re-read by the closing gate at all");
+    let witnesses = gate
+        .find("|| final_witnesses")
+        .expect("the per-witness vector disjunct");
+    assert!(
+        witnesses < arrays,
+        "the node-array witnesses must be re-read AFTER final_witnesses: one \
+         check standing in for many is only as strong as the LATEST it \
+         replaces, so moving it earlier narrows the window an engine write is \
+         caught in"
+    );
+}
+
+/// THE GATE MUST ACTUALLY RECEIVE THE WITNESSES, AND THE BUDGET MUST ACTUALLY
+/// BE CHARGED.
+///
+/// Both are wiring, and wiring is what the behavioural tests above cannot see:
+/// `the_frame_budget_bounds_what_all_the_povs_retain_together` does its own
+/// accumulating, so deleting the production charge would not fail it, and the
+/// witness tests construct `D81NodeArrayWitness` directly, so dropping the
+/// `final_node_arrays` push would leave the closing vector empty with every
+/// other test still green. Both were named by this lane's adversarial review
+/// (findings 5a and 5c). The tree already tests structure this way -- see the
+/// gate-order test above -- because there is no live process here to observe
+/// the effect end to end.
+#[test]
+fn the_node_array_wiring_is_present_in_the_hub_read() {
+    let source = collector_source_lf();
+    let hub = source
+        .split_once("fn read_compact_rail_hub_simulation(")
+        .expect("the d81 hub read")
+        .1
+        .split_once("\nfn ")
+        .expect("the end of the d81 hub read")
+        .0;
+
+    // 1. The copy's length is charged to the frame's retained bytes.
+    assert!(
+        hub.contains("node_array_retained_bytes = node_array_retained_bytes.saturating_add(bytes.len())"),
+        "an admitted copy must charge its own length to the frame budget, or \
+         the ceiling bounds nothing in production however well it is tested in \
+         isolation"
+    );
+    // 2. ...and the running total is what admission is asked about.
+    let admission_args = hub
+        .split_once("d81_node_array_admission(")
+        .expect("the hub must ask admission at all")
+        .1
+        .split_once(") {")
+        .expect("the admission call's argument list closes")
+        .0;
+    assert!(
+        admission_args.contains("node_array_retained_bytes"),
+        "admission must be asked about the frame's RUNNING retained total; \
+         passing a constant or a per-POV value makes the frame budget a \
+         per-POV budget again"
+    );
+    // 3. The minted witness reaches the vector the closing gate re-reads.
+    assert!(
+        hub.contains("final_node_arrays.extend(pov_node_array)"),
+        "every minted array witness must reach `final_node_arrays`, or the \
+         closing gate re-reads an empty vector and the conversion silently \
+         stops checking the nodes at all"
+    );
+    // 4. A DECLINE STILL READS THE NODE LIVE. This is the property that makes
+    // every decline "speed lost, never data": `d81_node_array_admission` and
+    // `d81_copy_node_array` can both answer "no", and on that answer the loop
+    // must run the per-node stable read it always ran. Nothing else in this
+    // file sees it -- `an_unservable_node_array_declines_instead_of_refusing`
+    // calls the helper and then reads live SEPARATELY, so it would pass even if
+    // production turned `None` into a refusal or a lost row (adversarial
+    // review, finding 5, round 2).
+    let served_match = hub
+        .split_once("let node = match served {")
+        .expect("the hub must choose between the copy and the live read")
+        .1
+        .split_once("};")
+        .expect("that match closes")
+        .0;
+    assert!(
+        served_match.contains("None => d81_read_stable_bytes("),
+        "when the copy cannot serve a window the hub must fall back to the \
+         per-node live read: that is what makes a declined copy cost speed and \
+         never data"
+    );
+    assert!(
+        served_match.contains("D81FailureStage::HubObject"),
+        "and the fallback must keep refusing under the pre-conversion stage, \
+         so a decline is indistinguishable from the old form to a consumer"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// THE TWO GATES ON THE BULK COPY (lane PG, 2026-08-22)
+// ---------------------------------------------------------------------------
+//
+// The conversion above is only a win on a DENSE array, and every image it takes
+// is retained until the frame-wide closing gate. The per-POV extent ceiling
+// bounds neither: it says nothing about density, and 4 MiB per POV across many
+// POVs is not a bound on a frame. `d81_node_array_admission` is where both are
+// decided, and it is deliberately pure arithmetic on shape so it is decidable
+// here without a live process.
+
+/// The density gate, at and around its threshold.
+///
+/// A THIRD IS NOT A MEASURED BREAK-EVEN and the constant's doc does not claim
+/// one: the break-even `n/c > m/(3k) + 1/c` needs a per-slot memory price and a
+/// MARGINAL per-call price, and this lane measured neither. It is a bounded
+/// judgement -- above the 1/4 that the old derivation admitted and its own model
+/// called ~28% slower, and far below the 0.89-0.91 production runs at. These
+/// assertions pin both ends of that bracket and the exact threshold behaviour.
+#[test]
+fn the_density_gate_admits_a_dense_array_and_declines_a_sparse_one() {
+    // Production shape: `pd_hub_before` measured 0.893 (9,452 reads over 10,582
+    // slots). It must be admitted, or the conversion buys nothing.
+    assert_eq!(
+        d81_node_array_admission(10_582, 9_452, 0),
+        D81NodeArrayAdmission::Copy,
+        "the density this conversion was measured and priced on must be admitted"
+    );
+    // Exactly at the threshold: 33 needed of 99 slots, and the gate admits it
+    // (`<` declines, so equality is on the Copy side).
+    assert_eq!(
+        d81_node_array_admission(99, 33, 0),
+        D81NodeArrayAdmission::Copy,
+        "a density exactly at the threshold is admitted"
+    );
+    // One node below it.
+    assert_eq!(
+        d81_node_array_admission(99, 32, 0),
+        D81NodeArrayAdmission::Sparse,
+        "just under the threshold declines, because the memcpy stops paying"
+    );
+    // THE SHAPE THE OLD QUARTER-THRESHOLD ADMITTED AND SHOULD NOT HAVE. Six
+    // needed of 24 slots is 1/4 exactly, and under the very cost model the old
+    // threshold invoked -- which it applied while forgetting the bulk path's
+    // own three guarded calls -- per-node costs ~1,744 ns against bulk's
+    // ~2,225 ns (adversarial review, finding 3).
+    assert_eq!(
+        d81_node_array_admission(24, 6, 0),
+        D81NodeArrayAdmission::Sparse,
+        "a quarter-dense array must NOT be copied: the model that was used to \
+         justify copying it says that shape is about 28% slower"
+    );
+    // The shape the whole gate exists for: a long array the frame barely
+    // touches. Copying 17,000 nodes to read one is 3.9 MB of memcpy to save two
+    // guarded calls.
+    assert_eq!(
+        d81_node_array_admission(17_000, 1, 0),
+        D81NodeArrayAdmission::Sparse,
+        "a long array with one needed node must take the per-node path"
+    );
+    // NOTHING TO SERVE IS ITS OWN ANSWER, NOT A DENSITY VERDICT.
+    //
+    // This is the distinction `pg_hub_after` forced: with both folded into
+    // `Sparse`, 79.8% of POVs declined and the capture could not say whether
+    // the density gate was rejecting four POVs in five or never firing at all.
+    // It was never firing -- the 88.6 served POVs held 12,209 of the frame's
+    // 12,252 node slots. Those are opposite findings and they now have
+    // opposite units.
+    assert_eq!(
+        d81_node_array_admission(64, 0, 0),
+        D81NodeArrayAdmission::Empty,
+        "a POV that selected no route has nothing to serve, which is not the \
+         same claim as an array too thin to be worth copying"
+    );
+    assert_eq!(
+        d81_node_array_admission(0, 0, 0),
+        D81NodeArrayAdmission::Empty,
+        "and neither is a companion with no array -- and asking is not a \
+         division by its length"
+    );
+    // The one that IS a density verdict still is one.
+    assert_eq!(
+        d81_node_array_admission(64, 1, 0),
+        D81NodeArrayAdmission::Sparse,
+        "one needed node in a 64-slot array is the density gate's own case"
+    );
+}
+
+/// THE FRAME-WIDE BUDGET, ON THE SHAPE IT EXISTS FOR.
+///
+/// The per-POV extent ceiling is 4 MiB and every admitted image is retained
+/// until the closing gate, so 32 POVs each declaring 17,000 dense nodes retain
+/// `32 * 17,000 * 0xE8` = 126 MB inside the reader's bracket with every per-POV
+/// extent legally under the per-POV ceiling. This replays that loop exactly as
+/// the reader runs it -- charge on admission, ask again for the next POV -- and
+/// pins the peak to the stated ceiling.
+///
+/// A per-POV-only bound passes every other test in this file and fails this one.
+#[test]
+fn the_frame_budget_bounds_what_all_the_povs_retain_together() {
+    const POVS: usize = 32;
+    const NODES: u32 = 17_000;
+    let per_pov = NODES as usize * D81_NODE_STRIDE;
+    assert!(
+        per_pov <= D81_BATCH_MAX_EXTENT_BYTES,
+        "the shape is only interesting because each POV is legally under the \
+         per-POV ceiling: {per_pov} bytes"
+    );
+
+    let mut retained = 0usize;
+    let mut admitted = 0usize;
+    let mut over_budget = 0usize;
+    for _ in 0..POVS {
+        // Dense, so the density gate is not what is being tested here.
+        match d81_node_array_admission(NODES, NODES as usize, retained) {
+            D81NodeArrayAdmission::Copy => {
+                retained += per_pov;
+                admitted += 1;
+            }
+            D81NodeArrayAdmission::OverBudget => over_budget += 1,
+            other => panic!("a fully-needed array is neither sparse nor empty: {other:?}"),
+        }
+    }
+
+    assert!(
+        retained <= D81_NODE_ARRAY_FRAME_BUDGET_BYTES,
+        "the frame retained {retained} bytes, over the {} byte ceiling",
+        D81_NODE_ARRAY_FRAME_BUDGET_BYTES
+    );
+    assert!(
+        retained < POVS * per_pov,
+        "this shape must actually be capped -- uncapped it would retain {} bytes",
+        POVS * per_pov
+    );
+    assert!(admitted > 0, "the budget must not decline the whole frame");
+    assert_eq!(
+        admitted + over_budget,
+        POVS,
+        "every POV is accounted: admitted or declined, never lost"
+    );
+}
+
+/// The measured production frame fits with room, and the counters say by how
+/// much.
+///
+/// `pd_hub_before`: 10,582 node slots across 439 POVs, so the whole frame's
+/// arrays are ~2.45 MB. If this ever stops holding, the ceiling -- not the
+/// production shape -- is what needs revisiting, and this is where that shows.
+#[test]
+fn the_measured_production_frame_is_nowhere_near_the_budget() {
+    let whole_frame = 10_582usize * D81_NODE_STRIDE;
+    assert!(
+        whole_frame * 6 < D81_NODE_ARRAY_FRAME_BUDGET_BYTES,
+        "the measured whole-frame array is {whole_frame} bytes against a {} \
+         byte ceiling; the gate is not expected to fire in production",
+        D81_NODE_ARRAY_FRAME_BUDGET_BYTES
+    );
+    // And the last POV of such a frame is still admitted.
+    assert_eq!(
+        d81_node_array_admission(24, 21, whole_frame),
+        D81NodeArrayAdmission::Copy,
+        "a production-shaped POV arriving after a whole production frame's \
+         worth of retention is still served"
+    );
+}
+
+/// AN EXTENT WHOSE LENGTH IS NOT REPRESENTABLE IS NOT CHARGED TO THE BUDGET.
+///
+/// It is declined by the copy itself, which takes nothing, so admitting it here
+/// leaves the ceiling in exactly one place rather than two that can drift.
+#[test]
+fn an_unrepresentable_extent_is_left_for_the_copy_to_decline() {
+    let absurd = u32::MAX;
+    assert_eq!(
+        d81_node_array_admission(absurd, absurd as usize, 0),
+        D81NodeArrayAdmission::Copy,
+        "admission does not second-guess the copy's own extent ceiling"
+    );
+    let region = node_array_fixture(4);
+    assert!(
+        d81_copy_node_array(region.addr(), absurd, &mut Vec::new()).is_none(),
+        "and the copy declines it, so nothing is taken and nothing is charged"
+    );
+}
+
+
+// ---------------------------------------------------------------------------
+// THE TWO ARMS OF THE NODE PHASE, IN ONE PROCESS (lane PG, 2026-08-22)
+// ---------------------------------------------------------------------------
+//
+// WHY NOT A BEFORE-AND-AFTER OF TWO BUILDS. Lane PC measured this box's spread
+// directly: the SAME test binary run three times put one walk at 10.085 / 7.441
+// / 8.285 ms and its UNTOUCHED phase at 7.953 / 6.448 / 9.246 ms. A 25-35%
+// spread on identical code is wider than this change, so a cross-build
+// difference at this shape says nothing on its own. Interleaving the two arms
+// inside ONE process removes the machine from the comparison: same core, same
+// cache state, same neighbours, alternating, order flipped every repetition,
+// minimised over the repetitions.
+//
+// THE POOL IS `d81_guarded_read_cost_model`'S, FOR ITS REASON. A first version
+// of this rig staged all 439 POVs in one 2.45 MB fixture and reported the bulk
+// arm 6.3% SLOWER. That fixture fits in L3 and is one allocation, so it charged
+// neither arm for a cache miss and charged the per-node arm 27.7 ns per guarded
+// call where production measures 96.9 (`pd_hub_before`, `hub_nodes_us` over its
+// node calls). Both errors run the same way: they shrink the per-call cost the
+// bulk copy removes and leave the memcpy it adds at full price. So the arrays
+// are scattered through a 256 MiB pool, visited in a randomised order that both
+// arms share, and the cache is evicted before each timed arm -- the shape lane
+// BG's bench already uses so its copies take real misses.
+//
+// WHAT IT STILL UNDERSTATES, in BG's own words about the same pool: it is ONE
+// allocation, so `range_confirmed_good` resolves on its MRU fast path on
+// essentially every call, while production d81 chases pointers across many
+// VirtualQuery regions.
+//
+// SO THIS RIG PRICES THE BYTES, AND NOTHING ELSE. It is tempting to divide a
+// phase by its call count and call the quotient a per-call price -- this
+// function did, and predicted a live cut of 2.680 ms -> 0.976 ms from it. The
+// live capture refuted that: `hub_nodes_us` is 193.7 ns per node read before
+// and 189.9 after, FLAT. The quotient is an AVERAGE that includes the decode,
+// the allocation and the witness construction the bulk arm still pays; the
+// marginal cost of a removed call is smaller. `runs/pg_hub_copy/MEASUREMENT.md`
+// carries what was actually measured -- a flat node phase and a third off the
+// closing gate, ~0.5 ms/invocation.
+//
+// NEITHER ARM IS DEAD CODE. Both are production paths today: the per-node arm
+// is exactly what `d81_node_array_admission` falls back to on a sparse POV or a
+// full frame, and the bulk arm is what it admits.
+
+/// `pd_hub_before`, per invocation: 439 POVs, 10,582 node slots (24.10 per POV),
+/// 9,452 node reads (21.53 per POV). Rounded to whole nodes.
+const NODE_ARMS_POVS: usize = 439;
+const NODE_ARMS_SLOTS: u32 = 24;
+const NODE_ARMS_NEEDED: usize = 21;
+const NODE_ARMS_RUNS: usize = 15;
+/// Lane BG's pool size, so the copies take real cache misses rather than
+/// re-reading L2.
+const NODE_ARMS_POOL_BYTES: usize = 256 << 20;
+/// Streamed between arms to evict what the previous arm left resident. Larger
+/// than any L3 on this class of box.
+const NODE_ARMS_FLUSH_BYTES: usize = 64 << 20;
+
+/// Which of the two paths the node phase takes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NodeArm {
+    /// Two guarded calls per needed node, plus one closing re-read each.
+    PerNode,
+    /// One guarded pair per POV, plus one closing re-read per POV.
+    Bulk,
+}
+
+/// The staged pool and the visit order both arms share.
+struct ArmsPool {
+    region: FixtureRegion,
+    /// Byte offsets of each POV's array within the pool, in visit order.
+    povs: Vec<usize>,
+}
+
+/// Scatter `NODE_ARMS_POVS` node arrays through a 256 MiB pool and fix one
+/// randomised visit order for both arms.
+///
+/// The order is a deterministic LCG shuffle rather than a real RNG: the point is
+/// that consecutive POVs are far apart in memory, not that the sequence is
+/// unpredictable, and a fixed seed keeps two runs of this bench comparable.
+fn arms_pool() -> ArmsPool {
+    let array_bytes = NODE_ARMS_SLOTS as usize * D81_NODE_STRIDE;
+    let spacing = (NODE_ARMS_POOL_BYTES - array_bytes) / NODE_ARMS_POVS;
+    let mut region = FixtureRegion::new(NODE_ARMS_POOL_BYTES);
+    let mut slots: Vec<usize> = (0..NODE_ARMS_POVS).map(|i| i * spacing).collect();
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for i in (1..slots.len()).rev() {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        slots.swap(i, (state >> 33) as usize % (i + 1));
+    }
+    for (pov, &offset) in slots.iter().enumerate() {
+        for index in 0..NODE_ARMS_SLOTS as usize {
+            let node = offset + index * D81_NODE_STRIDE;
+            let window = node + D81_NODE_WINDOW_OFF;
+            let tag = (pov * NODE_ARMS_SLOTS as usize + index) as u32;
+            region.write_u32(window, 1_000 + tag);
+            region.write_u8(window + 0x04, (tag % 251) as u8);
+            region.write_i64(window + 0x30, 5_000 + i64::from(tag));
+            region.write_i64(window + 0x38, 9_000 + i64::from(tag));
+            region.write_u32(node, 0xDEAD_0000 + tag);
+        }
+    }
+    ArmsPool {
+        region,
+        povs: slots,
+    }
+}
+
+/// Evict what the last arm left resident, so each timed arm starts cold the way
+/// a live frame's d81 read does after eleven other lanes have run.
+fn evict_cache(sink: &mut Vec<u8>) -> u64 {
+    if sink.len() < NODE_ARMS_FLUSH_BYTES {
+        sink.resize(NODE_ARMS_FLUSH_BYTES, 0);
+    }
+    let mut checksum = 0u64;
+    // 64-byte stride: one touch per cache line, WRITTEN so the line is dirtied
+    // and cannot be satisfied from a shared copy.
+    for chunk in sink.chunks_mut(64) {
+        chunk[0] = chunk[0].wrapping_add(1);
+        checksum = checksum.wrapping_add(u64::from(chunk[0]));
+    }
+    checksum
+}
+
+/// One invocation's worth of node reads plus the closing re-reads they cost,
+/// both arms decoding the identical four fields so the only difference measured
+/// is the reads.
+fn node_phase_arm(pool: &ArmsPool, arm: NodeArm) -> (Duration, u64) {
+    let base = pool.region.addr();
+    let mut scratch = Vec::new();
+    let mut checksum = 0u64;
+    let mut per_node_witnesses: Vec<D81BytesWitness> = Vec::new();
+    let mut array_witnesses: Vec<D81NodeArrayWitness> = Vec::new();
+    let started = Instant::now();
+
+    for &pov_offset in &pool.povs {
+        let node_data = base + pov_offset;
+        let node_array = match arm {
+            NodeArm::PerNode => None,
+            NodeArm::Bulk => d81_copy_node_array(node_data, NODE_ARMS_SLOTS, &mut scratch),
+        };
+        let mut consumed: Vec<u32> = Vec::new();
+        for index in 0..NODE_ARMS_NEEDED {
+            let offset = index * D81_NODE_STRIDE + D81_NODE_WINDOW_OFF;
+            let served = node_array
+                .as_ref()
+                .and_then(|bytes| bytes.get(offset..offset + D81_NODE_WINDOW_LEN));
+            let node = match served {
+                Some(window) => window.to_vec(),
+                None => d81_read_stable_bytes(
+                    node_data + offset,
+                    D81_NODE_WINDOW_LEN,
+                    D81FailureStage::HubObject,
+                    &mut scratch,
+                )
+                .expect("the staged node is readable"),
+            };
+            let (marker, flag, available, consumed_field) = decode_node(&node);
+            checksum = checksum
+                .wrapping_add(u64::from(marker))
+                .wrapping_add(u64::from(flag))
+                .wrapping_add(available as u64)
+                .wrapping_add(consumed_field as u64);
+            if served.is_some() {
+                consumed.push(offset as u32);
+            } else {
+                per_node_witnesses.push(D81BytesWitness::new(node_data + offset, node));
+            }
+        }
+        if let Some(bytes) = node_array {
+            if !consumed.is_empty() {
+                array_witnesses.push(D81NodeArrayWitness {
+                    base: node_data,
+                    bytes,
+                    consumed,
+                });
+            }
+        }
+    }
+    // THE CLOSING GATE'S SHARE, which is where the other half of the saving is:
+    // the per-node arm re-reads one witness per node, the bulk arm one per POV.
+    for witness in &per_node_witnesses {
+        if !witness.unchanged() {
+            checksum = checksum.wrapping_add(1);
+        }
+    }
+    for witness in &array_witnesses {
+        if !witness.unchanged() {
+            checksum = checksum.wrapping_add(1);
+        }
+    }
+    (started.elapsed(), checksum)
+}
+
+/// The node phase, both ways, at the production shape.
+#[test]
+#[ignore]
+fn profile_d81_node_phase_arms() {
+    let pool = arms_pool();
+    let mut sink = Vec::new();
+
+    // Assert the two arms decode the SAME thing before either is timed -- a
+    // faster arm that decoded something else would be worthless.
+    let (_, per_node_sum) = node_phase_arm(&pool, NodeArm::PerNode);
+    let (_, bulk_sum) = node_phase_arm(&pool, NodeArm::Bulk);
+    assert_eq!(
+        per_node_sum, bulk_sum,
+        "both arms must decode the same fields from the same nodes"
+    );
+
+    let mut per_node = Duration::MAX;
+    let mut bulk = Duration::MAX;
+    let mut guard = 0u64;
+    for repetition in 0..NODE_ARMS_RUNS {
+        // FLIPPED, so whichever arm runs second does not carry the cost of
+        // being second in every sample.
+        let order = if repetition % 2 == 0 {
+            [NodeArm::PerNode, NodeArm::Bulk]
+        } else {
+            [NodeArm::Bulk, NodeArm::PerNode]
+        };
+        for arm in order {
+            guard = guard.wrapping_add(evict_cache(&mut sink));
+            let (elapsed, _) = node_phase_arm(&pool, arm);
+            let slot = if arm == NodeArm::PerNode {
+                &mut per_node
+            } else {
+                &mut bulk
+            };
+            *slot = (*slot).min(elapsed);
+        }
+    }
+    assert_ne!(guard, u64::MAX, "the eviction sink must not be optimised out");
+
+    let per_node_ms = per_node.as_secs_f64() * 1.0e3;
+    let bulk_ms = bulk.as_secs_f64() * 1.0e3;
+    let reads = NODE_ARMS_POVS * NODE_ARMS_NEEDED;
+    // Three guarded calls per node read (two to take it, one to re-read it at
+    // the close) against three per POV.
+    let per_node_calls = 3 * reads;
+    let bulk_calls = 3 * NODE_ARMS_POVS;
+    println!();
+    println!("d81 node phase + its closing re-reads, one invocation's shape");
+    println!(
+        "  {NODE_ARMS_POVS} POVs x {NODE_ARMS_NEEDED} of {NODE_ARMS_SLOTS} slots = {reads} node \
+         reads, scattered through {} MiB, arms interleaved, cold, min of {NODE_ARMS_RUNS}",
+        NODE_ARMS_POOL_BYTES >> 20
+    );
+    println!("  {:>12} {:>12} {:>9}", "per-node ms", "bulk ms", "cut");
+    println!(
+        "  {:>12.3} {:>12.3} {:>8.1}%",
+        per_node_ms,
+        bulk_ms,
+        100.0 * (per_node_ms - bulk_ms) / per_node_ms,
+    );
+    // WHAT THIS RIG DOES AND DOES NOT SUPPORT.
+    //
+    // It measures the extra BYTES faithfully: that is plain memory traffic, and
+    // this box's memory is this box's memory. `bulk_ms` is dominated by them,
+    // because the bulk arm makes only 1,317 guarded calls.
+    //
+    // It does NOT support extrapolating a live win. An earlier version of this
+    // function did: it took `per_node_ms / per_node_calls` as a per-call price,
+    // scaled it to the 96.9 ns that `hub_nodes_us / node calls` gives live, and
+    // printed a predicted 2.680 ms -> 0.976 ms. The live capture refuted it --
+    // `pg_hub_after` puts `hub_nodes_us` at 189.9 ns per node read against
+    // `pd_hub_before`'s 193.7, i.e. FLAT -- and the adversarial review named the
+    // reason independently (finding 2): both figures are AVERAGE phase cost per
+    // call, not the MARGINAL cost of a call. They include decode, allocation,
+    // map insertion and witness construction, which the bulk arm still pays.
+    // A rig with free guards and costly decode would report the same "per-call
+    // price".
+    //
+    // So this prints the bytes, and nothing derived from a per-call price.
+    // `runs/pg_hub_copy/MEASUREMENT.md` carries what the live capture measured:
+    // the node phase is flat and the whole saving is in the closing gate.
+    let net_ms = bulk_ms - per_node_ms;
+    let slots = NODE_ARMS_POVS * NODE_ARMS_SLOTS as usize;
+    println!("  guarded calls {per_node_calls} -> {bulk_calls}");
+    println!(
+        "  net {net_ms:+.3} ms at this shape, over {slots} slots traversed \
+         three times"
+    );
+    println!(
+        "  that net is (extra bytes - {} removed calls x this rig's marginal \
+         call price), ONE equation in TWO unknowns: it does not yield a \
+         per-slot price, a per-call price, or a break-even density. See the \
+         header, and MEASUREMENT.md for what the live capture measured.",
+        per_node_calls - bulk_calls,
+    );
+}
