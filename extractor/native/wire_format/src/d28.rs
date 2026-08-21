@@ -1,9 +1,9 @@
 //! d28 `oob_command_live` — the order-of-battle command tree: army groups,
 //! armies, fleets and task forces, with their membership.
 //!
-//! Derived from `world_fold.rs:20210`-`:20410`
+//! Derived from `world_fold.rs:20237`-`:20446`
 //! (`fold_oob_command`), its payload constants at `:970`-`:972` and `:1019`-`:1038`,
-// @world-fold-authority domain=28 functions=fold_oob_command lines=20210-20410 sha256=f636e6e733751bf84ab8b8b6d30506f2464013bfbc06d210b0ba4994993bd486 closure=7474cc0694cd8b716f7305c91b5410590ebffb6a9482a90b2e8b1efe20279f40
+// @world-fold-authority domain=28 functions=fold_oob_command lines=20237-20446 sha256=6bb2b08571d4bddb43b5bfa98eebcfb8f617448e6ff499a3388cac8de585931e closure=4877b36fe37250431ccfdf9a0238bfb78e3bbf7070aa1ac5092d61b267cb474b
 //! the accumulator's own JSON projection (`:7948`-`:8010`, `:23542`-`:23560`), and
 //! the collector read that produces the flags, the status words and the member
 //! child rows (`extractor/native/collector/src/attach_log.rs:46680`-`:47160`,
@@ -225,13 +225,28 @@
 //!   applies and it is unknown (see the deliverable's open questions). Army
 //!   groups and fleets hard-code `None` (`:46884`, `:47000`) — never attempted,
 //!   so absent.
-//! * **`location_province_id`.** Only task-force rows ever carry one
-//!   (`attach_log.rs:46946`); army, army-group and fleet rows hard-code `None`
-//!   (`:46875`, `:46884`, `:47000`). A cleared gate on a task force means
-//!   `read_task_force_location_province_with_window` failed — unknown. On the
-//!   deepwar_t1 capture the gate is set on 259 of 262 live task-force rows and
-//!   clear on 3, and it is clear on every one of the 1,251 rows of the other
-//!   three kinds: exactly the shape this split predicts.
+//! * **`location_province_id`.** Only task-force rows ever carry one; army,
+//!   army-group and fleet rows hard-code `None`. The gate used to be a single
+//!   bit, and a cleared gate was read as "the read failed — unknown". That was
+//!   wrong, and expensively so: `read_task_force_location_province_with_window`
+//!   cleared it for THREE different reasons, and one of them is a measurement.
+//!   Zero at `CTaskForce+0x18` is the engine's own absence marker for a task
+//!   force that is not deployed to a province, which the d56 lane had already
+//!   established ("Zero is the engine's absence marker and is NOT passed to the
+//!   bound check"). Collapsing that into "unknown" made a lawfully locationless
+//!   task force look like a gap, and the viewer's fleets census — which requires
+//!   every row to be accounted for — turned a Present collection into
+//!   `DomainUnavailable` over one row, on every hour of every sealed recording.
+//!   The row now carries `COMPACT_OOB_ROW_FLAG_LOCATION_UNREADABLE` beside
+//!   `COMPACT_OOB_ROW_FLAG_LOCATION`, and the three states are:
+//!   `LOCATION` set — a measured province id, inside map space; both clear on a
+//!   task force — the engine's absence marker, measured; `LOCATION_UNREADABLE`
+//!   set — the read failed or the id was outside map space, the one genuinely
+//!   unknown case. Both clear on the other three kinds still means the schema
+//!   never attempts a location there, which `kind` distinguishes. Measured on
+//!   `captures/oz_tip`, 473 folded hours: 99,354 task-force rows measured, 473
+//!   the engine's absence (one per hour — CHI task force 601, naval mission 8
+//!   `RESERVE_FLEET`), and zero unreadable.
 //! * **`leader_trait_count` has no flag, and that is the trap.** The collector's
 //!   value is an `Option<u32>` that the packer writes as `unwrap_or(0)`
 //!   (`attach_log.rs:69719`) with **no gate bit**, so a `None` becomes an
@@ -371,6 +386,11 @@ pub const FLAG_LEADER_SKILL: u32 = 1 << 4;
 pub const FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 pub const FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const FLAG_LOCATION: u32 = 1 << 7;
+/// Task-force rows only: `CTaskForce+0x18` could not be read, or its id fell
+/// outside map space. Both location flags clear on a task-force row is the
+/// engine's own absence marker for a task force not deployed to a province —
+/// measured state, not a gap.
+pub const FLAG_LOCATION_UNREADABLE: u32 = 1 << 8;
 /// `OOB_KNOWN_FLAGS`, `world_fold.rs::OOB_KNOWN_FLAGS`. Any other bit is a hard
 /// error (`:14342`) — an unrecognised flag word means the row is not this
 /// grammar, so nothing in it can be trusted.
@@ -381,7 +401,8 @@ pub const KNOWN_FLAGS: u32 = FLAG_DELETED
     | FLAG_LEADER_SKILL
     | FLAG_MEMBER_COUNT_ENGINE
     | FLAG_MISSING_MEMBER_COUNT
-    | FLAG_LOCATION;
+    | FLAG_LOCATION
+    | FLAG_LOCATION_UNREADABLE;
 
 /// `COMPACT_OOB_STATUS_*`, `collector/src/attach_log.rs:11380`-`:11385`. The
 /// producer, `compact_oob_status_code` (`:57633`), is total onto this set.
@@ -727,6 +748,14 @@ pub fn parse_command_row(row: &[u8]) -> core::result::Result<CommandRow, String>
     if flags & FLAG_LOCATION == 0 && u32_at(row, 72) != 0 {
         return Err("oob_command location present without flag".into());
     }
+    // The two location flags are mutually exclusive and only a task force can be
+    // unreadable, matching `world_fold.rs::fold_oob_command`.
+    if flags & FLAG_LOCATION != 0 && flags & FLAG_LOCATION_UNREADABLE != 0 {
+        return Err("oob_command location is both measured and unreadable".into());
+    }
+    if flags & FLAG_LOCATION_UNREADABLE != 0 && kind != KIND_TASK_FORCE {
+        return Err("oob_command non-task-force row claims an unreadable location".into());
+    }
     // `world_fold.rs::fold_oob_command`.
     if u32_at(row, 76) != 0 {
         return Err("oob_command row reserved field is nonzero".into());
@@ -962,10 +991,16 @@ pub fn record_from_row(
             field::LOCATION_PROVINCE_ID => gated(
                 flags & FLAG_LOCATION != 0,
                 || Value::ContentId(u32_at(row, 72) as u64),
-                // Only task-force rows ever carry a location
-                // (`attach_log.rs:46946`); the other three kinds hard-code
-                // `None`, so the concept is unsupported for them.
-                if kind == KIND_TASK_FORCE {
+                // Only task-force rows ever carry a location; the other three
+                // kinds never attempt one, so the concept is unsupported for
+                // them. For a task force the cleared gate is no longer one
+                // state: `FLAG_LOCATION_UNREADABLE` is the read that failed or
+                // the id outside map space (unknown), and both flags clear is
+                // the engine's own absence marker for a task force not deployed
+                // to a province — a measurement, so `Absent`. Mapping that to
+                // `Unknown` is what made the viewer's fleets census treat a
+                // lawfully locationless task force as a gap.
+                if kind == KIND_TASK_FORCE && flags & FLAG_LOCATION_UNREADABLE != 0 {
                     Value::Unknown
                 } else {
                     Value::Absent
@@ -1403,7 +1438,7 @@ mod tests {
         RawRow {
             kind: KIND_ARMY,
             object_id: 1001,
-            flags: KNOWN_FLAGS & !FLAG_DELETED,
+            flags: KNOWN_FLAGS & !FLAG_DELETED & !FLAG_LOCATION_UNREADABLE,
             parent_id: 2002,
             owner_tag_db_id: 303,
             leader_id: 40404,
@@ -1596,6 +1631,70 @@ mod tests {
         }
     }
 
+    /// kills: collapsing the task-force location back to one gate bit, or letting
+    /// an army carry `FLAG_LOCATION_UNREADABLE`, or accepting both location flags
+    /// at once.
+    ///
+    /// The producer now distinguishes three things at `CTaskForce+0x18`: a
+    /// measured province, the engine's own absence marker for a task force not
+    /// deployed to one, and a read that failed. Only the last is a gap; mapping
+    /// the middle one to `Unknown` is what made the viewer's fleets census refuse
+    /// every hour of every sealed recording over a single row.
+    #[test]
+    fn a_task_force_location_carries_three_distinguishable_states() {
+        let c = commands();
+        let task_force = |flags: u32, province: u32| RawRow {
+            kind: KIND_TASK_FORCE,
+            object_id: 4,
+            flags: FLAG_PARENT | FLAG_OWNER | flags,
+            parent_id: 30,
+            owner_tag_db_id: 12,
+            parent_status: STATUS_EXACT,
+            member_status: STATUS_EXACT,
+            owner_status: STATUS_EXACT,
+            location_province_id: province,
+            ..RawRow::default()
+        };
+
+        let measured = record_from_row(&c, &task_force(FLAG_LOCATION, 118).bytes(), 0)
+            .expect("a measured location maps");
+        assert_eq!(
+            measured.values[index_of(&c, field::LOCATION_PROVINCE_ID)],
+            Value::ContentId(118)
+        );
+
+        let engine_absent =
+            record_from_row(&c, &task_force(0, 0).bytes(), 0).expect("engine absence maps");
+        assert_eq!(
+            engine_absent.values[index_of(&c, field::LOCATION_PROVINCE_ID)],
+            Value::Absent
+        );
+
+        let unreadable = record_from_row(&c, &task_force(FLAG_LOCATION_UNREADABLE, 0).bytes(), 0)
+            .expect("an unreadable location maps");
+        assert_eq!(
+            unreadable.values[index_of(&c, field::LOCATION_PROVINCE_ID)],
+            Value::Unknown
+        );
+
+        // The two flags are mutually exclusive...
+        assert!(record_from_row(
+            &c,
+            &task_force(FLAG_LOCATION | FLAG_LOCATION_UNREADABLE, 118).bytes(),
+            0
+        )
+        .is_err());
+
+        // ...and only a task force ever attempts a location at all.
+        let army = RawRow {
+            kind: KIND_ARMY,
+            object_id: 7,
+            flags: FLAG_LOCATION_UNREADABLE,
+            ..RawRow::default()
+        };
+        assert!(record_from_row(&c, &army.bytes(), 0).is_err());
+    }
+
     #[test]
     fn every_field_reads_from_its_own_offset() {
         // The transposition test: one row with a distinct value in every word,
@@ -1655,7 +1754,7 @@ mod tests {
         let row = RawRow {
             kind: KIND_ARMY,
             object_id: 9,
-            flags: KNOWN_FLAGS & !FLAG_DELETED,
+            flags: KNOWN_FLAGS & !FLAG_DELETED & !FLAG_LOCATION_UNREADABLE,
             leader_trait_status: STATUS_EXACT,
             ..RawRow::default()
         };
@@ -1802,9 +1901,13 @@ mod tests {
             ..RawRow::default()
         };
         let r = record_from_row(&c, &row.bytes(), 0).expect("maps");
+        // Both location flags clear on a TASK FORCE is now the engine's own
+        // absence marker at `CTaskForce+0x18` — a task force that is not deployed
+        // to a province — which is a measurement, not a gap. The read that failed
+        // carries `FLAG_LOCATION_UNREADABLE` instead; see the three-state test.
         assert_eq!(
             r.values[index_of(&c, field::LOCATION_PROVINCE_ID)],
-            Value::Unknown
+            Value::Absent
         );
         // A task force's missing count is attempted and filtered, so a clear
         // gate is unknown — the recipe's tie-break, see the open questions.
@@ -1930,7 +2033,11 @@ mod tests {
         let base = RawRow {
             kind: KIND_TASK_FORCE,
             object_id: 7,
-            flags: KNOWN_FLAGS & !FLAG_DELETED & !FLAG_LEADER & !FLAG_LEADER_SKILL,
+            flags: KNOWN_FLAGS
+                & !FLAG_DELETED
+                & !FLAG_LEADER
+                & !FLAG_LEADER_SKILL
+                & !FLAG_LOCATION_UNREADABLE,
             parent_id: 8,
             owner_tag_db_id: 9,
             member_count_engine: 10,
@@ -1944,16 +2051,25 @@ mod tests {
             leader_trait_status: STATUS_NONE,
             ..RawRow::default()
         };
-        for (gate, field_id, zero_the_word) in [
-            (FLAG_PARENT, field::PARENT_ID, false),
-            (FLAG_OWNER, field::OWNER_TAG_DB_ID, false),
-            (FLAG_MEMBER_COUNT_ENGINE, field::MEMBER_COUNT_ENGINE, false),
-            (FLAG_MISSING_MEMBER_COUNT, field::MISSING_MEMBER_COUNT, false),
-            // The two validated gates must pack a zero when clear.
-            (FLAG_LOCATION, field::LOCATION_PROVINCE_ID, true),
+        for (gate, field_id, zero_the_word, also_set) in [
+            (FLAG_PARENT, field::PARENT_ID, false, 0),
+            (FLAG_OWNER, field::OWNER_TAG_DB_ID, false, 0),
+            (FLAG_MEMBER_COUNT_ENGINE, field::MEMBER_COUNT_ENGINE, false, 0),
+            (FLAG_MISSING_MEMBER_COUNT, field::MISSING_MEMBER_COUNT, false, 0),
+            // The two validated gates must pack a zero when clear. Clearing the
+            // location gate alone no longer means "unknown" -- that is the
+            // engine's absence marker now -- so the unreadable flag comes with
+            // it to keep this row saying what this loop is testing.
+            (
+                FLAG_LOCATION,
+                field::LOCATION_PROVINCE_ID,
+                true,
+                FLAG_LOCATION_UNREADABLE,
+            ),
         ] {
             let mut row = base;
             row.flags &= !gate;
+            row.flags |= also_set;
             if zero_the_word {
                 row.location_province_id = 0;
             }

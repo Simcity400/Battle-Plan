@@ -694,7 +694,7 @@
       "main.rs:33666": 2,
       "recorder_host/src/domain_data_authority.rs:932-1011": 1,
       "recorder_host/src/main.rs:33666": 1,
-      "world_fold.rs:12832-12876": 1,
+      "world_fold.rs:12859-12903": 1,
       "world_fold.rs:9224-9239": 1,
       "world_fold.rs:9232": 1,
       "world_fold.rs:9236-9239": 1
@@ -731,7 +731,7 @@
       "world_fold.rs:12669": 1,
       "world_fold.rs:12936": 1,
       "world_fold.rs:12980": 1,
-      "world_fold.rs:17401-18042": 1,
+      "world_fold.rs:17428-18069": 1,
       "world_fold.rs:27598": 1,
       "world_fold.rs:27599": 1,
       "world_fold.rs:27600": 1,
@@ -764,7 +764,7 @@
       "world_fold.rs:13368": 1,
       "world_fold.rs:13374": 1,
       "world_fold.rs:13391": 1,
-      "world_fold.rs:18234-18637": 1
+      "world_fold.rs:18261-18664": 1
     },
     "extractor/native/wire_format/src/d13/tests.rs": {
       "attach_log.rs:68824": 1,
@@ -807,7 +807,7 @@
       "schema.rs:12-20": 1,
       "schema.rs:163": 1,
       "world_fold.rs:13819-13821": 1,
-      "world_fold.rs:19494-19552": 1,
+      "world_fold.rs:19521-19579": 1,
       "world_fold.rs:9279": 2
     },
     "extractor/native/wire_format/src/d17.rs": {
@@ -835,14 +835,14 @@
       "offsets.rs:154": 1,
       "world_fold.rs:13871-13872": 1,
       "world_fold.rs:13940": 1,
-      "world_fold.rs:19555-19628": 1
+      "world_fold.rs:19582-19655": 1
     },
     "extractor/native/wire_format/src/d20.rs": {
-      "world_fold.rs:25973-26526": 1
+      "world_fold.rs:26009-26562": 1
     },
     "extractor/native/wire_format/src/d21.rs": {
       "collector/src/attach_log.rs:72387-72454": 1,
-      "world_fold.rs:26529-26741": 1
+      "world_fold.rs:26565-26777": 1
     },
     "extractor/native/wire_format/src/d22.rs": {
       "attach_log.rs:58564": 1,
@@ -860,7 +860,7 @@
       "world_fold.rs:22247-22252": 1,
       "world_fold.rs:22266": 1,
       "world_fold.rs:22271": 1,
-      "world_fold.rs:29812-29936": 1,
+      "world_fold.rs:29848-29972": 1,
       "world_fold.rs:386-387": 1,
       "world_fold.rs:5350": 1
     },
@@ -877,8 +877,8 @@
       "attach_log.rs:71816": 1,
       "extractor/native/collector/src/attach_log.rs:58628-58717": 1,
       "world_fold.rs:22451": 1,
-      "world_fold.rs:29939-30162": 1,
       "world_fold.rs:29946": 1,
+      "world_fold.rs:29975-30198": 1,
       "world_fold.rs:400-403": 1
     },
     "extractor/native/wire_format/src/d24.rs": {
@@ -901,7 +901,7 @@
       "world_fold.rs:17043": 2,
       "world_fold.rs:17046": 1,
       "world_fold.rs:17058": 1,
-      "world_fold.rs:23636-24126": 1,
+      "world_fold.rs:23672-24162": 1,
       "world_fold.rs:24222": 1,
       "world_fold.rs:24228-24240": 2,
       "world_fold.rs:24243": 1,
@@ -927,7 +927,7 @@
       "world_fold.rs:1547": 1,
       "world_fold.rs:17414": 1,
       "world_fold.rs:17501": 1,
-      "world_fold.rs:24129-24435": 1,
+      "world_fold.rs:24165-24471": 1,
       "world_fold.rs:24170": 2,
       "world_fold.rs:24171": 1,
       "world_fold.rs:810-816": 1
@@ -961,7 +961,7 @@
       "world_fold.rs:14194-14212": 1,
       "world_fold.rs:14274": 3,
       "world_fold.rs:1696": 1,
-      "world_fold.rs:20026-20207": 1,
+      "world_fold.rs:20053-20234": 1,
       "world_fold.rs:23507-23512": 2,
       "world_fold.rs:23532": 1,
       "world_fold.rs:7929-7949": 1,
@@ -978,7 +978,6 @@
       "attach_log.rs:46855-46913": 1,
       "attach_log.rs:46884": 2,
       "attach_log.rs:46888": 1,
-      "attach_log.rs:46946": 2,
       "attach_log.rs:46975-47001": 1,
       "attach_log.rs:47008-47009": 1,
       "attach_log.rs:47022": 1,
@@ -999,7 +998,7 @@
       "world_fold.rs:1024-1038": 1,
       "world_fold.rs:14308-14322": 1,
       "world_fold.rs:1677": 1,
-      "world_fold.rs:20210-20410": 1,
+      "world_fold.rs:20237-20446": 1,
       "world_fold.rs:23616": 1,
       "world_fold.rs:23623": 1,
       "world_fold.rs:970-972": 1
@@ -1019,7 +1018,7 @@
       "recorder_host/src/main.rs:7621": 1,
       "world_fold.rs:14624": 2,
       "world_fold.rs:14629": 1,
-      "world_fold.rs:20413-20524": 1,
+      "world_fold.rs:20449-20560": 1,
       "world_fold.rs:973-974": 1
     },
     "extractor/native/wire_format/src/d31.rs": {
@@ -1038,7 +1037,7 @@
       "world_fold.rs:14755": 1,
       "world_fold.rs:14765": 1,
       "world_fold.rs:14779": 1,
-      "world_fold.rs:20695-20842": 1,
+      "world_fold.rs:20731-20878": 1,
       "world_fold.rs:977-978": 1
     },
     "extractor/native/wire_format/src/d32.rs": {
@@ -1065,7 +1064,7 @@
       "world_fold.rs:14969": 1,
       "world_fold.rs:14969-14972": 1,
       "world_fold.rs:14979-14982": 1,
-      "world_fold.rs:20845-20986": 1,
+      "world_fold.rs:20881-21022": 1,
       "world_fold.rs:23762": 1,
       "world_fold.rs:23762-23765": 2,
       "world_fold.rs:8203": 1,
@@ -1091,7 +1090,7 @@
       "world_fold.rs:15170-15172": 1,
       "world_fold.rs:15175": 1,
       "world_fold.rs:1870": 2,
-      "world_fold.rs:21129-21211": 1,
+      "world_fold.rs:21165-21247": 1,
       "world_fold.rs:8940-8944": 1,
       "world_fold.rs:985-986": 1
     },
@@ -1108,7 +1107,7 @@
       "attach_log.rs:70502-70517": 1,
       "attach_log.rs:70503": 2,
       "extractor/native/collector/src/attach_log.rs:52997-53067": 1,
-      "world_fold.rs:21214-21277": 1,
+      "world_fold.rs:21250-21313": 1,
       "world_fold.rs:23788": 1,
       "world_fold.rs:23860-23870": 3,
       "world_fold.rs:23862": 1,
@@ -1134,7 +1133,7 @@
       "world_fold.rs:15291-15318": 1,
       "world_fold.rs:15319": 2,
       "world_fold.rs:15359-15362": 1,
-      "world_fold.rs:21280-21398": 1,
+      "world_fold.rs:21316-21434": 1,
       "world_fold.rs:2863": 1,
       "world_fold.rs:2895": 1,
       "world_fold.rs:2947": 1,
@@ -1172,17 +1171,17 @@
       "world_fold.rs:15432": 2,
       "world_fold.rs:15455": 1,
       "world_fold.rs:15474": 1,
-      "world_fold.rs:21401-21536": 1,
+      "world_fold.rs:21437-21572": 1,
       "world_fold.rs:9087": 3,
       "world_fold.rs:991-992": 1
     },
     "extractor/native/wire_format/src/d39.rs": {
-      "world_fold.rs:21539-21620": 1,
+      "world_fold.rs:21575-21656": 1,
       "world_fold.rs:644": 1
     },
     "extractor/native/wire_format/src/d40.rs": {
       "attach_log.rs:54023-54055": 1,
-      "world_fold.rs:21539-21620": 1,
+      "world_fold.rs:21575-21656": 1,
       "world_fold.rs:645": 1
     },
     "extractor/native/wire_format/src/d46.rs": {
@@ -1217,7 +1216,7 @@
       "world_fold.rs:16342-16348": 1,
       "world_fold.rs:16555-16557": 1,
       "world_fold.rs:1883": 1,
-      "world_fold.rs:22057-22279": 1
+      "world_fold.rs:22093-22315": 1
     },
     "extractor/native/wire_format/src/d48.rs": {
       "collector_module.rs:164-206": 1,
@@ -1296,7 +1295,7 @@
       "world_fold.rs:20328": 1,
       "world_fold.rs:20595": 1,
       "world_fold.rs:2123-2131": 1,
-      "world_fold.rs:27362-27716": 1
+      "world_fold.rs:27398-27752": 1
     },
     "extractor/native/wire_format/src/d49.rs": {
       "attach_log.rs:39810-39816": 1,
@@ -1322,7 +1321,7 @@
       "world_fold.rs:20040-20129": 1,
       "world_fold.rs:20047": 1,
       "world_fold.rs:20047-20062": 1,
-      "world_fold.rs:27178-27266": 1,
+      "world_fold.rs:27214-27302": 1,
       "world_fold.rs:8800": 2
     },
     "extractor/native/wire_format/src/d50.rs": {
@@ -1349,7 +1348,7 @@
       "world_fold.rs:20131-20222": 1,
       "world_fold.rs:20153-20158": 1,
       "world_fold.rs:20220": 1,
-      "world_fold.rs:27269-27359": 1,
+      "world_fold.rs:27305-27395": 1,
       "world_fold.rs:8631": 2,
       "world_fold.rs:8876-8877": 1
     },
@@ -1412,8 +1411,8 @@
       "world_fold.rs:19067": 1,
       "world_fold.rs:25501": 1,
       "world_fold.rs:25501-25504": 1,
-      "world_fold.rs:25517-25732": 1,
       "world_fold.rs:25523-25530": 1,
+      "world_fold.rs:25553-25768": 1,
       "world_fold.rs:921-965": 2,
       "world_fold.rs:948-949": 1,
       "world_fold.rs:958": 1
@@ -1447,7 +1446,7 @@
       "lanes/occupation_resistance_compliance_live/domain44_compact.rs:235-610": 1,
       "world_fold.rs:16903-16929": 1,
       "world_fold.rs:16960": 1,
-      "world_fold.rs:23353-23359": 1,
+      "world_fold.rs:23389-23395": 1,
       "world_fold.rs:30395-30399": 1,
       "world_fold.rs:30400": 1,
       "world_fold.rs:30419": 1,
@@ -1504,7 +1503,7 @@
       "world_fold.rs:23877-23883": 3,
       "world_fold.rs:25702": 1,
       "world_fold.rs:25850": 1,
-      "world_fold.rs:28951-29052": 1,
+      "world_fold.rs:28987-29088": 1,
       "world_fold.rs:8286-8318": 1
     },
     "extractor/native/wire_format/src/d56.rs": {
@@ -1568,7 +1567,7 @@
       "world_fold.rs:22123-22129": 1,
       "world_fold.rs:22143": 1,
       "world_fold.rs:2872-2874": 1,
-      "world_fold.rs:29702-29809": 1
+      "world_fold.rs:29738-29845": 1
     },
     "extractor/native/wire_format/src/d61.rs": {
       "d62.rs:56-70": 1,
@@ -1611,7 +1610,7 @@
       "record.rs:383": 2,
       "world_fold.rs:15899-15912": 1,
       "world_fold.rs:15908-15912": 1,
-      "world_fold.rs:21935-21988": 1
+      "world_fold.rs:21971-22024": 1
     },
     "extractor/native/wire_format/src/d62.rs": {
       "lib.rs:175-196": 2,
@@ -1646,19 +1645,19 @@
       "schema.rs:371": 1,
       "world_fold.rs:15883": 1,
       "world_fold.rs:15926-15935": 1,
-      "world_fold.rs:21991-22054": 1
+      "world_fold.rs:22027-22090": 1
     },
     "extractor/native/wire_format/src/d63.rs": {
       "attach_log.rs:60576": 2,
       "attach_log.rs:60743-60754": 1,
       "extractor/native/collector/src/attach_log.rs:60573-60757": 1,
-      "world_fold.rs:12884-13103": 1,
+      "world_fold.rs:12911-13130": 1,
       "world_fold.rs:159-172": 1
     },
     "extractor/native/wire_format/src/d64.rs": {
       "compact_contract/src/lib.rs:148-163": 1,
       "domain_data_authority.rs:12083-12298": 1,
-      "world_fold.rs:13118-13251": 1,
+      "world_fold.rs:13145-13278": 1,
       "world_fold.rs:9521-9527": 1,
       "world_fold.rs:9548-9549": 1,
       "world_fold.rs:9634-9641": 1
@@ -1683,7 +1682,7 @@
       "world_fold.rs:12308-12313": 1,
       "world_fold.rs:12311": 1,
       "world_fold.rs:12312": 1,
-      "world_fold.rs:17148-17242": 1,
+      "world_fold.rs:17175-17269": 1,
       "world_fold.rs:191-196": 1,
       "world_fold.rs:195": 1,
       "world_fold.rs:196": 1
@@ -1738,7 +1737,7 @@
       "timed_instance_exact.rs:91-95": 1,
       "timed_instance_exact.rs:96-100": 2,
       "world_fold.rs:10008": 1,
-      "world_fold.rs:13434-13886": 1
+      "world_fold.rs:13461-13913": 1
     },
     "extractor/native/wire_format/src/d68.rs": {
       "attach_log.rs:61788-61790": 1,
@@ -1752,7 +1751,7 @@
       "schema.rs:12-20": 1,
       "schema.rs:302-308": 2,
       "world_fold.rs:10044": 1,
-      "world_fold.rs:13897-14031": 1,
+      "world_fold.rs:13924-14058": 1,
       "world_fold.rs:1744": 1,
       "world_fold.rs:224-253": 1,
       "world_fold.rs:2258": 1
@@ -1805,11 +1804,11 @@
       "naval_history.rs:9-24": 1,
       "variant_upgrades.rs:633": 1,
       "world_fold.rs:10243": 1,
-      "world_fold.rs:14087-14147": 1,
+      "world_fold.rs:14114-14174": 1,
       "world_fold.rs:1762": 1
     },
     "extractor/native/wire_format/src/d81.rs": {
-      "world_fold.rs:15135-15162": 1
+      "world_fold.rs:15162-15189": 1
     },
     "extractor/native/wire_format/src/d83.rs": {
       "attach_log.rs:32117-32126": 2,
@@ -1868,7 +1867,7 @@
       "schema.rs:12-20": 1,
       "schema.rs:29": 1,
       "world_fold.rs:11461": 1,
-      "world_fold.rs:16049-16118": 1
+      "world_fold.rs:16076-16145": 1
     },
     "extractor/native/wire_format/src/d92.rs": {
       "attach_log.rs:32490": 1,
@@ -1909,7 +1908,7 @@
       "preferred_tactic.rs:98-109": 1,
       "schema.rs:29-31": 1,
       "tactic_weight.rs:356": 1,
-      "world_fold.rs:14168-14231": 1,
+      "world_fold.rs:14195-14258": 1,
       "world_fold.rs:1934-1944": 1
     },
     "extractor/native/wire_format/src/d94.rs": {
@@ -1933,7 +1932,7 @@
       "recorder_host/src/stream_fold.rs:593-611": 1,
       "schema.rs:228": 1,
       "variant_upgrades.rs:633": 1,
-      "world_fold.rs:14435-14496": 1,
+      "world_fold.rs:14462-14523": 1,
       "world_fold.rs:1838": 2,
       "world_fold.rs:3093-3094": 1
     },
@@ -1990,7 +1989,7 @@
       "spotted_units.rs:90-98": 3,
       "spotted_units.rs:98": 1,
       "world_fold.rs:10539": 1,
-      "world_fold.rs:14498-14566": 1,
+      "world_fold.rs:14525-14593": 1,
       "world_fold.rs:1840": 1,
       "world_fold.rs:1840-1841": 1,
       "world_fold.rs:1944": 1
@@ -2080,12 +2079,12 @@
       "tactic_weight_fold.rs:74": 2,
       "world_fold.rs:10550-10560": 1,
       "world_fold.rs:10568": 1,
-      "world_fold.rs:14233-14271": 1,
+      "world_fold.rs:14260-14298": 1,
       "world_fold.rs:1842": 1,
       "world_fold.rs:1934": 1
     },
     "extractor/native/wire_format/src/d99.rs": {
-      "world_fold.rs:15103-15133": 1
+      "world_fold.rs:15130-15160": 1
     },
     "extractor/native/wire_format/src/gap.rs": {
       "bench_real_d50.rs:1866-1869": 1,

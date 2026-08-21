@@ -196,30 +196,32 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         status: divisions_status,
         can_report_absent: true,
     },
-    // NO POSITIVE WITNESS YET (lane OW, checked 2026-08-21).
+    // POSITIVE WITNESS: captures/oz_tip (lane PA, 2026-08-21).
     //
-    // This row and `units.air_base_location` were promoted to owner-proven without one real
-    // recorded hour where they are positively Admitted, and a wider check did not find one.
-    // Over ALL 533 hours of captures/mu_t83_settings_partition - 177x lane OK's three-hour
-    // sample - both rows refuse in every single hour, each for the same one reason
-    // ("WorldFrame certified fleets_status is DomainUnavailable" /
-    // "... certified wings_status air-base join is DomainUnavailable"). The other candidate
-    // recording, captures/ob_first_bmp, cannot be opened at all: its only artifact is
-    // native_session.failed.battleplan, which the reader refuses as recovery-only.
+    // Lane OW recorded that this row had never been positively Admitted on any recording, and
+    // read that as "no recording carries the fleets domain". captures/oz_tip does carry it -
+    // 473 of its 535 hours - and the row still refused every one of them, so the missing
+    // witness was half a data gap and half this predicate.
     //
-    // The predicates are NOT vacuous and this is NOT a defect in them: on the same 533 hours
-    // units.divisions admits in 364 and units.wings in 366, so the machinery demonstrably
-    // says yes when the data is there. What is missing is a recording that carries the fleets
-    // domain and the wings air-base join at all - which needs a live game, so it is left
-    // annotated rather than demoted. Census:
-    // extractor/native/runs/ow_viewer_sweep/POSITIVE_WITNESS_mu_t83.json
+    // The predicate demanded a measured nonzero location_province on EVERY row. CHI task
+    // force 601 (fleet 2377, one destroyer, d56 naval mission 8 RESERVE_FLEET) has none, on
+    // every hour, because the engine holds none for it - not because the read failed. The
+    // recording proves which: the run manifest's bound_trips ledger is empty across the whole
+    // capture, so no map-province bound trip ever refused a value. One lawfully locationless
+    // task force therefore turned a Present fleets collection into DomainUnavailable, for the
+    // whole family, on every hour of every sealed recording.
+    //
+    // With the engine's own absence admitted and only an unreadable location counted as a gap,
+    // the census admits all 473 of those hours: 99,354 measured locations, 473 engine-absent,
+    // zero unreadable. Evidence:
+    // extractor/native/runs/pa_capture_defects/oz_tip_verdicts.json
     MapAuthorityOwnerProvenAdmission {
         input_id: "units.taskforces_fleets",
         owner_packet: "XMAP13",
         payload_schema: "WorldFrame.fleets",
         status_accessor: "fleets_status",
         cadence: "one decoded view per canonical recorded hour",
-        identity_order: "recorder census order; each row a unique nonblank task_force_uid, a unique nonzero raw_task_force_id, a measured nonzero raw_fleet_id, a measured nonblank owner, a measured nonzero location_province, no dropped source row, and no unaccounted collector problem on the D18 owner-identity or D56 naval-missions-status domains",
+        identity_order: "recorder census order; each row a unique nonblank task_force_uid, a unique nonzero raw_task_force_id, a measured nonzero raw_fleet_id, a measured nonblank owner, a location_province that is either a measured nonzero province or the engine's own measured absence for a task force not deployed to one, no dropped source row, and no unaccounted collector problem on the D18 owner-identity or D56 naval-missions-status domains",
         status: taskforces_fleets_status,
         can_report_absent: true,
     },
@@ -547,6 +549,25 @@ fn divisions_status(frame: &WorldFrame) -> ViewStatus {
     certified_census_status(frame.division_units_status(), complete)
 }
 
+/// A task force's location is accounted for when the recorder either measured a
+/// real province for it, or said the engine holds none.
+///
+/// The engine's absence marker at `CTaskForce+0x18` is a measurement, not a gap: a
+/// task force that is not deployed to a province genuinely has no province, and a
+/// reserve-fleet one is the observed case. Demanding a measured nonzero province
+/// on every row made a single such task force -- CHI 601, one destroyer, on all
+/// 535 hours of `captures/oz_tip` -- turn a Present fleets collection into
+/// `DomainUnavailable`, so `units.taskforces_fleets` refused every hour of every
+/// sealed recording over one row. `Leaf::Unobtained` is still a gap and still
+/// costs the census: that is the read that actually failed.
+fn task_force_location_is_accounted(location: &Leaf<u32>) -> bool {
+    match location {
+        Leaf::Measured(province_id) => *province_id != 0,
+        Leaf::Absent => true,
+        Leaf::Unobtained => false,
+    }
+}
+
 /// The ledger row is "taskforce and fleet enumeration", so the numeric engine
 /// identities are part of what it promises, not only the semantic uid string.
 /// XMAP13's task-force join checks neither (`xmap13.rs::validate_typed_join`
@@ -567,7 +588,7 @@ fn taskforces_fleets_status(frame: &WorldFrame) -> ViewStatus {
                     .is_some_and(|id| *id != 0 && task_force_ids.insert(*id))
                 && row.raw_fleet_id.measured().is_some_and(|id| *id != 0)
                 && row.owner.measured().is_some_and(|tag| !tag.trim().is_empty())
-                && row.location_province.measured().is_some_and(|id| *id != 0)
+                && task_force_location_is_accounted(&row.location_province)
         });
     certified_census_status(frame.fleets_status(), complete)
 }

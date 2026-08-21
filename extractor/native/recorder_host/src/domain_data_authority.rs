@@ -634,6 +634,11 @@ pub const COMPACT_OOB_ROW_FLAG_LEADER_SKILL: u32 = 1 << 4;
 pub const COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE: u32 = 1 << 5;
 pub const COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT: u32 = 1 << 6;
 pub const COMPACT_OOB_ROW_FLAG_LOCATION: u32 = 1 << 7;
+/// Task-force rows only: `CTaskForce+0x18` could not be read, or its id fell
+/// outside map space. Both location flags clear on a task-force row is the
+/// engine's own absence marker for a task force that is not deployed to a
+/// province -- measured state, not a gap.
+pub const COMPACT_OOB_ROW_FLAG_LOCATION_UNREADABLE: u32 = 1 << 8;
 pub const COMPACT_OOB_MAX_ID: u32 = 4_000_000;
 pub const COMPACT_OOB_MAX_LOCATION_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 pub const COMPACT_OOB_MAX_MEMBER_ROWS: usize = 250_000;
@@ -6115,7 +6120,8 @@ fn decode_compact_oob_command_data_payload(
                 | COMPACT_OOB_ROW_FLAG_LEADER_SKILL
                 | COMPACT_OOB_ROW_FLAG_MEMBER_COUNT_ENGINE
                 | COMPACT_OOB_ROW_FLAG_MISSING_MEMBER_COUNT
-                | COMPACT_OOB_ROW_FLAG_LOCATION)
+                | COMPACT_OOB_ROW_FLAG_LOCATION
+                | COMPACT_OOB_ROW_FLAG_LOCATION_UNREADABLE)
             != 0
         {
             summary.parse_errors.push(format!(
@@ -6182,6 +6188,18 @@ fn decode_compact_oob_command_data_payload(
             summary.parse_errors.push(format!(
                 "offset {offset}: oob command row {row_index} has location_province_id without flag"
             ));
+        }
+        if (flags & COMPACT_OOB_ROW_FLAG_LOCATION_UNREADABLE) != 0 {
+            if (flags & COMPACT_OOB_ROW_FLAG_LOCATION) != 0 {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} is both located and unreadable"
+                ));
+            }
+            if kind != COMPACT_OOB_KIND_TASK_FORCE {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: oob command row {row_index} claims an unreadable location on a kind that never carries one"
+                ));
+            }
         }
         if (flags & COMPACT_OOB_ROW_FLAG_LEADER_SKILL) != 0 {
             leader_skill_rows = leader_skill_rows.saturating_add(1);

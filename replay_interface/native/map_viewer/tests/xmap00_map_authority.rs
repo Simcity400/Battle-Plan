@@ -264,6 +264,31 @@ fn taskforce_census_fixture() -> Value {
     })
 }
 
+/// The shape `captures/oz_tip` actually carries: one task force the engine holds
+/// no province for, alongside ordinary located ones.
+///
+/// CHI task force 601 (fleet 2377, one destroyer, naval mission 8
+/// `RESERVE_FLEET`) has no `location_province` on all 535 recorded hours. The
+/// recording proves this is the engine's own absence marker rather than a failed
+/// read: the run manifest's `bound_trips` ledger is empty over the whole capture,
+/// so no map-province bound trip ever refused a value, and d56 reports
+/// `validated_location_rows` 173 of `task_force_count` 174 -- exactly one row, on
+/// a task force whose every other field decoded from the same memory window.
+fn taskforce_census_fixture_with_engine_absent_location(status: &str) -> Value {
+    json!({
+        "order_of_battle": {
+            "fleets": [{
+                "id": 3,
+                "owner": "ENG",
+                "task_forces": [
+                    {"id": 71, "location_province": 118, "location_province_status": "exact"},
+                    {"id": 601, "location_province": null, "location_province_status": status}
+                ]
+            }]
+        }
+    })
+}
+
 fn air_wing_census_fixture() -> Value {
     json!({
         "order_of_battle": {
@@ -272,6 +297,47 @@ fn air_wing_census_fixture() -> Value {
             ]
         }
     })
+}
+
+/// kills: treating the engine's own "this task force is not deployed to a
+/// province" as a gap, which is what refused `units.taskforces_fleets` on every
+/// hour of every sealed recording over a single row.
+#[test]
+fn taskforces_fleets_admits_an_engine_absent_location_and_still_refuses_an_unreadable_one() {
+    let admitted_frame =
+        world_frame_with(taskforce_census_fixture_with_engine_absent_location("none"));
+    assert_eq!(admitted_frame.fleets_status(), ViewStatus::Present);
+    let manifest = fixture_manifest();
+    let projection =
+        map_authority_projection_from_world_frame(&admitted_frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "units.taskforces_fleets").disposition,
+        MapAuthorityRequirementDisposition::Admitted,
+        "a task force the engine holds no province for must not blank the family"
+    );
+    assert!(admit_map_authority_projection(&projection)
+        .unwrap()
+        .is_admitted("units.taskforces_fleets"));
+
+    // The read that actually failed is still a gap, and still costs the census.
+    let refused_frame =
+        world_frame_with(taskforce_census_fixture_with_engine_absent_location("unknown"));
+    assert_eq!(refused_frame.fleets_status(), ViewStatus::Present);
+    assert_owner_proven_unavailable(&refused_frame, "units.taskforces_fleets");
+
+    // And a producer that says nothing at all is not claiming absence either.
+    let silent = json!({
+        "order_of_battle": {
+            "fleets": [{
+                "id": 3,
+                "owner": "ENG",
+                "task_forces": [{"id": 601, "location_province": null}]
+            }]
+        }
+    });
+    let silent_frame = world_frame_with(silent);
+    assert_eq!(silent_frame.fleets_status(), ViewStatus::Present);
+    assert_owner_proven_unavailable(&silent_frame, "units.taskforces_fleets");
 }
 
 fn occupation_state_digest(ids: &[u32]) -> u64 {
