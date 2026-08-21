@@ -70,6 +70,29 @@ $ReviewExitCode = $LASTEXITCODE
   Codex approves clean - no round limit. Any commit after an APPROVE needs one
   more confirmation round.
 
+## OpenCode runner - mechanics only, no assigned job yet
+
+`opencode` (npm `opencode-ai`) is on the Windows PATH. Proven callable, but it has no
+role in the review loop yet; do not substitute it for Codex until the owner says so.
+
+```powershell
+$Result = & .\tools\reviewers\Invoke-OpenCodeReview.ps1 -Prompt $Prompt -RunDir $RunDir
+if ($Result.ExitCode -ne 0 -or -not $Result.ReplyText) { throw 'opencode job failed' }
+```
+
+- Defaults are fixed and not to be changed silently: `opencode/x-preview-f-free
+  --variant max` (Ox Alpha, max effort, owner 2026-08-21) and the read-only `plan`
+  agent. The script rejects an effort the model does not declare - the CLI drops an
+  unknown one without erroring.
+- Success = `ExitCode -eq 0` AND a non-empty `ReplyText`. Retry once: jobs fail
+  transiently while the OpenCode desktop app holds the same database.
+- OpenCode halts early a lot. The script sends `continue` into the same session until
+  the turn ends cleanly, capped by `-MaxContinues` (20); `$Result.Continues` reports
+  how many it needed. Nothing to do by hand.
+- Session id lands in `<RunDir>\opencode_session.txt` on the first event. Resume by
+  id only - `-SessionId $Result.SessionId`, never `--continue`.
+- Prompt rules are Codex's: no project memory, so the prompt carries everything.
+
 ## Orchestration - Only relevant if you are given the role of orchestrator by the owner
 
 - Lanes run in worktrees, each with its own branch and build dir,
