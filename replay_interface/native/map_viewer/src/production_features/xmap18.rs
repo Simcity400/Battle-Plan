@@ -38,13 +38,33 @@ const STATIC_DIRS: [(&str, Option<&str>); 10] = [
     ("map/strategicregions", Some("txt")),
     ("common/map_modes", Some("txt")),
 ];
-const OWNED_AUTHORITY_GAPS: [&str; 8] = [
+/// Every map-authority input the XMAP00 ledger gives XMAP18 as owner packet,
+/// gapped or admitted.
+///
+/// This used to be a gap-ONLY list that `prepare` treated as a hard error when
+/// an entry was missing from `map_authority_gaps`. That is the defect XMAP13
+/// already fixed for its own rows: an owner-proven input reports ADMITTED, not
+/// gapped, so the moment any owned row was proven the whole foundation graph
+/// aborted. Two entries here — `diplomacy.faction_roster` and
+/// `mapmode.occupation_resistance_compliance` — were ALREADY owner-proven, so
+/// this abort was live, not hypothetical: `mapmode.occupation_resistance_compliance`
+/// is ADMITTED on 13 of the 14 hours sampled across `captures/oz_tip`, and every
+/// one of those hours aborted XMAP18 before this was found (lane PL,
+/// 2026-08-21; extractor/native/runs/pl_xmap18/witness_final_stride40.json).
+///
+/// `mapmode.raids`, `mapmode.resource_deposits` and `diplomacy.pair_relations`
+/// were missing from the old list entirely; the accounting is only honest if it
+/// names every row the ledger assigns to this packet.
+const OWNED_AUTHORITY_INPUTS: [&str; 11] = [
     "diplomacy.faction_roster",
+    "diplomacy.pair_relations",
     "mapmode.air_superiority",
     "mapmode.infrastructure_state",
     "mapmode.intelligence",
     "mapmode.naval_supremacy",
     "mapmode.occupation_resistance_compliance",
+    "mapmode.raids",
+    "mapmode.resource_deposits",
     "mapmode.scripted_inputs",
     "session.player_country_set",
 ];
@@ -544,17 +564,14 @@ impl ProductionMapFeatureAdapter for Xmap18MapModeAdapter {
     }
 
     fn prepare(&self, context: &FoundationFeatureContext<'_>) -> Result<FoundationFeatureOutput> {
-        for input_id in OWNED_AUTHORITY_GAPS {
-            if !context
-                .map_authority_gaps
-                .iter()
-                .any(|gap| gap.input_id == input_id)
-            {
-                return Err(
-                    format!("XMAP18 authority projection omitted owned input {input_id}").into(),
-                );
-            }
-        }
+        // Owned-input accounting first, and identically whether a row is gapped
+        // or admitted. See `OWNED_AUTHORITY_INPUTS`.
+        let consumed_gap_ids = crate::account_owned_map_authority_inputs(
+            "XMAP18",
+            &OWNED_AUTHORITY_INPUTS,
+            context.map_authority_gaps,
+            context.map_authority_admitted,
+        )?;
         let selection = ViewerMapModeSelection::parse(&context.viewer.map_mode_id)?;
         let (composition, scripted_index) = match &selection {
             ViewerMapModeSelection::Hardcoded(mode) => {
@@ -646,10 +663,7 @@ impl ProductionMapFeatureAdapter for Xmap18MapModeAdapter {
             prepared_map_modes: Some(prepared),
             prepared_map_furniture: None,
             element_diagnostics: Vec::new(),
-            consumed_gap_ids: OWNED_AUTHORITY_GAPS
-                .iter()
-                .map(|input| (*input).to_string())
-                .collect(),
+            consumed_gap_ids,
         })
     }
 }
@@ -1485,14 +1499,27 @@ fn prepare_render_political(
             else {
                 return Err("XMAP18 player-country set is not measured".into());
             };
+            // A repeated TAG is co-op, not a defect.
+            //
+            // This used to error on `!player_tags.insert(tag)`. But what this
+            // mode paints is set MEMBERSHIP — `players_fill` asks only whether a
+            // state's owner is in `player_tags` — and two humans sharing one
+            // country is an ordinary multiplayer state the D57 producer emits
+            // deliberately (it sorts on `(country_tag, tag_db_id, human_name)`
+            // precisely because the country alone is not a key). Erroring on it
+            // refused to draw a legitimate co-op game over a duplicate that
+            // folds into the same answer (lane PL, 2026-08-21).
+            //
+            // A blank tag is still a defect: it is not a country.
             let mut player_tags = BTreeSet::new();
             for player in players {
                 let Leaf::Measured(tag) = &player.tag else {
                     return Err("XMAP18 player-country row has no measured tag".into());
                 };
-                if tag.trim().is_empty() || !player_tags.insert(tag.clone()) {
-                    return Err("XMAP18 player-country set has a blank or duplicate tag".into());
+                if tag.trim().is_empty() {
+                    return Err("XMAP18 player-country set has a blank tag".into());
                 }
+                player_tags.insert(tag.clone());
             }
             let state_fills = crate::players_fill(&owners, &player_tags, &colors, &defines);
             apply_state_rgba_fills_u8(
@@ -2659,7 +2686,17 @@ fn validate_hardcoded_inputs(
             }
         }
         HardcodedMapMode::Players => {
-            present(frame.session_metadata().status, "session metadata")?;
+            // The player LEAF, not the combined `session_metadata` root.
+            //
+            // That root is `combine_status` over `session` and
+            // `world.scenario`, and the exact D57 carrier this mode consumes
+            // lives in NEITHER: the producer publishes `players_by_country`
+            // from its own sidecar and can do so on an hour where the
+            // pause/speed section is unavailable. Requiring the root refused to
+            // draw a fully measured player set for a reason that has nothing to
+            // do with it — and, once `session.player_country_set` became
+            // owner-proven off the leaf, made the authority row admit an input
+            // this consumer then rejected (lane PL, 2026-08-21).
             if !matches!(
                 &frame.session_metadata().player_countries,
                 Leaf::Measured(_)

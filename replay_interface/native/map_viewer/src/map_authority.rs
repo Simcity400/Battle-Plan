@@ -137,6 +137,26 @@ pub const MAP_AUTHORITY_OWNER_PROVEN_INPUTS: &[MapAuthorityOwnerProvenAdmission]
         can_report_absent: false,
     },
     MapAuthorityOwnerProvenAdmission {
+        input_id: "mapmode.raids",
+        owner_packet: "XMAP18",
+        payload_schema: "WorldFrame.raids",
+        status_accessor: "raids_status",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "engine parent-then-child producer order under the producer's own instances_complete claim, re-validated structurally by the decoder; each instance a unique (id, id_type) with a measured phase, and every non-dummy country status row carrying a three-letter tag with a nonzero tag_db_id",
+        status: raids_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
+        input_id: "session.player_country_set",
+        owner_packet: "XMAP18",
+        payload_schema: "WorldFrame.session_metadata.player_countries",
+        status_accessor: "session_metadata.player_countries",
+        cadence: "one decoded view per canonical recorded hour",
+        identity_order: "a non-empty set in the producer's non-decreasing (country_tag, tag_db_id, human_name) order, that order re-checked at decode together with a nonzero engine tag_db_id and the human-controlled marker on every row; every row names a three-letter country and no row's name is a failed read -- a human-held slot the engine named nobody for is measured absence. A TAG MAY REPEAT: two humans co-oping one country is a lawful engine state and the map mode paints set membership.",
+        status: player_country_set_status,
+        can_report_absent: true,
+    },
+    MapAuthorityOwnerProvenAdmission {
         input_id: "map_furniture.current_victory_points",
         owner_packet: "XMAP21",
         payload_schema: "WorldFrame.map_furniture.victory_points",
@@ -277,6 +297,8 @@ pub fn map_authority_observed_status_label(input_id: &str) -> &'static str {
         "units.taskforces_fleets" => "certified fleets_status",
         "units.wings" => "certified wings_status",
         "units.air_base_location" => "certified wings_status air-base join",
+        "mapmode.raids" => "certified raids_status",
+        "session.player_country_set" => "certified D57 player-country leaf",
         _ => "root status",
     }
 }
@@ -341,6 +363,196 @@ fn occupation_resistance_compliance_status(frame: &WorldFrame) -> ViewStatus {
         && raw_rows == published_rows
         && membership_matches;
     certified_census_status(frame.occupation_status(), complete)
+}
+
+/// The raid census the raids map mode paints.
+///
+/// `build_raids` (`replay_core/src/world.rs`) hardcodes `ViewStatus::Present`
+/// whenever the `raids` domain is an object at all, so the bare accessor says
+/// nothing about the payload: on an injured hour it is still `Present` with both
+/// collections `Unobtained`. The completeness this adds is the producer's own
+/// `instances_complete` claim AND the decoder's structural re-validation of it
+/// (`parse_complete_raid_instances` returns `None` and the builder clears the
+/// flag when the parent/child ordering claim does not replay), plus unique
+/// instance identity.
+///
+/// `next_target` is deliberately NOT required. `raids.counters` is spelled
+/// `null` by the producer on every hour of `captures/oz_tip` — it is the engine's
+/// raid-id allocator, not a map-mode input, and the raids map mode never reads
+/// it. Requiring it would refuse every hour of every recording for a field the
+/// map does not draw.
+///
+/// The engine's own `missing_tag_dummy` status row (tag `null`, tag_db_id 0,
+/// child_count 0) is admitted as measured absence for the same reason: it is
+/// what the engine holds, not a read that failed.
+fn raids_status(frame: &WorldFrame) -> ViewStatus {
+    let raids = frame.raids();
+    // A frame that never heard of the raids domain reports absence, not a
+    // failed read: `DomainAbsent` and `DomainUnavailable` are different answers
+    // and the gap report spells them differently.
+    if raids.status != ViewStatus::Present {
+        return raids.status;
+    }
+    let (Some(statuses), Some(instances)) =
+        (raids.country_statuses.measured(), raids.instances.measured())
+    else {
+        return ViewStatus::DomainUnavailable;
+    };
+    // The producer requires EXACTLY ONE `missing_tag_dummy`, at ordinal zero,
+    // whenever the parent census is non-empty
+    // (`extractor/native/compact_contract/src/raid_instances.rs`: the post-loop
+    // `if dummy_count != 1 || next_child != children.len()` refusal; the
+    // both-empty population returns Ok before ever reaching it).
+    //
+    // `parse_complete_raid_instances` re-checks the dummy's SHAPE if one is
+    // there — unique ordinal zero, null tag, tag_db_id zero — but never checks
+    // that one EXISTS, so a census whose first parent is an ordinary country
+    // replays structurally and would otherwise be admitted as complete. That is
+    // a population the producer cannot emit, and admitting it would mean
+    // admitting a raid census short by the engine's untagged parent slot.
+    let dummy_population_is_exact = statuses
+        .iter()
+        .filter(|row| row.classification == "missing_tag_dummy")
+        .count()
+        == 1
+        && statuses.first().is_some_and(|row| {
+            row.classification == "missing_tag_dummy" && row.tag.is_none() && row.tag_db_id == 0
+        });
+    let mut identities = BTreeSet::new();
+    let complete = raids.instances_complete
+        && dummy_population_is_exact
+        && instances.iter().all(|row| {
+            identities.insert((row.id, row.id_type))
+                && !row.phase.trim().is_empty()
+                && row
+                    .owner_tag
+                    .as_deref()
+                    .is_some_and(|tag| tag.len() == 3)
+        })
+        && statuses.iter().all(|row| match row.tag.as_deref() {
+            None => row.classification == "missing_tag_dummy" && row.tag_db_id == 0,
+            Some(tag) => tag.len() == 3 && row.tag_db_id != 0,
+        });
+    certified_census_status(raids.status, complete)
+}
+
+/// The human-held country set XMAP18's Players map mode paints.
+///
+/// `prepare_render_political`'s `HardcodedMapMode::Players` arm refuses on
+/// exactly three things: an unmeasured set, a row with no measured tag, and a
+/// blank or duplicate tag. This predicate is those three, moved to the door so
+/// the authority row cannot promise a set the renderer will reject.
+///
+/// Duplicates are checked on `(tag, name)` rather than on the tag alone: the D57
+/// producer sorts by `(country_tag, tag_db_id, human_name)` precisely because
+/// one country can hold more than one human in co-op, so two rows for one TAG
+/// are a real engine state, not a defect. The renderer folds them into one
+/// `player_tags` entry, which is correct for painting; what would be wrong is
+/// the SAME human appearing twice on the same country.
+///
+/// An empty known set is refused. `state: "known"` means the collector read the
+/// engine's player vector, and a recording made by attaching to a running host
+/// always has at least that host in it — an empty read is the shape of a
+/// successful call against the wrong object, not of a game nobody is playing.
+fn player_country_set_status(frame: &WorldFrame) -> ViewStatus {
+    match player_country_set_leaf_status(frame) {
+        // The leaf itself is this row's ledger accessor, NOT
+        // `session_metadata.status`. That root is combined from `session` and
+        // `world.scenario`, neither of which this carrier lives in: the D57
+        // producer can publish `players_by_country` on an hour where the
+        // pause/speed section is unavailable, and gating on the root would have
+        // refused a measured player set for a reason that has nothing to do
+        // with it.
+        ViewStatus::Present => {}
+        other => return other,
+    }
+    let players = frame
+        .session_metadata()
+        .player_countries
+        .measured()
+        .expect("Present is set only when the leaf is measured");
+    // NO uniqueness check, deliberately.
+    //
+    // There is no stable player identity in this view to be unique ON.
+    // `PlayerCountry` carries a TAG and a display name; the engine's actual
+    // player key (`player_key_hash`) is not projected into it. And every
+    // candidate key is legitimately repeatable: two humans co-oping one country
+    // repeat the TAG, two whom the engine named nobody for repeat `(TAG, None)`
+    // — a pair the producer's own sort explicitly permits by comparing equal —
+    // and two different people can choose the same display name, because a name
+    // is not an identity. A uniqueness rule over any of those refuses a lawful
+    // multiplayer capture and proves nothing about the one shape that would be
+    // a real defect.
+    //
+    // What this row promises is therefore what it can check: a non-empty set in
+    // which every row names a country and no row's name is a failed read. The
+    // rest of the D57 contract — the nonzero engine identity, the
+    // human-controlled marker and the producer's ordering — is enforced at
+    // decode (`leaf_domain57_player_countries`), where the fields still exist.
+    let complete = !players.is_empty()
+        && players.iter().all(|player| {
+            let Some(tag) = player.tag.measured() else {
+                return false;
+            };
+            // Measured, or the engine's own "nobody is named here". A failed
+            // read is not either of those.
+            if matches!(player.player_name, Leaf::Unobtained) {
+                return false;
+            }
+            tag.len() == 3 && !tag.trim().is_empty()
+        });
+    if complete {
+        ViewStatus::Present
+    } else {
+        ViewStatus::DomainUnavailable
+    }
+}
+
+/// Did the EXACT D57 carrier supply this frame's player-country leaf?
+///
+/// This is the row's ledger accessor, and it deliberately asks about the
+/// carrier rather than about the leaf alone. `build_session_metadata` still
+/// falls back to two legacy keys (`session.player_countries`,
+/// `world.scenario.players`) that this recorder has never emitted; a frame
+/// carrying `{"session":{"player_countries":["GER"]}}` produces a perfectly
+/// measured one-row leaf with no `tag_db_id`, no human-controlled marker and no
+/// producer order — none of which the legacy shape even has. Certifying off the
+/// leaf alone would let that frame establish an admission whose `identity_order`
+/// advertises the whole D57 contract.
+///
+/// So the accessor is the carrier's own three-way answer: the sidecar is
+/// missing (absent), present but refused or unreadable (unavailable), or known
+/// and decoded into a measured leaf (present).
+pub fn player_country_set_leaf_status(frame: &WorldFrame) -> ViewStatus {
+    let sidecar = match frame.domain("_r2_session_multiplayer_metadata_live") {
+        // No D57 sidecar at all. Whatever the legacy fallback produced, this
+        // row has nothing of its own to certify.
+        None => return ViewStatus::DomainAbsent,
+        // Spelled null, or wrong-typed: the producer had the domain and could
+        // not deliver it. That is a failed read, not an absent domain.
+        Some(Value::Null) => return ViewStatus::DomainUnavailable,
+        Some(value) => match value.as_object() {
+            None => return ViewStatus::DomainUnavailable,
+            Some(sidecar) => sidecar,
+        },
+    };
+    let state = match sidecar.get("players_by_country") {
+        None => return ViewStatus::DomainAbsent,
+        Some(Value::Null) => return ViewStatus::DomainUnavailable,
+        Some(value) => value
+            .as_object()
+            .and_then(|players| players.get("state"))
+            .and_then(Value::as_str),
+    };
+    if state != Some("known") {
+        return ViewStatus::DomainUnavailable;
+    }
+    // The carrier says known; the decoder is what decides whether it really
+    // decoded. Every producer-contract check lives there.
+    match &frame.session_metadata().player_countries {
+        Leaf::Measured(_) => ViewStatus::Present,
+        _ => ViewStatus::DomainUnavailable,
+    }
 }
 
 fn fnv1a64_over_state_ids(ids: &[u32]) -> u64 {
@@ -1005,16 +1217,124 @@ pub fn map_authority_requirement_metadata(
         "mapmode.occupation_resistance_compliance" => {
             "the recording carries no complete measured per-state occupation census for this hour"
         }
-        "diplomacy.pair_relations"
-        | "mapmode.air_superiority"
-        | "mapmode.infrastructure_state"
-        | "mapmode.intelligence"
-        | "mapmode.naval_supremacy"
-        | "mapmode.raids"
-        | "mapmode.resource_deposits"
-        | "mapmode.scripted_inputs"
-        | "session.player_country_set" => {
-            "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins"
+        // The five rows below are owner-proven, so these texts are reached only
+        // when the proven status is not `Present` — i.e. the recording genuinely
+        // has no complete carrier for this hour — and each says that instead of
+        // naming work that is already done.
+        // ---- XMAP18's seven remaining refusals, and why each is refused ----
+        //
+        // Lane PL measured all of them on `captures/oz_tip` (2026-08-21, all 534
+        // hours; extractor/native/runs/pl_xmap18/). These blocker STRINGS say
+        // ONLY which contract is unmet. A blocker is rendered on every refusing
+        // hour, including hours nobody has measured, so a string that said "the
+        // census IS on the wire" or "the scopes ARE measured" would be false on
+        // exactly the hours where the carrier is missing -- which are the hours
+        // most likely to be read. Every measurement therefore lives in these
+        // comments, where it is dated and attached to its evidence, and none of
+        // it lives in a string that gets printed about an unmeasured frame.
+
+        // MEASURED PRESENT, RENDERER CANNOT USE IT YET. `captures/oz_tip`
+        // carries the exact D31 census at `naval_air._r2_air_superiority_inputs`
+        // on 469 of 534 hours (173-248 rows over 16-22 strategic regions and
+        // 27-32 owners) and the exact D56 ordered occurrence list at
+        // `naval_air._r2_naval_supremacy` on 475, under its own `row_count`
+        // witness and the `C` recorder marker.
+        //
+        // Neither is admissible yet, and the reason is NOT the carrier. The
+        // recorder deliberately spells the two COLLAPSED views
+        // (`naval_air.air_superiority`, root `naval_supremacy`) as null because
+        // which country HOLDS a region is an engine rule nobody has proven
+        // (`world_fold.rs::build_naval_air` and `insert_naval_supremacy` say so
+        // at length) -- and XMAP18's own renderer reads NEITHER form: its
+        // strategic-air and strategic-navy modes require the per-observer
+        // `map_mode_runtime` matrix (`xmap18.rs::raw_runtime_layers`), which no
+        // producer in this repo emits. Admitting these rows off the uncollapsed
+        // census would tell the map layer an input is ready and then fail the
+        // moment either mode was selected.
+        //
+        // What closes them is one of two things, both real work: emit the
+        // `map_mode_runtime` carrier, or implement the viewer-side per-observer
+        // derivation from the uncollapsed census that is already on the wire.
+        "mapmode.air_superiority" | "mapmode.naval_supremacy" => {
+            "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins; no per-observer map-mode carrier or viewer-side derivation exists to consume a D31/D56 census"
+        }
+
+        // MEASURED PRESENT, NO COMPLETENESS WITNESS. `captures/oz_tip` carries
+        // 1,081 per-state building rows with 1,045 measured infrastructure
+        // levels (the other 36 states have never built one, which is the
+        // engine's own answer and what the renderer's `None => 0.0` arm draws),
+        // and on its snapshot hour a D48 resource map over all 1,081 states.
+        //
+        // Neither is admissible, for the same reason: nothing in the recording
+        // says the state set in the frame IS the state set the effective VFS
+        // defines. XMAP18's infrastructure mode iterates the VFS state list and
+        // refuses on the first state the frame does not carry
+        // (`xmap18.rs::prepare_render_political`), so "every state I was given
+        // is fine" is not the claim the renderer needs -- a frame carrying ONE
+        // state would pass it. `mapmode.occupation_resistance_compliance` is
+        // admitted precisely because D52 ships a `published_state_digest` over
+        // its own membership; these two rows have no equivalent.
+        //
+        // What closes them: a producer-side state-membership witness of the D52
+        // kind, or an authenticated comparison against the effective VFS state
+        // list.
+        "mapmode.infrastructure_state" | "mapmode.resource_deposits" => {
+            "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins; no producer census witness or effective-VFS join proves the per-state membership is complete"
+        }
+
+        // MEASURED PRESENT, SCOPE UNIVERSE NEVER ENUMERATED. On every healthy
+        // hour of `captures/oz_tip` the scripted variable/flag surface carries
+        // no unobtained scope at all: 104 measured country scopes and 336
+        // measured-absent ones, 308 measured state scopes and 773
+        // measured-absent. On the one injured hour in the sample every measured
+        // scope flips to unobtained, so the distinction is real.
+        //
+        // It is still not completeness. A scope map that is simply EMPTY also
+        // has no unobtained entry, so "no scope failed" cannot tell a fully
+        // measured world from one where the scopes were never enumerated, and
+        // the country/state universes themselves are not witnessed anywhere in
+        // the frame. Separately, XMAP18's scripted modes render from
+        // `map_mode_scripted_runtime` (`xmap18.rs::prepare_scripted_render`),
+        // which no producer emits.
+        //
+        // What closes it: a witnessed country/state scope universe, and the
+        // scripted map-mode runtime carrier.
+        "mapmode.scripted_inputs" => {
+            "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins; the scripted scope universe is not witnessed and no scripted map-mode runtime carrier exists"
+        }
+
+        // Owner-proven, so this text is reached only when the proven predicate
+        // is not Present. `captures/oz_tip` admits it on 470 of 534 hours.
+        "mapmode.raids" => {
+            "the recording carries no complete measured raid instance/status census for this hour"
+        }
+
+        // Owner-proven; admitted on 470 of 534 hours of `captures/oz_tip`.
+        "session.player_country_set" => {
+            "the recording carries no complete measured human player-country set for this hour"
+        }
+
+        // SURFACE COMPLETE, CONTENT EMPTY. On the healthiest hour of
+        // `captures/oz_tip` all 96,141 unordered pairs over the 439-tag D18
+        // roster are answerable -- and every one of them answers `at_war`
+        // unobtained and `same_faction` unobtained, with the other five relation
+        // fields measured-absent
+        // (extractor/native/runs/pl_xmap18/census_oz_tip_pairfields.json).
+        // Enumerability is not measurement: admitting on "every pair answers"
+        // would promise a relation surface in which no relation was ever read.
+        "diplomacy.pair_relations" => {
+            "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins; the D53 war-edge and faction-membership carriers that give a country pair its content are not proven"
+        }
+
+        // NOTHING ON THE WIRE. Over all 534 hours of `captures/oz_tip`,
+        // including its healthiest, `intel_levels`, `intel_network_graphs`,
+        // `operation_instances` and `air_disclosure` are every one of them
+        // `Leaf::Unobtained` -- so no predicate written here could admit this
+        // row on that recording. The string still states the contract rather
+        // than that measurement, because it is rendered on hours nobody has
+        // measured.
+        "mapmode.intelligence" => {
+            "XMAP18 must prove the exact all-country map-mode input, unit, identity order, completeness, and authenticated producer/content joins; the D53 intel-level, intel-network, operation-instance and air-disclosure carriers it would prove against are not owner-proven"
         }
         "weather.region_gameplay" | "weather.visual_membership_lifecycle" => {
             "XMAP19 must prove exact-a729 gameplay weather and presentation-independent visual membership lifecycle contracts"
@@ -1172,10 +1492,7 @@ pub fn map_authority_projection_from_world_frame(
             Some(frame.army_battleplans().status),
         ),
         projector.derive_requirement("orders.theatre_army_hierarchy", None),
-        projector.derive_requirement(
-            "session.player_country_set",
-            Some(frame.session_metadata().status),
-        ),
+        projector.derive_requirement("session.player_country_set", None),
         projector.derive_requirement("terrain.snow_mud_semantic", Some(frame.snow_mud_status())),
         projector.derive_requirement("units.air_base_location", Some(frame.wings_status())),
         projector.derive_requirement("units.divisions", Some(frame.division_units_status())),

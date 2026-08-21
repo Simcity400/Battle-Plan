@@ -408,6 +408,279 @@ fn d48_building_census_fixture(source_marker: &str) -> Value {
     })
 }
 
+/// The exact D57 human player-country set (XMAP00 row #36).
+///
+/// One human per TAG, in the producer's non-decreasing
+/// `(country_tag, tag_db_id, human_name)` order. ENG's name is `not_sourced`,
+/// which is the engine naming nobody for a human-held slot — measured absence,
+/// and admitted as such.
+///
+/// Co-op (two humans on one TAG) is a real engine state the producer emits and
+/// this row deliberately REFUSES, because XMAP18's Players mode errors on a
+/// repeated TAG. The negative case below pins that.
+fn player_country_set_fixture() -> Value {
+    let row = |tag: &str, tag_db_id: u32, human_name: Value| {
+        json!({
+            "country_tag": tag, "tag_db_id": tag_db_id,
+            "is_human_controlled": true, "human_marker": true,
+            "human_name": human_name,
+            "player_key_hash": {"state": "not_sourced"},
+            "session_slot": {"state": "not_sourced"},
+            "host": {"state": "not_sourced"},
+            "connected": {"state": "not_sourced"},
+            "valid_from_hour_raw": 0
+        })
+    };
+    json!({
+        "session": {"localisation_language": "l_english"},
+        "_r2_session_multiplayer_metadata_live": {
+            "players_by_country": {
+                "state": "known",
+                "rows": [
+                    row("ENG", 2, json!({"state": "not_sourced"})),
+                    row("GER", 1, json!({"state": "known", "value": "Simcity400"}))
+                ]
+            }
+        }
+    })
+}
+
+/// kills: refusing a lawful co-op player set.
+///
+/// Two humans on one country, and two the engine named nobody for, are both
+/// ordinary multiplayer states: the D57 producer sorts on
+/// `(country_tag, tag_db_id, human_name)` and that key is explicitly not unique,
+/// so `(GER, 1, None)` twice compares EQUAL and is emitted as-is. XMAP18's
+/// Players mode paints set membership — whether a country has any human — so it
+/// folds the repeat. A uniqueness rule at this door on the TAG, or on
+/// `(TAG, name)`, would refuse a real capture; a display name is not an
+/// identity, and the engine's player key is not projected into this view.
+#[test]
+fn a_co_op_player_set_admits_however_its_humans_are_named() {
+    let manifest = fixture_manifest();
+    let co_op_row = |human_name: Value| {
+        json!({
+            "country_tag": "GER", "tag_db_id": 1,
+            "is_human_controlled": true, "human_marker": true,
+            "human_name": human_name,
+            "player_key_hash": {"state": "not_sourced"},
+            "session_slot": {"state": "not_sourced"},
+            "host": {"state": "not_sourced"},
+            "connected": {"state": "not_sourced"},
+            "valid_from_hour_raw": 0
+        })
+    };
+    for (label, extra) in [
+        // A second, differently named human on GER.
+        ("a second named human", co_op_row(json!({"state": "known", "value": "Zeta"}))),
+        // The same display name twice: two people, one chosen name.
+        ("a shared display name", co_op_row(json!({"state": "known", "value": "Simcity400"}))),
+    ] {
+        let mut snapshot = fully_measured_snapshot();
+        snapshot["_r2_session_multiplayer_metadata_live"]["players_by_country"]["rows"]
+            .as_array_mut()
+            .expect("the measured fixture carries a D57 row array")
+            .push(extra);
+        let frame = world_frame_with(snapshot);
+        let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+        assert_eq!(
+            requirement(&projection, "session.player_country_set").disposition,
+            MapAuthorityRequirementDisposition::Admitted,
+            "{label} is a lawful co-op set and must not refuse this row",
+        );
+    }
+
+    // Two unnamed humans on one country: the producer's sort key repeats
+    // EXACTLY, which its own stable sort permits, so the decoder's ordering
+    // check must not reject it either.
+    let mut snapshot = fully_measured_snapshot();
+    let rows = snapshot["_r2_session_multiplayer_metadata_live"]["players_by_country"]["rows"]
+        .as_array_mut()
+        .expect("row array");
+    rows.insert(0, co_op_row(json!({"state": "not_sourced"})));
+    rows.insert(0, co_op_row(json!({"state": "not_sourced"})));
+    // `(ENG, ...)` must still sort before the two `(GER, 1, None)` rows.
+    rows.sort_by_key(|row| {
+        (
+            row["country_tag"].as_str().unwrap_or_default().to_string(),
+            row["tag_db_id"].as_u64().unwrap_or_default(),
+        )
+    });
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "session.player_country_set").disposition,
+        MapAuthorityRequirementDisposition::Admitted,
+        "two unnamed co-op humans key equal under the producer's own sort",
+    );
+}
+
+/// kills: admitting a player set whose name is a FAILED READ rather than the
+/// engine's own absence.
+///
+/// `{"state": "not_sourced"}` is the engine naming nobody and must admit;
+/// a `known` state with no usable value is a read that did not complete and
+/// must not.
+#[test]
+fn a_player_row_whose_name_failed_to_read_is_not_a_complete_set() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["_r2_session_multiplayer_metadata_live"]["players_by_country"]["rows"][1]
+        ["human_name"] = json!({"state": "known"});
+    let frame = world_frame_with(snapshot);
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "session.player_country_set").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: admitting a raid census that carries no `missing_tag_dummy`.
+///
+/// The producer refuses `dummy_count != 1` on a non-empty parent census
+/// (`extractor/native/compact_contract/src/raid_instances.rs`), but
+/// `parse_complete_raid_instances` only checks the dummy's shape IF one is
+/// present. A country-first census therefore replays structurally, and without
+/// this the authority row would admit a population the producer cannot emit.
+#[test]
+fn a_raid_census_without_the_engines_untagged_parent_is_not_complete() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot["raids"]["country_statuses"] = json!([{
+        "status_index": 0, "tag": "GER", "tag_db_id": 1,
+        "classification": "country", "priority": 1,
+        "first_child_ordinal": 0, "child_count": 1
+    }]);
+    snapshot["raids"]["instances"][0]["status_index"] = json!(0);
+    let frame = world_frame_with(snapshot);
+    assert_eq!(
+        frame.raids_status(),
+        ViewStatus::Present,
+        "the census still replays structurally, which is why this test exists"
+    );
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "mapmode.raids").disposition,
+        MapAuthorityRequirementDisposition::Unavailable,
+    );
+}
+
+/// kills: letting the LEGACY player-country keys establish this admission.
+///
+/// `build_session_metadata` still falls back to `session.player_countries` and
+/// `world.scenario.players`, neither of which this recorder has ever emitted and
+/// neither of which carries a `tag_db_id`, a human-controlled marker, or a
+/// producer order. A frame using the legacy shape decodes a perfectly measured
+/// leaf — and must NOT be able to certify a row whose `identity_order`
+/// advertises the whole D57 contract.
+#[test]
+fn the_legacy_player_country_keys_cannot_certify_the_exact_d57_row() {
+    let manifest = fixture_manifest();
+    let mut snapshot = fully_measured_snapshot();
+    snapshot
+        .as_object_mut()
+        .expect("snapshot object")
+        .remove("_r2_session_multiplayer_metadata_live");
+    snapshot["session"]["player_countries"] = json!(["GER"]);
+    let frame = world_frame_with(snapshot);
+
+    assert!(
+        matches!(
+            &frame.session_metadata().player_countries,
+            replay_core::Leaf::Measured(rows) if rows.len() == 1
+        ),
+        "the legacy fallback still decodes, which is exactly why this test exists"
+    );
+    assert_eq!(
+        map_viewer::player_country_set_leaf_status(&frame),
+        ViewStatus::DomainAbsent,
+        "no D57 carrier means this row has nothing of its own to certify"
+    );
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "session.player_country_set").disposition,
+        MapAuthorityRequirementDisposition::Absent,
+    );
+}
+
+/// kills: accepting a D57 row set that is not in the producer's order, or whose
+/// rows drop the engine identity / human-controlled marker the ledger promises.
+#[test]
+fn a_d57_player_set_that_breaks_its_producer_contract_does_not_decode() {
+    let base = fully_measured_snapshot();
+    let mutate = |edit: &dyn Fn(&mut Value)| {
+        let mut snapshot = base.clone();
+        edit(&mut snapshot["_r2_session_multiplayer_metadata_live"]["players_by_country"]["rows"]);
+        world_frame_with(snapshot)
+    };
+    // Producer order is (country_tag, tag_db_id, human_name) non-decreasing.
+    let reordered = mutate(&|rows| {
+        let rows = rows.as_array_mut().expect("row array");
+        rows.reverse();
+    });
+    // The engine country identity is part of the promised order key.
+    let no_identity = mutate(&|rows| {
+        rows[0].as_object_mut().expect("row").remove("tag_db_id");
+    });
+    // Every row the producer emits is human-controlled.
+    let not_human = mutate(&|rows| {
+        rows[0]["is_human_controlled"] = json!(false);
+    });
+    for (label, frame) in [
+        ("reordered", reordered),
+        ("no tag_db_id", no_identity),
+        ("not human-controlled", not_human),
+    ] {
+        assert_eq!(
+            map_viewer::player_country_set_leaf_status(&frame),
+            ViewStatus::DomainUnavailable,
+            "{label} decoded as a usable player set"
+        );
+    }
+}
+
+/// The raid instance/status census (XMAP00 row #27).
+///
+/// Row 0 is the engine's own `missing_tag_dummy` — tag null, tag_db_id 0, no
+/// children — which `captures/oz_tip` carries on every hour. It is measured
+/// absence, not a defect, and the fixture pins that it admits.
+fn raid_census_fixture() -> Value {
+    json!({
+        "raids": {
+            "instances_complete": true,
+            "ordering": "engine_parent_then_child_producer_order",
+            "counters": Value::Null,
+            "targets": Value::Null,
+            "countries": [{"tag": "GER", "priority": 1}],
+            "country_statuses": [
+                {
+                    "status_index": 0, "tag": Value::Null, "tag_db_id": 0,
+                    "classification": "missing_tag_dummy", "priority": 0,
+                    "first_child_ordinal": 0, "child_count": 0
+                },
+                {
+                    "status_index": 1, "tag": "GER", "tag_db_id": 1,
+                    "classification": "country", "priority": 1,
+                    "first_child_ordinal": 0, "child_count": 1
+                }
+            ],
+            "instances": [{
+                "producer_ordinal": 0, "status_index": 1, "raid_index": 0,
+                "id": 509, "id_type": 84, "prep_time": 2160,
+                "phase": "ENDED", "phase_raw": 5,
+                "outcome": "FAILURE", "outcome_raw": 1,
+                "end_date_present": true,
+                "owner_tag": "GER", "owner_tag_db_id": 1,
+                "victim_country": "ENG", "victim_country_tag_db_id": 2,
+                "raid_source": {
+                    "type_present": true, "type_raw": 0, "province": 6570,
+                    "tag": "GER", "tag_db_id": 1, "location_raw": [0, 0]
+                }
+            }]
+        }
+    })
+}
+
 fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> {
     BTreeMap::from([
         (
@@ -528,6 +801,20 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
                 rest: map_furniture_victory_point_fixture(),
             },
         ),
+        (
+            "mapmode.raids",
+            NamedSnapshotFixture {
+                name: "complete raid instance/status census under its own ordering claim",
+                rest: raid_census_fixture(),
+            },
+        ),
+        (
+            "session.player_country_set",
+            NamedSnapshotFixture {
+                name: "exact D57 human player-country set, co-op rows included",
+                rest: player_country_set_fixture(),
+            },
+        ),
     ])
 }
 
@@ -594,14 +881,31 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
         }
         "combat.naval_air_epoch" => {
             object.insert("naval_combats".into(), Value::Null);
-            object.insert(
-                "naval_air".into(),
-                json!({"_r2_air_combat_losses_live": []}),
-            );
+            // MERGE, never replace: `naval_air` also carries the exact D31 and
+            // D56 map-mode carriers that `mapmode.air_superiority` and
+            // `mapmode.naval_supremacy` are proven on, and overwriting the whole
+            // section would move three rows instead of one.
+            object
+                .entry("naval_air")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("naval_air is an object in the measured fixture")
+                .insert("_r2_air_combat_losses_live".into(), json!([]));
             true
         }
         "country.d18_complete_roster" => {
-            object.insert("countries".into(), json!({"ENG": {}, "GER": {"_r2_tag_db_id": 1}}));
+            // Withdraw ENG's identity IN PLACE. Replacing the whole `countries`
+            // map also dropped every country's D48 construction sidecar, which
+            // took `mapmode.resource_deposits` down with it once that row was
+            // proven — the D48 projection is all-or-nothing across the snapshot
+            // (lane PL, 2026-08-21).
+            object
+                .get_mut("countries")
+                .and_then(Value::as_object_mut)
+                .and_then(|countries| countries.get_mut("ENG"))
+                .and_then(Value::as_object_mut)
+                .expect("the measured fixture carries an ENG country entry")
+                .remove("_r2_tag_db_id");
             false
         }
         "diplomacy.faction_roster" => {
@@ -699,21 +1003,27 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             true
         }
         "objects.building_state_damage" => {
-            // The recorder marker is the D48 sidecar's own authenticity field: without the exact
-            // "C" marker parse_d48_building_sidecar refuses the whole per-state map, so the
-            // ledger accessor itself stops being Present.
-            let states = object
-                .get_mut("states")
-                .and_then(Value::as_object_mut)
-                .expect("the measured fixture carries the D48 per-state census");
-            for state in states.values_mut() {
-                if let Some(sidecar) = state
-                    .get_mut("construction_buildings_state_damage_live")
-                    .and_then(Value::as_object_mut)
-                {
-                    sidecar.insert("source".into(), json!("not-the-recorder-marker"));
-                }
-            }
+            // The building half of the D48 sidecar, and only that half.
+            //
+            // This used to corrupt the sidecar's `source` marker instead. That
+            // still refuses this row — but the SAME marker gates
+            // `mapmode.resource_deposits`, which shares the sidecar, so the
+            // marker break moved two rows at once and the orthogonality this
+            // fixture set exists to prove would have been lost the moment the
+            // resource row was proven (lane PL, 2026-08-21).
+            //
+            // The PROVINCE-level D48 carrier is the seam that belongs to this
+            // row alone. `fold_d48_province_buildings` folds its outcome into
+            // `d48_status` with `combine_complete_status` (unavailable wins) but
+            // into `buildings_status` with `combine_status` (present wins), and
+            // it never touches a state row — so a province sidecar spelled
+            // `null` refuses exactly this row, leaves the per-state
+            // infrastructure levels `mapmode.infrastructure_state` reads
+            // untouched, and never goes near the resource map.
+            object.insert(
+                "provinces".into(),
+                json!({"77": {"construction_buildings_state_damage_live": Value::Null}}),
+            );
             false
         }
         "map_furniture.current_victory_points" => {
@@ -730,6 +1040,24 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
                 .and_then(Value::as_i64)
                 .expect("the fixture stamps an hour");
             furniture.insert("update_index".into(), json!(stamped + 1));
+            false
+        }
+        "mapmode.raids" => {
+            // `build_raids` hardcodes Present whenever `raids` is an object, so
+            // withdrawing the completeness claim leaves the ledger accessor
+            // Present while both collections go unobtained.
+            object["raids"]["instances_complete"] = json!(false);
+            true
+        }
+        "session.player_country_set" => {
+            // The producer's own "I could not read the player vector" spelling.
+            //
+            // This row's ledger accessor IS the player leaf, so this break moves
+            // the accessor with it — there is no composite to cover here. The
+            // composite direction (leaf still Measured, row still refused) is
+            // pinned by `a_co_op_player_set_is_refused_because_the_players_map_mode_rejects_it`.
+            object["_r2_session_multiplayer_metadata_live"]["players_by_country"]["state"] =
+                json!("unavailable");
             false
         }
         "world.calendar_time" => false,
@@ -780,6 +1108,8 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "objects.building_state_damage" => frame.d48_buildings_status(),
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
         "map_furniture.current_victory_points" => frame.map_furniture_status(),
+        "mapmode.raids" => frame.raids_status(),
+        "session.player_country_set" => map_viewer::player_country_set_leaf_status(frame),
         "world.calendar_time" => match frame.date() {
             Some(_) => ViewStatus::Present,
             None => ViewStatus::DomainUnavailable,
@@ -1137,6 +1467,13 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "divisions": Value::Null,
             "order_of_battle": Value::Null,
             "map_furniture": Value::Null,
+            // XMAP18's map-mode carriers, each spelled the way its own producer
+            // spells an unusable read (lane PL, 2026-08-21).
+            "raids": Value::Null,
+            "world": Value::Null,
+            "session": Value::Null,
+            "_r2_session_multiplayer_metadata_live": Value::Null,
+            "naval_air": Value::Null,
             }),
             None,
         ),
@@ -2051,7 +2388,7 @@ fn a_proven_input_refuses_when_its_own_payload_is_unmeasured() {
             .is_admitted(proven.input_id));
     }
     assert_eq!(
-        composites_covered, 8,
+        composites_covered, 9,
         "the composite-accessor cases are the ones this test exists for"
     );
 }
@@ -2313,7 +2650,20 @@ fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
         "logistics.rail_topology_state",
         "mapmode.supply_state",
         "mapmode.intelligence",
-        "session.player_country_set",
+        // `session.player_country_set` LEFT this list on 2026-08-21 (lane PL).
+        //
+        // Lane HW's blocker for it was not a producer defect at all — its
+        // evidence row is `"_any_capture_carries_it": false` with
+        // `session_multiplayer_metadata_live` marked `scheduled: false` in all
+        // five captures HW had (t46–t50):
+        // extractor/native/runs/hw_admission_a/producer_capture_evidence.json.
+        //
+        // `captures/oz_tip` schedules the domain and carries it: the D57
+        // sidecar publishes `players_by_country` with `state: "known"` and a
+        // named human-held row on 13 of 14 sampled hours, the fourteenth being
+        // the one injured hour that loses every domain. The premise, not the
+        // producer, was what was missing.
+        // Witness: extractor/native/runs/pl_xmap18/witness_oz_tip_all.json.
     ] {
         assert!(
             map_authority_owner_proven_admission(input_id).is_none(),
