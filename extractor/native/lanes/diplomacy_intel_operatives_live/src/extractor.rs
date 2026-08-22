@@ -730,6 +730,7 @@ pub struct ExtractedDomain53Frame {
     pub observed_rows: u32,
     pub skipped_rows: u32,
     pub skip_counts: Domain53SkipCounts,
+    pub stable_rejects: Domain53StableRejects,
     pub stale_dropped_total: usize,
     pub family_counts: Domain53FamilyCounts,
     pub rejection_counts: Domain53RejectionCounts,
@@ -769,6 +770,29 @@ impl Domain53SkipCounts {
         .into_iter()
         .fold(0u32, u32::saturating_add)
     }
+}
+
+/// Operative candidate observations proven to carry no row: a needle-hit
+/// address whose row read failed with the IDENTICAL value-carrying error on
+/// two attempts within one frame, with the vtable qword and the identity
+/// head re-read AFTER the second attempt still matching their before-samples
+/// (the full observation bracket in `read_operatives`).
+///
+/// This is discovery noise - freed heap slots still holding the needle-vtable
+/// qword, unused pool entries - not an omission of data: there is no
+/// publishable row at the address under this contract, and the whole bracket
+/// proves the address stably holds none. Counted per frame and surfaced as a
+/// PERF diagnostic unit so every frame still witnesses it, but it must never
+/// feed `skipped_rows`/PARTIAL_DATA: counting a stably-empty candidate as a
+/// missed data row misattributes the hour.
+///
+/// Deliberately LIMITED to this family: queue headers/data pointers advertise
+/// rows that would become unreadable, duplicate action ids cannot be proven
+/// to be the same delivery, and a repeated non-heap relation-slot value is
+/// not proven emptiness - all of those stay refuse-by-name skips.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Domain53StableRejects {
+    pub operative: u32,
 }
 
 pub const DOMAIN53_DISCOVERY_DEGRADED: &str = "domain53_discovery_degraded";
@@ -855,6 +879,7 @@ struct RowAccumulator {
     rows: ExtractedDomain53Rows,
     skipped_rows: u32,
     skip_counts: Domain53SkipCounts,
+    stable_rejects: Domain53StableRejects,
     observed_rows: u32,
     relflag_offsets: RelationFlagOffsetHistogram,
     relation_shadow_mismatches: u64,
@@ -1410,6 +1435,7 @@ fn extract_rows_from_resolved_roots_with_discovery<M: Domain53Memory>(
         observed_rows: acc.observed_rows,
         skipped_rows: acc.skipped_rows,
         skip_counts: acc.skip_counts,
+        stable_rejects: acc.stable_rejects,
         stale_dropped_total: staleness.stale_dropped_total(),
         family_counts,
         rejection_counts,
@@ -2360,6 +2386,9 @@ fn read_relation_rows_impl<M: Domain53Memory>(
             )? {
                 Ok(value) if is_heap_ptr(value) => value,
                 Ok(0) => continue,
+                // Zero is the established empty encoding; any other non-heap
+                // value is not PROVEN emptiness (it may be a corrupted live
+                // slot), so it refuses by name as a skip.
                 _ => {
                     acc.skip_relation_slot();
                     continue;
@@ -3012,6 +3041,9 @@ fn read_incoming_action_queue_rows<M: Domain53Memory>(
         };
         let size = (packed & 0xFFFF_FFFF) as u32;
         let cap = (packed >> 32) as u32;
+        // A queue whose packed header is invalid advertises rows this read
+        // cannot delimit - a genuine omission, refused by name (skip), never
+        // reclassified as noise.
         if size > cap || cap > profile::DOMAIN53_MAX_INCOMING_ACTION_ROWS {
             acc.skip_incoming_action();
             continue;
@@ -3062,6 +3094,11 @@ fn read_incoming_action_queue_rows<M: Domain53Memory>(
                     acc.observe();
                 }
                 Ok(_) => {
+                    // A second sighting of an action id already emitted this
+                    // frame. Suppression is load-bearing for the wire (the
+                    // decoder refuses duplicate ids), but whether a colliding
+                    // id is the SAME delivery or a distinct row cannot be
+                    // proven offline, so this keeps its refuse-by-name skip.
                     acc.skip_incoming_action();
                     continue;
                 }
@@ -4941,6 +4978,36 @@ fn country_ids_equivalent<M: Domain53Memory>(
     Ok(left_value == right_value)
 }
 
+/// Object-identity witness width for the stable-reject bracket: the first 16
+/// bytes of the identity block (handle type + op id + neighbours), sampled
+/// before and after the two row attempts alongside the vtable qword.
+const OPERATIVE_STABLE_REJECT_HEAD_BYTES: usize = 16;
+
+/// Stable-reject eligibility: ONLY the row-validation failures whose
+/// deciding raw value lives INSIDE the bracketed identity head
+/// (`OPERATIVE_STABLE_REJECT_HEAD_BYTES`): handle type (offset 0) and op id
+/// (offset 4). For these, the full bracket - head byte-equal before attempt 1
+/// and after attempt 2, vtable qword unchanged, identical error - proves both
+/// attempts observed the same invalid bytes of the SAME object.
+///
+/// Deliberately NOT eligible, each refusing by name instead:
+/// - `MemoryRead`: equality proves nothing about contents;
+/// - the constant-string utf8 arms: distinct invalid states collapse to one
+///   value;
+/// - `owner_invalid`: decides from the frame's country-acceptance oracle
+///   snapshot, not from the candidate's own bytes;
+/// - `assignment` / `xp` / `skill` / `name` failures: their deciding fields
+///   lie OUTSIDE the bracketed head (offsets up to 0x1078 and beyond, or
+///   behind the leader pointer), so the bracket cannot witness them; two
+///   identical observations prove only repeatability, not stability of a
+///   real row's absence;
+/// - InvalidRoot: value-free.
+fn operative_stable_reject_error(err: &ExtractError) -> bool {
+    matches!(err, ExtractError::Validation(message)
+        if message.starts_with("domain53_operative_handle_type=")
+            || message.starts_with("domain53_operative_id_invalid="))
+}
+
 fn read_operatives<M: Domain53Memory>(
     mem: &M,
     module_base: u64,
@@ -4978,6 +5045,11 @@ fn read_operatives<M: Domain53Memory>(
             .ok_or(ExtractError::InvalidRoot(
                 "domain53_operative_identity_overflow",
             ))?;
+        // Object-identity witness sampled BEFORE the first row attempt so a
+        // failure can be bracketed on both sides. One extra 16-byte read per
+        // candidate; the row attempt reads this region anyway.
+        let mut head_a = [0u8; OPERATIVE_STABLE_REJECT_HEAD_BYTES];
+        let head_a_ok = mem.read_into(identity, &mut head_a).is_ok();
         let read = read_operative_row(mem, identity, &valid_owners);
         match read {
             Ok(row) if seen.insert(row.op_id) => {
@@ -4985,6 +5057,48 @@ fn read_operatives<M: Domain53Memory>(
                 acc.observe();
             }
             Ok(_) => {}
+            Err(first)
+                if head_a_ok && operative_stable_reject_error(&first) =>
+            {
+                // kills: d53 permanent needle-hit garbage (freed operative
+                // slots retaining the vtable qword) stamped PARTIAL_DATA on
+                // every frame of every capture (measured 56.3-56.7 % of
+                // candidates, constant across sessions: pw_gate_final
+                // 63895/112622, pr_d47_run1 68410/120615, pt_d13_after
+                // 66564/118232) because a single failed row read counted the
+                // candidate as a skipped DATA row.
+                //
+                // A candidate is stably not a publishable row ONLY when the
+                // whole observation bracket agrees: the vtable qword and the
+                // identity head are re-read AFTER the second attempt and must
+                // equal their before-samples (the object was not freed,
+                // reused or rewritten mid-observation), AND both attempts
+                // fail with the IDENTICAL error whose deciding bytes live
+                // inside the bracketed head (handle type / op id - see
+                // operative_stable_reject_error). Everything else refuses by
+                // name: MemoryRead equality proves nothing about contents,
+                // constant-string utf8 arms collapse distinct invalid states,
+                // owner_invalid decides from the oracle snapshot, and the
+                // assignment/xp/skill/name fields lie outside the bracketed
+                // head. Any inequality, different error, or a success stays a
+                // torn skip.
+                let second = read_operative_row(mem, identity, &valid_owners);
+                let vtable_b = mem.read_u64(hit);
+                let mut head_b = [0u8; OPERATIVE_STABLE_REJECT_HEAD_BYTES];
+                let head_b_ok = mem.read_into(identity, &mut head_b).is_ok();
+                match vtable_b {
+                    Ok(v) if v == operative_vtable && head_b_ok && head_b == head_a => {
+                        match second {
+                            Err(e) if e == first => {
+                                acc.stable_rejects.operative =
+                                    acc.stable_rejects.operative.saturating_add(1);
+                            }
+                            _ => acc.skip_operative(),
+                        }
+                    }
+                    _ => acc.skip_operative(),
+                }
+            }
             Err(_) => acc.skip_operative(),
         }
     }
@@ -4996,28 +5110,38 @@ fn read_operative_row<M: Domain53Memory>(
     identity: u64,
     valid_owners: &BTreeSet<u32>,
 ) -> Result<OperativeRow, ExtractError> {
+    // Row-validation failures are VALUE-CARRYING on purpose: the stable-reject
+    // classification in `read_operatives` re-observes a failed candidate and
+    // requires the IDENTICAL error. Only the two arms whose deciding bytes
+    // live inside the bracketed identity head (handle type, op id) are
+    // eligible for that classification; the remaining arms carry values or
+    // constant strings purely for diagnostics and refuse by name regardless.
     let handle_type = mem.read_u32(identity)?;
     if handle_type != profile::DOMAIN53_OPERATIVE_HANDLE_TYPE {
-        return Err(ExtractError::InvalidRoot("domain53_operative_handle_type"));
+        return Err(ExtractError::Validation(format!(
+            "domain53_operative_handle_type={handle_type:#x}"
+        )));
     }
     let op_id = mem.read_u32(add_addr(identity, 4)?)?;
     if op_id == 0 || op_id > MAX_OPERATIVE_ID {
-        return Err(ExtractError::InvalidRoot("domain53_operative_id_invalid"));
+        return Err(ExtractError::Validation(format!(
+            "domain53_operative_id_invalid={op_id}"
+        )));
     }
     let owner = mem.read_u32(add_addr(identity, profile::DOMAIN53_OPERATIVE_OWNER)?)?;
     if !valid_tag_db_id(owner) || !valid_owners.contains(&owner) {
-        return Err(ExtractError::InvalidRoot(
-            "domain53_operative_owner_invalid",
-        ));
+        return Err(ExtractError::Validation(format!(
+            "domain53_operative_owner_invalid={owner}"
+        )));
     }
     let assignment = mem.read_u32(add_addr(
         identity,
         profile::DOMAIN53_OPERATIVE_ASSIGNMENT_ENUM,
     )?)?;
     if assignment > 5 {
-        return Err(ExtractError::InvalidRoot(
-            "domain53_operative_assignment_invalid",
-        ));
+        return Err(ExtractError::Validation(format!(
+            "domain53_operative_assignment_invalid={assignment}"
+        )));
     }
     let _portrait_gfx = match read_msvc_string(
         mem,
@@ -5027,8 +5151,8 @@ fn read_operative_row<M: Domain53Memory>(
         StringRead::Value(value) if !value.is_empty() => value,
         StringRead::Value(_) | StringRead::Missing => String::new(),
         StringRead::Invalid => {
-            return Err(ExtractError::InvalidRoot(
-                "domain53_operative_portrait_gfx_invalid_utf8",
+            return Err(ExtractError::Validation(
+                "domain53_operative_portrait_gfx_invalid_utf8".to_string(),
             ))
         }
     };
@@ -5042,20 +5166,20 @@ fn read_operative_row<M: Domain53Memory>(
         add_addr(identity, profile::DOMAIN53_OPERATIVE_NAME_DUPLICATE)?,
         128,
     );
-    let name_hash = match (name_a, name_b) {
-        (StringRead::Value(a), StringRead::Value(b)) if a == b => crate::compact::stable_hash64(&a),
+    let name_hash = match (&name_a, &name_b) {
+        (StringRead::Value(a), StringRead::Value(b)) if a == b => crate::compact::stable_hash64(a),
         (StringRead::Value(a), StringRead::Missing)
-        | (StringRead::Missing, StringRead::Value(a)) => crate::compact::stable_hash64(&a),
+        | (StringRead::Missing, StringRead::Value(a)) => crate::compact::stable_hash64(a),
         (StringRead::Missing, StringRead::Missing) => 0,
         (StringRead::Invalid, _) | (_, StringRead::Invalid) => {
-            return Err(ExtractError::InvalidRoot(
-                "domain53_operative_name_invalid_utf8",
+            return Err(ExtractError::Validation(
+                "domain53_operative_name_invalid_utf8".to_string(),
             ));
         }
         _ => {
-            return Err(ExtractError::InvalidRoot(
-                "domain53_operative_name_mismatch",
-            ))
+            return Err(ExtractError::Validation(format!(
+                "domain53_operative_name_mismatch:{name_a:?}:{name_b:?}"
+            )))
         }
     };
     let detected = mem
@@ -5071,7 +5195,11 @@ fn read_operative_row<M: Domain53Memory>(
         profile::DOMAIN53_OPERATIVE_EXPERIENCE_RAW,
     )?) {
         Ok(value) if (0..=MAX_XP_RAW).contains(&value) => Some(value),
-        Ok(_) => return Err(ExtractError::InvalidRoot("domain53_operative_xp_invalid")),
+        Ok(value) => {
+            return Err(ExtractError::Validation(format!(
+                "domain53_operative_xp_invalid={value}"
+            )))
+        }
         Err(_) => None,
     };
     let skill = match mem.read_u64(add_addr(
@@ -5084,10 +5212,10 @@ fn read_operative_row<M: Domain53Memory>(
                 profile::DOMAIN53_OPERATIVE_SKILL_LEVEL,
             )?) {
                 Ok(value) if value <= MAX_OPERATIVE_SKILL => Some(value),
-                Ok(_) => {
-                    return Err(ExtractError::InvalidRoot(
-                        "domain53_operative_skill_invalid",
-                    ))
+                Ok(value) => {
+                    return Err(ExtractError::Validation(format!(
+                        "domain53_operative_skill_invalid={value}"
+                    )))
                 }
                 Err(_) => None,
             }
@@ -6972,6 +7100,37 @@ mod tests {
         }
     }
 
+    /// Serves a DIFFERENT invalid handle_type on every read of the watched
+    /// address, so the two row attempts fail with different value-carrying
+    /// errors - the signature of an object mutating mid-observation, which
+    /// must stay a torn skip rather than a stable reject.
+    struct FlakyHandleTypeMemory {
+        inner: FakeMemory,
+        handle_addr: u64,
+        calls: std::cell::Cell<u32>,
+    }
+
+    impl Domain53Memory for FlakyHandleTypeMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            let mut bytes = self.inner.read_bytes(address, len)?;
+            if address == self.handle_addr && len == 4 && bytes.len() == 4 {
+                let call = self.calls.get();
+                self.calls.set(call + 1);
+                let value: u32 = if call % 2 == 0 { 0xDEAD_0001 } else { 0xDEAD_0002 };
+                bytes.copy_from_slice(&value.to_le_bytes());
+            }
+            Ok(bytes)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
     struct TornFactionValueMemory {
         inner: FakeMemory,
         address: u64,
@@ -8279,6 +8438,378 @@ mod tests {
         assert!(extracted.rows.cryptology.is_empty());
         assert_eq!(extracted.skip_counts.cryptology, 1);
         assert_eq!(extracted.skipped_rows, 1);
+    }
+
+    #[test]
+    fn operative_candidate_invalid_coherently_is_stable_reject_not_partial() {
+        // kills: pw_gate_final d53 partial-everywhere - permanent needle-hit
+        // garbage (freed slot retaining the operative vtable qword; identity
+        // head stably invalid) counted as a skipped DATA row on every frame.
+        let mut mem = fake_domain53_memory(true, true);
+        let dead = fake_heap_base() + 0x40_0000;
+        mem.add_chunk(dead, 0x2000);
+        mem.add_range(dead, 0x2000);
+        let module = mem.module_base;
+        mem.write_u64(
+            dead,
+            module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+        );
+        // Identity head left zeroed: handle_type reads 0 != the expected
+        // constant, identically (same value-carrying error), on both attempts.
+        let extracted = extract_rows_from_current_roots(&mem)
+            .expect("a stably-invalid candidate must not fail the frame");
+        assert_eq!(
+            extracted.stable_rejects.operative, 1,
+            "the dead candidate must classify as stable reject"
+        );
+        assert_eq!(
+            extracted.skipped_rows, 0,
+            "stable rejects are not data omissions: {:?}",
+            extracted.skip_counts
+        );
+    }
+
+    #[test]
+    fn operative_candidate_mutating_mid_observation_stays_torn_skip() {
+        // The deciding field changes between the two attempts (handle_type
+        // 0xDEAD01 -> 0xDEAD02): the value-carrying errors differ, so the
+        // re-observation cannot prove stability and the candidate stays a
+        // torn skip - refuse-by-name preserved.
+        let mut inner = fake_domain53_memory(true, true);
+        let dead = fake_heap_base() + 0x40_0000;
+        inner.add_chunk(dead, 0x2000);
+        inner.add_range(dead, 0x2000);
+        let module = inner.module_base;
+        inner.write_u64(
+            dead,
+            module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+        );
+        let identity = dead + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64;
+        let mem = FlakyHandleTypeMemory {
+            inner,
+            handle_addr: identity,
+            calls: std::cell::Cell::new(0),
+        };
+        let extracted = extract_rows_from_current_roots(&mem)
+            .expect("a torn candidate refuses row-local, not the frame");
+        assert_eq!(extracted.stable_rejects.operative, 0);
+        assert_eq!(extracted.skip_counts.operative, 1);
+        assert_eq!(extracted.skipped_rows, 1);
+    }
+
+    /// Order-sensitive tail-head guard probe. Serves the watched 16-byte
+    /// identity window unchanged on its FIRST read (the before-attempt
+    /// sample) and flips its first byte on the second read ONLY IF both row
+    /// attempts have already run (two handle reads observed). With the R5
+    /// ordering defect - the final sample taken between the attempts - the
+    /// second window read sees an unflipped buffer, the bracket wrongly
+    /// agrees, and the test's expectation of a skip fails.
+    struct MutatingTailHeadMemory {
+        inner: FakeMemory,
+        window_addr: u64,
+        window_len: usize,
+        handle_addr: u64,
+        window_reads: std::cell::Cell<u32>,
+        handle_reads: std::cell::Cell<u32>,
+    }
+
+    impl Domain53Memory for MutatingTailHeadMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            if address == self.handle_addr && len == 4 {
+                self.handle_reads.set(self.handle_reads.get() + 1);
+                return self.inner.read_bytes(address, len);
+            }
+            let mut bytes = self.inner.read_bytes(address, len)?;
+            if address == self.window_addr && len == self.window_len {
+                let reads = self.window_reads.get();
+                self.window_reads.set(reads + 1);
+                if reads >= 1 && self.handle_reads.get() >= 2 {
+                    if let Some(slot) = bytes.first_mut() {
+                        *slot ^= 0xFF;
+                    }
+                }
+            }
+            Ok(bytes)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
+    /// Order-sensitive vtable guard probe. Serves the operative vtable on the
+    /// FIRST read of the watched address (the entry check) and the foreign
+    /// value on the post-attempt re-observation ONLY IF both row attempts
+    /// have already run. Under the R5 ordering defect the re-observation
+    /// lands between the attempts, still sees the true vtable, and the
+    /// resulting wrongful stable reject fails the test's skip expectation.
+    struct VtableFlipMemory {
+        inner: FakeMemory,
+        hit: u64,
+        handle_addr: u64,
+        vtable_value: u64,
+        foreign_value: u64,
+        hit_reads: std::cell::Cell<u32>,
+        handle_reads: std::cell::Cell<u32>,
+    }
+
+    impl Domain53Memory for VtableFlipMemory {
+        fn module_base(&self) -> u64 {
+            self.inner.module_base()
+        }
+
+        fn read_u64(&self, address: u64) -> Result<u64, ExtractError> {
+            if address == self.hit {
+                let reads = self.hit_reads.get();
+                self.hit_reads.set(reads + 1);
+                if reads == 0 {
+                    return Ok(self.vtable_value);
+                }
+                return Ok(if self.handle_reads.get() >= 2 {
+                    self.foreign_value
+                } else {
+                    self.vtable_value
+                });
+            }
+            let bytes = self.inner.read_bytes(address, 8)?;
+            Ok(u64::from_le_bytes(bytes.try_into().expect("u64 slice")))
+        }
+
+        fn read_bytes(&self, address: u64, len: usize) -> Result<Vec<u8>, ExtractError> {
+            if address == self.handle_addr && len == 4 {
+                self.handle_reads.set(self.handle_reads.get() + 1);
+            }
+            self.inner.read_bytes(address, len)
+        }
+
+        fn readable_ranges(&self, lo: u64, hi: u64) -> Vec<(u64, usize)> {
+            self.inner.readable_ranges(lo, hi)
+        }
+    }
+
+    #[test]
+    fn operative_stable_reject_gate_refuses_memory_read_and_owner_errors() {
+        // Negative regressions for the eligibility gate (Codex r2 F2 / r3 F1):
+        // - an identity block that is UNREADABLE on both attempts yields two
+        //   equal MemoryRead errors; equality proves nothing about contents,
+        //   so the candidate must stay a refuse-by-name skip;
+        // - a candidate with a well-formed handle but an owner outside the
+        //   frame's accepted-country snapshot must also stay a skip: its
+        //   deciding state lives in the oracle, not in its own bytes.
+        let module = 0x1400_0000_0;
+        let countries = vec![CountryRoot {
+            tag_db_id: 1,
+            country_ptr: 0,
+        }];
+        {
+            let mut mem = FakeMemory::new(module);
+            // Only the vtable slot is readable: the row validator's very
+            // first field read fails with MemoryRead. MemoryRead errors are
+            // NOT eligible for stable rejection (equality proves nothing
+            // about contents), so the gate refuses before any re-attempt and
+            // the candidate stays a refuse-by-name skip.
+            let dead = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000 + 0x40_0000;
+            mem.add_chunk(dead, 8);
+            mem.write_u64(
+                dead,
+                module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+            );
+            let mut acc = RowAccumulator::default();
+            read_operatives(&mem, module, &countries, &[dead], &mut acc)
+                .expect("unreadable candidate walk succeeds");
+            assert_eq!(acc.stable_rejects.operative, 0, "MemoryRead is not eligible");
+            assert_eq!(acc.skip_counts.operative, 1);
+            assert_eq!(acc.skipped_rows, 1);
+        }
+        {
+            let mut mem = FakeMemory::new(module);
+            let dead = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000 + 0x40_0000;
+            mem.add_chunk(dead, 0x2000);
+            mem.write_u64(
+                dead,
+                module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+            );
+            let identity = dead + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64;
+            mem.write_u32(identity, profile::DOMAIN53_OPERATIVE_HANDLE_TYPE);
+            mem.write_u32(identity + 4, 11_387);
+            mem.write_u32(identity + profile::DOMAIN53_OPERATIVE_OWNER as u64, 999);
+            let mut acc = RowAccumulator::default();
+            read_operatives(&mem, module, &countries, &[dead], &mut acc)
+                .expect("foreign-owner candidate walk succeeds");
+            assert_eq!(
+                acc.stable_rejects.operative, 0,
+                "owner_invalid decides from the oracle snapshot, not the candidate"
+            );
+            assert_eq!(acc.skip_counts.operative, 1);
+            assert_eq!(acc.skipped_rows, 1);
+        }
+        {
+            // assignment lives at offset 0x1078 - OUTSIDE the bracketed
+            // identity head - so even an identical invalid value on both
+            // attempts is mere repeatability, not witnessed stability: the
+            // candidate must stay a refuse-by-name skip.
+            let mut mem = FakeMemory::new(module);
+            let dead = profile::DOMAIN53_HEAP_LO as u64 + 0x10_0000 + 0x40_0000;
+            mem.add_chunk(dead, 0x2000);
+            mem.write_u64(
+                dead,
+                module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+            );
+            let identity = dead + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64;
+            mem.write_u32(identity, profile::DOMAIN53_OPERATIVE_HANDLE_TYPE);
+            mem.write_u32(identity + 4, 11_387);
+            let owner_addr = identity + profile::DOMAIN53_OPERATIVE_OWNER as u64;
+            mem.write_u32(owner_addr, 1);
+            let assignment_addr =
+                identity + profile::DOMAIN53_OPERATIVE_ASSIGNMENT_ENUM as u64;
+            mem.write_u32(assignment_addr, 6);
+            let mut acc = RowAccumulator::default();
+            read_operatives(&mem, module, &countries, &[dead], &mut acc)
+                .expect("foreign-assignment candidate walk succeeds");
+            assert_eq!(
+                acc.stable_rejects.operative, 0,
+                "assignment_invalid decides outside the bracketed head"
+            );
+            assert_eq!(acc.skip_counts.operative, 1);
+            assert_eq!(acc.skipped_rows, 1);
+        }
+    }
+
+    #[test]
+    fn operative_stable_reject_bracket_refuses_changed_identity_head() {
+        // kills: the bracket guards must classify on their own - both row
+        // attempts fail with the IDENTICAL eligible error here, so only the
+        // changed final identity-head sample stands between this candidate
+        // and a wrongful stable reject.
+        let mut inner = fake_domain53_memory(true, true);
+        let dead = fake_heap_base() + 0x40_0000;
+        inner.add_chunk(dead, 0x2000);
+        inner.add_range(dead, 0x2000);
+        let module = inner.module_base;
+        inner.write_u64(
+            dead,
+            module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+        );
+        let identity = dead + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64;
+        let mem = MutatingTailHeadMemory {
+            inner,
+            window_addr: identity,
+            window_len: OPERATIVE_STABLE_REJECT_HEAD_BYTES,
+            handle_addr: identity,
+            window_reads: std::cell::Cell::new(0),
+            handle_reads: std::cell::Cell::new(0),
+        };
+        let extracted = extract_rows_from_current_roots(&mem)
+            .expect("a bracket-violating candidate refuses row-local");
+        assert_eq!(
+            extracted.stable_rejects.operative, 0,
+            "changed identity head must refuse the stable reject"
+        );
+        assert_eq!(extracted.skip_counts.operative, 1);
+    }
+
+    #[test]
+    fn operative_stable_reject_bracket_refuses_changed_vtable() {
+        // The vtable qword changes by the post-attempt-2 re-observation: the
+        // object was freed or reused inside the bracket and the candidate
+        // must stay a torn skip even though both attempts failed identically.
+        let mut inner = fake_domain53_memory(true, true);
+        let dead = fake_heap_base() + 0x40_0000;
+        inner.add_chunk(dead, 0x2000);
+        inner.add_range(dead, 0x2000);
+        let module = inner.module_base;
+        inner.write_u64(
+            dead,
+            module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+        );
+        let mem = VtableFlipMemory {
+            inner,
+            hit: dead,
+            handle_addr: dead + profile::DOMAIN53_OPERATIVE_IDENTITY_FROM_VTABLE as u64,
+            vtable_value: module + profile::DOMAIN53_OPERATIVE_VTABLE_RVA as u64,
+            foreign_value: module + profile::DOMAIN53_AGENCY_VTABLE_RVA as u64,
+            hit_reads: std::cell::Cell::new(0),
+            handle_reads: std::cell::Cell::new(0),
+        };
+        let extracted = extract_rows_from_current_roots(&mem)
+            .expect("a bracket-violating candidate refuses row-local");
+        assert_eq!(
+            extracted.stable_rejects.operative, 0,
+            "changed vtable must refuse the stable reject"
+        );
+        assert_eq!(extracted.skip_counts.operative, 1);
+    }
+
+    #[test]
+    fn incoming_action_duplicate_id_keeps_refuse_by_name_skip() {
+        // The duplicate-id suppression is load-bearing for the wire (the
+        // decoder refuses duplicate ids), but a colliding id cannot be proven
+        // to be the SAME delivery, so it must stay a refuse-by-name skip:
+        // pw_gate_final's ia_sk population keeps its typed gap.
+        let mut mem = fake_domain53_memory(true, true);
+        let heap = fake_heap_base();
+        let country3 = heap + 0x5_0000;
+        let queue3 = heap + 0x41_0000;
+        let data3 = heap + 0x41_1000;
+        let action3 = heap + 0x41_2000;
+        let body3 = heap + 0x41_3000;
+        for (addr, len) in [
+            (queue3, 0x40usize),
+            (data3, 0x08),
+            (action3, 0x20),
+            (body3, 0x50),
+        ] {
+            mem.add_chunk(addr, len);
+        }
+        let module = mem.module_base;
+        mem.write_u64(
+            country3 + profile::DOMAIN53_INCOMING_ACTION_QUEUE as u64,
+            queue3,
+        );
+        mem.write_u64(queue3 + profile::DOMAIN53_INCOMING_ACTION_QUEUE_DATA as u64, data3);
+        mem.write_u64(
+            queue3 + profile::DOMAIN53_INCOMING_ACTION_QUEUE_PACKED_SIZE_CAP as u64,
+            (1u64 << 32) | 1,
+        );
+        mem.write_u32(queue3 + profile::DOMAIN53_INCOMING_ACTION_QUEUE_OWNER_GUARD as u64, 3);
+        mem.write_u64(data3, action3);
+        // SAME action handle (same action id) as the fixture's country-2
+        // queue, but a body addressed to recipient 3 so the row itself would
+        // validate for this recipient.
+        mem.write_u64(
+            action3,
+            module + profile::DOMAIN53_INCOMING_ACTION_VTABLE_RVA as u64,
+        );
+        mem.write_u64(
+            action3 + profile::DOMAIN53_INCOMING_ACTION_HANDLE as u64,
+            (150_442u64 << 32) | u64::from(profile::DOMAIN53_INCOMING_ACTION_HANDLE_TYPE),
+        );
+        mem.write_u64(action3 + profile::DOMAIN53_INCOMING_ACTION_BODY as u64, body3);
+        mem.write_i32(body3 + profile::DOMAIN53_INCOMING_ACTION_BODY_TYPE as u64, 0);
+        mem.write_u32(body3 + profile::DOMAIN53_INCOMING_ACTION_ACTOR as u64, 1);
+        mem.write_u32(body3 + profile::DOMAIN53_INCOMING_ACTION_ORIGINAL_ACTOR as u64, 1);
+        mem.write_u32(body3 + profile::DOMAIN53_INCOMING_ACTION_RECIPIENT as u64, 3);
+        mem.write_u32(
+            body3 + profile::DOMAIN53_INCOMING_ACTION_ORIGINAL_RECIPIENT as u64,
+            3,
+        );
+        mem.write_u32(body3 + profile::DOMAIN53_INCOMING_ACTION_DATE as u64, 60_830_000);
+        mem.write_u32(
+            body3 + profile::DOMAIN53_INCOMING_ACTION_LAST_COMMAND_DATE as u64,
+            60_830_000,
+        );
+
+        let extracted = extract_rows_from_current_roots(&mem)
+            .expect("a duplicated delivery is not an error");
+        assert_eq!(
+            extracted.skip_counts.incoming_action, 1,
+            "the second sighting stays a refuse-by-name skip"
+        );
+        assert_eq!(extracted.stable_rejects.operative, 0);
     }
 
     #[test]
