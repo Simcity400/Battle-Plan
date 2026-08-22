@@ -52,7 +52,8 @@ pub const SO_D65_PARTIAL_PROFILE_MISMATCH: usize = 44;
 pub const SO_D66_PARTIAL_PROFILE_MISMATCH: usize = 45;
 pub const SO_D48_LANE_DUPLICATE_STATE_ROOTS: usize = 46;
 pub const SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS: usize = 47;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 48;
+pub const SO_D60_WARMUP_GAP: usize = 48;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 49;
 
 pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d45_partial_targeted_timed_structural",
@@ -103,6 +104,7 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d66_partial_profile_mismatch",
     "so_d48_lane_duplicate_state_roots",
     "so_d48_lane_duplicate_province_roots",
+    "so_d60_warmup_gap",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -742,6 +744,7 @@ mod tests {
                 SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS,
                 "so_d48_lane_duplicate_province_roots",
             ),
+            (SO_D60_WARMUP_GAP, "so_d60_warmup_gap"),
         ];
         for (id, name) in expected {
             assert_eq!(
