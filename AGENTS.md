@@ -95,6 +95,10 @@ if ($Result.ExitCode -ne 0 -or -not $Result.ReplyText) { throw 'opencode job fai
   how many it needed. Nothing to do by hand.
 - Session id lands in `<RunDir>\opencode_session.txt` on the first event. Resume by
   id only - `-SessionId $Result.SessionId`, never `--continue`.
+- A lane that stops early (empty reply, no commit, `step_finish reason=unknown`) is NOT
+  dead: re-prompt the SAME session id with "continue" (again if needed). Never start a
+  new session for a stalled lane (owner 2026-08-24). Keep its inputs small: slice reads
+  (grep -n, then a window), no whole files over ~1000 lines, commit after every step.
 - Prompt rules are Codex's: no project memory, so the prompt carries everything.
 
 ## Orchestration - Only relevant if you are given the role of orchestrator by the owner
