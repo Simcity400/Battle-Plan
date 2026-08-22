@@ -20,20 +20,37 @@ fn clean_pair() -> (ClockObservation, ClockObservation, ClockObservation) {
 }
 
 /// `SharedMapTopologyVerdict::Accept`. Observed in `--release`:
+/// SAME-HOUR RULE (owner ruling 2026-08-24): a consumer accepts a build made
+/// for the hour its own bracket reads, whenever in that hour either side
+/// opened. The old assertion in this test -- a consumer whose bracket opened
+/// after the build is refused `OutsideConsumerBracket` -- was WRONG: it made
+/// the first consumer's walk unsharable by construction, and lane PW §7
+/// measured exactly that at 0.24-1.6% shared accepts across seven captures.
+// kills: reverting the verdict to the ordinal comparison
+// (`build_opening.ordinal < consumer_opening.ordinal ->
+// OutsideConsumerBracket`) fails the LATE-CONSUMER arm below -- the arm that
+// is PW §7's measured scenario; the early-consumer and straddle arms are
+// unchanged by that revert and cannot catch it.
 #[test]
-fn the_acceptance_check_publishes_only_a_build_bracketed_by_its_own_consumer() {
+fn the_acceptance_check_publishes_a_build_made_for_the_consumers_own_hour() {
     let (consumer, opening, closing) = clean_pair();
     assert_eq!(
         shared_map_topology_verdict(opening, closing, Some(consumer), label_hour()),
         SharedMapTopologyVerdict::Accept,
-        "a build that began inside the consumer's bracket, in the frame's own \
-         hour, is exactly what the owner approved sharing"
+        "a build observed in the frame's own hour, the hour this consumer's \
+         bracket also reads, is exactly what the owner approved sharing"
     );
 
-    let late_consumer = clock_obs(label_hour(), opening.ordinal + 1);
+    // THE CASE PW §7 PROVED DEAD: the consumer opened AFTER the walk COMPLETED
+    // (its ordinal is past the closing read) -- nearly every non-builder
+    // consumer in production; PW §7 recorded only a rare handful that happened
+    // to open before the builder asked.
+    let late_consumer = clock_obs(label_hour(), closing.ordinal + 1);
     assert_eq!(
         shared_map_topology_verdict(opening, closing, Some(late_consumer), label_hour()),
-        SharedMapTopologyVerdict::OutsideConsumerBracket
+        SharedMapTopologyVerdict::Accept,
+        "the walk and the bracket agree on the recorded hour; when either one \
+         opened is no longer the acceptance question"
     );
 
     assert_eq!(
@@ -48,11 +65,27 @@ fn the_acceptance_check_publishes_only_a_build_bracketed_by_its_own_consumer() {
             Some(consumer),
             label_hour()
         ),
-        SharedMapTopologyVerdict::BuildStraddledHour
+        SharedMapTopologyVerdict::BuildStraddledHour,
+        "a walk whose rows mix two hours has no single hour to match the \
+         consumer against"
     );
 }
 
 /// from `shared_map_topology_prebuild_admission`. Observed in `--release`:
+/// The first arm is the named cross-hour refusal: a clean build observed
+/// wholly in H+1 against a consumer reading H is `DifferentHour`, not the old
+/// build-vs-label `HourLabelMismatch` -- the same refusal, now spelled against
+/// the consumer the ruling names. The other two arms are unchanged: the
+/// consumer's own hour and the frame label are still checked before any walk
+/// is paid for.
+// kills: deleting the same-hour comparison (leaving admission + straddle
+// alone) accepts this build and fails the first arm; weakening the comparison
+// to a one-sided `build_opening.hour > consumer_opening.hour` accepts the
+// H-1-build arm below and fails it. Comparing against the
+// frame LABEL instead of the consumer would NOT be caught here -- admission
+// already equates those two inside the verdict, so either spelling behaves
+// identically; the ruling names the consumer and the doc comment records why
+// one spelling suffices.
 #[test]
 fn a_build_or_a_consumer_outside_the_frames_labelled_hour_never_publishes() {
     let (consumer, opening, closing) = clean_pair();
@@ -64,8 +97,21 @@ fn a_build_or_a_consumer_outside_the_frames_labelled_hour_never_publishes() {
             Some(clock_obs(label_hour(), consumer.ordinal)),
             label_hour()
         ),
-        SharedMapTopologyVerdict::HourLabelMismatch,
-        "a build observed wholly in H+1 must not be published under H"
+        SharedMapTopologyVerdict::DifferentHour,
+        "a build observed wholly in H+1 must not be published to a consumer \
+         whose bracket reads H"
+    );
+
+    assert_eq!(
+        shared_map_topology_verdict(
+            clock_obs(label_hour() - 1, opening.ordinal),
+            clock_obs(label_hour() - 1, closing.ordinal),
+            Some(clock_obs(label_hour(), consumer.ordinal)),
+            label_hour()
+        ),
+        SharedMapTopologyVerdict::DifferentHour,
+        "the refusal is equality, not ordering: a build from EARLIER than the \
+         consumer's hour refuses exactly like one from later"
     );
 
     assert_eq!(
@@ -110,7 +156,12 @@ fn only_a_consumer_that_did_not_perform_the_walk_owes_the_extra_proofs() {
         shared_map_topology_claim(false, opening, Some(closing), Some(consumer), label_hour()),
         SharedMapTopologyClaim::SharedPendingArrayCheck
     );
-    let late_consumer = clock_obs(label_hour(), opening.ordinal + 1);
+    // Same hour, bracket opened after the walk COMPLETED: accepted pending
+    // the array check. The old assertion here refused this consumer
+    // `OutsideConsumerBracket` -- the ordering rule PW §7 proved dead.
+    // kills: reintroducing the ordinal refusal in `shared_map_topology_claim`'s
+    // verdict path fails this arm.
+    let late_consumer = clock_obs(label_hour(), closing.ordinal + 1);
     assert_eq!(
         shared_map_topology_claim(
             false,
@@ -119,7 +170,7 @@ fn only_a_consumer_that_did_not_perform_the_walk_owes_the_extra_proofs() {
             Some(late_consumer),
             label_hour()
         ),
-        SharedMapTopologyClaim::Refused(SharedMapTopologyVerdict::OutsideConsumerBracket)
+        SharedMapTopologyClaim::SharedPendingArrayCheck
     );
 }
 
@@ -397,8 +448,17 @@ fn an_accepted_share_returns_the_rows_a_local_rebuild_would_have_returned() {
 }
 
 /// `SharedMapTopologyVerdict::Accept`. Observed in `--release`:
+/// The scenario lane PW §7 measured dead: the first consumer builds and keeps
+/// its own walk; a SECOND consumer, whose bracket opened after that build,
+/// consults the cache. The old assertion here was `(builder_kept_own,
+/// rejected_outside_bracket) == (1, 1)` -- refusal by ordinal, which made
+/// `builder_kept_own == builds` in every capture and the share rate 0.24-1.6%.
+/// That assertion was WRONG under the same-hour rule (owner 2026-08-24): both
+/// brackets read the frame's own hour, so the later consumer shares the walk.
+// kills: reverting `shared_map_topology_verdict` to the ordering rule fails
+// this test at its central assertion.
 #[test]
-fn a_consumer_whose_bracket_opened_after_the_build_rebuilds_instead() {
+fn a_consumer_whose_bracket_opened_after_the_build_shares_it() {
     page_cache_new_frame();
     let fixture = staged_map_fixture();
     let state = fixture.collector_state();
@@ -427,18 +487,19 @@ fn a_consumer_whose_bracket_opened_after_the_build_rebuilds_instead() {
     }
     let counts = cache.counts();
     assert_eq!(
-        (counts.builder_kept_own, counts.rejected_outside_bracket),
+        (counts.builder_kept_own, counts.accepted),
         (1, 1),
-        "a consumer whose bracket opened after the build cannot vouch for it"
+        "a later same-hour consumer must SHARE the walk the old rule refused it"
     );
-    assert_eq!((counts.accepted, counts.rebuilt), (0, 1));
-    assert_eq!(
-        states_seen, 0,
-        "the refused consumer must have been handed nothing at all"
-    );
+    assert_eq!(counts.rejected_different_hour, 0);
+    assert_eq!((counts.rebuilt, counts.failed_through), (0, 0));
     assert_eq!(
         counts.builds, 1,
-        "the refusal must not make the frame build a second shared copy"
+        "the share means the frame walked the map once, not twice"
+    );
+    assert!(
+        states_seen > 0,
+        "the accepted consumer was handed the shared build, not nothing"
     );
 }
 
