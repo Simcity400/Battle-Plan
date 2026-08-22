@@ -423,9 +423,466 @@ pub fn owned_body<'a>(line: &'a [u8], owned_header: &str, owned_suffix: &str) ->
     Some(body)
 }
 
+/// Is this one physical line an intact record written by ANY process?
+///
+/// This log has exactly ONE writer -- the collector's
+/// `record_attach_worker_error` -- and every record it emits validates here,
+/// whichever process wrote it. So a line in the region appended after a
+/// capture's baseline that does NOT validate here is not "another process's
+/// text": it is a severed write, and nothing that survives of it says whose.
+///
+/// The reader needs that distinction because the writer ignores each
+/// `write_all` result and carries on. `owned_body` recognises a severed record
+/// of ours only once the complete `pid=.. ctime=.. len=` header reached the
+/// file; a write that stopped BEFORE that header was complete leaves a line the
+/// owned check cannot claim, the next record's newline restores the file's
+/// shape, and an absence computed over what remains reads as proven when it is
+/// not (Codex review round 7, finding 2).
+///
+/// This says INTACT or not, and nothing about whose. A severed line still has
+/// an owner whenever its header survived; `record_ownership` below is what
+/// reads it, and the two are used together (round 8, finding 1).
+///
+/// Returns the writer's pid with the body, so a caller that wants to attribute
+/// an intact foreign record can, without re-deriving the parse differently.
+pub fn any_record_body(line: &[u8]) -> Option<(u32, &[u8])> {
+    let (pid, creation) = record_ownership(line)?;
+    // Delegated rather than re-implemented: the envelope's length, digest and
+    // closing stamp are checked in exactly one place, so a record that this
+    // says is intact is a record `owned_body` would also accept from its own
+    // writer.
+    let body = owned_body(line, &owned_header(pid, creation), &owned_suffix(pid))?;
+    Some((pid, body))
+}
+
+/// Does `span` contain this process instance's PID TOKEN -- `pid=<pid> ` --
+/// anywhere?
+///
+/// The case this exists for: a foreign write is severed after its own header,
+/// and the record written next -- ours -- is severed BEFORE its header
+/// completes. Both losses land on one physical line. `record_ownership` reads
+/// the foreign header at the front and proves the FIRST loss was not ours, and
+/// our whole header never arrived, so nothing at the front or in the middle
+/// says we lost anything -- yet we did (Codex review round 9, finding 2).
+///
+/// What survives of our write is a PREFIX of our header. A prefix is only
+/// evidence once it is long enough to have named our pid: `pid=<digits> `.
+/// Shorter prefixes -- `p`, `pid=`, half our pid's digits -- are ordinary text
+/// and matching on them would call almost every severed line ours.
+///
+/// ANYWHERE in the span, not only at its end. Our write need not be the LAST
+/// thing severed on the line: A severed, then ours severed inside its header,
+/// then C severed, all before the record that finally supplies the newline,
+/// leaves our partial header in the middle of one gap (round 19, finding 1).
+///
+/// SAY WHAT THIS IS. It is a pid-token search, not a header match, and the
+/// caller's message must not claim more (round 20, finding 2). The token can
+/// occur in another writer's surviving error text with no write of ours lost at
+/// all, and those bytes are identical to our own truncated header. R11 states
+/// that this reader refuses in that case and why, rather than pretending the
+/// two are separable.
+///
+/// AND NOTHING NARROWS IT. Round 20 tried to exclude one occurrence -- a
+/// complete header naming a different run of the same pid, which
+/// `record_ownership` can read -- on the grounds that it is provably that run's.
+/// It is not provable. `record_ownership` reads SYNTAX, and this function is
+/// only ever called on a GAP: bytes that are left over precisely because writes
+/// there were severed. `record_attach_worker_error`'s own comment says a single
+/// `write_all` may retry after a short write, so two writers can interleave
+/// inside one record -- and a foreign prefix, our truncated header, and the
+/// foreign writer's retry can compose into bytes that READ as a complete header
+/// from another run while a positive-byte write of ours sits inside them
+/// (round 21, finding 1). Excluding that occurrence published the loss as
+/// clean. A gap is where interleaving happened, so no syntactic header reading
+/// inside one can be trusted, and the exclusion is gone.
+pub fn contains_owned_pid_token(span: &[u8], pid: u32) -> bool {
+    let token = format!("pid={pid} ");
+    let token = token.as_bytes();
+    span.len() >= token.len() && span.windows(token.len()).any(|window| window == token)
+}
+
+/// A record CANDIDATE beginning at the front of `from_start`: whose it claims
+/// to be, and how long it says it is -- established without hashing anything.
+///
+/// Split from the validation that follows it so a caller walking a long shared
+/// line can spend a budget deliberately. The two cheap gates here -- the header
+/// parses, and the bytes at the declared end really are the closing
+/// `end=pid=<n>` stamp -- reject almost every header-shaped position in
+/// constant time, where `owned_body` would first hash the whole declared body
+/// (Codex review round 16, finding 3).
+pub fn candidate_record_span(from_start: &[u8]) -> Option<(u32, u64, usize)> {
+    let (pid, creation) = record_ownership(from_start)?;
+    let len = owned_record_len(from_start, &owned_header(pid, creation))?;
+    if !from_start[..len].ends_with(owned_suffix(pid).as_bytes()) {
+        return None;
+    }
+    Some((pid, creation, len))
+}
+
+/// The body of a candidate that really is an intact record by a CONFORMING
+/// writer -- one that goes through `format_record`.
+///
+/// The expensive half of `candidate_record_span`: the digest is checked here,
+/// and so is the body grammar. Both are needed. The digest proves internal
+/// consistency; `body_is_canonical` proves authorship, because an envelope
+/// embedded in another writer's error text can be internally consistent but
+/// cannot carry a real debug-quoted error (round 16, finding 2).
+pub fn conforming_record_body(from_start: &[u8], pid: u32, creation: u64, len: usize) -> Option<&[u8]> {
+    let body = owned_body(
+        from_start.get(..len)?,
+        &owned_header(pid, creation),
+        &owned_suffix(pid),
+    )?;
+    body_is_canonical(body).then_some(body)
+}
+
+/// Is this body one this writer's own formatter could have produced?
+///
+/// `owned_body` proves an envelope is INTERNALLY CONSISTENT -- the declared
+/// length matches, the unkeyed FNV digest matches, the closing stamp is there.
+/// It does not prove AUTHORSHIP, and inside a shared line that difference
+/// matters: an envelope embedded in another writer's arbitrary error text can
+/// be internally consistent, because nothing stops that text containing
+/// `pid=.. ctime=.. len=.. sum=.. phase=p error=x end=pid=..` with a digest
+/// computed to match (Codex review round 16, finding 2).
+///
+/// What such an embedded envelope CANNOT do is carry a real body, and the
+/// reason is the writer itself. `format_record` writes the error as
+/// `{error:?}`, so every genuine body reads `phase=<p> error="<escaped>"
+/// end=pid=<n>` with REAL quote characters around the text -- and any `"` in a
+/// writer's own error text is escaped to `\"` on the way out. So a conforming
+/// writer physically cannot emit an unescaped `"` inside its body, and
+/// therefore cannot embed a body that satisfies this.
+///
+/// The assumption is stated rather than hidden: every writer of this log is a
+/// collector going through `format_record`. A non-conforming writer of this
+/// file is outside the model and is MEASUREMENT.md R10's territory.
+///
+/// AND ONE CONFORMING WRITER CANNOT, BUT SEVERAL INTERLEAVED MIGHT. This proves
+/// that no SINGLE `format_record` call can emit a body carrying an unescaped
+/// quoted error. It does not prove that fragments of SEVERAL such calls, spliced
+/// by `write_all` retries, cannot compose into one -- one writer donating the
+/// header and the sum, another the opening quote, another the closing quote
+/// (Codex review round 22, finding 1). The composed body would still have to
+/// hash to a `sum=` some writer emitted over text it did not write -- but that
+/// is NOT a probability bound, and round 22 stated one anyway. This digest is
+/// unkeyed FNV-1a over bytes chosen by whichever writes interleaved: nothing
+/// here is random, so a composite that hashes correctly is deterministically
+/// possible rather than improbable (Codex review round 23, finding 4).
+///
+/// So the reader does not rely on this being unlikely. A record recovered from
+/// a line another write damaged is COUNTED as such and published with its
+/// authorship qualified -- see `AppendedWorkerErrorScan::shared_line_records`
+/// in the host -- and on a log with no damaged line, which is every capture
+/// measured so far, no published record is subject to the question at all.
+/// MEASUREMENT.md R11 states it. A keyed digest would close it outright and is
+/// a change to the record format, which this lane does not own.
+pub fn body_is_canonical(body: &[u8]) -> bool {
+    let Ok(text) = core::str::from_utf8(body) else {
+        return false;
+    };
+    let Some(parsed) = parse_body(text) else {
+        return false;
+    };
+    // The debug-quoted error is the part a conforming writer cannot fake, so it
+    // is the part that is required.
+    unescape_debug_text(parsed.escaped_text).is_some()
+}
+
+/// How many bytes the record beginning at the front of `from_header` says it
+/// occupies, header and body together, from its own declared length field.
+///
+/// `owned_body` validates a slice that is EXACTLY one record: it requires the
+/// body to be the declared length, so handing it a slice with anything after
+/// the record fails. That made a record recoverable only when it ran to the end
+/// of its line, so two intact records of one writer sharing a physical line
+/// yielded only the later one and the earlier known cause was reduced to a torn
+/// count (Codex review round 15, finding 1). This says where the first one ends
+/// so the caller can cut it out exactly.
+///
+/// Returns `None` when the header is not there, when the length field is not
+/// eight digits, or when the declared length would run past `from_header`. It
+/// does NOT validate the digest or the closing stamp -- the caller passes the
+/// cut slice to `owned_body`, which does.
+pub fn owned_record_len(from_header: &[u8], owned_header: &str) -> Option<usize> {
+    let rest = from_header.strip_prefix(owned_header.as_bytes())?;
+    if rest.len() < LEN_FIELD_WIDTH {
+        return None;
+    }
+    let digits = &rest[..LEN_FIELD_WIDTH];
+    if !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    let declared: usize = core::str::from_utf8(digits).ok()?.parse().ok()?;
+    // header + <8 len digits> + " " + "sum=" + <8 hex> + " " + body
+    let fixed = owned_header.len() + LEN_FIELD_WIDTH + 1 + b"sum=".len() + SUM_FIELD_WIDTH + 1;
+    let total = fixed.checked_add(declared)?;
+    if total > from_header.len() {
+        return None;
+    }
+    Some(total)
+}
+
+/// The `(pid, creation_filetime)` a line CLAIMS, from its header alone and
+/// without validating the body behind it.
+///
+/// OWNERSHIP AND INTEGRITY ARE DIFFERENT QUESTIONS, and answering both at once
+/// was a defect. `owned_body` answers both, which is right for "is this an
+/// intact record of ours" and wrong for "whose severed write is this": a
+/// FOREIGN record whose write was cut short still carries an intact
+/// `pid=.. ctime=.. len=` header, and that header proves the loss was not ours.
+/// Treating it as unattributable made another capture's short append turn a
+/// healthy target's report inconclusive (Codex review round 8, finding 1).
+///
+/// The header must be COMPLETE -- parsed through the `len=` label that follows
+/// it -- because a write severed INSIDE the header is precisely the case where
+/// ownership did not survive and nothing can be attributed.
+pub fn record_ownership(line: &[u8]) -> Option<(u32, u64)> {
+    let rest = line.strip_prefix(b"pid=")?;
+    let end = rest.iter().position(|byte| !byte.is_ascii_digit())?;
+    if end == 0 {
+        return None;
+    }
+    let pid: u32 = core::str::from_utf8(&rest[..end]).ok()?.parse().ok()?;
+    let rest = rest[end..].strip_prefix(b" ctime=")?;
+    let end = rest.iter().position(|byte| !byte.is_ascii_digit())?;
+    if end == 0 {
+        return None;
+    }
+    let creation: u64 = core::str::from_utf8(&rest[..end]).ok()?.parse().ok()?;
+    rest[end..].strip_prefix(b" len=")?;
+    Some((pid, creation))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `any_record_body` accepts an intact record from ANY writer and nothing
+    /// else, which is what makes an unrecognised line evidence of a severed
+    /// write rather than of a stranger.
+    ///
+    /// The host's owned check can only claim a severed record of ours once the
+    /// whole `pid=.. ctime=.. len=` header reached the file. A write that
+    /// stopped short of that leaves a fragment the owned check skips as foreign
+    /// text -- and this log has one writer, so "foreign text" does not exist:
+    /// a line that is nobody's intact record is somebody's lost one
+    /// (Codex review round 7, finding 2).
+    #[test]
+    fn an_intact_record_of_any_writer_parses_and_a_severed_one_does_not() {
+        let ours = format_record(4321, 77, "capture", "something broke");
+        let (pid, body) =
+            any_record_body(ours.trim_end_matches('\n').as_bytes()).expect("our intact record");
+        assert_eq!(pid, 4321);
+        assert!(body.ends_with(owned_suffix(4321).as_bytes()));
+
+        // ANOTHER PROCESS'S INTACT RECORD PARSES TOO, and must: the whole point
+        // is to tell an intact stranger from a severed nobody. If this returned
+        // `None` the host would call every other capture's record a torn write.
+        let theirs = format_record(999, 5, "capture", "theirs");
+        let (pid, _) = any_record_body(theirs.trim_end_matches('\n').as_bytes())
+            .expect("another process's intact record");
+        assert_eq!(pid, 999);
+
+        // THE SEVERED SHAPE. A write that stopped inside `ctime=`, with the
+        // next record's bytes landing on the same line because the writer never
+        // learned its previous write was short.
+        let severed = format!("pid=4321 ct{}", ours.trim_end_matches('\n'));
+        assert!(
+            any_record_body(severed.as_bytes()).is_none(),
+            "a fragment glued to a following record is nobody's intact record"
+        );
+
+        // A body that does not match its own declared length and digest.
+        let corrupt = format!("{}x", ours.trim_end_matches('\n'));
+        assert!(any_record_body(corrupt.as_bytes()).is_none());
+
+        assert!(any_record_body(b"").is_none());
+        assert!(any_record_body(b"pid=4321").is_none(), "no ctime field at all");
+        assert!(
+            any_record_body(b"pid=abc ctime=1 len=00000001 sum=00000000 x").is_none(),
+            "a non-numeric pid is not a record this format can have written"
+        );
+    }
+
+    /// `record_ownership` reads WHOSE a line is without asking whether it is
+    /// intact, so a severed FOREIGN record can be excluded instead of counted
+    /// as an unattributable loss.
+    #[test]
+    fn a_severed_record_still_names_its_writer_when_its_header_survived() {
+        let theirs = format_record(999, 5, "capture", "theirs");
+        let intact = theirs.trim_end_matches('\n');
+        assert_eq!(record_ownership(intact.as_bytes()), Some((999, 5)));
+
+        // SEVERED AFTER THE HEADER: not an intact record any more, but its
+        // owner is still legible, and the owner is not us.
+        let severed_body = &intact[..intact.len() - 6];
+        assert!(
+            any_record_body(severed_body.as_bytes()).is_none(),
+            "the fixture must actually be severed or it tests nothing"
+        );
+        assert_eq!(record_ownership(severed_body.as_bytes()), Some((999, 5)));
+
+        // SEVERED INSIDE THE HEADER: the owner did not survive, and nothing
+        // may be attributed. `pid=999 cti` is the shape that made round 7's
+        // fix count a foreign loss as possibly ours.
+        assert_eq!(record_ownership(b"pid=999 cti"), None);
+        assert_eq!(
+            record_ownership(b"pid=999 ctime=5"),
+            None,
+            "the header is complete only once the len= field it precedes has begun"
+        );
+        assert_eq!(record_ownership(b""), None);
+        assert_eq!(record_ownership(b"not a record at all"), None);
+    }
+
+    /// `owned_record_len` says where a record ENDS, so one that does not run to
+    /// the end of its line can still be cut out and validated.
+    #[test]
+    fn a_records_declared_length_says_where_it_ends() {
+        let header = owned_header(4321, 77);
+        let first = format_record(4321, 77, "capture", "the first reason");
+        let first = first.trim_end_matches('\n');
+        let second = format_record(4321, 77, "capture", "the second reason");
+        let second = second.trim_end_matches('\n');
+
+        // ONE RECORD ALONE: the length it declares is its own length.
+        assert_eq!(
+            owned_record_len(first.as_bytes(), &header),
+            Some(first.len())
+        );
+
+        // TWO ON ONE LINE: the first still measures itself, and cutting there
+        // yields a slice `owned_body` accepts -- which it does NOT accept when
+        // the second record's bytes are left on the end.
+        let both = format!("{first}{second}");
+        let cut = owned_record_len(both.as_bytes(), &header).expect("the first record measures");
+        assert_eq!(cut, first.len());
+        assert!(owned_body(&both.as_bytes()[..cut], &header, &owned_suffix(4321)).is_some());
+        assert!(
+            owned_body(both.as_bytes(), &header, &owned_suffix(4321)).is_none(),
+            "the whole line is not one record, which is exactly why the length \
+             field has to be read"
+        );
+
+        assert_eq!(owned_record_len(b"", &header), None);
+        assert_eq!(owned_record_len(second.as_bytes(), &owned_header(999, 5)), None);
+        // A declared length running past what is there.
+        let truncated = &first[..first.len() - 5];
+        assert_eq!(owned_record_len(truncated.as_bytes(), &header), None);
+    }
+
+    /// A body that is internally consistent but is not one this writer's
+    /// formatter could have produced is not accepted as authorship.
+    #[test]
+    fn only_a_body_this_writer_could_have_produced_is_canonical() {
+        let real = format_record(4321, 77, "capture", "a genuine reason");
+        let real = real.trim_end_matches('\n');
+        let header = owned_header(4321, 77);
+        let body = owned_body(real.as_bytes(), &header, &owned_suffix(4321)).expect("a real body");
+        assert!(body_is_canonical(body));
+
+        // THE FORGERY SHAPE. Internally consistent -- correct declared length,
+        // correct digest, correct closing stamp -- and with an UNQUOTED error,
+        // which is what lets it be embedded in another writer's text at all: a
+        // conforming writer escapes every `"` it emits, so it could never carry
+        // a real one (Codex review round 16, finding 2).
+        let forged_body = "phase=production_hook_install_unit_recovered error=x end=pid=4321";
+        let forged = format!(
+            "{header}{:08} sum={:08x} {forged_body}",
+            forged_body.len(),
+            body_digest(forged_body.as_bytes())
+        );
+        let recovered = owned_body(forged.as_bytes(), &header, &owned_suffix(4321))
+            .expect("the envelope checks really do pass -- that is the finding");
+        assert!(
+            !body_is_canonical(recovered),
+            "an unquoted error text is not something `format_record` can emit, \
+             and that is what makes the embedded envelope refusable"
+        );
+
+        // AND THE ESCAPED FORM IS NOT THE QUOTED FORM. Inside another writer's
+        // record, a `"` arrives as `\"`, so an embedded envelope's error text
+        // begins with a backslash and fails here too.
+        let escaped_body = "phase=capture error=\\\"x\\\" end=pid=4321";
+        let escaped = format!(
+            "{header}{:08} sum={:08x} {escaped_body}",
+            escaped_body.len(),
+            body_digest(escaped_body.as_bytes())
+        );
+        let recovered = owned_body(escaped.as_bytes(), &header, &owned_suffix(4321))
+            .expect("envelope valid");
+        assert!(!body_is_canonical(recovered));
+    }
+
+    /// A write of OURS severed before its header completed is still visible
+    /// wherever on the line it landed -- and nothing in a gap can be excluded.
+    ///
+    /// The shape: a foreign write severed after its own header, then our write
+    /// severed inside ours, both on one line. The front of the line proves the
+    /// FIRST loss was foreign and says nothing about the second
+    /// (Codex review round 9, finding 2).
+    #[test]
+    fn a_partial_header_of_ours_at_the_end_of_a_line_is_recognised() {
+        let theirs = format_record(999, 5, "capture", "theirs");
+        let severed_foreign = &theirs.trim_end_matches('\n')[..40];
+
+        // Our write cut inside ` ctime=`: our pid arrived, the rest did not.
+        let both = format!("{severed_foreign}pid=4321 ct");
+        assert!(contains_owned_pid_token(both.as_bytes(), 4321));
+        assert_eq!(
+            record_ownership(both.as_bytes()),
+            Some((999, 5)),
+            "the front of the line still names the foreign writer, which is why \
+             the trailing token has to be looked for separately"
+        );
+
+        // Cut one byte later and one byte earlier: still ours either way, as
+        // long as the pid finished.
+        assert!(contains_owned_pid_token(b"...pid=4321 ", 4321));
+        assert!(contains_owned_pid_token(b"...pid=4321 ctime=7", 4321));
+
+        // AND IN THE MIDDLE, not only at the end. Our write can be severed and
+        // then another writer's severed write can land behind it, all before
+        // the record that finally supplies the newline (round 19, finding 1).
+        assert!(contains_owned_pid_token(
+            b"...pid=4321 ctime=7 then somebody else's severed bytes",
+            4321
+        ));
+
+        // TOO SHORT TO NAME US. These are ordinary text, and matching them
+        // would call almost every severed line ours.
+        assert!(!contains_owned_pid_token(b"...p", 4321));
+        assert!(!contains_owned_pid_token(b"...pid=", 4321));
+        assert!(
+            !contains_owned_pid_token(b"...pid=43", 4321),
+            "half our pid's digits could be any pid beginning 43"
+        );
+
+        // ANOTHER PROCESS'S token is not ours.
+        assert!(!contains_owned_pid_token(b"...pid=999 ct", 4321));
+
+        // AND A COMPLETE HEADER NAMING A DIFFERENT RUN OF OUR PID IS NOT
+        // EXCLUDED. Round 20 excluded it, reasoning that `record_ownership`
+        // proves the occurrence that run's. Inside a GAP it proves nothing:
+        // gaps are where writes were severed, a single `write_all` may retry
+        // after a short write, and a foreign prefix plus our truncated header
+        // plus that writer's retry can COMPOSE into bytes reading as another
+        // run's complete header with a positive-byte write of ours inside them
+        // (round 21, finding 1). Excluding it published that loss as clean.
+        assert!(contains_owned_pid_token(b"...pid=4321 ctime=78 len=", 4321));
+        assert!(contains_owned_pid_token(b"...pid=4321 ctime=78", 4321));
+
+        // A COMPLETE header of OURS contains the token too. That is harmless
+        // and deliberate: both answers mean a write of ours is in this span and
+        // cannot be read out of it.
+        let whole = owned_header(4321, 77);
+        assert!(contains_owned_pid_token(format!("...{whole}").as_bytes(), 4321));
+        assert!(!contains_owned_pid_token(b"", 4321));
+        // The match has to start at `pid=`, so a foreign ctime that happens to
+        // equal our pid is not ours.
+        assert!(!contains_owned_pid_token(b"pid=999 ctime=4321 len=", 4321));
+    }
 
     #[test]
     fn a_formatted_record_round_trips_through_the_reader() {

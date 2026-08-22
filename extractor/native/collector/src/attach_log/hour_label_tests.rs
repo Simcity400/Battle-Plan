@@ -707,6 +707,8 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
         700,
         23_641,
         &OutsideBuildSpans::default(),
+        92_000,
+        &FrameTailSegments::default(),
         &summary,
         FrameCpuSplit::default(),
     );
@@ -746,6 +748,8 @@ fn the_boundary_position_reaches_the_probe_record_and_absence_omits_it() {
         700,
         23_641,
         &OutsideBuildSpans::default(),
+        92_000,
+        &FrameTailSegments::default(),
         &summary,
         FrameCpuSplit::default(),
     );
@@ -881,6 +885,8 @@ fn the_build_start_lateness_reaches_the_probe_record_and_absence_omits_it() {
             700,
             23_641,
             &OutsideBuildSpans::default(),
+            92_000,
+            &FrameTailSegments::default(),
             &summary,
             FrameCpuSplit::default(),
         );

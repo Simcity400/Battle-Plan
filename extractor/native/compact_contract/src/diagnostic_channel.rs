@@ -1239,6 +1239,81 @@ pub fn outside_build_segment_name(code: u16) -> Option<&'static str> {
         .map(|(_, name)| *name)
 }
 
+/// The frame's SERIAL TAIL, by segment.
+///
+/// `lw_ft_us` (the build's own `frame_time_us`) is
+/// `lw_fanout_origin_us + lw_worker_span_us + sum(lw_t*_us)` plus a handful of
+/// microseconds of statements between the fan-out close and the first mark.
+/// Everything after the fan-out JOIN is serial: the frame is one thread from
+/// there to the end of the build, so a millisecond here costs the frame a
+/// millisecond, unlike a millisecond inside the fan-out.
+///
+/// WHY THE SEGMENTS ARE PROGRAM-ORDER RANGES AND NOT PER-DOMAIN TIMERS. The
+/// tail is one straight-line sequence of ~90 `if let Some(read) = ..` publish
+/// blocks with no common entry point to wrap: each one takes a reader's result
+/// and appends that domain's records, with its own early exits and its own
+/// borrow of the output buffer. Wrapping all ninety would be ninety edits into
+/// the most delicate code in the build for a decomposition no finer than the
+/// two heaviest domains, which this already isolates; the seven marks below sit
+/// at top-level statement boundaries, cost nine lines between them, and cannot
+/// change what any block does. The two segments that name a single domain
+/// (`d81_publish`, `d47_publish`) are the two whose ranges contain exactly one
+/// block.
+///
+/// The segments PARTITION the tail: adjacent marks, so they sum to the tail by
+/// construction and the check with content is against `lw_ft_us`, which is
+/// timed by a different instrument from a different origin. That check's
+/// residual is TWO boundary gaps, both inside `lw_ft_us` and inside no segment:
+/// the fan-out cycle-counter close between the fan-out span closing and the
+/// first mark, and — because the last segment has no following segment to
+/// absorb it, unlike every other — the final close's own arithmetic and return
+/// plus the frame-time stamp.
+pub const FRAME_TAIL_SEGMENTS: &[(u16, &str)] = &[
+    (0, "derived_encode"),
+    (1, "country_publish"),
+    (2, "publish_early"),
+    (3, "d81_publish"),
+    (4, "publish_units"),
+    (5, "d47_publish"),
+    (6, "publish_late"),
+];
+
+pub const FRAME_TAIL_UNIT_NAMES: &[&str] = &[
+    "lw_t0_us", "lw_t1_us", "lw_t2_us", "lw_t3_us", "lw_t4_us", "lw_t5_us", "lw_t6_us",
+];
+
+pub const FRAME_TAIL_SEGMENT_COUNT: usize = FRAME_TAIL_SEGMENTS.len();
+
+/// The unit carrying WHICH segments were actually closed on the frame this
+/// record describes: one bit per segment code, so a complete tail reads
+/// `FRAME_TAIL_MARKS_COMPLETE`.
+///
+/// WHY A VALUE AND NOT A SOURCE PIN. The seven segment values alone cannot
+/// distinguish a filled accumulator from a fresh one -- both are seven numbers,
+/// and an accumulator that was never marked publishes seven honest zeros with
+/// every count, every total and the host's whole population check intact. Four
+/// review rounds tried to close that with pins over the collector's source, and
+/// each was defeated by a compile-valid edit the next round found: a decoy
+/// binding, a function-pointer alias beside a dead call, a module-level static
+/// shadowing the build-local accumulator. Text matching cannot resolve names,
+/// and the property is not about text.
+///
+/// So the frame reports it. Whatever value reaches the emitter, it carries the
+/// marks it received; a default, a static, or anything else that was never
+/// closed reports zero, the host refuses the decomposition by name, and the
+/// capture says so instead of publishing a balanced fiction.
+pub const FRAME_TAIL_MARKS_UNIT: &str = "lw_ft_marks";
+
+/// Every segment closed exactly once: the low `FRAME_TAIL_SEGMENT_COUNT` bits.
+pub const FRAME_TAIL_MARKS_COMPLETE: u64 = (1u64 << FRAME_TAIL_SEGMENT_COUNT) - 1;
+
+pub fn frame_tail_segment_name(code: u16) -> Option<&'static str> {
+    FRAME_TAIL_SEGMENTS
+        .iter()
+        .find(|(segment_code, _)| *segment_code == code)
+        .map(|(_, name)| *name)
+}
+
 pub const POLL_GAP_BUCKET_MAX_US: [u64; 7] = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 64_000];
 
 pub const POLL_GAP_BUCKET_UNIT_NAMES: [&str; POLL_GAP_BUCKET_MAX_US.len() + 1] = [
@@ -2943,6 +3018,70 @@ mod tests {
             assert!(
                 !is_stateful_unit_family(name),
                 "{name} must not fall inside a stateful family, where silence                  means undeclared"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_tail_segment_codes_index_their_own_unit_names() {
+        assert_eq!(
+            FRAME_TAIL_SEGMENTS.len(),
+            FRAME_TAIL_UNIT_NAMES.len(),
+            "every segment needs exactly one wire name"
+        );
+        assert_eq!(FRAME_TAIL_SEGMENT_COUNT, FRAME_TAIL_SEGMENTS.len());
+        let mut seen = BTreeSet::new();
+        for (index, (code, name)) in FRAME_TAIL_SEGMENTS.iter().enumerate() {
+            assert_eq!(
+                usize::from(*code),
+                index,
+                "segment {name} sits at index {index} but claims code {code}; the \
+                 host indexes the name table by code"
+            );
+            assert_eq!(
+                FRAME_TAIL_UNIT_NAMES[index],
+                format!("lw_t{code}_us"),
+                "the wire name for segment {name} must be derivable from its code"
+            );
+            assert!(seen.insert(*name), "segment name {name} is used twice");
+            assert_eq!(frame_tail_segment_name(*code), Some(*name));
+        }
+        assert_eq!(
+            frame_tail_segment_name(FRAME_TAIL_SEGMENT_COUNT as u16),
+            None,
+            "a code this build does not know must resolve to None, not to a \
+             neighbouring segment's name"
+        );
+    }
+
+    #[test]
+    fn every_frame_tail_unit_is_a_per_frame_duration() {
+        for name in FRAME_TAIL_UNIT_NAMES.iter().chain(["lw_ft_us"].iter()) {
+            assert_eq!(
+                unit_accumulation(name),
+                Accumulation::PerFrame,
+                "{name} is a per-frame duration"
+            );
+            assert!(
+                !is_stateful_unit_family(name),
+                "{name} must not fall inside a stateful family, where silence \
+                 means undeclared"
+            );
+        }
+    }
+
+    /// The frame-tail names must not collide with the outside-build names, and
+    /// neither family may absorb the other's codes: both are decoded by the
+    /// host from a one-letter prefix and a number, so `lw_t1_us` and `lw_o1_us`
+    /// differ by exactly one character and a mistake here would silently fold
+    /// tail time into the sweep-loop overhead the frame is measured against.
+    #[test]
+    fn frame_tail_and_outside_build_wire_names_are_disjoint() {
+        let outside: BTreeSet<&str> = OUTSIDE_BUILD_UNIT_NAMES.iter().copied().collect();
+        for name in FRAME_TAIL_UNIT_NAMES {
+            assert!(
+                !outside.contains(name),
+                "{name} is claimed by both the frame-tail and outside-build tables"
             );
         }
     }
