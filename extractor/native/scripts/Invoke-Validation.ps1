@@ -464,7 +464,10 @@ function Invoke-ShippingTests {
         # directory's .cargo-lock anyway, so overlapping BUILDS buys nothing;
         # every root compiles first with a single lock holder at a time.
         foreach ($item in @($plans | Select-Object -First $cargoPlanCount)) {
-            $buildArguments = @($item.Arguments) + '--no-run'
+            # --no-run is build-only and rejects run-phase flags: --no-fail-fast
+            # (the only one the plans carry) must be stripped here and stays on
+            # the phase-B invocation below.
+            $buildArguments = @($item.Arguments | Where-Object { $_ -ne '--no-fail-fast' }) + '--no-run'
             Write-Host ('BUILD> ' + "$([string]$item.Program) $($buildArguments -join ' ')")
             & ([string]$item.Program) @buildArguments
             if ($LASTEXITCODE -ne 0) {
