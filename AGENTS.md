@@ -21,7 +21,7 @@ Read `PROJECT.md` before changing product behaviour, formats, or architecture.
 
 ## Tools
 
-- Agents run ONLY the specific tests they created or altered (targeted `cargo nextest run` on exact test names/files) - never `Invoke-Validation.ps1`, the battery, or any broad suite (owner directive 2026-08-23).
+- Agents, subagents and lanes run NO tests and NO validation - not `cargo test`/`cargo nextest`, not `Invoke-Validation.ps1`, not the battery, not the citation verify/restamp scripts (owner directive 2026-08-24). All testing and validation is done centrally by the orchestrator at landing. A lane may run `cargo check -p <crate>` on the crates it touched, in a lane-private `CARGO_TARGET_DIR`, so its commit compiles; it reports which tests the orchestrator should run.
 - `-Mode Landing` (`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\extractor\native\scripts\Invoke-Validation.ps1 -Mode Landing`) is the orchestrator's gate, run once on the merged tree at landing time; capture the exit code.
 - Run `-Mode ReleaseManual -AllowReleaseManual` only when the owner explicitly requests release/manual validation.
 - Never run a full battery or release/manual validation by default.
@@ -69,10 +69,14 @@ $ReviewExitCode = $LASTEXITCODE
   Codex approves clean - no round limit. Any commit after an APPROVE needs one
   more confirmation round.
 
-## OpenCode runner - mechanics only, no assigned job yet
+## OpenCode runner - the implementation lane runtime
 
-`opencode` (npm `opencode-ai`) is on the Windows PATH. Proven callable, but it has no
-role in the review loop yet; do not substitute it for Codex until the owner says so.
+`opencode` (npm `opencode-ai`) is on the Windows PATH. Owner 2026-08-24: implementation
+lanes run on OpenCode (`-Agent build`) instead of Opus subagents. It is never a reviewer;
+Codex stays the only adversarial reviewer, run by the orchestrator on the lane's commit,
+with findings sent back into the same session by `-SessionId`. Start the wrapper from the
+lane's locked worktree (it runs in the current directory; there is no --dir). The prompt
+carries everything: worktree path, job, proof rules, the no-test rule above, report shape.
 
 ```powershell
 $Result = & .\tools\reviewers\Invoke-OpenCodeReview.ps1 -Prompt $Prompt -RunDir $RunDir
