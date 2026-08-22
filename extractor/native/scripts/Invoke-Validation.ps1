@@ -303,15 +303,47 @@ function Get-ShippingPackageIds {
 function Test-ShippingTestTarget {
     param([Parameter(Mandatory = $true)][string]$Name)
 
+    # Exclusion audit (lane QG follow-up, 2026-08-24). Every name kept out of
+    # the landing plan has a recorded reason:
+    #   citation_integrity / world_fold_citation_authority - no Rust targets
+    #     exist under these names; the gate validates them through
+    #     its own python ExtraPlans (verify_citation_integrity.py /
+    #     verify_world_fold_citations.py below, scheduled when their inputs
+    #     change or -AllValidators is passed), and the names stay listed so
+    #     a duplicate Rust reimplementation cannot shadow that authority;
+    #   soak / soak_f2 - long-run soak binaries with their own [profile.soak];
+    #   fow_hidden_counter_evidence - gate_renderdoc_mined: mined RenderDoc
+    #     capture evidence;
+    #   frame162662_label_size_gate / frame4700_label_size_gate /
+    #     mapname_oracle63_gate - gate_map_bundle(_with_hoi4): map bundle
+    #     generated from live captures (oracle63 also needs the install);
+    #   c07_generated_library_matches_generator - the generator verifies
+    #     against PINNED vanilla installed content and refuses anything else, while
+    #     Landing forwards no game root (only ReleaseManual takes
+    #     -C07GameRoot), so this is install-backed like the gates above;
+    #   xui09_installed_game_evidence / xui22_installed_game_evidence -
+    #     gate_hoi4_install;
+    #   decision_chrome / event_chrome / flag_precedence / markup_law /
+    #     topbar_quads / xui01_definition_admission / xui02_window_manager /
+    #     xui17_characters - install-backed game_ui evidence harness binaries,
+    #     run manually under [profile.evidence].
+    # Everything else runs in the gate: no_silent_skip (the false-green early-
+    # return scanner; it was red on master for days precisely because it was
+    # not planned), gate_currency, script_status_vocabulary_sweep,
+    # extractor_dependency_boundary and replay_dependency_boundary are fast
+    # deterministic source/metadata checks; mapname_7b_acceptance and
+    # o05_fixed_object_promotion each carry exactly one install-gated test,
+    # and those two functions stay excluded from ci BY TEST NAME in
+    # .config/nextest.toml (draw_time_cull_matches_the_captured_drawn_set,
+    # vanilla_admission_matches_all_frozen_o05_semantics), so planning the
+    # targets runs only their committed-fixture deterministic tests.
     return $Name -notin @(
         'citation_integrity', 'world_fold_citation_authority',
         'c07_generated_library_matches_generator',
-        'script_status_vocabulary_sweep', 'no_silent_skip', 'gate_currency',
-        'extractor_dependency_boundary', 'replay_dependency_boundary',
         'soak', 'soak_f2', 'fow_hidden_counter_evidence',
         'frame162662_label_size_gate', 'frame4700_label_size_gate',
-        'mapname_7b_acceptance', 'mapname_oracle63_gate',
-        'o05_fixed_object_promotion', 'xui09_installed_game_evidence',
+        'mapname_oracle63_gate',
+        'xui09_installed_game_evidence',
         'xui22_installed_game_evidence', 'decision_chrome', 'event_chrome',
         'flag_precedence', 'markup_law', 'topbar_quads',
         'xui01_definition_admission', 'xui02_window_manager', 'xui17_characters'
