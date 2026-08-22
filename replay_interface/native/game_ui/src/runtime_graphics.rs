@@ -1598,6 +1598,7 @@ mod tests {
             definition_content: content("interface/test.gfx", &"c".repeat(64), 1),
             texture_slots: vec![crate::authored_role_index::AuthoredSpriteTextureRole {
                 authored_slot_key: "texturefile".into(),
+                authored_path: "gfx/interface/test.dds".into(),
                 content: content("gfx/interface/test.dds", &"d".repeat(64), 1),
             }],
             effect_content: content(

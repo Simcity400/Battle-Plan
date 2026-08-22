@@ -469,7 +469,7 @@ impl<'a> Parser<'a> {
             match token.kind {
                 TokenKind::Eof => {
                     if stop_on_close {
-                        self.recover_at(&token, "missing closing brace; accepted end of file");
+                        self.recover_at(&token, ENGINE_TOLERATED_EOF_CLOSE_RECOVERY);
                     }
                     break;
                 }
@@ -538,7 +538,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 TokenKind::Eof => {
-                    self.recover_at(&token, "missing closing brace; accepted end of file");
+                    self.recover_at(&token, ENGINE_TOLERATED_EOF_CLOSE_RECOVERY);
                     break;
                 }
                 TokenKind::Atom(_) | TokenKind::Quoted(_) | TokenKind::Equals => {}
@@ -1002,5 +1002,47 @@ mod tests {
             value = value.first_value_ci("a").unwrap();
         }
         assert_eq!(value.first_scalar_ci("inner"), Some("1"));
+    }
+
+    #[test]
+    fn lone_eof_block_close_on_a_cleanly_ended_file_is_engine_tolerated() {
+        let bytes = b"spriteTypes = {\n spriteType = { name = A }\n";
+        let doc = parse_bytes(bytes);
+        assert_eq!(doc.recoveries.len(), 1);
+        assert_eq!(
+            doc.recoveries[0].message,
+            ENGINE_TOLERATED_EOF_CLOSE_RECOVERY
+        );
+        assert!(engine_tolerated_outer_eof(&doc, bytes));
+    }
+
+    #[test]
+    fn eof_close_tolerance_requires_one_recovery_and_a_final_brace() {
+        let doc = parse_str("a = { b = { c = 1\n");
+        assert_eq!(
+            doc.recoveries.len(),
+            2,
+            "two open braces closed by EOF are not the tolerated single closure"
+        );
+        assert!(!engine_tolerated_outer_eof(&doc, b"a = { b = { c = 1\n"));
+
+        let no_final_brace = b"a = { b = 1\ntrailing\n";
+        let doc = parse_bytes(no_final_brace);
+        assert_eq!(doc.recoveries.len(), 1);
+        assert!(!engine_tolerated_outer_eof(&doc, no_final_brace));
+
+        let damaged = b"a = { b = 1 } }\n";
+        let doc = parse_bytes(damaged);
+        assert_eq!(doc.recoveries.len(), 1);
+        assert_ne!(
+            doc.recoveries[0].message,
+            ENGINE_TOLERATED_EOF_CLOSE_RECOVERY
+        );
+        assert!(!engine_tolerated_outer_eof(&doc, damaged));
+
+        let clean = b"a = { b = 1 }\n";
+        let doc = parse_bytes(clean);
+        assert!(doc.recoveries.is_empty());
+        assert!(!engine_tolerated_outer_eof(&doc, clean));
     }
 }

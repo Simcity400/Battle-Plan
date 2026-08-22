@@ -587,24 +587,41 @@ impl AssetResolver {
         if let Some(resolved) = self.resolve_optional_file(&normalized)? {
             return Ok(resolved);
         }
-        let Some((stem, ext)) = normalized.rsplit_once('.') else {
+        let candidates = texture_stem_fallback_candidates(&normalized);
+        if candidates.is_empty() {
             return Err(GameUiError::missing(format!(
                 "missing texture asset: {normalized}"
             )));
-        };
-        let alternate = match ext.to_ascii_lowercase().as_str() {
-            "tga" => Some(format!("{stem}.dds")),
-            "dds" => Some(format!("{stem}.tga")),
-            _ => None,
-        };
-        if let Some(alternate) = alternate {
-            if let Some(resolved) = self.resolve_optional_file(&alternate)? {
-                return Ok(resolved);
+        }
+        // The engine's precedence between same-stem formats in different
+        // layers is unproven, so an ambiguous stem refuses instead of guessing.
+        let mut distinct: Vec<ResolvedFile> = Vec::new();
+        for candidate in &candidates {
+            if let Some(resolved) = self.resolve_optional_file(candidate)? {
+                if !distinct.iter().any(|row| row.path == resolved.path) {
+                    distinct.push(resolved);
+                }
             }
         }
-        Err(GameUiError::missing(format!(
-            "missing texture asset: {normalized}"
-        )))
+        match distinct.len() {
+            0 => Err(GameUiError::missing(format!(
+                "missing texture asset: {normalized} (also tried {})",
+                candidates.join(", ")
+            ))),
+            1 => Ok(distinct.swap_remove(0)),
+            _ => Err(GameUiError::new(
+                ErrorKind::Other,
+                format!(
+                    "ambiguous texture asset: {normalized} matches same-stem files {}",
+                    distinct
+                        .iter()
+                        .filter_map(|row| row.path.file_name())
+                        .map(|name| name.to_string_lossy().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )),
+        }
     }
 
     pub fn decode_sprite(&self, sprite: &SpriteDefinition) -> Result<DecodedSprite> {
@@ -827,6 +844,35 @@ fn join_rel(rel_dir: &str, suffix: &Path) -> String {
     }
 }
 
+/// The engine resolves a texture by STEM across its three shipped formats (the
+/// vanilla corpus ships 61 `.png`-declared sprites whose only file is the
+/// same-stem `.dds`, plus 56 `tga`->`dds` pairs), so stem fallback covers
+/// exactly these formats; any other declared extension gets no fallback.
+pub(crate) fn texture_stem_fallback_candidates(normalized: &str) -> Vec<String> {
+    const SHIPPED_TEXTURE_FORMATS: [&str; 3] = ["dds", "tga", "png"];
+    let Some((stem, extension)) = normalized.rsplit_once('.') else {
+        return Vec::new();
+    };
+    let declared = extension.to_ascii_lowercase();
+    if !SHIPPED_TEXTURE_FORMATS.contains(&declared.as_str()) {
+        return Vec::new();
+    }
+    SHIPPED_TEXTURE_FORMATS
+        .into_iter()
+        .filter(|candidate| *candidate != declared)
+        .map(|candidate| format!("{stem}.{candidate}"))
+        .collect()
+}
+
+/// True when a bound content path is an authored texture slot's own path or
+/// the engine's unambiguous same-stem fallback resolution of it.
+pub(crate) fn texture_slot_paths_match(authored_normalized: &str, bound: &str) -> bool {
+    authored_normalized.eq_ignore_ascii_case(bound)
+        || texture_stem_fallback_candidates(authored_normalized)
+            .into_iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(bound))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,6 +890,73 @@ mod tests {
         let resolver = AssetResolver::new(vec![mod_root, vanilla]);
         let resolved = resolver.resolve_file("gfx\\interface\\icon.dds").unwrap();
         assert_eq!(fs::read(resolved.path).unwrap(), b"mod");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn texture_slot_match_accepts_exact_and_unambiguous_stem_bindings() {
+        assert!(texture_slot_paths_match(
+            "gfx/interface/stem_bg.png",
+            "gfx/interface/stem_bg.dds"
+        ));
+        assert!(texture_slot_paths_match(
+            "gfx/interface/stem_bg.dds",
+            "gfx/interface/stem_bg.dds"
+        ));
+        assert!(!texture_slot_paths_match(
+            "gfx/interface/stem_bg.png",
+            "gfx/interface/unrelated.dds"
+        ));
+        assert!(!texture_slot_paths_match(
+            "gfx/interface/stem_bg.webp",
+            "gfx/interface/stem_bg.dds"
+        ));
+    }
+
+    #[test]
+    fn texture_declared_png_falls_back_to_the_same_stem_dds() {
+        let root = temp_root("texture_stem_png");
+        let game = root.join("game");
+        fs::create_dir_all(game.join("gfx/interface")).unwrap();
+        fs::write(game.join("gfx/interface/stem_bg.dds"), b"dds").unwrap();
+        let resolver = AssetResolver::new(vec![game]);
+        let resolved = resolver
+            .resolve_texture_file("gfx/interface/stem_bg.png")
+            .unwrap();
+        assert!(resolved.path.ends_with("stem_bg.dds"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn texture_stem_fallback_refuses_an_ambiguous_stem_instead_of_guessing() {
+        let root = temp_root("texture_stem_ambiguous");
+        let game = root.join("game");
+        fs::create_dir_all(game.join("gfx/interface")).unwrap();
+        fs::write(game.join("gfx/interface/stem_bg.dds"), b"dds").unwrap();
+        fs::write(game.join("gfx/interface/stem_bg.tga"), b"tga").unwrap();
+        let resolver = AssetResolver::new(vec![game]);
+        let error = resolver
+            .resolve_texture_file("gfx/interface/stem_bg.png")
+            .unwrap_err();
+        assert!(
+            error.message.contains("ambiguous texture asset"),
+            "{error:?}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn texture_extension_outside_the_shipped_formats_gets_no_stem_fallback() {
+        let root = temp_root("texture_stem_unknown_ext");
+        let game = root.join("game");
+        fs::create_dir_all(game.join("gfx/interface")).unwrap();
+        fs::write(game.join("gfx/interface/stem_bg.dds"), b"dds").unwrap();
+        let resolver = AssetResolver::new(vec![game]);
+        let error = resolver
+            .resolve_texture_file("gfx/interface/stem_bg.webp")
+            .unwrap_err();
+        assert!(error.message.contains("missing texture asset"), "{error:?}");
+        assert!(!error.message.contains("also tried"), "{error:?}");
         let _ = fs::remove_dir_all(root);
     }
 

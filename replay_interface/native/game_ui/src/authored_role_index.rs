@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const AUTHORED_ROLE_INDEX_SCHEMA: &str = "replay.authored-gui-role-index.v7";
+pub const AUTHORED_ROLE_INDEX_SCHEMA: &str = "replay.authored-gui-role-index.v8";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,6 +58,9 @@ pub struct AuthoredSpriteRole {
 #[serde(deny_unknown_fields)]
 pub struct AuthoredSpriteTextureRole {
     pub authored_slot_key: String,
+    /// The normalized texture path the definition declared; the bound content
+    /// must be this path's exact or unambiguous same-stem resolution.
+    pub authored_path: String,
     pub content: UsedContentKey,
 }
 
@@ -533,10 +536,18 @@ impl AuthenticatedGuiRoleIndex {
                     };
                     let resolved = match resolve_optional(&normalized)? {
                         Some(file) => Some(file),
-                        None => match alternate_texture_path(&normalized) {
-                            Some(alternate) => resolve_optional(&alternate)?,
-                            None => None,
-                        },
+                        None => {
+                            match unambiguous_same_stem_texture(&normalized, &mut resolve_optional)? {
+                                SameStemTexture::Resolved(file) => Some(file),
+                                SameStemTexture::Ambiguous => {
+                                    missing.insert(format!(
+                                        "direct-texture:{normalized}:ambiguous-same-stem"
+                                    ));
+                                    continue;
+                                }
+                                SameStemTexture::Absent => None,
+                            }
+                        }
                     };
                     match resolved {
                         Some(file) => {
@@ -1421,9 +1432,16 @@ where
         };
         let resolved = match resolve_optional(&normalized)? {
             Some(file) => Some(file),
-            None => match alternate_texture_path(&normalized) {
-                Some(alternate) => resolve_optional(&alternate)?,
-                None => None,
+            None => match unambiguous_same_stem_texture(&normalized, resolve_optional)? {
+                SameStemTexture::Resolved(file) => Some(file),
+                SameStemTexture::Ambiguous => {
+                    missing.insert(format!(
+                        "sprite:{}:texture:{normalized}:ambiguous-same-stem",
+                        sprite.name
+                    ));
+                    continue;
+                }
+                SameStemTexture::Absent => None,
             },
         };
         match resolved {
@@ -1432,6 +1450,7 @@ where
                 dependencies.insert(key.normalized_game_relative_path.clone(), key.clone());
                 texture_slots.push(AuthoredSpriteTextureRole {
                     authored_slot_key: texture.key.clone(),
+                    authored_path: normalized,
                     content: key,
                 });
             }
@@ -1575,12 +1594,40 @@ fn admitted_key<'a>(
     )
 }
 
-fn alternate_texture_path(path: &str) -> Option<String> {
-    let (stem, extension) = path.rsplit_once('.')?;
-    match extension.to_ascii_lowercase().as_str() {
-        "dds" => Some(format!("{stem}.tga")),
-        "tga" => Some(format!("{stem}.dds")),
-        _ => None,
+/// Outcome of looking up a texture's same-stem fallback candidates.
+enum SameStemTexture {
+    Resolved(crate::assets::ResolvedFile),
+    Absent,
+    Ambiguous,
+}
+
+/// The engine resolves textures by stem across its shipped formats, but its
+/// precedence between same-stem files in different layers is unproven, so an
+/// ambiguous stem refuses instead of guessing.
+fn unambiguous_same_stem_texture<F>(
+    normalized: &str,
+    resolve_optional: &mut F,
+) -> Result<SameStemTexture, String>
+where
+    F: FnMut(&str) -> Result<Option<crate::assets::ResolvedFile>, String>,
+{
+    let mut hits: Vec<crate::assets::ResolvedFile> = Vec::new();
+    for candidate in crate::assets::texture_stem_fallback_candidates(normalized) {
+        if let Some(file) = resolve_optional(&candidate)? {
+            if !hits
+                .iter()
+                .any(|row: &crate::assets::ResolvedFile| row.path == file.path)
+            {
+                hits.push(file);
+            }
+        }
+    }
+    match hits.len() {
+        0 => Ok(SameStemTexture::Absent),
+        1 => Ok(SameStemTexture::Resolved(
+            hits.swap_remove(0),
+        )),
+        _ => Ok(SameStemTexture::Ambiguous),
     }
 }
 

@@ -5,8 +5,8 @@ use crate::font::authored_bitmap_font_registry_paths_for_language;
 use crate::gfx::SpriteRegistry;
 use crate::gui::GuiElement;
 use crate::paradox_text::{
-    decode_text, destructive_event_count, destructive_losses, diagnose_text_decode, parse_bytes,
-    Value,
+    decode_text, destructive_event_count, destructive_losses, diagnose_text_decode,
+    engine_tolerated_outer_eof, parse_bytes, Value,
 };
 use map_viewer::{GameFileResolver, ResolvedGameFile};
 use portable_content_manifest::hud_role::{
@@ -307,7 +307,9 @@ pub fn emit_effective_vfs_hud_role_index(
             Ok(bytes) => {
                 record_decode_damage(&mut decode_damaged, &rel, &bytes)?;
                 let document = parse_bytes(&bytes);
-                if !document.recoveries.is_empty() {
+                if !document.recoveries.is_empty()
+                    && !engine_tolerated_outer_eof(&document, &bytes)
+                {
                     gfx_parse_failed.insert(rel, folded_file_text(&path));
                     continue;
                 }
@@ -453,9 +455,9 @@ fn append_root_dependencies(
                         texture_key,
                     );
                 }
-                Err(_) => missing.push(format!(
-                    "sprite_texture:{element}:{sprite_id}:{}:{}",
-                    slot.key, texture_path
+                Err(error) => missing.push(format!(
+                    "sprite_texture:{element}:{sprite_id}:{}:{}:{}",
+                    slot.key, texture_path, error
                 )),
             }
         }
@@ -687,21 +689,42 @@ fn resolve_texture_key(
     {
         return key_from_resolved(&resolved, authority);
     }
-    let Some((stem, extension)) = normalized.rsplit_once('.') else {
+    let candidates = crate::assets::texture_stem_fallback_candidates(&normalized);
+    if candidates.is_empty() {
         return Err(format!("missing HUD texture dependency {normalized}"));
-    };
-    let alternate = match extension.to_ascii_lowercase().as_str() {
-        "tga" => format!("{stem}.dds"),
-        "dds" => format!("{stem}.tga"),
-        _ => return Err(format!("missing HUD texture dependency {normalized}")),
-    };
-    let resolved = resolver
-        .resolve_with_provenance(&alternate)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| {
-            format!("missing HUD texture dependency {normalized} (also tried {alternate})")
-        })?;
-    key_from_resolved(&resolved, authority)
+    }
+    // The engine's precedence between same-stem formats in different layers is
+    // unproven, so an ambiguous stem refuses instead of guessing a payload.
+    let mut hits = Vec::new();
+    for candidate in &candidates {
+        if let Some(resolved) = resolver
+            .resolve_with_provenance(candidate)
+            .map_err(|error| error.to_string())?
+        {
+            let identity = (
+                normalize_path(&resolved.logical_path),
+                resolved.source.ordinal,
+                resolved.source.source_id.clone(),
+            );
+            if !hits.iter().any(|(seen, _)| *seen == identity) {
+                hits.push((identity, resolved));
+            }
+        }
+    }
+    match hits.len() {
+        0 => Err(format!(
+            "missing HUD texture dependency {normalized} (also tried {})",
+            candidates.join(", ")
+        )),
+        1 => key_from_resolved(&hits.swap_remove(0).1, authority),
+        _ => Err(format!(
+            "ambiguous HUD texture dependency {normalized}: {}",
+            hits.into_iter()
+                .map(|(identity, _)| identity.0)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
 }
 
 fn key_from_resolved(
@@ -1235,6 +1258,209 @@ mod tests {
                 .filter(|closure| !closure.complete_dependency_closure)
                 .count(),
             1
+        );
+        index.validate().unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gfx_relying_on_the_engine_tolerated_eof_close_still_closes_hud_roots() {
+        let root = temp("tolerated_eof_gfx");
+        let (game, mod_root) = fixture(&root, true);
+        fs::create_dir_all(game.join("gfx/interface")).unwrap();
+        fs::write(game.join("gfx/interface/tolerated_eof.dds"), b"eof").unwrap();
+        // Shipped-vanilla shape (cf. interface/powerbalanceview.gfx): the outer
+        // block never closes and the last non-whitespace byte is the final
+        // entry's closing brace.
+        fs::write(
+            game.join("interface/tolerated_eof.gfx"),
+            r#"spriteTypes = {
+                spriteType = {
+                    name = GFX_tolerated_eof
+                    texturefile = "gfx/interface/tolerated_eof.dds"
+                }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            game.join("interface/core.gfx"),
+            r#"bitmapfonts = {
+                bitmapfont = {
+                    name = "Alias"
+                    path = "gfx/fonts/base"
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::create_dir_all(game.join("gfx/fonts")).unwrap();
+        fs::write(
+            game.join("gfx/fonts/base.fnt"),
+            "info face=\"base\" size=16\n\
+             common lineHeight=16 base=12 scaleW=1 scaleH=1 pages=1\n\
+             page id=0 file=\"base.dds\"\n\
+             chars count=3\n\
+             char id=49 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0\n\
+             char id=50 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0\n\
+             char id=51 x=0 y=0 width=1 height=1 xoffset=0 yoffset=0 xadvance=1 page=0\n",
+        )
+        .unwrap();
+        fs::write(game.join("gfx/fonts/base.dds"), b"base").unwrap();
+        fs::write(
+            mod_root.join("interface/topbar.gui"),
+            r#"guiTypes = {
+                containerWindowType = {
+                    name = "topbar"
+                    iconType = {
+                        name = "tolerated_eof_sprite"
+                        spriteType = "GFX_tolerated_eof"
+                    }
+                    instantTextBoxType = {
+                        name = "tolerated_eof_text"
+                        text = "123"
+                        font = "Alias"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resolver = GameFileResolver::with_mod_paths(&game, vec![mod_root]).unwrap();
+        let index =
+            emit_effective_vfs_hud_role_index(&resolver, &"f".repeat(64), "english").unwrap();
+        let topbar = index
+            .closures
+            .iter()
+            .find(|closure| closure.runtime_root_name == "topbar")
+            .unwrap();
+        assert!(
+            topbar.complete_dependency_closure,
+            "{:?}",
+            topbar.missing_roles
+        );
+        let paths = topbar
+            .bindings
+            .iter()
+            .map(|binding| binding.content.normalized_game_relative_path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(paths.contains("interface/core.gfx"));
+        assert!(paths.contains("gfx/interface/tolerated_eof.dds"));
+        assert!(paths.contains("gfx/fonts/base.fnt"));
+        assert_eq!(
+            index
+                .closures
+                .iter()
+                .filter(|closure| closure.complete_dependency_closure)
+                .count(),
+            ENGINE_CONTROLLER_ROOTS.len()
+        );
+        index.validate().unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn texture_declared_png_resolves_through_the_engine_stem_fallback() {
+        let root = temp("png_declared_dds_file");
+        let (game, mod_root) = fixture(&root, true);
+        fs::create_dir_all(game.join("gfx/interface")).unwrap();
+        // Shipped-vanilla shape (cf. gfx/interface/divisiondesigner/
+        // division_icon_bg_transp): the .gfx declares a .png that does not
+        // exist and only the same-stem .dds ships.
+        fs::write(game.join("gfx/interface/stem_fallback.dds"), b"dds").unwrap();
+        fs::write(
+            game.join("interface/stem_fallback.gfx"),
+            r#"spriteTypes = {
+                spriteType = {
+                    name = GFX_stem_fallback
+                    texturefile = "gfx/interface/stem_fallback.png"
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            mod_root.join("interface/topbar.gui"),
+            r#"guiTypes = {
+                containerWindowType = {
+                    name = "topbar"
+                    iconType = {
+                        name = "stem_fallback_sprite"
+                        spriteType = "GFX_stem_fallback"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resolver = GameFileResolver::with_mod_paths(&game, vec![mod_root]).unwrap();
+        let index =
+            emit_effective_vfs_hud_role_index(&resolver, &"a".repeat(64), "english").unwrap();
+        let topbar = index
+            .closures
+            .iter()
+            .find(|closure| closure.runtime_root_name == "topbar")
+            .unwrap();
+        assert!(
+            topbar.complete_dependency_closure,
+            "{:?}",
+            topbar.missing_roles
+        );
+        assert!(topbar.bindings.iter().any(|binding| {
+            binding.content.normalized_game_relative_path == "gfx/interface/stem_fallback.dds"
+        }));
+        index.validate().unwrap();
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ambiguous_texture_stem_withdraws_closure_completeness() {
+        let root = temp("ambiguous_stem");
+        let (game, mod_root) = fixture(&root, true);
+        fs::create_dir_all(game.join("gfx/interface")).unwrap();
+        fs::write(game.join("gfx/interface/stem_ambiguous.dds"), b"dds").unwrap();
+        fs::write(game.join("gfx/interface/stem_ambiguous.tga"), b"tga").unwrap();
+        fs::write(
+            game.join("interface/stem_ambiguous.gfx"),
+            r#"spriteTypes = {
+                spriteType = {
+                    name = GFX_stem_ambiguous
+                    texturefile = "gfx/interface/stem_ambiguous.png"
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            mod_root.join("interface/topbar.gui"),
+            r#"guiTypes = {
+                containerWindowType = {
+                    name = "topbar"
+                    iconType = {
+                        name = "stem_ambiguous_sprite"
+                        spriteType = "GFX_stem_ambiguous"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let resolver = GameFileResolver::with_mod_paths(&game, vec![mod_root]).unwrap();
+        let index =
+            emit_effective_vfs_hud_role_index(&resolver, &"b".repeat(64), "english").unwrap();
+        let topbar = index
+            .closures
+            .iter()
+            .find(|closure| closure.runtime_root_name == "topbar")
+            .unwrap();
+        assert!(
+            !topbar.complete_dependency_closure,
+            "an unproven same-stem precedence must not be guessed into a binding"
+        );
+        assert!(
+            topbar
+                .missing_roles
+                .iter()
+                .any(|role| role.starts_with("sprite_texture:")
+                    && role.contains("ambiguous HUD texture dependency")),
+            "{:?}",
+            topbar.missing_roles
         );
         index.validate().unwrap();
         portable_test_fs_retry::remove_dir_all(root).unwrap();

@@ -214,6 +214,11 @@ impl<'a> ProductionContentInterpreter<'a> {
                     .map_err(|error| add_logical_path(error, rel_path))?;
                 (decoded.format, decoded.image)
             }
+            "png" => {
+                let decoded = crate::png::decode_bytes(&bytes.value)
+                    .map_err(|error| add_logical_path(error, rel_path))?;
+                (decoded.format, decoded.image)
+            }
             _ => {
                 return Err(GameUiError::unsupported_texture_extension(
                     ext.clone(),

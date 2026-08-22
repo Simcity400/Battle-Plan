@@ -1,7 +1,8 @@
 
 use crate::assets::AssetResolver;
 use crate::paradox_text::{
-    destructive_event_count, diagnose_text_decode, parse_bytes, Entry, Value,
+    destructive_event_count, diagnose_text_decode, engine_tolerated_outer_eof, parse_bytes, Entry,
+    Value,
 };
 use crate::{GameUiError, Result};
 use replay_core::{Leaf, ScriptedGuiRuntimeInputs, ScriptedGuiView};
@@ -227,14 +228,8 @@ pub fn load_scripted_gui_registry(resolver: &AssetResolver) -> Result<ScriptedGu
             ));
         }
         let document = parse_bytes(&bytes);
-        let engine_tolerated_outer_eof = document.recoveries.len() == 1
-            && document.recoveries[0].message
-                == "missing closing brace; accepted end of file"
-            && bytes
-                .iter()
-                .rfind(|byte| !byte.is_ascii_whitespace())
-                .is_some_and(|byte| *byte == b'}');
-        if engine_tolerated_outer_eof {
+        let tolerated_eof_close = engine_tolerated_outer_eof(&document, &bytes);
+        if tolerated_eof_close {
             let recovery = &document.recoveries[0];
             engine_tolerated_eof_closures.push(format!(
                 "{}:{}:{}:{}",

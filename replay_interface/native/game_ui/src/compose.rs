@@ -3735,8 +3735,13 @@ impl<'a> Compositor<'a> {
                 .iter()
                 .zip(&sprite_role.texture_slots)
                 .all(|(slot, texture_role)| {
-                    slot.path
-                        .eq_ignore_ascii_case(&texture_role.content.normalized_game_relative_path)
+                    matches!(
+                        portable_content_manifest::normalize_game_relative_path(&slot.path),
+                        Ok(authored) if authored.eq_ignore_ascii_case(&texture_role.authored_path)
+                    ) && crate::assets::texture_slot_paths_match(
+                        &texture_role.authored_path,
+                        &texture_role.content.normalized_game_relative_path,
+                    )
                 });
         if !definition_matches {
             return Err(AuthenticatedComposeRejection::SpriteDefinitionMismatch(
@@ -4112,9 +4117,13 @@ impl<'a> Compositor<'a> {
                 .iter()
                 .zip(&sprite_role.texture_slots)
                 .any(|(slot, texture_role)| {
-                    !slot
-                        .path
-                        .eq_ignore_ascii_case(&texture_role.content.normalized_game_relative_path)
+                    !matches!(
+                        portable_content_manifest::normalize_game_relative_path(&slot.path),
+                        Ok(authored) if authored.eq_ignore_ascii_case(&texture_role.authored_path)
+                    ) || !crate::assets::texture_slot_paths_match(
+                        &texture_role.authored_path,
+                        &texture_role.content.normalized_game_relative_path,
+                    )
                 })
             || crate::gfx::a729_effect_shader_path(sprite.effect_file.as_deref())
                 .ok()
@@ -4201,6 +4210,8 @@ impl<'a> Compositor<'a> {
                     .map(|decoded| (decoded.format, decoded.image)),
                 "tga" => crate::tga::decode_bytes(&texture_bytes)
                     .map(|decoded| (decoded.format, decoded.image)),
+                "png" => crate::png::decode_bytes(&texture_bytes)
+                    .map(|decoded| (decoded.format, decoded.image)),
                 _ => Err(GameUiError::unsupported_texture_extension(
                     if extension.is_empty() {
                         "<none>"
@@ -4283,6 +4294,7 @@ impl<'a> Compositor<'a> {
             let decoded = match extension.as_str() {
                 "dds" => crate::dds::decode_bytes(&bytes).map(|decoded| decoded.image),
                 "tga" => crate::tga::decode_bytes(&bytes).map(|decoded| decoded.image),
+                "png" => crate::png::decode_bytes(&bytes).map(|decoded| decoded.image),
                 _ => Err(GameUiError::unsupported_texture_extension(
                     if extension.is_empty() {
                         "<none>"
@@ -7649,6 +7661,7 @@ mod tests {
             definition_content: cache_content("interface/test.gfx", 'c'),
             texture_slots: vec![crate::authored_role_index::AuthoredSpriteTextureRole {
                 authored_slot_key: "texturefile".into(),
+                authored_path: CAPTURED_TEXTURE_PATH.into(),
                 content: UsedContentKey {
                     payload_sha256: CAPTURED_TEXTURE_SHA256.into(),
                     payload_bytes: 20_424,
