@@ -1,0 +1,11 @@
+[package]
+name = "xmap20_effects"
+version = "0.1.0"
+edition = "2021"
+description = "Pending capture-side XMAP20 effects producer: per-hour sealed effect lifecycle frames"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+compact_contract = { path = "../../compact_contract" }

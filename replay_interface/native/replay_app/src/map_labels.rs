@@ -47,7 +47,6 @@ use crate::text::TextRenderer;
 use crate::Result;
 
 pub const MAP_LABEL_FONT_NAME: &str = "tahoma_60";
-pub const MAP_LABEL_SHADER_SOURCE: &str = "gfx/FX/mapname.shader";
 pub const XMAP21_RESOURCE_TEXT_DRAW_SCHEMA: &str =
     "hoi4.replay.xmap17-xmap21-resource-text-draw.v1";
 pub const XMAP21_VP_CAPITAL_TEXT_DRAW_SCHEMA: &str =

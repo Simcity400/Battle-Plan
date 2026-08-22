@@ -195,6 +195,7 @@ dependencies = [
  "victory_points",
  "windows-sys",
  "xmap17_labels",
+ "xmap20_effects",
  "xui26_frontend",
 ]
 
@@ -1303,6 +1304,13 @@ dependencies = [
 
 [[package]]
 name = "xmap17_labels"
+version = "0.1.0"
+dependencies = [
+ "compact_contract",
+]
+
+[[package]]
+name = "xmap20_effects"
 version = "0.1.0"
 dependencies = [
  "compact_contract",
