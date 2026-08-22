@@ -51,7 +51,15 @@ param(
     # Where to persist the session id and a copy of the transcript.
     [string] $RunDir,
 
-    [string] $Title
+    [string] $Title,
+
+    # Attach to an already-running hidden `opencode serve` (e.g. http://127.0.0.1:4097)
+    # instead of letting each run mint its own detached server. On Windows a detached
+    # server has no console, so every shell command a lane runs opened a visible,
+    # blank terminal window (owner complaint 2026-08-24). With --attach the server's
+    # hidden console is inherited and nothing pops up. The job runs in the current
+    # directory either way (--dir is passed explicitly).
+    [string] $Attach
 )
 
 $ErrorActionPreference = 'Stop'
@@ -111,6 +119,7 @@ if ($RunDir) {
 }
 
 $ocBase = @('run', '--format', 'json', '--auto', '--agent', $Agent, '--model', $Model)
+if ($Attach) { $ocBase += @('--attach', $Attach, '--dir', (Get-Location).Path) }
 if ($Variant) { $ocBase += @('--variant', $Variant) }
 
 $events       = New-Object System.IO.StreamWriter($EventsPath, $false, [Text.UTF8Encoding]::new($false))
