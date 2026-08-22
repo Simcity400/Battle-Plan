@@ -895,6 +895,28 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
             },
         ),
         (
+            "mapmode.supply_state",
+            NamedSnapshotFixture {
+                name: "measured D62 hub-motorization census",
+                rest: json!({
+                    "supply": {"_r2_hub_motorization_live": [{
+                        "country": "GER",
+                        "owner_tag_db_id": 3,
+                        "motorization_country": "GER",
+                        "actor_tag_db_id": 3,
+                        "province_id": 6354,
+                        "state_id": 42,
+                        "record_index": 0,
+                        "map_entry_index": 0,
+                        "motorization_level": 2,
+                        "truck_fraction_raw": 100000,
+                        "node_motorized": true,
+                        "scope": "country_level"
+                    }]}
+                }),
+            },
+        ),
+        (
             "weather.province_snow_accumulator",
             NamedSnapshotFixture {
                 name: "authenticated D24 province-snow row",
@@ -1097,6 +1119,18 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
                 .insert("census_complete".into(), json!(false));
             true
         }
+        "mapmode.supply_state" => {
+            // The fold's fail-closed shape: a domain the collector could not
+            // vouch for stores Null, which the strict decoder reports as
+            // DomainUnavailable rather than an empty Present census.
+            object
+                .entry("supply")
+                .or_insert_with(|| json!({}))
+                .as_object_mut()
+                .expect("supply is an object in the measured fixture")
+                .insert("_r2_hub_motorization_live".into(), Value::Null);
+            false
+        }
         "weather.province_snow_accumulator" => {
             let provinces = object
                 .get_mut("map")
@@ -1286,6 +1320,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
         "weather.province_snow_accumulator" => frame.weather_province_snow_status(),
         "map_furniture.current_victory_points" => frame.map_furniture_status(),
         "mapmode.raids" => frame.raids_status(),
+        "mapmode.supply_state" => frame.hub_motorization_status(),
         "session.player_country_set" => map_viewer::player_country_set_leaf_status(frame),
         "world.calendar_time" => match frame.date() {
             Some(_) => ViewStatus::Present,
@@ -2845,7 +2880,11 @@ fn lane_hw_rows_with_an_open_producer_defect_stay_unproven() {
         "country.presentation_identity",
         "logistics.rail_hub_frames",
         "logistics.rail_topology_state",
-        "mapmode.supply_state",
+        // `mapmode.supply_state` LEFT this list on 2026-08-22 (lane RD): the
+        // D62 engine-law dossier landed
+        // (extractor/native/runs/rd_d62_supply_law/DOSSIER.md) and
+        // MAP_AUTHORITY_OWNER_PROVEN_INPUTS now consumes
+        // WorldFrame.hub_motorization for it.
         "mapmode.intelligence",
         // `session.player_country_set` LEFT this list on 2026-08-21 (lane PL).
         //
