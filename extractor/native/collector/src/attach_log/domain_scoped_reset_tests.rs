@@ -56,6 +56,10 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          the fold received",
     ),
     (
+        "payload_span_delta",
+        "the PSD1 wire-delta producer for d41/d43/d53 (lane PS). Same classification as          d100's wire baseline and for the same reason: it is not a continuity claim, it names          the PAYLOAD the fold holds, and every delta or no-change record names that baseline          by SHA-256 -- so a consumer holding anything else refuses the hour by name rather          than reconstructing a payload nobody observed. It survives the blanket reset and          takes a PER-DOMAIN roll-back instead: the staged half is dropped for exactly those          enabled domains whose own records became a gap, which is what keeps the committed          half equal to what the fold received. Wiping it on every rejected bracket would force          a keyframe there, and d53's keyframe is 2.88 MB against a 26 MB delta stream for the          whole of captures/oz_tip",
+    ),
+    (
         "xmap07_snow_mud_generation_counter",
         "d100's monotonic anchor-generation ordinal, carried across the reset unconditionally \
          (lane PB). Holding it INSIDE the epoch tracker is what made the field useless: the \

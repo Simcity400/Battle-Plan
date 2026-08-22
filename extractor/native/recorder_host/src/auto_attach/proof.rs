@@ -762,12 +762,39 @@ fn data_record_matches_perf(
     Ok(matches)
 }
 
+/// The attach proof folds ONE record into a FRESH `WorldFold`, with no baseline
+/// store behind it, so it can only ever read a payload that stands alone. This
+/// function is what keeps it that way, and it is the reason `folded_snapshot`
+/// below is NOT another `PSD1` walker: every domain but 10, 44 and 68 is refused
+/// here, before `world_fold_proves_material_record` is reached, and none of those
+/// three is delta-enabled (asserted immediately below). A wrapped d43/d53 record
+/// therefore never reaches the fold at all.
+///
+/// The `Some(0)` is the second guard and the one that matters if that ever
+/// changes: a proof domain that started carrying envelopes would arrive with
+/// `COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA` set, fail the allowed-flag mask, and
+/// be declined as a proof candidate. Declining is correct — a `NoChange` or
+/// `Delta` body proves nothing on its own, and this fold holds no baseline to
+/// resolve it against — but the search would then quietly never find its first
+/// world record, so the assertion below makes it a build failure instead.
 fn proof_allowed_data_record_flags(domain_id: u16) -> Option<u32> {
     match domain_id {
         10 | 44 | 68 => Some(0),
         _ => None,
     }
 }
+
+// kills: adding a proof domain (10/44/68) to `DELTA_ENABLED_DOMAINS` without
+// giving this single-record fold a baseline chain. That combination is not
+// unsafe -- the mask above declines the record and nothing is misattributed --
+// but it is silent, and what it silences is the auto-attach first-world-record
+// proof never completing. Fail the build instead of the attach.
+const _: () = assert!(
+    !compact_contract::payload_span_delta::is_delta_enabled_domain(10)
+        && !compact_contract::payload_span_delta::is_delta_enabled_domain(44)
+        && !compact_contract::payload_span_delta::is_delta_enabled_domain(68),
+    "a delta-enabled proof domain would decline every first-world-record candidate"
+);
 
 fn clean_full_data_status(
     domain_id: u16,

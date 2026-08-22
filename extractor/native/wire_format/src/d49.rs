@@ -1,9 +1,9 @@
 //! d49 `naval_combat_lifecycle_live` — the per-battle scalars of every live
 //! naval combat.
 //!
-//! Derived from `world_fold.rs:27279`-`:27367`
+//! Derived from `world_fold.rs:27358`-`:27446`
 //! (`fold_naval_combat_lifecycle`, dispatched at `:4718`), the lane codec that
-// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=27279-27367 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=d0b6fc335afe2da0751bb9d5eaf2511fdaadf63ee3fa18c9a6410006743dba64
+// @world-fold-authority domain=49 functions=fold_naval_combat_lifecycle lines=27358-27446 sha256=513cfd661b84ade3f5778895882af340697db1795ab087292bd87d3ddf297eb6 closure=3f4905789834b829d6c919b36a952828d804aab059d23e5306ab5075b712c2b4
 //! owns the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`),
 //! the fold's own renderer (`world_fold.rs::build_naval_combats`), and the collector walk

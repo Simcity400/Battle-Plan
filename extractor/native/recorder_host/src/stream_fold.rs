@@ -1589,6 +1589,12 @@ pub fn walk_stream_hour_coverage(
     let mut excluded = Vec::new();
     let mut hard_error: Option<String> = None;
     let mut decoded_hasher = Sha256::new();
+    // The seal walk's own `PSD1` baselines. It is a third INDEPENDENT walker of
+    // the same stream -- the fold and the manifest summary are the other two --
+    // and each keeps its own store rather than sharing one, because they run at
+    // different times and, for the fold, in eight parallel copies.
+    let mut span_delta_consumer =
+        compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
     'read: loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
@@ -1668,10 +1674,49 @@ pub fn walk_stream_hour_coverage(
                 continue;
             }
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                // UNWRAP FIRST: a `PSD1` envelope is validated as the grammar it
+                // reconstructs to, exactly as it was before the delta existed. A
+                // record that cannot be reconstructed is EXCLUDED AND NAMED,
+                // which is this walk's existing outcome for a payload it cannot
+                // validate -- the hour still seals, and it seals saying which
+                // record it is missing and why.
+                let reconstructed =
+                    match compact_contract::payload_span_delta::reconstruct_if_enveloped(
+                        &mut span_delta_consumer,
+                        header.record_flags,
+                        compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                            domain_id: header.domain_id,
+                            source_sequence: header.sequence,
+                            game_hour_raw: header.game_hour_raw,
+                        },
+                        payload,
+                    ) {
+                        Ok(reconstructed) => reconstructed,
+                        Err(validation_reason) => {
+                            excluded.push(ExcludedDomainDataRecord {
+                                stream_offset: at,
+                                game_hour_raw: header.game_hour_raw,
+                                domain_id: header.domain_id,
+                                validation_reason,
+                            });
+                            tracker.observe(&header, payload, at);
+                            off += record_len;
+                            continue;
+                        }
+                    };
+                // The envelope flag is CLEARED for the validator: the payload
+                // it is being handed is the reconstructed grammar, not an
+                // envelope, and the flag describes the payload.
+                let downstream_flags = if reconstructed.is_some() {
+                    header.record_flags
+                        & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                } else {
+                    header.record_flags
+                };
                 if let Err(validation_reason) = validate_domain_data_payload_at(
                     header.domain_id,
-                    payload,
-                    header.record_flags,
+                    reconstructed.as_deref().unwrap_or(payload),
+                    downstream_flags,
                     header.sequence,
                     header.game_hour_raw,
                     at,
@@ -2144,15 +2189,49 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 }
             }
 
-            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                if let Err(reason) = validate_domain_data_payload_at(
-                    header.domain_id,
-                    payload,
-                    header.record_flags,
+            let mut record_flags = header.record_flags;
+            let reconstructed = if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                // RECONSTRUCT ONCE, HERE, and clear the envelope flag so the
+                // validation below, `fold.ingest_record` and every domain arm
+                // downstream all see the SAME reconstructed bytes and no second
+                // baseline advance. A record that will not reconstruct takes the
+                // malformed-payload path directly below, which is this loop's
+                // existing named outcome for a payload it cannot validate.
+                match fold.reconstruct_domain_data(
                     header.sequence,
                     header.game_hour_raw,
-                    processed + off as u64,
+                    header.domain_id,
+                    record_flags,
+                    payload,
                 ) {
+                    Ok(reconstructed) => {
+                        if reconstructed.is_some() {
+                            record_flags &=
+                                !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
+                        }
+                        Ok(reconstructed)
+                    }
+                    Err(reason) => Err(reason),
+                }
+            } else {
+                Ok(None)
+            };
+            let reconstruction_failure = reconstructed.as_ref().err().cloned();
+            let folded_payload = match &reconstructed {
+                Ok(Some(bytes)) => bytes.as_slice(),
+                _ => payload,
+            };
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                if let Err(reason) = reconstruction_failure.map(Err).unwrap_or_else(|| {
+                    validate_domain_data_payload_at(
+                        header.domain_id,
+                        folded_payload,
+                        record_flags,
+                        header.sequence,
+                        header.game_hour_raw,
+                        processed + off as u64,
+                    )
+                }) {
                     stats.records_total += 1;
                     stats.data_records += 1;
                     stats.malformed_payload_records += 1;
@@ -2215,8 +2294,8 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 header.game_hour_raw,
                 header.domain_id,
                 header.record_type,
-                payload,
-                header.record_flags,
+                folded_payload,
+                record_flags,
             );
             off += record_len;
         }

@@ -32,6 +32,7 @@ pub mod national_focus_presentation;
 pub mod naval_history;
 pub mod occupation_robin_hood;
 pub mod passive_ready;
+pub mod payload_span_delta;
 pub mod pending_producer;
 pub mod pov_visibility;
 pub mod preferred_tactic;

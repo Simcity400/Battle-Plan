@@ -5854,6 +5854,12 @@ fn scan_compact_stream_with_identity_mode(
     // production summarizer needs; without it every keyframe would read as a
     // first observation here too.
     let mut xmap07_snow_mud_previous_grid_sha256: Option<[u8; 32]> = None;
+    // This gate's own `PSD1` baselines. It is another independent walker of the
+    // spool and reconstructs for itself, so that everything below -- canonical
+    // validation, the domain authority, the status-bit gate -- reads the
+    // domain's own grammar exactly as it did before the delta existed.
+    let mut span_delta_consumer =
+        compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
         let header = match parse_compact_record_header(&raw[offset..]) {
@@ -6150,20 +6156,60 @@ fn scan_compact_stream_with_identity_mode(
                     .or_default()
                     .entry(domain_id)
                     .or_default() += 1;
-                let data_valid = match recorder_host::stream_fold::validate_domain_data_payload_at(
-                    domain_id,
-                    payload,
-                    header.record_flags,
-                    sequence,
-                    game_hour_raw,
-                    offset as u64,
-                ) {
-                    Ok(()) => true,
+                // UNWRAP FIRST, and clear the envelope flag downstream: the flag
+                // describes the payload being handed over.
+                let reconstructed =
+                    compact_contract::payload_span_delta::reconstruct_if_enveloped(
+                        &mut span_delta_consumer,
+                        header.record_flags,
+                        compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                            domain_id,
+                            source_sequence: sequence,
+                            game_hour_raw,
+                        },
+                        payload,
+                    );
+                let span_delta_flags = if matches!(reconstructed, Ok(Some(_))) {
+                    header.record_flags
+                        & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                } else {
+                    header.record_flags
+                };
+                let reconstructed = match reconstructed {
+                    Ok(reconstructed) => reconstructed,
                     Err(reason) => {
+                        // A record that will not reconstruct is NAMED here and
+                        // not decoded further: the gate reports it exactly as it
+                        // reports a payload that fails canonical validation.
                         summary.parse_errors.push(format!(
-                            "offset {offset}: domain {domain_id} DATA payload failed canonical validation: {reason}"
+                            "offset {offset}: domain {domain_id} DATA payload failed PSD1 reconstruction: {reason}"
                         ));
-                        false
+                        None
+                    }
+                };
+                let reconstruction_failed = span_delta_flags == header.record_flags
+                    && header.record_flags
+                        & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                        != 0;
+                let payload = reconstructed.as_deref().unwrap_or(payload);
+                let data_valid = if reconstruction_failed {
+                    false
+                } else {
+                    match recorder_host::stream_fold::validate_domain_data_payload_at(
+                        domain_id,
+                        payload,
+                        span_delta_flags,
+                        sequence,
+                        game_hour_raw,
+                        offset as u64,
+                    ) {
+                        Ok(()) => true,
+                        Err(reason) => {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: domain {domain_id} DATA payload failed canonical validation: {reason}"
+                            ));
+                            false
+                        }
                     }
                 };
                 if data_valid && envelope_ok {
@@ -6173,7 +6219,7 @@ fn scan_compact_stream_with_identity_mode(
                             payload,
                             recorder_host::domain_data_authority::DomainDataContext {
                                 stream_offset: offset,
-                                record_flags: header.record_flags,
+                                record_flags: span_delta_flags,
                                 sequence,
                                 header_hour_raw: game_hour_raw,
                                 session_header_identity: (domain_id == 68)

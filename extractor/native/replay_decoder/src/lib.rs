@@ -1643,15 +1643,54 @@ fn fold_compact_stream_file_identity_aware(
             }
             tracker.observe(&header, payload, record_at);
 
+            // RECONSTRUCT A `PSD1` ENVELOPE BEFORE VALIDATING IT, and clear the
+            // flag for everything downstream. This walk validates the payload as
+            // the domain's own grammar and SKIPS `ingest_record` when that
+            // fails, so an envelope reaching the validator un-reconstructed is
+            // not merely mis-validated: the record is marked malformed and the
+            // one call that would have reconstructed it never runs. Every
+            // wrapped d43/d53 record would be excluded from the certified replay
+            // product while `stream_fold`'s own artefacts looked clean, because
+            // that is a different walker (Codex review round 7, finding 1).
+            //
+            // The reconstruction uses the FOLD's retained baselines, exactly as
+            // `stream_fold::drive_fold_compressed_with_identity_mode` does, so
+            // this walker and that one hold the same bytes for the same records.
+            let mut downstream_flags = header.record_flags;
+            let mut reconstructed: Option<Vec<u8>> = None;
+            let mut reconstruction_failure: Option<String> = None;
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                if let Err(reason) = validate_domain_data_payload_at(
-                    header.domain_id,
-                    payload,
-                    header.record_flags,
+                match fold.reconstruct_domain_data(
                     header.sequence,
                     header.game_hour_raw,
-                    record_at,
+                    header.domain_id,
+                    header.record_flags,
+                    payload,
                 ) {
+                    Ok(value) => {
+                        if value.is_some() {
+                            downstream_flags &=
+                                !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
+                        }
+                        reconstructed = value;
+                    }
+                    Err(reason) => reconstruction_failure = Some(reason),
+                }
+            }
+            let folded_payload = reconstructed.as_deref().unwrap_or(payload);
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                let outcome = match reconstruction_failure {
+                    Some(reason) => Err(reason),
+                    None => validate_domain_data_payload_at(
+                        header.domain_id,
+                        folded_payload,
+                        downstream_flags,
+                        header.sequence,
+                        header.game_hour_raw,
+                        record_at,
+                    ),
+                };
+                if let Err(reason) = outcome {
                     stats.malformed_payload_records += 1;
                     stats
                         .excluded_domain_data_records
@@ -1676,8 +1715,8 @@ fn fold_compact_stream_file_identity_aware(
                 header.game_hour_raw,
                 header.domain_id,
                 header.record_type,
-                payload,
-                header.record_flags,
+                folded_payload,
+                downstream_flags,
             );
             off += record_len;
         }
@@ -2528,16 +2567,53 @@ impl HourCursor {
                 if self.strict_validation_error.is_none() {
                     self.strict_validation_error = envelope_error.clone();
                 }
-                let exact_payload_error = match (header.record_type, envelope_error.as_ref()) {
-                    (COMPACT_RECORD_TYPE_DOMAIN_DATA, None) => validate_domain_data_payload_at(
-                        header.domain_id,
-                        payload,
-                        header.record_flags,
+                // SAME RECONSTRUCTION AS THE SPOOLED FOLD ABOVE, through the same
+                // `WorldFold` baselines (Codex review round 7, finding 1). This
+                // cursor is the streaming half of the certified replay product;
+                // an envelope validated as raw d43/d53 grammar here is marked
+                // malformed and never reaches `ingest_record`.
+                let mut downstream_flags = header.record_flags;
+                let mut reconstructed: Option<Vec<u8>> = None;
+                let mut reconstruction_failure: Option<String> = None;
+                if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+                    && envelope_error.is_none()
+                {
+                    match self.fold.reconstruct_domain_data(
                         header.sequence,
                         header.game_hour_raw,
-                        record_start_abs,
-                    )
-                    .err(),
+                        header.domain_id,
+                        header.record_flags,
+                        payload,
+                    ) {
+                        Ok(value) => {
+                            if value.is_some() {
+                                downstream_flags &=
+                                    !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
+                            }
+                            reconstructed = value;
+                        }
+                        Err(reason) => {
+                            reconstruction_failure = Some(format!(
+                                "PSD1 reconstruction failed at byte {record_start_abs}: {reason}"
+                            ))
+                        }
+                    }
+                }
+                let folded_payload = reconstructed.as_deref().unwrap_or(payload);
+                let exact_payload_error = match (header.record_type, envelope_error.as_ref()) {
+                    (COMPACT_RECORD_TYPE_DOMAIN_DATA, None) => {
+                        reconstruction_failure.clone().or_else(|| {
+                            validate_domain_data_payload_at(
+                                header.domain_id,
+                                folded_payload,
+                                downstream_flags,
+                                header.sequence,
+                                header.game_hour_raw,
+                                record_start_abs,
+                            )
+                            .err()
+                        })
+                    }
                     _ => None,
                 };
                 let malformed_reason = (header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA)
@@ -2613,8 +2689,8 @@ impl HourCursor {
                         header.game_hour_raw,
                         header.domain_id,
                         header.record_type,
-                        payload,
-                        header.record_flags,
+                        folded_payload,
+                        downstream_flags,
                     );
                 }
                 self.pos += record_len;

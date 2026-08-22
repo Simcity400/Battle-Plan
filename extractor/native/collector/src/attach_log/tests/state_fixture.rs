@@ -387,6 +387,14 @@ pub(super) fn drive_compact_frame(
 
     let mut records = Vec::new();
     let mut offset = 0usize;
+    // THE FIXTURE IS A STREAM WALKER, so it reconstructs `PSD1` envelopes for
+    // itself exactly as the fold, the seal walk, the manifest summary and the
+    // completeness audit do. That is not a convenience for the assertions below:
+    // it is what makes every d41/d43/d53 test in this crate a live exercise of
+    // the round trip, because each one reads a payload that has been through the
+    // producer and back.
+    let mut span_delta_consumer =
+        compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
     while offset < bytes.len() {
         let header = compact_contract::parse_compact_record_header(&bytes[offset..])
             .expect("the frame builder emits well-framed compact records");
@@ -404,13 +412,35 @@ pub(super) fn drive_compact_frame(
                 header.domain_id, header.record_type
             )
         });
+        let reconstructed = compact_contract::payload_span_delta::reconstruct_if_enveloped(
+            &mut span_delta_consumer,
+            header.record_flags,
+            compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                domain_id: header.domain_id,
+                source_sequence: header.sequence,
+                game_hour_raw: header.game_hour_raw,
+            },
+            &payload,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "domain {} PSD1 record failed to reconstruct: {error}",
+                header.domain_id
+            )
+        });
+        let record_flags = if reconstructed.is_some() {
+            header.record_flags
+                & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+        } else {
+            header.record_flags
+        };
         records.push(FrameRecord {
             sequence: header.sequence,
             game_hour_raw: header.game_hour_raw,
             domain_id: header.domain_id,
             record_type: header.record_type,
-            record_flags: header.record_flags,
-            payload,
+            record_flags,
+            payload: reconstructed.unwrap_or(payload),
         });
         offset += header.record_len();
     }

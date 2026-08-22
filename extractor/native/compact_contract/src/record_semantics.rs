@@ -71,6 +71,18 @@ pub const COMPACT_DOMAIN_FRAME: u16 = 1000;
 
 pub const COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2: u32 = 1 << 31;
 pub const COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER: u32 = 1 << 30;
+/// This DOMAIN_DATA payload is a `PSD1` envelope
+/// ([`crate::payload_span_delta`]), not the domain's own grammar.
+///
+/// THE FLAG IS THE SIGNAL, and it is a header bit rather than a magic sniffed
+/// out of the payload because a domain's DOMAIN_DATA records are not always one
+/// grammar: d53 carries both its own payload and, from
+/// `insert_a30_payloads_before_frame_end`, the `ICCP` companion carrier, whose
+/// first bytes are its own magic and not the `elapsed_wall_ms` the delta basis
+/// is defined against. A consumer that guessed from payload bytes would have to
+/// be right about every such grammar forever; a consumer that reads this bit is
+/// told.
+pub const COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA: u32 = 1 << 29;
 
 pub const COMPACT_DOMAIN_PERF_BASE_LEN: usize = 40;
 pub const COMPACT_FRAME_END_PAYLOAD_LEN: usize = 32;
@@ -114,6 +126,11 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     }
     if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA && matches!(domain_id, 45 | 67) {
         allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
+    }
+    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+        && crate::payload_span_delta::is_delta_enabled_domain(domain_id)
+    {
+        allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
     }
     allowed
 }

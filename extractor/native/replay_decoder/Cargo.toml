@@ -42,6 +42,16 @@ recorder_host = { path = "../recorder_host" }
 snapshot = { path = "../snapshot" }
 serde_json = "1"
 
+# Lane PS. `autotests = false` above means an integration test has to be
+# declared, which is the point: a test target here is source that runs, and the
+# manifest says which ones exist. This one asserts that the CERTIFIED replay
+# product is unchanged when a delta-enabled domain's payload rides as a `PSD1`
+# envelope -- a property that has to be pinned in THIS crate, because its two
+# stream walkers are not the ones `recorder_host` tests.
+[[test]]
+name = "ps_wire_delta_replay_equality"
+path = "tests/ps_wire_delta_replay_equality.rs"
+
 [[bin]]
 name = "gq_bad_hour"
 path = "src/bin/gq_bad_hour.rs"

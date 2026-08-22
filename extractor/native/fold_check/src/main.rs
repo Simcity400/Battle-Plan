@@ -338,6 +338,18 @@ fn verify_expected_roster(
 
 #[derive(Default)]
 struct CompletenessAudit {
+    /// This walker's own `PSD1` baselines
+    /// ([`compact_contract::payload_span_delta`]).
+    ///
+    /// The completeness audit is an INDEPENDENT walker of the same spool -- the
+    /// fold, the seal walk and the manifest summary are the others -- so it
+    /// keeps its own store and reconstructs for itself. Without it every
+    /// enveloped record's `domain_data_payload_status_at` would return `None`
+    /// and the audit would quietly stop accounting d41/d43/d53's declared
+    /// status flags: not an error, just three domains missing from a
+    /// completeness answer, which is the shape of defect this audit exists to
+    /// prevent.
+    span_delta: compact_contract::payload_span_delta::PayloadSpanDeltaConsumer,
     hours: BTreeMap<i64, HourCompleteness>,
     refusals: BTreeMap<i64, HourRefusal>,
     current_domains: BTreeMap<u16, DomainCompleteness>,
@@ -356,6 +368,62 @@ impl CompletenessAudit {
         payload: &[u8],
     ) -> Result<(), String> {
         validate_compact_record_semantics(domain_id, record_type, record_flags, payload)?;
+        // UNWRAP BEFORE ANYTHING LOOKS AT THE PAYLOAD, and clear the envelope
+        // flag downstream: the flag describes the payload being handed over, and
+        // after this it is the domain's own grammar.
+        // A RECONSTRUCTION FAILURE EXCLUDES AND NAMES THE RECORD; IT DOES NOT
+        // ABORT THE AUDIT (Codex review round 1, finding 3). The first draft
+        // propagated the error with `?`, and the caller turns an `Err` here into
+        // a whole-run failure -- so one unreadable record would have destroyed
+        // the completeness answer for every hour of the capture, while the
+        // audit's own `excluded_data_records` / `excluded_data_reasons`
+        // machinery, which exists for exactly this, was never reached. It is
+        // also the opposite of what an ordinary malformed DOMAIN_DATA payload
+        // does below, where `domain_data_payload_status_at(...).unwrap_or(None)`
+        // records an unreadable status and carries on. Partial data still seals.
+        let reconstructed = match compact_contract::payload_span_delta::reconstruct_if_enveloped(
+            &mut self.span_delta,
+            record_flags,
+            compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                domain_id,
+                source_sequence: sequence,
+                game_hour_raw,
+            },
+            payload,
+        ) {
+            Ok(reconstructed) => reconstructed,
+            Err(_reason) => {
+                // THE EXCLUSION IS COUNTED BY THE LEDGER, NOT HERE (Codex review
+                // round 5, finding 1). The production fold has already recorded
+                // this same record in its `ExcludedDomainDataRecord` ledger, and
+                // `attribute_exclusion_ledger` below increments
+                // `excluded_data_records` and inserts the reason when it walks
+                // that ledger for this hour -- so counting it a second time here
+                // reported one lost record as two, a false loss count in a
+                // completeness answer.
+                //
+                // What this arm must still do is REGISTER THE DOMAIN for the
+                // hour, because the ledger attribution refuses an entry naming a
+                // domain the audit did not see. That is exactly what an ordinary
+                // unreadable payload does two calls below, where
+                // `domain_data_payload_status_at(...).unwrap_or(None)` records a
+                // data record with no readable status and carries on.
+                //
+                // The two cannot disagree about WHICH records fail: this audit
+                // and the fold walk the same records of the same stream in the
+                // same order, each advancing its own baseline store on every
+                // enveloped record -- the same reason the eight parallel fold
+                // workers stay in lockstep with one another.
+                self.current_domains.entry(domain_id).or_default().data_records += 1;
+                return Ok(());
+            }
+        };
+        let record_flags = if reconstructed.is_some() {
+            record_flags & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+        } else {
+            record_flags
+        };
+        let payload = reconstructed.as_deref().unwrap_or(payload);
         let record_type = compact_contract::KnownRecordType::try_from(record_type)
             .map_err(|unknown| format!("unknown compact record type {}", unknown.0))?;
         match record_type {
