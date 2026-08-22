@@ -12,7 +12,9 @@ use crate::gfx::{a729_effect_shader_path, xui07_builtin_shader_includes, SpriteR
 use crate::gui::{parse_gui_document, GuiElement};
 use crate::hud_emitter::authored_bitmap_font_dependency_registry_paths;
 use crate::hud_role::validate_sha256;
-use crate::paradox_text::{destructive_event_count, diagnose_text_decode, parse_bytes};
+use crate::paradox_text::{
+    destructive_event_count, diagnose_text_decode, engine_tolerated_outer_eof, parse_bytes,
+};
 use crate::{normalize_game_relative_path, UsedContentKey};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -122,7 +124,7 @@ pub fn emit_effective_vfs_authored_ui_closure(
     {
         refuse_destructive_text_decode(file, "authored GFX")?;
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
             return Err(format!(
                 "authored GFX parse required recovery in {}",
                 file.logical_path
@@ -858,6 +860,101 @@ mod tests {
             .into_iter()
             .map(str::to_string)
             .collect::<Vec<_>>()
+        );
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn gfx_relying_on_the_engine_tolerated_eof_close_still_closes_the_authored_namespace() {
+        // kills: dropping the `&& !engine_tolerated_outer_eof(&document,
+        // &file.bytes)` guard from the authored-GFX gate in
+        // emit_effective_vfs_authored_ui_closure re-refuses the whole
+        // namespace on powerbalance-shaped input.
+        let root = temp_root();
+        let base = root.join("base");
+        write(
+            &base,
+            "interface/tolerated.gfx",
+            br#"spriteTypes = {
+                spriteType = {
+                    name = GFX_tolerated
+                    texturefile = "gfx/interface/tolerated.dds"
+                }"#,
+        );
+        write(&base, "gfx/interface/tolerated.dds", b"texture");
+        let authority = "a".repeat(64);
+        let vfs = EffectiveVfs::new(
+            authority.clone(),
+            [EffectiveVfsLayerMount {
+                ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                storage_kind: LayerStorageKind::Directory,
+                local_source: base,
+                source_container_sha256: None,
+                replace_paths: Vec::new(),
+            }],
+        )
+        .unwrap();
+        let closure = emit_effective_vfs_authored_ui_closure(&vfs, &authority, "l_english")
+            .expect("the engine-tolerated EOF close must not refuse the authored GFX namespace");
+        let paths = closure
+            .observations
+            .iter()
+            .map(|row| {
+                (
+                    row.consumer.as_str(),
+                    row.content.normalized_game_relative_path.as_str(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert!(
+            paths.contains(&(GFX_NAMESPACE_CONSUMER, "interface/tolerated.gfx")),
+            "{paths:?}"
+        );
+        assert!(
+            paths.contains(&(DEPENDENCY_CLOSURE_CONSUMER, "gfx/interface/tolerated.dds")),
+            "{paths:?}"
+        );
+        portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn genuinely_damaged_gfx_still_refuses_the_authored_namespace_by_name() {
+        // Guard: the tolerance admits only the engine-admitted class; an
+        // unterminated quoted string must keep refusing by name.
+        let root = temp_root();
+        let base = root.join("base");
+        write(
+            &base,
+            "interface/damaged.gfx",
+            br#"spriteTypes = {
+                spriteType = {
+                    name = GFX_damaged
+                    texturefile = "gfx/interface/damaged.dds
+                }
+            }"#,
+        );
+        write(&base, "gfx/interface/damaged.dds", b"texture");
+        let authority = "a".repeat(64);
+        let vfs = EffectiveVfs::new(
+            authority.clone(),
+            [EffectiveVfsLayerMount {
+                ordinal: 0,
+                layer_kind: ContentLayerKind::Base,
+                layer_id: "base".into(),
+                storage_kind: LayerStorageKind::Directory,
+                local_source: base,
+                source_container_sha256: None,
+                replace_paths: Vec::new(),
+            }],
+        )
+        .unwrap();
+        let error = emit_effective_vfs_authored_ui_closure(&vfs, &authority, "l_english")
+            .expect_err("an unterminated quoted string is real damage");
+        assert_eq!(
+            error,
+            "authored GFX parse required recovery in interface/damaged.gfx"
         );
         portable_test_fs_retry::remove_dir_all(root).unwrap();
     }

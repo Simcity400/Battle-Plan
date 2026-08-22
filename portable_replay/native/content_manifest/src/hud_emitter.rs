@@ -9,8 +9,8 @@ use crate::hud_role::{
     HudSemanticRole, HudSurface, HudSurfaceActivationFrame, ResolvedHudRoleBinding,
 };
 use crate::paradox_text::{
-    decode_text, destructive_event_count, destructive_losses, diagnose_text_decode, parse_bytes,
-    Value,
+    decode_text, destructive_event_count, destructive_losses, diagnose_text_decode,
+    engine_tolerated_outer_eof, parse_bytes, Value,
 };
 use crate::{normalize_game_relative_path, UsedContentKey};
 use sha2::{Digest, Sha256};
@@ -68,7 +68,7 @@ pub fn emit_effective_vfs_hud_role_index(
         validate_resolved(&file, &rel, source_inventory_sha256)?;
         record_decode_damage(&mut decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
             gui_parse_failed.insert(rel, decode_text(&file.bytes).to_ascii_lowercase());
             continue;
         }
@@ -89,7 +89,7 @@ pub fn emit_effective_vfs_hud_role_index(
         validate_resolved(&file, &rel, source_inventory_sha256)?;
         record_decode_damage(&mut decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
             gfx_parse_failed.insert(rel, decode_text(&file.bytes).to_ascii_lowercase());
             continue;
         }
@@ -577,7 +577,7 @@ pub(crate) fn authored_bitmap_font_dependency_registry_paths(
         validate_resolved(&file, &source, authority)?;
         record_decode_damage(decode_damaged, &file);
         let document = parse_bytes(&file.bytes);
-        if !document.recoveries.is_empty() {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &file.bytes) {
             return Err(format!(
                 "{source}: bitmap-font registry parse required recovery"
             ));
@@ -872,7 +872,7 @@ fn bitmap_font_dependency_paths(
             .ok_or_else(|| format!("font {symbolic_name} has no descriptor or core.gfx alias"))?;
         validate_resolved(&core, "interface/core.gfx", authority)?;
         let document = parse_bytes(&core.bytes);
-        if !document.recoveries.is_empty() {
+        if !document.recoveries.is_empty() && !engine_tolerated_outer_eof(&document, &core.bytes) {
             return Err("core.gfx font alias parse required recovery".into());
         }
         let resolved_language = canonical_localisation_language(localisation_language)?;
@@ -1663,6 +1663,261 @@ mod tests {
             "{:?}",
             closure.missing_roles
         );
+    }
+
+    #[test]
+    fn gfx_relying_on_the_engine_tolerated_eof_close_still_binds_sprite_and_texture() {
+        // kills: dropping the `&& !engine_tolerated_outer_eof(&document,
+        // &file.bytes)` guard from the interface/**/*.gfx sprite-scan gate in
+        // emit_effective_vfs_hud_role_index re-blackholes the tolerated file.
+        let vfs = MapVfs::new(&[
+            (
+                "interface/fixture.gui",
+                br#"guiTypes = {
+                    containerWindowType = {
+                        name = fixture_topbar_hud
+                        iconType = { name = icon spriteType = GFX_powerbalance }
+                    }
+                }"#
+                    .as_slice(),
+            ),
+            (
+                "interface/fixture.gfx",
+                br#"spriteTypes = {
+                    spriteType = {
+                        name = GFX_powerbalance
+                        textureFile = "gfx/interface/powerbalance.dds"
+                    }"#
+                    .as_slice(),
+            ),
+            ("gfx/interface/powerbalance.dds", b"texture"),
+        ]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("the engine-tolerated EOF close must not blackhole the sprite registry");
+        let closure = &document.closures[0];
+        assert!(
+            closure.bindings.iter().any(|binding| matches!(
+                &binding.semantic_role,
+                HudSemanticRole::Sprite { sprite_id, .. } if sprite_id == "GFX_powerbalance"
+            )),
+            "{:?}",
+            closure.bindings
+        );
+        assert!(
+            closure.bindings.iter().any(|binding| matches!(
+                &binding.semantic_role,
+                HudSemanticRole::SpriteTexture { sprite_id, .. } if sprite_id == "GFX_powerbalance"
+            ) && binding.content.normalized_game_relative_path
+                == "gfx/interface/powerbalance.dds"),
+            "{:?}",
+            closure.bindings
+        );
+        assert!(
+            closure
+                .missing_roles
+                .iter()
+                .all(|role| !role.starts_with("sprite:")),
+            "{:?}",
+            closure.missing_roles
+        );
+    }
+
+    #[test]
+    fn gui_relying_on_the_engine_tolerated_eof_close_still_binds_the_root() {
+        // kills: dropping the same tolerated-EOF guard from the
+        // interface/**/*.gui scan gate re-blackholes the root.
+        let vfs = MapVfs::new(&[(
+            "interface/fixture.gui",
+            br#"guiTypes = {
+                containerWindowType = {
+                    name = fixture_topbar_hud
+                }"#
+                .as_slice(),
+        )]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("the engine-tolerated EOF close must not drop the GUI root");
+        let closure = &document.closures[0];
+        assert_eq!(closure.bindings.len(), 1);
+        assert!(matches!(
+            &closure.bindings[0].semantic_role,
+            HudSemanticRole::GuiRoot { window_or_root, .. } if window_or_root == "fixture_topbar_hud"
+        ));
+        assert!(
+            closure
+                .missing_roles
+                .iter()
+                .all(|role| !role.starts_with("compose_hud_root:")),
+            "{:?}",
+            closure.missing_roles
+        );
+        assert_eq!(
+            document.winning_content[0].normalized_game_relative_path,
+            "interface/fixture.gui"
+        );
+    }
+
+    #[test]
+    fn bitmapfont_registry_on_an_engine_tolerated_eof_close_still_plans_fonts() {
+        // kills: reverting the font-registry scan gate to refusing on any
+        // recovery fails the whole emitter again on powerbalance-shaped input.
+        let vfs = MapVfs::new(&[
+            (
+                "interface/fixture.gui",
+                b"guiTypes = {\n\tcontainerWindowType = {\n\t\tname = fixture_topbar_hud\n\t\tinstantTextBoxType = {\n\t\t\tname = label\n\t\t\tfont = \"myfont\"\n\t\t}\n\t}\n}\n"
+                    .as_slice(),
+            ),
+            (
+                "interface/core.gfx",
+                b"bitmapfonts={\n\tbitmapfont={\n\t\tname=myfont\n\t\tpath=\"gfx/fonts/myfont\"\n\t}"
+                    .as_slice(),
+            ),
+            (
+                "gfx/fonts/myfont.fnt",
+                b"info face=\"myfont\" size=16\npage id=0 file=\"myfont_0.dds\"\n".as_slice(),
+            ),
+            ("gfx/fonts/myfont_0.dds", b"\x00binary-atlas".as_slice()),
+        ]);
+        let document = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect("the engine-tolerated EOF close must not refuse the font registry");
+        let closure = &document.closures[0];
+        assert!(closure.bindings.iter().any(|binding| matches!(
+            &binding.semantic_role,
+            HudSemanticRole::Font { .. }
+        ) && binding.content.normalized_game_relative_path == "gfx/fonts/myfont.fnt"));
+        assert!(closure.bindings.iter().any(|binding| matches!(
+            &binding.semantic_role,
+            HudSemanticRole::FontTexture { font_id, .. } if font_id == "myfont"
+        )));
+        assert!(
+            closure
+                .missing_roles
+                .iter()
+                .all(|role| !role.starts_with("font:")),
+            "{:?}",
+            closure.missing_roles
+        );
+    }
+
+    #[test]
+    fn genuinely_damaged_gfx_still_refuses_the_font_registry_scan_by_name() {
+        // Guard: the tolerance admits only the engine-admitted class; an
+        // unterminated quoted string is real damage and must refuse by name.
+        let vfs = MapVfs::new(&[(
+            "interface/fontreg.gfx",
+            b"bitmapfonts={\n\tbitmapfont={\n\t\tname=myfont\n\t\tpath=\"gfx/fonts/myfont\n\t}\n}\n"
+                .as_slice(),
+        )]);
+        let error = authored_bitmap_font_dependency_registry_paths(
+            &vfs,
+            &BTreeSet::from(["myfont".to_string()]),
+            "l_english",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("an unterminated quoted string is real damage");
+        assert_eq!(
+            error,
+            "interface/fontreg.gfx: bitmap-font registry parse required recovery"
+        );
+    }
+
+    #[test]
+    fn genuinely_damaged_gfx_still_fails_the_emitter_by_name() {
+        // Guard: genuine damage keeps refusing the whole emitter by name (the
+        // bitmap-font registry scan covers the same interface/**/*.gfx set, so
+        // an emit-level Ok-with-blockers is not a contract the emitter has).
+        let vfs = MapVfs::new(&[
+            (
+                "interface/fixture.gui",
+                br#"guiTypes = {
+                    containerWindowType = {
+                        name = fixture_topbar_hud
+                        iconType = { name = icon spriteType = GFX_broken }
+                    }
+                }"#
+                    .as_slice(),
+            ),
+            (
+                "interface/broken.gfx",
+                b"spriteTypes={\n\tspriteType={\n\t\tname=GFX_broken\n\t\ttextureFile=\"gfx/broken.dds\n\t}\n}\n"
+                    .as_slice(),
+            ),
+            ("gfx/broken.dds", b"texture"),
+        ]);
+        let error = emit_effective_vfs_hud_role_index(
+            &vfs,
+            &topbar_activation("fixture_topbar_hud", 0),
+            &authority(),
+            "english",
+        )
+        .expect_err("an unterminated quoted string is real damage");
+        assert_eq!(
+            error,
+            "interface/broken.gfx: bitmap-font registry parse required recovery"
+        );
+    }
+
+    #[test]
+    fn core_gfx_alias_on_an_engine_tolerated_eof_close_still_resolves_fonts() {
+        // kills: reverting the cfg(test) core.gfx alias gate to refusing on
+        // any recovery breaks alias resolution for tolerated registries.
+        let vfs = MapVfs::new(&[
+            (
+                "interface/core.gfx",
+                b"bitmapfonts={\n\tbitmapfont={\n\t\tname=myfont\n\t\tpath=\"gfx/fonts/alias_source\"\n\t}"
+                    .as_slice(),
+            ),
+            (
+                "gfx/fonts/alias_source.fnt",
+                b"info face=\"myfont\" size=16\npage id=0 file=\"alias_source_0.dds\"\n".as_slice(),
+            ),
+            ("gfx/fonts/alias_source_0.dds", b"\x00binary-atlas".as_slice()),
+        ]);
+        let paths = bitmap_font_dependency_paths(
+            &vfs,
+            "myfont",
+            "l_english",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .expect("the engine-tolerated EOF close must not refuse the core.gfx alias");
+        assert_eq!(paths.alias_source.as_deref(), Some("interface/core.gfx"));
+        assert_eq!(paths.descriptor, "gfx/fonts/alias_source.fnt");
+        assert_eq!(paths.pages, vec!["gfx/fonts/alias_source_0.dds"]);
+    }
+
+    #[test]
+    fn genuinely_damaged_core_gfx_still_refuses_the_alias_by_name() {
+        // Guard: alias resolution keeps refusing genuine damage by name.
+        let vfs = MapVfs::new(&[(
+            "interface/core.gfx",
+            b"bitmapfonts={\n\tbitmapfont={\n\t\tname=myfont\n\t\tpath=\"gfx/fonts/myfont\n\t}\n}\n"
+                .as_slice(),
+        )]);
+        let error = bitmap_font_dependency_paths(
+            &vfs,
+            "myfont",
+            "l_english",
+            &authority(),
+            &mut BTreeMap::new(),
+        )
+        .expect_err("an unterminated quoted string is real damage");
+        assert_eq!(error, "core.gfx font alias parse required recovery");
     }
 
     #[test]

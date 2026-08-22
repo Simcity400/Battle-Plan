@@ -123,6 +123,26 @@ pub fn decode_text(bytes: &[u8]) -> String {
     }
 }
 
+/// The recovery message stamped when end-of-file implicitly closes an open
+/// block. The Paradox engine accepts exactly this closure on shipped files, so
+/// it reports tolerated input rather than damage.
+pub const ENGINE_TOLERATED_EOF_CLOSE_RECOVERY: &str =
+    "missing closing brace; accepted end of file";
+
+/// True when the document's only recovery is an end-of-file block closure the
+/// engine itself tolerates: one open brace closed by EOF on a file whose last
+/// non-whitespace byte is the closing brace of its final block. The parsed
+/// tree loses nothing, so consumers may treat the file as parsed instead of
+/// damaged.
+pub fn engine_tolerated_outer_eof(document: &Document, bytes: &[u8]) -> bool {
+    document.recoveries.len() == 1
+        && document.recoveries[0].message == ENGINE_TOLERATED_EOF_CLOSE_RECOVERY
+        && bytes
+            .iter()
+            .rfind(|byte| !byte.is_ascii_whitespace())
+            .is_some_and(|byte| *byte == b'}')
+}
+
 pub const MAX_TEXT_DECODE_DIAGNOSTICS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
