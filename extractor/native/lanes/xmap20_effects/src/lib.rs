@@ -22,7 +22,7 @@ has an unproven candidate flag at instance+0x55). Fields this crate does NOT tre
 blockers, because the same census live-confirms them readable: registration token and \
 FNV hash, time scale (node+0x78), SceneNode parent anchor (descriptor+0x10 token, \
 node+0x10 transform) and active flags bit 0. RawParticlePacket \
-(production_render_submit_live/src/lib.rs:456) carries only DefinitionIdentity \
+(production_render_submit_live/src/lib.rs::RawParticlePacket) carries only DefinitionIdentity \
 (registration_token, definition_source_token, registration_hash_u32) - the resolved \
 definition digest exists solely post-catalog on the portable ParticlePacket. Finally \
 owed: an hourly drain of the promoted submit stream into fold state (collector \
