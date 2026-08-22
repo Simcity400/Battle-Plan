@@ -73,8 +73,9 @@ $ReviewExitCode = $LASTEXITCODE
 
 `opencode` (npm `opencode-ai`) is on the Windows PATH. Owner 2026-08-24: implementation
 lanes run on OpenCode (`-Agent build`) instead of Opus subagents. It is never a reviewer;
-Codex stays the only adversarial reviewer, run by the orchestrator on the lane's commit,
-with findings sent back into the same session by `-SessionId`. Start the wrapper from the
+Codex stays the only adversarial reviewer, and the LANE runs that loop itself from its
+own shell until a clean APPROVE (the orchestrator never reviews lane work; it touches
+Codex only for its own edits). Start the wrapper from the
 lane's locked worktree (it runs in the current directory; there is no --dir). The prompt
 carries everything: worktree path, job, proof rules, the no-test rule above, report shape.
 
