@@ -262,6 +262,7 @@ pub(crate) fn run(
         terrain_options,
         REQUIRED_WIDTH,
         REQUIRED_HEIGHT,
+        provider.foundation_content(),
     )?;
     let ui_profile = crate::install_paths::playback_ui_profile_from_paths(
         product_paths,

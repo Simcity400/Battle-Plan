@@ -298,6 +298,15 @@ pub trait OwnerProvider: Send + Sync {
         None
     }
 
+    /// Recorded XMAP02 resolved foundation content, when this provider's
+    /// recording carries it. Default: absent (pre-producer recordings).
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
+        None
+    }
+
 
     fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
         None
@@ -626,6 +635,12 @@ impl OwnerProvider for RecordingTimeline {
         self.timeline.content_manifest()
     }
 
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
+        self.timeline.foundation_content()
+    }
 
     fn decision_catalog(&self) -> Option<&replay_core::PackagedDecisionCatalog> {
         self.timeline.decision_catalog()

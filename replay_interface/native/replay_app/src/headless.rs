@@ -689,6 +689,7 @@ fn dump_production_recording_frame(
         terrain_options,
         DUMP_WIDTH,
         DUMP_HEIGHT,
+        provider.foundation_content(),
     )?;
     let ui_profile = crate::install_paths::playback_ui_profile_from_paths(
         product_paths,

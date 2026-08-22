@@ -29,6 +29,10 @@ struct RecorderSessionBinding {
     display_variant: RecorderDisplayVariant,
     campaign_identity: Option<RecordedCampaignIdentity>,
     product_admission: RecorderProductAdmission,
+    /// XMAP02 resolved foundation content: the recorded per-family effective
+    /// VFS winners. Absent on recordings made before the XMAP02 producer
+    /// existed - that is a named gap state, not an error.
+    foundation_content: Option<portable_content_manifest::foundation_family::FoundationFamilyContentSet>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -639,6 +643,14 @@ pub trait ReplaySource: Send + Sync {
         None
     }
     fn content_manifest(&self) -> Option<&portable_content_manifest::ContentManifest> {
+        None
+    }
+    /// Recorded XMAP02 resolved foundation content, when the recording's
+    /// recorder session manifest carries it.
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
         None
     }
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
@@ -2863,6 +2875,14 @@ fn validate_recorder_portable_container_contract(
         )
     })?;
     validate_recorder_content_manifest_join(recorder_manifest, container.content_manifest())?;
+    let recorded_foundation = decode_recorded_foundation_content(
+        recorder_manifest.get(FOUNDATION_CONTENT_FIELD),
+        "recorder session manifest",
+    )?;
+    join_recorded_foundation_content(
+        recorded_foundation.as_ref(),
+        container.content_manifest(),
+    )?;
     if let Some(declared_game_id) = recorder_manifest.get("replay_game_id") {
         if declared_game_id.as_str() != Some(game_id) {
             return Err(SourceError::Open(format!(
@@ -3644,13 +3664,116 @@ fn recorder_manifest_binding_value(
         })?;
     validate_display_variant(&display_variant, reference)?;
 
+    let foundation_content =
+        decode_recorded_foundation_content(root.get(FOUNDATION_CONTENT_FIELD), reference)?;
+
     Ok(RecorderSessionBinding {
         active_dlcs,
         localisation_language,
         display_variant,
         campaign_identity,
         product_admission,
+        foundation_content,
     })
+}
+
+const FOUNDATION_CONTENT_FIELD: &str = "xmap02_foundation_content";
+
+/// Decode the recorded XMAP02 resolved foundation content, if this recording
+/// carries one. Three states: absent/null is the pre-producer gap state; a
+/// typed gap marker (`xmap02-foundation-content-gap.v1`) is a durable named
+/// gap the recorder wrote when production failed - both decode to absent.
+/// Anything else must fully validate as the sealed set.
+fn decode_recorded_foundation_content(
+    value: Option<&Value>,
+    reference: &str,
+) -> Result<
+    Option<portable_content_manifest::foundation_family::FoundationFamilyContentSet>,
+    SourceError,
+> {
+    const GAP_SCHEMA: &str = "hoi4.replay.xmap02-foundation-content-gap.v1";
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) if value.get("schema").and_then(Value::as_str) == Some(GAP_SCHEMA) => {
+            if value.as_object().is_some_and(|fields| {
+                fields.len() == 2
+                    && fields
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .is_some_and(|reason| !reason.trim().is_empty())
+            }) {
+                Ok(None)
+            } else {
+                Err(SourceError::Open(format!(
+                    "recorder manifest {reference:?} carries an XMAP02 foundation-content gap \
+                     marker without exactly one reason"
+                )))
+            }
+        }
+        Some(value) => {
+            let set: portable_content_manifest::foundation_family::FoundationFamilyContentSet =
+                serde_json::from_value(value.clone()).map_err(|error| {
+                    SourceError::Open(format!(
+                        "recorder manifest {reference:?} {FOUNDATION_CONTENT_FIELD} is malformed: \
+                         {error}"
+                    ))
+                })?;
+            set.validate().map_err(|error| {
+                SourceError::Open(format!(
+                    "recorder manifest {reference:?} {FOUNDATION_CONTENT_FIELD} failed \
+                     validation: {error}"
+                ))
+            })?;
+            Ok(Some(set))
+        }
+    }
+}
+
+/// THE XMAP02 CONSUMER JOIN at open time: a recorded foundation-content set
+/// must bind exactly the container's own portable content manifest - its
+/// manifest digest must name the container's finalized digest - and it must
+/// attest the classification re-derived from that same manifest with the
+/// shared closures. Any divergence refuses the recording at open.
+pub(crate) fn join_recorded_foundation_content(
+    recorded: Option<
+        &portable_content_manifest::foundation_family::FoundationFamilyContentSet,
+    >,
+    container_manifest: Option<&portable_content_manifest::ContentManifest>,
+) -> Result<(), SourceError> {
+    let Some(recorded) = recorded else {
+        return Ok(());
+    };
+    let container_manifest = container_manifest.ok_or_else(|| {
+        SourceError::Open(format!(
+            "recorder manifest carries {FOUNDATION_CONTENT_FIELD} but the container has no \
+             portable content manifest to join it against"
+        ))
+    })?;
+    let declared_digest = container_manifest
+        .manifest_digest_sha256
+        .as_deref()
+        .unwrap_or("");
+    if recorded.manifest_digest_sha256 != declared_digest {
+        return Err(SourceError::Open(
+            "recorder xmap02_foundation_content disagrees with the container content manifest \
+             authority"
+                .into(),
+        ));
+    }
+    // The whole join: re-derive the classification from THIS recording's own
+    // manifest with the shared closures and require the producer's record to
+    // attest exactly it. Any divergence - post-attach drift, tampering, a
+    // rewritten record - refuses by name.
+    let derived =
+        portable_content_manifest::foundation_family::derive_foundation_family_classification(
+            container_manifest,
+        )
+        .map_err(SourceError::Open)?;
+    recorded
+        .verify_against(&derived)
+        .map_err(|error| SourceError::Open(format!(
+            "recorder xmap02_foundation_content rejected: {error}"
+        )))
 }
 
 fn recorder_campaign_identity(
@@ -4432,6 +4555,15 @@ impl ReplaySource for IndexedReplaySource {
             .map(|binding| &binding.product_admission)
     }
 
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.foundation_content.as_ref())
+    }
+
 
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
@@ -4552,6 +4684,15 @@ impl ReplaySource for SpooledPrefoldedSource {
             .map(|binding| &binding.product_admission)
     }
 
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.foundation_content.as_ref())
+    }
+
 
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
@@ -4657,6 +4798,15 @@ impl ReplaySource for PrefoldedSource {
             .map(|binding| &binding.product_admission)
     }
 
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.foundation_content.as_ref())
+    }
+
 
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {
@@ -4755,6 +4905,15 @@ impl ReplaySource for StoreSource {
         self.recorder_binding
             .as_ref()
             .map(|binding| &binding.product_admission)
+    }
+
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>
+    {
+        self.recorder_binding
+            .as_ref()
+            .and_then(|binding| binding.foundation_content.as_ref())
     }
 
     fn design_catalog(&self) -> Option<&Arc<crate::design_catalog::PortableDesignCatalog>> {

@@ -13,6 +13,87 @@ use crate::timeline::OwnerProvider;
 
 pub const BUNDLE_CONTENT_AUTHORITY_SCHEMA: &str = "hoi4.replay.xmap02-bundle-content-authority.v1";
 
+/// THE XMAP02 CONSUMER JOIN at foundation start: the recorded record must be
+/// exactly the classification derived from this recording's own manifest with
+/// the shared closures, and every path that classification binds must be
+/// carried by THIS machine's admitted playback content. Winner identity rides
+/// once in the manifest's required-content rows; the portable admission gate
+/// already refuses when the local install resolves any of those rows to a
+/// different layer, so a mod that overlapped vanilla at capture must win here
+/// too or playback never reaches this point. This join binds the RECORD itself
+/// to the local admission on routes where no container-level join ran (e.g.
+/// directory-route opens). Recordings without the record (made before the
+/// XMAP02 producer existed) join trivially: that state is a named gap, not an
+/// error.
+pub(crate) fn join_recorded_xmap02_foundation_families(
+    recorded: Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet>,
+    admission: &replay_core::ValidatedContentAdmission,
+    manifest: &replay_core::ContentManifest,
+) -> Result<(), String> {
+    use portable_content_manifest::foundation_family::{
+        bound_paths_sha256, derive_family_bound_paths, derive_family_missing_paths,
+        derive_foundation_family_classification, missing_paths_sha256, FOUNDATION_FAMILY_CLOSURES,
+    };
+    let Some(set) = recorded else {
+        return Ok(());
+    };
+    set.validate().map_err(|error| {
+        format!("CONTENT INCOMPATIBLE: recorded xmap02 foundation content is invalid: {error}")
+    })?;
+    let declared = manifest.manifest_digest_sha256.as_deref().ok_or(
+        "CONTENT INCOMPATIBLE: recording carries xmap02_foundation_content but its manifest          has no finalized digest to join against",
+    )?;
+    if set.manifest_digest_sha256 != declared {
+        return Err(
+            "CONTENT INCOMPATIBLE: recording carries xmap02_foundation_content bound to a              different content authority than its own manifest"
+                .into(),
+        );
+    }
+    let derived = derive_foundation_family_classification(manifest).map_err(|error| {
+        format!(
+            "CONTENT INCOMPATIBLE: cannot re-derive recorded xmap02 foundation content: {error}"
+        )
+    })?;
+    set.verify_against(&derived).map_err(|error| {
+        format!(
+            "CONTENT INCOMPATIBLE: recording's xmap02_foundation_content rejected: {error}"
+        )
+    })?;
+    // Local leg: re-derive each family against THIS machine's admitted
+    // playback content; any witness divergence from the record means the
+    // capture requires inputs this install does not carry (or admits inputs
+    // the capture could not bind).
+    let admitted_paths: std::collections::BTreeSet<&str> =
+        admission.required_paths().collect();
+    for closure in FOUNDATION_FAMILY_CLOSURES.iter() {
+        let present = |path: &str| admitted_paths.contains(path);
+        let local_bound = derive_family_bound_paths(closure, present, |prefix| {
+            let dir = format!("{}/", prefix.trim_end_matches('/'));
+            admitted_paths
+                .range(dir.as_str()..)
+                .take_while(|path| path.starts_with(dir.as_str()))
+                .map(|path| (*path).to_string())
+                .collect::<Vec<String>>()
+        });
+        let local_missing = derive_family_missing_paths(closure, present);
+        let row = derived.family(closure.family_id).ok_or_else(|| {
+            format!(
+                "CONTENT INCOMPATIBLE: xmap02 record lost family {}",
+                closure.family_id
+            )
+        })?;
+        if bound_paths_sha256(&local_bound) != row.bound_paths_sha256
+            || missing_paths_sha256(&local_missing) != row.missing_paths_sha256
+        {
+            return Err(format!(
+                "CONTENT INCOMPATIBLE: {} requires inputs this machine's admitted playback                  content does not carry (or admits inputs the capture could not bind)",
+                closure.family_id
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Mechanical agreement between a generated map bundle and the exact content
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -440,7 +521,8 @@ mod tests {
     use super::*;
     use portable_content_manifest::{
         ContentIssue, ContentLayerKind, DlcSelection, LayerStorageKind, RecordedContentLayer,
-        SourceGameIdentity, SourceProfileIdentity, SCHEMA,
+        RequiredContent, RequiredContentKind, SourceGameIdentity, SourceProfileIdentity,
+        UsedContentKey, SCHEMA,
     };
     use std::collections::BTreeMap;
     use std::fs;
@@ -971,5 +1053,158 @@ graphics={
         );
         assert_eq!(authority.authority_sha256.len(), 64);
         portable_test_fs_retry::remove_dir_all(root).unwrap();
+    }
+
+    /// XMAP02 join fixture: a finalized manifest whose required content
+    /// carries exactly `paths`, plus its admission and the sealed record the
+    /// producer would emit for it.
+    fn xmap02_join_fixture(
+        paths: &[&str],
+    ) -> (
+        replay_core::ValidatedContentAdmission,
+        ContentManifest,
+        portable_content_manifest::foundation_family::FoundationFamilyContentSet,
+    ) {
+        use portable_content_manifest::foundation_family::FOUNDATION_FAMILY_CLOSURES;
+        let mut base = manifest();
+        base.required_content = paths
+            .iter()
+            .map(|path| {
+                let normalized = portable_content_manifest::normalize_game_relative_path(path)
+                    .unwrap();
+                RequiredContent {
+                    content_key: normalized.clone(),
+                    kind: RequiredContentKind::ShaderSource,
+                    content: UsedContentKey {
+                        effective_vfs_manifest_sha256: "c".repeat(64),
+                        normalized_game_relative_path: normalized,
+                        winning_layer_ordinal: 0,
+                        layer_kind: ContentLayerKind::Base,
+                        layer_id: "base".into(),
+                        source_sha256: "d".repeat(64),
+                        payload_sha256: "e".repeat(64),
+                        payload_bytes: 32,
+                    },
+                    observation_count: 1,
+                    consumers: vec!["xmap02_join_fixture".into()],
+                }
+            })
+            .collect();
+        base.source_profile.selection_sha256 = base.computed_selection_sha256().unwrap();
+        let manifest = base.with_computed_digest().unwrap();
+        let inventory = replay_core::PlaybackContentInventory {
+            source_game: manifest.source_game.clone(),
+            source_profile: manifest.source_profile.clone(),
+            layers: manifest
+                .ordered_layers
+                .iter()
+                .filter(|layer| layer.required_for_playback)
+                .map(|layer| replay_core::PlaybackContentLayer {
+                    recorded_ordinal: layer.ordinal,
+                    layer_kind: layer.layer_kind,
+                    layer_id: layer.layer_id.clone(),
+                    descriptor_sha256: layer.descriptor_sha256.clone(),
+                    source_container_sha256: layer.source_container_sha256.clone(),
+                    storage_kind: layer.storage_kind,
+                    replace_paths: Vec::new(),
+                })
+                .collect(),
+            dlc_selection: manifest.dlc_selection.clone(),
+            localisation_language: manifest.localisation_language.clone(),
+            settings: BTreeMap::new(),
+            resolved_content: manifest
+                .required_content
+                .iter()
+                .map(|row| portable_content_manifest::ResolvedPlaybackContent {
+                    normalized_game_relative_path: row
+                        .content
+                        .normalized_game_relative_path
+                        .clone(),
+                    winning_layer_ordinal: row.content.winning_layer_ordinal,
+                    layer_kind: row.content.layer_kind,
+                    layer_id: row.content.layer_id.clone(),
+                    source_sha256: row.content.source_sha256.clone(),
+                    payload_sha256: row.content.payload_sha256.clone(),
+                    payload_bytes: row.content.payload_bytes,
+                })
+                .collect(),
+        };
+        let admission = manifest.admit_playback(&inventory).unwrap();
+        let derived =
+            portable_content_manifest::foundation_family::derive_foundation_family_classification(
+                &manifest,
+            )
+            .unwrap();
+        assert_eq!(derived.families.len(), FOUNDATION_FAMILY_CLOSURES.len());
+        let set = portable_content_manifest::foundation_family::FoundationFamilyContentSet {
+            schema:
+                portable_content_manifest::foundation_family::FOUNDATION_FAMILY_CONTENT_SET_SCHEMA
+                    .into(),
+            manifest_digest_sha256: derived.manifest_digest_sha256.clone(),
+            classification_sha256: derived.classification_sha256,
+        };
+        set.validate().unwrap();
+        (admission, manifest, set)
+    }
+
+    #[test]
+    fn recorded_xmap02_seal_matching_this_manifest_joins() {
+        let (admission, manifest, set) = xmap02_join_fixture(&[
+            "gfx/fx/border.shader",
+            "map/provinces.bmp",
+            "history/states/1.txt",
+        ]);
+        join_recorded_xmap02_foundation_families(Some(&set), &admission, &manifest)
+            .expect("matching seal joins");
+    }
+
+    #[test]
+    fn recorded_xmap02_set_bound_to_another_manifest_refuses() {
+        // kills: content.* reopen condition - a record sealed against one
+        // content authority must not ride a recording whose manifest is
+        // another; playback re-derives from its own manifest and refuses on
+        // any divergence.
+        let (_own_admission, own_manifest, set) =
+            xmap02_join_fixture(&["gfx/fx/border.shader"]);
+        let _ = own_manifest;
+        let (foreign_admission, foreign_manifest, _foreign_set) = xmap02_join_fixture(&[
+            "gfx/fx/border.shader",
+            "history/states/9.txt",
+        ]);
+        let error = join_recorded_xmap02_foundation_families(
+            Some(&set),
+            &foreign_admission,
+            &foreign_manifest,
+        )
+        .err()
+        .expect("foreign authority refused");
+        assert!(
+            error.contains("different content authority")
+                || error.contains("does not match"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn tampered_xmap02_record_refuses_before_any_join() {
+        // kills: R2-2 - even with deny-unknown decode, a mutated digest row or
+        // stale seal must refuse inside the join itself.
+        let (admission, manifest, mut set) =
+            xmap02_join_fixture(&["gfx/fx/border.shader"]);
+        set.classification_sha256 = "f".repeat(64);
+        let error = join_recorded_xmap02_foundation_families(Some(&set), &admission, &manifest)
+            .err()
+            .expect("tampered record refused");
+        assert!(
+            error.contains("rejected") || error.contains("invalid"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn absent_xmap02_record_is_a_named_gap_not_an_error() {
+        let (admission, manifest, _set) = xmap02_join_fixture(&["gfx/fx/border.shader"]);
+        join_recorded_xmap02_foundation_families(None, &admission, &manifest)
+            .expect("pre-producer recordings open");
     }
 }

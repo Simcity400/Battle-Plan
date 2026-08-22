@@ -1310,6 +1310,11 @@ impl ReplaySource for ProductReplaySource {
     fn content_manifest(&self) -> Option<&ContentManifest> {
         self.inner.content_manifest()
     }
+    fn foundation_content(
+        &self,
+    ) -> Option<&portable_content_manifest::foundation_family::FoundationFamilyContentSet> {
+        self.inner.foundation_content()
+    }
     fn campaign_identity(&self) -> Option<&RecordedCampaignIdentity> {
         self.inner.campaign_identity()
     }

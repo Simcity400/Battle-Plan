@@ -28,6 +28,9 @@ impl ProductMapFoundationSession {
         content_admission: &replay_core::ValidatedContentAdmission,
         manifest: &replay_core::ContentManifest,
         terrain_options: map_viewer::TerrainLodCullOptions,
+        recorded_foundation_content: Option<
+            &portable_content_manifest::foundation_family::FoundationFamilyContentSet,
+        >,
     ) -> crate::Result<Self> {
         let (topology, schedule) = product_foundation_assigned_stage_plan()?;
         Self::start_with_assigned_stage_schedule(
@@ -35,6 +38,7 @@ impl ProductMapFoundationSession {
             content_admission,
             manifest,
             terrain_options,
+            recorded_foundation_content,
             &topology,
             schedule,
         )
@@ -45,6 +49,9 @@ impl ProductMapFoundationSession {
         content_admission: &replay_core::ValidatedContentAdmission,
         manifest: &replay_core::ContentManifest,
         terrain_options: map_viewer::TerrainLodCullOptions,
+        recorded_foundation_content: Option<
+            &portable_content_manifest::foundation_family::FoundationFamilyContentSet,
+        >,
         topology: &map_viewer::AssignedStageTopology,
         schedule: map_viewer::AssignedStageSchedule,
     ) -> crate::Result<Self> {
@@ -59,6 +66,12 @@ impl ProductMapFoundationSession {
             content_admission,
             &content_authority.authority_sha256,
         )?;
+        crate::content_compatibility::join_recorded_xmap02_foundation_families(
+            recorded_foundation_content,
+            content_admission,
+            manifest,
+        )
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
         Ok(Self {
             content_receipt,
             adapters: map_viewer::product_feature_adapters_with_assigned_stage_schedule(
@@ -178,8 +191,14 @@ pub(crate) fn prepare_product_map_foundation(
     let inputs = authenticated_xmap12_frame_inputs(frame)?;
     // A single-frame entry point has no previous frame, which is the engine's own cold start
     // for a freshly created map-building render slot.
-    ProductMapFoundationSession::start(resolver, content_admission, manifest, terrain_options)?
-        .prepare_with_xmap12_inputs(frame, viewer, manifest, None, inputs.fixed_runtime.as_ref())
+    ProductMapFoundationSession::start(
+        resolver,
+        content_admission,
+        manifest,
+        terrain_options,
+        None,
+    )?
+    .prepare_with_xmap12_inputs(frame, viewer, manifest, None, inputs.fixed_runtime.as_ref())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

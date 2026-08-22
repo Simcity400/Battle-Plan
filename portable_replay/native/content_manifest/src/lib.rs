@@ -7,6 +7,7 @@ pub mod authored_ui_closure;
 pub mod content_parse;
 pub mod effective_vfs;
 pub mod foundation;
+pub mod foundation_family;
 pub mod gfx;
 pub mod gui;
 pub mod hud_emitter;
