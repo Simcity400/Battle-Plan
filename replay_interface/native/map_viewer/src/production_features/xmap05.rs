@@ -1,4 +1,5 @@
 
+use crate::fog_derivation_law;
 use crate::fow_law::FOW_REQUIRED_SHADER_SOURCES;
 use crate::political_color_synthesis::{
     xmap05_half_res_source_index, xmap05_raster_inputs_with_keying, Xmap05RasterInputs,
@@ -785,14 +786,18 @@ impl Xmap05Shared {
             &province_controllers,
             &country_roster,
         )?;
+        // prepare BEFORE the all-country census so a POV whose vector is not
+        // recorded refuses with ITS named binding list rather than the
+        // generic census message; the census gate itself still runs (and
+        // still holds its all-or-nothing claim) before any texture is built.
+        let (visibility, province_visibility) =
+            prepare_visibility(context, raster.province_is_eligible_land.len())?;
         validate_all_country_visibility(
             context.world_frame,
             raster.province_is_eligible_land.len(),
         )?;
         let (channel1, channel2) =
             synthesize_gradient_border_channels(&raster, self.content.defines)?;
-        let (visibility, province_visibility) =
-            prepare_visibility(context, raster.province_is_eligible_land.len())?;
         let (intel_width, intel_height, intel_bytes) = exact_a729_intel_map(
             &raster.province_ids,
             raster.map_width,
@@ -1971,9 +1976,29 @@ fn prepare_country_visibility(
 ) -> Result<(PreparedXmap05Visibility, Vec<u8>)> {
     let view = frame.visibility_for(country);
     if view.status != ViewStatus::Present {
+        // The recording does not carry this POV. The engine-exact derivation
+        // law (fog_derivation_law) stands ready, but its standing input
+        // bindings are evaluated for THIS hour and the refusal names them:
+        // never an approximation, always the precise unsealed inputs. A
+        // network carrier that is absent/unobtained counts as "networks
+        // cannot be proven absent" — never as measured emptiness.
+        let networks = &frame.diplomacy().intel_network_graphs;
+        let shape = match networks {
+            Leaf::Measured(rows) if rows.is_empty() => {
+                fog_derivation_law::FogNetworkShape::MeasuredEmpty
+            }
+            Leaf::Measured(_) => fog_derivation_law::FogNetworkShape::MeasuredNonEmpty,
+            Leaf::Absent | Leaf::Unobtained => {
+                fog_derivation_law::FogNetworkShape::Unavailable
+            }
+        };
+        let report = fog_derivation_law::fog_binding_refusals(shape);
         return Err(format!(
-            "XMAP05 viewer POV {country} visibility is {:?}",
-            view.status
+            "XMAP05 viewer POV {country} visibility is {:?}; the recorded capture carries no \
+             vector for this country and per-POV fog-of-war derivation refuses by name until \
+             these input bindings seal: {}",
+            view.status,
+            report.blocked().join(", ")
         )
         .into());
     }

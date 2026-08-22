@@ -33,6 +33,7 @@ mod counter_render;
 mod cpu_terrain;
 mod d3d11_device;
 mod d3d11_replay;
+mod fog_derivation_law;
 mod fow_law;
 mod frame_bundle;
 mod game_data;

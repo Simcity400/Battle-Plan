@@ -173,3 +173,4 @@ extractor/native/runs/mj_reserved_domains/POWER_BALANCE_MEMORY_EVIDENCE.txt text
 extractor/native/runs/mr_reserved_domains3/BUILDING_RESOURCE_IDENTITY_EVIDENCE.txt text eol=lf
 extractor/native/runs/mw_replay_e2e3/PROGRESSBAR_ORIENTATION_EVIDENCE.txt text eol=lf
 extractor/native/scripts/Invoke-ReleaseManual.ps1 text eol=lf
+replay_interface/re_evidence/rendering_laws/XMAP05/fog_derivation_authority.json text eol=lf
