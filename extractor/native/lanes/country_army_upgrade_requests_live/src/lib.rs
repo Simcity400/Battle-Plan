@@ -216,18 +216,33 @@ pub enum CarrierError {
     TrailingBytes,
 }
 
+/// The engine mutates the AUR1 object graph concurrently with this walk, so a
+/// single pass pair can straddle a mutation even though the graph settles
+/// again inside the same frame bracket (lane QZ: 18 of 442 d93 frames in the
+/// sealed pw_gate_final capture failed the old fixed two-pass check, every
+/// one of them while the graph was mid-mutation). The coherent-read contract
+/// is therefore restartable: repeat the pass until two consecutive passes
+/// agree or the bound is hit. Restarts are plain re-reads -- they never wait,
+/// sleep, pause the engine, or widen the frame bracket -- and exhausting the
+/// bound still refuses under its own name so a persistently torn graph is
+/// never published as measured data.
+pub const COHERENT_READ_MAX_PASSES: usize = 8;
+
 pub fn read_snapshot_from_country_roots<M: ArmyUpgradeMemory>(
     memory: &M,
     module_base: u64,
     source_sequence: u64,
     roots: &[CountryRoot],
 ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
-    let first = read_snapshot_once(memory, module_base, source_sequence, roots)?;
-    let second = read_snapshot_once(memory, module_base, source_sequence, roots)?;
-    if first != second {
-        return invalid("AUR1 object graph changed across the coherent double-read");
+    let mut previous = read_snapshot_once(memory, module_base, source_sequence, roots)?;
+    for _pass in 1..COHERENT_READ_MAX_PASSES {
+        let current = read_snapshot_once(memory, module_base, source_sequence, roots)?;
+        if current == previous {
+            return Ok(current);
+        }
+        previous = current;
     }
-    Ok(first)
+    invalid("AUR1 object graph kept changing across every coherent-read restart")
 }
 
 fn read_snapshot_once<M: ArmyUpgradeMemory>(
@@ -1192,5 +1207,102 @@ mod tests {
         validate_snapshot(&snapshot).expect("alt unit handle type must validate");
         snapshot.countries[0].groups[0].army.kind = EQUIPMENT_VARIANT_ID_TYPE;
         assert!(validate_snapshot(&snapshot).is_err());
+    }
+
+    /// Serves `inner` verbatim except that reads covering
+    /// `watch_address + 4` (the CArmy id u32) return values from `watch_ids`:
+    /// successively while any remain (clamped to the final value), or cycling
+    /// forever when `cycle` is set. Each individual pass therefore sees a
+    /// structurally valid graph, and the schedule decides whether the graph
+    /// ever stops changing between passes.
+    struct MutatingMemory {
+        inner: SparseMemory,
+        watch_address: u64,
+        watch_ids: Vec<u32>,
+        cycle: bool,
+        watch_reads: std::cell::Cell<usize>,
+    }
+
+    impl ArmyUpgradeMemory for MutatingMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            if out.len() == 4 && address == self.watch_address + 4 {
+                let index = self.watch_reads.get();
+                let id = if self.cycle {
+                    self.watch_ids[index % self.watch_ids.len()]
+                } else {
+                    self.watch_ids[index.min(self.watch_ids.len() - 1)]
+                };
+                self.watch_reads.set(index + 1);
+                out.copy_from_slice(&id.to_le_bytes());
+                return Ok(());
+            }
+            self.inner.read_exact(address, out)
+        }
+    }
+
+    fn mutating_memory(ids: Vec<u32>, cycle: bool) -> MutatingMemory {
+        MutatingMemory {
+            inner: single_group_memory(ARMY_ID_TYPE, ids[0]),
+            watch_address: FIXTURE_ARMY + ARMY_ID_OFF,
+            watch_ids: ids,
+            cycle,
+            watch_reads: std::cell::Cell::new(0),
+        }
+    }
+
+    fn read_mutating(memory: &MutatingMemory) -> Result<ArmyUpgradeSnapshot, CarrierError> {
+        read_snapshot_from_country_roots(
+            memory,
+            FIXTURE_BASE,
+            1,
+            &[CountryRoot {
+                tag_db_id: 1,
+                object_ptr: FIXTURE_COUNTRY,
+            }],
+        )
+    }
+
+    // kills: the retired fixed two-pass check ("AUR1 object graph changed
+    // across the coherent double-read"), which refused a frame whenever one
+    // pass pair straddled an engine mutation even though the same bracket's
+    // later passes agree -- the d93 BLOCKED cause on pw_gate_final (18 frames,
+    // all d93_fail_reason_double_read_changed). The restartable contract must
+    // settle such a frame as measured data.
+    #[test]
+    fn coherent_read_restarts_until_the_graph_settles() {
+        // Pass 1 sees id 14646; the mutation lands; every later pass sees 14647.
+        let memory = mutating_memory(vec![14_646, 14_647], false);
+        let snapshot = read_mutating(&memory)
+            .unwrap_or_else(|error| panic!("a settling graph must still seal: {error:?}"));
+        assert_eq!(snapshot.countries[0].groups[0].army.id, 14_647);
+        assert_eq!(memory.watch_reads.get(), 3);
+    }
+
+    // kills: any unbounded retry, and any collapse of a persistently torn
+    // graph into measured data: a graph that changes on every pass must
+    // exhaust exactly COHERENT_READ_MAX_PASSES passes and refuse under its own
+    // restart-exhausted name. The elapsed-time bound kills retries that WAIT:
+    // the eight fixture passes are memory-only and complete in microseconds,
+    // so any per-pass sleep/yield of meaningful size blows the ceiling. That
+    // no production path sleeps is additionally established by inspection --
+    // the loop body is only `read_snapshot_once` calls.
+    #[test]
+    fn coherent_read_refuses_by_name_when_the_graph_never_settles() {
+        let memory = mutating_memory(vec![14_646, 14_647], true);
+        let started = std::time::Instant::now();
+        let error = read_mutating(&memory)
+            .err()
+            .expect("a graph that changes on every pass must stay refused");
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&error, CarrierError::Invalid(reason)
+                if reason == "AUR1 object graph kept changing across every coherent-read restart"),
+            "never-settling graph produced {error:?}"
+        );
+        assert_eq!(memory.watch_reads.get(), COHERENT_READ_MAX_PASSES);
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "the bounded refusal must not wait (took {elapsed:?})"
+        );
     }
 }
