@@ -43,6 +43,7 @@ struct Shared {
     worker_thread: std::sync::OnceLock<std::thread::ThreadId>,
     scanned_through: AtomicI64,
     eager_stalled_at: AtomicI64,
+    park_entries: AtomicU64,
     stopped: AtomicBool,
 }
 
@@ -93,6 +94,7 @@ impl ScrubEngine {
             worker_thread: std::sync::OnceLock::new(),
             scanned_through: AtomicI64::new(first_hour),
             eager_stalled_at: AtomicI64::new(i64::MIN),
+            park_entries: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
         });
         let serving = Arc::new(AtomicU64::new(0));
@@ -225,6 +227,19 @@ impl ScrubEngine {
     pub fn scanned_through(&self) -> i64 {
         self.shared.scanned_through.load(Ordering::Relaxed)
     }
+
+    pub fn eager_stalled_hour(&self) -> Option<i64> {
+        let stalled = self.shared.eager_stalled_at.load(Ordering::Relaxed);
+        if stalled == i64::MIN {
+            None
+        } else {
+            Some(stalled)
+        }
+    }
+
+    pub fn worker_park_entries(&self) -> u64 {
+        self.shared.park_entries.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for ScrubEngine {
@@ -264,6 +279,7 @@ fn run_worker(shared: Arc<Shared>, provider: Arc<dyn OwnerProvider>, serving: Ar
                     Some(next) if next != stalled => break (next, wanted.generation, true),
                     _ => {}
                 }
+                shared.park_entries.fetch_add(1, Ordering::SeqCst);
                 let Ok(next) = shared.wake.wait(wanted) else {
                     return;
                 };
@@ -713,13 +729,48 @@ mod tests {
             assert!(Instant::now() < deadline, "engine never settled on hour 0");
             std::thread::yield_now();
         }
-        std::thread::sleep(Duration::from_millis(50));
-        let after_stall = counter.resolved.load(Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(200));
-        let later = counter.resolved.load(Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while counter.refusals.load(Ordering::SeqCst) == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "hour 1 was never attempted by the eager walk"
+            );
+            std::thread::yield_now();
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while engine.eager_stalled_hour() != Some(1) || engine.worker_park_entries() == 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the refusal of hour 1 never parked the eager walk behind the stall"
+            );
+            std::thread::yield_now();
+        }
+        let resolved_at_stall = counter.resolved.load(Ordering::SeqCst);
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(10));
+            assert_eq!(
+                counter.refusals.load(Ordering::SeqCst),
+                1,
+                "the eager walk attempted hour 1 more than once for its refusal"
+            );
+            assert_eq!(
+                counter.resolved.load(Ordering::SeqCst),
+                resolved_at_stall,
+                "the eager walk kept resolving hours after it was stalled"
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while engine.show(2).1 != ScrubStatus::Settled {
+            assert!(
+                Instant::now() < deadline,
+                "the scrub never settled on hour 2 after the refusal stalled the walk"
+            );
+            std::thread::yield_now();
+        }
         assert_eq!(
-            after_stall, later,
-            "the eager walk kept retrying the hour it was refused"
+            counter.refusals.load(Ordering::SeqCst),
+            1,
+            "hour 1 was attempted again after the walk moved past it"
         );
     }
 

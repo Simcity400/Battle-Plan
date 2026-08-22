@@ -28,6 +28,20 @@ pub fn is_transient_sharing_violation(error: &io::Error) -> bool {
     }
 }
 
+pub fn is_transient_removal_error(error: &io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        is_transient_sharing_violation(error)
+            || error.raw_os_error() == Some(ERROR_ACCESS_DENIED)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
+}
+
 #[cfg(windows)]
 trait Clock {
     fn elapsed(&self) -> Duration;
@@ -98,27 +112,30 @@ fn retry_core<T>(
     operation: &str,
     mut op: impl FnMut() -> io::Result<T>,
     mut on_transient: impl FnMut(),
+    transient: &dyn Fn(&io::Error) -> bool,
     clock: &mut dyn Clock,
 ) -> io::Result<T> {
     let mut backoff = FIRST_BACKOFF;
     let mut attempts = 0_u32;
+    let mut last_transient_raw: Option<i32> = None;
     loop {
         attempts += 1;
         match op() {
             Ok(value) => {
                 if attempts > 1 {
                     eprintln!(
-                        "portable_test_fs_retry: {operation} recovered from a sharing violation \
-                         (os error {ERROR_SHARING_VIOLATION}) after {attempts} attempts, {:?}",
+                        "portable_test_fs_retry: {operation} recovered from a transient os \
+                         error {last_transient_raw:?} after {attempts} attempts, {:?}",
                         clock.elapsed()
                     );
                 }
                 return Ok(value);
             }
             Err(error) => {
-                if !is_transient_sharing_violation(&error) {
+                if !transient(&error) {
                     return Err(error);
                 }
+                last_transient_raw = error.raw_os_error();
                 on_transient();
                 fire_transient_hook();
                 let elapsed = clock.elapsed();
@@ -147,12 +164,38 @@ fn run<T>(
         operation,
         op,
         on_transient,
+        &is_transient_sharing_violation,
+        &mut RealClock(Instant::now()),
+    )
+}
+
+#[cfg(windows)]
+fn run_removal<T>(
+    operation: &str,
+    op: impl FnMut() -> io::Result<T>,
+    on_transient: impl FnMut(),
+) -> io::Result<T> {
+    retry_core(
+        RETRY_BUDGET,
+        operation,
+        op,
+        on_transient,
+        &is_transient_removal_error,
         &mut RealClock(Instant::now()),
     )
 }
 
 #[cfg(not(windows))]
 fn run<T>(
+    _operation: &str,
+    mut op: impl FnMut() -> io::Result<T>,
+    _on_transient: impl FnMut(),
+) -> io::Result<T> {
+    op()
+}
+
+#[cfg(not(windows))]
+fn run_removal<T>(
     _operation: &str,
     mut op: impl FnMut() -> io::Result<T>,
     _on_transient: impl FnMut(),
@@ -182,12 +225,12 @@ pub fn read_to_string(path: impl AsRef<Path>) -> io::Result<String> {
 
 pub fn remove_file(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
-    run("remove_file", || std::fs::remove_file(path), || {})
+    run_removal("remove_file", || std::fs::remove_file(path), || {})
 }
 
 pub fn remove_dir_all(path: impl AsRef<Path>) -> io::Result<()> {
     let path = path.as_ref();
-    run("remove_dir_all", || std::fs::remove_dir_all(path), || {})
+    run_removal("remove_dir_all", || std::fs::remove_dir_all(path), || {})
 }
 
 ///     .expect("acquire the read guard")
@@ -300,11 +343,53 @@ mod tests {
                 }
             },
             || {},
+            &is_transient_sharing_violation,
             &mut clock,
         )
         .expect("the violation clears on the fourth attempt");
         assert_eq!(value, 4);
         assert_eq!(attempts.get(), 4);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_deletion_refused_while_an_outside_handle_remains_is_waited_out() {
+        let attempts = Cell::new(0);
+        let mut clock = FakeClock::default();
+        let value = retry_core(
+            RETRY_BUDGET,
+            "test",
+            || {
+                attempts.set(attempts.get() + 1);
+                if attempts.get() < 3 {
+                    Err(io::Error::from_raw_os_error(5))
+                } else {
+                    Ok(attempts.get())
+                }
+            },
+            || {},
+            &is_transient_removal_error,
+            &mut clock,
+        )
+        .expect("an access-denied hold on a removal must clear within the budget");
+        assert_eq!(value, 3);
+        assert_eq!(attempts.get(), 3);
+        assert_eq!(
+            clock.slept.borrow().len(),
+            2,
+            "the loop must have slept between the refused attempts"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn access_denied_is_transient_for_deletions_only() {
+        let denied = io::Error::from_raw_os_error(5);
+        assert!(!is_transient_sharing_violation(&denied));
+        assert!(is_transient_removal_error(&denied));
+        assert!(is_transient_removal_error(&io::Error::from_raw_os_error(
+            ERROR_SHARING_VIOLATION
+        )));
     }
 
     #[cfg(windows)]
@@ -333,6 +418,7 @@ mod tests {
                         .unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "reattempted")))
                 },
                 || panic!("the observer must only fire for the transient class"),
+                &is_transient_sharing_violation,
                 &mut clock,
             )
             .expect_err("this class must not succeed");
@@ -357,6 +443,7 @@ mod tests {
                 Err(sharing_violation())
             },
             || {},
+            &is_transient_sharing_violation,
             &mut clock,
         )
         .expect_err("a violation that never clears must still fail");
@@ -397,6 +484,7 @@ mod tests {
                 Err(sharing_violation())
             },
             || {},
+            &is_transient_sharing_violation,
             &mut clock,
         )
         .expect_err("a spent budget must fail");
@@ -724,6 +812,9 @@ mod tests {
     fn nothing_is_transient_off_windows_and_nothing_loops() {
         for raw in [32, 33, 5, 2] {
             assert!(!is_transient_sharing_violation(
+                &io::Error::from_raw_os_error(raw)
+            ));
+            assert!(!is_transient_removal_error(
                 &io::Error::from_raw_os_error(raw)
             ));
         }
