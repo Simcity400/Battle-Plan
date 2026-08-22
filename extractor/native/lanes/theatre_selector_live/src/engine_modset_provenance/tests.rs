@@ -7,25 +7,68 @@ const IMAGE_BASE: u64 = A729_PREFERRED_IMAGE_BASE;
 const GAME_ROOT: &str = "d:/games/hoi4";
 const USER_ROOT: &str = "c:/users/Example/documents/paradox interactive/the game";
 
+/// kills: qg_gate_speed — the budget-refusal fixture writes ~10 MB of synthetic
+/// strings; storing them one `BTreeMap<u64, u8>` node per byte made every write
+/// and read an O(log n) tree walk (~14 s). The store below keeps the EXACT
+/// observable contract — every written byte readable at its address, every
+/// unwritten byte refused with `synthetic address 0x… is not readable` naming
+/// the FIRST unreadable byte, reads spanning separately-written neighbours
+/// succeed, and the per-byte walk's overflow semantics are reproduced
+/// exactly: a read errors with `synthetic read overflow` only after every
+/// in-range byte proved present; a one-byte write at `u64::MAX` is accepted;
+/// a write whose last byte lies beyond `u64::MAX` panics, as the old loop's
+/// `address + offset` overflow did — but stores maximal contiguous written
+/// runs, so a write or read touches O(1) map nodes plus a memcpy. Same
+/// assertions, same refusal addresses, ~100x less pointer chase. Range
+/// arithmetic is done in `u128` because the old loop's last accessed offset
+/// was `address + length - 1`, so an exclusive end of `address + length` can
+/// be `2^64`.
 #[derive(Clone, Default)]
 struct Image {
-    bytes: BTreeMap<u64, u8>,
+    /// Maximal contiguous WRITTEN runs, keyed by start address. Runs are
+    /// pairwise disjoint and never touch, so a lookup finds its byte's whole
+    /// run or proves the address was never written.
+    runs: BTreeMap<u64, Vec<u8>>,
     next: u64,
 }
 
 impl TargetImageMemory for Image {
     fn read(&self, address: u64, length: usize) -> Result<Vec<u8>, String> {
+        if length == 0 {
+            // The per-byte walk iterated zero offsets and returned an empty
+            // read without consulting the map; keep that exact behaviour.
+            return Ok(Vec::new());
+        }
+        // Inclusive bounds of the probed window, as the old loop's offsets:
+        // it computed `address + offset` for offset in 0..length and errored
+        // with `synthetic read overflow` only at the FIRST offset that does
+        // not fit u64 — i.e. after every earlier byte was already looked up.
+        let first = address as u128;
+        let last = first + length as u128 - 1;
+        let probe_last = last.min(u64::MAX as u128);
         let mut out = Vec::with_capacity(length);
-        for offset in 0..length as u64 {
-            let at = address
-                .checked_add(offset)
-                .ok_or("synthetic read overflow")?;
-            out.push(
-                *self
-                    .bytes
-                    .get(&at)
-                    .ok_or_else(|| format!("synthetic address 0x{at:x} is not readable"))?,
-            );
+        let mut cursor = first;
+        while cursor <= probe_last {
+            // The candidate run is the one with the largest start at or
+            // before `cursor`; the byte at `cursor` exists iff that run
+            // reaches up to `cursor` or beyond.
+            let Some((&start, bytes)) = self.runs.range(..=(cursor as u64)).next_back() else {
+                return Err(format!("synthetic address 0x{cursor:x} is not readable"));
+            };
+            let run_start = start as u128;
+            let run_last = run_start + bytes.len() as u128 - 1;
+            if run_last < cursor {
+                return Err(format!(
+                    "synthetic address 0x{cursor:x} is not readable"
+                ));
+            }
+            let take = (run_last.min(probe_last) - cursor + 1) as usize;
+            let at = (cursor - run_start) as usize;
+            out.extend_from_slice(&bytes[at..at + take]);
+            cursor += take as u128;
+        }
+        if last > probe_last {
+            return Err("synthetic read overflow".into());
         }
         Ok(out)
     }
@@ -34,24 +77,79 @@ impl TargetImageMemory for Image {
 impl Image {
     fn new() -> Self {
         Self {
-            bytes: BTreeMap::new(),
+            runs: BTreeMap::new(),
             next: 0x7000_0000,
         }
+    }
+
+    fn write(&mut self, address: u64, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        // Inclusive window [first, last]; the old loop inserted every offset
+        // `address + offset`, so a single-byte write at `u64::MAX` succeeded,
+        // while any write whose LAST byte lies beyond `u64::MAX` hit the
+        // loop's arithmetic overflow and panicked. Keep exactly that.
+        let first = address as u128;
+        let last = first + data.len() as u128 - 1;
+        assert!(
+            last <= u64::MAX as u128,
+            "synthetic write overflow"
+        );
+        let mut merged_start = first;
+        let mut merged_last = last;
+        let mut head = Vec::new();
+        let mut tail = Vec::new();
+        let mut absorbed: Vec<u64> = Vec::new();
+        // Absorb every run that overlaps or TOUCHES the window on either
+        // side -- right-adjacent (`run_start == last + 1`) and left-adjacent
+        // (`run_last + 1 == first`) alike: leaving either unmerged would keep
+        // two touching runs whose spanning read refuses bytes that were both
+        // written. Runs are disjoint, so everything absorbed is replaced by
+        // one merged maximal run spanning head + data + tail.
+        let touch_high = last + 1;
+        for (&start, bytes) in self.runs.iter() {
+            let run_start = start as u128;
+            if run_start > touch_high {
+                break;
+            }
+            let run_last = run_start + bytes.len() as u128 - 1;
+            if run_last + 1 < first {
+                continue;
+            }
+            absorbed.push(start);
+            if run_start < merged_start {
+                head.extend_from_slice(&bytes[..(merged_start - run_start) as usize]);
+                merged_start = run_start;
+            }
+            if run_last > merged_last {
+                // First still-unwritten offset inside this run, relative to
+                // its start. Written as `merged_last + 1 - run_start` (NOT
+                // `merged_last - run_start + 1`): for a right-adjacent run
+                // (`run_start == merged_last + 1`) the naive order
+                // subtracts before adding and underflows u128.
+                tail.extend_from_slice(&bytes[(merged_last + 1 - run_start) as usize..]);
+                merged_last = run_last;
+            }
+        }
+        for start in absorbed {
+            self.runs.remove(&start);
+        }
+        let mut merged = head;
+        merged.extend_from_slice(data);
+        merged.extend(tail);
+        self.runs.insert(merged_start as u64, merged);
     }
 
     fn alloc(&mut self, len: u64) -> u64 {
         let at = self.next;
         self.next = (self.next + len + 0x3f) & !0x3f;
-        for offset in 0..len {
-            self.bytes.insert(at + offset, 0);
-        }
+        self.write(at, &vec![0u8; len as usize]);
         at
     }
 
     fn put(&mut self, address: u64, data: &[u8]) {
-        for (offset, byte) in data.iter().enumerate() {
-            self.bytes.insert(address + offset as u64, *byte);
-        }
+        self.write(address, data);
     }
 
     fn put_u64(&mut self, address: u64, value: u64) {
@@ -110,9 +208,7 @@ impl Image {
 
     fn put_unterminated(&mut self, len: u64) -> u64 {
         let at = self.alloc(len);
-        for offset in 0..len {
-            self.bytes.insert(at + offset, b'a');
-        }
+        self.write(at, &vec![b'a'; len as usize]);
         at
     }
 
@@ -120,9 +216,7 @@ impl Image {
         let probe = self.alloc(0);
         let at = (probe & !0xfff) + 0x1000 + page_offset;
         self.next = at + len + 0x1000;
-        for offset in 0..len {
-            self.bytes.insert(at + offset, b'a');
-        }
+        self.write(at, &vec![b'a'; len as usize]);
         at
     }
 }

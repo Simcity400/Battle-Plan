@@ -1164,41 +1164,60 @@ fn the_harness_status_verdict_survives_every_route_out() {
 
     let dir = std::env::temp_dir().join(format!("hoi4_lane_i_exit2_{}", std::process::id()));
     let _ = fs::create_dir_all(&dir);
+    // kills: qg_gate_speed — the four route probes are real powershell.exe
+    // processes (that is the proof), but they ran back to back, serializing
+    // ~2 s of interpreter startup. They run concurrently now; same script
+    // bytes per route, failures collected in route order.
+    let route_outcomes: Vec<(String, Option<i32>)> = std::thread::scope(|scope| {
+        routes
+            .iter()
+            .map(|(label, shape)| {
+                let dir = dir.clone();
+                let arbitration = arbitration.clone();
+                scope.spawn(move || {
+                    let script = format!(
+                        "{preference}\n\
+                         $undefinedStatusBitFailure = 'proof'\n\
+                         $cleanupFatalMessage = 'proof cleanup failure'\n\
+                         $collectorInjectionStarted = $true\n\
+                         $collectorTeardownAuthenticated = $false\n\
+                         $gradedWindowStarted = $true\n\
+                         {body}\n\
+                         exit 0\n",
+                        body = shape.replace("BODY", &arbitration),
+                    );
+                    let path = dir.join(format!("probe_{}.ps1", label.replace(' ', "_")));
+                    let mut file = fs::File::create(&path).expect("create probe script");
+                    file.write_all(script.as_bytes())
+                        .expect("write probe script");
+                    drop(file);
+                    let status = std::process::Command::new("powershell.exe")
+                        .args([
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                        ])
+                        .arg(&path)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .expect("run powershell");
+                    let _ = fs::remove_file(&path);
+                    ((*label).to_string(), status.code())
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("probe thread"))
+            .collect()
+    });
     let mut failures = Vec::new();
-    for (label, shape) in routes.iter().copied() {
-        let script = format!(
-            "{preference}\n\
-             $undefinedStatusBitFailure = 'proof'\n\
-             $cleanupFatalMessage = 'proof cleanup failure'\n\
-             $collectorInjectionStarted = $true\n\
-             $collectorTeardownAuthenticated = $false\n\
-             $gradedWindowStarted = $true\n\
-             {body}\n\
-             exit 0\n",
-            body = shape.replace("BODY", arbitration),
-        );
-        let path = dir.join(format!("probe_{}.ps1", label.replace(' ', "_")));
-        let mut file = fs::File::create(&path).expect("create probe script");
-        file.write_all(script.as_bytes())
-            .expect("write probe script");
-        drop(file);
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ])
-            .arg(&path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("run powershell");
-        if status.code() != Some(2) {
-            failures.push(format!("{label}: exit={:?} (wanted 2)", status.code()));
+    for ((label, _), (_, code)) in routes.iter().zip(route_outcomes.iter()) {
+        if code != &Some(2) {
+            failures.push(format!("{label}: exit={code:?} (wanted 2)"));
         }
-        let _ = fs::remove_file(&path);
     }
 
     let script = format!(
@@ -1388,73 +1407,99 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
         ),
     ];
 
+    // kills: qg_gate_speed — every case runs its probe in a REAL powershell.exe
+    // (that is what makes the proof carry: the harness text is executed by the
+    // shipping interpreter), but they were spawned one after another, so ~13
+    // interpreter startups serialized into ~4.8 s. The probes are written and
+    // run CONCURRENTLY now — same script bytes per case, same fresh process per
+    // case, results collected in case order so the assertions below are
+    // byte-identical.
+    let absent_ref = &absent;
+    let chain_ref = &chain;
+    let missing_reporter_ref = &missing_reporter;
+    let outcomes: Vec<(String, Option<i32>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = cases
+            .iter()
+            .map(|(label, stub, have_manifest, have_reporter, game_died, _want_block)| {
+                let manifest = manifest.clone();
+                let reporter = reporter.clone();
+                let dir = dir.clone();
+                let chain = chain_ref;
+                let missing_reporter = missing_reporter_ref;
+                let absent = absent_ref;
+                scope.spawn(move || {
+                    let manifest_path = if *have_manifest { &manifest } else { &absent };
+                    let reporter_path = if *have_reporter { &reporter } else { &absent };
+                    let body = if stub.starts_with("throw") {
+                        stub.clone()
+                    } else {
+                        format!("[pscustomobject]{stub}")
+                    };
+                    let script = format!(
+                        "$ErrorActionPreference = 'Stop'\n\
+                         function Invoke-BoundedNativeCapture {{\n\
+                         \x20 param($FilePath, $Arguments, $TimeoutSeconds, $Purpose, [switch]$AllowNonzeroExit)\n\
+                         \x20 {body}\n\
+                         }}\n\
+                         $undefinedStatusBitFailure = 'standing verdict from capture start'\n\
+                         $manifestPath = '{manifest}'\n\
+                         $streamReport = '{reporter}'\n\
+                         $pythonExe = 'python.exe'\n\
+                         $OutDir = '{out_dir}'\n\
+                         $gameDied = ${game_died}\n\
+                         $haveManifest = Test-Path -LiteralPath $manifestPath -PathType Leaf\n\
+                         $haveStreamReport = Test-Path -LiteralPath $streamReport -PathType Leaf\n\
+                         {missing_reporter}\n\
+                         {chain}\n\
+                         if ([string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {{ exit 0 }}\n\
+                         exit 2\n",
+                        manifest = manifest_path.display(),
+                        reporter = reporter_path.display(),
+                        out_dir = dir.display(),
+                        game_died = if *game_died { "true" } else { "false" },
+                    );
+                    let path = dir.join(format!(
+                        "probe_{}_{}.ps1",
+                        label.replace([' ', ',', '(', ')'], "_"),
+                        std::process::id(),
+                    ));
+                    let mut file = fs::File::create(&path).expect("create probe");
+                    file.write_all(script.as_bytes()).expect("write probe");
+                    drop(file);
+                    let status = std::process::Command::new("powershell.exe")
+                        .args([
+                            "-NoProfile",
+                            "-NonInteractive",
+                            "-ExecutionPolicy",
+                            "Bypass",
+                            "-File",
+                        ])
+                        .arg(&path)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .status()
+                        .expect("run powershell");
+                    let _ = fs::remove_file(&path);
+                    ((*label).to_string(), status.code())
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("probe thread"))
+            .collect()
+    });
+
     let mut failures = Vec::new();
-    for (label, stub, have_manifest, have_reporter, game_died, want_block) in cases.iter() {
-        let (label, have_manifest, have_reporter, game_died, want_block) = (
-            *label,
-            *have_manifest,
-            *have_reporter,
-            *game_died,
-            *want_block,
-        );
-        let manifest_path = if have_manifest { &manifest } else { &absent };
-        let reporter_path = if have_reporter { &reporter } else { &absent };
-        let body = if stub.starts_with("throw") {
-            stub.clone()
-        } else {
-            format!("[pscustomobject]{stub}")
-        };
-        let script = format!(
-            "$ErrorActionPreference = 'Stop'\n\
-             function Invoke-BoundedNativeCapture {{\n\
-             \x20 param($FilePath, $Arguments, $TimeoutSeconds, $Purpose, [switch]$AllowNonzeroExit)\n\
-             \x20 {body}\n\
-             }}\n\
-             $undefinedStatusBitFailure = 'standing verdict from capture start'\n\
-             $manifestPath = '{manifest}'\n\
-             $streamReport = '{reporter}'\n\
-             $pythonExe = 'python.exe'\n\
-             $OutDir = '{out_dir}'\n\
-             $gameDied = ${game_died}\n\
-             $haveManifest = Test-Path -LiteralPath $manifestPath -PathType Leaf\n\
-             $haveStreamReport = Test-Path -LiteralPath $streamReport -PathType Leaf\n\
-             {missing_reporter}\n\
-             {chain}\n\
-             if ([string]::IsNullOrWhiteSpace($undefinedStatusBitFailure)) {{ exit 0 }}\n\
-             exit 2\n",
-            manifest = manifest_path.display(),
-            reporter = reporter_path.display(),
-            out_dir = dir.display(),
-            game_died = if game_died { "true" } else { "false" },
-        );
-        let path = dir.join(format!(
-            "probe_{}.ps1",
-            label.replace([' ', ',', '(', ')'], "_")
-        ));
-        let mut file = fs::File::create(&path).expect("create probe");
-        file.write_all(script.as_bytes()).expect("write probe");
-        drop(file);
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ])
-            .arg(&path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("run powershell");
-        let blocked = status.code() == Some(2);
-        if blocked != want_block {
+    for ((_label, .., want_block), (ran_label, code)) in
+        cases.iter().zip(outcomes.iter())
+    {
+        let blocked = code == &Some(2);
+        if blocked != *want_block {
             failures.push(format!(
-                "{label}: blocked={blocked} (wanted {want_block}), exit={:?}",
-                status.code()
+                "{ran_label}: blocked={blocked} (wanted {want_block}), exit={code:?}"
             ));
         }
-        let _ = fs::remove_file(&path);
     }
     let _ = fs::remove_dir_all(&dir);
     assert!(

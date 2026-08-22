@@ -152,7 +152,7 @@ impl Fixture {
         let mut records = self.records.clone();
         let mut arena = Vec::new();
         let mut offsets: Vec<(i32, i32)> = Vec::new();
-        let mut push_text =
+        let push_text =
             |arena: &mut Vec<u8>, offsets: &mut Vec<(i32, i32)>, record: &Record| {
                 let key_offset = arena.len() as i32;
                 arena.extend_from_slice(record.key.as_bytes());

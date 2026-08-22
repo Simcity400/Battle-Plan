@@ -155,6 +155,13 @@ fn constructed_unit_names(text: &str) -> BTreeSet<String> {
     // would never see the literal, and a name could be introduced without this
     // sweep noticing. Association is required, or every domain wire-name
     // constant in the tree would be treated as a unit.
+    // kills: qg_gate_speed — this scan walks ~45 MB of producer sources per
+    // test process. The binding loop below used to re-find EVERY call pattern
+    // from scratch for EVERY `const NAME` binding (O(bindings × calls × file)),
+    // which is where the seconds went. The windows are now cut once per call
+    // pattern and reused for every binding; the recognised set and the
+    // window boundaries (`);` or 400 chars) are byte-for-byte what the
+    // per-binding rescan produced.
     let mut bindings: Vec<(String, String)> = Vec::new();
     for keyword in ["const ", "static "] {
         let mut rest = text;
@@ -186,25 +193,30 @@ fn constructed_unit_names(text: &str) -> BTreeSet<String> {
             }
         }
     }
-    for (ident, literal) in bindings {
-        for call in UNIT_CONSTRUCTION_CALLS {
+    // The argument windows of every construction call, cut once. A binding is
+    // "used" when its identifier appears inside any window of any call.
+    let call_windows: Vec<Vec<&str>> = UNIT_CONSTRUCTION_CALLS
+        .iter()
+        .map(|call| {
+            let mut windows = Vec::new();
             let mut rest = text;
-            let mut used = false;
-            while let Some(at) = rest.find(call) {
+            while let Some(at) = rest.find(*call) {
                 rest = &rest[at + call.len()..];
-                let window = match rest.find(");") {
+                windows.push(match rest.find(");") {
                     Some(close) => &rest[..close],
                     None => &rest[..rest.len().min(400)],
-                };
-                if window.contains(ident.as_str()) {
-                    used = true;
-                    break;
-                }
+                });
             }
-            if used {
-                out.insert(literal.clone());
-                break;
-            }
+            windows
+        })
+        .collect();
+    for (ident, literal) in bindings {
+        let used = call_windows
+            .iter()
+            .flatten()
+            .any(|window| window.contains(ident.as_str()));
+        if used {
+            out.insert(literal.clone());
         }
     }
     // `name: "..."` — the collector's diagnostic-unit struct literal.

@@ -1,3 +1,10 @@
+# Exclusion audit (lane QG, 2026-08-24). Everything filtered out here is one
+# of: (a) HOI4-install-backed tests, `#[cfg_attr(not(gate_hoi4_install),
+# ignore)]` -- they parse/decode the real shipped game corpus and are skipped
+# by the harness itself without an install; (b) captured-session-backed tests,
+# which replay artifacts from a specific live capture session; (c) the soak
+# binaries, run only via [profile.soak]. No test is excluded for being slow:
+# slow deterministic tests are fixed at the root instead.
 [profile.default]
 default-filter = '''
 not (
@@ -5,7 +12,6 @@ not (
       admitted_ui_resolver_rejects_an_installed_but_unrecorded_path
       | captured_pixel_shader_prefilter_covers_full_family_classifiers
       | corpus_.*_when_session_available
-      | fx_naval_air_activity_region_statuses
       | gate_a_all_vanilla_mesh_and_anim_files_parse
       | gate_all_vanilla_.*
       | gate_b_diverse_mesh_semantic_checks
@@ -36,7 +42,6 @@ not (
       | topbar_rects_follow_engine_layout_law
       | vanilla_admission_matches_all_frozen_o05_semantics
       | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
-      | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
       | capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader
       | draw_time_cull_matches_the_captured_drawn_set
       | engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds
@@ -73,7 +78,6 @@ not (
       | backend_listbox_declares_vertical_rows_from_file_template_size
       | captured_pixel_shader_prefilter_covers_full_family_classifiers
       | corpus_.*_when_session_available
-      | fx_naval_air_activity_region_statuses
       | gate_a_all_vanilla_mesh_and_anim_files_parse
       | gate_all_vanilla_.*
       | gate_b_diverse_mesh_semantic_checks
@@ -109,7 +113,6 @@ not (
       | topbar_rects_follow_engine_layout_law
       | vanilla_admission_matches_all_frozen_o05_semantics
       | vanilla_resolver_decodes_render_assets_and_builds_known_land_counter
-      | a_symlinked_file_inside_a_layer_still_resolves_to_that_layer
       | capfix2_prefilter_admits_real_captured_pdxmap_pixel_shader
       | draw_time_cull_matches_the_captured_drawn_set
       | engine_underwater_terrain_diffuse_is_the_shipped_seabed_dds

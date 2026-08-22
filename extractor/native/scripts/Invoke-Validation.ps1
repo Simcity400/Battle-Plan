@@ -384,15 +384,38 @@ function Invoke-ShippingTests {
     }
     if ($PlanOnly -or $plans.Count -eq 0) { return $cargoPlanCount }
 
-    foreach ($item in $plans) {
-        $program = [string]$item.Program
-        $arguments = @($item.Arguments)
-        & $program @arguments
-        if ($LASTEXITCODE -ne 0) {
-            throw "$($item.Name) validation failed with exit code $LASTEXITCODE"
+    # The landing gate's compile log carried ~8,600 dead-code lint lines per
+    # run (test-only helpers that exist precisely because production code does
+    # not call them), burying real diagnostics. Silence ONLY that lint for the
+    # gate's own compiles; every other warning and every hard error still
+    # prints, and ordinary developer builds (which do not set this variable)
+    # keep seeing everything. NOTE: changing RUSTFLAGS changes cargo's cache
+    # key, so the FIRST gate run after this lands recompiles the test profile
+    # from scratch once; subsequent runs reuse the new cache. The variable is
+    # set only when absent and removed again in the finally below, so a gate
+    # run inside a live PowerShell session cannot leak -Adead_code (or its
+    # cache key) into that session's later cargo builds.
+    $gateSetRustFlags = $false
+    if (-not [Environment]::GetEnvironmentVariable('RUSTFLAGS')) {
+        $env:RUSTFLAGS = '-Adead_code'
+        $gateSetRustFlags = $true
+        Write-Host 'gate: RUSTFLAGS=-Adead_code (dead-code lint silenced for this gate run only)'
+    }
+    try {
+        foreach ($item in $plans) {
+            $program = [string]$item.Program
+            $arguments = @($item.Arguments)
+            & $program @arguments
+            if ($LASTEXITCODE -ne 0) {
+                throw "$($item.Name) validation failed with exit code $LASTEXITCODE"
+            }
+        }
+        return $cargoPlanCount
+    } finally {
+        if ($gateSetRustFlags) {
+            Remove-Item -LiteralPath 'Env:RUSTFLAGS' -ErrorAction SilentlyContinue
         }
     }
-    return $cargoPlanCount
 }
 
 try {

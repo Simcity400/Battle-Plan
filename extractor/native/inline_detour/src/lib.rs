@@ -1295,8 +1295,16 @@ mod source_ban_tests {
     }
 
     #[test]
-    fn no_direct_minhook_enable_outside_this_crate() {
-        let mut violations = Vec::new();
+    fn no_direct_minhook_enable_or_private_thread_suspender_outside_this_crate() {
+        // kills: qg_gate_speed — the two whole-tree source bans each walked
+        // every .rs file in both native workspaces, so the gate read and
+        // scanned the same ~hundreds of files twice per run (~6 s of CPU).
+        // ONE walk now applies BOTH scanners to each file once; the banned
+        // fragment sets, the this-crate exemption and both refusal texts are
+        // byte-identical, and both properties still fail with their own named
+        // violation list.
+        let mut enable_violations = Vec::new();
+        let mut suspender_violations = Vec::new();
         for path in workspace_sources() {
             if is_this_crate(&path) {
                 continue;
@@ -1305,13 +1313,21 @@ mod source_ban_tests {
                 continue;
             };
             for line in scan_source_for_direct_enable(&text) {
-                violations.push(format!("{}:{}", path.display(), line));
+                enable_violations.push(format!("{}:{}", path.display(), line));
+            }
+            for line in scan_source_for_private_suspender(&text) {
+                suspender_violations.push(format!("{}:{}", path.display(), line));
             }
         }
         assert!(
-            violations.is_empty(),
+            enable_violations.is_empty(),
             "inline detours must be enabled through `inline_detour::enable`, which pins this module against unload first. Enabling directly leaves a detour live in a module the collector can still unload, and a thread poised in that detour body then resumes on unmapped memory.\n{}",
-            violations.join("\n")
+            enable_violations.join("\n")
+        );
+        assert!(
+            suspender_violations.is_empty(),
+            "code that rewrites live bytes must freeze the process through `inline_detour` -- `enable`/`disable`/`remove` when MinHook owns the patch, `freeze_process` when the caller writes its own bytes. A private suspender reads a broken `Thread32Next` as the end of the thread list and enumerates once, so it certifies a truncated list and never sees a thread created after its snapshot; both are what the shared freeze exists to refuse.\n{}",
+            suspender_violations.join("\n")
         );
     }
 
@@ -1383,27 +1399,6 @@ mod source_ban_tests {
         assert!(
             scan_source_for_direct_enable(planted).is_empty(),
             "MinHook::create_hook patches no live bytes and must stay callable"
-        );
-    }
-
-    #[test]
-    fn no_private_thread_suspender_outside_this_crate() {
-        let mut violations = Vec::new();
-        for path in workspace_sources() {
-            if is_this_crate(&path) {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                continue;
-            };
-            for line in scan_source_for_private_suspender(&text) {
-                violations.push(format!("{}:{}", path.display(), line));
-            }
-        }
-        assert!(
-            violations.is_empty(),
-            "code that rewrites live bytes must freeze the process through `inline_detour` -- `enable`/`disable`/`remove` when MinHook owns the patch, `freeze_process` when the caller writes its own bytes. A private suspender reads a broken `Thread32Next` as the end of the thread list and enumerates once, so it certifies a truncated list and never sees a thread created after its snapshot; both are what the shared freeze exists to refuse.\n{}",
-            violations.join("\n")
         );
     }
 

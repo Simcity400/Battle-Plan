@@ -784,17 +784,20 @@ fn the_compact_shape_is_far_smaller_than_the_flat_one_on_a_repetitive_session() 
     }))
     .expect("flat serializes")
     .len();
-    let compact = serde_json::to_vec(&encode_gap_ledger(&gaps, &outcomes[..]))
+    // kills: qg_gate_speed — the ledger was encoded twice (once for the size
+    // claim, once for the round-trip); 60,000 rows went through the encoder
+    // two times per run. One encoding now feeds both assertions; both
+    // assertions are unchanged.
+    let encoded = encode_gap_ledger(&gaps, &outcomes[..]);
+    let compact = serde_json::to_vec(&encoded)
         .expect("compact serializes")
         .len();
     assert!(
         compact * 10 < flat,
         "compact {compact} B is not far below flat {flat} B"
     );
-    let (back_gaps, back_outcomes) = read_compact_stream_gap_ledger(
-        &json!({ "gap_ledger": encode_gap_ledger(&gaps, &outcomes[..]) }),
-    )
-    .expect("expands");
+    let (back_gaps, back_outcomes) =
+        read_compact_stream_gap_ledger(&json!({ "gap_ledger": encoded })).expect("expands");
     assert_eq!(fact_set(&back_gaps), fact_set(&gaps));
     assert_eq!(back_outcomes.len(), outcomes.len());
 }
