@@ -12,7 +12,10 @@ fn d81_topology_outcome(
     state: &CollectorState,
     cache: &CompactFrameMapTopologyCache,
 ) -> (D81FailureStage, u32) {
-    let read = d81_finish_rail_replay_state(read_compact_rail_replay_state(state, 0, cache, false));
+    let read = d81_finish_rail_replay_state(
+        read_compact_rail_replay_state(state, 0, cache, false),
+        &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+    );
     let failure = read
         .first_failure
         .expect("the fixture stages no rail tree, so d81 always refuses");

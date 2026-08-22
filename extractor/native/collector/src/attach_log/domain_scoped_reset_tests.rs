@@ -35,6 +35,15 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
          verdict; d47 emits no deltas, so there is no staged half to roll back",
     ),
     (
+        "rail_replay_state_live_geometry",
+        "d81 unchanged-geometry memo (a copy image and the rows it decoded to), carried \
+         across the reset UNCONDITIONALLY by its own carve-out (lane PW): it is a \
+         bytes-to-rows map with NO hour semantics, so a rejected bracket says nothing \
+         about whether what it holds is true, and the next frame re-proves its own \
+         inputs byte for byte before anything is reused; d81 stages no delta through \
+         it, so there is no half to roll back",
+    ),
+    (
         "acceptance_weather_fault_injected",
         "session-local one-shot, not a per-domain read product",
     ),
@@ -709,7 +718,9 @@ fn the_d47_discovery_cache_is_an_unconditional_carve_out_not_a_bracket_scoped_pi
         !DOMAIN_SCOPED_TRACKER_RETENTION
             .iter()
             .any(|(name, _)| *name == field),
-        "`{field}` must stay off the bracket-scoped allowlist: the witness replay, not the          bracket verdict, decides it"
+        "`{field}` must stay off the bracket-scoped allowlist: the next frame's own \
+         input comparison, not this bracket's verdict, decides whether the memo may \
+         be used"
     );
     let (_, reason) = BLANKET_RESET_TRACKER_FIELDS
         .iter()
@@ -762,6 +773,65 @@ fn the_two_late_failure_domains_are_not_domain_scoped() {
             "`{field}` must carry its exclusion reason in BLANKET_RESET_TRACKER_FIELDS"
         );
     }
+}
+
+/// Lane PW: d81's geometry memo is an unconditional carve-out, NOT a
+/// bracket-scoped pin.
+///
+/// The landing gate for `90a3dac3` suggested domain-scoping this field under
+/// d81's reader tag, "like the other rail_replay_state_live trackers". That
+/// would be wrong, and the difference is the whole design: a domain-scoped
+/// field is wiped when its reader's bracket is REJECTED, and the memo has no
+/// hour semantics to invalidate. It maps a byte image to the rows that image
+/// decodes to. A torn bracket means this frame may not publish; it does not
+/// make the remembered mapping false, and the next frame re-proves its own
+/// inputs byte for byte before reusing anything.
+///
+/// Wiping it on every tear is exactly the d47 death-spiral shape (lane MT,
+/// t83): straddled hours would force a cold walk on the next frame, which
+/// straddles the next hour, and the gate would never warm. d47's own cache is
+/// classified here for the same reason.
+///
+/// kills: moving this field to DOMAIN_SCOPED_TRACKER_RETENTION; deleting either
+/// half of the take/reinstall carve-out in the reset.
+#[test]
+fn the_d81_geometry_memo_is_an_unconditional_carve_out_not_a_bracket_scoped_pin() {
+    let field = "rail_replay_state_live_geometry";
+    assert!(
+        !DOMAIN_SCOPED_TRACKER_RETENTION
+            .iter()
+            .any(|(name, _)| *name == field),
+        "`{field}` must stay off the bracket-scoped allowlist: the next frame's own \
+         input comparison, not this bracket's verdict, decides whether the memo may \
+         be used"
+    );
+    let (_, reason) = BLANKET_RESET_TRACKER_FIELDS
+        .iter()
+        .find(|(name, _)| *name == field)
+        .expect("the geometry memo carries its classification reason");
+    assert!(
+        reason.contains("UNCONDITIONALLY") && reason.contains("carve-out"),
+        "the classification must state the unconditional carve-out: {reason}"
+    );
+    let source = attach_log_source();
+    let reset_start = source
+        .find("fn reset_trackers_after_rejected_bracket(")
+        .expect("the reset function is declared");
+    let reset_body = &source[reset_start
+        ..reset_start
+            + source[reset_start..]
+                .find(
+                    "
+}
+",
+                )
+                .expect("closed")];
+    assert!(
+        reset_body.contains("std::mem::take(&mut trackers.rail_replay_state_live_geometry)")
+            && reset_body
+                .contains("trackers.rail_replay_state_live_geometry = d81_geometry_memo;"),
+        "the reset must take the geometry memo before the blanket `fresh` and reinstall it after"
+    );
 }
 
 #[test]

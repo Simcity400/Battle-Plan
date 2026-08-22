@@ -261,7 +261,10 @@ fn a_refused_observation_is_returned_untouched_and_never_computed_on() {
         bracket_observed_hour_raw: None,
         diagnostics_provenance: D81DiagnosticsProvenance::Measured,
     };
-    let finished = d81_finish_rail_replay_state(D81ObserveOutcome::Complete(read));
+    let finished = d81_finish_rail_replay_state(
+        D81ObserveOutcome::Complete(read),
+        &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+    );
     assert_eq!(finished.first_failure, Some(refusal));
     assert_eq!(
         finished.read_time_us, 1_234,
@@ -1043,7 +1046,10 @@ fn a_read_failure_from_the_observe_half_survives_a_label_mismatch_skip() {
     let _ = (&ring, observed_neighbors);
     let deferred_copy =
         || D81ObserveOutcome::Deferred(Box::new(super::d81_authoritative::staged_deferred()));
-    let computed = d81_finish_rail_replay_state(deferred_copy());
+    let computed = d81_finish_rail_replay_state(
+        deferred_copy(),
+        &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+    );
     assert!(
         computed.hub_simulation.is_some() && computed.first_failure.is_none(),
         "the fixture must be a copy the compute half would publish, or 'the \
@@ -1151,7 +1157,12 @@ fn a_refused_frames_measurements_survive_both_discard_sites() {
             COMPACT_DOMAIN_RAIL_REPLAY_STATE_LIVE,
             hour,
             move |_bracket_opening| D81ObserveOutcome::Complete(observed_read),
-            d81_finish_rail_replay_state,
+            |outcome| {
+                d81_finish_rail_replay_state(
+                    outcome,
+                    &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+                )
+            },
             d81_preserve_measurement,
             |refusal, observed| d81_bracket_refused_outcome(refusal, observed, 0),
             d81_stamp_bracket_observation,
@@ -1448,7 +1459,8 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
          observation with nothing left to say which hour it belongs to"
     );
     assert!(
-        source.contains("fn d81_finish_rail_replay_state(outcome: D81ObserveOutcome)"),
+        source.contains("fn d81_finish_rail_replay_state(
+    outcome: D81ObserveOutcome,"),
         "the post-bracket half must take the outcome BY VALUE; a borrow leaves \
          the copy alive in the caller after the hour it belongs to"
     );
@@ -1490,7 +1502,7 @@ fn the_d81_deferred_copy_carries_the_hour_it_was_observed_in() {
         .0;
     assert!(
         d81_spawn.contains("spawn_gated_split(")
-            && d81_spawn.contains("d81_finish_rail_replay_state,"),
+            && d81_spawn.contains("d81_finish_rail_replay_state(observation, d81_geometry_gate)"),
         "and production must actually spawn d81 through the split, or the two \
          halves exist and the bracket still covers both"
     );
@@ -1714,7 +1726,10 @@ fn d81_bracket_split_cost_model() {
     let mut published = 0usize;
     for outcome in pending.drain(..) {
         let started = Instant::now();
-        let read = d81_finish_rail_replay_state(outcome);
+        let read = d81_finish_rail_replay_state(
+            outcome,
+            &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+        );
         fold_samples.push(started.elapsed().as_nanos() as u64);
         assert!(
             read.first_failure.is_none(),
@@ -1939,7 +1954,8 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
     }
 
     let computed = d81_stamp_bracket_observation(
-        d81_finish_rail_replay_state(D81ObserveOutcome::Complete(CompactRailReplayRead {
+        d81_finish_rail_replay_state(
+            D81ObserveOutcome::Complete(CompactRailReplayRead {
             plan: crate::attach_log::d81_copy_bracket::D81PlanCounters::default(),
             equality: crate::attach_log::d81_copy_bracket::D81EqualityCounters::default(),
             provinces: Vec::new(),
@@ -1953,7 +1969,9 @@ fn every_d81_outcome_leaves_the_worker_carrying_its_brackets_observation() {
             phase_times: D81PhaseTimes::default(),
             bracket_observed_hour_raw: None,
             diagnostics_provenance: D81DiagnosticsProvenance::Measured,
-        })),
+        }),
+            &mut crate::attach_log::d81_geometry_gate::D81GeometryGate::default(),
+        ),
         Some(observed),
     );
     assert_eq!(computed.bracket_observed_hour_raw, Some(observed));

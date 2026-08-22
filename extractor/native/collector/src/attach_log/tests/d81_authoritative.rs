@@ -7,24 +7,24 @@ use crate::attach_log::d81_copy_bracket::{
 use crate::snapshot_recipes::synthetic::SyntheticMemory;
 use crate::snapshot_recipes::HourStamp;
 
-const PROVINCE_SLOTS: u32 = 385;
+pub(super) const PROVINCE_SLOTS: u32 = 385;
 const PROVINCES: u32 = PROVINCE_SLOTS - 1;
 
 const BASE: u64 = 0x0000_0200_0000_0000;
 
-const GAMESTATE: u64 = BASE;
+pub(super) const GAMESTATE: u64 = BASE;
 const IDLER_SLOT: u64 = BASE + 0x0001_0000;
 const IDLER_SLOT_B: u64 = BASE + 0x0001_8000;
-const IDLER: u64 = BASE + 0x0002_0000;
-const OWNER: u64 = BASE + 0x0003_0000;
+pub(super) const IDLER: u64 = BASE + 0x0002_0000;
+pub(super) const OWNER: u64 = BASE + 0x0003_0000;
 const CONTAINER: u64 = BASE + 0x0004_0000;
 const RAIL_MANAGER: u64 = BASE + 0x0005_0000;
-const RAIL_TABLE: u64 = BASE + 0x0006_0000;
+pub(super) const RAIL_TABLE: u64 = BASE + 0x0006_0000;
 const ACTIVE_ROOT: u64 = BASE + 0x0010_0000;
-const ACTIVE_TABLE: u64 = BASE + 0x0011_0000;
+pub(super) const ACTIVE_TABLE: u64 = BASE + 0x0011_0000;
 const SELECTOR_MAP: u64 = BASE + 0x0020_0000;
-const SELECTOR_TABLE: u64 = BASE + 0x0021_0000;
-const SOURCE_ARRAY: u64 = BASE + 0x0030_0000;
+pub(super) const SELECTOR_TABLE: u64 = BASE + 0x0021_0000;
+pub(super) const SOURCE_ARRAY: u64 = BASE + 0x0030_0000;
 const MAP_ARRAY: u64 = BASE + 0x0031_0000;
 
 const RAIL_INFO: u64 = BASE + 0x1000_0000;
@@ -34,10 +34,10 @@ const RECORD: u64 = BASE + 0x4000_0000;
 const SOURCE_PROVINCE: u64 = BASE + 0x5000_0000;
 const SCATTER_STRIDE: u64 = 0x0002_0000;
 
-const CPROVINCE_VTABLE: u64 = BASE + 0x0F00_0000;
+pub(super) const CPROVINCE_VTABLE: u64 = BASE + 0x0F00_0000;
 
-const SELECTOR_MASK: u32 = 511;
-const SELECTOR_MAX_DISTANCE: u8 = 2;
+pub(super) const SELECTOR_MASK: u32 = 511;
+pub(super) const SELECTOR_MAX_DISTANCE: u8 = 2;
 const SELECTOR_SLOTS: u32 = SELECTOR_MASK + 1 + SELECTOR_MAX_DISTANCE as u32 + 1;
 
 const PAGE: u64 = crate::snapshot_recipes::SCOPED_VOID_GRANULARITY_BYTES;
@@ -168,7 +168,7 @@ fn rail_info_of(province: u32) -> u64 {
 fn pair_blob_of(province: u32) -> u64 {
     Layout::DEFAULT.pair_blob_of(province)
 }
-fn map_province_of(province: u32) -> u64 {
+pub(super) fn map_province_of(province: u32) -> u64 {
     Layout::DEFAULT.map_province_of(province)
 }
 fn record_of(province: u32) -> u64 {
@@ -477,7 +477,7 @@ pub(super) fn stage_world_in(shape: WorldShape, layout: Layout) -> StagedWorld {
     }
 }
 
-const WORLD_HOUR: HourStamp = HourStamp(1939_09_01);
+pub(super) const WORLD_HOUR: HourStamp = HourStamp(1939_09_01);
 
 pub(super) fn staged_deferred() -> D81DeferredCompute {
     let world = stage_world(WorldShape::default());
@@ -514,6 +514,11 @@ pub(super) fn staged_deferred() -> D81DeferredCompute {
         topology,
         valid_ids,
         container_snapshot: container,
+        chain_snapshot: crate::attach_log::D81MapProvinceChain {
+            idler: IDLER as usize,
+            owner: OWNER as usize,
+            container,
+        },
         rail_table: RAIL_TABLE as usize,
         active_table: ACTIVE_TABLE as usize,
         selector_table: SELECTOR_TABLE as usize,
@@ -797,7 +802,7 @@ fn copied_walk_with_mutation_at(
     (rows, counters, applied)
 }
 
-fn walk_with(
+pub(super) fn walk_with(
     world: &StagedWorld,
     source: &D81ReadSource<'_>,
     phases: &D81PhaseAccum,

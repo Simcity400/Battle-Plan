@@ -96,6 +96,45 @@ impl FamilyStore {
         &self.slabs[ordinal]
     }
 
+    /// Hand every byte of this store's CONTENT to `sink`, in a fixed order.
+    ///
+    /// Content is the window geometry (`starts`, `lens`, `offsets`), the
+    /// per-window `status` that decides whether a window may be read at all,
+    /// the three slabs the reads come out of, and the image counts that say how
+    /// many of those slabs are live. Nothing else in the store is content:
+    /// `merged` and the geometry memo are derived indices, rebuilt from exactly
+    /// these bytes.
+    ///
+    /// Used by [`super::d81_geometry_gate`] to prove two captures are the same
+    /// bytes. It is deliberately a SUPERSET of what any one walk reads — a
+    /// digest narrowed to the fields a reader touches is a second copy of that
+    /// reader's read set, and the two drift.
+    fn feed_content(&self, sink: &mut dyn FnMut(&[u8]), reduce_active_windows: bool) {
+        sink(&(self.starts.len() as u64).to_le_bytes());
+        for value in &self.starts {
+            sink(&value.to_le_bytes());
+        }
+        sink(&(self.lens.len() as u64).to_le_bytes());
+        for value in &self.lens {
+            sink(&value.to_le_bytes());
+        }
+        sink(&(self.offsets.len() as u64).to_le_bytes());
+        for value in &self.offsets {
+            sink(&value.to_le_bytes());
+        }
+        sink(&(self.status.len() as u64).to_le_bytes());
+        sink(&self.status);
+        for slab in &self.slabs {
+            sink(&(slab.len() as u64).to_le_bytes());
+            if reduce_active_windows {
+                feed_active_windows(slab, sink);
+            } else {
+                sink(slab);
+            }
+        }
+        sink(&[self.images.opening, self.images.closing]);
+    }
+
     pub fn window_count(&self) -> usize {
         self.starts.len()
     }
@@ -438,6 +477,33 @@ pub struct D81VectorCapture {
     memo: [Cell<Option<GeometryMemo>>; MEMO_WAYS],
 }
 
+/// Feed a slab of back-to-back active windows as their SEMANTIC state.
+///
+/// The slab is `n * D81_ACTIVE_WINDOW_LEN` bytes by construction (every push in
+/// the `ActiveClose` family uses that exact length). A trailing partial window
+/// cannot occur, but is fed verbatim if it somehow does: unexplained bytes are
+/// compared, never dropped.
+fn feed_active_windows(slab: &[u8], sink: &mut dyn FnMut(&[u8])) {
+    let len = super::D81_ACTIVE_WINDOW_LEN;
+    let mut at = 0usize;
+    while at + len <= slab.len() {
+        let mut window = [0u8; super::D81_ACTIVE_WINDOW_LEN];
+        window.copy_from_slice(&slab[at..at + len]);
+        let state = super::d81_active_state_from_window(window);
+        sink(&[
+            state.active_a,
+            state.active_b,
+            state.active_flags,
+            (state.active_u16 & 0xFF) as u8,
+            (state.active_u16 >> 8) as u8,
+        ]);
+        at += len;
+    }
+    if at < slab.len() {
+        sink(&slab[at..]);
+    }
+}
+
 impl D81VectorCapture {
     fn stores(&self) -> [&FamilyStore; STORE_COUNT] {
         [
@@ -458,6 +524,53 @@ impl D81VectorCapture {
     fn merged(&self) -> &MergedWindowIndex {
         self.merged
             .get_or_init(|| MergedWindowIndex::build(self.stores()))
+    }
+
+    /// Hand every byte of this capture's CONTENT to `sink`, in a fixed order.
+    ///
+    /// The eleven stores in `stores()` order, then `closing_tail_start`, which
+    /// participates in deciding which image a read resolves against.
+    ///
+    /// DELIBERATELY EXCLUDED, each for a stated reason:
+    ///  * `hour` — a different value every hour by construction. Including it
+    ///    would make the gate below never fire, which is not a safety property,
+    ///    it is the gate not existing. The hour is checked where it belongs, by
+    ///    `view_for`, before this capture is used at all.
+    ///  * `copies` — a counter of work done, not a byte anything reads.
+    ///  * `merged`, `memo` — indices derived from the stores, rebuilt on demand.
+    ///  * `pointers_rejected`, `voids`, `aliases_retired` — DEFECT COUNTS. They
+    ///    are not content, and the gate does not compare them: it REFUSES
+    ///    outright when any of them is nonzero, which is strictly stronger than
+    ///    comparing them (two captures with the same defect count need not have
+    ///    the same defects).
+    pub fn feed_content(&self, sink: &mut dyn FnMut(&[u8])) {
+        for (index, store) in self.stores().into_iter().enumerate() {
+            // THE ACTIVE-CLOSE FAMILY IS REDUCED, not fed raw (lane PW).
+            //
+            // Its slabs are a concatenation of `active_window_len` windows, one
+            // per railed province, taken at `entry + active_window_off` -- the
+            // SAME seven bytes the snapshot's active-table extent carries and
+            // the same seven the walk decodes. `d81_active_state_from_window`
+            // reduces three of their four fields to zero/nonzero because that
+            // is the producer's contract, so an entry whose counter ticked is
+            // the same state to every reader.
+            //
+            // Feeding it raw here would undo the reduction the gate applies to
+            // the snapshot side and put the volatile counter straight back into
+            // the comparison, which is exactly the miss lane PW measured.
+            let reduce = index == D81Family::ActiveClose as usize;
+            store.feed_content(sink, reduce);
+        }
+        sink(&self.closing_tail_start.to_le_bytes());
+    }
+
+    /// Did this capture take every byte it planned to?
+    ///
+    /// The gate may only reason about a capture with no rejected pointer, no
+    /// void and no retired alias; see `feed_content` for why these are refused
+    /// rather than compared.
+    pub fn is_defect_free(&self) -> bool {
+        self.pointers_rejected == 0 && self.voids == 0 && self.aliases_retired == 0
     }
 
     pub fn owned_window_count(&self) -> usize {
