@@ -175,5 +175,9 @@ extractor/native/runs/mw_replay_e2e3/PROGRESSBAR_ORIENTATION_EVIDENCE.txt text e
 extractor/native/scripts/Invoke-ReleaseManual.ps1 text eol=lf
 replay_interface/re_evidence/rendering_laws/XMAP05/fog_derivation_authority.json text eol=lf
 
+<<<<<<< HEAD
 # lane QP: byte-exact hash-manifested Ghidra exports - no EOL munging or the manifest hashes break
 extractor/native/runs/qp_fog_bindings/evidence/** -text
+=======
+extractor/native/runs/re_theatre_read_law/** text eol=lf
+>>>>>>> lane-re

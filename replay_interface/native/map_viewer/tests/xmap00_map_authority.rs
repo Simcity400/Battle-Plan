@@ -340,6 +340,236 @@ fn taskforces_fleets_admits_an_engine_absent_location_and_still_refuses_an_unrea
     assert_owner_proven_unavailable(&silent_frame, "units.taskforces_fleets");
 }
 
+/// A complete all-country theatre-selector census for the fixture hour
+/// (`orders.theatre_army_hierarchy`). The evidence array is replay_core's own
+/// 31-manifest pin rather than a copied literal, so a producer-evidence drift
+/// breaks this fixture loudly instead of admitting against a stale contract.
+///
+/// The census EXACTLY EQUALS the frame's complete D18 roster identities
+/// (measured_countries: GER=1, ENG=2), which is the same equality the row's
+/// predicate and the production renderer demand; the countries domain carried
+/// here is byte-identical to the D18 fixture's so merging every owner-proven
+/// fixture into one frame cannot drift the roster out from under this census.
+fn theatre_hierarchy_census_fixture() -> Value {
+    use replay_core::theatre_selector::{
+        EXACT_A729_EXECUTABLE_SHA256, REQUIRED_PRODUCER_EVIDENCE_SHA256,
+        THEATRE_SELECTOR_AUTHORITY, THEATRE_SELECTOR_SCHEMA_VERSION,
+    };
+    let hour = schema_hour_index(MEASURED_CALENDAR_STAMP).unwrap();
+    json!({
+        "countries": measured_countries(),
+        "_r2_theatre_selector_live": {
+            "authority": THEATRE_SELECTOR_AUTHORITY,
+            "schema_version": THEATRE_SELECTOR_SCHEMA_VERSION,
+            "executable_sha256": EXACT_A729_EXECUTABLE_SHA256,
+            "producer_evidence_sha256": REQUIRED_PRODUCER_EVIDENCE_SHA256,
+            "content_identity": {
+                "language": "l_english",
+                "localization_content_sha256": "a".repeat(64),
+                "ordered_layers": [
+                    {
+                        "ordinal": 0,
+                        "layer_kind": "base",
+                        "layer_id": "base",
+                        "content_sha256": "b".repeat(64)
+                    }
+                ]
+            },
+            "frame_hour": hour,
+            "source_sequence": hour + 1,
+            "producer_complete": true,
+            "census": [1, 2],
+            "negative_controller_dispositions": [
+                "air_theatre_group_item.current_priority_ordinal",
+                "navy_theater_group_item.combat_log_ownership_and_eligibility",
+                "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility"
+            ],
+            "sections": [
+                {
+                    "owner_tag_db_id": 1,
+                    "admission": "admitted",
+                    "theatres": [{
+                        "kind": "land_theatre",
+                        "selector_included": true,
+                        "object_id": 4101,
+                        "owner_tag_db_id": 1,
+                        "engine_order": 0,
+                        "display_name": "GHQ",
+                        "name_provenance": {"source": "localization_key", "key": "theatre_ghq"},
+                        "controller": {
+                            "kind": "land",
+                            "priority_ordinal": 2,
+                            "delete_eligible": false,
+                            "combat_log_owned": false
+                        },
+                        "land_alert_categories": [],
+                        "members": []
+                    }],
+                    "free_air_wings": [],
+                    "free_air_priority": {
+                        "selected_priority_ordinal": null,
+                        "priority_census_wing_ids": []
+                    },
+                    "strategic_regions": []
+                },
+                {
+                    "owner_tag_db_id": 2,
+                    "admission": "admitted",
+                    "theatres": [],
+                    "free_air_wings": [],
+                    "free_air_priority": {
+                        "selected_priority_ordinal": null,
+                        "priority_census_wing_ids": []
+                    },
+                    "strategic_regions": []
+                }
+            ]
+        }
+    })
+}
+
+/// kills: an `orders.theatre_army_hierarchy` join that could never admit --
+/// either by reporting Admitted on a frame whose selector payload the typed
+/// decoder refused, or by refusing to seal a frame that carries an admitted
+/// all-country schema-6 section set.
+#[test]
+fn theatre_army_hierarchy_admits_a_complete_schema6_section_set() {
+    let frame = world_frame_with(theatre_hierarchy_census_fixture());
+    assert_eq!(frame.theatre_selector().status, ViewStatus::Present);
+    let manifest = fixture_manifest();
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "orders.theatre_army_hierarchy").disposition,
+        MapAuthorityRequirementDisposition::Admitted,
+        "a complete all-country schema-6 census must admit"
+    );
+    assert_eq!(
+        requirement(&projection, "orders.theatre_army_hierarchy")
+            .payload_schema
+            .as_deref(),
+        Some("WorldFrame._r2_theatre_selector_live")
+    );
+    assert!(admit_map_authority_projection(&projection)
+        .unwrap()
+        .is_admitted("orders.theatre_army_hierarchy"));
+}
+
+/// Hours before the producer's first observation carry nothing for this
+/// domain; that is absence, not refusal.
+#[test]
+fn theatre_army_hierarchy_is_absent_where_the_fold_carries_nothing() {
+    let frame = world_frame_with(json!({}));
+    assert_eq!(frame.theatre_selector().status, ViewStatus::DomainAbsent);
+    let manifest = fixture_manifest();
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    let row = requirement(&projection, "orders.theatre_army_hierarchy");
+    assert_eq!(row.disposition, MapAuthorityRequirementDisposition::Absent);
+    assert!(row.blocker.as_deref().unwrap_or_default().contains(
+        "the recording carries no admitted all-country theatre-selector section set"
+    ));
+}
+
+/// kills: admitting on a stale carrier. A payload labelled for another hour
+/// must never vouch for the displayed one even if it decodes clean.
+#[test]
+fn theatre_army_hierarchy_refuses_a_payload_labelled_for_a_different_hour() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    rest["_r2_theatre_selector_live"]["frame_hour"] =
+        json!(schema_hour_index(MEASURED_CALENDAR_STAMP).unwrap() + 1);
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.theatre_selector().status, ViewStatus::Present);
+    assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
+}
+
+/// kills: treating a partial census as the all-country hierarchy. A country
+/// whose section names a reason keeps the whole row a gap -- named per country,
+/// sealed as unavailable.
+#[test]
+fn theatre_army_hierarchy_refuses_an_incomplete_section_set() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    let domain = rest["_r2_theatre_selector_live"].as_object_mut().unwrap();
+    domain.insert("producer_complete".into(), json!(false));
+    domain["sections"] = json!([
+        {
+            "owner_tag_db_id": 1,
+            "admission": "unavailable",
+            "reason": "theatre_selector_land_combat_log_leaf_has_no_all_country_law"
+        },
+        {
+            "owner_tag_db_id": 2,
+            "admission": "unavailable",
+            "reason": "theatre_selector_section_refused_by_its_producer"
+        }
+    ]);
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.theatre_selector().status, ViewStatus::Present);
+    assert!(!frame.theatre_selector().producer_complete);
+    assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
+}
+
+/// kills: dropping the source-sequence conjunct. Only the sequence is
+/// corrupted here -- the payload hour stays valid -- so removing that one
+/// check alone turns this test red.
+#[test]
+fn theatre_army_hierarchy_refuses_a_sequence_that_is_not_hour_plus_one() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    rest["_r2_theatre_selector_live"]["source_sequence"] =
+        json!(schema_hour_index(MEASURED_CALENDAR_STAMP).unwrap() + 2);
+    let frame = world_frame_with(rest);
+    assert_eq!(frame.theatre_selector().status, ViewStatus::Present);
+    assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
+}
+
+/// kills: any relaxation of the strict u64 hour conversion. The payload here
+/// is labelled for hour zero with a lawful sequence, so a reintroduced
+/// `.max(0)` would derive displayed hour zero from -1 and ADMIT this frame --
+/// only the strict conversion refuses it.
+#[test]
+fn theatre_army_hierarchy_refuses_a_negative_displayed_hour() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    rest["_r2_theatre_selector_live"]["frame_hour"] = json!(0);
+    rest["_r2_theatre_selector_live"]["source_sequence"] = json!(1);
+    let frame = world_frame_with_date_at(rest, None, -1);
+    assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
+}
+
+/// The producer ships schema 4 with 4 of 31 manifests today; every carried
+/// hour must refuse at the decoder's own named mismatch instead of crashing
+/// the projection or admitting. Each corruption is isolated so removing the
+/// OTHER check cannot keep this green.
+#[test]
+fn theatre_army_hierarchy_names_the_schema_version_mismatch_for_todays_carrier() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    rest["_r2_theatre_selector_live"]["schema_version"] = json!(4);
+    let frame = world_frame_with(rest);
+    assert_eq!(
+        frame.theatre_selector().status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(
+        frame.theatre_selector().diagnostic.as_deref(),
+        Some("theatre selector schema version mismatch")
+    );
+    assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
+}
+
+#[test]
+fn theatre_army_hierarchy_names_the_evidence_identity_mismatch_for_a_short_manifest_set() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    rest["_r2_theatre_selector_live"]["producer_evidence_sha256"] =
+        json!(Vec::<String>::new());
+    let frame = world_frame_with(rest);
+    assert_eq!(
+        frame.theatre_selector().status,
+        ViewStatus::DomainUnavailable
+    );
+    assert_eq!(
+        frame.theatre_selector().diagnostic.as_deref(),
+        Some("producer evidence identity mismatch")
+    );
+    assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
+}
+
 fn occupation_state_digest(ids: &[u32]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -952,6 +1182,13 @@ fn owner_proven_fixture_table() -> BTreeMap<&'static str, NamedSnapshotFixture> 
             },
         ),
         (
+            "orders.theatre_army_hierarchy",
+            NamedSnapshotFixture {
+                name: "admitted all-country theatre-selector census equal to the complete D18 roster",
+                rest: theatre_hierarchy_census_fixture(),
+            },
+        ),
+        (
             "mapmode.occupation_resistance_compliance",
             NamedSnapshotFixture {
                 name: "complete D52 per-state occupation census under its own witness",
@@ -1272,6 +1509,12 @@ fn unmeasured_fixture(input_id: &str) -> UnmeasuredFixture {
             false
         }
         "world.calendar_time" => false,
+        "orders.theatre_army_hierarchy" => {
+            // The theatre fold's own unusable-read spelling. The ledger
+            // accessor IS the decoded view here, so it moves with the payload.
+            object.insert("_r2_theatre_selector_live".into(), Value::Null);
+            false
+        }
         other => panic!("no unmeasured fixture for {other}"),
     };
     UnmeasuredFixture {
@@ -1326,6 +1569,7 @@ fn ledger_accessor_status(frame: &WorldFrame, input_id: &str) -> ViewStatus {
             Some(_) => ViewStatus::Present,
             None => ViewStatus::DomainUnavailable,
         },
+        "orders.theatre_army_hierarchy" => frame.theatre_army_hierarchy_status(),
         other => panic!("no ledger accessor for {other}"),
     }
 }
@@ -1679,6 +1923,9 @@ fn owner_proven_inputs_refuse_with_their_named_blocker_when_unmeasured() {
             "divisions": Value::Null,
             "order_of_battle": Value::Null,
             "map_furniture": Value::Null,
+            // The theatre fold spells an unusable read as null
+            // (`world_fold.rs::fold_theatre_selector`), same as every domain here.
+            "_r2_theatre_selector_live": Value::Null,
             // XMAP18's map-mode carriers, each spelled the way its own producer
             // spells an unusable read (lane PL, 2026-08-21).
             "raids": Value::Null,
@@ -2623,10 +2870,12 @@ fn unmeasuring_one_proven_input_leaves_its_siblings_admitted() {
             // fail-closed law REQUIRES them to move. `mapmode.raids` joins
             // every raid identity against the resolved D18 roster (an
             // unresolved numeric id renders as a 3-char decimal string, so
-            // shape alone cannot authenticate a tag).
+            // shape alone cannot authenticate a tag). The theatre hierarchy's
+            // all-country census must EQUAL that same complete roster.
             let consumes_unmeasured_input = matches!(
                 (proven.input_id, other.input_id),
                 ("country.d18_complete_roster", "mapmode.raids")
+                    | ("country.d18_complete_roster", "orders.theatre_army_hierarchy")
             );
             if consumes_unmeasured_input {
                 assert_eq!(
