@@ -148,6 +148,14 @@ success-output = "never"
 status-level = "fail"
 final-status-level = "slow"
 retries = 0
+# Sized to this machine: AMD Ryzen 7 9800X3D, 8 cores / 16 logical CPUs
+# ($env:NUMBER_OF_PROCESSORS = 16). nextest's default already equals 16, and
+# the gate's tail is spawn-bound (~10.7k sub-second tests = ~1,394 s CPU of
+# per-process startup; PROFILE.md s1), so the ci profile oversubscribes to
+# 2x logical CPUs to keep the kernel's process-creation pipeline full.
+# Revert to 16 if any fsync-heavy spool_trim timing proof flakes under
+# contention (PROFILE.md s4/L1).
+test-threads = 32
 slow-timeout = "10s"
 
 [profile.soak]

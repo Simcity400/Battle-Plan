@@ -23,7 +23,7 @@ $script:ProductionPromotionUnknownStatusMask =
 # the unknown-status test, exactly as
 # `compact_status_for_global_interpretation` does in the Rust consumers.
 # Pinned against the contract by
-# `compact_contract/tests/script_status_vocabulary_sweep.rs`.
+# `compact_contract/tests/compact_contract_suite/script_status_vocabulary_sweep.rs`.
 $script:ProductionPromotionLaneLocalStatusMask = @{
     49 = [uint32]0x00000800
     51 = [uint32]0x00003800

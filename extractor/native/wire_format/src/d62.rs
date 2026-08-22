@@ -120,7 +120,7 @@ pub const SCHEMA_VERSION: u32 = 2;
 /// count, which is exactly the kind of confusion the name invited.
 /// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
 /// gives `i32::MAX - 1`. Pinned by
-/// `tests/producer_consumer_admission_agreement.rs`.
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs`.
 pub const MAX_COUNTRY_COUNT: u32 = (i32::MAX as u32) - 1;
 /// `MAX_PROVINCE_ID`, `lib.rs:80` (`validate_row:353`). Was `20_000`, then
 /// `65_535` and documented as "a REPRESENTATION ENVELOPE". Both were guesses:

@@ -265,7 +265,7 @@ pub const AUTHORITY_KIND_EXACT_A729: u32 = 1;
 /// Was `2_048`, a guess at the vanilla-plus-DLC country count.
 /// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int` size
 /// gives `i32::MAX - 1`. Pinned by
-/// `tests/producer_consumer_admission_agreement.rs`.
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs`.
 pub const MAX_OWNER_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
 /// `compact_contract/src/record_header.rs:10`.
 pub const MAX_PAYLOAD_LEN: usize = 1 << 28;

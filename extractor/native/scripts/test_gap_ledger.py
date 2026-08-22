@@ -444,7 +444,7 @@ class Compatibility(unittest.TestCase):
         """A reason this reader admits and the producer's decoder refuses is two
         readers of one document disagreeing about what it says. The sets are
         pinned to the contract enums by
-        `compact_contract/tests/script_status_vocabulary_sweep.rs`.
+        `compact_contract/tests/compact_contract_suite/script_status_vocabulary_sweep.rs`.
 
         WHAT PRODUCTION CHANGE MAKES THIS FAIL: accepting any non-empty string
         where a wire name belongs."""

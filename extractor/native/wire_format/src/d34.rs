@@ -162,7 +162,7 @@ pub const ROW_FLAG_DELETED: u32 = 1;
 /// envelope is `portable_admission::SUPPLY_MAX_PROVINCE_ID`; this consumer was
 /// left behind, so the recorder collected rows d34 then refused — the exact
 /// producer-widened / consumer-still-narrow shape
-/// `tests/producer_consumer_admission_agreement.rs` exists to prevent.
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs` exists to prevent.
 ///
 /// It was then `65_535` and documented here as "a REPRESENTATION ENVELOPE".
 /// **That was a guess too, and lane IA retired it.** Its stated derivation ("the
@@ -184,7 +184,7 @@ pub const ROW_FLAG_DELETED: u32 = 1;
 /// Still not a province count: nothing here knows how many provinces the loaded
 /// mod set defines, and the number that does is on the producer side, which
 /// bounds against the engine's own array length.
-/// `tests/producer_consumer_admission_agreement.rs` pins this spelling to the
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs` pins this spelling to the
 /// shared one.
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 

@@ -3246,7 +3246,7 @@ mod tests {
         // state id space's structural width is `i32::MAX - 1`
         // (`claim_39c989ce13504504353c`); a state id past THAT is covered by
         // the boundary walk in
-        // `tests/producer_consumer_admission_agreement.rs`, which probes the
+        // `tests/wire_format_suite/producer_consumer_admission_agreement.rs`, which probes the
         // structural edge rather than a content-scale number.
         let cases: [(&str, RawRow); 3] = [
             (

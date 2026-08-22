@@ -357,12 +357,12 @@ pub const SCOPE_PROVINCE: u32 = 2;
 /// guess with a circular derivation; both are now their id space's STRUCTURAL
 /// width of the signed integer admitted by the producer. Each is spelled per
 /// id space and pinned to the producer's spelling by
-/// `tests/producer_consumer_admission_agreement.rs`.
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs`.
 pub const MAX_STATE_ID: u32 = (i32::MAX as u32) - 1;
 pub const MAX_PROVINCE_ID: u32 = (i32::MAX as u32) - 1;
 /// `build_profile.rs`'s `MAX_COMPACT_OWNER_TAG_DB_ID`, pinned to
 /// `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID` by
-/// `tests/producer_consumer_admission_agreement.rs`.
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs`.
 ///
 /// Was `2_048`, a guess at the vanilla-plus-DLC country count (vanilla defines
 /// 439 tags). ENGINE-STRUCTURAL now: a country-database id is admissible iff

@@ -97,7 +97,7 @@ pub const STATUS_PARTIAL: u32 = 1 << 2;
 /// This wording is a GATE INPUT, not decoration: `compact_contract`'s
 /// `lane_status_bit_sweep` allow-lists domain 61 bits 0..=3 as provably
 /// never-emitted and reads this exact sentence back as the retirement proof
-/// (`compact_contract/tests/lane_status_bit_sweep.rs` `NEVER_EMITTED`). An
+/// (`compact_contract/tests/compact_contract_suite/lane_status_bit_sweep.rs` `NEVER_EMITTED`). An
 /// external comment-strip removed it and the sweep failed; do not delete it
 /// without re-triaging the bits there.
 pub const STATUS_VALUE_VALIDATION_FIXTURE_REQUIRED: u32 = 1 << 3;

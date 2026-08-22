@@ -1,0 +1,14 @@
+mod compact_contract_dependency_policy;
+mod d99_transcription_matches_the_carrier;
+mod golden;
+mod ordered_shapes;
+mod producer_consumer_admission_agreement;
+mod regression_r2;
+mod regression_r3;
+mod regression_r4;
+mod regression_r5;
+mod regression_r6;
+mod regression_r6b;
+mod regression_r7;
+mod regression_r8;
+mod wire_module_domain_id_is_assigned;

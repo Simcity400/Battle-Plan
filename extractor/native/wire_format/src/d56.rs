@@ -225,7 +225,7 @@ pub const MAX_OOB_ID: u32 = 4_000_000;
 /// reached through `domain56_compact.rs:31`. Named here because d56 is not
 /// admitted to the production-codec dependency surface; the measurement bin
 /// asserts the local value and shipping contract agree (the d24/d32 pattern),
-/// and `tests/producer_consumer_admission_agreement.rs` pins it to
+/// and `tests/wire_format_suite/producer_consumer_admission_agreement.rs` pins it to
 /// `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID`.
 ///
 /// Was `2_048`, a guess at the vanilla-plus-DLC country count.

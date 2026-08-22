@@ -471,7 +471,7 @@ pub mod ace {
     /// ENGINE-STRUCTURAL now: `id < *(int32*)(db + 0x0C)` with a signed-`int`
     /// size gives `i32::MAX - 1` — the same derivation `MAX_ACE_ID` and
     /// `MAX_WING_ID` beside it already use for their own engine id spaces.
-    /// Pinned by `tests/producer_consumer_admission_agreement.rs`.
+    /// Pinned by `tests/wire_format_suite/producer_consumer_admission_agreement.rs`.
     pub const MAX_TAG_DB_ID: u32 = (i32::MAX as u32) - 1;
     pub const MAX_ACE_ID: u32 = i32::MAX as u32;
     pub const MAX_COUNTRY_ACE_INDEX: u32 = 4096;

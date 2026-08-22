@@ -6,7 +6,7 @@
 //! or more would satisfy the one-tile test while destroying every result below it.
 //!
 //! Run it for the numbers:
-//!   cargo test --test xmap07_tile_delta_measure -- --nocapture
+//!   cargo test --test portable_replay_format_suite xmap07_tile_delta_measure -- --nocapture
 //!
 //! WHAT THIS DOES AND DOES NOT ESTABLISH. The encoder, the grid dimensions and the record sizes
 //! are real. The DIRTY-TILE RATE is a free parameter here, because it is a property of the

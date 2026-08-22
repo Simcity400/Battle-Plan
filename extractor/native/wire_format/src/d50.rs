@@ -347,7 +347,7 @@ pub const MAX_SHIP_INSTANCE_ID: u32 = 4_000_000;
 /// mirrored rather than imported because d50 is not admitted to the production-
 /// codec dependency surface. The measurement bin asserts the mirror — the same
 /// arrangement d32 uses for its `DELTA_DATA` bit — and
-/// `tests/producer_consumer_admission_agreement.rs` pins it to
+/// `tests/wire_format_suite/producer_consumer_admission_agreement.rs` pins it to
 /// `portable_admission::MAX_COMPACT_OWNER_TAG_DB_ID`.
 ///
 /// Was `2_048`, a guess at the vanilla-plus-DLC country count (vanilla defines

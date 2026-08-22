@@ -3256,7 +3256,7 @@ mod tests {
     ///
     /// # Why this pin lives HERE and not in the shared agreement fixture
     ///
-    /// `wire_format/tests/producer_consumer_admission_agreement.rs` asserts
+    /// `wire_format/tests/wire_format_suite/producer_consumer_admission_agreement.rs` asserts
     /// that "every consumer applies the shared envelope" over a hand-maintained
     /// list, and `wire_format` does not depend on the lane crates -- so this
     /// constant CANNOT appear in that list. That gap is not academic: it is

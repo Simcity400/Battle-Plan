@@ -442,14 +442,74 @@ function Invoke-ShippingTests {
         Write-Host 'gate: RUSTFLAGS=-Adead_code (dead-code lint silenced for this gate run only)'
     }
     try {
-        foreach ($item in $plans) {
-            $program = [string]$item.Program
-            $arguments = @($item.Arguments)
-            & $program @arguments
+        $cacheDir = Join-Path $script:RepoRoot '.cargo-target'
+        New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+        $cacheTag = Join-Path $cacheDir 'CACHEDIR.TAG'
+        if (-not (Test-Path -LiteralPath $cacheTag -PathType Leaf)) {
+            Set-Content -LiteralPath $cacheTag -Encoding ascii -Value @(
+                'Signature: 8a477f597d28d172789f06886806bc55'
+                '# Cache directory tag (https://bford.info/cachedir/spec.html).'
+                '# This directory holds the landing gate build cache.'
+                '#'
+            )
+        }
+
+        # ---- Phase A: build every cargo root, strictly serially. ------------
+        # All workspaces share ONE target directory: .cargo/config.toml sets
+        # [build] target-dir = ".cargo-target", resolved against the repo root,
+        # so extractor/native, replay_interface/native and the five
+        # portable_replay roots all compile into <repo>/.cargo-target (probe:
+        # a check of compact_stream created <repo>/.cargo-target, nothing
+        # per-workspace). Concurrent cargo front-ends would serialize on that
+        # directory's .cargo-lock anyway, so overlapping BUILDS buys nothing;
+        # every root compiles first with a single lock holder at a time.
+        foreach ($item in @($plans | Select-Object -First $cargoPlanCount)) {
+            $buildArguments = @($item.Arguments) + '--no-run'
+            Write-Host ('BUILD> ' + "$([string]$item.Program) $($buildArguments -join ' ')")
+            & ([string]$item.Program) @buildArguments
             if ($LASTEXITCODE -ne 0) {
-                throw "$($item.Name) validation failed with exit code $LASTEXITCODE"
+                throw "$($item.Name) build failed with exit code $LASTEXITCODE"
             }
         }
+
+        # ---- Phase B: overlap the test phases. ------------------------------
+        # nextest compiles through a short-lived cargo child process and does
+        # NOT hold the target-dir lock while tests execute (measured probe:
+        # two concurrent `cargo nextest run` invocations sharing one
+        # CARGO_TARGET_DIR overlapped; the second finished its own build while
+        # the first's 25 s test was still running). Phase-A left fresh
+        # fingerprints, so phase-B builds are seconds-long freshness checks.
+        # Each lane's output is buffered and printed on completion to keep the
+        # gate log readable; unlike the old serial loop, one failing root no
+        # longer aborts the remaining roots - all lanes run, then failures are
+        # reported together (per-root --no-fail-fast semantics already in
+        # place inside each plan).
+        $lanes = @()
+        foreach ($item in $plans) {
+            $laneScript = {
+                param($Prog, $ArgArr, $Cwd)
+                Set-Location $Cwd
+                $output = & $Prog @ArgArr 2>&1
+                $exitCode = if ($null -eq $LASTEXITCODE) { 1 } else { $LASTEXITCODE }
+                [pscustomobject]@{ ExitCode = $exitCode; Output = @($output) }
+            }
+            $lanes += @{
+                Name = [string]$item.Name
+                Job = Start-Job -ScriptBlock $laneScript -ArgumentList @(
+                    [string]$item.Program, (, @($item.Arguments)), $script:RepoRoot)
+            }
+        }
+        $failures = @()
+        foreach ($lane in $lanes) {
+            Wait-Job $lane.Job | Out-Null
+            $result = Receive-Job $lane.Job
+            Remove-Job $lane.Job
+            foreach ($line in @($result.Output)) { Write-Host "[$($lane.Name)] $line" }
+            if ([int]$result.ExitCode -ne 0) {
+                $failures += "$($lane.Name) validation failed with exit code $($result.ExitCode)"
+            }
+        }
+        if ($failures.Count -gt 0) { throw ($failures -join '; ') }
         return $cargoPlanCount
     } finally {
         if ($gateSetRustFlags) {
