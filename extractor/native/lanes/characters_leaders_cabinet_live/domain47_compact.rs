@@ -1,16 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
 
-#[cfg(not(test))]
-use compact_contract::{parse_compact_record_header, RecordFramingError};
-
 pub const DOMAIN_ID: u16 = 47;
 pub const DOMAIN_NAME: &str = "characters_leaders_cabinet_live";
-
-pub const COMPACT_RECORD_MAGIC: &[u8; 4] = b"H4CR";
-pub const COMPACT_RECORD_HEADER_LEN: usize = 32;
-pub const COMPACT_RECORD_VERSION: u16 = 1;
-pub const COMPACT_RECORD_TYPE_DOMAIN_DATA: u16 = 3;
 
 pub const HEADER_LEN: usize = 64;
 pub const STRING_NONE: u32 = u32::MAX;
@@ -572,21 +564,6 @@ fn encode_payload_inner(
     out
 }
 
-pub fn encode_compact_data_record(sequence: u64, game_hour_raw: i32, payload: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(COMPACT_RECORD_HEADER_LEN + payload.len());
-    out.extend_from_slice(COMPACT_RECORD_MAGIC);
-    out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
-    out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
-    out.extend_from_slice(&sequence.to_le_bytes());
-    out.extend_from_slice(&game_hour_raw.to_le_bytes());
-    out.extend_from_slice(&DOMAIN_ID.to_le_bytes());
-    out.extend_from_slice(&COMPACT_RECORD_TYPE_DOMAIN_DATA.to_le_bytes());
-    out.extend_from_slice(&(payload.len().min(u32::MAX as usize) as u32).to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(payload);
-    out
-}
-
 fn decode_family_presence_mask(
     offset: usize,
     schema_flags: u32,
@@ -731,7 +708,15 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
 
     let mut cursor = HEADER_LEN;
     let string_start = cursor;
-    let mut strings = Vec::with_capacity(string_count);
+    // THE COUNT IS HEADER-CONTROLLED, SO THE RESERVATION IS DERIVED FROM BYTES
+    // IN HAND: every entry costs at least its 2-byte length prefix inside the
+    // walked region, so this is a tight ceiling on how many entries could
+    // exist. Reserving the declared u32 directly let a 64-byte payload demand
+    // ~64 GiB before the first truncation error was recorded (Codex review
+    // round 11, finding 1).
+    let mut strings = Vec::with_capacity(
+        string_count.min(payload.len().saturating_sub(HEADER_LEN) / 2),
+    );
     for index in 0..string_count {
         if cursor + 2 > payload.len() {
             summary.parse_errors.push(format!(
@@ -812,16 +797,34 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
             break;
         }
         summary.row_count_total = summary.row_count_total.saturating_add(1);
+        // A DECLARED LENGTH OTHER THAN ITS KIND'S CONSTANT IS AN ERROR, and the
+        // row's fixed-offset fields are NOT read: the extent check above only
+        // proves `row_len` bytes exist, so reading a 42-byte unit leader out of
+        // a 4-byte declaration would slice past the payload and panic instead
+        // of producing the parse error every malformed record must produce.
+        // The row is skipped (its bytes still consumed) with the error named.
+        let declared_want = match kind {
+            ROW_CHARACTER => Some(CHARACTER_ROW_LEN),
+            ROW_UNIT_LEADER => Some(UNIT_LEADER_ROW_LEN),
+            ROW_UNIT_LEADER_TRAIT => Some(TRAIT_ROW_LEN),
+            ROW_COUNTRY_LEADER_ROLE => Some(COUNTRY_LEADER_ROLE_ROW_LEN),
+            ROW_ACTIVE_RULER => Some(ACTIVE_RULER_ROW_LEN),
+            ROW_ADVISOR_ROSTER | ROW_APPOINTED_ADVISOR => Some(ADVISOR_ROW_LEN),
+            ROW_CHARACTER_PORTRAIT => Some(CHARACTER_PORTRAIT_ROW_LEN),
+            _ => None,
+        };
+        if let Some(want) = declared_want {
+            if row_len != want as usize {
+                summary.parse_errors.push(format!(
+                    "offset {offset}: row {row_index} kind {kind} length {row_len} != {want}"
+                ));
+                cursor += row_len;
+                row_index += 1;
+                continue;
+            }
+        }
         match kind {
             ROW_CHARACTER => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    CHARACTER_ROW_LEN,
-                );
                 let country = read_u32(payload, cursor + 4);
                 let char_id = read_u32(payload, cursor + 8);
                 let name_sid = read_u32(payload, cursor + 12);
@@ -852,14 +855,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 }
             }
             ROW_UNIT_LEADER => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    UNIT_LEADER_ROW_LEN,
-                );
                 let country = read_u32(payload, cursor + 4);
                 let unit_id = read_u32(payload, cursor + 8);
                 let char_id = read_u32(payload, cursor + 12);
@@ -924,14 +919,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 declared_trait_counts.insert(unit_id, trait_count);
             }
             ROW_UNIT_LEADER_TRAIT => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    TRAIT_ROW_LEN,
-                );
                 let unit_id = read_u32(payload, cursor + 4);
                 let ordinal = read_u16(payload, cursor + 8);
                 let trait_sid = read_u32(payload, cursor + 12);
@@ -954,14 +941,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 *entry = entry.saturating_add(1);
             }
             ROW_COUNTRY_LEADER_ROLE => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    COUNTRY_LEADER_ROLE_ROW_LEN,
-                );
                 let country = read_u32(payload, cursor + 4);
                 let char_id = read_u32(payload, cursor + 8);
                 let name_sid = read_u32(payload, cursor + 12);
@@ -993,14 +972,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 }
             }
             ROW_ACTIVE_RULER => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    ACTIVE_RULER_ROW_LEN,
-                );
                 let country = read_u32(payload, cursor + 4);
                 let char_id = read_u32(payload, cursor + 8);
                 let party_sid = read_u32(payload, cursor + 12);
@@ -1051,14 +1022,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 }
             }
             ROW_ADVISOR_ROSTER | ROW_APPOINTED_ADVISOR => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    ADVISOR_ROW_LEN,
-                );
                 let country = read_u32(payload, cursor + 4);
                 let char_id = read_u32(payload, cursor + 8);
                 let slot_sid = read_u32(payload, cursor + 12);
@@ -1104,14 +1067,6 @@ pub fn decode_payload(offset: usize, payload: &[u8]) -> Domain44GateSummary {
                 }
             }
             ROW_CHARACTER_PORTRAIT => {
-                require_len(
-                    &mut summary,
-                    offset,
-                    row_index,
-                    kind,
-                    row_len,
-                    CHARACTER_PORTRAIT_ROW_LEN,
-                );
                 let country = read_u32(payload, cursor + 4);
                 let char_id = read_u32(payload, cursor + 8);
                 let role_sid = read_u32(payload, cursor + 12);
@@ -1356,7 +1311,11 @@ fn decode_payload_rows_checked(payload: &[u8]) -> Result<DecodedDomain47Payload,
         .checked_add(string_bytes)
         .ok_or("domain47 string table length overflow")?;
     need_payload(payload, string_end, "domain47 string table")?;
-    let mut strings = Vec::with_capacity(string_count);
+    // Same derived reservation as decode_payload: the declared count is
+    // header-controlled and must not size an allocation by itself.
+    let mut strings = Vec::with_capacity(
+        string_count.min(payload.len().saturating_sub(HEADER_LEN) / 2),
+    );
     for index in 0..string_count {
         need_payload(payload, cursor + 2, "domain47 string length")?;
         let len = read_u16(payload, cursor) as usize;
@@ -1581,23 +1540,6 @@ fn read_u32(payload: &[u8], offset: usize) -> u32 {
 fn read_i32(payload: &[u8], offset: usize) -> i32 {
     i32::from_le_bytes(payload[offset..offset + 4].try_into().expect("i32 range"))
 }
-
-fn require_len(
-    summary: &mut Domain44GateSummary,
-    offset: usize,
-    row_index: usize,
-    kind: u8,
-    got: usize,
-    want: u8,
-) {
-    if got != want as usize {
-        summary.parse_errors.push(format!(
-            "offset {offset}: row {row_index} kind {kind} length {got} != {}",
-            want
-        ));
-    }
-}
-
 fn validate_country(
     summary: &mut Domain44GateSummary,
     offset: usize,
@@ -1749,156 +1691,6 @@ fn decoded_required_string(strings: &[String], string_id: u32) -> Result<String,
         .get(string_id as usize)
         .cloned()
         .ok_or_else(|| format!("domain47 invalid string id {string_id}"))
-}
-
-#[cfg(not(test))]
-fn main() {
-    if let Err(err) = run_cli() {
-        eprintln!("{err}");
-        std::process::exit(2);
-    }
-}
-
-#[cfg(not(test))]
-fn run_cli() -> Result<(), String> {
-    let mut args = std::env::args();
-    let program = args
-        .next()
-        .unwrap_or_else(|| "domain47_compact".to_string());
-    let Some(path) = args.next() else {
-        return Err(format!("usage: {program} <domain47_payload_or_record.bin>"));
-    };
-    if args.next().is_some() {
-        return Err(format!("usage: {program} <domain47_payload_or_record.bin>"));
-    }
-    let bytes = std::fs::read(&path).map_err(|err| format!("failed to read {path}: {err}"))?;
-    let (payload, wrapped_record) = payload_from_input(&bytes)?;
-    let summary = decode_payload(0, payload);
-    println!("{}", summary_json(&summary, wrapped_record, payload.len()));
-    if !summary.parse_errors.is_empty() {
-        std::process::exit(1);
-    }
-    Ok(())
-}
-
-#[cfg(not(test))]
-fn payload_from_input(bytes: &[u8]) -> Result<(&[u8], bool), String> {
-    if bytes.starts_with(COMPACT_RECORD_MAGIC) {
-        let header = parse_compact_record_header(bytes).map_err(|err| match err {
-            RecordFramingError::TruncatedHeader(_) | RecordFramingError::BadMagic => {
-                format!("invalid compact record header: {err}")
-            }
-            RecordFramingError::UnsupportedVersion(version) => {
-                format!("unsupported compact record version {version}")
-            }
-            RecordFramingError::UnsupportedHeaderLen(header_len) => {
-                format!("header_len {header_len} != {COMPACT_RECORD_HEADER_LEN}")
-            }
-            RecordFramingError::PayloadTooLarge(_) => {
-                format!("invalid compact record header: {err}")
-            }
-        })?;
-        if header.domain_id != DOMAIN_ID {
-            return Err(format!("domain_id {} != {DOMAIN_ID}", header.domain_id));
-        }
-        if header.record_type != COMPACT_RECORD_TYPE_DOMAIN_DATA {
-            return Err(format!(
-                "record_type {} != {COMPACT_RECORD_TYPE_DOMAIN_DATA}",
-                header.record_type
-            ));
-        }
-        if bytes.len() != header.record_len() {
-            return Err(format!(
-                "record payload length {} plus header {COMPACT_RECORD_HEADER_LEN} != file bytes {}",
-                header.payload_len,
-                bytes.len()
-            ));
-        }
-        compact_contract::validate_compact_record_semantics(
-            header.domain_id,
-            header.record_type,
-            header.record_flags,
-            &bytes[COMPACT_RECORD_HEADER_LEN..],
-        )
-        .map_err(|error| format!("invalid compact record semantics: {error}"))?;
-        return Ok((&bytes[COMPACT_RECORD_HEADER_LEN..], true));
-    }
-    Ok((bytes, false))
-}
-
-#[cfg(not(test))]
-fn summary_json(
-    summary: &Domain44GateSummary,
-    wrapped_record: bool,
-    payload_bytes: usize,
-) -> String {
-    let mut units = String::new();
-    units.push('{');
-    for (idx, (key, value)) in summary.data_units_total.iter().enumerate() {
-        if idx > 0 {
-            units.push(',');
-        }
-        units.push('"');
-        units.push_str(key);
-        units.push_str("\":");
-        units.push_str(&value.to_string());
-    }
-    units.push('}');
-    format!(
-        "{{\"domain\":\"{}\",\"domain_id\":{},\"wrapped_record\":{},\"payload_bytes\":{},\"status_flags_or\":{},\"schema_flags_or\":{},\"row_count_total\":{},\"character_rows\":{},\"unit_leader_rows\":{},\"unit_leader_trait_rows\":{},\"country_leader_role_rows\":{},\"active_ruler_rows\":{},\"advisor_roster_rows\":{},\"appointed_advisor_rows\":{},\"character_portrait_rows\":{},\"character_portrait_windows1252_rows\":{},\"string_count\":{},\"string_bytes\":{},\"data_units_total\":{},\"parse_errors\":{}}}",
-        json_escape(DOMAIN_NAME),
-        DOMAIN_ID,
-        wrapped_record,
-        payload_bytes,
-        summary.status_flags_or,
-        summary.schema_flags_or,
-        summary.row_count_total,
-        summary.character_rows,
-        summary.unit_leader_rows,
-        summary.trait_rows,
-        summary.country_leader_role_rows,
-        summary.active_ruler_rows,
-        summary.advisor_roster_rows,
-        summary.appointed_advisor_rows,
-        summary.character_portrait_rows,
-        summary.character_portrait_windows1252_rows,
-        summary.string_count,
-        summary.string_bytes,
-        units,
-        json_string_array(&summary.parse_errors),
-    )
-}
-
-#[cfg(not(test))]
-fn json_string_array(values: &[String]) -> String {
-    let mut out = String::from("[");
-    for (idx, value) in values.iter().enumerate() {
-        if idx > 0 {
-            out.push(',');
-        }
-        out.push('"');
-        out.push_str(&json_escape(value));
-        out.push('"');
-    }
-    out.push(']');
-    out
-}
-
-#[cfg(not(test))]
-fn json_escape(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            ch if ch.is_control() => out.push_str(&format!("\\u{:04x}", ch as u32)),
-            ch => out.push(ch),
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -2136,17 +1928,6 @@ mod tests {
                 .get("character_portrait_rows")
                 .copied(),
             Some(1)
-        );
-
-        let compact = encode_compact_data_record(7, 42, &payload);
-        assert_eq!(&compact[0..4], COMPACT_RECORD_MAGIC);
-        assert_eq!(
-            u16::from_le_bytes(compact[20..22].try_into().unwrap()),
-            DOMAIN_ID
-        );
-        assert_eq!(
-            u16::from_le_bytes(compact[22..24].try_into().unwrap()),
-            COMPACT_RECORD_TYPE_DOMAIN_DATA
         );
     }
 

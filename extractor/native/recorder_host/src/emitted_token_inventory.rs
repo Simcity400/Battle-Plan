@@ -139,8 +139,9 @@ fn scan_stream(
     //
     // Getting this wrong is not a degraded number, it is a lost capture:
     // `collect_static_join_tokens` decodes the domain grammar before deciding
-    // whether the domain contributes tokens, so the first wrapped d43/d53 record
-    // fails to decode, the `?` below turns that into an error, and
+    // whether the domain contributes tokens, so the first wrapped record of any
+    // delta-enabled domain (d43/d47/d53 today) fails to decode, the `?` below
+    // turns that into an error, and
     // `finalize_static_bundle` propagates it — no emitted-token inventory, no
     // static bundle, no replay publication. (Codex review round 8, finding 1: the
     // tenth walker, after the eight this lane found and the two round 7 did.)
@@ -210,7 +211,7 @@ fn scan_stream(
                         // keyframe cadence resynchronises the consumer. The first
                         // spelling of this fix propagated the refusal with `?`,
                         // and because `finalize_static_bundle` propagates in
-                        // turn, ONE damaged d43/d53 record destroyed the
+                        // turn, ONE damaged wrapped record destroyed the
                         // emitted-token inventory, the static bundle and the
                         // replay publication for the WHOLE capture -- and stopped
                         // the walk before the cadence could recover it. (Codex
@@ -224,10 +225,11 @@ fn scan_stream(
                         // `extractor/game_defs/static_bundle.py` uses it to check
                         // that every emitted token resolves in the catalogs -- so
                         // a skipped record means the join gate checked LESS, never
-                        // that it checked something false. Neither delta-enabled
-                        // domain has a token-collecting arm in
-                        // `collect_static_join_tokens` today, so in practice the
-                        // set is unchanged; the count and the reasons ride out to
+                        // that it checked something false. d47 DOES have a
+                        // token-collecting arm in `collect_static_join_tokens`
+                        // (`collect_domain47_advisor_tokens`, lane QL), so a
+                        // skipped d47 record costs its advisor tokens for that
+                        // hour; the count and the reasons ride out to
                         // the session manifest either way, because "exclude and
                         // account" is not satisfied by a number nobody can see.
                         unreconstructed_record_count =
@@ -592,7 +594,8 @@ mod tests {
         );
         assert!(
             unreconstructed.is_err(),
-            "envelope bytes parsed as d53 grammar, so this test could not tell              a reconstructing walker from one that skipped it"
+            "envelope bytes parsed as d53 grammar, so this test could not tell \
+             a reconstructing walker from one that skipped it"
         );
     }
 
@@ -667,6 +670,132 @@ mod tests {
                 && scan.unreconstructed_records[0].contains(&FIRST_HOUR.saturating_add(1).to_string()),
             "a refusal must name the domain and the hour it cost: {}",
             scan.unreconstructed_records[0]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_d47_stream_yields_the_same_advisor_tokens_as_the_raw_one() {
+        // kills: `scan_stream` skipping reconstruction for a newly enabled
+        // domain (lane QL put 47 on `DELTA_ENABLED_DOMAINS`). d47 is NOT d53:
+        // it has a token-collecting arm in `collect_static_join_tokens`
+        // (`collect_domain47_advisor_tokens`), so its wrapped records must not
+        // merely avoid breaking the walk -- they must contribute exactly the
+        // tokens their raw bytes contribute. An earlier wording of this file's
+        // inventory comment claimed no enabled domain collects tokens; that was
+        // true for {43, 53} and false from the hour 47 joined.
+        //
+        // The vacuity controls are the point, as in the d53 test above: the
+        // token set is asserted NON-EMPTY with a named member (an empty-set
+        // equality proves nothing), the raw and wrapped streams are asserted to
+        // be different bytes, and the unreconstructed envelope is asserted to
+        // fail d47 grammar outright -- so the equality below can only pass if
+        // the walker really did reconstruct.
+        use characters_leaders_cabinet_live_lane as domain47;
+        use compact_contract::payload_span_delta as psd;
+
+        const DOMAIN47: u16 = 47;
+        const ADVISOR_IDEA_TOKEN: &str = "POR_political_advisor_idea";
+
+        let advisor_payload = |elapsed_wall_ms: u64| -> Vec<u8> {
+            let rows = vec![
+                domain47::CharacterLaneRow::Character(domain47::CharacterRow {
+                    country_tag_db_id: 47,
+                    char_id: 1001,
+                    name: Some("Antonio de Oliveira Salazar"),
+                    token: Some("POR_salazar"),
+                }),
+                domain47::CharacterLaneRow::AdvisorRoster(domain47::AdvisorRow {
+                    country_tag_db_id: 47,
+                    char_id: 1001,
+                    slot: Some("political_advisor"),
+                    ledger: Some("political_advisor"),
+                    idea_token: ADVISOR_IDEA_TOKEN,
+                }),
+            ];
+            domain47::encode_payload(elapsed_wall_ms, 0, domain47::SCHEMA_ROOTS_VALIDATED, &rows)
+        };
+
+        let mut producer = psd::PayloadSpanDeltaProducer::new();
+        let mut raw = Vec::new();
+        let mut wrapped = Vec::new();
+        let mut envelopes = Vec::new();
+        let mut sequence = 1u64;
+        for hour in 0..3i32 {
+            // Same engine content every hour, a different recorder clock: the
+            // exact shape that makes a NoChange body correct and makes a
+            // reconstruction that took ANY byte from the wrong place visible.
+            let payload = advisor_payload(1_000 + hour as u64 * 1_000);
+            append_record(
+                &mut raw,
+                sequence,
+                FIRST_HOUR + hour,
+                DOMAIN47,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                0,
+                &payload,
+            );
+            let envelope = producer
+                .wrap(
+                    psd::PayloadSpanDeltaIdentity {
+                        domain_id: DOMAIN47,
+                        source_sequence: sequence,
+                        game_hour_raw: FIRST_HOUR + hour,
+                    },
+                    &payload,
+                )
+                .expect("wrap a valid d47 payload");
+            append_record(
+                &mut wrapped,
+                sequence,
+                FIRST_HOUR + hour,
+                DOMAIN47,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+                &envelope,
+            );
+            envelopes.push(envelope);
+            producer.commit();
+            sequence += 1;
+        }
+        assert_eq!(envelopes[0].len(), psd::HEADER_LEN + advisor_payload(0).len() - 8);
+        assert_eq!(envelopes[1].len(), psd::HEADER_LEN, "hour 2 is a NoChange body");
+        assert_eq!(envelopes[2].len(), psd::HEADER_LEN, "hour 3 is a NoChange body");
+
+        let scratch = ScratchDir::new("ql_static_join_d47");
+        let raw_path = scratch.write("raw.bin", &raw);
+        let wrapped_path = scratch.write("wrapped.bin", &wrapped);
+        let raw_scan = scan_stream(&raw_path, StreamIdentityMode::Legacy).expect("raw stream scans");
+        let wrapped_scan = scan_stream(&wrapped_path, StreamIdentityMode::Legacy)
+            .expect("wrapped stream scans -- an Err here means the walker did not unwrap");
+
+        let expected = BTreeSet::from([StaticJoinToken {
+            kind: "idea",
+            token: ADVISOR_IDEA_TOKEN.to_string(),
+        }]);
+        assert_eq!(raw_scan.tokens, expected, "the fixture must actually collect the advisor token");
+        assert_eq!(
+            raw_scan.tokens, wrapped_scan.tokens,
+            "the static-join token set must not depend on the wire encoding"
+        );
+        assert_eq!(wrapped_scan.unreconstructed_record_count, 0);
+        assert_ne!(raw, wrapped);
+
+        let unreconstructed = collect_static_join_tokens(
+            DOMAIN47,
+            &envelopes[0],
+            DomainDataContext {
+                stream_offset: 0,
+                record_flags: compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+                sequence: 1,
+                header_hour_raw: FIRST_HOUR,
+                session_header_identity: None,
+                xmap07_snow_mud_previous_grid_sha256: None,
+            },
+        );
+        assert!(
+            unreconstructed.is_err(),
+            "envelope bytes parsed as d47 grammar, so this test could not tell \
+             a reconstructing walker from one that skipped it"
         );
     }
 }

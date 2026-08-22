@@ -32,7 +32,8 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
         "d47 discovery cache (roots + sealed byte witness + walk families), carried across the \
          reset UNCONDITIONALLY by its own carve-out (lane MX): its validity is decided by the \
          next frame's witness replay inside that frame's bracket, never by this bracket's \
-         verdict; d47 emits no deltas, so there is no staged half to roll back",
+         verdict; nothing in this cache is a delta pin -- d47's wire baseline lives in \
+         `payload_span_delta`, which rolls back its own staged half",
     ),
     (
         "rail_replay_state_live_geometry",
@@ -66,7 +67,17 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "payload_span_delta",
-        "the PSD1 wire-delta producer for d41/d43/d53 (lane PS). Same classification as          d100's wire baseline and for the same reason: it is not a continuity claim, it names          the PAYLOAD the fold holds, and every delta or no-change record names that baseline          by SHA-256 -- so a consumer holding anything else refuses the hour by name rather          than reconstructing a payload nobody observed. It survives the blanket reset and          takes a PER-DOMAIN roll-back instead: the staged half is dropped for exactly those          enabled domains whose own records became a gap, which is what keeps the committed          half equal to what the fold received. Wiping it on every rejected bracket would force          a keyframe there, and d53's keyframe is 2.88 MB against a 26 MB delta stream for the          whole of captures/oz_tip",
+        "the PSD1 wire-delta producer for every domain on `DELTA_ENABLED_DOMAINS` \
+         (d43/d47/d53 today; lane PS, lane QL). Same classification as d100's wire baseline \
+         and for the same reason: it is not a continuity claim, it names the PAYLOAD the fold \
+         holds, and every delta or no-change record names that baseline by SHA-256 -- so a \
+         consumer holding anything else refuses the hour by name rather than reconstructing \
+         a payload nobody observed. It survives the blanket reset and takes a PER-DOMAIN \
+         roll-back instead: the staged half is dropped for exactly those enabled domains \
+         whose own records became a gap, which is what keeps the committed half equal to \
+         what the fold received. Wiping it on every rejected bracket would force a keyframe \
+         there, and d53's keyframe is 2.88 MB against a 26 MB delta stream for the whole of \
+         captures/oz_tip",
     ),
     (
         "xmap07_snow_mud_generation_counter",

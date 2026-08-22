@@ -1,5 +1,4 @@
 pub mod adapter;
-pub mod dll_collector;
 pub mod extractor;
 pub mod scheduled;
 pub mod static_semantics;
@@ -10,8 +9,8 @@ pub mod stream_gate;
 pub mod domain47_characters_leaders_cabinet_live;
 
 pub use domain47_characters_leaders_cabinet_live::{
-    absent_family_names, decode_payload, decode_payload_rows, encode_compact_data_record,
-    encode_payload, encode_payload_with_families, ActiveRulerRow, AdvisorRow, CharacterLaneRow,
+    absent_family_names, decode_payload, decode_payload_rows, encode_payload,
+    encode_payload_with_families, ActiveRulerRow, AdvisorRow, CharacterLaneRow,
     CharacterPortraitRow, CharacterRow, CountryLeaderRoleRow, DecodedDomain47Payload,
     DecodedDomain47Row, Domain44GateSummary, PortraitIdentityEncoding, UnitLeaderRow,
     UnitLeaderTraitRow, DOMAIN_ID, DOMAIN_NAME, FAMILY_ACTIVE_RULER, FAMILY_ADVISOR_ROSTER,

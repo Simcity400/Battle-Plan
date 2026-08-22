@@ -18,7 +18,6 @@ use compact_contract::payload_span_delta as psd;
 const D53: u16 = COMPACT_DOMAIN_DIPLOMACY_INTEL_OPERATIVES_LIVE;
 const D43: u16 = COMPACT_DOMAIN_MARKET_TRADE_LIVE;
 const FIRST_HOUR: i32 = 60_830_824;
-
 /// A d53-shaped payload: `elapsed_wall_ms` at offset 0, then a body.
 fn payload(elapsed_wall_ms: u64, body: &[u8]) -> Vec<u8> {
     let mut out = elapsed_wall_ms.to_le_bytes().to_vec();
@@ -267,10 +266,10 @@ fn a_second_record_in_the_same_frame_deltas_against_the_first() {
     // was. d53 really does emit more than one DOMAIN_DATA record in a frame --
     // the A30 companion rows -- but those are appended RAW and UNFLAGGED by
     // `append_compact_diplomacy_intel_operatives_data_record`, and
-    // `append_compact_span_delta_data_record` has exactly two call sites, one per
-    // enabled domain, each reached once a frame. This guards the invariant that
-    // makes rollback correct, at the collector's own wiring rather than in the
-    // codec's unit tests.
+    // `append_compact_span_delta_data_record` has one call site per enabled
+    // domain, each reached once a frame (three since lane QL enabled d47). This
+    // guards the invariant that makes rollback correct, at the collector's own
+    // wiring rather than in the codec's unit tests.
     let mut trackers = CompactPerfGateTrackers::default();
     let mut consumer = psd::PayloadSpanDeltaConsumer::new();
     let mut body = body_of_len(65_536, 5);
@@ -368,4 +367,94 @@ fn a_payload_the_producer_cannot_wrap_still_rides_whole_and_unflagged() {
         None,
         "an unflagged record is passed through untouched"
     );
+}
+
+#[test]
+fn d47s_emission_site_wraps_through_the_real_appender_and_the_consumer_reconstructs_it() {
+    // kills: reverting `append_compact_characters_leaders_cabinet_data_record`
+    // to a plain `append_compact_record` while 47 stays on
+    // `DELTA_ENABLED_DOMAINS`. That combination is silent — every record rides
+    // unflagged, consumers pass it through untouched, nothing refuses, and the
+    // domain's measured 45x simply stops existing — and unlike a codec refusal
+    // there is no error anywhere to catch it. This drives the REAL per-domain
+    // emission function with the REAL tracker set across three frames: the first
+    // hour must carry the envelope flag and reconstruct byte-for-byte through
+    // the shipped `PayloadSpanDeltaConsumer` (the same reconstruction every
+    // walker performs); a one-byte change must ride as a small delta rather
+    // than re-send the payload; and an UNCHANGED-content third hour (only the
+    // recorder clock moved) must cost EXACTLY `psd::HEADER_LEN` bytes — the one
+    // observable that separates a no-change envelope from appended raw bytes,
+    // since raw appending would re-send all 32 KiB.
+    let mut trackers = CompactPerfGateTrackers::default();
+    let mut consumer = psd::PayloadSpanDeltaConsumer::new();
+
+    let mut body = body_of_len(32_768, 47);
+    // A plausible d47 shape: the declared volatile header, then grammar bytes.
+    // The appender is grammar-agnostic — its basis is payload[8..] whatever the
+    // domain says — so a synthetic body exercises exactly the wiring under test.
+    let frame_payload = |elapsed_wall_ms: u64, body: &[u8]| -> Vec<u8> {
+        let mut out = elapsed_wall_ms.to_le_bytes().to_vec();
+        out.extend_from_slice(body);
+        out
+    };
+    let read_for = |payload_bytes: Vec<u8>| domain47::scheduled::NativeScheduledRead {
+        payload: payload_bytes,
+        ..Default::default()
+    };
+
+    let first = frame_payload(1_000, &body);
+    let mut out = Vec::new();
+    append_compact_characters_leaders_cabinet_data_record(
+        &mut out,
+        &mut trackers.payload_span_delta,
+        1,
+        FIRST_HOUR,
+        &read_for(first.clone()),
+    );
+    settle(&mut trackers, &[]);
+    let published = parse_one(&out);
+    assert_ne!(
+        published.record_flags & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+        0,
+        "d47's emission site must declare its payload an envelope"
+    );
+    assert_eq!(apply(&mut consumer, &published), first);
+
+    body[500] ^= 0xff;
+    let second = frame_payload(2_000, &body);
+    let mut out = Vec::new();
+    append_compact_characters_leaders_cabinet_data_record(
+        &mut out,
+        &mut trackers.payload_span_delta,
+        2,
+        FIRST_HOUR + 1,
+        &read_for(second.clone()),
+    );
+    settle(&mut trackers, &[]);
+    let published = parse_one(&out);
+    assert!(
+        published.wire_len < 1024,
+        "a one-byte change must ride as a delta against the committed baseline, \
+         not re-send {} bytes",
+        published.wire_len
+    );
+    assert_eq!(apply(&mut consumer, &published), second);
+
+    let unchanged = frame_payload(3_000, &body);
+    let mut out = Vec::new();
+    append_compact_characters_leaders_cabinet_data_record(
+        &mut out,
+        &mut trackers.payload_span_delta,
+        3,
+        FIRST_HOUR + 2,
+        &read_for(unchanged.clone()),
+    );
+    settle(&mut trackers, &[]);
+    let published = parse_one(&out);
+    assert_eq!(
+        published.wire_len,
+        psd::HEADER_LEN,
+        "an unchanged hour through the real appender must be a header and nothing else"
+    );
+    assert_eq!(apply(&mut consumer, &published), unchanged);
 }

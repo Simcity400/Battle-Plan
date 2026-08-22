@@ -153,10 +153,15 @@ pub const MAX_OPS: usize = 1 << 22;
 
 /// The domains whose DOMAIN_DATA payloads ride as `PSD1` envelopes.
 ///
-/// 43 `market_trade_live` and 53 `diplomacy_intel_operatives_live`, two of the
-/// three lane PN priced as the largest remaining size prize. The list is here,
-/// in the codec, because BOTH sides consult it: the producer to decide what to
-/// wrap, the decoder to refuse an envelope naming a domain nobody enabled.
+/// 43 `market_trade_live` and 53 `diplomacy_intel_operatives_live` — two of the
+/// three lane PN priced as the largest remaining size prize. 47
+/// `characters_leaders_cabinet_live` is the second-largest REMAINING domain
+/// (lane PN: ~684 KB/hour, ~3.2% hour-over-hour identity of the payload BASIS,
+/// i.e. after the volatile header; whole-payload identity measures 0-0.5%), priced
+/// by lane QL at 34-49x under this exact codec on five sealed spools
+/// (`runs/ql_d47_wire_delta/`). The list is here, in the codec, because BOTH
+/// sides consult it: the producer to decide what to wrap, the decoder to refuse
+/// an envelope naming a domain nobody enabled.
 ///
 /// # Why 41 `projects_live` is NOT on this list
 ///
@@ -174,9 +179,9 @@ pub const MAX_OPS: usize = 1 << 22;
 /// check matches them, and it rewrites eight bytes underneath `basis_sha256`.
 /// Every d41 keyframe in a frame that dropped a record would then fail its own
 /// digest. Not stamping is no better: it re-opens the defect the stamp exists to
-/// close, measured on `captures/ob_first_bmp` as 69 of 369 d41 hours refused for
-/// arithmetic. And a delta body cannot be stamped at all, because the trailer's
-/// bytes need not appear in it.
+/// close (69 of 369 d41 hours refused on `captures/ob_first_bmp`). And a delta
+/// body cannot be stamped at all, because the trailer's bytes need not appear in
+/// it.
 ///
 /// The price of leaving it out is measured and small: on both spools that still
 /// carry their bytes, d41's delta is worth 1.03x-1.06x — 105,483 B of a 4.79 GB
@@ -186,10 +191,20 @@ pub const MAX_OPS: usize = 1 << 22;
 ///
 /// 70 `sunk_convoy_history` and 100/101 are on the same stamped roster and are
 /// excluded for the same reason; 100 already has its own delta.
-pub const DELTA_ENABLED_DOMAINS: &[u16] = &[43, 53];
+///
+/// # Why 47 qualifies where 41 does not
+///
+/// d47's grammar (`characters_leaders_cabinet_live::domain47_compact`) carries no
+/// record sequence anywhere: its 64-byte header is `elapsed_wall_ms`, status and
+/// schema flags, string-table sizes and per-family row counts, and every row is
+/// fixed-width ids and string-table indexes. Nothing in the payload names the
+/// record that carries it, so the stamping law has nothing to rewrite, and the
+/// volatile-header rule applies to it exactly as to d43/d53: byte 0 is the same
+/// recorder wall-clock `u64` those grammars stamp.
+pub const DELTA_ENABLED_DOMAINS: &[u16] = &[43, 47, 53];
 
 pub const fn is_delta_enabled_domain(domain_id: u16) -> bool {
-    matches!(domain_id, 43 | 53)
+    matches!(domain_id, 43 | 47 | 53)
 }
 
 /// Hours a domain may go without a keyframe.

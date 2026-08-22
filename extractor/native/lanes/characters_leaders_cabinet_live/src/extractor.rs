@@ -507,11 +507,6 @@ pub fn encode_frame_payload_over(
     )
 }
 
-pub fn encode_frame_record(sequence: u64, game_hour_raw: i32, frame: &LaneFrame) -> Vec<u8> {
-    let payload = encode_frame_payload(frame);
-    compact::encode_compact_data_record(sequence, game_hour_raw, &payload)
-}
-
 pub fn decode_frame_payload(offset: usize, payload: &[u8]) -> compact::Domain44GateSummary {
     compact::decode_payload(offset, payload)
 }
@@ -1513,13 +1508,6 @@ mod tests {
         assert_eq!(summary.advisor_roster_rows, 3);
         assert_eq!(summary.appointed_advisor_rows, 3);
         assert_eq!(summary.schema_flags_or & compact::SCHEMA_ROOTS_VALIDATED, 1);
-
-        let record = encode_frame_record(7, 1946051909, &frame);
-        assert_eq!(&record[0..4], compact::COMPACT_RECORD_MAGIC);
-        assert_eq!(
-            u16::from_le_bytes(record[20..22].try_into().unwrap()),
-            DOMAIN_ID
-        );
     }
 
     #[test]

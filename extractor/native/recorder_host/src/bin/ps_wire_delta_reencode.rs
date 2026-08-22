@@ -28,7 +28,7 @@
 //!
 //! Usage:
 //!   ps_wire_delta_reencode <collector_stream.bin> [--json out.json]
-//!                          [--domains 41,43,53] [--rewrite out.bin]
+//!                          [--domains 43,47,53] [--rewrite out.bin]
 
 use std::collections::BTreeMap;
 use std::env;
@@ -45,7 +45,7 @@ use serde::Serialize;
 
 /// The shipped enabled set, restated so `--domains` can still price a
 /// candidate domain that is not enabled yet.
-const DEFAULT_DOMAINS: [u16; 2] = [43, 53];
+const DEFAULT_DOMAINS: [u16; 3] = [43, 47, 53];
 
 /// The `ICCP` companion carrier's magic
 /// (`diplomacy_intel_operatives_live::a30_companion_carrier::MAGIC`).
@@ -97,6 +97,10 @@ struct DomainRow {
     /// Records this tool deliberately did NOT wrap because production does not:
     /// d53's `ICCP` companion rows. See [`A30_COMPANION_MAGIC`].
     companion_records_passed_through: u64,
+    /// Selected-domain records that arrived ALREADY enveloped. This tool prices
+    /// raw spools; such records are passed through verbatim (and decoded, so a
+    /// damaged envelope is a mismatch) rather than wrapped a second time.
+    already_enveloped_records: u64,
     encode_errors: Vec<String>,
     decode_errors: Vec<String>,
 }
@@ -204,6 +208,64 @@ fn run() -> Result<(), String> {
                         ..DomainRow::default()
                     });
                     row.data_records += 1;
+
+                    // THIS HARNESS PRICES RAW SPOOLS. A record that arrives
+                    // already enveloped is passed through VERBATIM — wrapping it
+                    // again would measure a double envelope no collector ever
+                    // produces, and its round trip would pass against the INNER
+                    // bytes, which is exactly the kind of vacuous success this
+                    // tool exists to prevent. The existing envelope is still
+                    // decoded, so a damaged one is counted as a mismatch rather
+                    // than silently carried. (Codex review round 6.)
+                    if header.record_flags
+                        & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                        != 0
+                    {
+                        row.already_enveloped_records += 1;
+                        // BEFORE == AFTER: the record rides verbatim, so its
+                        // contribution to the per-domain ratio is 1.0x and the
+                        // ratio stays a ratio (a missing before-entry would
+                        // understate it toward zero).
+                        row.payload_bytes_before += payload.len() as u64;
+                        row.payload_bytes_after += payload.len() as u64;
+                        let started = Instant::now();
+                        let unwrapped = psd::reconstruct_if_enveloped(
+                            &mut consumer,
+                            header.record_flags,
+                            psd::PayloadSpanDeltaIdentity {
+                                domain_id: header.domain_id,
+                                source_sequence: header.sequence,
+                                game_hour_raw: header.game_hour_raw,
+                            },
+                            payload,
+                        );
+                        row.decode_us += started.elapsed().as_micros() as u64;
+                        round_trip_records += 1;
+                        match unwrapped {
+                            Ok(Some(_)) => {}
+                            Ok(None) | Err(_) => {
+                                row.round_trip_mismatches += 1;
+                                round_trip_mismatches += 1;
+                                if row.decode_errors.len() < 8 {
+                                    row.decode_errors.push(format!(
+                                        "already-enveloped record at sequence {} did not reconstruct",
+                                        header.sequence
+                                    ));
+                                }
+                            }
+                        }
+                        data_bytes_after += wire_len;
+                        record_bytes_after +=
+                            (COMPACT_RECORD_HEADER_LEN as u64) + wire_len;
+                        if let Some(writer) = rewritten.as_mut() {
+                            writer
+                                .write_all(&carry[off..off + record_len])
+                                .map_err(|e| format!("write rewritten record: {e}"))?;
+                        }
+                        off += record_len;
+                        continue;
+                    }
+
                     row.payload_bytes_before += payload.len() as u64;
                     if payload.len() >= 4 && &payload[..4] == A30_COMPANION_MAGIC {
                         row.companion_records_passed_through += 1;
@@ -490,7 +552,7 @@ fn parse_args() -> Result<Args, String> {
     Ok((
         input.ok_or(
             "usage: ps_wire_delta_reencode <collector_stream.bin> [--json out] \
-             [--domains 41,43,53] [--rewrite out.bin]",
+             [--domains 43,47,53] [--rewrite out.bin]",
         )?,
         json_output,
         domains.unwrap_or_else(|| DEFAULT_DOMAINS.to_vec()),

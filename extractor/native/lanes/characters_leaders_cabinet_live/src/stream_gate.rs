@@ -68,6 +68,12 @@ pub fn verify_domain47_stream(bytes: &[u8]) -> Domain47StreamGateSummary {
     let mut release_epilogue_seen = false;
     let mut owned = OwnedFrameAuthority::default();
     let mut frame_records = FrameRecordCounts::default();
+    // 47 is delta-enabled (`DELTA_ENABLED_DOMAINS`), so production d47 streams
+    // can carry `PSD1` envelopes. This gate decodes the DOMAIN grammar, so it
+    // reconstructs FIRST, exactly like every other walker, from its own
+    // baseline store (it has no `WorldFold` to borrow one from).
+    let mut span_delta_consumer =
+        compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
 
     while cursor < bytes.len() {
         let record_offset = cursor;
@@ -168,25 +174,48 @@ pub fn verify_domain47_stream(bytes: &[u8]) -> Domain47StreamGateSummary {
                 if header.domain_id == domain47::DOMAIN_ID {
                     out.domain_data_record_count = out.domain_data_record_count.saturating_add(1);
                     owned.data_count = owned.data_count.saturating_add(1);
-                    let decoded = domain47::decode_payload(
-                        record_offset + COMPACT_RECORD_HEADER_LEN,
+                    let reconstructed = compact_contract::payload_span_delta::reconstruct_if_enveloped(
+                        &mut span_delta_consumer,
+                        header.record_flags,
+                        compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                            domain_id: header.domain_id,
+                            source_sequence: header.sequence,
+                            game_hour_raw: header.game_hour_raw,
+                        },
                         payload,
                     );
-                    out.status_flags_or |= decoded.status_flags_or;
-                    out.data_rows_total =
-                        out.data_rows_total.saturating_add(decoded.row_count_total);
-                    out.data_changed_rows_total = out
-                        .data_changed_rows_total
-                        .saturating_add(decoded.row_count_total);
-                    out.parse_errors.extend(decoded.parse_errors);
-                    if owned.data.is_none() {
-                        owned.data = Some(DataAuthority {
-                            rows: decoded.row_count_total,
-                            changed_rows: decoded.row_count_total,
-                            units: decoded.row_count_total,
-                            changed_units: decoded.row_count_total,
-                            status: decoded.status_flags_or,
-                        });
+                    // PARTIAL DATA STILL SEALS. A refusal here is the ordinary
+                    // consequence of a dropped record (every later record of
+                    // the domain refuses until the cadence keyframe), not a
+                    // corrupt file: the refusal is NAMED and the walk carries
+                    // on, exactly as every other walker treats it.
+                    match reconstructed {
+                        Err(reason) => out.parse_errors.push(format!(
+                            "offset {record_offset}: PSD1 reconstruction refused: {reason}"
+                        )),
+                        Ok(reconstructed) => {
+                            let effective: &[u8] = reconstructed.as_deref().unwrap_or(payload);
+                            let decoded = domain47::decode_payload(
+                                record_offset + COMPACT_RECORD_HEADER_LEN,
+                                effective,
+                            );
+                            out.status_flags_or |= decoded.status_flags_or;
+                            out.data_rows_total =
+                                out.data_rows_total.saturating_add(decoded.row_count_total);
+                            out.data_changed_rows_total = out
+                                .data_changed_rows_total
+                                .saturating_add(decoded.row_count_total);
+                            out.parse_errors.extend(decoded.parse_errors);
+                            if owned.data.is_none() {
+                                owned.data = Some(DataAuthority {
+                                    rows: decoded.row_count_total,
+                                    changed_rows: decoded.row_count_total,
+                                    units: decoded.row_count_total,
+                                    changed_units: decoded.row_count_total,
+                                    status: decoded.status_flags_or,
+                                });
+                            }
+                        }
                     }
                 }
             }
