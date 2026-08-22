@@ -136,6 +136,8 @@ pub struct ConvoyTerminalHookTelemetry {
     pub dropped_candidate: u64,
     pub dropped_pre_hour_unreadable: u64,
     pub dropped_receipt_hour_mismatch: u64,
+    pub dropped_receipt_hour_ahead: u64,
+    pub dropped_receipt_lag_beyond: u64,
     pub dropped_post_hour_unreadable: u64,
     pub dropped_post_hour_changed: u64,
     pub dropped_resolver_snapshot_absent: u64,
@@ -147,6 +149,64 @@ pub struct ConvoyTerminalHookTelemetry {
     pub dropped_d70_mutation: u64,
     pub dropped_queue_busy: u64,
     pub dropped_queue_full: u64,
+}
+
+/// Per-drain deltas of the hook counters, computed against the last COMMITTED
+/// drain's observation. A rolled-back reservation leaves the baseline alone so
+/// its interval is re-counted by the next peek instead of vanishing. The
+/// candidate subsites do not appear here: they are LIFETIME diagnostics on the
+/// wire (validated against lifetime `dropped_candidate`), not interval facts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyTerminalDrainDeltas {
+    pub events_seen: u64,
+    pub events_emitted: u64,
+    /// Sum of every named drop-site delta in this interval; each hook entry
+    /// that ended at a refusal counts exactly once (the candidate aggregate
+    /// is NOT added on top of its subsites).
+    pub drops_total: u64,
+}
+
+fn subsite_counters() -> crate::convoy_transport_attack::ConvoyTransportAttackCandidateSubsites {
+    let load = |counter: &AtomicU64| counter.load(Ordering::Acquire);
+    crate::convoy_transport_attack::ConvoyTransportAttackCandidateSubsites {
+        initial_gate: load(&CAND_INITIAL_GATE),
+        producer_sequence_exhausted: load(&CAND_PRODUCER_SEQUENCE_EXHAUSTED),
+        capture_error: load(&CAND_CAPTURE_ERROR),
+        context_mismatch: load(&CAND_CONTEXT_MISMATCH),
+        context_address_overflow: load(&CAND_CONTEXT_ADDRESS_OVERFLOW),
+        member_bytes_unreadable: load(&CAND_MEMBER_BYTES_UNREADABLE),
+        route_reread_mismatch: load(&CAND_ROUTE_REREAD_MISMATCH),
+        slot_busy: load(&CAND_SLOT_BUSY),
+    }
+}
+
+/// Pure delta fold between two counter observations. `drops_total` sums the
+/// DISJOINT aggregate counters only: every refusal site increments exactly one
+/// aggregate (hour/epoch, resolver, candidate) plus its own diagnostic leaf,
+/// so summing aggregates counts each dropped entry exactly once and
+/// `events_seen == events_emitted + drops_total` holds for any coherent pair.
+fn telemetry_deltas(
+    current: &ConvoyTerminalHookTelemetry,
+    previous: &ConvoyTerminalHookTelemetry,
+) -> ConvoyTerminalDrainDeltas {
+    let delta = |now: u64, before: u64| now.saturating_sub(before);
+    let drops_total = delta(current.dropped_no_original, previous.dropped_no_original)
+        + delta(current.dropped_teardown, previous.dropped_teardown)
+        + delta(current.dropped_nested, previous.dropped_nested)
+        + delta(current.dropped_capture_busy, previous.dropped_capture_busy)
+        + delta(current.dropped_hour_or_epoch, previous.dropped_hour_or_epoch)
+        + delta(current.dropped_resolver, previous.dropped_resolver)
+        + delta(current.dropped_candidate, previous.dropped_candidate)
+        + delta(current.dropped_d70_pre, previous.dropped_d70_pre)
+        + delta(current.dropped_d70_post, previous.dropped_d70_post)
+        + delta(current.dropped_d70_mutation, previous.dropped_d70_mutation)
+        + delta(current.dropped_queue_busy, previous.dropped_queue_busy)
+        + delta(current.dropped_queue_full, previous.dropped_queue_full);
+    ConvoyTerminalDrainDeltas {
+        events_seen: delta(current.callbacks_seen, previous.callbacks_seen),
+        events_emitted: delta(current.events_emitted, previous.events_emitted),
+        drops_total,
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -161,6 +221,16 @@ pub struct ConvoyTerminalDrain {
     pub queue_mutation_generation: u64,
     pub resolver: ResolverPublicationReceipt,
     pub resolver_ever_partial: bool,
+    /// THIS interval's hook-entry/enqueue/drop accounting (delta against the
+    /// last committed drain). This is what batch exactness is judged from.
+    pub events_seen_this_drain: u64,
+    pub events_emitted_this_drain: u64,
+    pub drops_this_drain: u64,
+    /// LIFETIME candidate-subsite counters, captured inside the same guarded
+    /// window as the telemetry so the wire's subsite-sum identity cannot race
+    /// against the aggregate.
+    pub candidate_subsites:
+        crate::convoy_transport_attack::ConvoyTransportAttackCandidateSubsites,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,6 +364,10 @@ struct DrainReservationState {
     next_reservation_id: u64,
     active: Option<ActiveDrainReservation>,
     sealed_snapshot: Option<ConvoyTerminalDrain>,
+    /// Counter observation as of the last COMMITTED drain. Per-drain deltas
+    /// are measured against this; a rollback leaves it untouched so the
+    /// interval is re-counted by the next peek.
+    committed_baseline: Option<ConvoyTerminalHookTelemetry>,
 }
 
 impl Default for DrainReservationState {
@@ -302,6 +376,7 @@ impl Default for DrainReservationState {
             next_reservation_id: 1,
             active: None,
             sealed_snapshot: None,
+            committed_baseline: None,
         }
     }
 }
@@ -485,7 +560,7 @@ pub fn capture_h_convoy_control_raw(
     let route = capture_route_raw(&memory, module_base, client)
         .ok_or("H-CONVOY route raw window is unavailable")?;
     let mut selected = None;
-    for (member, epoch) in snapshot.evidence_member_epochs() {
+    for (member, membership) in snapshot.evidence_member_epochs() {
         let Some(observed) = memory.handle(
             member
                 .checked_add(crate::convoy_terminal_attribution::CFEX_MEMBER_CLIENT_HANDLE_OFF)
@@ -497,10 +572,10 @@ pub fn capture_h_convoy_control_raw(
             if selected.is_some() {
                 return Err("H-CONVOY client maps to multiple active combat members".into());
             }
-            selected = Some((member, epoch));
+            selected = Some((member, membership));
         }
     }
-    let (member_address, epoch) =
+    let (member_address, membership) =
         selected.ok_or("H-CONVOY client lacks an active combat member")?;
     let member_bytes = read_exact_bytes(&memory, member_address, 0x124)
         .ok_or("H-CONVOY member raw window is unreadable")?;
@@ -510,8 +585,8 @@ pub fn capture_h_convoy_control_raw(
         game_hour_raw: hour,
         member_address,
         member_bytes,
-        combat_id: epoch.combat_id,
-        combat_generation: epoch.generation,
+        combat_id: membership.epoch.combat_id,
+        combat_generation: membership.epoch.generation,
         route,
         d70,
         heartbeat: convoy_terminal_hook_heartbeat(),
@@ -550,12 +625,22 @@ counters!(
     DROP_QUEUE_FULL,
     DROP_PRE_HOUR_UNREADABLE,
     DROP_RECEIPT_HOUR_MISMATCH,
+    DROP_RECEIPT_HOUR_AHEAD,
+    DROP_RECEIPT_LAG_BEYOND,
     DROP_POST_HOUR_UNREADABLE,
     DROP_POST_HOUR_CHANGED,
     DROP_RESOLVER_SNAPSHOT_ABSENT,
     DROP_RESOLVER_UNPUBLISHED,
     RECEIPT_HOUR_LAG_MAX,
     RECEIPT_HOUR_LEAD_MAX,
+    CAND_INITIAL_GATE,
+    CAND_PRODUCER_SEQUENCE_EXHAUSTED,
+    CAND_CAPTURE_ERROR,
+    CAND_CONTEXT_MISMATCH,
+    CAND_CONTEXT_ADDRESS_OVERFLOW,
+    CAND_MEMBER_BYTES_UNREADABLE,
+    CAND_ROUTE_REREAD_MISMATCH,
+    CAND_SLOT_BUSY,
 );
 
 static INSTALLED: AtomicBool = AtomicBool::new(false);
@@ -787,6 +872,7 @@ fn peek_convoy_terminal_events_inner(
     }
 
     let telemetry_before = telemetry();
+    let subsites_before = subsite_counters();
     let active_before = ACTIVE_CALLBACKS.load(Ordering::Acquire);
     let producer_before = PRODUCER_SEQUENCE.load(Ordering::Acquire);
     let resolver_before = current_convoy_terminal_publication_receipt();
@@ -799,17 +885,23 @@ fn peek_convoy_terminal_events_inner(
     let remaining_events = u32::try_from(queue.len().saturating_sub(take)).unwrap_or(u32::MAX);
     let queue_mutation_generation = QUEUE_MUTATION_GENERATION.load(Ordering::Acquire);
     let telemetry_after = telemetry();
+    let subsites_after = subsite_counters();
     let active_after = ACTIVE_CALLBACKS.load(Ordering::Acquire);
     let producer_after = PRODUCER_SEQUENCE.load(Ordering::Acquire);
     let resolver_after = current_convoy_terminal_publication_receipt();
     drop(queue);
 
     let correlation_poisoned = telemetry_before != telemetry_after
+        || subsites_before != subsites_after
         || active_before != active_after
         || producer_before != producer_after
         || resolver_before.is_err()
         || resolver_after.is_err()
         || resolver_before != resolver_after;
+    let deltas = telemetry_deltas(
+        &telemetry_after,
+        &reservation.committed_baseline.clone().unwrap_or_default(),
+    );
     let drain = ConvoyTerminalDrain {
         events,
         cumulative_telemetry: telemetry_after,
@@ -821,6 +913,10 @@ fn peek_convoy_terminal_events_inner(
         queue_mutation_generation,
         resolver: resolver_after.unwrap_or_default(),
         resolver_ever_partial: convoy_terminal_resolver_ever_partial(),
+        events_seen_this_drain: deltas.events_seen,
+        events_emitted_this_drain: deltas.events_emitted,
+        drops_this_drain: deltas.drops_total,
+        candidate_subsites: subsites_after,
     };
     let reservation_id = reservation.next_reservation_id;
     reservation.next_reservation_id = reservation
@@ -872,6 +968,7 @@ pub fn commit_convoy_terminal_events(reservation_id: u64) -> Result<(), String> 
     let sealed_complete =
         active.drain.remaining_events == 0 && SEALED_PUBLICATION_PENDING.load(Ordering::Acquire);
     drop(queue);
+    reservation.committed_baseline = Some(active.drain.cumulative_telemetry);
     reservation.active = None;
     if sealed_complete {
         SEALED_PUBLICATION_PENDING.store(false, Ordering::Release);
@@ -993,6 +1090,10 @@ fn encode_convoy_transport_attack_drain(
         resolver_route_bindings: drain.resolver.route_bindings,
         resolver_unbound_convoy_clients: drain.resolver.unbound_convoy_clients,
         resolver_ever_partial: drain.resolver_ever_partial,
+        events_seen_this_drain: drain.events_seen_this_drain,
+        events_emitted_this_drain: drain.events_emitted_this_drain,
+        drops_this_drain: drain.drops_this_drain,
+        candidate_subsites: drain.candidate_subsites,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry.callbacks_seen,
             original_calls: telemetry.original_calls,
@@ -1006,6 +1107,8 @@ fn encode_convoy_transport_attack_drain(
             dropped_candidate: telemetry.dropped_candidate,
             dropped_pre_hour_unreadable: telemetry.dropped_pre_hour_unreadable,
             dropped_receipt_hour_mismatch: telemetry.dropped_receipt_hour_mismatch,
+            dropped_receipt_hour_ahead: telemetry.dropped_receipt_hour_ahead,
+            dropped_receipt_lag_beyond: telemetry.dropped_receipt_lag_beyond,
             dropped_post_hour_unreadable: telemetry.dropped_post_hour_unreadable,
             dropped_post_hour_changed: telemetry.dropped_post_hour_changed,
             dropped_resolver_snapshot_absent: telemetry.dropped_resolver_snapshot_absent,
@@ -1037,6 +1140,8 @@ fn telemetry() -> ConvoyTerminalHookTelemetry {
         dropped_candidate: load(&DROP_CANDIDATE),
         dropped_pre_hour_unreadable: load(&DROP_PRE_HOUR_UNREADABLE),
         dropped_receipt_hour_mismatch: load(&DROP_RECEIPT_HOUR_MISMATCH),
+        dropped_receipt_hour_ahead: load(&DROP_RECEIPT_HOUR_AHEAD),
+        dropped_receipt_lag_beyond: load(&DROP_RECEIPT_LAG_BEYOND),
         dropped_post_hour_unreadable: load(&DROP_POST_HOUR_UNREADABLE),
         dropped_post_hour_changed: load(&DROP_POST_HOUR_CHANGED),
         dropped_resolver_snapshot_absent: load(&DROP_RESOLVER_SNAPSHOT_ABSENT),
@@ -1090,12 +1195,22 @@ fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
         &DROP_QUEUE_FULL,
         &DROP_PRE_HOUR_UNREADABLE,
         &DROP_RECEIPT_HOUR_MISMATCH,
+        &DROP_RECEIPT_HOUR_AHEAD,
+        &DROP_RECEIPT_LAG_BEYOND,
         &DROP_POST_HOUR_UNREADABLE,
         &DROP_POST_HOUR_CHANGED,
         &DROP_RESOLVER_SNAPSHOT_ABSENT,
         &DROP_RESOLVER_UNPUBLISHED,
         &RECEIPT_HOUR_LAG_MAX,
         &RECEIPT_HOUR_LEAD_MAX,
+        &CAND_INITIAL_GATE,
+        &CAND_PRODUCER_SEQUENCE_EXHAUSTED,
+        &CAND_CAPTURE_ERROR,
+        &CAND_CONTEXT_MISMATCH,
+        &CAND_CONTEXT_ADDRESS_OVERFLOW,
+        &CAND_MEMBER_BYTES_UNREADABLE,
+        &CAND_ROUTE_REREAD_MISMATCH,
+        &CAND_SLOT_BUSY,
     ] {
         counter.store(0, Ordering::Release);
     }
@@ -1104,6 +1219,9 @@ fn reset_observer_state_with(held: &mut HeldObserverState<'_>) {
     SEALED_PUBLICATION_PENDING.store(false, Ordering::Release);
     if let Some(reservation) = held.reservation.as_mut() {
         reservation.sealed_snapshot = None;
+        // Counters restart at zero with the install, so the delta baseline
+        // must too.
+        reservation.committed_baseline = None;
     }
     if let Some(queue) = held.queue.as_mut() {
         queue.clear();
@@ -1165,7 +1283,15 @@ unsafe extern "system" fn convoy_terminal_hook(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResolverRefusal {
     Unpublished,
-    HourMismatch,
+    /// The resolver receipt is NEWER than the event's own engine hour: the
+    /// event could not have been produced under the published bindings, so
+    /// attributing it would fabricate provenance.
+    ReceiptHourAhead,
+    /// The event is older than the receipt by more than one observed
+    /// inter-publication interval: the combat-epoch join would come from a
+    /// snapshot more than one collector cadence stale, which is farther than
+    /// any event between two publications can legitimately sit.
+    ReceiptLagBeyondInterval,
 }
 
 #[cfg(windows)]
@@ -1173,13 +1299,27 @@ fn classify_resolver_receipt(
     publication_sequence: u64,
     receipt_game_hour_raw: i32,
     engine_hour: i32,
+    max_lag_hours: u64,
 ) -> Option<ResolverRefusal> {
     if publication_sequence == 0 {
         return Some(ResolverRefusal::Unpublished);
     }
-    if receipt_game_hour_raw != engine_hour {
-        return Some(ResolverRefusal::HourMismatch);
+    if receipt_game_hour_raw > engine_hour {
+        return Some(ResolverRefusal::ReceiptHourAhead);
     }
+    let lag = u64::try_from(i64::from(engine_hour) - i64::from(receipt_game_hour_raw))
+        .unwrap_or(u64::MAX);
+    if lag > max_lag_hours {
+        return Some(ResolverRefusal::ReceiptLagBeyondInterval);
+    }
+    // A receipt up to ONE inter-publication interval stale is NOT a refusal:
+    // at live speed the engine advances hours between collector publications,
+    // so every sink firing between them lags legitimately (pw_gate_final:
+    // receipt_hour_lag_max=2 with ~1.2 game-hours/frame). What anchors an
+    // event to its own moment is captured here and now -- the route re-read
+    // must equal the snapshot binding, the member fields are read live, the
+    // engine hour is re-read after the original call, and the D70 mutation
+    // proof brackets the sink -- not the receipt's publication cadence.
     None
 }
 
@@ -1218,6 +1358,7 @@ fn prepare_observation(
 ) -> Option<PreObservation> {
     if count != 1 || game_state == 0 || killer_ref == 0 || owner_ref < 0x20 {
         DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        CAND_INITIAL_GATE.fetch_add(1, Ordering::Relaxed);
         return None;
     }
     let memory = ProcessMemory;
@@ -1232,16 +1373,32 @@ fn prepare_observation(
         return None;
     };
     let receipt = resolver.receipt();
-    match classify_resolver_receipt(receipt.publication_sequence, receipt.game_hour_raw, hour) {
+    // The staleness bound is the collector's own observed cadence ceiling,
+    // carried on the receipt -- never a hardcoded hour count. Until a first
+    // interval has been measured it is 0: same-hour captures only, which is
+    // the conservative direction.
+    let max_lag_hours = u64::from(receipt.publication_interval_hours);
+    match classify_resolver_receipt(
+        receipt.publication_sequence,
+        receipt.game_hour_raw,
+        hour,
+        max_lag_hours,
+    ) {
         None => {}
         Some(ResolverRefusal::Unpublished) => {
             DROP_RESOLVER.fetch_add(1, Ordering::Relaxed);
             DROP_RESOLVER_UNPUBLISHED.fetch_add(1, Ordering::Relaxed);
             return None;
         }
-        Some(ResolverRefusal::HourMismatch) => {
+        Some(ResolverRefusal::ReceiptHourAhead) => {
             DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
-            DROP_RECEIPT_HOUR_MISMATCH.fetch_add(1, Ordering::Relaxed);
+            DROP_RECEIPT_HOUR_AHEAD.fetch_add(1, Ordering::Relaxed);
+            record_receipt_hour_distance(receipt.game_hour_raw, hour);
+            return None;
+        }
+        Some(ResolverRefusal::ReceiptLagBeyondInterval) => {
+            DROP_HOUR_OR_EPOCH.fetch_add(1, Ordering::Relaxed);
+            DROP_RECEIPT_LAG_BEYOND.fetch_add(1, Ordering::Relaxed);
             record_receipt_hour_distance(receipt.game_hour_raw, hour);
             return None;
         }
@@ -1249,6 +1406,7 @@ fn prepare_observation(
     let sequence = PRODUCER_SEQUENCE.fetch_add(1, Ordering::AcqRel);
     if sequence == 0 {
         DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        CAND_PRODUCER_SEQUENCE_EXHAUSTED.fetch_add(1, Ordering::Relaxed);
         return None;
     }
     let member = owner_ref - 0x20;
@@ -1273,22 +1431,30 @@ fn prepare_observation(
         Ok(carrier) => carrier,
         Err(_) => {
             DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+            CAND_CAPTURE_ERROR.fetch_add(1, Ordering::Relaxed);
             return None;
         }
     };
     let mut context_bytes = vec![0u8; crate::convoy_terminal_attribution::A729_CONTEXT_BYTES.len()];
-    if !memory.read_exact(
-        module_base.checked_add(crate::convoy_terminal_attribution::A729_CONTEXT_RVA)?,
-        &mut context_bytes,
-    ) || context_bytes != crate::convoy_terminal_attribution::A729_CONTEXT_BYTES
+    let Some(context_address) =
+        module_base.checked_add(crate::convoy_terminal_attribution::A729_CONTEXT_RVA)
+    else {
+        DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        CAND_CONTEXT_ADDRESS_OVERFLOW.fetch_add(1, Ordering::Relaxed);
+        return None;
+    };
+    if !memory.read_exact(context_address, &mut context_bytes)
+        || context_bytes != crate::convoy_terminal_attribution::A729_CONTEXT_BYTES
     {
         DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        CAND_CONTEXT_MISMATCH.fetch_add(1, Ordering::Relaxed);
         return None;
     }
     let member_bytes = match read_exact_bytes(&memory, member, 0x124) {
         Some(bytes) => bytes,
         None => {
             DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+            CAND_MEMBER_BYTES_UNREADABLE.fetch_add(1, Ordering::Relaxed);
             return None;
         }
     };
@@ -1304,6 +1470,7 @@ fn prepare_observation(
         }
         _ => {
             DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+            CAND_ROUTE_REREAD_MISMATCH.fetch_add(1, Ordering::Relaxed);
             return None;
         }
     };
@@ -1375,6 +1542,7 @@ fn complete_observation(game_state: usize, pre: PreObservation) {
     };
     if slot.is_some() {
         DROP_CANDIDATE.fetch_add(1, Ordering::Relaxed);
+        CAND_SLOT_BUSY.fetch_add(1, Ordering::Relaxed);
         return;
     }
     *slot = Some(raw);
@@ -2391,26 +2559,59 @@ mod resolver_refusal_tests {
     #[test]
     fn an_unpublished_receipt_is_not_an_hour_disagreement() {
         assert_eq!(
-            classify_resolver_receipt(0, 0, 4_211),
+            classify_resolver_receipt(0, 0, 4_211, 2),
             Some(ResolverRefusal::Unpublished)
         );
         assert_eq!(
-            classify_resolver_receipt(0, 4_211, 4_211),
+            classify_resolver_receipt(0, 4_211, 4_211, 2),
             Some(ResolverRefusal::Unpublished)
         );
     }
 
     #[test]
-    fn a_published_receipt_from_another_hour_is_an_hour_disagreement() {
+    fn a_stale_receipt_within_one_publication_interval_admits_the_candidate() {
+        // kills pw_gate_final M-C1: at live speed the engine advances ~1-2
+        // game-hours between collector publications, so EVERY sink firing
+        // between them hit this arm under the old same-hour gate; 25 of 71
+        // events died there in pw_gate_final and the domain emitted 0 rows.
+        // A receipt up to one observed inter-publication interval stale is
+        // now admitted: the route re-read, live member reads, post-hour
+        // re-read and D70 proof anchor the event to its own moment instead.
+        assert_eq!(classify_resolver_receipt(7, 4_210, 4_211, 2), None);
+        assert_eq!(classify_resolver_receipt(7, 4_209, 4_211, 2), None);
+    }
+
+    #[test]
+    fn a_receipt_lagging_past_the_observed_interval_refuses_by_name() {
+        // Beyond one inter-publication interval no sink can legitimately sit,
+        // and the combat-epoch join would come from a snapshot more than one
+        // cadence stale. The bound is the collector's own measured cadence --
+        // never a hardcoded hour count.
         assert_eq!(
-            classify_resolver_receipt(7, 4_210, 4_211),
-            Some(ResolverRefusal::HourMismatch)
+            classify_resolver_receipt(7, 4_208, 4_211, 2),
+            Some(ResolverRefusal::ReceiptLagBeyondInterval)
+        );
+        // Interval 0 (first publication / regressed clock): same-hour only.
+        assert_eq!(
+            classify_resolver_receipt(7, 4_210, 4_211, 0),
+            Some(ResolverRefusal::ReceiptLagBeyondInterval)
+        );
+        assert_eq!(classify_resolver_receipt(7, 4_211, 4_211, 0), None);
+    }
+
+    #[test]
+    fn a_receipt_newer_than_the_event_refuses_by_name() {
+        // The event cannot have been produced under bindings published after
+        // it happened; attributing it would fabricate provenance.
+        assert_eq!(
+            classify_resolver_receipt(7, 4_212, 4_211, 2),
+            Some(ResolverRefusal::ReceiptHourAhead)
         );
     }
 
     #[test]
     fn a_published_receipt_for_this_hour_admits_the_candidate() {
-        assert_eq!(classify_resolver_receipt(7, 4_211, 4_211), None);
+        assert_eq!(classify_resolver_receipt(7, 4_211, 4_211, 2), None);
     }
 
     #[test]
@@ -2426,8 +2627,12 @@ mod resolver_refusal_tests {
         for (arm, counter) in [
             ("Some(ResolverRefusal::Unpublished) => {", "DROP_RESOLVER"),
             (
-                "Some(ResolverRefusal::HourMismatch) => {",
-                "DROP_HOUR_OR_EPOCH",
+                "Some(ResolverRefusal::ReceiptHourAhead) => {",
+                "DROP_RECEIPT_HOUR_AHEAD",
+            ),
+            (
+                "Some(ResolverRefusal::ReceiptLagBeyondInterval) => {",
+                "DROP_RECEIPT_LAG_BEYOND",
             ),
         ] {
             let body = routing
@@ -2462,7 +2667,8 @@ mod resolver_refusal_tests {
                 "DROP_HOUR_OR_EPOCH",
                 &[
                     "DROP_PRE_HOUR_UNREADABLE",
-                    "DROP_RECEIPT_HOUR_MISMATCH",
+                    "DROP_RECEIPT_HOUR_AHEAD",
+                    "DROP_RECEIPT_LAG_BEYOND",
                     "DROP_POST_HOUR_UNREADABLE",
                     "DROP_POST_HOUR_CHANGED",
                 ][..],
@@ -2470,6 +2676,19 @@ mod resolver_refusal_tests {
             (
                 "DROP_RESOLVER",
                 &["DROP_RESOLVER_SNAPSHOT_ABSENT", "DROP_RESOLVER_UNPUBLISHED"][..],
+            ),
+            (
+                "DROP_CANDIDATE",
+                &[
+                    "CAND_INITIAL_GATE",
+                    "CAND_PRODUCER_SEQUENCE_EXHAUSTED",
+                    "CAND_CAPTURE_ERROR",
+                    "CAND_CONTEXT_MISMATCH",
+                    "CAND_CONTEXT_ADDRESS_OVERFLOW",
+                    "CAND_MEMBER_BYTES_UNREADABLE",
+                    "CAND_ROUTE_REREAD_MISMATCH",
+                    "CAND_SLOT_BUSY",
+                ][..],
             ),
         ] {
             let increment = format!("{aggregate}.fetch_add(1, Ordering::Relaxed);");

@@ -50,8 +50,15 @@ impl MemberEpochSnapshot {
 }
 
 impl ExactCombatEpochResolver for MemberEpochSnapshot {
-    fn resolve_member_epoch(&self, member_address: usize) -> Result<CombatEpoch, String> {
-        Ok(self.resolve_member(member_address)?.epoch)
+    fn resolve_member_epoch(
+        &self,
+        member_address: usize,
+    ) -> Result<crate::convoy_terminal_attribution::CombatEpochMembership, String> {
+        let resolution = self.resolve_member(member_address)?;
+        Ok(crate::convoy_terminal_attribution::CombatEpochMembership {
+            epoch: resolution.epoch,
+            battle_slot_index_raw: resolution.battle_slot_index_raw,
+        })
     }
 }
 

@@ -9116,6 +9116,11 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             "convoy_transport_attack_dropped_queue_full",
             witness.telemetry.dropped_queue_full,
         ),
+        // `dropped_receipt_hour_ahead` / `dropped_receipt_lag_beyond` are
+        // deliberately NOT here: they are diagnostic leaves OF
+        // `dropped_hour_or_epoch` (production increments the aggregate beside
+        // its leaf), so summing them into `dropped_events` would count one
+        // refusal twice.
     ];
     let dropped_events = drop_counts
         .iter()
@@ -9158,6 +9163,20 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
         add_batch_unit(
             "convoy_transport_attack_drained_rows",
             witness.drained_rows as u64,
+        );
+        // v5 per-drain facts: each batch's own interval accounting, summed
+        // across the window like every other per-frame unit.
+        add_batch_unit(
+            "convoy_transport_attack_events_seen_this_drain",
+            witness.events_seen_this_drain,
+        );
+        add_batch_unit(
+            "convoy_transport_attack_events_emitted_this_drain",
+            witness.events_emitted_this_drain,
+        );
+        add_batch_unit(
+            "convoy_transport_attack_drops_this_drain",
+            witness.drops_this_drain,
         );
     }
 
@@ -9229,6 +9248,37 @@ fn decode_compact_convoy_transport_attack_live_data_payload(
             telemetry.receipt_hour_lead_max,
         ),
     ] {
+        add_compact_domain_cumulative_unit(
+            summary,
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            name,
+            value,
+        );
+    }
+    // Hour-refusal leaves ride OUTSIDE the aggregate `dropped_events` sum (see
+    // the drop_counts note) but are still registered as their own cumulative
+    // units.
+    for (name, value) in [
+        (
+            "convoy_transport_attack_dropped_receipt_hour_ahead",
+            telemetry.dropped_receipt_hour_ahead,
+        ),
+        (
+            "convoy_transport_attack_dropped_receipt_lag_beyond",
+            telemetry.dropped_receipt_lag_beyond,
+        ),
+    ] {
+        add_compact_domain_cumulative_unit(
+            summary,
+            COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
+            name,
+            value,
+        );
+    }
+    for (name, value) in naval4950::ConvoyTransportAttackCandidateSubsites::FIELDS
+        .iter()
+        .zip(witness.candidate_subsites.as_array())
+    {
         add_compact_domain_cumulative_unit(
             summary,
             COMPACT_DOMAIN_CONVOY_TRANSPORT_ATTACK_LIVE,
@@ -19193,6 +19243,10 @@ mod tests {
             resolver_game_hour_raw: 156_618,
             resolver_member_bindings: 1,
             resolver_route_bindings: 1,
+            events_seen_this_drain: if exact { 1 } else { 2 },
+            events_emitted_this_drain: 1,
+            drops_this_drain: u64::from(!exact),
+            candidate_subsites: naval4950::ConvoyTransportAttackCandidateSubsites::default(),
             telemetry: naval4950::ConvoyTransportAttackTelemetry {
                 callbacks_seen: if exact { 1 } else { 2 },
                 original_calls: if exact { 1 } else { 2 },

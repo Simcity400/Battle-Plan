@@ -56,8 +56,9 @@ pub use convoy_route_source::{
 pub use convoy_transport_attack::{
     decode_convoy_transport_attack_batch, encode_convoy_transport_attack_batch,
     BatchDecodeError as ConvoyTransportAttackBatchError, ConvoyD70MutationKind,
-    ConvoyD70MutationProof, ConvoyTransportAttackRow, ConvoyTransportAttackTelemetry,
-    ConvoyTransportAttackWitness, DecodedConvoyTransportAttackBatch,
+    ConvoyD70MutationProof, ConvoyTransportAttackCandidateSubsites, ConvoyTransportAttackRow,
+    ConvoyTransportAttackTelemetry, ConvoyTransportAttackWitness,
+    DecodedConvoyTransportAttackBatch,
     BATCH_FLAG_COMPLETE_EXACT_EVENTS, BATCH_FLAG_HOOK_INSTALLED,
     BATCH_HEADER_LEN as CONVOY_TRANSPORT_ATTACK_BATCH_HEADER_LEN,
     BATCH_MAGIC as CONVOY_TRANSPORT_ATTACK_BATCH_MAGIC,

@@ -1,12 +1,12 @@
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::convoy_route_source::ExactA729RouteRead;
 use crate::convoy_terminal_attribution::{
-    CombatEpoch, EntityHandle, ExactCombatEpochResolver, ExactLiveRouteResolver,
-    LiveRouteResolution, RouteEndpointKind, RouteProducerKind,
+    CombatEpoch, CombatEpochMembership, EntityHandle, ExactCombatEpochResolver,
+    ExactLiveRouteResolver, LiveRouteResolution, RouteEndpointKind, RouteProducerKind,
     D90_STATIC_AUTHORITY_MANIFEST_SHA256, GAME_ENTITY_TYPE_TAG,
 };
 use crate::extractor::ValidatedCombatSnapshot;
@@ -16,6 +16,14 @@ const MAX_ACTIVE_ROUTE_BINDINGS: usize = 65_536;
 
 static NEXT_PUBLICATION_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static RESOLVER_STATE: OnceLock<RwLock<Arc<ResolverSnapshot>>> = OnceLock::new();
+
+/// Hour of the most recent resolver publication (`i32::MIN` before the first).
+static LAST_PUBLICATION_HOUR: AtomicI32 = AtomicI32::new(i32::MIN);
+/// Running ceiling of observed inter-publication intervals. The staleness
+/// bound events are judged against: a sink between two publications can lag
+/// the receipt by at most one cadence interval, so anything older than the
+/// WORST interval this session has produced is too stale to attribute.
+static MAX_PUBLICATION_INTERVAL_HOURS: AtomicU32 = AtomicU32::new(0);
 
 static RESOLVER_EVER_PARTIAL: AtomicBool = AtomicBool::new(false);
 
@@ -43,6 +51,13 @@ pub struct AuthenticatedLiveRouteBinding {
 pub struct ResolverPublicationReceipt {
     pub publication_sequence: u64,
     pub game_hour_raw: i32,
+    /// Game hours between THIS publication and the previous one, as observed
+    /// by the collector's own cadence (0 for the session's first publication).
+    /// This is the staleness bound events are judged against at capture time:
+    /// a sink firing between publications can lag the receipt by at most the
+    /// current inter-publication interval before its combat-epoch join is
+    /// considered too stale to attribute. Derived, never hardcoded.
+    pub publication_interval_hours: u32,
     pub member_bindings: u32,
     pub route_bindings: u32,
     pub unbound_convoy_clients: u32,
@@ -51,7 +66,7 @@ pub struct ResolverPublicationReceipt {
 #[derive(Clone, Debug)]
 pub struct ResolverSnapshot {
     receipt: ResolverPublicationReceipt,
-    member_epochs: BTreeMap<usize, CombatEpoch>,
+    member_epochs: BTreeMap<usize, crate::convoy_terminal_attribution::CombatEpochMembership>,
     routes: BTreeMap<EntityHandle, AuthenticatedLiveRouteBinding>,
 }
 
@@ -74,19 +89,22 @@ impl ResolverSnapshot {
         self.routes.get(&client)
     }
 
-    pub fn evidence_member_epochs(&self) -> impl Iterator<Item = (usize, CombatEpoch)> + '_ {
-        self.member_epochs
-            .iter()
-            .map(|(address, epoch)| (*address, *epoch))
+    pub fn evidence_member_epochs(
+        &self,
+    ) -> impl Iterator<Item = (usize, crate::convoy_terminal_attribution::CombatEpochMembership)> + '_
+    {
+        self.member_epochs.iter().map(|(address, membership)| (*address, *membership))
     }
 }
 
 impl ExactCombatEpochResolver for ResolverSnapshot {
-    fn resolve_member_epoch(&self, member_address: usize) -> Result<CombatEpoch, String> {
-        self.member_epochs
-            .get(&member_address)
-            .copied()
-            .ok_or_else(|| "CFEXMember is absent from the same-hour d49/d50 epoch snapshot".into())
+    fn resolve_member_epoch(
+        &self,
+        member_address: usize,
+    ) -> Result<crate::convoy_terminal_attribution::CombatEpochMembership, String> {
+        self.member_epochs.get(&member_address).copied().ok_or_else(|| {
+            "CFEXMember is absent from the same-hour d49/d50 epoch snapshot".into()
+        })
     }
 }
 
@@ -265,10 +283,19 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
     authority: [u8; 32],
     unbound_convoy_clients: u32,
 ) -> Result<ResolverPublicationReceipt, String> {
-    let member_epochs: BTreeMap<usize, CombatEpoch> = build_member_epoch_map(member_bindings)?
-        .into_iter()
-        .map(|(member_address, resolution)| (member_address, resolution.epoch))
-        .collect();
+    let member_epochs: BTreeMap<usize, crate::convoy_terminal_attribution::CombatEpochMembership> =
+        build_member_epoch_map(member_bindings)?
+            .into_iter()
+            .map(|(member_address, resolution)| {
+                (
+                    member_address,
+                    crate::convoy_terminal_attribution::CombatEpochMembership {
+                        epoch: resolution.epoch,
+                        battle_slot_index_raw: resolution.battle_slot_index_raw,
+                    },
+                )
+            })
+            .collect();
 
     let mut route_map = BTreeMap::new();
     for binding in routes {
@@ -288,9 +315,24 @@ fn publish_convoy_terminal_resolver_bindings_with_hashes(
     if publication_sequence == 0 {
         return Err("resolver publication sequence exhausted".into());
     }
+    // The collector's own cadence, measured between consecutive publications.
+    // The receipt carries the running CEILING of observed intervals: a cadence
+    // slowdown takes effect immediately (tighter intervals may refuse until a
+    // new ceiling lands, which is the safe direction), and a speedup does not
+    // silently loosen the bound mid-session. A regressed clock or the first
+    // publication yields interval 0 = "same-hour only".
+    let previous_hour = LAST_PUBLICATION_HOUR.swap(game_hour_raw, Ordering::AcqRel);
+    let interval = if previous_hour != i32::MIN && game_hour_raw > previous_hour {
+        u32::try_from(game_hour_raw - previous_hour).unwrap_or(u32::MAX)
+    } else {
+        0
+    };
+    MAX_PUBLICATION_INTERVAL_HOURS.fetch_max(interval, Ordering::AcqRel);
+    let publication_interval_hours = MAX_PUBLICATION_INTERVAL_HOURS.load(Ordering::Acquire);
     let receipt = ResolverPublicationReceipt {
         publication_sequence,
         game_hour_raw,
+        publication_interval_hours,
         member_bindings: u32::try_from(member_epochs.len())
             .map_err(|_| "member binding count exceeds u32".to_string())?,
         route_bindings: u32::try_from(route_map.len())
@@ -331,6 +373,11 @@ pub fn clear_convoy_terminal_resolver_snapshot() -> Result<(), String> {
         .write()
         .map_err(|_| "convoy terminal resolver state poisoned".to_string())? =
         Arc::new(ResolverSnapshot::default());
+    // The next publication starts a NEW interval: without this reset it would
+    // be measured across the clear gap and could swallow the whole gap into
+    // the cadence ceiling. The ceiling itself persists -- it is a session
+    // fact about how fast this collector has ever republished.
+    LAST_PUBLICATION_HOUR.store(i32::MIN, Ordering::Release);
     Ok(())
 }
 

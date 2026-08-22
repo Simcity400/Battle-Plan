@@ -6,11 +6,20 @@ pub const DOMAIN_CONVOY_TRANSPORT_ATTACK: u16 = 90;
 pub const DOMAIN_CONVOY_TRANSPORT_ATTACK_NAME: &str = "convoy_transport_attack_live";
 
 pub const BATCH_MAGIC: u32 = u32::from_le_bytes(*b"CTA2");
-pub const BATCH_VERSION: u16 = 3;
-pub const BATCH_HEADER_LEN: usize = 256;
+pub const BATCH_VERSION: u16 = 5;
+pub const BATCH_HEADER_LEN: usize = 384;
 const V2_TELEMETRY_WORDS_OFF: usize = 32;
 const V3_TELEMETRY_WORDS_OFF: usize = 192;
 const V3_TELEMETRY_WORDS: usize = 8;
+// v5 appends the per-drain facts that exactness is now judged from. The v3/v4
+// lifetime counters stay on the wire verbatim as diagnostics; they no longer
+// decide anything (pw_gate_final: one early incident poisoned all 392 batches).
+const V5_PER_DRAIN_OFF: usize = 256;
+const V5_SUBSITE_OFF: usize = 280;
+const V5_SUBSITE_WORDS: usize = 8;
+const V5_RECEIPT_AHEAD_OFF: usize = 344;
+const V5_LAG_BEYOND_OFF: usize = 352;
+const V5_RESERVED_OFF: usize = 360;
 pub const BATCH_ROW_LEN: usize = 120;
 pub const BATCH_FLAG_COMPLETE_EXACT_EVENTS: u32 = 1 << 0;
 pub const BATCH_FLAG_HOOK_INSTALLED: u32 = 1 << 1;
@@ -77,6 +86,13 @@ pub struct ConvoyTransportAttackTelemetry {
     pub dropped_d70_mutation: u64,
     pub dropped_queue_busy: u64,
     pub dropped_queue_full: u64,
+    /// Events refused because the resolver receipt was NEWER than the event's
+    /// own engine hour (clock skew / torn hour read).
+    pub dropped_receipt_hour_ahead: u64,
+    /// Events refused because the receipt lagged the event by more than one
+    /// observed inter-publication interval (combat-epoch join too stale to
+    /// attribute). The bound is the collector's own cadence, never a constant.
+    pub dropped_receipt_lag_beyond: u64,
 }
 
 impl ConvoyTransportAttackTelemetry {
@@ -94,9 +110,67 @@ impl ConvoyTransportAttackTelemetry {
             self.dropped_d70_mutation,
             self.dropped_queue_busy,
             self.dropped_queue_full,
+            self.dropped_receipt_hour_ahead,
+            self.dropped_receipt_lag_beyond,
         ]
         .into_iter()
         .any(|value| value != 0)
+    }
+}
+
+/// Where a DROP_CANDIDATE came from. The aggregate `dropped_candidate` could
+/// not say, so pw_gate_final's 46 candidate drops stayed unattributable and
+/// every one of them was unfixable by construction. These are LIFETIME
+/// counters like `dropped_candidate` and must sum to it exactly.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConvoyTransportAttackCandidateSubsites {
+    pub initial_gate: u64,
+    pub producer_sequence_exhausted: u64,
+    pub capture_error: u64,
+    /// The A729 context bytes did not read or did not match.
+    pub context_mismatch: u64,
+    /// The context ADDRESS itself overflowed (previously a silent uncounted
+    /// loss path).
+    pub context_address_overflow: u64,
+    pub member_bytes_unreadable: u64,
+    pub route_reread_mismatch: u64,
+    pub slot_busy: u64,
+}
+
+impl ConvoyTransportAttackCandidateSubsites {
+    pub fn total(&self) -> u64 {
+        self.initial_gate
+            .wrapping_add(self.producer_sequence_exhausted)
+            .wrapping_add(self.capture_error)
+            .wrapping_add(self.context_mismatch)
+            .wrapping_add(self.context_address_overflow)
+            .wrapping_add(self.member_bytes_unreadable)
+            .wrapping_add(self.route_reread_mismatch)
+            .wrapping_add(self.slot_busy)
+    }
+
+    pub const FIELDS: [&'static str; 8] = [
+        "convoy_transport_attack_dropped_candidate_initial_gate",
+        "convoy_transport_attack_dropped_candidate_producer_sequence_exhausted",
+        "convoy_transport_attack_dropped_candidate_capture_error",
+        "convoy_transport_attack_dropped_candidate_context_mismatch",
+        "convoy_transport_attack_dropped_candidate_context_address_overflow",
+        "convoy_transport_attack_dropped_candidate_member_bytes_unreadable",
+        "convoy_transport_attack_dropped_candidate_route_reread_mismatch",
+        "convoy_transport_attack_dropped_candidate_slot_busy",
+    ];
+
+    pub fn as_array(&self) -> [u64; 8] {
+        [
+            self.initial_gate,
+            self.producer_sequence_exhausted,
+            self.capture_error,
+            self.context_mismatch,
+            self.context_address_overflow,
+            self.member_bytes_unreadable,
+            self.route_reread_mismatch,
+            self.slot_busy,
+        ]
     }
 }
 
@@ -113,24 +187,40 @@ pub struct ConvoyTransportAttackWitness {
     pub resolver_member_bindings: u32,
     pub resolver_route_bindings: u32,
     pub resolver_unbound_convoy_clients: u32,
+    /// Diagnostic only since v5. A past partial publication no longer
+    /// disqualifies later batches: any events it lost were dropped under the
+    /// per-drain drop accounting of their own intervals, so the taint is
+    /// already carried where it happened. Keeping it on the wire preserves
+    /// the session-level view; removing it from exactness is what lets a
+    /// clean drain prove its own batch (pw_gate_final M-A).
     pub resolver_ever_partial: bool,
+    /// Hook entries observed during THIS drain interval (delta against the
+    /// last committed drain, not the session).
+    pub events_seen_this_drain: u64,
+    /// Events enqueued during THIS drain interval.
+    pub events_emitted_this_drain: u64,
+    /// Events refused at any named drop site during THIS drain interval.
+    /// By construction every hook entry ends at exactly one drop site or in
+    /// an enqueue, so seen == emitted + drops must hold and is validated.
+    pub drops_this_drain: u64,
+    pub candidate_subsites: ConvoyTransportAttackCandidateSubsites,
     pub telemetry: ConvoyTransportAttackTelemetry,
 }
 
 impl ConvoyTransportAttackWitness {
+    /// Whether THIS batch proves its event set exhaustive. Every conjunct is
+    /// a fact of this drain interval or a point-in-time reading taken under
+    /// the drain's own correlation guard -- nothing session-cumulative
+    /// decides it (pw_gate_final: 392/393 batches failed on lifetime scars
+    /// from incidents their own intervals never contained).
     pub fn exact_events_complete(&self) -> bool {
         self.hook_installed
             && self.queue_drain_complete
             && self.remaining_events == 0
             && self.active_callbacks == 0
             && self.resolver_unbound_convoy_clients == 0
-            && !self.resolver_ever_partial
-            && (self.telemetry.callbacks_seen == 0 || self.resolver_publication_sequence != 0)
-            && self.telemetry.callbacks_seen == self.telemetry.original_calls
-            && self.telemetry.callbacks_seen == self.telemetry.events_emitted
-            && self.producer_sequence_next
-                == self.telemetry.events_emitted.checked_add(1).unwrap_or(0)
-            && !self.telemetry.has_drop()
+            && self.events_seen_this_drain == self.events_emitted_this_drain
+            && self.drops_this_drain == 0
     }
 }
 
@@ -236,6 +326,31 @@ pub fn encode_convoy_transport_attack_batch(
     {
         write_u64(&mut out, V3_TELEMETRY_WORDS_OFF + index * 8, value);
     }
+    write_u64(&mut out, V5_PER_DRAIN_OFF, witness.events_seen_this_drain);
+    write_u64(
+        &mut out,
+        V5_PER_DRAIN_OFF + 8,
+        witness.events_emitted_this_drain,
+    );
+    write_u64(&mut out, V5_PER_DRAIN_OFF + 16, witness.drops_this_drain);
+    for (index, value) in witness
+        .candidate_subsites
+        .as_array()
+        .into_iter()
+        .enumerate()
+    {
+        write_u64(&mut out, V5_SUBSITE_OFF + index * 8, value);
+    }
+    write_u64(
+        &mut out,
+        V5_RECEIPT_AHEAD_OFF,
+        witness.telemetry.dropped_receipt_hour_ahead,
+    );
+    write_u64(
+        &mut out,
+        V5_LAG_BEYOND_OFF,
+        witness.telemetry.dropped_receipt_lag_beyond,
+    );
 
     for (index, row) in rows.iter().enumerate() {
         validate_row(row)?;
@@ -271,6 +386,12 @@ pub fn decode_convoy_transport_attack_batch(
     if read_u16(bytes, 10)? != 0 || read_u32(bytes, 20)? != 0 {
         return Err(BatchDecodeError::Reserved);
     }
+    if bytes[V5_RESERVED_OFF..BATCH_HEADER_LEN]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
+        return Err(BatchDecodeError::Reserved);
+    }
     let flags = read_u32(bytes, 16)?;
     if flags & !BATCH_KNOWN_FLAGS != 0
         || flags & BATCH_FLAG_COMPLETE_EXACT_EVENTS != 0 && flags & BATCH_FLAG_HOOK_INSTALLED == 0
@@ -298,6 +419,21 @@ pub fn decode_convoy_transport_attack_batch(
     let v3 = (0..V3_TELEMETRY_WORDS)
         .map(|index| read_u64(bytes, V3_TELEMETRY_WORDS_OFF + index * 8))
         .collect::<Result<Vec<_>, _>>()?;
+    let read_u64_at = |offset: usize| read_u64(bytes, offset);
+    let mut subsite_values = [0u64; V5_SUBSITE_WORDS];
+    for (index, value) in subsite_values.iter_mut().enumerate() {
+        *value = read_u64_at(V5_SUBSITE_OFF + index * 8)?;
+    }
+    let candidate_subsites = ConvoyTransportAttackCandidateSubsites {
+        initial_gate: subsite_values[0],
+        producer_sequence_exhausted: subsite_values[1],
+        capture_error: subsite_values[2],
+        context_mismatch: subsite_values[3],
+        context_address_overflow: subsite_values[4],
+        member_bytes_unreadable: subsite_values[5],
+        route_reread_mismatch: subsite_values[6],
+        slot_busy: subsite_values[7],
+    };
     let witness = ConvoyTransportAttackWitness {
         hook_installed: flags & BATCH_FLAG_HOOK_INSTALLED != 0,
         resolver_ever_partial: flags & BATCH_FLAG_RESOLVER_EVER_PARTIAL != 0,
@@ -315,6 +451,10 @@ pub fn decode_convoy_transport_attack_batch(
         resolver_member_bindings: read_u32(bytes, 180)?,
         resolver_route_bindings: read_u32(bytes, 184)?,
         resolver_unbound_convoy_clients: read_u32(bytes, 188)?,
+        events_seen_this_drain: read_u64_at(V5_PER_DRAIN_OFF)?,
+        events_emitted_this_drain: read_u64_at(V5_PER_DRAIN_OFF + 8)?,
+        drops_this_drain: read_u64_at(V5_PER_DRAIN_OFF + 16)?,
+        candidate_subsites,
         telemetry: ConvoyTransportAttackTelemetry {
             callbacks_seen: telemetry_values[0],
             original_calls: telemetry_values[1],
@@ -339,6 +479,8 @@ pub fn decode_convoy_transport_attack_batch(
             dropped_d70_mutation: telemetry_values[12],
             dropped_queue_busy: telemetry_values[13],
             dropped_queue_full: telemetry_values[14],
+            dropped_receipt_hour_ahead: read_u64_at(V5_RECEIPT_AHEAD_OFF)?,
+            dropped_receipt_lag_beyond: read_u64_at(V5_LAG_BEYOND_OFF)?,
         },
     };
 
@@ -423,6 +565,18 @@ fn validate_witness(
         || witness.telemetry.events_emitted > witness.telemetry.original_calls
     {
         return Err(BatchDecodeError::InvalidWitness("counters"));
+    }
+    if witness.events_seen_this_drain
+        != witness
+            .events_emitted_this_drain
+            .wrapping_add(witness.drops_this_drain)
+    {
+        // Every hook entry ends at exactly one named drop site or in an
+        // enqueue; a batch that violates the identity miscounts its own loss.
+        return Err(BatchDecodeError::InvalidWitness("drain_deltas"));
+    }
+    if witness.candidate_subsites.total() != witness.telemetry.dropped_candidate {
+        return Err(BatchDecodeError::InvalidWitness("candidate_subsites"));
     }
     Ok(())
 }
@@ -586,20 +740,13 @@ mod tests {
             queue_drain_complete: true,
             producer_sequence_next: emitted + 1,
             drained_rows: rows.len() as u32,
-            remaining_events: 0,
-            active_callbacks: 0,
+            events_seen_this_drain: u64::from(rows.len() as u32),
+            events_emitted_this_drain: u64::from(rows.len() as u32),
             resolver_publication_sequence: 3,
             resolver_game_hour_raw: 61_000_000,
             resolver_member_bindings: 4,
             resolver_route_bindings: 2,
-            resolver_unbound_convoy_clients: 0,
-            resolver_ever_partial: false,
-            telemetry: ConvoyTransportAttackTelemetry {
-                callbacks_seen: emitted,
-                original_calls: emitted,
-                events_emitted: emitted,
-                ..ConvoyTransportAttackTelemetry::default()
-            },
+            ..ConvoyTransportAttackWitness::default()
         }
     }
 
@@ -711,7 +858,11 @@ mod tests {
     }
 
     #[test]
-    fn cta2_rows_redrained_under_a_later_complete_resolver_stay_incomplete() {
+    fn cta2_a_clean_drain_recovers_after_an_ever_partial_publication() {
+        // kills pw_gate_final M-A: one partial publication latched
+        // RESOLVER_EVER_PARTIAL for the session and every later batch failed
+        // exactness on a scar its own interval never contained (392/393
+        // incomplete). The latch is now diagnostic only.
         let rows = vec![row(7, ConvoyD70MutationKind::IncrementExisting)];
 
         let mut partial = witness(&rows);
@@ -721,23 +872,114 @@ mod tests {
         assert!(
             !decode_convoy_transport_attack_batch(&encoded)
                 .unwrap()
-                .exact_events_complete
+                .exact_events_complete,
+            "the partial interval itself is still inexact"
         );
 
-        let mut later = witness(&rows);
-        later.resolver_unbound_convoy_clients = 0;
+        let mut later = witness(&[]);
+        later.producer_sequence_next = rows[0].carrier.producer_sequence;
         later.resolver_ever_partial = true;
-        let encoded = encode_convoy_transport_attack_batch(&rows, later).unwrap();
+        let encoded = encode_convoy_transport_attack_batch(&[], later).unwrap();
         let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
         assert!(
             decoded.witness.resolver_ever_partial,
-            "latch must round-trip"
+            "latch must round-trip as the session-level diagnostic it is"
         );
         assert!(
-            !decoded.exact_events_complete,
-            "a capture that was ever partial can never claim an exhaustive event set"
+            decoded.exact_events_complete,
+            "a drain whose own interval was fully bound and lossless proves its own batch"
         );
-        assert_eq!(decoded.rows, rows);
+    }
+
+    #[test]
+    fn cta2_lifetime_scars_do_not_poison_a_clean_drain() {
+        // kills pw_gate_final M-B: cumulative telemetry embedded in every
+        // batch meant one dropped event anywhere made every later batch fail
+        // callbacks_seen==events_emitted and has_drop forever. Exactness now
+        // reads only this drain's deltas.
+        let mut scarred = witness(&[]);
+        scarred.telemetry.callbacks_seen = 71;
+        scarred.telemetry.original_calls = 71;
+        scarred.telemetry.events_emitted = 0;
+        scarred.telemetry.dropped_candidate = 46;
+        scarred.telemetry.dropped_receipt_hour_mismatch = 25;
+        scarred.candidate_subsites.initial_gate = 21;
+        scarred.candidate_subsites.route_reread_mismatch = 25;
+        let encoded = encode_convoy_transport_attack_batch(&[], scarred).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        assert_eq!(decoded.witness.telemetry.dropped_candidate, 46);
+        assert!(decoded.exact_events_complete);
+    }
+
+    #[test]
+    fn cta2_a_per_drain_drop_disqualifies_exactness() {
+        // kills the residual-loss hole the lifetime version had: drops are
+        // judged per interval, so a drop in THIS interval must make THIS
+        // batch inexact even though nothing was ever dropped before.
+        let mut dropped = witness(&[]);
+        dropped.events_seen_this_drain = 1;
+        dropped.drops_this_drain = 1;
+        dropped.telemetry.dropped_candidate = 1;
+        dropped.candidate_subsites.capture_error = 1;
+        let encoded = encode_convoy_transport_attack_batch(&[], dropped).unwrap();
+        assert!(
+            !decode_convoy_transport_attack_batch(&encoded)
+                .unwrap()
+                .exact_events_complete
+        );
+    }
+
+    #[test]
+    fn cta2_rejects_drain_delta_identity_violations() {
+        // seen != emitted + drops miscounts the interval's own loss; encode
+        // and decode both refuse it.
+        let mut bad = ConvoyTransportAttackWitness {
+            hook_installed: true,
+            queue_drain_complete: true,
+            producer_sequence_next: 1,
+            ..ConvoyTransportAttackWitness::default()
+        };
+        bad.events_seen_this_drain = 1;
+        assert_eq!(
+            encode_convoy_transport_attack_batch(&[], bad),
+            Err(BatchDecodeError::InvalidWitness("drain_deltas"))
+        );
+    }
+
+    #[test]
+    fn cta2_rejects_subsite_totals_that_disagree_with_the_candidate_counter() {
+        let mut bad = witness(&[]);
+        bad.telemetry.dropped_candidate = 2;
+        bad.candidate_subsites.initial_gate = 1;
+        assert_eq!(
+            encode_convoy_transport_attack_batch(&[], bad),
+            Err(BatchDecodeError::InvalidWitness("candidate_subsites"))
+        );
+    }
+
+    #[test]
+    fn cta2_refuses_pre_v5_batches_by_version() {
+        let rows = [row(7, ConvoyD70MutationKind::IncrementExisting)];
+        let mut encoded = encode_convoy_transport_attack_batch(&rows, witness(&rows)).unwrap();
+        write_u16(&mut encoded, 4, 4);
+        assert_eq!(
+            decode_convoy_transport_attack_batch(&encoded),
+            Err(BatchDecodeError::VersionOrLayout)
+        );
+    }
+
+    #[test]
+    fn cta2_receipt_hour_ahead_round_trips_and_counts_as_a_drop() {
+        let mut ahead = witness(&[]);
+        ahead.events_seen_this_drain = 1;
+        ahead.drops_this_drain = 1;
+        ahead.telemetry.dropped_receipt_hour_ahead = 1;
+        ahead.telemetry.dropped_hour_or_epoch = 1;
+        let encoded = encode_convoy_transport_attack_batch(&[], ahead).unwrap();
+        let decoded = decode_convoy_transport_attack_batch(&encoded).unwrap();
+        assert_eq!(decoded.witness.telemetry.dropped_receipt_hour_ahead, 1);
+        assert!(!decoded.exact_events_complete);
+        assert!(decoded.witness.telemetry.has_drop());
     }
 
     #[test]
@@ -825,7 +1067,12 @@ mod tests {
                 .exact_events_complete
         );
 
+        // A drop in THIS interval disqualifies this batch. The lifetime
+        // counter rides along as the diagnostic it is; the exactness verdict
+        // comes from the per-drain deltas.
         let mut dropped = prepublication;
+        dropped.events_seen_this_drain = 1;
+        dropped.drops_this_drain = 1;
         dropped.telemetry.callbacks_seen = 1;
         dropped.telemetry.original_calls = 1;
         dropped.telemetry.dropped_resolver = 1;

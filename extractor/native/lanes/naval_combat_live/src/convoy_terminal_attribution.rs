@@ -137,7 +137,19 @@ pub trait ExactLiveRouteResolver {
 }
 
 pub trait ExactCombatEpochResolver {
-    fn resolve_member_epoch(&self, member_address: usize) -> Result<CombatEpoch, String>;
+    /// Resolve a member address to the combat membership the same-hour d49/d50
+    /// walk bound it to: the combat epoch AND the battle slot it occupied.
+    /// The slot rides with the epoch so capture time can prove the member is
+    /// still where the walk saw it, not merely that the address resolves.
+    fn resolve_member_epoch(&self, member_address: usize) -> Result<CombatEpochMembership, String>;
+}
+
+/// One member's published combat membership: which combat (epoch) and where in
+/// it (battle slot). Both must still match live memory at event time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CombatEpochMembership {
+    pub epoch: CombatEpoch,
+    pub battle_slot_index_raw: u32,
 }
 
 pub trait ExactMemory {
@@ -390,6 +402,11 @@ pub enum CaptureError {
     InvalidCombatEpoch,
     InvalidEndpoint(&'static str),
     CombatJoin(String),
+    /// The member's LIVE battle slot no longer matches the slot the same-hour
+    /// d49/d50 walk bound it to. A member that changed combats (or a reused
+    /// member address) fails here BY NAME instead of being attributed to the
+    /// stale combat epoch.
+    CombatSlotMismatch,
     RouteJoin(String),
     RouteKeyMismatch,
 }
@@ -495,10 +512,20 @@ where
         CFEX_MEMBER_BATTLE_SLOT_OFF,
         "battle_slot",
     )?;
-    let combat = combat_resolver
+    // The epoch join is not trusted blind: the member must still sit where the
+    // same-hour walk saw it. A member that left its published battle slot (or
+    // a reused member address) fails HERE, by name. What this check cannot
+    // catch is a move to a DIFFERENT combat at the SAME slot index within one
+    // cadence interval -- the sink ABI (game_state, count, killer_ref,
+    // owner_ref) carries no combat identity for the recorder to compare, so
+    // that residual is named in FIX.md rather than hidden.
+    let membership = combat_resolver
         .resolve_member_epoch(registers.r12_member)
-        .map_err(CaptureError::CombatJoin)?
-        .validate()?;
+        .map_err(CaptureError::CombatJoin)?;
+    let combat = membership.epoch.validate()?;
+    if membership.battle_slot_index_raw != battle_slot {
+        return Err(CaptureError::CombatSlotMismatch);
+    }
     let route = route_resolver
         .resolve_client_route(client)
         .map_err(CaptureError::RouteJoin)?;
@@ -733,11 +760,19 @@ mod tests {
 
     struct Combat;
     impl ExactCombatEpochResolver for Combat {
-        fn resolve_member_epoch(&self, member_address: usize) -> Result<CombatEpoch, String> {
+        fn resolve_member_epoch(
+            &self,
+            member_address: usize,
+        ) -> Result<CombatEpochMembership, String> {
             (member_address == 0x5000)
-                .then_some(CombatEpoch {
-                    combat_id: 13,
-                    generation: 9,
+                .then_some(CombatEpochMembership {
+                    epoch: CombatEpoch {
+                        combat_id: 13,
+                        generation: 9,
+                    },
+                    // Matches the fixture member's live battle slot at
+                    // CFEX_MEMBER_BATTLE_SLOT_OFF; anything else now refuses.
+                    battle_slot_index_raw: 10,
                 })
                 .ok_or_else(|| "foreign member".into())
         }
@@ -866,6 +901,70 @@ mod tests {
                 .windows(8)
                 .any(|window| window == pointer.to_le_bytes()));
         }
+    }
+
+    /// The member left its published battle slot (changed combats, or a reused
+    /// member address): the stale-epoch join must refuse BY NAME, never
+    /// attribute the sink to combat it no longer belongs to.
+    #[test]
+    fn terminal_candidate_refuses_a_member_that_left_its_published_slot() {
+        struct SlotDrift;
+        impl ExactCombatEpochResolver for SlotDrift {
+            fn resolve_member_epoch(
+                &self,
+                member_address: usize,
+            ) -> Result<CombatEpochMembership, String> {
+                let membership = Combat.resolve_member_epoch(member_address)?;
+                Ok(CombatEpochMembership {
+                    battle_slot_index_raw: membership.battle_slot_index_raw + 1,
+                    ..membership
+                })
+            }
+        }
+        let base = 0x1400_0000_0usize;
+        let member = 0x5000usize;
+        let killer = 0x9000usize;
+        let mut memory = Memory::default();
+        memory.put_u64(member, (base + CFEX_MEMBER_VTABLE_RVA) as u64);
+        memory.put_handle(
+            member + CFEX_MEMBER_CONVOY_HANDLE_OFF,
+            EntityHandle {
+                id: 157947,
+                type_tag: GAME_ENTITY_TYPE_TAG,
+            },
+        );
+        memory.put_u32(member + CFEX_MEMBER_OWNER_TAG_OFF, 77);
+        memory.put_handle(
+            member + CFEX_MEMBER_CLIENT_HANDLE_OFF,
+            EntityHandle {
+                id: 156618,
+                type_tag: GAME_ENTITY_TYPE_TAG,
+            },
+        );
+        memory.put_u32(member + CFEX_MEMBER_CONVOY_INDEX_OFF, 0);
+        memory.put_u32(member + CFEX_MEMBER_STATE_OFF, TERMINAL_SUNK_STATE);
+        memory.put_u32(member + CFEX_MEMBER_BATTLE_SLOT_OFF, 10);
+        memory.put_u32(killer, 51);
+        assert_eq!(
+            capture_candidate(
+                &memory,
+                base,
+                A729PreCollapseRegisters {
+                    rcx_game_state: 0x7000,
+                    edx_count: 1,
+                    r8_killer_country_ref: killer,
+                    r9_owner_country_ref: member + CFEX_MEMBER_OWNER_TAG_OFF,
+                    r12_member: member,
+                    r15_killer_country_ref: killer,
+                },
+                1,
+                72,
+                &SlotDrift,
+                &Route,
+            )
+            .unwrap_err(),
+            CaptureError::CombatSlotMismatch
+        );
     }
 
     #[test]
