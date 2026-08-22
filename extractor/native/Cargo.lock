@@ -1077,6 +1077,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "portable_replay_format",
+ "portable_test_fs_retry",
  "serde",
  "serde_json",
  "windows-sys",

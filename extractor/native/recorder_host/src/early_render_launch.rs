@@ -2610,6 +2610,11 @@ mod windows {
         }
 
         fn spawn_sleeping_cmd() -> TestProcess {
+            // The fixture must remain a real second process; CREATE_NO_WINDOW
+            // keeps the console-subsystem child from allocating a visible
+            // terminal window on console-less harnesses (lane QI defect
+            // class).
+            const CREATE_NO_WINDOW: Dword = 0x0800_0000;
             let executable = std::env::var_os("ComSpec")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
@@ -2626,7 +2631,7 @@ mod windows {
                         ptr::null_mut(),
                         ptr::null_mut(),
                         0,
-                        CREATE_SUSPENDED,
+                        CREATE_SUSPENDED | CREATE_NO_WINDOW,
                         ptr::null_mut(),
                         ptr::null(),
                         &mut startup,
@@ -2645,6 +2650,11 @@ mod windows {
         }
 
         fn spawn_sleeping_cmd_in_job(job: Handle) -> TestProcess {
+            // The fixture must remain a real second process; CREATE_NO_WINDOW
+            // keeps the console-subsystem child from allocating a visible
+            // terminal window on console-less harnesses (lane QI defect
+            // class).
+            const CREATE_NO_WINDOW: Dword = 0x0800_0000;
             let executable = std::env::var_os("ComSpec")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
@@ -2663,7 +2673,7 @@ mod windows {
                     ptr::null_mut(),
                     ptr::null_mut(),
                     0,
-                    CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT,
+                    CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
                     ptr::null_mut(),
                     ptr::null(),
                     (&mut startup as *mut StartupInfoExW).cast(),

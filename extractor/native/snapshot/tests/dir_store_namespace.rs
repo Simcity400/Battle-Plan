@@ -6,7 +6,6 @@ use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::{mem::MaybeUninit, ptr::null_mut};
 use windows_sys::Win32::Foundation::{GetLastError, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{
@@ -39,35 +38,20 @@ impl Drop for Temp {
     }
 }
 
-/// the child. `mklink` reports its own refusals with exit code 1, which stays a
+/// Junction fixture via portable_test_fs_retry's native mount-point helper.
+/// The former cmd link shell-out was a console-subsystem child, so every
+/// console-less harness run allocated a visible terminal window per call
+/// (lane QI defect class). Assertion kept: the result must be a real reparse
+/// point on disk.
 fn make_junction(link: &Path, target: &Path) {
-    const MAX_ATTEMPTS: u32 = 5;
-    const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
-    for attempt in 1..=MAX_ATTEMPTS {
-        let status = Command::new("cmd.exe")
-            .args(["/D", "/C", "mklink", "/J"])
-            .arg(link)
-            .arg(target)
-            .status()
-            .expect("launch mklink /J");
-        if status.success() {
-            break;
-        }
-        let child_never_ran = status
-            .code()
-            .is_some_and(|code| code as u32 == STATUS_DLL_INIT_FAILED);
-        assert!(
-            child_never_ran && attempt < MAX_ATTEMPTS,
-            "mklink /J failed with {status}"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
-    }
+    portable_test_fs_retry::create_junction(link, target)
+        .unwrap_or_else(|error| panic!("native junction {}: {error}", link.display()));
     assert!(
         fs::symlink_metadata(link)
             .expect("junction was reported created")
             .file_type()
             .is_symlink(),
-        "mklink /J reported success without leaving a reparse point at {}",
+        "the native junction reported success without leaving a reparse point at {}",
         link.display()
     );
 }

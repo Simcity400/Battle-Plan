@@ -52,3 +52,9 @@ windows-sys = { version = "0.61", features = [
 [[bin]]
 name = "pack_replay"
 path = "../../../portable_replay/native/snapshot/src/bin/pack_replay.rs"
+
+[dev-dependencies]
+# Junction fixtures are made in-process through the shared native mount-point
+# helper; the former cmd link shell-outs allocated a visible console window
+# per call on console-less harnesses.
+portable_test_fs_retry = { path = "../../../portable_replay/native/test_fs_retry" }

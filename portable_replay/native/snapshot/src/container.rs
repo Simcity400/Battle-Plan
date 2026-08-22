@@ -3835,17 +3835,12 @@ mod tests {
         let target = root.join("target");
         fs::create_dir(&target).unwrap();
         let junction = root.join("junction");
-        let status = std::process::Command::new("cmd")
-            .arg("/C")
-            .arg("mklink")
-            .arg("/J")
-            .arg(&junction)
-            .arg(&target)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .expect("run mklink");
-        assert!(status.success(), "mklink /J must create a junction");
+        // Native in-process junction via the shared helper: the former cmd
+        // link shell-out was a console-subsystem child, so each console-less
+        // harness run allocated a visible terminal window per call (lane QI
+        // defect class).
+        portable_test_fs_retry::create_junction(&junction, &target)
+            .expect("create the native junction fixture");
         assert!(
             fs::symlink_metadata(&junction)
                 .unwrap()

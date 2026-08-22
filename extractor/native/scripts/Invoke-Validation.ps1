@@ -161,7 +161,11 @@ function Get-CargoTopology {
         'portable_replay/native/compact_stream',
         'portable_replay/native/content_manifest',
         'portable_replay/native/render_stream',
-        'portable_replay/native/snapshot'
+        'portable_replay/native/snapshot',
+        # Standalone root so its own pins (junction_pin, no_console_shellouts)
+        # execute at landing; depending crates never run another crate's
+        # integration tests.
+        'portable_replay/native/test_fs_retry'
     )
 
     $roots = @()
@@ -284,7 +288,11 @@ function Get-ShippingPackageIds {
     $selected = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     $queue = [Collections.Generic.Queue[string]]::new()
     foreach ($entry in $Topology.PackagesById.GetEnumerator()) {
-        if ([string]$entry.Value.name -in @('collector', 'recorder_host', 'replay_app')) {
+        # portable_test_fs_retry is seeded explicitly: it is referenced only
+        # through dev-dependencies, so the production-forward walk below can
+        # never reach it, yet its integration pins (junction_pin,
+        # no_console_shellouts) must execute at landing.
+        if ([string]$entry.Value.name -in @('collector', 'recorder_host', 'replay_app', 'portable_test_fs_retry')) {
             if ($selected.Add([string]$entry.Key)) { $queue.Enqueue([string]$entry.Key) }
         }
     }

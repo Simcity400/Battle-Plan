@@ -14,6 +14,31 @@ fn scripts_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../scripts")
 }
 
+/// kills: lane QI console-window defect class. The powershell probes below
+/// must remain real child processes (they exercise real exit codes), but a
+/// console-subsystem child of a console-less harness allocates a visible
+/// terminal window per call; CREATE_NO_WINDOW suppresses that allocation. The
+/// adapter keeps the suppression attached to every spawn in this file.
+trait NoConsoleWindow {
+    fn no_console_window(&mut self) -> &mut Self;
+}
+
+#[cfg(windows)]
+impl NoConsoleWindow for std::process::Command {
+    fn no_console_window(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+}
+
+#[cfg(not(windows))]
+impl NoConsoleWindow for std::process::Command {
+    fn no_console_window(&mut self) -> &mut Self {
+        self
+    }
+}
+
 fn read_script(name: &str) -> String {
     let path = scripts_root().join(name);
     fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
@@ -1202,6 +1227,7 @@ fn the_harness_status_verdict_survives_every_route_out() {
                         .arg(&path)
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
+                        .no_console_window()
                         .status()
                         .expect("run powershell");
                     let _ = fs::remove_file(&path);
@@ -1246,6 +1272,7 @@ fn the_harness_status_verdict_survives_every_route_out() {
         .arg(&path)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_console_window()
         .status()
         .expect("run powershell");
     if status.code() != Some(0) {
@@ -1477,6 +1504,7 @@ fn the_harness_report_dispatch_blocks_on_every_unanswered_path() {
                         .arg(&path)
                         .stdout(std::process::Stdio::null())
                         .stderr(std::process::Stdio::null())
+                        .no_console_window()
                         .status()
                         .expect("run powershell");
                     let _ = fs::remove_file(&path);

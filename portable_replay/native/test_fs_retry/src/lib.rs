@@ -5,6 +5,10 @@ use std::time::Duration;
 #[cfg(windows)]
 use std::time::Instant;
 
+pub mod junction;
+
+pub use junction::{create_junction, reparse_tag_of, IO_REPARSE_TAG_MOUNT_POINT};
+
 pub const RETRY_BUDGET: Duration = Duration::from_millis(2000);
 
 #[cfg(windows)]

@@ -1005,6 +1005,12 @@ mod tests {
         let mut source = WmiProcessEventSource::new();
         assert_eq!(source.health(), WatcherHealth::Healthy);
 
+        // The fixture must remain a real second process -- the test watches
+        // its actual WMI start/stop lifecycle; CREATE_NO_WINDOW keeps the
+        // console-subsystem child from allocating a visible terminal window
+        // on console-less harnesses (lane QI defect class).
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let mut child = std::process::Command::new("powershell.exe")
             .args([
                 "-NoLogo",
@@ -1016,6 +1022,7 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .expect("launch WMI lifecycle fixture");
         let child_pid = child.id();

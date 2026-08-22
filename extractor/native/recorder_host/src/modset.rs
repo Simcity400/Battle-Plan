@@ -2921,30 +2921,12 @@ mod tests {
         corroborate_user_dir_live(&real, my_pid).unwrap();
 
         let fake_logs = fake.join("logs");
-        // runs. `mklink`'s own refusals use exit code 1 and still fail on the
-        const MAX_ATTEMPTS: u32 = 5;
-        const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
-        for attempt in 1..=MAX_ATTEMPTS {
-            let status = std::process::Command::new("cmd")
-                .arg("/C")
-                .arg("mklink")
-                .arg("/J")
-                .arg(&fake_logs)
-                .arg(&real_logs)
-                .status()
-                .expect("spawn cmd mklink /J");
-            if status.success() {
-                break;
-            }
-            let child_never_ran = status
-                .code()
-                .is_some_and(|code| code as u32 == STATUS_DLL_INIT_FAILED);
-            assert!(
-                child_never_ran && attempt < MAX_ATTEMPTS,
-                "mklink /J failed: {status}"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(attempt)));
-        }
+        // Native in-process junction via the shared helper: the former cmd
+        // link shell-out was a console-subsystem child, so each console-less
+        // harness run allocated a visible terminal window per call (lane QI
+        // defect class). The helper keeps the shell's refusal contract.
+        portable_test_fs_retry::create_junction(&fake_logs, &real_logs)
+            .unwrap_or_else(|error| panic!("junction alias {}: {error}", fake_logs.display()));
         assert!(fake_logs.join("game.log").is_file());
         let err = corroborate_user_dir_live(&fake, my_pid).unwrap_err();
         assert!(
