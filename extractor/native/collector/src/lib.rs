@@ -839,13 +839,11 @@ fn portable_submit_with_pending_s1_from_a729_runtime(
         camera_carrier: promoted.camera_carrier,
         ordered_static_map_programs: Vec::new(),
         authenticated_texture_snapshots: Vec::new(),
-        tree_runtime: None,
         s1_shadow: None,
         particles: promoted.particles,
         particle_packet_set_sha256,
         entities: promoted.entities,
         rail_construction_arrows: Vec::new(),
-        ordered_draws: promoted.ordered_draws,
         ordered_render_operations: Vec::new(),
         tiled_lights: Vec::new(),
         weather_membership: Vec::new(),
@@ -1469,6 +1467,10 @@ fn finalize_a729_runtime_captures_in_process(
             .iter()
             .map(|raw| production_render_submit_live_lane::promote_entity_submission(raw, &catalog))
             .collect::<Result<Vec<_>, _>>()?;
+        // The cross-family draw order is not carried on the wire: the portable
+        // crate derives it from the packets by sorting on draw_order. The same
+        // contiguity law runs here so an incomplete capture is rejected at
+        // capture time instead of replay time.
         let mut ordered_draws =
             particles
                 .iter()
@@ -1522,7 +1524,6 @@ fn finalize_a729_runtime_captures_in_process(
                 )?,
                 particles,
                 entities,
-                ordered_draws,
                 s1_shadow: None,
             },
             raw: capture.clone(),
@@ -2815,7 +2816,15 @@ fn build_a729_s1_shadow_carrier(
         .map(|row| build_s1_generic_pdxmesh_submission(row, frame, submit, &by_sequence))
         .collect::<Result<Vec<_>, _>>()?;
     if execution.tree_casters.is_empty() {
-        if let Some(tree) = submit.tree_runtime.as_ref() {
+        // The C07 carrier no longer rides the submit; derive it from the same
+        // sealed static programs/execution order to project the retained tree
+        // shadow submissions.
+        let derived_tree =
+            portable_render_stream::C07TreeRuntimeCarrier::from_authenticated_selected_submit(
+                submit,
+            )
+            .map_err(|error| format!("C07 selected-submit tree runtime: {error}"))?;
+        if let Some(tree) = derived_tree.as_ref() {
             typed.extend(tree.s1_primary_shadow_submissions_against_submit(submit)?);
         }
     } else {
@@ -2987,7 +2996,6 @@ pub struct PromotedA729ProductionRenderSubmit {
     pub camera_carrier: Option<portable_render_stream::AuthenticatedCameraCarrier>,
     pub particles: Vec<portable_render_stream::ParticlePacket>,
     pub entities: Vec<portable_render_stream::EntitySubmission>,
-    pub ordered_draws: Vec<portable_render_stream::RenderOutputRef>,
     pub s1_shadow: Option<portable_render_stream::S1ShadowCarrier>,
 }
 
@@ -3392,13 +3400,11 @@ mod fold_carrier_guard_tests {
             camera_carrier: None,
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
-            tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
                 particle_packet_set_sha256: String::new(),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
-            ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
                 tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
@@ -3520,7 +3526,6 @@ pub fn fold_a729_static_program_capture(
     if !submit.ordered_static_map_programs.is_empty()
         || !submit.authenticated_texture_snapshots.is_empty()
         || !submit.ordered_render_operations.is_empty()
-        || submit.tree_runtime.is_some()
     {
         return Err(production_render_submit_live_lane::PromotionError::Invalid(
             "d80 fold targets a different or already-populated submit".into(),
@@ -3548,7 +3553,11 @@ pub fn fold_a729_static_program_capture(
             _ => None,
         })
         .collect::<Vec<_>>();
-    if runtime_subsequence != submit.ordered_draws {
+    if runtime_subsequence
+        != submit
+            .derive_ordered_draws()
+            .map_err(production_render_submit_live_lane::PromotionError::Invalid)?
+    {
         return Err(production_render_submit_live_lane::PromotionError::Invalid(
             "d80 fold interleave changes the authenticated runtime subsequence".into(),
         ));
@@ -3576,14 +3585,16 @@ pub fn fold_a729_static_program_capture(
     submit.authenticated_texture_snapshots = promoted.authenticated_texture_snapshots;
     submit.ordered_static_map_programs = promoted.ordered_programs;
     submit.ordered_render_operations = ordered_execution;
-    let tree_runtime =
-        portable_render_stream::C07TreeRuntimeCarrier::from_authenticated_selected_submit(submit)
-            .map_err(|error| {
+    // The C07 tree runtime carrier no longer rides the wire: the portable
+    // derivation from_authenticated_selected_submit rebuilds it per submit at
+    // replay time from the same static programs and execution order folded
+    // here, so capture only fails closed when that derivation would.
+    portable_render_stream::C07TreeRuntimeCarrier::from_authenticated_selected_submit(submit)
+        .map_err(|error| {
             production_render_submit_live_lane::PromotionError::Invalid(format!(
                 "C07 selected-submit tree runtime: {error}"
             ))
         })?;
-    submit.tree_runtime = tree_runtime;
     Ok(())
 }
 
@@ -3851,7 +3862,6 @@ pub fn drain_a729_production_render_submits<
                 camera_carrier: promote_a729_camera_carrier(submit.camera_carrier.as_ref())?,
                 particles,
                 entities,
-                ordered_draws,
                 s1_shadow: None,
             })
         })

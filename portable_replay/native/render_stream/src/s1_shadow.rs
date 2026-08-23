@@ -256,6 +256,22 @@ impl S1ShadowCarrier {
         if self.payload_sha256 != self.computed_payload_sha256()? {
             return Err("S1 carrier payload SHA-256 mismatch".into());
         }
+        // The retired wire join between the C07 tree runtime carrier and this
+        // S1 chain, re-established against the portable C07 derivation: every
+        // admission of a carried S1 carrier must agree with the tree shadow
+        // operations derivable from the same recorded submit. A derivation
+        // error here means the recorded static tree family is incomplete or
+        // tampered; no derived trees simply skips the join (matching the old
+        // both-carriers-present semantics).
+        let trees = crate::C07TreeRuntimeCarrier::from_authenticated_selected_submit(submit)?;
+        if let Some(trees) = &trees {
+            if self.is_inactive() {
+                return Err(
+                    "C07 tree-shadow operations conflict with an inactive S1 skip".into(),
+                );
+            }
+            trees.validate_s1_tree_shadow_join(self)?;
+        }
         let blur_camera_factor = f32::from_bits(self.blur_camera_factor_f32_bits);
         if !blur_camera_factor.is_finite() || !(0.0..=1.0).contains(&blur_camera_factor) {
             return Err("S1 blur camera factor is non-finite or outside [0,1]".into());

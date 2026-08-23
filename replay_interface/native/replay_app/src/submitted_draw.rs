@@ -85,10 +85,14 @@ enum SubmittedOutput<'a> {
 }
 
 fn ordered_draws<'a>(submit: &'a RenderSubmit) -> Result<Vec<OrderedDraw<'a>>> {
-    let mut out = Vec::with_capacity(submit.ordered_draws.len());
-    let mut seen_particles = vec![false; submit.particles.len()];
-    let mut seen_entities = vec![false; submit.entities.len()];
-    for draw in &submit.ordered_draws {
+    // kills: the carried RenderSubmit.ordered_draws wire field is retired; the
+    // execution order is the portable derive_ordered_draws law over the
+    // recorded particle/entity packets, which reproduces the previously
+    // carried sequence exactly on every sealed fixture (sort by draw_order,
+    // contiguous 0..n coverage of the submitted draw set).
+    let ordered_refs = submit.derive_ordered_draws().map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    let mut out = Vec::with_capacity(ordered_refs.len());
+    for draw in &ordered_refs {
         match draw {
             RenderOutputRef::Particle {
                 effect_instance_id,
@@ -96,20 +100,16 @@ fn ordered_draws<'a>(submit: &'a RenderSubmit) -> Result<Vec<OrderedDraw<'a>>> {
                 packet_ordinal,
                 draw_order,
             } => {
-                let (packet_index, packet) = submit
+                let packet = submit
                     .particles
                     .iter()
-                    .enumerate()
                     .find(|packet| {
-                        packet.1.effect_instance_id == *effect_instance_id
-                            && packet.1.bucket == *bucket
-                            && packet.1.packet_ordinal == *packet_ordinal
-                            && packet.1.draw_order == *draw_order
+                        packet.effect_instance_id == *effect_instance_id
+                            && packet.bucket == *bucket
+                            && packet.packet_ordinal == *packet_ordinal
+                            && packet.draw_order == *draw_order
                     })
                     .ok_or("ordered particle draw references an absent packet")?;
-                if !mark_once(&mut seen_particles, packet_index) {
-                    return Err("ordered particle draw references the same packet twice".into());
-                }
                 out.push(OrderedDraw::Particle(packet));
             }
             RenderOutputRef::Entity {
@@ -117,31 +117,20 @@ fn ordered_draws<'a>(submit: &'a RenderSubmit) -> Result<Vec<OrderedDraw<'a>>> {
                 entity_instance_id,
                 draw_order,
             } => {
-                let (entity_index, entity) = submit
+                let entity = submit
                     .entities
                     .iter()
-                    .enumerate()
                     .find(|entity| {
-                        entity.1.pass_ordinal == *pass_ordinal
-                            && entity.1.entity_instance_id == *entity_instance_id
-                            && entity.1.draw_order == *draw_order
+                        entity.pass_ordinal == *pass_ordinal
+                            && entity.entity_instance_id == *entity_instance_id
+                            && entity.draw_order == *draw_order
                     })
                     .ok_or("ordered entity draw references an absent submission")?;
-                if !mark_once(&mut seen_entities, entity_index) {
-                    return Err("ordered entity draw references the same submission twice".into());
-                }
                 out.push(OrderedDraw::Entity(entity));
             }
         }
     }
-    if seen_particles.iter().any(|seen| !seen) || seen_entities.iter().any(|seen| !seen) {
-        return Err("ordered draw list does not cover the complete submitted draw set".into());
-    }
     Ok(out)
-}
-
-fn mark_once(seen: &mut [bool], index: usize) -> bool {
-    !std::mem::replace(&mut seen[index], true)
 }
 
 pub unsafe fn execute_submitted_draws(
@@ -1667,13 +1656,11 @@ mod tests {
             camera_carrier: None,
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
-            tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
             particle_packet_set_sha256: "0".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
-            ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
@@ -1699,30 +1686,14 @@ mod tests {
     }
 
     #[test]
-    fn ordered_draw_execution_never_accepts_unknown_or_inferred_rows() {
+    fn ordered_draw_execution_derives_the_empty_cross_family_order() {
+        // kills: with the carried RenderSubmit.ordered_draws wire field retired,
+        // execution order comes from the portable derive_ordered_draws law; the
+        // empty-submit equality case plus the portable-crate sealed-fixture
+        // equality tests pin it to the previously carried sequence.
         assert!(ordered_draws(&empty_submit())
             .expect("empty order")
             .is_empty());
-        let mut submit = empty_submit();
-        submit.ordered_draws.push(RenderOutputRef::Particle {
-            effect_instance_id: 9,
-            bucket: 2,
-            packet_ordinal: 3,
-            draw_order: 4,
-        });
-        assert!(ordered_draws(&submit)
-            .expect_err("unknown ordered draw")
-            .to_string()
-            .contains("absent packet"));
-    }
-
-    #[test]
-    fn duplicate_reference_marker_rejects_a_second_visit() {
-        let mut seen = [false, false];
-        assert!(mark_once(&mut seen, 0));
-        assert!(!mark_once(&mut seen, 0));
-        assert!(mark_once(&mut seen, 1));
-        assert!(seen.into_iter().all(|value| value));
     }
 
     #[test]

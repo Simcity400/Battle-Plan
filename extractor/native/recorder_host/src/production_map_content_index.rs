@@ -816,13 +816,11 @@ mod tests {
             // program frames validate on their own sealed content below.
             ordered_static_map_programs: programs,
             authenticated_texture_snapshots: Vec::new(),
-            tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
             particle_packet_set_sha256: "e".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
-            ordered_draws: Vec::new(),
             ordered_render_operations: (0..11)
                 .map(|operation_ordinal| RenderExecutionRef::Static { operation_ordinal })
                 .collect(),

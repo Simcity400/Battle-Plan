@@ -1,7 +1,8 @@
 use crate::{
     BufferSource, DrawCommand, IndexFormat, RenderExecutionRef, RenderSubmit, S1DrawArguments,
-    S1LightDepthSubmission, S1ShadowPipeline, StaticGeometrySource, StaticMapCommand,
-    StaticMapDraw, StaticShaderResourceSource, S1_PARTITION_PRIMARY,
+    S1LightDepthSubmission, S1ShadowCarrier, S1ShadowPipeline, StaticGeometrySource,
+    StaticMapCommand, StaticMapDraw, StaticMapOperation, StaticShaderResourceSource,
+    S1_PARTITION_PRIMARY,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1601,18 +1602,16 @@ impl C07TreeRuntimeCarrier {
             return Ok(None);
         }
 
-        let mut static_draws = BTreeMap::<u32, &StaticMapDraw>::new();
+        let mut static_operations = BTreeMap::<u32, &StaticMapOperation>::new();
         for program in &submit.ordered_static_map_programs {
             for operation in &program.ordered_operations {
-                if let StaticMapCommand::Draw { draw } = &operation.command {
-                    if static_draws
-                        .insert(operation.operation_ordinal, draw)
-                        .is_some()
-                    {
-                        return Err(
-                            "C07 tree discovery sees duplicate static operation ordinal".into()
-                        );
-                    }
+                if static_operations
+                    .insert(operation.operation_ordinal, operation)
+                    .is_some()
+                {
+                    return Err(
+                        "C07 tree discovery sees duplicate static operation ordinal".into()
+                    );
                 }
             }
         }
@@ -1625,8 +1624,14 @@ impl C07TreeRuntimeCarrier {
             let RenderExecutionRef::Static { operation_ordinal } = execution else {
                 continue;
             };
-            let Some(draw) = static_draws.get(operation_ordinal).copied() else {
+            let Some(operation) = static_operations.get(operation_ordinal) else {
                 return Err("C07 selected execution references an absent static draw".into());
+            };
+            // A selected execution of a non-draw static operation (target
+            // clears and similar) is executed static work, not tree content -
+            // skipped exactly like a draw whose shader pair is not a tree pass.
+            let StaticMapCommand::Draw { draw } = &operation.command else {
+                continue;
             };
             let Some((pass_index, expected_pass)) = EXPECTED_PASSES
                 .iter()
@@ -1715,10 +1720,7 @@ impl C07TreeRuntimeCarrier {
                 ordered_draws: std::mem::take(&mut pass_draws[index]),
             })
             .collect();
-        let selected_submit_payload_sha256 = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(submit).map_err(|error| error.to_string())?)
-        );
+        let selected_submit_payload_sha256 = Self::selected_submit_hash_projection(submit)?;
         let mut carrier = Self {
             schema: C07_TREE_RUNTIME_SCHEMA.into(),
             executable_sha256: C07_TREE_A729_EXECUTABLE_SHA256.into(),
@@ -1844,22 +1846,34 @@ impl C07TreeRuntimeCarrier {
         Ok(())
     }
 
+    /// Canonical hash projection of the selected submit for the generic
+    /// (non-pinned) seal: the submit exactly as it stood when the capture-side
+    /// producer folded the static programs and derived the C07 carrier — before
+    /// the later S1 and weather folds mutated it. Excluding those two fields
+    /// makes the derivation fold-position-invariant: deriving from a fully
+    /// folded decoded submit equals, field for field, the output of the same
+    /// producer function evaluated at its capture-time fold position (the
+    /// kills-test pins this directly). This is not v13 byte-equality: the v13
+    /// grammar embedded fields the v14 grammar derives, which is why the wire
+    /// schema was bumped.
+    fn selected_submit_hash_projection(submit: &RenderSubmit) -> Result<String, String> {
+        let mut hashed = submit.clone();
+        hashed.s1_shadow = None;
+        hashed.weather_membership = Vec::new();
+        Ok(format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&hashed).map_err(|error| error.to_string())?)
+        ))
+    }
+
     pub fn validate_against_submit(
         &self,
         submit: &RenderSubmit,
         requirement: C07TreeCoverageRequirement,
-    ) -> Result<(), String> {
-        self.validate_contract(requirement)?;
+    ) -> Result<(), String> {        self.validate_contract(requirement)?;
         let pinned_geometry_law = self.retained_rdc_sha256 == C07_TREE_RETAINED_RDC_SHA256;
         if !pinned_geometry_law {
-            let mut selected_submit = submit.clone();
-            selected_submit.tree_runtime = None;
-            let selected_submit_sha256 = format!(
-                "{:x}",
-                Sha256::digest(
-                    serde_json::to_vec(&selected_submit).map_err(|error| error.to_string())?
-                )
-            );
+            let selected_submit_sha256 = Self::selected_submit_hash_projection(submit)?;
             if self.retained_rdc_sha256 != selected_submit_sha256 {
                 return Err("C07 runtime carrier targets a different selected submit".into());
             }
@@ -2026,6 +2040,41 @@ impl C07TreeRuntimeCarrier {
             });
         }
         Ok(submissions)
+    }
+
+    /// The retired wire join between a carried C07 and a carried S1 carrier,
+    /// re-established against the derived C07: an active S1 chain must draw
+    /// exactly the derived shadow-pass operations, in order, and a tree-bearing
+    /// submit may never pair with an inactive S1 skip.
+    pub fn validate_s1_tree_shadow_join(&self, shadow: &S1ShadowCarrier) -> Result<(), String> {
+        if shadow.is_inactive() {
+            return Err("C07 tree-shadow operations conflict with an inactive S1 skip".into());
+        }
+        let retained_shadow = self
+            .ordered_passes
+            .iter()
+            .find(|pass| pass.pass == C07TreePassKind::Shadow)
+            .ok_or("C07 carrier has no retained shadow pass")?
+            .ordered_draws
+            .iter()
+            .map(|draw| RenderExecutionRef::Static {
+                operation_ordinal: draw.operation_ordinal,
+            })
+            .collect::<Vec<_>>();
+        let s1_tree_shadow = shadow
+            .ordered_light_depth_submissions
+            .iter()
+            .filter_map(|submission| match submission {
+                S1LightDepthSubmission::Tree { execution, .. } => Some(execution.clone()),
+                S1LightDepthSubmission::Pdxmesh { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if retained_shadow != s1_tree_shadow {
+            return Err(
+                "C07 retained shadow operation order differs from S1 L03 tree submissions".into(),
+            );
+        }
+        Ok(())
     }
 
     fn validate_contract(&self, requirement: C07TreeCoverageRequirement) -> Result<(), String> {
@@ -2620,13 +2669,11 @@ mod tests {
                 payload_sha256: String::new(),
             }],
             authenticated_texture_snapshots: vec![],
-            tree_runtime: None,
             s1_shadow: None,
             particles: vec![],
             particle_packet_set_sha256: "5".repeat(64),
             entities: vec![],
             rail_construction_arrows: vec![],
-            ordered_draws: vec![],
             ordered_render_operations: executions,
             tiled_lights: vec![],
             weather_membership: vec![],
@@ -2687,16 +2734,327 @@ mod tests {
         );
 
         let mut generic = pinned.clone();
-        let mut without_carrier = submit.clone();
-        without_carrier.tree_runtime = None;
-        generic.retained_rdc_sha256 = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&without_carrier).unwrap())
-        );
+        generic.retained_rdc_sha256 =
+            C07TreeRuntimeCarrier::selected_submit_hash_projection(&submit).unwrap();
         generic.seal_payload_sha256().unwrap();
         generic
             .validate_against_submit(&submit, C07TreeCoverageRequirement::RetainedVisibleSubset)
             .unwrap();
+    }
+
+    #[test]
+    fn derived_tree_runtime_reproduces_the_retired_carried_carrier() {
+        // kills: RenderSubmit.tree_runtime used to ride the wire verbatim.
+        // The capture-side producer (collector fold_a729_static_program_capture)
+        // stored exactly C07TreeRuntimeCarrier::from_authenticated_selected_submit
+        // over the submit as it stood at static-fold time — before the later S1
+        // and weather folds mutated it. This test derives from that pre-fold
+        // state (the previously carried construction, verbatim), then folds S1
+        // and weather on top exactly as the drain did and requires the
+        // replay-side derivation of the folded state to equal it field-for-field.
+        // It also fails closed instead of sealing a partial tree family, and
+        // preserves the retained visible-subset coverage law against the pinned
+        // carrier.
+        let pinned = frame36669_carrier();
+        let mut pre_fold = submit_with_generic_tree_draws(&pinned);
+
+        let carried =
+            C07TreeRuntimeCarrier::from_authenticated_selected_submit(&pre_fold)
+                .unwrap()
+                .expect("sealed fixture carries static tree draws");
+        assert_eq!(
+            carried.coverage,
+            pinned.coverage,
+            "derivation preserves the retained visible-subset coverage law"
+        );
+
+        pre_fold.s1_shadow = Some(crate::S1ShadowCarrier {
+            schema: crate::S1_SHADOW_SCHEMA.into(),
+            executable_sha256: String::new(),
+            l02_authority_sha256: String::new(),
+            l03_authority_sha256: String::new(),
+            s1_chain_authority_sha256: String::new(),
+            shadow_pass_active: false,
+            blur_camera_factor_f32_bits: 0,
+            selected_light: None,
+            light_view_projection_f32_bits: None,
+            shadow_map_texture_matrix_f32_bits: None,
+            camera_y_f32_bits: None,
+            enabled_partition_mask: None,
+            light_depth_target: None,
+            producer_and_final_target: None,
+            blur_intermediate_target: None,
+            light_depth_clear: None,
+            ordered_light_depth_submissions: Vec::new(),
+            ordered_terrain_unlit_draws: Vec::new(),
+            horizontal_blur_draw: None,
+            vertical_blur_draw: None,
+            ordered_shadow_consumers: Vec::new(),
+            payload_sha256: String::new(),
+        });
+        pre_fold.weather_membership = vec![weather_membership_fixture()];
+        let replay_derived = C07TreeRuntimeCarrier::from_authenticated_selected_submit(&pre_fold)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            replay_derived, carried,
+            "replay-side derivation must reproduce the previously carried carrier across the S1 and weather folds"
+        );
+        let derived = replay_derived;
+
+        let mut programless = pre_fold.clone();
+        programless.ordered_render_operations.clear();
+        assert!(C07TreeRuntimeCarrier::from_authenticated_selected_submit(&programless)
+            .unwrap()
+            .is_none());
+
+        let shadow_ordinals: Vec<u32> = derived
+            .ordered_passes
+            .iter()
+            .find(|pass| pass.pass == C07TreePassKind::Shadow)
+            .unwrap()
+            .ordered_draws
+            .iter()
+            .map(|draw| draw.operation_ordinal)
+            .collect();
+        let mut halved = pre_fold.clone();
+        halved.ordered_render_operations.retain(|execution| {
+            !matches!(execution, RenderExecutionRef::Static { operation_ordinal }
+                if shadow_ordinals.contains(operation_ordinal))
+        });
+        assert_eq!(
+            C07TreeRuntimeCarrier::from_authenticated_selected_submit(&halved).unwrap_err(),
+            "C07 selected submit contains an incomplete tree pass family"
+        );
+    }
+
+    #[test]
+    fn clear_only_selected_executions_derive_no_tree_content_and_dangling_refs_still_refuse() {
+        // kills: a selected execution of a NON-draw static operation (target
+        // clear and similar) is executed static work, not tree content - the
+        // derivation must skip it exactly like a draw whose shader pair is not
+        // a tree pass, so a legitimate clear-only submit seals without a C07
+        // carrier instead of being refused. A reference to an operation
+        // ordinal that exists nowhere in the static pool still fails closed
+        // with the same named refusal as before.
+        let submit = RenderSubmit {
+            global_order: 1,
+            camera_carrier_ordinal: 0,
+            camera_carrier: None,
+            ordered_static_map_programs: vec![crate::StaticMapPassProgram {
+                program_ordinal: 0,
+                pass_token: "exact-target-clear".into(),
+                ordered_content_keys: vec![],
+                ordered_operations: vec![crate::StaticMapOperation {
+                    operation_ordinal: 7,
+                    payload_sha256: String::new(),
+                    command: StaticMapCommand::ClearColor {
+                        target: tree_target(64, 64, 10, 0),
+                        rgba_f32_bits: [0; 4],
+                    },
+                }],
+                payload_sha256: String::new(),
+            }],
+            authenticated_texture_snapshots: vec![],
+            s1_shadow: None,
+            particles: vec![],
+            particle_packet_set_sha256: "5".repeat(64),
+            entities: vec![],
+            rail_construction_arrows: vec![],
+            ordered_render_operations: vec![RenderExecutionRef::Static {
+                operation_ordinal: 7,
+            }],
+            tiled_lights: vec![],
+            weather_membership: vec![],
+            political_textures: vec![],
+        };
+        assert!(
+            C07TreeRuntimeCarrier::from_authenticated_selected_submit(&submit)
+                .unwrap()
+                .is_none()
+        );
+        let mut dangling = submit.clone();
+        dangling.ordered_render_operations[0] =
+            RenderExecutionRef::Static { operation_ordinal: 9 };
+        assert_eq!(
+            C07TreeRuntimeCarrier::from_authenticated_selected_submit(&dangling).unwrap_err(),
+            "C07 selected execution references an absent static draw"
+        );
+    }
+
+    fn weather_membership_fixture() -> crate::WeatherMembership {
+        crate::WeatherMembership {
+            sequence: 1,
+            update_index: 0,
+            strategic_region_id: 7,
+            rain_light_active: false,
+            rain_heavy_active: false,
+            snow_active: false,
+            blizzard_active: false,
+            sandstorm_active: false,
+            arctic_water_active: false,
+            region_value_i64_fixed_1e5: 0,
+            transition_expiry_game_hour_i32: 0,
+            airborne_runtime_code: 0,
+            selection_seed_words: None,
+            visual_epoch: None,
+            weather_effect_token: None,
+            weather_position_source_content: crate::UsedContentKey {
+                effective_vfs_manifest_sha256: "2".repeat(64),
+                normalized_game_relative_path: "gfx/weather/weather.system".into(),
+                winning_layer_ordinal: 0,
+                layer_kind: portable_content_manifest::ContentLayerKind::Base,
+                layer_id: "base".into(),
+                source_sha256: "c".repeat(64),
+                payload_sha256: "c".repeat(64),
+                payload_bytes: 1,
+            },
+            ordered_variant_content: Vec::new(),
+            ordered_positions: Vec::new(),
+            ordered_weather_instances: Vec::new(),
+            visibility_updates: Vec::new(),
+            membership_sha256: String::new(),
+        }
+    }
+
+    #[test]
+    fn s1_tree_shadow_join_reproduces_the_retired_wire_check() {
+        // kills: RenderSubmit wire validation used to refuse an S1 carrier whose
+        // L03 tree submissions diverged from the C07 retained shadow pass, and
+        // refused tree-shadow operations paired with an inactive S1 skip. With
+        // the C07 derived instead of carried, the join must hold between the
+        // derived carrier and the carried S1 carrier with identical strength.
+        let pinned = frame36669_carrier();
+        let submit = submit_with_generic_tree_draws(&pinned);
+        let derived = C07TreeRuntimeCarrier::from_authenticated_selected_submit(&submit)
+            .unwrap()
+            .unwrap();
+
+        let shadow_pass = derived
+            .ordered_passes
+            .iter()
+            .find(|pass| pass.pass == C07TreePassKind::Shadow)
+            .unwrap();
+        let submissions = shadow_pass
+            .ordered_draws
+            .iter()
+            .map(|draw_ref| {
+                S1LightDepthSubmission::Tree {
+                    partition_mask: S1_PARTITION_PRIMARY,
+                    source_row_ordinal: u32::from(draw_ref.bucket_id),
+                    selected_mesh_ordinal: 0,
+                    selected_lod_index: 0,
+                    selected_mesh: "gfx/models/tree.mesh".into(),
+                    selected_material: "tree_shadow".into(),
+                    pipeline: S1ShadowPipeline::TreeShadow,
+                    draw: S1DrawArguments::DrawIndexedInstanced {
+                        index_count_per_instance: 12,
+                        start_index: 0,
+                        base_vertex: 0,
+                        instance_count: 1,
+                        start_instance: 0,
+                    },
+                    execution: RenderExecutionRef::Static {
+                        operation_ordinal: draw_ref.operation_ordinal,
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut shadow = crate::S1ShadowCarrier {
+            schema: crate::S1_SHADOW_SCHEMA.into(),
+            executable_sha256: String::new(),
+            l02_authority_sha256: String::new(),
+            l03_authority_sha256: String::new(),
+            s1_chain_authority_sha256: String::new(),
+            shadow_pass_active: true,
+            blur_camera_factor_f32_bits: 0,
+            selected_light: None,
+            light_view_projection_f32_bits: None,
+            shadow_map_texture_matrix_f32_bits: None,
+            camera_y_f32_bits: None,
+            enabled_partition_mask: None,
+            light_depth_target: None,
+            producer_and_final_target: None,
+            blur_intermediate_target: None,
+            light_depth_clear: None,
+            ordered_light_depth_submissions: submissions.clone(),
+            ordered_terrain_unlit_draws: Vec::new(),
+            horizontal_blur_draw: None,
+            vertical_blur_draw: None,
+            ordered_shadow_consumers: Vec::new(),
+            payload_sha256: String::new(),
+        };
+        derived.validate_s1_tree_shadow_join(&shadow).unwrap();
+
+        let mut reordered = shadow.clone();
+        let last = reordered.ordered_light_depth_submissions.pop().unwrap();
+        reordered
+            .ordered_light_depth_submissions
+            .insert(0, last);
+        assert_eq!(
+            derived
+                .validate_s1_tree_shadow_join(&reordered)
+                .unwrap_err(),
+            "C07 retained shadow operation order differs from S1 L03 tree submissions"
+        );
+
+        shadow.shadow_pass_active = false;
+        assert_eq!(
+            derived.validate_s1_tree_shadow_join(&shadow).unwrap_err(),
+            "C07 tree-shadow operations conflict with an inactive S1 skip"
+        );
+    }
+
+    #[test]
+    fn s1_admission_enforces_the_derived_c07_tree_shadow_join() {
+        // kills: the retired wire check ran inside RenderSubmit validation; it
+        // now rides S1 admission itself, so every path that accepts a carried
+        // S1 carrier pays it. Deleting the join inside
+        // S1ShadowCarrier::validate_against_submit fails this test: a
+        // tree-bearing submit paired with an inactive S1 skip must be refused
+        // exactly as the old wire validator refused it.
+        let pinned = frame36669_carrier();
+        let mut submit = submit_with_generic_tree_draws(&pinned);
+        submit.s1_shadow = Some(sealed_inactive_s1());
+        assert_eq!(
+            submit
+                .s1_shadow
+                .as_ref()
+                .unwrap()
+                .validate_against_submit(&submit)
+                .unwrap_err(),
+            "C07 tree-shadow operations conflict with an inactive S1 skip"
+        );
+    }
+
+    fn sealed_inactive_s1() -> crate::S1ShadowCarrier {
+        let mut carrier = crate::S1ShadowCarrier {
+            schema: crate::S1_SHADOW_SCHEMA.into(),
+            executable_sha256: crate::S1_A729_EXECUTABLE_SHA256.into(),
+            l02_authority_sha256: crate::S1_L02_AUTHORITY_SHA256.into(),
+            l03_authority_sha256: crate::S1_L03_AUTHORITY_SHA256.into(),
+            s1_chain_authority_sha256: crate::S1_CHAIN_AUTHORITY_SHA256.into(),
+            shadow_pass_active: false,
+            blur_camera_factor_f32_bits: 0,
+            selected_light: None,
+            light_view_projection_f32_bits: None,
+            shadow_map_texture_matrix_f32_bits: None,
+            camera_y_f32_bits: None,
+            enabled_partition_mask: None,
+            light_depth_target: None,
+            producer_and_final_target: None,
+            blur_intermediate_target: None,
+            light_depth_clear: None,
+            ordered_light_depth_submissions: Vec::new(),
+            ordered_terrain_unlit_draws: Vec::new(),
+            horizontal_blur_draw: None,
+            vertical_blur_draw: None,
+            ordered_shadow_consumers: Vec::new(),
+            payload_sha256: String::new(),
+        };
+        carrier.payload_sha256 = carrier.computed_payload_sha256().unwrap();
+        carrier
     }
 
     #[test]

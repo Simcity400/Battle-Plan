@@ -137,13 +137,15 @@ pub fn promote_o05_building_frame(
         ));
     }
 
+    let ordered_draws = display_submit
+        .derive_ordered_draws()
+        .map_err(PromotionError::Invalid)?;
     let mut records = Vec::with_capacity(raw.records.len());
     let mut selected_outputs = BTreeSet::new();
     for row in &raw.records {
         let outputs = match row.selected_entity_instance_id {
             None => Vec::new(),
-            Some(entity_instance_id) => display_submit
-                .ordered_draws
+            Some(entity_instance_id) => ordered_draws
                 .iter()
                 .filter(|output| {
                     matches!(
@@ -255,8 +257,7 @@ pub fn promote_o05_building_frame(
         });
     }
 
-    let ordered_outputs = display_submit
-        .ordered_draws
+    let ordered_outputs = ordered_draws
         .iter()
         .filter(|output| selected_outputs.contains(*output))
         .cloned()

@@ -29,7 +29,7 @@ pub type EntityOutputKey = (u32, u64, u32);
 pub struct DerivedDirectVisualCoverage {
     pub particle_output_count: usize,
     pub entity_output_count: usize,
-    /// Length of the recorded ordered draw list; equals
+    /// Length of the derived runtime draw list; equals
     /// `particle_output_count + entity_output_count` exactly.
     pub ordered_draw_count: usize,
 }
@@ -63,7 +63,14 @@ pub fn derive_direct_visual_coverage(
             )
         })
         .collect::<Vec<_>>();
-    derive_direct_visual_coverage_from_parts(&particle_keys, &entity_keys, &submit.ordered_draws)
+    // kills: the carried RenderSubmit.ordered_draws wire field is retired; the
+    // ordered cover is the portable derive_ordered_draws law over this
+    // submit's recorded outputs - the same source every viewer consumer uses -
+    // so a re-added carrier field cannot bypass or reorder presentation.
+    let ordered_draws = submit
+        .derive_ordered_draws()
+        .map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
+    derive_direct_visual_coverage_from_parts(&particle_keys, &entity_keys, &ordered_draws)
 }
 
 /// Pure core of the coverage law over the exact recorded identities: the

@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v14";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v15";
+pub const INCOMPATIBLE_DERIVED_RUNTIME_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v14";
 pub const INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v13";
 pub const INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA: &str =
     "hoi4.production-render-submit.v12";
@@ -824,15 +825,12 @@ pub struct RenderSubmit {
     #[serde(default)]
     pub authenticated_texture_snapshots: Vec<AuthenticatedTextureSnapshotPacket>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tree_runtime: Option<C07TreeRuntimeCarrier>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s1_shadow: Option<S1ShadowCarrier>,
     pub particles: Vec<ParticlePacket>,
     pub particle_packet_set_sha256: String,
     pub entities: Vec<EntitySubmission>,
     #[serde(default)]
     pub rail_construction_arrows: Vec<RailConstructionArrowVisual>,
-    pub ordered_draws: Vec<RenderOutputRef>,
     #[serde(default)]
     pub ordered_render_operations: Vec<RenderExecutionRef>,
     pub tiled_lights: Vec<TiledLightSubmission>,
@@ -2873,11 +2871,14 @@ pub fn weather_composition_checkpoint_sha256(submits: &[RenderSubmit]) -> Result
         .flat_map(|weather| weather.ordered_weather_instances.iter())
         .flat_map(|instance| instance.submitted_outputs.iter().cloned())
         .collect::<BTreeSet<_>>();
+    let mut ordered = Vec::new();
+    for submit in submits {
+        ordered.extend(submit.derive_ordered_draws()?);
+    }
     canonical_json_sha256(
-        &submits
-            .iter()
-            .flat_map(|submit| submit.ordered_draws.iter())
-            .filter(|output| weather_outputs.contains(*output))
+        &ordered
+            .into_iter()
+            .filter(|output| weather_outputs.contains(output))
             .collect::<Vec<_>>(),
     )
 }
@@ -3031,6 +3032,11 @@ fn check_schema(schema: &str) -> Result<(), String> {
     if schema == INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: it carries always-empty entity-presentation and direct-visual producer vectors that no writer ever emitted instead of deriving presentation from the recorded entity/particle state"
+        ));
+    }
+    if schema == INCOMPATIBLE_DERIVED_RUNTIME_CARRIER_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it carried the ordered runtime draw list and the C07 tree runtime carrier verbatim on the wire instead of deriving both from the recorded packets and selected submit"
         ));
     }
     if schema == INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA {
@@ -3876,7 +3882,7 @@ impl ProductionRenderFrame {
                 .ok_or("O04 carrier has no authenticated display submit")?;
             let referenced = o04.ordered_outputs.iter().cloned().collect::<BTreeSet<_>>();
             let actual_order = display_submit
-                .ordered_draws
+                .derive_ordered_draws()?
                 .iter()
                 .filter(|output| referenced.contains(*output))
                 .cloned()
@@ -3899,7 +3905,7 @@ impl ProductionRenderFrame {
                     _ => return Err("O04 city has no entity output identity".into()),
                 };
                 let complete_display_outputs = display_submit
-                    .ordered_draws
+                    .derive_ordered_draws()?
                     .iter()
                     .filter(|output| {
                         matches!(
@@ -3963,7 +3969,7 @@ impl ProductionRenderFrame {
                 .ok_or("O05 carrier has no authenticated display submit")?;
             let referenced = o05.ordered_outputs.iter().cloned().collect::<BTreeSet<_>>();
             let actual_order = display_submit
-                .ordered_draws
+                .derive_ordered_draws()?
                 .iter()
                 .filter(|output| referenced.contains(*output))
                 .cloned()
@@ -3982,7 +3988,7 @@ impl ProductionRenderFrame {
                     RenderOutputRef::Particle { .. } => unreachable!("validated O05 output"),
                 };
                 let complete_display_outputs = display_submit
-                    .ordered_draws
+                    .derive_ordered_draws()?
                     .iter()
                     .filter(|output| {
                         matches!(
@@ -4155,6 +4161,50 @@ impl ProductionRenderFrame {
 }
 
 impl RenderSubmit {
+    /// Derives the exact runtime draw order from the recorded particle and
+    /// entity packets alone. The capture-side producer law (collector
+    /// promotion) builds the cross-family draw sequence by sorting every
+    /// particle/entity output reference on its `draw_order` key and refusing
+    /// anything that is not a complete contiguous `0..n` sequence, so the
+    /// carried list was always a pure function of the packets this submit
+    /// already records. Deriving it here keeps that law fail-closed on the
+    /// receive side instead of spending wire bytes on a verbatim copy.
+    pub fn derive_ordered_draws(&self) -> Result<Vec<RenderOutputRef>, String> {
+        let mut ordered = self
+            .particles
+            .iter()
+            .map(|packet| RenderOutputRef::Particle {
+                effect_instance_id: packet.effect_instance_id,
+                bucket: packet.bucket,
+                packet_ordinal: packet.packet_ordinal,
+                draw_order: packet.draw_order,
+            })
+            .chain(self.entities.iter().map(|entity| {
+                RenderOutputRef::Entity {
+                    pass_ordinal: entity.pass_ordinal,
+                    entity_instance_id: entity.entity_instance_id,
+                    draw_order: entity.draw_order,
+                }
+            }))
+            .collect::<Vec<_>>();
+        ordered.sort_by_key(|draw| match draw {
+            RenderOutputRef::Particle { draw_order, .. }
+            | RenderOutputRef::Entity { draw_order, .. } => *draw_order,
+        });
+        if ordered.iter().enumerate().any(|(expected, draw)| {
+            let actual = match draw {
+                RenderOutputRef::Particle { draw_order, .. }
+                | RenderOutputRef::Entity { draw_order, .. } => *draw_order,
+            };
+            usize::try_from(actual).ok() != Some(expected)
+        }) {
+            return Err(
+                "runtime draw order is not a complete contiguous cross-family sequence".into(),
+            );
+        }
+        Ok(ordered)
+    }
+
     fn validate(
         &self,
         first_sequence: u64,
@@ -4197,10 +4247,6 @@ impl RenderSubmit {
             &self.ordered_static_map_programs,
             authority_manifest_sha256,
         )?;
-        if let Some(tree_runtime) = &self.tree_runtime {
-            tree_runtime
-                .validate_against_submit(self, C07TreeCoverageRequirement::RetainedVisibleSubset)?;
-        }
         if let Some(s1_shadow) = &self.s1_shadow {
             s1_shadow.validate_against_submit(self)?;
         }
@@ -4434,15 +4480,13 @@ impl RenderSubmit {
             .chain(entity_outputs.iter())
             .cloned()
             .collect();
-        let mut seen_draws = BTreeSet::new();
-        for output in &self.ordered_draws {
-            if !all_outputs.contains(output) || !seen_draws.insert(output.clone()) {
-                return Err("ordered draw list has an unknown or duplicate output".into());
-            }
-        }
-        if seen_draws != all_outputs {
+        let ordered_draws = self.derive_ordered_draws()?;
+        if ordered_draws.len() != all_outputs.len()
+            || ordered_draws.iter().any(|output| !all_outputs.contains(output))
+        {
             return Err(
-                "ordered draw list does not cover every particle/entity draw exactly once".into(),
+                "derived runtime draw order does not cover every particle/entity draw exactly once"
+                    .into(),
             );
         }
         validate_unified_render_operations(self, carriers)?;
@@ -4488,7 +4532,7 @@ impl RenderSubmit {
                 authority_manifest_sha256,
                 &particle_outputs,
                 &entity_outputs,
-                &self.ordered_draws,
+                &ordered_draws,
             )?;
         }
         let mut texture_orders = BTreeSet::new();
@@ -4639,37 +4683,10 @@ fn validate_optional_render_carrier_joins(submit: &RenderSubmit) -> Result<(), S
             return Err("C02 camera current-eye Y differs from active S1 camera Y".into());
         }
     }
-
-    let (Some(trees), Some(shadow)) = (&submit.tree_runtime, &submit.s1_shadow) else {
-        return Ok(());
-    };
-    if shadow.is_inactive() {
-        return Err("C07 tree-shadow operations conflict with an inactive S1 skip".into());
-    }
-    let retained_shadow = trees
-        .ordered_passes
-        .iter()
-        .find(|pass| pass.pass == C07TreePassKind::Shadow)
-        .ok_or("C07 carrier has no retained shadow pass")?
-        .ordered_draws
-        .iter()
-        .map(|draw| RenderExecutionRef::Static {
-            operation_ordinal: draw.operation_ordinal,
-        })
-        .collect::<Vec<_>>();
-    let s1_tree_shadow = shadow
-        .ordered_light_depth_submissions
-        .iter()
-        .filter_map(|submission| match submission {
-            S1LightDepthSubmission::Tree { execution, .. } => Some(execution.clone()),
-            S1LightDepthSubmission::Pdxmesh { .. } => None,
-        })
-        .collect::<Vec<_>>();
-    if retained_shadow != s1_tree_shadow {
-        return Err(
-            "C07 retained shadow operation order differs from S1 L03 tree submissions".into(),
-        );
-    }
+    // The retired C07/S1 tree-shadow join lives inside
+    // S1ShadowCarrier::validate_against_submit (see s1_shadow.rs): every
+    // carried S1 carrier validates against its submit wherever it is admitted,
+    // so the derived-C07 join cannot be bypassed by skipping this helper.
     Ok(())
 }
 
@@ -5302,8 +5319,9 @@ fn validate_unified_render_operations(
         .iter()
         .filter(|operation| matches!(operation, RenderExecutionRef::M03 { .. }))
         .count();
+    let ordered_draws = submit.derive_ordered_draws()?;
     if submit.ordered_render_operations.len()
-        != static_operations.len() + submit.ordered_draws.len() + m02_count + m03_count
+        != static_operations.len() + ordered_draws.len() + m02_count + m03_count
     {
         return Err(
             "unified render-operation order does not cover every static/runtime operation".into(),
@@ -5353,7 +5371,7 @@ fn validate_unified_render_operations(
                 if m02_suffix {
                     return Err("M02 UI-overlay operations are not a render-order suffix".into());
                 }
-                if submit.ordered_draws.get(runtime_index) != Some(output) {
+                if ordered_draws.get(runtime_index) != Some(output) {
                     return Err(
                         "unified render order changes authenticated runtime draw order".into(),
                     );
@@ -5411,7 +5429,7 @@ fn validate_unified_render_operations(
             }
         }
     }
-    if runtime_index != submit.ordered_draws.len()
+    if runtime_index != ordered_draws.len()
         || seen
             .iter()
             .filter(|value| matches!(value, RenderExecutionRef::Static { .. }))
@@ -7406,13 +7424,11 @@ mod tests {
                 camera_carrier: None,
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
-                tree_runtime: None,
                 s1_shadow: None,
                 particles: vec![],
                 particle_packet_set_sha256: "5".repeat(64),
                 entities: vec![],
                 rail_construction_arrows: vec![],
-                ordered_draws: vec![],
                 ordered_render_operations: vec![RenderExecutionRef::M02 { output: reference }],
                 tiled_lights: vec![],
                 weather_membership: vec![],
@@ -7450,13 +7466,11 @@ mod tests {
             camera_carrier: None,
             ordered_static_map_programs: vec![],
             authenticated_texture_snapshots: vec![],
-            tree_runtime: None,
             s1_shadow: None,
             particles: vec![],
             particle_packet_set_sha256: "6".repeat(64),
             entities: vec![],
             rail_construction_arrows: vec![],
-            ordered_draws: vec![],
             ordered_render_operations: vec![duplicate],
             tiled_lights: vec![],
             weather_membership: vec![],
@@ -7556,6 +7570,99 @@ mod tests {
             error.contains("no exact selected-submit static shader-resource consumer"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn derived_runtime_draw_order_reproduces_the_retired_carried_list() {
+        // kills: RenderSubmit.ordered_draws used to ride the wire verbatim.
+        // Capture-side promotion built that list by sorting every particle and
+        // entity reference on draw_order and refusing anything that was not a
+        // complete contiguous cross-family sequence, so the carried list was a
+        // pure function of the recorded packets. The derivation must equal the
+        // previously carried list on sealed fixtures and fail closed when the
+        // recorded packets do not cover 0..n contiguously.
+        let mut particle = |order: u32| ParticlePacket {
+            effect_instance_id: 3,
+            registration_token: "smoke".into(),
+            resolved_definition_sha256: hash(b"definition"),
+            content_identity: particle_content_identity(4),
+            content_identity_sha256: hash(b"content"),
+            bucket: 2,
+            packet_ordinal: order,
+            draw_order: order,
+            ribbon_tail_order: None,
+            canonical_packet_112_bytes: vec![0u8; 112],
+            canonical_packet_sha256: hash(&[0u8; 112]),
+            packet_matrix_4x4_f32_bits: [0; 16],
+            live_count: 1,
+            record_stride: 48,
+            max_count: 1,
+            ordered_gpu_instance_records: vec![0; 48],
+            gpu_instance_records_sha256: hash(&[0u8; 48]),
+            elapsed_f32_bits: 0,
+            shader_program: shader(),
+            ordered_texture_bindings: vec![texture()],
+            pipeline: pipeline(),
+            geometry: particle_geometry(1),
+            ordered_constant_buffers: vec![constant_buffer()],
+            output_state: output_state(),
+            atlas_rows: 1,
+            atlas_columns: 1,
+            scale_f32_bits: 0,
+            flags_u16: 0,
+        };
+        let mut entity = |order: u32| EntitySubmission {
+            pass_ordinal: 1,
+            draw_order: order,
+            entity_instance_id: 8,
+            resolved_entity_sha256: "c".repeat(64),
+            content_identity: entity_content_identity(),
+            shader_program: shader(),
+            ordered_texture_bindings: vec![texture()],
+            pipeline: pipeline(),
+            geometry: entity_geometry(),
+            ordered_constant_buffers: vec![constant_buffer()],
+            output_state: output_state(),
+            world_transform_4x4_f32_bits: [0; 16],
+            state_flags: 3 | (4 << 8) | (7 << 16) | (6 << 24),
+            skinning: Skinning::NotSkinned,
+        };
+        let mut frame = production_frame_with_m02();
+        let submit = &mut frame.submits[0];
+        submit.particles.push(particle(2));
+        submit.entities.push(entity(0));
+        submit.particles.push(particle(1));
+        let carried_order_that_used_to_ride_the_wire = vec![
+            RenderOutputRef::Entity {
+                pass_ordinal: 1,
+                entity_instance_id: 8,
+                draw_order: 0,
+            },
+            RenderOutputRef::Particle {
+                effect_instance_id: 3,
+                bucket: 2,
+                packet_ordinal: 1,
+                draw_order: 1,
+            },
+            RenderOutputRef::Particle {
+                effect_instance_id: 3,
+                bucket: 2,
+                packet_ordinal: 2,
+                draw_order: 2,
+            },
+        ];
+        assert_eq!(
+            submit.derive_ordered_draws().unwrap(),
+            carried_order_that_used_to_ride_the_wire
+        );
+
+        let mut gapped = production_frame_with_m02();
+        let submit = &mut gapped.submits[0];
+        submit.entities.push(entity(1));
+        assert!(submit
+            .derive_ordered_draws()
+            .unwrap_err()
+            .contains("contiguous"));
     }
 
     fn snow_mud_fade_submit(bits: u32) -> RenderSubmit {
@@ -8105,11 +8212,11 @@ mod tests {
         let output = RenderOutputRef::Entity {
             pass_ordinal: 1,
             entity_instance_id: 8,
-            draw_order: 2,
+            draw_order: 0,
         };
         frame.submits[0].entities = vec![EntitySubmission {
             pass_ordinal: 1,
-            draw_order: 2,
+            draw_order: 0,
             entity_instance_id: 8,
             resolved_entity_sha256: "c".repeat(64),
             content_identity: entity_content_identity(),
@@ -8123,7 +8230,6 @@ mod tests {
             state_flags: 3 | (4 << 8) | (7 << 16) | (6 << 24),
             skinning: Skinning::NotSkinned,
         }];
-        frame.submits[0].ordered_draws = vec![output.clone()];
         frame.o04_cities = Some(O04CityFrame {
             schema: O04_CITY_SCHEMA.into(),
             executable_sha256: O04_A729_EXECUTABLE_SHA256.into(),
@@ -9187,7 +9293,6 @@ mod tests {
                 camera_carrier: None,
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
-                tree_runtime: None,
                 s1_shadow: None,
                 particle_packet_set_sha256: "5".repeat(64),
                 particles: vec![ParticlePacket {
@@ -9200,7 +9305,7 @@ mod tests {
                         .unwrap(),
                     bucket: 2,
                     packet_ordinal: 4,
-                    draw_order: 5,
+                    draw_order: 1,
                     ribbon_tail_order: None,
                     canonical_packet_112_bytes: canonical_packet.clone(),
                     canonical_packet_sha256: hash(&canonical_packet),
@@ -9224,7 +9329,7 @@ mod tests {
                 }],
                 entities: vec![EntitySubmission {
                     pass_ordinal: 1,
-                    draw_order: 2,
+                    draw_order: 0,
                     entity_instance_id: 8,
                     resolved_entity_sha256: "c".repeat(64),
                     content_identity: entity_content_identity(),
@@ -9242,19 +9347,6 @@ mod tests {
                     },
                 }],
                 rail_construction_arrows: vec![],
-                ordered_draws: vec![
-                    RenderOutputRef::Entity {
-                        pass_ordinal: 1,
-                        entity_instance_id: 8,
-                        draw_order: 2,
-                    },
-                    RenderOutputRef::Particle {
-                        effect_instance_id: 3,
-                        bucket: 2,
-                        packet_ordinal: 4,
-                        draw_order: 5,
-                    },
-                ],
                 ordered_render_operations: Vec::new(),
                 tiled_lights: vec![],
                 weather_membership: vec![],
@@ -9344,10 +9436,19 @@ mod tests {
                 operation_ordinal: 101,
             },
             RenderExecutionRef::Runtime {
-                output: frame.submits[0].ordered_draws[0].clone(),
+                output: RenderOutputRef::Entity {
+                    pass_ordinal: 1,
+                    entity_instance_id: 8,
+                    draw_order: 0,
+                },
             },
             RenderExecutionRef::Runtime {
-                output: frame.submits[0].ordered_draws[1].clone(),
+                output: RenderOutputRef::Particle {
+                    effect_instance_id: 3,
+                    bucket: 2,
+                    packet_ordinal: 4,
+                    draw_order: 1,
+                },
             },
         ];
         frame
@@ -9707,6 +9808,13 @@ mod tests {
             ),
             "{error}"
         );
+        // kills: silent re-admission of the retired derived-runtime carriers -
+        // a v14 frame must refuse with the NAMED incompatibility (ordered
+        // runtime draw list below), never parse and never fall out as a
+        // generic unsupported-schema error.
+        let v14 = serde_json::json!({"schema": INCOMPATIBLE_DERIVED_RUNTIME_CARRIER_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v14).unwrap_err();
+        assert!(error.contains("ordered runtime draw list"), "{error}");
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
         let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
         assert!(error.contains("unsupported production render schema"));
@@ -9829,7 +9937,6 @@ mod tests {
                 camera_carrier: None,
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
-                tree_runtime: None,
                 s1_shadow: None,
                 particle_packet_set_sha256: "5".repeat(64),
                 particles: vec![ParticlePacket {
@@ -9866,12 +9973,6 @@ mod tests {
                 }],
                 entities: vec![],
                 rail_construction_arrows: vec![],
-                ordered_draws: vec![RenderOutputRef::Particle {
-                    effect_instance_id: 1,
-                    bucket: 0,
-                    packet_ordinal: 0,
-                    draw_order: 0,
-                }],
                 ordered_render_operations: Vec::new(),
                 tiled_lights: vec![],
                 weather_membership: vec![],

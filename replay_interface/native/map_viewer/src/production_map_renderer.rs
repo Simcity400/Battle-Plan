@@ -412,7 +412,22 @@ impl ProductionMapRenderer {
                         frame.o05_buildings.clone(),
                     ),
                     Some(submit) => {
-                        if let Some(tree_runtime) = &submit.tree_runtime {
+                        // kills: the carried RenderSubmit.tree_runtime wire
+                        // field is retired. The C07 carrier content is the
+                        // portable derivation from_authenticated_selected_submit
+                        // over the same recorded static programs and unified
+                        // execution order the capture-side producer used; by the
+                        // fold-invariant seal law it equals the output of that
+                        // producer function at its capture-time fold position
+                        // (the kills-test pins this; v13 recording seals are not
+                        // comparable, which is why the wire schema was bumped).
+                        let tree_runtime = C07TreeRuntimeCarrier::from_authenticated_selected_submit(
+                            submit,
+                        )
+                        .map_err(|error| -> Box<dyn std::error::Error> {
+                            format!("C07 tree runtime derivation blocked: {error}").into()
+                        })?;
+                        if let Some(tree_runtime) = &tree_runtime {
                             tree_runtime
                                 .content_selection_against_submit(submit)
                                 .map_err(|error| {
@@ -420,6 +435,9 @@ impl ProductionMapRenderer {
                                 })?;
                         }
                         if let Some(s1_shadow) = &submit.s1_shadow {
+                            // Admission includes the retired C07/S1 tree-shadow
+                            // join against the derived C07 carrier (see
+                            // S1ShadowCarrier::validate_against_submit).
                             s1_shadow.validate_against_submit(submit).map_err(|error| {
                                 format!("S1 shadow runtime admission blocked: {error}")
                             })?;
@@ -452,7 +470,7 @@ impl ProductionMapRenderer {
                             submit.ordered_static_map_programs.clone(),
                             submit.authenticated_texture_snapshots.clone(),
                             frame.snow_mud_texture.clone(),
-                            submit.tree_runtime.clone(),
+                            tree_runtime,
                             submit.s1_shadow.clone(),
                             submit.ordered_render_operations.clone(),
                             submit.political_textures.clone(),
@@ -509,18 +527,26 @@ impl ProductionMapRenderer {
             });
         }
         if tree_runtime.is_none() {
-            omitted_data_needs.push(ProductionMapDataNeed {
-                packet: "C07/T1".into(),
-                feature: "exact tree visibility/model/LOD draws".into(),
-                reason: "selected submit has no authenticated C07 tree runtime carrier; tree draws omitted rather than reconstructed from camera or files".into(),
-            });
+            // Name the gap only where a selected submit exists to lack tree
+            // operations; without a production frame or selected submit there
+            // is no recorded submit to reason about.
+            if selected_submit_index.is_some() {
+                omitted_data_needs.push(ProductionMapDataNeed {
+                    packet: "C07/T1".into(),
+                    feature: "exact tree visibility/model/LOD draws".into(),
+                    reason: "selected submit has no retained tree operations for the portable C07 tree runtime derivation to select (no static programs or execution operations at all, or none matching the retained tree shader law); no tree draws exist for this submit".into(),
+                });
+            }
         }
         if s1_shadow.is_none() {
-            omitted_data_needs.push(ProductionMapDataNeed {
-                packet: "C07/S1".into(),
-                feature: "exact selected-light shadow producer/blur/consumer chain".into(),
-                reason: "selected submit has no authenticated S1 shadow carrier; the shadow chain is omitted rather than reconstructed from capture identities or guessed caster state".into(),
-            });
+            // Same submit-scoping rule as the C07/T1 note above.
+            if selected_submit_index.is_some() {
+                omitted_data_needs.push(ProductionMapDataNeed {
+                    packet: "C07/S1".into(),
+                    feature: "exact selected-light shadow producer/blur/consumer chain".into(),
+                    reason: "selected submit has no authenticated S1 shadow carrier; the shadow chain is omitted rather than reconstructed from capture identities or guessed caster state".into(),
+                });
+            }
         }
         if m03_arrows.is_none() {
             omitted_data_needs.push(ProductionMapDataNeed {
@@ -798,7 +824,7 @@ impl ProductionMapRenderer {
             return Err("O04 carrier repeats an entity output".into());
         }
         let actual_order = submit
-            .ordered_draws
+            .derive_ordered_draws()?
             .iter()
             .filter(|output| referenced.contains(*output))
             .cloned()
@@ -817,7 +843,7 @@ impl ProductionMapRenderer {
                 _ => return Err("O04 city has no entity output".into()),
             };
             let complete_entity_outputs = submit
-                .ordered_draws
+                .derive_ordered_draws()?
                 .iter()
                 .filter(|output| {
                     matches!(
@@ -898,7 +924,7 @@ impl ProductionMapRenderer {
             return Err("O05 carrier repeats an entity output".into());
         }
         let actual_order = submit
-            .ordered_draws
+            .derive_ordered_draws()?
             .iter()
             .filter(|output| referenced.contains(*output))
             .cloned()
@@ -922,7 +948,7 @@ impl ProductionMapRenderer {
                 _ => return Err("O05 building has no entity output".into()),
             };
             let complete_entity_outputs = submit
-                .ordered_draws
+                .derive_ordered_draws()?
                 .iter()
                 .filter(|output| {
                     matches!(
@@ -1112,6 +1138,12 @@ fn ordered_draws(
     o04_cities: Option<&O04CityFrame>,
     o05_buildings: Option<&O05BuildingFrame>,
 ) -> Result<Vec<PreparedRuntimeDraw>> {
+    // kills: the carried RenderSubmit.ordered_draws wire field is retired; the
+    // draw order is the portable derive_ordered_draws law over the recorded
+    // particle/entity packets (sort by draw_order, contiguous 0..n), which the
+    // capture-side producer itself used to build the retired list. On every
+    // sealed fixture the derived sequence equals the previously carried list.
+    let ordered_refs = submit.derive_ordered_draws().map_err(|error| -> Box<dyn std::error::Error> { error.into() })?;
     let o04_outputs = o04_cities
         .map(|frame| {
             frame
@@ -1169,8 +1201,8 @@ fn ordered_draws(
             ))
             .or_insert(entity);
     }
-    let mut draws = Vec::with_capacity(submit.ordered_draws.len());
-    for ordered in &submit.ordered_draws {
+    let mut draws = Vec::with_capacity(ordered_refs.len());
+    for ordered in &ordered_refs {
         let draw = match ordered {
             RenderOutputRef::Particle {
                 effect_instance_id,

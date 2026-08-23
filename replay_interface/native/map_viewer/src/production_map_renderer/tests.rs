@@ -549,13 +549,11 @@ fn frame_with_static_program(
             // scene constant-buffer carrier is retired (no producer edge ever filled it).
             ordered_static_map_programs: vec![program],
             authenticated_texture_snapshots: Vec::new(),
-            tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
-            ordered_draws: Vec::new(),
             ordered_render_operations: vec![RenderExecutionRef::Static { operation_ordinal }],
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
@@ -697,7 +695,7 @@ fn attach_o04_city(
         .map(|pass_ordinal| RenderOutputRef::Entity {
             pass_ordinal: 20 + pass_ordinal,
             entity_instance_id: 81,
-            draw_order: 100 + pass_ordinal,
+            draw_order: pass_ordinal,
         })
         .collect::<Vec<_>>();
     let submit = &mut frame.submits[0];
@@ -707,7 +705,6 @@ fn attach_o04_city(
             fixture_entity_submission(output, entity_asset.clone(), mesh.clone(), shader.clone())
         })
         .collect();
-    submit.ordered_draws = outputs.clone();
     submit.ordered_render_operations.extend(
         outputs
             .iter()
@@ -1070,13 +1067,11 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             camera_carrier: None,
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
-            tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
-            ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
@@ -1267,13 +1262,11 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             camera_carrier: None,
             ordered_static_map_programs: vec![program.clone()],
             authenticated_texture_snapshots: Vec::new(),
-            tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
-            ordered_draws: Vec::new(),
             ordered_render_operations: vec![RenderExecutionRef::Static {
                 operation_ordinal: 7,
             }],

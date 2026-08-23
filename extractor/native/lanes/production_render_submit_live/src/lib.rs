@@ -3052,9 +3052,9 @@ pub fn join_weather_membership_to_submit_outputs(
     membership: &mut WeatherMembership,
     submit: &RenderSubmit,
 ) -> Result<(), PromotionError> {
+    let ordered_draws = submit.derive_ordered_draws().map_err(PromotionError::Invalid)?;
     for instance in &mut membership.ordered_weather_instances {
-        let outputs = submit
-            .ordered_draws
+        let outputs = ordered_draws
             .iter()
             .filter(|output| {
                 matches!(
