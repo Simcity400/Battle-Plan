@@ -182,10 +182,40 @@ fn scan_stream(
         hasher.update(&payload);
         decoded_bytes = decoded_bytes.saturating_add(record_len as u64);
 
-        match validator
-            .validate_record(&header, &payload)
-            .map_err(|error| format!("H4CR validation at offset {stream_offset} failed: {error}"))?
-        {
+        // A SEMANTICALLY MALFORMED DOMAIN_DATA_REPEAT IS A LOST RECORD, NOT
+        // A DEAD INVENTORY (Codex review round 15, finding 4): skip it by
+        // name, clear the validator's stored failure so the stream is not
+        // poisoned for every record after it, and let the token walk carry
+        // on — a repeated hour's token set equals its predecessor's, which
+        // was already counted.
+        let accepted = match validator.validate_record(&header, &payload) {
+            Ok(accepted) => accepted,
+            Err(
+                error @ (compact_contract::stream_validator::StreamValidationError::InvalidRecordPayload(_)
+                | compact_contract::stream_validator::StreamValidationError::PayloadLengthMismatch { .. }
+                | compact_contract::stream_validator::StreamValidationError::ReservedDomainZero),
+            ) if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT =>
+            {
+                // Only SEMANTIC failures are tolerable; sequence-level
+                // errors stay fatal (Codex review round 18, finding 2).
+                unreconstructed_records.push(format!(
+                    "offset {stream_offset}: DOMAIN_DATA_REPEAT failed stream validation: {error}"
+                ));
+                unreconstructed_record_count += 1;
+                validator.tolerate_failed_record(&header);
+                stream_offset = stream_offset
+                    .checked_add(record_len)
+                    .ok_or_else(|| "decoded stream offset overflow".to_string())?;
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "H4CR validation at offset {stream_offset} failed: {error}"
+                ))
+            }
+        };
+        match accepted {
             AcceptedRecordKind::CampaignIdentity => {}
             AcceptedRecordKind::Ordinary
                 if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA =>

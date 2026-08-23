@@ -9,7 +9,7 @@ use crate::model::{
     SYMBOLS_PATH,
 };
 use compact_contract::stream_validator::{
-    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode,
+    AcceptedRecordKind, StatefulStreamValidator, StreamIdentityMode, StreamValidationError,
 };
 use compact_contract::{
     parse_compact_record_header, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -168,13 +168,15 @@ impl BranchStreamEncoder<'_> {
         if !self.started {
             self.start(tick)?;
         }
-        let outcome =
-            d81::fold_payload(self.schema, &payload, tick, self.symbols).map_err(|error| {
-                ProductError::new(format!(
+        let outcome = match d81::fold_payload(self.schema, &payload, tick, self.symbols) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return Err(ProductError::new(format!(
                     "branch {} d81 payload at tick {tick} rejected during streaming fold: {error}",
                     self.branch
-                ))
-            })?;
+                )))
+            }
+        };
         match outcome {
             FoldOutcome::Unavailable { status_flags } => {
                 close_block(&mut self.block, self.schema, self.sink)?;
@@ -429,6 +431,7 @@ pub(crate) fn build_d81_into(
             session.branch,
             session.identity_mode,
             selection,
+            Some(catalog),
             reader,
             |_| Ok(()),
         )?;
@@ -580,6 +583,7 @@ pub(crate) fn build_d81_into(
             session.branch,
             session.identity_mode,
             selection,
+            Some(catalog),
             reader,
             |item| match item {
                 ScannedD81Item::Gap(gap) => encoder.observe_gap(gap),
@@ -658,6 +662,26 @@ pub fn build_d81_bundle_from_file(
 }
 
 pub fn inspect_d81_session(session: H4crSession<'_>) -> Result<D81SessionInspection, ProductError> {
+    inspect_d81_session_inner(session, None)
+}
+
+/// Catalog-aware inspection: the province half of the identity-portability
+/// oracle runs against the authenticated catalog, so
+/// `unreconstructed_records` matches exactly what a bundle build over the
+/// same stream will degrade into coverage gaps (Codex review round 28,
+/// finding 1). Publication paths MUST use this variant when they copy the
+/// count into `d81_unreconstructed_records`.
+pub fn inspect_d81_session_with_catalog(
+    session: H4crSession<'_>,
+    catalog: &AuthenticatedProvinceCatalog,
+) -> Result<D81SessionInspection, ProductError> {
+    inspect_d81_session_inner(session, Some(catalog))
+}
+
+fn inspect_d81_session_inner(
+    session: H4crSession<'_>,
+    catalog: Option<&AuthenticatedProvinceCatalog>,
+) -> Result<D81SessionInspection, ProductError> {
     let (reader, selection): (Box<dyn Read + '_>, Option<H4crSelection>) = match session.source {
         H4crSource::Bytes(bytes) => (Box::new(Cursor::new(bytes)), None),
         H4crSource::File(path) => (
@@ -684,6 +708,7 @@ pub fn inspect_d81_session(session: H4crSession<'_>) -> Result<D81SessionInspect
         session.branch,
         session.identity_mode,
         selection,
+        catalog,
         reader,
         |_| Ok(()),
     )?;
@@ -745,12 +770,20 @@ fn scan_h4cr<F>(
     branch: u32,
     mode: StreamIdentityMode,
     selection: Option<H4crSelection>,
+    catalog: Option<&AuthenticatedProvinceCatalog>,
     mut reader: Box<dyn Read + '_>,
     mut on_closed: F,
 ) -> Result<ScannedBranch, ProductError>
 where
     F: FnMut(ScannedD81Item) -> Result<(), ProductError>,
 {
+    // The AUTHENTICATED province catalog is the only authority for province
+    // identities; payload occurrence proves nothing (Codex review round 27,
+    // finding 2). A scan WITHOUT a catalog (session inspection) skips the
+    // province half of the oracle and keeps its counts comparable.
+    let catalog_province_ids: BTreeSet<u32> = catalog
+        .map(|catalog| catalog.bindings.iter().map(|b| b.province_id).collect())
+        .unwrap_or_default();
     let mut validator = match mode {
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
@@ -780,12 +813,24 @@ where
     let mut pending_perf_status = None;
     let mut pending_data: Option<(u32, Vec<u8>)> = None;
     let mut pending_d18_data: Option<D18CountryCarrier> = None;
+    let mut pending_d18_lost: Option<String> = None;
+    let mut pending_publication_authoritative = false;
     // DOMAIN_DATA_REPEAT reconstruction baselines for the two domains this
     // scanner decodes payloads of. A repeat's payload is a volatile prefix
     // plus a digest of the previous published payload's tail; verifying that
     // digest against the stored baseline and reconstructing lets this scan
     // see exactly the bytes the original full record carried.
     let mut repeat_baselines: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
+    // Country roster entries decoded from full D18 records OUTSIDE the
+    // selection: true wire assertions that fill identity holes for selected
+    // hours whose own d18 record predates the selection (Codex review round
+    // 25, finding 1). Selected frames' bindings take precedence.
+    let mut primed_country_bindings: BTreeMap<u32, String> = BTreeMap::new();
+    // Every country id any walked D18 roster vouched for, in wire order —
+    // the scan-side portability oracle for d81 payloads (round 26). Province
+    // identities are answered by the authenticated catalog instead (round
+    // 27).
+    let mut bound_country_ids: BTreeSet<u32> = BTreeSet::new();
     let mut pending_d81_gaps = Vec::new();
     let mut next_gap_ordinal_by_lane = BTreeMap::new();
     let mut last_gap_end_by_lane = BTreeMap::new();
@@ -818,13 +863,41 @@ where
             .and_then(|value| value.checked_add(header.payload_len as u64))
             .ok_or_else(|| ProductError::new("decoded H4CR byte position overflows"))?;
         sha256.update(&payload);
-        let accepted = validator
-            .validate_record(&header, &payload)
-            .map_err(|error| {
-                ProductError::new(format!(
+        let mut repeat_validation_refused = false;
+        let accepted = match validator.validate_record(&header, &payload) {
+            Ok(accepted) => accepted,
+            // A SEMANTICALLY MALFORMED DOMAIN_DATA_REPEAT IS A LOST RECORD,
+            // NOT A BROKEN SCAN (Codex review round 14, finding 1): the
+            // framing layer parsed it, so walk it as ordinary and let the
+            // baseline-maintenance block below refuse it BY NAME; a selected
+            // instance then degrades to the excluded-and-gap outcomes instead
+            // of aborting the product.
+            Err(
+                _error @ (StreamValidationError::InvalidRecordPayload(_)
+                | StreamValidationError::PayloadLengthMismatch { .. }
+                | StreamValidationError::ReservedDomainZero),
+            ) if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT =>
+            {
+                // Only SEMANTIC failures of a type-14 record are tolerable
+                // losses; the refusal itself is NOT discarded — baseline
+                // maintenance below refuses reconstruction by name, or a
+                // valid-digest repeat with illegal flags would pass as
+                // authoritative (Codex review rounds 15/17). SEQUENCE-level
+                // errors say the stream reordered or lost bytes and stay
+                // fatal: tolerating them while the validator still expects
+                // N would admit physically reordered streams (Codex review
+                // round 18, finding 2).
+                validator.tolerate_failed_record(&header);
+                repeat_validation_refused = true;
+                AcceptedRecordKind::Ordinary
+            }
+            Err(error) => {
+                return Err(ProductError::new(format!(
                     "H4CR stream validation failed on branch {branch}: {error}"
-                ))
-            })?;
+                )))
+            }
+        };
         let decoded_domain_gap = if accepted == AcceptedRecordKind::Ordinary
             && header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_GAP
         {
@@ -942,26 +1015,65 @@ where
         // verified original payload of a SELECTED repeat into the decode
         // paths below.
         let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        let mut repeat_failure: Option<String> = None;
         if accepted == AcceptedRecordKind::Ordinary
             && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
             && (header.domain_id == 18 || header.domain_id == d81::DOMAIN as u16)
         {
             repeat_baselines.insert(header.domain_id, payload.clone());
+            if header.domain_id == 18 {
+                // PRIME THE COUNTRY ROSTER FROM EVERY FULL D18 RECORD,
+                // SELECTED OR NOT (Codex review round 25, finding 1): a
+                // selection may begin after the roster entry an inside-
+                // selected d81 hour references was published. These are true
+                // wire assertions; filling holes with them keeps identity
+                // portability checkable without inventing state. Selected
+                // frames still overwrite with their own (later) roster.
+                if let Ok(carrier) = decode_complete_d18_country_rows(&payload) {
+                    if let Some(rows) = carrier.rows {
+                        for (source_id, symbol) in rows {
+                            primed_country_bindings.entry(source_id).or_insert(symbol);
+                            // Every rostered id is vouched for by this very
+                            // record, whatever map wins later.
+                            bound_country_ids.insert(source_id);
+                        }
+                    }
+                }
+            }
         } else if accepted == AcceptedRecordKind::Ordinary
             && header.record_type
                 == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
             && (header.domain_id == 18 || header.domain_id == d81::DOMAIN as u16)
         {
-            let reconstructed = reconstruct_repeat_payload(
-                &mut repeat_baselines,
-                header.domain_id,
-                header.sequence,
-                header.game_hour_raw,
-                branch,
-                &payload,
-            )?;
-            repeat_baselines.insert(header.domain_id, reconstructed.clone());
-            repeat_reconstruction = Some(reconstructed);
+            // FAIL-CLOSED, NOT FAIL-DEAD (Codex review round 12, finding 3):
+            // a refused repeat is a lost record, not a broken build. The
+            // stale baseline is kept so a later full record resynchronises,
+            // the refusal is named, and a SELECTED repeat degrades to the
+            // excluded-and-gap outcome in the decode paths below.
+            // A VALIDATOR-refused repeat never even reaches reconstruction:
+            // its rejected flags are part of the verdict, and digest-plus-
+            // length checks alone would accept it as authoritative (Codex
+            // review round 17, finding 2).
+            if repeat_validation_refused {
+                repeat_failure = Some(
+                    "DOMAIN_DATA_REPEAT failed stream validation".to_string(),
+                );
+            } else {
+                match reconstruct_repeat_payload(
+                    &mut repeat_baselines,
+                    header.domain_id,
+                    header.sequence,
+                    header.game_hour_raw,
+                    branch,
+                    &payload,
+                ) {
+                    Ok(reconstructed) => {
+                        repeat_baselines.insert(header.domain_id, reconstructed.clone());
+                        repeat_reconstruction = Some(reconstructed);
+                    }
+                    Err(error) => repeat_failure = Some(error.to_string()),
+                }
+            }
         }
         if !selected {
             continue;
@@ -993,15 +1105,52 @@ where
             && header.record_type
                 == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
         {
-            let reconstructed = repeat_reconstruction
-                .as_deref()
-                .expect("a selected d18 repeat always carries its verified reconstruction");
-            let carrier = decode_complete_d18_country_rows(reconstructed).map_err(|error| {
-                ProductError::new(format!(
-                    "branch {branch} D18 country identity reconstructed at sequence {} rejected: {error}",
-                    header.sequence
-                ))
-            })?;
+            let reconstructed = match repeat_reconstruction.as_deref() {
+                Some(reconstructed) => reconstructed,
+                // THE SCAN REFUSED THIS REPEAT: a lost record, accounted as
+                // an exclusion — never a build abort (Codex review round 12,
+                // finding 3). The hour's PERF/DATA binding below closes as a
+                // NAMED d18 gap instead of a seal mismatch (round 13,
+                // finding 1); the next full d18 record resynchronises.
+                None => {
+                    unreconstructed_records += 1;
+                    pending_d18_lost = Some(repeat_failure.clone().expect(
+                        "a selected repeat without its reconstruction carries its refusal",
+                    ));
+                    // THE HOUR'S IDENTITY ROSTER IS UNVERIFIED, SO ITS D81
+                    // STATE CANNOT BE CERTIFIED EITHER: country identities
+                    // the manifest cannot vouch for would fail portability
+                    // during the streaming fold and abort the build (Codex
+                    // review round 14, finding 3). Close the whole hour as
+                    // the named lost-data outcome instead — a repeat carries
+                    // no new roster, so no other hour loses an identity.
+                    if pending_data_lost.is_none() {
+                        pending_data_lost = Some(format!(
+                            "d18 DOMAIN_DATA_REPEAT refused verification: {}",
+                            repeat_failure.clone().expect("refusal reason checked above")
+                        ));
+                    }
+                    continue;
+                }
+            };
+            let carrier = match decode_complete_d18_country_rows(reconstructed) {
+                Ok(carrier) => carrier,
+                Err(error) => {
+                    // DIGEST-VALID RESOLUTION OF MALFORMED D18 BYTES IS STILL
+                    // A LOST HOUR, NOT A BROKEN BUILD (Codex review round 22):
+                    // the malformed full record may even lie outside the
+                    // selected extent, where nothing ever decoded it. Same
+                    // named gap as a verification refusal.
+                    unreconstructed_records += 1;
+                    let reason =
+                        format!("D18 repeated payload failed domain validation: {error}");
+                    pending_d18_lost = Some(reason.clone());
+                    if pending_data_lost.is_none() {
+                        pending_data_lost = Some(reason);
+                    }
+                    continue;
+                }
+            };
             if pending_d18_data.replace(carrier).is_some() {
                 return Err(ProductError::new(format!(
                     "branch {branch} repeats D18 DATA in frame {}",
@@ -1092,8 +1241,7 @@ where
                     pending_d18_data.take(),
                 ) {
                     (None, None) => {}
-                    (Some(perf), Some(carrier)) if perf == carrier.status => {
-                        if let Some(rows) = carrier.rows {
+                    (Some(perf), Some(carrier)) if perf == carrier.status => {                        if let Some(rows) = carrier.rows {
                             for (source_id, symbol) in rows {
                                 if let Some(previous) =
                                     country_bindings.insert(source_id, symbol.clone())
@@ -1116,6 +1264,12 @@ where
                             }
                         }
                     }
+                    // THE HOUR WHOSE D18 REPEAT REFUSED VERIFICATION CLOSES
+                    // AS A NAMED GAP, NOT A SEAL MISMATCH: same lost-record
+                    // class as the d81 status-bound gap below — the record
+                    // arrived but its bytes could not be recovered, which is
+                    // never a corrupt product.
+                    (Some(_perf), None) if pending_d18_lost.take().is_some() => {}
                     (perf, data) => {
                         return Err(ProductError::new(format!(
                             "branch {branch} D18 PERF/DATA binding differs in closed frame {record_tick}: PERF={perf:?}, DATA={:?}",
@@ -1129,6 +1283,15 @@ where
                     (None, None) => None,
                     (Some(perf), Some((data, payload))) if perf == data && lost_data.is_none() => {
                         Some(payload)
+                    }
+                    // THE HOUR WHOSE IDENTITY ROSTER WAS LOST CLOSES AS A GAP
+                    // EVEN WHEN ITS D81 BYTES WERE HEALTHY: an unverifiable
+                    // country roster cannot be certified portable downstream,
+                    // so the whole hour degrades together (Codex review round
+                    // 15, finding 2).
+                    (Some(perf), Some(_)) if lost_data.is_some() => {
+                        unreconstructable_perf = Some(perf);
+                        None
                     }
                     // THE HOUR WHOSE DATA ENVELOPE REFUSED RECONSTRUCTION
                     // CLOSES AS A STATUS-BOUND GAP, NOT A BUILD FAILURE.
@@ -1198,6 +1361,18 @@ where
                             tick: record_tick,
                             payload,
                         })?;
+                        // THE HOUR ACTUALLY PUBLISHES: only now may its
+                        // snapshot count as publication-authoritative — an
+                        // hour gapped by lost d18 identity never reaches this
+                        // arm (Codex review round 23, finding 2).
+                        if pending_publication_authoritative {
+                            publication_authoritative_records = publication_authoritative_records
+                                .checked_add(1)
+                                .ok_or_else(|| {
+                                    ProductError::new("d81 success count overflows")
+                                })?;
+                            pending_publication_authoritative = false;
+                        }
                     }
                     (Some(_), Some(_)) => {
                         return Err(ProductError::new(format!(
@@ -1236,6 +1411,12 @@ where
                 pending_frame_tick = None;
                 pending_perf_domains.clear();
                 pending_terminal_domains.clear();
+                pending_publication_authoritative = false;
+                // The d18 loss marker is PER-FRAME: taking it here (win or
+                // lose) can never leak into a later frame and excuse an
+                // unrelated missing D18 DATA record (Codex review round 14,
+                // finding 2).
+                pending_d18_lost = None;
             } else {
                 match pending_frame_tick {
                     None => pending_frame_tick = Some(record_tick),
@@ -1313,16 +1494,6 @@ where
             } else {
                 continue;
             }
-            let payload = if header.record_type
-                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
-            {
-                repeat_reconstruction
-                    .as_deref()
-                    .expect("a selected d81 repeat always carries its verified reconstruction")
-                    .to_vec()
-            } else {
-                payload.clone()
-            };
             if pending_frame_tick != Some(tick) {
                 return Err(ProductError::new(format!(
                     "branch {branch} d81 DATA at {tick} is outside its open frame"
@@ -1333,25 +1504,73 @@ where
             // the payload the domain encoded, exactly as every other walker.
             // The reconstruction itself already happened above, selected or
             // not (see the priming block); here it is only harvested.
-            let data_bytes = match scanned_d81_envelope.take().expect(
-                "an enveloped d81 DATA record was primed during the scan pass",
-            ) {
-                Ok(Some(reconstructed)) => reconstructed,
-                // The raw on-wire bytes stay alive for the repeat baseline below.
-                Ok(None) => payload.clone(),
-                Err(reason) => {
-                    // EXCLUDED AND NAMED, NEVER A PUBLICATION ABORT. A
-                    // record that cannot be reconstructed is the ordinary
-                    // consequence of a lost or damaged record — the next
-                    // keyframe resynchronises this consumer at the 64-hour
-                    // cadence — and the hour degrades to a coverage-shortfall gap
-                    // when its frame closes (see the lost-data arms at
-                    // FRAME_END). The record counts only in
-                    // `unreconstructed_records`: it is not usable DATA and
-                    // must not claim coverage or authority.
-                    unreconstructed_records += 1;
-                    pending_data_lost = Some(reason);
-                    continue;
+            let was_repeat = header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT;
+            let data_bytes = if was_repeat {
+                let resolved = match repeat_reconstruction.as_deref() {
+                    Some(resolved) => resolved,
+                    // THE SCAN REFUSED THIS REPEAT (missing baseline, wrong
+                    // length, tail-digest mismatch): the same lost-record
+                    // class as a refused envelope, so the SAME
+                    // excluded-and-gap outcome — never a build abort.
+                    None => {
+                        unreconstructed_records += 1;
+                        pending_data_lost = Some(repeat_failure.clone().expect(
+                            "a selected repeat without its reconstruction carries its refusal",
+                        ));
+                        continue;
+                    }
+                };
+                if header.record_flags
+                    & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                    != 0
+                {
+                    // THE SPAN-DELTA CONSUMER MUST SEE REPEAT-DERIVED PAYLOADS.
+                    // A flagged repeat resolves to the repeated hour's ON-WIRE
+                    // bytes, which are a PSD1 envelope exactly when that hour rode
+                    // enveloped. `repeat_basis` authenticates those bytes against
+                    // this scan's retained baseline (digest match) and returns the
+                    // full original payload; a refusal is excluded and named like
+                    // any other lost record — never `?`-aborted.
+                    match compact_contract::payload_span_delta::repeat_basis(
+                        &span_delta,
+                        header.domain_id,
+                        resolved,
+                    ) {
+                        Ok(basis) => basis,
+                        Err(reason) => {
+                            unreconstructed_records += 1;
+                            pending_data_lost =
+                                Some(format!("repeated envelope refused composition: {reason}"));
+                            continue;
+                        }
+                    }
+                } else {
+                    // An unflagged repeat resolves to plain grammar bytes.
+                    resolved.to_vec()
+                }
+            } else {
+                match scanned_d81_envelope.take().expect(
+                    "an enveloped d81 DATA record was primed during the scan pass",
+                ) {
+                    Ok(Some(reconstructed)) => reconstructed,
+                    // The raw on-wire bytes are already stored as this
+                    // domain's repeat baseline by the maintenance block above.
+                    Ok(None) => payload.clone(),
+                    Err(reason) => {
+                        // EXCLUDED AND NAMED, NEVER A PUBLICATION ABORT. A
+                        // record that cannot be reconstructed is the ordinary
+                        // consequence of a lost or damaged record — the next
+                        // keyframe resynchronises this consumer at the 64-hour
+                        // cadence — and the hour degrades to a coverage-shortfall gap
+                        // when its frame closes (see the lost-data arms at
+                        // FRAME_END). The record counts only in
+                        // `unreconstructed_records`: it is not usable DATA and
+                        // must not claim coverage or authority.
+                        unreconstructed_records += 1;
+                        pending_data_lost = Some(reason);
+                        continue;
+                    }
                 }
             };
             let was_enveloped =
@@ -1373,6 +1592,17 @@ where
                         Some(format!("reconstructed envelope is not valid d81 grammar: {error}"));
                     continue;
                 }
+                // DIGEST-VALID RESOLUTION OF MALFORMED D81 BYTES IS STILL A
+                // LOST HOUR: the malformed full record may lie outside the
+                // selected extent where nothing ever decoded it, and its
+                // repeat carries those bytes inside (Codex review round 22).
+                Err(error) if was_repeat => {
+                    unreconstructed_records += 1;
+                    pending_data_lost = Some(format!(
+                        "repeated payload is not valid d81 grammar: {error}"
+                    ));
+                    continue;
+                }
                 Err(error) => {
                     return Err(ProductError::new(format!(
                         "branch {branch} d81 payload at tick {tick} rejected: {error}"
@@ -1382,31 +1612,124 @@ where
             let status_flags = payload_header.status_flags;
             let payload_version = payload_header.payload_version;
             let hub_simulation_complete = payload_header.hub_simulation_complete;
+            // SCAN-SIDE IDENTITY PORTABILITY ORACLE (Codex review rounds
+            // 23-27): decode the resolved bytes for their referenced ids and
+            // require countries to be vouched by walked D18 rosters and
+            // provinces by the AUTHENTICATED catalog — payload occurrence
+            // proves nothing, and a missing check here would let the
+            // second-pass fold die build-wide. An unvouched identity taints
+            // ONLY this hour; raw full-record corruption keeps its
+            // pre-delta hard refusal.
+            match compact_contract::rail_replay::decode_payload(&data_bytes) {
+                Ok(decoded) => {
+                    let mut unknown_country: Option<u32> = None;
+                    let mut unknown_province: Option<u32> = None;
+                    'provinces: for province in &decoded.provinces {
+                        if !catalog_province_ids.is_empty()
+                            && !catalog_province_ids.contains(&province.province_id)
+                        {
+                            unknown_province = Some(province.province_id);
+                            break 'provinces;
+                        }
+                        for neighbor in &province.neighbors {
+                            if !catalog_province_ids.is_empty()
+                                && !catalog_province_ids.contains(&neighbor.province_id)
+                            {
+                                unknown_province = Some(neighbor.province_id);
+                                break 'provinces;
+                            }
+                        }
+                    }
+                    if unknown_province.is_none() {
+                        'hub_rows: for row in &decoded.hub_simulation_rows {
+                            for country_id in
+                                [row.province_owner_country_id, row.pov_country_id]
+                            {
+                                if country_id != 0 && !bound_country_ids.contains(&country_id) {
+                                    unknown_country = Some(country_id);
+                                    break 'hub_rows;
+                                }
+                            }
+                            if !catalog_province_ids.is_empty()
+                                && !catalog_province_ids.contains(&row.province_id)
+                            {
+                                unknown_province = Some(row.province_id);
+                                break 'hub_rows;
+                            }
+                        }
+                    }
+                    let identity_loss = unknown_country
+                        .map(|id| {
+                            format!(
+                                "d81 state references country id {id} that no walked D18 roster vouches for"
+                            )
+                        })
+                        .or_else(|| {
+                            unknown_province.map(|id| {
+                                format!(
+                                    "d81 state references province id {id} absent from the authenticated province catalog"
+                                )
+                            })
+                        });
+                    if let Some(reason) = identity_loss {
+                        if was_repeat || was_enveloped {
+                            unreconstructed_records += 1;
+                            pending_data_lost = Some(reason);
+                            continue;
+                        }
+                        return Err(ProductError::new(format!(
+                            "branch {branch} d81 payload at tick {tick} rejected: {reason}"
+                        )));
+                    }
+                }
+                Err(error) => {
+                    // split_payload above already proved this grammar with the
+                    // same decoder family; a divergent failure here is a bug,
+                    // not a stream condition.
+                    return Err(ProductError::new(format!(
+                        "branch {branch} d81 payload at tick {tick} failed identity pre-read: {error}"
+                    )));
+                }
+            }
+            let unknown = compact_contract::compact_status_unknown_flags_v1(status_flags);
+            if unknown != 0 {
+                if was_repeat {
+                    unreconstructed_records += 1;
+                    pending_data_lost = Some(format!(
+                        "repeated d81 payload has unknown status {unknown:#x}"
+                    ));
+                    continue;
+                }
+                return Err(ProductError::new(format!(
+                    "branch {branch} d81 payload at tick {tick} has unknown status {unknown:#x}"
+                )));
+            }
             if pending_data.replace((status_flags, data_bytes)).is_some() {
                 return Err(ProductError::new(format!(
                     "branch {branch} repeats d81 DATA at tick {tick}"
                 )));
             }
-            repeat_baselines.insert(d81::DOMAIN as u16, payload);
+            // The repeat baseline maintenance above already stored this
+            // record's ON-WIRE bytes (raw DATA payload, or a verified repeat's
+            // resolved bytes) before the selection filter; storing again here
+            // from the post-unwrap side would put BASIS bytes where the gate's
+            // digest expects WIRE bytes.
             data_records = data_records
                 .checked_add(1)
                 .ok_or_else(|| ProductError::new("d81 data count overflows"))?;
             first_data_tick.get_or_insert(tick);
-            let unknown = compact_contract::compact_status_unknown_flags_v1(status_flags);
-            if unknown != 0 {
-                return Err(ProductError::new(format!(
-                    "branch {branch} d81 payload at tick {tick} has unknown status {unknown:#x}"
-                )));
-            }
             let failure = compact_contract::compact_status_is_failure(status_flags);
             if failure {
                 failure_records = failure_records
                     .checked_add(1)
                     .ok_or_else(|| ProductError::new("d81 failure count overflows"))?;
             } else if payload_version == d81::PAYLOAD_VERSION_V3 && hub_simulation_complete {
-                publication_authoritative_records = publication_authoritative_records
-                    .checked_add(1)
-                    .ok_or_else(|| ProductError::new("d81 success count overflows"))?;
+                // DEFERRED to the frame's actual close: an hour whose d18
+                // identity was lost closes as a named gap and NEVER publishes
+                // this snapshot, so counting it here would report an
+                // authoritative record that does not exist (Codex review
+                // round 23, finding 2).
+                pending_publication_authoritative = true;
             }
         }
     }
@@ -1434,15 +1757,24 @@ where
         failure_records,
         unreconstructed_records,
         first_data_tick,
-        country_bindings,
+        country_bindings: {
+            let mut merged = country_bindings;
+            for (source_id, symbol) in primed_country_bindings {
+                merged.entry(source_id).or_insert(symbol);
+            }
+            merged
+        },
     })
 }
 
 /// Verify one DOMAIN_DATA_REPEAT record against this scanner's stored
 /// baseline for `domain`, reconstruct the original payload (fresh volatile
-/// prefix over the verified tail), and refresh the baseline. Fail-closed by
-/// name: a missing baseline, a wrong length, or any digest mismatch refuses
-/// the whole product build rather than guessing.
+/// prefix over the verified tail), and hand it back for the caller to refresh
+/// the baseline with. Fail-closed by name: a missing baseline, a wrong
+/// length, or any digest mismatch is returned as the named error — the CALLER
+/// keeps its stale baseline and, when the repeat is selected, degrades to
+/// `unreconstructed_records` plus the coverage gap instead of aborting the
+/// build (Codex review round 12, finding 3).
 fn reconstruct_repeat_payload(
     repeat_baselines: &mut BTreeMap<u16, Vec<u8>>,
     domain_id: u16,

@@ -6341,50 +6341,79 @@ let envelope_ok = match compact_contract::validate_compact_record_semantics(
                     ));
                     continue;
                 };
-                if envelope_ok {
-                    let result =
-                        recorder_host::domain_data_authority::summarize_domain_data_payload(
-                            domain_id,
-                            reconstructed,
-                            recorder_host::domain_data_authority::DomainDataContext {
-                                stream_offset: offset,
-                                record_flags: header.record_flags,
-                                sequence,
-                                header_hour_raw: game_hour_raw,
-                                session_header_identity: (domain_id == 68)
-                                    .then_some(&mut session_header_identity),
-                                xmap07_snow_mud_previous_grid_sha256: (domain_id
-                                    == compact_contract::xmap07_snow_mud::DOMAIN_ID)
-                                    .then_some(&mut xmap07_snow_mud_previous_grid_sha256),
-                            },
-                        );
-                    match result {
-                        Ok(decoded) => {
-                            if let Some(status_flags) = decoded.status_flags {
-                                let unknown_status =
-                                    domain_status_unknown_bits(domain_id, status_flags);
-                                if unknown_status != 0 {
-                                    summary.parse_errors.push(format!(
-                                        "offset {offset}: DOMAIN_DATA_REPEAT domain {domain_id} status {status_flags:#x} contains unknown v1 bits {unknown_status:#x}"
-                                    ));
-                                }
-                            }
-                            if let Some(frame) = decoded.auxiliary.domain57_frame.clone() {
-                                summary.domain57_frames.push(frame);
-                            }
-                            let authority = DataAuthority {
-                                row_count: decoded.emitted_rows,
-                                changed_rows: decoded.changed_rows,
-                                status_flags: decoded.status_flags,
-                                data_units: decoded.data_units,
-                            };
-                            merge_data_authority(domain_id, &authority, &mut summary);
-                            summary
-                                .per_hour_data_authority
-                                .entry((game_hour_raw, domain_id))
-                                .or_insert(authority);
+                // THE SPAN-DELTA CONSUMER MUST SEE REPEAT-DERIVED PAYLOADS.
+                // A flagged repeat resolves to the repeated hour's ON-WIRE
+                // bytes, which are a PSD1 envelope exactly when that hour rode
+                // enveloped; `repeat_basis` authenticates them against this
+                // scan's retained baseline and returns the original grammar
+                // bytes. A refusal is a named parse error on this audit, not a
+                // silent pass-through of envelope bytes as grammar.
+                let audited = if header.record_flags
+                    & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                    != 0
+                {
+                    match compact_contract::payload_span_delta::repeat_basis(
+                        &span_delta_consumer,
+                        domain_id,
+                        reconstructed,
+                    ) {
+                        Ok(basis) => Some(basis),
+                        Err(reason) => {
+                            summary.parse_errors.push(format!(
+                                "offset {offset}: DOMAIN_DATA_REPEAT for domain {domain_id} failed PSD1 composition: {reason}"
+                            ));
+                            None
                         }
-                        Err(error) => summary.parse_errors.extend(error.errors),
+                    }
+                } else {
+                    Some(reconstructed.clone())
+                };
+                if envelope_ok {
+                    if let Some(audited_payload) = audited.as_deref() {
+                        let result =
+                            recorder_host::domain_data_authority::summarize_domain_data_payload(
+                                domain_id,
+                                audited_payload,
+                                recorder_host::domain_data_authority::DomainDataContext {
+                                    stream_offset: offset,
+                                    record_flags: header.record_flags,
+                                    sequence,
+                                    header_hour_raw: game_hour_raw,
+                                    session_header_identity: (domain_id == 68)
+                                        .then_some(&mut session_header_identity),
+                                    xmap07_snow_mud_previous_grid_sha256: (domain_id
+                                        == compact_contract::xmap07_snow_mud::DOMAIN_ID)
+                                        .then_some(&mut xmap07_snow_mud_previous_grid_sha256),
+                                },
+                            );
+                        match result {
+                            Ok(decoded) => {
+                                if let Some(status_flags) = decoded.status_flags {
+                                    let unknown_status =
+                                        domain_status_unknown_bits(domain_id, status_flags);
+                                    if unknown_status != 0 {
+                                        summary.parse_errors.push(format!(
+                                            "offset {offset}: DOMAIN_DATA_REPEAT domain {domain_id} status {status_flags:#x} contains unknown v1 bits {unknown_status:#x}"
+                                        ));
+                                    }
+                                }
+                                if let Some(frame) = decoded.auxiliary.domain57_frame.clone() {
+                                    summary.domain57_frames.push(frame);
+                                }
+                                let authority = DataAuthority {
+                                    row_count: decoded.emitted_rows,
+                                    changed_rows: decoded.changed_rows,
+                                    status_flags: decoded.status_flags,
+                                    data_units: decoded.data_units,
+                                };
+                                merge_data_authority(domain_id, &authority, &mut summary);
+                                summary
+                                    .per_hour_data_authority
+                                    .entry((game_hour_raw, domain_id))
+                                    .or_insert(authority);
+                            }
+                            Err(error) => summary.parse_errors.extend(error.errors),
+                        }
                     }
                 }
                 match open_frame_hour {

@@ -156,6 +156,13 @@ pub enum StreamValidationError {
     SequenceExhausted(u64),
     PayloadLengthMismatch { declared: usize, actual: usize },
     ReservedDomainZero,
+    /// The RECORD ITSELF is malformed (its own payload/flags/domain triple
+    /// fails `validate_compact_record_semantics`). This is the only
+    /// stream-validation failure a walker may tolerate as a named lost
+    /// record — everything else here says the STREAM is damaged.
+    InvalidRecordPayload(String),
+    /// Stream-level policy violations (release-epilogue placement,
+    /// sentinel hours, census placement): never tolerable.
     InvalidRecordSemantics(String),
 }
 
@@ -185,6 +192,9 @@ impl core::fmt::Display for StreamValidationError {
                 f,
                 "compact domain zero is reserved exclusively for the CID1 sequence-zero record"
             ),
+            Self::InvalidRecordPayload(error) => {
+                write!(f, "invalid compact record payload: {error}")
+            }
             Self::InvalidRecordSemantics(error) => {
                 write!(f, "invalid compact record semantics: {error}")
             }
@@ -284,6 +294,38 @@ impl StatefulStreamValidator {
         self.failure.is_some()
     }
 
+    /// Tolerate ONE failed record as a named loss: clear the stored failure
+    /// AND advance the sequence state exactly as acceptance would have, so
+    /// the stream is neither poisoned (`Terminal`) nor stuck expecting a
+    /// sequence no record will ever carry (Codex review round 16, findings
+    /// 1/3).
+    ///
+    /// FOR NAMED LOST-RECORD TOLERANCE ONLY: the caller must account the
+    /// refused record in its own exclusion ledger. Sound because validation
+    /// is prove-then-commit — a failed attempt mutated nothing else here.
+    /// A record whose sequence does not match the expectation is NOT
+    /// tolerable (that says the STREAM lost bytes, not that one record is
+    /// damaged), so the phase is left alone for it.
+    pub fn tolerate_failed_record(&mut self, header: &CompactRecordHeader) {
+        self.failure = None;
+        if let StreamPhase::AwaitingOrdinary { next_sequence } = self.phase {
+            if header.sequence == next_sequence {
+                if let Some(following) = header.sequence.checked_add(1) {
+                    self.phase = StreamPhase::AwaitingOrdinary {
+                        next_sequence: following,
+                    };
+                    self.ordinary_record_count += 1;
+                }
+            }
+        }
+        // Placement policy reads this as "the record immediately before me";
+        // a tolerated wire slot occupied that position exactly as an
+        // accepted one would (Codex review round 17, finding 4).
+        if let Ok(record_type) = KnownRecordType::try_from(header.record_type) {
+            self.last_ordinary_record_type = Some(record_type);
+        }
+    }
+
     pub fn failure(&self) -> Option<&StreamValidationError> {
         self.failure.as_ref()
     }
@@ -372,13 +414,6 @@ impl StatefulStreamValidator {
                         header.game_hour_raw
                     )));
                 }
-                validate_compact_record_semantics(
-                    header.domain_id,
-                    header.record_type,
-                    header.record_flags,
-                    payload,
-                )
-                .map_err(StreamValidationError::InvalidRecordSemantics)?;
                 let record_type =
                     KnownRecordType::try_from(header.record_type).map_err(|error| {
                         StreamValidationError::InvalidRecordSemantics(error.to_string())
@@ -485,6 +520,19 @@ impl StatefulStreamValidator {
                 } else {
                     None
                 };
+                // THE PER-RECORD CHECK RUNS LAST: every stream-level rule
+                // above must be enforced even when a record's own payload is
+                // also malformed, because `InvalidRecordPayload` is the ONLY
+                // variant a walker's named-lost-record tolerance may clear
+                // (Codex review round 19 finding 2, round 31 defect 1).
+                validate_compact_record_semantics(
+                    header.domain_id,
+                    header.record_type,
+                    header.record_flags,
+                    payload,
+                )
+                .map_err(StreamValidationError::InvalidRecordPayload)?;
+
                 Ok(PendingCommit::Ordinary {
                     next_sequence: following_sequence,
                     gap_outcome,
@@ -1211,11 +1259,16 @@ mod tests {
         candidate.record_flags = 1;
         assert!(matches!(
             unknown_flags.validate_record(&candidate, data),
-            Err(StreamValidationError::InvalidRecordSemantics(_))
+            Err(StreamValidationError::InvalidRecordPayload(_))
         ));
 
         let mut unknown_type = StatefulStreamValidator::legacy();
         let candidate = header(1, 18, 99, data);
+        // Since the per-record semantics check moved AFTER every
+        // stream-level rule (round 32), an UNCLASSIFIABLE record type is
+        // refused by the type parse first — and must be: an unknown type is
+        // never in the tolerable per-record class, so this stays
+        // stream-fatal by name.
         assert!(matches!(
             unknown_type.validate_record(&candidate, data),
             Err(StreamValidationError::InvalidRecordSemantics(_))
@@ -1225,7 +1278,7 @@ mod tests {
         let candidate = header(1, 18, COMPACT_RECORD_TYPE_DOMAIN_PERF, &[]);
         assert!(matches!(
             malformed_perf.validate_record(&candidate, &[]),
-            Err(StreamValidationError::InvalidRecordSemantics(_))
+            Err(StreamValidationError::InvalidRecordPayload(_))
         ));
     }
 

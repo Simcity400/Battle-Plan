@@ -354,6 +354,33 @@ impl BoundaryTracker {
         payload: &[u8],
         at_byte: u64,
     ) {
+        self.observe_with_tolerance(header, payload, at_byte, false)
+    }
+
+    /// Observe one record the walker has ALREADY decided to tolerate as a
+    /// named loss (today: a semantically malformed DOMAIN_DATA_REPEAT whose
+    /// refusal is accounted in an exclusion ledger). Framing, hour-span and
+    /// sequence accounting still run; the SEMANTIC rules do not, because
+    /// their violation is exactly what the walker tolerated — latching it
+    /// here would surface as `boundary_error` and fail certification for a
+    /// record the walk had already forgiven (Codex review round 16,
+    /// finding 4).
+    pub fn observe_tolerated(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        payload: &[u8],
+        at_byte: u64,
+    ) {
+        self.observe_with_tolerance(header, payload, at_byte, true)
+    }
+
+    fn observe_with_tolerance(
+        &mut self,
+        header: &compact_contract::CompactRecordHeader,
+        payload: &[u8],
+        at_byte: u64,
+        tolerate_record_semantics: bool,
+    ) {
         let record_len: u64 = header.record_len().try_into().unwrap_or(u64::MAX);
         if self.resync.is_some() {
             self.absorb_into_resync(header, at_byte, record_len);
@@ -362,7 +389,7 @@ impl BoundaryTracker {
         let span_was_open = self.hour_span.is_some();
         self.absorb_into_hour(header, payload, at_byte);
         let latched = self.violation.take();
-        self.observe_rules(header, payload, at_byte);
+        self.observe_rules(header, payload, at_byte, tolerate_record_semantics);
         let fired = self.violation.take();
         self.violation = latched.or_else(|| fired.clone());
         match fired {
@@ -423,7 +450,7 @@ impl BoundaryTracker {
         self.prev_sequence = header.sequence.checked_sub(1);
         self.lost_between_frames = (self.lost_between_frames.0.saturating_add(1), reason);
         let latched = self.violation.take();
-        self.observe_rules(header, payload, at_byte);
+        self.observe_rules(header, payload, at_byte, false);
         let fired = self.violation.take();
         self.violation = latched.or_else(|| fired.clone());
         match fired {
@@ -781,6 +808,7 @@ impl BoundaryTracker {
         header: &compact_contract::CompactRecordHeader,
         payload: &[u8],
         at_byte: u64,
+        tolerate_record_semantics: bool,
     ) {
         if self.termination.is_some() {
             self.violation = Some(format!(
@@ -828,16 +856,18 @@ impl BoundaryTracker {
         }
         self.prev_sequence = Some(header.sequence);
 
-        if let Err(reason) = validate_compact_record_semantics(
-            header.domain_id,
-            header.record_type,
-            header.record_flags,
-            payload,
-        ) {
-            self.violation = Some(format!(
-                "record semantic violation at byte {at_byte}: {reason}"
-            ));
-            return;
+        if !tolerate_record_semantics {
+            if let Err(reason) = validate_compact_record_semantics(
+                header.domain_id,
+                header.record_type,
+                header.record_flags,
+                payload,
+            ) {
+                self.violation = Some(format!(
+                    "record semantic violation at byte {at_byte}: {reason}"
+                ));
+                return;
+            }
         }
 
         let record_type = match KnownRecordType::try_from(header.record_type) {
@@ -1601,6 +1631,12 @@ pub fn walk_stream_hour_coverage(
     // different times and, for the fold, in eight parallel copies.
     let mut span_delta_consumer =
         compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
+    // The framing-layer RAW repeat baselines: a semantically valid repeat is
+    // COVERED DATA only after this walk verifies it exactly like every other
+    // reader does — resolution digest, then PSD1 composition when the flag
+    // word says the repeated hour rode enveloped (Codex review round 19,
+    // finding 3).
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     'read: loop {
         let n = reader.read(&mut chunk)?;
         if n == 0 {
@@ -1660,6 +1696,33 @@ pub fn walk_stream_hour_coverage(
             let payload = &carry[off + COMPACT_RECORD_HEADER_LEN..off + record_len];
             let accepted = match validator.validate_record(&header, payload) {
                 Ok(accepted) => accepted,
+                // A semantically malformed DOMAIN_DATA_REPEAT is a LOST
+                // RECORD, not a seal-breaking violation (Codex review round
+                // 14, finding 1): excluded and named like any refused repeat,
+                // the hour still seals.
+                Err(
+                    error @ (compact_contract::stream_validator::StreamValidationError::InvalidRecordPayload(_)
+                    | compact_contract::stream_validator::StreamValidationError::PayloadLengthMismatch { .. }
+                    | compact_contract::stream_validator::StreamValidationError::ReservedDomainZero),
+                ) if header.record_type
+                    == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT =>
+                {
+                    // Only SEMANTIC failures of a type-14 record are
+                    // tolerable losses; sequence-level errors stay fatal
+                    // (Codex review round 18, finding 2).
+                    excluded.push(ExcludedDomainDataRecord {
+                        stream_offset: at,
+                        game_hour_raw: header.game_hour_raw,
+                        domain_id: header.domain_id,
+                        validation_reason: format!(
+                            "DOMAIN_DATA_REPEAT failed stream validation: {error}"
+                        ),
+                    });
+                    validator.tolerate_failed_record(&header);
+                    tracker.observe_tolerated(&header, payload, at);
+                    off += record_len;
+                    continue;
+                }
                 Err(error) => {
                     if hard_error.is_none() {
                         hard_error = Some(format!(
@@ -1680,6 +1743,15 @@ pub fn walk_stream_hour_coverage(
                 continue;
             }
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+                // Seed the framing-layer RAW baseline exactly as the
+                // collector's gate did when this record published — without
+                // it every later honest repeat would refuse "no stored
+                // baseline" (Codex review round 20, finding 2).
+                let _ = repeat_baselines.observe(
+                    header.domain_id,
+                    header.record_type,
+                    payload,
+                );
                 // UNWRAP FIRST: a `PSD1` envelope is validated as the grammar it
                 // reconstructs to, exactly as it was before the delta existed. A
                 // record that cannot be reconstructed is EXCLUDED AND NAMED,
@@ -1733,6 +1805,84 @@ pub fn walk_stream_hour_coverage(
                         domain_id: header.domain_id,
                         validation_reason,
                     });
+                }
+            }
+            if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            {
+                // VERIFY, DON'T TRUST THE BYTES' PRESENCE (Codex review round
+                // 19, finding 3): the framing gate resolves the repeated
+                // hour's raw on-wire bytes, and — when the preserved flag word
+                // says they are an envelope — `repeat_basis` proves them
+                // against this walk's own retained output. The RESOLVED
+                // payload then passes the same domain-grammar validation a
+                // full record's does: digest-valid resolution of malformed
+                // bytes is still a lost hour (Codex review round 21).
+                // A refusal is excluded and named; the hour's bytes still
+                // seal.
+                let verification = match repeat_baselines.observe(
+                    header.domain_id,
+                    header.record_type,
+                    payload,
+                ) {
+                    Err(error) => Err(error),
+                    Ok(resolved) => match resolved {
+                        Some(bytes) => {
+                            let composed = if header.record_flags
+                                & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                                != 0
+                            {
+                                compact_contract::payload_span_delta::repeat_basis(
+                                    &span_delta_consumer,
+                                    header.domain_id,
+                                    &bytes,
+                                )
+                            } else {
+                                Ok(bytes.to_vec())
+                            };
+                            match composed {
+                                Ok(resolved_payload) => {
+                                    let validation_flags = if header.record_flags
+                                        & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                                        != 0
+                                    {
+                                        header.record_flags
+                                            & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                                    } else {
+                                        header.record_flags
+                                    };
+                                    validate_domain_data_payload_at(
+                                        header.domain_id,
+                                        &resolved_payload,
+                                        validation_flags,
+                                        header.sequence,
+                                        header.game_hour_raw,
+                                        at,
+                                    )
+                                    .map_err(|error| {
+                                        format!(
+                                            "repeated payload failed domain validation: {error}"
+                                        )
+                                    })
+                                }
+                                Err(reason) => Err(format!(
+                                    "DOMAIN_DATA_REPEAT composition refused: {reason}"
+                                )),
+                            }
+                        }
+                        None => Ok(()),
+                    },
+                };
+                if let Err(reason) = verification {
+                    excluded.push(ExcludedDomainDataRecord {
+                        stream_offset: at,
+                        game_hour_raw: header.game_hour_raw,
+                        domain_id: header.domain_id,
+                        validation_reason: format!("DOMAIN_DATA_REPEAT refused: {reason}"),
+                    });
+                    tracker.observe_tolerated(&header, payload, at);
+                    off += record_len;
+                    continue;
                 }
             }
             tracker.observe(&header, payload, at);
@@ -2195,33 +2345,32 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 }
             }
 
-            let mut record_flags = header.record_flags;
+            // PROVE, DON'T ADVANCE: the walker validates the reconstruction
+            // through the fold's READ-ONLY probe and passes RAW ON-WIRE
+            // bytes plus the ORIGINAL flag word to `ingest_record`, whose
+            // internal apply performs the ONE true advance (Codex review
+            // round 16, finding 2). An advancing walker-side reconstruct
+            // would store grammar in the repeat baseline and refuse every
+            // honest Delta-resolution repeat.
+            let record_flags = header.record_flags;
             let reconstructed = if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                // RECONSTRUCT ONCE, HERE, and clear the envelope flag so the
-                // validation below, `fold.ingest_record` and every domain arm
-                // downstream all see the SAME reconstructed bytes and no second
-                // baseline advance. A record that will not reconstruct takes the
-                // malformed-payload path directly below, which is this loop's
-                // existing named outcome for a payload it cannot validate.
-                match fold.reconstruct_domain_data(
+                match fold.probe_domain_data(
                     header.sequence,
                     header.game_hour_raw,
                     header.domain_id,
                     record_flags,
                     payload,
                 ) {
-                    Ok(reconstructed) => {
-                        if reconstructed.is_some() {
-                            record_flags &=
-                                !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
-                        }
-                        Ok(reconstructed)
-                    }
+                    Ok(reconstructed) => Ok(reconstructed),
                     Err(reason) => Err(reason),
                 }
             } else {
                 Ok(None)
             };
+            let mut validation_flags = record_flags;
+            if let Ok(Some(_)) = &reconstructed {
+                validation_flags &= !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
+            }
             let reconstruction_failure = reconstructed.as_ref().err().cloned();
             let folded_payload = match &reconstructed {
                 Ok(Some(bytes)) => bytes.as_slice(),
@@ -2232,7 +2381,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                     validate_domain_data_payload_at(
                         header.domain_id,
                         folded_payload,
-                        record_flags,
+                        validation_flags,
                         header.sequence,
                         header.game_hour_raw,
                         processed + off as u64,
@@ -2259,6 +2408,18 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                             first_game_hour_raw: header.game_hour_raw,
                         });
                     malformed.records = malformed.records.saturating_add(1);
+                    // The producer published this record and moved BOTH
+                    // baselines with it; the reader must too, or a forged
+                    // repeat naming an older envelope passes the stale raw
+                    // digest and the un-advanced retained output (Codex
+                    // review round 17, finding 1).
+                    fold.note_rejected_domain_data(
+                        header.sequence,
+                        header.game_hour_raw,
+                        header.domain_id,
+                        header.record_flags,
+                        payload,
+                    );
                     let before = FoldDamageWatch::before(&tracker);
                     tracker.observe(&header, payload, processed + off as u64);
                     apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
@@ -2294,6 +2455,79 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 ) => stats.other_records += 1,
                 Err(_) => stats.other_records += 1,
             }
+            // A refused repeat must reach THIS walker's exclusion ledger with
+            // its exact reason, not only the fold's malformed-hour note
+            // (Codex review round 10, finding 4): the read-only probe runs
+            // every check `ingest_record` would, so a refusal here is THE
+            // refusal, named once and counted where the loss is attributed.
+            // The boundary tracker is told the record is TOLERATED so its
+            // semantic rules do not latch a violation the walk has already
+            // forgiven (Codex review round 16, finding 4).
+            if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            {
+                // The resolved payload is grammar-validated EXACTLY like a
+                // full record's: digest-valid resolution of malformed domain
+                // bytes is still a lost hour (Codex review round 21).
+                let outcome = fold
+                    .verify_domain_data_repeat(
+                        header.domain_id,
+                        record_flags,
+                        folded_payload,
+                    )
+                    .map_err(|error| {
+                        format!("DOMAIN_DATA_REPEAT composition refused: {error}")
+                    })
+                    .and_then(|resolved| {
+                        let validation_flags =
+                            if record_flags & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                                != 0
+                            {
+                                record_flags
+                                    & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+                            } else {
+                                record_flags
+                            };
+                        validate_domain_data_payload_at(
+                            header.domain_id,
+                            &resolved,
+                            validation_flags,
+                            header.sequence,
+                            header.game_hour_raw,
+                            processed + off as u64,
+                        )
+                        .map_err(|error| {
+                            format!("repeated payload failed domain validation: {error}")
+                        })
+                    });
+                if let Err(reason) = outcome {
+                    stats.malformed_payload_records += 1;
+                    stats
+                        .excluded_domain_data_records
+                        .push(ExcludedDomainDataRecord {
+                            stream_offset: processed + off as u64,
+                            game_hour_raw: header.game_hour_raw,
+                            domain_id: header.domain_id,
+                            validation_reason: reason.clone(),
+                        });
+                    let malformed = stats
+                        .malformed_payload_domains
+                        .entry(header.domain_id)
+                        .or_insert_with(|| MalformedPayloadDomainStats {
+                            records: 0,
+                            first_reason: reason.clone(),
+                            first_stream_offset: processed + off as u64,
+                            first_game_hour_raw: header.game_hour_raw,
+                        });
+                    malformed.records = malformed.records.saturating_add(1);
+                    let before = FoldDamageWatch::before(&tracker);
+                    tracker.observe_tolerated(&header, payload, processed + off as u64);
+                    apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
+                    fold.refuse_domain_data_repeat(header.game_hour_raw, header.domain_id, &reason);
+                    off += record_len;
+                    continue;
+                }
+            }
             let before = FoldDamageWatch::before(&tracker);
             tracker.observe(&header, payload, processed + off as u64);
             apply_fold_damage_step(before.after(&tracker, header.game_hour_raw), fold);
@@ -2302,7 +2536,7 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
                 header.game_hour_raw,
                 header.domain_id,
                 header.record_type,
-                folded_payload,
+                payload,
                 record_flags,
             );
             off += record_len;
@@ -5908,9 +6142,21 @@ fn a_corrupted_repeat_refuses_by_name_while_the_hour_bytes_still_seal() {
     let mut fold = WorldFold::new("pv_repeat_corrupt");
     let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
         .expect("a corrupted repeat is a named fold refusal, not framing damage");
+    // kills: a refused DOMAIN_DATA_REPEAT that surfaced only as the fold's
+    // malformed-hour note, so the walker's exclusion ledger held no entry and
+    // fold-check loss accounting omitted the refused repeated hour (Codex
+    // review round 10, finding 4). The refusal must be counted HERE.
     assert_eq!(
-        stats.malformed_payload_records, 0,
-        "the record is structurally valid; refusal happens at the digest"
+        stats.malformed_payload_records, 1,
+        "the refused repeat is a lost DATA record in this walker's ledger"
+    );
+    assert_eq!(stats.excluded_domain_data_records.len(), 1);
+    assert!(
+        stats.excluded_domain_data_records[0]
+            .validation_reason
+            .contains("DOMAIN_DATA_REPEAT composition refused"),
+        "{}",
+        stats.excluded_domain_data_records[0].validation_reason
     );
     assert_eq!(stats.hour_coverage.verified_count(), 2);
     let snapshots: Vec<serde_json::Value> = fold

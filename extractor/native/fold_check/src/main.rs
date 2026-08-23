@@ -371,61 +371,101 @@ impl CompletenessAudit {
         stream_offset: u64,
         payload: &[u8],
     ) -> Result<(), String> {
-        // Verify/refresh the repeat baseline on every data record; a verified
-        // REPEAT resolves to the original payload bytes so the audit's status
-        // extraction sees exactly what a full record carried.
+        // A framing-level or semantic refusal of a REPEAT is a LOST RECORD,
+        // not a broken audit (Codex review round 12, finding 4): the wire
+        // slot still existed, so data_records counts it, the domain stays
+        // registered for attribution, and the production cursor's exclusion
+        // ledger names the exact reason once. Every other record type keeps
+        // this audit's hard stop on violations.
         let repeat_reconstruction =
-            self.repeat_baselines
-                .observe(domain_id, record_type, payload)?;
+            if record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT {
+                match self.repeat_baselines.observe(domain_id, record_type, payload) {
+                    Err(_) => {
+                        self.current_domains.entry(domain_id).or_default().data_records += 1;
+                        return Ok(());
+                    }
+                    Ok(reconstructed) => {
+                        if validate_compact_record_semantics(
+                            domain_id,
+                            record_type,
+                            record_flags,
+                            payload,
+                        )
+                        .is_err()
+                        {
+                            self.current_domains.entry(domain_id).or_default().data_records += 1;
+                            return Ok(());
+                        }
+                        reconstructed
+                    }
+                }
+            } else {
+                // Verify/refresh the repeat baseline on every data record; a
+                // verified REPEAT resolves to the original payload bytes so
+                // the audit's status extraction sees exactly what a full
+                // record carried.
+                self.repeat_baselines
+                    .observe(domain_id, record_type, payload)?
+            };
         validate_compact_record_semantics(domain_id, record_type, record_flags, payload)?;
-        // UNWRAP BEFORE ANYTHING LOOKS AT THE PAYLOAD, and clear the envelope
-        // flag downstream: the flag describes the payload being handed over, and
-        // after this it is the domain's own grammar.
-        // A RECONSTRUCTION FAILURE EXCLUDES AND NAMES THE RECORD; IT DOES NOT
-        // ABORT THE AUDIT (Codex review round 1, finding 3). The first draft
-        // propagated the error with `?`, and the caller turns an `Err` here into
-        // a whole-run failure -- so one unreadable record would have destroyed
-        // the completeness answer for every hour of the capture, while the
-        // audit's own `excluded_data_records` / `excluded_data_reasons`
-        // machinery, which exists for exactly this, was never reached. It is
-        // also the opposite of what an ordinary malformed DOMAIN_DATA payload
-        // does below, where `domain_data_payload_status_at(...).unwrap_or(None)`
-        // records an unreadable status and carries on. Partial data still seals.
-        let reconstructed = match compact_contract::payload_span_delta::reconstruct_if_enveloped(
-            &mut self.span_delta,
-            record_flags,
-            compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+        // THE SPAN-DELTA CONSUMER MUST SEE REPEAT-DERIVED PAYLOADS: for a
+        // REPEAT the unwrap target is the RESOLUTION (the repeated hour's
+        // ON-WIRE bytes — an envelope exactly when that hour rode enveloped,
+        // signalled by the flag word the gate preserved), not this record's own
+        // digest blob. For repeats the resolution names the ORIGINAL hour, so
+        // `repeat_basis` replaces the header identity join with a digest check
+        // against this audit's retained baseline.
+        let is_repeat = record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT;
+        let unwrap_target: &[u8] = if is_repeat {
+            match repeat_reconstruction.as_deref() {
+                Some(bytes) => bytes,
+                None => {
+                    self.current_domains.entry(domain_id).or_default().data_records += 1;
+                    return Ok(());
+                }
+            }
+        } else {
+            payload
+        };
+        let reconstructed = if is_repeat
+            && record_flags & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA != 0
+        {
+            match compact_contract::payload_span_delta::repeat_basis(
+                &self.span_delta,
                 domain_id,
-                source_sequence: sequence,
-                game_hour_raw,
-            },
-            payload,
-        ) {
-            Ok(reconstructed) => reconstructed,
-            Err(_reason) => {
-                // THE EXCLUSION IS COUNTED BY THE LEDGER, NOT HERE (Codex review
-                // round 5, finding 1). The production fold has already recorded
-                // this same record in its `ExcludedDomainDataRecord` ledger, and
-                // `attribute_exclusion_ledger` below increments
-                // `excluded_data_records` and inserts the reason when it walks
-                // that ledger for this hour -- so counting it a second time here
-                // reported one lost record as two, a false loss count in a
-                // completeness answer.
-                //
-                // What this arm must still do is REGISTER THE DOMAIN for the
-                // hour, because the ledger attribution refuses an entry naming a
-                // domain the audit did not see. That is exactly what an ordinary
-                // unreadable payload does two calls below, where
-                // `domain_data_payload_status_at(...).unwrap_or(None)` records a
-                // data record with no readable status and carries on.
-                //
-                // The two cannot disagree about WHICH records fail: this audit
-                // and the fold walk the same records of the same stream in the
-                // same order, each advancing its own baseline store on every
-                // enveloped record -- the same reason the eight parallel fold
-                // workers stay in lockstep with one another.
-                self.current_domains.entry(domain_id).or_default().data_records += 1;
-                return Ok(());
+                unwrap_target,
+            ) {
+                Ok(basis) => Some(basis),
+                Err(_reason) => {
+                    // EXACTLY-ONE ACCOUNTING: this audit walk has no ledger of
+                    // its own; the production cursor's exclusion ledger now
+                    // carries every refused repeat (stream_fold and the
+                    // replay_decoder probe it before delegating), and
+                    // `attribute_exclusion_ledger` is what moves that entry
+                    // into a per-hour completeness record. Registering it HERE
+                    // too would double-count one wire slot as two exclusions.
+                    // The domain still registers so attribution finds it.
+                    self.current_domains.entry(domain_id).or_default().data_records += 1;
+                    return Ok(());
+                }
+            }
+        } else {
+            match compact_contract::payload_span_delta::reconstruct_if_enveloped(
+                &mut self.span_delta,
+                record_flags,
+                compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                    domain_id,
+                    source_sequence: sequence,
+                    game_hour_raw,
+                },
+                unwrap_target,
+            ) {
+                Ok(reconstructed) => reconstructed,
+                Err(_reason) => {
+                    // See the exactly-one accounting note in the arm above.
+                    self.current_domains.entry(domain_id).or_default().data_records += 1;
+                    return Ok(());
+                }
             }
         };
         let record_flags = if reconstructed.is_some() {
@@ -433,15 +473,9 @@ impl CompletenessAudit {
         } else {
             record_flags
         };
-        let payload = reconstructed.as_deref().unwrap_or(payload);
+        let audited_payload: &[u8] = reconstructed.as_deref().unwrap_or(unwrap_target);
         let record_type = compact_contract::KnownRecordType::try_from(record_type)
             .map_err(|unknown| format!("unknown compact record type {}", unknown.0))?;
-        let audited_payload: &[u8] = match record_type {
-            compact_contract::KnownRecordType::DomainDataRepeat => {
-                repeat_reconstruction.as_deref().unwrap_or(payload)
-            }
-            _ => payload,
-        };
         match record_type {
             compact_contract::KnownRecordType::DomainData
             | compact_contract::KnownRecordType::DomainDataRepeat => {
@@ -812,9 +846,28 @@ fn audit_compact_reader_with_identity_mode(
             }
             let payload_start = cursor + COMPACT_RECORD_HEADER_LEN;
             let payload = &carry[payload_start..cursor + record_len];
-            let accepted = stream_validator
-                .validate_record(&header, payload)
-                .map_err(|error| {
+            let accepted = match stream_validator.validate_record(&header, payload) {
+                Ok(accepted) => accepted,
+                // A SEMANTICALLY MALFORMED DOMAIN_DATA_REPEAT IS A LOST
+                // RECORD, NOT A BROKEN AUDIT (Codex review round 14,
+                // finding 1): observe() below counts the wire slot and
+                // registers the domain without aborting.
+                Err(
+                    _error @ (compact_contract::stream_validator::StreamValidationError::InvalidRecordPayload(_)
+                    | compact_contract::stream_validator::StreamValidationError::PayloadLengthMismatch { .. }
+                    | compact_contract::stream_validator::StreamValidationError::ReservedDomainZero),
+                ) if header.record_type
+                    == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT =>
+                {
+                    // Only SEMANTIC failures of a type-14 record are
+                    // tolerable losses; sequence-level errors say the stream
+                    // reordered or lost bytes and stay fatal (Codex review
+                    // round 18, finding 2). observe() below counts the wire
+                    // slot and registers the domain.
+                    stream_validator.tolerate_failed_record(&header);
+                    AcceptedRecordKind::Ordinary
+                }
+                Err(error) => {
                     let semantics_context = if identity_mode == StreamIdentityMode::Legacy
                         && matches!(&error, StreamValidationError::ReservedDomainZero)
                     {
@@ -830,12 +883,13 @@ fn audit_compact_reader_with_identity_mode(
                     } else {
                         String::new()
                     };
-                    format!(
+                    return Err(format!(
                         "{} stream validation at byte {}: {error}{semantics_context}",
                         stream_identity_mode_name(identity_mode),
                         offset + cursor as u64
-                    )
-                })?;
+                    ));
+                }
+            };
             if accepted == AcceptedRecordKind::CampaignIdentity {
                 cursor += record_len;
                 continue;

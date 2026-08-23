@@ -8,6 +8,7 @@ mod verify;
 pub use build::{
     build_d81_bundle, build_d81_bundle_from_file, build_d81_bundle_with_leading_gaps,
     inspect_d81_session,
+    inspect_d81_session_with_catalog,
 };
 pub use catalog::{AuthenticatedProvinceCatalog, ProvinceBinding};
 pub use model::{

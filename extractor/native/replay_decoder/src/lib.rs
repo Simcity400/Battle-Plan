@@ -1610,14 +1610,23 @@ fn fold_compact_stream_file_identity_aware(
             let sequence_error =
                 strict_sequence_error(previous_ordinary_sequence, header.sequence, record_at);
             previous_ordinary_sequence = Some(header.sequence);
-            if validation_error.is_none() {
-                validation_error = sequence_error.or_else(|| {
-                    validate_compact_record_envelope(&header, payload)
-                        .err()
-                        .map(|reason| {
-                            format!("record contract violation at byte {record_at}: {reason}")
-                        })
-                });
+            let contract_error: Option<String> = sequence_error.clone().or_else(|| {
+                validate_compact_record_envelope(&header, payload)
+                    .err()
+                    .map(|reason| {
+                        format!("record contract violation at byte {record_at}: {reason}")
+                    })
+            });
+            // A SEMANTICALLY MALFORMED DOMAIN_DATA_REPEAT IS A LOST RECORD,
+            // NOT A DEAD CERTIFICATION (Codex review round 15, finding 3): it
+            // is excluded and named below instead of poisoning
+            // `boundary_error`. Sequence-order violations stay fatal — they
+            // say the STREAM is damaged, not one record.
+            let tolerated_repeat_error = contract_error.is_some()
+                && sequence_error.is_none()
+                && header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT;
+            if !tolerated_repeat_error && validation_error.is_none() {
+                validation_error = contract_error.clone();
             }
             stats.records_total += 1;
 
@@ -1644,7 +1653,30 @@ fn fold_compact_stream_file_identity_aware(
                 )
                 | Err(_) => stats.other_records += 1,
             }
+            if tolerated_repeat_error {
+                stats.malformed_payload_records += 1;
+                stats
+                    .excluded_domain_data_records
+                    .push(ExcludedDomainDataRecord {
+                        stream_offset: record_at,
+                        game_hour_raw: header.game_hour_raw,
+                        domain_id: header.domain_id,
+                        validation_reason: contract_error.clone().unwrap_or_default(),
+                    });
+                fold.refuse_domain_data_repeat(
+                    header.game_hour_raw,
+                    header.domain_id,
+                    contract_error.as_deref().unwrap_or("malformed"),
+                );
+                // The tracker is told the record is TOLERATED so its rules
+                // do not latch a violation the walk has already forgiven
+                // (Codex review round 16, finding 4).
+                tracker.observe_tolerated(&header, payload, record_at);
+                off += record_len;
+                continue;
+            }
             tracker.observe(&header, payload, record_at);
+
 
             // RECONSTRUCT A `PSD1` ENVELOPE BEFORE VALIDATING IT, and clear the
             // flag for everything downstream. This walk validates the payload as
@@ -1663,7 +1695,11 @@ fn fold_compact_stream_file_identity_aware(
             let mut reconstructed: Option<Vec<u8>> = None;
             let mut reconstruction_failure: Option<String> = None;
             if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
-                match fold.reconstruct_domain_data(
+                // PROVE, DON'T ADVANCE (Codex review round 16, finding 2):
+                // validation uses the READ-ONLY probe; `ingest_record` below
+                // receives RAW ON-WIRE bytes plus the ORIGINAL flag word and
+                // performs the one true advance itself.
+                match fold.probe_domain_data(
                     header.sequence,
                     header.game_hour_raw,
                     header.domain_id,
@@ -1679,9 +1715,35 @@ fn fold_compact_stream_file_identity_aware(
                     }
                     Err(reason) => reconstruction_failure = Some(reason),
                 }
+            } else if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            {
+                // A refused repeat reaches THIS walker's ledger with its exact
+                // reason, not only the fold's malformed-hour note (Codex
+                // review round 10, finding 4): probe every check
+                // `ingest_record` would apply, read-only — and keep the
+                // RESOLVED payload so its grammar is validated exactly like a
+                // full record's (Codex review round 21).
+                match fold.verify_domain_data_repeat(
+                    header.domain_id,
+                    header.record_flags,
+                    payload,
+                ) {
+                    Ok(resolved) => {
+                        reconstructed = Some(resolved);
+                        downstream_flags &=
+                            !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
+                    }
+                    Err(reason) => {
+                        reconstruction_failure =
+                            Some(format!("DOMAIN_DATA_REPEAT composition refused: {reason}"))
+                    }
+                }
             }
             let folded_payload = reconstructed.as_deref().unwrap_or(payload);
-            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            let is_repeat = header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT;
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA || is_repeat {
                 let outcome = match reconstruction_failure {
                     Some(reason) => Err(reason),
                     None => validate_domain_data_payload_at(
@@ -1703,12 +1765,32 @@ fn fold_compact_stream_file_identity_aware(
                             domain_id: header.domain_id,
                             validation_reason: reason.clone(),
                         });
-                    fold.record_malformed_domain_payload(
-                        header.game_hour_raw,
-                        header.domain_id,
-                        payload,
-                        &reason,
-                    );
+                    if is_repeat {
+                        // A refused repeat keeps the REPEAT arm's named
+                        // provenance, not the generic malformed-payload one.
+                        fold.refuse_domain_data_repeat(
+                            header.game_hour_raw,
+                            header.domain_id,
+                            &reason,
+                        );
+                    } else {
+                        // The producer published this record and moved BOTH
+                        // baselines with it; the reader must too (Codex
+                        // review round 17, finding 1).
+                        fold.note_rejected_domain_data(
+                            header.sequence,
+                            header.game_hour_raw,
+                            header.domain_id,
+                            header.record_flags,
+                            payload,
+                        );
+                        fold.record_malformed_domain_payload(
+                            header.game_hour_raw,
+                            header.domain_id,
+                            payload,
+                            &reason,
+                        );
+                    }
                     off += record_len;
                     continue;
                 }
@@ -1718,8 +1800,8 @@ fn fold_compact_stream_file_identity_aware(
                 header.game_hour_raw,
                 header.domain_id,
                 header.record_type,
-                folded_payload,
-                downstream_flags,
+                payload,
+                header.record_flags,
             );
             off += record_len;
         }
@@ -2567,21 +2649,31 @@ impl HourCursor {
                     .map(|reason| {
                         format!("record contract violation at byte {record_start_abs}: {reason}")
                     });
-                if self.strict_validation_error.is_none() {
+                // A malformed DOMAIN_DATA_REPEAT is a TOLERATED loss, not a
+                // certification boundary violation: the strict error must
+                // not latch for it (Codex review round 16, finding 4). Full
+                // DATA keeps the stricter rule.
+                let tolerated_repeat_error = envelope_error.is_some()
+                    && header.record_type
+                        == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT;
+                if !tolerated_repeat_error && self.strict_validation_error.is_none() {
                     self.strict_validation_error = envelope_error.clone();
                 }
                 // SAME RECONSTRUCTION AS THE SPOOLED FOLD ABOVE, through the same
-                // `WorldFold` baselines (Codex review round 7, finding 1). This
-                // cursor is the streaming half of the certified replay product;
-                // an envelope validated as raw d43/d53 grammar here is marked
-                // malformed and never reaches `ingest_record`.
+                // `WorldFold` baselines (Codex review round 7, finding 1) — but
+                // PROVE, DON'T ADVANCE: the cursor validates through the fold's
+                // READ-ONLY probe and passes RAW ON-WIRE bytes plus the ORIGINAL
+                // flag word to `ingest_record`, whose internal apply performs
+                // the ONE true advance (Codex review round 16, finding 2). An
+                // advancing probe here would store grammar in the repeat
+                // baseline and refuse every honest Delta-resolution repeat.
                 let mut downstream_flags = header.record_flags;
                 let mut reconstructed: Option<Vec<u8>> = None;
                 let mut reconstruction_failure: Option<String> = None;
                 if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
                     && envelope_error.is_none()
                 {
-                    match self.fold.reconstruct_domain_data(
+                    match self.fold.probe_domain_data(
                         header.sequence,
                         header.game_hour_raw,
                         header.domain_id,
@@ -2601,6 +2693,33 @@ impl HourCursor {
                             ))
                         }
                     }
+                } else if header.record_type
+                    == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+                    && envelope_error.is_none()
+                {
+                    // A refused repeat must reach this cursor's exclusion
+                    // ledger, not only the fold's malformed-hour note (Codex
+                    // review round 10, finding 4): probe every check
+                    // `ingest_record` would apply, read-only — and keep the
+                    // RESOLVED payload so its grammar is validated exactly
+                    // like a full record's (Codex review round 21).
+                    match self.fold.verify_domain_data_repeat(
+                        header.domain_id,
+                        header.record_flags,
+                        payload,
+                    ) {
+                        Ok(resolved) => {
+                            reconstructed = Some(resolved);
+                            downstream_flags &=
+                                !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
+                        }
+                        Err(reason) => {
+                            reconstruction_failure = Some(format!(
+                                "DOMAIN_DATA_REPEAT composition refused at byte \
+                                 {record_start_abs}: {reason}"
+                            ))
+                        }
+                    }
                 }
                 let folded_payload = reconstructed.as_deref().unwrap_or(payload);
                 let exact_payload_error = match (header.record_type, envelope_error.as_ref()) {
@@ -2617,6 +2736,24 @@ impl HourCursor {
                             .err()
                         })
                     }
+                    // A repeat's payload is a volatile prefix plus a tail
+                    // digest, never grammar; its resolved payload, however,
+                    // IS domain grammar and validates exactly like a full
+                    // record's (Codex review round 21).
+                    (
+                        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+                        None,
+                    ) => reconstruction_failure.clone().or_else(|| {
+                        validate_domain_data_payload_at(
+                            header.domain_id,
+                            folded_payload,
+                            downstream_flags,
+                            header.sequence,
+                            header.game_hour_raw,
+                            record_start_abs,
+                        )
+                        .err()
+                    }),
                     _ => None,
                 };
                 let malformed_reason = matches!(
@@ -2667,6 +2804,39 @@ impl HourCursor {
                 }
                 let damage_before =
                     recorder_host::stream_fold::FoldDamageWatch::before(&self.boundary_tracker);
+                if tolerated_repeat_error {
+                    // A repeat that cannot ride the wire at all refuses here:
+                    // for type 14 ANY malformed reason is ledger-worthy
+                    // (Codex review round 11, finding 3), and the boundary
+                    // tracker is told the record is TOLERATED so its rules do
+                    // not latch a violation the walk has already forgiven
+                    // (Codex review round 16, finding 4).
+                    let reason = envelope_error.clone().unwrap_or_default();
+                    self.stats.malformed_payload_records += 1;
+                    self.stats
+                        .excluded_domain_data_records
+                        .push(ExcludedDomainDataRecord {
+                            stream_offset: record_start_abs,
+                            game_hour_raw: header.game_hour_raw,
+                            domain_id: header.domain_id,
+                            validation_reason: reason.clone(),
+                        });
+                    self.boundary_tracker
+                        .observe_tolerated(&header, payload, record_start_abs);
+                    recorder_host::stream_fold::apply_fold_damage_step(
+                        damage_before.after(&self.boundary_tracker, header.game_hour_raw),
+                        &mut self.fold,
+                    );
+                    // A refused repeat keeps the REPEAT arm's named
+                    // provenance, not the generic malformed-payload one.
+                    self.fold.refuse_domain_data_repeat(
+                        header.game_hour_raw,
+                        header.domain_id,
+                        &reason,
+                    );
+                    self.pos += record_len;
+                    continue;
+                }
                 self.boundary_tracker
                     .observe(&header, payload, record_start_abs);
                 recorder_host::stream_fold::apply_fold_damage_step(
@@ -2675,7 +2845,13 @@ impl HourCursor {
                 );
 
                 if let Some(reason) = malformed_reason {
-                    if exact_payload_error.is_some() {
+                    if header.record_type
+                        == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+                    {
+                        // A composition-refused repeat (framing was fine) is
+                        // still ledger-worthy here (Codex review round 11,
+                        // finding 3) and keeps the REPEAT arm's named
+                        // provenance.
                         self.stats.malformed_payload_records += 1;
                         self.stats
                             .excluded_domain_data_records
@@ -2685,21 +2861,47 @@ impl HourCursor {
                                 domain_id: header.domain_id,
                                 validation_reason: reason.clone(),
                             });
+                        self.fold
+                            .refuse_domain_data_repeat(header.game_hour_raw, header.domain_id, &reason);
+                    } else if exact_payload_error.is_some() {
+                        self.stats.malformed_payload_records += 1;
+                        self.stats
+                            .excluded_domain_data_records
+                            .push(ExcludedDomainDataRecord {
+                                stream_offset: record_start_abs,
+                                game_hour_raw: header.game_hour_raw,
+                                domain_id: header.domain_id,
+                                validation_reason: reason.clone(),
+                            });
+                        // The producer published this record and moved BOTH
+                        // baselines with it; the reader must too (Codex
+                        // review round 17, finding 1).
+                        self.fold.note_rejected_domain_data(
+                            header.sequence,
+                            header.game_hour_raw,
+                            header.domain_id,
+                            header.record_flags,
+                            payload,
+                        );
+                        self.fold.record_malformed_domain_payload(
+                            header.game_hour_raw,
+                            header.domain_id,
+                            payload,
+                            &reason,
+                        );
                     }
-                    self.fold.record_malformed_domain_payload(
-                        header.game_hour_raw,
-                        header.domain_id,
-                        payload,
-                        &reason,
-                    );
                 } else {
+                    // RAW ON-WIRE bytes plus the ORIGINAL flag word: the
+                    // fold's internal apply performs the one true advance and
+                    // stores the raw baseline (Codex review round 16,
+                    // finding 2).
                     self.fold.ingest_record(
                         header.sequence,
                         header.game_hour_raw,
                         header.domain_id,
                         header.record_type,
-                        folded_payload,
-                        downstream_flags,
+                        payload,
+                        header.record_flags,
                     );
                 }
                 self.pos += record_len;

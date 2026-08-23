@@ -1238,11 +1238,35 @@ fn scan_runtime_content_snapshots(
                 "runtime-content stream has truncated payload at offset {stream_offset}"
             ));
         }
-        let accepted = validator
-            .validate_record(&header, &payload)
-            .map_err(|error| {
-                format!("H4CR validation at offset {stream_offset} failed: {error}")
-            })?;
+        // A SEMANTICALLY MALFORMED DOMAIN_DATA_REPEAT IS A LOST RECORD, NOT
+        // A DEAD MANIFEST (Codex review round 15, finding 4): skip it by
+        // name and clear the validator's stored failure so the stream is not
+        // poisoned for every record after it. A repeat contributes no new
+        // runtime content, so nothing is missing from this scan.
+        let accepted = match validator.validate_record(&header, &payload) {
+            Ok(accepted) => accepted,
+            Err(
+                error @ (compact_contract::stream_validator::StreamValidationError::InvalidRecordPayload(_)
+                | compact_contract::stream_validator::StreamValidationError::PayloadLengthMismatch { .. }
+                | compact_contract::stream_validator::StreamValidationError::ReservedDomainZero),
+            ) if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT =>
+            {
+                // Only SEMANTIC failures are tolerable; sequence-level
+                // errors stay fatal (Codex review round 18, finding 2).
+                let _ = error;
+                validator.tolerate_failed_record(&header);
+                stream_offset = stream_offset
+                    .checked_add(header.record_len())
+                    .ok_or_else(|| "runtime-content stream offset overflow".to_string())?;
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "H4CR validation at offset {stream_offset} failed: {error}"
+                ))
+            }
+        };
         if accepted == AcceptedRecordKind::Ordinary
             && header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA
         {

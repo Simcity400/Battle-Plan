@@ -1630,6 +1630,133 @@ impl PayloadSpanDeltaConsumer {
     pub fn retained_bytes(&self) -> usize {
         self.baselines.retained_bytes()
     }
+
+    /// The retained baseline of one domain, for READ-ONLY proofs.
+    ///
+    /// This is the non-advancing half of the walker contract: a walker that
+    /// must validate an enveloped record BEFORE deciding to hand it to its
+    /// fold probes through here plus [`apply_to_baseline`], and lets the
+    /// fold's own `apply` perform the one true advance (Codex review round
+    /// 16, finding 2 — a double advance would refuse every honest Delta).
+    pub fn retained_baseline(&self, domain_id: u16) -> Option<&PayloadSpanDeltaBaseline> {
+        self.baselines.get(domain_id)
+    }
+}
+
+/// Reconstruct a DOMAIN_DATA_REPEAT-derived payload for a delta-enabled
+/// domain.
+///
+/// A DOMAIN_DATA_REPEAT whose replaced hour rode enveloped resolves (through
+/// the framing layer's baseline store) to those ON-WIRE ENVELOPE BYTES. This
+/// is the reader-side half of that composition. THE LAW: acceptance must
+/// yield EXACTLY the payload the reader already vouches for — the volatile
+/// header the envelope carries plus the RETAINED basis — and must prove the
+/// envelope describes precisely that output before returning it:
+///
+/// 1. the envelope's declared output digest equals the retained digest, and
+///    its declared `reconstructed_len` equals the retained basis plus the
+///    volatile header;
+/// 2. a `NoChange` body names the retained digest as its input (provable:
+///    the reader still holds it);
+/// 3. a `Delta` body's program is SHAPE-proven against the declared sizes
+///    (op budget, byte budget). Its INPUT digest cannot be re-proven — the
+///    reader discarded that pre-state when it advanced — and that is sound
+///    BY CONSTRUCTION: acceptance returns only the retained basis, whose
+///    digest the declared output digest was just proven to equal, so even a
+///    forged body can never summon bytes the reader does not already hold
+///    (Codex review rounds 10-12, findings 1/1/1: the proof must bind the
+///    envelope to the retained OUTPUT, which is the thing that survives).
+///    The original hour's own application policed the full program once
+///    under its identity join; a body that lied there was refused then, the
+///    chain stayed put, and this digest check refuses its repeat now.
+/// 4. a `Keyframe` body is self-authenticating (its embedded basis must hash
+///    to the declared digest), and rule 1 additionally pins that digest to
+///    the retained one — a foreign keyframe cannot ride a repeat past the
+///    unchanged-state assertion (Codex review round 12, finding 2).
+///
+/// The returned payload is volatile header plus retained basis WITHOUT
+/// advancing the chain — a repeated hour asserts state-unchanged, so there is
+/// no new basis to retain.
+///
+/// Fails by name when the resolved bytes are not an envelope for `domain_id`,
+/// when the consumer holds no baseline for it, or when any proof above fails.
+pub fn repeat_basis(
+    consumer: &PayloadSpanDeltaConsumer,
+    domain_id: u16,
+    resolved_on_wire: &[u8],
+) -> Result<Vec<u8>, String> {
+    let record = decode_payload(resolved_on_wire)?;
+    if record.identity.domain_id != domain_id {
+        return Err(format!(
+            "PSD1 envelope claims domain {} but the repeat carries domain {}",
+            record.identity.domain_id, domain_id
+        ));
+    }
+    let Some(baseline) = consumer.baselines.get(domain_id) else {
+        return Err(format!(
+            "PSD1 envelope for domain {domain_id} has no retained baseline: a repeated \
+             enveloped hour may only follow a full record this reader unwrapped"
+        ));
+    };
+    if record.basis_sha256 != baseline.basis_sha256 {
+        return Err(format!(
+            "PSD1 envelope basis digest does not match the retained baseline for domain \
+             {domain_id}; the repeated hour is not the unchanged hour the stream claims"
+        ));
+    }
+    let expected_len = baseline.basis.len() + VOLATILE_HEADER_LEN;
+    if record.reconstructed_len as usize != expected_len {
+        return Err(format!(
+            "PSD1 envelope declares a {}-byte payload but the retained basis it names is \
+             {} byte(s) plus the volatile header",
+            record.reconstructed_len, baseline.basis.len()
+        ));
+    }
+    let basis_len = expected_len - VOLATILE_HEADER_LEN;
+    match &record.body {
+        PayloadSpanDeltaBody::Keyframe => {
+            let digest: [u8; 32] = Sha256::digest(record.keyframe_basis.as_slice()).into();
+            if digest != record.basis_sha256 {
+                return Err(
+                    "PSD1 keyframe basis does not hash to its own declared basis digest"
+                        .into(),
+                );
+            }
+        }
+        PayloadSpanDeltaBody::NoChange { base_basis_sha256 } => {
+            if *base_basis_sha256 != baseline.basis_sha256 {
+                return Err(format!(
+                    "PSD1 no-change body names {} but the retained baseline is {}",
+                    hex32(base_basis_sha256),
+                    hex32(&baseline.basis_sha256)
+                ));
+            }
+        }
+        PayloadSpanDeltaBody::Delta {
+            base_basis_sha256,
+            program,
+            op_count,
+        } => {
+            let _ = base_basis_sha256;
+            if *op_count as usize > MAX_OPS {
+                return Err(format!("PSD1 delta body carries more than {MAX_OPS} ops"));
+            }
+            let produced =
+                walk_program(program, *op_count, basis_len, |_, _| Ok(()))?;
+            if produced != basis_len {
+                return Err(format!(
+                    "PSD1 delta program produces {produced} byte(s), not the {} it declares",
+                    basis_len
+                ));
+            }
+        }
+    }
+    debug_assert_eq!(Sha256::digest(&baseline.basis).as_slice(), &record.basis_sha256[..]);
+    let mut out = Vec::with_capacity(expected_len);
+    out.extend_from_slice(&record.volatile_header);
+    out.extend_from_slice(&baseline.basis);
+    debug_assert_eq!(out.len(), expected_len);
+    Ok(out)
 }
 
 /// Reconstruct a DOMAIN_DATA payload when its record flags say it is an

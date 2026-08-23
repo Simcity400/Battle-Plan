@@ -322,18 +322,32 @@ fn verify_rebuilt_wire_source_receipts(
 
 fn inspect_rebuilt_wire_session_first_ticks(
     sessions: &[OwnedStitchedWireSession],
+    catalog: Option<&wire_product::AuthenticatedProvinceCatalog>,
 ) -> Result<(std::collections::BTreeMap<u32, u64>, u64), String> {
     let mut first_ticks = std::collections::BTreeMap::new();
     let mut unreconstructed_records = 0u64;
     for session in sessions {
-        let inspection = wire_product::inspect_d81_session(wire_product::H4crSession {
-            branch: session.branch,
-            identity_mode: session.identity_mode,
-            source: wire_product::H4crSource::RetainedFileSelection(
-                &session.file,
-                session.selection,
+        let inspection = match catalog {
+            Some(catalog) => wire_product::inspect_d81_session_with_catalog(
+                wire_product::H4crSession {
+                    branch: session.branch,
+                    identity_mode: session.identity_mode,
+                    source: wire_product::H4crSource::RetainedFileSelection(
+                        &session.file,
+                        session.selection,
+                    ),
+                },
+                catalog,
             ),
-        })
+            None => wire_product::inspect_d81_session(wire_product::H4crSession {
+                branch: session.branch,
+                identity_mode: session.identity_mode,
+                source: wire_product::H4crSource::RetainedFileSelection(
+                    &session.file,
+                    session.selection,
+                ),
+            }),
+        }
         .map_err(|error| {
             format!(
                 "inspect retained stitched H4CR branch {} coverage: {error}",
@@ -361,6 +375,7 @@ fn inspect_rebuilt_wire_session_first_ticks(
 
 fn derive_rebuilt_wire_plan_from_sessions(
     plan: &StitchedPlan,
+    catalog: Option<&wire_product::AuthenticatedProvinceCatalog>,
     sessions: &[OwnedStitchedWireSession],
 ) -> Result<
     (
@@ -373,7 +388,7 @@ fn derive_rebuilt_wire_plan_from_sessions(
 > {
     let (mut branches, routes) = derive_rebuilt_wire_plan(plan)?;
     let (first_ticks, unreconstructed_records) =
-        inspect_rebuilt_wire_session_first_ticks(sessions)?;
+        inspect_rebuilt_wire_session_first_ticks(sessions, catalog)?;
     if first_ticks.len() != branches.len() {
         return Err(
             "retained stitched H4CR session count differs from rebuilt-wire branches".to_string(),
@@ -577,7 +592,7 @@ impl StitchedRebuiltWireProduct {
         }
         verify_rebuilt_wire_source_receipts(&sessions)?;
         let (branches, inspected_routes, source_first_ticks, unreconstructed_records) =
-            derive_rebuilt_wire_plan_from_sessions(plan, &sessions)?;
+            derive_rebuilt_wire_plan_from_sessions(plan, Some(&catalog), &sessions)?;
         if inspected_routes != routes {
             return Err(
                 "retained H4CR inspection changed the rebuilt-wire route table".to_string(),
@@ -1170,7 +1185,7 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
             return Err("rebuilt-wire product belongs to a different stitched plan".to_string());
         }
         let (branches, routes, source_first_ticks, unreconstructed_records) =
-            derive_rebuilt_wire_plan_from_sessions(plan, &product.sessions)?;
+            derive_rebuilt_wire_plan_from_sessions(plan, Some(&product.catalog), &product.sessions)?;
         if branches != product.branches || routes != product.routes {
             return Err(
                 "rebuilt-wire product branch join differs from the final stitched plan".to_string(),
@@ -2519,7 +2534,11 @@ mod tests {
         );
         let h2_last_sequence = sequence - 1;
         let h3_first_sequence = sequence;
-        let (h3_first, h3_last) = append_stitched_d81_hour(&mut stream, &mut sequence, h3);
+        // The country roster rides WITH the hour: the identity-portability
+        // oracle requires every d81 country id to be vouched by a walked D18
+        // roster, and this synthetic branch's only roster is its own.
+        let (h3_first, h3_last) =
+            append_stitched_d81_hour_with_country_roster(&mut stream, &mut sequence, h3);
         let h3_last_sequence = sequence - 1;
         let digest = Sha256::hex(&stream);
 
@@ -2580,7 +2599,7 @@ mod tests {
             },
         };
         let (branches, routes, first_ticks, _unreconstructed_records) =
-            derive_rebuilt_wire_plan_from_sessions(&plan, &[session]).unwrap();
+            derive_rebuilt_wire_plan_from_sessions(&plan, None, &[session]).unwrap();
         assert_eq!(branches[0].first_tick, u64::try_from(h0).unwrap());
         assert_eq!(first_ticks.get(&0), Some(&u64::try_from(h0).unwrap()));
         assert!(
@@ -2599,7 +2618,8 @@ mod tests {
         let h12 = stitched_valid_hour(12);
         let mut stream = Vec::new();
         let mut sequence = 1u64;
-        append_stitched_d81_hour(&mut stream, &mut sequence, h9);
+        // Roster rides with the hour (identity-portability oracle).
+        append_stitched_d81_hour_with_country_roster(&mut stream, &mut sequence, h9);
         let (first, _) =
             append_stitched_d81_hour_with_country_roster(&mut stream, &mut sequence, h10);
         append_stitched_d81_gap(
@@ -2637,12 +2657,14 @@ mod tests {
             },
         );
         let selection = wire_product::H4crSelection {
-            first_sequence: 4,
+            // The rostered hours carry two extra D18 records each, so h10's
+            // first record is sequence 6 (Codex review round 31, defect 2).
+            first_sequence: 6,
             last_sequence: sequence - 1,
             start_byte: first.0,
             end_byte: last.1,
         };
-        assert_eq!((selection.first_sequence, selection.last_sequence), (4, 12));
+        assert_eq!((selection.first_sequence, selection.last_sequence), (6, 14));
         assert!(selection.start_byte < selection.end_byte);
         let dir = TempDir::new("wire_selected_refold");
         let source_path = dir.0.join("selected.h4cr");

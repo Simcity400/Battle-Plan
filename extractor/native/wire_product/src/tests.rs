@@ -1088,6 +1088,179 @@ fn an_enveloped_d81_session_inspects_and_builds_like_the_raw_one() {
     assert_ne!(raw_descriptor.blake3, wrapped_descriptor.blake3);
 }
 
+#[test]
+fn a_repeated_enveloped_d81_hour_publishes_the_same_state_as_its_full_record() {
+    // kills: the PSD1 x DOMAIN_DATA_REPEAT composition seam. A repeat whose
+    // baseline hour rode ENVELOPED resolves to those ON-WIRE envelope bytes
+    // (d81 declares no volatile prefix, so the repeat digest covers the whole
+    // envelope), and scan_h4cr must unwrap them through its span-delta
+    // consumer before any grammar read. Before this seam was closed the d81
+    // arm took from a priming slot that repeats never fill (panic) or fed the
+    // envelope straight to `d81::split_payload`. The repeated hour must count,
+    // publish, and produce state byte-identical to a plain full record.
+    let mut wrapped = Vec::new();
+    let mut sequence = 1u64;
+    let mut producer = compact_contract::payload_span_delta::PayloadSpanDeltaProducer::new();
+
+    // Hour 10: PERF + enveloped keyframe DATA + FRAME_END.
+    let tick_a = 10i32;
+    let payload_a = compact_contract::rail_replay::encode_payload_with_hub_simulation(
+        &[],
+        &[],
+        0,
+        0,
+        0,
+        0,
+    )
+    .unwrap();
+    let identity = |sequence: u64, tick: i32| {
+        compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+            domain_id: wire_format::d81::DOMAIN as u16,
+            source_sequence: sequence,
+            game_hour_raw: tick,
+        }
+    };
+    let envelope_a = producer.wrap(identity(sequence + 1, tick_a), &payload_a).unwrap();
+    push_h4cr_record(
+        &mut wrapped,
+        sequence,
+        tick_a,
+        wire_format::d81::DOMAIN as u16,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        0,
+        &perf_payload(0),
+    );
+    push_h4cr_record(
+        &mut wrapped,
+        sequence + 1,
+        tick_a,
+        wire_format::d81::DOMAIN as u16,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+        &envelope_a,
+    );
+    push_h4cr_record(
+        &mut wrapped,
+        sequence + 2,
+        tick_a,
+        COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(1, 1, 0),
+    );
+    sequence += 3;
+
+    // Hour 11: PERF + a DOMAIN_DATA_REPEAT vouching hour 10's on-wire bytes.
+    // d81 declares no volatile prefix, so the repeat payload is exactly the
+    // 32-byte digest of the stored baseline (the envelope). The gate keeps the
+    // flag word of the record it replaces, so this record carries the PSD1 bit.
+    let tick_b = 11i32;
+    let repeat_payload = {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(&envelope_a);
+        digest.to_vec()
+    };
+    producer.commit();
+    push_h4cr_record(
+        &mut wrapped,
+        sequence,
+        tick_b,
+        wire_format::d81::DOMAIN as u16,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        0,
+        &perf_payload(0),
+    );
+    push_h4cr_record(
+        &mut wrapped,
+        sequence + 1,
+        tick_b,
+        wire_format::d81::DOMAIN as u16,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+        COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+        &repeat_payload,
+    );
+    push_h4cr_record(
+        &mut wrapped,
+        sequence + 2,
+        tick_b,
+        COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(1, 1, 0),
+    );
+
+    // The composed session inspects like two full hours...
+    let inspection = inspect_d81_session(legacy_bytes_session(&wrapped)).unwrap();
+    assert_eq!(inspection.data_records, 2);
+    assert_eq!(inspection.publication_authoritative_records, 2);
+    assert_eq!(inspection.unreconstructed_records, 0);
+
+    // ...and publishes state identical to a session where BOTH hours are full
+    // records carrying the same payload (the only thing the repeat asserts).
+    let mut raw = Vec::new();
+    let mut raw_sequence = 1u64;
+    for tick in [tick_a, tick_b] {
+        push_h4cr_record(
+            &mut raw,
+            raw_sequence,
+            tick,
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(0),
+        );
+        push_h4cr_record(
+            &mut raw,
+            raw_sequence + 1,
+            tick,
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &payload_a,
+        );
+        push_h4cr_record(
+            &mut raw,
+            raw_sequence + 2,
+            tick,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(1, 1, 0),
+        );
+        raw_sequence += 3;
+    }
+    let catalog = authenticated_catalog();
+    let config = BundleBuildConfig::default();
+    let describe_state_entries = |bundle: &PreparedBundle| {
+        let mut rows: Vec<(String, String)> = bundle
+            .entries()
+            .iter()
+            .filter(|entry| entry.role == ArtifactRole::StateBlock)
+            .map(|entry| (entry.path.clone(), hex_encode_blake3(&entry.blake3)))
+            .collect();
+        rows.sort();
+        rows
+    };
+    let raw_bundle = build_d81_bundle(
+        config,
+        std::slice::from_ref(&h4cr_branch(tick_a as u64, &raw)),
+        &catalog,
+        std::slice::from_ref(&legacy_bytes_session(&raw)),
+    )
+    .unwrap();
+    let wrapped_bundle = build_d81_bundle(
+        config,
+        std::slice::from_ref(&h4cr_branch(tick_a as u64, &wrapped)),
+        &catalog,
+        std::slice::from_ref(&legacy_bytes_session(&wrapped)),
+    )
+    .unwrap();
+    assert_eq!(
+        describe_state_entries(&raw_bundle),
+        describe_state_entries(&wrapped_bundle)
+    );
+}
+
 /// Hex helper local to these tests; `blake3::Hasher` output rendered the way
 /// [`BundleEntry`] displays it.
 fn hex_encode_blake3(bytes: &[u8; 32]) -> String {

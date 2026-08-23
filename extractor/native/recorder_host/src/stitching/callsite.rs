@@ -474,7 +474,7 @@ fn verify_registered_rebuilt_wire_authority(
         identity_mode,
         source: wire_product::H4crSource::RetainedFile(&raw_file),
     };
-    let inspection = wire_product::inspect_d81_session(session)
+    let inspection = wire_product::inspect_d81_session_with_catalog(session, &catalog)
         .map_err(|error| format!("inspect registered D81 source failed: {error}"))?;
     let branch = wire_product::BranchSpec {
         branch: 0,

@@ -298,7 +298,11 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     }
     // A repeat replaces a DATA record one-for-one and carries that record's
     // flag word, so it admits exactly the bits its domain's DATA records
-    // admit.
+    // admit. For a delta-enabled domain that includes the PSD1 envelope bit:
+    // the repeat gate rewrites record_type and payload ONLY, so a repeated
+    // hour whose full record rode as an envelope keeps that bit, and every
+    // reader resolves the repeat to those same on-wire bytes and unwraps them
+    // through its span-delta consumer before grammar reads.
     if matches!(
         record_type,
         COMPACT_RECORD_TYPE_DOMAIN_DATA | COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
@@ -306,8 +310,10 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     {
         allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
     }
-    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
-        && crate::payload_span_delta::is_delta_enabled_domain(domain_id)
+    if matches!(
+        record_type,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA | COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+    ) && crate::payload_span_delta::is_delta_enabled_domain(domain_id)
     {
         allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA;
     }
@@ -1180,5 +1186,187 @@ mod tests {
         let err = validate_compact_record_semantics(18, 99, 0, &[])
             .expect_err("unknown record type must fail");
         assert!(err.contains("unknown compact record type 99"), "{err}");
+    }
+    #[test]
+    fn a_repeat_of_an_enveloped_hour_resolves_to_the_envelope_and_unwraps_to_the_raw_hour() {
+        // kills: treating a DOMAIN_DATA_REPEAT whose baseline hour rode as a
+        // PSD1 envelope as if it resolved to raw grammar. The repeat gate
+        // stores RAW on-wire bytes and preserves the replaced record's flag
+        // word, so resolution returns THE ENVELOPE BYTE-FOR-BYTE and every
+        // reader must unwrap it through its span-delta consumer — identity
+        // join intact, because the gate rewrites record_type and payload only.
+        // A reader (or a flag table that drops the PSD1 bit on type 14) breaks
+        // here instead of at publication time.
+        use crate::payload_span_delta as psd;
+        use sha2::{Digest, Sha256};
+
+        const HOUR: i32 = DATE_EPOCH_CONST + 1936 * 365 * 24;
+        let mut producer = psd::PayloadSpanDeltaProducer::new();
+        let mut consumer = psd::PayloadSpanDeltaConsumer::new();
+        let mut baselines = DomainRepeatBaselines::new();
+
+        for (domain_id, sequence) in [
+            (crate::rail_replay::DOMAIN_ID, 7u64),
+            (
+                crate::payload_span_delta::DELTA_ENABLED_DOMAINS[0],
+                9u64,
+            ),
+        ] {
+            let mut payload = HOUR.to_le_bytes().to_vec();
+            payload.extend(
+                (0..512u32)
+                    .map(|index: u32| (index as u8).wrapping_add(domain_id as u8)),
+            );
+            let identity = psd::PayloadSpanDeltaIdentity {
+                domain_id,
+                source_sequence: sequence,
+                game_hour_raw: HOUR,
+            };
+            let envelope = producer.wrap(identity, &payload).unwrap();
+
+            // The gate stores RAW ON-WIRE bytes and vouches their tail.
+            assert_eq!(
+                baselines
+                    .observe(domain_id, COMPACT_RECORD_TYPE_DOMAIN_DATA, &envelope)
+                    .unwrap(),
+                None
+            );
+            let span = domain_declared_volatile_prefix_len(domain_id);
+            let mut repeat_payload = envelope[..span].to_vec();
+            let digest = Sha256::digest(&envelope[span..]);
+            repeat_payload.extend_from_slice(digest.as_slice());
+
+            // The preserved flag word is admissible on the rewritten record.
+            assert_eq!(
+                compact_record_allowed_flags(
+                    domain_id,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+                ) & COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+                COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
+            );
+            validate_compact_record_semantics(
+                domain_id,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+                COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+                &repeat_payload,
+            )
+            .expect("an enveloped-hour repeat carries its PSD1 flag word");
+
+            // Resolution returns the envelope BYTE FOR BYTE.
+            let resolved = baselines
+                .observe(
+                    domain_id,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+                    &repeat_payload,
+                )
+                .unwrap()
+                .expect("a verified repeat resolves to stored bytes");
+            assert_eq!(resolved, envelope);
+
+            // ...and the reader-side law: `repeat_basis` authenticates the
+            // resolution against the consumer's RETAINED baseline (digest
+            // match) and returns the full original payload WITHOUT advancing
+            // the chain - a repeated hour asserts state-unchanged. The strict
+            // header join cannot be expressed by a reader here: the resolution
+            // names the ORIGINAL record's sequence/hour while the repeat
+            // carries its own.
+            let mut consumer = psd::PayloadSpanDeltaConsumer::new();
+            assert!(consumer.apply(identity, &envelope).is_ok());
+            let basis =
+                psd::repeat_basis(&consumer, domain_id, &resolved).unwrap_or_else(|error| {
+                    panic!("domain {domain_id} repeat basis must resolve: {error}")
+                });
+            assert_eq!(basis, payload);
+        }
+    }
+
+    #[test]
+    fn a_no_change_envelope_naming_the_retained_digest_but_another_length_is_refused_by_repeat_basis()
+    {
+        // kills: `repeat_basis` authenticating a repeated enveloped hour by
+        // its self-declared `basis_sha256` alone, ignoring the declared
+        // `reconstructed_len` — an excluded, malformed envelope could name
+        // the retained digest yet declare some other length and reconstruct
+        // cleanly where ordinary application refuses the same record
+        // (Codex review round 10, finding 1). The repeat must prove the
+        // envelope describes EXACTLY the retained basis.
+        use crate::payload_span_delta as psd;
+
+        const HOUR: i32 = DATE_EPOCH_CONST + 1936 * 365 * 24;
+        let domain_id = psd::DELTA_ENABLED_DOMAINS[0];
+        let mut payload = HOUR.to_le_bytes().to_vec();
+        payload.extend((0..512u32).map(|index: u32| index as u8));
+        let identity = |sequence: u64| psd::PayloadSpanDeltaIdentity {
+            domain_id,
+            source_sequence: sequence,
+            game_hour_raw: HOUR,
+        };
+        let mut producer = psd::PayloadSpanDeltaProducer::new();
+        let mut consumer = psd::PayloadSpanDeltaConsumer::new();
+        let keyframe = producer.wrap(identity(7), &payload).unwrap();
+        consumer.apply(identity(7), &keyframe).unwrap();
+
+        // The honest unchanged hour composes and yields the original payload.
+        let no_change = producer.wrap(identity(8), &payload).unwrap();
+        assert_eq!(
+            psd::repeat_basis(&consumer, domain_id, &no_change).unwrap(),
+            payload
+        );
+
+        // Tamper ONLY the declared reconstructed_len (bytes 20..24 of the
+        // PSD1 header: volatile window, magic, version, header length,
+        // domain, kind byte, volatile length). The self-declared basis
+        // digest still matches the retained baseline byte for byte, so a
+        // digest-only check would accept this.
+        let mut malformed = no_change.clone();
+        let declared = u32::from_le_bytes(malformed[20..24].try_into().unwrap());
+        malformed[20..24].copy_from_slice(&(declared + 64).to_le_bytes());
+        let error = psd::repeat_basis(&consumer, domain_id, &malformed)
+            .expect_err("a NoChange envelope declaring another length must not reconstruct");
+        assert!(error.contains("declares"), "{error}");
+    }
+
+    #[test]
+    fn a_repeat_of_a_delta_hour_returns_the_retained_output_and_foreign_envelopes_are_refused() {
+        // kills: two opposite failures of the same law. Round 12 finding 1:
+        // replaying a Delta-resolution envelope against the consumer's CURRENT
+        // baseline refuses every honest repeat, because the Delta names its
+        // PRE-state while the reader holds the POST-state. Round 12 finding 2:
+        // accepting a Keyframe resolution without binding it to the retained
+        // digest lets a foreign state ride the unchanged-hour assertion. The
+        // law under test: an envelope composes iff it DECLARES exactly the
+        // retained basis as its output.
+        use crate::payload_span_delta as psd;
+
+        const HOUR: i32 = DATE_EPOCH_CONST + 1936 * 365 * 24;
+        let domain_id = psd::DELTA_ENABLED_DOMAINS[0];
+        let mut payload_a = HOUR.to_le_bytes().to_vec();
+        payload_a.extend((0..512u32).map(|index: u32| index as u8));
+        let mut payload_b = payload_a.clone();
+        payload_b[500] ^= 0xFF;
+        let identity = |sequence: u64| psd::PayloadSpanDeltaIdentity {
+            domain_id,
+            source_sequence: sequence,
+            game_hour_raw: HOUR,
+        };
+        let mut producer = psd::PayloadSpanDeltaProducer::new();
+        let mut consumer = psd::PayloadSpanDeltaConsumer::new();
+        let keyframe = producer.wrap(identity(7), &payload_a).unwrap();
+        consumer.apply(identity(7), &keyframe).unwrap();
+        let delta = producer.wrap(identity(8), &payload_b).unwrap();
+        consumer.apply(identity(8), &delta).unwrap();
+
+        // THE HONEST DELTA RESOLUTION: hour N+1 repeats hour N's wire bytes,
+        // which are this Delta envelope. Composition yields the retained
+        // OUTPUT (payload_b) without advancing anything.
+        let basis = psd::repeat_basis(&consumer, domain_id, &delta)
+            .expect("an honest delta-hour repeat must compose");
+        assert_eq!(basis, payload_b);
+
+        // A FOREIGN KEYFRAME (the old state's envelope) is refused: its
+        // declared output digest is not the retained one.
+        let foreign = psd::repeat_basis(&consumer, domain_id, &keyframe)
+            .expect_err("a keyframe of another state must not ride a repeat");
+        assert!(foreign.contains("does not match the retained baseline"), "{foreign}");
     }
 }
