@@ -80,6 +80,7 @@ members = [
     "lanes/division_combat_stats_live",
     "lanes/fow_visibility_live",
     "lanes/spotted_units_live",
+    "lanes/d13_tech_change_gate",
     "lanes/land_combat_detail_events_live",
     "lanes/market_trade_live",
     "lanes/army_battleplans_depth_live",

@@ -1159,3 +1159,120 @@ fn xui09_a_derived_quartet_reaches_the_snapshot_under_the_words_the_consumer_rea
         Some(250_136)
     );
 }
+
+fn gate_skipped_row(tag_db_id: u32) -> CountryObjectRow {
+    let mut row = super::domain13_tech_delta_tests::bare_country_row(tag_db_id);
+    // The real collector reads the CHEAP half of every row every hour, so a
+    // gate-skipped country's counts are as fresh as anyone's; a completed
+    // count that disagreed with the sealed witness would mean research
+    // COMPLETED since - which fires W4 and marks the manager dirty. The
+    // fixture mirrors that invariant: same counts as the baseline row.
+    row.research = Some(CountryResearchRow {
+        completed_tech_count: Some(2),
+        research_slot_count: Some(2),
+        active_research: None,
+        technology_witness: Err(Xui09RefusalReason::ChangeGateSkipped),
+    });
+    row
+}
+
+/// The change gate's wire shape end to end (owner ruling 2026-08-25): a
+/// clean skip is WITNESSED UNCHANGED - the pinned bytes are re-fed as the
+/// frame's measurement, so the fold re-seals the witness to the new hour and
+/// nothing is ever unavailable; the next measured hour certifies Complete as
+/// usual.
+#[test]
+fn xui09_joint_a_change_gate_skip_reseals_the_witness_and_the_next_measure_certifies_complete() {
+    let mut tracker = CompactTechCountryDeltaTracker::default();
+    let dictionary = fixture_dictionary();
+    let identities = [(7u32, "GER"), (11, "FRA")];
+
+    // Hour 1: everything measured; this is the baseline both hours diff on.
+    let first = compact_tech_data_payload_delta(&fixture_rows(), 0, 0, &mut tracker, &dictionary);
+    // Hour 2: GER's witness was gate-skipped; FRA is measured again unchanged.
+    let second_rows = vec![gate_skipped_row(7), fixture_rows().remove(1)];
+    let second =
+        compact_tech_data_payload_delta(&second_rows, 0, 0, &mut tracker, &dictionary);
+    // Hour 3: GER measured in full again - the recovery shape.
+    let third = compact_tech_data_payload_delta(&fixture_rows(), 0, 0, &mut tracker, &dictionary);
+
+    let mut stream = Vec::new();
+    let mut sequence = 0u64;
+    for (hour, tech) in [
+        (FIXTURE_RAW_HOUR, &first),
+        (FIXTURE_RAW_HOUR + 1, &second),
+        (FIXTURE_RAW_HOUR + 2, &third),
+    ] {
+        sequence += 1;
+        append_compact_record(
+            &mut stream,
+            sequence,
+            hour,
+            COMPACT_DOMAIN_COUNTRY_IDENTITY,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            &country_identity_payload(&identities),
+        );
+        sequence += 1;
+        append_compact_record(
+            &mut stream,
+            sequence,
+            hour,
+            COMPACT_DOMAIN_TECH,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            tech,
+        );
+        sequence += 1;
+        append_compact_record(
+            &mut stream,
+            sequence,
+            hour,
+            compact_contract::COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(),
+        );
+    }
+    let mut fold = recorder_host::world_fold::WorldFold::new("jo_xui09_change_gate");
+    fold.ingest_stream(&stream);
+    let snapshots = fold.finish();
+    assert_eq!(snapshots.len(), 3, "three hours were closed");
+
+    let skipped_hour: Value = serde_json::from_slice(&snapshots[1].2).expect("fold JSON");
+    let germany = &skipped_hour["countries"]["GER"]["research"];
+    // WITNESSED UNCHANGED (owner ruling 2026-08-25; Codex r2 finding 3): the
+    // producer re-feeds the pinned bytes as the skipped country's
+    // measurement, so the fold RE-SEALS the witness for the new hour instead
+    // of dropping it. Silence here means witnessed unchanged state - the
+    // classifier vector stays present and continuously available.
+    assert!(
+        germany.get("technology_states").is_some(),
+        "the pinned witness is re-sealed for the skipped hour"
+    );
+    assert_eq!(
+        germany["technology_states_game_hour_raw"],
+        json!(FIXTURE_RAW_HOUR as i64 + 1),
+        "re-sealed for THIS hour, exactly like measured-and-unchanged"
+    );
+    assert!(
+        germany.get("technology_states_unmeasured_reason").is_none(),
+        "a witnessed-unchanged hour is not an unmeasured one"
+    );
+    assert_eq!(
+        germany["tech_count"], json!(2),
+        "the cheap half of the row still travelled through the patch"
+    );
+
+    let recovered_hour: Value = serde_json::from_slice(&snapshots[2].2).expect("fold JSON");
+    let germany_again = &recovered_hour["countries"]["GER"]["research"];
+    assert!(
+        germany_again.get("technology_states").is_some(),
+        "the next full measurement keeps the witness flowing"
+    );
+    assert_eq!(
+        classify_country_research(germany_again, Some(FIXTURE_RAW_HOUR as i64 + 2)),
+        Ok(WitnessShape::Complete),
+        "the recovered hour certifies complete"
+    );
+}

@@ -124,6 +124,46 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         "D3DCompile",
         "152168d97a6afbbf938a4658444f961b3eb734fdc0654f9400dc38cf0ca5dece"
     ),
+    // d13's change-signal gate (owner ruling 2026-08-25): the five runtime
+    // writers of [CTechnology]+0x170. Proof digests are SHA-256 over each
+    // site's 16-byte sentinel, exactly as for every roster above; the bytes
+    // come from the hash-pinned indexed instruction artifacts re-verified with
+    // ghidra_verify by lane RO (runs/ro_d13_change_gate/RE_EVIDENCE.md).
+    pinned_rva!(
+        "gameplay.d13.tech_research_completed",
+        0xECECE0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "ae793f49175312a6780acc9002f7a3066007a56b8dd90e2d9b11946be9fcf067"
+    ),
+    pinned_rva!(
+        "gameplay.d13.tech_status_classify_sweep",
+        0xECB170,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "d490289b3d7782b9f0c50b8b3acb55acca85dead49b4087ffca8e2630c72fee6"
+    ),
+    pinned_rva!(
+        "gameplay.d13.tech_status_fresh_init",
+        0xECE9E0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "c8b38b9201635de7981835cfc2d591d521cd9d6a2c326be08f4d735d7bd35896"
+    ),
+    pinned_rva!(
+        "gameplay.d13.tech_status_init_post_read",
+        0xECB270,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "0445026d2a77a511d0a8e49aadbdf846f8d609063aaeac4b0bf5b38a6cfff50c"
+    ),
+    pinned_rva!(
+        "gameplay.d13.technology_propagate",
+        0xEC19C0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "e3e2b7d0933663f2cbf4cd46600126c4cf6ee0db690e91e4d78adacafd4b2bc2"
+    ),
     pinned_rva!(
         "gameplay.d45.decision_cancel",
         0x71B350,
@@ -473,7 +513,7 @@ pub const PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1: u16 = {
     count
 };
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
-    digest_from_hex("8889e55eed6794a6dacb1343e36a09d15ada23331ba4b9f1a79bc5f078f12c82");
+    digest_from_hex("46adf385cbd87c19d5715d11a0e88be1587ccfd86ecdcac37211af650a0538fd");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())

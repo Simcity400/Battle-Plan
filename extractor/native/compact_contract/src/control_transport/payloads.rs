@@ -1134,9 +1134,12 @@ mod tests {
             scheduler_queue_capacity: 1,
             scheduler_worker_count: 12,
             // 2026-08-24: the three gameplay.d57.* sites joined the pinned
-            // roster (45 -> 48) and the allowlist digest moved with them.
-            allowed_hook_count: 48,
-            active_hook_count: 48,
+            // roster (45 -> 48); 2026-08-25: d57 readmission kept the count
+            // while nine sealed domains left, then lane RO's five
+            // gameplay.d13.* change-gate sites joined (48 -> 53) and the
+            // allowlist digest moved with them.
+            allowed_hook_count: 53,
+            active_hook_count: 53,
             install_freeze_count,
             clock_hour_raw: 60_831_264,
             clock_observation_ordinal: 12,
@@ -1147,7 +1150,7 @@ mod tests {
                 "18883f3ad61d796d13e406b28869e764efca61863928150fbe08cdcb23bb07b8",
             ),
             hook_allowlist_sha256: hex32(
-                "8889e55eed6794a6dacb1343e36a09d15ada23331ba4b9f1a79bc5f078f12c82",
+                "46adf385cbd87c19d5715d11a0e88be1587ccfd86ecdcac37211af650a0538fd",
             ),
             hook_outcomes_sha256: hex32(
                 "416db3019bcd56f982a9e11978bcc47a0b9dc06d23147935d56dbbf30907951b",
@@ -1191,7 +1194,7 @@ mod tests {
         assert_eq!(read_u16(&thirteen, 50), 13);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thirteen)),
-            "60df4508332692a8e4187278291b6383f5b1901a31c3291fe3ac4eb9157b5ad5"
+            "cc16c0ee1e931532cb0df751c28af5619ab9d8cc047684bd39fef990e1887eff"
         );
         let thousand = t63_ready_fields(1000)
             .encode_authenticated(token)
@@ -1199,7 +1202,7 @@ mod tests {
         assert_eq!(read_u16(&thousand, 50), 1000);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thousand)),
-            "1adc250fa0028b21a75785376c01dd282e5afbb54554367b1eb3a5954d4bf988"
+            "8052536857f29782d414b232d338c921d7aa365baeb89d0fc49e2003e8f7c61d"
         );
         assert_ne!(thirteen, thousand);
     }
