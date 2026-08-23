@@ -1,8 +1,8 @@
 //! d61 `air_loss_stats_live` — per-country CUMULATIVE strategic-air loss statistics.
 //!
-//! Derived from `world_fold.rs:22116`-`:22169`
+//! Derived from `world_fold.rs:22166`-`:22219`
 //! (`fold_air_loss_stats`, dispatched at `:4708`), its JSON emission at
-// @world-fold-authority domain=61 functions=fold_air_loss_stats lines=22116-22169 sha256=66ea65854ffcdc1958091016b6f1d524fd91b017b314f6a2452f5abf8aa21906 closure=e776b7617225b6dc7e784e4f04ada8b0749055303f615bdbda7726d3496c1abe
+// @world-fold-authority domain=61 functions=fold_air_loss_stats lines=22166-22219 sha256=66ea65854ffcdc1958091016b6f1d524fd91b017b314f6a2452f5abf8aa21906 closure=e776b7617225b6dc7e784e4f04ada8b0749055303f615bdbda7726d3496c1abe
 //! `:9150`-`:9183`, and the payload codec the fold calls, which for this domain
 //! lives **outside** the fold in its own leaf crate:
 //! `extractor/native/lanes/air_loss_stats_live/src/lib.rs` (`decode_payload_rows`
