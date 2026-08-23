@@ -100,9 +100,11 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     ),
     (
         "tech_country_delta",
-        "d13's wire baseline is advanced at EMISSION, after every reader has returned, so no \
-         reader bracket can decide whether it survived; the blanket reset is what keeps the pin \
-         and the fold's mirror in step",
+        "d13's wire baseline advances UNCONDITIONALLY once per frame wherever its \
+         publication is encoded (lane RU: in the tech child during the bundle \
+         fan-out, or in the tail's substitute fallback for a panicked lane), so no \
+         reader bracket decides whether it survived; the blanket reset is what keeps \
+         the pin and the fold's mirror in step",
     ),
     (
         "air_wings",

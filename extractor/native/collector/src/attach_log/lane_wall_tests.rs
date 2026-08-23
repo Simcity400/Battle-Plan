@@ -242,6 +242,7 @@ fn country_bundle_sub_reads_are_attributed_under_their_own_units() {
         status_flags: 0,
         worker_panic_reason: None,
         technology_ids: Arc::new(TechnologyIdDictionary::default()),
+        published_records: None,
     };
     let country_lanes = country_lane_attribution(&[
         read(&[COMPACT_DOMAIN_FUEL], 4_100),
