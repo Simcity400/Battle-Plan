@@ -1,8 +1,8 @@
 //! d32 `air_wing_loadouts` — per-air-wing air-base placement and equipment banks.
 //!
-//! Derived from `world_fold.rs:21156`-`:21297`
+//! Derived from `world_fold.rs:21168`-`:21309`
 //! (`fold_air_wing_loadouts`), its payload constants at `:979`-`:981`, its
-// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=21156-21297 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=4361e5b398c7d0cf8da8afe1b269c92103f62f5224e3a03e15079690aa9a6099
+// @world-fold-authority domain=32 functions=fold_air_wing_loadouts lines=21168-21309 sha256=a5d78d0723cbeb2867a22cfc4b51f3a8f7b279223a598274998d6a73bcd141b4 closure=4361e5b398c7d0cf8da8afe1b269c92103f62f5224e3a03e15079690aa9a6099
 //! accumulator's JSON projection (`world_fold.rs::build_order_of_battle`), the end-of-hour orphan prune
 //! that also writes that accumulator (`world_fold.rs::prune_air_wing_loadout_orphans_for_current_hour`), and the collector read
 //! and packer that produce the rows
