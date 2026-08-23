@@ -10,6 +10,7 @@ pub const EXACT_A729_EXECUTABLE_SHA256: &str =
     "870ebf1f615262facca48a3b947775c41f0a5338f3068c40958209f5c41c65ad";
 
 pub const REQUIRED_NEGATIVE_CONTROLLER_DISPOSITIONS: &[&str] = &[
+    "theater_group_item.combat_log_ownership_and_eligibility",
     "navy_theater_group_item.combat_log_ownership_and_eligibility",
     "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
     "air_theatre_group_item.current_priority_ordinal",
@@ -356,7 +357,6 @@ pub enum TheatreControllerState {
     Land {
         priority_ordinal: u32,
         delete_eligible: bool,
-        combat_log_owned: bool,
     },
     Navy {
         priority_ordinal: u32,
@@ -542,12 +542,18 @@ fn parse_theatre_controller(
         .as_object()
         .ok_or_else(|| "theatre controller is not an object".to_string())?;
     match (expected, object.get("kind").and_then(Value::as_str)) {
-        (ObjectKind::LandTheatre, Some("land")) => Ok(TheatreControllerState::Land {
-            priority_ordinal: u32_field(object, "priority_ordinal")
-                .ok_or_else(|| "land controller priority invalid".to_string())?,
-            delete_eligible: bool_field(object, "delete_eligible", "land controller")?,
-            combat_log_owned: bool_field(object, "combat_log_owned", "land controller")?,
-        }),
+        (ObjectKind::LandTheatre, Some("land")) => {
+            if object.contains_key("combat_log_owned") {
+                return Err(
+                    "land controller carries the retired combat_log_owned leaf".to_string()
+                );
+            }
+            Ok(TheatreControllerState::Land {
+                priority_ordinal: u32_field(object, "priority_ordinal")
+                    .ok_or_else(|| "land controller priority invalid".to_string())?,
+                delete_eligible: bool_field(object, "delete_eligible", "land controller")?,
+            })
+        }
         (ObjectKind::NavyTheatre, Some("navy")) => Ok(TheatreControllerState::Navy {
             priority_ordinal: u32_field(object, "priority_ordinal")
                 .ok_or_else(|| "navy controller priority invalid".to_string())?,

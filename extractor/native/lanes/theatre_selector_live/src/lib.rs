@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const DOMAIN_ID: u16 = 98;
 pub const DOMAIN_NAME: &str = "theatre_selector_live";
 pub const MAGIC: u32 = u32::from_le_bytes(*b"THS2");
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub const MAX_COUNTRIES: usize = i32::MAX as usize;
 
@@ -29,11 +29,29 @@ pub const RESERVE_NAVY_FILTER_MANIFEST_SHA256: [u8; 32] =
 pub const AIR_AND_NAVY_LAW_MANIFEST_SHA256: [u8; 32] =
     hex32(b"eee5a6c973edc425a709864071f940ebb002b4f741d138f09864dab4dc017ed6");
 
-///   `*.combat_log_ownership_and_eligibility` rows are in this class, and they
+/// Owner ruling on lane RE's DOSSIER section 2.4 (option A, 2026-08-23): the
+/// land combat-log leaf is retired from the all-country carrier entirely --
+/// never carried, never measured; the replay viewer derives the icon from
+/// authoritative state (`session.player_country_set`). These four strings are
+/// the exact negative-controller-disposition declaration replay's strict
+/// schema-6 decoder requires (`REQUIRED_NEGATIVE_CONTROLLER_DISPOSITIONS`);
+/// keep them equal by value. The land row names the real contract template:
+/// the land theatre row's container IS `theater_group_item`
+/// (`authenticated_semantic_provider.rs`, claim identity `0x01e5_17d0`);
+/// there is no `land_theatre_item` template in the engine.
+pub const NEGATIVE_CONTROLLER_DISPOSITIONS: &[&str] = &[
+    "theater_group_item.combat_log_ownership_and_eligibility",
+    "navy_theater_group_item.combat_log_ownership_and_eligibility",
+    "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
+    "air_theatre_group_item.current_priority_ordinal",
+];
+
+/// Controller fields the producer neither measures nor declares: each names
+/// `template.field` on the real contract template, per GS-F5. The land
+/// combat-log row is NOT here anymore -- it is negatively disposed above.
 pub const UNCAPTURED_CONTROLLER_FIELDS: &[&str] = &[
     "navy_theater_fleet_item.live_spotting_state",
     "navy_theater_fleet_item.exercise_stop_at_max_state",
-    "theater_group_item.combat_log_ownership_and_eligibility",
     "navy_theater_group_item.combat_log_ownership_and_eligibility",
     "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
     "new_theater_group_item.current_eligibility",

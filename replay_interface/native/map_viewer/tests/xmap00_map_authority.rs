@@ -380,9 +380,10 @@ fn theatre_hierarchy_census_fixture() -> Value {
             "producer_complete": true,
             "census": [1, 2],
             "negative_controller_dispositions": [
+                "theater_group_item.combat_log_ownership_and_eligibility",
                 "air_theatre_group_item.current_priority_ordinal",
                 "navy_theater_group_item.combat_log_ownership_and_eligibility",
-                "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility"
+                "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
             ],
             "sections": [
                 {
@@ -399,8 +400,7 @@ fn theatre_hierarchy_census_fixture() -> Value {
                         "controller": {
                             "kind": "land",
                             "priority_ordinal": 2,
-                            "delete_eligible": false,
-                            "combat_log_owned": false
+                            "delete_eligible": false
                         },
                         "land_alert_categories": [],
                         "members": []
@@ -533,12 +533,54 @@ fn theatre_army_hierarchy_refuses_a_negative_displayed_hour() {
     assert_owner_proven_unavailable(&frame, "orders.theatre_army_hierarchy");
 }
 
-/// The producer ships schema 4 with 4 of 31 manifests today; every carried
-/// hour must refuse at the decoder's own named mismatch instead of crashing
-/// the projection or admitting. Each corruption is isolated so removing the
-/// OTHER check cannot keep this green.
+/// The owner ruling (option A) retires the land combat-log leaf from schema 6;
+/// a payload still carrying it must refuse with the decoder's named error
+/// instead of silently ignoring the key.
 #[test]
-fn theatre_army_hierarchy_names_the_schema_version_mismatch_for_todays_carrier() {
+fn theatre_army_hierarchy_refuses_a_payload_still_carrying_the_retired_leaf() {
+    let mut rest = theatre_hierarchy_census_fixture();
+    rest["_r2_theatre_selector_live"]["sections"][0]["theatres"][0]["controller"]
+        ["combat_log_owned"] = json!(false);
+    let frame = world_frame_with(rest);
+    assert_eq!(
+        frame.theatre_army_hierarchy_status(),
+        ViewStatus::DomainUnavailable
+    );
+    let manifest = fixture_manifest();
+    let projection = map_authority_projection_from_world_frame(&frame, &manifest).unwrap();
+    assert_eq!(
+        requirement(&projection, "orders.theatre_army_hierarchy").disposition,
+        MapAuthorityRequirementDisposition::Unavailable
+    );
+}
+
+/// kills: an icon derivation that reads the retired leaf back from the decoded
+/// view -- the field no longer exists, so this only compiles while admission
+/// and derivation stay on authoritative state (the session's measured player
+/// set) rather than on a carried leaf.
+#[test]
+fn theatre_army_hierarchy_admits_without_any_combat_log_leaf_on_land_rows() {
+    let frame = world_frame_with(theatre_hierarchy_census_fixture());
+    assert_eq!(frame.theatre_army_hierarchy_status(), ViewStatus::Present);
+    for theatre in frame.theatre_selector().sections() {
+        for theatre in &theatre.theatres {
+            assert!(matches!(
+                theatre.controller,
+                replay_core::TheatreControllerState::Land { .. }
+                    | replay_core::TheatreControllerState::Navy { .. }
+            ));
+        }
+    }
+}
+
+/// The carrier contract is schema 6 now; the producer's sealed output still
+/// refuses every hour at the evidence-set size (4 of 31 manifests). This test
+/// pins the LEGACY schema-4 shape so a pre-bump recording refuses at the
+/// decoder's own named mismatch instead of crashing the projection or
+/// admitting. Each corruption is isolated so removing the OTHER check cannot
+/// keep this green.
+#[test]
+fn theatre_army_hierarchy_names_the_schema_version_mismatch_for_a_legacy_carrier() {
     let mut rest = theatre_hierarchy_census_fixture();
     rest["_r2_theatre_selector_live"]["schema_version"] = json!(4);
     let frame = world_frame_with(rest);

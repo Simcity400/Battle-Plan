@@ -1834,14 +1834,11 @@ fn build_exact_a729_theatre_materialization_plan(
                     .template(Template::LandTheatre)
                     .ok_or_else(|| theatre_materialization_rejection(owner_panel.window_id()))?;
                 let (width, height) = template_extent(Template::LandTheatre)?;
-                let (priority_ordinal, _delete_eligible, combat_log_owned) = match &theatre
-                    .controller
-                {
+                let (priority_ordinal, _delete_eligible) = match &theatre.controller {
                     TheatreControllerState::Land {
                         priority_ordinal,
                         delete_eligible,
-                        combat_log_owned,
-                    } => (*priority_ordinal, *delete_eligible, *combat_log_owned),
+                    } => (*priority_ordinal, *delete_eligible),
                     _ => return Err(theatre_materialization_rejection(owner_panel.window_id())),
                 };
                 let mut overrides = vec![
@@ -1893,7 +1890,12 @@ fn build_exact_a729_theatre_materialization_plan(
                         ReplayAuthenticatedElementSemantic::Hidden,
                     ),
                 ];
-                if combat_log_owned {
+                // Owner ruling option A (lane RE dossier section 2.4): schema 6
+                // never carries the land combat-log leaf. The icon is derived at
+                // admission time from authoritative state -- the observer
+                // country's membership in the session's measured player set --
+                // and rides on the surface (`combat_log_icon_shown`).
+                if binding.surface.combat_log_icon_shown {
                     overrides.push((
                         "combat_logs_btn",
                         ReplayAuthenticatedElementSemantic::PassiveSprite { one_based_frame: 1 },

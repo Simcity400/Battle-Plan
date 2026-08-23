@@ -1149,6 +1149,18 @@ pub struct ObserverTheatreSurface {
     pub country_tag: String,
     pub owner_tag_db_id: u32,
     pub section: replay_core::TheatreSelectorCountrySection,
+    /// Owner ruling option A (lane RE dossier section 2.4): the land combat-log
+    /// leaf is retired from schema 6 and never carried. The icon is DERIVED
+    /// from authoritative recorded state -- true iff this surface's observer
+    /// country is one of the session's measured player countries. The ONLY
+    /// accepted source is the exact D57 player-country carrier
+    /// (`map_viewer::player_country_set_leaf_status` certifies it); an absent,
+    /// failed or legacy-fallback-fed set refuses admission by name instead of
+    /// silently hiding a player's icon. The engine's two remaining conjuncts
+    /// (combat-log window input state, per-client flag byte) are panel-local
+    /// presentation that no all-country carrier reconstructs; see
+    /// `extractor/native/runs/re_theatre_read_law/DOSSIER.md` section 2.4.
+    pub combat_log_icon_shown: bool,
 }
 
 fn reconcile_theatre_settings_land_id(
@@ -1203,6 +1215,38 @@ fn shipping_d98_predecessor_sequence(
         )
     })?;
     Ok(expected_hour)
+}
+
+/// Owner ruling option A (lane RE dossier section 2.4): the land combat-log
+/// leaf is retired from schema 6 and never carried. The icon is DERIVED from
+/// authoritative recorded state -- true iff this surface's observer country is
+/// one of the session's measured player countries -- and the ONLY accepted
+/// source is the exact D57 player-country carrier:
+/// `map_viewer::player_country_set_leaf_status` is that carrier's own
+/// three-way answer (absent sidecar, present-but-failed read, or known and
+/// decoded into a measured leaf), so a set fed by `build_session_metadata`'s
+/// two legacy fallback keys -- which carry no identity or producer-order proof
+/// -- refuses here exactly as if the set were missing. An absent or failed
+/// read refuses by name too: a player's icon must never be silently hidden
+/// behind an unavailable input.
+fn derive_combat_log_icon(
+    frame: &WorldFrame,
+    country_tag: &str,
+) -> std::result::Result<bool, ObserverUiGap> {
+    if map_viewer::player_country_set_leaf_status(frame) != replay_core::ViewStatus::Present {
+        return Err(theatre_gap(
+            "combat_log_icon_source",
+            "the exact D57 player-country carrier is not admitted for this hour; \
+             the retired combat-log icon cannot be derived from proven state",
+        ));
+    }
+    Ok(matches!(
+        &frame.session_metadata().player_countries,
+        replay_core::Leaf::Measured(players)
+            if players
+                .iter()
+                .any(|player| matches!(&player.tag, replay_core::Leaf::Measured(tag) if tag == country_tag))
+    ))
 }
 
 fn admit_observer_theatre_surface(
@@ -1272,10 +1316,14 @@ fn admit_observer_theatre_surface(
                 .unwrap_or_else(|| "selected country D98 section was rejected".into()),
         ));
     }
+    // Owner ruling option A: derive the icon, but ONLY from proven state (see
+    // `derive_combat_log_icon` for the fail-closed carrier law).
+    let combat_log_icon_shown = derive_combat_log_icon(frame, country_tag)?;
     Ok(ObserverTheatreSurface {
         country_tag: country_tag.to_string(),
         owner_tag_db_id: entry.tag_db_id,
         section,
+        combat_log_icon_shown,
     })
 }
 
@@ -7276,6 +7324,64 @@ mod tests {
             later.field, "selected_country_identity",
             "a complete roster must not refuse at the roster: {later:?}"
         );
+    }
+
+    #[test]
+    fn the_retired_combat_log_icon_derives_only_from_the_exact_d57_carrier() {
+        let d57_frame = |rows: serde_json::Value| {
+            let mut rest = serde_json::Map::new();
+            rest.insert(
+                "_r2_session_multiplayer_metadata_live".into(),
+                serde_json::json!({
+                    "players_by_country": {"state": "known", "rows": rows}
+                }),
+            );
+            observer_test_frame(rest)
+        };
+        let row = |tag: &str| {
+            serde_json::json!({
+                "country_tag": tag,
+                "is_human_controlled": true,
+                "tag_db_id": 23,
+                "human_name": {"state": "not_sourced"}
+            })
+        };
+
+        // The certified carrier: a measured player-country set. Membership
+        // derives TRUE for a player country...
+        let ger = d57_frame(serde_json::json!([row("GER")]));
+        assert_eq!(derive_combat_log_icon(&ger, "GER"), Ok(true));
+        // ...and FALSE for an observed non-player country -- a measured
+        // negative, not a silent default.
+        assert_eq!(derive_combat_log_icon(&ger, "SOV"), Ok(false));
+
+        // kills: deriving off `build_session_metadata`'s LEGACY fallback keys.
+        // `{"session":{"player_countries":["GER"]}}` decodes into a perfectly
+        // measured one-row leaf with no engine identity and no producer order;
+        // the carrier check must refuse it exactly like a missing set instead
+        // of letting unproven data draw the icon.
+        let mut legacy_only = serde_json::Map::new();
+        legacy_only.insert(
+            "session".into(),
+            serde_json::json!({"player_countries": ["GER"]}),
+        );
+        let legacy_frame = observer_test_frame(legacy_only);
+        let gap = derive_combat_log_icon(&legacy_frame, "GER")
+            .expect_err("a legacy-fed player set has no identity or order proof to derive from");
+        assert_eq!(gap.field, "combat_log_icon_source");
+        assert!(gap.reason.contains("D57"), "{gap:?}");
+
+        // A sidecar whose read FAILED is not an empty lobby either: refuse by
+        // name instead of silently hiding a player's icon.
+        let mut failed = serde_json::Map::new();
+        failed.insert(
+            "_r2_session_multiplayer_metadata_live".into(),
+            serde_json::json!({"players_by_country": {"state": "unavailable"}}),
+        );
+        let failed_frame = observer_test_frame(failed);
+        let gap = derive_combat_log_icon(&failed_frame, "GER")
+            .expect_err("a failed D57 read must refuse, not render as no players");
+        assert_eq!(gap.field, "combat_log_icon_source");
     }
 
     #[test]

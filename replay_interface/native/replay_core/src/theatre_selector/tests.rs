@@ -75,8 +75,7 @@ fn land_section(owner: u32) -> Value {
             "controller": {
                 "kind": "land",
                 "priority_ordinal": 2,
-                "delete_eligible": true,
-                "combat_log_owned": true
+                "delete_eligible": true
             },
             "land_alert_categories": [3, 9],
             "members": [
@@ -342,8 +341,7 @@ fn typed_controller_and_strategic_inputs_survive() {
         section.theatres[0].controller,
         TheatreControllerState::Land {
             priority_ordinal: 2,
-            delete_eligible: true,
-            combat_log_owned: true
+            delete_eligible: true
         }
     ));
     assert_eq!(section.strategic_regions[0].engine_region_index, 7);
@@ -490,6 +488,35 @@ fn evidence_schema_executable_and_negative_dispositions_are_exact() {
         );
     }
 }
+#[test]
+fn a_land_controller_carrying_the_retired_combat_log_leaf_is_refused() {
+    let mut bad = frame_json();
+    bad[THEATRE_SELECTOR_FIELD]["sections"][0]["theatres"][0]["controller"]
+        ["combat_log_owned"] = json!(false);
+    let view = parse_theatre_selector(&raw(bad));
+    assert_eq!(view.status, ViewStatus::DomainUnavailable);
+    assert_eq!(
+        view.diagnostic.as_deref(),
+        Some("land controller carries the retired combat_log_owned leaf")
+    );
+}
+
+#[test]
+fn the_negative_disposition_set_requires_the_land_combat_log_row() {
+    let mut bad = frame_json();
+    bad[THEATRE_SELECTOR_FIELD]["negative_controller_dispositions"] = json!([
+        "navy_theater_group_item.combat_log_ownership_and_eligibility",
+        "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
+        "air_theatre_group_item.current_priority_ordinal"
+    ]);
+    let view = parse_theatre_selector(&raw(bad));
+    assert_eq!(view.status, ViewStatus::DomainUnavailable);
+    assert_eq!(
+        view.diagnostic.as_deref(),
+        Some("negative controller dispositions do not exactly match exact-a729 authority")
+    );
+}
+
 
 #[test]
 fn every_producer_evidence_identity_is_authenticated() {

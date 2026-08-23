@@ -652,7 +652,14 @@ fn localization_keyed_name_requires_a_key() {
 
 #[test]
 fn uncaptured_controller_fields_are_declared() {
-    assert_eq!(UNCAPTURED_CONTROLLER_FIELDS.len(), 18);
+    assert_eq!(NEGATIVE_CONTROLLER_DISPOSITIONS, &[
+        "theater_group_item.combat_log_ownership_and_eligibility",
+        "navy_theater_group_item.combat_log_ownership_and_eligibility",
+        "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
+        "air_theatre_group_item.current_priority_ordinal"
+    ]);
+    assert_eq!(SCHEMA_VERSION, 6);
+    assert_eq!(UNCAPTURED_CONTROLLER_FIELDS.len(), 17);
     for captured in [
         "theater_group_settings_view.current_priority_ordinal",
         "theater_group_settings_view.delete_eligibility",
@@ -668,7 +675,6 @@ fn uncaptured_controller_fields_are_declared() {
         );
     }
     for permanent in [
-        "theater_group_item.combat_log_ownership_and_eligibility",
         "navy_theater_group_item.combat_log_ownership_and_eligibility",
         "reserve_navy_theater_group_item.combat_log_ownership_and_eligibility",
     ] {
@@ -677,6 +683,21 @@ fn uncaptured_controller_fields_are_declared() {
             "{permanent} is client-local UI state and must stay declared uncaptured"
         );
     }
+    // Owner ruling option A: the land combat-log leaf is retired to the
+    // negative disposition declaration above (under its real contract name --
+    // the land theatre row's container IS `theater_group_item`), and its
+    // presentation is derived from authoritative state, so it is neither
+    // captured nor an open hole.
+    assert!(
+        NEGATIVE_CONTROLLER_DISPOSITIONS
+            .contains(&"theater_group_item.combat_log_ownership_and_eligibility"),
+        "the land combat-log leaf must stay negatively disposed"
+    );
+    assert!(
+        !UNCAPTURED_CONTROLLER_FIELDS
+            .contains(&"theater_group_item.combat_log_ownership_and_eligibility"),
+        "the land combat-log leaf is negatively disposed, not an open hole"
+    );
     let mut sorted = UNCAPTURED_CONTROLLER_FIELDS.to_vec();
     sorted.sort_unstable();
     sorted.dedup();
@@ -800,9 +821,13 @@ fn every_declared_hole_names_a_contract_template_and_leaf() {
 
 #[test]
 fn every_contract_template_family_is_declared_uncaptured() {
+    // `theater_group_item` is exempt: its last uncaptured leaf
+    // (`combat_log_ownership_and_eligibility`) became a negative controller
+    // disposition under owner ruling option A (schema 6), and its remaining
+    // leaves are measured (`supply_priority_ordinal`). Every leaf of every
+    // other contract family must still name an open hole here.
     for family in [
         "navy_theater_fleet_item",
-        "theater_group_item",
         "navy_theater_group_item",
         "reserve_navy_theater_group_item",
         "new_theater_group_item",
