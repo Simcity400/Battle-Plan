@@ -169,4 +169,6 @@ extractor/native/runs/**/*.battleplan
 .pnpm-store/
 .reference/
 captures/
-opencode.jsonc
+
+# machine-local lane-runner config (absolute user paths)
+/opencode.jsonc

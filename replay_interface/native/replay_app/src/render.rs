@@ -19,7 +19,7 @@ use map_viewer::{
 use replay_core::{
     OccupationSecondaryReplayReadbackReceipt, PoliticalTextureFormat, PoliticalTextureKind,
     ProductionRenderFrame, RenderSubmit, SnowMudReplayReadbackReceipt, SnowMudTexturePacket,
-    StaticMapCommand, StaticShaderResourceSource, TiledLightSubmission, ViewStatus,
+    StaticMapCommand, StaticShaderResourceSource, ViewStatus,
     WeatherProvinceSnowView, WorldFrame,
 };
 use sha2::{Digest, Sha256};
@@ -555,7 +555,6 @@ struct CapturedPassLayer {
     counter_gpu: CounterGpuPass,
     political_cb0: map_viewer::PoliticalSceneCb0,
     recorded_political_bindings: std::collections::BTreeSet<String>,
-    recorded_tiled_lights_bound: bool,
     reported_omitted_particles: bool,
     reported_omitted_entities: bool,
     reported_omitted_weather: bool,
@@ -666,18 +665,6 @@ fn require_secondary_political_texture(submit: Option<&RenderSubmit>) -> Result<
         );
     }
     Ok(submit)
-}
-
-fn unique_display_tiled_light(submit: &RenderSubmit) -> Result<Option<&TiledLightSubmission>> {
-    match submit.tiled_lights.as_slice() {
-        [] => Ok(None),
-        [light] => Ok(Some(light)),
-        rows => Err(format!(
-            "production tiled lights blocked: displayed submit carries {} payloads and no explicit display-light selector",
-            rows.len()
-        )
-        .into()),
-    }
 }
 
 impl CapturedPassLayer {
@@ -884,7 +871,6 @@ impl CapturedPassLayer {
             counter_gpu: CounterGpuPass::new(resolver.clone(), session_dir.to_path_buf()),
             political_cb0,
             recorded_political_bindings: std::collections::BTreeSet::new(),
-            recorded_tiled_lights_bound: false,
             reported_omitted_particles: false,
             reported_omitted_entities: false,
             reported_omitted_weather: false,
@@ -1019,72 +1005,6 @@ impl CapturedPassLayer {
             self.recorded_political_bindings = next_bindings;
             self.mark_dirty();
         }
-        Ok(())
-    }
-
-    unsafe fn update_recorded_tiled_lights(
-        &mut self,
-        gfx: &Gfx,
-        render_frame: &ProductionRenderFrame,
-    ) -> Result<()> {
-        let Some(submit) = production_display_submit(render_frame)? else {
-            if self.recorded_tiled_lights_bound {
-                return Err(
-                    "production tiled lights blocked: empty displayed submit would retain prior-hour bindings"
-                        .into(),
-                );
-            }
-            return Ok(());
-        };
-        let light = match unique_display_tiled_light(submit)? {
-            None => {
-                if self.recorded_tiled_lights_bound {
-                    return Err(
-                        "production tiled lights blocked: displayed submit omits a previously bound payload"
-                            .into(),
-                    );
-                }
-                return Ok(());
-            }
-            Some(light) => light,
-        };
-
-        let (_index_texture, index_srv) = create_immutable_texture_with_pitch(
-            gfx,
-            64,
-            64,
-            DXGI_FORMAT_B8G8R8A8_UNORM,
-            64 * 4,
-            &light.light_index_map_64x64_bgra8,
-            "recorded tiled-light LightIndexMap",
-        )?;
-        let (_data_texture, data_srv) = create_immutable_texture_with_pitch(
-            gfx,
-            128,
-            1,
-            DXGI_FORMAT_R32G32B32A32_FLOAT,
-            128 * 16,
-            &light.light_data_map_128x1_rgba32f,
-            "recorded tiled-light LightDataMap",
-        )?;
-        let index_replacements = self
-            .prepared
-            .replace_named_ps_srv("LightIndexMap", index_srv.as_raw())?;
-        let data_replacements = self
-            .prepared
-            .replace_named_ps_srv("LightDataMap", data_srv.as_raw())?;
-        let cb_replacements = self.renderer.replace_tiled_light_cb2(
-            &mut self.prepared,
-            light.grid_start_inv_cell_size_float4_bits,
-        )?;
-        if index_replacements == 0 || data_replacements == 0 || cb_replacements == 0 {
-            return Err(format!(
-                "production tiled lights blocked: prepared map replacements index={index_replacements}, data={data_replacements}, cb2={cb_replacements}"
-            )
-            .into());
-        }
-        self.recorded_tiled_lights_bound = true;
-        self.mark_dirty();
         Ok(())
     }
 
@@ -1813,8 +1733,6 @@ impl MapRenderer {
                 .update_recorded_submitted_draws(render_frame)?;
             self.captured
                 .update_recorded_political_textures(gfx, render_frame)?;
-            self.captured
-                .update_recorded_tiled_lights(gfx, render_frame)?;
         }
         Ok(())
     }
@@ -3486,43 +3404,14 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_render_operations: Vec::new(),
-            tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }
     }
-
-    fn empty_render_checkpoint(last_sequence: u64, update_index: u64) -> RenderCheckpoint {
-        RenderCheckpoint {
-            last_sequence,
-            last_update_index: update_index,
-            last_submit_index: Some("12".to_string()),
-            next_stable_ids: BTreeMap::new(),
-            active_effect_lifecycle: Vec::new(),
-            active_light_lifecycle: Vec::new(),
-            latest_tiled_light_payload: None,
-            weather_state_and_ordered_membership: Vec::new(),
-            active_effect_set_sha256: "6".repeat(64),
-            ordered_particle_packets_sha256: "7".repeat(64),
-            ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_light_submissions_sha256: "a".repeat(64),
-            weather_state_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_membership_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_lifecycle_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_visibility_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            ordered_weather_packets_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-            weather_composition_sha256:
-                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
-        }
-    }
-
     #[test]
     fn production_render_uses_explicit_display_submit_without_first_last_guess() {
+        use replay_core::{ParticleRuntimeMode, RenderAuthority, RenderCheckpoint};
+
         let frame = ProductionRenderFrame {
             schema: replay_core::PRODUCTION_RENDER_SCHEMA.to_string(),
             authority: RenderAuthority {
@@ -3584,14 +3473,8 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
                 .is_some(),
             true
         );
-        assert_eq!(
-            frame.retained_submit_identity(),
-            Some(12)
-        );
-        assert_eq!(
-            frame.selected_presentation_qpc_ticks(),
-            Some(200)
-        );
+        assert_eq!(frame.retained_submit_identity(), Some(12));
+        assert_eq!(frame.selected_presentation_qpc_ticks(), Some(200));
 
         let mut ambiguous = frame;
         ambiguous.display_submit_index = None;
@@ -3601,39 +3484,31 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             .contains("display_submit_index"));
     }
 
-    #[test]
-    fn tiled_light_binding_never_guesses_between_multiple_writers() {
-        fn light(writer_index: u64) -> TiledLightSubmission {
-            TiledLightSubmission {
-                update_index: 7,
-                writer_index,
-                first_sequence: 10,
-                last_sequence: 20,
-                grid_start_inv_cell_size_float4_bits: [0; 4],
-                light_index_map_64x64_bgra8: vec![0; 16_384],
-                light_index_map_sha256: "0".repeat(64),
-                light_data_map_128x1_rgba32f: vec![0; 2_048],
-                light_data_map_sha256: "0".repeat(64),
-                ordered_slot_semantic_joins: Vec::new(),
-            }
+    fn empty_render_checkpoint(last_sequence: u64, update_index: u64) -> RenderCheckpoint {
+        RenderCheckpoint {
+            last_sequence,
+            last_update_index: update_index,
+            last_submit_index: Some("12".to_string()),
+            next_stable_ids: BTreeMap::new(),
+            active_effect_lifecycle: Vec::new(),
+            active_light_lifecycle: Vec::new(),
+            weather_state_and_ordered_membership: Vec::new(),
+            active_effect_set_sha256: "6".repeat(64),
+            ordered_particle_packets_sha256: "7".repeat(64),
+            ordered_entity_submissions_sha256: "8".repeat(64),
+            ordered_light_submissions_sha256: "a".repeat(64),
+            weather_state_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_membership_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_lifecycle_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_visibility_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            ordered_weather_packets_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            weather_composition_sha256:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
         }
-
-        let mut submit = empty_submit(2);
-        assert!(unique_display_tiled_light(&submit)
-            .expect("empty light set")
-            .is_none());
-        submit.tiled_lights.push(light(41));
-        assert_eq!(
-            unique_display_tiled_light(&submit)
-                .expect("unique light")
-                .expect("present light")
-                .writer_index,
-            41
-        );
-        submit.tiled_lights.push(light(42));
-        assert!(unique_display_tiled_light(&submit)
-            .expect_err("multiple writers need an explicit selector")
-            .to_string()
-            .contains("no explicit display-light selector"));
     }
 }

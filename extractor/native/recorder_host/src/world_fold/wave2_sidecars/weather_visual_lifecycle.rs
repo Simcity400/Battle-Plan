@@ -198,7 +198,6 @@ mod tests {
             next_stable_ids: Default::default(),
             active_effect_lifecycle: Vec::new(),
             active_light_lifecycle: Vec::new(),
-            latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: String::new(),
             ordered_particle_packets_sha256: String::new(),

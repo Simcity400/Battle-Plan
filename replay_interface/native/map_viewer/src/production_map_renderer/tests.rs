@@ -142,7 +142,6 @@ fn unsupported_static_producer_transitively_omits_dependent_pass_chain() {
         tree_runtime: None,
         s1_shadow: None,
         political_textures: Vec::new(),
-        tiled_lights: Vec::new(),
         ordered_runtime_draws: Vec::new(),
         m02_combat: None,
         authenticated_ui_pass: None,
@@ -555,7 +554,6 @@ fn frame_with_static_program(
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_render_operations: vec![RenderExecutionRef::Static { operation_ordinal }],
-            tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }],
@@ -572,7 +570,6 @@ fn frame_with_static_program(
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
             active_light_lifecycle: Vec::new(),
-            latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
@@ -1073,7 +1070,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_render_operations: Vec::new(),
-            tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }],
@@ -1105,7 +1101,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
             active_light_lifecycle: Vec::new(),
-            latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
@@ -1133,7 +1128,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
     assert!(prepared.ordered_static_map_programs.is_empty());
     assert!(prepared.ordered_render_operations.is_empty());
     assert!(prepared.political_textures.is_empty());
-    assert!(prepared.tiled_lights.is_empty());
     assert!(prepared.m02_combat.is_some());
     assert!(!prepared
         .omitted_data_needs
@@ -1270,7 +1264,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             ordered_render_operations: vec![RenderExecutionRef::Static {
                 operation_ordinal: 7,
             }],
-            tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }],
@@ -1287,7 +1280,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
             active_light_lifecycle: Vec::new(),
-            latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),

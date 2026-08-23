@@ -175,7 +175,6 @@ impl NativeM02OverlayExecutor {
             &[],
             &prepared.draw.draw,
             &[],
-            &[],
             &[] as &[PreparedTargetTexture],
             &target,
             &mut self.stream_output,

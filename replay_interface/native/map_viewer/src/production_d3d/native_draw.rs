@@ -304,7 +304,6 @@ pub(super) unsafe fn execute_static_exact_used_draw(
     scene_constant_buffers: &[ConstantBufferBinding],
     draw: &replay_core::StaticMapDraw,
     political_textures: &[replay_core::PoliticalTexturePacket],
-    tiled_lights: &[replay_core::TiledLightSubmission],
     prepared_targets: &[PreparedTargetTexture],
     target: &SubmittedMainSceneTarget,
     stream_output: &mut StreamOutputBuffers,
@@ -328,7 +327,6 @@ pub(super) unsafe fn execute_static_exact_used_draw(
         &mut occupation_water_t3_binding_count,
         &[],
         political_textures,
-        tiled_lights,
         prepared_targets,
         target,
         &[],
@@ -350,7 +348,6 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
     occupation_water_t3_binding_count: &mut u32,
     authenticated_textures: &[AuthenticatedTextureGpu],
     political_textures: &[replay_core::PoliticalTexturePacket],
-    tiled_lights: &[replay_core::TiledLightSubmission],
     prepared_targets: &[PreparedTargetTexture],
     target: &SubmittedMainSceneTarget,
     additional_colors: &[SubmittedColorTarget],
@@ -538,71 +535,16 @@ pub(super) unsafe fn execute_static_exact_used_draw_mrt(
                 }
                 dynamic_views.push(inline);
             }
-            replay_core::StaticShaderResourceSource::TiledLightIndex {
-                writer_index,
-                payload_sha256,
-                resource,
-                view,
-            } => {
-                let packet = tiled_lights
-                    .iter()
-                    .find(|packet| {
-                        packet.writer_index == *writer_index
-                            && packet.light_index_map_sha256 == *payload_sha256
-                    })
-                    .ok_or("tiled-light index source has no exact writer payload")?;
-                let row_pitch = resource
-                    .width
-                    .checked_mul(4)
-                    .ok_or("tiled-light row overflow")?;
-                let slice_pitch = row_pitch
-                    .checked_mul(resource.height)
-                    .ok_or("tiled-light slice overflow")?;
-                dynamic_views.push(create_inline_texture_view(
-                    gfx,
-                    resolver,
-                    binding.stage,
-                    binding.slot.into(),
-                    resource,
-                    view,
-                    &packet.light_index_map_64x64_bgra8,
-                    row_pitch,
-                    slice_pitch,
-                    payload_sha256,
-                )?);
-            }
-            replay_core::StaticShaderResourceSource::TiledLightData {
-                writer_index,
-                payload_sha256,
-                resource,
-                view,
-            } => {
-                let packet = tiled_lights
-                    .iter()
-                    .find(|packet| {
-                        packet.writer_index == *writer_index
-                            && packet.light_data_map_sha256 == *payload_sha256
-                    })
-                    .ok_or("tiled-light data source has no exact writer payload")?;
-                let row_pitch = resource
-                    .width
-                    .checked_mul(16)
-                    .ok_or("tiled-light row overflow")?;
-                let slice_pitch = row_pitch
-                    .checked_mul(resource.height)
-                    .ok_or("tiled-light slice overflow")?;
-                dynamic_views.push(create_inline_texture_view(
-                    gfx,
-                    resolver,
-                    binding.stage,
-                    binding.slot.into(),
-                    resource,
-                    view,
-                    &packet.light_data_map_128x1_rgba32f,
-                    row_pitch,
-                    slice_pitch,
-                    payload_sha256,
-                )?);
+            // Frame validation already refuses these sources: no lawful
+            // payload exists until the owner proves the semantic point-light
+            // census. Unreachable here; fail closed rather than bind a
+            // neutral stand-in.
+            replay_core::StaticShaderResourceSource::TiledLightIndex { .. }
+            | replay_core::StaticShaderResourceSource::TiledLightData { .. } => {
+                return Err(
+                    "tiled-light texture has no lawful payload until the owner proves the semantic point-light census"
+                        .into(),
+                );
             }
         }
     }

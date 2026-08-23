@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v15";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v16";
+pub const INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA: &str = "hoi4.production-render-submit.v15";
 pub const INCOMPATIBLE_DERIVED_RUNTIME_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v14";
 pub const INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v13";
 pub const INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA: &str =
@@ -833,7 +834,6 @@ pub struct RenderSubmit {
     pub rail_construction_arrows: Vec<RailConstructionArrowVisual>,
     #[serde(default)]
     pub ordered_render_operations: Vec<RenderExecutionRef>,
-    pub tiled_lights: Vec<TiledLightSubmission>,
     pub weather_membership: Vec<WeatherMembership>,
     #[serde(default)]
     pub political_textures: Vec<PoliticalTexturePacket>,
@@ -1300,14 +1300,12 @@ pub enum StaticShaderResourceSource {
     TiledLightIndex {
         #[serde(with = "decimal_u64")]
         writer_index: u64,
-        payload_sha256: String,
         resource: TextureResourceDesc,
         view: ShaderResourceViewDesc,
     },
     TiledLightData {
         #[serde(with = "decimal_u64")]
         writer_index: u64,
-        payload_sha256: String,
         resource: TextureResourceDesc,
         view: ShaderResourceViewDesc,
     },
@@ -2541,37 +2539,6 @@ pub enum LightResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct TiledLightSubmission {
-    #[serde(with = "decimal_u64")]
-    pub update_index: u64,
-    #[serde(with = "decimal_u64")]
-    pub writer_index: u64,
-    #[serde(with = "decimal_u64")]
-    pub first_sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub last_sequence: u64,
-    pub grid_start_inv_cell_size_float4_bits: [u32; 4],
-    #[serde(with = "base64_bytes")]
-    pub light_index_map_64x64_bgra8: Vec<u8>,
-    pub light_index_map_sha256: String,
-    #[serde(with = "base64_bytes")]
-    pub light_data_map_128x1_rgba32f: Vec<u8>,
-    pub light_data_map_sha256: String,
-    pub ordered_slot_semantic_joins: Vec<LightSlotJoin>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LightSlotJoin {
-    pub light_slot: u8,
-    #[serde(with = "decimal_u64")]
-    pub light_instance_id: u64,
-    pub light_token: String,
-    pub resolved_definition_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct WeatherMembership {
     #[serde(with = "decimal_u64")]
     pub sequence: u64,
@@ -2679,7 +2646,6 @@ pub struct RenderCheckpoint {
     pub next_stable_ids: BTreeMap<String, String>,
     pub active_effect_lifecycle: Vec<EffectLifecycleEvent>,
     pub active_light_lifecycle: Vec<LightLifecycleEvent>,
-    pub latest_tiled_light_payload: Option<TiledLightSubmission>,
     pub weather_state_and_ordered_membership: Vec<WeatherMembership>,
     pub active_effect_set_sha256: String,
     pub ordered_particle_packets_sha256: String,
@@ -3029,6 +2995,11 @@ struct InlineBlobWire {
 }
 
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: its selected submits still carry the retired tiled point-light payload carrier and live texture digests, which are forbidden product authority"
+        ));
+    }
     if schema == INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: it carries always-empty entity-presentation and direct-visual producer vectors that no writer ever emitted instead of deriving presentation from the recorded entity/particle state"
@@ -4491,34 +4462,6 @@ impl RenderSubmit {
         }
         validate_unified_render_operations(self, carriers)?;
 
-        for light in &self.tiled_lights {
-            if light.first_sequence > light.last_sequence
-                || light.first_sequence < first_sequence
-                || light.last_sequence > last_sequence
-            {
-                return Err("tiled-light sequence range is invalid".into());
-            }
-            if light.light_index_map_64x64_bgra8.len() != 16_384
-                || light.light_data_map_128x1_rgba32f.len() != 2_048
-            {
-                return Err("tiled-light payload dimensions are incomplete".into());
-            }
-            check_sha256(
-                &light.light_index_map_sha256,
-                Some(&light.light_index_map_64x64_bgra8),
-            )?;
-            check_sha256(
-                &light.light_data_map_sha256,
-                Some(&light.light_data_map_128x1_rgba32f),
-            )?;
-            let mut slots = BTreeSet::new();
-            for join in &light.ordered_slot_semantic_joins {
-                if join.light_slot >= 64 || !slots.insert(join.light_slot) {
-                    return Err("tiled-light semantic slot is invalid or duplicated".into());
-                }
-                check_sha256(&join.resolved_definition_sha256, None)?;
-            }
-        }
         let mut previous_weather_sequence = None;
         for weather in &self.weather_membership {
             if previous_weather_sequence.is_some_and(|value| weather.sequence <= value) {
@@ -5569,37 +5512,19 @@ fn validate_static_draw_named_payloads(
                     }
                 }
             }
-            StaticShaderResourceSource::TiledLightIndex {
-                writer_index,
-                payload_sha256,
-                resource,
-                ..
-            } => {
-                let packet = unique_tiled_light(submit, *writer_index, owner)?;
-                if packet.light_index_map_sha256 != *payload_sha256
-                    || resource.width != 64
-                    || resource.height != 64
-                    || resource.dxgi_format_u32 != 87
-                    || resource.sample_count != 1
-                {
-                    return Err("tiled-light index texture identity/descriptor mismatch".into());
-                }
+            // The semantic point-light census behind these textures is
+            // owner-unproven (ledger row lighting.point_light_lifecycle,
+            // portable path none), so no lawful payload exists for ANY draw:
+            // unavailable is never rendered as measured empty.
+            StaticShaderResourceSource::TiledLightIndex { .. } => {
+                return Err(format!(
+                    "{owner} draw binds a tiled point-light index texture, but no lawful payload exists until the owner proves the semantic point-light census"
+                ));
             }
-            StaticShaderResourceSource::TiledLightData {
-                writer_index,
-                payload_sha256,
-                resource,
-                ..
-            } => {
-                let packet = unique_tiled_light(submit, *writer_index, owner)?;
-                if packet.light_data_map_sha256 != *payload_sha256
-                    || resource.width != 128
-                    || resource.height != 1
-                    || resource.dxgi_format_u32 != 2
-                    || resource.sample_count != 1
-                {
-                    return Err("tiled-light data texture identity/descriptor mismatch".into());
-                }
+            StaticShaderResourceSource::TiledLightData { .. } => {
+                return Err(format!(
+                    "{owner} draw binds a tiled point-light data texture, but no lawful payload exists until the owner proves the semantic point-light census"
+                ));
             }
             StaticShaderResourceSource::AuthenticatedSnapshot {
                 snapshot_sha256,
@@ -5622,26 +5547,6 @@ fn validate_static_draw_named_payloads(
         }
     }
     Ok(())
-}
-
-fn unique_tiled_light<'a>(
-    submit: &'a RenderSubmit,
-    writer_index: u64,
-    owner: &str,
-) -> Result<&'a TiledLightSubmission, String> {
-    let mut matches = submit
-        .tiled_lights
-        .iter()
-        .filter(|packet| packet.writer_index == writer_index);
-    let packet = matches
-        .next()
-        .ok_or_else(|| format!("{owner} draw references an absent tiled-light payload"))?;
-    if matches.next().is_some() {
-        return Err(format!(
-            "{owner} draw tiled-light writer identity is not unique"
-        ));
-    }
-    Ok(packet)
 }
 
 fn record_output_state_writer(
@@ -5787,19 +5692,8 @@ fn validate_static_map_draw(draw: &StaticMapDraw) -> Result<(), String> {
                 view.validate()?;
                 view.validate_against(resource)?;
             }
-            StaticShaderResourceSource::TiledLightIndex {
-                payload_sha256,
-                resource,
-                view,
-                ..
-            }
-            | StaticShaderResourceSource::TiledLightData {
-                payload_sha256,
-                resource,
-                view,
-                ..
-            } => {
-                check_sha256(payload_sha256, None)?;
+            StaticShaderResourceSource::TiledLightIndex { resource, view, .. }
+            | StaticShaderResourceSource::TiledLightData { resource, view, .. } => {
                 validate_submit_payload_texture_resource(resource)?;
                 view.validate()?;
                 view.validate_against(resource)?;
@@ -7430,7 +7324,6 @@ mod tests {
                 entities: vec![],
                 rail_construction_arrows: vec![],
                 ordered_render_operations: vec![RenderExecutionRef::M02 { output: reference }],
-                tiled_lights: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
             }],
@@ -7472,7 +7365,6 @@ mod tests {
             entities: vec![],
             rail_construction_arrows: vec![],
             ordered_render_operations: vec![duplicate],
-            tiled_lights: vec![],
             weather_membership: vec![],
             political_textures: vec![],
         });
@@ -9348,7 +9240,6 @@ mod tests {
                 }],
                 rail_construction_arrows: vec![],
                 ordered_render_operations: Vec::new(),
-                tiled_lights: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
             }],
@@ -9794,6 +9685,13 @@ mod tests {
         let v12 = serde_json::json!({"schema": INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v12).unwrap_err();
         assert!(error.contains("engine-generated textures"));
+
+        // kills: dropping the v13 refusal would let retired tiled point-light
+        // payload carriers and live texture digests back through decode as if
+        // they were current-schema frames.
+        let v13_tiled = serde_json::json!({"schema": INCOMPATIBLE_TILED_LIGHT_PAYLOAD_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v13_tiled).unwrap_err();
+        assert!(error.contains("retired tiled point-light payload carrier"), "{error}");
         // kills: silent re-admission of the retired always-empty
         // entity-presentation / direct-visual producer carriers - a v13 frame
         // must refuse with the NAMED incompatibility (exact message below),
@@ -9974,7 +9872,6 @@ mod tests {
                 entities: vec![],
                 rail_construction_arrows: vec![],
                 ordered_render_operations: Vec::new(),
-                tiled_lights: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
             }],
@@ -10090,7 +9987,6 @@ mod tests {
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: vec![],
             active_light_lifecycle: vec![],
-            latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: vec![],
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
@@ -10231,19 +10127,22 @@ mod tests {
                 "{carrier}"
             );
 
+            // No lawful tiled-light payload exists for any carrier until the
+            // owner proves the semantic census, overlays included.
             let frame = frame_with_side_carrier_source(
                 carrier,
                 StaticShaderResourceSource::TiledLightIndex {
                     writer_index: 3,
-                    payload_sha256: "e".repeat(64),
                     resource: texture().resource,
                     view: texture().view,
                 },
             );
             let error = frame.validate().unwrap_err();
             assert_eq!(
+                format!(
+                    "{carrier} draw binds a tiled point-light index texture, but no lawful payload exists until the owner proves the semantic point-light census"
+                ),
                 error,
-                format!("{carrier} draw references an absent tiled-light payload"),
                 "{carrier}"
             );
 

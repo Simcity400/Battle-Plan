@@ -2675,7 +2675,6 @@ mod tests {
             entities: vec![],
             rail_construction_arrows: vec![],
             ordered_render_operations: executions,
-            tiled_lights: vec![],
             weather_membership: vec![],
             political_textures: vec![],
         }
@@ -2864,7 +2863,6 @@ mod tests {
             ordered_render_operations: vec![RenderExecutionRef::Static {
                 operation_ordinal: 7,
             }],
-            tiled_lights: vec![],
             weather_membership: vec![],
             political_textures: vec![],
         };

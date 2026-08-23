@@ -824,7 +824,6 @@ mod tests {
             ordered_render_operations: (0..11)
                 .map(|operation_ordinal| RenderExecutionRef::Static { operation_ordinal })
                 .collect(),
-            tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         };
@@ -886,7 +885,6 @@ mod tests {
                 next_stable_ids: BTreeMap::new(),
                 active_effect_lifecycle: Vec::new(),
                 active_light_lifecycle: Vec::new(),
-                latest_tiled_light_payload: None,
                 weather_state_and_ordered_membership: Vec::new(),
                 active_effect_set_sha256: "3".repeat(64),
                 ordered_particle_packets_sha256: "4".repeat(64),

@@ -845,7 +845,6 @@ fn portable_submit_with_pending_s1_from_a729_runtime(
         entities: promoted.entities,
         rail_construction_arrows: Vec::new(),
         ordered_render_operations: Vec::new(),
-        tiled_lights: Vec::new(),
         weather_membership: Vec::new(),
         political_textures: Vec::new(),
     };
@@ -1181,7 +1180,6 @@ pub fn assemble_production_render_frame(
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: empty_effects.clone(),
             active_light_lifecycle: empty_lights.clone(),
-            latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: weather_checkpoint.clone(),
             active_effect_set_sha256: canonical_json_sha256(&empty_effects)?,
             ordered_particle_packets_sha256: canonical_json_sha256(&particles)?,
@@ -1400,6 +1398,14 @@ fn canonical_json_sha256<T: serde::Serialize>(value: &T) -> Result<String, Strin
 // instead of shipping an unbound pass.
 pub(crate) const D77_D80_HOURLY_INPUT_REFUSAL_REASON: &str =
     "selected-Present GUI paints observed with no hourly recorded-input observation";
+
+// Named refusal carried onto the wire through `d77_d80_refusal` (and
+// attributed by the so_d77_d80_tiled_light_census_gap status-origin sample)
+// when a selected submit binds the tiled point-light textures whose semantic
+// census is owner-unproven - the hour degrades named instead of shipping an
+// unrenderable pass.
+pub const D77_D80_TILED_LIGHT_CENSUS_REFUSAL_REASON: &str =
+    "d80 selected-submit draw binds a tiled point-light texture, but no lawful payload exists until the owner proves the semantic point-light census; refusing an unrenderable packet";
 
 #[cfg(windows)]
 pub fn drain_a729_runtime_captures_in_process(
@@ -1996,6 +2002,18 @@ where
                     portable_render_stream::StaticShaderResourceSource::UsedContent { .. }
                 )
             }) {
+                if draw.ordered_shader_resources.iter().any(|binding| {
+                    matches!(
+                        &binding.source,
+                        portable_render_stream::StaticShaderResourceSource::TiledLightIndex { .. }
+                            | portable_render_stream::StaticShaderResourceSource::TiledLightData { .. }
+                    )
+                }) {
+                    return Err(
+                        crate::D77_D80_TILED_LIGHT_CENSUS_REFUSAL_REASON
+                            .into(),
+                    );
+                }
                 return Err(
                     "selected GUI exact draw depends on a non-VFS resource unavailable to UI replay"
                         .into(),
@@ -3105,17 +3123,6 @@ fn source_requires_political_carrier(
         portable_render_stream::StaticShaderResourceSource::PoliticalTexture { .. }
     )
 }
-
-fn source_requires_tiled_light_carrier(
-    source: &portable_render_stream::StaticShaderResourceSource,
-) -> bool {
-    matches!(
-        source,
-        portable_render_stream::StaticShaderResourceSource::TiledLightIndex { .. }
-            | portable_render_stream::StaticShaderResourceSource::TiledLightData { .. }
-    )
-}
-
 #[cfg(test)]
 mod fold_carrier_guard_tests {
     use super::*;
@@ -3152,40 +3159,6 @@ mod fold_carrier_guard_tests {
     }
 
     #[test]
-    fn tiled_light_predicate_covers_both_variants_and_nothing_else() {
-        let index = StaticShaderResourceSource::TiledLightIndex {
-            writer_index: 1,
-            payload_sha256: "a".repeat(64),
-            resource: resource(),
-            view: view(),
-        };
-        let data = StaticShaderResourceSource::TiledLightData {
-            writer_index: 1,
-            payload_sha256: "b".repeat(64),
-            resource: resource(),
-            view: view(),
-        };
-        assert!(source_requires_tiled_light_carrier(&index));
-        assert!(source_requires_tiled_light_carrier(&data));
-
-        let snapshot = StaticShaderResourceSource::AuthenticatedSnapshot {
-            snapshot_sha256: "c".repeat(64),
-            view: view(),
-        };
-        assert!(!source_requires_tiled_light_carrier(&snapshot));
-
-        let political = StaticShaderResourceSource::PoliticalTexture {
-            texture_kind: PoliticalTextureKind::Primary,
-            target_binding_identity: "primary".into(),
-            upload_order: 0,
-            payload_sha256: "d".repeat(64),
-            resource: resource(),
-            view: view(),
-        };
-        assert!(!source_requires_tiled_light_carrier(&political));
-    }
-
-    #[test]
     fn political_predicate_is_unchanged_by_the_shared_helper_refactor() {
         let political = StaticShaderResourceSource::PoliticalTexture {
             texture_kind: PoliticalTextureKind::GradientBorderChannel1,
@@ -3199,7 +3172,6 @@ mod fold_carrier_guard_tests {
 
         let index = StaticShaderResourceSource::TiledLightIndex {
             writer_index: 7,
-            payload_sha256: "f".repeat(64),
             resource: resource(),
             view: view(),
         };
@@ -3212,12 +3184,9 @@ mod fold_carrier_guard_tests {
         assert!(!source_requires_political_carrier(&snapshot));
     }
 
+
     #[test]
     fn empty_program_set_binds_nothing() {
-        assert!(!static_programs_bind(
-            &[],
-            source_requires_tiled_light_carrier
-        ));
         assert!(!static_programs_bind(
             &[],
             source_requires_political_carrier
@@ -3406,7 +3375,6 @@ mod fold_carrier_guard_tests {
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_render_operations: Vec::new(),
-                tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }
@@ -3415,14 +3383,13 @@ mod fold_carrier_guard_tests {
     fn tiled_light_index_source() -> StaticShaderResourceSource {
         StaticShaderResourceSource::TiledLightIndex {
             writer_index: 1,
-            payload_sha256: "a".repeat(64),
             resource: resource(),
             view: view(),
         }
     }
 
     #[test]
-    fn fold_refuses_a_tiled_light_draw_when_the_carrier_is_empty() {
+    fn fold_refuses_a_tiled_light_draw_because_no_lawful_payload_exists() {
         let promoted = PromotedA729StaticProgramCapture {
             submit_index: 1,
             frame_sequence: 1,
@@ -3432,7 +3399,6 @@ mod fold_carrier_guard_tests {
             authenticated_texture_snapshots: Vec::new(),
         };
         let mut submit = empty_submit(1);
-        assert!(submit.tiled_lights.is_empty());
 
         let error = fold_a729_static_program_capture(&mut submit, promoted, Vec::new())
             .expect_err("fold must refuse a program-bearing capture without scene-CB authority");
@@ -3523,6 +3489,7 @@ pub fn fold_a729_static_program_capture(
                 .into(),
         ));
     }
+
     if !submit.ordered_static_map_programs.is_empty()
         || !submit.authenticated_texture_snapshots.is_empty()
         || !submit.ordered_render_operations.is_empty()
@@ -3572,16 +3539,7 @@ pub fn fold_a729_static_program_capture(
                 .into(),
         ));
     }
-    let requires_tiled_light_observation = static_programs_bind(
-        &promoted.ordered_programs,
-        source_requires_tiled_light_carrier,
-    );
-    if requires_tiled_light_observation && submit.tiled_lights.is_empty() {
-        return Err(production_render_submit_live_lane::PromotionError::Invalid(
-            "d80 selected-submit draw references a tiled point-light texture, but the live collector has no authenticated tiled-light submission to join its payload digest against; refusing an unbound packet"
-                .into(),
-        ));
-    }
+
     submit.authenticated_texture_snapshots = promoted.authenticated_texture_snapshots;
     submit.ordered_static_map_programs = promoted.ordered_programs;
     submit.ordered_render_operations = ordered_execution;
@@ -3990,18 +3948,6 @@ pub fn promote_a729_production_unified_render_execution_order<
         static_programs,
         resolver,
     )
-}
-
-pub fn promote_a729_production_tiled_lights<
-    R: production_render_submit_live_lane::ExactLightCatalogResolver,
->(
-    raw: &production_render_submit_live_lane::RawTiledLightObservation,
-    resolver: &R,
-) -> Result<
-    portable_render_stream::TiledLightSubmission,
-    production_render_submit_live_lane::PromotionError,
-> {
-    production_render_submit_live_lane::promote_tiled_light_observation(raw, resolver)
 }
 
 #[cfg(windows)]

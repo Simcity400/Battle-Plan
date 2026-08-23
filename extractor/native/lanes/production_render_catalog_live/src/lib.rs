@@ -2092,24 +2092,29 @@ impl<'a, V: AdmittedVfsPayloads> Builder<'a, V> {
                             view,
                         }
                     }
-                    RawStaticShaderResourceSource::TiledLightIndex {
-                        writer_index,
-                        payload_sha256,
-                    } => StaticShaderResourceSource::TiledLightIndex {
-                        writer_index: *writer_index,
-                        payload_sha256: payload_sha256.clone(),
-                        resource,
-                        view,
-                    },
-                    RawStaticShaderResourceSource::TiledLightData {
-                        writer_index,
-                        payload_sha256,
-                    } => StaticShaderResourceSource::TiledLightData {
-                        writer_index: *writer_index,
-                        payload_sha256: payload_sha256.clone(),
-                        resource,
-                        view,
-                    },
+                    // The tiled-light textures are forbidden product authority (the engine
+                    // writer anchors them to the live camera), so their captured
+                    // subresource bytes and digests are stripped here exactly like the
+                    // SnowMudTexture arm; only descriptor identity and writer
+                    // vocabulary reach the wire.
+                    RawStaticShaderResourceSource::TiledLightIndex { writer_index, .. } => {
+                        let mut descriptor = resource;
+                        descriptor.ordered_subresources.clear();
+                        StaticShaderResourceSource::TiledLightIndex {
+                            writer_index: *writer_index,
+                            resource: descriptor,
+                            view,
+                        }
+                    }
+                    RawStaticShaderResourceSource::TiledLightData { writer_index, .. } => {
+                        let mut descriptor = resource;
+                        descriptor.ordered_subresources.clear();
+                        StaticShaderResourceSource::TiledLightData {
+                            writer_index: *writer_index,
+                            resource: descriptor,
+                            view,
+                        }
+                    }
                 };
                 Ok(StaticShaderResourceBinding {
                     stage: shader_stage(object.stage),

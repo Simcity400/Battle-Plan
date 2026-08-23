@@ -87,7 +87,6 @@ pub struct NativeProductionD3dExecutor<'a> {
     occupation_water_t3_binding_count: u32,
     authenticated_textures: Vec<super::native_draw::AuthenticatedTextureGpu>,
     political_textures: Vec<replay_core::PoliticalTexturePacket>,
-    tiled_lights: Vec<replay_core::TiledLightSubmission>,
     graph_colors: BTreeMap<PreparedRenderTarget, NativeGraphColorTarget>,
     graph_depths: BTreeMap<PreparedRenderTarget, NativeGraphDepthTarget>,
 }
@@ -126,7 +125,6 @@ impl<'a> NativeProductionD3dExecutor<'a> {
             occupation_water_t3_binding_count: 0,
             authenticated_textures: Vec::new(),
             political_textures: Vec::new(),
-            tiled_lights: Vec::new(),
             graph_colors: BTreeMap::new(),
             graph_depths: BTreeMap::new(),
         })
@@ -395,7 +393,6 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
         self.occupation_secondary_proof = None;
         self.occupation_terrain_t6_binding_count = 0;
         self.occupation_water_t3_binding_count = 0;
-        self.tiled_lights = frame.tiled_lights.clone();
         self.graph_colors.clear();
         self.graph_depths.clear();
         for program in &frame.ordered_static_programs {
@@ -568,7 +565,6 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                         &mut self.occupation_water_t3_binding_count,
                         &self.authenticated_textures,
                         &self.political_textures,
-                        &self.tiled_lights,
                         &prepared_targets,
                         &target,
                         &additional_colors,
@@ -628,7 +624,6 @@ impl ProductionD3dExecutionBridge for NativeProductionD3dExecutor<'_> {
                 &mut self.occupation_water_t3_binding_count,
                 &self.authenticated_textures,
                 &self.political_textures,
-                &self.tiled_lights,
                 &prepared_targets,
                 &target,
                 &additional_colors,

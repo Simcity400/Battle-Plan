@@ -1138,7 +1138,6 @@ fn build_stress_map_frame(
         ordered_render_operations: order,
         snow_mud_texture: None,
         political_textures: Vec::new(),
-        tiled_lights: Vec::new(),
         authenticated_texture_snapshots: Vec::new(),
         ordered_static_used_content: vec![source],
         ordered_static_programs: vec![StaticMapPassProgram {

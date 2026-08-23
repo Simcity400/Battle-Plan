@@ -1662,7 +1662,6 @@ mod tests {
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_render_operations: Vec::new(),
-            tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }

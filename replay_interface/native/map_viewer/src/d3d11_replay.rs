@@ -20,14 +20,6 @@ use winapi::um::d3dcommon::*;
 #[cfg(windows)]
 use winapi::um::unknwnbase::IUnknown;
 
-pub fn tiled_light_grid_cb2_bytes(bits: [u32; 4]) -> [u8; 16] {
-    let mut bytes = [0u8; 16];
-    for (index, value) in bits.into_iter().enumerate() {
-        bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-    }
-    bytes
-}
-
 #[cfg(windows)]
 pub(crate) fn world_synthesis_water_refraction_source(
     water_full: bool,
@@ -744,31 +736,6 @@ impl NativeD3d11TerrainRenderer {
 
     pub fn set_water_full(&mut self, water_full: bool) {
         self.water_full = water_full;
-    }
-
-    #[cfg(windows)]
-    pub unsafe fn replace_tiled_light_cb2(
-        &self,
-        prepared: &mut NativeD3d11PreparedProductionMap,
-        grid_start_inv_cell_size_f32_bits: [u32; 4],
-    ) -> Result<usize> {
-        let bytes = tiled_light_grid_cb2_bytes(grid_start_inv_cell_size_f32_bits);
-        let mut replaced = 0usize;
-        for draw in prepared.draws_mut() {
-            for constant_buffer in &mut draw.constant_buffers {
-                if constant_buffer.stage == "PS"
-                    && constant_buffer.slot == TERRAIN_POINT_LIGHT_CB2_BIND_POINT
-                {
-                    constant_buffer.buffer = native_d3d11_create_exact_constant_buffer(
-                        &self.device.device,
-                        &bytes,
-                        "recorded tiled-point-light GridStart_InvCellSize CB2",
-                    )?;
-                    replaced += 1;
-                }
-            }
-        }
-        Ok(replaced)
     }
 
     pub fn with_water_full(mut self, water_full: bool) -> Self {
@@ -4592,17 +4559,6 @@ mod tests {
 
     #[cfg(windows)]
     use winapi::um::d3dcommon::{D3D11_SRV_DIMENSION_TEXTURE2D, D3D11_SRV_DIMENSION_TEXTURECUBE};
-
-    #[test]
-    fn tiled_light_grid_cb2_preserves_raw_float_bits_little_endian() {
-        assert_eq!(
-            tiled_light_grid_cb2_bytes([0x3f80_0000, 0xbf00_0000, 0x0000_0001, 0x7fc0_0001]),
-            [
-                0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0xbf, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00,
-                0xc0, 0x7f,
-            ]
-        );
-    }
 
     #[cfg(windows)]
     #[test]

@@ -3,9 +3,9 @@ use portable_content_manifest::normalize_game_relative_path;
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{
     BufferSource, ConstantBufferBinding, DrawCommand, EntityContentIdentity, EntitySubmission,
-    GeometryBinding, LightSlotJoin, ParticlePacket, PipelineDesc, RenderExecutionRef,
-    RenderOutputRef, RenderOutputState, RenderSubmit, ShaderProgram, Skinning, StaticMapCommand,
-    StaticMapPassProgram, TextureBinding, TiledLightSubmission, WeatherCameraBranch,
+    GeometryBinding, ParticlePacket, PipelineDesc, RenderExecutionRef, RenderOutputRef,
+    RenderOutputState, RenderSubmit, ShaderProgram, Skinning, StaticMapCommand,
+    StaticMapPassProgram, TextureBinding, WeatherCameraBranch,
     WeatherEntityRole, WeatherEntityVisibility, WeatherInstance, WeatherMembership,
     WeatherPosition, WeatherPositionClass, WeatherResolution, WeatherVariantContentJoin,
     WeatherVisibilityPhase,
@@ -2223,40 +2223,6 @@ fn validate_catalog_content_membership(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawLightSlotJoin {
-    pub light_slot: u8,
-    pub light_instance_id: u64,
-    pub definition_ptr: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawTiledLightObservation {
-    pub update_index: u64,
-    pub writer_index: u64,
-    pub first_sequence: u64,
-    pub last_sequence: u64,
-    pub grid_start_inv_cell_size_float4_bits: [u32; 4],
-    pub light_index_map_64x64_bgra8: Vec<u8>,
-    pub light_data_map_128x1_rgba32f: Vec<u8>,
-    pub ordered_slot_joins: Vec<RawLightSlotJoin>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedLightSlot {
-    pub light_token: String,
-    pub resolved_definition: UsedContentKey,
-}
-
-pub trait ExactLightCatalogResolver {
-    fn authority_manifest_sha256(&self) -> &str;
-    fn resolve_slot(
-        &self,
-        raw: &RawTiledLightObservation,
-        join: &RawLightSlotJoin,
-    ) -> Option<ResolvedLightSlot>;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PromotionError {
     Invalid(String),
     UnresolvedCatalog {
@@ -2323,76 +2289,6 @@ pub fn promote_entity_submission<R: ExactEntityCatalogResolver>(
         world_transform_4x4_f32_bits: raw.world_transform_4x4_f32_bits,
         state_flags: raw.state_flags,
         skinning,
-    })
-}
-
-pub fn promote_tiled_light_observation<R: ExactLightCatalogResolver>(
-    raw: &RawTiledLightObservation,
-    resolver: &R,
-) -> Result<TiledLightSubmission, PromotionError> {
-    check_sha256(
-        resolver.authority_manifest_sha256(),
-        "light catalog manifest",
-    )?;
-    if raw.update_index == 0
-        || raw.writer_index == 0
-        || raw.first_sequence == 0
-        || raw.last_sequence < raw.first_sequence
-        || raw.light_index_map_64x64_bgra8.len() != 16_384
-        || raw.light_data_map_128x1_rgba32f.len() != 2_048
-    {
-        return invalid(
-            "tiled-light observation has invalid indices, range, or payload dimensions",
-        );
-    }
-    let mut seen_slots = std::collections::BTreeSet::new();
-    let mut resolved = Vec::with_capacity(raw.ordered_slot_joins.len());
-    for join in &raw.ordered_slot_joins {
-        if join.light_slot >= 64
-            || join.light_instance_id == 0
-            || join.definition_ptr == 0
-            || !seen_slots.insert(join.light_slot)
-        {
-            return invalid("tiled-light slot join is invalid or duplicated");
-        }
-        let row = resolver.resolve_slot(raw, join).ok_or_else(|| {
-            PromotionError::Invalid("light catalog could not resolve an observed slot".into())
-        })?;
-        if row.light_token.is_empty() {
-            return invalid("light resolver returned an empty token");
-        }
-        validate_content_key(
-            &row.resolved_definition,
-            resolver.authority_manifest_sha256(),
-            "light definition",
-        )?;
-        resolved.push(LightSlotJoin {
-            light_slot: join.light_slot,
-            light_instance_id: join.light_instance_id,
-            light_token: row.light_token,
-            resolved_definition_sha256: row.resolved_definition.payload_sha256,
-        });
-    }
-    if raw
-        .light_index_map_64x64_bgra8
-        .iter()
-        .copied()
-        .filter(|value| *value != 255)
-        .any(|value| !seen_slots.contains(&value))
-    {
-        return invalid("tiled-light index map references a slot without a semantic join");
-    }
-    Ok(TiledLightSubmission {
-        update_index: raw.update_index,
-        writer_index: raw.writer_index,
-        first_sequence: raw.first_sequence,
-        last_sequence: raw.last_sequence,
-        grid_start_inv_cell_size_float4_bits: raw.grid_start_inv_cell_size_float4_bits,
-        light_index_map_sha256: hex_sha256(&raw.light_index_map_64x64_bgra8),
-        light_index_map_64x64_bgra8: raw.light_index_map_64x64_bgra8.clone(),
-        light_data_map_sha256: hex_sha256(&raw.light_data_map_128x1_rgba32f),
-        light_data_map_128x1_rgba32f: raw.light_data_map_128x1_rgba32f.clone(),
-        ordered_slot_semantic_joins: resolved,
     })
 }
 
@@ -3801,23 +3697,6 @@ mod tests {
         }
     }
 
-    struct LightResolver;
-    impl ExactLightCatalogResolver for LightResolver {
-        fn authority_manifest_sha256(&self) -> &str {
-            "1111111111111111111111111111111111111111111111111111111111111111"
-        }
-
-        fn resolve_slot(
-            &self,
-            _: &RawTiledLightObservation,
-            _: &RawLightSlotJoin,
-        ) -> Option<ResolvedLightSlot> {
-            Some(ResolvedLightSlot {
-                light_token: "alarm_flash".into(),
-                resolved_definition: content("gfx/entities/map_lights.asset", "af".repeat(32)),
-            })
-        }
-    }
 
     fn packet() -> RawParticlePacket {
         let token = "rain_clouds_file";
@@ -4691,7 +4570,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_entity_direct_and_tiled_light_promotions_fail_closed() {
+    fn typed_entity_direct_promotions_fail_closed() {
         let entity = promote_entity_submission(
             &RawEntitySubmission {
                 submit_index: 3,
@@ -4728,28 +4607,6 @@ mod tests {
             "gfx/models/test.mesh"
         );
 
-        let mut index_map = vec![255; 16_384];
-        index_map[0] = 3;
-        let raw_light = RawTiledLightObservation {
-            update_index: 2,
-            writer_index: 1,
-            first_sequence: 4,
-            last_sequence: 5,
-            grid_start_inv_cell_size_float4_bits: [0; 4],
-            light_index_map_64x64_bgra8: index_map,
-            light_data_map_128x1_rgba32f: vec![0; 2_048],
-            ordered_slot_joins: vec![RawLightSlotJoin {
-                light_slot: 3,
-                light_instance_id: 12,
-                definition_ptr: 0x5000,
-            }],
-        };
-        let light = promote_tiled_light_observation(&raw_light, &LightResolver).unwrap();
-        assert_eq!(light.ordered_slot_semantic_joins[0].light_slot, 3);
-
-        let mut invalid = raw_light;
-        invalid.light_index_map_64x64_bgra8[1] = 4;
-        assert!(promote_tiled_light_observation(&invalid, &LightResolver).is_err());
     }
 
     #[test]

@@ -243,7 +243,7 @@ pub use counter_render::{
 pub use d3d11_replay::{
     accept_terrain_d3d11, accept_terrain_d3d11_with_resolver, render_production_map_d3d11,
     render_production_map_d3d11_with_resolver, render_terrain_d3d11, render_terrain_d3d11_bundle,
-    render_terrain_d3d11_with_resolver, smoke_terrain_chunk_synthesis, tiled_light_grid_cb2_bytes,
+    render_terrain_d3d11_with_resolver, smoke_terrain_chunk_synthesis,
     validate_terrain_chunk_synthesis, validate_terrain_d3d11_bundle,
     validate_terrain_d3d11_bundle_with_resolver, NativeD3d11PreparedProductionMap,
     NativeD3d11PreparedSynthesizedProductionMap, NativeD3d11PreparedTerrainBundle,
