@@ -160,8 +160,6 @@ pub struct InProcessRenderAdmission {
     manifest: portable_content_manifest::ContentManifest,
     winners: production_render_submit_live_lane::RawEffectiveVfsWinnerIndexBinding,
     payload_ranges: BTreeMap<ObservedVfsPayloadRangeRequest, Vec<u8>>,
-    recorded_input_variant:
-        Option<production_render_catalog_live::AuthenticatedRecordedInputVariant>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,6 +175,34 @@ fn canonical_lower_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+// A recorded-input observation is minted PER selected Present (each hour's
+// frame carries an observation of its own Present), so the admission keeps no
+// session-wide copy; every hourly receipt must independently cross this
+// launch-admission check before it may ride the hour's authority.
+pub fn validate_hourly_recorded_input_admission(
+    receipt: &production_render_catalog_live::AuthenticatedRecordedInputVariant,
+    process_start_nonce: u64,
+    source_game_executable_sha256: &str,
+) -> Result<(), String> {
+    let computed_receipt_sha256 = receipt
+        .computed_receipt_sha256()
+        .map_err(|error| format!("recorded input-family receipt hash: {error}"))?;
+    if receipt.process_id == 0
+        || receipt.process_start_nonce != process_start_nonce
+        || receipt.executable_sha256 != source_game_executable_sha256
+        || receipt.hook_epoch_nonce == 0
+        || receipt.observation_sequence == 0
+        || !canonical_lower_sha256(&receipt.authority_manifest_sha256)
+        || !canonical_lower_sha256(&receipt.observation_receipt_sha256)
+        || computed_receipt_sha256 != receipt.observation_receipt_sha256
+    {
+        return Err(
+            "hourly recorded input-family receipt crosses its launch admission".into(),
+        );
+    }
+    Ok(())
 }
 
 impl InProcessRenderAdmission {
@@ -211,34 +237,18 @@ impl InProcessRenderAdmission {
             manifest,
             winners,
             payload_ranges: BTreeMap::new(),
-            recorded_input_variant: None,
         })
     }
 
-    pub fn bind_recorded_input_variant(
-        &mut self,
-        receipt: production_render_catalog_live::AuthenticatedRecordedInputVariant,
+    pub fn validate_hourly_recorded_input(
+        &self,
+        receipt: &production_render_catalog_live::AuthenticatedRecordedInputVariant,
     ) -> Result<(), String> {
-        let computed_receipt_sha256 = receipt
-            .computed_receipt_sha256()
-            .map_err(|error| format!("recorded input-family receipt hash: {error}"))?;
-        if self.recorded_input_variant.is_some()
-            || receipt.process_id == 0
-            || receipt.process_start_nonce != self.process_start_nonce
-            || receipt.executable_sha256 != self.manifest.source_game.executable_sha256
-            || receipt.hook_epoch_nonce == 0
-            || receipt.observation_sequence == 0
-            || !canonical_lower_sha256(&receipt.authority_manifest_sha256)
-            || !canonical_lower_sha256(&receipt.observation_receipt_sha256)
-            || computed_receipt_sha256 != receipt.observation_receipt_sha256
-        {
-            return Err(
-                "recorded input-family receipt is duplicated or crosses its launch admission"
-                    .into(),
-            );
-        }
-        self.recorded_input_variant = Some(receipt);
-        Ok(())
+        validate_hourly_recorded_input_admission(
+            receipt,
+            self.process_start_nonce,
+            &self.manifest.source_game.executable_sha256,
+        )
     }
 
     pub fn manifest(&self) -> &portable_content_manifest::ContentManifest {
@@ -278,12 +288,6 @@ impl InProcessRenderAdmission {
         }
         self.winners.authorize_content(&row.content)?;
         manifest_key_for_raw(&self.manifest, &row.content)
-    }
-
-    fn recorded_input_variant(
-        &self,
-    ) -> Option<&production_render_catalog_live::AuthenticatedRecordedInputVariant> {
-        self.recorded_input_variant.as_ref()
     }
 
     fn missing_exact_authority_payloads(
@@ -1391,19 +1395,29 @@ fn canonical_json_sha256<T: serde::Serialize>(value: &T) -> Result<String, Strin
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
+// Named refusal carried onto the wire through `d77_d80_refusal` (and attributed
+// by the so_d77_d80_hourly_input_gap status-origin sample) when an hour observed
+// GUI paints but its selected Present minted no hourly recorded-input
+// observation — such an hour cannot prove interactivity, so it degrades named
+// instead of shipping an unbound pass.
+pub(crate) const D77_D80_HOURLY_INPUT_REFUSAL_REASON: &str =
+    "selected-Present GUI paints observed with no hourly recorded-input observation";
+
 #[cfg(windows)]
 pub fn drain_a729_runtime_captures_in_process(
     admission: &InProcessRenderAdmission,
+    recorded_input: Option<&production_render_catalog_live::AuthenticatedRecordedInputVariant>,
 ) -> Result<Vec<FinalizedA729RuntimeCapture>, production_render_submit_live_lane::PromotionError> {
     let mut captures =
         production_render_submit_live_lane::a729_hook::drain_complete_submit_captures()
             .map_err(production_render_submit_live_lane::PromotionError::Invalid)?;
-    finalize_a729_runtime_captures_in_process(admission, &mut captures)
+    finalize_a729_runtime_captures_in_process(admission, recorded_input, &mut captures)
 }
 
 #[cfg(windows)]
 fn finalize_a729_runtime_captures_in_process(
     admission: &InProcessRenderAdmission,
+    recorded_input: Option<&production_render_catalog_live::AuthenticatedRecordedInputVariant>,
     captures: &mut Vec<production_render_submit_live_lane::RawRenderSubmitCapture>,
 ) -> Result<Vec<FinalizedA729RuntimeCapture>, production_render_submit_live_lane::PromotionError> {
     for capture in captures.iter() {
@@ -1492,7 +1506,7 @@ fn finalize_a729_runtime_captures_in_process(
             admission.manifest().effective_vfs_manifest_sha256.clone(),
             admission.catalog_authority_sha256().to_owned(),
             admission.catalog_authority_sha256().to_owned(),
-            admission.recorded_input_variant(),
+            recorded_input,
         )
         .map_err(|error| {
             production_render_submit_live_lane::PromotionError::Invalid(format!(
@@ -1578,7 +1592,7 @@ fn drain_finalize_a729_production_frames_with_payload_loader<F>(
     owner_captures: Vec<
         runtime_text_inputs_live_lane::owner_glyph_probe::SelectedOwnerGlyphCapture,
     >,
-    recorded_input_receipt_sha256: String,
+    hour_recorded_input: Option<production_render_catalog_live::AuthenticatedRecordedInputVariant>,
     payload_loader: &mut F,
 ) -> Result<A729ProductionRenderDrain, String>
 where
@@ -1655,7 +1669,8 @@ where
     let missing =
         admission.missing_observed_payloads(raw_runtime.iter().map(|capture| &capture.catalog))?;
     payload_loader(admission, missing)?;
-    let mut runtime = finalize_a729_runtime_captures_in_process(admission, &mut raw_runtime)
+    let mut runtime =
+        finalize_a729_runtime_captures_in_process(admission, hour_recorded_input.as_ref(), &mut raw_runtime)
         .map_err(|error| format!("d77 runtime strict finalization: {error:?}"))?
         .into_iter()
         .map(|row| (row.promoted.submit_index, row))
@@ -2028,22 +2043,32 @@ where
     if pending.len() != 1 {
         return Err("production render carrier retained more than selected Present".into());
     }
-    let authenticated_ui_pass = if gui_draws.is_observed() {
-        Some(
-            production_render_submit_live_lane::a25_runtime_text_present::
-                materialize_direct_selected_present_ui_pass(
-                    &ui_selected_capture,
-                    admission.winner_index(),
-                    gui_draws.captures(),
-                    owner_captures,
-                    gui_exact_draws,
-                    update_index,
-                    recorded_input_receipt_sha256,
-                    None,
-                )?,
-        )
-    } else {
-        None
+    let authenticated_ui_pass = match gui_draws.is_observed() {
+        false => None,
+        true => {
+            // The consumer law binds any authenticated UI pass to a recorded-input
+            // observation of THIS frame's selected Present. An hour whose Present
+            // carries no fresh pointer-movement observation cannot prove interactivity,
+            // so materializing a pass there would be unfalsifiable: refuse the hour
+            // by name (the disposition degrades it, named on the wire) instead of
+            // shipping an unbound pass.
+            let hour_input = hour_recorded_input.as_ref().ok_or(
+                crate::D77_D80_HOURLY_INPUT_REFUSAL_REASON,
+            )?;
+            Some(
+                production_render_submit_live_lane::a25_runtime_text_present::
+                    materialize_direct_selected_present_ui_pass(
+                        &ui_selected_capture,
+                        admission.winner_index(),
+                        gui_draws.captures(),
+                        owner_captures,
+                        gui_exact_draws,
+                        update_index,
+                        hour_input.observation_receipt_sha256.clone(),
+                        None,
+                    )?,
+            )
+        }
     };
     let rail_supply_arrows = (|| -> Result<_, String> {
         let frame = &pending[0].0;

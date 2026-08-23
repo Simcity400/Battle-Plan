@@ -57,7 +57,17 @@ pub const SO_D60_WARMUP_GAP: usize = 48;
 /// lack of sealed scene constant-buffer bytes, so the hour published a named
 /// DOMAIN_GAP instead of a production-render frame.
 pub const SO_D77_D80_SCENE_CB_GAP: usize = 49;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 50;
+/// d77/d80 sealed degraded: the hour observed GUI paints but its selected
+/// Present minted no hourly recorded-input observation, so no authenticated UI
+/// pass could seal; the hour publishes a named DOMAIN_GAP instead of a
+/// production-render frame.
+pub const SO_D77_D80_HOURLY_INPUT_GAP: usize = 50;
+/// d77/d80 sealed degraded: the selected Present's in-hook foreground pointer
+/// sample completed after its selection cutoff (benign timing race), so no
+/// recorded-input observation could authenticate; the hour publishes a named
+/// DOMAIN_GAP instead of a production-render frame.
+pub const SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP: usize = 51;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 52;
 
 pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d45_partial_targeted_timed_structural",
@@ -110,6 +120,8 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d48_lane_duplicate_province_roots",
     "so_d60_warmup_gap",
     "so_d77_d80_scene_cb_gap",
+    "so_d77_d80_hourly_input_gap",
+    "so_d77_d80_present_sample_cutoff_gap",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -753,6 +765,14 @@ mod tests {
             (
                 SO_D77_D80_SCENE_CB_GAP,
                 "so_d77_d80_scene_cb_gap",
+            ),
+            (
+                SO_D77_D80_HOURLY_INPUT_GAP,
+                "so_d77_d80_hourly_input_gap",
+            ),
+            (
+                SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP,
+                "so_d77_d80_present_sample_cutoff_gap",
             ),
         ];
         for (id, name) in expected {

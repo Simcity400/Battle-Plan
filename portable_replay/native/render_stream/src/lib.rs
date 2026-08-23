@@ -8765,6 +8765,55 @@ mod tests {
             .unwrap_err()
             .contains("non-chronological"));
 
+        // kills: carrier.production_frame.authority.recorded_input_observation — an
+        // observation bound to a DIFFERENT hour's selected Present (the once-per-session
+        // producer defect) must refuse on the per-frame qpc-ticks EQUALITY even while
+        // its own receipt chain stays internally consistent AND its present sample
+        // still completes before this frame's cutoff (fixture: selected 500, cutoff
+        // 600; the foreign hour's sample ends at 402) — so the refusal can only come
+        // from the equality clause, not the cutoff clause.
+        let mut foreign_present_hour = production_frame_with_exact_ui_pass();
+        let observation = foreign_present_hour
+            .authority
+            .recorded_input_observation
+            .as_mut()
+            .unwrap();
+        assert_eq!(observation.selected_present_qpc_ticks, 500);
+        assert_eq!(observation.present_sample_completed_qpc_ticks, 502);
+        observation.prior_observation_qpc_ticks = 100;
+        observation.selected_present_qpc_ticks = 400;
+        observation.present_sample_started_qpc_ticks = 401;
+        observation.present_sample_completed_qpc_ticks = 402;
+        observation.observation_receipt_sha256 = observation.computed_receipt_sha256().unwrap();
+        foreign_present_hour.authority.recorded_input_receipt_sha256 =
+            Some(observation.observation_receipt_sha256.clone());
+        assert!(foreign_present_hour
+            .validate()
+            .unwrap_err()
+            .contains("crosses selected-Present cutoff"));
+
+        // ... and so must an observation whose receipt hash uses the WRONG
+        // CONSTRUCTION: the raw producer selection receipt is a binary v7-domain
+        // SHA-256, this join demands the portable canonical-JSON construction, and the
+        // two agree only by collision.
+        let mut wrong_construction = production_frame_with_exact_ui_pass();
+        let observation = wrong_construction
+            .authority
+            .recorded_input_observation
+            .as_mut()
+            .unwrap();
+        let mut forged = observation.selected_present_receipt_sha256.clone();
+        forged
+            .replace_range(..1, if forged.starts_with('0') { "1" } else { "0" });
+        observation.selected_present_receipt_sha256 = forged;
+        observation.observation_receipt_sha256 = observation.computed_receipt_sha256().unwrap();
+        wrong_construction.authority.recorded_input_receipt_sha256 =
+            Some(observation.observation_receipt_sha256.clone());
+        assert!(wrong_construction
+            .validate()
+            .unwrap_err()
+            .contains("crosses selected-Present cutoff"));
+
         let mut wrong_mapmode_vfs = production_frame_with_exact_ui_pass();
         if let Some(ActiveMapmodeState {
             provenance: MapmodeProvenance::EffectiveVfs { content },

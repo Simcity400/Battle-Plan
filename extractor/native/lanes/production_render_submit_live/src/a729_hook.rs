@@ -117,6 +117,11 @@ const MAX_VFS_OPEN_RECEIPTS: usize = 1_048_576;
 const MAX_OCCUPATION_SECONDARY_RESOURCES: usize = 16;
 const MAX_D3D_SHADER_BYTECODE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_D3D_INPUT_ELEMENTS: u32 = 32;
+/// Benign race: the in-hook foreground pointer sample completed after this
+/// Present's selection cutoff. The collector's d77/d80 disposition degrades the
+/// hour NAMED on exactly these bytes instead of refusing the capture.
+pub const PRESENT_SAMPLE_CUTOFF_REFUSAL: &str =
+    "selected render-frame foreground pointer sample crosses its selection cutoff";
 pub const BOOTSTRAP_HOOK_COUNT: usize = 2;
 const HARDWARE_D3D_HOOK_COUNT: usize = 19;
 const ENGINE_HOOK_COUNT: usize = 52;
@@ -5311,7 +5316,11 @@ fn selected_render_frame_receipt_sha256(
     consumed_unselected_sha256: &str,
 ) -> Result<String, String> {
     let mut hasher = Sha256::new();
-    hasher.update(b"hoi4.a729.selected-present.v6\0");
+    // v7: binds the selected frame's in-hook foreground pointer sample. Without it, the
+    // sample bytes rode only in the (opaque, non-recomputed) candidate-set digest, so a
+    // post-selection mutation of the sample could masquerade as the benign
+    // cutoff-crossing race and degrade named instead of failing fatally.
+    hasher.update(b"hoi4.a729.selected-present.v7\0");
     hasher.update(target_game_hour_raw.to_le_bytes());
     hasher.update(cutoff_qpc_ticks.to_le_bytes());
     hasher.update(cutoff_qpc_frequency_hz.to_le_bytes());
@@ -5333,6 +5342,21 @@ fn selected_render_frame_receipt_sha256(
     update_hash_bytes(&mut hasher, selected.weather_snapshot_sha256.as_bytes())?;
     hasher.update(discarded_candidate_count.to_le_bytes());
     update_hash_bytes(&mut hasher, consumed_unselected_sha256.as_bytes())?;
+    match selected.foreground_pointer_sample.as_ref() {
+        Some(sample) => {
+            hasher.update([1]);
+            hasher.update(sample.sample_started_qpc_ticks.to_le_bytes());
+            hasher.update(sample.sample_completed_qpc_ticks.to_le_bytes());
+            hasher.update(sample.foreground_process_id.to_le_bytes());
+            for value in sample.client_extent {
+                hasher.update(value.to_le_bytes());
+            }
+            for value in sample.client_position {
+                hasher.update(value.to_le_bytes());
+            }
+        }
+        None => hasher.update([0]),
+    }
     Ok(format!("{:x}", hasher.finalize()))
 }
 
@@ -5391,13 +5415,6 @@ pub fn validate_selected_render_frame_receipt(
     }
     if let Some(sample) = frame.foreground_pointer_sample.as_ref() {
         validate_present_foreground_pointer_sample(sample, frame.presentation_qpc_ticks)?;
-        if sample.sample_completed_qpc_ticks > receipt.cutoff_qpc_ticks
-            || sample.foreground_process_id != selected.selected.runtime.catalog.process.process_id
-        {
-            return Err(
-                "selected render-frame foreground pointer sample crosses its cutoff/process".into(),
-            );
-        }
     }
     if let Some(observation) = frame.s1_shadow_observation.as_ref() {
         validate_s1_selected_submit_observation(
@@ -5423,6 +5440,24 @@ pub fn validate_selected_render_frame_receipt(
     )?;
     if recomputed != receipt.selection_receipt_sha256 {
         return Err("selected render-frame receipt SHA-256 does not recompute".into());
+    }
+    if let Some(sample) = frame.foreground_pointer_sample.as_ref() {
+        // Two distinct refusals, checked LAST so neither can mask any fatal
+        // condition above: a foreign-process sample poisons the capture and
+        // stays fatal; a sample completing after the selection cutoff is a
+        // BENIGN timing race — it can only be classified as such when every
+        // fatal check (joins, digests, receipt recompute) has already passed.
+        // The collector's d77/d80 disposition classifies on these exact strings.
+        if sample.foreground_process_id != selected.selected.runtime.catalog.process.process_id
+        {
+            return Err(
+                "selected render-frame foreground pointer sample belongs to another process"
+                    .into(),
+            );
+        }
+        if sample.sample_completed_qpc_ticks > receipt.cutoff_qpc_ticks {
+            return Err(PRESENT_SAMPLE_CUTOFF_REFUSAL.into());
+        }
     }
     Ok(())
 }

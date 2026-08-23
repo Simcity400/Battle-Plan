@@ -109,13 +109,18 @@ fn scene_cb_authority_refusal_degrades_the_hour_instead_of_refusing_it() {
     // kills: carrier.render_submit.ordered_scene_constant_buffers — a program-bearing
     // d80 fold refuses with the scene-CB authority reason (fold_a729_static_program_capture,
     // collector lib.rs guard test pins that string); this hour disposition must turn that
-    // refusal into a degraded hour (Ok(None): the hour seals without d77/d80) and never
-    // refuse the capture, while any unrelated drain error still refuses.
+    // refusal into a degraded hour carrying the CANONICAL wire reason (never the varying
+    // fold text), while any unrelated drain error still refuses.
     let refusal = "d80 fold: Invalid(\"d80 static program fold has no selected-submit scene constant-buffer authority\")";
-    let degraded = super::d77_d80_hour_disposition(Err(refusal.to_string())).unwrap();
+    let (degraded, reason) = super::d77_d80_hour_disposition(Err(refusal.to_string())).unwrap();
     assert!(
         matches!(degraded, None),
         "the refusal must degrade the hour's d77/d80"
+    );
+    assert_eq!(
+        reason.as_deref(),
+        Some(super::D77_D80_SCENE_CB_REFUSAL_REASON),
+        "the wire must carry the canonical static scene-CB reason bytes"
     );
 
     let unrelated = super::d77_d80_hour_disposition(Err(
@@ -123,4 +128,29 @@ fn scene_cb_authority_refusal_degrades_the_hour_instead_of_refusing_it() {
     ))
     .unwrap_err();
     assert!(unrelated.contains("render hour changed"));
+}
+
+#[test]
+fn hourly_input_and_cutoff_refusals_degrade_named() {
+    // kills: carrier.production_frame.authority.recorded_input_observation — an hour whose
+    // GUI paints ride without an hourly recorded-input observation degrades NAMED instead
+    // of mislabeling itself as a scene-CB failure; the benign present-sample cutoff race
+    // likewise degrades named, and only truly fatal drain errors refuse.
+    let hourly = crate::D77_D80_HOURLY_INPUT_REFUSAL_REASON;
+    let (degraded, reason) =
+        super::d77_d80_hour_disposition(Err(hourly.to_string())).unwrap();
+    assert!(matches!(degraded, None));
+    assert_eq!(reason.as_deref(), Some(hourly));
+
+    let cutoff = production_render_submit_live_lane::a729_hook::PRESENT_SAMPLE_CUTOFF_REFUSAL;
+    let (degraded, reason) =
+        super::d77_d80_hour_disposition(Err(cutoff.to_string())).unwrap();
+    assert!(matches!(degraded, None));
+    assert_eq!(reason.as_deref(), Some(cutoff));
+
+    let foreign_process =
+        "selected render-frame foreground pointer sample belongs to another process";
+    let error =
+        super::d77_d80_hour_disposition(Err(foreign_process.into())).unwrap_err();
+    assert!(error.contains("belongs to another process"));
 }
