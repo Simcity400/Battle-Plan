@@ -273,6 +273,20 @@ impl ProductionMapFeatureAdapter for Xmap20EffectsAdapter {
         };
         let prepared = prepared.as_ref();
         prepared.validate()?;
+        // Derivation join: every prepared packet must join its authoritative
+        // definition through the recorded census laws (identity equality,
+        // FNV-1a-32 registration hash, definition digest, one setup per
+        // definition identity, single gfx/fx/particle.shader program path).
+        // The setup fields stay KEEP inside the authoritative carrier; this
+        // gate requires every executed packet to present the lawful census
+        // join before its content may run.
+        let derivation_authority = super::xmap20_derive::Xmap20DefinitionAuthority::from_census(
+            &prepared.admission.active_effects,
+            &prepared.ordered_particles,
+        )?;
+        for packet in &prepared.ordered_particles {
+            derivation_authority.derive_packet_draw_setup(packet)?;
+        }
         if context.world_frame.hour_index() != prepared.admission.hour_index {
             return Err("XMAP20 prepared effects belong to a different game hour".into());
         }
@@ -467,6 +481,20 @@ pub fn prepare_xmap20_effects(
     };
     prepared.deterministic_sha256 = Sha256::hex(&serde_json::to_vec(&prepared)?);
     prepared.validate()?;
+    // Derivation join on the PRODUCT preparation route: every packet that will
+    // be executed must join its authoritative definition through the recorded
+    // census laws (identity equality, FNV-1a-32 registration hash, definition
+    // digest, one setup per definition identity, single gfx/fx/particle.shader
+    // program path). Execution consumes these packets directly; the setup
+    // fields stay KEEP inside the authoritative carrier, and this gate requires
+    // the lawful census join before the packets may execute.
+    let derivation_authority = super::xmap20_derive::Xmap20DefinitionAuthority::from_census(
+        &prepared.admission.active_effects,
+        &prepared.ordered_particles,
+    )?;
+    for packet in &prepared.ordered_particles {
+        derivation_authority.derive_packet_draw_setup(packet)?;
+    }
     Ok(prepared)
 }
 
