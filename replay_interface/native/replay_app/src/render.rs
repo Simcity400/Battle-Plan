@@ -521,7 +521,6 @@ pub struct CapturedPassStats {
     pub restore_evidence_found: bool,
     pub particle_stream_omitted: bool,
     pub entity_stream_omitted: bool,
-    pub direct_visual_stream_omitted: bool,
     pub weather_stream_omitted: bool,
     pub water_gap: Option<String>,
     pub layer_gaps: Vec<String>,
@@ -559,7 +558,6 @@ struct CapturedPassLayer {
     recorded_tiled_lights_bound: bool,
     reported_omitted_particles: bool,
     reported_omitted_entities: bool,
-    reported_omitted_direct_visuals: bool,
     reported_omitted_weather: bool,
     last_camera: Option<CapturedCameraKey>,
     last_restore_grade_key: Option<RestoreGradeKey>,
@@ -890,7 +888,6 @@ impl CapturedPassLayer {
             recorded_tiled_lights_bound: false,
             reported_omitted_particles: false,
             reported_omitted_entities: false,
-            reported_omitted_direct_visuals: false,
             reported_omitted_weather: false,
             last_camera: None,
             last_restore_grade_key: None,
@@ -1115,7 +1112,6 @@ impl CapturedPassLayer {
         }
         self.reported_omitted_particles = false;
         self.reported_omitted_entities = false;
-        self.reported_omitted_direct_visuals = false;
         self.reported_omitted_weather = false;
         Ok(())
     }
@@ -1236,11 +1232,10 @@ impl CapturedPassLayer {
                     )?
                 };
                 eprintln!(
-                    "replay_app: executed portable submit {} in authoritative order ({} entity, {} particle, {} direct-visual joins, {} weather joins)",
+                    "replay_app: executed portable submit {} in authoritative order ({} entity, {} particle, {} weather joins)",
                     submit.submit_index,
                     stats.entity_draws,
                     stats.particle_draws,
-                    stats.direct_visual_joins,
                     stats.weather_joins,
                 );
             }
@@ -1723,7 +1718,6 @@ impl CapturedPassLayer {
             restore_evidence_found: self.restore_postfx.evidence_found,
             particle_stream_omitted: self.reported_omitted_particles,
             entity_stream_omitted: self.reported_omitted_entities,
-            direct_visual_stream_omitted: self.reported_omitted_direct_visuals,
             weather_stream_omitted: self.reported_omitted_weather,
             water_gap: self.water_gap.clone(),
             layer_gaps: self.layer_gaps.clone(),
@@ -3489,13 +3483,11 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
-            direct_visuals: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
@@ -3509,15 +3501,12 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             last_submit_index: Some("12".to_string()),
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
-            active_entity_presentation: Vec::new(),
-            active_direct_visual_producers: Vec::new(),
             active_light_lifecycle: Vec::new(),
             latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
             ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
             weather_state_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),

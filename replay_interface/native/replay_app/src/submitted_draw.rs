@@ -70,7 +70,6 @@ impl SubmittedMainSceneTarget {
 pub struct SubmittedDrawStats {
     pub particle_draws: usize,
     pub entity_draws: usize,
-    pub direct_visual_joins: usize,
     pub weather_joins: usize,
 }
 
@@ -154,6 +153,9 @@ pub unsafe fn execute_submitted_draws(
     if !resolver.has_content_admission() {
         return Err("submitted draw execution requires validated effective-VFS admission".into());
     }
+    // XMAP20 direct-visual derivation law runs before any draw: the ordered
+    // cover of recorded outputs IS the whole direct-scene presentation.
+    map_viewer::derive_direct_visual_coverage(submit)?;
     for weather in &submit.weather_membership {
         resolver.read_admitted_used_content(&weather.weather_position_source_content)?;
         for variant in &weather.ordered_variant_content {
@@ -167,7 +169,6 @@ pub unsafe fn execute_submitted_draws(
     let ordered = ordered_draws(submit)?;
     let mut stream_output = StreamOutputBuffers::default();
     let mut stats = SubmittedDrawStats {
-        direct_visual_joins: submit.direct_visuals.len(),
         weather_joins: submit
             .weather_membership
             .iter()
@@ -195,6 +196,10 @@ pub unsafe fn execute_submitted_draws(
                 stats.particle_draws += 1;
             }
             OrderedDraw::Entity(entity) => {
+                // XMAP20 entity-presentation derivation law: the recorded
+                // submission itself is the presented-entity authority; derive
+                // its presented state (fail closed) before presenting it.
+                map_viewer::derive_entity_presentation(entity)?;
                 resolver
                     .read_admitted_used_content(&entity.content_identity.resolved_entity_asset)?;
                 resolver.read_admitted_used_content(&entity.content_identity.mesh)?;
@@ -1666,13 +1671,11 @@ mod tests {
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
             particle_packet_set_sha256: "0".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
-            direct_visuals: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),

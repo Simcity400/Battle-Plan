@@ -3,6 +3,7 @@ use crate::image_load::load_dds_rgba;
 use crate::mod_resolver::GameFileResolver;
 use crate::types::RgbaImage;
 use crate::Result;
+use replay_core::{Leaf, WeatherRegionRow, WeatherVisualEpoch};
 use std::{collections::BTreeSet, path::Path};
 
 pub const WEATHER_EFFECTS_SOURCE: &str = "common/weather.txt";
@@ -1312,6 +1313,236 @@ fn braced_field(block: &str, key: &str) -> Option<String> {
     None
 }
 
+/// The recorded D24 gameplay row and the recorded visual-lifecycle epoch must
+/// describe the same weather before anything visual may be derived from them:
+/// frozen flag priority picks the code, the engine kind key and the transition
+/// expiry must agree exactly. Returns the derived weather *type*.
+pub fn weather_epoch_join_law(
+    gameplay: &WeatherRegionRow,
+    epoch: &WeatherVisualEpoch,
+) -> Result<WeatherType> {
+    let exact = |leaf: &Leaf<bool>, name: &str| -> Result<bool> {
+        match leaf {
+            Leaf::Measured(value) => Ok(*value),
+            _ => Err(format!("weather D24 {name} is not measured").into()),
+        }
+    };
+    let flags = [
+        (2u8, exact(&gameplay.rain_light_active, "rain_light")?),
+        (3, exact(&gameplay.rain_heavy_active, "rain_heavy")?),
+        (4, exact(&gameplay.snow_active, "snow")?),
+        (5, exact(&gameplay.blizzard_active, "blizzard")?),
+        (7, exact(&gameplay.sandstorm_active, "sandstorm")?),
+    ];
+    let expected = flags
+        .iter()
+        .find(|(_, value)| *value)
+        .map(|(code, _)| *code)
+        .unwrap_or(0);
+    let kind = match &gameplay.weather_kind {
+        Leaf::Measured(value) => WeatherType::from_recording_kind(value)
+            .ok_or("weather D24 kind is not an exact engine key")?,
+        _ => return Err("weather D24 kind is not measured".into()),
+    };
+    let derived = weather_type_for_airborne_code(epoch.airborne_runtime_code)?;
+    if expected != epoch.airborne_runtime_code || derived != kind {
+        return Err("weather D24 and visual epoch airborne code disagree".into());
+    }
+    match &gameplay.transition_expiry_game_hour {
+        Leaf::Measured(value) if *value == i64::from(epoch.transition_expiry_game_hour) => {}
+        _ => return Err("weather D24 and visual epoch transition expiry disagree".into()),
+    }
+    Ok(kind)
+}
+
+/// Frozen engine priority table mapping the observed airborne runtime code to
+/// its weather *type* key; unknown codes are refused, never mapped to none.
+pub fn weather_type_for_airborne_code(code: u8) -> Result<WeatherType> {
+    match code {
+        0 => Ok(WeatherType::NoPhenomenon),
+        2 => Ok(WeatherType::RainLight),
+        3 => Ok(WeatherType::RainHeavy),
+        4 => Ok(WeatherType::Snow),
+        5 => Ok(WeatherType::Blizzard),
+        7 => Ok(WeatherType::Sandstorm),
+        _ => Err("weather membership derivation refuses an unknown airborne code".into()),
+    }
+}
+
+/// Deterministic producer-instance identity for one weather visual member at
+/// one recorded visual epoch. The same law runs on both sides of the join: the
+/// recorder's sidecar census and this viewer derivation.
+pub fn weather_membership_producer_instance_id(
+    strategic_region_id: u32,
+    epoch_ordinal: u64,
+    airborne_runtime_code: u8,
+    position_source_ordinal: u32,
+    role: &str,
+) -> String {
+    format!("xmap19.weather:r{strategic_region_id}:e{epoch_ordinal}:c{airborne_runtime_code}:p{position_source_ordinal}:{role}")
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DerivedWeatherPositionSelection {
+    /// 1-based ordinal of the emitter row in `map/weatherpositions.txt` order.
+    pub source_ordinal: u32,
+    pub position_xyz_f32_bits: [u32; 3],
+    /// Emitter size class after the engine's Big-without-Big-variants fallback.
+    pub class: WeatherPositionSize,
+    /// Index of the selected `common/weather.txt` binding inside its weather
+    /// type's ordered rows (equals the authored effect index), when active.
+    pub selected_binding_index: Option<usize>,
+    pub authored_weather_effect_index: Option<u16>,
+    pub primary_producer_instance_id: Option<String>,
+    pub fading_producer_instance_id: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DerivedRegionWeatherMembership {
+    pub strategic_region_id: u32,
+    pub airborne_runtime_code: u8,
+    pub weather_type: Option<WeatherType>,
+    /// Selector state after every position consumed its candidate draw, so a
+    /// caller can cross-check the recorded census without re-deriving.
+    pub selection_seed_after_positions: Option<[u32; 2]>,
+    pub ordered_producer_instance_ids: Vec<String>,
+    pub ordered_positions: Vec<DerivedWeatherPositionSelection>,
+}
+
+impl DerivedRegionWeatherMembership {
+    /// The derived member census must equal the recorded visual-lifecycle
+    /// producer-instance census exactly: this is where a content/seed drift or
+    /// a forged epoch fails closed instead of presenting invented weather.
+    pub fn require_matching_recorded_census(&self, epoch: &WeatherVisualEpoch) -> Result<()> {
+        if self.strategic_region_id != epoch.strategic_region_id
+            || self.airborne_runtime_code != epoch.airborne_runtime_code
+            || self.selection_seed_after_positions.is_some() != epoch.selection_seed_words.is_some()
+        {
+            return Err("derived weather membership identity disagrees with its epoch".into());
+        }
+        if self.ordered_producer_instance_ids == epoch.producer_instance_ids {
+            Ok(())
+        } else {
+            Err(format!(
+                "region {} derived weather member census disagrees with the recorded epoch census",
+                self.strategic_region_id
+            )
+            .into())
+        }
+    }
+}
+
+/// Derive the complete per-position weather visual membership of ONE strategic
+/// region from authoritative recorded state (D24 gameplay row + visual-lifecycle
+/// epoch) plus admitted authored content (positions table + effects bindings).
+/// Positions, size-class fallback, variant selection by the recorded seed, and
+/// producer-instance identity all follow proven laws from inputs the replay
+/// already owns - no expanded membership carrier is consulted.
+pub fn derive_region_weather_membership(
+    strategic_region_id: u32,
+    gameplay: &WeatherRegionRow,
+    epoch: &WeatherVisualEpoch,
+    emitters: &WeatherEmitterTable,
+    effects: &WeatherEffectsTable,
+) -> Result<DerivedRegionWeatherMembership> {
+    if epoch.strategic_region_id != strategic_region_id {
+        return Err("weather membership derivation region disagrees with its epoch".into());
+    }
+    let weather = weather_epoch_join_law(gameplay, epoch)?;
+    let active = (epoch.airborne_runtime_code != 0).then_some(weather);
+    let mut seed = epoch.selection_seed_words;
+    let mut ordered_producer_instance_ids = Vec::new();
+    let mut ordered_positions = Vec::new();
+    for (zero_based, emitter) in emitters.emitters.iter().enumerate() {
+        if emitter.region_id != strategic_region_id {
+            continue;
+        }
+        let source_ordinal =
+            u32::try_from(zero_based + 1).map_err(|_| "weather emitter ordinal overflows u32")?;
+        let base = DerivedWeatherPositionSelection {
+            source_ordinal,
+            position_xyz_f32_bits: emitter.position.map(f32::to_bits),
+            class: emitter.size,
+            selected_binding_index: None,
+            authored_weather_effect_index: None,
+            primary_producer_instance_id: None,
+            fading_producer_instance_id: None,
+        };
+        let position = match active {
+            None => base,
+            Some(active_type) => {
+                // The binding index is ORDINAL WITHIN THE ACTIVE TYPE'S OWN
+                // ordered rows (the authored effect index), never a position
+                // in the whole effects table: callers key their per-type
+                // variant vectors by it.
+                let mut candidates = Vec::new();
+                for (ty, binding) in effects.rows() {
+                    if *ty == active_type {
+                        let local_index = candidates.len();
+                        candidates.push((local_index, binding.clone()));
+                    }
+                }
+                let has_big = candidates.iter().any(|(_, binding)| !binding.small);
+                let class = match emitter.size {
+                    WeatherPositionSize::Big if !has_big => WeatherPositionSize::Small,
+                    otherwise => otherwise,
+                };
+                let selected = candidates
+                    .iter()
+                    .filter(|(_, binding)| binding.small == (class == WeatherPositionSize::Small))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let chosen = weather_selected_candidate_index(&mut seed, selected.len())?
+                    .map(|index| selected[index].clone());
+                match chosen {
+                    None => base,
+                    Some((index, binding)) => {
+                        let primary_producer_instance_id = weather_membership_producer_instance_id(
+                            strategic_region_id,
+                            epoch.epoch_ordinal,
+                            epoch.airborne_runtime_code,
+                            source_ordinal,
+                            "primary",
+                        );
+                        ordered_producer_instance_ids.push(primary_producer_instance_id.clone());
+                        let fading_producer_instance_id =
+                            binding.fading_entity.as_ref().map(|_| {
+                                let id = weather_membership_producer_instance_id(
+                                    strategic_region_id,
+                                    epoch.epoch_ordinal,
+                                    epoch.airborne_runtime_code,
+                                    source_ordinal,
+                                    "fading",
+                                );
+                                ordered_producer_instance_ids.push(id.clone());
+                                id
+                            });
+                        DerivedWeatherPositionSelection {
+                            class,
+                            selected_binding_index: Some(index),
+                            authored_weather_effect_index: Some(u16::try_from(index).map_err(
+                                |_| "weather authored effect index overflows u16",
+                            )?),
+                            primary_producer_instance_id: Some(primary_producer_instance_id),
+                            fading_producer_instance_id,
+                            ..base
+                        }
+                    }
+                }
+            }
+        };
+        ordered_positions.push(position);
+    }
+    Ok(DerivedRegionWeatherMembership {
+        strategic_region_id,
+        airborne_runtime_code: epoch.airborne_runtime_code,
+        weather_type: active,
+        selection_seed_after_positions: seed,
+        ordered_producer_instance_ids,
+        ordered_positions,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1715,6 +1946,243 @@ entity = {
     fn weather_emitters_reject_unknown_size_tag() {
         assert!(weather_emitters_from_source("1;2.0;3.0;4.0;huge").is_err());
         assert!(weather_emitters_from_source("1;2.0;3.0").is_err());
+    }
+
+    fn membership_gameplay(code: u8) -> replay_core::WeatherRegionRow {
+        // Local fixture table: unknown codes deliberately produce a
+        // well-formed-but-clear gameplay row so the LAW (not the fixture) is
+        // what refuses them.
+        let key = match code {
+            2 => "rain_light",
+            3 => "rain_heavy",
+            4 => "snow",
+            5 => "blizzard",
+            7 => "sandstorm",
+            _ => "no_phenomenon",
+        };
+        replay_core::WeatherRegionRow {
+            weather_kind: replay_core::Leaf::Measured(key.into()),
+            intensity: replay_core::Leaf::Measured(1.0),
+            rain_light_active: replay_core::Leaf::Measured(code == 2),
+            rain_heavy_active: replay_core::Leaf::Measured(code == 3),
+            snow_active: replay_core::Leaf::Measured(code == 4),
+            blizzard_active: replay_core::Leaf::Measured(code == 5),
+            sandstorm_active: replay_core::Leaf::Measured(code == 7),
+            arctic_water_active: replay_core::Leaf::Measured(false),
+            transition_expiry_game_hour: replay_core::Leaf::Measured(900),
+            snow_level_0_255: replay_core::Leaf::Absent,
+            mud_level_0_255: replay_core::Leaf::Absent,
+            snow_mud_fade: replay_core::Leaf::Absent,
+            snow_mud_fade_from: replay_core::Leaf::Absent,
+            snow_mud_fade_to: replay_core::Leaf::Absent,
+        }
+    }
+
+    fn membership_epoch(
+        region_id: u32,
+        code: u8,
+        seed_words: Option<[u32; 2]>,
+        producer_instance_ids: Vec<String>,
+    ) -> replay_core::WeatherVisualEpoch {
+        replay_core::WeatherVisualEpoch {
+            strategic_region_id: region_id,
+            airborne_runtime_code: code,
+            transition_expiry_game_hour: 900,
+            epoch_game_hour: 42,
+            epoch_ordinal: 5,
+            selection_seed_words: seed_words,
+            producer_instance_ids,
+        }
+    }
+
+    // kills: QJ carrier.render_submit.weather_membership DERIVE_missing - the
+    // viewer shipped visibility/fog/selection/effects laws but no membership
+    // builder, so the expanded wire rows could only be trusted, never derived.
+    #[test]
+    fn derives_region_membership_positions_selection_and_census() {
+        let emitters =
+            weather_emitters_from_source("17;10.0;20.0;30.0;big\n17;40.0;50.0;60.0;small\n")
+                .expect("emitters");
+        let effects = weather_effects_from_source(
+            "weather_effects = {\n rain_light = {\n  weather_effect = { entity = rain_big fading_entity = rain_big_fade }\n  weather_effect = { entity = rain_small fading_entity = rain_small_fade small = yes }\n }\n}\n",
+        )
+        .expect("effects");
+        let gameplay = membership_gameplay(2);
+        let epoch = membership_epoch(17, 2, Some([7, 11]), Vec::new());
+        let derived =
+            derive_region_weather_membership(17, &gameplay, &epoch, &emitters, &effects)
+                .expect("derive");
+        assert_eq!(derived.weather_type, Some(WeatherType::RainLight));
+        assert_eq!(derived.ordered_positions.len(), 2);
+        let big = &derived.ordered_positions[0];
+        assert_eq!(big.source_ordinal, 1);
+        assert_eq!(big.class, WeatherPositionSize::Big);
+        assert_eq!(big.selected_binding_index, Some(0));
+        assert_eq!(big.authored_weather_effect_index, Some(0));
+        let small = &derived.ordered_positions[1];
+        assert_eq!(small.source_ordinal, 2);
+        assert_eq!(small.class, WeatherPositionSize::Small);
+        assert_eq!(small.selected_binding_index, Some(1));
+        let census = vec![
+            weather_membership_producer_instance_id(17, 5, 2, 1, "primary"),
+            weather_membership_producer_instance_id(17, 5, 2, 1, "fading"),
+            weather_membership_producer_instance_id(17, 5, 2, 2, "primary"),
+            weather_membership_producer_instance_id(17, 5, 2, 2, "fading"),
+        ];
+        assert_eq!(derived.ordered_producer_instance_ids, census);
+        let recorded = membership_epoch(17, 2, Some([7, 11]), census);
+        derived
+            .require_matching_recorded_census(&recorded)
+            .expect("census join");
+        // one selector draw per position with a nonempty candidate vector
+        assert_eq!(
+            derived.selection_seed_after_positions,
+            Some([9, 11])
+        );
+    }
+
+    // kills: a derivation that indexed bindings GLOBALLY across the effects
+    // table - callers key per-type variant vectors by the authored index, so
+    // any type after the first must select by its own 0-based ordinal.
+    #[test]
+    fn binding_index_is_the_authored_ordinal_within_its_type() {
+        let emitters = weather_emitters_from_source("17;1.0;2.0;3.0;big").expect("emitters");
+        // rain_light ships two rows first; sandstorm's single row is therefore
+        // global index 2 but authored ordinal 0 within its own vector.
+        let effects = weather_effects_from_source(
+            "weather_effects = {\n rain_light = {\n  weather_effect = { entity = rain_a }\n  weather_effect = { entity = rain_b small = yes }\n }\n sandstorm = {\n  weather_effect = { entity = sand_a fading_entity = sand_fade }\n }\n}\n",
+        )
+        .expect("effects");
+        let epoch = membership_epoch(17, 7, Some([7, 11]), Vec::new());
+        let derived = derive_region_weather_membership(
+            17,
+            &membership_gameplay(7),
+            &epoch,
+            &emitters,
+            &effects,
+        )
+        .expect("derive");
+        let position = &derived.ordered_positions[0];
+        assert_eq!(position.class, WeatherPositionSize::Big);
+        assert_eq!(position.selected_binding_index, Some(0));
+        assert_eq!(position.authored_weather_effect_index, Some(0));
+        assert_eq!(
+            position.primary_producer_instance_id.as_deref(),
+            Some(
+                weather_membership_producer_instance_id(17, 5, 7, 1, "primary").as_str()
+            )
+        );
+        assert_eq!(
+            position.fading_producer_instance_id.as_deref(),
+            Some(
+                weather_membership_producer_instance_id(17, 5, 7, 1, "fading").as_str()
+            )
+        );
+    }
+
+    // kills: a derivation that silently accepted an unknown airborne code and
+    // presented invented clear weather instead of failing closed.
+    #[test]
+    fn membership_derivation_refuses_unknown_airborne_code() {
+        let emitters = weather_emitters_from_source("17;1.0;2.0;3.0;big").expect("emitters");
+        let effects =
+            weather_effects_from_source("weather_effects = { rain_light = { weather_effect = { entity = e } } }")
+                .expect("effects");
+        let epoch = membership_epoch(17, 6, None, Vec::new());
+        assert!(derive_region_weather_membership(
+            17,
+            &membership_gameplay(6),
+            &epoch,
+            &emitters,
+            &effects
+        )
+        .is_err());
+    }
+
+    // kills: Big-class positions mis-selecting when a weather type ships only
+    // Small variants (the engine falls back to the Small candidate list).
+    #[test]
+    fn big_without_big_variants_falls_back_to_small_candidates() {
+        let emitters = weather_emitters_from_source("17;1.0;2.0;3.0;big").expect("emitters");
+        let effects = weather_effects_from_source(
+            "weather_effects = {\n rain_light = {\n  weather_effect = { entity = only_small small = yes }\n }\n}\n",
+        )
+        .expect("effects");
+        let epoch = membership_epoch(17, 2, Some([7, 11]), Vec::new());
+        let derived = derive_region_weather_membership(
+            17,
+            &membership_gameplay(2),
+            &epoch,
+            &emitters,
+            &effects,
+        )
+        .expect("derive");
+        assert_eq!(derived.ordered_positions[0].class, WeatherPositionSize::Small);
+        assert_eq!(derived.ordered_positions[0].selected_binding_index, Some(0));
+        assert_eq!(
+            derived.selection_seed_after_positions,
+            Some([8, 11])
+        );
+    }
+
+    // kills: blind trust of the recorded membership carrier - a tampered or
+    // drifted member census must fail closed instead of presenting.
+    #[test]
+    fn census_mismatch_fails_closed() {
+        let emitters = weather_emitters_from_source("17;1.0;2.0;3.0;big").expect("emitters");
+        let effects =
+            weather_effects_from_source("weather_effects = { rain_light = { weather_effect = { entity = e } } }")
+                .expect("effects");
+        let epoch = membership_epoch(17, 2, Some([7, 11]), Vec::new());
+        let derived = derive_region_weather_membership(
+            17,
+            &membership_gameplay(2),
+            &epoch,
+            &emitters,
+            &effects,
+        )
+        .expect("derive");
+        let forged = membership_epoch(
+            17,
+            2,
+            Some([7, 11]),
+            vec![weather_membership_producer_instance_id(17, 5, 2, 1, "forged")],
+        );
+        assert!(derived.require_matching_recorded_census(&forged).is_err());
+        let empty_recorded = membership_epoch(17, 2, Some([7, 11]), Vec::new());
+        assert!(
+            derived
+                .require_matching_recorded_census(&empty_recorded)
+                .is_err()
+        );
+    }
+
+    // kills: presenting invented weather visuals for regions the recording
+    // marks clear - code zero must derive explicit-empty without touching the
+    // selector state.
+    #[test]
+    fn code_zero_derives_explicit_empty_membership() {
+        let emitters = weather_emitters_from_source("17;1.0;2.0;3.0;big").expect("emitters");
+        let effects =
+            weather_effects_from_source("weather_effects = { rain_light = { weather_effect = { entity = e } } }")
+                .expect("effects");
+        let epoch = membership_epoch(17, 0, None, Vec::new());
+        let derived = derive_region_weather_membership(
+            17,
+            &membership_gameplay(0),
+            &epoch,
+            &emitters,
+            &effects,
+        )
+        .expect("derive");
+        assert_eq!(derived.weather_type, None);
+        assert_eq!(derived.selection_seed_after_positions, None);
+        assert!(derived.ordered_producer_instance_ids.is_empty());
+        assert!(derived
+            .ordered_positions
+            .iter()
+            .all(|position| position.selected_binding_index.is_none()
+                && position.primary_producer_instance_id.is_none()));
     }
 
     #[test]

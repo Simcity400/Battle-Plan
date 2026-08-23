@@ -126,6 +126,8 @@ mod xmap16_d3d_handoff;
 mod xmap16_hub_handoff;
 mod xmap16_supply_arrow_handoff;
 mod xn13_unit_presentation;
+mod xmap20_direct_visual_law;
+mod xmap20_entity_presentation_law;
 
 pub(crate) use border_pass::*;
 pub(crate) use bundle_gen::*;
@@ -685,6 +687,16 @@ pub use xn13_unit_presentation::{
     Xn13PassPoses, Xn13PoseBinding, Xn13PresentationRow, Xn13SelectionEffect, XN13_INPUT_SCHEMA,
 };
 
+pub use xmap20_direct_visual_law::{
+    derive_direct_visual_coverage, derive_direct_visual_coverage_from_parts,
+    DerivedDirectVisualCoverage,
+};
+pub use xmap20_entity_presentation_law::{
+    derive_entity_presentation, derive_entity_presentation_from_parts,
+    DerivedEntityPresentation,
+};
+
+
 pub use combat_indicator_assets::{
     combat_indicator_assets_from_resolver, combat_indicator_fonts_from_resolver,
     combat_indicator_gui_container_count, combat_indicator_gui_layouts_from_resolver,
@@ -918,8 +930,11 @@ pub use weather_law::{
     weather_effects_from_resolver, weather_effects_from_source,
     weather_emitters_from_resolver, weather_emitters_from_source,
     weather_fade_defines_from_resolver, weather_fade_defines_from_source,
-    weather_selected_candidate_index, weather_selection_word, weather_visibility_law,
-    CloudRenderLaw, ParticleBlend, WeatherAuthoredEvent, WeatherAuthoredParticleEffect,
+    derive_region_weather_membership, weather_epoch_join_law,
+    weather_membership_producer_instance_id, weather_selected_candidate_index,
+    weather_selection_word, weather_type_for_airborne_code, weather_visibility_law,
+    CloudRenderLaw, DerivedRegionWeatherMembership, DerivedWeatherPositionSelection, ParticleBlend,
+    WeatherAuthoredEvent, WeatherAuthoredParticleEffect,
     WeatherDistanceFogDefines, WeatherEffectBinding, WeatherEffectsTable, WeatherEmitter,
     WeatherEmitterTable, WeatherEntityStateEvents, WeatherFadeDefines, WeatherPositionSize,
     WeatherType, WeatherVisibilityLaw, FOG_CONSTANTS_SOURCE,

@@ -565,18 +565,13 @@ fn dump_debug_frame(
             stats.last_render_ms.unwrap_or(0.0)
         );
         println!(
-            "captured pass submitted-stream omissions: particles {}, entities {}, direct_visuals {}, weather {}",
+            "captured pass submitted-stream omissions: particles {}, entities {}, weather {}",
             if stats.particle_stream_omitted {
                 "omitted"
             } else {
                 "none"
             },
             if stats.entity_stream_omitted {
-                "omitted"
-            } else {
-                "none"
-            },
-            if stats.direct_visual_stream_omitted {
                 "omitted"
             } else {
                 "none"

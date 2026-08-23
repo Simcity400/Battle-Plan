@@ -4,15 +4,17 @@ use crate::{
     particle_asset_definition_count, particle_asset_shader_effects, particle_asset_texture_files,
     pdxparticle_registration_count, pdxparticle_type, weather_distance_fog_defines_from_source,
     weather_distance_fog_factor, weather_effects_from_source, weather_emitters_from_source,
-    weather_fade_defines_from_source, weather_selected_candidate_index, weather_visibility_law,
+    weather_fade_defines_from_source, weather_visibility_law, derive_region_weather_membership,
+    weather_membership_producer_instance_id, weather_type_for_airborne_code,
     FoundationFeatureContext, FoundationFeatureOutput, GameFileResolver,
-    ProductionMapFeatureAdapter, Result, WeatherEffectBinding, WeatherPositionSize, WeatherType,
+    ProductionMapFeatureAdapter, Result, WeatherEffectBinding, WeatherEffectsTable,
+    WeatherPositionSize, WeatherType,
     FOG_CONSTANTS_SOURCE, GRAPHICS_DEFINES_SOURCE, WEATHER_EFFECTS_SOURCE,
     WEATHER_POSITIONS_SOURCE,
 };
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{FamilyDisposition, FoundationGap, MapVisualFamily};
-use replay_core::{Leaf, ValidatedContentAdmission, ViewStatus, WeatherRegionRow};
+use replay_core::{ValidatedContentAdmission, ViewStatus};
 use serde::{Deserialize, Serialize};
 use snapshot::sha256::Sha256;
 use std::collections::{BTreeMap, BTreeSet};
@@ -338,10 +340,10 @@ impl PreparedXmap19WeatherFrame {
             match (&position.weather_effect_key, &position.selection) {
                 (None, None) if position.airborne_runtime_code == 0 => {}
                 (Some(key), Some(selection))
-                    if weather_type_for_code(position.airborne_runtime_code)
-                        .is_some_and(|weather| weather.key() == key) =>
+                    if weather_type_for_airborne_code(position.airborne_runtime_code)
+                        .is_ok_and(|weather| weather.key() == key) =>
                 {
-                    let expected_primary = weather_producer_instance_id(
+                    let expected_primary = weather_membership_producer_instance_id(
                         position.strategic_region_id,
                         epoch.epoch_ordinal,
                         position.airborne_runtime_code,
@@ -365,7 +367,7 @@ impl PreparedXmap19WeatherFrame {
                         .checked_add(1)
                         .ok_or("XMAP19 weather selection count overflow")?;
                     if let Some(fading_source_id) = &selection.fading_source_id {
-                        let expected_fading = weather_producer_instance_id(
+                        let expected_fading = weather_membership_producer_instance_id(
                             position.strategic_region_id,
                             epoch.epoch_ordinal,
                             position.airborne_runtime_code,
@@ -518,6 +520,7 @@ struct VariantProgram {
 #[derive(Clone)]
 struct Xmap19Content {
     ordered_used_content: Vec<UsedContentKey>,
+    bindings: WeatherEffectsTable,
     effects: BTreeMap<WeatherType, Vec<VariantProgram>>,
     positions: crate::WeatherEmitterTable,
     defines: crate::WeatherFadeDefines,
@@ -968,6 +971,7 @@ fn admit_content(
     });
     Ok(Xmap19Content {
         ordered_used_content: all_content,
+        bindings: effects_table,
         effects,
         positions,
         defines,
@@ -1090,89 +1094,94 @@ fn prepare_weather(
             .by_region
             .get(&region_id)
             .ok_or_else(|| format!("XMAP19 lifecycle omitted strategic region {region_id}"))?;
-        validate_epoch_join(
+        let derived = derive_region_weather_membership(
+            region_id,
             gameplay,
-            epoch.airborne_runtime_code,
-            epoch.transition_expiry_game_hour,
+            epoch,
+            &content.positions,
+            &content.bindings,
         )?;
-        let weather = weather_type_for_code(epoch.airborne_runtime_code);
-        let mut seed = epoch.selection_seed_words;
-        let mut expected_producer_ids = Vec::new();
-        for (ordinal, emitter) in content.positions.emitters.iter().enumerate() {
-            if emitter.region_id != region_id {
-                continue;
+        derived.require_matching_recorded_census(epoch)?;
+        let weather_effect_key = derived
+            .weather_type
+            .map(|value| value.key().to_string());
+        let variants_by_binding_index = |weather: crate::WeatherType| {
+            content.effects.get(&weather).ok_or(format!(
+                "XMAP19 content omitted the {} variant vector",
+                weather.key()
+            ))
+        };
+        for (emitter, derived_position) in content
+            .positions
+            .for_region(region_id)
+            .zip(derived.ordered_positions.iter())
+        {
+            if emitter.position.map(f32::to_bits) != derived_position.position_xyz_f32_bits
+                || matches!(
+                    (&emitter.size, &derived_position.class),
+                    // the fallback may only ever narrow Big to Small
+                    (WeatherPositionSize::Small, WeatherPositionSize::Big)
+                )
+            {
+                return Err("XMAP19 derived position disagrees with its emitter row".into());
             }
-            let selection = if let Some(weather) = weather {
-                let variants = content
-                    .effects
-                    .get(&weather)
-                    .ok_or("XMAP19 content omitted an active weather vector")?;
-                let has_big = variants
-                    .iter()
-                    .any(|variant| variant.size == WeatherPositionSize::Big);
-                let class = match emitter.size {
-                    WeatherPositionSize::Big if has_big => WeatherPositionSize::Big,
-                    WeatherPositionSize::Big => WeatherPositionSize::Small,
-                    WeatherPositionSize::Small => WeatherPositionSize::Small,
-                };
-                let candidates = variants
-                    .iter()
-                    .filter(|variant| variant.size == class)
-                    .collect::<Vec<_>>();
-                weather_selected_candidate_index(&mut seed, candidates.len())?
-                    .map(|index| candidates[index])
-                    .map(|variant| -> Result<PreparedWeatherSelection> {
-                        let source_ordinal = u32::try_from(ordinal + 1)?;
-                        let primary_source_id = weather_producer_instance_id(
-                            region_id,
-                            epoch.epoch_ordinal,
-                            epoch.airborne_runtime_code,
-                            source_ordinal,
-                            "primary",
+            let selection = match (
+                derived_position.selected_binding_index,
+                derived.weather_type,
+            ) {
+                (Some(binding_index), Some(active_type)) => {
+                    let variant = variants_by_binding_index(active_type)?
+                        .get(binding_index)
+                        .ok_or("XMAP19 selected a binding outside its authored vector")?;
+                    if variant.authored_weather_effect_index
+                        != derived_position.authored_weather_effect_index
+                            .ok_or("XMAP19 selection lost its authored effect index")?
+                        || usize::from(variant.authored_weather_effect_index) != binding_index
+                    {
+                        return Err(
+                            "XMAP19 selected binding and authored effect index disagree".into()
                         );
-                        expected_producer_ids.push(primary_source_id.clone());
-                        let fading_source_id = variant.fading.as_ref().map(|_| {
-                            let identity = weather_producer_instance_id(
-                                region_id,
-                                epoch.epoch_ordinal,
-                                epoch.airborne_runtime_code,
-                                source_ordinal,
-                                "fading",
-                            );
-                            expected_producer_ids.push(identity.clone());
-                            identity
-                        });
-                        Ok(PreparedWeatherSelection {
-                            authored_weather_effect_index: variant.authored_weather_effect_index,
-                            primary_source_id,
-                            fading_source_id,
-                            primary: variant.primary.clone(),
-                            fading: variant.fading.clone(),
-                        })
+                    }
+                    Some(PreparedWeatherSelection {
+                        authored_weather_effect_index: variant.authored_weather_effect_index,
+                        primary_source_id: derived_position
+                            .primary_producer_instance_id
+                            .clone()
+                            .ok_or("XMAP19 selected position has no producer identity")?,
+                        fading_source_id: variant
+                            .fading
+                            .as_ref()
+                            .map(|_| {
+                                derived_position
+                                    .fading_producer_instance_id
+                                    .clone()
+                                    .ok_or("XMAP19 fading variant lost its producer identity")
+                            })
+                            .transpose()?,
+                        primary: variant.primary.clone(),
+                        fading: variant.fading.clone(),
                     })
-                    .transpose()?
-            } else {
-                None
+                }
+                (None, _) => None,
+                (Some(_), None) => {
+                    return Err(
+                        "XMAP19 derived a binding selection without an active weather type".into(),
+                    )
+                }
             };
             positions.push(PreparedWeatherPosition {
-                source_ordinal: u32::try_from(ordinal + 1)?,
+                source_ordinal: derived_position.source_ordinal,
                 strategic_region_id: region_id,
-                position_xyz_f32_bits: emitter.position.map(f32::to_bits),
+                position_xyz_f32_bits: derived_position.position_xyz_f32_bits,
                 size: match emitter.size {
                     WeatherPositionSize::Big => "big",
                     WeatherPositionSize::Small => "small",
                 }
                 .into(),
                 airborne_runtime_code: epoch.airborne_runtime_code,
-                weather_effect_key: weather.map(|value| value.key().to_string()),
+                weather_effect_key: weather_effect_key.clone(),
                 selection,
             });
-        }
-        if expected_producer_ids != epoch.producer_instance_ids {
-            return Err(format!(
-                "XMAP19 region {region_id} authenticated producer-instance census disagrees with file/seed-derived membership"
-            )
-            .into());
         }
         regions.push(PreparedWeatherRegionEpoch {
             strategic_region_id: region_id,
@@ -1181,7 +1190,7 @@ fn prepare_weather(
             epoch_game_hour: epoch.epoch_game_hour,
             epoch_ordinal: epoch.epoch_ordinal,
             selection_seed_words: epoch.selection_seed_words,
-            selection_seed_after_positions: seed,
+            selection_seed_after_positions: derived.selection_seed_after_positions,
             authenticated_producer_instance_ids: epoch.producer_instance_ids.clone(),
         });
     }
@@ -1207,62 +1216,6 @@ fn prepare_weather(
     prepared.deterministic_sha256 = prepared_weather_digest(&prepared)?;
     prepared.validate()?;
     Ok(prepared)
-}
-
-fn validate_epoch_join(gameplay: &WeatherRegionRow, code: u8, expiry: i32) -> Result<()> {
-    let exact = |leaf: &Leaf<bool>, name: &str| -> Result<bool> {
-        match leaf {
-            Leaf::Measured(value) => Ok(*value),
-            _ => Err(format!("XMAP19 D24 {name} is not measured").into()),
-        }
-    };
-    let flags = [
-        (2, exact(&gameplay.rain_light_active, "rain_light")?),
-        (3, exact(&gameplay.rain_heavy_active, "rain_heavy")?),
-        (4, exact(&gameplay.snow_active, "snow")?),
-        (5, exact(&gameplay.blizzard_active, "blizzard")?),
-        (7, exact(&gameplay.sandstorm_active, "sandstorm")?),
-    ];
-    let expected = flags
-        .iter()
-        .find(|(_, value)| *value)
-        .map(|(code, _)| *code)
-        .unwrap_or(0);
-    let kind = match &gameplay.weather_kind {
-        Leaf::Measured(value) => WeatherType::from_recording_kind(value)
-            .ok_or("XMAP19 D24 weather kind is not an exact engine key")?,
-        _ => return Err("XMAP19 D24 weather kind is not measured".into()),
-    };
-    if expected != code || weather_type_for_code(code).unwrap_or(WeatherType::NoPhenomenon) != kind
-    {
-        return Err("XMAP19 D24 and visual epoch airborne code disagree".into());
-    }
-    match &gameplay.transition_expiry_game_hour {
-        Leaf::Measured(value) if *value == i64::from(expiry) => Ok(()),
-        _ => Err("XMAP19 D24 and visual epoch transition expiry disagree".into()),
-    }
-}
-
-fn weather_type_for_code(code: u8) -> Option<WeatherType> {
-    match code {
-        0 => None,
-        2 => Some(WeatherType::RainLight),
-        3 => Some(WeatherType::RainHeavy),
-        4 => Some(WeatherType::Snow),
-        5 => Some(WeatherType::Blizzard),
-        7 => Some(WeatherType::Sandstorm),
-        _ => None,
-    }
-}
-
-fn weather_producer_instance_id(
-    region_id: u32,
-    epoch_ordinal: u64,
-    code: u8,
-    source_ordinal: u32,
-    role: &str,
-) -> String {
-    format!("xmap19.weather:r{region_id}:e{epoch_ordinal}:c{code}:p{source_ordinal}:{role}")
 }
 
 fn admitted_text(
@@ -1354,6 +1307,7 @@ fn unavailable_gap(context: &FoundationFeatureContext<'_>) -> FoundationGap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay_core::{Leaf, WeatherRegionRow};
 
     fn gameplay(kind: &str, code: u8, expiry: i64) -> WeatherRegionRow {
         WeatherRegionRow {
@@ -1374,14 +1328,26 @@ mod tests {
         }
     }
 
+    fn epoch(code: u8, expiry: i32) -> replay_core::WeatherVisualEpoch {
+        replay_core::WeatherVisualEpoch {
+            strategic_region_id: 17,
+            airborne_runtime_code: code,
+            transition_expiry_game_hour: expiry,
+            epoch_game_hour: 42,
+            epoch_ordinal: 5,
+            selection_seed_words: None,
+            producer_instance_ids: Vec::new(),
+        }
+    }
+
     #[test]
     fn exact_epoch_join_rejects_kind_code_or_expiry_drift() {
         let rain = gameplay("rain_light", 2, 900);
-        validate_epoch_join(&rain, 2, 900).expect("exact join");
-        assert!(validate_epoch_join(&rain, 3, 900).is_err());
-        assert!(validate_epoch_join(&rain, 2, 901).is_err());
+        crate::weather_epoch_join_law(&rain, &epoch(2, 900)).expect("exact join");
+        assert!(crate::weather_epoch_join_law(&rain, &epoch(3, 900)).is_err());
+        assert!(crate::weather_epoch_join_law(&rain, &epoch(2, 901)).is_err());
         let alias = gameplay("rain", 2, 900);
-        assert!(validate_epoch_join(&alias, 2, 900).is_err());
+        assert!(crate::weather_epoch_join_law(&alias, &epoch(2, 900)).is_err());
     }
 
     #[test]
@@ -1389,21 +1355,21 @@ mod tests {
         let mut overlap = gameplay("rain_light", 2, 900);
         overlap.rain_heavy_active = Leaf::Measured(true);
         overlap.snow_active = Leaf::Measured(true);
-        validate_epoch_join(&overlap, 2, 900).expect("first active flag wins");
-        assert!(validate_epoch_join(&overlap, 3, 900).is_err());
+        crate::weather_epoch_join_law(&overlap, &epoch(2, 900)).expect("first active flag wins");
+        assert!(crate::weather_epoch_join_law(&overlap, &epoch(3, 900)).is_err());
     }
 
     #[test]
     fn selector_consumes_only_nonempty_vectors() {
         let mut seed = Some([7, 11]);
         assert_eq!(
-            weather_selected_candidate_index(&mut seed, 0).expect("empty"),
+            crate::weather_selected_candidate_index(&mut seed, 0).expect("empty"),
             None
         );
         assert_eq!(seed, Some([7, 11]));
         let expected = crate::weather_selection_word([7, 11]) as usize % 3;
         assert_eq!(
-            weather_selected_candidate_index(&mut seed, 3).expect("selected"),
+            crate::weather_selected_candidate_index(&mut seed, 3).expect("selected"),
             Some(expected)
         );
         assert_eq!(seed, Some([8, 11]));

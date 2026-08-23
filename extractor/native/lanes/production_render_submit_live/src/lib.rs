@@ -2,10 +2,9 @@
 use portable_content_manifest::normalize_game_relative_path;
 use portable_content_manifest::UsedContentKey;
 use portable_render_stream::{
-    BufferSource, ConstantBufferBinding, DirectVisualKind, DirectVisualOperation,
-    DirectVisualProducer, DrawCommand, EntityContentIdentity, EntitySubmission, GeometryBinding,
-    LightSlotJoin, ParticlePacket, PipelineDesc, RenderExecutionRef, RenderOutputRef,
-    RenderOutputState, RenderSubmit, ShaderProgram, Skinning, StaticMapCommand,
+    BufferSource, ConstantBufferBinding, DrawCommand, EntityContentIdentity, EntitySubmission,
+    GeometryBinding, LightSlotJoin, ParticlePacket, PipelineDesc, RenderExecutionRef,
+    RenderOutputRef, RenderOutputState, RenderSubmit, ShaderProgram, Skinning, StaticMapCommand,
     StaticMapPassProgram, TextureBinding, TiledLightSubmission, WeatherCameraBranch,
     WeatherEntityRole, WeatherEntityVisibility, WeatherInstance, WeatherMembership,
     WeatherPosition, WeatherPositionClass, WeatherResolution, WeatherVariantContentJoin,
@@ -2224,43 +2223,6 @@ fn validate_catalog_content_membership(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RawDirectVisualObservation {
-    pub sequence: u64,
-    pub update_index: u64,
-    pub producer_kind: DirectVisualKind,
-    pub producer_instance_id: u64,
-    pub entity_instance_id: u64,
-    pub effect_instance_id: Option<u64>,
-    pub operation: DirectVisualOperation,
-    pub entity_definition_ptr: usize,
-    pub semantic_state: String,
-    pub authored_state_index: u32,
-    pub authored_event_index: u32,
-    pub state_enter_sequence: u64,
-    pub live_phase_f32_bits: u32,
-    pub world_transform_4x4_f32_bits: [u32; 16],
-    pub node_or_locator_token: Option<String>,
-    pub visibility_flags: u32,
-    pub direct_object_list_ordinal: u32,
-    pub direct_object_count: u32,
-    pub rng_counter: u32,
-    pub rng_seed: u32,
-    pub effect_expiry_update: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ResolvedDirectVisualRow {
-    pub entity_token: String,
-    pub resolved_entity_source: UsedContentKey,
-    pub submitted_outputs: Vec<RenderOutputRef>,
-}
-
-pub trait ExactDirectVisualResolver {
-    fn authority_manifest_sha256(&self) -> &str;
-    fn resolve(&self, raw: &RawDirectVisualObservation) -> Option<ResolvedDirectVisualRow>;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawLightSlotJoin {
     pub light_slot: u8,
     pub light_instance_id: u64,
@@ -2361,84 +2323,6 @@ pub fn promote_entity_submission<R: ExactEntityCatalogResolver>(
         world_transform_4x4_f32_bits: raw.world_transform_4x4_f32_bits,
         state_flags: raw.state_flags,
         skinning,
-    })
-}
-
-pub fn promote_direct_visual<R: ExactDirectVisualResolver>(
-    raw: &RawDirectVisualObservation,
-    resolver: &R,
-) -> Result<DirectVisualProducer, PromotionError> {
-    check_sha256(
-        resolver.authority_manifest_sha256(),
-        "direct-visual catalog manifest",
-    )?;
-    if raw.sequence == 0
-        || raw.update_index == 0
-        || raw.producer_instance_id == 0
-        || raw.entity_instance_id == 0
-        || raw.entity_definition_ptr == 0
-        || raw.semantic_state.is_empty()
-        || raw.state_enter_sequence == 0
-        || raw.direct_object_list_ordinal >= raw.direct_object_count
-    {
-        return invalid("direct-visual observation is incomplete");
-    }
-    let effect_operation = matches!(
-        raw.operation,
-        DirectVisualOperation::EffectSpawn | DirectVisualOperation::EffectExpire
-    );
-    if effect_operation != raw.effect_instance_id.is_some() {
-        return invalid("direct-visual effect identity disagrees with the operation");
-    }
-    if matches!(raw.operation, DirectVisualOperation::EffectExpire)
-        != raw.effect_expiry_update.is_some()
-    {
-        return invalid("direct-visual expiry update disagrees with the operation");
-    }
-    if raw
-        .node_or_locator_token
-        .as_ref()
-        .is_some_and(|value| value.is_empty())
-    {
-        return invalid("direct-visual node/locator token is blank");
-    }
-    let row = resolver.resolve(raw).ok_or_else(|| {
-        PromotionError::Invalid(
-            "direct-visual catalog could not resolve the observed entity".into(),
-        )
-    })?;
-    if row.entity_token.is_empty() {
-        return invalid("direct-visual resolver returned an empty entity token");
-    }
-    validate_content_key(
-        &row.resolved_entity_source,
-        resolver.authority_manifest_sha256(),
-        "direct-visual entity source",
-    )?;
-    Ok(DirectVisualProducer {
-        sequence: raw.sequence,
-        update_index: raw.update_index,
-        producer_kind: raw.producer_kind,
-        producer_instance_id: raw.producer_instance_id,
-        entity_instance_id: raw.entity_instance_id,
-        effect_instance_id: raw.effect_instance_id.map(|value| value.to_string()),
-        operation: raw.operation,
-        entity_token: row.entity_token,
-        resolved_entity_source_sha256: row.resolved_entity_source.payload_sha256,
-        semantic_state: raw.semantic_state.clone(),
-        authored_state_index: raw.authored_state_index,
-        authored_event_index: raw.authored_event_index,
-        state_enter_sequence: raw.state_enter_sequence,
-        live_phase_f32_bits: raw.live_phase_f32_bits,
-        world_transform_4x4_f32_bits: raw.world_transform_4x4_f32_bits,
-        node_or_locator_token: raw.node_or_locator_token.clone(),
-        visibility_flags: raw.visibility_flags,
-        direct_object_list_ordinal: raw.direct_object_list_ordinal,
-        direct_object_count: raw.direct_object_count,
-        rng_counter: raw.rng_counter,
-        rng_seed: raw.rng_seed,
-        effect_expiry_update: raw.effect_expiry_update.map(|value| value.to_string()),
-        submitted_outputs: row.submitted_outputs,
     })
 }
 
@@ -3917,21 +3801,6 @@ mod tests {
         }
     }
 
-    struct DirectResolver;
-    impl ExactDirectVisualResolver for DirectResolver {
-        fn authority_manifest_sha256(&self) -> &str {
-            "1111111111111111111111111111111111111111111111111111111111111111"
-        }
-
-        fn resolve(&self, _: &RawDirectVisualObservation) -> Option<ResolvedDirectVisualRow> {
-            Some(ResolvedDirectVisualRow {
-                entity_token: "fighter_entity".into(),
-                resolved_entity_source: content("gfx/entities/air.asset", "9f".repeat(32)),
-                submitted_outputs: vec![],
-            })
-        }
-    }
-
     struct LightResolver;
     impl ExactLightCatalogResolver for LightResolver {
         fn authority_manifest_sha256(&self) -> &str {
@@ -4858,35 +4727,6 @@ mod tests {
             entity.content_identity.mesh.normalized_game_relative_path,
             "gfx/models/test.mesh"
         );
-
-        let direct = promote_direct_visual(
-            &RawDirectVisualObservation {
-                sequence: 4,
-                update_index: 2,
-                producer_kind: DirectVisualKind::StrategicAirScene,
-                producer_instance_id: 1,
-                entity_instance_id: 9,
-                effect_instance_id: None,
-                operation: DirectVisualOperation::StateChange,
-                entity_definition_ptr: 0x1000,
-                semantic_state: "attack".into(),
-                authored_state_index: 3,
-                authored_event_index: 0,
-                state_enter_sequence: 4,
-                live_phase_f32_bits: 0,
-                world_transform_4x4_f32_bits: [0; 16],
-                node_or_locator_token: None,
-                visibility_flags: 1,
-                direct_object_list_ordinal: 0,
-                direct_object_count: 1,
-                rng_counter: 5,
-                rng_seed: 6,
-                effect_expiry_update: None,
-            },
-            &DirectResolver,
-        )
-        .unwrap();
-        assert_eq!(direct.resolved_entity_source_sha256, "9f".repeat(32));
 
         let mut index_map = vec![255; 16_384];
         index_map[0] = 3;

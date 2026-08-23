@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
-pub const SCHEMA: &str = "hoi4.production-render-submit.v13";
+pub const SCHEMA: &str = "hoi4.production-render-submit.v14";
+pub const INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA: &str = "hoi4.production-render-submit.v13";
 pub const INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA: &str =
     "hoi4.production-render-submit.v12";
 pub const INCOMPATIBLE_RECORDED_INPUT_OBSERVATION_SCHEMA: &str =
@@ -832,7 +833,6 @@ pub struct RenderSubmit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub s1_shadow: Option<S1ShadowCarrier>,
     pub particles: Vec<ParticlePacket>,
-    pub entity_presentations: Vec<EntityPresentationEvent>,
     pub particle_packet_set_sha256: String,
     pub entities: Vec<EntitySubmission>,
     #[serde(default)]
@@ -840,7 +840,6 @@ pub struct RenderSubmit {
     pub ordered_draws: Vec<RenderOutputRef>,
     #[serde(default)]
     pub ordered_render_operations: Vec<RenderExecutionRef>,
-    pub direct_visuals: Vec<DirectVisualProducer>,
     pub tiled_lights: Vec<TiledLightSubmission>,
     pub weather_membership: Vec<WeatherMembership>,
     #[serde(default)]
@@ -2439,32 +2438,6 @@ pub enum ParentAnchor {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EntityPresentationEvent {
-    #[serde(with = "decimal_u64")]
-    pub sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub update_index: u64,
-    #[serde(with = "decimal_u64")]
-    pub entity_instance_id: u64,
-    pub resolved_entity_sha256: String,
-    pub state_token: String,
-    #[serde(with = "decimal_u64")]
-    pub state_enter_update: u64,
-    pub animation_token: String,
-    pub animation_phase_f32_bits: u32,
-    pub animation_speed_f32_bits: u32,
-    pub loop_ordinal_u32: u32,
-    pub transition_from_state: Option<String>,
-    pub transition_phase_f32_bits: u32,
-    pub chance_resolution_u32: u32,
-    pub world_transform_4x4_f32_bits: [u32; 16],
-    pub visibility_flags_u32: u32,
-    pub selection_flags_u32: u32,
-    pub damage_state_u32: u32,
-}
-
 pub const RAIL_CONSTRUCTION_ARROW_PRODUCER_RVA: u32 = 0x0159_B650;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2534,39 +2507,6 @@ pub enum Skinning {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DirectVisualProducer {
-    #[serde(with = "decimal_u64")]
-    pub sequence: u64,
-    #[serde(with = "decimal_u64")]
-    pub update_index: u64,
-    pub producer_kind: DirectVisualKind,
-    #[serde(with = "decimal_u64")]
-    pub producer_instance_id: u64,
-    #[serde(with = "decimal_u64")]
-    pub entity_instance_id: u64,
-    pub effect_instance_id: Option<String>,
-    pub operation: DirectVisualOperation,
-    pub entity_token: String,
-    pub resolved_entity_source_sha256: String,
-    pub semantic_state: String,
-    pub authored_state_index: u32,
-    pub authored_event_index: u32,
-    #[serde(with = "decimal_u64")]
-    pub state_enter_sequence: u64,
-    pub live_phase_f32_bits: u32,
-    pub world_transform_4x4_f32_bits: [u32; 16],
-    pub node_or_locator_token: Option<String>,
-    pub visibility_flags: u32,
-    pub direct_object_list_ordinal: u32,
-    pub direct_object_count: u32,
-    pub rng_counter: u32,
-    pub rng_seed: u32,
-    pub effect_expiry_update: Option<String>,
-    pub submitted_outputs: Vec<RenderOutputRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct LightLifecycleEvent {
     #[serde(with = "decimal_u64")]
     pub sequence: u64,
@@ -2604,26 +2544,6 @@ pub enum LightOperation {
 pub enum LightResolution {
     ResolvedDefinition,
     ExplicitNull,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DirectVisualKind {
-    StrategicAirScene,
-    NavalCombatScene,
-    TradeRouteConvoy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DirectVisualOperation {
-    Create,
-    Show,
-    Hide,
-    StateChange,
-    EffectSpawn,
-    EffectExpire,
-    Destroy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2765,15 +2685,12 @@ pub struct RenderCheckpoint {
     pub last_submit_index: Option<String>,
     pub next_stable_ids: BTreeMap<String, String>,
     pub active_effect_lifecycle: Vec<EffectLifecycleEvent>,
-    pub active_entity_presentation: Vec<EntityPresentationEvent>,
-    pub active_direct_visual_producers: Vec<DirectVisualProducer>,
     pub active_light_lifecycle: Vec<LightLifecycleEvent>,
     pub latest_tiled_light_payload: Option<TiledLightSubmission>,
     pub weather_state_and_ordered_membership: Vec<WeatherMembership>,
     pub active_effect_set_sha256: String,
     pub ordered_particle_packets_sha256: String,
     pub ordered_entity_submissions_sha256: String,
-    pub ordered_direct_visual_producers_sha256: String,
     pub ordered_light_submissions_sha256: String,
     pub weather_state_sha256: String,
     pub weather_membership_sha256: String,
@@ -3116,6 +3033,11 @@ struct InlineBlobWire {
 }
 
 fn check_schema(schema: &str) -> Result<(), String> {
+    if schema == INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA {
+        return Err(format!(
+            "production render schema {schema} is incompatible with {SCHEMA}: it carries always-empty entity-presentation and direct-visual producer vectors that no writer ever emitted instead of deriving presentation from the recorded entity/particle state"
+        ));
+    }
     if schema == INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA {
         return Err(format!(
             "production render schema {schema} is incompatible with {SCHEMA}: it cannot preserve authenticated draw-time bytes for engine-generated textures that are neither direct effective-VFS payloads nor prior render-target outputs"
@@ -4208,7 +4130,6 @@ impl ProductionRenderFrame {
             &self.checkpoint.active_effect_set_sha256,
             &self.checkpoint.ordered_particle_packets_sha256,
             &self.checkpoint.ordered_entity_submissions_sha256,
-            &self.checkpoint.ordered_direct_visual_producers_sha256,
             &self.checkpoint.ordered_light_submissions_sha256,
             &self.checkpoint.weather_membership_sha256,
         ] {
@@ -4415,16 +4336,6 @@ impl RenderSubmit {
             });
         }
 
-        for event in &self.entity_presentations {
-            check_sequence(
-                event.sequence,
-                first_sequence,
-                last_sequence,
-                "entity presentation",
-            )?;
-            check_sha256(&event.resolved_entity_sha256, None)?;
-        }
-
         let mut entity_keys = BTreeSet::new();
         let mut entity_outputs = BTreeSet::new();
         for entity in &self.entities {
@@ -4538,24 +4449,6 @@ impl RenderSubmit {
         }
         validate_unified_render_operations(self, carriers)?;
 
-        for direct in &self.direct_visuals {
-            if direct.sequence < first_sequence || direct.sequence > last_sequence {
-                return Err("direct visual sequence is outside frame range".into());
-            }
-            check_sha256(&direct.resolved_entity_source_sha256, None)?;
-            if let Some(id) = &direct.effect_instance_id {
-                check_decimal_u64(id, "direct visual effect_instance_id")?;
-            }
-            if let Some(expiry) = &direct.effect_expiry_update {
-                check_decimal_u64(expiry, "direct visual effect_expiry_update")?;
-            }
-            validate_output_refs(
-                &direct.submitted_outputs,
-                &particle_outputs,
-                &entity_outputs,
-                "direct visual",
-            )?;
-        }
         for light in &self.tiled_lights {
             if light.first_sequence > light.last_sequence
                 || light.first_sequence < first_sequence
@@ -7520,13 +7413,11 @@ mod tests {
                 tree_runtime: None,
                 s1_shadow: None,
                 particles: vec![],
-                entity_presentations: vec![],
                 particle_packet_set_sha256: "5".repeat(64),
                 entities: vec![],
                 rail_construction_arrows: vec![],
                 ordered_draws: vec![],
                 ordered_render_operations: vec![RenderExecutionRef::M02 { output: reference }],
-                direct_visuals: vec![],
                 tiled_lights: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
@@ -7569,13 +7460,11 @@ mod tests {
             tree_runtime: None,
             s1_shadow: None,
             particles: vec![],
-            entity_presentations: vec![],
             particle_packet_set_sha256: "6".repeat(64),
             entities: vec![],
             rail_construction_arrows: vec![],
             ordered_draws: vec![],
             ordered_render_operations: vec![duplicate],
-            direct_visuals: vec![],
             tiled_lights: vec![],
             weather_membership: vec![],
             political_textures: vec![],
@@ -9250,7 +9139,6 @@ mod tests {
                     scale_f32_bits: 0,
                     flags_u16: 0,
                 }],
-                entity_presentations: vec![],
                 entities: vec![EntitySubmission {
                     pass_ordinal: 1,
                     draw_order: 2,
@@ -9285,7 +9173,6 @@ mod tests {
                     },
                 ],
                 ordered_render_operations: Vec::new(),
-                direct_visuals: vec![],
                 tiled_lights: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
@@ -9717,6 +9604,20 @@ mod tests {
         let v12 = serde_json::json!({"schema": INCOMPATIBLE_AUTHENTICATED_TEXTURE_SNAPSHOT_SCHEMA});
         let error = ProductionRenderFrame::decode_value(&v12).unwrap_err();
         assert!(error.contains("engine-generated textures"));
+        // kills: silent re-admission of the retired always-empty
+        // entity-presentation / direct-visual producer carriers - a v13 frame
+        // must refuse with the NAMED incompatibility (exact message below),
+        // never parse and never fall out as a generic unsupported-schema error.
+        let v13 = serde_json::json!({"schema": INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA});
+        let error = ProductionRenderFrame::decode_value(&v13).unwrap_err();
+        assert!(error.contains(INCOMPATIBLE_PRESENTATION_CARRIER_SCHEMA), "{error}");
+        assert!(error.contains("always-empty entity-presentation"), "{error}");
+        assert!(
+            error.contains(
+                "instead of deriving presentation from the recorded entity/particle state"
+            ),
+            "{error}"
+        );
         let unknown = serde_json::json!({"schema": "hoi4.production-render-submit.v99"});
         let error = ProductionRenderFrame::decode_value(&unknown).unwrap_err();
         assert!(error.contains("unsupported production render schema"));
@@ -9877,7 +9778,6 @@ mod tests {
                     scale_f32_bits: 0,
                     flags_u16: 0,
                 }],
-                entity_presentations: vec![],
                 entities: vec![],
                 rail_construction_arrows: vec![],
                 ordered_draws: vec![RenderOutputRef::Particle {
@@ -9887,7 +9787,6 @@ mod tests {
                     draw_order: 0,
                 }],
                 ordered_render_operations: Vec::new(),
-                direct_visuals: vec![],
                 tiled_lights: vec![],
                 weather_membership: vec![],
                 political_textures: vec![],
@@ -10003,15 +9902,12 @@ mod tests {
             last_submit_index: last_submit.map(str::to_string),
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: vec![],
-            active_entity_presentation: vec![],
-            active_direct_visual_producers: vec![],
             active_light_lifecycle: vec![],
             latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: vec![],
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
             ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
             weather_state_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),

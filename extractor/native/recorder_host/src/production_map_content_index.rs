@@ -828,7 +828,6 @@ mod tests {
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
             particle_packet_set_sha256: "e".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
@@ -836,7 +835,6 @@ mod tests {
             ordered_render_operations: (0..11)
                 .map(|operation_ordinal| RenderExecutionRef::Static { operation_ordinal })
                 .collect(),
-            direct_visuals: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
@@ -898,15 +896,12 @@ mod tests {
                 last_submit_index: Some("1".into()),
                 next_stable_ids: BTreeMap::new(),
                 active_effect_lifecycle: Vec::new(),
-                active_entity_presentation: Vec::new(),
-                active_direct_visual_producers: Vec::new(),
                 active_light_lifecycle: Vec::new(),
                 latest_tiled_light_payload: None,
                 weather_state_and_ordered_membership: Vec::new(),
                 active_effect_set_sha256: "3".repeat(64),
                 ordered_particle_packets_sha256: "4".repeat(64),
                 ordered_entity_submissions_sha256: "5".repeat(64),
-                ordered_direct_visual_producers_sha256: "6".repeat(64),
                 ordered_light_submissions_sha256: "7".repeat(64),
                 weather_state_sha256:
                     "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),

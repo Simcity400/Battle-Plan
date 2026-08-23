@@ -297,7 +297,6 @@ pub unsafe fn execute_xmap20_effects(
         &submitted_target,
     )?;
     if stats.entity_draws != 0
-        || stats.direct_visual_joins != 0
         || stats.weather_joins != 0
         || stats.particle_draws != prepared.ordered_particles.len()
     {

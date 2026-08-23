@@ -563,13 +563,11 @@ fn frame_with_static_program(
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: vec![RenderExecutionRef::Static { operation_ordinal }],
-            direct_visuals: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
@@ -586,15 +584,12 @@ fn frame_with_static_program(
             last_submit_index: Some("12".into()),
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
-            active_entity_presentation: Vec::new(),
-            active_direct_visual_producers: Vec::new(),
             active_light_lifecycle: Vec::new(),
             latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
             ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
             weather_state_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
@@ -1102,13 +1097,11 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
-            direct_visuals: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
@@ -1140,15 +1133,12 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
             last_submit_index: Some("12".into()),
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
-            active_entity_presentation: Vec::new(),
-            active_direct_visual_producers: Vec::new(),
             active_light_lifecycle: Vec::new(),
             latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
             ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
             weather_state_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
@@ -1315,7 +1305,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
             particle_packet_set_sha256: "5".repeat(64),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
@@ -1323,7 +1312,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             ordered_render_operations: vec![RenderExecutionRef::Static {
                 operation_ordinal: 7,
             }],
-            direct_visuals: Vec::new(),
             tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
@@ -1340,15 +1328,12 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
             last_submit_index: Some("12".into()),
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: Vec::new(),
-            active_entity_presentation: Vec::new(),
-            active_direct_visual_producers: Vec::new(),
             active_light_lifecycle: Vec::new(),
             latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: Vec::new(),
             active_effect_set_sha256: "6".repeat(64),
             ordered_particle_packets_sha256: "7".repeat(64),
             ordered_entity_submissions_sha256: "8".repeat(64),
-            ordered_direct_visual_producers_sha256: "9".repeat(64),
             ordered_light_submissions_sha256: "a".repeat(64),
             weather_state_sha256:
                 "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
@@ -2277,4 +2262,45 @@ fn retained_capture_interpreter_relocates_through_vfs_and_executes_in_d77_order(
         .unwrap_err()
         .to_string();
     assert!(error.contains("payload SHA-256 mismatch"), "{error}");
+}
+
+// kills: QJ carrier.render_submit.entity_presentations DERIVE_missing - the
+// viewer derives presented entity state from the recorded submissions
+// themselves (the retired presentation-event carrier added nothing the
+// entities do not already carry on every producible recording).
+#[test]
+fn xmap20_presentation_law_derives_presented_state_from_fixture_entities() {
+    let hand_content = |path: &str, sha: String| UsedContentKey {
+        effective_vfs_manifest_sha256: "22".repeat(32),
+        normalized_game_relative_path: path.into(),
+        winning_layer_ordinal: 1,
+        layer_kind: ContentLayerKind::Base,
+        layer_id: "base".into(),
+        source_sha256: sha.clone(),
+        payload_sha256: sha,
+        payload_bytes: 16,
+    };
+    let output = RenderOutputRef::Entity {
+        pass_ordinal: 1,
+        entity_instance_id: 81,
+        draw_order: 100,
+    };
+    let entity = fixture_entity_submission(
+        &output,
+        hand_content("o04.entity", "ab".repeat(32)),
+        hand_content("o04.mesh", "cd".repeat(32)),
+        hand_content("o04.shader", "ef".repeat(32)),
+    );
+    let derived = crate::derive_entity_presentation(&entity).expect("derive");
+    assert_eq!(derived.entity_instance_id, 81);
+    assert_eq!(
+        derived.resolved_entity_sha256,
+        entity.resolved_entity_sha256
+    );
+    assert_eq!(derived.semantic_state_flags, entity.state_flags);
+    assert_eq!(derived.registration_token, "city_fixture");
+
+    let mut tampered = entity.clone();
+    tampered.state_flags ^= 0x100;
+    assert!(crate::derive_entity_presentation(&tampered).is_err());
 }

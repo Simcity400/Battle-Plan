@@ -846,13 +846,11 @@ fn portable_submit_with_pending_s1_from_a729_runtime(
         tree_runtime: None,
         s1_shadow: None,
         particles: promoted.particles,
-        entity_presentations: Vec::new(),
         particle_packet_set_sha256,
         entities: promoted.entities,
         rail_construction_arrows: Vec::new(),
         ordered_draws: promoted.ordered_draws,
         ordered_render_operations: Vec::new(),
-        direct_visuals: Vec::new(),
         tiled_lights: Vec::new(),
         weather_membership: Vec::new(),
         political_textures: Vec::new(),
@@ -1156,8 +1154,6 @@ pub fn assemble_production_render_frame(
     }
     let display_submit_index = submits.last().map(|submit| submit.submit_index.to_string());
     let empty_effects: Vec<portable_render_stream::EffectLifecycleEvent> = Vec::new();
-    let empty_presentations: Vec<portable_render_stream::EntityPresentationEvent> = Vec::new();
-    let empty_direct: Vec<portable_render_stream::DirectVisualProducer> = Vec::new();
     let empty_lights: Vec<portable_render_stream::LightLifecycleEvent> = Vec::new();
     let particles = submits
         .iter()
@@ -1190,15 +1186,12 @@ pub fn assemble_production_render_frame(
             last_submit_index: display_submit_index.clone(),
             next_stable_ids: BTreeMap::new(),
             active_effect_lifecycle: empty_effects.clone(),
-            active_entity_presentation: empty_presentations.clone(),
-            active_direct_visual_producers: empty_direct.clone(),
             active_light_lifecycle: empty_lights.clone(),
             latest_tiled_light_payload: None,
             weather_state_and_ordered_membership: weather_checkpoint.clone(),
             active_effect_set_sha256: canonical_json_sha256(&empty_effects)?,
             ordered_particle_packets_sha256: canonical_json_sha256(&particles)?,
             ordered_entity_submissions_sha256: canonical_json_sha256(&entities)?,
-            ordered_direct_visual_producers_sha256: canonical_json_sha256(&empty_direct)?,
             ordered_light_submissions_sha256: canonical_json_sha256(&empty_lights)?,
             weather_state_sha256: portable_render_stream::weather_state_checkpoint_sha256(
                 &weather_checkpoint,
@@ -3390,14 +3383,12 @@ mod fold_carrier_guard_tests {
             tree_runtime: None,
             s1_shadow: None,
             particles: Vec::new(),
-            entity_presentations: Vec::new(),
-            particle_packet_set_sha256: String::new(),
+                particle_packet_set_sha256: String::new(),
             entities: Vec::new(),
             rail_construction_arrows: Vec::new(),
             ordered_draws: Vec::new(),
             ordered_render_operations: Vec::new(),
-            direct_visuals: Vec::new(),
-            tiled_lights: Vec::new(),
+                tiled_lights: Vec::new(),
             weather_membership: Vec::new(),
             political_textures: Vec::new(),
         }
@@ -3929,18 +3920,6 @@ pub fn promote_a729_production_unified_render_execution_order<
         static_programs,
         resolver,
     )
-}
-
-pub fn promote_a729_production_direct_visual<
-    R: production_render_submit_live_lane::ExactDirectVisualResolver,
->(
-    raw: &production_render_submit_live_lane::RawDirectVisualObservation,
-    resolver: &R,
-) -> Result<
-    portable_render_stream::DirectVisualProducer,
-    production_render_submit_live_lane::PromotionError,
-> {
-    production_render_submit_live_lane::promote_direct_visual(raw, resolver)
 }
 
 pub fn promote_a729_production_tiled_lights<
