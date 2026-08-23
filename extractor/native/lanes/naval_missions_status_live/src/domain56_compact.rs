@@ -687,6 +687,7 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
     let mut release_epilogue_seen = false;
     let mut frame_domain_data_records = 0u32;
     let mut frame_domain_perf_records = 0u32;
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     while offset < raw.len() {
         let previous_record_closed_world = final_record_is_clean_world_boundary;
         final_record_is_clean_world_boundary = false;
@@ -738,6 +739,19 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
         }
         let payload = &raw[payload_start..payload_end];
         summary.record_count += 1;
+        // Verify/refresh the d56 repeat baseline on every data record; a
+        // corrupted or orphaned repeat refuses the stream by name.
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+            Ok(reconstructed) => repeat_reconstruction = reconstructed,
+            Err(error) => {
+                summary
+                    .parse_errors
+                    .push(format!("offset {offset}: {error}"));
+                offset = payload_end;
+                continue;
+            }
+        }
         if let Err(error) = validate_compact_record_semantics(
             header.domain_id,
             header.record_type,
@@ -789,6 +803,41 @@ pub fn gate_stream(raw: &[u8]) -> Domain56GateSummary {
                 summary.parse_errors.extend(decoded.parse_errors);
             }
             compact_contract::KnownRecordType::DomainData => observe_open_frame(
+                &mut summary,
+                &mut open_frame_hour,
+                header.game_hour_raw,
+                offset,
+            ),
+            // A repeat covers its hour like DATA and satisfies the frame's
+            // data authority: the reconstruction is verified against this
+            // walker's own baseline, so the d56 grammar runs on exactly the
+            // bytes the original full record carried.
+            compact_contract::KnownRecordType::DomainDataRepeat if header.domain_id == DOMAIN_ID => {
+                observe_open_frame(
+                    &mut summary,
+                    &mut open_frame_hour,
+                    header.game_hour_raw,
+                    offset,
+                );
+                let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                    summary
+                        .parse_errors
+                        .push(format!("offset {offset}: DOMAIN_DATA_REPEAT resolved to no payload"));
+                    offset = payload_end;
+                    continue;
+                };
+                let decoded = decode_payload(offset, reconstructed);
+                summary.data_record_count += 1;
+                frame_domain_data_records = frame_domain_data_records.saturating_add(1);
+                observe_status_flags(&mut summary, decoded.status_flags_or);
+                summary.row_count_total += decoded.row_count_total;
+                summary.changed_rows_total += decoded.changed_rows_total;
+                for (key, value) in decoded.data_units_total {
+                    *summary.data_units_total.entry(key).or_default() += value;
+                }
+                summary.parse_errors.extend(decoded.parse_errors);
+            }
+            compact_contract::KnownRecordType::DomainDataRepeat => observe_open_frame(
                 &mut summary,
                 &mut open_frame_hour,
                 header.game_hour_raw,

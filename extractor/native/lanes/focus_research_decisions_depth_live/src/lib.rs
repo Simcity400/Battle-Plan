@@ -934,6 +934,7 @@ fn validate_authoritative_stream(
     let mut final_record_is_certified_frame_end = false;
     let mut release_epilogue_seen = false;
     let mut data_counts = BTreeMap::<(i32, u16), u32>::new();
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     let mut perf_counts = BTreeMap::<(i32, u16), u32>::new();
     let mut observed_perf_counts_by_hour = BTreeMap::<i32, u64>::new();
 
@@ -972,13 +973,22 @@ fn validate_authoritative_stream(
         }
         previous_sequence = Some(record.sequence);
 
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
         let semantics_ok = match validate_compact_record_semantics(
             record.domain_id,
             record.record_type,
             record.record_flags,
             record.payload,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                match repeat_baselines.observe(record.domain_id, record.record_type, record.payload) {
+                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Err(error) => {
+                        result.errors.push(format!("offset {offset}: {error}"));
+                    }
+                }
+                true
+            },
             Err(error) => {
                 result.errors.push(format!("offset {offset}: {error}"));
                 false
@@ -1119,8 +1129,7 @@ fn validate_authoritative_stream(
                             } else {
                                 result.errors.extend(local.parse_errors);
                             }
-                        } else {
-                            match summarize_domain_data_payload(
+                        } else {                            match summarize_domain_data_payload(
                             record.domain_id,
                             record.payload,
                             DomainDataContext {
@@ -1152,12 +1161,80 @@ fn validate_authoritative_stream(
                                         error.partial_authority.status_flags,
                                     );
                                 }
-                                Err(error) => result.errors.push(format!(
+                                 Err(error) => result.errors.push(format!(
                                     "offset {offset}: domain {} DATA failed shared authority decode: {error}",
                                     record.domain_id
                                 )),
                             }
                         }
+                    }
+                }
+            }
+            // A repeat covers its hour like DATA (same open-hour rules), but
+            // its payload is a volatile prefix plus a tail digest, so the
+            // shared payload authority never runs on it.
+            KnownRecordType::DomainDataRepeat => {
+                if let Some(open) = open_frame_hour {
+                    if record.game_hour_raw != open {
+                        result.errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA_REPEAT hour {} encountered before FRAME_END closed open frame hour {open}",
+                            record.game_hour_raw
+                        ));
+                    }
+                } else {
+                    validate_next_source_hour(
+                        &mut result.errors,
+                        last_closed_hour,
+                        record.game_hour_raw,
+                        "DOMAIN_DATA_REPEAT",
+                        offset,
+                    );
+                    if let Some(pending) = pending_perf_hour {
+                        if pending != record.game_hour_raw {
+                            result.errors.push(format!(
+                                "offset {offset}: DOMAIN_DATA_REPEAT hour {} conflicts with pending PERF hour {pending}",
+                                record.game_hour_raw
+                            ));
+                        }
+                    }
+                    open_frame_hour = Some(record.game_hour_raw);
+                }
+                if owned_domains.contains(&record.domain_id) {
+                    let count = data_counts
+                        .entry((record.game_hour_raw, record.domain_id))
+                        .or_default();
+                    *count = count.saturating_add(1);
+                    let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                        result.errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA_REPEAT resolved to no payload"
+                        ));
+                        continue;
+                    };
+                    // The reconstruction is digest-verified against this
+                    // walker's own baseline; run the shared payload authority
+                    // on it so status accounting matches full records.
+                    match summarize_domain_data_payload(
+                        record.domain_id,
+                        reconstructed,
+                        DomainDataContext {
+                            stream_offset: offset,
+                            record_flags: record.record_flags,
+                            sequence: record.sequence,
+                            header_hour_raw: record.game_hour_raw,
+                            session_header_identity: None,
+                            xmap07_snow_mud_previous_grid_sha256: None,
+                        },
+                    ) {
+                        Ok(authority) => {
+                            result.data_status_by_hour_domain.insert(
+                                (record.game_hour_raw, record.domain_id),
+                                authority.status_flags,
+                            );
+                        }
+                        Err(error) => result.errors.push(format!(
+                            "offset {offset}: domain {} REPEAT failed shared authority decode: {error}",
+                            record.domain_id
+                        )),
                     }
                 }
             }

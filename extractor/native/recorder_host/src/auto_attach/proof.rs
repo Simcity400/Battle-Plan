@@ -605,6 +605,12 @@ impl FirstCompactRecordGate {
             compact_contract::KnownRecordType::FreezeCensus
             | compact_contract::KnownRecordType::ContentIdentityCensus
             | compact_contract::KnownRecordType::StateTopologyCensus
+            // A repeat's payload is a volatile prefix plus a tail digest, not
+            // domain grammar, so no materiality proof can run on it — and none
+            // needs to: the repeat gate holds no baseline before the first
+            // published hour, so the FIRST world record this proof scans for
+            // is always a full DOMAIN_DATA record.
+            | compact_contract::KnownRecordType::DomainDataRepeat
             | compact_contract::KnownRecordType::StreamHeader => Ok(false),
             compact_contract::KnownRecordType::DomainGap
             | compact_contract::KnownRecordType::FrameRefused

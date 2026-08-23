@@ -871,8 +871,7 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                     }
                 }
 
-                summary.domains_seen.insert(record.domain_id);
-                match record.domain_id {
+                summary.domains_seen.insert(record.domain_id);                match record.domain_id {
                     DOMAIN_NAVAL_COMBAT_LIFECYCLE => {
                         frame_lifecycle_data_records =
                             frame_lifecycle_data_records.saturating_add(1);
@@ -1160,6 +1159,46 @@ pub fn gate_stream(data: &[u8]) -> GateResult {
                         }
                     }
                     _ => {}
+                }
+            }
+            // A repeat covers its hour like DATA (same open-hour rules), but
+            // its payload is a volatile prefix plus a tail digest. This
+            // offline gate keeps no reconstruction baseline, so it REFUSES
+            // owned-domain repeats by name rather than trusting
+            // unauthenticated bytes: fail-closed beats fake authority.
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                match open_frame_hour {
+                    Some(open) if open != record.game_hour_raw => errors.push(format!(
+                        "offset {}: DOMAIN_DATA_REPEAT hour {} encountered before FRAME_END closed open frame hour {open}",
+                        record.offset, record.game_hour_raw
+                    )),
+                    Some(_) => {}
+                    None => {
+                        validate_next_frame_hour(
+                            last_closed_hour,
+                            record.game_hour_raw,
+                            "DOMAIN_DATA_REPEAT",
+                            record.offset,
+                            &mut errors,
+                        );
+                        if let Some(pending) = pending_perf_hour {
+                            if pending != record.game_hour_raw {
+                                errors.push(format!(
+                                    "offset {}: DOMAIN_DATA_REPEAT hour {} conflicts with pending PERF hour {pending}",
+                                    record.offset, record.game_hour_raw
+                                ));
+                            }
+                        }
+                        open_frame_hour = Some(record.game_hour_raw);
+                    }
+                }
+
+                summary.domains_seen.insert(record.domain_id);
+                if matches!(record.domain_id, DOMAIN_NAVAL_COMBAT_LIFECYCLE | DOMAIN_NAVAL_COMBAT_MEMBERS) {
+                    errors.push(format!(
+                        "offset {}: domain {} DOMAIN_DATA_REPEAT carries no decodable d49/d50 payload for this gate; a baseline-aware verifier is required",
+                        record.offset, record.domain_id
+                    ));
                 }
             }
             compact_contract::KnownRecordType::FrameEnd => {

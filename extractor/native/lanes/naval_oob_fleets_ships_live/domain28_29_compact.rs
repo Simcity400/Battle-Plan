@@ -198,6 +198,7 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
     let mut release_epilogue_seen = false;
     let mut hours = BTreeSet::new();
     let mut owned_frame = OwnedFrameAuthority::default();
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
 
     while offset < raw.len() {
         let remaining = raw.len().saturating_sub(offset);
@@ -270,13 +271,27 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + payload_len;
         let payload = &raw[payload_start..payload_end];
-        let semantics_valid = match validate_compact_record_semantics(
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        let mut semantics_valid = match validate_compact_record_semantics(
             header.domain_id,
             header.record_type,
             header.record_flags,
             payload,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                // Verify/refresh the repeat baseline on every d28/d29 data
+                // record; a corrupted or orphaned repeat refuses the stream
+                // by name instead of passing as unauthenticated authority.
+                match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Err(error) => {
+                        summary
+                            .parse_errors
+                            .push(format!("offset {offset}: {error}"));
+                        false
+                    }
+                }
+            }
             Err(error) => {
                 summary
                     .parse_errors
@@ -492,9 +507,77 @@ pub fn decode_stream(raw: &[u8], minimum_game_hour_advancements: i64) -> NavalOo
                     _ => {}
                 }
             }
+            // A repeat covers its hour like DATA (same open-hour rules) and
+            // counts toward the frame's data authority; the grammar runs on
+            // the reconstruction verified above, so row/status totals stay
+            // exact.
+            compact_contract::KnownRecordType::DomainDataRepeat if semantics_valid => {
+                match open_hour {
+                    Some(open) if open != header.game_hour_raw => summary.parse_errors.push(format!(
+                        "offset {offset}: repeat hour {} encountered before frame-end closed hour {open}",
+                        header.game_hour_raw
+                    )),
+                    None => match pending_perf_hour {
+                        Some(pending) if pending != header.game_hour_raw => summary
+                            .parse_errors
+                            .push(format!(
+                                "offset {offset}: repeat hour {} does not match pending perf hour {pending}",
+                                header.game_hour_raw
+                            )),
+                        _ => {
+                            pending_perf_hour = None;
+                            open_hour = Some(header.game_hour_raw);
+                        }
+                    },
+                    _ => {}
+                }
+                summary.domain_data_record_count =
+                    summary.domain_data_record_count.saturating_add(1);
+                if header.domain_id == RC_PROBE_DOMAIN_ID {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: diagnostic probe domain 250 is PERF-only; DATA/REPEAT is forbidden"
+                    ));
+                } else {
+                    owned_frame.all_data_records = owned_frame.all_data_records.saturating_add(1);
+                    owned_frame.data_domains.insert(header.domain_id);
+                }
+                let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                    continue;
+                };
+                match header.domain_id {
+                    DOMAIN_OOB_COMMAND => {
+                        owned_frame.oob_data_records =
+                            owned_frame.oob_data_records.saturating_add(1);
+                        if reconstructed.len() >= 20 {
+                            owned_frame.oob_data_status = Some(read_u32_le(reconstructed, 16));
+                        }
+                        summary
+                            .per_domain
+                            .entry(header.domain_id)
+                            .or_default()
+                            .data_record_count += 1;
+                        decode_oob_command_data_payload(offset, reconstructed, &mut summary);
+                    }
+                    DOMAIN_SHIPS => {
+                        owned_frame.ships_data_records =
+                            owned_frame.ships_data_records.saturating_add(1);
+                        if reconstructed.len() >= 20 {
+                            owned_frame.ships_data_status = Some(read_u32_le(reconstructed, 16));
+                        }
+                        summary
+                            .per_domain
+                            .entry(header.domain_id)
+                            .or_default()
+                            .data_record_count += 1;
+                        decode_ships_data_payload(offset, reconstructed, &mut summary);
+                    }
+                    _ => {}
+                }
+            }
             compact_contract::KnownRecordType::DomainPerf
             | compact_contract::KnownRecordType::FrameEnd
-            | compact_contract::KnownRecordType::DomainData => {}
+            | compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainDataRepeat => {}
             compact_contract::KnownRecordType::FreezeCensus => {
                 if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
                     last_record_was_clean_frame_end = compact_contract::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);

@@ -945,10 +945,12 @@ dependencies = [
 name = "replay_decoder"
 version = "0.1.0"
 dependencies = [
+ "collector",
  "compact_contract",
  "compact_stream",
  "recorder_host",
  "serde_json",
+ "sha2",
  "snapshot",
 ]
 

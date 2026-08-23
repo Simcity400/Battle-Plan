@@ -492,6 +492,7 @@ pub fn certify_canonical_stream(
     let mut perf = BTreeMap::<u16, PerfAuthority>::new();
     let mut data_roster = BTreeSet::new();
     let mut projects_data = None;
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     let mut scientists = BTreeMap::<u32, ScientistRow>::new();
     let mut baseline_seen = false;
     while offset < bytes.len() {
@@ -576,6 +577,23 @@ pub fn certify_canonical_stream(
             }
         }
 
+        // Verify/refresh the repeat baseline on every data record; a verified
+        // REPEAT resolves to the original payload bytes so the D41 grammar
+        // decodes exactly what a full record carried.
+        let reconstruction = match record_type {
+            compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainDataRepeat => {
+                match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                    Ok(reconstruction) => reconstruction,
+                    Err(error) => {
+                        report.problems.push(format!("offset {offset}: {error}"));
+                        break;
+                    }
+                }
+            }
+            _ => None,
+        };
+
         match record_type {
             compact_contract::KnownRecordType::DomainData => {
                 if header.domain_id == DOMAIN_CONTROL {
@@ -600,6 +618,51 @@ pub fn certify_canonical_stream(
                         }
                         Err(error) => {
                             report.problems.push(format!("offset {offset}: {error}"));
+                            break;
+                        }
+                    }
+                }
+            }
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                // A repeat covers its hour like DATA (same roster and
+                // uniqueness rules); the reconstruction is digest-verified
+                // against this walker's own baseline, and a D41 repeat's
+                // decoded authority stands in for the frame exactly as a
+                // full record would.
+                if header.domain_id == DOMAIN_CONTROL {
+                } else if !policy.expected_data_roster.contains(&header.domain_id) {
+                    report.problems.push(format!(
+                        "offset {offset}: unexpected repeat domain {}",
+                        header.domain_id
+                    ));
+                    break;
+                } else if !data_roster.insert(header.domain_id) {
+                    report.problems.push(format!(
+                        "offset {offset}: duplicate DATA/REPEAT domain {}",
+                        header.domain_id
+                    ));
+                    break;
+                }
+                if header.domain_id == DOMAIN_PROJECTS_LIVE {
+                    match reconstruction.as_deref() {
+                        Some(reconstructed) => {
+                            match decode_production_projects_scientists(reconstructed) {
+                                Ok(decoded) => {
+                                    report.projects_data_records += 1;
+                                    projects_data = Some(decoded);
+                                }
+                                Err(error) => {
+                                    report.problems.push(format!(
+                                        "offset {offset}: {error}"
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                        None => {
+                            report.problems.push(format!(
+                                "offset {offset}: DOMAIN_DATA_REPEAT resolved to no payload"
+                            ));
                             break;
                         }
                     }

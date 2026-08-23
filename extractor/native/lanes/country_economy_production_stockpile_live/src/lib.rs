@@ -729,6 +729,7 @@ pub fn gate_compact_stream(raw: &[u8], expected_domains: &[u16]) -> LaneGate {
 }
 
 pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     let mut summary = CompactStreamSummary {
         total_bytes: raw.len(),
         ordered: true,
@@ -818,13 +819,24 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + payload_len;
         let payload = &raw[payload_start..payload_end];
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
         let record_semantics_ok = match compact_contract::validate_compact_record_semantics(
             domain_id,
             record_type,
             header.record_flags,
             payload,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                match repeat_baselines.observe(domain_id, record_type, payload) {
+                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Err(error) => {
+                        summary
+                            .parse_errors
+                            .push(format!("offset {offset}: {error}"));
+                    }
+                }
+                true
+            },
             Err(error) => {
                 summary
                     .parse_errors
@@ -976,6 +988,69 @@ pub fn summarize_compact_stream(raw: &[u8]) -> CompactStreamSummary {
                         ),
                         DOMAIN_GAP_BADGES => {
                             decode_gap_badges_payload(offset, payload, domain_id, &mut summary)
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // A repeat covers its hour like DATA and satisfies the same
+            // frame authority: the reconstruction verified above carries the
+            // exact prior payload bytes, so the owned decoders run on it and
+            // row/status totals stay exact.
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                observe_data_hour(
+                    &mut summary,
+                    pending_perf_hour,
+                    &mut open_frame_hour,
+                    last_closed_hour,
+                    game_hour_raw,
+                    offset,
+                );
+                let domain = domain_entry(&mut summary, domain_id);
+                domain.record_count = domain.record_count.saturating_add(1);
+                domain.data_record_count = domain.data_record_count.saturating_add(1);
+                increment_hour_domain(
+                    &mut summary.per_hour_data_domain_counts,
+                    game_hour_raw,
+                    domain_id,
+                );
+                let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                    continue;
+                };
+                if is_lane_owned_data_domain(domain_id) {
+                    match observed_lane_perf_status_by_hour_domain
+                        .get(&game_hour_raw)
+                        .and_then(|domains| domains.get(&domain_id))
+                        .copied()
+                    {
+                        Some(perf_status_flags) if reconstructed.len() >= 20 => {
+                            let data_status_flags = read_u32_le(reconstructed, 16);
+                            if perf_status_flags != data_status_flags {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: domain {domain_id} DOMAIN_DATA_REPEAT status {data_status_flags:#010x} != preceding same-hour DOMAIN_PERF status {perf_status_flags:#010x}"
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if record_semantics_ok {
+                    match domain_id {
+                        DOMAIN_FUEL => decode_fuel_payload(offset, reconstructed, &mut summary),
+                        DOMAIN_PRODUCTION => {
+                            decode_production_payload(offset, reconstructed, &mut summary)
+                        }
+                        DOMAIN_STOCKPILE_VARIANT_DEFS => {
+                            decode_variant_defs_payload(offset, reconstructed, domain_id, &mut summary)
+                        }
+                        DOMAIN_STOCKPILE_VARIANT_UPGRADES => decode_variant_upgrades_payload(
+                            offset,
+                            reconstructed,
+                            domain_id,
+                            &mut summary,
+                        ),
+                        DOMAIN_GAP_BADGES => {
+                            decode_gap_badges_payload(offset, reconstructed, domain_id, &mut summary)
                         }
                         _ => {}
                     }

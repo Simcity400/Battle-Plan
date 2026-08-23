@@ -1149,7 +1149,7 @@ fn validate_domain_manifest(
             .unwrap_or(0);
         if contract.id == 47 && work_without_emission_frames != 0 {
             errors.push(format!(
-                "domain {} discarded every built row on {work_without_emission_frames} frame(s)                  (adapter work without emission — silent per-frame data loss even though the                  whole-run row total is nonzero)",
+                "domain {} discarded every built row on {work_without_emission_frames} frame(s)                  (adapter work without emission â€” silent per-frame data loss even though the                  whole-run row total is nonzero)",
                 contract.name,
             ));
         }
@@ -1168,7 +1168,7 @@ fn validate_domain_manifest(
                 .collect();
             if !worked.is_empty() {
                 errors.push(format!(
-                    "domain {} performed adapter work ({}) but emitted row_count_total=0 — every built row was discarded (silent data loss behind a rowless frame)",
+                    "domain {} performed adapter work ({}) but emitted row_count_total=0 â€” every built row was discarded (silent data loss behind a rowless frame)",
                     contract.name,
                     worked.join(", ")
                 ));
@@ -2102,7 +2102,7 @@ fn cache_only_source_absent(path: &Path) -> String {
     format!(
         "cache-only replay certification is not applicable here ({CACHE_ONLY_SOURCE_ABSENT_OUTCOME}): \
          the recording declares the {:?} composition, so the raw collector stream lives only in the \
-         capture run directory, and {} does not exist. Nothing disagreed — there were no local \
+         capture run directory, and {} does not exist. Nothing disagreed â€” there were no local \
          source bytes to hash, so no attestation link was proved or broken. Run this gate against \
          the capture's own run directory; a sealed container alone cannot be certified by it.",
         snapshot::RawStreamPackaging::Omitted.as_str(),
@@ -3543,8 +3543,8 @@ fn certify_attach_time_content_proof(
         .ok_or_else(|| {
             format!(
                 "{field}.game_process_start_unix is missing or not an integer: without it the \
-                 interval between the engine starting and the attach window opening — which this \
-                 proof does not cover — cannot be read off the recording"
+                 interval between the engine starting and the attach window opening â€” which this \
+                 proof does not cover â€” cannot be read off the recording"
             )
         })?;
     if game_process_start_unix > observed_at {
@@ -3961,7 +3961,7 @@ fn bind_run_dir_manifest_to_sealed_authority(
             format!(
                 "authoritative sealed recorder_manifest is not portable: {error}; a shareable \
                  container must carry no personal filesystem path, in a value or in an object \
-                 key, and the recorder's seal-time gate refuses to write one — so a container \
+                 key, and the recorder's seal-time gate refuses to write one â€” so a container \
                  that carries one was not sealed by that gate"
             )
         })?;
@@ -4195,7 +4195,7 @@ fn truncate_for_refusal(value: &Value) -> String {
         return rendered;
     }
     let head: String = rendered.chars().take(120).collect();
-    format!("{head}…")
+    format!("{head}â€¦")
 }
 
 #[cfg(test)]
@@ -5844,6 +5844,7 @@ fn scan_compact_stream_with_identity_mode(
     let mut pending_perf_hour: Option<i32> = None;
     let mut last_closed_hour: Option<i32> = None;
     let mut gap_sequences = BTreeMap::<(u16, u16), GapSequenceAuthority>::new();
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     let mut final_record_is_clean_world_boundary = false;
     let mut release_epilogue_seen = false;
     let mut framing_complete = true;
@@ -5935,7 +5936,7 @@ fn scan_compact_stream_with_identity_mode(
                 ));
             }
         }
-        let envelope_ok = match compact_contract::validate_compact_record_semantics(
+let envelope_ok = match compact_contract::validate_compact_record_semantics(
             domain_id,
             record_type,
             header.record_flags,
@@ -5949,6 +5950,23 @@ fn scan_compact_stream_with_identity_mode(
                 false
             }
         };
+        // Verify/refresh the per-domain repeat baseline on every data record;
+        // a corrupted or orphaned repeat refuses the stream by name.
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        if envelope_ok
+            && matches!(
+                record_type,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA
+                    | compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            )
+        {
+            match repeat_baselines.observe(domain_id, record_type, payload) {
+                Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                Err(reason) => summary.parse_errors.push(format!(
+                    "offset {offset}: {reason}"
+                )),
+            }
+        }
         if record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS {
             summary.record_count += 1;
             summary.total_payload_bytes = summary
@@ -6297,6 +6315,99 @@ fn scan_compact_stream_with_identity_mode(
                             if pending != game_hour_raw {
                                 summary.parse_errors.push(format!(
                                     "offset {offset}: DOMAIN_DATA hour {game_hour_raw} conflicts with pending PERF hour {pending}"
+                                ));
+                            }
+                        }
+                        open_frame_hour = Some(game_hour_raw);
+                    }
+                }
+            }
+            // A repeat is a data record of a new kind: it counts toward the
+            // same hour-cardinality ledgers. Its payload is verified against
+            // this walker's own baseline above and reconstructed, so the
+            // shared payload authority below sees exactly the bytes the
+            // original full record carried.
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                summary.domain_data_record_count += 1;
+                *summary
+                    .per_hour_data_domain_counts
+                    .entry(game_hour_raw)
+                    .or_default()
+                    .entry(domain_id)
+                    .or_default() += 1;
+                let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                    summary.parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_DATA_REPEAT for domain {domain_id} resolved to no payload"
+                    ));
+                    continue;
+                };
+                if envelope_ok {
+                    let result =
+                        recorder_host::domain_data_authority::summarize_domain_data_payload(
+                            domain_id,
+                            reconstructed,
+                            recorder_host::domain_data_authority::DomainDataContext {
+                                stream_offset: offset,
+                                record_flags: header.record_flags,
+                                sequence,
+                                header_hour_raw: game_hour_raw,
+                                session_header_identity: (domain_id == 68)
+                                    .then_some(&mut session_header_identity),
+                                xmap07_snow_mud_previous_grid_sha256: (domain_id
+                                    == compact_contract::xmap07_snow_mud::DOMAIN_ID)
+                                    .then_some(&mut xmap07_snow_mud_previous_grid_sha256),
+                            },
+                        );
+                    match result {
+                        Ok(decoded) => {
+                            if let Some(status_flags) = decoded.status_flags {
+                                let unknown_status =
+                                    domain_status_unknown_bits(domain_id, status_flags);
+                                if unknown_status != 0 {
+                                    summary.parse_errors.push(format!(
+                                        "offset {offset}: DOMAIN_DATA_REPEAT domain {domain_id} status {status_flags:#x} contains unknown v1 bits {unknown_status:#x}"
+                                    ));
+                                }
+                            }
+                            if let Some(frame) = decoded.auxiliary.domain57_frame.clone() {
+                                summary.domain57_frames.push(frame);
+                            }
+                            let authority = DataAuthority {
+                                row_count: decoded.emitted_rows,
+                                changed_rows: decoded.changed_rows,
+                                status_flags: decoded.status_flags,
+                                data_units: decoded.data_units,
+                            };
+                            merge_data_authority(domain_id, &authority, &mut summary);
+                            summary
+                                .per_hour_data_authority
+                                .entry((game_hour_raw, domain_id))
+                                .or_insert(authority);
+                        }
+                        Err(error) => summary.parse_errors.extend(error.errors),
+                    }
+                }
+                match open_frame_hour {
+                    Some(open) if open != game_hour_raw => summary.parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_DATA_REPEAT hour {game_hour_raw} encountered before FRAME_END closed open frame hour {open}"
+                    )),
+                    Some(_) => {}
+                    None => {
+                        if let Some(closed) = last_closed_hour {
+                            match closed.checked_add(1) {
+                                Some(expected) if game_hour_raw == expected => {}
+                                Some(_) => summary.parse_errors.push(format!(
+                                    "offset {offset}: DOMAIN_DATA_REPEAT hour {game_hour_raw} does not follow closed frame hour {closed}"
+                                )),
+                                None => summary.parse_errors.push(format!(
+                                    "offset {offset}: closed frame hour {closed} exhausted; another frame is forbidden"
+                                )),
+                            }
+                        }
+                        if let Some(pending) = pending_perf_hour {
+                            if pending != game_hour_raw {
+                                summary.parse_errors.push(format!(
+                                    "offset {offset}: DOMAIN_DATA_REPEAT hour {game_hour_raw} conflicts with pending PERF hour {pending}"
                                 ));
                             }
                         }

@@ -1,4 +1,4 @@
-//! spilled to disk the moment its `FRAME_END` closes and then released — so peak
+//! spilled to disk the moment its `FRAME_END` closes and then released â€” so peak
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
@@ -906,10 +906,16 @@ impl BoundaryTracker {
                     }
                 }
             }
-            KnownRecordType::DomainData => {
+            // A repeat is a data record of a new kind: the owning hour stays
+            // covered, and it obeys the same gap-exclusion and
+            // hour-monotonicity rules as DOMAIN_DATA. A domain may still carry
+            // several data records of either kind in one hour (d53 snapshot +
+            // controller carriers), so repeats add no uniqueness rule here.
+            KnownRecordType::DomainData | KnownRecordType::DomainDataRepeat => {
                 if self.gap_domains.contains(&header.domain_id) {
                     self.violation = Some(format!(
-                        "DOMAIN_DATA for domain {} in hour {} coexists with DOMAIN_GAP at byte {at_byte}",
+                        "{} for domain {} in hour {} coexists with DOMAIN_GAP at byte {at_byte}",
+                        record_type.canonical_name().to_uppercase(),
                         header.domain_id, header.game_hour_raw
                     ));
                     return;
@@ -1956,10 +1962,10 @@ fn sha256_file(path: &Path) -> io::Result<String> {
 /// Validate one DOMAIN_DATA payload against the H4CR header that carries it.
 ///
 /// The header identity is a PARAMETER and never a default. Two domains
-/// cross-check their payload against the enclosing record —
+/// cross-check their payload against the enclosing record â€”
 /// `session_multiplayer_metadata_live` (d57) compares its payload hour and
 /// every event row's hour against `header_hour_raw`, and
-/// `xmap07_snow_mud_live` (d100) compares its source sequence and hour — so a
+/// `xmap07_snow_mud_live` (d100) compares its source sequence and hour â€” so a
 /// caller that passes a placeholder does not "skip" those checks, it runs them
 /// against the placeholder and fails every record.
 ///
@@ -1995,7 +2001,7 @@ pub fn validate_domain_data_payload_at(
 ///
 /// Same rule as [`validate_domain_data_payload_at`]: the header identity is a
 /// parameter, never a default. A placeholder here is worse than a wrong error
-/// message, because the only caller maps `Err` to `None` — so a d57 record
+/// message, because the only caller maps `Err` to `None` â€” so a d57 record
 /// rejected against a placeholder hour does not merely mis-report, it drops the
 /// domain's declared status flags out of the completeness audit entirely.
 pub fn domain_data_payload_status_at(
@@ -2269,7 +2275,9 @@ pub fn drive_fold_compressed_with_identity_mode<R: Read>(
 
             stats.records_total += 1;
             match KnownRecordType::try_from(header.record_type) {
-                Ok(KnownRecordType::DomainData) => stats.data_records += 1,
+                Ok(KnownRecordType::DomainData | KnownRecordType::DomainDataRepeat) => {
+                    stats.data_records += 1
+                }
                 Ok(KnownRecordType::FrameEnd) => stats.frame_end_records += 1,
                 Ok(KnownRecordType::DomainPerf) => stats.perf_records += 1,
                 Ok(KnownRecordType::FreezeCensus) => stats.freeze_census_records += 1,
@@ -3268,7 +3276,7 @@ mod tests {
         );
         assert!(
             coverage.is_hour_verified(raw_for(HOUR_C + 1)),
-            "the hour AFTER the injury is verified — the whole point of the ruling: {}",
+            "the hour AFTER the injury is verified â€” the whole point of the ruling: {}",
             coverage.summary()
         );
         let excluded = coverage.excluded_hours();
@@ -3480,7 +3488,7 @@ mod tests {
             FramingResync::At(offset) => {
                 assert_ne!(
                     offset, decoy_at,
-                    "the decoy header parses but its record lands on nothing — it must be rejected"
+                    "the decoy header parses but its record lands on nothing â€” it must be rejected"
                 );
                 assert_eq!(offset, real_at, "the resync must land on the real record");
             }
@@ -5738,7 +5746,7 @@ mod tests {
     /// The enclosing H4CR header identity must reach the payload validator.
     ///
     /// d57 cross-checks its payload hour against the record header's hour, so a
-    /// caller that substitutes a placeholder does not skip the check — it runs
+    /// caller that substitutes a placeholder does not skip the check â€” it runs
     /// it against the placeholder and rejects a perfectly good record. Lane OB's
     /// live capture hit exactly that: all 366 d57 records were reported
     /// `d57 payload hour <hour> != H4CR hour 0`, which failed the seal gate with
@@ -5776,4 +5784,146 @@ mod tests {
             "the placeholder must be reported as the mismatch it is, got: {error}"
         );
     }
+// -+
+// DOMAIN_DATA_REPEAT and the per-hour seal.
+// -------------------------------------------------------------------------
+
+/// THE SEAL QUESTION THE REPEAT GATE WAS APPROVED ON: an hour whose data is a
+/// DOMAIN_DATA_REPEAT record is COVERED, exactly as a full-record hour is â€”
+/// the repeat is a data record of a new kind, not a gap.
+///
+/// kills: counting repeats as "other" records would leave hour B with no data
+/// record in the completeness ledger (`data_records == 1`), and treating the
+/// unknown type as a violation would exclude hour B from `hour_coverage` â€”
+/// both assertions below name which one broke.
+#[test]
+fn a_repeat_covered_hour_seals_complete() {
+    let span = compact_contract::domain_declared_volatile_prefix_len(18);
+    let full = country_identity_payload(&[(48, "FRA")]);
+    let mut digest = Sha256::digest(&full[span..]).to_vec();
+    let repeat_payload = {
+        let mut p = Vec::with_capacity(span + 32);
+        p.extend_from_slice(&7u64.to_le_bytes());
+        p.append(&mut digest);
+        p
+    };
+    let hour_a = raw_for(HOUR_A);
+    let hour_b = raw_for(HOUR_B);
+
+    let mut stream = Vec::new();
+    let perf = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];
+    push_record(&mut stream, 1, hour_a, 18, COMPACT_RECORD_TYPE_DOMAIN_PERF, &perf);
+    push_record(&mut stream, 2, hour_a, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &full);
+    push_record(
+        &mut stream,
+        3,
+        hour_a,
+        0,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(1, 1, 0, 0),
+    );
+    push_record(&mut stream, 4, hour_b, 18, COMPACT_RECORD_TYPE_DOMAIN_PERF, &perf);
+    push_record(
+        &mut stream,
+        5,
+        hour_b,
+        18,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+        &repeat_payload,
+    );
+    push_record(
+        &mut stream,
+        6,
+        hour_b,
+        0,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(1, 1, 0, 0),
+    );
+
+    let mut fold = WorldFold::new("pv_repeat_seal");
+    let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+        .expect("a stream with a repeat-covered hour folds cleanly");
+    assert_eq!(stats.data_records, 2, "the repeat counts as a data record");
+    assert_eq!(stats.malformed_payload_records, 0);
+    assert_eq!(stats.hours_emitted, 2, "both hours publish");
+    assert!(
+        stats.ends_at_frame_end,
+        "no violation fired on the repeat record: {:?}",
+        stats.stop_reason
+    );
+    assert_eq!(
+        stats.hour_coverage.verified_count(),
+        2,
+        "both hours seal VERIFIED: {}",
+        stats.hour_coverage.summary()
+    );
+    assert_eq!(stats.hour_coverage.excluded_count(), 0);
+}
+
+/// The digest is the fail-closed guarantee behind that seal: a corrupted
+/// repeat still seals its hour's BYTES (framing was intact) while the fold
+/// refuses the domain by name instead of applying unverified state.
+#[test]
+fn a_corrupted_repeat_refuses_by_name_while_the_hour_bytes_still_seal() {
+    let span = compact_contract::domain_declared_volatile_prefix_len(18);
+    let full = country_identity_payload(&[(48, "FRA")]);
+    let mut digest = Sha256::digest(&full[span..]).to_vec();
+    digest[0] ^= 0xFF;
+    let mut repeat_payload = Vec::with_capacity(span + 32);
+    repeat_payload.extend_from_slice(&7u64.to_le_bytes());
+    repeat_payload.extend_from_slice(&digest);
+    let hour_a = raw_for(HOUR_A);
+    let hour_b = raw_for(HOUR_B);
+
+    let mut stream = Vec::new();
+    let perf = vec![0u8; COMPACT_DOMAIN_PERF_BASE_LEN];
+    push_record(&mut stream, 1, hour_a, 18, COMPACT_RECORD_TYPE_DOMAIN_PERF, &perf);
+    push_record(&mut stream, 2, hour_a, 18, COMPACT_RECORD_TYPE_DOMAIN_DATA, &full);
+    push_record(
+        &mut stream,
+        3,
+        hour_a,
+        0,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(1, 1, 0, 0),
+    );
+    push_record(&mut stream, 4, hour_b, 18, COMPACT_RECORD_TYPE_DOMAIN_PERF, &perf);
+    push_record(
+        &mut stream,
+        5,
+        hour_b,
+        18,
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+        &repeat_payload,
+    );
+    push_record(
+        &mut stream,
+        6,
+        hour_b,
+        0,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        &frame_end_payload(1, 1, 0, 0),
+    );
+
+    let mut fold = WorldFold::new("pv_repeat_corrupt");
+    let stats = drive_fold(Cursor::new(stream.clone()), stream.len() as u64, &mut fold)
+        .expect("a corrupted repeat is a named fold refusal, not framing damage");
+    assert_eq!(
+        stats.malformed_payload_records, 0,
+        "the record is structurally valid; refusal happens at the digest"
+    );
+    assert_eq!(stats.hour_coverage.verified_count(), 2);
+    let snapshots: Vec<serde_json::Value> = fold
+        .take_finished()
+        .into_iter()
+        .map(|(_, _, bytes)| serde_json::from_slice(&bytes).expect("snapshot json"))
+        .collect();
+    let refused = snapshots.iter().any(|snapshot| {
+        snapshot.to_string().contains("invalid_domain_data_repeat")
+    });
+    assert!(
+        refused,
+        "the digest mismatch must be named in the published provenance"
+    );
+}
 }

@@ -17,6 +17,7 @@ pub mod private_heap;
 #[global_allocator]
 static COLLECTOR_PRIVATE_HEAP: private_heap::PrivateHeap = private_heap::PrivateHeap;
 pub mod custody_shadow;
+pub mod domain_repeat_gate;
 #[cfg(windows)]
 pub mod early_render_capture_control;
 pub mod engine_localisation_reader;

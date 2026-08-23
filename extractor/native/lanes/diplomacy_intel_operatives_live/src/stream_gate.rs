@@ -2,7 +2,7 @@ use crate::{compact, DOMAIN_ID};
 use compact_contract::{
     compact_status_failure_flags_after_expected_partial_tolerance, parse_compact_record_header,
     validate_compact_record_semantics, COMPACT_DOMAIN_FRAME, COMPACT_DOMAIN_PERF_BASE_LEN,
-    COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
     COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END,
 };
 
@@ -60,6 +60,7 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
     let mut release_epilogue_seen = false;
     let mut owned = OwnedFrameAuthority::default();
     let mut frame_records = FrameRecordCounts::default();
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
 
     while cursor < bytes.len() {
         let offset = cursor;
@@ -106,6 +107,16 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
             }
         };
         // The single release epilogue the owner ruling admits after a closed-hour
+        let mut repeat_reconstruction = None;
+        if semantics_ok {
+            match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                Err(error) => {
+                    out.parse_errors.push(format!("offset {offset}: {error}"));
+                    break;
+                }
+            }
+        }
         if semantics_ok && header.record_type == compact_contract::COMPACT_RECORD_TYPE_FREEZE_CENSUS
         {
             if let Ok(census) =
@@ -158,6 +169,53 @@ pub fn verify_domain53_stream(bytes: &[u8]) -> Domain53StreamGateSummary {
                     owned.data_count = owned.data_count.saturating_add(1);
                     let decoded =
                         compact::decode_payload(offset + COMPACT_RECORD_HEADER_LEN, payload);
+                    let authority = Authority {
+                        rows: decoded.data_rows_total,
+                        changed_rows: decoded.data_changed_rows_total,
+                        units: decoded.data_rows_total,
+                        changed_units: decoded.data_changed_rows_total,
+                        status: decoded.status_flags_or,
+                    };
+                    out.status_flags_or |= authority.status;
+                    out.data_rows_total = out.data_rows_total.saturating_add(authority.rows);
+                    out.data_changed_rows_total = out
+                        .data_changed_rows_total
+                        .saturating_add(authority.changed_rows);
+                    out.parse_errors.extend(decoded.parse_errors);
+                    if owned.data.is_none() {
+                        owned.data = Some(authority);
+                    }
+                }
+            }
+            // A repeat covers its hour like DATA (same open-hour rules) and
+            // satisfies the frame's data authority, but its payload is a
+            // volatile prefix plus a tail digest, so the d53 grammar never
+            // runs on it. Row/status totals come from the full records; the
+            // repeated tail is byte-identical to the last one by construction.
+            COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT if semantics_ok => {
+                // The reconstruction was verified against this walker's own
+                // baseline above, so the d53 grammar runs on exactly the
+                // bytes the original full record carried.
+                frame_records.data = frame_records.data.saturating_add(1);
+                observe_data_hour(
+                    &mut out.parse_errors,
+                    pending_hour,
+                    &mut open_hour,
+                    last_closed_hour,
+                    header.game_hour_raw,
+                    offset,
+                );
+                if header.domain_id == DOMAIN_ID {
+                    out.domain_data_record_count = out.domain_data_record_count.saturating_add(1);
+                    owned.data_count = owned.data_count.saturating_add(1);
+                    let Some(reconstructed) = repeat_reconstruction else {
+                        out.parse_errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA_REPEAT resolved to no payload"
+                        ));
+                        break;
+                    };
+                    let decoded =
+                        compact::decode_payload(offset + COMPACT_RECORD_HEADER_LEN, &reconstructed);
                     let authority = Authority {
                         rows: decoded.data_rows_total,
                         changed_rows: decoded.data_changed_rows_total,

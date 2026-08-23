@@ -997,6 +997,20 @@ fn certify_stream(bytes: &[u8]) -> Result<StreamCertification, Vec<String>> {
                         }
                     }
                 }
+                // A repeat covers its hour like DATA (satisfying the same
+                // frame authority), but its payload is a volatile prefix
+                // plus a tail digest, so the d52 grammar never runs on it.
+                // The open.d52_data slot stays unset: this verifier's frame
+                // authority then reports the hour as data-authority-less,
+                // which is the truthful statement for a byte stream this
+                // tool cannot independently reconstruct.
+                compact_contract::KnownRecordType::DomainDataRepeat => {
+                    if header.domain_id == DOMAIN_ID {
+                        errors.push(format!(
+                            "offset {record_offset}: domain {DOMAIN_ID} DOMAIN_DATA_REPEAT carries no decodable d52 payload for replay verification"
+                        ));
+                    }
+                }
                 compact_contract::KnownRecordType::FrameEnd => {
                     let frame_status = read_u32_le(payload, 24);
                     validate_status(&mut errors, "FRAME_END", record_offset, frame_status);

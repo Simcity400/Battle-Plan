@@ -56,6 +56,14 @@ UntrustedClockRecovery => COMPACT_RECORD_TYPE_UNTRUSTED_CLOCK_RECOVERY = 10, "un
 FreezeCensus => COMPACT_RECORD_TYPE_FREEZE_CENSUS = 11, "freeze_census";
 ContentIdentityCensus => COMPACT_RECORD_TYPE_CONTENT_IDENTITY_CENSUS = 12, "content_identity_census";
 StateTopologyCensus => COMPACT_RECORD_TYPE_STATE_TOPOLOGY_CENSUS = 13, "state_topology_census";
+/// A DOMAIN_DATA hour whose payload, minus the domain's declared volatile
+/// prefix ([`domain_declared_volatile_prefix_len`]), is byte-identical to the
+/// previous PUBLISHED payload for that domain. The payload carries the fresh
+/// volatile prefix followed by a SHA-256 digest of the unchanged remainder;
+/// the fold reconstructs by overwriting the prefix on its stored baseline and
+/// refuses by name unless that digest verifies. The owning hour stays COVERED:
+/// this is a data record of a new kind, not a gap.
+DomainDataRepeat => COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT = 14, "domain_data_repeat";
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +116,170 @@ pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC: &[u8; 4] = b"PDU1";
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION: u16 = 1;
 pub const COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2: u16 = 2;
 
+/// Byte length of the SHA-256 digest a `DOMAIN_DATA_REPEAT` payload carries
+/// over the unchanged tail of the domain's prior published payload.
+pub const COMPACT_DOMAIN_DATA_REPEAT_DIGEST_LEN: usize = 32;
+
+/// How many consecutive published hours one domain may ride on repeats before
+/// it must publish a full record again, so a consumer that lost a record
+/// resyncs. Owner-ruled standard cadence (2026-08-23), matching the shipped
+/// d100 XSM2 keyframe interval.
+pub const COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS: u32 = 64;
+
+/// The per-domain DECLARED volatile prefix of a DOMAIN_DATA payload: leading
+/// bytes that are recorder telemetry rather than engine state, written fresh
+/// into every record and therefore excluded from both halves of the
+/// repeat-gate comparison.
+///
+/// The declaration is CONTRACT, not measurement: each nonzero entry names a
+/// grammar whose documented layout opens with those bytes of recorder
+/// telemetry, cited below. A wrong or missing entry can only move WHERE the
+/// gate fires, never whether reconstruction is exact — the repeat record
+/// always carries the fresh prefix bytes, and the digest covers everything
+/// after them — so extending this table is a yield decision, not a safety one.
+///
+/// `elapsed_wall_ms` is a u64 of recorder wall-clock stamped at offset +0 of
+/// these grammars (674 write sites in the collector; see PN's
+/// `runs/pn_structural/MEASUREMENT.md` §3):
+///
+/// * wire_format grammars documenting `elapsed_wall_ms` u64 at `+0`:
+///   d10 `fuel_live`, d11 `production_live`, d13 `tech_live`, d16
+///   `decisions_live`, d17 `diplomacy_live`, d21 `land_combats_live`,
+///   d22 `map_control_live`, d23 `map_detail_live`, d24 `weather_live`,
+///   d26 `division_equipment_live`, d27 `army_orders_live`, d28
+///   `oob_command_live`, d29 `ships_live`, d31 `air_region_activity_live`,
+///   d32 `air_wing_loadouts_live`, d34 `air_base_status_live`, d35
+///   `air_variant_stats`, d36 `air_variant_reserves`, d38
+///   `air_superiority_inputs`, d46 `air_variant_archetypes_live`, d51
+///   `scripted_state_flags_variables_live`, d52
+///   `occupation_resistance_compliance_live`, d54
+///   `army_battleplans_depth_live`, d56 `naval_missions_status_live`, d61
+///   `air_loss_stats_live`, d62 `hub_motorization_live`, d63
+///   `country_core_scalars_live`, d64 `delayed_events_live`, d65
+///   `special_project_programs_live`, d68 `session_header_live`, d39+d40
+///   `variant_upgrades` (one shared grammar);
+/// * lane/collector encoders writing `elapsed_wall_ms` first: d12
+///   `focus_live` (`attach_log.rs::compact_focus_data_payload`), d14
+///   `politics_live`, d15 `politics_residuals`, d18 `country_identity`
+///   (`compact_country_identity_data_payload`), d20 `divisions_live`
+///   (`domain20_compact.rs`), d42 `air_combat_losses_live`
+///   (`domain42_compact.rs`), d43 `market_trade_live`
+///   (`market_trade_live/src/lib.rs::encode_payload`), d44
+///   `supply_logistics_attrition_live`, d53 `diplomacy_intel_operatives_live`
+///   snapshot (`diplomacy_intel_operatives_live/domain44_compact.rs::encode_payload` — the largest single
+///   repeat-gate win), d60 `capitulation_war_state_live`
+///   (`capitulation_war_state_live/src/compact.rs`), d66
+///   `occupation_state_extras_live` and d69 `tech_sharing_groups_live`
+///   (their authority decoders read the row/group count at `+8`, so `+0..8`
+///   is the same telemetry u64).
+///
+/// Two grammars carry MORE than eight leading telemetry bytes, proven from
+/// their own documented layouts:
+///
+/// * d49 `naval_combat_lifecycle_live` and d50 `naval_combat_members_live`:
+///   schema_version u16 at `+0` (constant 2) with padding to `+4`, then
+///   `elapsed_wall_ms` u64 at `+4` (wire_format `d49.rs`/`d50.rs` headers) —
+///   declared 12 so the whole elapsed field leaves the compared tail;
+/// * d67 `country_dynamic_modifiers_live`: `DMI2` magic at `+0`, version at
+///   `+4`, `elapsed_wall_ms` u64 at `+8` (wire_format `d67.rs` header table)
+///   — declared 16.
+pub const fn domain_declared_volatile_prefix_len(domain_id: u16) -> usize {
+    match domain_id {
+        10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 20 | 21 | 22 | 23 | 24 | 26 | 27 | 28 | 29
+        | 31 | 32 | 34 | 35 | 36 | 38 | 39 | 40 | 42 | 43 | 44 | 51 | 52 | 53 | 54 | 56 | 60
+        | 61 | 62 | 63 | 64 | 65 | 66 | 68 | 69 => 8,
+        49 | 50 => 12,
+        67 => 16,
+        _ => 0,
+    }
+}
+
+/// Exact payload length of a `DOMAIN_DATA_REPEAT` record for `domain_id`:
+/// the fresh declared volatile prefix plus the digest of the unchanged tail.
+pub const fn domain_data_repeat_payload_len(domain_id: u16) -> usize {
+    domain_declared_volatile_prefix_len(domain_id) + COMPACT_DOMAIN_DATA_REPEAT_DIGEST_LEN
+}
+
+/// Per-domain reconstruction baselines for stream walkers that decode
+/// DOMAIN_DATA payloads and must therefore see through DOMAIN_DATA_REPEAT
+/// records to the original bytes.
+///
+/// `observe` mirrors the collector gate and production fold rule exactly:
+/// every full record refreshes the domain's slot; a repeat is verified
+/// against the slot (exact length, baseline present, SHA-256 over the tail)
+/// and resolves to the original payload `prefix ++ stored_tail`, which then
+/// becomes the new slot content. Any violation is a named error — never a
+/// guess — so callers refuse the stream rather than authenticate unverified
+/// bytes.
+#[derive(Default)]
+pub struct DomainRepeatBaselines {
+    slots: std::collections::BTreeMap<u16, Vec<u8>>,
+}
+
+impl DomainRepeatBaselines {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed one framed record. Returns `Ok(None)` for non-data records and
+    /// full DOMAIN_DATA records; `Ok(Some(reconstructed))` for a verified
+    /// DOMAIN_DATA_REPEAT (callers then decode `reconstructed` through the
+    /// domain grammar); `Err(reason)` for any violation.
+    pub fn observe(
+        &mut self,
+        domain_id: u16,
+        record_type: u16,
+        payload: &[u8],
+    ) -> Result<Option<Vec<u8>>, String> {
+        if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT {
+            let span = domain_declared_volatile_prefix_len(domain_id);
+            let expected = domain_data_repeat_payload_len(domain_id);
+            if payload.len() != expected {
+                return Err(format!(
+                    "DOMAIN_DATA_REPEAT for domain {domain_id} is {} byte(s), not {expected} (declared prefix {span}, digest {})",
+                    payload.len(),
+                    COMPACT_DOMAIN_DATA_REPEAT_DIGEST_LEN
+                ));
+            }
+            let Some(baseline) = self.slots.get(&domain_id) else {
+                return Err(format!(
+                    "DOMAIN_DATA_REPEAT for domain {domain_id} has no stored baseline: a repeat may only follow a published full record"
+                ));
+            };
+            if baseline.len() <= span {
+                return Err(format!(
+                    "DOMAIN_DATA_REPEAT baseline for domain {domain_id} carries no tail beyond its declared prefix ({span})"
+                ));
+            }
+            let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+            <sha2::Sha256 as sha2::Digest>::update(&mut hasher, &baseline[span..]);
+            let digest = <sha2::Sha256 as sha2::Digest>::finalize(hasher);
+            if digest.as_slice() != &payload[span..] {
+                return Err(format!(
+                    "DOMAIN_DATA_REPEAT for domain {domain_id} fails its baseline digest; the recorded tail does not match the last ingested payload"
+                ));
+            }
+            let mut reconstructed = payload[..span].to_vec();
+            reconstructed.extend_from_slice(&baseline[span..]);
+            self.slots.insert(domain_id, reconstructed.clone());
+            Ok(Some(reconstructed))
+        } else if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            match self.slots.get_mut(&domain_id) {
+                Some(stored) => {
+                    stored.clear();
+                    stored.extend_from_slice(payload);
+                }
+                None => {
+                    self.slots.insert(domain_id, payload.to_vec());
+                }
+            }
+            Ok(None)
+        } else {
+            Ok(None)
+        }
+    }
+}
+
 pub const fn compact_record_counts_toward_terminal_outcome(record_type: u16) -> bool {
     matches!(
         record_type,
@@ -124,7 +296,14 @@ pub const fn compact_record_allowed_flags(domain_id: u16, record_type: u16) -> u
     if record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF {
         allowed |= COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER;
     }
-    if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA && matches!(domain_id, 45 | 67) {
+    // A repeat replaces a DATA record one-for-one and carries that record's
+    // flag word, so it admits exactly the bits its domain's DATA records
+    // admit.
+    if matches!(
+        record_type,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA | COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+    ) && matches!(domain_id, 45 | 67)
+    {
         allowed |= COMPACT_RECORD_FLAG_PAYLOAD_SCHEMA_V2;
     }
     if record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
@@ -174,6 +353,26 @@ pub fn validate_compact_record_semantics(
             Ok(())
         }
         KnownRecordType::DomainData => Ok(()),
+        KnownRecordType::DomainDataRepeat => {
+            if domain_id == 0 || domain_id == COMPACT_DOMAIN_FRAME {
+                return Err(format!(
+                    "DOMAIN_DATA_REPEAT envelope affected domain {domain_id} is invalid"
+                ));
+            }
+            // Flag admissibility is already enforced above: a repeat admits
+            // exactly the flag bits its domain's DATA records admit, because
+            // it replaces that record one-for-one and carries its flag word.
+            let expected = domain_data_repeat_payload_len(domain_id);
+            if payload.len() != expected {
+                return Err(format!(
+                    "DOMAIN_DATA_REPEAT payload length {} is not {expected} for domain {domain_id} (declared volatile prefix {}, digest {})",
+                    payload.len(),
+                    domain_declared_volatile_prefix_len(domain_id),
+                    COMPACT_DOMAIN_DATA_REPEAT_DIGEST_LEN
+                ));
+            }
+            Ok(())
+        }
         KnownRecordType::StreamHeader => {
             Err("STREAM_HEADER is valid only through the CID1 sequence-zero authority".to_string())
         }
@@ -920,10 +1119,11 @@ mod tests {
     }
 
     #[test]
-    fn raw_unknown_record_type_fourteen_rejects() {
-        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 14, 0, &[])
-            .expect_err("raw type 14 is not assigned");
-        assert_eq!(error, "unknown compact record type 14");
+    fn raw_unknown_record_type_fifteen_rejects() {
+        // 14 became DOMAIN_DATA_REPEAT (lane PV); 15 is the first unassigned type.
+        let error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 15, 0, &[])
+            .expect_err("raw type 15 is not assigned");
+        assert_eq!(error, "unknown compact record type 15");
 
         let topology_error = validate_compact_record_semantics(COMPACT_DOMAIN_FRAME, 13, 0, &[])
             .expect_err("an empty payload is not a state topology census");

@@ -149,6 +149,7 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
     let mut final_record_is_clean_frame_end = false;
     let mut release_epilogue_seen = false;
     let mut owned_frame = OwnedFrameAuthority::default();
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
 
     while cursor < bytes.len() {
         let record_offset = cursor;
@@ -219,13 +220,22 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
         }
         records_seen = records_seen.saturating_add(1);
         let payload = &bytes[cursor..payload_end];
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
         let record_semantics_ok = match validate_compact_record_semantics(
             header.domain_id,
             header.record_type,
             header.record_flags,
             payload,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Err(error) => {
+                        errors.push(format!("offset {record_offset}: {error}"));
+                    }
+                }
+                true
+            },
             Err(error) => {
                 errors.push(format!("offset {record_offset}: {error}"));
                 false
@@ -286,6 +296,46 @@ fn decode_stream(bytes: &[u8]) -> GateResult {
                         validate_known_status_flags(
                             &mut errors,
                             "DOMAIN_DATA",
+                            record_offset,
+                            summary.status_flags_or,
+                        );
+                        domain_data_records = domain_data_records.saturating_add(1);
+                        owned_frame.data_records = owned_frame.data_records.saturating_add(1);
+                        owned_frame.data_status_flags_or |= summary.status_flags_or;
+                        status_flags_or |= summary.status_flags_or;
+                        rows = rows.saturating_add(summary.data_rows_total);
+                        changed_rows = changed_rows.saturating_add(summary.data_changed_rows_total);
+                        for (key, value) in summary.data_units_total {
+                            *units.entry(key).or_default() += value;
+                        }
+                        errors.extend(summary.parse_errors);
+                    }
+                }
+            }
+            // A repeat covers its hour like DATA and satisfies the same
+            // frame authority; the d44 grammar runs on the reconstruction
+            // verified above, so status/row totals stay exact.
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                if record_semantics_ok {
+                    observe_data_hour(
+                        &mut errors,
+                        pending_perf_hour,
+                        &mut open_frame_hour,
+                        last_closed_hour,
+                        header.game_hour_raw,
+                        record_offset,
+                    );
+                    if header.domain_id == domain44_compact::DOMAIN_ID {
+                        let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                            errors.push(format!(
+                                "offset {record_offset}: DOMAIN_DATA_REPEAT resolved to no payload"
+                            ));
+                            continue;
+                        };
+                        let summary = domain44_compact::decode_payload(cursor, reconstructed);
+                        validate_known_status_flags(
+                            &mut errors,
+                            "DOMAIN_DATA_REPEAT",
                             record_offset,
                             summary.status_flags_or,
                         );

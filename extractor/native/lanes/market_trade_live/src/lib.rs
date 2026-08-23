@@ -1314,6 +1314,7 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
         total_bytes: raw.len(),
         ..MarketTradeStreamSummary::default()
     };
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     if let Err(error) =
         compact_contract::stream_validator::validate_freeze_census_stream_placement(raw)
     {
@@ -1388,13 +1389,24 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
         let payload_start = offset + COMPACT_RECORD_HEADER_LEN;
         let payload_end = payload_start + header.payload_len;
         let payload = &raw[payload_start..payload_end];
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
         let record_semantics_ok = match validate_compact_record_semantics(
             header.domain_id,
             header.record_type,
             header.record_flags,
             payload,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Err(error) => {
+                        summary
+                            .parse_errors
+                            .push(format!("offset {offset}: {error}"));
+                    }
+                }
+                true
+            }
             Err(error) => {
                 summary
                     .parse_errors
@@ -1626,6 +1638,36 @@ pub fn summarize_compact_stream(raw: &[u8]) -> MarketTradeStreamSummary {
                     header.game_hour_raw,
                     offset,
                 );
+            }
+            // A repeat covers its hour like DATA and satisfies the frame's
+            // data authority: the reconstruction above is verified against
+            // this walker's own baseline, so the d43 grammar runs on exactly
+            // the bytes the original full record carried.
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                observe_data_hour(
+                    &mut summary,
+                    pending_perf_hour,
+                    &mut open_frame_hour,
+                    last_closed_hour,
+                    header.game_hour_raw,
+                    offset,
+                );
+                if header.domain_id == DOMAIN_ID {
+                    summary.domain_data_records = summary.domain_data_records.saturating_add(1);
+                    *per_hour_data.entry(header.game_hour_raw).or_default() += 1;
+                    let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                        summary
+                            .parse_errors
+                            .push("DOMAIN_DATA_REPEAT resolved to no payload".to_string());
+                        break;
+                    };
+                    let payload_summary =
+                        decode_payload(offset + COMPACT_RECORD_HEADER_LEN, reconstructed);
+                    summary.status_flags_or |= payload_summary.status_flags;
+                    summary.row_count_total = summary
+                        .row_count_total
+                        .saturating_add(payload_summary.row_count as u64);
+                }
             }
             compact_contract::KnownRecordType::FrameEnd => {
                 summary.frame_end_records = summary.frame_end_records.saturating_add(1);

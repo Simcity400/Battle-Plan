@@ -761,6 +761,12 @@ where
     let mut pending_perf_status = None;
     let mut pending_data: Option<(u32, Vec<u8>)> = None;
     let mut pending_d18_data: Option<D18CountryCarrier> = None;
+    // DOMAIN_DATA_REPEAT reconstruction baselines for the two domains this
+    // scanner decodes payloads of. A repeat's payload is a volatile prefix
+    // plus a digest of the previous published payload's tail; verifying that
+    // digest against the stored baseline and reconstructing lets this scan
+    // see exactly the bytes the original full record carried.
+    let mut repeat_baselines: BTreeMap<u16, Vec<u8>> = BTreeMap::new();
     let mut pending_d81_gaps = Vec::new();
     let mut next_gap_ordinal_by_lane = BTreeMap::new();
     let mut last_gap_end_by_lane = BTreeMap::new();
@@ -880,6 +886,35 @@ where
                     && decoded_offset <= bounds.end_byte
             }
         };
+        // Baseline maintenance runs for EVERY d18/d81 data record on the
+        // stream, selected or not: a retained selection may BEGIN on a
+        // repeat whose full record precedes bounds.start_byte, and that
+        // repeat is only verifiable against a baseline the scan kept while
+        // walking up to the selection. `repeat_reconstruction` carries the
+        // verified original payload of a SELECTED repeat into the decode
+        // paths below.
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        if accepted == AcceptedRecordKind::Ordinary
+            && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+            && (header.domain_id == 18 || header.domain_id == d81::DOMAIN as u16)
+        {
+            repeat_baselines.insert(header.domain_id, payload.clone());
+        } else if accepted == AcceptedRecordKind::Ordinary
+            && header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            && (header.domain_id == 18 || header.domain_id == d81::DOMAIN as u16)
+        {
+            let reconstructed = reconstruct_repeat_payload(
+                &mut repeat_baselines,
+                header.domain_id,
+                header.sequence,
+                header.game_hour_raw,
+                branch,
+                &payload,
+            )?;
+            repeat_baselines.insert(header.domain_id, reconstructed.clone());
+            repeat_reconstruction = Some(reconstructed);
+        }
         if !selected {
             continue;
         }
@@ -890,6 +925,32 @@ where
             let carrier = decode_complete_d18_country_rows(&payload).map_err(|error| {
                 ProductError::new(format!(
                     "branch {branch} D18 country identity at sequence {} rejected: {error}",
+                    header.sequence
+                ))
+            })?;
+            if pending_d18_data.replace(carrier).is_some() {
+                return Err(ProductError::new(format!(
+                    "branch {branch} repeats D18 DATA in frame {}",
+                    header.game_hour_raw
+                )));
+            }
+            repeat_baselines.insert(18, payload.clone());
+        }
+        // A d18 REPEAT vouches for a tail byte-identical to the previous
+        // published d18 payload: the reconstruction above was already
+        // verified against this scanner's own baseline; decode it exactly
+        // like a full record.
+        if accepted == AcceptedRecordKind::Ordinary
+            && header.domain_id == 18
+            && header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+        {
+            let reconstructed = repeat_reconstruction
+                .as_deref()
+                .expect("a selected d18 repeat always carries its verified reconstruction");
+            let carrier = decode_complete_d18_country_rows(reconstructed).map_err(|error| {
+                ProductError::new(format!(
+                    "branch {branch} D18 country identity reconstructed at sequence {} rejected: {error}",
                     header.sequence
                 ))
             })?;
@@ -1153,9 +1214,25 @@ where
                 }
                 continue;
             }
-            if header.record_type != COMPACT_RECORD_TYPE_DOMAIN_DATA {
+            if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+                || header.record_type
+                    == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            {
+                // fall through to the d81 payload handling below; a REPEAT is
+                // first reconstructed against this scanner's own baseline.
+            } else {
                 continue;
             }
+            let payload = if header.record_type
+                == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            {
+                repeat_reconstruction
+                    .as_deref()
+                    .expect("a selected d81 repeat always carries its verified reconstruction")
+                    .to_vec()
+            } else {
+                payload.clone()
+            };
             if pending_frame_tick != Some(tick) {
                 return Err(ProductError::new(format!(
                     "branch {branch} d81 DATA at {tick} is outside its open frame"
@@ -1169,11 +1246,12 @@ where
             let status_flags = payload_header.status_flags;
             let payload_version = payload_header.payload_version;
             let hub_simulation_complete = payload_header.hub_simulation_complete;
-            if pending_data.replace((status_flags, payload)).is_some() {
+            if pending_data.replace((status_flags, payload.clone())).is_some() {
                 return Err(ProductError::new(format!(
                     "branch {branch} repeats d81 DATA at tick {tick}"
                 )));
             }
+            repeat_baselines.insert(d81::DOMAIN as u16, payload);
             data_records = data_records
                 .checked_add(1)
                 .ok_or_else(|| ProductError::new("d81 data count overflows"))?;
@@ -1221,6 +1299,50 @@ where
         first_data_tick,
         country_bindings,
     })
+}
+
+/// Verify one DOMAIN_DATA_REPEAT record against this scanner's stored
+/// baseline for `domain`, reconstruct the original payload (fresh volatile
+/// prefix over the verified tail), and refresh the baseline. Fail-closed by
+/// name: a missing baseline, a wrong length, or any digest mismatch refuses
+/// the whole product build rather than guessing.
+fn reconstruct_repeat_payload(
+    repeat_baselines: &mut BTreeMap<u16, Vec<u8>>,
+    domain_id: u16,
+    sequence: u64,
+    game_hour_raw: i32,
+    branch: u32,
+    payload: &[u8],
+) -> Result<Vec<u8>, ProductError> {
+    let span = compact_contract::domain_declared_volatile_prefix_len(domain_id);
+    let expected_len = compact_contract::domain_data_repeat_payload_len(domain_id);
+    if payload.len() != expected_len {
+        return Err(ProductError::new(format!(
+            "branch {branch} DOMAIN_DATA_REPEAT for domain {domain_id} at sequence {sequence} is {} byte(s), not {expected_len}",
+            payload.len()
+        )));
+    }
+    let Some(baseline) = repeat_baselines.get(&domain_id) else {
+        return Err(ProductError::new(format!(
+            "branch {branch} DOMAIN_DATA_REPEAT for domain {domain_id} at sequence {sequence} has no stored baseline"
+        )));
+    };
+    if baseline.len() <= span {
+        return Err(ProductError::new(format!(
+            "branch {branch} DOMAIN_DATA_REPEAT baseline for domain {domain_id} carries no tail beyond its declared prefix"
+        )));
+    }
+    let digest = Sha256::digest(&baseline[span..]);
+    if digest.as_slice() != &payload[span..] {
+        return Err(ProductError::new(format!(
+            "branch {branch} DOMAIN_DATA_REPEAT for domain {domain_id} at sequence {sequence} fails its baseline digest; the recorded tail does not match this scan's stored payload"
+        )));
+    }
+    let mut reconstructed = payload[..span].to_vec();
+    reconstructed.extend_from_slice(&baseline[span..]);
+    repeat_baselines.insert(domain_id, reconstructed.clone());
+    let _ = game_hour_raw;
+    Ok(reconstructed)
 }
 
 fn decode_complete_d18_country_rows(payload: &[u8]) -> Result<D18CountryCarrier, String> {

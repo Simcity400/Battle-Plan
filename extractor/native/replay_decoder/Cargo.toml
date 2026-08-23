@@ -28,6 +28,11 @@ gz-interior-holes = []
 # it refuses by name. Measurement only: it writes nothing outside the scratch
 # directory it is given, is never on by default and is never packaged.
 ha-entry-confinement = []
+# Lane PV DOMAIN_DATA_REPEAT offline harness. Re-encodes a retained H4CR
+# spool through the collector's real repeat gate and proves round-trip fold
+# equality against the non-gated encoding. Measurement only: it writes only
+# the files its arguments name, is never on by default, is never packaged.
+pv-repeat-gate = ["dep:collector", "dep:sha2"]
 # Truncation harness. Shares the entry-confinement fixture
 # (`src/bin/entry_damage_fixture.rs`) and cuts the packaged H4CP short instead
 # of flipping a byte, reporting which hours the verified prefix still serves.
@@ -41,6 +46,8 @@ compact_contract = { path = "../compact_contract" }
 recorder_host = { path = "../recorder_host" }
 snapshot = { path = "../snapshot" }
 serde_json = "1"
+sha2 = { version = "0.10", optional = true }
+collector = { path = "../collector", optional = true }
 
 # Lane PS. `autotests = false` above means an integration test has to be
 # declared, which is the point: a test target here is source that runs, and the
@@ -78,3 +85,18 @@ required-features = ["hr-truncated-prefix"]
 # through `replay_app`'s authenticated internal child mode. It must never be
 # minted or packaged as a standalone executable, which is what declaring a
 # target here would allow.
+
+[[bin]]
+name = "pv_repeat_gate_reencode"
+path = "src/bin/pv_repeat_gate_reencode.rs"
+required-features = ["pv-repeat-gate"]
+
+[[bin]]
+name = "pv_repeat_diag"
+path = "src/bin/pv_repeat_diag.rs"
+required-features = ["pv-repeat-gate"]
+
+[[bin]]
+name = "pv_hour_dump"
+path = "src/bin/pv_hour_dump.rs"
+required-features = ["pv-repeat-gate"]

@@ -362,10 +362,36 @@ fn normalise(source: &str) -> String {
             index += 1;
             continue;
         }
+        // A char literal such as `'"'` or `'{'` must neither toggle string
+        // state nor count as a brace: skip `'x'` and `'\x'` / `'\u{..}'`
+        // forms whole. A lifetime or label (`'a` with no closing quote inside
+        // the literal span) is left alone.
+        if current == '\'' {
+            if let Some(len) = char_literal_len(&characters[index..]) {
+                out.push(' ');
+                index += len;
+                continue;
+            }
+        }
         out.push(current);
         index += 1;
     }
     out
+}
+
+/// Length in chars of the char literal starting at `chars[0] == '\''`, or
+/// `None` when the quote does not open one (a lifetime or a loop label).
+fn char_literal_len(chars: &[char]) -> Option<usize> {
+    match chars.get(1)? {
+        '\\' => chars
+            .iter()
+            .enumerate()
+            .skip(3)
+            .take(12)
+            .find(|(_, c)| **c == '\'')
+            .map(|(i, _)| i + 1),
+        _ => (chars.get(2)? == &'\'').then_some(3),
+    }
 }
 
 fn functions(text: &str) -> Vec<(String, String)> {
@@ -386,6 +412,10 @@ fn functions(text: &str) -> Vec<(String, String)> {
         let Some(open) = text[start..].find('{').map(|i| start + i) else {
             continue;
         };
+        // `open` is a byte offset into `text`; `bytes` is indexed by char, so a
+        // non-ASCII character earlier in the file (a BOM, an em dash in code)
+        // must not skew the brace walk.
+        let open = text[..open].chars().count();
         let mut depth = 0usize;
         let mut index = open;
         while index < bytes.len() {
@@ -402,7 +432,9 @@ fn functions(text: &str) -> Vec<(String, String)> {
         if index >= bytes.len() {
             continue;
         }
-        out.push((name, text[open..index].to_string()));
+        // `open`/`index` are char indices into `bytes`; slicing `text` by them
+        // would mix byte and char offsets again.
+        out.push((name, bytes[open..index].iter().collect::<String>()));
     }
     out
 }
@@ -829,6 +861,46 @@ mod tests {
             }],
             &["freeze_process()"],
         )
+    }
+
+    #[test]
+    fn a_bom_or_non_ascii_code_before_the_window_does_not_skew_the_brace_walk() {
+        // kills: lane PV landing - functions() found `{` by byte offset but
+        // walked a char vector, so one leading BOM (3 bytes, 1 char) shifted
+        // every brace and the walk underflowed instead of auditing the window.
+        let source = format!(
+            "{bom}const NOTE: &str = \"\"; // {dash} prose\nfn patch() {{ let held = freeze_process().unwrap(); \
+             let ranges: Vec<_> = sites.iter().collect(); drop(held); }}",
+            bom = '\u{feff}',
+            dash = '\u{2014}'
+        );
+        let findings = one(&source);
+        assert!(
+            findings.iter().any(|finding| matches!(
+                finding,
+                Finding::AllocatesInWindow { construct, .. } if *construct == "collect"
+            )),
+            "{findings:?}"
+        );
+    }
+
+    #[test]
+    fn a_quote_char_literal_before_the_window_does_not_hide_the_allocation() {
+        // kills: normalise() treated the `"` inside `'"'` as a string opener,
+        // inverting string state for the rest of the file and hiding real
+        // allocations inside a held freeze window.
+        let findings = one(
+            "fn escape(c: char) -> bool { c == '\"' } \
+             fn patch() { let held = freeze_process().unwrap(); \
+             let ranges: Vec<_> = sites.iter().collect(); drop(held); }",
+        );
+        assert!(
+            findings.iter().any(|finding| matches!(
+                finding,
+                Finding::AllocatesInWindow { construct, .. } if *construct == "collect"
+            )),
+            "{findings:?}"
+        );
     }
 
     #[test]

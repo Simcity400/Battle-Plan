@@ -247,6 +247,7 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
     let mut last_closed_hour: Option<i32> = None;
     let mut project_data: Option<DecodedProjectsPayload> = None;
     let mut project_perf: Option<PerfSummary> = None;
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     let mut owned_perf_statuses = BTreeMap::new();
     let mut logical_states: BTreeMap<u32, LogicalProjectState> = BTreeMap::new();
     let mut logical_breakthroughs: BTreeMap<(u32, u32), ProjectBreakthroughRow> = BTreeMap::new();
@@ -311,6 +312,25 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
         ) {
             parse_errors.push(format!("offset {offset}: {error}"));
             break;
+        }
+        // Verify/refresh the d41 repeat baseline on every projects_live data
+        // record; the reconstruction of a verified repeat is what the d41
+        // grammar below decodes.
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        if header.domain_id == DOMAIN_PROJECTS_LIVE
+            && matches!(
+                header.record_type,
+                compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA
+                    | compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+            )
+        {
+            match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                Err(error) => {
+                    parse_errors.push(format!("offset {offset}: {error}"));
+                    break;
+                }
+            }
         }
         if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_PERF
             && header.domain_id == 250
@@ -393,6 +413,41 @@ fn parse_project_frames(raw: &[u8]) -> Result<ParsedStream, String> {
                     }
                 }
             }
+        // A repeat covers its hour like DATA (same PERF-authority and
+        // uniqueness rules): the reconstruction above is digest-verified
+        // against this walker's own baseline, so the d41 grammar decodes
+        // exactly the bytes the original full record carried.
+        compact_contract::KnownRecordType::DomainDataRepeat => {
+            if header.domain_id == DOMAIN_PROJECTS_LIVE {
+                if project_perf.is_none() {
+                    parse_errors.push(format!(
+                        "offset {offset}: projects_live DOMAIN_DATA_REPEAT precedes its DOMAIN_PERF authority for hour {}",
+                        header.game_hour_raw
+                    ));
+                    break;
+                }
+                if project_data.is_some() {
+                    parse_errors.push(format!(
+                        "offset {offset}: duplicate projects_live DOMAIN_DATA/REPEAT for hour {}",
+                        header.game_hour_raw
+                    ));
+                    break;
+                }
+                let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                    parse_errors.push(format!(
+                        "offset {offset}: DOMAIN_DATA_REPEAT resolved to no payload"
+                    ));
+                    break;
+                };
+                match parse_projects_payload(header.game_hour_raw, reconstructed) {
+                    Ok(decoded) => project_data = Some(decoded),
+                    Err(err) => {
+                        parse_errors.push(format!("offset {offset}: {err}"));
+                        break;
+                    }
+                }
+            }
+        }
             compact_contract::KnownRecordType::DomainPerf => {
                 if compact_contract::assigned_descriptor_by_id(header.domain_id).is_none() {
                     parse_errors.push(format!(

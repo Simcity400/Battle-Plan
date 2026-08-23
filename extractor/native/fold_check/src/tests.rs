@@ -1519,6 +1519,7 @@ fn the_audit_accounts_every_record_type_the_contract_admits() {
             COMPACT_RECORD_TYPE_DOMAIN_PERF,
             COMPACT_RECORD_TYPE_FRAME_END,
             COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
             COMPACT_RECORD_TYPE_DOMAIN_GAP,
             COMPACT_RECORD_TYPE_FRAME_REFUSED,
         ]

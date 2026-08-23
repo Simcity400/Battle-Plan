@@ -58,7 +58,7 @@ fn main() -> ExitCode {
 
 fn print_usage() {
     eprintln!(
-        "fold_check — fold-equivalence gate (G1)\n\
+        "fold_check â€” fold-equivalence gate (G1)\n\
          \n\
          USAGE:\n\
          \x20 fold_check hash    <input> --expected-profile production [--identity-mode legacy|identity-v1] [--out report.json]\n\
@@ -355,6 +355,9 @@ struct CompletenessAudit {
     refusals: BTreeMap<i64, HourRefusal>,
     current_domains: BTreeMap<u16, DomainCompleteness>,
     current_declared_degraded: BTreeMap<u16, (u32, u32)>,
+    /// Framing-layer repeat baselines: let the audit decode verified
+    /// reconstructions so payload status accounting covers repeated hours.
+    repeat_baselines: compact_contract::DomainRepeatBaselines,
 }
 
 impl CompletenessAudit {
@@ -368,6 +371,12 @@ impl CompletenessAudit {
         stream_offset: u64,
         payload: &[u8],
     ) -> Result<(), String> {
+        // Verify/refresh the repeat baseline on every data record; a verified
+        // REPEAT resolves to the original payload bytes so the audit's status
+        // extraction sees exactly what a full record carried.
+        let repeat_reconstruction =
+            self.repeat_baselines
+                .observe(domain_id, record_type, payload)?;
         validate_compact_record_semantics(domain_id, record_type, record_flags, payload)?;
         // UNWRAP BEFORE ANYTHING LOOKS AT THE PAYLOAD, and clear the envelope
         // flag downstream: the flag describes the payload being handed over, and
@@ -427,11 +436,18 @@ impl CompletenessAudit {
         let payload = reconstructed.as_deref().unwrap_or(payload);
         let record_type = compact_contract::KnownRecordType::try_from(record_type)
             .map_err(|unknown| format!("unknown compact record type {}", unknown.0))?;
+        let audited_payload: &[u8] = match record_type {
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                repeat_reconstruction.as_deref().unwrap_or(payload)
+            }
+            _ => payload,
+        };
         match record_type {
-            compact_contract::KnownRecordType::DomainData => {
+            compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainDataRepeat => {
                 let payload_status = replay_decoder::domain_data_payload_status_at(
                     domain_id,
-                    payload,
+                    audited_payload,
                     record_flags,
                     sequence,
                     game_hour_raw,
@@ -462,6 +478,16 @@ impl CompletenessAudit {
                     domain.lane_local_status_flags_or |=
                         status_flags & lane_local_status_mask(domain_id);
                 }
+            }
+            // A repeat is a data record of a new kind and the seal's per-hour
+            // completeness counts it as data. Its payload is a declared
+            // volatile prefix plus a tail digest â€” not a domain grammar â€” so
+            // no payload status can be (or needs to be) read out of it here:
+            // the tail it vouches for is byte-identical to the prior
+            // published record whose status this audit already counted.
+            compact_contract::KnownRecordType::DomainDataRepeat => {
+                let domain = self.current_domains.entry(domain_id).or_default();
+                domain.data_records += 1;
             }
             compact_contract::KnownRecordType::DomainPerf => {
                 let status_flags = read_u32_at(payload, 32, "DOMAIN_PERF status")?;
@@ -1973,7 +1999,7 @@ fn preview(v: &Value) -> Value {
     match v {
         Value::Array(a) => json!(format!("<array len {}>", a.len())),
         Value::Object(o) => json!(format!("<object len {}>", o.len())),
-        Value::String(s) if s.len() > 120 => json!(format!("{}…({} chars)", &s[..117], s.len())),
+        Value::String(s) if s.len() > 120 => json!(format!("{}â€¦({} chars)", &s[..117], s.len())),
         other => other.clone(),
     }
 }

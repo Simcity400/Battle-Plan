@@ -580,7 +580,11 @@ fn process_record(
         }
     }
 
-    if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+    if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+        || header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+    {
+        // A repeat is a data record of a new kind and counts toward the
+        // hour's data tally exactly like a full record.
         state.current.data_count = state.current.data_count.saturating_add(1);
     }
     if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_GAP {
@@ -2291,6 +2295,7 @@ fn record_type_name(record_type: u16) -> &'static str {
         COMPACT_RECORD_TYPE_DOMAIN_PERF => "DOMAIN_PERF",
         COMPACT_RECORD_TYPE_FRAME_END => "FRAME_END",
         COMPACT_RECORD_TYPE_DOMAIN_DATA => "DOMAIN_DATA",
+        compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT => "DOMAIN_DATA_REPEAT",
         COMPACT_RECORD_TYPE_STREAM_HEADER => "STREAM_HEADER",
         COMPACT_RECORD_TYPE_DOMAIN_GAP => "DOMAIN_GAP",
         COMPACT_RECORD_TYPE_FRAME_REFUSED => "FRAME_REFUSED",

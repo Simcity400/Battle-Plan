@@ -32,7 +32,7 @@ pub use compact_record_header::{
 #[cfg(test)]
 use compact_record_semantics::COMPACT_DOMAIN_PERF_BASE_LEN as DOMAIN_PERF_PAYLOAD_LEN;
 use compact_record_semantics::{
-    validate_compact_record_semantics, KnownRecordType,
+    validate_compact_record_semantics, DomainRepeatBaselines, KnownRecordType,
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER,
 };
 #[cfg(test)]
@@ -481,6 +481,7 @@ pub fn verify_domain51_h4cr_stream(
     let mut terminal_frame_end_authoritative = false;
     let mut release_epilogue_seen = false;
     let mut owned = OwnedHourAuthority::default();
+    let mut repeat_baselines = DomainRepeatBaselines::new();
     let mut domains_seen = BTreeSet::new();
 
     while offset < raw.len() {
@@ -547,13 +548,24 @@ pub fn verify_domain51_h4cr_stream(
         let payload_start = offset + H4CR_HEADER_LEN;
         let payload_end = payload_start + record.payload_len;
         let payload = &raw[payload_start..payload_end];
-        let semantics_valid = match validate_compact_record_semantics(
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        let mut semantics_valid = match validate_compact_record_semantics(
             record.domain_id,
             record.record_type,
             record.flags,
             payload,
         ) {
-            Ok(()) => true,
+            Ok(()) => {
+                // Verify/refresh the repeat baseline on every d51 data
+                // record; a corrupted or orphaned repeat refuses by name.
+                match repeat_baselines.observe(record.domain_id, record.record_type, payload) {
+                    Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                    Err(error) => {
+                        report.errors.push(format!("offset {offset}: {error}"));
+                        false
+                    }
+                }
+            }
             Err(error) => {
                 report.errors.push(format!("offset {offset}: {error}"));
                 false
@@ -662,6 +674,68 @@ pub fn verify_domain51_h4cr_stream(
                         report.errors.extend(verdict.summary.parse_errors);
                     }
                 }
+            // A repeat covers its hour like DATA (same open-hour rules) and
+            // satisfies the frame's scheduled-data authority; the d51 gate
+            // runs on the reconstruction verified above, so row/status
+            // totals stay exact.
+            KnownRecordType::DomainDataRepeat if semantics_valid => {
+                observe_data_hour(
+                    &mut report.errors,
+                    pending_hour,
+                    &mut open_hour,
+                    last_closed_hour,
+                    record.game_hour_raw,
+                    offset,
+                );
+                report.domain_data_records = report.domain_data_records.saturating_add(1);
+                if record.domain_id == DOMAIN_DIAGNOSTIC_PROBE {
+                    report.errors.push(format!(
+                        "offset {offset}: diagnostic probe domain 250 is PERF-only; DATA/REPEAT is forbidden"
+                    ));
+                } else {
+                    owned.scheduled_data_record_count =
+                        owned.scheduled_data_record_count.saturating_add(1);
+                    owned.scheduled_data_domains.insert(record.domain_id);
+                }
+                if record.domain_id == collector::compact::DOMAIN_ID {
+                    report.domain51_data_records = report.domain51_data_records.saturating_add(1);
+                    report.domain51_payload_bytes = report
+                        .domain51_payload_bytes
+                        .saturating_add(record.payload_len as u64);
+                    *report
+                        .per_hour_domain51_data
+                        .entry(record.game_hour_raw)
+                        .or_default() += 1;
+                    owned.data_count = owned.data_count.saturating_add(1);
+                    let Some(reconstructed) = repeat_reconstruction.as_ref() else {
+                        report.errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA_REPEAT resolved to no payload"
+                        ));
+                        break;
+                    };
+                    let verdict = gate::gate_domain51_payload(offset, reconstructed);
+                    report.status_flags_or |= verdict.summary.status_flags_or;
+                    update_status_bools(&mut report, verdict.summary.status_flags_or);
+                    report.partial_failure_seen |= verdict.partial_failure;
+                    report.unresolved_delayed_events_badged |= verdict.unresolved_delayed_events;
+                    report.unresolved_scripted_gui_badged |= verdict.unresolved_scripted_gui;
+                    report.domain51_rows_total = report
+                        .domain51_rows_total
+                        .saturating_add(verdict.summary.data_rows_total);
+                    report.domain51_changed_rows_total = report
+                        .domain51_changed_rows_total
+                        .saturating_add(verdict.summary.data_changed_rows_total);
+                    if owned.data.is_none() {
+                        owned.data = Some(DataAuthority {
+                            rows: verdict.summary.data_rows_total,
+                            changed_rows: verdict.summary.data_changed_rows_total,
+                            status: verdict.summary.status_flags_or,
+                        });
+                    }
+                    if !verdict.accepted {
+                        report.errors.extend(verdict.summary.parse_errors);
+                    }
+                }
             }
             KnownRecordType::FrameEnd => {
                 saw_frame_end = true;
@@ -698,7 +772,8 @@ pub fn verify_domain51_h4cr_stream(
                     owned = OwnedHourAuthority::default();
                 }
             }
-            KnownRecordType::DomainPerf | KnownRecordType::DomainData => {}
+            KnownRecordType::DomainPerf | KnownRecordType::DomainData
+            | KnownRecordType::DomainDataRepeat => {}
             KnownRecordType::FreezeCensus => {
                 if let Ok(census) = crate::freeze_census_record::FreezeCensusRecordV1::decode(payload) {
                     terminal_frame_end_authoritative = crate::freeze_census_record::release_epilogue_closes_stream_policy(previous_record_closed_world, census.phase(), release_epilogue_seen);

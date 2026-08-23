@@ -5,6 +5,7 @@ const fn consumer_action(record_type: KnownRecordType) -> &'static str {
         KnownRecordType::DomainPerf => "domain outcome",
         KnownRecordType::FrameEnd => "frame boundary",
         KnownRecordType::DomainData => "world data",
+        KnownRecordType::DomainDataRepeat => "world data",
         KnownRecordType::StreamHeader => "identity",
         KnownRecordType::DomainGap => "domain outcome",
         KnownRecordType::FrameRefused => "frame boundary",

@@ -1622,7 +1622,10 @@ fn fold_compact_stream_file_identity_aware(
             stats.records_total += 1;
 
             match compact_contract::KnownRecordType::try_from(header.record_type) {
-                Ok(compact_contract::KnownRecordType::DomainData) => stats.data_records += 1,
+                Ok(
+                    compact_contract::KnownRecordType::DomainData
+                    | compact_contract::KnownRecordType::DomainDataRepeat,
+                ) => stats.data_records += 1,
                 Ok(compact_contract::KnownRecordType::FrameEnd) => stats.frame_end_records += 1,
                 Ok(compact_contract::KnownRecordType::DomainPerf) => stats.perf_records += 1,
                 Ok(compact_contract::KnownRecordType::FreezeCensus) => {
@@ -2616,16 +2619,22 @@ impl HourCursor {
                     }
                     _ => None,
                 };
-                let malformed_reason = (header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA)
-                    .then(|| {
-                        envelope_error
-                            .clone()
-                            .or_else(|| exact_payload_error.clone())
-                    })
-                    .flatten();
+                let malformed_reason = matches!(
+                    header.record_type,
+                    COMPACT_RECORD_TYPE_DOMAIN_DATA | compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+                )
+                .then(|| {
+                    envelope_error
+                        .clone()
+                        .or_else(|| exact_payload_error.clone())
+                })
+                .flatten();
 
                 match compact_contract::KnownRecordType::try_from(header.record_type) {
-                    Ok(compact_contract::KnownRecordType::DomainData) => {
+                    Ok(
+                        compact_contract::KnownRecordType::DomainData
+                        | compact_contract::KnownRecordType::DomainDataRepeat,
+                    ) => {
                         self.stats.data_records += 1;
                         *self
                             .stats
@@ -2781,9 +2790,10 @@ impl HourCursor {
                 unknown.0
             )),
             Ok(record_type) => match record_type {
-            compact_contract::KnownRecordType::DomainData => match self.strict_open_hour {
+            compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainDataRepeat => match self.strict_open_hour {
                 Some(open) if open != header.game_hour_raw => Some(format!(
-                    "hour interleaving at byte {at}: DOMAIN_DATA for hour {} while hour {open} is open",
+                    "hour interleaving at byte {at}: data record for hour {} while hour {open} is open",
                     header.game_hour_raw
                 )),
                 None => {

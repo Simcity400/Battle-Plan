@@ -1259,8 +1259,37 @@ pub fn decode_stream(raw: &[u8]) -> Domain20GateSummary {
                     }
                 }
             }
+            // A repeat covers its hour like DATA (same open-hour rules) and
+            // counts as d20 data, but its payload is a volatile prefix plus a
+            // tail digest, so the d20 grammar never runs on it.
+            compact_contract::KnownRecordType::DomainDataRepeat if semantics_valid => {
+                match open_hour {
+                    Some(open) if open != header.game_hour_raw => summary.parse_errors.push(format!(
+                        "offset {offset}: repeat hour {} encountered before frame-end closed hour {open}",
+                        header.game_hour_raw
+                    )),
+                    None => match pending_perf_hour {
+                        Some(pending) if pending != header.game_hour_raw => summary
+                            .parse_errors
+                            .push(format!(
+                                "offset {offset}: repeat hour {} does not match pending perf hour {pending}",
+                                header.game_hour_raw
+                            )),
+                        _ => {
+                            pending_perf_hour = None;
+                            open_hour = Some(header.game_hour_raw);
+                        }
+                    },
+                    _ => {}
+                }
+                if header.domain_id == DOMAIN_ID {
+                    summary.domain_data_record_count =
+                        summary.domain_data_record_count.saturating_add(1);
+                }
+            }
             compact_contract::KnownRecordType::FrameEnd
             | compact_contract::KnownRecordType::DomainData
+            | compact_contract::KnownRecordType::DomainDataRepeat
             | compact_contract::KnownRecordType::DomainPerf => {}
             compact_contract::KnownRecordType::FreezeCensus => {
                 if let Ok(census) = compact_contract::freeze_census_record::FreezeCensusRecordV1::decode(payload) {

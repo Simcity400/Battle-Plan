@@ -521,6 +521,62 @@ impl GateBoundaryState {
                     }
                     self.open_hour = Some(header.game_hour_raw);
                 }
+                 if header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS {
+                     self.d55_data_count = self.d55_data_count.saturating_add(1);
+                     if self.d55_data_authority.is_none() {
+                         self.d55_data_authority = match record_authority {
+                             Some(D55RecordAuthority::Data(authority)) => Some(authority),
+                             _ => None,
+                         };
+                     }
+                     if self.d55_data_count > 1 {
+                         errors.push(format!(
+                             "offset {offset}: duplicate domain-55 DATA for hour {}",
+                             header.game_hour_raw
+                         ));
+                     }
+                 }
+             }
+            // A repeat covers its hour like DATA (same open-hour rules) and
+            // binds the same data authority: the caller digest-verified its
+            // payload against this walk's own baseline and decoded the
+            // reconstruction, so `record_authority` is authenticated.
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT => {
+                if let Some(open) = self.open_hour {
+                    if open != header.game_hour_raw {
+                        errors.push(format!(
+                            "offset {offset}: DOMAIN_DATA_REPEAT hour {} interleaves open hour {open}",
+                            header.game_hour_raw
+                        ));
+                        return;
+                    }
+                } else {
+                    if let Some(pending) = self.pending_perf_hour {
+                        if pending != header.game_hour_raw {
+                            errors.push(format!(
+                                "offset {offset}: REPEAT hour {} conflicts with pending PERF hour {pending}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    if let Some(last_closed) = self.last_closed_hour {
+                        let Some(expected) = last_closed.checked_add(1) else {
+                            errors.push(format!(
+                                "offset {offset}: closed-hour overflow after {last_closed}"
+                            ));
+                            return;
+                        };
+                        if header.game_hour_raw != expected {
+                            errors.push(format!(
+                                "offset {offset}: non-consecutive REPEAT hour {}; expected {expected} after closed hour {last_closed}",
+                                header.game_hour_raw
+                            ));
+                            return;
+                        }
+                    }
+                    self.open_hour = Some(header.game_hour_raw);
+                }
                 if header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS {
                     self.d55_data_count = self.d55_data_count.saturating_add(1);
                     if self.d55_data_authority.is_none() {
@@ -531,13 +587,13 @@ impl GateBoundaryState {
                     }
                     if self.d55_data_count > 1 {
                         errors.push(format!(
-                            "offset {offset}: duplicate domain-55 DATA for hour {}",
+                            "offset {offset}: duplicate domain-55 DATA/REPEAT for hour {}",
                             header.game_hour_raw
                         ));
                     }
                 }
             }
-            compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
+             compact_contract::COMPACT_RECORD_TYPE_FRAME_END => {
                 match self.open_hour {
                     Some(open) if open == header.game_hour_raw => {}
                     Some(open) => {
@@ -1672,6 +1728,7 @@ pub fn gate_stream_for_product(data: &[u8], minimum_game_hour_advancements: i64)
 fn gate_stream_internal(data: &[u8], minimum_game_hour_advancements: Option<i64>) -> GateResult {
     let mut errors = Vec::new();
     let mut summary = GateSummary::default();
+    let mut repeat_baselines = compact_contract::DomainRepeatBaselines::new();
     let mut cursor = 0usize;
     let mut previous_sequence: Option<u64> = None;
     let mut boundary = GateBoundaryState::default();
@@ -1740,17 +1797,52 @@ fn gate_stream_internal(data: &[u8], minimum_game_hour_advancements: Option<i64>
         }
         summary.record_count = summary.record_count.saturating_add(1);
         summary.domains_seen.insert(header.domain_id);
+        // Verify/refresh the d55 repeat baseline on every data record; a
+        // verified repeat reconstructs the original payload so its decoded
+        // authority stands in exactly like a full record's.
+        let mut repeat_reconstruction: Option<Vec<u8>> = None;
+        if semantic_result.is_ok() {
+            match repeat_baselines.observe(header.domain_id, header.record_type, payload) {
+                Ok(reconstructed) => repeat_reconstruction = reconstructed,
+                Err(error) => {
+                    errors.push(format!("offset {cursor}: {error}"));
+                    break;
+                }
+            }
+        }
         let data_authority = if semantic_result.is_ok()
             && header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS
             && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
         {
             decode_detail_events_payload_into_summary(cursor, payload, &mut summary, &mut errors)
+        } else if semantic_result.is_ok()
+            && header.domain_id == DOMAIN_LAND_COMBAT_DETAIL_EVENTS
+            && header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+        {
+            match repeat_reconstruction.as_ref() {
+                Some(reconstructed) => decode_detail_events_payload_into_summary(
+                    cursor,
+                    reconstructed,
+                    &mut summary,
+                    &mut errors,
+                ),
+                None => None,
+            }
         } else {
             None
         };
         if semantic_result.is_ok() {
             let record_authority = match (header.domain_id, header.record_type) {
                 (DOMAIN_LAND_COMBAT_DETAIL_EVENTS, COMPACT_RECORD_TYPE_DOMAIN_DATA) => {
+                    data_authority.map(D55RecordAuthority::Data)
+                }
+                (
+                    DOMAIN_LAND_COMBAT_DETAIL_EVENTS,
+                    compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+                ) => {
+                    // The reconstruction was digest-verified above; its
+                    // decoded authority stands in for the frame exactly like
+                    // a full record's.
                     data_authority.map(D55RecordAuthority::Data)
                 }
                 (
