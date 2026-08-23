@@ -566,8 +566,8 @@ fn theatre_army_hierarchy_admits_without_any_combat_log_leaf_on_land_rows() {
         for theatre in &theatre.theatres {
             assert!(matches!(
                 theatre.controller,
-                replay_core::TheatreControllerState::Land { .. }
-                    | replay_core::TheatreControllerState::Navy { .. }
+                replay_core::TheatreSelectorController::Land { .. }
+                    | replay_core::TheatreSelectorController::Navy { .. }
             ));
         }
     }
