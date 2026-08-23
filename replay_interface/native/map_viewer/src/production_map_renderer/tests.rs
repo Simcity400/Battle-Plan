@@ -496,16 +496,6 @@ fn frame_with_static_program(
     manifest: &ContentManifest,
     program: StaticMapPassProgram,
 ) -> ProductionRenderFrame {
-    let raw_bytes = (0u8..32).collect::<Vec<_>>();
-    let binding = ConstantBufferBinding {
-        stage_mask_u8: 0x03,
-        slot: 0,
-        byte_offset: 16,
-        byte_count: 16,
-        sha256: Sha256::hex(&raw_bytes),
-        raw_bytes,
-        semantic_layout: "SceneCameraAndClock".into(),
-    };
     let operation_ordinal = program.ordered_operations[0].operation_ordinal;
     ProductionRenderFrame {
         schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
@@ -552,12 +542,11 @@ fn frame_with_static_program(
         ),
         snow_mud_texture: None,
         submits: vec![RenderSubmit {
-            submit_index: 12,
             global_order: 2,
-            presentation_qpc_ticks: 200,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: vec![binding],
+            // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
+            // scene constant-buffer carrier is retired (no producer edge ever filled it).
             ordered_static_map_programs: vec![program],
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
@@ -1031,16 +1020,6 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
     );
     write(&mod_root, "gfx/FX/map.shader", b"scene-cb-shader");
     let (mut renderer, manifest, _) = admitted_renderer(&game, &mod_root, false);
-    let raw_bytes = (0u8..32).collect::<Vec<_>>();
-    let binding = ConstantBufferBinding {
-        stage_mask_u8: 0x03,
-        slot: 0,
-        byte_offset: 16,
-        byte_count: 16,
-        sha256: Sha256::hex(&raw_bytes),
-        raw_bytes,
-        semantic_layout: "SceneCameraAndClock".into(),
-    };
     let frame = ProductionRenderFrame {
         schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
         authority: RenderAuthority {
@@ -1086,12 +1065,9 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
         ),
         snow_mud_texture: None,
         submits: vec![RenderSubmit {
-            submit_index: 12,
             global_order: 2,
-            presentation_qpc_ticks: 200,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: vec![binding.clone()],
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
@@ -1156,7 +1132,9 @@ fn selected_submit_preserves_exact_scene_constant_buffers() {
     };
     let prepared = renderer.prepare_frame(Some(&frame)).unwrap();
     assert_eq!(prepared.selected_submit_index, Some(12));
-    assert_eq!(prepared.ordered_scene_constant_buffers, vec![binding]);
+    // kills: carrier.render_submit.ordered_scene_constant_buffers — the prepared frame
+    // derives an empty scene constant-buffer list because nothing carries one anymore.
+    assert_eq!(prepared.ordered_scene_constant_buffers, Vec::new());
     assert!(prepared.ordered_static_map_programs.is_empty());
     assert!(prepared.ordered_render_operations.is_empty());
     assert!(prepared.political_textures.is_empty());
@@ -1239,16 +1217,6 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
         .to_string()
         .contains("rejects unrecorded/default lookup"));
 
-    let raw_bytes = (0u8..32).collect::<Vec<_>>();
-    let binding = ConstantBufferBinding {
-        stage_mask_u8: 0x03,
-        slot: 0,
-        byte_offset: 16,
-        byte_count: 16,
-        sha256: Sha256::hex(&raw_bytes),
-        raw_bytes,
-        semantic_layout: "SceneCameraAndClock".into(),
-    };
     let frame = ProductionRenderFrame {
         schema: replay_core::PRODUCTION_RENDER_SCHEMA.into(),
         authority: RenderAuthority {
@@ -1294,12 +1262,9 @@ fn mod_defined_opaque_program_key_is_admitted_without_semantic_role_omission() {
         ),
         snow_mud_texture: None,
         submits: vec![RenderSubmit {
-            submit_index: 12,
             global_order: 2,
-            presentation_qpc_ticks: 200,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: vec![binding],
             ordered_static_map_programs: vec![program.clone()],
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,

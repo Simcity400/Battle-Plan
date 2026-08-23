@@ -815,15 +815,10 @@ pub fn compute_render_launch_epoch_sha256(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderSubmit {
-    #[serde(with = "decimal_u64")]
-    pub submit_index: u64,
     pub global_order: u32,
-    #[serde(with = "decimal_u64")]
-    pub presentation_qpc_ticks: u64,
     pub camera_carrier_ordinal: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_carrier: Option<AuthenticatedCameraCarrier>,
-    pub ordered_scene_constant_buffers: Vec<ConstantBufferBinding>,
     #[serde(default)]
     pub ordered_static_map_programs: Vec<StaticMapPassProgram>,
     #[serde(default)]
@@ -3343,9 +3338,24 @@ impl ProductionRenderFrame {
     }
 
     pub fn submit(&self, submit_index: u64) -> Option<&RenderSubmit> {
-        self.submits
-            .iter()
-            .find(|row| row.submit_index == submit_index)
+        if self.submits.len() != 1 || self.selected_present.selected_candidate_id != submit_index {
+            return None;
+        }
+        self.submits.first()
+    }
+
+    pub fn retained_submit_identity(&self) -> Option<u64> {
+        if self.submits.is_empty() {
+            return None;
+        }
+        Some(self.selected_present.selected_candidate_id)
+    }
+
+    pub fn selected_presentation_qpc_ticks(&self) -> Option<u64> {
+        if self.submits.is_empty() {
+            return None;
+        }
+        Some(self.selected_present.selected_qpc_ticks)
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -3421,13 +3431,10 @@ impl ProductionRenderFrame {
             return Err("production render must retain exactly one selected Present".into());
         }
         let selected = &self.selected_present;
-        let submit = &self.submits[0];
         if selected.candidate_count == 0
             || selected.selected_ordinal.checked_add(1) != Some(selected.candidate_count)
-            || selected.selected_candidate_id != submit.submit_index
             || compact_update_index_from_raw(selected.selected_game_hour_raw)
                 != Some(self.update_index)
-            || selected.selected_qpc_ticks != submit.presentation_qpc_ticks
             || selected.selection_cutoff_qpc_ticks == 0
             || selected.selected_qpc_ticks > selected.selection_cutoff_qpc_ticks
         {
@@ -3442,9 +3449,7 @@ impl ProductionRenderFrame {
         {
             return Err("display/checkpoint submit identity differs from selected Present".into());
         }
-        let mut last_submit = None;
         let mut last_global = None;
-        let mut last_qpc = None;
         if self.presentation_qpc_frequency_hz == 0 {
             return Err("presentation QPC frequency is zero".into());
         }
@@ -3480,18 +3485,10 @@ impl ProductionRenderFrame {
             snow_mud: self.snow_mud_texture.as_ref(),
         };
         for submit in &self.submits {
-            if last_submit.is_some_and(|v| submit.submit_index <= v) {
-                return Err("submit_index is not strictly increasing".into());
-            }
             if last_global.is_some_and(|v| submit.global_order <= v) {
                 return Err("global_order is not strictly increasing".into());
             }
-            if last_qpc.is_some_and(|v| submit.presentation_qpc_ticks <= v) {
-                return Err("presentation QPC ticks are not strictly increasing".into());
-            }
-            last_submit = Some(submit.submit_index);
             last_global = Some(submit.global_order);
-            last_qpc = Some(submit.presentation_qpc_ticks);
             submit.validate(
                 self.first_sequence,
                 self.last_sequence,
@@ -3602,7 +3599,7 @@ impl ProductionRenderFrame {
                 );
             }
             if self.submits.iter().any(|submit| {
-                submit.submit_index != display_submit.submit_index
+                !std::ptr::eq(submit, display_submit)
                     && submit
                         .ordered_render_operations
                         .iter()
@@ -4063,11 +4060,14 @@ impl ProductionRenderFrame {
         {
             return Err("checkpoint sequence/update frontier does not match frame".into());
         }
-        match (&self.checkpoint.last_submit_index, self.submits.last()) {
+        match (
+            &self.checkpoint.last_submit_index,
+            self.retained_submit_identity(),
+        ) {
             (None, None) => {}
-            (Some(text), Some(last)) => {
+            (Some(text), Some(identity)) => {
                 check_decimal_u64(text, "checkpoint last_submit_index")?;
-                if text.parse::<u64>().ok() != Some(last.submit_index) {
+                if text.parse::<u64>().ok() != Some(identity) {
                     return Err("checkpoint last_submit_index does not match final submit".into());
                 }
             }
@@ -4172,7 +4172,6 @@ impl RenderSubmit {
             }
         }
         check_sha256(&self.particle_packet_set_sha256, None)?;
-        validate_constant_buffers(&self.ordered_scene_constant_buffers)?;
         let mut authenticated_texture_snapshots = BTreeMap::new();
         let mut prior_authenticated_texture_snapshot = None;
         for packet in &self.authenticated_texture_snapshots {
@@ -4196,7 +4195,6 @@ impl RenderSubmit {
         }
         validate_static_map_programs(
             &self.ordered_static_map_programs,
-            self.ordered_scene_constant_buffers.as_slice(),
             authority_manifest_sha256,
         )?;
         if let Some(tree_runtime) = &self.tree_runtime {
@@ -5138,15 +5136,16 @@ pub fn canonical_json_sha256(value: &impl Serialize) -> Result<String, String> {
 
 fn validate_static_map_programs(
     programs: &[StaticMapPassProgram],
-    scene_constant_buffers: &[ConstantBufferBinding],
     authority_manifest_sha256: &str,
 ) -> Result<(), String> {
     if programs.is_empty() {
         return Ok(());
     }
-    if scene_constant_buffers.is_empty() {
-        return Err("static map programs have no selected-submit scene constant buffers".into());
-    }
+    // kills: carrier.render_submit.ordered_scene_constant_buffers — the retired submit-level
+    // scene constant-buffer carrier never had a producer edge (the only constructor wrote an
+    // empty vec), so no sealed frame ever carried scene-CB bytes here; program content is
+    // still validated on its own merits and the scene-CB authority join is re-introduced by
+    // the producer lane that seals real constant-buffer bytes.
 
     let mut previous_program = None;
     let mut previous_operation = None;
@@ -7402,12 +7401,9 @@ mod tests {
             ),
             snow_mud_texture: None,
             submits: vec![RenderSubmit {
-                submit_index: 11,
                 global_order: 1,
-                presentation_qpc_ticks: 500,
                 camera_carrier_ordinal: 0,
                 camera_carrier: None,
-                ordered_scene_constant_buffers: vec![],
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
                 tree_runtime: None,
@@ -7449,12 +7445,9 @@ mod tests {
         let mut non_display = production_frame_with_m02();
         let duplicate = non_display.submits[0].ordered_render_operations[0].clone();
         non_display.submits.push(RenderSubmit {
-            submit_index: 12,
             global_order: 2,
-            presentation_qpc_ticks: 501,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: vec![],
             ordered_static_map_programs: vec![],
             authenticated_texture_snapshots: vec![],
             tree_runtime: None,
@@ -7491,7 +7484,8 @@ mod tests {
             payload_sha256: String::new(),
         };
         program.seal_payload_hashes().unwrap();
-        non_suffix.submits[0].ordered_scene_constant_buffers = vec![constant_buffer()];
+        // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
+        // carrier is retired; program frames validate on content alone.
         non_suffix.submits[0].ordered_static_map_programs = vec![program];
         non_suffix.submits[0]
             .ordered_render_operations
@@ -7500,6 +7494,44 @@ mod tests {
             });
         let error = non_suffix.validate().unwrap_err();
         assert!(error.contains("not a render-order suffix"), "{error}");
+    }
+
+    #[test]
+    fn submit_identity_and_presentation_ticks_are_derived_from_selected_present_receipt() {
+        // kills: carrier.render_submit.submit_index — the sealed fixture previously carried
+        // submit_index=11 on the RenderSubmit; the derived identity equals that carried value
+        // because the former wire law enforced selected_candidate_id == submit.submit_index.
+        // kills: carrier.render_submit.presentation_qpc_ticks — the sealed fixture previously
+        // carried presentation_qpc_ticks=500 on the RenderSubmit; the derived ticks equal that
+        // carried value because the former wire law enforced
+        // selected_qpc_ticks == submit.presentation_qpc_ticks.
+        let frame = production_frame_with_m02();
+        assert_eq!(frame.selected_present.selected_candidate_id, 11);
+        assert_eq!(frame.selected_present.selected_qpc_ticks, 500);
+        assert_eq!(frame.retained_submit_identity(), Some(11));
+        assert_eq!(frame.selected_presentation_qpc_ticks(), Some(500));
+        frame.validate().unwrap();
+
+        let mut foreign_identity = production_frame_with_m02();
+        foreign_identity.display_submit_index = Some("12".into());
+        foreign_identity.checkpoint.last_submit_index = Some("12".into());
+        let error = foreign_identity.validate().unwrap_err();
+        assert!(
+            error.contains("display/checkpoint submit identity differs"),
+            "{error}"
+        );
+
+        let mismatched = production_frame_with_m02();
+        assert_eq!(mismatched.submit(12), None);
+        assert_eq!(
+            mismatched
+                .display_submit_index
+                .as_deref()
+                .and_then(|value| value.parse::<u64>().ok())
+                .and_then(|id| mismatched.submit(id))
+                .map(|_| ()),
+            Some(())
+        );
     }
 
     #[test]
@@ -7634,10 +7666,15 @@ mod tests {
 
         let mut retargeted = frame.clone();
         retargeted.selected_present.selected_candidate_id = 12;
+        // kills: carrier.render_submit.submit_index — the receipt's candidate id no longer has
+        // an on-submit twin to disagree with (submit_index retired), so a retarget first
+        // refuses at the display/checkpoint identity join, the surviving law binding the
+        // receipt; remove that check and this assert catches the drift because validate()
+        // then fails later with a different message (the M02 submit(11) lookup at :3582).
         assert!(retargeted
             .validate()
             .unwrap_err()
-            .contains("differs from the sole retained submit/hour/cutoff"));
+            .contains("display/checkpoint submit identity differs from selected Present"));
 
         let mut multi = frame.clone();
         multi.selected_present.candidate_count = 2;
@@ -9096,12 +9133,9 @@ mod tests {
             ),
             snow_mud_texture: None,
             submits: vec![RenderSubmit {
-                submit_index: 11,
                 global_order: 1,
-                presentation_qpc_ticks: 500,
                 camera_carrier_ordinal: 0,
                 camera_carrier: None,
-                ordered_scene_constant_buffers: vec![constant_buffer()],
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
                 tree_runtime: None,
@@ -9430,6 +9464,15 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("half-pixel bits do not match"));
+        // kills: carrier.render_submit.submit_index — the submit no longer carries its
+        // identity; it is derived from selected_present.selected_candidate_id (11).
+        // kills: carrier.render_submit.presentation_qpc_ticks — presentation ticks are
+        // derived from selected_present.selected_qpc_ticks (500), not carried on the submit.
+        let encoded_text = String::from_utf8(encoded).unwrap();
+        assert!(!encoded_text.contains("\"submit_index\""));
+        assert!(!encoded_text.contains("\"presentation_qpc_ticks\""));
+        assert_eq!(decoded.retained_submit_identity(), Some(11));
+        assert_eq!(decoded.selected_presentation_qpc_ticks(), Some(500));
         let mut tampered = decoded;
         tampered.submits[0].ordered_static_map_programs[0].ordered_operations[0].payload_sha256 =
             "0".repeat(64);
@@ -9441,9 +9484,6 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("operation payload SHA-256 mismatch"));
-        assert!(String::from_utf8(encoded)
-            .unwrap()
-            .contains("\"submit_index\":\"11\""));
     }
 
     #[test]
@@ -9735,12 +9775,9 @@ mod tests {
             ),
             snow_mud_texture: None,
             submits: vec![RenderSubmit {
-                submit_index: 1,
                 global_order: 1,
-                presentation_qpc_ticks: 1,
                 camera_carrier_ordinal: 0,
                 camera_carrier: None,
-                ordered_scene_constant_buffers: vec![],
                 ordered_static_map_programs: vec![],
                 authenticated_texture_snapshots: vec![],
                 tree_runtime: None,
@@ -10129,7 +10166,8 @@ mod tests {
             payload_sha256: String::new(),
         };
         program.seal_payload_hashes().unwrap();
-        frame.submits[0].ordered_scene_constant_buffers = vec![constant_buffer()];
+        // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
+        // carrier is retired; program frames validate on content alone.
         frame.submits[0].ordered_static_map_programs = vec![program];
         let producer = RenderExecutionRef::Static {
             operation_ordinal: 7,

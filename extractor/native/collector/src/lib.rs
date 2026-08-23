@@ -805,13 +805,9 @@ fn promote_a729_camera_carrier(
 pub fn portable_submit_from_a729_runtime(
     promoted: PromotedA729ProductionRenderSubmit,
     global_order: u32,
-    presentation_qpc_ticks: u64,
 ) -> Result<portable_render_stream::RenderSubmit, String> {
-    let (mut submit, s1_shadow) = portable_submit_with_pending_s1_from_a729_runtime(
-        promoted,
-        global_order,
-        presentation_qpc_ticks,
-    )?;
+    let (mut submit, s1_shadow) =
+        portable_submit_with_pending_s1_from_a729_runtime(promoted, global_order)?;
     if let Some(carrier) = s1_shadow {
         fold_a729_s1_shadow_carrier(&mut submit, carrier).map_err(s1_fold_error_message)?;
     }
@@ -821,7 +817,6 @@ pub fn portable_submit_from_a729_runtime(
 fn portable_submit_with_pending_s1_from_a729_runtime(
     promoted: PromotedA729ProductionRenderSubmit,
     global_order: u32,
-    presentation_qpc_ticks: u64,
 ) -> Result<
     (
         portable_render_stream::RenderSubmit,
@@ -829,18 +824,15 @@ fn portable_submit_with_pending_s1_from_a729_runtime(
     ),
     String,
 > {
-    if promoted.submit_index == 0 || presentation_qpc_ticks == 0 {
-        return Err("portable d77 submit has a null submit/QPC identity".into());
+    if promoted.submit_index == 0 {
+        return Err("portable d77 submit has a null submit identity".into());
     }
     let particle_packet_set_sha256 = canonical_json_sha256(&promoted.particles)?;
     let s1_shadow = promoted.s1_shadow.clone();
     let submit = portable_render_stream::RenderSubmit {
-        submit_index: promoted.submit_index,
         global_order,
-        presentation_qpc_ticks,
         camera_carrier_ordinal: promoted.camera_carrier_ordinal,
         camera_carrier: promoted.camera_carrier,
-        ordered_scene_constant_buffers: Vec::new(),
         ordered_static_map_programs: Vec::new(),
         authenticated_texture_snapshots: Vec::new(),
         tree_runtime: None,
@@ -1152,7 +1144,7 @@ pub fn assemble_production_render_frame(
     if submits.is_empty() {
         return Err("d77 frame has no fully promoted submit".into());
     }
-    let display_submit_index = submits.last().map(|submit| submit.submit_index.to_string());
+    let display_submit_index = Some(selected_present.selected_candidate_id.to_string());
     let empty_effects: Vec<portable_render_stream::EffectLifecycleEvent> = Vec::new();
     let empty_lights: Vec<portable_render_stream::LightLifecycleEvent> = Vec::new();
     let particles = submits
@@ -1540,6 +1532,7 @@ pub fn drain_finalize_a729_production_frames(
 }
 
 #[cfg(windows)]
+#[derive(Debug)]
 enum A729ProductionRenderDrain {
     EmptyNoCapture,
     PendingIncomplete,
@@ -1727,11 +1720,8 @@ where
         let runtime_row = runtime
             .remove(&frame.submit_index)
             .ok_or("render frame/runtime submit pairing was repeated")?;
-        let (mut portable_submit, s1_shadow) = portable_submit_with_pending_s1_from_a729_runtime(
-            runtime_row.promoted,
-            frame.global_order,
-            frame.presentation_qpc_ticks,
-        )?;
+        let (mut portable_submit, s1_shadow) =
+            portable_submit_with_pending_s1_from_a729_runtime(runtime_row.promoted, frame.global_order)?;
         let s1_execution = s1_execution_by_submit
             .remove(&frame.submit_index)
             .ok_or("render frame has no exact S1 execution disposition")?;
@@ -2172,7 +2162,7 @@ where
             || last_sequence.is_some_and(|prior| frame_first <= prior)
             || prior_global_order
                 .is_some_and(|prior: u32| submit.global_order != prior.saturating_add(1))
-            || prior_presentation_qpc.is_some_and(|prior| submit.presentation_qpc_ticks <= prior)
+            || prior_presentation_qpc.is_some_and(|prior| frame.presentation_qpc_ticks <= prior)
         {
             return Err(
                 "hourly render aggregation crosses authority/frequency/order epochs".into(),
@@ -2182,7 +2172,7 @@ where
         last_sequence = Some(frame_last);
         prior_frame_sequence = Some(frame.frame_sequence);
         prior_global_order = Some(submit.global_order);
-        prior_presentation_qpc = Some(submit.presentation_qpc_ticks);
+        prior_presentation_qpc = Some(frame.presentation_qpc_ticks);
         submits.push(submit);
     }
     let first_sequence = first_sequence.expect("nonempty pending");
@@ -3370,14 +3360,11 @@ mod fold_carrier_guard_tests {
         }
     }
 
-    fn empty_submit(submit_index: u64) -> portable_render_stream::RenderSubmit {
+    fn empty_submit(global_order: u32) -> portable_render_stream::RenderSubmit {
         portable_render_stream::RenderSubmit {
-            submit_index,
-            global_order: 0,
-            presentation_qpc_ticks: 1,
+            global_order,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
@@ -3417,18 +3404,57 @@ mod fold_carrier_guard_tests {
         assert!(submit.tiled_lights.is_empty());
 
         let error = fold_a729_static_program_capture(&mut submit, promoted, Vec::new())
-            .expect_err("fold must refuse an unbound tiled-light draw");
+            .expect_err("fold must refuse a program-bearing capture without scene-CB authority");
         let production_render_submit_live_lane::PromotionError::Invalid(message) = error else {
             panic!("expected an Invalid refusal, got {error:?}");
         };
         assert!(
-            message.contains("tiled point-light texture"),
-            "refusal must name the tiled-light carrier, got: {message}"
+            message.contains("scene constant-buffer authority"),
+            "refusal must name the missing scene-CB authority first, got: {message}"
         );
     }
 
     #[test]
-    fn fold_admits_a_draw_that_binds_no_carrier_backed_resource() {
+    fn program_binding_fold_refusal_is_named_on_the_wire() {
+        // kills: carrier.render_submit.ordered_scene_constant_buffers - folding a
+        // program-bearing hour refuses with EXACTLY the static reason the
+        // d77/d80 scene-CB gap attributes on the wire, and the gap payload that
+        // seals for such an hour decodes to a domain-77 Both/SourceUnavailable
+        // H4DG for the refused hour (WorldFold names the domain via its
+        // DOMAIN_GAP arm and stamps DOMAIN_GAP_PROBLEM with this cause).
+        let promoted = PromotedA729StaticProgramCapture {
+            submit_index: 1,
+            frame_sequence: 1,
+            authority: authority(),
+            ordered_programs: vec![program_with_bound_draw(tiled_light_index_source())],
+            ordered_static_execution: Vec::new(),
+            authenticated_texture_snapshots: Vec::new(),
+        };
+        let error = fold_a729_static_program_capture(&mut empty_submit(1), promoted, Vec::new())
+            .expect_err("program-bearing folds are refused without scene-CB authority");
+        let production_render_submit_live_lane::PromotionError::Invalid(message) = error else {
+            panic!("expected an Invalid refusal, got {error:?}");
+        };
+        assert_eq!(message, crate::attach_log::D77_D80_SCENE_CB_REFUSAL_REASON);
+
+        let payload = crate::attach_log::d77_d80_scene_cb_gap_payload(60_759_359, 3)
+            .expect("bounded d77/d80 scene-CB H4DG payload");
+        let decoded =
+            compact_contract::domain_gap::DomainGapRecordV1::decode(&payload)
+                .expect("the wire gap payload decodes");
+        assert_eq!(decoded.part, compact_contract::domain_gap::DomainGapPart::Both);
+        assert_eq!(
+            decoded.reason,
+            compact_contract::domain_gap::DomainGapReason::SourceUnavailable
+        );
+        assert_eq!(decoded.target_hour_raw, 60_759_359);
+        assert_eq!(decoded.outcome_ordinal, 3);
+    }
+
+    #[test]
+    fn fold_refuses_any_program_capture_without_scene_cb_authority() {
+        // kills: carrier.render_submit.ordered_scene_constant_buffers — program-bearing
+        // captures are refused at the fold because no sealed scene constant-buffer bytes exist.
         let snapshot = StaticShaderResourceSource::AuthenticatedSnapshot {
             snapshot_sha256: "c".repeat(64),
             view: view(),
@@ -3443,11 +3469,12 @@ mod fold_carrier_guard_tests {
         };
         let mut submit = empty_submit(1);
 
-        let outcome = fold_a729_static_program_capture(&mut submit, promoted, Vec::new());
-        assert!(
-            outcome.is_ok(),
-            "a draw binding no carrier-backed resource must fold: {outcome:?}"
-        );
+        let error = fold_a729_static_program_capture(&mut submit, promoted, Vec::new())
+            .expect_err("program-bearing folds are refused without scene-CB authority");
+        let production_render_submit_live_lane::PromotionError::Invalid(message) = error else {
+            panic!("expected an Invalid refusal, got {error:?}");
+        };
+        assert!(message.contains("scene constant-buffer authority"), "{message}");
     }
 }
 
@@ -3456,8 +3483,16 @@ pub fn fold_a729_static_program_capture(
     promoted: PromotedA729StaticProgramCapture,
     ordered_execution: Vec<portable_render_stream::RenderExecutionRef>,
 ) -> Result<(), production_render_submit_live_lane::PromotionError> {
-    if submit.submit_index != promoted.submit_index
-        || !submit.ordered_static_map_programs.is_empty()
+    // kills: carrier.render_submit.ordered_scene_constant_buffers — the retired submit-level
+    // scene constant-buffer carrier never had a producer edge, so program-bearing folds have
+    // no sealed scene-CB authority and are refused before any doomed frame is serialized.
+    if !promoted.ordered_programs.is_empty() {
+        return Err(production_render_submit_live_lane::PromotionError::Invalid(
+            "d80 static program fold has no selected-submit scene constant-buffer authority"
+                .into(),
+        ));
+    }
+    if !submit.ordered_static_map_programs.is_empty()
         || !submit.authenticated_texture_snapshots.is_empty()
         || !submit.ordered_render_operations.is_empty()
         || submit.tree_runtime.is_some()

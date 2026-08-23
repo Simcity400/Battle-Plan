@@ -673,8 +673,7 @@ fn unique_display_tiled_light(submit: &RenderSubmit) -> Result<Option<&TiledLigh
         [] => Ok(None),
         [light] => Ok(Some(light)),
         rows => Err(format!(
-            "production tiled lights blocked: displayed submit {} carries {} payloads and no explicit display-light selector",
-            submit.submit_index,
+            "production tiled lights blocked: displayed submit carries {} payloads and no explicit display-light selector",
             rows.len()
         )
         .into()),
@@ -1096,7 +1095,12 @@ impl CapturedPassLayer {
         let next = production_display_submit(render_frame)?.cloned();
         let next_camera_binding = map_viewer::selected_c03_camera_replay_binding(render_frame)?;
         if let (Some(submit), Some(binding)) = (&next, &next_camera_binding) {
-            if binding.submit_index != submit.submit_index
+            // kills: carrier.render_submit.submit_index — the binding identity is checked
+            // against the receipt-derived submit identity, not a carried counter.
+            let identity = render_frame
+                .retained_submit_identity()
+                .ok_or("displayed submit has no derived identity")?;
+            if binding.submit_index != identity
                 || binding.submit_global_order != submit.global_order
             {
                 return Err(
@@ -1232,8 +1236,7 @@ impl CapturedPassLayer {
                     )?
                 };
                 eprintln!(
-                    "replay_app: executed portable submit {} in authoritative order ({} entity, {} particle, {} weather joins)",
-                    submit.submit_index,
+                    "replay_app: executed portable submit in authoritative order ({} entity, {} particle, {} weather joins)",
                     stats.entity_draws,
                     stats.particle_draws,
                     stats.weather_joins,
@@ -3437,7 +3440,7 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             "{err}"
         );
 
-        let submit = empty_submit(1, 1, 1);
+        let submit = empty_submit(1);
         let err = require_secondary_political_texture(Some(&submit))
             .expect_err("empty first submit must not retain PAN2's secondary texture");
         assert!(
@@ -3446,7 +3449,7 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             "{err}"
         );
 
-        let mut submit = empty_submit(1, 1, 1);
+        let mut submit = empty_submit(1);
         submit
             .political_textures
             .push(replay_core::PoliticalTexturePacket {
@@ -3470,14 +3473,11 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
         );
     }
 
-    fn empty_submit(submit_index: u64, global_order: u32, qpc: u64) -> RenderSubmit {
+    fn empty_submit(global_order: u32) -> RenderSubmit {
         RenderSubmit {
-            submit_index,
             global_order,
-            presentation_qpc_ticks: qpc,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
@@ -3569,7 +3569,7 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
                 300,
             ),
             snow_mud_texture: None,
-            submits: vec![empty_submit(12, 2, 200)],
+            submits: vec![empty_submit(2)],
             m02_combat: None,
             m03_arrows: None,
             rail_supply_arrows: None,
@@ -3579,11 +3579,20 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             checkpoint: empty_render_checkpoint(20, 16_959_360),
         };
         assert_eq!(
+            // kills: carrier.render_submit.submit_index — display selection resolves through
+            // the receipt-derived identity (selected_present.selected_candidate_id == 12).
             production_display_submit(&frame)
                 .expect("select display submit")
-                .expect("display submit")
-                .submit_index,
-            12
+                .is_some(),
+            true
+        );
+        assert_eq!(
+            frame.retained_submit_identity(),
+            Some(12)
+        );
+        assert_eq!(
+            frame.selected_presentation_qpc_ticks(),
+            Some(200)
         );
 
         let mut ambiguous = frame;
@@ -3611,7 +3620,7 @@ POSTEFFECT_FEATHER_AT_MAX = 0.80,
             }
         }
 
-        let mut submit = empty_submit(12, 2, 200);
+        let mut submit = empty_submit(2);
         assert!(unique_display_tiled_light(&submit)
             .expect("empty light set")
             .is_none());

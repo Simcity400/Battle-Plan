@@ -365,7 +365,7 @@ mod tests {
     };
     use portable_render_stream::{
         BlendDesc, BlendFactor, BlendOperation, Comparison, CompiledShaderPayload,
-        ConstantBufferBinding, CullMode, DepthDesc, DrawCommand, FillMode, IndexFormat,
+        CullMode, DepthDesc, DrawCommand, FillMode, IndexFormat,
         InputElementDesc, InterpreterVertexBufferDesc, ParticleRuntimeMode, PipelineDesc,
         PreparedRenderTarget, PrimitiveTopology, RasterizerDesc, RenderAuthority, RenderCheckpoint,
         RenderExecutionRef, RenderOutputState, RenderSubmit, RenderTargetAttachmentView,
@@ -807,22 +807,13 @@ mod tests {
         post.seal_payload_hashes().unwrap();
         programs.push(post);
 
-        let cb = vec![0u8; 16];
         let submit = RenderSubmit {
-            submit_index: 1,
             global_order: 0,
-            presentation_qpc_ticks: 1,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: vec![ConstantBufferBinding {
-                stage_mask_u8: 1,
-                slot: 0,
-                byte_offset: 0,
-                byte_count: cb.len() as u32,
-                raw_bytes: cb.clone(),
-                sha256: hash(&cb),
-                semantic_layout: "mod_scene_constants".into(),
-            }],
+            // kills: carrier.render_submit.ordered_scene_constant_buffers — the submit-level
+            // scene constant-buffer carrier is retired (no producer edge ever filled it);
+            // program frames validate on their own sealed content below.
             ordered_static_map_programs: programs,
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,

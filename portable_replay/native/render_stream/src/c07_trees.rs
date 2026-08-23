@@ -2609,12 +2609,9 @@ mod tests {
             _ => unreachable!(),
         });
         RenderSubmit {
-            submit_index: 11,
             global_order: 1,
-            presentation_qpc_ticks: 500,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: vec![],
             ordered_static_map_programs: vec![crate::StaticMapPassProgram {
                 program_ordinal: 0,
                 pass_token: format!("opaque-pass:{}", "a".repeat(64)),

@@ -103,3 +103,24 @@ fn failed_a39_quiescence_preserves_shared_a25_hook_owner() {
     assert!(error.contains("A39 character-presentation teardown failed"));
     assert_eq!(runtime_text_calls.get(), 0);
 }
+
+#[test]
+fn scene_cb_authority_refusal_degrades_the_hour_instead_of_refusing_it() {
+    // kills: carrier.render_submit.ordered_scene_constant_buffers — a program-bearing
+    // d80 fold refuses with the scene-CB authority reason (fold_a729_static_program_capture,
+    // collector lib.rs guard test pins that string); this hour disposition must turn that
+    // refusal into a degraded hour (Ok(None): the hour seals without d77/d80) and never
+    // refuse the capture, while any unrelated drain error still refuses.
+    let refusal = "d80 fold: Invalid(\"d80 static program fold has no selected-submit scene constant-buffer authority\")";
+    let degraded = super::d77_d80_hour_disposition(Err(refusal.to_string())).unwrap();
+    assert!(
+        matches!(degraded, None),
+        "the refusal must degrade the hour's d77/d80"
+    );
+
+    let unrelated = super::d77_d80_hour_disposition(Err(
+        "render hour changed across selected-Present finalization".into(),
+    ))
+    .unwrap_err();
+    assert!(unrelated.contains("render hour changed"));
+}

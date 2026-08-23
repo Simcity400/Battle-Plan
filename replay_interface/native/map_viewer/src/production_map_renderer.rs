@@ -78,7 +78,10 @@ pub struct C03CameraReplayBinding {
     pub envelope_state_selection_count: u8,
 }
 
-fn c03_binding_from_submit(submit: &RenderSubmit) -> Result<Option<C03CameraReplayBinding>> {
+fn c03_binding_from_submit(
+    submit: &RenderSubmit,
+    submit_identity: u64,
+) -> Result<Option<C03CameraReplayBinding>> {
     let Some(carrier) = &submit.camera_carrier else {
         return Ok(None);
     };
@@ -97,7 +100,9 @@ fn c03_binding_from_submit(submit: &RenderSubmit) -> Result<Option<C03CameraRepl
     }
     Ok(Some(C03CameraReplayBinding {
         schema: C03_CAMERA_REPLAY_BINDING_SCHEMA.into(),
-        submit_index: submit.submit_index,
+        // kills: carrier.render_submit.submit_index — the binding identity is derived from
+        // the sealed selected_present.selected_candidate_id receipt, not a carried counter.
+        submit_index: submit_identity,
         submit_global_order: submit.global_order,
         carrier_payload_sha256: carrier.payload_sha256.clone(),
         event_batch_count: u32::try_from(carrier.camera_event_batches.len())
@@ -122,7 +127,14 @@ pub fn selected_c03_camera_replay_binding(
         .validate()
         .map_err(|error| format!("invalid portable production-render frame: {error}"))?;
     match selected_submit(frame)? {
-        Some(submit) => c03_binding_from_submit(submit),
+        // kills: carrier.render_submit.submit_index — derived from the frame's sealed
+        // selected_present.selected_candidate_id receipt instead of a carried counter.
+        Some(submit) => c03_binding_from_submit(
+            submit,
+            frame
+                .retained_submit_identity()
+                .ok_or("selected submit has no derived identity")?,
+        ),
         None => Ok(None),
     }
 }
@@ -415,16 +427,28 @@ impl ProductionMapRenderer {
                         self.load_selected_static_resources(submit)?;
                         self.validate_static_program_content(submit)?;
                         self.validate_submit_content(submit)?;
+                        // kills: carrier.render_submit.submit_index — derived from the sealed
+                        // selected_present.selected_candidate_id receipt (equal to the retired
+                        // carried counter by the former :3505 wire law).
+                        let submit_identity = frame
+                            .retained_submit_identity()
+                            .ok_or("selected submit has no derived identity")?;
                         let draws = ordered_draws(
                             submit,
                             frame.o04_cities.as_ref(),
                             frame.o05_buildings.as_ref(),
                         )?;
                         (
-                            Some(submit.submit_index),
+                            // kills: carrier.render_submit.submit_index — the prepared frame
+                            // identity is derived from selected_present.selected_candidate_id.
+                            Some(submit_identity),
                             Some(submit.global_order),
-                            c03_binding_from_submit(submit)?,
-                            submit.ordered_scene_constant_buffers.clone(),
+                            c03_binding_from_submit(submit, submit_identity)?,
+                            // kills: carrier.render_submit.ordered_scene_constant_buffers —
+                            // the submit-level scene constant-buffer carrier is retired (no
+                            // producer edge ever filled it); the prepared frame derives an
+                            // empty list until a producer seals real bytes.
+                            Vec::new(),
                             submit.ordered_static_map_programs.clone(),
                             submit.authenticated_texture_snapshots.clone(),
                             frame.snow_mud_texture.clone(),
@@ -1072,17 +1096,15 @@ fn selected_submit(frame: &ProductionRenderFrame) -> Result<Option<&RenderSubmit
     let Some(text) = frame.display_submit_index.as_deref() else {
         return Ok(None);
     };
-    let index = text
+    let identity = text
         .parse::<u64>()
         .ok()
-        .filter(|index| index.to_string() == text)
+        .filter(|identity| identity.to_string() == text)
         .ok_or("display_submit_index is not canonical u64 text")?;
     frame
-        .submits
-        .iter()
-        .find(|submit| submit.submit_index == index)
+        .submit(identity)
         .map(Some)
-        .ok_or_else(|| format!("display_submit_index {index} is absent from submits").into())
+        .ok_or_else(|| "display_submit_index does not name the retained submit".into())
 }
 
 fn ordered_draws(

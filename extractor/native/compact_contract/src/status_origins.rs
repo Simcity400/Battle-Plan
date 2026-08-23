@@ -53,7 +53,11 @@ pub const SO_D66_PARTIAL_PROFILE_MISMATCH: usize = 45;
 pub const SO_D48_LANE_DUPLICATE_STATE_ROOTS: usize = 46;
 pub const SO_D48_LANE_DUPLICATE_PROVINCE_ROOTS: usize = 47;
 pub const SO_D60_WARMUP_GAP: usize = 48;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 49;
+/// d77/d80 sealed degraded: the selected Present's d80 fold was refused for
+/// lack of sealed scene constant-buffer bytes, so the hour published a named
+/// DOMAIN_GAP instead of a production-render frame.
+pub const SO_D77_D80_SCENE_CB_GAP: usize = 49;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 50;
 
 pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d45_partial_targeted_timed_structural",
@@ -105,6 +109,7 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d48_lane_duplicate_state_roots",
     "so_d48_lane_duplicate_province_roots",
     "so_d60_warmup_gap",
+    "so_d77_d80_scene_cb_gap",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -745,6 +750,10 @@ mod tests {
                 "so_d48_lane_duplicate_province_roots",
             ),
             (SO_D60_WARMUP_GAP, "so_d60_warmup_gap"),
+            (
+                SO_D77_D80_SCENE_CB_GAP,
+                "so_d77_d80_scene_cb_gap",
+            ),
         ];
         for (id, name) in expected {
             assert_eq!(

@@ -182,7 +182,9 @@ pub unsafe fn execute_submitted_draws(
                 execute_draw(
                     gfx,
                     resolver,
-                    &submit.ordered_scene_constant_buffers,
+                    // kills: carrier.render_submit.ordered_scene_constant_buffers — the
+                    // retired submit-level carrier is derived empty at the prepared frame.
+                    &[],
                     &packet.shader_program,
                     &packet.ordered_texture_bindings,
                     &packet.pipeline,
@@ -206,7 +208,7 @@ pub unsafe fn execute_submitted_draws(
                 execute_draw(
                     gfx,
                     resolver,
-                    &submit.ordered_scene_constant_buffers,
+                    &[],
                     &entity.shader_program,
                     &entity.ordered_texture_bindings,
                     &entity.pipeline,
@@ -1660,12 +1662,9 @@ mod tests {
 
     fn empty_submit() -> RenderSubmit {
         RenderSubmit {
-            submit_index: 1,
             global_order: 1,
-            presentation_qpc_ticks: 1,
             camera_carrier_ordinal: 0,
             camera_carrier: None,
-            ordered_scene_constant_buffers: Vec::new(),
             ordered_static_map_programs: Vec::new(),
             authenticated_texture_snapshots: Vec::new(),
             tree_runtime: None,
