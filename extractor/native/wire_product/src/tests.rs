@@ -5,10 +5,10 @@ use crate::codec::{
 use crate::model::{BRANCHES_PATH, BUNDLE_PATH, PROVINCES_PATH, SCHEMAS_PATH, SYMBOLS_PATH};
 use compact_contract::stream_validator::StreamIdentityMode;
 use compact_contract::{
-    COMPACT_DOMAIN_FRAME, COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_HEADER_LEN,
-    COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA, COMPACT_RECORD_TYPE_DOMAIN_GAP,
-    COMPACT_RECORD_TYPE_DOMAIN_PERF, COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION,
-    COMPACT_STATUS_DELTA_DATA,
+    COMPACT_DOMAIN_FRAME, COMPACT_FRAME_END_PAYLOAD_LEN, COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+    COMPACT_RECORD_HEADER_LEN, COMPACT_RECORD_MAGIC, COMPACT_RECORD_TYPE_DOMAIN_DATA,
+    COMPACT_RECORD_TYPE_DOMAIN_GAP, COMPACT_RECORD_TYPE_DOMAIN_PERF,
+    COMPACT_RECORD_TYPE_FRAME_END, COMPACT_RECORD_VERSION, COMPACT_STATUS_DELTA_DATA,
 };
 use portable_content_manifest::symbol_manifest::SymbolManifestBuilder;
 use sha2::{Digest, Sha256};
@@ -856,6 +856,498 @@ fn raw_path_retained_raw_and_retained_zstd_reopen_the_same_decoded_source() {
     assert_eq!(from_retained_raw, from_bytes);
     assert_eq!(from_retained_zstd, from_bytes);
     assert_eq!(from_bytes.decoded_sha256, source_digest(&stream));
+}
+
+#[test]
+fn an_enveloped_d81_session_inspects_and_builds_like_the_raw_one() {
+    // kills: scan_h4cr treating a `PSD1` envelope as d81's RRL1 grammar --
+    // `d81::split_payload` would reject every wrapped DATA record and
+    // publication would fail wholesale once the collector wraps d81.
+    // Unwrapping through the same consumer contract every other walker uses
+    // must leave the inspection counts, the raw-stream digest and every
+    // STATE-bearing bundle entry identical to the same hours riding
+    // unwrapped, while the two IDENTITY artefacts (branches.bin's embedded
+    // session_fingerprint and the metadata hashing it) differ exactly by
+    // naming their own source stream -- see the assertions at the tail.
+    let mut raw = Vec::new();
+    let mut wrapped = Vec::new();
+    let mut sequence = 1u64;
+    let mut producer = compact_contract::payload_span_delta::PayloadSpanDeltaProducer::new();
+    for hour in 0..3i32 {
+        let tick = 10 + hour;
+        let payload =
+            compact_contract::rail_replay::encode_payload_with_hub_simulation(
+                &[],
+                &[],
+                u64::try_from(hour).unwrap() * 1000,
+                0,
+                0,
+                0,
+            )
+            .unwrap();
+        let envelope = producer
+            .wrap(
+                compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                    domain_id: wire_format::d81::DOMAIN as u16,
+                    source_sequence: sequence + 1,
+                    game_hour_raw: tick,
+                },
+                &payload,
+            )
+            .unwrap();
+        for (out, data_payload, flags) in [
+            (&mut raw, payload.as_slice(), 0),
+            (
+                &mut wrapped,
+                envelope.as_slice(),
+                COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+            ),
+        ] {
+            push_h4cr_record(
+                out,
+                sequence,
+                tick,
+                wire_format::d81::DOMAIN as u16,
+                COMPACT_RECORD_TYPE_DOMAIN_PERF,
+                0,
+                &perf_payload(0),
+            );
+            push_h4cr_record(
+                out,
+                sequence + 1,
+                tick,
+                wire_format::d81::DOMAIN as u16,
+                COMPACT_RECORD_TYPE_DOMAIN_DATA,
+                flags,
+                data_payload,
+            );
+            push_h4cr_record(
+                out,
+                sequence + 2,
+                tick,
+                COMPACT_DOMAIN_FRAME,
+                COMPACT_RECORD_TYPE_FRAME_END,
+                0,
+                &frame_end_payload(1, 1, 0),
+            );
+        }
+        sequence += 3;
+        producer.commit();
+    }
+
+    let raw_inspection = inspect_d81_session(legacy_bytes_session(&raw)).unwrap();
+    let wrapped_inspection = inspect_d81_session(legacy_bytes_session(&wrapped)).unwrap();
+    assert_eq!(wrapped_inspection.data_records, 3);
+    assert_eq!(
+        wrapped_inspection.data_records,
+        raw_inspection.data_records
+    );
+    assert_eq!(
+        wrapped_inspection.publication_authoritative_records,
+        raw_inspection.publication_authoritative_records
+    );
+    assert_eq!(wrapped_inspection.publication_authoritative_records, 3);
+    assert_eq!(wrapped_inspection.unreconstructed_records, 0);
+    assert_eq!(wrapped_inspection.decoded_sha256, source_digest(&wrapped));
+
+    // The product built from enveloped hours is byte-identical to the one
+    // built from raw bytes: the envelopes never reach the block encoder.
+    let catalog = authenticated_catalog();
+    let config = BundleBuildConfig::default();
+    let raw_bundle = build_d81_bundle(
+        config,
+        std::slice::from_ref(&h4cr_branch(10, &raw)),
+        &catalog,
+        std::slice::from_ref(&legacy_bytes_session(&raw)),
+    )
+    .unwrap();
+    let wrapped_bundle = build_d81_bundle(
+        config,
+        std::slice::from_ref(&h4cr_branch(10, &wrapped)),
+        &catalog,
+        std::slice::from_ref(&legacy_bytes_session(&wrapped)),
+    )
+    .unwrap();
+    // THE TRANSPORT MUST NOT REACH THE DERIVED STATE. Every state-bearing
+    // entry is built from reconstructed bases, so raw and enveloped hours
+    // must produce byte-identical blocks, province catalog, schemas, symbol
+    // manifest and gaps.
+    let state_entries = |bundle: &PreparedBundle| {
+        let mut rows: Vec<(String, String)> = bundle
+            .entries()
+            .iter()
+            .filter(|entry| {
+                !matches!(
+                    entry.role,
+                    ArtifactRole::BranchTable | ArtifactRole::BundleMetadata
+                )
+            })
+            .map(|entry| (entry.path.clone(), hex_encode_blake3(&entry.blake3)))
+            .collect();
+        rows.sort();
+        rows
+    };
+    assert_eq!(state_entries(&raw_bundle), state_entries(&wrapped_bundle));
+
+    // ...while the two IDENTITY artefacts differ exactly by the source
+    // binding they exist to carry and nothing else. branches.bin embeds each
+    // branch's `session_fingerprint` (`codec::encode_branches`) — here each
+    // stream's own SHA-256, because the product authenticates its exact
+    // source capture — and bundle.bin hashes the descriptor list that
+    // includes it. Decoding both tables proves every other field agrees and
+    // both fingerprints name their own stream; decoding both metadata blobs
+    // proves their descriptor lists agree except that one entry's hash.
+    let entry_by_role = |bundle: &PreparedBundle, role: ArtifactRole| bundle
+        .entries()
+        .iter()
+        .find(|entry| entry.role == role)
+        .unwrap_or_else(|| panic!("bundle has no {role:?} entry"))
+        .clone();
+    let raw_branches = crate::codec::decode_branches(&portable_test_fs_retry::read(
+        &entry_by_role(&raw_bundle, ArtifactRole::BranchTable).file_path,
+    )
+    .unwrap())
+    .unwrap();
+    let wrapped_branches = crate::codec::decode_branches(
+        &portable_test_fs_retry::read(
+            &entry_by_role(&wrapped_bundle, ArtifactRole::BranchTable).file_path,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(raw_branches.len(), 1);
+    assert_eq!(wrapped_branches.len(), 1);
+    let (raw_branch, wrapped_branch) = (&raw_branches[0], &wrapped_branches[0]);
+    assert_eq!(raw_branch.branch, wrapped_branch.branch);
+    assert_eq!(raw_branch.first_tick, wrapped_branch.first_tick);
+    assert_eq!(raw_branch.parent, wrapped_branch.parent);
+    assert_ne!(
+        raw_branch.session_fingerprint,
+        wrapped_branch.session_fingerprint
+    );
+    assert_eq!(raw_branch.session_fingerprint, source_digest(&raw));
+    assert_eq!(
+        wrapped_branch.session_fingerprint,
+        source_digest(&wrapped)
+    );
+
+    // bundle.bin hashes the descriptor list that includes branches.bin, so it
+    // differs transitively and only through that one descriptor. Decoding both
+    // metadata blobs proves it: same authenticated digests, descriptor lists
+    // equal once the branch-table entry is set aside, and the branch-table
+    // entries themselves equal in length (the tables differ only in their
+    // fingerprint bytes) while naming different hashes.
+    fn read_metadata(bundle: &PreparedBundle) -> crate::codec::BundleMetadata {
+        crate::codec::decode_bundle_metadata(
+            &portable_test_fs_retry::read(
+                &bundle
+                    .entries()
+                    .iter()
+                    .find(|entry| entry.role == ArtifactRole::BundleMetadata)
+                    .expect("bundle has no metadata entry")
+                    .file_path,
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
+    fn without_branches(metadata: &crate::codec::BundleMetadata) -> Vec<(String, u64, [u8; 32])> {
+        let mut rows: Vec<(String, u64, [u8; 32])> = metadata
+            .artifacts
+            .iter()
+            .filter(|descriptor| descriptor.path != BRANCHES_PATH)
+            .map(|descriptor| (descriptor.path.clone(), descriptor.len, descriptor.blake3))
+            .collect();
+        rows.sort();
+        rows
+    }
+    fn branch_descriptor(metadata: &crate::codec::BundleMetadata) -> &crate::codec::ArtifactDescriptor {
+        metadata
+            .artifacts
+            .iter()
+            .find(|descriptor| descriptor.path == BRANCHES_PATH)
+            .expect("bundle metadata names no branches.bin")
+    }
+    let raw_metadata = read_metadata(&raw_bundle);
+    let wrapped_metadata = read_metadata(&wrapped_bundle);
+    assert_eq!(
+        raw_metadata.content_manifest_sha256,
+        wrapped_metadata.content_manifest_sha256
+    );
+    assert_eq!(
+        raw_metadata.definition_csv_sha256,
+        wrapped_metadata.definition_csv_sha256
+    );
+    assert_eq!(
+        without_branches(&raw_metadata),
+        without_branches(&wrapped_metadata)
+    );
+    let raw_descriptor = branch_descriptor(&raw_metadata);
+    let wrapped_descriptor = branch_descriptor(&wrapped_metadata);
+    assert_eq!(raw_descriptor.len, wrapped_descriptor.len);
+    assert_ne!(raw_descriptor.blake3, wrapped_descriptor.blake3);
+}
+
+/// Hex helper local to these tests; `blake3::Hasher` output rendered the way
+/// [`BundleEntry`] displays it.
+fn hex_encode_blake3(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[test]
+fn an_unreconstructable_d81_hour_degrades_to_a_named_gap_and_still_publishes() {
+    // kills: propagating a PSD1 reconstruction refusal out of scan_h4cr with
+    // `?`. A damaged or dropped record is the ordinary case the cadence
+    // keyframe exists to recover from; refusing publication for it would be
+    // the exact defect class PS's Codex rounds 7-9 closed for every other
+    // walker. The lost hour must close as a coverage-shortfall gap IN the product
+    // and the exclusion must be counted on the session inspection.
+    let mut wrapped = Vec::new();
+    let mut sequence = 1u64;
+    let mut producer = compact_contract::payload_span_delta::PayloadSpanDeltaProducer::new();
+    let mut damaged_at = None;
+    for hour in 0..2i32 {
+        let tick = 10 + hour;
+        let payload =
+            compact_contract::rail_replay::encode_payload_with_hub_simulation(
+                &[],
+                &[],
+                u64::try_from(hour).unwrap() * 1000,
+                0,
+                0,
+                0,
+            )
+            .unwrap();
+        let mut envelope = producer
+            .wrap(
+                compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                    domain_id: wire_format::d81::DOMAIN as u16,
+                    source_sequence: sequence + 1,
+                    game_hour_raw: tick,
+                },
+                &payload,
+            )
+            .unwrap();
+        if hour == 1 {
+            // Damage a byte INSIDE the delta body so the H4CR framing and the
+            // PSD1 header stay valid but the reconstruction hash refuses.
+            let last = envelope.len() - 1;
+            envelope[last] ^= 0xff;
+            damaged_at = Some(last);
+        }
+        push_h4cr_record(
+            &mut wrapped,
+            sequence,
+            tick,
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(0),
+        );
+        push_h4cr_record(
+            &mut wrapped,
+            sequence + 1,
+            tick,
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+            &envelope,
+        );
+        push_h4cr_record(
+            &mut wrapped,
+            sequence + 2,
+            tick,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(1, 1, 0),
+        );
+        sequence += 3;
+        producer.commit();
+    }
+    assert!(damaged_at.is_some());
+
+    let inspection = inspect_d81_session(legacy_bytes_session(&wrapped)).unwrap();
+    assert_eq!(inspection.unreconstructed_records, 1);
+    assert_eq!(inspection.data_records, 1);
+    assert_eq!(inspection.publication_authoritative_records, 1);
+
+    let bundle = build_d81_bundle(
+        BundleBuildConfig::default(),
+        std::slice::from_ref(&h4cr_branch(10, &wrapped)),
+        &authenticated_catalog(),
+        std::slice::from_ref(&legacy_bytes_session(&wrapped)),
+    )
+    .unwrap();
+    let gap_entries = bundle
+        .entries()
+        .iter()
+        .filter(|entry| entry.role == ArtifactRole::GapRecord)
+        .count();
+    assert!(
+        gap_entries >= 1,
+        "the lost hour must appear as a gap record in the bundle"
+    );
+}
+
+#[test]
+fn a_branch_whose_every_d81_hour_was_lost_still_publishes_as_named_gaps() {
+    // kills: the zero-authority refusal firing AFTER degradation converted a
+    // short selection's every snapshot into named gaps -- publication would
+    // abort exactly where the lost-record law says it must not. A branch with
+    // no authoritative snapshots but NAMED exclusions publishes gap-only, and
+    // the refusal stays for a branch with neither snapshots nor exclusions.
+    let mut wrapped = Vec::new();
+    let mut sequence = 1u64;
+    let mut producer = compact_contract::payload_span_delta::PayloadSpanDeltaProducer::new();
+    for hour in 0..2i32 {
+        let tick = 10 + hour;
+        let payload =
+            compact_contract::rail_replay::encode_payload_with_hub_simulation(
+                &[],
+                &[],
+                u64::try_from(hour).unwrap() * 1000,
+                0,
+                0,
+                0,
+            )
+            .unwrap();
+        let mut envelope = producer
+            .wrap(
+                compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                    domain_id: wire_format::d81::DOMAIN as u16,
+                    source_sequence: sequence + 1,
+                    game_hour_raw: tick,
+                },
+                &payload,
+            )
+            .unwrap();
+        let last = envelope.len() - 1;
+        envelope[last] ^= 0xff;
+        push_h4cr_record(
+            &mut wrapped,
+            sequence,
+            tick,
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_PERF,
+            0,
+            &perf_payload(0),
+        );
+        push_h4cr_record(
+            &mut wrapped,
+            sequence + 1,
+            tick,
+            wire_format::d81::DOMAIN as u16,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+            &envelope,
+        );
+        push_h4cr_record(
+            &mut wrapped,
+            sequence + 2,
+            tick,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &frame_end_payload(1, 1, 0),
+        );
+        sequence += 3;
+        producer.commit();
+    }
+
+    let inspection = inspect_d81_session(legacy_bytes_session(&wrapped)).unwrap();
+    assert_eq!(inspection.unreconstructed_records, 2);
+    assert_eq!(inspection.data_records, 0);
+    assert_eq!(inspection.publication_authoritative_records, 0);
+
+    let bundle = build_d81_bundle(
+        BundleBuildConfig::default(),
+        std::slice::from_ref(&h4cr_branch(10, &wrapped)),
+        &authenticated_catalog(),
+        std::slice::from_ref(&legacy_bytes_session(&wrapped)),
+    )
+    .unwrap();
+    assert!(bundle
+        .entries()
+        .iter()
+        .any(|entry| entry.role == ArtifactRole::GapRecord));
+}
+
+#[test]
+fn a_damaged_volatile_prefix_is_a_named_exclusion_and_not_an_abort() {
+    // kills: the PSD1 digest excludes the declared volatile prefix, and for
+    // d81 those eight bytes are the payload's own RRL1 magic/version/length.
+    // Damage confined there reconstructs faithfully and then fails
+    // `d81::split_payload` — which used to propagate with `?` and abort the
+    // whole publication. It must take the same excluded-and-named path as any
+    // other lost record.
+    let mut wrapped = Vec::new();
+    let mut sequence = 1u64;
+    let mut producer = compact_contract::payload_span_delta::PayloadSpanDeltaProducer::new();
+    let tick = 10;
+    let payload = compact_contract::rail_replay::encode_payload_with_hub_simulation(
+        &[],
+        &[],
+        0,
+        0,
+        0,
+        0,
+    )
+    .unwrap();
+    let mut envelope = producer
+        .wrap(
+            compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                domain_id: wire_format::d81::DOMAIN as u16,
+                source_sequence: sequence + 1,
+                game_hour_raw: tick,
+            },
+            &payload,
+        )
+        .unwrap();
+    envelope[0] ^= 0xff; // inside the volatile prefix, outside every digest
+    push_h4cr_record(
+        &mut wrapped,
+        sequence,
+        tick,
+        wire_format::d81::DOMAIN as u16,
+        COMPACT_RECORD_TYPE_DOMAIN_PERF,
+        0,
+        &perf_payload(0),
+    );
+    push_h4cr_record(
+        &mut wrapped,
+        sequence + 1,
+        tick,
+        wire_format::d81::DOMAIN as u16,
+        COMPACT_RECORD_TYPE_DOMAIN_DATA,
+        COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
+        &envelope,
+    );
+    push_h4cr_record(
+        &mut wrapped,
+        sequence + 2,
+        tick,
+        COMPACT_DOMAIN_FRAME,
+        COMPACT_RECORD_TYPE_FRAME_END,
+        0,
+        &frame_end_payload(1, 1, 0),
+    );
+
+    let inspection = inspect_d81_session(legacy_bytes_session(&wrapped)).unwrap();
+    assert_eq!(inspection.unreconstructed_records, 1);
+    assert_eq!(inspection.data_records, 0);
+
+    let bundle = build_d81_bundle(
+        BundleBuildConfig::default(),
+        std::slice::from_ref(&h4cr_branch(10, &wrapped)),
+        &authenticated_catalog(),
+        std::slice::from_ref(&legacy_bytes_session(&wrapped)),
+    )
+    .unwrap();
+    assert!(bundle
+        .entries()
+        .iter()
+        .any(|entry| entry.role == ArtifactRole::GapRecord));
 }
 
 #[test]

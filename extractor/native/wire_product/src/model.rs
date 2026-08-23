@@ -452,6 +452,10 @@ pub struct D81SessionInspection {
     pub data_records: u64,
     pub publication_authoritative_records: u64,
     pub failure_records: u64,
+    /// DATA records whose `PSD1` envelope refused reconstruction. Each such
+    /// hour publishes as a status-bound gap rather than aborting the build;
+    /// this count is the named exclusion a reader checks the product against.
+    pub unreconstructed_records: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

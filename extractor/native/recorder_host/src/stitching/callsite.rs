@@ -513,10 +513,27 @@ fn registered_rebuilt_wire_descriptors(
             "present",
             "root",
             "semantic_reopen_required_before_publication",
+            // Named exclusion count for d81 DATA records whose PSD1 envelope
+            // refused reconstruction while this product was scanned (zero on
+            // every healthy capture). Written by every producer build since
+            // d81 joined the span delta; a container without it predates that
+            // change and fails here by design rather than stitching a product
+            // whose exclusions nobody can see.
+            "d81_unreconstructed_records",
             "entries",
         ],
         "registered rebuilt-wire discovery",
     )?;
+    if rebuilt
+        .get("d81_unreconstructed_records")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return Err(
+            "registered rebuilt-wire discovery has no d81_unreconstructed_records count"
+                .to_string(),
+        );
+    }
     if rebuilt.get("present").and_then(Value::as_bool) != Some(true)
         || rebuilt.get("root").and_then(Value::as_str) != Some("rebuilt_wire")
         || rebuilt
@@ -2176,6 +2193,7 @@ mod tests {
                 "present": true,
                 "root": "rebuilt_wire",
                 "semantic_reopen_required_before_publication": true,
+                "d81_unreconstructed_records": 0,
                 "entries": descriptors,
             },
         }))

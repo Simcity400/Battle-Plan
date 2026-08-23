@@ -35,6 +35,10 @@ struct ScannedBranch {
     data_records: u64,
     publication_authoritative_records: u64,
     failure_records: u64,
+    /// DATA records whose `PSD1` envelope refused reconstruction. Each one's
+    /// hour publishes as a coverage-shortfall gap instead of aborting the build; the
+    /// count is the named exclusion the session inspection carries.
+    unreconstructed_records: u64,
     first_data_tick: Option<u64>,
     country_bindings: BTreeMap<u32, String>,
 }
@@ -595,7 +599,15 @@ pub(crate) fn build_d81_into(
                 scan.branch, first_tick, branch.first_tick
             )));
         }
-        if scan.publication_authoritative_records == 0 {
+        // A branch whose snapshots were ALL excluded BY NAME still publishes:
+        // every lost hour rides as a coverage-shortfall gap in this same bundle and
+        // the count is on the session manifest, so refusing here would be the
+        // exact "one lost record destroys the publication" defect class this
+        // lane closed everywhere else. The refusal stays for a branch that has
+        // NEITHER authoritative snapshots NOR named exclusions -- nothing was
+        // lost, there is simply nothing certified, which is a stream-shape
+        // error and not a degradation.
+        if scan.publication_authoritative_records == 0 && scan.unreconstructed_records == 0 {
             return Err(ProductError::new(format!(
                 "branch {} contains no publication-authoritative d81 snapshot",
                 scan.branch
@@ -683,6 +695,7 @@ pub fn inspect_d81_session(session: H4crSession<'_>) -> Result<D81SessionInspect
         data_records: scan.data_records,
         publication_authoritative_records: scan.publication_authoritative_records,
         failure_records: scan.failure_records,
+        unreconstructed_records: scan.unreconstructed_records,
     })
 }
 
@@ -754,6 +767,12 @@ where
     let mut publication_authoritative_records = 0u64;
     let mut failure_records = 0u64;
     let mut data_records = 0u64;
+    let mut unreconstructed_records = 0u64;
+    // The retained consumer baselines this scan reconstructs `PSD1` envelopes
+    // against, and the reason the CURRENT frame's d81 DATA is missing when its
+    // envelope refused — taken at FRAME_END, where the hour degrades to a gap.
+    let mut span_delta = compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
+    let mut pending_data_lost: Option<String> = None;
     let mut first_data_tick = None;
     let mut pending_frame_tick = None;
     let mut pending_perf_domains = BTreeMap::new();
@@ -853,6 +872,35 @@ where
         } else {
             None
         };
+        // PRIME THE PSD1 CONSUMER THROUGH EVERY ENVELOPE IN THE STREAM,
+        // SELECTED OR NOT. A stitched member's selection may begin mid-chain;
+        // the retained source it cuts from still carries every earlier record,
+        // and this whole scan digests all of them against the branch
+        // fingerprint, so the baseline a selected delta names is available and
+        // trustworthy even when the record carrying it is outside the product.
+        // Priming here keeps a mid-chain selection reconstructing exactly what
+        // the producer meant instead of falsely refusing until the next
+        // keyframe; only records INSIDE the selection are folded or counted.
+        let mut scanned_d81_envelope: Option<
+            Result<Option<Vec<u8>>, String>,
+        > = None;
+        if accepted == AcceptedRecordKind::Ordinary
+            && header.domain_id == d81::DOMAIN as u16
+            && header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA
+        {
+            scanned_d81_envelope = Some(
+                compact_contract::payload_span_delta::reconstruct_if_enveloped(
+                    &mut span_delta,
+                    header.record_flags,
+                    compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                        domain_id: header.domain_id,
+                        source_sequence: header.sequence,
+                        game_hour_raw: header.game_hour_raw,
+                    },
+                    &payload,
+                ),
+            );
+        }
         let selected = match selection {
             None => true,
             Some(bounds) => {
@@ -1075,14 +1123,34 @@ where
                         )))
                     }
                 }
+                let lost_data = pending_data_lost.take();
+                let mut unreconstructable_perf = None;
                 let payload = match (pending_perf_status.take(), pending_data.take()) {
                     (None, None) => None,
-                    (Some(perf), Some((data, payload))) if perf == data => Some(payload),
+                    (Some(perf), Some((data, payload))) if perf == data && lost_data.is_none() => {
+                        Some(payload)
+                    }
+                    // THE HOUR WHOSE DATA ENVELOPE REFUSED RECONSTRUCTION
+                    // CLOSES AS A STATUS-BOUND GAP, NOT A BUILD FAILURE.
+                    //
+                    // The record arrived but its bytes could not be recovered,
+                    // which is the ordinary consequence of a dropped or damaged
+                    // record rather than a corrupt product; refusing
+                    // publication for it would be the exact defect class lane
+                    // PS's Codex rounds 7-9 closed for every other walker ("one
+                    // lost record destroyed a whole capture's publication"). It
+                    // is named instead: the exclusion count rides the session
+                    // inspection, and this tick publishes with the same
+                    // status-witness gap any unavailable hour carries.
+                    (Some(perf), None) if lost_data.is_some() => {
+                        unreconstructable_perf = Some(perf);
+                        None
+                    }
                     (perf, data) => {
                         return Err(ProductError::new(format!(
-                            "branch {branch} d81 PERF/DATA binding differs in closed frame {record_tick}: PERF={perf:?}, DATA={:?}",
+                            "branch {branch} d81 PERF/DATA binding differs in closed frame {record_tick}: PERF={perf:?}, DATA={:?}, unreconstructable={lost_data:?}",
                             data.as_ref().map(|(status, _)| status)
-                        )))
+                        )));
                     }
                 };
                 let coverage_start = if let Some(prior) = last_closed_tick {
@@ -1136,11 +1204,33 @@ where
                             "branch {branch} d81 frame {record_tick} carries both DATA and authenticated state-gap outcomes"
                         )));
                     }
-                    (None, None) => {
-                        return Err(ProductError::new(format!(
-                            "branch {branch} d81 frame {record_tick} has neither status-bound DATA nor H4DG"
-                        )));
-                    }
+                    (None, None) => match unreconstructable_perf.take() {
+                        // THE LOST-DATA HOUR: the perf terminal exists, the
+                        // payload does not. Publish a coverage-shortfall gap
+                        // and keep building — see the lost-data arm above.
+                        // A COVERAGE witness, deliberately not the PERF
+                        // status: that status describes the read, which
+                        // succeeded, and a StatusBits witness without failure
+                        // bits is rejected at verification ("d81 status gap
+                        // does not carry a known failure status"); what is
+                        // missing here is this hour's STATE, which is exactly
+                        // what CoverageShortfall names. The precise cause —
+                        // an envelope whose digest refused — is the named
+                        // exclusion count on the session inspection.
+                        Some(_) => {
+                            let tick_end = record_tick.checked_add(1).ok_or_else(|| {
+                                ProductError::new("d81 lost-hour gap tick overflows")
+                            })?;
+                            on_closed(ScannedD81Item::Gap(coverage_gap(
+                                branch, record_tick, tick_end,
+                            )))?;
+                        }
+                        None => {
+                            return Err(ProductError::new(format!(
+                                "branch {branch} d81 frame {record_tick} has neither status-bound DATA nor H4DG"
+                            )));
+                        }
+                    },
                 }
                 last_closed_tick = Some(record_tick);
                 pending_frame_tick = None;
@@ -1238,15 +1328,61 @@ where
                     "branch {branch} d81 DATA at {tick} is outside its open frame"
                 )));
             }
-            let (payload_header, _) = d81::split_payload(&payload).map_err(|error| {
-                ProductError::new(format!(
-                    "branch {branch} d81 payload at tick {tick} rejected: {error}"
-                ))
-            })?;
+            // UNWRAP BEFORE ANYTHING LOOKS AT THE PAYLOAD. A `PSD1` envelope
+            // carries no RRL1 grammar; the fold downstream of this scan reads
+            // the payload the domain encoded, exactly as every other walker.
+            // The reconstruction itself already happened above, selected or
+            // not (see the priming block); here it is only harvested.
+            let data_bytes = match scanned_d81_envelope.take().expect(
+                "an enveloped d81 DATA record was primed during the scan pass",
+            ) {
+                Ok(Some(reconstructed)) => reconstructed,
+                // The raw on-wire bytes stay alive for the repeat baseline below.
+                Ok(None) => payload.clone(),
+                Err(reason) => {
+                    // EXCLUDED AND NAMED, NEVER A PUBLICATION ABORT. A
+                    // record that cannot be reconstructed is the ordinary
+                    // consequence of a lost or damaged record — the next
+                    // keyframe resynchronises this consumer at the 64-hour
+                    // cadence — and the hour degrades to a coverage-shortfall gap
+                    // when its frame closes (see the lost-data arms at
+                    // FRAME_END). The record counts only in
+                    // `unreconstructed_records`: it is not usable DATA and
+                    // must not claim coverage or authority.
+                    unreconstructed_records += 1;
+                    pending_data_lost = Some(reason);
+                    continue;
+                }
+            };
+            let was_enveloped =
+                header.record_flags & compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA != 0;
+            let (payload_header, _) = match d81::split_payload(&data_bytes) {
+                Ok(split) => split,
+                // RECONSTRUCTED, YET NOT GRAMMAR. The codec's digest excludes
+                // the declared volatile prefix — for d53/d43 a wall clock, but
+                // for d81 the payload's own RRL1 magic/version/length — so
+                // damage confined to those eight bytes reconstructs faithfully
+                // and fails HERE instead. For an enveloped record that is the
+                // same lost-record outcome as any other: excluded and named,
+                // hour degrades to a gap at FRAME_END. A RAW record with an
+                // invalid grammar keeps its pre-delta hard refusal — this lane
+                // did not change how unenveloped corruption behaves.
+                Err(error) if was_enveloped => {
+                    unreconstructed_records += 1;
+                    pending_data_lost =
+                        Some(format!("reconstructed envelope is not valid d81 grammar: {error}"));
+                    continue;
+                }
+                Err(error) => {
+                    return Err(ProductError::new(format!(
+                        "branch {branch} d81 payload at tick {tick} rejected: {error}"
+                    )));
+                }
+            };
             let status_flags = payload_header.status_flags;
             let payload_version = payload_header.payload_version;
             let hub_simulation_complete = payload_header.hub_simulation_complete;
-            if pending_data.replace((status_flags, payload.clone())).is_some() {
+            if pending_data.replace((status_flags, data_bytes)).is_some() {
                 return Err(ProductError::new(format!(
                     "branch {branch} repeats d81 DATA at tick {tick}"
                 )));
@@ -1296,6 +1432,7 @@ where
         data_records,
         publication_authoritative_records,
         failure_records,
+        unreconstructed_records,
         first_data_tick,
         country_bindings,
     })

@@ -57,6 +57,10 @@ pub struct StitchedRebuiltWireProduct {
     leading_gaps: Vec<wire_product::D81LeadingGap>,
     content_manifest: portable_content_manifest::ContentManifest,
     routes: Vec<StitchedRebuiltWireRoute>,
+    /// d81 DATA records whose `PSD1` envelope refused reconstruction inside
+    /// any member session's selection. Their hours appear in the bundle as
+    /// status-bound gaps; this count is the manifest-visible exclusion total.
+    unreconstructed_records: u64,
 }
 
 struct OwnedStitchedWireSession {
@@ -318,8 +322,9 @@ fn verify_rebuilt_wire_source_receipts(
 
 fn inspect_rebuilt_wire_session_first_ticks(
     sessions: &[OwnedStitchedWireSession],
-) -> Result<std::collections::BTreeMap<u32, u64>, String> {
+) -> Result<(std::collections::BTreeMap<u32, u64>, u64), String> {
     let mut first_ticks = std::collections::BTreeMap::new();
+    let mut unreconstructed_records = 0u64;
     for session in sessions {
         let inspection = wire_product::inspect_d81_session(wire_product::H4crSession {
             branch: session.branch,
@@ -344,8 +349,14 @@ fn inspect_rebuilt_wire_session_first_ticks(
                 session.branch
             ));
         }
+        // THE STITCHED PRODUCT'S OWN NAMED EXCLUSION COUNT. Each branch is
+        // scanned with the same consumer contract as a whole-stream product;
+        // hours whose envelope refused reconstruction appear in this bundle as
+        // status-bound gaps, and the count says how many without a reader
+        // having to re-derive it from the gap records.
+        unreconstructed_records += inspection.unreconstructed_records;
     }
-    Ok(first_ticks)
+    Ok((first_ticks, unreconstructed_records))
 }
 
 fn derive_rebuilt_wire_plan_from_sessions(
@@ -356,11 +367,13 @@ fn derive_rebuilt_wire_plan_from_sessions(
         Vec<wire_product::BranchSpec>,
         Vec<StitchedRebuiltWireRoute>,
         std::collections::BTreeMap<u32, u64>,
+        u64,
     ),
     String,
 > {
     let (mut branches, routes) = derive_rebuilt_wire_plan(plan)?;
-    let first_ticks = inspect_rebuilt_wire_session_first_ticks(sessions)?;
+    let (first_ticks, unreconstructed_records) =
+        inspect_rebuilt_wire_session_first_ticks(sessions)?;
     if first_ticks.len() != branches.len() {
         return Err(
             "retained stitched H4CR session count differs from rebuilt-wire branches".to_string(),
@@ -383,7 +396,7 @@ fn derive_rebuilt_wire_plan_from_sessions(
             })?;
         }
     }
-    Ok((branches, routes, first_ticks))
+    Ok((branches, routes, first_ticks, unreconstructed_records))
 }
 
 fn derive_rebuilt_wire_leading_gaps(
@@ -563,7 +576,7 @@ impl StitchedRebuiltWireProduct {
             return Err("stitched rebuilt-wire sources include an unreferenced path".to_string());
         }
         verify_rebuilt_wire_source_receipts(&sessions)?;
-        let (branches, inspected_routes, source_first_ticks) =
+        let (branches, inspected_routes, source_first_ticks, unreconstructed_records) =
             derive_rebuilt_wire_plan_from_sessions(plan, &sessions)?;
         if inspected_routes != routes {
             return Err(
@@ -590,6 +603,7 @@ impl StitchedRebuiltWireProduct {
             leading_gaps,
             content_manifest,
             routes,
+            unreconstructed_records,
         })
     }
 }
@@ -958,6 +972,7 @@ fn rebuilt_wire_index_bytes(
             "stitch_input_digest": plan.stitch_input_digest,
             "content_manifest_sha256": hex32(&verified.content_manifest_sha256),
             "definition_csv_sha256": hex32(&verified.definition_csv_sha256),
+            "d81_unreconstructed_records": product.unreconstructed_records,
             "branches": product.routes.iter().map(|route| serde_json::json!({
                 "branch": route.branch,
                 "segment_id": route.segment_id,
@@ -1154,11 +1169,17 @@ fn publish_stitched_container_retained_impl<S: RetainedStitchedPayloadSource>(
         if product.stitch_input_digest != plan.stitch_input_digest {
             return Err("rebuilt-wire product belongs to a different stitched plan".to_string());
         }
-        let (branches, routes, source_first_ticks) =
+        let (branches, routes, source_first_ticks, unreconstructed_records) =
             derive_rebuilt_wire_plan_from_sessions(plan, &product.sessions)?;
         if branches != product.branches || routes != product.routes {
             return Err(
                 "rebuilt-wire product branch join differs from the final stitched plan".to_string(),
+            );
+        }
+        if unreconstructed_records != product.unreconstructed_records {
+            return Err(
+                "rebuilt-wire product d81 exclusion count differs from the final stitched plan"
+                    .to_string(),
             );
         }
         let leading_gaps = derive_rebuilt_wire_leading_gaps(plan, &routes, &source_first_ticks)?;
@@ -2558,7 +2579,7 @@ mod tests {
                 end_byte: stream.len() as u64,
             },
         };
-        let (branches, routes, first_ticks) =
+        let (branches, routes, first_ticks, _unreconstructed_records) =
             derive_rebuilt_wire_plan_from_sessions(&plan, &[session]).unwrap();
         assert_eq!(branches[0].first_tick, u64::try_from(h0).unwrap());
         assert_eq!(first_ticks.get(&0), Some(&u64::try_from(h0).unwrap()));

@@ -248,31 +248,58 @@ fn scan_stream(
                 };
                 // The flag describes the payload being handed over, and after the
                 // reconstruction that payload is the domain's own grammar.
-                let record_flags = if reconstructed.is_some() {
+                let was_enveloped = reconstructed.is_some();
+                let record_flags = if was_enveloped {
                     header.record_flags
                         & !compact_contract::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA
                 } else {
                     header.record_flags
                 };
                 let payload = reconstructed.as_deref().unwrap_or(&payload);
-                tokens.extend(
-                    collect_static_join_tokens(
-                        header.domain_id,
-                        payload,
-                        DomainDataContext {
-                            stream_offset,
-                            record_flags,
-                            sequence: header.sequence,
-                            header_hour_raw: header.game_hour_raw,
-                            session_header_identity: None,
-                            // Token collection only; no changed-row count is read.
-                            xmap07_snow_mud_previous_grid_sha256: None,
-                        },
-                    )
-                    .map_err(|error| {
-                        format!("static-join DATA decode failed at offset {stream_offset}: {error}")
-                    })?,
-                );
+                match collect_static_join_tokens(
+                    header.domain_id,
+                    payload,
+                    DomainDataContext {
+                        stream_offset,
+                        record_flags,
+                        sequence: header.sequence,
+                        header_hour_raw: header.game_hour_raw,
+                        session_header_identity: None,
+                        // Token collection only; no changed-row count is read.
+                        xmap07_snow_mud_previous_grid_sha256: None,
+                    },
+                ) {
+                    Ok(rows) => tokens.extend(rows),
+                    Err(error) if was_enveloped => {
+                        // SAME LAW AS THE RECONSTRUCTION REFUSAL ABOVE, one
+                        // layer down: an ENVELOPED record can reconstruct
+                        // faithfully yet still fail its grammar, because the
+                        // codec's digest excludes the declared volatile prefix
+                        // and for d81 those eight bytes are the payload's own
+                        // RRL1 magic/version/length. The first spelling of the
+                        // r9 fix stopped at the reconstruction arm, so this
+                        // shape propagated with `?` and
+                        // `finalize_static_bundle` destroyed the inventory, the
+                        // static bundle and replay publication for the whole
+                        // capture anyway. Excluded and named, exactly like the
+                        // arm above; a RAW record with corrupt grammar keeps
+                        // its pre-delta hard failure.
+                        unreconstructed_record_count =
+                            unreconstructed_record_count.saturating_add(1);
+                        if unreconstructed_records.len() < MAX_NAMED_RECONSTRUCTION_REFUSALS {
+                            unreconstructed_records.push(format!(
+                                "domain {} hour {} sequence {} at offset {stream_offset}: \
+                                 reconstructed envelope rejected by its grammar: {error}",
+                                header.domain_id, header.game_hour_raw, header.sequence
+                            ));
+                        }
+                    }
+                    Err(error) => {
+                        return Err(format!(
+                            "static-join DATA decode failed at offset {stream_offset}: {error}"
+                        ));
+                    }
+                }
             }
             AcceptedRecordKind::Ordinary => {}
         }

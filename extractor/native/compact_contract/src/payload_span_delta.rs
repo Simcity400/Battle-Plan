@@ -153,6 +153,16 @@ pub const MAX_OPS: usize = 1 << 22;
 
 /// The domains whose DOMAIN_DATA payloads ride as `PSD1` envelopes.
 ///
+/// 43 `market_trade_live`, 53 `diplomacy_intel_operatives_live`, and 81
+/// `rail_replay_state_live`. The first two are two of the three lane PN priced
+/// as the largest remaining size prize; d81 is the largest remaining domain
+/// after them (`runs/pn_structural/`'s table), put on the same codec by lane QK
+/// after lane PW proved its payload splits into a geometry collection that is
+/// 93-98% byte-identical hour over hour and a hub collection whose changed
+/// bytes are a few thousand scattered inside a ~1 MB payload
+/// (`runs/qk_d81_wire_delta/MEASUREMENT.md` §1). The list is here, in the
+/// codec, because BOTH sides consult it: the producer to decide what to wrap,
+/// the decoder to refuse an envelope naming a domain nobody enabled.
 /// 43 `market_trade_live` and 53 `diplomacy_intel_operatives_live` — two of the
 /// three lane PN priced as the largest remaining size prize. 47
 /// `characters_leaders_cabinet_live` is the second-largest REMAINING domain
@@ -192,6 +202,17 @@ pub const MAX_OPS: usize = 1 << 22;
 /// 70 `sunk_convoy_history` and 100/101 are on the same stamped roster and are
 /// excluded for the same reason; 100 already has its own delta.
 ///
+/// # Why d81 needs no exception of its own
+///
+/// Its v3 payload bakes no record sequence (`compact_contract::rail_replay`'s
+/// header is magic/version/header_len/row_len/reserved/status flags/wall
+/// clock/observed counts/row count), so `stamp_record_bound_sequence` has only
+/// the envelope-header arm to settle for it, exactly as for 43 and 53. Its wall
+/// clock rides at payload offset 16..24, INSIDE the comparison basis rather
+/// than in the declared volatile header — measured cost: NoChange never fires
+/// and each hour's delta carries one small literal op for those bytes
+/// (`runs/qk_d81_wire_delta/MEASUREMENT.md` §1); correctness is untouched,
+/// because the basis is opaque bytes both sides.
 /// # Why 47 qualifies where 41 does not
 ///
 /// d47's grammar (`characters_leaders_cabinet_live::domain47_compact`) carries no
@@ -201,10 +222,10 @@ pub const MAX_OPS: usize = 1 << 22;
 /// record that carries it, so the stamping law has nothing to rewrite, and the
 /// volatile-header rule applies to it exactly as to d43/d53: byte 0 is the same
 /// recorder wall-clock `u64` those grammars stamp.
-pub const DELTA_ENABLED_DOMAINS: &[u16] = &[43, 47, 53];
+pub const DELTA_ENABLED_DOMAINS: &[u16] = &[43, 47, 53, 81];
 
 pub const fn is_delta_enabled_domain(domain_id: u16) -> bool {
-    matches!(domain_id, 43 | 47 | 53)
+    matches!(domain_id, 43 | 47 | 53 | 81)
 }
 
 /// Hours a domain may go without a keyframe.

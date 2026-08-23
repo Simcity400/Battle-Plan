@@ -839,6 +839,7 @@ fn scan_stream(
         StreamIdentityMode::IdentityV1 => StatefulStreamValidator::identity_v1(),
         StreamIdentityMode::Legacy => StatefulStreamValidator::legacy(),
     };
+    let mut span_delta = compact_contract::payload_span_delta::PayloadSpanDeltaConsumer::new();
     let mut hours = Vec::new();
     let mut failures = 0usize;
     let mut closed_hours = 0usize;
@@ -1058,6 +1059,28 @@ fn scan_stream(
             // `fold_payload` first runs the complete compact decoder (including
             // every row and join), then rejects unknown status vocabulary, then
             // classifies known failure bits.
+            //
+            // UNWRAP BEFORE ANYTHING LOOKS AT THE PAYLOAD: a d81 record may ride
+            // as a `PSD1` envelope (`compact_contract::payload_span_delta`),
+            // and this bench must fold what the domain encoded, not refuse it.
+            // A record that will not reconstruct is refused BY NAME — this is a
+            // bench over an intact stream, so a refusal is worth stopping for.
+            let reconstructed =
+                compact_contract::payload_span_delta::reconstruct_if_enveloped(
+                    &mut span_delta,
+                    header.record_flags,
+                    compact_contract::payload_span_delta::PayloadSpanDeltaIdentity {
+                        domain_id: header.domain_id,
+                        source_sequence: header.sequence,
+                        game_hour_raw: header.game_hour_raw,
+                    },
+                    payload,
+                )
+                .map_err(|reason| format!("d81 DATA at byte {pos} reconstructs: {reason}"))?;
+            let payload: &[u8] = match &reconstructed {
+                Some(reconstructed) => reconstructed,
+                None => payload,
+            };
             let compact_decoded = compact_rail::decode_payload(payload)
                 .map_err(|error| format!("d81 DATA at byte {pos}: {error}"))?;
             let perf_status = perf_domains.get(&D81).copied().ok_or_else(|| {

@@ -45,7 +45,7 @@ use serde::Serialize;
 
 /// The shipped enabled set, restated so `--domains` can still price a
 /// candidate domain that is not enabled yet.
-const DEFAULT_DOMAINS: [u16; 3] = [43, 47, 53];
+const DEFAULT_DOMAINS: [u16; 4] = [43, 47, 53, 81];
 
 /// The `ICCP` companion carrier's magic
 /// (`diplomacy_intel_operatives_live::a30_companion_carrier::MAGIC`).
