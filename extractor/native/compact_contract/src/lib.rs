@@ -300,6 +300,11 @@ pub const COMPACT_EXPECTED_PARTIAL_TOLERANCES: &[CompactExpectedPartialTolerance
         reason: "oob_command: only invalid army-root or naval task-force-root rows are tolerated; the collector freezes additions/deletes/linkage changes, and the domain/hour remains unknown because omitted command identities are not serialized",
     },
     CompactExpectedPartialTolerance {
+        domain_id: 42,
+        tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
+        reason: "air_combat_losses_live: only a producer-declared air-region combat-history gap is tolerated, and the declaration IS the payload spelling — the DATA record ends at its legacy length with NO region trailer exactly when the attribution walk refused unreadably after one re-walk and a second agreeing wing pass, with the refusal named by stage/predicate/address on the diagnostic channel; the fold admits nothing else. The wing rows carried are exact measurements whose delta baseline advances; the omitted attribution is absent, never zeros, so no combat is fabricated and no deletion is invented; every other failing word (SOURCE_UNAVAILABLE, inherited frame failures, rejected wing rows, scale mismatches — all serialized WITH their region section) keeps the pre-tolerance verdict: hour unknown, rows discarded",
+    },
+    CompactExpectedPartialTolerance {
         domain_id: 47,
         tolerated_flags: COMPACT_STATUS_PARTIAL_DATA,
         reason: "characters_leaders_cabinet_live: only a payload-declared per-family gap is tolerated, and the header's family-presence mask names every family the frame did not observe with the decoder refusing any other spelling — a bare PARTIAL_DATA without the declaration, a declaration without PARTIAL_DATA, rows from a declared-absent family, or a unit-leader trait count asserted while the trait family was unobserved. The rows carried are exact and whole families are the only unit of omission, so the sparse patch fabricates no deletion; row-level loss inside an observed family keeps SOURCE_UNAVAILABLE and stays outside this tolerance, and the domain/hour remains unknown for every family the mask declares absent",
@@ -2756,7 +2761,7 @@ mod tests {
             .iter()
             .map(|tolerance| tolerance.domain_id)
             .collect::<Vec<_>>();
-        assert_eq!(domains, vec![26, 27, 28, 47, 54, 86]);
+        assert_eq!(domains, vec![26, 27, 28, 42, 47, 54, 86]);
     }
 
     #[test]
@@ -2776,7 +2781,7 @@ mod tests {
         for domain_id in [29, 41, 45, 48, 49, 50, 53, 56, 65] {
             assert_eq!(expected_partial_tolerance(domain_id), None);
         }
-        for domain_id in [26, 27, 28, 47, 54, 86] {
+        for domain_id in [26, 27, 28, 42, 47, 54, 86] {
             assert_eq!(
                 expected_partial_tolerance(domain_id).map(|tolerance| tolerance.tolerated_flags),
                 Some(COMPACT_STATUS_PARTIAL_DATA)

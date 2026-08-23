@@ -1052,9 +1052,23 @@ def grade_passive_domain_outcomes(
                 f"per_domain_{name}_record_count_invalid", problems)
         require(is_int(data_count) and data_count == accepted,
                 f"per_domain_{name}_data_record_count_mismatch", problems)
+        # D42's declared attribution gap: the boundary decoder counts an
+        # undeclared partial (failing word tolerable by flags while the region
+        # section is still present) as d42_undeclared_expected_partial. With
+        # that counter PRESENT and zero, every d42 PARTIAL_DATA hour omitted
+        # its region section -- the declared gap the compact contract
+        # tolerates -- so the raw-word clause licenses exactly that bit.
+        # A missing or malformed counter never licenses. Mirrors
+        # ProductionCapture.Promotion.ps1 / ProductionCapture.Validation.ps1.
+        raw_mask = CANONICAL_COMPACT_FAILURE_MASK
+        if domain_id == 42:
+            d42_problems = row.get("problems") or {}
+            undeclared = d42_problems.get("d42_undeclared_expected_partial")
+            if is_int(undeclared) and undeclared == 0:
+                raw_mask &= ~(1 << 9)
         require(
             is_int(raw_flags) and raw_flags >= 0
-            and raw_flags & CANONICAL_COMPACT_FAILURE_MASK == 0,
+            and raw_flags & raw_mask == 0,
             f"per_domain_{name}_raw_failure_status",
             problems,
         )

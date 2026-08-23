@@ -58,6 +58,12 @@ public static class ProductionCaptureAtomicPublishNative {
 }
 
 $script:CanonicalCompactFailureMask = [uint32]0x13CF
+# The same mask without PARTIAL_DATA (bit 9): domain 42's raw-word clause uses
+# it when the boundary decoder counted ZERO undeclared partials -- every d42
+# PARTIAL_DATA hour in the capture is then the declared attribution gap the
+# compact contract tolerates. A missing or malformed counter never licenses.
+# Mirrors ProductionCapture.Promotion.ps1's scoped raw-word mask.
+$script:CanonicalCompactFailureMaskNoPartialData = [uint32]0x11CF
 $script:RequiredStaticArtifactNames = @(
     "templates_equipment_catalog",
     "localisation_join",
@@ -1237,7 +1243,26 @@ function Test-ProductionCaptureArtifacts {
         }
         $rawFlags = if (Test-IsJsonInteger $rawFlagsRaw) { [uint32][int64]$rawFlagsRaw } else { [uint32]0 }
         $effectiveFlags = Get-ObjectProperty $row "effective_failure_status_flags_or"
-        if (($rawFlags -band $script:CanonicalCompactFailureMask) -ne 0) {
+        # D42'S DECLARATION IS THE PAYLOAD SPELLING: the boundary decoder
+        # counts an undeclared partial (failing word tolerable BY FLAGS while
+        # the region section is still present) as
+        # `d42_undeclared_expected_partial`. With that counter PRESENT and
+        # zero, every d42 PARTIAL_DATA hour omitted its region section -- the
+        # declared gap the compact contract tolerates -- so the raw-word
+        # clause licenses exactly that bit for domain 42. A missing or
+        # malformed counter never licenses. Mirrors Promotion.ps1.
+        $rawFailureMask = $script:CanonicalCompactFailureMask
+        if ($id -eq 42) {
+            $d42Problems = Get-ObjectProperty $row "problems"
+            $d42Undeclared = $null
+            if ($null -ne $d42Problems) {
+                $d42Undeclared = Get-ObjectProperty $d42Problems "d42_undeclared_expected_partial"
+            }
+            if ((Test-IsJsonInteger $d42Undeclared) -and [int64]$d42Undeclared -eq 0) {
+                $rawFailureMask = $script:CanonicalCompactFailureMaskNoPartialData
+            }
+        }
+        if (($rawFlags -band $rawFailureMask) -ne 0) {
             # A raw source-unavailable, hard-disabled, partial, bridge, or decode
             # status is never production-complete. Effective-status masking is
             # useful for replay semantics, but it cannot promote missing source

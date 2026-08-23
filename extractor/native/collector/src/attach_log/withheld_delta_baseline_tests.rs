@@ -257,7 +257,7 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
     let mut tracker = CompactAirStrengthDeltaTracker::default();
     let generations = CompactAirWingGenerationAuthority::default();
     let (rows, ..) =
-        compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(100)], 0);
+        compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(100)], 0, false);
     assert_eq!(rows.len(), 1);
     let generation_after_seed = generations.next_generation();
 
@@ -265,7 +265,7 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
         &mut tracker,
         &generations,
         vec![sample(90)],
-        COMPACT_STATUS_PARTIAL_DATA,
+        COMPACT_STATUS_PARTIAL_DATA, false
     );
     assert!(rows.is_empty());
     assert_eq!((changed_rows, loss_rows), (0, 0));
@@ -276,7 +276,7 @@ fn d42_withheld_frame_defers_the_full_count_delta_to_the_next_clean_frame() {
     );
 
     let (rows, changed_rows, loss_rows, ..) =
-        compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(85)], 0);
+        compact_air_strength_delta_rows(&mut tracker, &generations, vec![sample(85)], 0, false);
     assert_eq!((changed_rows, loss_rows), (1, 1));
     assert_eq!(rows[0].count_delta, -15);
     assert_eq!(rows[0].old_count, 100);
@@ -307,7 +307,7 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
         &mut tracker,
         &generations,
         vec![sample(4, 100, scaled(100))],
-        0,
+        0, false
     );
     let generation_after_seed = generations.next_generation();
 
@@ -315,7 +315,7 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
         &mut tracker,
         &generations,
         vec![sample(4, 99, scaled(99) + 1), sample(5, 20, scaled(20))],
-        0,
+        0, false
     );
     assert_eq!(
         scale_mismatch_rows, 1,
@@ -341,7 +341,7 @@ fn d42_scale_mismatch_frame_withholds_and_the_movement_survives_an_unchanged_fra
             &mut tracker,
             &generations,
             vec![sample(4, 99, scaled(99)), sample(5, 20, scaled(20))],
-            0,
+            0, false
         );
     assert_eq!(scale_mismatch_rows, 0);
     assert_eq!((changed_rows, loss_rows), (2, 1));
@@ -525,7 +525,17 @@ fn withheld_predicate_covers_every_failure_class_bit() {
 
 #[test]
 fn class_domains_have_no_expected_partial_tolerance() {
-    for domain_id in [29u16, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 42, 46] {
+    // 42 LEFT this class on purpose (round-5 gate): it gained the contract's
+    // declared-region-gap tolerance, and its delta builder was RE-DERIVED for
+    // that -- `compact_air_strength_delta_rows` now releases the withhold only
+    // when the caller declares the gap AND the contract tolerates the word
+    // (`tolerate_region_gap_partial` +
+    // `expected_partial_tolerance_applies`). The behavioural pin for both
+    // directions lives in attach_log/tests.rs as
+    // `d42_delta_builder_emits_and_advances_only_on_the_declared_gap_partial`.
+    // Every other delta-class domain below must stay tolerance-free so its
+    // blanket withhold keeps matching its fold treatment exactly.
+    for domain_id in [29u16, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 46] {
         assert!(
             compact_contract::expected_partial_tolerance(domain_id).is_none(),
             "d{domain_id} gained an expected-partial tolerance; the collector's \

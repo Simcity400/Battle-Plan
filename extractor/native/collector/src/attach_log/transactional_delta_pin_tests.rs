@@ -381,7 +381,7 @@ fn air_unit_frame(
         &mut trackers.air_combat_losses_live,
         generations,
         strengths,
-        0,
+        0, false
     );
     (d30_rows, d32_rows, d42_rows)
 }

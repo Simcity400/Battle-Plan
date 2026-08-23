@@ -7198,6 +7198,32 @@ fn decode_compact_air_combat_losses_live_data_payload(
         return;
     }
 
+    // D42'S DECLARATION IS THE PAYLOAD SPELLING (round-2 review): the
+    // producer omits the region section -- payload ends exactly at the
+    // legacy length -- only when the attribution walk refused unreadably
+    // after its one re-walk and a second agreeing wing pass. That is the
+    // one partial the contract tolerates. A failing word whose section is
+    // STILL PRESENT (rejected wing rows, a scale mismatch) is an
+    // UNDECLARED partial: counted here so neither the fold nor the
+    // promotion accounting mistakes it for the declared gap.
+    //
+    // The counter is published for EVERY decoded d42 DATA record -- zero
+    // when none -- because the promotion/validation licenses require it
+    // PRESENT and zero before they license bit 9; a discarded zero would
+    // make every clean declared-gap capture unlandable (round-5 review).
+    let undeclared_partial = compact_contract::compact_status_is_failure(status_flags)
+        && payload.len() != legacy_len
+        && compact_contract::expected_partial_tolerance_applies(42, status_flags)
+            .is_some();
+    {
+        let domain = summary.per_domain.entry(42).or_default();
+        fold_named_unit(
+            &mut domain.problems,
+            "d42_undeclared_expected_partial",
+            u64::from(undeclared_partial),
+        );
+    }
+
     if let Some(domain) = summary.per_domain.get_mut(&42) {
         domain.data_rows_total = domain.data_rows_total.saturating_add(row_count as u64);
         domain.data_changed_rows_total = domain

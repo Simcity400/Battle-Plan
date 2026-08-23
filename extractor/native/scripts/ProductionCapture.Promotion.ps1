@@ -1,6 +1,11 @@
 Set-StrictMode -Version Latest
 
 $script:ProductionPromotionFailureMask = [uint32]0x13CF
+# The same mask without PARTIAL_DATA (bit 9). Used ONLY for domain 42's
+# raw-word clause when the boundary decoder counted zero undeclared partials,
+# i.e. every d42 PARTIAL_DATA hour in the capture is the declared attribution
+# gap the compact contract tolerates. See the completeness clause below.
+$script:ProductionPromotionFailureMaskNoPartialData = [uint32]0x11CF
 # Complement of COMPACT_STATUS_V1_KNOWN_MASK
 # (compact_contract/src/status_flags_base.rs). Bits 0..=14 are assigned; bit 14
 # is COMPACT_STATUS_SOURCE_EMPTY, the informational badge a domain publishes
@@ -876,6 +881,34 @@ function Get-ProductionCapturePromotionEvidence {
         # two are required to agree by the first clause below.
         $globalStatusFlags = Get-ProductionPromotionGlobalStatusFlags `
             -DomainId ([int]$expectedDomains[$index].id) -StatusFlags $rawStatusFlags
+        # D42'S DECLARATION IS THE PAYLOAD SPELLING. The domain-42 boundary
+        # decoder counts an UNDECLARED partial -- a failing word tolerable BY
+        # FLAGS (bare PARTIAL_DATA) whose region section is still present --
+        # as `d42_undeclared_expected_partial` in the row's problems map. When
+        # that count is zero, every PARTIAL_DATA hour this capture carried for
+        # domain 42 omitted its region section: the declared attribution gap
+        # the compact contract tolerates, with the refusal named on the PERF
+        # diagnostic units. The RAW-word clause below then licenses exactly
+        # that bit (and nothing else) for domain 42; every other bit and every
+        # other domain keep blocking on the raw word, and the EFFECTIVE-word
+        # clause is untouched either way.
+        $rawFailureMask = $script:ProductionPromotionFailureMask
+        if ([int]$expectedDomains[$index].id -eq 42) {
+            $d42Problems = Get-ProductionPromotionProperty $row 'problems'
+            $d42Undeclared = $null
+            if ($null -ne $d42Problems) {
+                $d42Undeclared = Get-ProductionPromotionProperty `
+                    $d42Problems 'd42_undeclared_expected_partial'
+            }
+            # Strict integer check: ConvertFrom-Json yields Int64 for integer
+            # literals, Double for fractions, and booleans/strings must never
+            # license (a `[int64]$false` cast is 0).
+            if ($null -ne $d42Undeclared -and
+                ($d42Undeclared -is [int] -or $d42Undeclared -is [long]) -and
+                [int64]$d42Undeclared -eq 0) {
+                $rawFailureMask = $script:ProductionPromotionFailureMaskNoPartialData
+            }
+        }
         # Definedness is tested on the globalized word: a REGISTERED lane badge
         # is defined, and an undefined bit still survives the strip. The failure
         # mask deliberately stays on the RAW word -- whether a lane-local badge
@@ -884,7 +917,7 @@ function Get-ProductionCapturePromotionEvidence {
         if ($rowDomainId -ne [int]$expectedDomains[$index].id -or
             $rowRecordCount -ne $frameCount -or
             $rowDataRecordCount -ne $frameCount -or
-            ($rawStatusFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
+            ($rawStatusFlags -band $rawFailureMask) -ne 0 -or
             ($effectiveStatusFlags -band $script:ProductionPromotionFailureMask) -ne 0 -or
             ($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0 -or
             ($effectiveStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -ne 0) {
@@ -900,7 +933,7 @@ function Get-ProductionCapturePromotionEvidence {
             effective_failure_status_flags_or = $effectiveStatusFlags
             real_source_complete =
                 ($rowDataRecordCount -eq $frameCount -and
-                ($rawStatusFlags -band $script:ProductionPromotionFailureMask) -eq 0 -and
+                ($rawStatusFlags -band $rawFailureMask) -eq 0 -and
                 ($effectiveStatusFlags -band $script:ProductionPromotionFailureMask) -eq 0 -and
                 ($globalStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -eq 0 -and
                 ($effectiveStatusFlags -band $script:ProductionPromotionUnknownStatusMask) -eq 0)

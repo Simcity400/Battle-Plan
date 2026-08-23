@@ -764,7 +764,29 @@ def main() -> int:
         domain_id = int(info.get("domain_id", -1))
         raw = int(info.get("status_flags_or", 0))
         globalized = globalize(domain_id, raw)
-        residual_failure = globalized & FAILURE_MASK & ~tolerated.get(name, 0)
+        strip = tolerated.get(name, 0)
+        # D42 declares its attribution gap by OMITTING the region section of
+        # the DATA payload. A partial whose section is still present is an
+        # UNDECLARED partial (the boundary decoder counts it as
+        # d42_undeclared_expected_partial): the tolerance must not strip its
+        # PARTIAL_DATA bit, or promotion would launder hours the fold marks
+        # unknown.
+        problems = info.get("problems", {}) or {}
+        undeclared = problems.get("d42_undeclared_expected_partial")
+        # License requires the counter PRESENT, an integer (bool excluded),
+        # and exactly zero; anything malformed counts as undeclared and keeps
+        # PARTIAL_DATA out of the strip. DOMAIN 42 ONLY: it is the only
+        # domain that publishes this counter, and the only one whose
+        # tolerance needs payload-level precision — every other tolerated
+        # domain must keep its plain flag-level strip.
+        licensed = (
+            isinstance(undeclared, int)
+            and not isinstance(undeclared, bool)
+            and undeclared == 0
+        )
+        if domain_id == 42 and not licensed:
+            strip &= ~(1 << 9)
+        residual_failure = globalized & FAILURE_MASK & ~strip
         rows.append({
             "outcome_reasons": outcome_reasons.get(domain_id),
             "domain": name,
