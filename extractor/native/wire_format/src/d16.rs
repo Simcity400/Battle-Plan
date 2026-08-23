@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:19666`-`:19724`
 //! (`fold_decisions`), the collector write that produces the payload
-// @world-fold-authority domain=16 functions=fold_decisions lines=19666-19724 sha256=be53b53fb85f6abfa59eca3721f7d8b65ef511ef04d038a280f0379815af269c closure=aa103fad870d8e87b17bbd8c116d9678c89daf6f5c21e7a811da15fafe6b0601
+// @world-fold-authority domain=16 functions=fold_decisions lines=19666-19724 sha256=be53b53fb85f6abfa59eca3721f7d8b65ef511ef04d038a280f0379815af269c closure=df09960a734f3c1691fa6ec120c4f8538d6e94c23a1b5fe468da6f5b9f6218f2
 //! (`extractor/native/collector/src/attach_log.rs:69581`-`:69648`), and the read
 //! that produces the counters (`attach_log.rs:83141`-`:83235`).
 //! Field-level evidence is retained as `domain-16::Overview` in

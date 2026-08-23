@@ -4,7 +4,7 @@
 //! pending state, while its optional `DEL2` suffix is an independently produced,
 //! append-only lifecycle ledger (`world_fold.rs:13290`-`:13423`, including the
 //! delegated lifecycle-row fold).
-// @world-fold-authority domain=64 functions=fold_delayed_events,fold_delayed_event_rows lines=13290-13423 sha256=123b847368be5ccd76a5eb867e5ea30e106b0bedd96c0bf06a34f9a9f6dc0e71 closure=ab35f7520d3a3d9ccf7d478c8f88132270a0843ac2123c602955c1c43e52bb12
+// @world-fold-authority domain=64 functions=fold_delayed_events,fold_delayed_event_rows lines=13290-13423 sha256=123b847368be5ccd76a5eb867e5ea30e106b0bedd96c0bf06a34f9a9f6dc0e71 closure=68f510c0e3108e918f3482c5cd61fec7db7a9e652597e18e53353740874826f0
 //! The state table is an ordered occurrence list whose physical vector order
 //! must be preserved. The ordered-occurrence codec can represent that shape, but
 //! the d64 pending-state collection remains independently unported and

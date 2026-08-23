@@ -3,7 +3,7 @@
 //! This boundary is derived from the shipping fold in
 //! `world_fold.rs:26760`-`:26972` and the producer in
 //! `collector/src/attach_log.rs:72387`-`:72454`.
-// @world-fold-authority domain=21 functions=fold_land_combats lines=26760-26972 sha256=51627906d884a909b27dc06723c343bc8a2c00ba2088d522d4bb783f8704d674 closure=80e5069a9a56b4e69245f122e42742144d56b886e9fe63bfd4ef9f7fd15d6165
+// @world-fold-authority domain=21 functions=fold_land_combats lines=26760-26972 sha256=51627906d884a909b27dc06723c343bc8a2c00ba2088d522d4bb783f8704d674 closure=ed40c8e52233c243b2d9a07ea4b38ba20aa6b2eede82d28460e11ac64bc96b54
 //!
 //! The shipping order is significant: the fold validates the 32-byte header,
 //! reserved word, and exact payload length before consulting `status_flags`.

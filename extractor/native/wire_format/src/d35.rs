@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:21395`-`:21458`
 //! (`fold_air_variant_stats`), its payload constants at `:987`-`:988`, the state
-// @world-fold-authority domain=35 functions=fold_air_variant_stats lines=21395-21458 sha256=d39b1dfa684718401b65209d22f943d7593c95d8c65c0b7f669764c571f07a50 closure=91399666539c673fcb1aed4f0aea65c0d14bfb0200e0d6f8501885571ec1663d
+// @world-fold-authority domain=35 functions=fold_air_variant_stats lines=21395-21458 sha256=d39b1dfa684718401b65209d22f943d7593c95d8c65c0b7f669764c571f07a50 closure=7fce424980688e9d3e48e380400319ee014caeef74d5b656af347c73b5bfc323
 //! struct and render at `:23835`-`:23889`, and the collector read and payload
 //! writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:52997`-`:53067`,

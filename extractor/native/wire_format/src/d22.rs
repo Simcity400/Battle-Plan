@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:30043`-`:30167`
 //! (`fold_map_control`), its row-length constants at `:386`-`:387`, the projection
-// @world-fold-authority domain=22 functions=fold_map_control lines=30043-30167 sha256=78a9bbbfbd40b1faf44e6d45b3a3e9bf164c22d85fecfa8be226543976794ad9 closure=9d894bc3f42571d6ceb15c884b68171cb081c9b086801514b6a5100d22c14196
+// @world-fold-authority domain=22 functions=fold_map_control lines=30043-30167 sha256=78a9bbbfbd40b1faf44e6d45b3a3e9bf164c22d85fecfa8be226543976794ad9 closure=cd18abc5540c01c0c3d0c89fa34b258a63b632a19e42079a2e7e3c33e3fc0d98
 //! that merges its output into the shared state/province objects (`world_fold.rs::build_snapshot`),
 //! and the collector read and payload writer that produce the rows
 //! (`extractor/native/collector/src/attach_log.rs:59480`-`:59538`,

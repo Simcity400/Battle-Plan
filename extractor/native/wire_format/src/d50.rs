@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:27500`-`:27590`
 //! (`fold_naval_combat_members`), the D49 fold it depends on
-// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=27500-27590 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=11c63ac93f51824f116bc4b0c0f727627b7359622dde88427494bdaba98d3cbb
+// @world-fold-authority domain=50 functions=fold_naval_combat_members lines=27500-27590 sha256=4b0a3cce4ee4862f1519c4693203ca513e134edc70b423cc29c4bad6121f602b closure=36bc47027a7d82aa6d620a70efab7871a5b225238229cc10b69f31c7aba5eeda
 //! (`:20040`-`:20128`, `fold_naval_combat_lifecycle`), the accumulator's JSON
 //! projection (`:8839`-`:8887`), the lane codec that defines the payload grammar
 //! (`extractor/native/lanes/naval_combat_live/src/domain49_50_naval_combat_live.rs`,

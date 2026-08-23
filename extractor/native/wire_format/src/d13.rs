@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:18406`-`:18809`
 //! (`fold_tech`), its scale constants at `:154`-`:155`, the collector packer
-// @world-fold-authority domain=13 functions=fold_tech lines=18406-18809 sha256=a94c63198c17782a1ee46a63deb97a42c20544d636d7dc268ad8ecce6a0fdd03 closure=f97196505ef0efe8a71d8f7f24b1b8fcea96c5b5584bea4f65bb7bcb24c129c8
+// @world-fold-authority domain=13 functions=fold_tech lines=18406-18809 sha256=a94c63198c17782a1ee46a63deb97a42c20544d636d7dc268ad8ecce6a0fdd03 closure=25d19b826b73fec35950d94e087f9f5a7b4bcdc5e792d86bf5a312df4bfecbcf
 // The structural half of that fold no longer lives in `world_fold.rs`: it is the
 // shared leaf `d13_grammar`, which this port EXECUTES rather than transcribes.
 // The closure above cannot follow it across the crate boundary, so the leaf's

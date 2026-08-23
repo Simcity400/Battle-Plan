@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:13004`-`:13048`
 //! (`fold_fuel`), its scale constant at `:152`, the collector read that produces
-// @world-fold-authority domain=10 functions=fold_fuel lines=13004-13048 sha256=39ef43d5bf9850374524292ee3b0b0083bb98cbfd92fb53d3cd59f4ed193a8b9 closure=8c88c525be6cd8994eb5d297f8c72efa5629fdb86c3e11b5d780a0b4977029d1
+// @world-fold-authority domain=10 functions=fold_fuel lines=13004-13048 sha256=39ef43d5bf9850374524292ee3b0b0083bb98cbfd92fb53d3cd59f4ed193a8b9 closure=cefd74563e3ca378f929d37ec0ecce729f16689e03295d9b5244a64fd3faa323
 //! the rows (`extractor/native/collector/src/attach_log.rs:83846`-`:83885`), the
 //! collector's payload encoder (`:67976`-`:67999`), and the recorder's own
 //! structural decoder for this payload

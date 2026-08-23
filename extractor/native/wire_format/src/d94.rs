@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:14607`-`:14668`
 //! (`fold_pov_province_visibility`, dispatched at `:4745`, its error arm at
-// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=14607-14668 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=c74f028b6e6a757707880684641a69c851a82db75d11a648cc24d3a051fb542d
+// @world-fold-authority domain=94 functions=fold_pov_province_visibility lines=14607-14668 sha256=f4f2a1bf6b68acc138462a5344beaf993617b18b124b4fc745192514c3c29f90 closure=18ce66df9f77ab85648b41677f0fac9ca63bb1064629f29f1cfd4e7c9d4249ab
 //! `:4917`-`:4925`, its hour reset at `world_fold.rs::reset_hour_state`) and from the payload codec
 //! the domain already owns, `compact_contract/src/pov_visibility.rs` (recipe
 //! authority 2). There is no `extractor/documents/domains/d94_*.md`, which is

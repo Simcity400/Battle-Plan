@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:17573`-`:18214`
 //! (`fold_production`), its `parse_production_trailers` chain parser and the ten
-// @world-fold-authority domain=11 functions=fold_production lines=17573-18214 sha256=196584a7f9b89e2a3bcfd56c98f5b92acfcce5ddbeb34995021888e6db1e14bb closure=a0e274b4f7d46c134d25e40e5c0d051b2fd07dc0c66a948059039aa7d27654ee
+// @world-fold-authority domain=11 functions=fold_production lines=17573-18214 sha256=196584a7f9b89e2a3bcfd56c98f5b92acfcce5ddbeb34995021888e6db1e14bb closure=0dc4d087f7877de32a39776ad0297a81ad673fb9e74afb56bab2207042b46489
 // @leaf-source-authority crate=d11_grammar root=extractor/native/d11_grammar files=8 sha256=cd0e1eed4d8767af23c3d745c2ff369f1fa78e514c9a77ab4f6ef9acdfc54631
 //! per-segment parsers it dispatches to, plus the collector reads that produce
 //! every gate (`extractor/native/collector/src/attach_log.rs`, cited per field).

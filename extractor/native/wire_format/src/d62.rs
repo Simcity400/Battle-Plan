@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:22222`-`:22285`
 //! (`fold_hub_motorization`), its JSON emission at `:9187`-`:9220`, and the
-// @world-fold-authority domain=62 functions=fold_hub_motorization lines=22222-22285 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=7ae0a91cb232fa60ff8c29d41dcd4f78fae2fcd66d4b16ba0eb09efb30b24009
+// @world-fold-authority domain=62 functions=fold_hub_motorization lines=22222-22285 sha256=00f57454e997e08043a40a625ef9d2833c5c900c82cb22bbe8ae6ffef9c6f33f closure=7bb1e2e6c7cd6fca81d3d7465b55c19f131f189e83867677af260d8c02a5313c
 //! payload codec the fold calls, which for this domain lives **outside** the fold
 //! in its own leaf crate: `extractor/native/lanes/hub_motorization_live/src/lib.rs`
 //! (`decode_payload_rows` at `:264`, `read_row` at `:325`, `validate_row` at

@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:21582`-`:21717`
 //! (`fold_air_superiority_inputs`), its payload constants at `:991`-`:992`,
-// @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=21582-21717 sha256=0d9ec25354f229338546a9c188fb9251b664880f6276727f2f4fa29344bdb840 closure=bc6ec8a0874c637b4479243db78b9d72ed785d538844dfba08a69eb011ce654b
+// @world-fold-authority domain=38 functions=fold_air_superiority_inputs lines=21582-21717 sha256=0d9ec25354f229338546a9c188fb9251b664880f6276727f2f4fa29344bdb840 closure=df7d11be2fde55ec64c0a24023440e9ace3a8533afed0e653ee03b3c0a826007
 //! `:758` and `:156`, the accumulator's own JSON projection (`world_fold.rs::insert_air_superiority_inputs`), and
 //! the collector read that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:55529`-`:55769`,

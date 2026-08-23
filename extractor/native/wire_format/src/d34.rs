@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:21310`-`:21392`
 //! (`fold_air_base_status`), its payload constants at `:985`-`:986`, `:758` and
-// @world-fold-authority domain=34 functions=fold_air_base_status lines=21310-21392 sha256=7e016bc6ad8f2b0b1038f0abe9d7d59b82698ccc322a61146577a461a5c13311 closure=51952f615368ef64fdaa94e03719bd521666c7869fb96f4f1033b297788c0c29
+// @world-fold-authority domain=34 functions=fold_air_base_status lines=21310-21392 sha256=7e016bc6ad8f2b0b1038f0abe9d7d59b82698ccc322a61146577a461a5c13311 closure=7ed47d57e64cc8665e8355cd3bf7536c725c3b0dcdb0ce94d6599938e4ea1720
 //! `:499`, the accumulator it folds into (`:1870`), the two consumers of that
 //! accumulator (`:8169`-`:8219`, `:8926`-`:8962`), and the collector read and
 //! payload writer that produce the rows

@@ -2,7 +2,7 @@
 //!
 //! Derived from `world_fold.rs:13056`-`:13275`
 //! (`fold_country_core_scalars`), its payload constants at `:159`-`:172`, and the
-// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=13056-13275 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=69fb6e75ea474027280cf41687c8a967ec4f8e085a80cd3a8f2f7924beb9946c
+// @world-fold-authority domain=63 functions=fold_country_core_scalars lines=13056-13275 sha256=9d0ad424e548b0539a71f764081750d9be96e415c46038bd3cd5219ba8658329 closure=1cf0733f8c6bce5daa3177337ea391b5dfe1dbbbf00ab969da6dfae98efeada2
 //! collector read that produces the presence flags
 //! (`extractor/native/collector/src/attach_log.rs:60573`-`:60757`).
 //! The fold and collector read are the field-level basis.

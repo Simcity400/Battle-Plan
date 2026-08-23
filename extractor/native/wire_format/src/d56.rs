@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:29933`-`:30040`
 //! (`fold_naval_missions_status`, dispatched at `:4723`), the row grammar in
-// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=29933-30040 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58 closure=08cdce3a766c1ea5d80c97837d681ff49f3fc55c2e295e1eeb5bab8884923544
+// @world-fold-authority domain=56 functions=fold_naval_missions_status lines=29933-30040 sha256=c2b2f8413318f52c2efc47516abb2f44d6b52c3ca40d77574d631eafab5dcd58 closure=c27bc961319491eb719ce0e175cef302f0137152e6ff928dbbd9b49136ee2b91
 //! `extractor/native/lanes/naval_missions_status_live/src/domain56_compact.rs`
 //! (authority #2 for offsets, bounds and scales), and the collector read that
 //! produces the presence flags,

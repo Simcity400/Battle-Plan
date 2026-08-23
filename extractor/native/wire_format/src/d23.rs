@@ -3,7 +3,7 @@
 //!
 //! Derived from `world_fold.rs:30170`-`:30393`
 //! (`fold_map_detail`), its payload constants at `:400`-`:403`, the shared row
-// @world-fold-authority domain=23 functions=fold_map_detail lines=30170-30393 sha256=f1811dd2ba44bb469d40dcd00b7a9d855d7c247270108333059ee41aa65f9494 closure=14de15e2f04667ed54b1a442be072b5c19a75ef502a7960e5c82f3e865b62c29
+// @world-fold-authority domain=23 functions=fold_map_detail lines=30170-30393 sha256=f1811dd2ba44bb469d40dcd00b7a9d855d7c247270108333059ee41aa65f9494 closure=76f4e7ff6b5f93220734eb7b7600e352999d090694a49e314170ee0f84d94668
 //! helpers at `:29977`-`:30044`, and the collector read and packer that produce
 //! the flags (`extractor/native/collector/src/attach_log.rs:58628`-`:58717`,
 //! `:59312`-`:59444`, `:71729`-`:71850`). The fold and collector read are the
