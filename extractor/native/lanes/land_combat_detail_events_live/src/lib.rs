@@ -89,7 +89,15 @@ pub const STATUS_PARTIAL_DATA: u32 = compact_contract::COMPACT_STATUS_PARTIAL_DA
 pub const STATUS_TRANSITION_BASELINE_RESET: u32 =
     compact_contract::COMPACT_STATUS_TRANSITION_BASELINE_RESET;
 pub const FAILURE_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_FAILURE_MASK;
-pub const D55_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK;
+/// What this domain's own payload decoder accepts as a DEFINED status word:
+/// the assigned global v1 vocabulary plus this lane's registered local
+/// badges. `DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE` rides on every frame
+/// whose event carriers dropped or could not attribute observations, so a
+/// mask without it would reject exactly the records the badge law exists to
+/// let through -- the decoder would fail them before the fold ever reached
+/// the delta-pin check.
+pub const D55_KNOWN_STATUS_MASK: u32 = compact_contract::COMPACT_STATUS_V1_KNOWN_MASK
+    | compact_contract::DOMAIN55_LANE_LOCAL_STATUS_MASK;
 
 pub const EVENT_PHASE_STARTED: u32 = 1;
 pub const EVENT_PHASE_UPDATED: u32 = 2;
@@ -4544,6 +4552,30 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("final record is not canonical FRAME_END")));
+    }
+
+    /// kills: narrowing `D55_KNOWN_STATUS_MASK` back to the global v1
+    /// vocabulary -- the decoder would then reject every event-carrier-badged
+    /// record before the fold's delta-pin check could ever see it -- or
+    /// reclassifying the badge as a failure flag in this lane's own gate.
+    #[test]
+    fn the_event_carrier_badge_decodes_clean_and_stays_non_failure() {
+        let badge = compact_contract::DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE;
+        let badged = encode_detail_events_payload_v4(1, STATUS_DELTA_DATA | badge, &[], &[], &[]);
+        let gate = gate_d55_payload(&badged);
+        assert!(
+            gate.errors.is_empty(),
+            "an event-carrier-badged record must decode cleanly: {:?}",
+            gate.errors
+        );
+        assert_eq!(badge & FAILURE_STATUS_MASK, 0);
+
+        let poisoned =
+            encode_detail_events_payload_v4(1, STATUS_DELTA_DATA | badge | (1 << 24), &[], &[], &[]);
+        assert!(gate_d55_payload(&poisoned)
+            .errors
+            .iter()
+            .any(|error| error.contains("unknown bits")));
     }
 
     #[test]

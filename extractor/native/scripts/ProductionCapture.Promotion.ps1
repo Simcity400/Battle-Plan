@@ -33,6 +33,7 @@ $script:ProductionPromotionLaneLocalStatusMask = @{
     49 = [uint32]0x00000800
     51 = [uint32]0x00003800
     53 = [uint32]0x007F0000
+    55 = [uint32]0x00010000
     60 = [uint32]0x00030000
     99 = [uint32]0x00070000
 }

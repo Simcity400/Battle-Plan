@@ -63,6 +63,9 @@ LANE_LOCAL_BITS = {
         21: "d53:faction_group_unvalidated",
         22: "d53:intel_network_graph_unvalidated",
     },
+    55: {
+        16: "d55:event_carrier_incomplete",
+    },
     60: {
         16: "d60:war_casualties_running_accumulator",
         17: "d60:war_residuals_exact",

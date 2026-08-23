@@ -97,11 +97,34 @@ pub const DOMAIN60_STATUS_WAR_RESIDUALS_EXACT: u32 = 1 << 17;
 pub const DOMAIN60_LANE_LOCAL_STATUS_MASK: u32 =
     DOMAIN60_STATUS_WAR_CASUALTIES_RUNNING_ACCUMULATOR | DOMAIN60_STATUS_WAR_RESIDUALS_EXACT;
 
+/// Set when at least one of d55's event carriers (width, current-loss,
+/// terminal-record, passive-modifier) dropped observations it could not
+/// attribute, or rejected captures it could not prove coherent with this
+/// frame's census, so the rows present are not the complete set of combat
+/// events that ran. Lane-local, outside the assigned v1 status vocabulary;
+/// stripped before global classification by `crate::lane_local_status_mask`.
+///
+/// This exists for the same reason `DOMAIN99_STATUS_INCOMPLETE_OBSERVATION`
+/// does: `COMPACT_STATUS_PARTIAL_DATA` is a FAILURE bit in the global v1
+/// vocabulary, and on live captures the engine's continuous mutation makes a
+/// per-frame drop or projection refusal the common case, not the exception.
+/// Spending a failure bit on it degraded 378 of 390 data records of the
+/// `pw_gate_final` capture and threw away every row that DID project coherently
+/// -- both at emission (the reader cleared its accepted rows) and at fold time
+/// (`compact_delta_pin_may_advance` refuses failure-flagged records). "Three of
+/// four hundred observations were discarded" is not a failed hour; the dropped
+/// count is named per class by the frame's diagnostic units, and the rows that
+/// did project are each proven against this frame's own census before they are
+/// published, so no misattribution hides behind the badge.
+pub const DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE: u32 = 1 << 16;
+pub const DOMAIN55_LANE_LOCAL_STATUS_MASK: u32 = DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE;
+
 pub const fn lane_local_status_mask(domain_id: CompactDomainId) -> u32 {
     match domain_id {
         49 => DOMAIN49_LANE_LOCAL_STATUS_MASK,
         51 => DOMAIN51_LANE_LOCAL_STATUS_MASK,
         53 => DOMAIN53_LANE_LOCAL_STATUS_MASK,
+        55 => DOMAIN55_LANE_LOCAL_STATUS_MASK,
         60 => DOMAIN60_LANE_LOCAL_STATUS_MASK,
         99 => crate::division_combat_stats::DOMAIN99_LANE_LOCAL_STATUS_MASK,
         _ => 0,
@@ -2708,6 +2731,7 @@ mod tests {
                 49 => 1 << 11,
                 51 => (1 << 11) | (1 << 12) | (1 << 13),
                 53 => 0x007F_0000,
+                55 => 0x0001_0000,
                 60 => 0x0003_0000,
                 99 => 0x0007_0000,
                 _ => 0,
@@ -2772,6 +2796,45 @@ mod tests {
             crate::division_combat_stats::DOMAIN99_LANE_LOCAL_STATUS_MASK
                 & COMPACT_STATUS_FAILURE_MASK,
             0
+        );
+        assert_eq!(DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE, 1 << 16);
+        assert_eq!(
+            DOMAIN55_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_V1_KNOWN_MASK,
+            0
+        );
+        assert_eq!(
+            DOMAIN55_LANE_LOCAL_STATUS_MASK & COMPACT_STATUS_FAILURE_MASK,
+            0
+        );
+    }
+
+    /// The load-bearing consequence of the d55 event-carrier badge: a frame
+    /// whose only failure-vocabulary bit is DELTA_DATA must still advance the
+    /// fold's delta pin with the badge set, so badged rows are actually
+    /// applied instead of being refused a second time downstream. This is the
+    /// fold-side half of "stop losing real events": the reader keeps them,
+    /// and `compact_delta_pin_may_advance` is what lets the fold keep them
+    /// too.
+    #[test]
+    fn the_d55_event_carrier_badge_does_not_block_the_delta_pin_or_the_fold() {
+        let badged = COMPACT_STATUS_DELTA_DATA | DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE;
+        assert!(
+            compact_delta_pin_may_advance(55, badged),
+            "a badged-but-unfailed d55 record must fold its rows"
+        );
+        // And the globalised word carries nothing: the badge strips to zero,
+        // so neither the promotion gate nor the report sees a failure bit.
+        let global = compact_status_for_global_interpretation(55, badged);
+        assert_eq!(global, COMPACT_STATUS_DELTA_DATA);
+        assert!(!compact_status_is_failure(global));
+        assert_eq!(compact_status_unknown_flags_v1(global), 0);
+        // A different domain wearing the same raw word is NOT defined: the
+        // badge is d55's alone.
+        assert_eq!(
+            compact_status_unknown_flags_v1(compact_status_for_global_interpretation(
+                54, badged
+            )),
+            DOMAIN55_STATUS_EVENT_CARRIER_INCOMPLETE,
         );
     }
 

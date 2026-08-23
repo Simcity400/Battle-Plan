@@ -68,6 +68,7 @@ DOMAIN_STATUS_BITS: Mapping[int, Mapping[int, StatusSpec]] = {
         12: StatusSpec('LANE:DELAYED_EVENTS_ROOT_UNRESOLVED', True),
         13: StatusSpec('LANE:SCRIPTED_GUI_ROOT_UNRESOLVED', True),
     },
+    55: {16: StatusSpec('LANE:EVENT_CARRIER_INCOMPLETE', False)},
     53: {
         16: StatusSpec('LANE:OPERATIONS_DETAIL_RESISTED', True),
         17: StatusSpec('LANE:INTEL_MAP_RESISTED', True),

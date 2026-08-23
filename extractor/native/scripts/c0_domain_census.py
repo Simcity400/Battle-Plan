@@ -616,6 +616,11 @@ LANE_LOCAL = {
              "CapturedPartial: discarded observations, rows are not the "
              "complete round set"),
     },
+    "land_combat_detail_events_live": {
+        16: ("LANE:EVENT_CARRIER_INCOMPLETE", False,
+             "CapturedPartial: carrier drops or unattributable captures; "
+             "proven rows retained, per-class counts in diagnostic units"),
+    },
 }
 
 ATTRIBUTED = {
