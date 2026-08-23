@@ -66,7 +66,7 @@ fn select_hours(all_hours: &[i64], selection: HourSelection) -> Vec<i64> {
     }
 }
 
-fn write_report_create_new_or_equal(out: &Path, bytes: &[u8]) -> crate::Result<()> {
+pub(crate) fn write_report_create_new_or_equal(out: &Path, bytes: &[u8]) -> crate::Result<()> {
     use std::io::Write;
     match std::fs::OpenOptions::new()
         .write(true)
@@ -75,7 +75,7 @@ fn write_report_create_new_or_equal(out: &Path, bytes: &[u8]) -> crate::Result<(
     {
         Ok(mut file) => {
             file.write_all(bytes)
-                .map_err(|error| format!("write reach report {}: {error}", out.display()))?;
+                .map_err(|error| format!("write report {}: {error}", out.display()))?;
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -93,7 +93,7 @@ fn write_report_create_new_or_equal(out: &Path, bytes: &[u8]) -> crate::Result<(
                 .into())
             }
         }
-        Err(error) => Err(format!("create reach report {}: {error}", out.display()).into()),
+        Err(error) => Err(format!("create report {}: {error}", out.display()).into()),
     }
 }
 

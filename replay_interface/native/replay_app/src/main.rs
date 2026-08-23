@@ -8,6 +8,7 @@ mod bundle;
 mod camera;
 mod character_runtime;
 mod clausewitz;
+mod content_authority_report;
 mod content_compatibility;
 #[cfg(test)]
 mod e2e_playback;
@@ -75,11 +76,12 @@ use map_viewer::{sensitive_file_overrides, GameFileResolver, GameFileResolverOpt
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all]] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
+const USAGE: &str = "usage: replay_app [--configure] [--config <profile.json>] [--non-interactive] [--list-blockers] [--validate-recording <path>] [--report-recording-reach <path> --report-out <report.json> [--report-hours sample|all]] [--report-content-authority <path> --report-out <report.json>] [--validate-playback <path>] [--verify-xmap22-dump <out.bmp>] [--benchmark-stress-output <receipt.json>] [--benchmark-output <receipt.json> --recording <path>] [--bundle <dir>] [--game <the game install dir>] \
 [--mod <content-dir> ...] [--use-dlc-load --userdata <dir>] [--recording <path> [--logical-stream <id>] [--frame-cache <entries>]] [--capture <session dir>] [--dump-frame <out.bmp> [--dump-hour <canonical-hour-index> | --dump-nth-hour <ordinal>] \
 [--hour <0..1>] [--dump-zoom <screen-px-per-map-px>] [--dump-center <x,y>] [--dump-hdr <out.rgba16f>]] \
     [--postfx] [--postfx-restore-full] [--postfx-validate-capture] [--water-full]\n\
 --report-recording-reach opens one recording through the product policy and writes, per reported hour, that frame's coverage warnings and the complete XMAP00 map-authority projection (every required input with its disposition and blocker); it renders nothing and needs no game install; --report-hours defaults to sample (first/middle/last); \
+--report-content-authority opens one recording through the product policy, admits its recorded content against this machine's install exactly as playback would, and writes the BundleContentAuthority (ordered winner inputs and authority_sha256) to --report-out as JSON without rendering; it requires the same content roots playback uses (--game/--userdata/--config); \
 --dump-hour selects the exact canonical hour_index; --dump-nth-hour selects a zero-based ordinal in the recording snapshot index and resolves it to that canonical hour; \
 --frame-cache <entries> shrinks the recording's decoded-frame LRU budget for weak-PC profiles (default 16 hot frames; requires --recording); \
 --benchmark-stress-output runs the checked-in non-semantic 1920x1080 stress workload; --benchmark-output requires --benchmark-contract only to select the logical stream/hour, executes and measures the complete packet-native map composition with GPU completion, and writes no benchmark receipt unless exhaustive map-family admission and native execution succeed; --benchmark-warmup-frames and --benchmark-sample-frames configure either benchmark profile; \
@@ -744,6 +746,25 @@ fn run(args: &[String]) -> Result<()> {
         reject_env_overrides(|name| std::env::var_os(name))?;
         return recording_reach::run(&path, &out, logical_stream_id, hours);
     }
+    if args.iter().any(|arg| arg == "--report-content-authority") {
+        let request = parse_report_content_authority_args(args)?;
+        reject_env_overrides(|name| std::env::var_os(name))?;
+        let paths = install_paths::resolve_process_paths(
+            request.config,
+            install_paths::ResolveOptions {
+                game_override: resolve_game_dir(request.game, std::env::var_os("BATTLE_PLAN_VANILLA").or_else(|| std::env::var_os("HOI4_VANILLA"))),
+                user_data_override: request.userdata,
+                force_reselect: false,
+                non_interactive: request.non_interactive,
+            },
+        )?;
+        return content_authority_report::run(
+            &request.recording,
+            &request.out,
+            request.logical_stream_id,
+            &paths,
+        );
+    }
     if args.iter().any(|arg| arg == "--list-blockers") {
         print!("{}", blockers::render_list());
         return Ok(());
@@ -1119,6 +1140,114 @@ fn parse_validate_recording_args(args: &[String]) -> Result<(PathBuf, Option<u64
     }
     let path = path.ok_or_else(|| format!("--validate-recording requires a path\n{USAGE}"))?;
     Ok((path, logical_stream_id))
+}
+
+#[derive(Debug)]
+struct ReportContentAuthorityRequest {
+    recording: PathBuf,
+    out: PathBuf,
+    logical_stream_id: Option<u64>,
+    game: Option<PathBuf>,
+    userdata: Option<PathBuf>,
+    config: Option<PathBuf>,
+    non_interactive: bool,
+}
+
+fn parse_report_content_authority_args(args: &[String]) -> Result<ReportContentAuthorityRequest> {
+    let mut recording = None;
+    let mut out = None;
+    let mut logical_stream_id = None;
+    let mut game = None;
+    let mut userdata = None;
+    let mut config = None;
+    let mut non_interactive = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--report-content-authority" => {
+                index += 1;
+                if recording.is_some() {
+                    return Err(format!(
+                        "--report-content-authority may be passed only once\n{USAGE}"
+                    )
+                    .into());
+                }
+                recording = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--report-content-authority requires a path\n{USAGE}")
+                })?));
+            }
+            "--report-out" => {
+                index += 1;
+                if out.is_some() {
+                    return Err(format!("--report-out may be passed only once\n{USAGE}").into());
+                }
+                out = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--report-out requires an output path\n{USAGE}")
+                })?));
+            }
+            "--logical-stream" => {
+                index += 1;
+                if logical_stream_id.is_some() {
+                    return Err(format!("--logical-stream may be passed only once\n{USAGE}").into());
+                }
+                let value = args.get(index).ok_or_else(|| {
+                    format!("--logical-stream requires an unsigned id\n{USAGE}")
+                })?;
+                logical_stream_id = Some(value.parse::<u64>().map_err(|error| {
+                    format!("--logical-stream: invalid id {value:?}: {error}\n{USAGE}")
+                })?);
+            }
+            "--game" => {
+                index += 1;
+                if game.is_some() {
+                    return Err(format!("--game may be passed only once\n{USAGE}").into());
+                }
+                game = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--game requires a the game install dir\n{USAGE}")
+                })?));
+            }
+            "--userdata" => {
+                index += 1;
+                if userdata.is_some() {
+                    return Err(format!("--userdata may be passed only once\n{USAGE}").into());
+                }
+                userdata = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--userdata requires a the game user-data dir\n{USAGE}")
+                })?));
+            }
+            "--config" => {
+                index += 1;
+                if config.is_some() {
+                    return Err(format!("--config may be passed only once\n{USAGE}").into());
+                }
+                config = Some(PathBuf::from(args.get(index).ok_or_else(|| {
+                    format!("--config requires a file path\n{USAGE}")
+                })?));
+            }
+            "--non-interactive" => non_interactive = true,
+            other => {
+                return Err(format!(
+                    "{other:?} is not valid with --report-content-authority; use only \
+                     --report-out, --game, --userdata, --config, --logical-stream and \
+                     --non-interactive\n{USAGE}"
+                )
+                .into())
+            }
+        }
+        index += 1;
+    }
+    Ok(ReportContentAuthorityRequest {
+        recording: recording
+            .ok_or_else(|| format!("--report-content-authority requires a path\n{USAGE}"))?,
+        out: out.ok_or_else(|| {
+            format!("--report-content-authority requires --report-out <report.json>\n{USAGE}")
+        })?,
+        logical_stream_id,
+        game,
+        userdata,
+        config,
+        non_interactive,
+    })
 }
 
 fn parse_report_recording_reach_args(

@@ -193,7 +193,27 @@ pub fn build_effective_vfs_winner_binding_from_inventory(
     if first != second {
         return Err("source inventory changed while building winner binding".into());
     }
-    let inventory: SourceInventoryV3 = serde_json::from_slice(&first)
+    build_effective_vfs_winner_binding_from_bytes(
+        &first,
+        ordered_layers,
+        process_start_nonce,
+        authority_manifest_sha256,
+    )
+}
+
+/// Byte-level entry for callers that already hold the exact inventory bytes
+/// (the offline RC predicate audit): the folded bytes and any reported digest
+/// are the same slice by construction, with no intermediate file to race.
+pub fn build_effective_vfs_winner_binding_from_bytes(
+    source_inventory_bytes: &[u8],
+    ordered_layers: &[RecordedContentLayer],
+    process_start_nonce: u64,
+    authority_manifest_sha256: &str,
+) -> Result<RawEffectiveVfsWinnerIndexBinding, String> {
+    if process_start_nonce == 0 || !valid_sha(authority_manifest_sha256) {
+        return Err("winner binding process nonce or authority digest is invalid".into());
+    }
+    let inventory: SourceInventoryV3 = serde_json::from_slice(source_inventory_bytes)
         .map_err(|error| format!("decode source inventory v3 failed: {error}"))?;
     validate_inventory(&inventory)?;
 

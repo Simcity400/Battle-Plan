@@ -178,3 +178,6 @@ replay_interface/re_evidence/rendering_laws/XMAP05/fog_derivation_authority.json
 # lane QP: byte-exact hash-manifested Ghidra exports - no EOL munging or the manifest hashes break
 extractor/native/runs/qp_fog_bindings/evidence/** -text
 extractor/native/runs/re_theatre_read_law/** text eol=lf
+
+# lane RP: hash-pinned evidence (source-inventory v3 is digest-referenced by the audit reports)
+extractor/native/runs/rp_rc_predicate_tools/** text eol=lf
