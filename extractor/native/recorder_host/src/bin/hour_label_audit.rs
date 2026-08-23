@@ -2,7 +2,8 @@ use compact_contract::campaign_identity::{parse_cid1_record, COMPACT_RECORD_TYPE
 use compact_contract::diagnostic_channel::{decode_units, DiagUnit};
 use compact_contract::{
     parse_compact_record_header, validate_compact_record_semantics, DomainGapReason,
-    DomainGapRecordV1, DomainGapWitnessProvenance, COMPACT_DOMAIN_PERF_BASE_LEN,
+    DomainGapRecordV1, DomainGapWitnessProvenance, DomainRepeatBaselines,
+    COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS, COMPACT_DOMAIN_PERF_BASE_LEN,
     COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_MAGIC, COMPACT_DOMAIN_PERF_DIAGNOSTIC_UNITS_VERSION_V2,
     COMPACT_RECORD_FLAG_PERF_DIAGNOSTIC_TRAILER, COMPACT_RECORD_HEADER_LEN,
     COMPACT_RECORD_TYPE_CAPTURE_TERMINATED, COMPACT_RECORD_TYPE_DOMAIN_DATA,
@@ -21,6 +22,41 @@ const RC_PROBE_DOMAIN_ID: u16 = 250;
 const TARGET_FRAME_LABEL: i32 = 60_832_037;
 const GAP_EXAMPLE_LIMIT: usize = 50;
 const NOTABLE_FRAME_LIMIT: usize = 200;
+const REPEAT_ERROR_EXAMPLE_LIMIT: usize = 50;
+
+/// Mirror of collector's `gateable_domain` (domain_repeat_gate.rs): the ids
+/// that never carry gated data records and are never keyed by the repeat
+/// gate. Used to decide whether a named DOMAIN_GAP forces the next record
+/// of its domain full.
+const fn repeat_gate_managed_domain(domain_id: u16) -> bool {
+    domain_id != 0
+        && domain_id != RC_PROBE_DOMAIN_ID
+        && domain_id != compact_contract::COMPACT_DOMAIN_FRAME
+}
+
+/// Per-domain DOMAIN_DATA_REPEAT accounting for one stream scan.
+#[derive(Default)]
+struct RepeatDomainTally {
+    repeat_records: u64,
+    first_repeat_hour_raw: Option<i32>,
+    last_repeat_hour_raw: Option<i32>,
+    /// Full DOMAIN_DATA records seen for this domain (the keyframe anchors).
+    full_data_records: u64,
+    /// Calendar hour index of the domain's last FULL record; the cadence
+    /// anchor, mirroring `last_full_hour_index` in domain_repeat_gate.rs.
+    last_full_hour_index: Option<i64>,
+    /// A named DOMAIN_GAP forces the next published record of the domain
+    /// FULL (force-full law); a repeat while this is set is a violation.
+    gap_since_full: bool,
+    keyframe_cadence_violations: u64,
+    repeats_after_named_gap: u64,
+    /// Consecutive repeats since the domain's last FULL record (reset by
+    /// every full record).
+    repeat_run: u64,
+    /// Longest consecutive-repeat chain seen for this domain in this stream:
+    /// the offline non-vacuity measure for the keyframe law.
+    longest_repeat_run: u64,
+}
 
 #[derive(Serialize)]
 struct AuditReport {
@@ -35,6 +71,7 @@ struct AuditReport {
     section_c_per_frame: PerFrameSection,
     section_d_classification: ClassificationSection,
     section_e_target_label: TargetLabelSection,
+    section_f_repeat_census: RepeatCensusSection,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -228,6 +265,33 @@ struct TargetLabelSection {
     frames: Vec<TargetFrame>,
 }
 
+/// Single-stream DOMAIN_DATA_REPEAT census (lane RQ): per-domain counts,
+/// the hours repeats cover, and the shared-codec consistency verdict.
+/// `baseline_errors_total` counts records where the referenced baseline was
+/// missing or the recorded digest did not reconstruct (verified through
+/// `compact_contract::DomainRepeatBaselines`, never a local re-derivation).
+#[derive(Serialize)]
+struct RepeatCensusSection {
+    domain_data_repeat_records: u64,
+    domains_with_repeats: u64,
+    gate_excluded_repeat_records: u64,
+    per_domain: Vec<RepeatDomainRow>,
+    baseline_errors_total: u64,
+    baseline_error_examples: Vec<ParseError>,
+}
+
+#[derive(Serialize)]
+struct RepeatDomainRow {
+    domain_id: u16,
+    repeat_records: u64,
+    first_repeat_hour_raw: Option<i32>,
+    last_repeat_hour_raw: Option<i32>,
+    full_data_records: u64,
+    keyframe_cadence_violations: u64,
+    repeats_after_named_gap: u64,
+    longest_repeat_run: u64,
+}
+
 #[derive(Serialize)]
 struct TargetFrame {
     sequence_start: u64,
@@ -351,6 +415,19 @@ struct AuditState {
     exact_mismatch_distribution: BTreeMap<u64, u64>,
     exact_wholly_mislabelled_frames: u64,
     exact_partially_mislabelled_frames: u64,
+    domain_data_repeat_records: u64,
+    repeat_tallies: BTreeMap<u16, RepeatDomainTally>,
+    /// Type-14 records for ids the collector never gates (0/250/1000): not a
+    /// legitimate gate emission, refused by name, never census rows.
+    repeat_gate_excluded_repeat_records: u64,
+    /// Shared codec (compact_contract::DomainRepeatBaselines): the SAME
+    /// baseline store the collector gate and production fold keep. Feeding
+    /// every semantically valid data/repeat record through it verifies, per
+    /// repeat, that a published baseline exists earlier in THIS stream and
+    /// that the recorded tail digest reconstructs.
+    repeat_baselines: DomainRepeatBaselines,
+    repeat_baseline_error_examples: Vec<ParseError>,
+    repeat_baseline_errors_total: u64,
 }
 
 fn main() {
@@ -586,6 +663,19 @@ fn process_record(
         // A repeat is a data record of a new kind and counts toward the
         // hour's data tally exactly like a full record.
         state.current.data_count = state.current.data_count.saturating_add(1);
+        if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT {
+            // Census rows exist only for gate-managed domains; a type-14
+            // record for an excluded id is refused in
+            // audit_repeat_baseline_state and counted separately here.
+            if repeat_gate_managed_domain(header.domain_id) {
+                state.domain_data_repeat_records =
+                    state.domain_data_repeat_records.saturating_add(1);
+                let tally = state.repeat_tallies.entry(header.domain_id).or_default();
+                tally.repeat_records = tally.repeat_records.saturating_add(1);
+                tally.first_repeat_hour_raw.get_or_insert(header.game_hour_raw);
+                tally.last_repeat_hour_raw = Some(header.game_hour_raw);
+            }
+        }
     }
     if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_GAP {
         state.current.gap_count = state.current.gap_count.saturating_add(1);
@@ -603,6 +693,18 @@ fn process_record(
                     let provenance = DomainGapRecordV1::decode_witness_provenance(payload)
                         .unwrap_or(DomainGapWitnessProvenance::Unstated);
                     detail.gap = Some(gap_record_detail(gap, provenance));
+                    // Force-full law (domain_repeat_gate.rs): any named gap
+                    // for a gate-managed domain forces that domain's next
+                    // published record FULL. The tally is created here so a
+                    // gap that precedes the domain's first data record is
+                    // still remembered.
+                    if repeat_gate_managed_domain(header.domain_id) {
+                        state
+                            .repeat_tallies
+                            .entry(header.domain_id)
+                            .or_default()
+                            .gap_since_full = true;
+                    }
                     account_gap(
                         state,
                         offset,
@@ -623,6 +725,16 @@ fn process_record(
         } else {
             state.undecoded_gaps = state.undecoded_gaps.saturating_add(1);
         }
+    }
+
+    if semantic_error.is_none()
+        && matches!(
+            header.record_type,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA
+                | compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT
+        )
+    {
+        audit_repeat_baseline_state(state, offset, header, payload);
     }
 
     if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_PERF
@@ -667,6 +779,114 @@ fn record_error(state: &mut AuditState, offset: u64, error: String) {
         error,
         framing_lost: false,
     });
+}
+
+/// Keyframe-cadence, force-full and shared-codec verification for one
+/// semantically valid DOMAIN_DATA / DOMAIN_DATA_REPEAT record. Full records
+/// anchor the cadence; repeats are checked against the anchor and resolved
+/// through `DomainRepeatBaselines` -- the same reconstruction the collector
+/// gate and the production fold run -- so a repeat whose baseline is absent
+/// from this stream or whose tail digest does not reconstruct is refused by
+/// name here.
+fn audit_repeat_baseline_state(
+    state: &mut AuditState,
+    offset: u64,
+    header: &compact_contract::CompactRecordHeader,
+    payload: &[u8],
+) {
+    // The collector never gates ids 0/250/1000 (domain_repeat_gate.rs
+    // `gateable_domain`), so a type-14 record for one cannot be a legitimate
+    // gate emission; envelope validation alone does not refuse it. Full DATA
+    // records of excluded domains simply never take part in the census.
+    if !repeat_gate_managed_domain(header.domain_id) {
+        if header.record_type == compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT {
+            state.repeat_gate_excluded_repeat_records =
+                state.repeat_gate_excluded_repeat_records.saturating_add(1);
+            record_error(
+                state,
+                offset,
+                format!(
+                    "DOMAIN_DATA_REPEAT for gate-excluded domain {} is not a legitimate gate emission",
+                    header.domain_id
+                ),
+            );
+        }
+        return;
+    }
+
+    let hour_index = compact_contract::calendar::hour_index_from_raw(header.game_hour_raw);
+    if header.record_type == COMPACT_RECORD_TYPE_DOMAIN_DATA {
+        // Refresh the tally anchors AND seed the shared baseline store: a
+        // later repeat resolves against the LAST full record of its domain.
+        {
+            let tally = state.repeat_tallies.entry(header.domain_id).or_default();
+            tally.full_data_records = tally.full_data_records.saturating_add(1);
+            tally.last_full_hour_index = hour_index;
+            tally.gap_since_full = false;
+            tally.repeat_run = 0;
+        }
+        if let Err(reason) = state
+            .repeat_baselines
+            .observe(header.domain_id, header.record_type, payload)
+        {
+            record_baseline_error(state, offset, reason);
+        }
+        return;
+    }
+
+    // Decide all named refusals inside one scoped borrow, then record them.
+    let cadence = i64::from(COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS);
+    let mut refusals: Vec<String> = Vec::new();
+    {
+        let tally = state.repeat_tallies.entry(header.domain_id).or_default();
+        if tally.gap_since_full {
+            tally.repeats_after_named_gap = tally.repeats_after_named_gap.saturating_add(1);
+            refusals.push(format!(
+                "DOMAIN_DATA_REPEAT for domain {} follows a named gap for its domain; the force-full law requires the next published record to be FULL",
+                header.domain_id
+            ));
+        }
+        match (tally.last_full_hour_index, hour_index) {
+            (Some(last), Some(current))
+                if !(current < last || current - last >= cadence) => {}
+            (last, current) => {
+                tally.keyframe_cadence_violations =
+                    tally.keyframe_cadence_violations.saturating_add(1);
+                refusals.push(format!(
+                    "DOMAIN_DATA_REPEAT for domain {} violates the keyframe cadence: current hour index {:?} against last full record {:?} under the {cadence}-hour law (the collector gate publishes FULL whenever either index is unanchorable)",
+                    header.domain_id, current, last
+                ));
+            }
+        }
+        tally.repeat_run = tally.repeat_run.saturating_add(1);
+        if tally.repeat_run > tally.longest_repeat_run {
+            tally.longest_repeat_run = tally.repeat_run;
+        }
+    }
+    for refusal in refusals {
+        record_error(state, offset, refusal);
+    }
+    if let Err(reason) = state
+        .repeat_baselines
+        .observe(header.domain_id, header.record_type, payload)
+    {
+        record_baseline_error(state, offset, reason);
+    }
+}
+
+/// Baseline-chain failures go to BOTH the capped census examples and the
+/// stream-wide parse_errors, so the standard health-check bar catches them.
+fn record_baseline_error(state: &mut AuditState, offset: u64, reason: String) {
+    state.repeat_baseline_errors_total = state.repeat_baseline_errors_total.saturating_add(1);
+    let message = format!("DOMAIN_DATA_REPEAT baseline check failed: {reason}");
+    if state.repeat_baseline_error_examples.len() < REPEAT_ERROR_EXAMPLE_LIMIT {
+        state.repeat_baseline_error_examples.push(ParseError {
+            offset,
+            error: message.clone(),
+            framing_lost: false,
+        });
+    }
+    record_error(state, offset, message);
 }
 
 fn decode_probe_units(record_flags: u32, payload: &[u8]) -> Result<Option<Vec<DiagUnit>>, String> {
@@ -1105,6 +1325,31 @@ fn finish_report(input: &Path, mut state: AuditState) -> AuditReport {
         section_e_target_label: TargetLabelSection {
             label: TARGET_FRAME_LABEL,
             frames: state.target_frames,
+        },
+        section_f_repeat_census: RepeatCensusSection {
+            domain_data_repeat_records: state.domain_data_repeat_records,
+            domains_with_repeats: state
+                .repeat_tallies
+                .values()
+                .filter(|tally| tally.repeat_records > 0)
+                .count() as u64,
+            gate_excluded_repeat_records: state.repeat_gate_excluded_repeat_records,
+            per_domain: state
+                .repeat_tallies
+                .iter()
+                .map(|(domain_id, tally)| RepeatDomainRow {
+                    domain_id: *domain_id,
+                    repeat_records: tally.repeat_records,
+                    first_repeat_hour_raw: tally.first_repeat_hour_raw,
+                    last_repeat_hour_raw: tally.last_repeat_hour_raw,
+                    full_data_records: tally.full_data_records,
+                    keyframe_cadence_violations: tally.keyframe_cadence_violations,
+                    repeats_after_named_gap: tally.repeats_after_named_gap,
+                    longest_repeat_run: tally.longest_repeat_run,
+                })
+                .collect(),
+            baseline_errors_total: state.repeat_baseline_errors_total,
+            baseline_error_examples: state.repeat_baseline_error_examples,
         },
     }
 }
@@ -1586,6 +1831,42 @@ fn print_report(report: &AuditReport) -> io::Result<()> {
                 writeln!(out, "    decode_error={error}")?;
             }
         }
+    }
+
+    let f = &report.section_f_repeat_census;
+    writeln!(out, "\nF. Domain-data-repeat census")?;
+    writeln!(
+        out,
+        "DOMAIN_DATA_REPEAT records: {}",
+        f.domain_data_repeat_records
+    )?;
+    writeln!(out, "domains carrying repeats: {}", f.domains_with_repeats)?;
+    writeln!(
+        out,
+        "gate-excluded type-14 records (refused): {}",
+        f.gate_excluded_repeat_records
+    )?;
+    for row in &f.per_domain {
+        writeln!(
+            out,
+            "  domain {}: repeats={} hours={:?}..={:?} full_records={} longest_repeat_run={} cadence_violations={} repeats_after_named_gap={}",
+            row.domain_id,
+            row.repeat_records,
+            row.first_repeat_hour_raw,
+            row.last_repeat_hour_raw,
+            row.full_data_records,
+            row.longest_repeat_run,
+            row.keyframe_cadence_violations,
+            row.repeats_after_named_gap
+        )?;
+    }
+    writeln!(
+        out,
+        "baseline consistency errors: {} (verified via compact_contract::DomainRepeatBaselines)",
+        f.baseline_errors_total
+    )?;
+    for error in &f.baseline_error_examples {
+        writeln!(out, "  offset {}: {}", error.offset, error.error)?;
     }
     out.flush()
 }
@@ -2323,5 +2604,259 @@ mod freeze_census_name_tests {
             "FREEZE_CENSUS"
         );
         assert_eq!(record_type_name(12), "UNKNOWN");
+    }
+}
+
+#[cfg(test)]
+mod repeat_census_tests {
+    use super::*;
+    use compact_contract::{COMPACT_DOMAIN_FRAME, COMPACT_RECORD_MAGIC, COMPACT_RECORD_VERSION};
+    use sha2::{Digest, Sha256};
+
+    const REPEAT_HOUR_A: i32 = 60_831_056;
+    const REPEAT_HOUR_B: i32 = 60_831_057;
+
+    // Domain 10's declared volatile prefix is 8 (record_semantics.rs), so a
+    // domain-10 repeat payload is exactly 8 + 32 bytes.
+    const DOMAIN: u16 = 10;
+    const PREFIX: usize = 8;
+
+    fn raw_record(
+        sequence: u64,
+        hour: i32,
+        domain: u16,
+        rtype: u16,
+        flags: u32,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(COMPACT_RECORD_MAGIC);
+        out.extend_from_slice(&COMPACT_RECORD_VERSION.to_le_bytes());
+        out.extend_from_slice(&(COMPACT_RECORD_HEADER_LEN as u16).to_le_bytes());
+        out.extend_from_slice(&sequence.to_le_bytes());
+        out.extend_from_slice(&hour.to_le_bytes());
+        out.extend_from_slice(&domain.to_le_bytes());
+        out.extend_from_slice(&rtype.to_le_bytes());
+        out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(payload);
+        out
+    }
+
+    fn audit(stream: &[u8]) -> AuditReport {
+        let mut state = AuditState::default();
+        scan_stream(&mut &stream[..], &mut state).expect("scan");
+        finish_report(Path::new("synthetic"), state)
+    }
+
+    fn full_record(sequence: u64, hour: i32, payload: &[u8]) -> Vec<u8> {
+        let mut out = raw_record(
+            sequence,
+            hour,
+            DOMAIN,
+            COMPACT_RECORD_TYPE_DOMAIN_DATA,
+            0,
+            payload,
+        );
+        out.extend_from_slice(&raw_record(
+            sequence + 1,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        out
+    }
+
+    fn repeat_record(
+        sequence: u64,
+        hour: i32,
+        baseline_tail_digest: [u8; 32],
+    ) -> Vec<u8> {
+        let mut payload = vec![0u8; PREFIX];
+        payload.extend_from_slice(&baseline_tail_digest);
+        let mut out = raw_record(
+            sequence,
+            hour,
+            DOMAIN,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+            0,
+            &payload,
+        );
+        out.extend_from_slice(&raw_record(
+            sequence + 1,
+            hour,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        out
+    }
+
+    fn tail_digest(baseline_payload: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(&baseline_payload[PREFIX..]);
+        hasher.finalize().into()
+    }
+
+    fn gap_record(sequence: u64, hour: i32) -> Vec<u8> {
+        let payload = DomainGapRecordV1 {
+            part: compact_contract::DomainGapPart::State,
+            reason: DomainGapReason::SourceUnavailable,
+            target_hour_raw: hour,
+            range_start_hour_raw: hour,
+            range_end_hour_raw: hour,
+            tick_before: 7,
+            tick_after: 7,
+            queue_capacity: 0,
+            queue_depth: 0,
+            queue_dropped: 0,
+            outcome_ordinal: 0,
+        }
+        .encode_with_witness_provenance(DomainGapWitnessProvenance::Unstated)
+        .expect("fixture gap must be wire-encodable");
+        raw_record(
+            sequence,
+            hour,
+            DOMAIN,
+            COMPACT_RECORD_TYPE_DOMAIN_GAP,
+            0,
+            &payload,
+        )
+    }
+
+    #[test]
+    fn verified_repeat_is_counted_and_consistent() {
+        let baseline_payload = vec![7u8; 48];
+        let mut stream = full_record(0, REPEAT_HOUR_A, &baseline_payload);
+        stream.extend_from_slice(&repeat_record(2, REPEAT_HOUR_B, tail_digest(&baseline_payload)));
+        let report = audit(&stream);
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+        let f = &report.section_f_repeat_census;
+        assert_eq!(f.domain_data_repeat_records, 1);
+        assert_eq!(f.domains_with_repeats, 1);
+        assert_eq!(
+            f.baseline_errors_total, 0,
+            "{:?}",
+            f.baseline_error_examples
+        );
+        assert_eq!(f.per_domain.len(), 1);
+        let row = &f.per_domain[0];
+        assert_eq!(row.domain_id, DOMAIN);
+        assert_eq!(row.repeat_records, 1);
+        assert_eq!(row.first_repeat_hour_raw, Some(REPEAT_HOUR_B));
+        assert_eq!(row.last_repeat_hour_raw, Some(REPEAT_HOUR_B));
+        assert_eq!(row.full_data_records, 1);
+        assert_eq!(row.longest_repeat_run, 1);
+        assert_eq!(row.keyframe_cadence_violations, 0);
+        assert_eq!(row.repeats_after_named_gap, 0);
+    }
+
+    #[test]
+    fn repeat_with_corrupt_digest_is_refused_by_name() {
+        let baseline_payload = vec![7u8; 48];
+        let mut stream = full_record(0, REPEAT_HOUR_A, &baseline_payload);
+        stream.extend_from_slice(&repeat_record(2, REPEAT_HOUR_B, [0u8; 32]));
+        let report = audit(&stream);
+        assert_eq!(
+            report.section_f_repeat_census.baseline_errors_total, 1,
+            "{:?}",
+            report.parse_errors
+        );
+        assert!(report
+            .parse_errors
+            .iter()
+            .any(|error| error.error.contains("fails its baseline digest")));
+    }
+
+    #[test]
+    fn repeat_without_a_baseline_is_refused_by_name() {
+        let stream = repeat_record(0, REPEAT_HOUR_A, [9u8; 32]);
+        let report = audit(&stream);
+        assert_eq!(report.section_f_repeat_census.baseline_errors_total, 1);
+        assert!(report
+            .parse_errors
+            .iter()
+            .any(|error| error.error.contains("no stored baseline")));
+    }
+
+    #[test]
+    fn cadence_overdue_repeat_is_flagged_but_in_cadence_is_not() {
+        let baseline_payload = vec![7u8; 48];
+        // One hour short of the cadence boundary: legal.
+        let mut stream = full_record(0, REPEAT_HOUR_A, &baseline_payload);
+        let last_legal =
+            REPEAT_HOUR_A + (COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS as i32) - 1;
+        stream.extend_from_slice(&repeat_record(2, last_legal, tail_digest(&baseline_payload)));
+        let report = audit(&stream);
+        assert_eq!(report.parse_error_count, 0, "{:?}", report.parse_errors);
+        // At the boundary itself the keyframe is overdue.
+        let mut stream = full_record(0, REPEAT_HOUR_A, &baseline_payload);
+        let overdue = REPEAT_HOUR_A + (COMPACT_DOMAIN_DATA_REPEAT_KEYFRAME_CADENCE_HOURS as i32);
+        stream.extend_from_slice(&repeat_record(2, overdue, tail_digest(&baseline_payload)));
+        let report = audit(&stream);
+        let row = &report.section_f_repeat_census.per_domain[0];
+        assert_eq!(row.keyframe_cadence_violations, 1);
+        assert!(report
+            .parse_errors
+            .iter()
+            .any(|error| error.error.contains("keyframe cadence")));
+    }
+
+    #[test]
+    fn repeat_after_a_named_gap_is_refused_by_name() {
+        let baseline_payload = vec![7u8; 48];
+        let mut stream = full_record(0, REPEAT_HOUR_A, &baseline_payload);
+        stream.extend_from_slice(&gap_record(2, REPEAT_HOUR_B));
+        stream.extend_from_slice(&raw_record(
+            3,
+            REPEAT_HOUR_B,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        stream.extend_from_slice(&repeat_record(4, REPEAT_HOUR_B, tail_digest(&baseline_payload)));
+        let report = audit(&stream);
+        let row = &report.section_f_repeat_census.per_domain[0];
+        assert_eq!(row.repeats_after_named_gap, 1);
+        assert!(report
+            .parse_errors
+            .iter()
+            .any(|error| error.error.contains("force-full law")));
+    }
+
+    #[test]
+    fn gate_excluded_domain_repeat_is_refused_and_never_becomes_a_census_row() {
+        // The RC probe domain 250 is PERF-only and never gated. Its declared
+        // prefix is 0, so this repeat is ENVELOPE-valid (domain not 0/1000,
+        // length exactly 32) yet can never be a legitimate gate emission.
+        let mut stream = raw_record(
+            0,
+            REPEAT_HOUR_A,
+            RC_PROBE_DOMAIN_ID,
+            compact_contract::COMPACT_RECORD_TYPE_DOMAIN_DATA_REPEAT,
+            0,
+            &[0u8; 32],
+        );
+        stream.extend_from_slice(&raw_record(
+            1,
+            REPEAT_HOUR_A,
+            COMPACT_DOMAIN_FRAME,
+            COMPACT_RECORD_TYPE_FRAME_END,
+            0,
+            &[0u8; 32],
+        ));
+        let report = audit(&stream);
+        assert!(report.parse_errors.iter().any(|error| {
+            error.error.contains("gate-excluded domain")
+        }), "{:?}", report.parse_errors);
+        let f = &report.section_f_repeat_census;
+        assert_eq!(f.gate_excluded_repeat_records, 1);
+        assert_eq!(f.domain_data_repeat_records, 0);
+        assert_eq!(f.baseline_errors_total, 0);
+        assert!(f.per_domain.is_empty());
     }
 }
