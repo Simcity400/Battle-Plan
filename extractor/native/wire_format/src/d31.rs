@@ -1,9 +1,9 @@
 //! d31 `air_region_activity` — per-region air activity, aggregated into
 //! `(region, owner, mission)` buckets.
 //!
-//! Derived from `world_fold.rs:20876`-`:21023`
+//! Derived from `world_fold.rs:21006`-`:21153`
 //! (`fold_air_region_activity`), its payload constants at `:977`-`:978`, the
-// @world-fold-authority domain=31 functions=fold_air_region_activity lines=20876-21023 sha256=06884767f94764ae24a0bdce96e6981a50e1fe1dd0431e6b2be0d00682d4ea36 closure=fb3a84b159c3f9e589c2c7c697e9392f6ef009b0be216bca26607311cea4fea1
+// @world-fold-authority domain=31 functions=fold_air_region_activity lines=21006-21153 sha256=06884767f94764ae24a0bdce96e6981a50e1fe1dd0431e6b2be0d00682d4ea36 closure=bfc1bd85f04d768c7b0837f26edfba591ae105ea98d12ed2134fae6a17849999
 //! accumulator's own JSON projection (`world_fold.rs::insert_air_region_activity`), and the collector read
 //! that builds the buckets and the delta rows
 //! (`extractor/native/collector/src/attach_log.rs:48122`-`:48160`,

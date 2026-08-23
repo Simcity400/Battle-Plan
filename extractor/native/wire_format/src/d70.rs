@@ -1,8 +1,8 @@
 //! d70 `sunk_convoy_history_live` — the global sunk-convoy history table.
 //!
-//! Derived from `world_fold.rs:14259`-`:14319`
+//! Derived from `world_fold.rs:14389`-`:14449`
 //! (`fold_sunk_convoy_history`), its two dispatch sites (`:4737` and `:4801`-`:4806`),
-// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=14259-14319 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a closure=3fefe94686090070a67f020052a7bf07eb93fcc51dc734255f04cc128b30e957
+// @world-fold-authority domain=70 functions=fold_sunk_convoy_history lines=14389-14449 sha256=275d9ee0dc03e03b4c0f5f85f38d7da0f2cb6106a7021ef04e2dbbd21780b54a closure=eaad8ce7c9bed6253e1db63772a58af696a8d635d66e935f7e0044c9cd887a03
 //! and the payload codec `extractor/native/compact_contract/src/naval_history.rs`,
 //! which is where this domain's row grammar actually lives. There is no dossier
 //! under `extractor/documents/domains/`, so those three are the whole basis.
