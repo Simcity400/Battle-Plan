@@ -67,7 +67,12 @@ pub const SO_D77_D80_HOURLY_INPUT_GAP: usize = 50;
 /// recorded-input observation could authenticate; the hour publishes a named
 /// DOMAIN_GAP instead of a production-render frame.
 pub const SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP: usize = 51;
-pub const STATUS_ORIGIN_ID_COUNT: usize = 52;
+/// d53 first-attach warmup (lane RS): the shared heap sweep has not completed
+/// its first pass AND this tracker has never consumed a ready frame, so the
+/// frame publishes one named DOMAIN_GAP instead of a failing record. The
+/// sample value is FNV-1a of the static fail-closed reason.
+pub const SO_D53_WARMUP_GAP: usize = 52;
+pub const STATUS_ORIGIN_ID_COUNT: usize = 53;
 
 pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d45_partial_targeted_timed_structural",
@@ -122,6 +127,7 @@ pub const STATUS_ORIGIN_UNITS: [&str; STATUS_ORIGIN_ID_COUNT] = [
     "so_d77_d80_scene_cb_gap",
     "so_d77_d80_hourly_input_gap",
     "so_d77_d80_present_sample_cutoff_gap",
+    "so_d53_warmup_gap",
 ];
 
 #[allow(clippy::declare_interior_mutable_const)]
@@ -774,6 +780,7 @@ mod tests {
                 SO_D77_D80_PRESENT_SAMPLE_CUTOFF_GAP,
                 "so_d77_d80_present_sample_cutoff_gap",
             ),
+            (SO_D53_WARMUP_GAP, "so_d53_warmup_gap"),
         ];
         for (id, name) in expected {
             assert_eq!(

@@ -169,3 +169,4 @@ extractor/native/runs/**/*.battleplan
 .pnpm-store/
 .reference/
 captures/
+opencode.jsonc
