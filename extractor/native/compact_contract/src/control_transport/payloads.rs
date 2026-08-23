@@ -1133,8 +1133,10 @@ mod tests {
             validated_domain_count: 67,
             scheduler_queue_capacity: 1,
             scheduler_worker_count: 12,
-            allowed_hook_count: 45,
-            active_hook_count: 45,
+            // 2026-08-24: the three gameplay.d57.* sites joined the pinned
+            // roster (45 -> 48) and the allowlist digest moved with them.
+            allowed_hook_count: 48,
+            active_hook_count: 48,
             install_freeze_count,
             clock_hour_raw: 60_831_264,
             clock_observation_ordinal: 12,
@@ -1145,7 +1147,7 @@ mod tests {
                 "18883f3ad61d796d13e406b28869e764efca61863928150fbe08cdcb23bb07b8",
             ),
             hook_allowlist_sha256: hex32(
-                "54348f3d32277a114474c0a2b667ddf32cab6388adfd2a42500cac79ea8eaa79",
+                "8889e55eed6794a6dacb1343e36a09d15ada23331ba4b9f1a79bc5f078f12c82",
             ),
             hook_outcomes_sha256: hex32(
                 "416db3019bcd56f982a9e11978bcc47a0b9dc06d23147935d56dbbf30907951b",
@@ -1189,7 +1191,7 @@ mod tests {
         assert_eq!(read_u16(&thirteen, 50), 13);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thirteen)),
-            "e8b08ebca73f6b9d4821931b3c53f74dc55e7c48bc203b0f6a69f4b596ad16b8"
+            "60df4508332692a8e4187278291b6383f5b1901a31c3291fe3ac4eb9157b5ad5"
         );
         let thousand = t63_ready_fields(1000)
             .encode_authenticated(token)
@@ -1197,7 +1199,7 @@ mod tests {
         assert_eq!(read_u16(&thousand, 50), 1000);
         assert_eq!(
             to_hex32(&capture_ready_payload_sha256(&thousand)),
-            "5089b85d8f0fa835790baa90d45984c8c1b64036e88da2f7070ac616aff27bfe"
+            "1adc250fa0028b21a75785376c01dd282e5afbb54554367b1eb3a5954d4bf988"
         );
         assert_ne!(thirteen, thousand);
     }

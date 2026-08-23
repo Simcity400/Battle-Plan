@@ -278,6 +278,34 @@ pub const PINNED_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpecV1] = &[
         MINHOOK_NORMAL_REL5,
         "b17fdbf47dfb9f150b9dd55018b81765b8e3777c42cf64b96bf04a7f3e6cd1fb"
     ),
+    // The three X12 speed/pause transition sites were FORBIDDEN for passive
+    // captures from 2026-08-13 until the owner ruling of 2026-08-24 admitted
+    // them into the production install set: without them d57 can never close
+    // its speed/pause transition evidence path, and every capture marked the
+    // domain source_unavailable|partial_data. Same RVAs, primitive, patch
+    // length, and proof digests the forbidden entries carried; only the roster
+    // changed (and with it this list's digest).
+    pinned_rva!(
+        "gameplay.d57.pause_forced",
+        0xDBE260,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
+    ),
+    pinned_rva!(
+        "gameplay.d57.pause_toggle",
+        0xDC6520,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
+    ),
+    pinned_rva!(
+        "gameplay.d57.speed_setter",
+        0x1EDAD0,
+        5,
+        MINHOOK_NORMAL_REL5,
+        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
+    ),
     pinned_rva!(
         "gameplay.d64.definition_cancel",
         0x6DD7F0,
@@ -445,7 +473,7 @@ pub const PINNED_PRODUCTION_IMPORT_HOOK_COUNT_V1: u16 = {
     count
 };
 pub const PINNED_PRODUCTION_HOOK_ALLOWLIST_SHA256_V1: [u8; 32] =
-    digest_from_hex("54348f3d32277a114474c0a2b667ddf32cab6388adfd2a42500cac79ea8eaa79");
+    digest_from_hex("8889e55eed6794a6dacb1343e36a09d15ada23331ba4b9f1a79bc5f078f12c82");
 
 pub fn pinned_production_hook_count_v1() -> Result<u16, PassiveReadyDigestError> {
     u16::try_from(PINNED_PRODUCTION_HOOK_SPECS_V1.len())
@@ -503,27 +531,11 @@ pub const FORBIDDEN_PASSIVE_PRODUCTION_HOOK_SPECS_V1: &[PinnedProductionHookSpec
         MINHOOK_NORMAL_REL5,
         "77fc7a5ef65dc0f4739157a8a698f10a46bb4d58b0663e7583c9721504753a7f"
     ),
-    pinned_rva!(
-        "gameplay.d57.pause_forced",
-        0xDBE260,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
-    ),
-    pinned_rva!(
-        "gameplay.d57.pause_toggle",
-        0xDC6520,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
-    ),
-    pinned_rva!(
-        "gameplay.d57.speed_setter",
-        0x1EDAD0,
-        5,
-        MINHOOK_NORMAL_REL5,
-        "a4c743e2f6eb067019e9f2cc1162b21466a2b133635c9730cd896021eb15ca51"
-    ),
+    // The d57 speed/pause sites left this list on 2026-08-24: the owner ruled
+    // them into `PINNED_PRODUCTION_HOOK_SPECS_V1` (and the production install
+    // registry) because a passive capture without them can never close d57's
+    // transition evidence path. A forbidden entry that the registry itself
+    // installs would be a capture-killing contradiction.
     pinned_rva!(
         "gameplay.d78.designer_refresh",
         0x17797A0,
@@ -1780,6 +1792,11 @@ mod pinned_bootstrap_import_primitive {
 
     #[test]
     fn no_descheduled_domain_keeps_a_pinned_production_hook_site() {
+        // Reads production_hook_site_installs, so it stays meaningful for every
+        // roster change: a pinned site passes only when its producer domain is
+        // genuinely scheduled (or held by a live lane's prerequisite). d57's
+        // three sites pass since the 2026-08-24 owner ruling readmitted the
+        // domain; every descheduled domain's sites must stay out.
         use super::{PinnedHookProducer, PINNED_PRODUCTION_HOOK_SPECS_V1};
 
         let mut domain_sites: Vec<(crate::CompactDomainId, &'static str)> = Vec::new();
@@ -1921,8 +1938,14 @@ mod pinned_bootstrap_import_primitive {
         assert!(
             still_pinned.is_empty(),
             "the owner ruled every optional fail-closed companion's detour out of a \
-             passive capture on 2026-08-13, and these are still pinned without being \
-             named as deferred: {still_pinned:?}"
+             passive capture on 2026-08-13, and these are still pinned without \
+             being named as deferred. The one named exception so far is d57: the \
+             owner ruling of 2026-08-24 readmitted its three speed/pause sites \
+             to the production install set (registry group D57), so d57 left \
+             OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS instead of joining this \
+             deferral list -- every other companion stays out unless it is \
+             named in OPTIONAL_COMPANION_SITES_DEFERRED_TO_ACTIVE_LANES: \
+             {still_pinned:?}"
         );
     }
 

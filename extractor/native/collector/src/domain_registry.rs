@@ -155,9 +155,11 @@ mod tests {
             registry.by_id(47).map(|d| d.status),
             Some(CompactDomainStatus::ProductionComplete)
         );
+        // 2026-08-24 owner ruling: X12 installed, stage 38 closed, so d57
+        // leaves validated_partial_slice for full production.
         assert_eq!(
             registry.by_id(57).map(|d| d.status),
-            Some(CompactDomainStatus::ValidatedPartialSlice)
+            Some(CompactDomainStatus::ProductionComplete)
         );
         assert_eq!(
             registry.id_for_scheduled_name("hub_motorization_live"),

@@ -405,8 +405,15 @@ pub const REQUIRED_STATIC_ARTIFACTS: &[&str] = &[
 pub const PRODUCTION_PROFILE_RULE: &str =
     "mandatory schedulable compact domains must have status Existing, ProductionComplete, or ProductionCompleteBase; validated/partial/open-gap domains are never admitted to the mandatory production profile";
 
+/// Domains the owner ruled out of passive capture as optional fail-closed
+/// companions on 2026-08-13. d57 (57) belonged here until the owner ruling of
+/// 2026-08-24 readmitted it: install the X12 speed/pause hooks into the
+/// production install set and close world-tension stage 38, so the domain
+/// seals clean instead of publishing a typed unavailable every frame. Its
+/// three sites are pinned and installed by `ProductionHookLeaseRegistry`
+/// group D57; see PINNED_PRODUCTION_HOOK_SPECS_V1.
 pub const OPTIONAL_FAIL_CLOSED_COMPANION_DOMAIN_IDS: &[CompactDomainId] =
-    &[57, 74, 78, 84, 98, 99, 100, 101];
+    &[74, 78, 84, 98, 99, 100, 101];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactDomainStatus {
@@ -743,7 +750,11 @@ pub fn passive_production_roster() -> Vec<CompactDomainDescriptor> {
 // first hour it costs only the provinces a scripted effect actually changed.
 // The map picture must not need a special capture setting to show its victory
 // points.
-pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[57, 100, 101];
+//
+// d57 belonged here until the owner ruling of 2026-08-24 promoted it: with the
+// X12 hooks installed and stage 38 closed it is an ordinary mandatory member of
+// the passive production roster, no longer a capture-only rider.
+pub const PASSIVE_CAPTURE_ONLY_DOMAIN_IDS: &[CompactDomainId] = &[100, 101];
 
 pub fn passive_capture_roster() -> Vec<CompactDomainDescriptor> {
     let mut roster = passive_production_roster();
@@ -1407,7 +1418,12 @@ pub const ASSIGNED_COMPACT_DOMAINS: &[CompactDomainDescriptor] = &[
         57,
         "session_multiplayer_metadata_live",
         "session_multiplayer_metadata_live",
-        CompactDomainStatus::ValidatedPartialSlice,
+        // 2026-08-24 owner ruling: install the X12 speed/pause hooks and close
+        // world-tension stage 38, so d57 seals clean instead of publishing a
+        // typed unavailable every frame. The status leaves
+        // validated_partial_slice with the residuals closed; the confirming
+        // passive capture is named in extractor/native/runs/ra_d57_seal/FIX.md.
+        CompactDomainStatus::ProductionComplete,
         true,
         true,
         &[],
@@ -2367,9 +2383,13 @@ mod tests {
             .collect();
 
         assert!(capture.contains(&57), "d57 must be scheduled by a capture");
+        // 2026-08-24 owner ruling: with the X12 hooks installed and stage 38
+        // closed, d57 is an ordinary mandatory member of the passive roster,
+        // no longer a capture-only rider.
         assert!(
-            !mandatory.contains(&57),
-            "d57 must stay out of the mandatory production profile"
+            mandatory.contains(&57),
+            "d57 must sit in the mandatory production profile now that its \
+             residuals are closed"
         );
         assert!(is_in_passive_capture_roster(57));
         for id in &mandatory {
