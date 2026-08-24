@@ -549,7 +549,7 @@ impl D81GeometryGate {
 /// d81 unit, so dividing by `geometry_gate_miss` gives means; and because a
 /// copy plan's windows have distinctive fixed lengths, a mean `len` that comes
 /// out an exact integer identifies the table on its own.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct D81GateMissShape {
     /// How many intervals differed in this observation, not just the first.
     /// One differing interval means a single volatile field; thousands means a
@@ -567,6 +567,40 @@ pub(super) struct D81GateMissShape {
     /// offset inside the framing run. The unit is named
     /// `..._miss_first_run_offset` on the wire to say so.
     pub(super) first_offset: u64,
+    /// When the FIRST difference landed in [`D81GateStage::Vector`], which BIN
+    /// of [`super::d81_vector_store::D81_VECTOR_STORE_NAMES`] it was in -- a
+    /// store index in `0..D81_VECTOR_STORE_COUNT`, or the trailing `framing`
+    /// bin for the capture's own framing.
+    ///
+    /// [`super::d81_vector_store::D81_VECTOR_STORE_UNATTRIBUTED`] when the miss
+    /// was NOT in that stage, which is the value the default carries and the
+    /// one the accumulator declines to bin. Every miss therefore appears in
+    /// `geometry_gate_miss_stage` and only a vector miss appears here, so the
+    /// two histograms agree by construction rather than by arithmetic.
+    ///
+    /// Lane TD. `rc_vanilla4` put 125 of 159 misses in `Vector`, and that stage
+    /// covers all nine families plus the two closing stores, so the capture
+    /// could not say whether the churn was the rail pairs (whose only in-place
+    /// mutator is `CProvinceRailwayInfo::SetRailway`, claim
+    /// `claim_19f6d2c17f8bc5f17460`) or the active window (`SProvinceSupplyData`,
+    /// claim `claim_d48c7f58b39be669efec`). That is the difference between a
+    /// partial rail predicate being worth pricing and candidate (a) being dead;
+    /// see `runs/td_rail_change_signal/DOSSIER.md` sections 6 and 7.
+    pub(super) first_vector_store: usize,
+}
+
+impl Default for D81GateMissShape {
+    fn default() -> Self {
+        Self {
+            differing_intervals: 0,
+            first_len: 0,
+            first_offset: 0,
+            // NOT `usize::default()`, which is 0 and is a real store index
+            // (`RailHeader`). A derived `Default` would report every non-vector
+            // miss as a rail-header miss.
+            first_vector_store: super::d81_vector_store::D81_VECTOR_STORE_UNATTRIBUTED,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -750,9 +784,15 @@ fn feed_observation(
     );
     if let Some(vector) = vector {
         let mut fed = 0u64;
-        vector.feed_content(&mut |bytes| {
+        // THE ORDINAL CARRIES THE VECTOR STORE, not an interval index (lane
+        // TD). Every other stage's ordinal indexes `snapshot.intervals()`; this
+        // one indexes `D81VectorCapture::stores()`, because the vector capture
+        // has no intervals and the bin it needed was "which family". The one
+        // place that reads the ordinal without knowing the stage --
+        // `interval_len_at` -- is guarded on this stage in `image_matches`.
+        vector.feed_content(&mut |store, bytes| {
             fed += bytes.len() as u64;
-            sink(D81GateStage::Vector, usize::MAX, bytes);
+            sink(D81GateStage::Vector, store, bytes);
         });
         *fed_bytes += fed;
     }
@@ -983,7 +1023,21 @@ impl D81GeometryGate {
                 if equal {
                     equal = false;
                     *first_difference = Some(stage);
-                    shape.first_len = interval_len_at(snapshot, ordinal).unwrap_or(bytes.len() as u64);
+                    // THE VECTOR STAGE'S ORDINAL IS NOT AN INTERVAL INDEX (lane
+                    // TD). Every other stage either carries a real interval
+                    // ordinal or `usize::MAX`, which `interval_len_at` returns
+                    // `None` for; the vector stage now carries a store index in
+                    // 0..11, which would have named an unrelated interval's
+                    // length. Guarding on the stage rather than on the range is
+                    // what keeps that true if either numbering grows.
+                    let interval_len = if matches!(stage, D81GateStage::Vector) {
+                        shape.first_vector_store =
+                            super::d81_vector_store::d81_vector_store_bin(ordinal);
+                        None
+                    } else {
+                        interval_len_at(snapshot, ordinal)
+                    };
+                    shape.first_len = interval_len.unwrap_or(bytes.len() as u64);
                     shape.first_offset = offset as u64;
                 }
             },

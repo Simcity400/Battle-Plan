@@ -147,30 +147,40 @@ impl FamilyStore {
     /// bytes. It is deliberately a SUPERSET of what any one walk reads — a
     /// digest narrowed to the fields a reader touches is a second copy of that
     /// reader's read set, and the two drift.
-    fn feed_content(&self, sink: &mut dyn FnMut(&[u8]), reduce_active_windows: bool) {
-        sink(&(self.starts.len() as u64).to_le_bytes());
+    /// `store` is this store's index in [`D81VectorCapture::stores`], handed to
+    /// the sink beside every run so a consumer can attribute a difference to
+    /// the family it belongs to. It is a LABEL and nothing more: it is not fed
+    /// into the byte stream, so the image this produces is byte-identical to
+    /// the one produced before the label existed.
+    fn feed_content(
+        &self,
+        store: usize,
+        sink: &mut dyn FnMut(usize, &[u8]),
+        reduce_active_windows: bool,
+    ) {
+        sink(store, &(self.starts.len() as u64).to_le_bytes());
         for value in &self.starts {
-            sink(&value.to_le_bytes());
+            sink(store, &value.to_le_bytes());
         }
-        sink(&(self.lens.len() as u64).to_le_bytes());
+        sink(store, &(self.lens.len() as u64).to_le_bytes());
         for value in &self.lens {
-            sink(&value.to_le_bytes());
+            sink(store, &value.to_le_bytes());
         }
-        sink(&(self.offsets.len() as u64).to_le_bytes());
+        sink(store, &(self.offsets.len() as u64).to_le_bytes());
         for value in &self.offsets {
-            sink(&value.to_le_bytes());
+            sink(store, &value.to_le_bytes());
         }
-        sink(&(self.status.len() as u64).to_le_bytes());
-        sink(&self.status);
+        sink(store, &(self.status.len() as u64).to_le_bytes());
+        sink(store, &self.status);
         for slab in &self.slabs {
-            sink(&(slab.len() as u64).to_le_bytes());
+            sink(store, &(slab.len() as u64).to_le_bytes());
             if reduce_active_windows {
-                feed_active_windows(slab, sink);
+                feed_active_windows(store, slab, sink);
             } else {
-                sink(slab);
+                sink(store, slab);
             }
         }
-        sink(&[self.images.opening, self.images.closing]);
+        sink(store, &[self.images.opening, self.images.closing]);
     }
 
     pub fn window_count(&self) -> usize {
@@ -455,6 +465,59 @@ const STORE_HEADER_CLOSE: u8 = D81_FAMILY_COUNT as u8;
 const STORE_RECORD_PTR_CLOSE: u8 = D81_FAMILY_COUNT as u8 + 1;
 const STORE_COUNT: usize = D81_FAMILY_COUNT + 2;
 
+/// The number of stores [`D81VectorCapture::feed_content`] labels its runs
+/// with, and the label it uses for content that belongs to no store.
+///
+/// Lane TD. `rc_vanilla4` put 125 of the geometry gate's 159 misses in the
+/// `Vector` stage, which is every one of these stores fed through one bin, so
+/// the manifest could not say which family churned. These names give the miss
+/// an owner; `D81_VECTOR_STORE_NAMES` is the wire spelling, in `stores()`
+/// order, with the unattributed bin last.
+pub const D81_VECTOR_STORE_COUNT: usize = STORE_COUNT;
+/// The label [`D81VectorCapture::feed_content`] uses for the capture's own
+/// trailing framing. Deliberately `usize::MAX` rather than `STORE_COUNT`, so a
+/// consumer that forgets to map it lands out of range instead of silently
+/// blaming the last store.
+pub const D81_VECTOR_STORE_UNATTRIBUTED: usize = usize::MAX;
+/// One bin per store, plus one for [`D81_VECTOR_STORE_UNATTRIBUTED`].
+///
+/// Taken from the NAME LIST rather than written as `STORE_COUNT + 1`, so the
+/// list is what the histogram is sized by: a bin nobody named cannot exist, and
+/// the array's own `[&str; STORE_COUNT + 1]` type is what makes forgetting a
+/// name a compile error rather than an unnamed column in a manifest.
+pub const D81_VECTOR_STORE_BINS: usize = D81_VECTOR_STORE_NAMES.len();
+/// Wire names for the bins, in `stores()` order. The last two stores carry the
+/// CLOSING images of `RailHeader` and `MapRecordPtr` (see `STORE_FAMILY`), so
+/// they are named for that rather than for a family of their own.
+pub const D81_VECTOR_STORE_NAMES: [&str; STORE_COUNT + 1] = [
+    "rail_header",
+    "pair_blob",
+    "map_record_ptr",
+    "map_anchors",
+    "record_key",
+    "source_province",
+    "source_slot_close",
+    "map_slot_close",
+    "active_close",
+    "rail_header_close",
+    "map_record_ptr_close",
+    "framing",
+];
+
+/// Which bin a [`D81VectorCapture::feed_content`] label falls in.
+///
+/// Total, so a label this module does not recognise is accounted to the
+/// `framing` bin rather than dropped: a miss that vanishes from the histogram
+/// is worse than one attributed to the wrong bin, because the histogram's sum
+/// is what says the split is complete.
+pub fn d81_vector_store_bin(label: usize) -> usize {
+    if label < D81_VECTOR_STORE_COUNT {
+        label
+    } else {
+        D81_VECTOR_STORE_COUNT
+    }
+}
+
 /// WHICH FAMILY EACH STORE BELONGS TO.
 ///
 /// The last two stores are not families of their own: they hold the CLOSING
@@ -725,24 +788,27 @@ pub struct D81VectorCapture {
 /// the `ActiveClose` family uses that exact length). A trailing partial window
 /// cannot occur, but is fed verbatim if it somehow does: unexplained bytes are
 /// compared, never dropped.
-fn feed_active_windows(slab: &[u8], sink: &mut dyn FnMut(&[u8])) {
+fn feed_active_windows(store: usize, slab: &[u8], sink: &mut dyn FnMut(usize, &[u8])) {
     let len = super::D81_ACTIVE_WINDOW_LEN;
     let mut at = 0usize;
     while at + len <= slab.len() {
         let mut window = [0u8; super::D81_ACTIVE_WINDOW_LEN];
         window.copy_from_slice(&slab[at..at + len]);
         let state = super::d81_active_state_from_window(window);
-        sink(&[
-            state.active_a,
-            state.active_b,
-            state.active_flags,
-            (state.active_u16 & 0xFF) as u8,
-            (state.active_u16 >> 8) as u8,
-        ]);
+        sink(
+            store,
+            &[
+                state.active_a,
+                state.active_b,
+                state.active_flags,
+                (state.active_u16 & 0xFF) as u8,
+                (state.active_u16 >> 8) as u8,
+            ],
+        );
         at += len;
     }
     if at < slab.len() {
-        sink(&slab[at..]);
+        sink(store, &slab[at..]);
     }
 }
 
@@ -785,7 +851,15 @@ impl D81VectorCapture {
     ///    outright when any of them is nonzero, which is strictly stronger than
     ///    comparing them (two captures with the same defect count need not have
     ///    the same defects).
-    pub fn feed_content(&self, sink: &mut dyn FnMut(&[u8])) {
+    ///
+    /// The sink's first argument is the index in [`Self::stores`] of the store
+    /// the run belongs to, or [`D81_VECTOR_STORE_UNATTRIBUTED`] for the
+    /// capture's own trailing framing, which belongs to no family. Nothing
+    /// about the BYTES changed when that label was added (lane TD): the label
+    /// is not serialized, so an image built before and after this change is the
+    /// same image, and the label exists only so a consumer that finds a
+    /// difference can say which family it was in.
+    pub fn feed_content(&self, sink: &mut dyn FnMut(usize, &[u8])) {
         for (index, store) in self.stores().into_iter().enumerate() {
             // THE ACTIVE-CLOSE FAMILY IS REDUCED, not fed raw (lane PW).
             //
@@ -801,9 +875,12 @@ impl D81VectorCapture {
             // the snapshot side and put the volatile counter straight back into
             // the comparison, which is exactly the miss lane PW measured.
             let reduce = index == D81Family::ActiveClose as usize;
-            store.feed_content(sink, reduce);
+            store.feed_content(index, sink, reduce);
         }
-        sink(&self.closing_tail_start.to_le_bytes());
+        sink(
+            D81_VECTOR_STORE_UNATTRIBUTED,
+            &self.closing_tail_start.to_le_bytes(),
+        );
     }
 
     /// Did this capture take every byte it planned to?
@@ -1833,6 +1910,52 @@ mod shape_tests {
         store.copy_side(2, ST_O, &mut copy, &calls, MergePolicy::default());
         assert_eq!(order, vec![0x1000, 0x1000, 0x2000, 0x2000]);
         assert_eq!(calls.get(), 4);
+    }
+
+    /// THE STORE LABELS AND THEIR WIRE NAMES ARE ONE LIST (lane TD).
+    ///
+    /// `feed_content` labels each run with a `stores()` index and the manifest
+    /// publishes one named unit per bin, so the two orderings have to be the
+    /// same list or a capture reports the churn of one family under another
+    /// family's name — which is precisely the reading this histogram exists to
+    /// make. Nothing else in the tree ties them together.
+    ///
+    /// One half is already a compile error rather than an assertion:
+    /// `D81_VECTOR_STORE_NAMES` is typed `[&str; STORE_COUNT + 1]`, so a family
+    /// added without a name does not build. What is NOT compiler-enforced, and
+    /// is what this test carries, is that the label-to-bin mapping is total and
+    /// that the names are distinct.
+    ///
+    /// kills: mapping the unattributed label onto a real store (the `framing`
+    /// assertions fail); making `d81_vector_store_bin` partial so an unknown
+    /// label silently vanishes from the histogram; giving two bins one name so
+    /// the manifest sums them together.
+    #[test]
+    fn every_store_has_a_bin_and_a_name() {
+        assert_eq!(D81_VECTOR_STORE_BINS, D81_VECTOR_STORE_COUNT + 1);
+        for index in 0..D81_VECTOR_STORE_COUNT {
+            assert_eq!(
+                d81_vector_store_bin(index),
+                index,
+                "a real store must bin to itself"
+            );
+        }
+        assert_eq!(
+            d81_vector_store_bin(D81_VECTOR_STORE_UNATTRIBUTED),
+            D81_VECTOR_STORE_COUNT,
+            "the capture's own framing belongs in the trailing bin"
+        );
+        assert_eq!(
+            D81_VECTOR_STORE_NAMES[D81_VECTOR_STORE_COUNT], "framing",
+            "the trailing bin is the one that is not a store"
+        );
+        // AND EVERY NAME IS DISTINCT: two bins sharing a name would be summed
+        // together by the manifest, which aggregates by name.
+        let mut seen = D81_VECTOR_STORE_NAMES;
+        seen.sort_unstable();
+        for pair in seen.windows(2) {
+            assert_ne!(pair[0], pair[1], "duplicate store name {}", pair[0]);
+        }
     }
 
     #[test]

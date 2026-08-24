@@ -292,6 +292,138 @@ fn one_changed_word_of_the_copy_is_a_miss() {
     );
 }
 
+/// A VECTOR-STAGE MISS NAMES THE FAMILY IT WAS IN (lane TD).
+///
+/// `captures/rc_vanilla4` put 125 of the gate's 159 misses in the `Vector`
+/// stage, which before this lane was ONE bin covering all eleven stores — so
+/// the capture could say "the copy churns" and could not say whether the
+/// churning bytes were the rail pairs, whose only in-place mutator is
+/// `CProvinceRailwayInfo::SetRailway`, or the supply system's per-province
+/// record. That distinction is what decides RY3 §3.1(a); see
+/// `runs/td_rail_change_signal/DOSSIER.md` section 7.
+///
+/// THE PREMISE IS PROVEN HERE, not assumed (Codex r1 finding 6). An anchor
+/// triplet has to be carried by the vector store and by NO snapshot interval,
+/// or the first difference would be an interval one and this would be testing
+/// the wrong stage. The first assertion below walks the plan's own span list
+/// and shows the anchor address lies outside every one of them.
+///
+/// kills: dropping the store label in `D81VectorCapture::feed_content` and
+/// feeding `usize::MAX` again (the miss lands in the `framing` bin); binning a
+/// non-vector miss (the sum assertion breaks against the stage histogram);
+/// labelling the runs with a constant (the anchor would bin to whatever that
+/// constant is, not to `MapAnchors`).
+#[test]
+fn a_vector_stage_miss_is_binned_to_the_store_it_was_in() {
+    use crate::attach_log::d81_geometry_gate::D81GateStage;
+    use crate::attach_log::d81_vector_store::{D81Family, D81_VECTOR_STORE_BINS};
+
+    let changed = with_anchor(0x2222_2222);
+    // THE PREMISE. Build the same observation `ask` will build, and show the
+    // edited address is in no copied interval -- so the only image that carries
+    // it is the vector capture's.
+    let anchor = map_province_of(EDITED_PROVINCE) + ANCHOR_PRIMARY_OFF;
+    {
+        let memory = CountingSnapshotMemory::new(&changed.memory);
+        let mut plan = D81PlanCounters::default();
+        let observation =
+            d81_observe_copy_plan_with(&memory, &changed.roots, WORLD_HOUR, &mut plan)
+                .expect("custody admits a fixture this size");
+        assert!(
+            observation.vector.is_some(),
+            "the fixture must produce a vector capture or there is no store to bin to"
+        );
+        for (start, end) in plan_spans_of(&observation, &changed) {
+            assert!(
+                anchor < start || anchor >= end,
+                "the anchor at {anchor:#x} lies inside the copied span \
+                 [{start:#x}, {end:#x}); it would first differ as an interval, \
+                 not in the vector stage, and this test would be measuring the \
+                 wrong thing"
+            );
+        }
+    }
+
+    let mut gate = D81GeometryGate::default();
+    let _walked = observe_and_remember(&mut gate, &with_anchor(0x1111_1111));
+    let phases = D81PhaseAccum::default();
+    let _ = ask(&mut gate, &changed, &phases);
+
+    assert_eq!(phases.geometry_gate_miss.get(), 1);
+    let vector_stage = phases.geometry_gate_miss_stage[D81GateStage::Vector.ordinal()].get();
+    assert_eq!(
+        vector_stage, 1,
+        "the assertion above showed the anchor is carried by no interval, so \
+         the first difference must be in the vector stage"
+    );
+    let bins: Vec<u64> = (0..D81_VECTOR_STORE_BINS)
+        .map(|index| phases.geometry_gate_miss_vector_store[index].get())
+        .collect();
+    assert_eq!(
+        bins.iter().sum::<u64>(),
+        vector_stage,
+        "the per-store bins must sum to the vector stage's own count: a bin \
+         that over- or under-counts is a histogram nobody can read"
+    );
+    assert_eq!(
+        bins[D81Family::MapAnchors as usize], 1,
+        "the anchor lives in the MapAnchors store, so that is the bin the miss \
+         belongs in; bins were {bins:?}"
+    );
+}
+
+/// AND A MISS THAT REACHED THE COMPARISON OUTSIDE THE VECTOR STAGE BINS
+/// NOTHING (lane TD).
+///
+/// THE ONE THAT KILLS A DERIVED `Default` on `D81GateMissShape`, and the first
+/// version of this test did not (Codex r1 finding 6): it used a SCALAR
+/// mismatch, and `decide` returns on that before a `D81GateMissShape` is ever
+/// constructed or `record_gate_miss_shape` is ever called, so restoring
+/// `#[derive(Default)]` left it green. The edit here is a byte of the active
+/// table instead, which is a copied interval — the comparison runs, the first
+/// difference is an interval one, and the shape reaches the accumulator with
+/// `first_vector_store` untouched. Under a derived `Default` that field would
+/// be `0`, which is the `RailHeader` store, and this miss would be reported as
+/// a rail-header miss — the wrong answer to the one question the histogram
+/// exists to settle.
+///
+/// kills: `#[derive(Default)]` on `D81GateMissShape`; binning unconditionally
+/// rather than only for the vector stage.
+#[test]
+fn an_interval_stage_miss_bins_no_store() {
+    use crate::attach_log::d81_geometry_gate::D81GateStage;
+    use crate::attach_log::d81_vector_store::D81_VECTOR_STORE_BINS;
+
+    let mut gate = D81GeometryGate::default();
+    let _walked = observe_and_remember(&mut gate, &stage_world(WorldShape::default()));
+    let mut flipped = stage_world(WorldShape::default());
+    // The same edit `an_active_table_predicate_that_flips_is_a_miss` makes: a
+    // predicate field of one active-table entry, which lives in a copied
+    // interval and is compared before the vector capture is fed at all.
+    flipped.memory.write(active_window_addr(2) + 2, &[0x00]);
+    let phases = D81PhaseAccum::default();
+    let _ = ask(&mut gate, &flipped, &phases);
+
+    assert_eq!(phases.geometry_gate_miss.get(), 1);
+    assert_eq!(
+        phases.geometry_gate_miss_stage[D81GateStage::IntervalOpening.ordinal()].get(),
+        1,
+        "the active table is a copied interval, so this miss is an interval one"
+    );
+    assert!(
+        phases.geometry_gate_miss_intervals.get() > 0,
+        "the shape must have reached the accumulator, or this test cannot say \
+         anything about the field the accumulator reads"
+    );
+    let binned: u64 = (0..D81_VECTOR_STORE_BINS)
+        .map(|index| phases.geometry_gate_miss_vector_store[index].get())
+        .sum();
+    assert_eq!(
+        binned, 0,
+        "a miss outside the vector stage has no store, so no bin may move"
+    );
+}
+
 /// THE SAME EDITED WORLD TWICE STILL HITS.
 ///
 /// The companion to the test above: it pins that `with_anchor` itself does not
