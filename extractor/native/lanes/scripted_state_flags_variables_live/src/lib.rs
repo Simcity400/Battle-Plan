@@ -29,9 +29,10 @@ pub use scripted_gui_runtime_compact::{
     DOMAIN_ID as SCRIPTED_GUI_RUNTIME_DOMAIN_ID, DOMAIN_NAME as SCRIPTED_GUI_RUNTIME_DOMAIN_NAME,
 };
 pub use scripted_state_domain51_collector::{
-    collect_a13_domain51_frame, collect_domain51_frame, registration_descriptor, A13CarrierError,
-    A13FrameInput, DelayedEventRow, Domain51CollectedFrame, Domain51FrameInput, FlagEntry,
-    FlagScopeRead, OpaqueRootState, ScopeReadStatus, VariableEntry, VariableScopeRead,
+    collect_a13_domain51_frame, collect_a13_domain51_frame_shaped, collect_domain51_frame,
+    collect_domain51_frame_shaped, registration_descriptor, A13CarrierError, A13FrameInput,
+    DelayedEventRow, Domain51CollectedFrame, Domain51FrameInput, FlagEntry, FlagScopeRead,
+    OpaqueRootState, PayloadShape, ScopeReadStatus, VariableEntry, VariableScopeRead,
 };
 pub use scripted_state_domain51_gate::compact::{
     Domain51GateSummary, DOMAIN_ID, DOMAIN_NAME, STATUS_DELAYED_EVENTS_ROOT_UNRESOLVED,

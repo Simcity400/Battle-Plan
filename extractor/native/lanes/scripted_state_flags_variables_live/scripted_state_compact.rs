@@ -114,9 +114,28 @@ pub fn encode_payload(header: &ScriptedStateHeader, rows: &[ScriptedStateRow]) -
     // codec boundary as well as in the production collector so auxiliary
     // producers and deterministic fixtures cannot accidentally serialize
     // hash-container or caller insertion order.
-    let mut canonical_rows = rows.to_vec();
-    canonical_rows.sort_by(canonical_row_cmp);
-    let rows = canonical_rows.as_slice();
+    //
+    // Lane SE: the production collector ALREADY sorts with this exact
+    // comparator immediately before calling here, so the old unconditional
+    // `rows.to_vec()` deep-cloned every row (each with its heap key String)
+    // and re-sorted a sequence that was already canonical - the dominant
+    // allocation in the domain's read window at ~7.9k rows/frame. The clone
+    // is now taken only when the input is NOT already non-decreasing under
+    // `canonical_row_cmp`. That is byte-identical, not merely equivalent:
+    // `sort_by` is a STABLE sort, so on an already-non-decreasing sequence it
+    // is the identity permutation and the encoded slice is the same slice.
+    // Auxiliary producers passing unsorted rows still get the clone-and-sort.
+    let canonical_rows = if rows_are_canonically_sorted(rows) {
+        None
+    } else {
+        let mut owned = rows.to_vec();
+        owned.sort_by(canonical_row_cmp);
+        Some(owned)
+    };
+    let rows: &[ScriptedStateRow] = match canonical_rows.as_deref() {
+        Some(sorted) => sorted,
+        None => rows,
+    };
     let mut key_bytes = Vec::new();
     let mut row_keys = Vec::with_capacity(rows.len());
     let mut variable_rows = 0u32;
@@ -686,6 +705,15 @@ pub fn canonical_row_cmp(
             },
             right.deleted || right.value_kind & ROW_VALUE_KIND_DELETED != 0,
         ))
+}
+
+/// True when `rows` is already non-decreasing under [`canonical_row_cmp`],
+/// i.e. when a STABLE `sort_by(canonical_row_cmp)` over it would be the
+/// identity permutation. One linear comparator sweep; the encoder uses it to
+/// decide whether it owes the caller a defensive clone-and-sort at all.
+fn rows_are_canonically_sorted(rows: &[ScriptedStateRow]) -> bool {
+    rows.windows(2)
+        .all(|pair| canonical_row_cmp(&pair[0], &pair[1]) != std::cmp::Ordering::Greater)
 }
 
 fn validate_opaque_badge_key(

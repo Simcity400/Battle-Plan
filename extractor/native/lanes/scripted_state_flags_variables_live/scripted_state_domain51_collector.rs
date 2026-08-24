@@ -180,8 +180,35 @@ pub fn registration_descriptor() -> Domain51RegistrationDescriptor {
     }
 }
 
+/// Whether the collected frame carries its encoded payload.
+///
+/// Lane SE. In `d51_emit_mode=delta` - production's default - the caller
+/// throws the whole-table payload away and re-encodes the changed rows
+/// instead, so on every delta frame after the first the collector was
+/// encoding ~7.9k rows into a ~585 KB buffer that nothing ever reads. The
+/// caller asks for [`PayloadShape::RowsOnly`] exactly when it can prove it
+/// will re-encode, and [`Domain51CollectedFrame::rows`] is unchanged either
+/// way; nothing else about the frame differs between the two shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PayloadShape {
+    /// `payload` holds `encode_payload(header, rows)`.
+    Encoded,
+    /// `payload` is empty; the caller re-encodes from `rows` before use.
+    RowsOnly,
+}
+
 pub fn collect_a13_domain51_frame(
+    input: A13FrameInput,
+) -> Result<Domain51CollectedFrame, A13CarrierError> {
+    collect_a13_domain51_frame_shaped(input, PayloadShape::Encoded)
+}
+
+/// [`collect_a13_domain51_frame`] with the payload encode under caller
+/// control. Every other field - rows, row_count, the three scope counters,
+/// status flags, and every refusal - is computed identically.
+pub fn collect_a13_domain51_frame_shaped(
     mut input: A13FrameInput,
+    payload_shape: PayloadShape,
 ) -> Result<Domain51CollectedFrame, A13CarrierError> {
     if input.executable_sha256 != EXACT_A729_EXECUTABLE_SHA256 {
         return Err(A13CarrierError::WrongExecutable);
@@ -225,14 +252,17 @@ pub fn collect_a13_domain51_frame(
     if u32::try_from(row_count).is_err() {
         return Err(A13CarrierError::RowCountOverflow);
     }
-    Ok(collect_domain51_frame(Domain51FrameInput {
-        elapsed_wall_ms: input.elapsed_wall_ms,
-        variable_scopes: input.variable_scopes,
-        flag_scopes: input.flag_scopes,
-        delayed_events: OpaqueRootState::NotRequested,
-        scripted_gui_open_state: OpaqueRootState::NotRequested,
-        delayed_event_rows: Vec::new(),
-    }))
+    Ok(collect_domain51_frame_shaped(
+        Domain51FrameInput {
+            elapsed_wall_ms: input.elapsed_wall_ms,
+            variable_scopes: input.variable_scopes,
+            flag_scopes: input.flag_scopes,
+            delayed_events: OpaqueRootState::NotRequested,
+            scripted_gui_open_state: OpaqueRootState::NotRequested,
+            delayed_event_rows: Vec::new(),
+        },
+        payload_shape,
+    ))
 }
 
 fn scope_roster<T>(scopes: &[T]) -> Result<std::collections::BTreeSet<(u32, u32)>, A13CarrierError>
@@ -371,6 +401,16 @@ fn validate_key(key: &str) -> Result<(), A13CarrierError> {
 }
 
 pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFrame {
+    collect_domain51_frame_shaped(input, PayloadShape::Encoded)
+}
+
+/// [`collect_domain51_frame`] with the payload encode under caller control.
+/// See [`PayloadShape`]: `RowsOnly` skips ONLY the `encode_payload` call and
+/// leaves every other field of the frame bit-for-bit what `Encoded` produces.
+pub fn collect_domain51_frame_shaped(
+    input: Domain51FrameInput,
+    payload_shape: PayloadShape,
+) -> Domain51CollectedFrame {
     let mut rows = Vec::new();
     let mut status_flags = 0u32;
     let mut observed_scopes = 0u32;
@@ -499,7 +539,10 @@ pub fn collect_domain51_frame(input: Domain51FrameInput) -> Domain51CollectedFra
         measured_scopes,
         rejected_scopes,
     };
-    let payload = compact::encode_payload(&header, &rows);
+    let payload = match payload_shape {
+        PayloadShape::Encoded => compact::encode_payload(&header, &rows),
+        PayloadShape::RowsOnly => Vec::new(),
+    };
 
     Domain51CollectedFrame {
         domain_id: compact::DOMAIN_ID,

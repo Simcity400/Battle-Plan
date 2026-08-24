@@ -163,6 +163,10 @@ pub fn read_variables_container<R: MemoryRead>(
     }
 
     let span = nb.saturating_add(4).saturating_mul(NODE_STRIDE);
+    // Two independent snapshots, decoded independently, and the accepted read
+    // is the one both agree on - unchanged. What changed is the container the
+    // comparison runs over: sorted duplicate-free pair vectors instead of two
+    // `BTreeMap`s, which decides the same way and builds one map, not two.
     if let (Some(first), Some(second)) = (
         read_variables_container_snapshot(mem, base, span, size),
         read_variables_container_snapshot(mem, base, span, size),
@@ -188,7 +192,7 @@ pub fn read_variables_container<R: MemoryRead>(
             node_base: Some(base),
             declared_size: size,
             bucket_mask: mask,
-            entries: first,
+            entries: first.into_iter().collect(),
             failure_reason: None,
         };
     }
@@ -321,12 +325,21 @@ fn stable_header_pair<R: MemoryRead>(mem: &R, container: u64) -> Option<(u64, u6
     ))
 }
 
+/// One snapshot's decoded rows: sorted by key and proven duplicate-free, so
+/// two of them compare exactly as the two `BTreeMap`s they used to be
+/// (`BTreeMap::from_iter` over sorted duplicate-free pairs is injective on
+/// this order). The map is built once, from the ACCEPTED snapshot only -
+/// building it for the discarded second snapshot as well cost one heap node
+/// per variable per container per frame for a value that was compared and
+/// then thrown away.
+type VariableSnapshotRows = Vec<(String, i64)>;
+
 fn read_variables_container_snapshot<R: MemoryRead>(
     mem: &R,
     base: u64,
     span: u64,
     size: u32,
-) -> Option<BTreeMap<String, i64>> {
+) -> Option<VariableSnapshotRows> {
     let span_len = usize::try_from(span).ok()?;
     if span_len == 0 || span_len > VARIABLE_TABLE_SNAPSHOT_MAX_BYTES {
         return None;
@@ -336,39 +349,78 @@ fn read_variables_container_snapshot<R: MemoryRead>(
     scan_variables_snapshot(mem, &bytes, size)
 }
 
+/// The part of [`read_msvc_string_from_node_snapshot`] that decides, from the
+/// node bytes ALONE, that this node cannot carry a key: every rejection the
+/// full reader can make before it touches memory or validates characters.
+///
+/// It is therefore a sound upper bound - a node the full reader accepts must
+/// pass this - which is what lets the phase loop below drop a phase whose
+/// candidate count is already short of `target_len` without reading a single
+/// out-of-line key buffer for it. Five of the six phases are wrong by
+/// construction (the node stride is 0x30 and only one 8-byte phase lines up
+/// with the table), and each plausible-looking garbage node in them was
+/// costing one guarded read plus one `String`.
+fn node_header_admits_key(node: &[u8]) -> bool {
+    let (Some(size), Some(cap)) = (read_u64_le(node, 0x10), read_u64_le(node, 0x18)) else {
+        return false;
+    };
+    let (size, cap) = (size as usize, cap as usize);
+    if size == 0 || size > MAX_KEYLEN || size > cap || cap >= (1 << 20) {
+        return false;
+    }
+    let inline = cap == 15;
+    inline || cap >= 16
+}
+
 fn scan_variables_snapshot<R: MemoryRead>(
     mem: &R,
     bytes: &[u8],
     size: u32,
-) -> Option<BTreeMap<String, i64>> {
+) -> Option<VariableSnapshotRows> {
     let target_len = size as usize;
-    let mut exact: Option<Vec<(String, i64)>> = None;
+    let mut exact: Option<VariableSnapshotRows> = None;
+    let mut entries: VariableSnapshotRows = Vec::with_capacity(target_len);
     let mut phase = 0usize;
     while phase < NODE_STRIDE_USIZE {
-        let mut entries = Vec::new();
+        // Sound-upper-bound sweep first: pure arithmetic over the snapshot,
+        // no reads, no allocation, same node bounds as the parse loop below.
+        // `read_i64_le(node, NODE_VALUE)` cannot fail on a 0x30-byte node, so
+        // the parse loop's only early exit is a bound this sweep shares.
+        let mut candidates = 0usize;
         let mut offset = phase;
         while offset.checked_add(NODE_STRIDE_USIZE)? <= bytes.len() {
-            let node = &bytes[offset..offset + NODE_STRIDE_USIZE];
-            if let Some(key) = read_msvc_string_from_node_snapshot(mem, node) {
-                let raw = read_i64_le(node, NODE_VALUE_USIZE)?;
-                entries.push((key, raw));
+            if node_header_admits_key(&bytes[offset..offset + NODE_STRIDE_USIZE]) {
+                candidates += 1;
             }
             offset = offset.checked_add(NODE_STRIDE_USIZE)?;
         }
-        if entries.len() == target_len {
-            entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-            if !entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-                if let Some(existing) = exact.as_ref() {
-                    if existing != &entries {
-                        return None;
+        if candidates >= target_len {
+            entries.clear();
+            let mut offset = phase;
+            while offset.checked_add(NODE_STRIDE_USIZE)? <= bytes.len() {
+                let node = &bytes[offset..offset + NODE_STRIDE_USIZE];
+                if let Some(key) = read_msvc_string_from_node_snapshot(mem, node) {
+                    let raw = read_i64_le(node, NODE_VALUE_USIZE)?;
+                    entries.push((key, raw));
+                }
+                offset = offset.checked_add(NODE_STRIDE_USIZE)?;
+            }
+            if entries.len() == target_len {
+                entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                if !entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                    match exact.as_ref() {
+                        Some(existing) if existing != &entries => return None,
+                        // Already recorded and equal: the old spelling
+                        // reassigned an equal value here.
+                        Some(_) => {}
+                        None => exact = Some(std::mem::take(&mut entries)),
                     }
                 }
-                exact = Some(entries);
             }
         }
         phase = phase.checked_add(8)?;
     }
-    exact.map(|entries| entries.into_iter().collect())
+    exact
 }
 
 fn read_msvc_string_from_node_snapshot<R: MemoryRead>(mem: &R, node: &[u8]) -> Option<String> {
@@ -707,6 +759,129 @@ mod tests {
         assert_eq!(
             read.failure_reason,
             Some("country_variables_size_gate_failed")
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Lane SE: the phase-loop candidate pre-count.
+    //
+    // `scan_variables_snapshot` now sweeps each phase for nodes whose header
+    // bytes could carry a key BEFORE it parses that phase, and skips the
+    // phase when the count is already short of the declared size. The claim
+    // is that the pre-count is a SOUND UPPER BOUND, so the accepted rows and
+    // every refusal are unchanged; these pin both halves of that.
+    // ---------------------------------------------------------------
+
+    /// The pre-change parse loop, restated: no pre-count, every phase parsed.
+    /// The reference half of the equivalence below.
+    fn scan_variables_snapshot_unfiltered<R: MemoryRead>(
+        mem: &R,
+        bytes: &[u8],
+        size: u32,
+    ) -> Option<VariableSnapshotRows> {
+        let target_len = size as usize;
+        let mut exact: Option<VariableSnapshotRows> = None;
+        let mut phase = 0usize;
+        while phase < NODE_STRIDE_USIZE {
+            let mut entries: VariableSnapshotRows = Vec::new();
+            let mut offset = phase;
+            while offset.checked_add(NODE_STRIDE_USIZE)? <= bytes.len() {
+                let node = &bytes[offset..offset + NODE_STRIDE_USIZE];
+                if let Some(key) = read_msvc_string_from_node_snapshot(mem, node) {
+                    let raw = read_i64_le(node, NODE_VALUE_USIZE)?;
+                    entries.push((key, raw));
+                }
+                offset = offset.checked_add(NODE_STRIDE_USIZE)?;
+            }
+            if entries.len() == target_len {
+                entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+                if !entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                    if let Some(existing) = exact.as_ref() {
+                        if existing != &entries {
+                            return None;
+                        }
+                    }
+                    exact = Some(entries);
+                }
+            }
+            phase = phase.checked_add(8)?;
+        }
+        exact
+    }
+
+    fn snapshot_with_inline_rows(rows: &[(&str, i64)], slack_nodes: usize) -> Vec<u8> {
+        let mut bytes = vec![0u8; (rows.len() + slack_nodes) * NODE_STRIDE_USIZE];
+        for (index, (key, value)) in rows.iter().enumerate() {
+            let base = index * NODE_STRIDE_USIZE;
+            put_inline_string(&mut bytes, base, key);
+            put_i64(&mut bytes, base + NODE_VALUE_USIZE, *value);
+        }
+        bytes
+    }
+
+    #[test]
+    fn the_precounted_phase_scan_decodes_exactly_what_the_unfiltered_scan_did() {
+        let mem = FixtureMemory::default();
+        let rows = [("air_doctrine", 250_000i64), ("zeta", -7), ("mid_key^2", 0)];
+        for slack in [1usize, 4, 9] {
+            let bytes = snapshot_with_inline_rows(&rows, slack);
+            for declared in [rows.len() as u32, rows.len() as u32 + 1, 0] {
+                assert_eq!(
+                    scan_variables_snapshot(&mem, &bytes, declared),
+                    scan_variables_snapshot_unfiltered(&mem, &bytes, declared),
+                    "slack {slack} declared {declared}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_one_byte_header_edit_moves_the_precount_and_both_scans_together() {
+        // kills: a pre-count that is not a sound upper bound. Clearing the
+        // `cap` word of one node takes that node out of the candidate set, so
+        // phase 0 can no longer reach the declared size and the read must
+        // refuse - and the unfiltered scan, which never counted anything,
+        // must refuse for the same reason at the same input.
+        let mem = FixtureMemory::default();
+        let rows = [("alpha", 1i64), ("beta", 2), ("gamma", 3)];
+        let mut bytes = snapshot_with_inline_rows(&rows, 3);
+        assert!(scan_variables_snapshot(&mem, &bytes, 3).is_some());
+
+        let node = NODE_STRIDE_USIZE; // "beta"
+        put_u64(&mut bytes, node + 0x18, 0);
+        assert_eq!(scan_variables_snapshot(&mem, &bytes, 3), None);
+        assert_eq!(
+            scan_variables_snapshot(&mem, &bytes, 3),
+            scan_variables_snapshot_unfiltered(&mem, &bytes, 3),
+        );
+    }
+
+    #[test]
+    fn the_precount_still_refuses_a_table_two_phases_can_read_differently() {
+        // kills: a pre-count that skipped a phase which WOULD have produced a
+        // full, duplicate-free, DIFFERENT row set - the ambiguity the scan
+        // exists to refuse. Two single-row readings at two different phases,
+        // both reaching the declared size, must still fail the container.
+        // Phase 0 reads one row out of the node at 0x00; phase 8 reads a
+        // DIFFERENT one out of the node at 0x38. The two node images do not
+        // overlap (an inline node occupies [base, base + 0x28)), so both
+        // readings are genuinely available and the container is ambiguous.
+        let mem = FixtureMemory::default();
+        let mut bytes = vec![0u8; 6 * NODE_STRIDE_USIZE];
+        put_inline_string(&mut bytes, 0, "phase_zero");
+        put_i64(&mut bytes, NODE_VALUE_USIZE, 11);
+        put_inline_string(&mut bytes, 0x38, "phase_eight");
+        put_i64(&mut bytes, 0x38 + NODE_VALUE_USIZE, 22);
+        assert_eq!(
+            scan_variables_snapshot_unfiltered(&mem, &bytes, 1),
+            None,
+            "the fixture must be ambiguous for the pre-count to have anything to preserve"
+        );
+
+        assert_eq!(scan_variables_snapshot(&mem, &bytes, 1), None);
+        assert_eq!(
+            scan_variables_snapshot(&mem, &bytes, 1),
+            scan_variables_snapshot_unfiltered(&mem, &bytes, 1),
         );
     }
 
