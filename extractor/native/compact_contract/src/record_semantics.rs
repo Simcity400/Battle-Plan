@@ -1205,12 +1205,19 @@ mod tests {
         let mut consumer = psd::PayloadSpanDeltaConsumer::new();
         let mut baselines = DomainRepeatBaselines::new();
 
+        // Two SHAPES, and now three domains. d81 and d43 are the original pair
+        // (declared volatile prefix 0 and 8 respectively); d93 is lane SG's
+        // addition and carries prefix 0, so the repeat digest covers the WHOLE
+        // envelope for it -- including the PSD1 header's own `source_sequence`
+        // and `game_hour_raw`. Enabling a domain without extending this loop is
+        // exactly how the seam would be widened untested.
         for (domain_id, sequence) in [
             (crate::rail_replay::DOMAIN_ID, 7u64),
             (
                 crate::payload_span_delta::DELTA_ENABLED_DOMAINS[0],
                 9u64,
             ),
+            (93, 13u64),
         ] {
             let mut payload = HOUR.to_le_bytes().to_vec();
             payload.extend(

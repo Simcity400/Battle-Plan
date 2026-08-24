@@ -153,35 +153,94 @@ pub const MAX_OPS: usize = 1 << 22;
 
 /// The domains whose DOMAIN_DATA payloads ride as `PSD1` envelopes.
 ///
-/// 43 `market_trade_live`, 53 `diplomacy_intel_operatives_live`, and 81
-/// `rail_replay_state_live`. The first two are two of the three lane PN priced
-/// as the largest remaining size prize; d81 is the largest remaining domain
-/// after them (`runs/pn_structural/`'s table), put on the same codec by lane QK
-/// after lane PW proved its payload splits into a geometry collection that is
-/// 93-98% byte-identical hour over hour and a hub collection whose changed
-/// bytes are a few thousand scattered inside a ~1 MB payload
-/// (`runs/qk_d81_wire_delta/MEASUREMENT.md` §1). The list is here, in the
-/// codec, because BOTH sides consult it: the producer to decide what to wrap,
-/// the decoder to refuse an envelope naming a domain nobody enabled.
-/// 43 `market_trade_live` and 53 `diplomacy_intel_operatives_live` — two of the
-/// three lane PN priced as the largest remaining size prize. 47
-/// `characters_leaders_cabinet_live` is the second-largest REMAINING domain
-/// (lane PN: ~684 KB/hour, ~3.2% hour-over-hour identity of the payload BASIS,
-/// i.e. after the volatile header; whole-payload identity measures 0-0.5%), priced
-/// by lane QL at 34-49x under this exact codec on five sealed spools
-/// (`runs/ql_d47_wire_delta/`). The list is here, in the codec, because BOTH
-/// sides consult it: the producer to decide what to wrap, the decoder to refuse
-/// an envelope naming a domain nobody enabled.
+/// | id | domain | measured ratio | spool |
+/// |---|---|---|---|
+/// | 43 | `market_trade_live` | 52.2x | `captures/pn_structural` |
+/// | 47 | `characters_leaders_cabinet_live` | 41.7x | `captures/pn_structural` |
+/// | 53 | `diplomacy_intel_operatives_live` | 50.0x | `captures/pn_structural` |
+/// | 81 | `rail_replay_state_live` | 8.6x | `captures/pn_structural` |
+/// | 93 | `country_army_upgrade_requests_live` | 24.7x | `captures/rc_vanilla` |
+///
+/// The list is here, in the codec, because BOTH sides consult it: the producer
+/// to decide what to wrap, the decoder to refuse an envelope naming a domain
+/// nobody enabled.
+///
+/// 43 and 53 are two of the three lane PN priced as the largest remaining size
+/// prize. 47 was the second-largest REMAINING domain after them (lane PN: ~684
+/// KB/hour, ~3.2% hour-over-hour identity of the payload BASIS, i.e. after the
+/// volatile header; whole-payload identity measures 0-0.5%), priced by lane QL
+/// at 34-49x under this exact codec on five sealed spools
+/// (`runs/ql_d47_wire_delta/`). 81 was the largest after those, put on the codec
+/// by lane QK once lane PW proved its payload splits into a geometry collection
+/// that is 93-98% byte-identical hour over hour and a hub collection whose
+/// changed bytes are a few thousand scattered inside a ~1 MB payload
+/// (`runs/qk_d81_wire_delta/MEASUREMENT.md` §1). 93 is lane SG's, priced over
+/// every hour of `captures/rc_vanilla` (`runs/sg_dense_delta/MEASUREMENT.md`).
+///
+/// # Four laws decide membership, and every exclusion below cites one
+///
+/// 1. **A domain that copies its own H4CR record sequence into its payload
+///    cannot be wrapped**, because `attach_log::stamp_record_bound_sequence`
+///    settles that copy AFTER the frame's drop passes have resequenced the
+///    stream — inside what would be the envelope's digested basis. Excludes 41,
+///    70, 100 and 101.
+/// 2. **A domain the auto-attach first-world-record proof reads STANDING ALONE
+///    cannot be wrapped**, because that proof folds one record into a fresh
+///    `WorldFold` with no baseline behind it and its allowed-flag mask therefore
+///    declines any enveloped candidate
+///    (`recorder_host::auto_attach::proof::proof_allowed_data_record_flags`,
+///    which carries a `const` assertion making the combination a build failure
+///    rather than a silent never-completing attach). Excludes 10, 44 and 68.
+/// 3. **A domain whose already-built DATA record is READ BACK AND REBUILT cannot
+///    be wrapped without a recovery path.** `attach_log`'s terminal hook-custody
+///    merge does exactly that at capture close for 45, 55, 67, 86 and 90: it
+///    decodes the record through the domain grammar and replaces it while
+///    copying its flag word, so an envelope there is read as grammar AND the
+///    replacement ships grammar under an envelope flag. A second `const`
+///    assertion, beside `reserve_and_merge_terminal_d55`, makes that combination
+///    a build failure too, and names the fix.
+/// 4. **A domain is wrapped only if enveloping it makes the spool smaller BOTH
+///    before and after the compressor.** There is no ratio threshold to argue
+///    about: the test is the SIGN of two byte counts, measured whole-spool one
+///    domain at a time over `captures/rc_vanilla`, with the second count taken at
+///    the settings a production capture is actually written with (zstd level 3,
+///    `window_log` 27, frame checksums, a flush every 1 MiB, a frame every
+///    256 MiB — `compact_stream::new_frame_encoder`, `PeriodicZstdWriter` and
+///    `spool_frame_bytes`; `CaptureProfile::Production` selects
+///    `StreamCompression::Zstd`).
+///
+///    | id | decoded | stored | verdict |
+///    |---|---|---|---|
+///    | 93 | −54,281,733 B | **−384,181 B** | wrapped |
+///    | 55 | −34,120,528 B | +766,592 B | not wrapped |
+///    | 42 | −17,493,832 B | +1,121,124 B | not wrapped |
+///    | 20 | −53,870,511 B | +5,062,159 B | not wrapped |
+///
+///    The two counts disagree for three of the four, and that is the finding
+///    rather than an inconvenience: zstd at a 128 MiB window already recovers
+///    most of what a 32-byte span delta recovers, so below a large raw ratio the
+///    delta's copy-op headers cost more than the redundancy they remove. An
+///    envelope also costs [`ENVELOPE_OVERHEAD`] bytes a record, a retained
+///    baseline the size of the payload on both sides, and a fail-closed refusal
+///    surface, none of which a domain should pay for a stored-size loss.
+///
+///    100 FAILS THIS LAW OUTRIGHT on the decoded half: its payload is already an
+///    XSM2 delta, so a second delta over it LOSES 9,176 bytes before a
+///    compressor sees them. 44 does not: it saves 2,214,224 decoded bytes, and
+///    its stored half was never run because LAW 2 ALREADY EXCLUDES IT. Its law-4
+///    verdict is therefore undetermined, and saying otherwise would be claiming
+///    a measurement nobody took (Codex review round 4, finding 1).
+///    (`runs/sg_dense_delta/MEASUREMENT.md` §3, §7b.)
 ///
 /// # Why 41 `projects_live` is NOT on this list
 ///
 /// It was, and it came off for a reason no size argument outweighs (Codex review
-/// round 2, finding 1). d41 is one of the four domains that copy their own H4CR
-/// sequence INTO their payload: its PPA1 authority trailer carries
-/// `record_sequence`, and `attach_log::stamp_record_bound_sequence` settles that
-/// field AFTER the frame's drop passes have removed records and
-/// `resequence_compact_records` has assigned the sequence the stream actually
-/// ships. The stamper finds the trailer by walking back from the payload END.
+/// round 2, finding 1). d41 is one of the four domains under law 1: its PPA1
+/// authority trailer carries `record_sequence`, and
+/// `attach_log::stamp_record_bound_sequence` settles that field AFTER the
+/// frame's drop passes have removed records and `resequence_compact_records` has
+/// assigned the sequence the stream actually ships. The stamper finds the
+/// trailer by walking back from the payload END.
 ///
 /// Wrapping d41 puts an envelope where that payload used to be, and the trailer
 /// is the last thing the domain appends — so on a keyframe the trailer's bytes
@@ -213,6 +272,7 @@ pub const MAX_OPS: usize = 1 << 22;
 /// and each hour's delta carries one small literal op for those bytes
 /// (`runs/qk_d81_wire_delta/MEASUREMENT.md` §1); correctness is untouched,
 /// because the basis is opaque bytes both sides.
+///
 /// # Why 47 qualifies where 41 does not
 ///
 /// d47's grammar (`characters_leaders_cabinet_live::domain47_compact`) carries no
@@ -222,10 +282,96 @@ pub const MAX_OPS: usize = 1 << 22;
 /// record that carries it, so the stamping law has nothing to rewrite, and the
 /// volatile-header rule applies to it exactly as to d43/d53: byte 0 is the same
 /// recorder wall-clock `u64` those grammars stamp.
-pub const DELTA_ENABLED_DOMAINS: &[u16] = &[43, 47, 53, 81];
+///
+/// # Why 93 qualifies, and where its split point lands
+///
+/// It is on no exclusion roster, and lane SG re-checked that from the grammar
+/// rather than from the roster. d93 `country_army_upgrade_requests_live` DOES
+/// carry a field named `source_sequence`, at payload offset 260, and it is NOT
+/// this record's H4CR sequence: it is the GAME HOUR INDEX PLUS ONE, handed to
+/// the reader by the collector as
+/// `E20CurrentProcessSource { source_sequence: frame_hour + 1 }` where
+/// `frame_hour = calendar::hour_index_from_raw(game_hour_raw)`. Verified on the
+/// bytes of `captures/rc_vanilla`: it runs 17,031,698, 17,031,699, 17,031,700,
+/// exactly one above the `frame_hour` each payload carries at offset 24, while
+/// the H4CR sequences of those same three records are 122, 264, 407. Nothing
+/// stamps it after encoding (`stamp_record_bound_sequence` has no d93 arm) and
+/// no consumer joins it to the header, so it is opaque basis bytes like any
+/// other -- one small literal op an hour.
+///
+/// THE 8-BYTE SPLIT IS A POSITION, NOT A CLAIM ABOUT THE FIELD THERE. d81
+/// established that already. `payload[..8]` is carried verbatim and
+/// `payload[8..]` is compared, so reconstruction is byte-exact whatever those
+/// eight bytes mean, and the only thing at stake is yield: d93's split covers
+/// its `AUR1` magic and version, both constant, and its wall clock sits at
+/// 16..24 inside the basis, exactly d81's shape. Measured consequence on
+/// `captures/rc_vanilla`: `NoChange` never fires for d93 (0 of 324 hours), and
+/// it still prices at 24.7x raw and 1.009x stored over the whole spool.
+///
+/// # Why 55 `land_combat_detail_events_live` is NOT on this list
+///
+/// It deltas -- 3.67x over every hour of `captures/rc_vanilla`, 46.9 MB down to
+/// 12.8 MB -- and it still fails law 4, which is the whole reason law 4 tests two
+/// byte counts rather than one ratio. Measured whole-spool at the parameters a
+/// production capture is written with, an enveloped d55 leaves 766,592 MORE
+/// stored bytes (+1.85%) than the raw one, against 34.1 MB less decoded. d93, on
+/// the same capture and the same measurement, is smaller both ways
+/// (-54,281,733 B decoded, -384,181 B stored). d55 is also the higher-risk half
+/// of the pair: it is a law-3 domain, so wrapping it needs a recovery path in the
+/// capture-close teardown that d93 needs not at all.
+///
+/// # Why 20, 42, 44 and 100 are not on this list
+///
+/// All four are dense — together 182 MB of `captures/rc_vanilla`'s 508 MB of
+/// payload — and all four were MEASURED rather than assumed. Not through this
+/// codec's own producer, though, and the difference is worth stating: a domain
+/// that is not on the list above is refused BY NAME by both sides of this codec,
+/// so `ps_wire_delta_reencode` cannot price a candidate. They were priced by
+/// `runs/sg_dense_delta/sg_psd1_model.py`, a port of the producer's size
+/// decisions that `sg_calibrate.py` holds to byte-identity against
+/// `ps_wire_delta_reencode` on a spool whose enabled domains ride raw — same
+/// fields, and the same SHA-256 over a whole 316 MB rewritten spool.
+/// (`runs/sg_dense_delta/MEASUREMENT.md` §2, §3, §7b.)
+///
+/// | id | domain | payload | raw ratio | stored | why not |
+/// |---|---|---|---|---|---|
+/// | 20 | `divisions_live` | 96.1 MB | 2.28x | +5,062,159 B | law 4 |
+/// | 42 | `air_combat_losses_live` | 33.6 MB | 2.09x | +1,121,124 B | law 4 |
+/// | 44 | `supply_logistics_attrition_live` | 27.3 MB | 1.09x | not run | law 2 |
+/// | 100 | `xmap07_snow_mud_live` | 25.2 MB | 1.00x | not run | laws 1 and 4 |
+///
+/// d20 and d42 are where this codec runs out of road, and the delta programs show
+/// how far it got: a mean d20 delta hour writes out 92,297 bytes of LITERAL --
+/// 31.2% of its basis -- against d93's 1,455 bytes and 0.8%
+/// (`runs/sg_dense_delta/rc_vanilla_literal_census.json`; earlier drafts quoted the
+/// whole envelope length here and called it literal, which overstated it -- Codex
+/// review round 4, finding 3).
+///
+/// THOSE TWO COLUMNS DESCRIBE THIS ENCODER AND NOT THE GAME (Codex review rounds
+/// 5-7). [`build_delta_ops`] is greedy, single-pass and non-backtracking, it indexes
+/// at [`MATCH_WINDOW`] granularity, and a copy may source from any baseline offset
+/// -- so a literal means only that this encoder found no match, and a copy says
+/// nothing about whether the state at those positions is unchanged. A different
+/// encoder could move bytes between the columns.
+///
+/// The exclusion does not rest on them. It rests on law 4's two byte counts: at the
+/// sizes THIS encoder produces, enveloping d20 leaves 5.06 MB more stored capture,
+/// and d42 1.12 MB. The divisions size prize is real -- the largest single domain on
+/// the spool -- and whether a non-greedy encoder, a finer match window, or a
+/// field-wise or columnar spelling could claim it is the open question this
+/// measurement leaves behind rather than one it answers.
+///
+/// d100 is the sharpest case: its payload is ALREADY an XSM2 delta, and a second
+/// delta over it LOSES 9,176 bytes across the capture before any compressor sees
+/// them -- so its law-1 exclusion is free, measured rather than argued.
+pub const DELTA_ENABLED_DOMAINS: &[u16] = &[43, 47, 53, 81, 93];
 
+/// [`DELTA_ENABLED_DOMAINS`] as a `const fn`, and the two are proven equal over
+/// every id in `0..=300` by `the_enabled_set_and_the_allowed_record_flag_agree` —
+/// a `matches!` that drifted from the slice would let a producer wrap a domain
+/// the decoder refuses, which costs the hour on every reader at once.
 pub const fn is_delta_enabled_domain(domain_id: u16) -> bool {
-    matches!(domain_id, 43 | 47 | 53 | 81)
+    matches!(domain_id, 43 | 47 | 53 | 81 | 93)
 }
 
 /// Hours a domain may go without a keyframe.
@@ -1343,7 +1489,7 @@ fn hex32(bytes: &[u8; 32]) -> String {
 /// The producer's retained baselines, one per delta-enabled domain.
 ///
 /// Deliberately a small explicit store rather than a map keyed by anything
-/// clever: the enabled set is three domains, and a store that silently grew a
+/// clever: the enabled set is five domains, and a store that silently grew a
 /// baseline for a domain nobody enabled would be memory nobody accounted for.
 #[derive(Clone, Debug, Default)]
 pub struct PayloadSpanDeltaBaselines {
@@ -2515,6 +2661,69 @@ mod tests {
                 ) & crate::COMPACT_RECORD_FLAG_PAYLOAD_SPAN_DELTA,
                 0
             );
+        }
+    }
+
+    #[test]
+    fn the_membership_laws_name_every_domain_they_admit_and_every_one_they_keep_out() {
+        // kills: widening the enabled set past one of the four laws in
+        // `DELTA_ENABLED_DOMAINS`' docs. Each id below is excluded for a stated
+        // reason, and none of the reasons is visible from this crate at
+        // compile time -- the sequence-baking roster lives in the collector's
+        // `stamp_record_bound_sequence`, the attach-proof roster in
+        // `recorder_host::auto_attach::proof`, the terminal hook-custody roster
+        // beside `attach_log::reserve_and_merge_terminal_d55`, and the size
+        // measurements in `runs/sg_dense_delta/`. A list here is what makes
+        // adding a domain require deciding about them. (The two collector-side
+        // rosters ALSO carry `const` assertions of their own; this is the third
+        // statement of the same law, in the crate that owns the set.)
+        //
+        // The admitted half is asserted too, and that is the vacuity control:
+        // an empty or wrongly-typed `DELTA_ENABLED_DOMAINS` would satisfy every
+        // exclusion below while proving nothing.
+        for (domain_id, law) in [
+            // Law 1 -- copies its own H4CR record sequence into its payload,
+            // which `stamp_record_bound_sequence` settles after resequencing.
+            (41u16, "d41 PPA1 record_sequence"),
+            (70, "d70 SCH1 source_sequence"),
+            (100, "d100 XSM2 source_sequence"),
+            (101, "d101 MFV1 source_sequence"),
+            // Law 2 -- the auto-attach first-world-record proof folds one of
+            // these records STANDING ALONE, and its allowed-flag mask declines
+            // any enveloped candidate.
+            (10, "d10 attach proof"),
+            (44, "d44 attach proof"),
+            (68, "d68 attach proof"),
+            // Law 3 -- the terminal hook-custody merge reads this domain's
+            // already-built record back and rebuilds it, keeping its flag word.
+            (45, "d45 terminal custody"),
+            (55, "d55 terminal custody"),
+            (67, "d67 terminal custody"),
+            (86, "d86 terminal custody"),
+            (90, "d90 terminal custody"),
+            // Law 4 -- each of these SHRINKS the decoded spool and GROWS the
+            // stored one, measured whole-spool over captures/rc_vanilla at the
+            // settings a production capture is written with. That is the whole
+            // finding: zstd at a 128 MiB window already recovers most of what a
+            // 32-byte span delta recovers. (d55 is listed under law 3 above and
+            // fails this one too, at +766,592 stored bytes.)
+            //
+            // Priced by `runs/sg_dense_delta/sg_psd1_model.py`, a port of this
+            // codec's producer that `sg_calibrate.py` holds byte-identical to
+            // `ps_wire_delta_reencode` -- the shipped harness cannot price a
+            // domain that is not enabled yet, because both sides of this codec
+            // refuse an unassigned domain by name.
+            (20, "d20 divisions, -53.9 MB decoded but +5,062,159 B stored"),
+            (42, "d42 air combat losses, -17.5 MB decoded but +1,121,124 B stored"),
+        ] {
+            assert!(
+                !is_delta_enabled_domain(domain_id),
+                "{law}: domain {domain_id} must not be wrapped"
+            );
+        }
+        assert_eq!(DELTA_ENABLED_DOMAINS, &[43u16, 47, 53, 81, 93]);
+        for domain_id in DELTA_ENABLED_DOMAINS {
+            assert!(is_delta_enabled_domain(*domain_id));
         }
     }
 }

@@ -68,7 +68,7 @@ const BLANKET_RESET_TRACKER_FIELDS: &[(&str, &str)] = &[
     (
         "payload_span_delta",
         "the PSD1 wire-delta producer for every domain on `DELTA_ENABLED_DOMAINS` \
-         (d43/d47/d53 today; lane PS, lane QL). Same classification as d100's wire baseline \
+         (d43/d47/d53/d81/d93 today; lanes PS, QL, QK, SG). Same classification as d100's wire baseline \
          and for the same reason: it is not a continuity claim, it names the PAYLOAD the fold \
          holds, and every delta or no-change record names that baseline by SHA-256 -- so a \
          consumer holding anything else refuses the hour by name rather than reconstructing \

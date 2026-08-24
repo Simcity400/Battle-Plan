@@ -45,7 +45,14 @@ use serde::Serialize;
 
 /// The shipped enabled set, restated so `--domains` can still price a
 /// candidate domain that is not enabled yet.
-const DEFAULT_DOMAINS: [u16; 4] = [43, 47, 53, 81];
+///
+/// A candidate BOTH sides of the codec still refuse by name, though: pricing a
+/// domain before it joins `DELTA_ENABLED_DOMAINS` reports encode errors rather
+/// than sizes, which is what `runs/sg_dense_delta/sg_psd1_model.py` exists to
+/// work around (and `sg_calibrate.py` to keep honest -- it requires the model's
+/// numbers to equal THIS tool's, field for field, on a spool whose enabled
+/// domains ride raw).
+const DEFAULT_DOMAINS: [u16; 5] = [43, 47, 53, 81, 93];
 
 /// The `ICCP` companion carrier's magic
 /// (`diplomacy_intel_operatives_live::a30_companion_carrier::MAGIC`).

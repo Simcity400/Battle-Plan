@@ -140,7 +140,7 @@ fn scan_stream(
     // Getting this wrong is not a degraded number, it is a lost capture:
     // `collect_static_join_tokens` decodes the domain grammar before deciding
     // whether the domain contributes tokens, so the first wrapped record of any
-    // delta-enabled domain (d43/d47/d53 today) fails to decode, the `?` below
+    // delta-enabled domain (d43/d47/d53/d81/d93 today) fails to decode, the `?` below
     // turns that into an error, and
     // `finalize_static_bundle` propagates it — no emitted-token inventory, no
     // static bundle, no replay publication. (Codex review round 8, finding 1: the

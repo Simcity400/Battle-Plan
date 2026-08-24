@@ -346,7 +346,7 @@ struct CompletenessAudit {
     /// keeps its own store and reconstructs for itself. Without it every
     /// enveloped record's `domain_data_payload_status_at` would return `None`
     /// and the audit would quietly stop accounting every delta-enabled domain's
-    /// (d43/d47/d53 today) declared
+    /// (d43/d47/d53/d81/d93 today) declared
     /// status flags: not an error, just those domains missing from a
     /// completeness answer, which is the shape of defect this audit exists to
     /// prevent.
