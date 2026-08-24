@@ -635,6 +635,35 @@ fn populated_state_makes_the_ships_domain_emit_domain_data_rows_offline() {
                 perf_diag_value(&perf, "naval_oob_roots_discovery_us")
             ),
             ("domain29_paid_naval_discovery".to_string(), 1u64),
+            // Lane SD2's phase split: the two walls that sum to the discovery,
+            // and the walk's population. Always emitted, because a wall is only
+            // useful as a per-frame series; the six REFUSAL counters beside them
+            // are emitted only when non-zero, and this fixture earns none of
+            // them, so none appear.
+            (
+                "naval_oob_fleet_roots_us".to_string(),
+                perf_diag_value(&perf, "naval_oob_fleet_roots_us")
+            ),
+            (
+                "naval_oob_task_force_walk_us".to_string(),
+                perf_diag_value(&perf, "naval_oob_task_force_walk_us")
+            ),
+            (
+                "naval_oob_walk_elements".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_elements")
+            ),
+            (
+                "naval_oob_walk_accepted".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_accepted")
+            ),
+            (
+                "naval_oob_walk_engine_total".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_engine_total")
+            ),
+            (
+                "naval_oob_walk_distinct_lifted".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_distinct_lifted")
+            ),
         ],
         "the fixture's diagnostic view is the units d29 actually emitted"
     );
@@ -675,6 +704,35 @@ fn a_state_whose_build_profile_is_unverified_makes_d29_typed_source_unavailable(
                 perf_diag_value(&perf, "naval_oob_roots_discovery_us")
             ),
             ("domain29_paid_naval_discovery".to_string(), 1u64),
+            // Lane SD2's phase split: the two walls that sum to the discovery,
+            // and the walk's population. Always emitted, because a wall is only
+            // useful as a per-frame series; the six REFUSAL counters beside them
+            // are emitted only when non-zero, and this fixture earns none of
+            // them, so none appear.
+            (
+                "naval_oob_fleet_roots_us".to_string(),
+                perf_diag_value(&perf, "naval_oob_fleet_roots_us")
+            ),
+            (
+                "naval_oob_task_force_walk_us".to_string(),
+                perf_diag_value(&perf, "naval_oob_task_force_walk_us")
+            ),
+            (
+                "naval_oob_walk_elements".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_elements")
+            ),
+            (
+                "naval_oob_walk_accepted".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_accepted")
+            ),
+            (
+                "naval_oob_walk_engine_total".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_engine_total")
+            ),
+            (
+                "naval_oob_walk_distinct_lifted".to_string(),
+                perf_diag_value(&perf, "naval_oob_walk_distinct_lifted")
+            ),
         ]
     );
     outcome.assert_diagnostics_agree_with_production(COMPACT_DOMAIN_SHIPS);

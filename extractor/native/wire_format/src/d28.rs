@@ -272,9 +272,12 @@
 //!   dropping the word quietly would be the one way this mapping could lose data.
 //!   Measured: 0 of 1,519 rows on deepwar_t1 carry it.
 //!
-//! **The five `*_status` words are `Enum`, with cardinality 6.** The vocabulary
-//! is the collector's own `COMPACT_OOB_STATUS_*` (`attach_log.rs:11380`-`:11385`):
-//! `NONE=0, EXACT=1, UNKNOWN=2, OVERFLOW=3, VALIDATION_FAILED=4, MIXED=5`, and
+//! **The five `*_status` words are `Enum`.** An ARMY row's `member_status` has
+//! cardinality 7; the other four have 6, because only that one word can carry
+//! `SECOND_OBSERVATION_DISAGREED`. The vocabulary
+//! is the collector's own `COMPACT_OOB_STATUS_*`:
+//! `NONE=0, EXACT=1, UNKNOWN=2, OVERFLOW=3, VALIDATION_FAILED=4, MIXED=5,
+//! SECOND_OBSERVATION_DISAGREED=6`, and
 //! `compact_oob_status_code` (`:57633`) is total onto exactly that set. **This
 //! corrects the batch-2 survey**, which cited `lanes/army_battleplans_depth_live`'s
 //! `STATUS_EXACT`/`STATUS_UNKNOWN` — that is d54's vocabulary, which agrees on
@@ -412,8 +415,27 @@ pub const STATUS_UNKNOWN: u32 = 2;
 pub const STATUS_OVERFLOW: u32 = 3;
 pub const STATUS_VALIDATION_FAILED: u32 = 4;
 pub const STATUS_MIXED: u32 = 5;
+/// The collector's two observations of a command's membership disagreed
+/// (`COMPACT_OOB_STATUS_SECOND_OBSERVATION_DISAGREED`). d28 resolves and
+/// validates every division's army parent twice in a frame; owner ruling
+/// 2026-08-26 is that the second read stays AND that a disagreement is
+/// reported rather than silently editing the row's member list. Only
+/// `member_status` can carry it, and `STATUS_OVERFLOW` wins the field when the
+/// list was also truncated -- the disagreement is then only in the frame's
+/// `d28_second_observation_*` PERF units.
+pub const STATUS_SECOND_OBSERVATION_DISAGREED: u32 = 6;
 /// One past the highest status code; schema-kind contract rejects a code at or above this.
-pub const STATUS_CARDINALITY: u32 = 6;
+pub const STATUS_CARDINALITY: u32 = 7;
+/// One past the highest status code the OTHER FOUR status words may carry.
+///
+/// Only an `KIND_ARMY` row's `member_status` reaches [`STATUS_CARDINALITY`];
+/// `parent_status`, `owner_status`, `leader_status` and `leader_trait_status`
+/// stop below [`STATUS_SECOND_OBSERVATION_DISAGREED`], because a division
+/// second-observation disagreement is a statement about army membership and the
+/// producer writes it nowhere else. A sweep over "every code this word can
+/// hold" must use this bound, not the shared one -- raising
+/// `STATUS_CARDINALITY` for one word silently widened two such sweeps.
+pub const STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION: u32 = STATUS_SECOND_OBSERVATION_DISAGREED;
 
 /// The five status words, in row order, with their byte offsets
 /// (`world_fold.rs::fold_oob_command`).
@@ -500,14 +522,26 @@ pub fn schema() -> Schema {
                         .optional()
                         .unknown_capable(),
                     // The five capture-quality codes. `Enum` with the producer's
-                    // full codomain (`STATUS_CARDINALITY`), never the histogram
-                    // of one capture. Always concrete: the packer writes a code
-                    // for every row, so none of the five declares a capability.
-                    Field::new(f::PARENT_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
+                    // full codomain, never the histogram of one capture. Always
+                    // concrete: the packer writes a code for every row, so none
+                    // of the five declares a capability.
+                    //
+                    // THE CODOMAIN IS NOT THE SAME FOR ALL FIVE, and declaring
+                    // one number for them would overstate four of them. Only
+                    // `member_status`, and only on a `KIND_ARMY` row, can carry
+                    // `SECOND_OBSERVATION_DISAGREED`; `record_from_row` refuses
+                    // it on the other four, so declaring `STATUS_CARDINALITY`
+                    // for them would advertise a code the producer cannot write
+                    // and the mapper would reject.
+                    Field::new(f::PARENT_STATUS, Kind::Enum)
+                        .enum_card(STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION),
                     Field::new(f::MEMBER_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
-                    Field::new(f::OWNER_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
-                    Field::new(f::LEADER_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
-                    Field::new(f::LEADER_TRAIT_STATUS, Kind::Enum).enum_card(STATUS_CARDINALITY),
+                    Field::new(f::OWNER_STATUS, Kind::Enum)
+                        .enum_card(STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION),
+                    Field::new(f::LEADER_STATUS, Kind::Enum)
+                        .enum_card(STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION),
+                    Field::new(f::LEADER_TRAIT_STATUS, Kind::Enum)
+                        .enum_card(STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION),
                     // A province id: content-defined (content-identity contract), exactly as d20
                     // classes `location_province`. A ContentId **value**, not a
                     // key, so it is the lighter retrofit class.
@@ -880,12 +914,34 @@ pub fn record_from_row(
     // a gate. schema-kind contract: "a value the writer cannot map into 0..n-1 is a failed sample
     // and a typed gap, never a coerced code."
     let mut statuses = [0u32; 5];
-    for (i, (_, offset)) in STATUS_WORDS.into_iter().enumerate() {
+    for (i, (field_id, offset)) in STATUS_WORDS.into_iter().enumerate() {
         let code = u32_at(row, offset);
         if code >= STATUS_CARDINALITY {
             return Err(format!(
                 "oob_command status word at +{offset} is {code}, outside the \
                  0..{STATUS_CARDINALITY} vocabulary"
+            ));
+        }
+        // `STATUS_CARDINALITY` is one number for five words, and the
+        // producer's codomain is not. `SECOND_OBSERVATION_DISAGREED` says
+        // d28's two observations of a division's army parent disagreed,
+        // which only `member_status` can be about (`attach_log.rs`,
+        // `sample_compact_oob_command_rows`). Raising the shared cardinality
+        // for it must not quietly make it legal on the other four: a row
+        // carrying it there is one the collector cannot have written, and
+        // this mapper is fail-closed on producer-impossible rows exactly as
+        // it is on `leader_trait_count` under a non-EXACT status.
+        // ...and only on an ARMY row. A division second-observation
+        // disagreement is a statement about army membership; a fleet,
+        // army-group or task-force row carrying it is producer-impossible
+        // (Codex round 2, finding 5).
+        if code == STATUS_SECOND_OBSERVATION_DISAGREED
+            && (field_id != field::MEMBER_STATUS || kind != KIND_ARMY)
+        {
+            return Err(format!(
+                "oob_command status word at +{offset} is \
+                 SECOND_OBSERVATION_DISAGREED on kind {kind}, which only an \
+                 army row's member_status carries"
             ));
         }
         statuses[i] = code;
@@ -1744,6 +1800,41 @@ mod tests {
         }
     }
 
+    /// The seventh status code carries the collector's own disagreement between
+    /// the two observations d28 makes of every division's army parent (owner
+    /// ruling 2026-08-26: report, never drop). It is a legal `member_status`,
+    /// and it gates nothing -- the member list it accompanies is exactly the
+    /// list the collector could name, which is the point.
+    ///
+    /// kills: leave `STATUS_CARDINALITY` at 6 and this row is rejected as
+    /// out-of-vocabulary, so the collector's named outcome would have to be
+    /// dropped at the boundary -- silence again, one layer down.
+    #[test]
+    fn member_status_can_say_the_two_observations_disagreed() {
+        let c = commands();
+        let mut row = full_army();
+        row.member_status = STATUS_SECOND_OBSERVATION_DISAGREED;
+        let r = record_from_row(&c, &row.bytes(), 0).expect("maps");
+        assert_eq!(
+            r.values[index_of(&c, field::MEMBER_STATUS)],
+            Value::Enum(STATUS_SECOND_OBSERVATION_DISAGREED)
+        );
+        // The member fields are untouched by it: the row still publishes the
+        // members it named and the engine's own count beside them.
+        assert_eq!(
+            r.values[index_of(&c, field::LOGICAL_MEMBER_COUNT)],
+            Value::Unsigned(17)
+        );
+        assert_eq!(
+            r.values[index_of(&c, field::MEMBER_COUNT_ENGINE)],
+            Value::Unsigned(19)
+        );
+        assert!(
+            STATUS_SECOND_OBSERVATION_DISAGREED < STATUS_CARDINALITY,
+            "the code has to be inside the vocabulary the row check enforces"
+        );
+    }
+
     #[test]
     fn a_real_zero_is_a_value_not_an_empty_state() {
         // Every gate set, every value zero: record-state contract keeps zero out of the three empty
@@ -1986,8 +2077,11 @@ mod tests {
         // the count is a value exactly when the trait status is EXACT, absent
         // exactly when the leader status is NONE, and unknown everywhere else —
         // the same function `leader_id` and `leader_skill` use.
-        for leader_status in 0..STATUS_CARDINALITY {
-            for trait_status in 0..STATUS_CARDINALITY {
+        // Neither of these two words may carry
+        // `SECOND_OBSERVATION_DISAGREED`, so the sweep stops below it: this is
+        // "every code the word can hold", not "every code the row can hold".
+        for leader_status in 0..STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION {
+            for trait_status in 0..STATUS_CARDINALITY_WITHOUT_SECOND_OBSERVATION {
                 let row = RawRow {
                     kind: KIND_ARMY,
                     object_id: 1,
@@ -2222,7 +2316,7 @@ mod tests {
         assert!(record_from_row(&c, &row.bytes(), 0).is_err(), "delete row");
         // A status code outside the producer's vocabulary, every one of the five
         // words and the whole out-of-range edge.
-        for (i, (_, offset)) in STATUS_WORDS.into_iter().enumerate() {
+        for (i, (field_id, offset)) in STATUS_WORDS.into_iter().enumerate() {
             for code in [STATUS_CARDINALITY, STATUS_CARDINALITY + 1, u32::MAX] {
                 let mut bytes = full_army().bytes();
                 bytes[offset..offset + 4].copy_from_slice(&code.to_le_bytes());
@@ -2230,6 +2324,41 @@ mod tests {
                     record_from_row(&c, &bytes, 0).is_err(),
                     "status word {i} code {code}"
                 );
+            }
+            // And the code INSIDE the vocabulary that only one (word, kind)
+            // pair may carry. Raising `STATUS_CARDINALITY` for an army's
+            // `member_status` must not make `SECOND_OBSERVATION_DISAGREED` legal
+            // on the other four words, or on a fleet, army-group or task-force
+            // row: a division second-observation disagreement is a statement
+            // about ARMY membership and the collector writes it nowhere else.
+            // Swept over the whole (kind x status-word) space rather than one
+            // sample (Codex round 2, finding 5).
+            for kind in [KIND_ARMY, KIND_ARMY_GROUP, KIND_FLEET, KIND_TASK_FORCE] {
+                let mut row = full_army();
+                row.kind = kind;
+                if kind != KIND_TASK_FORCE {
+                    row.flags &= !FLAG_LOCATION;
+                    row.location_province_id = 0;
+                }
+                let mut bytes = row.bytes();
+                bytes[offset..offset + 4]
+                    .copy_from_slice(&STATUS_SECOND_OBSERVATION_DISAGREED.to_le_bytes());
+                let mapped = record_from_row(&c, &bytes, 0);
+                if kind == KIND_ARMY && field_id == field::MEMBER_STATUS {
+                    assert!(
+                        mapped.is_ok(),
+                        "an army row's member_status must carry code 6"
+                    );
+                } else {
+                    // The message matters: a fleet or army-group row can fail
+                    // for other reasons, and "it errored" would be a vacuous
+                    // assertion. The status check runs before any of them.
+                    let error = mapped.expect_err("must refuse");
+                    assert!(
+                        error.contains("SECOND_OBSERVATION_DISAGREED"),
+                        "kind {kind}, status word {i} must refuse the CODE, not                          fail for some other reason: {error}"
+                    );
+                }
             }
         }
         // `leader_trait_count` carrying a value without an EXACT status — the

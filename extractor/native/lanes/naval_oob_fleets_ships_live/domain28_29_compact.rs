@@ -1110,14 +1110,28 @@ pub fn decode_oob_command_data_payload(
                 "offset {offset}: oob command row {row_index} has missing member count without flag"
             ));
         }
-        for (status_name, status_value) in [
-            ("parent_status", parent_status),
-            ("member_status", member_status),
-            ("owner_status", owner_status),
-            ("leader_status", leader_status),
-            ("leader_trait_status", leader_trait_status),
+        // The producer's vocabulary is `COMPACT_OOB_STATUS_*`, 0..=6.
+        // `SECOND_OBSERVATION_DISAGREED` (6) is producible on `member_status`
+        // ONLY -- it says d28's two observations of a division disagreed -- so a
+        // 6 on any other word is a row the collector cannot have written, and
+        // this stays fail-closed about it (lane SD2).
+        for (status_name, status_value, allows_second_observation) in [
+            ("parent_status", parent_status, false),
+            ("member_status", member_status, true),
+            ("owner_status", owner_status, false),
+            ("leader_status", leader_status, false),
+            ("leader_trait_status", leader_trait_status, false),
         ] {
-            if status_value > 5 {
+            // Code 6 rides on `member_status` AND only on an ARMY row: a
+            // division second-observation disagreement is a statement about
+            // army membership, and the collector never writes it to a fleet,
+            // army-group or task-force row (Codex round 2, finding 5).
+            let ceiling = if allows_second_observation && kind == COMPACT_OOB_KIND_ARMY {
+                6
+            } else {
+                5
+            };
+            if status_value > ceiling {
                 summary.parse_errors.push(format!(
                     "offset {offset}: oob command row {row_index} has invalid {status_name} {status_value}"
                 ));
@@ -2997,6 +3011,89 @@ mod tests {
         payload.extend_from_slice(&1u16.to_le_bytes());
         payload.extend_from_slice(&0u16.to_le_bytes());
         payload
+    }
+
+    /// One d28 DATA payload with one row, for the (kind x status-word) sweep
+    /// below. Everything the row does not need is zero.
+    fn sd2_one_row_oob_payload(kind: u32, status_offset: usize, status_value: u32) -> Vec<u8> {
+        let mut payload = vec![0u8; 48 + COMPACT_OOB_ROW_LEN];
+        payload[8..12].copy_from_slice(&1u32.to_le_bytes());
+        payload[12..16].copy_from_slice(&1u32.to_le_bytes());
+        let row = 48usize;
+        payload[row..row + 4].copy_from_slice(&kind.to_le_bytes());
+        payload[row + 4..row + 8].copy_from_slice(&17u32.to_le_bytes());
+        let at = row + status_offset;
+        payload[at..at + 4].copy_from_slice(&status_value.to_le_bytes());
+        payload
+    }
+
+    /// `SECOND_OBSERVATION_DISAGREED` is legal on an ARMY row's `member_status`
+    /// and nowhere else, in THIS decoder.
+    ///
+    /// `wire_format::d28` enforces the same rule, and its own sweep covers only
+    /// itself: reverting this decoder left that test green (Codex round 3,
+    /// finding 4). Two decoders, two sweeps.
+    ///
+    /// kills: raise the ceiling for a status word other than `member_status`, or
+    /// for a kind other than ARMY, and the corresponding arm fails; lower it for
+    /// an army's `member_status` and the accepted arm fails.
+    #[test]
+    fn code_six_is_legal_only_on_an_army_rows_member_status() {
+        const SECOND_OBSERVATION_DISAGREED: u32 = 6;
+        for (status_name, status_offset) in [
+            ("parent_status", 52usize),
+            ("member_status", 56),
+            ("owner_status", 60),
+            ("leader_status", 64),
+            ("leader_trait_status", 68),
+        ] {
+            for kind in [
+                COMPACT_OOB_KIND_ARMY,
+                COMPACT_OOB_KIND_ARMY_GROUP,
+                COMPACT_OOB_KIND_FLEET,
+                COMPACT_OOB_KIND_TASK_FORCE,
+            ] {
+                let payload =
+                    sd2_one_row_oob_payload(kind, status_offset, SECOND_OBSERVATION_DISAGREED);
+                let mut summary = NavalOobGateSummary::default();
+                summary
+                    .per_domain
+                    .entry(DOMAIN_OOB_COMMAND)
+                    .or_default()
+                    .data_record_count = 1;
+                decode_oob_command_data_payload(0, &payload, &mut summary);
+                let complained = summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains(&format!("invalid {status_name} 6")));
+                let allowed = kind == COMPACT_OOB_KIND_ARMY && status_offset == 56;
+                assert_eq!(
+                    complained, !allowed,
+                    "kind {kind}, {status_name}: allowed={allowed}, errors={:?}",
+                    summary.parse_errors
+                );
+            }
+        }
+        // And the control: 5 is legal everywhere, so the sweep above is about
+        // the SIXTH code and not about the sweep's own plumbing.
+        for (_, status_offset) in [("parent_status", 52usize), ("member_status", 56)] {
+            let payload = sd2_one_row_oob_payload(COMPACT_OOB_KIND_FLEET, status_offset, 5);
+            let mut summary = NavalOobGateSummary::default();
+            summary
+                .per_domain
+                .entry(DOMAIN_OOB_COMMAND)
+                .or_default()
+                .data_record_count = 1;
+            decode_oob_command_data_payload(0, &payload, &mut summary);
+            assert!(
+                !summary
+                    .parse_errors
+                    .iter()
+                    .any(|error| error.contains("status 5")),
+                "{:?}",
+                summary.parse_errors
+            );
+        }
     }
 
     fn test_oob_command_data_payload(status_flags: u32) -> Vec<u8> {
