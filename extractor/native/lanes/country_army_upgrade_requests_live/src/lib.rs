@@ -228,15 +228,340 @@ pub enum CarrierError {
 /// never published as measured data.
 pub const COHERENT_READ_MAX_PASSES: usize = 8;
 
+// --- widened guarded copies (lane SF) -----------------------------------
+//
+// Every scalar this walk wants used to cost one guarded read
+// (`ArmyUpgradeMemory::read_exact` -> the collector's `read_into` -> the
+// region gate plus the guarded copy). On a 439-country wartime frame the walk
+// wants ~98.5k of them per pass, and the coherent-read contract above only
+// settles when two consecutive passes agree, so a clean frame paid ~197k.
+// The bytes each object contributes are contiguous, so they are now taken in
+// ONE guarded copy per object, and array entries in one copy per window, with
+// the fields decoded out of that copy.
+//
+// Three properties keep this free of wire consequences:
+//
+// * SUCCESS IS A SUBSET. A wide copy is served only when the region gate
+//   confirms the WHOLE range inside one committed, readable, non-guard
+//   region; every sub-range of that range is confirmed by the same test, so a
+//   wide copy can only succeed where each scalar read it replaces would also
+//   have succeeded.
+// * REFUSAL FALLS BACK TO THE OLD STATEMENTS. When the wide copy is refused
+//   (a range the gate will not confirm whole, or an address-space edge), the
+//   fields are read individually, in the original order, through the original
+//   helpers -- so the refusal's address, width and message are unchanged.
+// * THE COPY INSTANT ONLY MOVES EARLIER. An object's copy is taken where the
+//   old walk issued that object's FIRST read (its vtable, at every site); an
+//   array window is copied where the old walk read the first entry it holds.
+//   No field is observed LATER than it was, and fields that used to be
+//   sampled at several instants -- a delivery's status and its progress, a
+//   vector's begin/capacity/count -- now come from one instant. That is
+//   strictly more coherent, and the restartable two-pass contract is
+//   untouched: it still re-reads the whole graph and still refuses by name
+//   when the graph never settles.
+//
+// On a memory that does not change under the walk -- every offline fixture,
+// and the settled live graph -- the two paths produce identical bytes, which
+// is what `widened_and_scalar_paths_are_byte_identical` proves.
+
+/// Field extent of `CCountryArmyUpgradeStatus`: vtable, persistent-serializer
+/// vtable and the group vector header.
+const STATUS_BLOCK_LEN: usize = 0x30;
+/// Field extent of the per-army request object: both vtables, the version
+/// word, the CArmy and status back-pointers, and the request and delivery
+/// vector headers.
+const GROUP_BLOCK_LEN: usize = 0x58;
+/// Field extent of `CArmy`: both vtables and the persistent identity.
+const ARMY_BLOCK_LEN: usize = 0x20;
+/// Field extent of the equipment variant: vtable and persistent identity.
+const EQUIPMENT_BLOCK_LEN: usize = 0x10;
+/// Field extent of a delivery: vtable, status, both progress words, the
+/// embedded produced pool's vtable and vector header, and the allow-zero
+/// flag. Every block extent here stops at its last decoded field rather than
+/// at the object's natural size: a shorter range is a range the region gate
+/// is likelier to confirm whole, and no byte is copied that no reader wants.
+const DELIVERY_BLOCK_LEN: usize = 0x59;
+/// `{begin: u64, capacity: i32, count: i32}` -- the re-verification extent.
+const VECTOR_HEADER_LEN: usize = 0x10;
+/// Bytes an array window holds. Sized so that every array this walk meets on
+/// a production frame (group slots ~6, request rows ~2, delivery slots and
+/// produced rows ~1) is covered by a single copy, while a pathological array
+/// at the `MAX_*` bounds still streams through in windows instead of
+/// demanding a 98 KB buffer.
+const ARRAY_WINDOW_BYTES: usize = 4096;
+
+// The block extents are pinned to the offsets they must cover: an offset edit
+// that outruns its block is a compile error, not a silent narrow-read
+// regression.
+const _: () = {
+    assert!(STATUS_PERSISTENT_VTABLE_OFF as usize + 8 <= STATUS_BLOCK_LEN);
+    assert!(STATUS_GROUP_BEGIN_OFF as usize + 8 <= STATUS_BLOCK_LEN);
+    assert!(STATUS_GROUP_CAPACITY_OFF as usize + 4 <= STATUS_BLOCK_LEN);
+    assert!(STATUS_GROUP_COUNT_OFF as usize + 4 <= STATUS_BLOCK_LEN);
+    assert!(REQUESTS_VERSION_OFF as usize + 4 <= GROUP_BLOCK_LEN);
+    assert!(REQUESTS_PERSISTENT_VTABLE_OFF as usize + 8 <= GROUP_BLOCK_LEN);
+    assert!(REQUESTS_ARMY_PTR_OFF as usize + 8 <= GROUP_BLOCK_LEN);
+    assert!(REQUESTS_STATUS_PTR_OFF as usize + 8 <= GROUP_BLOCK_LEN);
+    assert!(REQUEST_ROW_BEGIN_OFF as usize + 8 <= GROUP_BLOCK_LEN);
+    assert!(REQUEST_ROW_CAPACITY_OFF as usize + 4 <= GROUP_BLOCK_LEN);
+    assert!(REQUEST_ROW_COUNT_OFF as usize + 4 <= GROUP_BLOCK_LEN);
+    assert!(DELIVERY_BEGIN_OFF as usize + 8 <= GROUP_BLOCK_LEN);
+    assert!(DELIVERY_CAPACITY_OFF as usize + 4 <= GROUP_BLOCK_LEN);
+    assert!(DELIVERY_COUNT_OFF as usize + 4 <= GROUP_BLOCK_LEN);
+    assert!(ARMY_PERSISTENT_VTABLE_OFF as usize + 8 <= ARMY_BLOCK_LEN);
+    assert!(ARMY_ID_OFF as usize + 8 <= ARMY_BLOCK_LEN);
+    assert!(EQUIPMENT_VARIANT_ID_OFF as usize + 8 <= EQUIPMENT_BLOCK_LEN);
+    assert!(DELIVERY_STATUS_OFF as usize + 4 <= DELIVERY_BLOCK_LEN);
+    assert!(DELIVERY_PROGRESS_OFF as usize + 8 <= DELIVERY_BLOCK_LEN);
+    assert!(DELIVERY_TOTAL_PROGRESS_OFF as usize + 8 <= DELIVERY_BLOCK_LEN);
+    assert!(DELIVERY_PRODUCED_POOL_OFF as usize + 8 <= DELIVERY_BLOCK_LEN);
+    assert!(PRODUCED_ROW_BEGIN_OFF as usize + 8 <= DELIVERY_BLOCK_LEN);
+    assert!(PRODUCED_ROW_CAPACITY_OFF as usize + 4 <= DELIVERY_BLOCK_LEN);
+    assert!(PRODUCED_ROW_COUNT_OFF as usize + 4 <= DELIVERY_BLOCK_LEN);
+    assert!(PRODUCED_ALLOW_ZERO_OFF as usize + 1 <= DELIVERY_BLOCK_LEN);
+    // The 16-byte header copy is only the same bytes as the three scalar
+    // reads where the triple is contiguous. It is, at all four sites.
+    assert!(STATUS_GROUP_BEGIN_OFF + 8 == STATUS_GROUP_CAPACITY_OFF);
+    assert!(STATUS_GROUP_CAPACITY_OFF + 4 == STATUS_GROUP_COUNT_OFF);
+    assert!(REQUEST_ROW_BEGIN_OFF + 8 == REQUEST_ROW_CAPACITY_OFF);
+    assert!(REQUEST_ROW_CAPACITY_OFF + 4 == REQUEST_ROW_COUNT_OFF);
+    assert!(DELIVERY_BEGIN_OFF + 8 == DELIVERY_CAPACITY_OFF);
+    assert!(DELIVERY_CAPACITY_OFF + 4 == DELIVERY_COUNT_OFF);
+    assert!(PRODUCED_ROW_BEGIN_OFF + 8 == PRODUCED_ROW_CAPACITY_OFF);
+    assert!(PRODUCED_ROW_CAPACITY_OFF + 4 == PRODUCED_ROW_COUNT_OFF);
+    // Both row strides must hold every field the window decodes out of them.
+    assert!(REQUEST_ROW_STRIDE >= REQUEST_ROW_TOTAL_OFF + 8);
+    assert!(PRODUCED_ROW_STRIDE >= 16);
+};
+
+/// One guarded copy of an engine object's field extent, or `None` when the
+/// copy was refused and every field must be read on its own.
+struct ObjectBlock<const N: usize> {
+    base: u64,
+    bytes: Option<[u8; N]>,
+}
+
+/// Take the copy. A base whose extent would leave the address space is not
+/// copied: the per-field `add` checks then produce the address-overflow
+/// refusal they always did.
+fn read_block<const N: usize, M: ArmyUpgradeMemory>(memory: &M, base: u64) -> ObjectBlock<N> {
+    let mut bytes = [0; N];
+    let copied =
+        base.checked_add(N as u64).is_some() && memory.read_exact(base, &mut bytes).is_ok();
+    ObjectBlock {
+        base,
+        bytes: copied.then_some(bytes),
+    }
+}
+
+impl<const N: usize> ObjectBlock<N> {
+    #[inline]
+    fn field(&self, offset: u64, width: usize) -> Option<&[u8]> {
+        let start = usize::try_from(offset).ok()?;
+        let end = start.checked_add(width)?;
+        debug_assert!(
+            end <= N,
+            "AUR1 block field {} + {} is outside its {}-byte block",
+            offset,
+            width,
+            N
+        );
+        self.bytes.as_ref()?.get(start..end)
+    }
+
+    fn u8_at<M: ArmyUpgradeMemory>(&self, memory: &M, offset: u64) -> Result<u8, CarrierError> {
+        match self.field(offset, 1) {
+            Some(raw) => Ok(raw[0]),
+            None => read_u8(memory, add(self.base, offset)?),
+        }
+    }
+
+    fn u32_at<M: ArmyUpgradeMemory>(&self, memory: &M, offset: u64) -> Result<u32, CarrierError> {
+        match self.field(offset, 4) {
+            Some(raw) => Ok(u32::from_le_bytes(raw.try_into().unwrap())),
+            None => read_u32(memory, add(self.base, offset)?),
+        }
+    }
+
+    fn i32_at<M: ArmyUpgradeMemory>(&self, memory: &M, offset: u64) -> Result<i32, CarrierError> {
+        match self.field(offset, 4) {
+            Some(raw) => Ok(i32::from_le_bytes(raw.try_into().unwrap())),
+            None => read_i32(memory, add(self.base, offset)?),
+        }
+    }
+
+    fn u64_at<M: ArmyUpgradeMemory>(&self, memory: &M, offset: u64) -> Result<u64, CarrierError> {
+        match self.field(offset, 8) {
+            Some(raw) => Ok(u64::from_le_bytes(raw.try_into().unwrap())),
+            None => read_u64(memory, add(self.base, offset)?),
+        }
+    }
+
+    fn i64_at<M: ArmyUpgradeMemory>(&self, memory: &M, offset: u64) -> Result<i64, CarrierError> {
+        match self.field(offset, 8) {
+            Some(raw) => Ok(i64::from_le_bytes(raw.try_into().unwrap())),
+            None => read_i64(memory, add(self.base, offset)?),
+        }
+    }
+
+    fn id_at<M: ArmyUpgradeMemory>(
+        &self,
+        memory: &M,
+        offset: u64,
+    ) -> Result<PersistentId, CarrierError> {
+        match self.field(offset, 8) {
+            Some(raw) => Ok(PersistentId {
+                kind: u32::from_le_bytes(raw[..4].try_into().unwrap()),
+                id: u32::from_le_bytes(raw[4..].try_into().unwrap()),
+            }),
+            None => read_persistent_id(memory, add(self.base, offset)?),
+        }
+    }
+
+    /// Same refusal text and same address arithmetic order as `require_vtable`
+    /// -- the object address first, then the expected image address.
+    fn require_vtable_at<M: ArmyUpgradeMemory>(
+        &self,
+        memory: &M,
+        offset: u64,
+        module_base: u64,
+        expected_rva: u64,
+    ) -> Result<(), CarrierError> {
+        match self.field(offset, 8) {
+            Some(raw) => {
+                let object = add(self.base, offset)?;
+                let expected = add(module_base, expected_rva)?;
+                if u64::from_le_bytes(raw.try_into().unwrap()) != expected {
+                    return invalid(format!("AUR1 vtable mismatch at 0x{object:x}"));
+                }
+                Ok(())
+            }
+            None => require_vtable(memory, add(self.base, offset)?, module_base, expected_rva),
+        }
+    }
+
+    fn vector_header_at<M: ArmyUpgradeMemory>(
+        &self,
+        memory: &M,
+        begin_off: u64,
+        capacity_off: u64,
+        count_off: u64,
+        maximum: usize,
+        label: &str,
+    ) -> Result<(u64, usize), CarrierError> {
+        let begin = self.u64_at(memory, begin_off)?;
+        let capacity = self.i32_at(memory, capacity_off)?;
+        let count = self.i32_at(memory, count_off)?;
+        vector_header_from_fields(begin, capacity, count, maximum, label)
+    }
+}
+
+/// A sequential window over a fixed-stride engine array. Entries are served
+/// out of one guarded copy of up to `buffer.len()` bytes, refilled when the
+/// walk steps past the window; `None` means no window covers that entry and
+/// the caller must read the entry's fields itself. A window copies exactly
+/// the bytes the per-entry field reads would have read -- the entries are
+/// adjacent and every field lies inside the stride -- so no byte outside the
+/// array is touched.
+struct ArrayWindow<'buffer> {
+    begin: u64,
+    stride: u64,
+    count: usize,
+    buffer: &'buffer mut [u8],
+    first: usize,
+    held: usize,
+    refused: bool,
+}
+
+impl<'buffer> ArrayWindow<'buffer> {
+    fn new(begin: u64, stride: u64, count: usize, buffer: &'buffer mut [u8]) -> Self {
+        Self {
+            begin,
+            stride,
+            count,
+            buffer,
+            first: 0,
+            held: 0,
+            refused: false,
+        }
+    }
+
+    fn entry<M: ArmyUpgradeMemory>(&mut self, memory: &M, index: usize) -> Option<&[u8]> {
+        let stride = usize::try_from(self.stride).ok()?;
+        if stride == 0 || index >= self.count {
+            return None;
+        }
+        if index < self.first || index >= self.first.saturating_add(self.held) {
+            // One refusal disables the window for the rest of the array: a
+            // range this gate will not confirm whole does not start being
+            // confirmed, and re-asking once per entry would spend exactly the
+            // reads the window exists to save.
+            if self.refused {
+                return None;
+            }
+            let want = (self.count - index).min(self.buffer.len() / stride);
+            if want == 0 {
+                // The buffer cannot hold one entry of this stride.
+                self.refused = true;
+                self.held = 0;
+                return None;
+            }
+            let length = want * stride;
+            let base = (index as u64)
+                .checked_mul(self.stride)
+                .and_then(|offset| self.begin.checked_add(offset))
+                .filter(|base| base.checked_add(length as u64).is_some());
+            let Some(base) = base else {
+                self.refused = true;
+                self.held = 0;
+                return None;
+            };
+            if memory.read_exact(base, &mut self.buffer[..length]).is_err() {
+                self.refused = true;
+                self.held = 0;
+                return None;
+            }
+            self.first = index;
+            self.held = want;
+        }
+        let at = (index - self.first) * stride;
+        self.buffer.get(at..at + stride)
+    }
+}
+
+/// The four array windows, allocated once per coherent read and reused by
+/// every pass and every object, so widening the array reads adds no
+/// allocation to the walk.
+struct WalkBuffers {
+    group_slots: Vec<u8>,
+    request_rows: Vec<u8>,
+    delivery_slots: Vec<u8>,
+    produced_rows: Vec<u8>,
+}
+
+impl WalkBuffers {
+    fn new() -> Self {
+        Self {
+            group_slots: vec![0; ARRAY_WINDOW_BYTES],
+            request_rows: vec![0; ARRAY_WINDOW_BYTES],
+            delivery_slots: vec![0; ARRAY_WINDOW_BYTES],
+            produced_rows: vec![0; ARRAY_WINDOW_BYTES],
+        }
+    }
+}
+
 pub fn read_snapshot_from_country_roots<M: ArmyUpgradeMemory>(
     memory: &M,
     module_base: u64,
     source_sequence: u64,
     roots: &[CountryRoot],
 ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
-    let mut previous = read_snapshot_once(memory, module_base, source_sequence, roots)?;
+    let mut buffers = WalkBuffers::new();
+    let mut previous =
+        read_snapshot_once(memory, module_base, source_sequence, roots, &mut buffers)?;
     for _pass in 1..COHERENT_READ_MAX_PASSES {
-        let current = read_snapshot_once(memory, module_base, source_sequence, roots)?;
+        let current =
+            read_snapshot_once(memory, module_base, source_sequence, roots, &mut buffers)?;
         if current == previous {
             return Ok(current);
         }
@@ -250,6 +575,7 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
     module_base: u64,
     source_sequence: u64,
     roots: &[CountryRoot],
+    buffers: &mut WalkBuffers,
 ) -> Result<ArmyUpgradeSnapshot, CarrierError> {
     if module_base == 0 || source_sequence == 0 || roots.len() > MAX_COUNTRIES {
         return invalid("AUR1 country-root snapshot header is invalid");
@@ -261,109 +587,14 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
         if root.tag_db_id == 0 || root.object_ptr == 0 || !country_ids.insert(root.tag_db_id) {
             return invalid("AUR1 country identity is zero or duplicated");
         }
-        let groups_result = (|| -> Result<Vec<ArmyUpgradeGroup>, CarrierError> {
-            let owner = read_u64(
-                memory,
-                add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
+        let mut groups =
+            read_country_groups(memory, module_base, root, &mut total_leaf_rows, buffers).map_err(
+                |source| CarrierError::CountryRead {
+                    tag_db_id: root.tag_db_id,
+                    object_ptr: root.object_ptr,
+                    source: Box::new(source),
+                },
             )?;
-            let mut groups = Vec::new();
-            if owner == 0 {
-                return Ok(groups);
-            }
-            require_vtable(memory, owner, module_base, STATUS_VTABLE_RVA)?;
-            require_vtable(
-                memory,
-                add(owner, STATUS_PERSISTENT_VTABLE_OFF)?,
-                module_base,
-                STATUS_PERSISTENT_VTABLE_RVA,
-            )?;
-            let (begin, count) = read_vector_header(
-                memory,
-                owner,
-                STATUS_GROUP_BEGIN_OFF,
-                STATUS_GROUP_CAPACITY_OFF,
-                STATUS_GROUP_COUNT_OFF,
-                MAX_GROUPS_PER_COUNTRY,
-                "army-upgrade group",
-            )?;
-            let mut army_ids = BTreeSet::new();
-            groups.reserve(count);
-            for index in 0..count {
-                let group_ptr = read_u64(memory, add(begin, (index as u64) * 8)?)?;
-                if group_ptr == 0 {
-                    return invalid("AUR1 group pointer is null");
-                }
-                require_vtable(memory, group_ptr, module_base, REQUESTS_VTABLE_RVA)?;
-                require_vtable(
-                    memory,
-                    add(group_ptr, REQUESTS_PERSISTENT_VTABLE_OFF)?,
-                    module_base,
-                    REQUESTS_PERSISTENT_VTABLE_RVA,
-                )?;
-                if read_u32(memory, add(group_ptr, REQUESTS_VERSION_OFF)?)? != REQUESTS_VERSION {
-                    return invalid("AUR1 request object version is not exact a729 version 1");
-                }
-                if read_u64(memory, add(group_ptr, REQUESTS_STATUS_PTR_OFF)?)? != owner {
-                    return invalid("AUR1 request object status back-reference disagrees");
-                }
-                let army_ptr = read_u64(memory, add(group_ptr, REQUESTS_ARMY_PTR_OFF)?)?;
-                if army_ptr == 0 {
-                    return invalid("AUR1 request object has null CArmy identity");
-                }
-                require_vtable(memory, army_ptr, module_base, ARMY_VTABLE_RVA)?;
-                require_vtable(
-                    memory,
-                    add(army_ptr, ARMY_PERSISTENT_VTABLE_OFF)?,
-                    module_base,
-                    ARMY_PERSISTENT_VTABLE_RVA,
-                )?;
-                let army = read_persistent_id(memory, add(army_ptr, ARMY_ID_OFF)?)?;
-                if !is_army_identity_type(army.kind) || army.id == 0 || !army_ids.insert(army) {
-                    return invalid("AUR1 CArmy persistent identity is invalid or duplicated");
-                }
-                let requests = read_request_rows(memory, module_base, group_ptr)?;
-                let deliveries = read_deliveries(memory, module_base, group_ptr)?;
-                total_leaf_rows = total_leaf_rows
-                    .checked_add(requests.len())
-                    .and_then(|value| value.checked_add(deliveries.len()))
-                    .and_then(|value| {
-                        deliveries
-                            .iter()
-                            .try_fold(value, |sum, row| sum.checked_add(row.produced.len()))
-                    })
-                    .ok_or_else(|| CarrierError::Invalid("AUR1 leaf count overflow".into()))?;
-                if total_leaf_rows > MAX_TOTAL_LEAF_ROWS {
-                    return invalid("AUR1 total leaf count exceeds bound");
-                }
-                groups.push(ArmyUpgradeGroup {
-                    army,
-                    requests,
-                    deliveries,
-                });
-            }
-            if read_vector_header(
-                memory,
-                owner,
-                STATUS_GROUP_BEGIN_OFF,
-                STATUS_GROUP_CAPACITY_OFF,
-                STATUS_GROUP_COUNT_OFF,
-                MAX_GROUPS_PER_COUNTRY,
-                "army-upgrade group",
-            )? != (begin, count)
-                || read_u64(
-                    memory,
-                    add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
-                )? != owner
-            {
-                return invalid("AUR1 country/status graph changed during snapshot");
-            }
-            Ok(groups)
-        })();
-        let mut groups = groups_result.map_err(|source| CarrierError::CountryRead {
-            tag_db_id: root.tag_db_id,
-            object_ptr: root.object_ptr,
-            source: Box::new(source),
-        })?;
         groups.sort_by_key(|group| group.army);
         countries.push(CountryArmyUpgradeRow {
             tag_db_id: root.tag_db_id,
@@ -379,14 +610,143 @@ fn read_snapshot_once<M: ArmyUpgradeMemory>(
     Ok(snapshot)
 }
 
+/// One country's army-upgrade groups. A named function rather than the
+/// immediately-invoked closure it was, so the four array windows can be
+/// borrowed field by field by the levels that use them.
+fn read_country_groups<M: ArmyUpgradeMemory>(
+    memory: &M,
+    module_base: u64,
+    root: &CountryRoot,
+    total_leaf_rows: &mut usize,
+    buffers: &mut WalkBuffers,
+) -> Result<Vec<ArmyUpgradeGroup>, CarrierError> {
+    let WalkBuffers {
+        group_slots,
+        request_rows,
+        delivery_slots,
+        produced_rows,
+    } = buffers;
+    let owner = read_u64(
+        memory,
+        add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
+    )?;
+    let mut groups = Vec::new();
+    if owner == 0 {
+        return Ok(groups);
+    }
+    let status = read_block::<STATUS_BLOCK_LEN, _>(memory, owner);
+    status.require_vtable_at(memory, 0, module_base, STATUS_VTABLE_RVA)?;
+    status.require_vtable_at(
+        memory,
+        STATUS_PERSISTENT_VTABLE_OFF,
+        module_base,
+        STATUS_PERSISTENT_VTABLE_RVA,
+    )?;
+    let (begin, count) = status.vector_header_at(
+        memory,
+        STATUS_GROUP_BEGIN_OFF,
+        STATUS_GROUP_CAPACITY_OFF,
+        STATUS_GROUP_COUNT_OFF,
+        MAX_GROUPS_PER_COUNTRY,
+        "army-upgrade group",
+    )?;
+    let mut army_ids = BTreeSet::new();
+    groups.reserve(count);
+    let mut slots = ArrayWindow::new(begin, 8, count, group_slots.as_mut_slice());
+    for index in 0..count {
+        let group_ptr = match slots.entry(memory, index) {
+            Some(raw) => u64::from_le_bytes(raw.try_into().unwrap()),
+            None => read_u64(memory, add(begin, (index as u64) * 8)?)?,
+        };
+        if group_ptr == 0 {
+            return invalid("AUR1 group pointer is null");
+        }
+        let group = read_block::<GROUP_BLOCK_LEN, _>(memory, group_ptr);
+        group.require_vtable_at(memory, 0, module_base, REQUESTS_VTABLE_RVA)?;
+        group.require_vtable_at(
+            memory,
+            REQUESTS_PERSISTENT_VTABLE_OFF,
+            module_base,
+            REQUESTS_PERSISTENT_VTABLE_RVA,
+        )?;
+        if group.u32_at(memory, REQUESTS_VERSION_OFF)? != REQUESTS_VERSION {
+            return invalid("AUR1 request object version is not exact a729 version 1");
+        }
+        if group.u64_at(memory, REQUESTS_STATUS_PTR_OFF)? != owner {
+            return invalid("AUR1 request object status back-reference disagrees");
+        }
+        let army_ptr = group.u64_at(memory, REQUESTS_ARMY_PTR_OFF)?;
+        if army_ptr == 0 {
+            return invalid("AUR1 request object has null CArmy identity");
+        }
+        let army_object = read_block::<ARMY_BLOCK_LEN, _>(memory, army_ptr);
+        army_object.require_vtable_at(memory, 0, module_base, ARMY_VTABLE_RVA)?;
+        army_object.require_vtable_at(
+            memory,
+            ARMY_PERSISTENT_VTABLE_OFF,
+            module_base,
+            ARMY_PERSISTENT_VTABLE_RVA,
+        )?;
+        let army = army_object.id_at(memory, ARMY_ID_OFF)?;
+        if !is_army_identity_type(army.kind) || army.id == 0 || !army_ids.insert(army) {
+            return invalid("AUR1 CArmy persistent identity is invalid or duplicated");
+        }
+        let requests =
+            read_request_rows(memory, module_base, group_ptr, &group, &mut *request_rows)?;
+        let deliveries = read_deliveries(
+            memory,
+            module_base,
+            group_ptr,
+            &group,
+            &mut *delivery_slots,
+            &mut *produced_rows,
+        )?;
+        *total_leaf_rows = total_leaf_rows
+            .checked_add(requests.len())
+            .and_then(|value| value.checked_add(deliveries.len()))
+            .and_then(|value| {
+                deliveries
+                    .iter()
+                    .try_fold(value, |sum, row| sum.checked_add(row.produced.len()))
+            })
+            .ok_or_else(|| CarrierError::Invalid("AUR1 leaf count overflow".into()))?;
+        if *total_leaf_rows > MAX_TOTAL_LEAF_ROWS {
+            return invalid("AUR1 total leaf count exceeds bound");
+        }
+        groups.push(ArmyUpgradeGroup {
+            army,
+            requests,
+            deliveries,
+        });
+    }
+    if reread_vector_header(
+        memory,
+        owner,
+        STATUS_GROUP_BEGIN_OFF,
+        STATUS_GROUP_CAPACITY_OFF,
+        STATUS_GROUP_COUNT_OFF,
+        MAX_GROUPS_PER_COUNTRY,
+        "army-upgrade group",
+    )? != (begin, count)
+        || read_u64(
+            memory,
+            add(root.object_ptr, COUNTRY_UPGRADE_STATUS_PTR_OFF)?,
+        )? != owner
+    {
+        return invalid("AUR1 country/status graph changed during snapshot");
+    }
+    Ok(groups)
+}
+
 fn read_request_rows<M: ArmyUpgradeMemory>(
     memory: &M,
     module_base: u64,
     group_ptr: u64,
+    group: &ObjectBlock<GROUP_BLOCK_LEN>,
+    window: &mut [u8],
 ) -> Result<Vec<ArmyUpgradeRequestRow>, CarrierError> {
-    let (begin, count) = read_vector_header(
+    let (begin, count) = group.vector_header_at(
         memory,
-        group_ptr,
         REQUEST_ROW_BEGIN_OFF,
         REQUEST_ROW_CAPACITY_OFF,
         REQUEST_ROW_COUNT_OFF,
@@ -394,17 +754,45 @@ fn read_request_rows<M: ArmyUpgradeMemory>(
         "army-upgrade request",
     )?;
     let mut rows = Vec::with_capacity(count);
+    let mut entries = ArrayWindow::new(begin, REQUEST_ROW_STRIDE, count, window);
     for index in 0..count {
-        let row = add(begin, (index as u64) * REQUEST_ROW_STRIDE)?;
-        let equipment_ptr = read_u64(memory, add(row, REQUEST_ROW_EQUIPMENT_PTR_OFF)?)?;
-        let equipment_variant = read_equipment_id(memory, module_base, equipment_ptr)?;
-        rows.push(ArmyUpgradeRequestRow {
-            equipment_variant,
-            request_raw: read_i64(memory, add(row, REQUEST_ROW_REQUEST_OFF)?)?,
-            total_raw: read_i64(memory, add(row, REQUEST_ROW_TOTAL_OFF)?)?,
-        });
+        match entries.entry(memory, index) {
+            Some(raw) => {
+                let equipment_ptr = u64::from_le_bytes(
+                    raw[REQUEST_ROW_EQUIPMENT_PTR_OFF as usize..][..8]
+                        .try_into()
+                        .unwrap(),
+                );
+                let request_raw = i64::from_le_bytes(
+                    raw[REQUEST_ROW_REQUEST_OFF as usize..][..8]
+                        .try_into()
+                        .unwrap(),
+                );
+                let total_raw = i64::from_le_bytes(
+                    raw[REQUEST_ROW_TOTAL_OFF as usize..][..8]
+                        .try_into()
+                        .unwrap(),
+                );
+                rows.push(ArmyUpgradeRequestRow {
+                    equipment_variant: read_equipment_id(memory, module_base, equipment_ptr)?,
+                    request_raw,
+                    total_raw,
+                });
+            }
+            None => {
+                // The pre-window statements, in their original order.
+                let row = add(begin, (index as u64) * REQUEST_ROW_STRIDE)?;
+                let equipment_ptr = read_u64(memory, add(row, REQUEST_ROW_EQUIPMENT_PTR_OFF)?)?;
+                let equipment_variant = read_equipment_id(memory, module_base, equipment_ptr)?;
+                rows.push(ArmyUpgradeRequestRow {
+                    equipment_variant,
+                    request_raw: read_i64(memory, add(row, REQUEST_ROW_REQUEST_OFF)?)?,
+                    total_raw: read_i64(memory, add(row, REQUEST_ROW_TOTAL_OFF)?)?,
+                });
+            }
+        }
     }
-    if read_vector_header(
+    if reread_vector_header(
         memory,
         group_ptr,
         REQUEST_ROW_BEGIN_OFF,
@@ -423,10 +811,12 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
     memory: &M,
     module_base: u64,
     group_ptr: u64,
+    group: &ObjectBlock<GROUP_BLOCK_LEN>,
+    slot_window: &mut [u8],
+    produced_window: &mut [u8],
 ) -> Result<Vec<UpgradeDeliveryRow>, CarrierError> {
-    let (begin, count) = read_vector_header(
+    let (begin, count) = group.vector_header_at(
         memory,
-        group_ptr,
         DELIVERY_BEGIN_OFF,
         DELIVERY_CAPACITY_OFF,
         DELIVERY_COUNT_OFF,
@@ -434,21 +824,25 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
         "army-upgrade delivery",
     )?;
     let mut rows = Vec::with_capacity(count);
+    let mut slots = ArrayWindow::new(begin, 8, count, slot_window);
     for index in 0..count {
-        let delivery = read_u64(memory, add(begin, (index as u64) * 8)?)?;
+        let delivery = match slots.entry(memory, index) {
+            Some(raw) => u64::from_le_bytes(raw.try_into().unwrap()),
+            None => read_u64(memory, add(begin, (index as u64) * 8)?)?,
+        };
         if delivery == 0 {
             return invalid("AUR1 delivery pointer is null");
         }
-        require_vtable(memory, delivery, module_base, DELIVERY_VTABLE_RVA)?;
-        require_vtable(
+        let block = read_block::<DELIVERY_BLOCK_LEN, _>(memory, delivery);
+        block.require_vtable_at(memory, 0, module_base, DELIVERY_VTABLE_RVA)?;
+        block.require_vtable_at(
             memory,
-            add(delivery, DELIVERY_PRODUCED_POOL_OFF)?,
+            DELIVERY_PRODUCED_POOL_OFF,
             module_base,
             EQUIPMENT_VARIANT_POOL_VTABLE_RVA,
         )?;
-        let (produced_begin, produced_count) = read_vector_header(
+        let (produced_begin, produced_count) = block.vector_header_at(
             memory,
-            delivery,
             PRODUCED_ROW_BEGIN_OFF,
             PRODUCED_ROW_CAPACITY_OFF,
             PRODUCED_ROW_COUNT_OFF,
@@ -456,18 +850,37 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
             "army-upgrade produced equipment",
         )?;
         let mut produced = Vec::with_capacity(produced_count);
+        let mut entries = ArrayWindow::new(
+            produced_begin,
+            PRODUCED_ROW_STRIDE,
+            produced_count,
+            &mut *produced_window,
+        );
         for produced_index in 0..produced_count {
-            let row = add(
-                produced_begin,
-                (produced_index as u64) * PRODUCED_ROW_STRIDE,
-            )?;
-            let equipment_ptr = read_u64(memory, row)?;
-            produced.push(ProducedEquipmentRow {
-                equipment_variant: read_equipment_id(memory, module_base, equipment_ptr)?,
-                amount_raw: read_i64(memory, add(row, 8)?)?,
-            });
+            match entries.entry(memory, produced_index) {
+                Some(raw) => {
+                    let equipment_ptr = u64::from_le_bytes(raw[..8].try_into().unwrap());
+                    let amount_raw = i64::from_le_bytes(raw[8..16].try_into().unwrap());
+                    produced.push(ProducedEquipmentRow {
+                        equipment_variant: read_equipment_id(memory, module_base, equipment_ptr)?,
+                        amount_raw,
+                    });
+                }
+                None => {
+                    // The pre-window statements, in their original order.
+                    let row = add(
+                        produced_begin,
+                        (produced_index as u64) * PRODUCED_ROW_STRIDE,
+                    )?;
+                    let equipment_ptr = read_u64(memory, row)?;
+                    produced.push(ProducedEquipmentRow {
+                        equipment_variant: read_equipment_id(memory, module_base, equipment_ptr)?,
+                        amount_raw: read_i64(memory, add(row, 8)?)?,
+                    });
+                }
+            }
         }
-        if read_vector_header(
+        if reread_vector_header(
             memory,
             delivery,
             PRODUCED_ROW_BEGIN_OFF,
@@ -479,20 +892,20 @@ fn read_deliveries<M: ArmyUpgradeMemory>(
         {
             return invalid("AUR1 produced vector changed during snapshot");
         }
-        let status = read_u32(memory, add(delivery, DELIVERY_STATUS_OFF)?)?;
+        let status = block.u32_at(memory, DELIVERY_STATUS_OFF)?;
         rows.push(UpgradeDeliveryRow {
             status,
             progress_raw: if status == 1 {
-                Some(read_i64(memory, add(delivery, DELIVERY_PROGRESS_OFF)?)?)
+                Some(block.i64_at(memory, DELIVERY_PROGRESS_OFF)?)
             } else {
                 None
             },
-            total_progress_raw: read_i64(memory, add(delivery, DELIVERY_TOTAL_PROGRESS_OFF)?)?,
-            allow_zero_entries: read_u8(memory, add(delivery, PRODUCED_ALLOW_ZERO_OFF)?)? != 0,
+            total_progress_raw: block.i64_at(memory, DELIVERY_TOTAL_PROGRESS_OFF)?,
+            allow_zero_entries: block.u8_at(memory, PRODUCED_ALLOW_ZERO_OFF)? != 0,
             produced,
         });
     }
-    if read_vector_header(
+    if reread_vector_header(
         memory,
         group_ptr,
         DELIVERY_BEGIN_OFF,
@@ -515,20 +928,39 @@ fn read_equipment_id<M: ArmyUpgradeMemory>(
     if equipment_ptr == 0 {
         return invalid("AUR1 equipment variant pointer is null");
     }
-    require_vtable(
-        memory,
-        equipment_ptr,
-        module_base,
-        EQUIPMENT_VARIANT_VTABLE_RVA,
-    )?;
-    let identity = read_persistent_id(memory, add(equipment_ptr, EQUIPMENT_VARIANT_ID_OFF)?)?;
+    let variant = read_block::<EQUIPMENT_BLOCK_LEN, _>(memory, equipment_ptr);
+    variant.require_vtable_at(memory, 0, module_base, EQUIPMENT_VARIANT_VTABLE_RVA)?;
+    let identity = variant.id_at(memory, EQUIPMENT_VARIANT_ID_OFF)?;
     if identity.kind != EQUIPMENT_VARIANT_ID_TYPE || identity.id == 0 {
         return invalid("AUR1 equipment_variant_index identity is invalid");
     }
     Ok(identity)
 }
 
-fn read_vector_header<M: ArmyUpgradeMemory>(
+/// The header admission rules, shared by the block-served read and the
+/// scalar-served re-read so the two cannot drift.
+fn vector_header_from_fields(
+    begin: u64,
+    capacity: i32,
+    count: i32,
+    maximum: usize,
+    label: &str,
+) -> Result<(u64, usize), CarrierError> {
+    if capacity < 0 || count < 0 || count > capacity || count as usize > maximum {
+        return invalid(format!("AUR1 {label} vector header is invalid"));
+    }
+    if count != 0 && begin == 0 {
+        return invalid(format!("AUR1 {label} vector begin is null"));
+    }
+    Ok((begin, count as usize))
+}
+
+/// A FRESH copy of a `{begin, capacity, count}` vector header: the
+/// re-verification every AUR1 vector level performs after walking its
+/// entries. Exactly the bytes the three scalar reads read (the triple is
+/// contiguous at all four sites, asserted above), in one guarded copy, with
+/// those same three scalar reads as the refusal fallback.
+fn reread_vector_header<M: ArmyUpgradeMemory>(
     memory: &M,
     object: u64,
     begin_off: u64,
@@ -537,16 +969,17 @@ fn read_vector_header<M: ArmyUpgradeMemory>(
     maximum: usize,
     label: &str,
 ) -> Result<(u64, usize), CarrierError> {
-    let begin = read_u64(memory, add(object, begin_off)?)?;
-    let capacity = read_i32(memory, add(object, capacity_off)?)?;
-    let count = read_i32(memory, add(object, count_off)?)?;
-    if capacity < 0 || count < 0 || count > capacity || count as usize > maximum {
-        return invalid(format!("AUR1 {label} vector header is invalid"));
-    }
-    if count != 0 && begin == 0 {
-        return invalid(format!("AUR1 {label} vector begin is null"));
-    }
-    Ok((begin, count as usize))
+    debug_assert_eq!(begin_off + 8, capacity_off);
+    debug_assert_eq!(capacity_off + 4, count_off);
+    let header = read_block::<VECTOR_HEADER_LEN, _>(memory, add(object, begin_off)?);
+    header.vector_header_at(
+        memory,
+        0,
+        capacity_off - begin_off,
+        count_off - begin_off,
+        maximum,
+        label,
+    )
 }
 
 fn require_vtable<M: ArmyUpgradeMemory>(
@@ -572,17 +1005,73 @@ fn read_persistent_id<M: ArmyUpgradeMemory>(
     })
 }
 
-pub fn collect_and_encode<S: ExactArmyUpgradeSource>(
+/// The two row counts the collector publishes beside a D93 payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedCounts {
+    pub countries: u32,
+    pub entries: u32,
+}
+
+/// The counting the collector used to do over a freshly DECODED payload,
+/// done over the snapshot the payload was encoded FROM. Identical by the
+/// encoder/decoder round trip (`exact_raw_request_delivery_roundtrip`,
+/// `observed_counts_match_the_counts_taken_from_the_decoded_payload`), and it
+/// saves re-parsing a ~175 KB payload into a fresh object graph once per
+/// frame for two integers.
+pub fn observed_counts(snapshot: &ArmyUpgradeSnapshot) -> ObservedCounts {
+    ObservedCounts {
+        countries: snapshot.countries.len().min(u32::MAX as usize) as u32,
+        entries: snapshot
+            .countries
+            .iter()
+            .flat_map(|country| &country.groups)
+            .map(|group| {
+                1u64.saturating_add(group.requests.len() as u64)
+                    .saturating_add(group.deliveries.len() as u64)
+                    .saturating_add(
+                        group
+                            .deliveries
+                            .iter()
+                            .map(|delivery| delivery.produced.len() as u64)
+                            .sum::<u64>(),
+                    )
+            })
+            .sum::<u64>()
+            .min(u64::from(u32::MAX)) as u32,
+    }
+}
+
+fn collect_snapshot<S: ExactArmyUpgradeSource>(
     source: &S,
-    frame_hour: u64,
-    elapsed_wall_ms: u64,
-) -> Result<Vec<u8>, CarrierError> {
+) -> Result<ArmyUpgradeSnapshot, CarrierError> {
     if !source.is_exact_a729_country_army_upgrade_source() {
         return Err(CarrierError::Source(
             "source did not authenticate exact a729 CCountry+0xF80 army upgrades".into(),
         ));
     }
-    let snapshot = source.read_country_army_upgrades()?;
+    source.read_country_army_upgrades()
+}
+
+/// `collect_and_encode` plus the row counts its caller needs, taken from the
+/// snapshot instead of from a decode of the bytes just produced.
+pub fn collect_and_encode_with_counts<S: ExactArmyUpgradeSource>(
+    source: &S,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<(Vec<u8>, ObservedCounts), CarrierError> {
+    let snapshot = collect_snapshot(source)?;
+    let counts = observed_counts(&snapshot);
+    Ok((
+        encode_receipt(snapshot, frame_hour, elapsed_wall_ms)?,
+        counts,
+    ))
+}
+
+fn encode_receipt(
+    snapshot: ArmyUpgradeSnapshot,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<Vec<u8>, CarrierError> {
     encode_payload(&ArmyUpgradeFrame {
         elapsed_wall_ms,
         frame_hour,
@@ -590,6 +1079,14 @@ pub fn collect_and_encode<S: ExactArmyUpgradeSource>(
         authority: AuthorityState::ExactA729Receipt,
         snapshot: Some(snapshot),
     })
+}
+
+pub fn collect_and_encode<S: ExactArmyUpgradeSource>(
+    source: &S,
+    frame_hour: u64,
+    elapsed_wall_ms: u64,
+) -> Result<Vec<u8>, CarrierError> {
+    encode_receipt(collect_snapshot(source)?, frame_hour, elapsed_wall_ms)
 }
 
 pub fn encode_source_unavailable(
@@ -610,24 +1107,31 @@ pub fn validate_snapshot(snapshot: &ArmyUpgradeSnapshot) -> Result<(), CarrierEr
     if snapshot.source_sequence == 0 || snapshot.countries.len() > MAX_COUNTRIES {
         return invalid("AUR1 snapshot header is invalid");
     }
-    let mut countries = BTreeSet::new();
+    // No duplicate SETS here (lane SF). The strict-ascending test below is
+    // the same rejection predicate on this walk: when entry `i` is reached
+    // every earlier entry has been proven strictly ascending, so a value
+    // equal to ANY earlier entry is <= the immediate predecessor and the
+    // ordering arm rejects it -- with the identical message, since both arms
+    // of the same `if` produce one refusal. Two `BTreeSet` families
+    // (439 country tags plus one set per country of its army ids) were
+    // therefore being built three times per frame -- once per coherent-read
+    // pass and once more inside `encode_payload` -> `validate_frame` -- to
+    // decide something the neighbouring comparison already decides.
+    // `duplicate_identities_are_still_refused_without_the_sets` pins it.
     let mut leaves = 0usize;
     let mut prior_country = None;
     for country in &snapshot.countries {
         if country.tag_db_id == 0
-            || !countries.insert(country.tag_db_id)
             || prior_country.is_some_and(|prior| prior >= country.tag_db_id)
             || country.groups.len() > MAX_GROUPS_PER_COUNTRY
         {
             return invalid("AUR1 country order/identity/count is invalid");
         }
         prior_country = Some(country.tag_db_id);
-        let mut armies = BTreeSet::new();
         let mut prior_army = None;
         for group in &country.groups {
             if !is_army_identity_type(group.army.kind)
                 || group.army.id == 0
-                || !armies.insert(group.army)
                 || prior_army.is_some_and(|prior| prior >= group.army)
                 || group.requests.len() > MAX_REQUEST_ROWS_PER_GROUP
                 || group.deliveries.len() > MAX_DELIVERIES_PER_GROUP
@@ -691,9 +1195,41 @@ pub fn validate_frame(frame: &ArmyUpgradeFrame) -> Result<(), CarrierError> {
     Ok(())
 }
 
+/// Byte length of the fixed header every AUR1 payload carries, and the whole
+/// length of a rowless one.
+pub const ROWLESS_PAYLOAD_LEN: usize = 260;
+
+/// The exact encoded length, so the ~175 KB production payload is built in
+/// one allocation instead of growing 8 -> 16 -> ... -> 262,144 bytes: 15
+/// reallocations presenting ~262 KB of existing contents to be moved (some
+/// of which `realloc` may extend in place rather than copy). Saturating
+/// throughout: this is a capacity hint, and a wrong hint can only cost a
+/// reallocation, never a byte. `encoded_length_is_exact` and the
+/// `debug_assert` in `encode_payload` pin it to the encoder.
+fn encoded_length(frame: &ArmyUpgradeFrame) -> usize {
+    let Some(snapshot) = &frame.snapshot else {
+        return ROWLESS_PAYLOAD_LEN;
+    };
+    let mut len = ROWLESS_PAYLOAD_LEN.saturating_add(12);
+    for country in &snapshot.countries {
+        len = len
+            .saturating_add(8)
+            .saturating_add(country.groups.len().saturating_mul(16));
+        for group in &country.groups {
+            len = len.saturating_add(group.requests.len().saturating_mul(24));
+            for delivery in &group.deliveries {
+                len = len
+                    .saturating_add(32)
+                    .saturating_add(delivery.produced.len().saturating_mul(16));
+            }
+        }
+    }
+    len
+}
+
 pub fn encode_payload(frame: &ArmyUpgradeFrame) -> Result<Vec<u8>, CarrierError> {
     validate_frame(frame)?;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(encoded_length(frame));
     u32v(&mut out, MAGIC);
     u32v(&mut out, SCHEMA_VERSION);
     u32v(&mut out, frame.authority.raw());
@@ -710,6 +1246,7 @@ pub fn encode_payload(frame: &ArmyUpgradeFrame) -> Result<Vec<u8>, CarrierError>
     out.push(u8::from(frame.snapshot.is_some()));
     out.extend_from_slice(&[0; 3]);
     let Some(snapshot) = &frame.snapshot else {
+        debug_assert_eq!(out.len(), encoded_length(frame));
         return Ok(out);
     };
     u64v(&mut out, snapshot.source_sequence);
@@ -741,6 +1278,7 @@ pub fn encode_payload(frame: &ArmyUpgradeFrame) -> Result<Vec<u8>, CarrierError>
             }
         }
     }
+    debug_assert_eq!(out.len(), encoded_length(frame));
     Ok(out)
 }
 
@@ -1086,6 +1624,16 @@ mod tests {
             }
         }
 
+        /// Present an object's whole field extent, so a widened copy of it is
+        /// served rather than refused. Without this the fixture would only
+        /// ever exercise the scalar fallback and the path production runs
+        /// would go untested.
+        fn present(&mut self, address: u64, len: usize) {
+            for offset in 0..len as u64 {
+                self.bytes.entry(address + offset).or_insert(0);
+            }
+        }
+
         fn u32(&mut self, address: u64, value: u32) {
             self.put(address, &value.to_le_bytes());
         }
@@ -1106,6 +1654,9 @@ mod tests {
 
     fn single_group_memory(army_kind: u32, army_id: u32) -> SparseMemory {
         let mut memory = SparseMemory::default();
+        memory.present(FIXTURE_STATUS, STATUS_BLOCK_LEN);
+        memory.present(FIXTURE_GROUP, GROUP_BLOCK_LEN);
+        memory.present(FIXTURE_ARMY, ARMY_BLOCK_LEN);
         memory.u64(
             FIXTURE_COUNTRY + COUNTRY_UPGRADE_STATUS_PTR_OFF,
             FIXTURE_STATUS,
@@ -1209,12 +1760,18 @@ mod tests {
         assert!(validate_snapshot(&snapshot).is_err());
     }
 
-    /// Serves `inner` verbatim except that reads covering
-    /// `watch_address + 4` (the CArmy id u32) return values from `watch_ids`:
-    /// successively while any remain (clamped to the final value), or cycling
-    /// forever when `cycle` is set. Each individual pass therefore sees a
-    /// structurally valid graph, and the schedule decides whether the graph
-    /// ever stops changing between passes.
+    /// Serves `inner` verbatim except that any read COVERING
+    /// `watch_address + 4` (the CArmy id u32) has values from `watch_ids`
+    /// spliced in: successively while any remain (clamped to the final
+    /// value), or cycling forever when `cycle` is set. Each individual pass
+    /// therefore sees a structurally valid graph, and the schedule decides
+    /// whether the graph ever stops changing between passes.
+    ///
+    /// Coverage, not an exact `(address, width)` match: the walk takes the
+    /// CArmy identity out of one widened copy of the object rather than as
+    /// its own 4-byte read, and a fixture that only recognised the narrow
+    /// read would silently stop mutating anything. One covering read per pass
+    /// either way, so the read counts these tests assert still count passes.
     struct MutatingMemory {
         inner: SparseMemory,
         watch_address: u64,
@@ -1225,7 +1782,13 @@ mod tests {
 
     impl ArmyUpgradeMemory for MutatingMemory {
         fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
-            if out.len() == 4 && address == self.watch_address + 4 {
+            self.inner.read_exact(address, out)?;
+            let watched = self.watch_address + 4;
+            let covers = address <= watched
+                && watched
+                    .checked_add(4)
+                    .is_some_and(|end| end <= address + out.len() as u64);
+            if covers {
                 let index = self.watch_reads.get();
                 let id = if self.cycle {
                     self.watch_ids[index % self.watch_ids.len()]
@@ -1233,10 +1796,10 @@ mod tests {
                     self.watch_ids[index.min(self.watch_ids.len() - 1)]
                 };
                 self.watch_reads.set(index + 1);
-                out.copy_from_slice(&id.to_le_bytes());
-                return Ok(());
+                let at = (watched - address) as usize;
+                out[at..at + 4].copy_from_slice(&id.to_le_bytes());
             }
-            self.inner.read_exact(address, out)
+            Ok(())
         }
     }
 
@@ -1304,5 +1867,650 @@ mod tests {
             elapsed < std::time::Duration::from_millis(500),
             "the bounded refusal must not wait (took {elapsed:?})"
         );
+    }
+
+    // --- lane SF: the widened guarded copies -----------------------------
+
+    /// A dense image with a bump allocator: every object the walk reads is a
+    /// contiguous run of real bytes, which is the production shape and the
+    /// only shape in which a widened copy is SERVED rather than refused.
+    struct DenseMemory {
+        base: u64,
+        bytes: Vec<u8>,
+        /// `(address, width)` of every read this image SERVED, in order.
+        /// The byte-identity test asserts on it, because two walks that agree
+        /// prove nothing if the widened one silently fell back to scalar
+        /// reads throughout. The ADDRESS is in the log because widths alone
+        /// cannot tell two same-width paths apart: an equipment block, a
+        /// vector-header re-read and a two-entry pointer window are all 16
+        /// bytes wide.
+        served: std::cell::RefCell<Vec<(u64, usize)>>,
+    }
+
+    impl DenseMemory {
+        fn new(base: u64) -> Self {
+            // Leading padding so no object can be allocated at `base` itself
+            // and be mistaken for a null pointer.
+            Self {
+                base,
+                bytes: vec![0; 16],
+                served: std::cell::RefCell::new(Vec::new()),
+            }
+        }
+
+        fn alloc(&mut self, len: usize) -> u64 {
+            let at = (self.bytes.len() + 15) & !15;
+            self.bytes.resize(at + len.max(1), 0);
+            self.base + at as u64
+        }
+
+        fn put(&mut self, address: u64, value: &[u8]) {
+            let at = (address - self.base) as usize;
+            self.bytes[at..at + value.len()].copy_from_slice(value);
+        }
+
+        fn u8(&mut self, address: u64, value: u8) {
+            self.put(address, &[value]);
+        }
+        fn u32(&mut self, address: u64, value: u32) {
+            self.put(address, &value.to_le_bytes());
+        }
+        fn i32(&mut self, address: u64, value: i32) {
+            self.put(address, &value.to_le_bytes());
+        }
+        fn u64(&mut self, address: u64, value: u64) {
+            self.put(address, &value.to_le_bytes());
+        }
+        fn i64(&mut self, address: u64, value: i64) {
+            self.put(address, &value.to_le_bytes());
+        }
+
+        fn vector(&mut self, object: u64, begin_off: u64, begin: u64, count: usize) {
+            self.u64(object + begin_off, begin);
+            self.i32(object + begin_off + 8, count as i32);
+            self.i32(object + begin_off + 12, count as i32);
+        }
+    }
+
+    impl ArmyUpgradeMemory for DenseMemory {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            let at = usize::try_from(address.checked_sub(self.base).ok_or(())?).map_err(|_| ())?;
+            let end = at.checked_add(out.len()).ok_or(())?;
+            out.copy_from_slice(self.bytes.get(at..end).ok_or(())?);
+            self.served.borrow_mut().push((address, out.len()));
+            Ok(())
+        }
+    }
+
+    /// The same image behind a one-scalar ceiling: every read wider than 8
+    /// bytes is refused, which is what the collector's region gate does to a
+    /// range it will not confirm whole. The walk therefore runs its scalar
+    /// fallback for every object block, every vector-header re-read and every
+    /// multi-entry array window. (A single-entry pointer window is exactly 8
+    /// bytes at exactly the address the scalar read would use, so there is no
+    /// distinction left to force there.)
+    struct ScalarOnlyMemory<'image> {
+        inner: &'image DenseMemory,
+    }
+
+    impl ArmyUpgradeMemory for ScalarOnlyMemory<'_> {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            if out.len() > 8 {
+                return Err(());
+            }
+            self.inner.read_exact(address, out)
+        }
+    }
+
+    /// Refuses every read covering one byte, wide or narrow.
+    struct HoleMemory<'image> {
+        inner: &'image DenseMemory,
+        hole: u64,
+    }
+
+    impl ArmyUpgradeMemory for HoleMemory<'_> {
+        fn read_exact(&self, address: u64, out: &mut [u8]) -> Result<(), ()> {
+            if address <= self.hole && self.hole < address + out.len() as u64 {
+                return Err(());
+            }
+            self.inner.read_exact(address, out)
+        }
+    }
+
+    struct GraphBuilder {
+        memory: DenseMemory,
+        module_base: u64,
+        /// The most recently built `CArmy` and equipment variant, so the test
+        /// can pin a widened read to each of them BY ADDRESS.
+        last_army: u64,
+        last_equipment: u64,
+    }
+
+    impl GraphBuilder {
+        fn equipment(&mut self, id: u32) -> u64 {
+            let ptr = self.memory.alloc(EQUIPMENT_BLOCK_LEN);
+            self.memory
+                .u64(ptr, self.module_base + EQUIPMENT_VARIANT_VTABLE_RVA);
+            self.memory
+                .u32(ptr + EQUIPMENT_VARIANT_ID_OFF, EQUIPMENT_VARIANT_ID_TYPE);
+            self.memory.u32(ptr + EQUIPMENT_VARIANT_ID_OFF + 4, id);
+            self.last_equipment = ptr;
+            ptr
+        }
+
+        fn delivery(
+            &mut self,
+            status: u32,
+            progress: i64,
+            total: i64,
+            allow_zero: bool,
+            produced: &[(u32, i64)],
+        ) -> u64 {
+            let ptr = self.memory.alloc(DELIVERY_BLOCK_LEN);
+            self.memory.u64(ptr, self.module_base + DELIVERY_VTABLE_RVA);
+            self.memory.u64(
+                ptr + DELIVERY_PRODUCED_POOL_OFF,
+                self.module_base + EQUIPMENT_VARIANT_POOL_VTABLE_RVA,
+            );
+            self.memory.u32(ptr + DELIVERY_STATUS_OFF, status);
+            self.memory.i64(ptr + DELIVERY_PROGRESS_OFF, progress);
+            self.memory.i64(ptr + DELIVERY_TOTAL_PROGRESS_OFF, total);
+            self.memory
+                .u8(ptr + PRODUCED_ALLOW_ZERO_OFF, u8::from(allow_zero));
+            let mut begin = 0;
+            if !produced.is_empty() {
+                begin = self
+                    .memory
+                    .alloc(produced.len() * PRODUCED_ROW_STRIDE as usize);
+                for (index, (variant, amount)) in produced.iter().enumerate() {
+                    let variant_ptr = self.equipment(*variant);
+                    let row = begin + index as u64 * PRODUCED_ROW_STRIDE;
+                    self.memory.u64(row, variant_ptr);
+                    self.memory.i64(row + 8, *amount);
+                }
+            }
+            self.memory
+                .vector(ptr, PRODUCED_ROW_BEGIN_OFF, begin, produced.len());
+            ptr
+        }
+
+        fn group(
+            &mut self,
+            status_ptr: u64,
+            army_kind: u32,
+            army_id: u32,
+            requests: &[(u32, i64, i64)],
+            deliveries: &[u64],
+        ) -> u64 {
+            let ptr = self.memory.alloc(GROUP_BLOCK_LEN);
+            let army = self.memory.alloc(ARMY_BLOCK_LEN);
+            self.memory.u64(army, self.module_base + ARMY_VTABLE_RVA);
+            self.memory.u64(
+                army + ARMY_PERSISTENT_VTABLE_OFF,
+                self.module_base + ARMY_PERSISTENT_VTABLE_RVA,
+            );
+            self.memory.u32(army + ARMY_ID_OFF, army_kind);
+            self.memory.u32(army + ARMY_ID_OFF + 4, army_id);
+            self.memory.u64(ptr, self.module_base + REQUESTS_VTABLE_RVA);
+            self.memory.u64(
+                ptr + REQUESTS_PERSISTENT_VTABLE_OFF,
+                self.module_base + REQUESTS_PERSISTENT_VTABLE_RVA,
+            );
+            self.memory
+                .u32(ptr + REQUESTS_VERSION_OFF, REQUESTS_VERSION);
+            self.memory.u64(ptr + REQUESTS_ARMY_PTR_OFF, army);
+            self.memory.u64(ptr + REQUESTS_STATUS_PTR_OFF, status_ptr);
+            let mut rows = 0;
+            if !requests.is_empty() {
+                rows = self
+                    .memory
+                    .alloc(requests.len() * REQUEST_ROW_STRIDE as usize);
+                for (index, (variant, request, total)) in requests.iter().enumerate() {
+                    let variant_ptr = self.equipment(*variant);
+                    let row = rows + index as u64 * REQUEST_ROW_STRIDE;
+                    self.memory
+                        .u64(row + REQUEST_ROW_EQUIPMENT_PTR_OFF, variant_ptr);
+                    self.memory.i64(row + REQUEST_ROW_REQUEST_OFF, *request);
+                    self.memory.i64(row + REQUEST_ROW_TOTAL_OFF, *total);
+                }
+            }
+            self.memory
+                .vector(ptr, REQUEST_ROW_BEGIN_OFF, rows, requests.len());
+            let mut slots = 0;
+            if !deliveries.is_empty() {
+                slots = self.memory.alloc(deliveries.len() * 8);
+                for (index, delivery) in deliveries.iter().enumerate() {
+                    self.memory.u64(slots + index as u64 * 8, *delivery);
+                }
+            }
+            self.memory
+                .vector(ptr, DELIVERY_BEGIN_OFF, slots, deliveries.len());
+            self.last_army = army;
+            ptr
+        }
+
+        fn status(&mut self) -> u64 {
+            let ptr = self.memory.alloc(STATUS_BLOCK_LEN);
+            self.memory.u64(ptr, self.module_base + STATUS_VTABLE_RVA);
+            self.memory.u64(
+                ptr + STATUS_PERSISTENT_VTABLE_OFF,
+                self.module_base + STATUS_PERSISTENT_VTABLE_RVA,
+            );
+            ptr
+        }
+
+        fn finish_status(&mut self, status_ptr: u64, groups: &[u64]) {
+            let mut slots = 0;
+            if !groups.is_empty() {
+                slots = self.memory.alloc(groups.len() * 8);
+                for (index, group) in groups.iter().enumerate() {
+                    self.memory.u64(slots + index as u64 * 8, *group);
+                }
+            }
+            self.memory
+                .vector(status_ptr, STATUS_GROUP_BEGIN_OFF, slots, groups.len());
+        }
+
+        fn country(&mut self, status_ptr: u64) -> u64 {
+            let ptr = self
+                .memory
+                .alloc(COUNTRY_UPGRADE_STATUS_PTR_OFF as usize + 8);
+            self.memory
+                .u64(ptr + COUNTRY_UPGRADE_STATUS_PTR_OFF, status_ptr);
+            ptr
+        }
+    }
+
+    struct Fixture {
+        memory: DenseMemory,
+        module_base: u64,
+        roots: Vec<CountryRoot>,
+        /// Country 22's status object, its first group, and the objects that
+        /// group hangs off - so the byte-identity test can assert that a
+        /// widened copy of each KIND of block was served, at the address it
+        /// belongs to rather than merely at its width. `group_equipment` is
+        /// the LAST equipment variant built for that group's request rows
+        /// (its third), not the first one in the graph; any one of them
+        /// pins the equipment-block path.
+        status: u64,
+        first_group: u64,
+        first_army: u64,
+        group_equipment: u64,
+        first_delivery: u64,
+    }
+
+    /// Three countries covering every arm of the walk: a country with no
+    /// upgrade status at all, a country with two groups (one carrying
+    /// deliveries with and without progress and with and without produced
+    /// rows, one carrying a request array LONGER than a single array window
+    /// so the window must refill mid-array), and a country with a group that
+    /// has no requests and one delivery with three produced rows.
+    fn upgrade_graph() -> Fixture {
+        let module_base = 0x1_4000_0000;
+        let mut builder = GraphBuilder {
+            memory: DenseMemory::new(0x3000_0000),
+            module_base,
+            last_army: 0,
+            last_equipment: 0,
+        };
+        let mut roots = Vec::new();
+
+        let bare = builder.country(0);
+        roots.push(CountryRoot {
+            tag_db_id: 11,
+            object_ptr: bare,
+        });
+
+        let first_status = builder.status();
+        let status = first_status;
+        let with_progress = builder.delivery(1, 25_000, 100_000, false, &[(5001, 3)]);
+        let without_progress = builder.delivery(2, 0, 7, true, &[]);
+        let first_group = builder.group(
+            status,
+            ARMY_ID_TYPE,
+            100,
+            &[
+                (5001, 1_000, 2_000),
+                (5002, -5, 6),
+                (5003, i64::MAX, i64::MIN),
+            ],
+            &[with_progress, without_progress],
+        );
+        let first_army = builder.last_army;
+        let group_equipment = builder.last_equipment;
+        let long: Vec<(u32, i64, i64)> = (0..200)
+            .map(|index| (5100 + index as u32, index as i64, index as i64 * 3))
+            .collect();
+        let long_group = builder.group(status, ARMY_ID_ALT_TYPE, 99, &long, &[]);
+        builder.finish_status(status, &[first_group, long_group]);
+        let country = builder.country(status);
+        roots.push(CountryRoot {
+            tag_db_id: 22,
+            object_ptr: country,
+        });
+
+        let status = builder.status();
+        let three_produced = builder.delivery(0, 0, 0, false, &[(5004, 1), (5005, 2), (5006, 3)]);
+        let sole_group = builder.group(status, ARMY_ID_TYPE, 7, &[], &[three_produced]);
+        builder.finish_status(status, &[sole_group]);
+        let country = builder.country(status);
+        roots.push(CountryRoot {
+            tag_db_id: 33,
+            object_ptr: country,
+        });
+
+        Fixture {
+            memory: builder.memory,
+            module_base,
+            roots,
+            status: first_status,
+            first_group,
+            first_army,
+            group_equipment,
+            first_delivery: with_progress,
+        }
+    }
+
+    fn receipt_frame(snapshot: ArmyUpgradeSnapshot) -> ArmyUpgradeFrame {
+        ArmyUpgradeFrame {
+            elapsed_wall_ms: 4,
+            frame_hour: 77,
+            status_flags: 0,
+            authority: AuthorityState::ExactA729Receipt,
+            snapshot: Some(snapshot),
+        }
+    }
+
+    // kills: any widening of the guarded reads that does not reproduce the
+    // scalar walk's bytes -- a mis-sized object block, a field decoded at the
+    // wrong offset inside a copy, an array window that skips, repeats or
+    // mis-addresses an entry across a refill, or a fallback arm that reads
+    // different fields than the widened arm it stands in for. Same image,
+    // one served wide and one forced through the scalar statements, so the
+    // two payloads must be identical byte for byte.
+    #[test]
+    fn widened_and_scalar_paths_are_byte_identical() {
+        let fixture = upgrade_graph();
+        let widened = read_snapshot_from_country_roots(
+            &fixture.memory,
+            fixture.module_base,
+            5,
+            &fixture.roots,
+        )
+        .expect("the widened walk must read the fixture graph");
+        let widened_reads = std::mem::take(&mut *fixture.memory.served.borrow_mut());
+        let scalar = read_snapshot_from_country_roots(
+            &ScalarOnlyMemory {
+                inner: &fixture.memory,
+            },
+            fixture.module_base,
+            5,
+            &fixture.roots,
+        )
+        .expect("the scalar walk must read the same fixture graph");
+        let scalar_reads = std::mem::take(&mut *fixture.memory.served.borrow_mut());
+        assert_eq!(widened, scalar);
+
+        // The widened walk must actually have BEEN widened: two agreeing
+        // walks prove nothing if the first one silently fell back to scalar
+        // reads everywhere. Each block kind is pinned at the address it
+        // belongs to, because three of the widths collide (an equipment
+        // block, a vector-header re-read and a two-entry pointer window are
+        // all 16 bytes), and a same-width regression would hide behind a
+        // width-only assertion.
+        assert!(
+            scalar_reads.iter().all(|(_, width)| *width <= 8),
+            "the scalar-only memory must serve nothing wider than one scalar"
+        );
+        for (address, width, what) in [
+            (fixture.status, STATUS_BLOCK_LEN, "the status object block"),
+            (
+                fixture.first_group,
+                GROUP_BLOCK_LEN,
+                "the group object block",
+            ),
+            (fixture.first_army, ARMY_BLOCK_LEN, "the CArmy block"),
+            (
+                fixture.group_equipment,
+                EQUIPMENT_BLOCK_LEN,
+                "the equipment variant block",
+            ),
+            (
+                fixture.first_delivery,
+                DELIVERY_BLOCK_LEN,
+                "the delivery block",
+            ),
+            (
+                fixture.first_group + REQUEST_ROW_BEGIN_OFF,
+                VECTOR_HEADER_LEN,
+                "the request vector-header re-read",
+            ),
+            (
+                fixture.first_group + DELIVERY_BEGIN_OFF,
+                VECTOR_HEADER_LEN,
+                "the delivery vector-header re-read",
+            ),
+            (
+                fixture.first_delivery + PRODUCED_ROW_BEGIN_OFF,
+                VECTOR_HEADER_LEN,
+                "the produced vector-header re-read",
+            ),
+            (
+                fixture.status + STATUS_GROUP_BEGIN_OFF,
+                VECTOR_HEADER_LEN,
+                "the group vector-header re-read",
+            ),
+        ] {
+            assert_eq!(
+                widened_reads
+                    .iter()
+                    .filter(|(at, served)| *at == address && *served == width)
+                    .count(),
+                2,
+                "{what} must be served as one widened copy per coherent-read pass"
+            );
+        }
+
+        // The 200-row request array is longer than one window, so a working
+        // window takes it as a full window plus a short tail at the address
+        // the tail starts at. The tail read is what proves the refill ran,
+        // rather than the array falling back after its first window.
+        let full_window = ARRAY_WINDOW_BYTES / REQUEST_ROW_STRIDE as usize;
+        let tail_rows = 200 - full_window;
+        let widest = widened_reads.iter().map(|(_, width)| *width).max();
+        assert_eq!(
+            widest,
+            Some(full_window * REQUEST_ROW_STRIDE as usize),
+            "the widest widened read must be one full request-row window"
+        );
+        let long_array = widened_reads
+            .iter()
+            .find(|(_, width)| Some(*width) == widest)
+            .expect("the full window read was just asserted to exist")
+            .0;
+        assert_eq!(
+            widened_reads
+                .iter()
+                .filter(
+                    |(at, width)| *at == long_array + full_window as u64 * REQUEST_ROW_STRIDE
+                        && *width == tail_rows * REQUEST_ROW_STRIDE as usize
+                )
+                .count(),
+            2,
+            "each pass must refill the window at the array's tail address"
+        );
+        assert!(
+            widened_reads.len() * 3 < scalar_reads.len(),
+            "widening must cut the read count several-fold: {} vs {}",
+            widened_reads.len(),
+            scalar_reads.len()
+        );
+        assert_eq!(
+            encode_payload(&receipt_frame(widened.clone())).unwrap(),
+            encode_payload(&receipt_frame(scalar)).unwrap()
+        );
+
+        // The graph really is populated -- an empty walk would satisfy the
+        // comparison above without testing anything -- and its longest array
+        // really does outrun one window.
+        let groups: usize = widened.countries.iter().map(|c| c.groups.len()).sum();
+        let requests: usize = widened
+            .countries
+            .iter()
+            .flat_map(|c| &c.groups)
+            .map(|g| g.requests.len())
+            .sum();
+        let deliveries: usize = widened
+            .countries
+            .iter()
+            .flat_map(|c| &c.groups)
+            .map(|g| g.deliveries.len())
+            .sum();
+        let produced: usize = widened
+            .countries
+            .iter()
+            .flat_map(|c| &c.groups)
+            .flat_map(|g| &g.deliveries)
+            .map(|d| d.produced.len())
+            .sum();
+        assert_eq!(
+            (
+                widened.countries.len(),
+                groups,
+                requests,
+                deliveries,
+                produced
+            ),
+            (3, 3, 203, 3, 4)
+        );
+        assert!(200 * REQUEST_ROW_STRIDE as usize > ARRAY_WINDOW_BYTES);
+    }
+
+    // kills: a widened read whose refusal is reported at the WIDE range
+    // instead of at the field the scalar walk would have failed on. A hole in
+    // the CArmy pointer refuses the group's whole widened copy, so the
+    // fallback walks the group's fields in the original order and must
+    // surface the original `Memory { address, width }` for that one field --
+    // the address and width `d93_fail_address` / `d93_fail_width` publish.
+    #[test]
+    fn the_scalar_fallback_keeps_the_refusal_address_and_width() {
+        let fixture = upgrade_graph();
+        let hole = fixture.first_group + REQUESTS_ARMY_PTR_OFF;
+        let error = read_snapshot_from_country_roots(
+            &HoleMemory {
+                inner: &fixture.memory,
+                hole,
+            },
+            fixture.module_base,
+            5,
+            &fixture.roots,
+        )
+        .expect_err("an unreadable CArmy pointer must refuse");
+        assert!(
+            matches!(&error, CarrierError::CountryRead { tag_db_id: 22, source, .. }
+                if matches!(&**source, CarrierError::Memory { address, width }
+                    if *address == hole && *width == 8)),
+            "{error:?}"
+        );
+    }
+
+    // kills: a counts helper that drifts from the decode-derived counting the
+    // collector used to do for the D93 PERF record's country and entry
+    // scalars.
+    #[test]
+    fn observed_counts_match_the_counts_taken_from_the_decoded_payload() {
+        let fixture = upgrade_graph();
+        let snapshot = read_snapshot_from_country_roots(
+            &fixture.memory,
+            fixture.module_base,
+            5,
+            &fixture.roots,
+        )
+        .unwrap();
+        let counts = observed_counts(&snapshot);
+        let payload = encode_payload(&receipt_frame(snapshot)).unwrap();
+        let decoded = decode_payload(&payload).unwrap().snapshot.unwrap();
+        // The arithmetic the collector ran over the decoded payload, restated.
+        let countries = decoded.countries.len().min(u32::MAX as usize) as u32;
+        let entries = decoded
+            .countries
+            .iter()
+            .flat_map(|country| &country.groups)
+            .map(|group| {
+                1u64.saturating_add(group.requests.len() as u64)
+                    .saturating_add(group.deliveries.len() as u64)
+                    .saturating_add(
+                        group
+                            .deliveries
+                            .iter()
+                            .map(|delivery| delivery.produced.len() as u64)
+                            .sum::<u64>(),
+                    )
+            })
+            .sum::<u64>()
+            .min(u64::from(u32::MAX)) as u32;
+        assert_eq!(counts, ObservedCounts { countries, entries });
+        assert_eq!(
+            counts,
+            ObservedCounts {
+                countries: 3,
+                entries: 213
+            }
+        );
+    }
+
+    // kills: dropping the duplicate SETS from `validate_snapshot` without the
+    // strict-ascending test that subsumes them -- a duplicated country tag or
+    // a duplicated army identity must still be refused, under the same name.
+    #[test]
+    fn duplicate_identities_are_still_refused_without_the_sets() {
+        let mut snapshot = frame().snapshot.unwrap();
+        let country = snapshot.countries[0].clone();
+        snapshot.countries.push(country);
+        let error = validate_snapshot(&snapshot).unwrap_err();
+        assert!(
+            matches!(&error, CarrierError::Invalid(reason)
+                if reason == "AUR1 country order/identity/count is invalid"),
+            "{error:?}"
+        );
+
+        let mut snapshot = frame().snapshot.unwrap();
+        let group = snapshot.countries[0].groups[0].clone();
+        snapshot.countries[0].groups.push(group);
+        let error = validate_snapshot(&snapshot).unwrap_err();
+        assert!(
+            matches!(&error, CarrierError::Invalid(reason)
+                if reason == "AUR1 army group order/identity/count is invalid"),
+            "{error:?}"
+        );
+    }
+
+    // kills: an `encoded_length` that drifts from the encoder. It is only a
+    // capacity hint, so drift cannot corrupt a payload -- but a hint that is
+    // quietly short puts the ~175 KB production payload back on the
+    // reallocation path this lane took it off.
+    #[test]
+    fn encoded_length_is_exact_for_rowless_and_rich_frames() {
+        let rowless = ArmyUpgradeFrame {
+            elapsed_wall_ms: 1,
+            frame_hour: 2,
+            status_flags: 0x100,
+            authority: AuthorityState::SourceUnavailable,
+            snapshot: None,
+        };
+        let bytes = encode_payload(&rowless).unwrap();
+        assert_eq!(bytes.len(), ROWLESS_PAYLOAD_LEN);
+        assert_eq!(bytes.len(), encoded_length(&rowless));
+
+        let fixture = upgrade_graph();
+        let snapshot = read_snapshot_from_country_roots(
+            &fixture.memory,
+            fixture.module_base,
+            5,
+            &fixture.roots,
+        )
+        .unwrap();
+        let rich = receipt_frame(snapshot);
+        assert_eq!(encode_payload(&rich).unwrap().len(), encoded_length(&rich));
     }
 }
