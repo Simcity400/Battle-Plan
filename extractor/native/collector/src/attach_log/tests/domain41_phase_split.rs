@@ -1,12 +1,22 @@
 use super::*;
 
-const D41_PHASE_UNITS: [&str; 6] = [
+/// Lane DS's six FIRST, then lane RZ's five. The order is the contract, not
+/// an accident: `compact_projects_diagnostic_units` fills the
+/// `MAX_FLOOR_UNITS_PER_OFFENDER` (8) floor in emission order, so a truncated
+/// record must lose the RZ sub-split before it loses the DS split. This array
+/// is what pins that.
+const D41_PHASE_UNITS: [&str; 11] = [
     "d41_phase_d18_reread_us",
     "d41_phase_lifecycle_us",
     "d41_phase_cache_rows_us",
     "d41_phase_breakthrough_us",
     "d41_phase_emit_mode_us",
     "d41_phase_total_us",
+    "d41_phase_lifecycle_decode_us",
+    "d41_phase_lifecycle_sort_us",
+    "d41_phase_breakthrough_records_us",
+    "d41_phase_breakthrough_classify_us",
+    "d41_lifecycle_bulk_fallback_countries",
 ];
 
 fn read_with_phase(status_flags: u32) -> CompactProjectsRead {
@@ -31,6 +41,11 @@ fn read_with_phase_and_shortfall(
             breakthrough_us: 44,
             emit_mode_us: 55,
             total_us: 66,
+            lifecycle_decode_us: 77,
+            lifecycle_sort_us: 88,
+            breakthrough_records_us: 99,
+            breakthrough_classify_us: 110,
+            lifecycle_bulk_fallback_countries: 121,
         },
         d18_authority: None,
         read_time_us: 0,
@@ -78,7 +93,11 @@ fn d41_phase_units_are_emitted_on_a_clean_status() {
          failure-context word"
     );
     let values: Vec<u64> = units.iter().map(|unit| unit.value).collect();
-    assert_eq!(values, vec![11, 22, 33, 44, 55, 66], "phase unit wiring");
+    assert_eq!(
+        values,
+        vec![11, 22, 33, 44, 55, 66, 77, 88, 99, 110, 121],
+        "phase unit wiring"
+    );
 }
 
 #[test]
